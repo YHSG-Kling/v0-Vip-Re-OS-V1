@@ -10,13 +10,14 @@ import { verifyCronAuth } from "@/lib/cron-auth"
 import { runDocumentComplianceAudit } from "@/lib/kernel/document-compliance-audit"
 
 /**
- * DOCUMENT-VISION COMPLIANCE AUDIT cron (hourly) — the live equivalent of the legacy
+ * DOCUMENT-TEXT COMPLIANCE AUDIT cron (hourly) — the live equivalent of the legacy
  * workflows/audit-document.json + workflows/broker-audit.json. Sweeps recently-uploaded
  * deal documents (client_documents tied to a transaction or contact) that have NOT yet been
- * audited, runs the AI vision compliance pass per document, records the result on the doc's
- * ai_metadata, and on findings escalates to the broker via the existing notifications rail +
- * the manager-signals bus. The sweep is the lower-risk trigger (no upload-path coupling);
- * idempotent per (document, vision content) so re-runs are cheap and never double-escalate.
+ * audited, runs the TEXT-extraction compliance pass per document (ocr-pdf text layer +
+ * deterministic checklist — NO vision), records the result on the doc's ai_metadata, and on
+ * findings escalates to the broker via the existing notifications rail + the manager-signals
+ * bus. The sweep is the lower-risk trigger (no upload-path coupling); idempotent per
+ * (document, extracted-text content) so re-runs are cheap and never double-escalate.
  */
 export async function GET(req: NextRequest) {
   const unauth = verifyCronAuth(req)

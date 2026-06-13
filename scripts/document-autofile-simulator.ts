@@ -22,13 +22,18 @@
 import {
   classifyDocumentType,
   resolveDealFolder,
+  parseBucketObjectPath,
+  dealFolderObjectPath,
+  fileStorageObject,
   DOC_CATEGORIES,
+  DOCUMENT_BUCKET,
   isDocCategory,
   AUTOFILE_EVENT,
   AUTOFILE_FLAGGED_EVENT,
   type DocCategory,
   type DealRow,
   type DocClassification,
+  type StorageMover,
 } from "../lib/kernel/document-autofile"
 
 let passed = 0, failed = 0
@@ -129,6 +134,52 @@ async function main() {
   check("contact on >1 open deal → ambiguous, null (never guess)",
     amb.transactionId === null && amb.reason === "ambiguous_multiple_open_deals")
 
+  console.log("\n[Layer 1 · pure Supabase Storage path resolution]")
+
+  // Parse the in-bucket object key out of a stored public URL.
+  const pubUrl = `https://proj.supabase.co/storage/v1/object/public/${DOCUMENT_BUCKET}/contacts/c1/1700000000_PSA.pdf`
+  check("parseBucketObjectPath: public URL → in-bucket object key",
+    parseBucketObjectPath(pubUrl) === "contacts/c1/1700000000_PSA.pdf")
+  check("parseBucketObjectPath: signed URL (query string) → key without token",
+    parseBucketObjectPath(`https://proj.supabase.co/storage/v1/object/sign/${DOCUMENT_BUCKET}/contacts/c1/x.pdf?token=abc`) === "contacts/c1/x.pdf")
+  check("parseBucketObjectPath: data: DB-fallback URL → null (no move)",
+    parseBucketObjectPath("data:application/pdf;base64,JVBER...") === null)
+  check("parseBucketObjectPath: external URL (not our bucket) → null",
+    parseBucketObjectPath("https://example.test/psa.pdf") === null)
+
+  // The canonical deal-folder destination key.
+  check("dealFolderObjectPath: {brokerage}/{txn}/{category}/{filename}",
+    dealFolderObjectPath({ brokerageId: "bk1", transactionId: "tx1", docCategory: "offer_form", sourcePath: "contacts/c1/1700000000_PSA.pdf" })
+      === "bk1/tx1/offer_form/1700000000_PSA.pdf")
+  check("dealFolderObjectPath: no deal → _unsorted segment (typed-filed, deal left for human)",
+    dealFolderObjectPath({ brokerageId: "bk1", transactionId: null, docCategory: "disclosure", sourcePath: "contacts/c1/x.pdf" })
+      === "bk1/_unsorted/disclosure/x.pdf")
+
+  // fileStorageObject — moves, idempotency, honesty (pure, with an in-memory mover).
+  const calls: Array<{ from: string; to: string }> = []
+  const okMover: StorageMover = async ({ fromPath, toPath }) => { calls.push({ from: fromPath, to: toPath }); return { ok: true, publicUrl: `https://proj.supabase.co/storage/v1/object/public/${DOCUMENT_BUCKET}/${toPath}` } }
+
+  const moveRes = await fileStorageObject(okMover, { documentUrl: pubUrl, brokerageId: "bk1", transactionId: "tx1", docCategory: "offer_form" })
+  check("fileStorageObject: moves into the deal folder + returns the new public URL",
+    moveRes.moved === true && moveRes.toPath === "bk1/tx1/offer_form/1700000000_PSA.pdf" &&
+    (moveRes.newPublicUrl ?? "").endsWith("bk1/tx1/offer_form/1700000000_PSA.pdf"))
+  check("fileStorageObject: invoked the mover exactly once with the right from→to",
+    calls.length === 1 && calls[0].from === "contacts/c1/1700000000_PSA.pdf" && calls[0].to === "bk1/tx1/offer_form/1700000000_PSA.pdf")
+
+  // Idempotent: an object already AT its deal folder is a no-op (no move call).
+  const callsB: Array<unknown> = []
+  const noopMover: StorageMover = async () => { callsB.push(1); return { ok: true } }
+  const already = await fileStorageObject(noopMover, {
+    documentUrl: `https://proj.supabase.co/storage/v1/object/public/${DOCUMENT_BUCKET}/bk1/tx1/offer_form/x.pdf`,
+    brokerageId: "bk1", transactionId: "tx1", docCategory: "offer_form",
+  })
+  check("fileStorageObject: source already in deal folder → no-op, mover NOT called",
+    already.moved === false && callsB.length === 0 && (already.reason ?? "").includes("already"))
+
+  // Honest: no parsable bucket path → no move.
+  const noPath = await fileStorageObject(okMover, { documentUrl: "data:application/pdf;base64,JVBER", brokerageId: "bk1", transactionId: "tx1", docCategory: "offer_form" })
+  check("fileStorageObject: data: URL → moved false, honest reason", noPath.moved === false && !!noPath.reason)
+
   // ───────────────────────────────────────────────────────────────────────────
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
@@ -165,18 +216,28 @@ async function main() {
     cleanup.push({ table: "transactions", id: (txn as any).id })
 
     // UNFILED upload: doc_category NULL, contact set, NO transaction stamped yet.
+    // document_url is a bucket-shaped public URL so the storage move has a parsable source.
+    const sourceObjectPath = `contacts/${(contact as any).id}/1700000000_psa.pdf`
+    const srcUrl = `https://proj.supabase.co/storage/v1/object/public/${DOCUMENT_BUCKET}/${sourceObjectPath}`
     const { data: pdoc } = await svc.from("client_documents").insert({
       brokerage_id: brokerageId, contact_id: (contact as any).id,
       document_name: `${TAG} Residential Purchase Agreement - 44 Birch.pdf`,
-      document_url: "https://example.test/psa.pdf",
+      document_url: srcUrl,
     }).select("id").single()
     const docId = (pdoc as any).id
     cleanup.push({ table: "client_documents", id: docId })
 
-    // INJECTED classifier — deterministic, no token spend (mirrors a confident gateway).
+    // INJECTED classifier + storage mover — deterministic, no token spend, no real bucket I/O.
+    // The mover records every move and returns a synthetic public URL for the destination.
+    const moves: Array<{ from: string; to: string }> = []
+    const storageMover: StorageMover = async ({ bucket, fromPath, toPath }) => {
+      moves.push({ from: fromPath, to: toPath })
+      return { ok: true, publicUrl: `https://proj.supabase.co/storage/v1/object/public/${bucket}/${toPath}` }
+    }
     const inject = {
       classifier: async (input: { filename: string }): Promise<DocClassification> =>
         classifyDocumentType(input.filename),
+      storageMover,
     }
 
     const r1 = await runAutoFile({ documentId: docId }, inject, svc)
@@ -184,14 +245,24 @@ async function main() {
     check("runAutoFile: classified offer_form", r1.documentType === "offer_form", String(r1.documentType))
     check("runAutoFile: resolved the deal by contact", r1.transactionId === (txn as any).id && r1.dealReason === "matched_by_contact", JSON.stringify(r1))
 
+    // The STORAGE OBJECT was moved into the deal folder {brokerage}/{txn}/{category}/{file}.
+    const expectedDest = `${brokerageId}/${(txn as any).id}/offer_form/1700000000_psa.pdf`
+    check("storage: object MOVED into the deal folder path", r1.storage?.moved === true && r1.storage?.toPath === expectedDest, JSON.stringify(r1.storage))
+    check("storage: mover invoked once with the right from→to",
+      moves.length === 1 && moves[0].from === sourceObjectPath && moves[0].to === expectedDest, JSON.stringify(moves))
+
     // The row is FILED: doc_category + document_type + transaction_id all set.
     const { data: filed } = await svc.from("client_documents")
-      .select("doc_category, document_type, transaction_id, ai_metadata").eq("id", docId).single()
+      .select("doc_category, document_type, transaction_id, document_url, ai_metadata").eq("id", docId).single()
     check("row filed: doc_category = offer_form (canonical enum)", (filed as any)?.doc_category === "offer_form")
     check("row filed: document_type folder key set", (filed as any)?.document_type === "offer_form")
     check("row filed: transaction_id stamped to the deal", (filed as any)?.transaction_id === (txn as any).id)
-    check("row filed: ai_metadata.autofile audit (status filed, drive_synced false)",
-      (filed as any)?.ai_metadata?.autofile?.status === "filed" && (filed as any)?.ai_metadata?.autofile?.drive_synced === false)
+    check("row filed: ai_metadata.autofile audit (status filed, storage_filed true + deal-folder path)",
+      (filed as any)?.ai_metadata?.autofile?.status === "filed" &&
+      (filed as any)?.ai_metadata?.autofile?.storage_filed === true &&
+      (filed as any)?.ai_metadata?.autofile?.storage_to === expectedDest)
+    check("row filed: document_url re-pointed at the moved object's public URL",
+      ((filed as any)?.document_url ?? "").endsWith(expectedDest))
 
     // The filing is RECORDED on lifecycle_events.
     const { data: ev } = await svc.from("lifecycle_events")

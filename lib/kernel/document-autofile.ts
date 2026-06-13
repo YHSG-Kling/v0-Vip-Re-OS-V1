@@ -21,15 +21,19 @@
 //   · ai_metadata    — the filing audit (confidence, signals, classifier source).
 // An UNFILED doc is one with no doc_category set yet (the clerk's work queue).
 //
-// ── In-app filing, NOT Google Drive (what's actually wired) ───────────────────
-// The legacy workflow filed into Google Drive folders (Drive: Folder Lookup / Create /
-// Upload). This codebase has NO Drive folder API wired: the connector-registry.ts has no
-// Drive connector, and Google OAuth (lib/inbound-mail/oauth-fetchers, lib/providers) is
-// Gmail/Calendar only — there is no create/list-folder or move-file runtime integration.
-// So the clerk performs the CANONICAL IN-APP filing (set the columns above on the row).
-// A Drive sync is an honest FOLLOW-UP (would hang off a future Drive connector + the same
-// resolveDealFolder output); the clerk never pretends to move a file into a Drive folder
-// that does not exist.
+// ── Supabase Storage filing (the `client-documents` bucket) ───────────────────
+// Documents live in the `client-documents` SUPABASE STORAGE bucket (uploaded by
+// app/actions/documents.ts at `transactions/{txn}/...` or `contacts/{contact}/...`), with the
+// public URL stored on client_documents.document_url. The clerk organizes BOTH halves of a
+// filed document:
+//   1. the ROW (the canonical columns above), AND
+//   2. the STORAGE OBJECT — it MOVES the object inside the bucket into the deal-folder path
+//      {brokerage_id}/{transaction_id}/{doc_category}/{filename} via the Supabase Storage
+//      move API, then re-points document_url at the new public URL.
+// HONEST: when document_url is not a parsable bucket path (e.g. the data: DB-fallback URL, or an
+// external URL), the clerk files the ROW and records storage_filed:false (no fabricated move).
+// Idempotent: a row already carrying a canonical doc_category is never re-moved; a move whose
+// destination already equals the source is a no-op.
 //
 // ── Classify via an injectable seam, deterministic floor ──────────────────────
 // classifyDocumentType is a PURE keyword/extension classifier over the canonical enum —
@@ -392,6 +396,131 @@ function meetsFloor(c: Confidence): boolean {
   return c === "high" || c === "medium" // 'low' never auto-files
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Supabase Storage filing — move the bucket object into the deal-folder path
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The Supabase Storage bucket every client document lives in (verified live). */
+export const DOCUMENT_BUCKET = "client-documents"
+
+/**
+ * PURE. Parse the in-bucket object path out of a stored document_url. document_url is the
+ * PUBLIC url getPublicUrl() produced, i.e.
+ *   https://<proj>.supabase.co/storage/v1/object/public/client-documents/<path>
+ * Returns the `<path>` (everything after the bucket segment), or null when the URL is not a
+ * parsable object in our bucket (external URL, signed URL, or the data: DB-fallback). No move
+ * is attempted when this returns null — the clerk files the row only and stays honest.
+ */
+export function parseBucketObjectPath(documentUrl: string | null | undefined, bucket = DOCUMENT_BUCKET): string | null {
+  if (!documentUrl || typeof documentUrl !== "string") return null
+  if (documentUrl.startsWith("data:")) return null
+  const marker = `/${bucket}/`
+  // Matches both /object/public/<bucket>/ and /object/sign|authenticated/<bucket>/ layouts.
+  const idx = documentUrl.indexOf(marker)
+  if (idx === -1) return null
+  let path = documentUrl.slice(idx + marker.length)
+  // Strip any query string (signed-URL tokens) — we only want the object key.
+  const q = path.indexOf("?")
+  if (q !== -1) path = path.slice(0, q)
+  path = path.replace(/^\/+/, "")
+  return path.length > 0 ? decodeURIComponent(path) : null
+}
+
+/**
+ * PURE. The canonical deal-folder destination key inside the bucket:
+ *   {brokerage_id}/{transaction_id}/{doc_category}/{filename}
+ * Falls back to "_unsorted" for the transaction segment when no deal resolved (the doc is still
+ * typed-filed; the deal folder is left for a human). The filename is preserved from the source.
+ */
+export function dealFolderObjectPath(args: {
+  brokerageId: string | null
+  transactionId: string | null
+  docCategory: DocCategory
+  sourcePath: string
+}): string {
+  const fileName = args.sourcePath.split("/").filter(Boolean).pop() ?? "document"
+  const brokerage = args.brokerageId ?? "_brokerage"
+  const txn = args.transactionId ?? "_unsorted"
+  return `${brokerage}/${txn}/${args.docCategory}/${fileName}`
+}
+
+/** Result of a storage move attempt. */
+export interface StorageMoveResult {
+  moved: boolean
+  fromPath: string | null
+  toPath: string | null
+  /** A fresh public URL for the new path, when the mover produced one. */
+  newPublicUrl?: string | null
+  reason?: string
+}
+
+/** The injectable storage seam — the simulator injects an in-memory mover (no real bucket). */
+export interface StorageMoverInput {
+  bucket: string
+  fromPath: string
+  toPath: string
+}
+export interface StorageMoverOutput {
+  ok: boolean
+  /** Public URL for the destination path (the mover resolves it via getPublicUrl). */
+  publicUrl?: string | null
+  error?: string
+}
+export type StorageMover = (input: StorageMoverInput) => Promise<StorageMoverOutput>
+
+/**
+ * The REAL default mover — Supabase Storage move() within the bucket, then getPublicUrl() for
+ * the destination. Honest: returns ok:false (never throws) so a storage hiccup never blocks the
+ * row filing.
+ */
+export function makeSupabaseStorageMover(supabase: Svc): StorageMover {
+  return async ({ bucket, fromPath, toPath }) => {
+    try {
+      const { error } = await (supabase as any).storage.from(bucket).move(fromPath, toPath)
+      if (error) return { ok: false, error: error.message ?? String(error) }
+      const { data } = (supabase as any).storage.from(bucket).getPublicUrl(toPath)
+      return { ok: true, publicUrl: data?.publicUrl ?? null }
+    } catch (e: any) {
+      return { ok: false, error: e?.message ?? String(e) }
+    }
+  }
+}
+
+/**
+ * Move the document's storage object into its deal folder. Idempotent + honest:
+ *   · no parsable bucket path (data:/external URL) → { moved:false, reason } (row still files).
+ *   · source already AT the destination → { moved:false, reason:"already in deal folder" }.
+ *   · move fails → { moved:false, reason } (logged on the row; the row filing still stands).
+ */
+export async function fileStorageObject(
+  mover: StorageMover,
+  args: {
+    documentUrl: string | null
+    brokerageId: string | null
+    transactionId: string | null
+    docCategory: DocCategory
+  },
+): Promise<StorageMoveResult> {
+  const fromPath = parseBucketObjectPath(args.documentUrl)
+  if (!fromPath) {
+    return { moved: false, fromPath: null, toPath: null, reason: "no parsable storage object in document_url" }
+  }
+  const toPath = dealFolderObjectPath({
+    brokerageId: args.brokerageId,
+    transactionId: args.transactionId,
+    docCategory: args.docCategory,
+    sourcePath: fromPath,
+  })
+  if (fromPath === toPath) {
+    return { moved: false, fromPath, toPath, reason: "already in deal folder" }
+  }
+  const res = await mover({ bucket: DOCUMENT_BUCKET, fromPath, toPath })
+  if (!res.ok) {
+    return { moved: false, fromPath, toPath, reason: res.error ?? "storage move failed" }
+  }
+  return { moved: true, fromPath, toPath, newPublicUrl: res.publicUrl ?? null }
+}
+
 export interface RunAutoFileParams {
   documentId: string
 }
@@ -399,6 +528,8 @@ export interface RunAutoFileParams {
 export interface RunAutoFileDeps {
   /** Injected classifier; defaults to realDocClassifier (gateway). */
   classifier?: DocClassifier
+  /** Injected storage mover; defaults to the real Supabase Storage move() on the client. */
+  storageMover?: StorageMover
 }
 
 export interface RunAutoFileResult {
@@ -413,6 +544,8 @@ export interface RunAutoFileResult {
   signals?: string[]
   /** lifecycle_events.id of the recorded filing / flag. */
   eventId?: string
+  /** The storage-object filing outcome (the bucket move into the deal folder). */
+  storage?: StorageMoveResult
   reason?: string
 }
 
@@ -436,12 +569,13 @@ export async function runAutoFile(
   const { documentId } = params
   const classifier = deps.classifier ?? realDocClassifier
   const supabase = client ?? (await import("@/lib/supabase/service")).createServiceClient()
+  const storageMover = deps.storageMover ?? makeSupabaseStorageMover(supabase)
   const now = new Date().toISOString()
 
   // 1. Load the doc.
   const { data: doc } = await supabase
     .from("client_documents")
-    .select("id, brokerage_id, contact_id, transaction_id, document_name, document_type, doc_category, is_financial_verification, ai_metadata")
+    .select("id, brokerage_id, contact_id, transaction_id, document_name, document_url, document_type, doc_category, is_financial_verification, ai_metadata")
     .eq("id", documentId)
     .maybeSingle()
 
@@ -454,6 +588,7 @@ export async function runAutoFile(
     contact_id: string | null
     transaction_id: string | null
     document_name: string
+    document_url: string | null
     document_type: string | null
     doc_category: string | null
     is_financial_verification: boolean | null
@@ -556,6 +691,17 @@ export async function runAutoFile(
     deal = { transactionId: row.transaction_id, reason: "already_on_deal" }
   }
 
+  // MOVE the storage object into the deal folder within the `client-documents` bucket
+  // ({brokerage}/{transaction_id}/{doc_category}/{filename}). Honest + idempotent: a non-bucket
+  // document_url (data:/external) or an object already in its deal folder is a no-op; a failed
+  // move still lets the ROW filing stand (the move outcome is recorded on ai_metadata).
+  const storage = await fileStorageObject(storageMover, {
+    documentUrl: row.document_url,
+    brokerageId: row.brokerage_id,
+    transactionId: deal.transactionId ?? row.transaction_id ?? null,
+    docCategory: documentType,
+  })
+
   // FILE the row — set the canonical filing columns. document_type carries the folder key
   // (same value as doc_category so the Document Center groups it correctly); doc_category
   // is the constrained enum; transaction_id is stamped only when the deal resolved.
@@ -571,14 +717,20 @@ export async function runAutoFile(
         signals,
         deal_reason: deal.reason,
         filed_at: now,
-        // Drive sync is a documented follow-up — no Drive folder API is wired in this OS.
-        drive_synced: false,
+        storage_filed: storage.moved,
+        storage_from: storage.fromPath,
+        storage_to: storage.toPath,
+        storage_reason: storage.reason ?? null,
         source: "ai_autofile_clerk",
       },
     },
   }
   if (deal.transactionId && !row.transaction_id) {
     update.transaction_id = deal.transactionId
+  }
+  // Re-point document_url at the moved object's fresh public URL when the move produced one.
+  if (storage.moved && storage.newPublicUrl) {
+    update.document_url = storage.newPublicUrl
   }
 
   await supabase.from("client_documents").update(update).eq("id", documentId)
@@ -599,13 +751,15 @@ export async function runAutoFile(
           confidence,
           transaction_id: deal.transactionId ?? null,
           deal_reason: deal.reason,
-          drive_synced: false,
+          storage_filed: storage.moved,
+          storage_to: storage.toPath,
         },
         metadata: {
           document_name: row.document_name,
           document_type: documentType,
           folder: DOC_CATEGORY_LABELS[documentType],
           transaction_id: deal.transactionId ?? null,
+          storage_path: storage.toPath,
         },
       })
       .select("id")
@@ -622,6 +776,7 @@ export async function runAutoFile(
     dealReason: deal.reason,
     signals,
     eventId,
+    storage,
   }
 }
 
