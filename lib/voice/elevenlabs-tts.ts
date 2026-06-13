@@ -40,6 +40,17 @@ export interface SynthesizeSpeechInput {
   voiceId?: string | null
   voiceSettings?: VoiceSettings
   modelId?: string             // 'eleven_monolingual_v1' (default), 'eleven_multilingual_v2', etc.
+  /**
+   * BCP-47 language code for the multilingual model (e.g. 'es', 'pt', 'zh', 'fr').
+   * Only honoured when modelId is 'eleven_multilingual_v2' (or any future multilingual
+   * model). When omitted, ElevenLabs auto-detects the language from the input text —
+   * which is the correct behaviour for the multilingual model. Existing callers that
+   * do NOT supply this field are UNAFFECTED (the default model stays monolingual_v1).
+   *
+   * ADDITIVE: no existing caller is broken — the field is optional and ignored by
+   * the monolingual model endpoint.
+   */
+  languageCode?: string | null
   /** When set, the synthesis cost is recorded to the unified vendor ledger. */
   brokerageId?: string | null
 }
@@ -95,6 +106,9 @@ export async function synthesizeSpeech(
         text: input.text,
         model_id: input.modelId ?? "eleven_monolingual_v1",
         voice_settings: settings,
+        // language_code is optional — only sent when the caller specifies it (multilingual path).
+        // ElevenLabs ignores it for monolingual models and auto-detects when omitted on multilingual.
+        ...(input.languageCode ? { language_code: input.languageCode } : {}),
       },
     })
 
@@ -215,6 +229,8 @@ export async function synthesizeSpeechWithTimestamps(
         text: input.text,
         model_id: input.modelId ?? "eleven_monolingual_v1",
         voice_settings: settings,
+        // language_code is optional — only sent when the caller specifies it (multilingual path).
+        ...(input.languageCode ? { language_code: input.languageCode } : {}),
       },
     })
 
@@ -311,6 +327,8 @@ export async function synthesizeSpeechStream(input: SynthesizeSpeechInput): Prom
           text: input.text,
           model_id: input.modelId ?? "eleven_monolingual_v1",
           voice_settings: settings,
+          // language_code is optional — only sent when the caller specifies it (multilingual path).
+          ...(input.languageCode ? { language_code: input.languageCode } : {}),
         }),
       }
     )

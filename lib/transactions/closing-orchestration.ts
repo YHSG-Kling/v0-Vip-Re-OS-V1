@@ -25,6 +25,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { runDealAutopsy } from "@/lib/kernel/deal-autopsy"
 
 type Severity = "low" | "medium" | "high" | "urgent"
 type Recipient = "buyer" | "seller" | "lender" | "inspector" | "title" | "escrow" | "co_agent" | "agent"
@@ -357,4 +358,68 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
   }
 
   return { scanned: txns.length, opened, superseded }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Deal-Autopsy trigger — fires when a transaction transitions to terminal failure
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Run deal autopsies for recently-lost transactions (status='lost') that have
+ * not yet been autopsied. This is the TRIGGER SEAM: wired here so the deal-
+ * autopsy runs as part of the same closing-orchestration cron pass that owns
+ * the full transaction lifecycle. Additive — does NOT modify runClosingOrchestration.
+ *
+ * Idempotency is owned by runDealAutopsy itself (unique index on transaction_id
+ * in deal_autopsy_observations). Re-running this for the same lost transaction
+ * is a cheap no-op.
+ */
+export async function runLostTransactionAutopsies(opts?: { limit?: number; sinceHours?: number }): Promise<{
+  scanned:   number
+  autopsied: number
+  skipped:   number
+  errors:    string[]
+}> {
+  const svc = createServiceClient()
+  const limit = opts?.limit ?? 50
+  // Default look-back: transactions that went lost in the last 72 hours (catches
+  // both the immediate transition and any missed cron windows). Pass sinceHours=0
+  // to scan ALL lost transactions (useful for backfill / simulator cleanup).
+  const since = opts?.sinceHours != null && opts.sinceHours === 0
+    ? null
+    : new Date(Date.now() - (opts?.sinceHours ?? 72) * 3_600_000).toISOString()
+
+  let q = svc
+    .from("transactions")
+    .select("id")
+    .eq("status", "lost")
+    .order("updated_at", { ascending: false })
+    .limit(limit)
+  if (since) q = q.gte("updated_at", since)
+
+  const { data: lostTxns } = await q
+  if (!lostTxns || lostTxns.length === 0) return { scanned: 0, autopsied: 0, skipped: 0, errors: [] }
+
+  let autopsied = 0
+  let skipped   = 0
+  const errors: string[] = []
+
+  for (const t of lostTxns as Array<{ id: string }>) {
+    try {
+      const result = await runDealAutopsy(t.id, svc)
+      if (result.error) {
+        skipped += 1
+        errors.push(`${t.id}: ${result.error}`)
+      } else if (result.idempotent) {
+        skipped += 1
+      } else {
+        autopsied += 1
+      }
+    } catch (e: any) {
+      skipped += 1
+      errors.push(`${t.id}: ${e?.message ?? String(e)}`)
+    }
+  }
+
+  return { scanned: lostTxns.length, autopsied, skipped, errors }
 }

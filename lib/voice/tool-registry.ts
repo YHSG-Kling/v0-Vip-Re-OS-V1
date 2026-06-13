@@ -249,6 +249,18 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_nar_regulated: false,
     description: "Compose the agent's top-priority action queue into a spoken briefing. Pulls from 6 sources (portal_event / deal_health / listing_health / lifetime_npv / negotiation_strategy / income_gap) via composeAgentActionQueue. The voice cockpit calls this on session start to open with 'three things to act on today' so the AI feels proactive instead of order-taking.",
   },
+
+  // -- Studio Session (batch content calendar commissioning) -----------------
+  book_studio_session: {
+    name: "book_studio_session",
+    category: "stage",
+    authority: "agent",
+    gates: ["evaluate_outbound"],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Commission a GATED content calendar batch in one spoken command: plans N reels (which formats, which listings/topics, which dates) and stages them via the Video Director at pending_review. Nothing auto-publishes — every reel awaits human approval in the Content Studio. Example: 'book me a week of content', 'schedule a month of reels'.",
+  },
 }
 
 /**

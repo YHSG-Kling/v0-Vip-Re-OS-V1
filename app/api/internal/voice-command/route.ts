@@ -22,6 +22,7 @@ type VoiceIntent =
   | "start_marketing"
   | "cut_promo"
   | "commission_video"
+  | "studio_session"
   | "optimize_tour"
   | "closings_at_risk"
   | "send_equity_report"
@@ -88,6 +89,7 @@ export async function POST(req: NextRequest) {
 - start_marketing: asking to start/kick off marketing or a campaign for a named person ("get marketing going for Jordan", "push a campaign for the Hendersons")
 - cut_promo: asking to create/cut/make a promo video/reel for a LISTING ADDRESS ("cut a promo reel for 44 Birch Lane", "make a video for the new listing on Maple")
 - commission_video: asking to create an ON-DEMAND video that is NOT a listing promo — a market update, CMA/home-value, explainer/educational, neighborhood spotlight, testimonial, or anniversary/equity reel ("make a market update reel for Instagram", "create an explainer video about escrow for TikTok", "cut a neighborhood spotlight for Oakdale")
+- studio_session: asking to BOOK / PLAN / SCHEDULE a BATCH or CALENDAR of content / reels / videos for a duration (a day, a week, a month) — the agent wants MULTIPLE reels planned and staged at once ("book me a week of content", "schedule a month of reels", "plan my content calendar for the week", "line up a week of videos", "get me a content calendar")
 - optimize_tour: asking to optimize/fix/re-route a buyer's TOUR by named person ("optimize the Henderson tour", "fix the route and times for Jordan's tour", "sort the Garcia showings by drive time")
 - closings_at_risk: asking which closings/deals are AT RISK or tight this week ("what closings are at risk this week", "any deals about to slip", "which closings are tight")
 - send_equity_report: asking to send/run a named person's ANNIVERSARY EQUITY report ("send the Garcias their anniversary equity report", "run Jordan's equity update")
@@ -380,6 +382,28 @@ Respond with ONLY the intent string, nothing else.`,
         spokenResponse = r.spoken
         data = { kind, targetChannel }
         action = r.ok ? "video_commissioned" : null
+      }
+    } else if (intent === "studio_session") {
+      // "Book me a week of content" — the Studio Session BATCH: plans N reels (which
+      // formats, which listings/topics, which dates) and stages them for approval via the
+      // Video Director. Nothing auto-publishes — every reel lands at pending_review. The
+      // spoken command IS the human trigger; approvals still happen one-by-one in the
+      // Content Studio.
+      if (!brokerageId) {
+        spokenResponse = "I can't book a studio session without a brokerage on your profile."
+      } else {
+        const { voiceStudioSession } = await import("@/lib/voice/studio-session")
+        const r = await voiceStudioSession({ brokerageId, agentUserId: user.id, transcript }, service)
+        spokenResponse = r.spoken
+        data = {
+          sessionId: r.sessionId ?? null,
+          sessionKey: r.sessionKey ?? null,
+          commissioned: r.commissioned ?? 0,
+          skipped: r.skipped ?? 0,
+          videoProjectIds: r.videoProjectIds ?? [],
+          planItemCount: r.plan?.items.length ?? 0,
+        }
+        action = r.ok ? (r.stage === "already_commissioned" ? "studio_session_existing" : "studio_session_commissioned") : null
       }
     } else if (intent === "optimize_tour") {
       // "Optimize the Henderson tour" — resolve the buyer → their latest planned tour →

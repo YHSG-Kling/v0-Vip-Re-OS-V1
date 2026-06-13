@@ -535,6 +535,51 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
 
     return actions.join("; ")
   },
+  // Deal Coordinator → Recruiting Manager: a deal FELL THROUGH (status='lost'). The
+  // autopsy has already classified the failure reason and proposed a gated coaching
+  // brief (proposeClientMessage). The Recruiting Manager's handler here surfaces a
+  // NOTIFICATION to the broker/team-lead so the coaching prompt is never invisible —
+  // it reaches both the gated message inbox AND the notifications rail. The agent
+  // development charter (recruiter_agent_mgmt) already owns this notification pattern.
+  "recruiting_manager:deal_autopsy_completed": async (signal, ctx) => {
+    const p = (signal.payload ?? {}) as Record<string, unknown>
+    const reason = (p.failure_reason as string | undefined) ?? "other"
+    const agentId = (p.agent_id as string | undefined) ?? null
+    const confidence = typeof p.confidence === "number" ? p.confidence : 0
+    const purchasePrice = typeof p.purchase_price === "number" ? p.purchase_price : null
+    const daysUnder = typeof p.days_under_contract === "number" ? p.days_under_contract : null
+
+    const priceStr = purchasePrice ? `$${Math.round(purchasePrice).toLocaleString()}` : "unknown price"
+    const daysStr = daysUnder != null ? `${daysUnder} days under contract` : ""
+    const confStr = `${Math.round(confidence * 100)}% confidence`
+
+    // Notify broker/admins so the coaching prompt reaches the people who develop agents.
+    const { data: mgrs } = await ctx.supabase.from("users").select("id")
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+    let notified = 0
+    for (const m of (mgrs ?? []) as Array<{ id: string }>) {
+      const { error } = await ctx.supabase.from("notifications").insert({
+        user_id: m.id, brokerage_id: ctx.brokerageId, type: "deal_autopsy",
+        title: `Deal autopsy: ${reason.replace(/_/g, " ")} — ${priceStr}`,
+        body: `A ${priceStr} deal fell through (${reason.replace(/_/g, " ")}, ${confStr}${daysStr ? `, ${daysStr}` : ""}). A coaching brief has been proposed for review. ${signal.message}`,
+        entity_type: "transaction", entity_id: signal.entityId,
+        priority: "medium", is_read: false,
+      })
+      if (!error) notified += 1
+    }
+    // If the failing agent exists, notify them as well so they see the coaching ping.
+    if (agentId) {
+      await ctx.supabase.from("notifications").insert({
+        user_id: agentId, brokerage_id: ctx.brokerageId, type: "deal_autopsy",
+        title: `Deal autopsy ready — ${reason.replace(/_/g, " ")}`,
+        body: `Your ${priceStr} deal was autopsied (${reason.replace(/_/g, " ")}, ${confStr}). Your manager has a coaching brief queued. Check in this week.`,
+        entity_type: "transaction", entity_id: signal.entityId, priority: "low", is_read: false,
+      }).then()
+    }
+    return notified > 0
+      ? `deal-autopsy coaching prompt surfaced to ${notified} broker/admin${notified === 1 ? "" : "s"}${agentId ? " + agent notified" : ""}`
+      : "no broker/admin to surface deal-autopsy coaching prompt to"
+  },
   // Data Steward → Sphere: the consent-recovery chain exhausted every step (no fallback
   // channel, enrichment re-run found nothing). The Sphere releases the relationship
   // RESPECTFULLY: nurture_status='withdrawn' (history kept, never a delete), agent told.

@@ -10,7 +10,9 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContext } from "@/lib/kernel/identity"
+import { issueGovernedDocumentUrl, type AccessPurpose } from "@/lib/kernel/document-custody"
 
 export interface DocumentCenterRow {
   id: string
@@ -174,4 +176,55 @@ export async function getDocumentCenterData(): Promise<{
     pendingReviewCount,
     blockingIssuesCount,
   }
+}
+
+/**
+ * GOVERNED document open — the custody-layer access path for the Document Center.
+ *
+ * The `client-documents` bucket is PRIVATE (scripts/511: public=false), so the bare
+ * document_url (a getPublicUrl) does NOT resolve. This action resolves the requesting
+ * agent's context, verifies the document is in their brokerage, then mints a
+ * TIME-LIMITED signed URL via the custody layer and RECORDS the access on
+ * document_access_log (who/when/why/doc). The UI should call this to OPEN a document
+ * instead of linking the raw documentUrl.
+ *
+ * HONEST: a document whose document_url has no parsable bucket object (data: fallback
+ * / external URL) returns ok:false with a reason — no fabricated URL.
+ */
+export async function getGovernedDocumentUrl(
+  documentId: string,
+  purpose: AccessPurpose = "view",
+): Promise<{ success: boolean; url?: string; ttlSeconds?: number; error?: string }> {
+  const ctx = await resolveWriteContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
+  // Tenant scope check before issuing any access.
+  const svc = createServiceClient()
+  const { data: doc } = await svc
+    .from("client_documents")
+    .select("brokerage_id")
+    .eq("id", documentId)
+    .maybeSingle()
+  if (!doc || (doc as any).brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
+
+  const res = await issueGovernedDocumentUrl(
+    {
+      documentId,
+      requestedBy: {
+        type: "agent",
+        id: ctx.agentId ?? ctx.userId ?? null,
+      },
+      purpose,
+    },
+    svc,
+  )
+
+  if (!res.ok || !res.signedUrl) {
+    return { success: false, error: res.reason ?? "Could not issue a governed document URL" }
+  }
+  return { success: true, url: res.signedUrl, ttlSeconds: res.ttlSeconds }
 }
