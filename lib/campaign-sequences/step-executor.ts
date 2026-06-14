@@ -28,6 +28,7 @@ import { buildVariableContext, resolveVariables } from "@/lib/workflow/variables
 import { checkSequenceAuthority }  from "./compliance-gate"
 import { decideFirstTouch, FIRST_TOUCH_OUTREACH_CHANNELS } from "./first-touch-coordination"
 import { recordSequenceTouchpoint } from "./touchpoint-bridge"
+import { isDeconflictDeferral, decideDeferral, MAX_DEFERS } from "./deferral-policy"
 import { publishManagerSignal }    from "@/lib/kernel/manager-signals"
 import { KernelEvent }             from "@/lib/kernel/events"
 import { processKernelEvent }      from "@/lib/kernel/notification-engine"
@@ -320,6 +321,40 @@ export async function executeSequenceStep(
   const now = new Date().toISOString()
   const durationMs = Date.now() - startedAt
   const executionStatus = dispatchResult.status === "sent" ? "sent" : "failed"
+
+  // ── Step 8b: De-confliction deferral — RESCHEDULE the step, never DROP the touch ──
+  // The frequency cap (dispatch.ts deconflictGate) returns providerKey 'deconflict_gate' when one
+  // more touch would over-message the contact. Treating that as a failure would advance the
+  // enrollment and lose the message; instead retry the SAME step after a backoff so the contact
+  // still gets it once the over-touch window clears (bounded by MAX_DEFERS so it can't stall).
+  if (isDeconflictDeferral(dispatchResult.providerKey, dispatchResult.status)) {
+    const stepKey = `step_${nextStepNumber}`
+    const defers  = (previousOutputs.__defers as Record<string, number> | undefined) ?? {}
+    const decision = decideDeferral(defers[stepKey] ?? 0)
+
+    void Promise.resolve(supabase.from("workflow_step_runs").update({
+      status: "skipped", blocked_reason: dispatchResult.error ?? "over-touch deferral",
+      finished_at: now, duration_ms: durationMs,
+    }).eq("id", stepRunId)).catch(() => {})
+
+    await supabase.from("sequence_step_executions").insert({
+      enrollment_id: enrollmentId, sequence_id: enrollment.sequence_id, step_id: step.id,
+      contact_id: contactId, channel: step.channel, status: "skipped",
+      blocked_reason: `over-touch deferral (attempt ${decision.attempt}/${MAX_DEFERS}): ${dispatchResult.error ?? ""}`.trim(),
+      sent_at: null,
+    })
+
+    if (decision.action === "reschedule") {
+      // Retry the SAME step (current_step unchanged) after the backoff — touch preserved.
+      await supabase.from("sequence_enrollments").update({
+        next_step_at: decision.nextStepAt,
+        step_outputs: { ...previousOutputs, __defers: { ...defers, [stepKey]: decision.attempt } },
+      }).eq("id", enrollmentId)
+      return { status: "skipped", reason: `over-touch: rescheduled (attempt ${decision.attempt}/${MAX_DEFERS})` }
+    }
+    // Cap exhausted — advance so a perpetually-capped contact never stalls the cadence forever.
+    return await advanceEnrollment(supabase, enrollment, step, "skipped")
+  }
 
   // ── Step 9: Write step output to enrollment.step_outputs ───────────────────
   if (dispatchResult.output && step.output_variable_name) {

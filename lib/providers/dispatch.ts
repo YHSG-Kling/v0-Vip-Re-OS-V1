@@ -26,6 +26,7 @@ import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
 import { evaluateOutboundCompliance } from "@/lib/kernel/communication-compliance"
 import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 import { evaluateDeconflict, type DeconflictChannel } from "@/lib/kernel/deconflict"
+import { DECONFLICT_GATE_KEY } from "@/lib/campaign-sequences/deferral-policy"
 import { createServiceClient } from "@/lib/supabase/service"
 
 // ─── SHARED TYPES ─────────────────────────────────────────────────────────────
@@ -77,7 +78,7 @@ async function deconflictGate(args: {
   if (d.allowed) return null
   return {
     success:     false,
-    providerKey: "deconflict_gate",
+    providerKey: DECONFLICT_GATE_KEY,
     error:       `Outbound deferred: ${d.reason}`,
   }
 }
