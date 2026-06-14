@@ -239,11 +239,11 @@ Respond with ONLY the intent string, nothing else.`,
       if (!personQuery || personQuery.toUpperCase() === "NONE" || !brokerageId) {
         spokenResponse = "Who should I ask the team about? Give me a name and I'll pull everything the managers know."
       } else {
-        const { runTeamQuery } = await import("@/lib/kernel/team-query")
-        const tq = await runTeamQuery(brokerageId, personQuery, {}, service)
-        spokenResponse = tq.spoken
-        data = { contactId: tq.contactId, contributions: tq.contributions }
-        action = tq.found ? "team_query_answered" : null
+        const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
+        const r = await dispatchTeamCommand("team_query", { person_query: personQuery }, { brokerageId, agentUserId: user.id, firstName: profile.first_name }, service)
+        spokenResponse = r.spoken
+        data = r.data ?? {}
+        action = r.data?.contactId ? "team_query_answered" : null
       }
     } else if (intent === "morning_standup") {
       // "Hey team, what should I do today?" — the managers rank the day's top 3 moves
@@ -252,25 +252,26 @@ Respond with ONLY the intent string, nothing else.`,
       if (!brokerageId) {
         spokenResponse = "I can't pull your day without a brokerage on your profile."
       } else {
-        const { runMorningStandup } = await import("@/lib/kernel/morning-standup")
-        const s = await runMorningStandup(brokerageId, user.id, { firstName: profile.first_name }, service)
-        spokenResponse = s.spoken
-        data = { items: s.items }
-        action = s.items.length > 0 ? "standup_delivered" : null
+        const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
+        const r = await dispatchTeamCommand("morning_standup", {}, { brokerageId, agentUserId: user.id, firstName: profile.first_name }, service)
+        spokenResponse = r.spoken
+        data = r.data ?? {}
+        action = ((r.data?.items as unknown[] | undefined)?.length ?? 0) > 0 ? "standup_delivered" : null
       }
     } else if (intent === "do_standup_item") {
       // "Knock out number two" — re-derive the stand-up (live) and act on item N
       // through its rail (approval → the gate as the agent; reengage → follow-up;
       // fire → never auto-resolved).
-      const { parseOrdinal, runStandupAction } = await import("@/lib/kernel/standup-action")
+      const { parseOrdinal } = await import("@/lib/kernel/standup-action")
       const ordinal = parseOrdinal(transcript)
       if (!ordinal || !brokerageId) {
         spokenResponse = "Which one — number one, two, or three? Say the rank and I'll knock it out."
       } else {
-        const r = await runStandupAction({ brokerageId, agentUserId: user.id, ordinal, firstName: profile.first_name }, service)
+        const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
+        const r = await dispatchTeamCommand("standup_action", { ordinal }, { brokerageId, agentUserId: user.id, firstName: profile.first_name }, service)
         spokenResponse = r.spoken
-        data = { ordinal, actedKind: r.actedKind ?? null, entityId: r.entityId ?? null }
-        action = r.ok ? `standup_${r.actedKind}_done` : null
+        data = r.data ?? {}
+        action = r.ok ? `standup_${r.data?.actedKind ?? "item"}_done` : null
       }
     } else if (intent === "reject_standup_item") {
       // "Reject number two — too pushy" — the spoken NO carries its reason; outcome
@@ -306,11 +307,11 @@ Respond with ONLY the intent string, nothing else.`,
       if (!areaQuery || areaQuery.toUpperCase() === "NONE" || !brokerageId) {
         spokenResponse = "Which area? Give me a street, neighborhood, or city and I'll pull what the team has going there."
       } else {
-        const { runAreaQuery } = await import("@/lib/kernel/area-query")
-        const a = await runAreaQuery(brokerageId, areaQuery, service)
-        spokenResponse = a.spoken
-        data = { area: a.area, contributions: a.contributions }
-        action = a.contributions.length > 0 ? "area_query_answered" : null
+        const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
+        const r = await dispatchTeamCommand("area_query", { area_query: areaQuery }, { brokerageId, agentUserId: user.id, firstName: profile.first_name }, service)
+        spokenResponse = r.spoken
+        data = r.data ?? {}
+        action = ((r.data?.contributions as unknown[] | undefined)?.length ?? 0) > 0 ? "area_query_answered" : null
       }
     } else if (intent === "voice_followup" || intent === "start_marketing") {
       // VOICE DELEGATION — the spoken instruction is the human decision. Follow-ups
@@ -329,23 +330,12 @@ Respond with ONLY the intent string, nothing else.`,
       if (!personQuery || !brokerageId) {
         spokenResponse = "Who is that for? Give me the name and I'll take it from there."
       } else {
-        const { runTeamQuery } = await import("@/lib/kernel/team-query")
-        const tq = await runTeamQuery(brokerageId, personQuery, {}, service)
-        if (!tq.found || !tq.contactId) {
-          spokenResponse = tq.spoken
-        } else if (intent === "voice_followup") {
-          const { voiceFollowUp } = await import("@/lib/kernel/voice-delegation")
-          const r = await voiceFollowUp({ brokerageId, agentUserId: user.id, contactId: tq.contactId, dictation }, service)
-          spokenResponse = r.spoken
-          data = { contactId: tq.contactId, messageId: r.messageId ?? null }
-          action = r.ok ? "voice_followup_sent" : null
-        } else {
-          const { voiceStartMarketing } = await import("@/lib/kernel/voice-delegation")
-          const r = await voiceStartMarketing({ brokerageId, agentUserId: user.id, contactId: tq.contactId }, service)
-          spokenResponse = r.spoken
-          data = { contactId: tq.contactId, enrollmentId: r.enrollmentId ?? null }
-          action = r.ok ? "marketing_started" : null
-        }
+        const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
+        const cmd = intent === "voice_followup" ? "voice_followup" : "start_marketing"
+        const r = await dispatchTeamCommand(cmd, { person_query: personQuery, dictation }, { brokerageId, agentUserId: user.id, firstName: profile.first_name }, service)
+        spokenResponse = r.spoken
+        data = r.data ?? {}
+        action = r.ok ? (intent === "voice_followup" ? "voice_followup_sent" : "marketing_started") : null
       }
     } else if (intent === "cut_promo") {
       // "Cut a promo reel for 44 Birch" — the voice command is a manual trigger on the
@@ -361,10 +351,10 @@ Respond with ONLY the intent string, nothing else.`,
       if (!addressQuery || addressQuery.toUpperCase() === "NONE" || !brokerageId) {
         spokenResponse = "Which listing? Give me the street number and name and I'll cut the reel."
       } else {
-        const { voiceCutPromo } = await import("@/lib/kernel/voice-delegation")
-        const r = await voiceCutPromo({ brokerageId, agentUserId: user.id, addressQuery }, service)
+        const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
+        const r = await dispatchTeamCommand("cut_promo", { address_query: addressQuery }, { brokerageId, agentUserId: user.id, firstName: profile.first_name }, service)
         spokenResponse = r.spoken
-        data = { addressQuery }
+        data = r.data ?? {}
         action = r.ok ? "promo_dispatched" : null
       }
     } else if (intent === "commission_video") {
