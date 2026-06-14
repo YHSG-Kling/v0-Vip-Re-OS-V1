@@ -157,7 +157,8 @@
     "test:cadence-learning": "tsx scripts/cadence-learning-simulator.ts",
     "test:client-actor": "tsx scripts/client-actor-simulator.ts",
     "test:capacity-guardian": "tsx scripts/capacity-guardian-simulator.ts",
-    "test:seller-timeline": "tsx scripts/seller-timeline-simulator.ts"
+    "test:seller-timeline": "tsx scripts/seller-timeline-simulator.ts",
+    "test:nothing-dropped": "tsx scripts/nothing-dropped-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
