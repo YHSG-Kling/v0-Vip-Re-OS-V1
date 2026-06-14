@@ -250,6 +250,42 @@ export const voiceTools: Record<string, VoiceTool> = {
     description: "Compose the agent's top-priority action queue into a spoken briefing. Pulls from 6 sources (portal_event / deal_health / listing_health / lifetime_npv / negotiation_strategy / income_gap) via composeAgentActionQueue. The voice cockpit calls this on session start to open with 'three things to act on today' so the AI feels proactive instead of order-taking.",
   },
 
+  // ── Team coordination (the bullpen — read-only, no gates beyond auth) ──────
+  // Fan a question across the whole AI manager bench and read back ONE
+  // manager-attributed spoken answer. The spoken admin's differentiator: talk
+  // to your AI team like a human team. Backends in lib/kernel/{team-query,
+  // area-query,morning-standup}; dispatched via lib/voice/team-commands.ts.
+  team_query: {
+    name: "team_query",
+    category: "report",
+    authority: "agent_or_isa",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Ask the whole team what it knows about a person — 'Hey team, what do you know about the Hendersons?'. Every manager (AI ISA, Shopping Agent, Deal Coordinator, Asset Manager, Ads Manager, Data Steward) answers with ONLY what its own tables know; honest when empty; recommends silence on a withdrawn contact.",
+  },
+  area_query: {
+    name: "area_query",
+    category: "report",
+    authority: "agent_or_isa",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Ask the marketing bench what's happening near a place — 'anything happening near 44 Birch?'. Reports active listings (Listing Concierge), reusable promo reels ready/rendering (Asset Manager), and live ads targeting the area (Ads Manager). Read-only, honest when nothing's running.",
+  },
+  morning_standup: {
+    name: "morning_standup",
+    category: "report",
+    authority: "agent",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "The team's ranked top-3 for the day — 'what should I do today?'. Fire drills first (most expensive to ignore), then aging approvals past the 4h SLA, then the single warmest cooling lead. One spoken ranked answer, read-only, honest when the day is clear.",
+  },
+
   // -- Studio Session (batch content calendar commissioning) -----------------
   book_studio_session: {
     name: "book_studio_session",

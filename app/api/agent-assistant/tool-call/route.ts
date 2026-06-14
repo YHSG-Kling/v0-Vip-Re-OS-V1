@@ -246,6 +246,20 @@ async function runTool(
     case "get_morning_briefing":
       return getMorningBriefing(params, session, supabase)
 
+    // ── Team coordination (the bullpen) — shared dispatcher, same backends the
+    //    internal voice route uses. Read-only; the spoken admin gains the team Q&A.
+    case "team_query":
+    case "area_query":
+    case "morning_standup": {
+      const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
+      return dispatchTeamCommand(
+        toolName,
+        params,
+        { brokerageId: session.brokerage_id, agentUserId: session.user_id, firstName: (session as { first_name?: string | null }).first_name ?? null },
+        supabase,
+      )
+    }
+
     case "dispatch_transaction_packet":
       return dispatchTransactionPacket(params, session, supabase)
 
