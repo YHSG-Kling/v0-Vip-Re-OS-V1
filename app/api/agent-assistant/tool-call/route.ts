@@ -246,11 +246,15 @@ async function runTool(
     case "get_morning_briefing":
       return getMorningBriefing(params, session, supabase)
 
-    // ── Team coordination (the bullpen) — shared dispatcher, same backends the
-    //    internal voice route uses. Read-only; the spoken admin gains the team Q&A.
+    // ── Team coordination — shared dispatcher, same backends the internal voice route uses.
+    //    Read-only bullpen + the acting verbs (each backend enforces its own proposal/FH gate).
     case "team_query":
     case "area_query":
-    case "morning_standup": {
+    case "morning_standup":
+    case "standup_action":
+    case "voice_followup":
+    case "start_marketing":
+    case "cut_promo": {
       const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
       return dispatchTeamCommand(
         toolName,

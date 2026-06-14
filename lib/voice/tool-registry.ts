@@ -286,6 +286,50 @@ export const voiceTools: Record<string, VoiceTool> = {
     description: "The team's ranked top-3 for the day — 'what should I do today?'. Fire drills first (most expensive to ignore), then aging approvals past the 4h SLA, then the single warmest cooling lead. One spoken ranked answer, read-only, honest when the day is clear.",
   },
 
+  // ── Team coordination (acting verbs — the team DOES what you say) ──────────
+  // Each delegates to a backend that enforces its OWN gate; nothing sends autonomously.
+  standup_action: {
+    name: "standup_action",
+    category: "send",
+    authority: "agent",
+    gates: [],  // Re-derives the stand-up live; each item routes to its rail (approval→gate as the
+                // agent; reengage→follow-up through the gate; fire is NEVER auto-resolved).
+    is_outbound: true,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Act on a ranked stand-up item — 'knock out number two'. Pass ordinal (1/2/3). Routes to the item's rail: an approval is approved AS the agent through the gate, a cooling lead gets a follow-up, a fire drill is never auto-resolved (human judgment).",
+  },
+  voice_followup: {
+    name: "voice_followup",
+    category: "send",
+    authority: "agent_or_isa",
+    gates: ["evaluate_outbound"],  // Brand voice + Them-First + fair housing; proposal→approval re-checks consent.
+    is_outbound: true,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Send a follow-up to a contact — 'send the Hendersons a follow-up saying …'. Proposal → approved AS the speaking agent through the gate → consent re-checked → sent. Pass contact_id or person_query, and optional dictation (carried verbatim). Nothing sends until approved.",
+  },
+  start_marketing: {
+    name: "start_marketing",
+    category: "send",
+    authority: "agent_or_isa",
+    gates: [],  // Enrollment itself; EACH campaign step clears its own compliance gate before it touches the contact.
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Enroll a contact in the best active campaign sequence — 'start marketing for the Hendersons'. Pass contact_id or person_query. Each sequence step clears its own compliance gate before it sends.",
+  },
+  cut_promo: {
+    name: "cut_promo",
+    category: "draft",
+    authority: "agent",
+    gates: [],  // Fair Housing pre-flight + cooldown debounce inside the rail; social drafts human-approved.
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Cut a promo reel for a listing — 'cut a promo reel for 44 Birch'. Manual trigger on the canonical Remotion + D-ID + ElevenLabs rail (Fair Housing pre-flight, cooldown debounce). Social drafts still land for human approval. Pass address_query.",
+  },
+
   // -- Studio Session (batch content calendar commissioning) -----------------
   book_studio_session: {
     name: "book_studio_session",

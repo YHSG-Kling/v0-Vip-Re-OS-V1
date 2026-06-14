@@ -45,6 +45,13 @@ async function main() {
   check("morning_standup is agent-only (ISA cannot run the agent's standup)", authorityAllows("morning_standup", "agent") === true && authorityAllows("morning_standup", "isa") === false)
   check("unknown tool is denied", authorityAllows("not_a_tool", "agent") === false)
 
+  console.log("\n[Layer 1b · acting-verb gating invariants — nothing sends ungated]")
+  check("voice_followup carries the evaluate_outbound gate", gatesFor("voice_followup").includes("evaluate_outbound"))
+  check("voice_followup is outbound + agent_or_isa", voiceTools.voice_followup?.is_outbound === true && authorityAllows("voice_followup", "isa") === true)
+  check("standup_action is outbound + agent-only", voiceTools.standup_action?.is_outbound === true && authorityAllows("standup_action", "isa") === false)
+  check("start_marketing is enrollment (not directly outbound), agent_or_isa", voiceTools.start_marketing?.is_outbound === false && authorityAllows("start_marketing", "isa") === true)
+  check("cut_promo is a draft (FH pre-flight inside), agent-only", voiceTools.cut_promo?.is_outbound === false && authorityAllows("cut_promo", "isa") === false)
+
   console.log("\n[Layer 2 · live: dispatcher → kernel backend → spoken answer]")
   const hasCreds =
     !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
@@ -84,7 +91,21 @@ async function main() {
     )
     check("team_query returns ok with a non-empty spoken answer", r.ok === true && typeof r.spoken === "string" && r.spoken.length > 0, JSON.stringify(r).slice(0, 120))
     check("team_query resolved the seeded contact", (r.data?.contactId ?? null) === contactId)
+
+    // Acting verb: voice_followup must PROPOSE through the gate, never auto-send.
+    const fu = await dispatchTeamCommand(
+      "voice_followup",
+      { contact_id: contactId, dictation: "Quick check-in on your home search." },
+      { brokerageId, agentUserId: (agent as any).user_id ?? brokerageId },
+      supabase,
+    )
+    check("voice_followup returns a spoken answer (proposal flow)", typeof fu.spoken === "string" && fu.spoken.length > 0, JSON.stringify(fu).slice(0, 160))
+    const { count: sentImmediately } = await supabase
+      .from("client_portal_messages").select("id", { count: "exact", head: true })
+      .eq("contact_id", contactId).eq("status", "sent")
+    check("voice_followup did NOT auto-send (proposal→approval gate holds)", (sentImmediately ?? 0) === 0)
   } finally {
+    await supabase.from("agent_client_messages").delete().eq("contact_id", contactId).then(() => {}, () => {})
     await supabase.from("contacts").delete().eq("id", contactId)
     const { count } = await supabase.from("contacts").select("id", { count: "exact", head: true }).eq("id", contactId)
     check("cleanup: seed removed (count == 0)", (count ?? 0) === 0)
