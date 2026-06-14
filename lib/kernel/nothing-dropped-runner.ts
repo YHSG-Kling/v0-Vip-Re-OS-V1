@@ -13,12 +13,20 @@ import { findDroppingBalls, summarizeSweep, type DropCandidate, type DropEntity,
 type Svc = ReturnType<typeof createServiceClient>
 
 const hoursSince = (iso: string | null): number => (iso ? (Date.now() - new Date(iso).getTime()) / 3_600_000 : 0)
+/** Age from the MOST RECENT of several timestamps (0 if none) — "how long since the last touch". */
+const hoursSinceLatest = (...isos: (string | null)[]): number => {
+  const ts = isos.filter(Boolean).map((s) => new Date(s as string).getTime())
+  return ts.length ? (Date.now() - Math.max(...ts)) / 3_600_000 : 0
+}
 
-async function gather(svc: Svc, table: string, filter: (q: any) => any, entityType: DropEntity, label: (r: any) => string): Promise<DropCandidate[]> {
+async function gather(
+  svc: Svc, table: string, select: string, filter: (q: any) => any,
+  entityType: DropEntity, age: (r: any) => number, label: (r: any) => string,
+): Promise<DropCandidate[]> {
   try {
-    const { data } = await filter(svc.from(table).select("id, created_at").limit(500))
-    return ((data ?? []) as { id: string; created_at: string | null }[]).map((r) => ({
-      entityType, entityId: r.id, ageHours: hoursSince(r.created_at), hasNextAction: false, label: label(r),
+    const { data } = await filter(svc.from(table).select(select).limit(500))
+    return ((data ?? []) as Record<string, any>[]).map((r) => ({
+      entityType, entityId: r.id, ageHours: age(r), hasNextAction: false, label: label(r),
     }))
   } catch { return [] }
 }
@@ -33,13 +41,21 @@ export async function runNothingDroppedSweep(
 
   const candidates: DropCandidate[] = [
     // A pending showing nobody confirmed.
-    ...(await gather(svc, "showing_requests", (q) => q.eq("brokerage_id", brokerageId).eq("status", "pending"), "showing_request", () => "pending showing")),
+    ...(await gather(svc, "showing_requests", "id, created_at", (q) => q.eq("brokerage_id", brokerageId).eq("status", "pending"),
+      "showing_request", (r) => hoursSince(r.created_at), () => "pending showing")),
     // A proposed action awaiting approval (office-hours SLA).
-    ...(await gather(svc, "agent_client_messages", (q) => q.eq("brokerage_id", brokerageId).eq("status", "proposed"), "approval", () => "awaiting approval")),
+    ...(await gather(svc, "agent_client_messages", "id, created_at", (q) => q.eq("brokerage_id", brokerageId).eq("status", "proposed"),
+      "approval", (r) => hoursSince(r.created_at), () => "awaiting approval")),
     // An unconsumed inter-manager signal.
-    ...(await gather(svc, "manager_signals", (q) => q.eq("brokerage_id", brokerageId).eq("status", "open"), "manager_signal", () => "open signal")),
+    ...(await gather(svc, "manager_signals", "id, created_at", (q) => q.eq("brokerage_id", brokerageId).eq("status", "open"),
+      "manager_signal", (r) => hoursSince(r.created_at), () => "open signal")),
     // A lead never first-touched (ghost) — leads stay AI-ISA owned until conversion.
-    ...(await gather(svc, "leads", (q) => q.eq("brokerage_id", brokerageId).is("first_touched_at", null), "lead", () => "lead not first-touched")),
+    ...(await gather(svc, "leads", "id, created_at", (q) => q.eq("brokerage_id", brokerageId).is("first_touched_at", null),
+      "lead", (r) => hoursSince(r.created_at), () => "lead not first-touched")),
+    // A first-touched lead whose NEXT email/direct-mail push is overdue (age from the last touch).
+    ...(await gather(svc, "leads", "id, first_touched_at, last_contacted_at",
+      (q) => q.eq("brokerage_id", brokerageId).not("first_touched_at", "is", null).eq("ai_isa_owner", true),
+      "lead_followup", (r) => hoursSinceLatest(r.last_contacted_at, r.first_touched_at), () => "lead needs next email/mail push")),
   ]
 
   const dropping = findDroppingBalls(candidates)

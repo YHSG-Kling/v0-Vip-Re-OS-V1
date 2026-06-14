@@ -11,11 +11,12 @@
 // PURE — no I/O (the proof pins the detection + ranking). The runner gathers live awaiting rows.
 
 export type DropEntity =
-  | "lead" | "contact" | "showing_request" | "offer" | "approval" | "manager_signal" | "task"
+  | "lead" | "lead_followup" | "contact" | "showing_request" | "offer" | "approval" | "manager_signal" | "task"
 
 /** Hours an entity may sit in an "awaiting / no-next-action" state before it's DROPPING. */
 export const DEFAULT_SLA_HOURS: Record<DropEntity, number> = {
   lead:            1,        // not first-touched within the speed-to-lead window
+  lead_followup:   72,       // first-touched, but the next email/direct-mail push is overdue
   showing_request: 4,        // a pending showing not confirmed
   offer:           2,        // an untouched offer — the most time-critical
   approval:        4,        // a proposed action past the office-hours SLA
@@ -26,7 +27,7 @@ export const DEFAULT_SLA_HOURS: Record<DropEntity, number> = {
 
 /** Relative cost of dropping THIS kind of ball — an untouched offer hurts far more than a stale contact. */
 export const CRITICALITY: Record<DropEntity, number> = {
-  offer: 3, showing_request: 2.5, approval: 2, lead: 1.8, task: 1.5, manager_signal: 1, contact: 1,
+  offer: 3, showing_request: 2.5, approval: 2, lead: 1.8, lead_followup: 1.6, task: 1.5, manager_signal: 1, contact: 1,
 }
 
 export interface DropCandidate {

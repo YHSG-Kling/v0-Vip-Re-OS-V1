@@ -39,6 +39,8 @@ async function main() {
     { entityType: "approval",        entityId: "a1", ageHours: 9,  hasNextAction: false },  // past 4h → drop
     { entityType: "offer",           entityId: "o1", ageHours: 8,  hasNextAction: false },  // 6h overdue × 3 crit = worst
     { entityType: "lead",            entityId: "l1", ageHours: 3,  hasNextAction: false },  // past 1h → drop
+    { entityType: "lead_followup",   entityId: "lf1", ageHours: 80,  hasNextAction: false }, // first-touched, 80h since last push (>72) → drop
+    { entityType: "lead_followup",   entityId: "lf2", ageHours: 40,  hasNextAction: false }, // 40h since last push (<72) → ok
     { entityType: "showing_request", entityId: "s3", ageHours: 99, hasNextAction: true },   // owned → never drops
     { entityType: "contact",         entityId: "c1", ageHours: 200, hasNextAction: false }, // within 14d(336h) → ok
   ]
@@ -48,10 +50,12 @@ async function main() {
   check("owned item (hasNextAction) is NOT dropping (s3)", !ids.includes("s3"))
   check("within-window contact is NOT dropping (c1)", !ids.includes("c1"))
   check("past-SLA items ARE dropping (s1, a1, o1, l1)", ["s1", "a1", "o1", "l1"].every(i => ids.includes(i)))
+  check("a first-touched lead overdue for its next email/mail push IS dropping (lf1)", ids.includes("lf1"))
+  check("a lead within the follow-up window is NOT dropping (lf2)", !ids.includes("lf2"))
   check("an untouched OFFER ranks worst (highest criticality × overdue)", dropping[0].entityId === "o1", dropping[0]?.entityId)
   check("ranking is worst-first (severity descending)", dropping.every((d, i) => i === 0 || dropping[i - 1].severity >= d.severity))
   const sum = summarizeSweep(dropping, 3)
-  check("summary counts + caps the top card", sum.total === 4 && sum.top.length === 3 && (sum.byEntity.showing_request ?? 0) === 1)
+  check("summary counts + caps the top card", sum.total === 5 && sum.top.length === 3 && (sum.byEntity.lead_followup ?? 0) === 1)
 
   console.log("\n[Layer 2 · live (read-only): a past-SLA pending showing surfaces]")
   const hasCreds =
