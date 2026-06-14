@@ -153,7 +153,8 @@
     "test:touchpoint-bridge": "tsx scripts/touchpoint-bridge-simulator.ts",
     "test:deferral-retry": "tsx scripts/deferral-retry-simulator.ts",
     "test:lead-deconflict": "tsx scripts/lead-deconflict-simulator.ts",
-    "test:voice-team": "tsx scripts/voice-team-commands-simulator.ts"
+    "test:voice-team": "tsx scripts/voice-team-commands-simulator.ts",
+    "test:cadence-learning": "tsx scripts/cadence-learning-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

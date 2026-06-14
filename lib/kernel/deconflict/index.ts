@@ -35,6 +35,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { leadLogChannel, type DeconflictChannel } from "./lead-channel"
+import { computeLearnedCadence, getEngagementSignals } from "./cadence-policy"
 
 // Re-exported so existing importers of "@/lib/kernel/deconflict" keep working.
 export { leadLogChannel }
@@ -70,6 +71,10 @@ export interface DeconflictInput {
   policyOverride?: Partial<ChannelPolicy>
   /** Skip the write to deconflict_suppression_log (dry-run/preview). */
   skipLog?: boolean
+  /** Opt in to the SELF-TUNING cadence: adjust the frequency cap from the brokerage's recent
+   *  engagement (within hard safety bounds — never below the floor, never above the ceiling; the
+   *  legal gates are separate and always apply). Best-effort, fails open to the base policy. */
+  learn?: boolean
 }
 
 export interface DeconflictDecision {
@@ -312,7 +317,17 @@ async function countLeadTouchesByChannel(
  */
 export async function evaluateDeconflict(input: DeconflictInput): Promise<DeconflictDecision> {
   const svc    = createServiceClient()
-  const policy = { ...DEFAULT_POLICY[input.channel], ...(input.policyOverride ?? {}) }
+  let   policy = { ...DEFAULT_POLICY[input.channel], ...(input.policyOverride ?? {}) }
+
+  // Self-tuning cadence (opt-in, best-effort, bounded). Adjusts ONLY the over-touch count from
+  // recent engagement; the consent/opt-out/DNC/quiet-hours gates are separate and always apply.
+  if (input.learn) {
+    try {
+      const signals = await getEngagementSignals(svc, input.brokerageId, input.channel, 30)
+      policy = computeLearnedCadence(policy, signals).policy
+    } catch { /* fail open to the base policy */ }
+  }
+
   const since  = new Date(Date.now() - policy.windowDays * 86_400_000).toISOString()
 
   // Count touches by contact when promoted, else by lead — an unconverted lead gets the SAME
