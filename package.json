@@ -155,7 +155,8 @@
     "test:lead-deconflict": "tsx scripts/lead-deconflict-simulator.ts",
     "test:voice-team": "tsx scripts/voice-team-commands-simulator.ts",
     "test:cadence-learning": "tsx scripts/cadence-learning-simulator.ts",
-    "test:client-actor": "tsx scripts/client-actor-simulator.ts"
+    "test:client-actor": "tsx scripts/client-actor-simulator.ts",
+    "test:capacity-guardian": "tsx scripts/capacity-guardian-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
