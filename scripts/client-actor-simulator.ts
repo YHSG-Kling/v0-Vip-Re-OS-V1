@@ -86,19 +86,25 @@ async function main() {
   }).select("id").single()
   const contactId = (seller as any)?.id
 
+  // Inject a deterministic copy generator (no live model) — proves copy is GENERATED per persona,
+  // not hardcoded. A real injected function, not a stub of the system under test.
+  const stampGen = async (req: { goal: string }) => ({ subject: "ZZGEN", body: `ZZGEN ${req.goal}` })
+
   try {
     const r = await dispatchClientAction(
-      { brokerageId, contactId, contactType: "seller", message: "Please drop my price to 499", newPrice: 499000 },
+      { brokerageId, contactId, contactType: "seller", message: "Please drop my price to 499", newPrice: 499000, copyGenerator: stampGen },
       supabase,
     )
     check("seller request routed to a gated agent proposal", r.ok === true && r.outcome === "proposed_to_agent", JSON.stringify(r).slice(0, 140))
     check("a proposal id came back", !!r.proposalId)
+    check("client-facing reply is GENERATED copy, not hardcoded", (r.spoken ?? "").startsWith("ZZGEN"), r.spoken)
 
     // The proposal is PROPOSED (in the agent's queue), not sent — human in the loop.
     const { data: prop } = await supabase
-      .from("agent_client_messages").select("status, agent_kind").eq("id", r.proposalId ?? "none").maybeSingle()
+      .from("agent_client_messages").select("status, agent_kind, body").eq("id", r.proposalId ?? "none").maybeSingle()
     check("the proposal landed as 'proposed' (gated, not sent)", (prop as any)?.status === "proposed", `status=${(prop as any)?.status}`)
     check("attributed to the Listing Concierge", (prop as any)?.agent_kind === "listing_concierge")
+    check("proposal body is GENERATED copy, not hardcoded", String((prop as any)?.body ?? "").startsWith("ZZGEN"))
   } finally {
     await supabase.from("agent_client_messages").delete().eq("entity_id", contactId).then(() => {}, () => {})
     await supabase.from("contacts").delete().eq("id", contactId)

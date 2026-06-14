@@ -8,6 +8,7 @@
 
 import "server-only"
 import { classifyClientIntent, routeClientIntent } from "./client-action-router"
+import { generatePersonaCopy, loadContactPersona, type CopyGenerator } from "@/lib/kernel/ai-copy"
 import type { createServiceClient } from "@/lib/supabase/service"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -21,6 +22,8 @@ export interface ClientActionInput {
   propertyAddress?: string
   preferredDates?: { date: string; time: string }[]
   newPrice?: number
+  /** Injectable copy generator (tests pass a deterministic one; prod uses the AI gateway). */
+  copyGenerator?: CopyGenerator
 }
 
 export interface ClientActionResult {
@@ -36,6 +39,12 @@ export async function dispatchClientAction(input: ClientActionInput, client?: Sv
   const intent = classifyClientIntent(input.message, input.contactType)
   const route = routeClientIntent(intent, input.contactType)
 
+  // Persona-aware copy — NEVER hardcoded. The AI gateway personalizes; the deterministic fallback
+  // guarantees real copy. The generator is injectable so proofs run without a live model.
+  const persona = client ? await loadContactPersona(client, input.contactId) : { audience: input.contactType ?? "audience" }
+  const gen = (goal: string, facts: string[], fallback: string, words = 40) =>
+    generatePersonaCopy({ goal, facts, channel: "portal", persona, words }, { body: fallback }, { generator: input.copyGenerator })
+
   switch (route.kind) {
     case "create_showing": {
       if (!input.propertyAddress) {
@@ -50,10 +59,14 @@ export async function dispatchClientAction(input: ClientActionInput, client?: Sv
         clientNotes:     `Requested via portal concierge: "${input.message}"`,
       })
       if (r.success) {
-        return { ok: true, outcome: "showing_requested", spoken: "Done — I've put in that showing request and your agent will confirm the time.", showingId: (r as { showing?: { id?: string } }).showing?.id }
+        const say = await gen("a one-sentence concierge reply confirming the showing request was placed and the agent will confirm a time",
+          [`Property: ${input.propertyAddress}`], "Done — I've put in that showing request and your agent will confirm the time.")
+        return { ok: true, outcome: "showing_requested", spoken: say.body, showingId: (r as { showing?: { id?: string } }).showing?.id }
       }
       // BBA gate blocked it (NAR 2024) — propose a signing-link nudge to the agent, don't drop it.
       if ((r as { errorCode?: string }).errorCode === "bba_required") {
+        const note = await gen("a short note to the AGENT that the buyer asked to tour this property and needs the representation agreement sent so it can be scheduled",
+          [`Buyer wants to tour ${input.propertyAddress}`, `Client said: "${input.message}"`], `Your buyer asked to tour ${input.propertyAddress}. Send the Buyer Representation Agreement so we can schedule it.`)
         const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
         const p = await proposeClientMessage({
           brokerageId:        input.brokerageId,
@@ -62,19 +75,23 @@ export async function dispatchClientAction(input: ClientActionInput, client?: Sv
           entityId:           input.contactId,
           recipientContactId: input.contactId,
           audience:           "buyer",
-          subject:            "Buyer wants a showing — agreement needed",
-          body:               `Your buyer asked to tour ${input.propertyAddress}. Send the Buyer Representation Agreement so we can schedule it.`,
+          subject:            note.subject ?? "Buyer wants a showing — agreement needed",
+          body:               note.body,
           rationale:          `Client portal request: "${input.message}" — showing blocked, BBA not on file (NAR 2024)`,
           channel:            "portal",
         }, client)
-        return { ok: true, outcome: "bba_required_proposed", spoken: "Before we tour, there's a quick representation agreement to sign — I've flagged it for your agent to send over.", proposalId: p.id }
+        const say = await gen("a warm one-sentence reply telling the client a quick representation agreement is needed before touring and their agent has been notified",
+          [], "Before we tour, there's a quick representation agreement to sign — I've flagged it for your agent to send over.")
+        return { ok: true, outcome: "bba_required_proposed", spoken: say.body, proposalId: p.id }
       }
       return { ok: false, outcome: "needs_detail", spoken: "I couldn't put that showing in just yet — your agent will follow up." }
     }
 
     case "propose_to_agent": {
+      const facts = [`Client request: "${input.message}"`, ...(input.newPrice ? [`Requested new price: $${input.newPrice.toLocaleString()}`] : [])]
+      const note = await gen("a short note to the AGENT summarizing the seller's request so they can review and approve it",
+        facts, `Your seller requested: "${input.message}"${input.newPrice ? ` (new price $${input.newPrice.toLocaleString()})` : ""}. Review and approve to action it.`)
       const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
-      const detail = input.newPrice ? ` (requested new price: $${input.newPrice.toLocaleString()})` : ""
       const p = await proposeClientMessage({
         brokerageId:        input.brokerageId,
         agentKind:          "listing_concierge",
@@ -82,12 +99,14 @@ export async function dispatchClientAction(input: ClientActionInput, client?: Sv
         entityId:           input.contactId,
         recipientContactId: input.contactId,
         audience:           "agent",
-        subject:            "Seller request from the portal",
-        body:               `Your seller requested: "${input.message}"${detail}. Review and approve to action it.`,
+        subject:            note.subject ?? "Seller request from the portal",
+        body:               note.body,
         rationale:          `Client portal request: "${input.message}" — seller action, awaiting agent approval`,
         channel:            "portal",
       }, client)
-      return { ok: p.ok, outcome: "proposed_to_agent", spoken: "I've passed that to your agent to review — they'll confirm with you shortly.", proposalId: p.id }
+      const say = await gen("a warm one-sentence reply telling the seller their request was passed to their agent to review and confirm",
+        [], "I've passed that to your agent to review — they'll confirm with you shortly.")
+      return { ok: p.ok, outcome: "proposed_to_agent", spoken: say.body, proposalId: p.id }
     }
 
     case "open_search":
