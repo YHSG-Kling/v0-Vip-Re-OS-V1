@@ -151,7 +151,8 @@
     "test:listing-capture": "tsx scripts/listing-landing-capture-simulator.ts",
     "test:first-touch-coord": "tsx scripts/first-touch-coordination-simulator.ts",
     "test:touchpoint-bridge": "tsx scripts/touchpoint-bridge-simulator.ts",
-    "test:deferral-retry": "tsx scripts/deferral-retry-simulator.ts"
+    "test:deferral-retry": "tsx scripts/deferral-retry-simulator.ts",
+    "test:lead-deconflict": "tsx scripts/lead-deconflict-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

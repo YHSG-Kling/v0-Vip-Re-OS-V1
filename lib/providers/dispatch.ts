@@ -69,11 +69,12 @@ async function deconflictGate(args: {
   brokerageId:   string
   channel:       DeconflictChannel
   contactId?:    string | null
+  leadId?:       string | null
   recipientEmail?: string | null
   recipientPhone?: string | null
   systemSource?: string
 }): Promise<DispatchResult | null> {
-  if (!args.contactId && !args.recipientEmail && !args.recipientPhone) return null
+  if (!args.contactId && !args.leadId && !args.recipientEmail && !args.recipientPhone) return null
   const d = await evaluateDeconflict(args)
   if (d.allowed) return null
   return {
@@ -161,6 +162,7 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
       brokerageId:    params.brokerageId,
       channel:        "email",
       contactId:      params.contactId ?? null,
+      leadId:         params.leadId ?? null,
       recipientEmail: params.to ?? null,
       systemSource:   params.systemSource,
     })
@@ -327,6 +329,7 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
       brokerageId:    params.brokerageId,
       channel:        "sms",
       contactId:      params.contactId ?? null,
+      leadId:         params.leadId ?? null,
       recipientPhone: params.to ?? null,
       systemSource:   params.systemSource,
     })
@@ -444,6 +447,7 @@ export async function dispatchPhone(params: DispatchPhoneParams): Promise<Dispat
       brokerageId:    params.brokerageId,
       channel:        "phone",
       contactId:      params.contactId ?? null,
+      leadId:         params.leadId ?? null,
       recipientPhone: params.to ?? null,
       systemSource:   params.systemSource,
     })
@@ -552,12 +556,14 @@ export async function dispatchDirectMail(
 
   // ── De-Conflict gate (over-touch suppression) ────────────────────────────
   // Lob postcards/letters land in mailboxes — physical touches count too.
-  // The default policy caps 1 piece / 30 days per contact.
-  if (params.contactId) {
+  // The default policy caps 1 piece / 30 days per contact OR lead (lead postcards
+  // are a real nurture channel — they get the same physical-mail over-touch cap).
+  if (params.contactId || params.leadId) {
     const deferred = await deconflictGate({
       brokerageId:  params.brokerageId,
       channel:      "mail",
-      contactId:    params.contactId,
+      contactId:    params.contactId ?? null,
+      leadId:       params.leadId ?? null,
       systemSource: params.systemSource,
     })
     if (deferred) return deferred

@@ -34,8 +34,11 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { leadLogChannel, type DeconflictChannel } from "./lead-channel"
 
-export type DeconflictChannel = "email" | "sms" | "phone" | "mail" | "video"
+// Re-exported so existing importers of "@/lib/kernel/deconflict" keep working.
+export { leadLogChannel }
+export type { DeconflictChannel }
 
 interface ChannelPolicy {
   maxTouches: number
@@ -54,6 +57,10 @@ export interface DeconflictInput {
   brokerageId:   string
   channel:       DeconflictChannel
   contactId?:    string | null
+  /** Lead ID — when the recipient is an unconverted LEAD (no contacts row yet). Lead touches are
+   *  counted from isa_outreach_log (the lead-side outreach ledger) so a lead gets the SAME
+   *  over-touch protection as a contact. contactId takes precedence when both are present. */
+  leadId?:       string | null
   recipientEmail?: string | null
   recipientPhone?: string | null
   /** Where the outbound originated — 'ai_isa', 'sphere_agent',
@@ -283,6 +290,18 @@ async function countTouchesByChannel(
   }
 }
 
+/** Count a LEAD's recent touches on one channel from isa_outreach_log (the lead-side ledger).
+ *  Leads have no contacts row, so the per-contact sources don't see them — this gives an
+ *  unconverted lead the SAME over-touch protection a contact gets. */
+async function countLeadTouchesByChannel(
+  svc:  Svc,
+  args: { brokerageId: string; leadId: string; channel: DeconflictChannel; since: string },
+): Promise<number> {
+  return safeCount(svc.from("isa_outreach_log").select("id", { count: "exact", head: true })
+    .eq("brokerage_id", args.brokerageId).eq("lead_id", args.leadId)
+    .eq("channel", leadLogChannel(args.channel)).gte("sent_at", args.since))
+}
+
 /**
  * Evaluate whether sending one more outbound on `channel` would over-touch
  * the recipient. Writes one row to deconflict_suppression_log unless skipLog.
@@ -296,8 +315,12 @@ export async function evaluateDeconflict(input: DeconflictInput): Promise<Deconf
   const policy = { ...DEFAULT_POLICY[input.channel], ...(input.policyOverride ?? {}) }
   const since  = new Date(Date.now() - policy.windowDays * 86_400_000).toISOString()
 
+  // Count touches by contact when promoted, else by lead — an unconverted lead gets the SAME
+  // over-touch protection (counted from its isa_outreach_log ledger).
   const touches = input.contactId
     ? await countTouchesByChannel(svc, { brokerageId: input.brokerageId, contactId: input.contactId, channel: input.channel, since })
+    : input.leadId
+    ? await countLeadTouchesByChannel(svc, { brokerageId: input.brokerageId, leadId: input.leadId, channel: input.channel, since })
     : 0
 
   const allowed = touches < policy.maxTouches
