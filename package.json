@@ -165,7 +165,8 @@
     "test:deal-killer": "tsx scripts/deal-killer-radar-simulator.ts",
     "test:source-conversion": "tsx scripts/source-conversion-simulator.ts",
     "test:journey-conformance": "tsx scripts/journey-conformance-simulator.ts",
-    "test:wire-fraud": "tsx scripts/wire-fraud-simulator.ts"
+    "test:wire-fraud": "tsx scripts/wire-fraud-simulator.ts",
+    "test:price-advisor": "tsx scripts/price-advisor-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
