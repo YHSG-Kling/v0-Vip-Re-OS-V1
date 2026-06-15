@@ -160,7 +160,8 @@
     "test:seller-timeline": "tsx scripts/seller-timeline-simulator.ts",
     "test:nothing-dropped": "tsx scripts/nothing-dropped-simulator.ts",
     "test:warm-handoff": "tsx scripts/warm-handoff-simulator.ts",
-    "test:seller-decision": "tsx scripts/seller-decision-room-simulator.ts"
+    "test:seller-decision": "tsx scripts/seller-decision-room-simulator.ts",
+    "test:deal-confidence": "tsx scripts/deal-confidence-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
