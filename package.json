@@ -162,7 +162,8 @@
     "test:warm-handoff": "tsx scripts/warm-handoff-simulator.ts",
     "test:seller-decision": "tsx scripts/seller-decision-room-simulator.ts",
     "test:deal-confidence": "tsx scripts/deal-confidence-simulator.ts",
-    "test:deal-killer": "tsx scripts/deal-killer-radar-simulator.ts"
+    "test:deal-killer": "tsx scripts/deal-killer-radar-simulator.ts",
+    "test:source-conversion": "tsx scripts/source-conversion-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
