@@ -39,7 +39,7 @@ const config: ConformanceConfig = {
 }
 const T = (from: string, to: string, override = false): JourneyTransition => ({ from, to, override })
 
-function main() {
+async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Journey-conformance simulator")
   console.log("══════════════════════════════════════════════════")
@@ -76,7 +76,46 @@ function main() {
   console.log("\n[Empty]")
   check("no transitions → compliant (nothing to audit)", checkJourneyConformance([], config).compliant)
 
+  console.log("\n[Layer 2 · live: audit a real illegal transition from lifecycle_events]")
+  const hasCreds =
+    !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
+    !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
+  if (!hasCreds) {
+    console.log("  ⏭  Skipped — SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set (pure layer ran).")
+    return report()
+  }
+
+  const { createServiceClient } = await import("../lib/supabase/service")
+  const { auditJourneyConformance } = await import("../lib/journey-conformance/conformance-runner")
+  const supabase = createServiceClient()
+  const { data: brokerage } = await supabase.from("brokerages").select("id").limit(1).maybeSingle()
+  if (!brokerage) { console.log("  ⏭  Skipped — need a real brokerage."); return report() }
+  const brokerageId = (brokerage as any).id
+  const stamp = Date.now()
+  const { data: contact } = await supabase.from("contacts").insert({
+    brokerage_id: brokerageId, first_name: "ZZJourney", last_name: `Conf${stamp}`,
+    email: `zz-journey-${stamp}@example.com`, contact_type: "buyer", source: "test",
+  }).select("id").single()
+  const contactId = (contact as any)?.id
+
+  try {
+    // A real illegal skip: contact created → touring, no financial verification, no override.
+    await supabase.from("lifecycle_events").insert({
+      brokerage_id: brokerageId, entity_type: "contact", entity_id: contactId,
+      event_type: "contact.stage_advanced",
+      metadata: { from_stage: "BUYER_CONTACT_CREATED", to_stage: "BUYER_TOURING" },
+    })
+    const audit = await auditJourneyConformance(contactId, brokerageId, { escalate: false }, supabase)
+    check("the live illegal skip is caught (not compliant)", audit.compliant === false, JSON.stringify(audit.violations).slice(0, 120))
+    check("flagged as illegal_transition AND gate_bypassed", audit.violations.some(v => v.type === "illegal_transition") && audit.violations.some(v => v.type === "gate_bypassed"))
+  } finally {
+    await supabase.from("lifecycle_events").delete().eq("entity_id", contactId).then(() => {}, () => {})
+    await supabase.from("contacts").delete().eq("id", contactId)
+    const { count } = await supabase.from("contacts").select("id", { count: "exact", head: true }).eq("id", contactId)
+    check("cleanup: seed removed (count == 0)", (count ?? 0) === 0)
+  }
+
   report()
 }
 
-main()
+main().catch((e) => { console.error(e); process.exit(1) })

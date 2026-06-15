@@ -32,7 +32,7 @@ const rows: SourceConversionRow[] = [
   { source: "osint_signal",    leadCount: 10, contactCount: 3,  closedCount: 0, revenue: 0,     spend: 0 },    // free, no spend
 ]
 
-function main() {
+async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Source-conversion learner simulator")
   console.log("══════════════════════════════════════════════════")
@@ -60,7 +60,56 @@ function main() {
   const none = scoreSourceConversions([])
   check("no data → empty scored, empty allocation (no fabrication)", none.ranked.length === 0 && recommendSourceAllocation(none, []).enable.length === 0)
 
+  console.log("\n[Layer 2 · live: aggregate real per-source outcomes]")
+  const hasCreds =
+    !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
+    !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
+  if (!hasCreds) {
+    console.log("  ⏭  Skipped — SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set (pure layer ran).")
+    return report()
+  }
+  const { createServiceClient } = await import("../lib/supabase/service")
+  const { loadSourceConversions } = await import("../lib/lead-pipeline/source-conversion-runner")
+  const supabase = createServiceClient()
+  const { data: brokerage } = await supabase.from("brokerages").select("id").limit(1).maybeSingle()
+  if (!brokerage) { console.log("  ⏭  Skipped — need a real brokerage."); return report() }
+  const brokerageId = (brokerage as any).id
+  const stamp = Date.now()
+  const SRC = `zz_src_${stamp}`
+  const contactIds: string[] = []
+  const leadIds: string[] = []
+  try {
+    // 2 converted leads (with a contact) + 3 unconverted, all from one isolated test source.
+    for (let i = 0; i < 5; i++) {
+      let contactId: string | null = null
+      if (i < 2) {
+        const { data: c } = await supabase.from("contacts").insert({
+          brokerage_id: brokerageId, first_name: "ZZSrc", last_name: `${stamp}-${i}`,
+          email: `zz-src-${stamp}-${i}@example.com`, contact_type: "buyer", source: SRC,
+        }).select("id").single()
+        contactId = (c as any)?.id ?? null
+        if (contactId) contactIds.push(contactId)
+      }
+      const { data: l } = await supabase.from("leads").insert({
+        brokerage_id: brokerageId, first_name: "ZZSrc", email: `zz-srclead-${stamp}-${i}@example.com`,
+        source: SRC, contact_id: contactId, cost_per_record: 20,
+      }).select("id").single()
+      if ((l as any)?.id) leadIds.push((l as any).id)
+    }
+
+    const scored = await loadSourceConversions(brokerageId, {}, supabase)
+    const s = scored.sources[SRC]
+    check("the test source aggregated 5 leads", !!s && s.sampleSize === 5, `sample=${s?.sampleSize}`)
+    check("2 of them converted to contacts (40% lead→contact)", !!s && Math.abs(s.leadToContactRate - 0.4) < 1e-9)
+    check("spend summed from cost_per_record ($100)", !!s && Math.abs(s.costPerContact - 50) < 1e-9) // 100 spend / 2 contacts
+  } finally {
+    await supabase.from("leads").delete().in("id", leadIds.length ? leadIds : ["none"])
+    await supabase.from("contacts").delete().in("id", contactIds.length ? contactIds : ["none"])
+    const { count } = await supabase.from("leads").select("id", { count: "exact", head: true }).in("id", leadIds.length ? leadIds : ["none"])
+    check("cleanup: seed leads removed (count == 0)", (count ?? 0) === 0)
+  }
+
   report()
 }
 
-main()
+main().catch((e) => { console.error(e); process.exit(1) })
