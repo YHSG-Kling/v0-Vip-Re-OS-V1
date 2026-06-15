@@ -161,7 +161,8 @@
     "test:nothing-dropped": "tsx scripts/nothing-dropped-simulator.ts",
     "test:warm-handoff": "tsx scripts/warm-handoff-simulator.ts",
     "test:seller-decision": "tsx scripts/seller-decision-room-simulator.ts",
-    "test:deal-confidence": "tsx scripts/deal-confidence-simulator.ts"
+    "test:deal-confidence": "tsx scripts/deal-confidence-simulator.ts",
+    "test:deal-killer": "tsx scripts/deal-killer-radar-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
