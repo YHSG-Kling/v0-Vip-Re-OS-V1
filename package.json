@@ -158,7 +158,8 @@
     "test:client-actor": "tsx scripts/client-actor-simulator.ts",
     "test:capacity-guardian": "tsx scripts/capacity-guardian-simulator.ts",
     "test:seller-timeline": "tsx scripts/seller-timeline-simulator.ts",
-    "test:nothing-dropped": "tsx scripts/nothing-dropped-simulator.ts"
+    "test:nothing-dropped": "tsx scripts/nothing-dropped-simulator.ts",
+    "test:warm-handoff": "tsx scripts/warm-handoff-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

@@ -298,6 +298,13 @@ export async function POST(request: Request) {
           }
         })
         .then(() => {}, () => {})
+
+      // Warm handoff: compose the FULL brief (portal transcript + context spine + 11-manager team
+      // brief + ISA background) onto the contact + a warm_handoff notification, so the agent walks
+      // in informed and the client never repeats themselves. Best-effort, fire-and-forget.
+      import("@/lib/kernel/warm-handoff-runner")
+        .then(({ runWarmHandoff }) => runWarmHandoff(contactId, { triggerMessage: latestText }, serviceClient))
+        .then(() => {}, () => {})
     }
 
     // ── Persist incoming user message ──────────────────────────────────────────
