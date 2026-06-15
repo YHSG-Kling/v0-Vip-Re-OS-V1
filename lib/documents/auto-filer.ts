@@ -64,6 +64,21 @@ export async function autoFileDocument(
       })
     }
 
+    // NET-SHEET SURPRISE GUARD: a final settlement statement / Closing Disclosure just
+    // landed — reconcile the seller's actual net against what we promised at offer time and
+    // arm the Deal Coordinator on a material gap. Best-effort; never blocks filing.
+    if (
+      doc.transaction_id &&
+      ["final_settlement_statement", "closing_disclosure"].includes(bestMatch.doc_type)
+    ) {
+      try {
+        const { runNetSheetSurpriseGuard } = await import("@/lib/net-sheet/net-sheet-guard-runner")
+        await runNetSheetSurpriseGuard({ brokerageId, transactionId: doc.transaction_id })
+      } catch {
+        /* reconciliation is additive — a failure here never blocks document filing */
+      }
+    }
+
     return { success: true, routed: true, docType: bestMatch.doc_type }
   }
 
