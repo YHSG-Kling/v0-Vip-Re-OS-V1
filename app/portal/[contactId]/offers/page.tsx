@@ -476,6 +476,16 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
     // Continue without AI analysis
   }
 
+  // Net-to-you insight: the highest offer isn't always the most money in the seller's pocket.
+  const offersWithNet = offers.filter((o: any) => o.seller_net_estimate != null)
+  const topNetOffer = offersWithNet.length
+    ? offersWithNet.reduce((a: any, b: any) => ((b.seller_net_estimate ?? 0) > (a.seller_net_estimate ?? 0) ? b : a))
+    : null
+  const topPriceOffer = offers.length
+    ? offers.reduce((a: any, b: any) => ((b.offer_price ?? 0) > (a.offer_price ?? 0) ? b : a), offers[0])
+    : null
+  const netBeatsPrice = !!(topNetOffer && topPriceOffer && topNetOffer.id !== topPriceOffer.id)
+
   return (
     <div className="space-y-6">
       <h2 className="text-3xl font-bold">Compare Offers ({offers.length})</h2>
@@ -523,6 +533,18 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                 <p className="text-xs text-blue-700">Awaiting Response</p>
               </div>
             </div>
+            {topNetOffer && (
+              <div className="mt-3 rounded-lg border border-green-300 bg-white p-3">
+                <p className="text-sm font-semibold text-green-900">
+                  Most money in your pocket: {formatCurrency(topNetOffer.seller_net_estimate)} <span className="font-normal text-green-700">(net, after costs)</span>
+                </p>
+                {netBeatsPrice && (
+                  <p className="text-xs text-green-700 mt-1">
+                    💡 The highest offer ({formatCurrency(topPriceOffer.offer_price)}) isn&apos;t the most you&apos;d keep — a different offer nets you more after commission, payoff, and fees. Your agent will walk you through why.
+                  </p>
+                )}
+              </div>
+            )}
             <p className="text-xs text-muted-foreground mt-3 text-center">
               Your agent will guide you through each offer. This is a summary only.
             </p>
