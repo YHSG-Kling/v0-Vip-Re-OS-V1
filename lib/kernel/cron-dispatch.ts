@@ -39,6 +39,8 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/brokerage-pl-rollup",            schedule: "0 3 * * *" },
   { path: "/api/cron/listing-health-scan",            schedule: "0 */6 * * *" },
   { path: "/api/cron/marketing-attribution-engine",   schedule: "0 2 * * *" },
+  { path: "/api/cron/journey-conformance-audit",       schedule: "0 3 * * *" },
+  { path: "/api/cron/source-conversion-learning",      schedule: "0 4 * * 1" },
   { path: "/api/cron/marketing-campaign-scheduler",   schedule: "*/30 * * * *" },
   { path: "/api/cron/negotiation-strategy-generator", schedule: "0 */4 * * *" },
   { path: "/api/cron/onboarding-progress-tracker",    schedule: "0 10 * * *" },
