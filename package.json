@@ -192,6 +192,7 @@
     "test:dry-run-cockpit": "tsx scripts/dry-run-cockpit-simulator.ts",
     "test:copy-learning": "tsx scripts/copy-learning-conductor-simulator.ts",
     "test:deferral-nudge": "tsx scripts/stalled-deferrals-simulator.ts",
+    "test:relationship-health": "tsx scripts/relationship-health-simulator.ts",
     "test:phone-scrub": "tsx scripts/phone-scrub-simulator.ts",
     "test:manager-standup": "tsx scripts/manager-standup-simulator.ts",
     "test:direct-mail-channel": "tsx scripts/direct-mail-channel-simulator.ts",
