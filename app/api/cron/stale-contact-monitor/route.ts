@@ -133,6 +133,15 @@ export async function GET(request: NextRequest) {
         errors.push(`stale-preapproval: ${err instanceof Error ? err.message : String(err)}`)
       }
 
+      // OVER-DEFERRAL ACCOUNTABILITY — a manager deferred-to repeatedly on one contact with no
+      // action gets an "act or release" nudge. Turns visible coordination into accountability.
+      try {
+        const { runStalledDeferralNudges } = await import('@/lib/kernel/stalled-deferrals-runner')
+        await runStalledDeferralNudges(brokerageId, supabase)
+      } catch (err: unknown) {
+        errors.push(`deferral-nudge: ${err instanceof Error ? err.message : String(err)}`)
+      }
+
       // PERSONA-DRIFT REFRESH — re-queue records whose enrichment has aged past the freshness
       // window so the next persona-grounded touch is built on CURRENT facts, not a stale snapshot.
       try {
