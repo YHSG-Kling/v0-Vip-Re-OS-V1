@@ -20,11 +20,29 @@ export const videoAdapter: ChannelAdapter = {
   channel: "video",
 
   async execute(ctx: StepContext): Promise<StepResult> {
-    const { contact, step, brokerageId, agentUserId } = ctx
+    const { contact, step, brokerageId, agentUserId, entity } = ctx
 
-    const script = step.video_script ?? step.body ?? ""
-    if (!script) {
-      return { status: "error", providerKey: "d-id", error: "No video script configured" }
+    // Persona+enrichment script (no hardcoded copy): when the step carries an ai_intent, GENERATE
+    // the spoken script from this person's persona + Fair-Housing-safe enrichment. Falls back to an
+    // explicit step.video_script only if no intent. Never narrate a blank/ungenerated script.
+    let script = step.video_script ?? step.body ?? ""
+    if ((step as any).ai_intent && contact?.id) {
+      try {
+        const { generateEntityStepCopy } = await import("@/lib/campaign-sequences/persona-render-runner")
+        const draft = await generateEntityStepCopy({
+          svc: ctx.supabase as any,
+          entity: (entity ?? "contact"),
+          id: contact.id as string,
+          intent: (step as any).ai_intent as string,
+          channel: "video",
+          words: 90,
+          fallback: { body: step.video_script ?? step.body ?? "" },
+        })
+        script = draft.body
+      } catch { /* fall back to the step script below */ }
+    }
+    if (!script || !script.trim()) {
+      return { status: "error", providerKey: "d-id", error: "No video script — persona generation produced none and no template fallback" }
     }
 
     // Resolve agent voice + avatar via voice-resolver
@@ -68,12 +86,13 @@ export const videoAdapter: ChannelAdapter = {
       videoUrl = result.videoUrl ?? undefined
       videoId = result.videoId
     } catch {
-      // D-ID not configured or module not found — return success so sequence
-      // doesn't block on a missing integration.
+      // D-ID not configured or module not found — SKIP honestly (don't claim 'sent' for a video
+      // that was never made). The executor advances without recording a false touch.
       return {
-        status: "sent",
+        status: "skipped",
         providerKey: "d-id",
-        output: { video_url: null, video_id: null, note: "D-ID integration not yet configured" },
+        error: "D-ID integration not configured — video step skipped (no false send)",
+        output: { video_url: null, video_id: null },
       }
     }
 
