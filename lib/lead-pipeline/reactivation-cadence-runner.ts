@@ -13,7 +13,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { planReactivationStep, reactivationFallbackCopy, reactivationAudience, type ReactivationThresholds } from "./reactivation-cadence"
+import { planReactivationStep, reactivationFallbackCopy, reactivationAudience, followupSuppresses, type ReactivationThresholds } from "./reactivation-cadence"
 import { generatePersonaCopy, type CopyGenerator } from "@/lib/kernel/ai-copy"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -46,7 +46,7 @@ export async function runReactivationCadence(input: ReactivationRunInput, client
   // the legacy stale-contact cron's created_at proxy predates it; this cadence uses the real one.)
   const { data: contacts } = await svc
     .from("contacts")
-    .select("id, first_name, last_name, contact_type, agent_id, status, dnc_status, isa_reengage_allowed, last_contacted_at, created_at")
+    .select("id, first_name, last_name, contact_type, agent_id, status, dnc_status, isa_reengage_allowed, last_contacted_at, created_at, next_followup_at")
     .eq("brokerage_id", input.brokerageId)
     .not("agent_id", "is", null)
     .eq("dnc_status", false)
@@ -56,6 +56,8 @@ export async function runReactivationCadence(input: ReactivationRunInput, client
     .limit(input.limit ?? 200)
 
   for (const row of (contacts ?? []) as any[]) {
+    // Honor an explicit future-intent date — if they asked to be reached later, don't nag yet.
+    if (followupSuppresses(row.next_followup_at, now)) continue
     const lastTouch = row.last_contacted_at ?? row.created_at
     if (!lastTouch) continue
     const daysDormant = Math.floor((nowMs - new Date(lastTouch).getTime()) / 86_400_000)

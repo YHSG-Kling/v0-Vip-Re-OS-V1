@@ -15,6 +15,7 @@
  */
 export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   contacts: [
+    "next_followup_at", "next_followup_reason",
     "address", "age_range", "agent_id", "ai_autopilot_level", "ai_conversion_probability", "ai_insights",
     "avatar_url", "birthday", "home_anniversary", "preferred_contact_time", "tags", "time_zone",
     "ai_isa_enabled", "ai_outreach_paused", "ai_predicted_close_date", "nurture_status",
@@ -90,6 +91,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
     "rationale", "recipient_contact_id", "send_error", "sent_at", "status", "subject",
   ],
   leads: [
+    "next_followup_at", "next_followup_reason",
     "address", "agent_id", "ai_isa_owner", "ai_outreach_paused", "assigned_owner", "brokerage_id",
     "budget_max", "budget_min", "call_stop_flag", "campaign_attribution_id", "city", "contact_count",
     "contact_id", "converted_at", "cost_per_record", "created_at", "days_in_stage", "dedupe_status",

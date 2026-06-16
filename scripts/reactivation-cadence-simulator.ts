@@ -16,7 +16,7 @@
  *
  * Run: npx tsx scripts/reactivation-cadence-simulator.ts   (npm run test:reactivation-cadence)
  */
-import { planReactivationStep, reactivationAudience } from "../lib/lead-pipeline/reactivation-cadence"
+import { planReactivationStep, reactivationAudience, followupSuppresses } from "../lib/lead-pipeline/reactivation-cadence"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -59,6 +59,13 @@ async function main() {
   check("contact_type seller → seller audience", reactivationAudience("seller") === "seller")
   check("both/investor → buyer audience", reactivationAudience("both") === "buyer" && reactivationAudience("investor") === "buyer")
   check("unknown/blank type → neutral lead audience", reactivationAudience(null) === "lead" && reactivationAudience("") === "lead")
+
+  // Future-intent (m229): honor an explicit "reach me later" date — suppress nagging until due.
+  const NOW2 = "2026-06-16T12:00:00.000Z"
+  check("future follow-up date → suppresses the cadence", followupSuppresses("2026-12-01T00:00:00.000Z", NOW2) === true)
+  check("past/ due follow-up date → no longer suppresses", followupSuppresses("2026-01-01T00:00:00.000Z", NOW2) === false)
+  check("no follow-up date → no suppression", followupSuppresses(null, NOW2) === false)
+  check("garbage date → no suppression (honest)", followupSuppresses("not-a-date", NOW2) === false)
 
   console.log("\n[Layer 2 · live: walk a real contact 8d→15d→22d, idempotently]")
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY && !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)

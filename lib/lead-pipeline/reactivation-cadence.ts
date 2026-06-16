@@ -75,6 +75,17 @@ export function planReactivationStep(input: ReactivationStepInput): Reactivation
   return HOLD(`cadence up to date for ${d}d dormant — waiting for the next threshold`)
 }
 
+/**
+ * Honor an explicit future-intent date: when a lead/contact asked to be reached "in 6 months",
+ * the cadence must NOT nag them before that date arrives. Pure. Returns true while the scheduled
+ * follow-up is still in the future (suppress auto-touches); false once it's due or unset.
+ */
+export function followupSuppresses(nextFollowupAt: string | null | undefined, now: string): boolean {
+  if (!nextFollowupAt) return false
+  const t = new Date(nextFollowupAt).getTime()
+  return Number.isFinite(t) && t > new Date(now).getTime()
+}
+
 export type ReactivationAudience = "buyer" | "seller" | "lead"
 
 /**
