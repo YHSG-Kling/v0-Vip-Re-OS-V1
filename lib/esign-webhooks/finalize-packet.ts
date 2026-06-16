@@ -136,6 +136,16 @@ export async function finalizeVoiceCockpitPacket(
   // + deadlines get seeded.
   await finalizeMatchingOffer(supabase, envelopeId, provider)
 
+  // COMPLETENESS GATE — before the agent forwards to the listing agent, verify the packet: all
+  // required forms present + all signed. On pass, hand it to the Deal Coordinator on the bus + notify
+  // the agent the docs are ready for the listing agent; on a gap, surface what's missing. Best-effort.
+  try {
+    const { verifyOfferDocsReady } = await import("@/lib/intelligence/offer-doc-completeness-runner")
+    await verifyOfferDocsReady(envelopeId, supabase as any)
+  } catch (err) {
+    console.error("[finalize-packet] offer-docs completeness scan failed:", err)
+  }
+
   return {
     docs_signed: (matchedDocs ?? []).length,
     bba_signed:  matchedBBA ? 1 : 0,

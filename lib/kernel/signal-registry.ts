@@ -77,6 +77,7 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
   first_touch_claimed:            { consumers: [], disposition: "feed_only", kind: "handoff",    what: "a manager claimed the first touch on a new lead (the bullpen race resolved)" },
   open_house_lead_handoff:        { consumers: [], disposition: "feed_only", kind: "handoff",    what: "the hot, unrepresented buyer leads from a Listing Concierge open house handed to the AI ISA to qualify — the seller-event → buyer-pipeline bridge, made visible on the bus" },
   listing_marketing_ready:        { consumers: [], disposition: "feed_only", kind: "handoff",    what: "a listing reached coming-soon or went live — the Listing Concierge → Campaign Orchestrator marketing handoff, made visible on the bus (the kernel-event fanout still enrolls the sequences; this makes the team coordination legible)" },
+  offer_docs_ready:               { consumers: [], disposition: "feed_only", kind: "handoff",    what: "a signed offer packet passed the completeness scan (all required forms present + signed) — the Deal Coordinator handoff that the docs are verified and ready to send to the listing agent (the agent is also notified)" },
   agent_overloaded:               { consumers: [], disposition: "feed_only", kind: "escalation", what: "capacity guardian flagged an agent's load — surfaced for the broker (advisory)" },
 }
 

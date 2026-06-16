@@ -10,7 +10,8 @@ import { logEventAndTrigger } from "@/lib/events/event-helpers"
 interface SubmitForSignatureParams {
   offerId: string
   userId?: string  // ignored — derived from session (was a forgery vector)
-  signers: Array<{
+  /** Optional — when omitted/empty, the buyer's signer info is auto-pulled from the offer's CRM contact. */
+  signers?: Array<{
     name: string
     email: string
     role: "buyer" | "co_buyer" | "agent"
@@ -18,7 +19,7 @@ interface SubmitForSignatureParams {
 }
 
 export async function submitForSignature(params: SubmitForSignatureParams) {
-  const { offerId, signers } = params
+  const { offerId } = params
 
   if (!isValidUUID(offerId)) {
     return { success: false, error: "Invalid offer ID" }
@@ -58,6 +59,25 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   // platform_credentials with offer.brokerage_id.
   if (offer.brokerage_id !== callerRow.brokerage_id) {
     return { success: false, error: "Forbidden" }
+  }
+
+  // AUTO-PULL the buyer signer from the offer's CRM contact when the caller didn't pass signers —
+  // the e-sign provider should get the buyer's name + email automatically (no manual re-typing). A
+  // contact with no email on file is surfaced as a blocker, never faked.
+  let signers = params.signers ?? []
+  if (signers.length === 0) {
+    const { buildSignersFromContacts } = await import("@/lib/intelligence/offer-signers")
+    let buyer: { first_name?: string | null; last_name?: string | null; email?: string | null } | null = null
+    if (offer.contact_id) {
+      const { data: c } = await supabase.from("contacts").select("first_name, last_name, email").eq("id", offer.contact_id).maybeSingle()
+      buyer = (c as any) ?? null
+    }
+    signers = buildSignersFromContacts(
+      buyer ? { firstName: buyer.first_name, lastName: buyer.last_name, email: buyer.email } : null,
+    )
+    if (signers.length === 0) {
+      return { success: false, error: "No buyer email on file to send for signature — add the buyer's email first.", blockerType: "missing_signer_email" }
+    }
   }
 
   // NAR 2024 GATE: buyer commission disclosure must be acknowledged before submit.
