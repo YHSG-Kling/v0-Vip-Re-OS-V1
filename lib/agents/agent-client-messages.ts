@@ -101,15 +101,21 @@ export async function approveClientMessage(
     if (channel === "sms" || channel === "voice_drop" || channel === "email") {
       // Direct channels need the contact's identifier + the canonical suppression gate
       // (TCPA consent, DNC, per-channel opt-out / unsubscribe) — one source of truth.
-      const { canDispatchToContact, CONTACT_CONSENT_COLUMNS } = await import("@/lib/compliance/contact-channel-gate")
+      const { canDispatchToContact, honorsChannelPreference, CONTACT_CONSENT_COLUMNS, CONTACT_PREFERENCE_COLUMN } = await import("@/lib/compliance/contact-channel-gate")
       const { data: c } = await supabase.from("contacts")
-        .select(`email, phone, first_name, ${CONTACT_CONSENT_COLUMNS}`).eq("id", m.recipient_contact_id ?? "").maybeSingle()
-      const contact = c as ({ email?: string | null; phone?: string | null; first_name?: string | null } & import("@/lib/compliance/contact-channel-gate").ContactConsentState) | null
+        .select(`email, phone, first_name, ${CONTACT_PREFERENCE_COLUMN}, ${CONTACT_CONSENT_COLUMNS}`).eq("id", m.recipient_contact_id ?? "").maybeSingle()
+      const contact = c as ({ email?: string | null; phone?: string | null; first_name?: string | null; preferred_channel?: string | null } & import("@/lib/compliance/contact-channel-gate").ContactConsentState) | null
       if (!contact) return await fail(supabase, messageId, "no recipient contact for this channel")
 
       // HARD pre-dispatch compliance gate — blocks before any provider is called.
       const gate = canDispatchToContact(contact, channel as import("@/lib/compliance/contact-channel-gate").DispatchChannel)
       if (!gate.allowed) return await fail(supabase, messageId, gate.reason ?? "blocked by compliance gate")
+
+      // CHANNEL PREFERENCE gate — consent says it's legal; this says the contact actually
+      // wants this channel. A manager's SMS to an email-only contact is blocked here (the
+      // human re-proposes on the preferred rail). Portal/social/no-preference never block.
+      const prefGate = honorsChannelPreference(contact.preferred_channel ?? null, channel as import("@/lib/compliance/contact-channel-gate").DispatchChannel)
+      if (!prefGate.allowed) return await fail(supabase, messageId, prefGate.reason ?? "blocked by channel preference")
 
       if (channel === "sms" || channel === "voice_drop") {
         if (!contact.phone) return await fail(supabase, messageId, "contact has no phone")

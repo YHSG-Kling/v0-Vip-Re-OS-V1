@@ -82,3 +82,61 @@ export function canDispatchToContact(state: ContactConsentState, channel: Dispat
 /** The contact columns the gate needs — for a `.select()` in the dispatch path. */
 export const CONTACT_CONSENT_COLUMNS =
   "tcpa_consent, dnc_status, email_opt_out, email_unsubscribed, sms_opt_out, sms_unsubscribed, phone_opt_out, opt_out_channels"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHANNEL PREFERENCE (distinct from consent).
+//
+// The consent gate above answers "is it LEGAL to send this channel?". This answers
+// a different question: "does the contact WANT this channel?". A client who told us
+// "email me, don't text" has given SMS consent (tcpa_consent=true) yet still doesn't
+// want texts — consent says yes, preference says no. AI-ISA speed-to-lead already
+// honors preferred_channel; the manager/agent send path did not, so a manager could
+// fire an SMS at someone who asked for email-only. This closes that gap at the same
+// provable chokepoint as consent (approveClientMessage), keeping the human in control:
+// a violating send is BLOCKED with a reason that names the channel to re-propose on.
+//
+// Pure + conservative: only an EXPLICIT preference that maps to one of our dispatch
+// rails blocks a mismatched channel. No preference, or a preference we can't honor on
+// these rails (direct_mail / social), never blocks — we don't fabricate enforcement.
+
+/** Map a stored preferred_channel value to the dispatch "family" it corresponds to. */
+function preferenceFamily(preferred: string | null | undefined): "email" | "sms" | "voice" | null {
+  switch ((preferred ?? "").trim().toLowerCase()) {
+    case "email": return "email"
+    case "sms":   case "text": return "sms"
+    case "phone": case "call": case "voice": return "voice"
+    // direct_mail / facebook / instagram / linkedin / twitter / "" → not a rail we honor here
+    default: return null
+  }
+}
+
+/** Map a dispatch channel to the family a preference is expressed in. */
+function channelFamily(channel: DispatchChannel): "email" | "sms" | "voice" | "portal" {
+  if (channel === "email") return "email"
+  if (channel === "sms") return "sms"
+  if (channel === "voice_drop") return "voice"
+  return "portal"
+}
+
+/**
+ * Decide whether dispatching `channel` honors the contact's stated channel preference.
+ * Pure. Portal is always honored (the consumer's own surface). A blocked result names
+ * the preferred channel so the manager can re-propose on the right rail.
+ */
+export function honorsChannelPreference(
+  preferredChannel: string | null | undefined,
+  channel: DispatchChannel,
+): ChannelGateResult {
+  const fam = channelFamily(channel)
+  if (fam === "portal") return { allowed: true } // consumer's own surface — preference n/a
+
+  const pref = preferenceFamily(preferredChannel)
+  if (!pref) return { allowed: true }            // no honorable preference on file
+  if (pref === fam) return { allowed: true }      // proposed channel matches preference
+
+  const label = pref === "voice" ? "phone/voice" : pref
+  return { allowed: false, reason: `contact prefers ${label} — re-propose on their preferred channel instead of ${fam}` }
+}
+
+/** The preference column the preference gate needs — for a `.select()` in the dispatch path. */
+export const CONTACT_PREFERENCE_COLUMN = "preferred_channel"
