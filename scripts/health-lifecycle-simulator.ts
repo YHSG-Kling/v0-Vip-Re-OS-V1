@@ -10,6 +10,7 @@
  * Run: npx tsx scripts/health-lifecycle-simulator.ts   (npm run test:health-lifecycle)
  */
 import { lifecyclePlayForHealth } from "../lib/intelligence/health-lifecycle-play"
+import { winbackVideoPlan } from "../lib/intelligence/winback-video"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -45,6 +46,12 @@ function main() {
   const dormant = lifecyclePlayForHealth("dormant", "buyer")
   check("dormant → urgency 'now' + last_attempt play", dormant.urgency === "now" && /last_attempt/.test(dormant.play ?? ""))
   check("at-risk urgency is 'soon'", lifecyclePlayForHealth("at_risk", "buyer").urgency === "soon")
+
+  // Multimodal win-back: only DORMANT stages a personal video, kind matched to who they are.
+  check("dormant past client → anniversary win-back video", (() => { const w = winbackVideoPlan("past_client", "dormant"); return w.commission && w.kind === "anniversary" })())
+  check("dormant buyer → explainer win-back video", (() => { const w = winbackVideoPlan("buyer", "dormant"); return w.commission && w.kind === "explainer" })())
+  check("at-risk → NO win-back video (lighter plays first)", winbackVideoPlan("past_client", "at_risk").commission === false)
+  check("healthy → no win-back video", winbackVideoPlan("buyer", "thriving").commission === false && winbackVideoPlan("buyer", "cooling").commission === false)
 
   report()
 }
