@@ -75,6 +75,21 @@ export function planReactivationStep(input: ReactivationStepInput): Reactivation
   return HOLD(`cadence up to date for ${d}d dormant — waiting for the next threshold`)
 }
 
+export type ReactivationAudience = "buyer" | "seller" | "lead"
+
+/**
+ * Derive the message audience from a contact's type. An ASSIGNED contact being reactivated is a
+ * buyer or seller — not a generic "lead" — so the persona/tone matches who they actually are.
+ * (Fixes a bug where every reactivation message used the cold-lead persona even for known
+ * buyers/sellers.) Unknown/unset types fall back to the neutral lead persona.
+ */
+export function reactivationAudience(contactType?: string | null): ReactivationAudience {
+  const t = (contactType ?? "").trim().toLowerCase()
+  if (t === "seller" || t === "listing") return "seller"
+  if (t === "buyer" || t === "both" || t === "investor") return "buyer"
+  return "lead"
+}
+
 /** Copy keys for the deterministic fallback body of each touch step. */
 export function reactivationFallbackCopy(step: 1 | 2, firstName?: string | null): { subject: string; body: string } {
   const name = (firstName ?? "").trim()

@@ -13,7 +13,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { planReactivationStep, reactivationFallbackCopy, type ReactivationThresholds } from "./reactivation-cadence"
+import { planReactivationStep, reactivationFallbackCopy, reactivationAudience, type ReactivationThresholds } from "./reactivation-cadence"
 import { generatePersonaCopy, type CopyGenerator } from "@/lib/kernel/ai-copy"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -46,7 +46,7 @@ export async function runReactivationCadence(input: ReactivationRunInput, client
   // the legacy stale-contact cron's created_at proxy predates it; this cadence uses the real one.)
   const { data: contacts } = await svc
     .from("contacts")
-    .select("id, first_name, last_name, agent_id, status, dnc_status, isa_reengage_allowed, last_contacted_at, created_at")
+    .select("id, first_name, last_name, contact_type, agent_id, status, dnc_status, isa_reengage_allowed, last_contacted_at, created_at")
     .eq("brokerage_id", input.brokerageId)
     .not("agent_id", "is", null)
     .eq("dnc_status", false)
@@ -89,8 +89,9 @@ export async function runReactivationCadence(input: ReactivationRunInput, client
       const step = plan.step as 1 | 2
       const channel = plan.action
       const fallback = reactivationFallbackCopy(step, firstName)
+      const audience = reactivationAudience(row.contact_type)
       const { loadContactPersona } = await import("@/lib/kernel/ai-copy")
-      const persona = await loadContactPersona(svc, row.id).catch(() => ({ audience: "lead" as const }))
+      const persona = await loadContactPersona(svc, row.id).catch(() => ({ audience }))
       const draft = await generatePersonaCopy(
         {
           goal: `a brief, warm, no-pressure re-engagement ${channel === "email" ? "email" : "text"} to a contact who has gone quiet for ${daysDormant} days — invite them to pick back up, make it easy to say "later"`,
@@ -110,7 +111,7 @@ export async function runReactivationCadence(input: ReactivationRunInput, client
           entityType: "contact",
           entityId: row.id,
           recipientContactId: row.id,
-          audience: "lead",
+          audience,
           subject: draft.subject ?? fallback.subject,
           body: draft.body,
           rationale: `${STEP_KEY(row.id, step)} — ${plan.reason}`,

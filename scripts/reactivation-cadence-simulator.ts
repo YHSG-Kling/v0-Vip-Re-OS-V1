@@ -16,7 +16,7 @@
  *
  * Run: npx tsx scripts/reactivation-cadence-simulator.ts   (npm run test:reactivation-cadence)
  */
-import { planReactivationStep } from "../lib/lead-pipeline/reactivation-cadence"
+import { planReactivationStep, reactivationAudience } from "../lib/lead-pipeline/reactivation-cadence"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -53,6 +53,12 @@ async function main() {
   check("30d dormant, nothing done → top crossed rung (escalate)", jump.due && jump.step === 3)
   // Custom thresholds honored.
   check("custom thresholds shift the rungs", planReactivationStep({ daysDormant: 4, completedSteps: [], thresholds: { step1Days: 3 } }).step === 1)
+
+  // Audience bug fix: an assigned buyer/seller is NOT messaged with the cold-lead persona.
+  check("contact_type buyer → buyer audience", reactivationAudience("buyer") === "buyer")
+  check("contact_type seller → seller audience", reactivationAudience("seller") === "seller")
+  check("both/investor → buyer audience", reactivationAudience("both") === "buyer" && reactivationAudience("investor") === "buyer")
+  check("unknown/blank type → neutral lead audience", reactivationAudience(null) === "lead" && reactivationAudience("") === "lead")
 
   console.log("\n[Layer 2 · live: walk a real contact 8d→15d→22d, idempotently]")
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY && !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
