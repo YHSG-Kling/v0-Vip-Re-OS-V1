@@ -23,11 +23,12 @@ export interface ManagerStandupLine {
   headline: string
 }
 
-export async function generateManagerStandup(brokerageId: string): Promise<ManagerStandupLine[]> {
-  const supabase = createServiceClient()
+export async function generateManagerStandup(brokerageId: string, client?: ReturnType<typeof createServiceClient>): Promise<ManagerStandupLine[]> {
+  const supabase = client ?? createServiceClient()
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
 
-  const [handoffs, hotIsa, proposedMsgs, enrichQueue, activeListings, rendersDone, matches24h] =
+  const [handoffs, hotIsa, proposedMsgs, enrichQueue, activeListings, rendersDone, matches24h,
+         dealTasks, adsProposed, mktProposed, sphereProposed, recruitProposed] =
     await Promise.all([
       supabase.from('assignment_log').select('id', { count: 'exact', head: true })
         .eq('brokerage_id', brokerageId).gte('created_at', since),
@@ -43,6 +44,21 @@ export async function generateManagerStandup(brokerageId: string): Promise<Manag
         .eq('brokerage_id', brokerageId).eq('render_status', 'completed').gte('completed_at', since),
       supabase.from('property_matches').select('id', { count: 'exact', head: true })
         .eq('brokerage_id', brokerageId).gte('created_at', since),
+      // Deal Coordinator — transaction tasks advanced in 24h (workload actually moving).
+      supabase.from('transaction_tasks').select('id', { count: 'exact', head: true })
+        .eq('brokerage_id', brokerageId).gte('updated_at', since),
+      // Ads Manager — paid-campaign actions awaiting a human's spend approval.
+      supabase.from('ad_manager_actions').select('id', { count: 'exact', head: true })
+        .eq('brokerage_id', brokerageId).eq('status', 'proposed'),
+      // Marketing Manager — brand/content actions awaiting approval.
+      supabase.from('marketing_agent_actions').select('id', { count: 'exact', head: true })
+        .eq('brokerage_id', brokerageId).eq('status', 'proposed'),
+      // Sphere Manager — repeat/referral touches proposed (attributed by agent_kind).
+      supabase.from('agent_client_messages').select('id', { count: 'exact', head: true })
+        .eq('brokerage_id', brokerageId).eq('agent_kind', 'sphere_of_influence').eq('status', 'proposed'),
+      // Recruiting Manager — candidate outreach drafts proposed.
+      supabase.from('agent_client_messages').select('id', { count: 'exact', head: true })
+        .eq('brokerage_id', brokerageId).eq('agent_kind', 'recruiting_manager').eq('status', 'proposed'),
     ])
 
   const n = (r: { count: number | null }) => r.count ?? 0
@@ -80,6 +96,39 @@ export async function generateManagerStandup(brokerageId: string): Promise<Manag
       manager: 'shopping_agent', label: MANAGERS.shopping_agent.label,
       activity_24h: n(matches24h), needs_human: 0,
       headline: `${n(matches24h)} buyer property match${n(matches24h) === 1 ? '' : 'es'} generated in 24h`,
+    },
+    {
+      manager: 'deal_coordinator', label: MANAGERS.deal_coordinator.label,
+      activity_24h: n(dealTasks), needs_human: 0,
+      headline: `${n(dealTasks)} transaction task${n(dealTasks) === 1 ? '' : 's'} advanced in 24h`,
+    },
+    {
+      manager: 'ads_manager', label: MANAGERS.ads_manager.label,
+      activity_24h: n(adsProposed), needs_human: n(adsProposed),
+      headline: n(adsProposed) > 0
+        ? `${n(adsProposed)} ad action${n(adsProposed) === 1 ? '' : 's'} proposed — awaiting your spend approval`
+        : 'No ad spend awaiting approval',
+    },
+    {
+      manager: 'marketing_agent', label: MANAGERS.marketing_agent.label,
+      activity_24h: n(mktProposed), needs_human: n(mktProposed),
+      headline: n(mktProposed) > 0
+        ? `${n(mktProposed)} marketing action${n(mktProposed) === 1 ? '' : 's'} proposed — awaiting your approval`
+        : 'No marketing actions awaiting approval',
+    },
+    {
+      manager: 'sphere_of_influence', label: MANAGERS.sphere_of_influence.label,
+      activity_24h: n(sphereProposed), needs_human: n(sphereProposed),
+      headline: n(sphereProposed) > 0
+        ? `${n(sphereProposed)} repeat/referral touch${n(sphereProposed) === 1 ? '' : 'es'} proposed — awaiting your approval`
+        : 'No sphere touches awaiting approval',
+    },
+    {
+      manager: 'recruiting_manager', label: MANAGERS.recruiting_manager.label,
+      activity_24h: n(recruitProposed), needs_human: n(recruitProposed),
+      headline: n(recruitProposed) > 0
+        ? `${n(recruitProposed)} recruiting draft${n(recruitProposed) === 1 ? '' : 's'} ready to send`
+        : 'No recruiting drafts pending',
     },
   ]
   // Only report managers with something to say (quiet managers don't add noise).
