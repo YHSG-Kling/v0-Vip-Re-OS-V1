@@ -174,7 +174,8 @@
     "test:rate-lock": "tsx scripts/rate-lock-watch-simulator.ts",
     "test:referral-reciprocity": "tsx scripts/referral-reciprocity-simulator.ts",
     "test:offer-rejection": "tsx scripts/offer-rejection-recovery-simulator.ts",
-    "test:relist-recovery": "tsx scripts/relist-recovery-simulator.ts"
+    "test:relist-recovery": "tsx scripts/relist-recovery-simulator.ts",
+    "test:stale-preapproval": "tsx scripts/stale-preapproval-reengage-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

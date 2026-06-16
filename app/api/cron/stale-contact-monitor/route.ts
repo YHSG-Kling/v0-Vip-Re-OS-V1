@@ -123,6 +123,16 @@ export async function GET(request: NextRequest) {
         errors.push(`relist-recovery: ${err instanceof Error ? err.message : String(err)}`)
       }
 
+      // STALE PRE-APPROVAL RE-ENGAGE — a quiet pre-contract buyer whose pre-approval lapsed
+      // can't make a competitive offer; refresh their financing before they drift away.
+      try {
+        const { runStalePreApprovalReengage } = await import('@/lib/lead-pipeline/stale-preapproval-reengage-runner')
+        const pa = await runStalePreApprovalReengage({ brokerageId }, supabase)
+        reengaged += pa.reengaged
+      } catch (err: unknown) {
+        errors.push(`stale-preapproval: ${err instanceof Error ? err.message : String(err)}`)
+      }
+
       results.push({
         brokerageId,
         staleCount: staleContacts?.length ?? 0,
