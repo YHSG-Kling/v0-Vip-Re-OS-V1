@@ -172,7 +172,8 @@
     "test:negotiation-outcome": "tsx scripts/negotiation-outcome-simulator.ts",
     "test:trid-clock": "tsx scripts/trid-disclosure-clock-simulator.ts",
     "test:rate-lock": "tsx scripts/rate-lock-watch-simulator.ts",
-    "test:referral-reciprocity": "tsx scripts/referral-reciprocity-simulator.ts"
+    "test:referral-reciprocity": "tsx scripts/referral-reciprocity-simulator.ts",
+    "test:offer-rejection": "tsx scripts/offer-rejection-recovery-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

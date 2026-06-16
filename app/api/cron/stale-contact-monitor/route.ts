@@ -102,6 +102,17 @@ export async function GET(request: NextRequest) {
         }
       }
 
+      // OFFER-REJECTION RECOVERY — the ACUTE window the 14-day stale net misses: a buyer
+      // whose offer was just rejected gets a gated regroup + (acute) an AI-ISA call routed,
+      // before they go shop another agent. Honest: countered offers are live, not recovered.
+      try {
+        const { runOfferRejectionRecovery } = await import('@/lib/lead-pipeline/offer-rejection-recovery-runner')
+        const rec = await runOfferRejectionRecovery({ brokerageId }, supabase)
+        reengaged += rec.recovered
+      } catch (err: unknown) {
+        errors.push(`offer-rejection-recovery: ${err instanceof Error ? err.message : String(err)}`)
+      }
+
       results.push({
         brokerageId,
         staleCount: staleContacts?.length ?? 0,
