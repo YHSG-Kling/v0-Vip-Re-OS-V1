@@ -45,6 +45,14 @@ export async function GET(request: NextRequest) {
 
     for (const b of (brokerages ?? []) as { id: string }[]) {
       scanned++
+
+      // LEARNING CONDUCTOR (copy) — promote the winning ai_intent variant per A/B step (reply-rate,
+      // sample+margin gated). Same weekly cadence as the source learner; best-effort.
+      try {
+        const { runSequenceCopyLearning } = await import("@/lib/campaign-sequences/copy-learning-conductor")
+        await runSequenceCopyLearning(b.id, svc)
+      } catch { /* best-effort — never fails the source learner */ }
+
       const scored = await loadSourceConversions(b.id, {}, svc)
       if (scored.ranked.length === 0) continue
 
