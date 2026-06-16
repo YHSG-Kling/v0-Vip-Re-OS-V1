@@ -20,7 +20,7 @@ export interface ProposeClientMessageInput {
   subject?:              string | null
   body:                  string
   rationale?:            string | null
-  channel?:              "portal" | "portal_push" | "email" | "sms" | "voice_drop" | null
+  channel?:              "portal" | "portal_push" | "email" | "sms" | "voice_drop" | "direct_mail" | null
 }
 
 export async function proposeClientMessage(
@@ -138,6 +138,29 @@ export async function approveClientMessage(
         const r = await dispatchEmail({ brokerageId: m.brokerage_id, contactId: m.recipient_contact_id ?? undefined, from: "", to: contact.email, subject: m.subject ?? "An update from your agent", html: `<p>${m.body.replace(/\n/g, "<br/>")}</p>`, text: m.body, channelPurpose: "update", systemSource: "agent_client_message" })
         if (!r.success) return await fail(supabase, messageId, r.error ?? "email send failed")
       }
+    } else if (channel === "direct_mail") {
+      // DIRECT MAIL — its own gate (direct_mail_opt_out, not TCPA/CAN-SPAM): resolve the
+      // deliverable mailing address, then dispatch the preset (subject 'preset:<id>') through
+      // the existing Lob orchestrator. Skips cleanly when there's no preset / no good address.
+      if (!m.recipient_contact_id) return await fail(supabase, messageId, "direct mail needs a recipient contact")
+      const { data: dmc } = await supabase.from("contacts")
+        .select("first_name, last_name, direct_mail_opt_out").eq("id", m.recipient_contact_id).maybeSingle()
+      const dm = dmc as { first_name?: string | null; last_name?: string | null; direct_mail_opt_out?: boolean | null } | null
+      if (!dm) return await fail(supabase, messageId, "no recipient contact for direct mail")
+      if (dm.direct_mail_opt_out) return await fail(supabase, messageId, "contact opted out of direct mail")
+      const presetId = (m.subject && /preset:/.test(m.subject)) ? m.subject.replace(/.*preset:/, "").trim() : null
+      if (!presetId) return await fail(supabase, messageId, "direct_mail needs a preset (subject 'preset:<id>')")
+      const { resolveMailingAddressForContact } = await import("@/lib/contacts/resolve-mailing-address")
+      const addr = await resolveMailingAddressForContact({ contactId: m.recipient_contact_id, brokerageId: m.brokerage_id })
+      if (!addr) return await fail(supabase, messageId, "no deliverable mailing address on file")
+      const { orchestratePresetSend } = await import("@/lib/direct-mail/orchestrate-preset-send")
+      const r = await orchestratePresetSend({
+        brokerageId: m.brokerage_id, presetId, contactId: m.recipient_contact_id,
+        recipientName: `${dm.first_name ?? ""} ${dm.last_name ?? ""}`.trim() || "Neighbor",
+        mailingAddress: addr.street, city: addr.city, state: addr.state, zip: addr.zip,
+        systemSource: "agent_client_message",
+      })
+      if (!r.success) return await fail(supabase, messageId, r.error ?? r.fellBackReason ?? "direct mail send failed")
     } else {
       // portal / portal_push → write the canonical portal card DIRECTLY.
       // (Previously this emitted the string "agent_message_received" — which is not a
