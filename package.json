@@ -206,6 +206,7 @@
     "test:consult-outcome-resolver": "tsx scripts/consult-outcome-resolver-simulator.ts",
     "test:signal-integrity": "tsx scripts/signal-integrity-simulator.ts",
     "test:showing-feedback-routing": "tsx scripts/showing-feedback-routing-simulator.ts",
+    "test:listing-stall-predictor": "tsx scripts/listing-stall-predictor-simulator.ts",
     "test:manager-outbound-eval": "tsx scripts/manager-outbound-eval-simulator.ts",
     "test:learning-outcomes": "tsx scripts/learning-outcomes-simulator.ts",
     "test:voice-report": "tsx scripts/voice-report-format-simulator.ts",

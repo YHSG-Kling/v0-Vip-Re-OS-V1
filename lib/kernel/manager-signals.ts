@@ -574,6 +574,41 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }, ctx.supabase)
     return res.ok ? `proposed a gated "${play}" seller recommendation (message ${res.id})` : null
   },
+  // Stall predictor → Listing Concierge: a listing is heading for a stall (DOM past the area's pace,
+  // showings drying up, no offers) BEFORE it expires. The concierge gets ahead of it with a GATED
+  // seller recommendation — a marketing refresh while there's still time, or an early price
+  // conversation. Catching it early is the whole point (relist_recovery is the after-the-fact net).
+  "listing_concierge:listing_stall_predicted": async (signal, ctx) => {
+    if (!signal.contactId) return null
+    const p = (signal.payload ?? {}) as Record<string, unknown>
+    const play = (p.play as string | undefined) ?? null
+    const reasons = Array.isArray(p.reasons) ? (p.reasons as string[]).slice(0, 3) : []
+    const addr = (p.property_address as string | undefined) ?? "your home"
+    if (!play || play === "hold") return null
+
+    const copy: Record<string, { subject: string; body: string }> = {
+      marketing_refresh: {
+        subject: "Let's get fresh eyes on your home",
+        body: `I'm watching the activity on ${addr} closely and want to get ahead of something before it becomes an issue. ${reasons.length ? `What I'm seeing: ${reasons.join("; ")}. ` : ""}I'd like to refresh the marketing — new photos in the feed, a fresh push to buyers, maybe a new reel — to put it back in front of the right people. Can I run that for you this week?`,
+      },
+      price_strategy: {
+        subject: "A quick strategy check on your listing",
+        body: `I want to get ahead of the numbers on ${addr} before it sits too long. ${reasons.length ? `What I'm seeing: ${reasons.join("; ")}. ` : ""}Homes that linger get stale in buyers' minds, so I'd rather make a smart, proactive move now than react later. Do you have a few minutes to talk strategy this week?`,
+      },
+    }
+    const msg = copy[play]
+    if (!msg) return null
+
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "listing_concierge", entityType: "listing",
+      entityId: signal.entityId, recipientContactId: signal.contactId, audience: "seller",
+      subject: msg.subject, body: msg.body,
+      rationale: `LISTING-STALL PREDICTOR — predicted a stall (${(p.risk as string) ?? "elevated"} risk) BEFORE expiry; gated "${play}" recommendation proposed so the team gets ahead of it (manager-orchestrated, early).`,
+      channel: "portal",
+    }, ctx.supabase)
+    return res.ok ? `proposed a gated early "${play}" recommendation (message ${res.id})` : null
+  },
   // autopsy has already classified the failure reason and proposed a gated coaching
   // brief (proposeClientMessage). The Recruiting Manager's handler here surfaces a
   // NOTIFICATION to the broker/team-lead so the coaching prompt is never invisible —
