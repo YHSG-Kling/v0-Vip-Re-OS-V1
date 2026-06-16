@@ -187,6 +187,7 @@
     "test:material-change": "tsx scripts/material-enrichment-change-simulator.ts",
     "test:decision-receipts": "tsx scripts/decision-receipts-simulator.ts",
     "test:variant-winner": "tsx scripts/variant-winner-simulator.ts",
+    "test:coordination-kind": "tsx scripts/coordination-kind-simulator.ts",
     "test:phone-scrub": "tsx scripts/phone-scrub-simulator.ts",
     "test:manager-standup": "tsx scripts/manager-standup-simulator.ts",
     "test:direct-mail-channel": "tsx scripts/direct-mail-channel-simulator.ts",

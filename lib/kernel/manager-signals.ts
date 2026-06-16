@@ -655,6 +655,9 @@ export interface ManagerTalkLine {
   status: string
   consumedAction: string | null
   createdAt: string
+  /** Coordination kind (deferral / handoff / escalation / alert / update) so the feed renders the
+   *  negotiation, not a flat log. */
+  kind: import("./coordination-kind").CoordinationKind
 }
 
 /** The Command Center's "managers talking" feed — recent inter-manager conversation. */
@@ -662,9 +665,10 @@ export async function loadRecentManagerTalk(
   brokerageId: string, limit = 20, client?: Svc,
 ): Promise<ManagerTalkLine[]> {
   const supabase = client ?? createServiceClient()
+  const { classifyCoordination } = await import("./coordination-kind")
   const { data } = await supabase
     .from("manager_signals")
-    .select("id, from_manager, to_manager, message, status, consumed_action, created_at")
+    .select("id, from_manager, to_manager, signal_type, message, status, consumed_action, created_at")
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false }).limit(limit)
   return ((data ?? []) as any[]).map((r) => ({
@@ -675,5 +679,6 @@ export async function loadRecentManagerTalk(
     status: r.status,
     consumedAction: r.consumed_action ?? null,
     createdAt: r.created_at,
+    kind: classifyCoordination(r.signal_type),
   }))
 }
