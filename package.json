@@ -181,6 +181,7 @@
     "test:ai-call-adapter": "tsx scripts/ai-call-adapter-simulator.ts",
     "test:touch-provenance": "tsx scripts/touch-provenance-simulator.ts",
     "test:persona-drift": "tsx scripts/persona-drift-simulator.ts",
+    "test:source-wording": "tsx scripts/source-wording-diagnostic-simulator.ts",
     "test:phone-scrub": "tsx scripts/phone-scrub-simulator.ts",
     "test:manager-standup": "tsx scripts/manager-standup-simulator.ts",
     "test:direct-mail-channel": "tsx scripts/direct-mail-channel-simulator.ts",
