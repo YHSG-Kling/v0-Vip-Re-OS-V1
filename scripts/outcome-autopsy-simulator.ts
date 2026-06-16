@@ -50,7 +50,7 @@ function main() {
   ])
   const video = stats.find((s) => s.channel === "video")
   const sms = stats.find((s) => s.channel === "sms")
-  check("video win rate computed (2/3)", video && Math.abs(video.winRate - 2 / 3) < 1e-9)
+  check("video win rate computed (2/3)", !!video && Math.abs(video.winRate - 2 / 3) < 1e-9)
   check("sms all-loss → 0 win rate", sms?.winRate === 0)
   check("ranked by win rate (video ahead of sms)", stats[0].channel === "video")
   check("empty → empty", aggregateAutopsyByChannel([]).length === 0)
