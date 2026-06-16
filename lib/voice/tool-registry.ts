@@ -285,6 +285,26 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_nar_regulated: false,
     description: "The team's ranked top-3 for the day — 'what should I do today?'. Fire drills first (most expensive to ignore), then aging approvals past the 4h SLA, then the single warmest cooling lead. One spoken ranked answer, read-only, honest when the day is clear.",
   },
+  whos_slipping: {
+    name: "whos_slipping",
+    category: "report",
+    authority: "agent_or_isa",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Who needs you first today — 'who's slipping?'. Reads the lifetime relationship-health work list (most-at-risk first) plus what the AI team plans to send today and what the gates held. Agent-scoped, read-only.",
+  },
+  explain_touches: {
+    name: "explain_touches",
+    category: "report",
+    authority: "agent_or_isa",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Why a contact got (or didn't get) recent touches — 'why did the Hendersons get that?'. Reads the decision receipts: every send, every skip/block WITH its reason, opens/replies, and which manager + intent produced each. Pass contact_id or person_query. Read-only.",
+  },
 
   // ── Team coordination (acting verbs — the team DOES what you say) ──────────
   // Each delegates to a backend that enforces its OWN gate; nothing sends autonomously.
