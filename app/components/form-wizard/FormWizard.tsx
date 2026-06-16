@@ -41,6 +41,7 @@ import type { Contact } from "@/lib/domain/types"
 import { createClient } from "@/lib/supabase/client"
 import { createOffer } from "@/app/actions/buyer-offers"
 import { submitForSignature } from "@/app/actions/buyer-offer/submit-for-signature"
+import { prefillStorageFormAction } from "@/app/actions/buyer-offer/prefill-storage-form"
 import Link from "next/link"
 
 type TransactionProvider = "dotloop" | "docusign" | "skyslope" | "authentisign"
@@ -836,9 +837,38 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
 
 // ─── Step 3 — Fill Forms ─────────────────────────────────────────────────────
 
+interface FilledFormState { loading: boolean; previewUrl?: string; filledFields?: string[]; unresolvedFields?: string[]; error?: string }
+
 function Step3Fill({ state, providerInfo }: { state: WizardState; providerInfo: { provider: TransactionProvider; embedUrl: string | null } | null | "loading" }) {
   const myFormsList = state.selectedForms.filter(f => f.source === "my_forms")
   const hasProvider = state.selectedForms.some(f => f.source === "transaction_provider")
+
+  // PROPERTY-ONLY PREFILL — fill the known property identification into each storage PDF in-app, so
+  // the agent works in a preview (not another tab). Offer terms stay blank for the agent.
+  const [filled, setFilled] = useState<Record<string, FilledFormState>>({})
+  useEffect(() => {
+    let cancelled = false
+    const pdfForms = myFormsList.filter(f => f.formRef.toLowerCase().endsWith(".pdf"))
+    for (const f of pdfForms) {
+      if (filled[f.formRef]) continue
+      setFilled(prev => ({ ...prev, [f.formRef]: { loading: true } }))
+      prefillStorageFormAction({
+        formPath: f.formRef,
+        propertyAddress: state.propertyAddress || null,
+        propertyCity: state.propertyCity || null,
+        propertyState: state.propertyState || null,
+      }).then(res => {
+        if (cancelled) return
+        setFilled(prev => ({ ...prev, [f.formRef]: res.success
+          ? { loading: false, previewUrl: res.previewUrl, filledFields: res.filledFields, unresolvedFields: res.unresolvedFields }
+          : { loading: false, error: res.error } }))
+      }).catch(() => {
+        if (!cancelled) setFilled(prev => ({ ...prev, [f.formRef]: { loading: false, error: "prefill failed" } }))
+      })
+    }
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.selectedForms])
 
   return (
     <div className="space-y-4">
@@ -846,31 +876,37 @@ function Step3Fill({ state, providerInfo }: { state: WizardState; providerInfo: 
 
       {myFormsList.length > 0 && (
         <div className="space-y-3">
-          <p className="text-sm text-muted-foreground">Forms from your library. You fill in the offer terms; the known property details on file are shown below to carry into each form.</p>
-          {(() => {
-            const known = [state.propertyAddress, state.propertyCity, state.propertyState].filter(Boolean).join(", ")
+          <p className="text-sm text-muted-foreground">Forms from your library. Known property details are pre-filled into each form; you complete the offer terms in the preview.</p>
+          {myFormsList.map(f => {
+            const fs = filled[f.formRef]
+            const isPdf = f.formRef.toLowerCase().endsWith(".pdf")
             return (
-              <p className="text-xs rounded-md bg-muted/40 border px-3 py-2">
-                {known
-                  ? <>Known property info to carry in: <span className="font-medium">{known}</span>. Complete the remaining fields on each form.</>
-                  : <>No property info on file yet — enter the property details directly on the form.</>}
-              </p>
-            )
-          })()}
-          {myFormsList.map(f => (
             <div key={f.formRef} className="border rounded-lg overflow-hidden">
               <div className="px-4 py-2 bg-muted/50 border-b flex items-center gap-2">
                 <Badge variant="outline" className="text-xs">{f.scope}</Badge>
                 <span className="text-sm font-medium">{f.name}</span>
+                {fs?.loading && <span className="text-xs text-muted-foreground ml-auto">Pre-filling…</span>}
+                {fs?.filledFields && fs.filledFields.length > 0 && <span className="text-xs text-emerald-600 ml-auto">{fs.filledFields.length} property field(s) pre-filled</span>}
               </div>
-              <div className="p-4">
-                <a href={f.formRef} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs underline text-primary">
-                  <ExternalLink className="h-3 w-3" />
-                  Open form to review
-                </a>
+              <div className="p-4 space-y-2">
+                {isPdf && fs?.previewUrl ? (
+                  <>
+                    <div className="border rounded-lg overflow-hidden" style={{ height: 480 }}>
+                      <iframe src={fs.previewUrl} className="w-full h-full" title={`${f.name} preview`} />
+                    </div>
+                    {fs.unresolvedFields && fs.unresolvedFields.length > 0 && (
+                      <p className="text-xs text-muted-foreground">Complete in the form: {fs.unresolvedFields.join(", ")}, plus the offer terms.</p>
+                    )}
+                  </>
+                ) : (
+                  <a href={f.formRef} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs underline text-primary">
+                    <ExternalLink className="h-3 w-3" />
+                    {fs?.error ? "Open form to review (prefill unavailable)" : "Open form to review"}
+                  </a>
+                )}
               </div>
             </div>
-          ))}
+          )})}
         </div>
       )}
 
