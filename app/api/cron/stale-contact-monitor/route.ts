@@ -133,6 +133,17 @@ export async function GET(request: NextRequest) {
         errors.push(`stale-preapproval: ${err instanceof Error ? err.message : String(err)}`)
       }
 
+      // REACTIVATION CADENCE — the escalating, self-limiting ladder the one-shot net lacks:
+      // 7d warm email → 14d direct SMS → 21d hand to the human and STOP. Each rung fires once;
+      // consent + channel-preference gates run downstream at approval.
+      try {
+        const { runReactivationCadence } = await import('@/lib/lead-pipeline/reactivation-cadence-runner')
+        const rc = await runReactivationCadence({ brokerageId }, supabase)
+        reengaged += rc.emailed + rc.texted + rc.escalated
+      } catch (err: unknown) {
+        errors.push(`reactivation-cadence: ${err instanceof Error ? err.message : String(err)}`)
+      }
+
       results.push({
         brokerageId,
         staleCount: staleContacts?.length ?? 0,
