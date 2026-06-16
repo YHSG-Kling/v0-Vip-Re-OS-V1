@@ -19,6 +19,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { assembleEmail, type AssembledEmail } from "@/lib/kernel/communications/assemble-email"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
+import { generatePersonaCopy, type CopyGenerator } from "@/lib/kernel/ai-copy"
 
 export interface RenderStepInput {
   brokerageId:  string
@@ -31,6 +32,12 @@ export interface RenderStepInput {
     subject: string | null
     body:    string | null
   }
+  /** When set, the body is GENERATED from the contact's persona + Fair-Housing-safe enriched facts
+   *  using this as the goal — instead of token-interpolating the static template body. Opt-in
+   *  (step.ai_intent); null/absent keeps the legacy template behaviour. */
+  personaIntent?: string | null
+  /** Injectable copy generator (tests). Defaults to the real AI gateway generator. */
+  generator?: CopyGenerator
   /** Channel purpose drives which post-body additions assembleEmail makes
    *  (campaign sends get unsubscribe, transactional skips it). */
   channelPurpose?: "conversation" | "campaign" | "update" | "transactional"
@@ -58,7 +65,7 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
   // ── Load the contact + agent + brokerage details for token replacement ──
   const [{ data: contact }, agentInfo, { data: brokerage }] = await Promise.all([
     supabase.from("contacts")
-      .select("id, first_name, last_name, email, phone, contact_persona, contact_type, brokerage_id")
+      .select("id, first_name, last_name, email, phone, contact_persona, contact_type, buyer_stage, home_owner_status, last_contacted_at, brokerage_id")
       .eq("id", input.contactId)
       .maybeSingle(),
     input.agentUserId
@@ -94,9 +101,31 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
     today:             new Date().toLocaleDateString(),
   }
 
+  // PERSONA+ENRICHMENT generation (opt-in via step.ai_intent): write to THIS person from their
+  // Fair-Housing-safe enriched facts instead of token-interpolating a static template body.
+  let subjectTemplate = input.step.subject ?? ""
+  let bodyTemplate    = input.step.body ?? ""
+  if (input.personaIntent && input.personaIntent.trim()) {
+    const { buildPersonaContext } = await import("./persona-render")
+    const personaCtx = buildPersonaContext((contact ?? {}) as any, "contact")
+    const draft = await generatePersonaCopy(
+      {
+        goal: input.personaIntent,
+        facts: personaCtx.facts,
+        channel: input.step.channel,
+        persona: personaCtx.persona,
+        words: input.step.channel === "sms" ? 40 : 80,
+      },
+      { subject: input.step.subject ?? undefined, body: input.step.body ?? "" },
+      { generator: input.generator },
+    )
+    bodyTemplate = draft.body
+    if (draft.subject) subjectTemplate = draft.subject
+  }
+
   const replaced: Record<string, string> = {}
-  const subject = interpolate(input.step.subject ?? "", tokens, replaced)
-  const body    = interpolate(input.step.body ?? "", tokens, replaced)
+  const subject = interpolate(subjectTemplate, tokens, replaced)
+  const body    = interpolate(bodyTemplate, tokens, replaced)
 
   // ── Brand-voice check (advisory + hard-block on violations) ──────────────
   // Resolution order: brokerage → team → agent (most-specific wins).

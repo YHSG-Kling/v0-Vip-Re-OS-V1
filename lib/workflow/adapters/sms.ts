@@ -23,6 +23,7 @@ export const smsAdapter: ChannelAdapter = {
       contactId: contact.id,
       agentUserId,
       step: { channel: "sms", subject: null, body: step.body },
+      personaIntent: (step as any).ai_intent ?? null,
     })
 
     if (rendered.brandVoiceViolations.length > 0) {

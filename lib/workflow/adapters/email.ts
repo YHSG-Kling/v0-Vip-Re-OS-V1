@@ -23,6 +23,7 @@ export const emailAdapter: ChannelAdapter = {
       contactId: contact.id,
       agentUserId,
       step: { channel: "email", subject: step.subject, body: step.body },
+      personaIntent: (step as any).ai_intent ?? null,
       channelPurpose: "campaign",
     })
 
