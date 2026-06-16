@@ -197,6 +197,7 @@
     "test:source-health": "tsx scripts/source-health-simulator.ts",
     "test:second-opinion": "tsx scripts/second-opinion-simulator.ts",
     "test:steer-my-day": "tsx scripts/steer-my-day-simulator.ts",
+    "test:health-lifecycle": "tsx scripts/health-lifecycle-simulator.ts",
     "test:phone-scrub": "tsx scripts/phone-scrub-simulator.ts",
     "test:manager-standup": "tsx scripts/manager-standup-simulator.ts",
     "test:direct-mail-channel": "tsx scripts/direct-mail-channel-simulator.ts",
