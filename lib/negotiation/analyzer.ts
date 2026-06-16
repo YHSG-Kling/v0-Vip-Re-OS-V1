@@ -178,10 +178,14 @@ export async function buildNegotiationContext(
     }
   }
 
-  // 5. Peer patterns (Sprint 4 brokerage intelligence — negotiation-relevant)
+  // 5. Peer patterns (brokerage intelligence — negotiation-relevant). These are mined by
+  // the Negotiation-Outcome Learner (lib/brokerage-intelligence/offer-term-outcomes.ts):
+  // term-level win/loss from THIS brokerage's own resolved offers. The grounded one-liner
+  // lives in `headline`; `lift_pct` is the strength of the signal (this table has no
+  // separate summary/confidence columns — reading them silently returned nothing before).
   const { data: insights } = await supabase
     .from("brokerage_intelligence_insights")
-    .select("pattern_key, severity, summary, confidence")
+    .select("pattern_key, severity, headline, lift_pct")
     .eq("brokerage_id", brokerageId)
     .eq("status", "open")
     .in("pattern_key", [
@@ -195,8 +199,8 @@ export async function buildNegotiationContext(
     (i: Record<string, unknown>) => ({
       patternKey: i.pattern_key as string,
       severity:   (i.severity as string | null) ?? null,
-      summary:    (i.summary as string | null) ?? null,
-      confidence: (i.confidence as number | null) ?? null,
+      summary:    (i.headline as string | null) ?? null,
+      confidence: (i.lift_pct as number | null) ?? null,
     }),
   )
 

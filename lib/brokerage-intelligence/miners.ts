@@ -34,7 +34,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 
 export interface MinerInsight {
   brokerageId:             string
-  patternKey:              "response_time" | "touchpoint_cadence" | "ai_isa_lift" | "drip_engagement" | "negotiation_copilot_adoption"
+  patternKey:              "response_time" | "touchpoint_cadence" | "ai_isa_lift" | "drip_engagement" | "negotiation_copilot_adoption" | "win_rate_by_offer_strength" | "appraisal_gap_outcomes"
   headline:                string
   metricLabel:             string
   topQuartileValue:        number | null
@@ -532,6 +532,79 @@ export async function mineNegotiationCoPilotAdoption(input: MinerInput): Promise
   }
 }
 
+// ─── Miner 6: Negotiation-Outcome Learner (term-level win/loss) ───────────
+//
+// THE STARVED CONSUMER: lib/negotiation/analyzer.ts already READS
+// brokerage_intelligence_insights for `win_rate_by_offer_strength` +
+// `appraisal_gap_outcomes` to ground its counter-strategy in this brokerage's real local
+// outcomes — but nothing mined them (dead reads). This miner closes that loop: it learns,
+// from the brokerage's OWN resolved offers, which terms correlate with WINNING, and feeds
+// the negotiation copilot. PURE term math lives in offer-term-outcomes.ts (reusing the
+// canonical scoreBuyerStrength); this function does the I/O + maps to MinerInsight. HONEST:
+// only resolved offers count, and a pattern publishes only above the cohort/lift floors.
+
+export async function mineOfferTermOutcomes(input: MinerInput): Promise<MinerInsight[]> {
+  const svc = createServiceClient()
+  const lookbackDays = input.lookbackDays ?? 365
+  const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString()
+
+  const { data: offers } = await svc
+    .from("offers")
+    .select("offer_price, financing_type, down_payment_percent, contingencies, earnest_money, appraisal_gap, status, is_winning_offer, created_at")
+    .eq("brokerage_id", input.brokerageId)
+    .gte("created_at", since)
+    .limit(5000)
+
+  const { mineOfferTermPatterns } = await import("./offer-term-outcomes")
+  type Row = {
+    offer_price: number | null; financing_type: string | null; down_payment_percent: number | null
+    contingencies: unknown; earnest_money: number | null; appraisal_gap: number | null
+    status: string | null; is_winning_offer: boolean | null
+  }
+  const WON = new Set(["accepted"])
+  const LOST = new Set(["rejected", "withdrawn", "lost", "expired"])
+  const resolved = ((offers ?? []) as Row[])
+    .map((o) => {
+      const won = o.is_winning_offer === true || (o.status != null && WON.has(o.status))
+      const lost = !won && o.status != null && LOST.has(o.status)
+      if (!won && !lost) return null // unresolved (pending/submitted/countered) — excluded
+      const contingencies = Array.isArray(o.contingencies)
+        ? (o.contingencies as unknown[]).map(String)
+        : []
+      return {
+        offerPrice: Number(o.offer_price ?? 0),
+        financingType: o.financing_type ?? null,
+        downPaymentPercent: o.down_payment_percent != null ? Number(o.down_payment_percent) : null,
+        contingencies,
+        emd: o.earnest_money != null ? Number(o.earnest_money) : null,
+        appraisalGap: o.appraisal_gap != null ? Number(o.appraisal_gap) : null,
+        won,
+      }
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null)
+
+  const patterns = mineOfferTermPatterns(resolved)
+  return patterns.map((p) => ({
+    brokerageId:           input.brokerageId,
+    patternKey:            p.patternKey,
+    headline:              p.summary,
+    metricLabel:           "Offer win rate by terms (%)",
+    topQuartileValue:      p.topCohort.winRatePct,
+    medianValue:           Math.round((p.topCohort.winRatePct + p.bottomCohort.winRatePct) / 2),
+    bottomQuartileValue:   p.bottomCohort.winRatePct,
+    outcomeLabel:          "Offer acceptance rate (%)",
+    topQuartileOutcome:    p.topCohort.winRatePct,
+    medianOutcome:         Math.round((p.topCohort.winRatePct + p.bottomCohort.winRatePct) / 2),
+    bottomQuartileOutcome: p.bottomCohort.winRatePct,
+    liftPct:               p.liftPct,
+    sampleSize:            p.sampleSize,
+    supportingAgents:      [], // brokerage-market pattern, not an agent-level behavior
+    playbook:              p.playbook,
+    playbookActions:       [{ type: "open_negotiation_copilot" }],
+    severity:              severityFromLift(p.liftPct),
+  }))
+}
+
 // ─── Orchestrator: run all miners for one brokerage ──────────────────────
 
 export async function mineAllPatterns(input: MinerInput): Promise<MinerInsight[]> {
@@ -541,10 +614,13 @@ export async function mineAllPatterns(input: MinerInput): Promise<MinerInsight[]
     mineTouchpointCadence(input),
     mineDripEngagement(input),
     mineNegotiationCoPilotAdoption(input),
+    mineOfferTermOutcomes(input),
   ])
   const out: MinerInsight[] = []
   for (const r of results) {
-    if (r.status === "fulfilled" && r.value) out.push(r.value)
+    if (r.status !== "fulfilled" || !r.value) continue
+    if (Array.isArray(r.value)) out.push(...r.value)
+    else out.push(r.value)
   }
   return out
 }
