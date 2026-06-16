@@ -375,6 +375,23 @@ export async function executeListingTransition(params: {
     console.error("[executeListingTransition] fanOutKernelEvent failed", err)
   }
 
+  // MANAGER HANDOFF (bus) — when the listing reaches coming-soon or goes live, announce the Listing
+  // Concierge → Campaign Orchestrator marketing handoff on the bus so the marketing pickup is a
+  // VISIBLE coordinated team play (the kernel-event fanout above still enrolls the sequences — this
+  // complements it, never re-produces). Best-effort; never affects the transition result.
+  try {
+    const { announceListingMarketingHandoff } = await import("@/lib/intelligence/listing-marketing-handoff-runner")
+    const { data: l } = await supabase.from("listings").select("address, city, state").eq("id", params.listingId).maybeSingle()
+    const propertyAddress = l ? [(l as any).address, (l as any).city, (l as any).state].filter(Boolean).join(", ") : null
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    await announceListingMarketingHandoff({
+      brokerageId: listing.brokerage_id, listingId: params.listingId,
+      targetStage: params.targetStage as string, propertyAddress,
+    }, createServiceClient())
+  } catch (err) {
+    console.error("[executeListingTransition] marketing handoff announce failed", err)
+  }
+
   return {
     success: true,
     transition: {
