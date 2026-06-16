@@ -8,7 +8,7 @@
  *
  * Run: npx tsx scripts/relationship-health-simulator.ts   (npm run test:relationship-health)
  */
-import { scoreRelationshipHealth, bandForScore, healthPriority } from "../lib/intelligence/relationship-health"
+import { scoreRelationshipHealth, bandForScore, healthPriority, prioritizeByHealth } from "../lib/intelligence/relationship-health"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -52,6 +52,15 @@ function main() {
 
   // No-data fields don't crash and don't over-penalize.
   check("null inputs handled (no NaN)", Number.isFinite(scoreRelationshipHealth({ daysSinceLastInbound: null, replyRate: null, daysSinceLastTouch: null, enrichmentAgeDays: null }).score))
+
+  // Reprioritization: the team works the most-at-risk client FIRST, thriving last.
+  const ranked = prioritizeByHealth([
+    { contactId: "happy", input: { daysSinceLastInbound: 2, replyRate: 0.5, daysSinceLastTouch: 3, enrichmentAgeDays: 20 } },
+    { contactId: "slipping", input: { daysSinceLastInbound: null, replyRate: 0, daysSinceLastTouch: 120, enrichmentAgeDays: 500 } },
+    { contactId: "middle", input: { daysSinceLastInbound: 40, replyRate: 0.1, daysSinceLastTouch: 25, enrichmentAgeDays: 90 } },
+  ])
+  check("most-at-risk ranked first, thriving last", ranked[0].contactId === "slipping" && ranked[ranked.length - 1].contactId === "happy", JSON.stringify(ranked.map((r) => r.contactId)))
+  check("ranked items carry score + band + priority", typeof ranked[0].score === "number" && !!ranked[0].band && typeof ranked[0].priority === "number")
 
   report()
 }

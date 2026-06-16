@@ -82,3 +82,26 @@ export function healthPriority(band: HealthBand): number {
     case "thriving": return 0
   }
 }
+
+export interface HealthRankedItem {
+  contactId: string
+  score: number
+  band: HealthBand
+  priority: number
+  drivers: string[]
+}
+
+/**
+ * Rank a set of relationships so the team works the RIGHT client first: most-at-risk ahead of
+ * routine nurture, thriving last (they don't need chasing). Within a band, the lower score (closer
+ * to slipping) sorts first. Pure — the reprioritization brain the team acts on.
+ */
+export function prioritizeByHealth(items: Array<{ contactId: string; input: RelationshipHealthInput }>): HealthRankedItem[] {
+  return (items ?? [])
+    .map((it) => {
+      const h = scoreRelationshipHealth(it.input)
+      return { contactId: it.contactId, score: h.score, band: h.band, priority: healthPriority(h.band), drivers: h.drivers }
+    })
+    // higher priority first; within the same band, the lower score (more urgent) first.
+    .sort((a, b) => (b.priority - a.priority) || (a.score - b.score))
+}
