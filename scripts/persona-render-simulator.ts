@@ -47,10 +47,12 @@ async function main() {
   check("contact persona: name + buyer audience", c.persona.name === "Dana Reyes" && c.persona.audience === "buyer")
   check("contact facts include renting + buyer stage + months-since", c.facts.some(f => /renting/.test(f)) && c.facts.some(f => /buyer journey stage/.test(f)) && c.facts.some(f => /2 months/.test(f)), JSON.stringify(c.facts))
 
-  // Lead reads its OWN persona field (persona, not contact_persona).
-  const l = buildPersonaContext({ first_name: "Sam", persona: "first_time_buyer", home_owner_status: "owner" }, "lead", NOW)
+  // Lead reads its OWN persona field (persona, not contact_persona) + ownership from the
+  // enrichment_profile JSONB (leads have no home_owner_status column — lineage to the copy).
+  const l = buildPersonaContext({ first_name: "Sam", persona: "first_time_buyer", enrichment_profile: { home_owner_status: "owner", household_income: 240000 } }, "lead", NOW)
   check("lead audience is 'lead' + situation from persona field", l.persona.audience === "lead" && /first time buyer/.test(l.persona.situation ?? ""))
-  check("lead fact includes homeowner status", l.facts.some(f => /owns their home/.test(f)))
+  check("lead ownership fact comes from enrichment_profile jsonb", l.facts.some(f => /owns their home/.test(f)))
+  check("protected field INSIDE enrichment_profile (income) does NOT leak", !l.facts.join(" ").toLowerCase().includes("income") && !l.facts.join(" ").includes("240000"))
 
   // FAIR HOUSING: protected-class inputs must NOT leak into facts.
   const fh = buildPersonaContext(
@@ -78,13 +80,13 @@ async function main() {
 
   try {
     await svc.from("contacts").insert({ id: contactId, brokerage_id: brokerageId, first_name: "ZZ", last_name: "Persona", contact_type: "seller", buyer_stage: "nurture", home_owner_status: "owner", last_contacted_at: new Date("2026-03-16T12:00:00.000Z").toISOString() })
-    await svc.from("leads").insert({ id: leadId, brokerage_id: brokerageId, first_name: "ZZ", last_name: "LeadPersona", persona: "investor", email: "zz.lp@example.com" })
+    await svc.from("leads").insert({ id: leadId, brokerage_id: brokerageId, first_name: "ZZ", last_name: "LeadPersona", persona: "investor", email: "zz.lp@example.com", enrichment_profile: { home_owner_status: "owner" } })
 
     const cCopy = await generateEntityStepCopy({ svc, entity: "contact", id: contactId, intent: "re-engage", channel: "email", fallback: { subject: "f", body: "FALLBACK" }, generator: echoGen, now: NOW })
     check("contact copy is persona-grounded (seller audience + owner fact, not fallback)", /AUD:seller/.test(cCopy.body) && /owns their home/.test(cCopy.body), cCopy.body)
 
     const lCopy = await generateEntityStepCopy({ svc, entity: "lead", id: leadId, intent: "re-engage", channel: "email", fallback: { subject: "f", body: "FALLBACK" }, generator: echoGen, now: NOW })
-    check("lead copy reads the LEADS table (lead audience, not contact)", /AUD:lead/.test(lCopy.body), lCopy.body)
+    check("lead copy reads the LEADS table + enrichment_profile ownership (lineage to copy)", /AUD:lead/.test(lCopy.body) && /owns their home/.test(lCopy.body), lCopy.body)
 
     // Generator returns nothing → deterministic fallback (still produces copy, never blank).
     const nullGen = async () => null

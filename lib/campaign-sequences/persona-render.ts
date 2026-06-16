@@ -16,10 +16,13 @@ import type { CopyPersona } from "@/lib/kernel/ai-copy"
 
 export type PersonaEntity = "contact" | "lead"
 
-/** The Fair-Housing-safe fields we read per table (everything else is intentionally excluded). */
-export const CONTACT_PERSONA_COLUMNS = "first_name, last_name, contact_type, contact_persona, buyer_stage, home_owner_status, last_contacted_at"
-// NOTE: leads have NO home_owner_status / buyer_stage column — only persona + lead_temperature.
-export const LEAD_PERSONA_COLUMNS = "first_name, last_name, persona, lead_temperature, last_contacted_at"
+/** The Fair-Housing-safe fields we read per table (everything else is intentionally excluded).
+ *  enrichment_profile (jsonb) carries the PeopleData payload — leads hold home ownership ONLY in
+ *  there (no first-class column), so reading it completes the lineage raw→leads→contacts→copy. */
+export const CONTACT_PERSONA_COLUMNS = "first_name, last_name, contact_type, contact_persona, buyer_stage, home_owner_status, enrichment_profile, last_contacted_at"
+// NOTE: leads have NO home_owner_status / buyer_stage column — only persona + lead_temperature +
+// the enrichment_profile jsonb (which DOES carry home_owner_status from PeopleData).
+export const LEAD_PERSONA_COLUMNS = "first_name, last_name, persona, lead_temperature, enrichment_profile, last_contacted_at"
 
 export interface PersonaContextRow {
   first_name?: string | null
@@ -30,6 +33,8 @@ export interface PersonaContextRow {
   buyer_stage?: string | null
   lead_temperature?: string | null
   home_owner_status?: string | null
+  /** PeopleData enrichment payload (jsonb). Source of truth for leads' home ownership. */
+  enrichment_profile?: Record<string, any> | null
   last_contacted_at?: string | null
 }
 
@@ -70,8 +75,10 @@ export function buildPersonaContext(row: PersonaContextRow, entity: PersonaEntit
 
   // FACTS — property-relationship signals ONLY. (home_owner_status is a property/finance signal,
   // not a protected class; life_events / income / family size / age are deliberately omitted.)
+  // Lineage: prefer the first-class column (contacts), fall back to enrichment_profile (leads hold
+  // ownership only in the jsonb), so a lead's copy is as grounded as a contact's.
   const facts: string[] = []
-  const owner = (row.home_owner_status ?? "").toLowerCase()
+  const owner = (row.home_owner_status ?? row.enrichment_profile?.home_owner_status ?? "").toString().toLowerCase()
   if (owner === "owner" || owner === "homeowner" || owner === "own") facts.push("currently owns their home")
   else if (owner === "renter" || owner === "rent") facts.push("currently renting")
   if (entity === "contact" && row.buyer_stage) facts.push(`buyer journey stage: ${String(row.buyer_stage).replace(/_/g, " ")}`)

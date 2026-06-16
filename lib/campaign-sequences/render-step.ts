@@ -69,10 +69,10 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
   const entity = input.entity ?? "contact"
   const recipientQuery = entity === "lead"
     ? supabase.from("leads")
-        .select("id, first_name, last_name, email, phone, persona, lead_temperature, last_contacted_at")
+        .select("id, first_name, last_name, email, phone, persona, lead_temperature, enrichment_profile, last_contacted_at")
         .eq("id", input.contactId).maybeSingle()
     : supabase.from("contacts")
-        .select("id, first_name, last_name, email, phone, contact_persona, contact_type, buyer_stage, home_owner_status, last_contacted_at, brokerage_id")
+        .select("id, first_name, last_name, email, phone, contact_persona, contact_type, buyer_stage, home_owner_status, enrichment_profile, last_contacted_at, brokerage_id")
         .eq("id", input.contactId).maybeSingle()
   const [{ data: contact }, agentInfo, { data: brokerage }] = await Promise.all([
     recipientQuery,
