@@ -133,6 +133,15 @@ export async function GET(request: NextRequest) {
         errors.push(`stale-preapproval: ${err instanceof Error ? err.message : String(err)}`)
       }
 
+      // PERSONA-DRIFT REFRESH — re-queue records whose enrichment has aged past the freshness
+      // window so the next persona-grounded touch is built on CURRENT facts, not a stale snapshot.
+      try {
+        const { runPersonaDriftRefresh } = await import('@/lib/lead-pipeline/persona-drift-runner')
+        await runPersonaDriftRefresh({ brokerageId }, supabase)
+      } catch (err: unknown) {
+        errors.push(`persona-drift: ${err instanceof Error ? err.message : String(err)}`)
+      }
+
       // AI-ISA REACTIVATION — enroll quiet contacts & leads into the multi-channel reactivation
       // SEQUENCE (consolidated into the real sequencer: de-confliction + shared touch ledger +
       // response-driven stop + persona copy). Replaces the old hand-built ladders.
