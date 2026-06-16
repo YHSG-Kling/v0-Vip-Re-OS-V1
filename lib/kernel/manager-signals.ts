@@ -535,7 +535,45 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
 
     return actions.join("; ")
   },
-  // Deal Coordinator → Recruiting Manager: a deal FELL THROUGH (status='lost'). The
+  // Showing-feedback router → Listing Concierge: the week's buyer-showing feedback on an in-house
+  // listing pointed at a PLAY (price pressure / strong interest / presentation). The concierge ACTS:
+  // it proposes a GATED seller recommendation (never auto-sent) so the feedback drives the team, not
+  // a task that rots in a list. Manager-orchestrated, not linear.
+  "listing_concierge:showing_feedback_routed": async (signal, ctx) => {
+    if (!signal.contactId) return null // need the seller contact to address the recommendation
+    const p = (signal.payload ?? {}) as Record<string, unknown>
+    const play = (p.play as string | undefined) ?? null
+    const points = Array.isArray(p.coachingPoints) ? (p.coachingPoints as string[]).slice(0, 4) : []
+    const addr = (p.property_address as string | undefined) ?? "your home"
+    if (!play) return null
+
+    const copy: Record<string, { subject: string; body: string }> = {
+      price_pressure: {
+        subject: "What this week's showings are telling us",
+        body: `I've been reading the feedback from this week's showings on ${addr}, and a pattern is emerging around price. ${points.length ? `Buyers keep mentioning: ${points.join("; ")}. ` : ""}I'd like to walk you through the numbers and a strategic adjustment that gets us in front of the right buyers — do you have a few minutes this week?`,
+      },
+      strong_interest: {
+        subject: "Strong interest on your home this week",
+        body: `Good news — the showings on ${addr} are drawing real interest. ${points.length ? `Buyers are responding to: ${points.join("; ")}. ` : ""}While the attention is hot, let's talk about the best way to turn it into offers — whether that's inviting them in or holding firm. When can we connect?`,
+      },
+      presentation_coaching: {
+        subject: "A couple of quick wins before the next showings",
+        body: `The feedback on ${addr} is close — a few small presentation tweaks could tip the next buyers over. ${points.length ? `What's coming up: ${points.join("; ")}. ` : ""}These are quick, low-cost fixes. Want me to put together a short prep list?`,
+      },
+    }
+    const msg = copy[play]
+    if (!msg) return null
+
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "listing_concierge", entityType: "listing",
+      entityId: signal.entityId, recipientContactId: signal.contactId, audience: "seller",
+      subject: msg.subject, body: msg.body,
+      rationale: `SHOWING-FEEDBACK ROUTING — the week's buyer feedback routed the "${play}" play; gated seller recommendation proposed (manager-orchestrated, not a passive task).`,
+      channel: "portal",
+    }, ctx.supabase)
+    return res.ok ? `proposed a gated "${play}" seller recommendation (message ${res.id})` : null
+  },
   // autopsy has already classified the failure reason and proposed a gated coaching
   // brief (proposeClientMessage). The Recruiting Manager's handler here surfaces a
   // NOTIFICATION to the broker/team-lead so the coaching prompt is never invisible —

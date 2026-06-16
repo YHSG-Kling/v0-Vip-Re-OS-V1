@@ -42,6 +42,7 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
   agent_stalling:          { consumers: ["recruiting_manager"],                  disposition: "handled", kind: "escalation", what: "a recruited agent is stalling on production — flag for a check-in" },
   deal_autopsy_completed:  { consumers: ["recruiting_manager"],                  disposition: "handled", kind: "alert",      what: "a won/lost-deal autopsy finished — feed the coaching/recruiting learning" },
   contact_withdrawn:       { consumers: ["sphere_of_influence"],                 disposition: "handled", kind: "alert",      what: "every channel revoked + no new contact info — mark withdrawn, inform the agent, preserve history" },
+  showing_feedback_routed: { consumers: ["listing_concierge"],                   disposition: "handled", kind: "update",     what: "the week's buyer-showing feedback routed a play (price pressure / strong interest / presentation) — concierge proposes a gated seller recommendation (manager-orchestrated, not a passive task)" },
 
   // ── Feed-only — surfaced on the Command Center for a HUMAN (no automated consumer by design) ──
   creative_fatigue:               { consumers: [], disposition: "feed_only", kind: "alert",      what: "an ad creative's performance is fatiguing — refresh advised" },

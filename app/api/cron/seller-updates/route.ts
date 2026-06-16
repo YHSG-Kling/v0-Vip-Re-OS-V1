@@ -93,6 +93,30 @@ export async function GET(req: NextRequest) {
             notes: sentiment ? JSON.stringify(sentiment) : null,
           })
 
+          // MANAGER-ORCHESTRATED, NOT LINEAR — when the feedback points at a play (price pressure /
+          // strong interest / presentation), hand it to the Listing Concierge over the bus so it
+          // proposes a GATED seller recommendation. The activity above is the record; this is the team
+          // acting. Best-effort; these are in-house listings by construction.
+          if (sentiment && sentiment.feedbackCount > 0) {
+            try {
+              const { routeAndPublishShowingFeedback } = await import("@/lib/intelligence/showing-feedback-routing-runner")
+              await routeAndPublishShowingFeedback({
+                brokerageId: listing.brokerage_id, listingId: listing.id, sellerContactId,
+                propertyAddress, isInHouse: true,
+                summary: {
+                  pricingPressure: sentiment.pricingPressure,
+                  objections: sentiment.objections,
+                  positiveThemes: sentiment.positiveThemes,
+                  feedbackCount: sentiment.feedbackCount,
+                  highInterestCount: sentiment.highInterestCount,
+                  lowInterestCount: sentiment.lowInterestCount,
+                },
+              }, supabase)
+            } catch (err) {
+              console.warn(`[seller-updates] showing-feedback routing failed for ${listing.id}:`, err)
+            }
+          }
+
           processed++
         } catch (err: any) {
           skipped++
