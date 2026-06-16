@@ -53,6 +53,12 @@ export async function GET(request: NextRequest) {
         await runSequenceCopyLearning(b.id, svc)
       } catch { /* best-effort — never fails the source learner */ }
 
+      // CHANNEL-ORDER learning — recommend the lead channel per brokerage by real reply rate (advisory).
+      try {
+        const { runChannelOrderLearning } = await import("@/lib/campaign-sequences/channel-order-runner")
+        await runChannelOrderLearning(b.id, svc)
+      } catch { /* best-effort */ }
+
       const scored = await loadSourceConversions(b.id, {}, svc)
       if (scored.ranked.length === 0) continue
 
