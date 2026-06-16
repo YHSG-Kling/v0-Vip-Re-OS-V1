@@ -11,7 +11,7 @@ export const smsAdapter: ChannelAdapter = {
   channel: "sms",
 
   async execute(ctx: StepContext): Promise<StepResult> {
-    const { contact, step, brokerageId, agentUserId } = ctx
+    const { contact, step, brokerageId, agentUserId, entity } = ctx
 
     if (!contact?.phone) {
       return { status: "error", providerKey: "sms", error: "No phone on contact" }
@@ -22,6 +22,7 @@ export const smsAdapter: ChannelAdapter = {
       brokerageId,
       contactId: contact.id,
       agentUserId,
+      entity: entity ?? "contact",
       step: { channel: "sms", subject: null, body: step.body },
       personaIntent: (step as any).ai_intent ?? null,
     })

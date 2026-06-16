@@ -32,7 +32,10 @@ export interface RenderStepInput {
     subject: string | null
     body:    string | null
   }
-  /** When set, the body is GENERATED from the contact's persona + Fair-Housing-safe enriched facts
+  /** Recipient table — "lead" reads the leads row for tokens + persona (leads use email/direct mail
+   *  only and skip contact-specific signature assembly). Defaults to "contact". */
+  entity?: "contact" | "lead"
+  /** When set, the body is GENERATED from the person's persona + Fair-Housing-safe enriched facts
    *  using this as the goal — instead of token-interpolating the static template body. Opt-in
    *  (step.ai_intent); null/absent keeps the legacy template behaviour. */
   personaIntent?: string | null
@@ -62,12 +65,17 @@ export interface RenderedStep {
 export async function renderSequenceStep(input: RenderStepInput): Promise<RenderedStep> {
   const supabase = createServiceClient()
 
-  // ── Load the contact + agent + brokerage details for token replacement ──
+  // ── Load the recipient (contact OR lead) + agent + brokerage for token replacement ──
+  const entity = input.entity ?? "contact"
+  const recipientQuery = entity === "lead"
+    ? supabase.from("leads")
+        .select("id, first_name, last_name, email, phone, persona, lead_temperature, last_contacted_at")
+        .eq("id", input.contactId).maybeSingle()
+    : supabase.from("contacts")
+        .select("id, first_name, last_name, email, phone, contact_persona, contact_type, buyer_stage, home_owner_status, last_contacted_at, brokerage_id")
+        .eq("id", input.contactId).maybeSingle()
   const [{ data: contact }, agentInfo, { data: brokerage }] = await Promise.all([
-    supabase.from("contacts")
-      .select("id, first_name, last_name, email, phone, contact_persona, contact_type, buyer_stage, home_owner_status, last_contacted_at, brokerage_id")
-      .eq("id", input.contactId)
-      .maybeSingle(),
+    recipientQuery,
     input.agentUserId
       ? supabase.from("users")
           .select("id, first_name, last_name, email, phone, team_id")
@@ -107,7 +115,7 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
   let bodyTemplate    = input.step.body ?? ""
   if (input.personaIntent && input.personaIntent.trim()) {
     const { buildPersonaContext } = await import("./persona-render")
-    const personaCtx = buildPersonaContext((contact ?? {}) as any, "contact")
+    const personaCtx = buildPersonaContext((contact ?? {}) as any, entity)
     const draft = await generatePersonaCopy(
       {
         goal: input.personaIntent,
@@ -134,16 +142,17 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
     teamId:       (agentInfo as any)?.team_id ?? undefined,
     actorUserId:  input.agentUserId ?? undefined,
     actorRole:    "agent",
-    journeyType:  contact?.contact_type === "seller" ? "seller" : "buyer",
-    persona:      contact?.contact_persona ?? "other",
+    journeyType:  (contact as any)?.contact_type === "seller" ? "seller" : "buyer",
+    persona:      (contact as any)?.contact_persona ?? "other",
     messageType:  input.step.channel === "sms" ? "sms" : "email",
     content:      body,
   })
 
   // ── For email: assemble signature + unsubscribe + legal ──────────────────
   if (input.step.channel === "email") {
-    if (!input.agentUserId) {
-      // No assigned agent — skip kernel assembly (no signature available)
+    if (!input.agentUserId || entity === "lead") {
+      // No assigned agent, or a LEAD recipient — skip contact-keyed kernel assembly (no contact
+      // signature/unsubscribe record to assemble against). Brand voice + persona copy still apply.
       return {
         subject,
         htmlBody:             plainToHtml(body),

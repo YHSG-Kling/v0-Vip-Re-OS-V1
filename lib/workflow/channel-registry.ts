@@ -22,6 +22,9 @@ export interface StepContext {
   step: StepRow
   /** Resolved contact record (null for non-contact enrollments) */
   contact: ContactRow | null
+  /** Which table the recipient came from — "lead" enrollments load the leads row into `contact`
+   *  (shape-compatible) and restrict to the approved pre-consent channels. Defaults to "contact". */
+  entity?: "contact" | "lead"
   brokerageId: string
   /** Auth user ID of the agent who created the sequence */
   agentUserId: string | null

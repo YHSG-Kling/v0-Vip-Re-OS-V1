@@ -11,10 +11,10 @@ export const emailAdapter: ChannelAdapter = {
   channel: "email",
 
   async execute(ctx: StepContext): Promise<StepResult> {
-    const { contact, step, brokerageId, agentUserId } = ctx
+    const { contact, step, brokerageId, agentUserId, entity } = ctx
 
     if (!contact?.email) {
-      return { status: "error", providerKey: "email", error: "No email on contact" }
+      return { status: "error", providerKey: "email", error: "No email on recipient" }
     }
 
     const { renderSequenceStep } = await import("@/lib/campaign-sequences/render-step")
@@ -22,6 +22,7 @@ export const emailAdapter: ChannelAdapter = {
       brokerageId,
       contactId: contact.id,
       agentUserId,
+      entity: entity ?? "contact",
       step: { channel: "email", subject: step.subject, body: step.body },
       personaIntent: (step as any).ai_intent ?? null,
       channelPurpose: "campaign",

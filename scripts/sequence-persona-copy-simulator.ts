@@ -50,6 +50,7 @@ async function main() {
   const brokerageId = (brokerage as any).id
   const uuid = () => (globalThis.crypto ?? require("node:crypto").webcrypto).randomUUID()
   const contactId = uuid()
+  const leadId = uuid()
   // Deterministic generator: echo persona + facts so we can prove enrichment reached the copy.
   const echoGen = async (req: { facts: string[]; persona: { audience?: string | null } }) =>
     ({ subject: "ZZ subject", body: `AUD:${req.persona.audience}|FACTS:${req.facts.join(";")}` })
@@ -74,8 +75,23 @@ async function main() {
     })
     check("no ai_intent → static template body used", /STATIC TEMPLATE BODY for ZZ/.test(tmpl.htmlBody), tmpl.htmlBody.slice(0, 200))
     check("no ai_intent → token interpolation still fires ({{first_name}})", /Hi ZZ/.test(tmpl.subject ?? ""))
+
+    // LEAD entity → renderSequenceStep reads the LEADS table (was contacts-only, so leads couldn't render).
+    await svc.from("leads").insert({ id: leadId, brokerage_id: brokerageId, first_name: "ZZ", last_name: "RenderLead", email: "zz.rl@example.com", persona: "investor", last_contacted_at: new Date(Date.now() - 60 * 86_400_000).toISOString() })
+    const leadRender = await renderSequenceStep({
+      brokerageId, contactId: leadId, agentUserId: null, entity: "lead",
+      step: { channel: "email", subject: "S", body: "T" },
+      personaIntent: "re-engage", generator: echoGen as any,
+    })
+    check("lead entity → body generated from the LEADS row (lead audience, not contact)", /AUD:lead/.test(leadRender.htmlBody), leadRender.htmlBody.slice(0, 200))
+    const leadTmpl = await renderSequenceStep({
+      brokerageId, contactId: leadId, agentUserId: null, entity: "lead",
+      step: { channel: "email", subject: "Hi {{first_name}}", body: "lead template {{first_name}}" },
+    })
+    check("lead entity → tokens resolve from the leads row", /lead template ZZ/.test(leadTmpl.htmlBody), leadTmpl.htmlBody.slice(0, 120))
   } finally {
     await svc.from("contacts").delete().eq("id", contactId).then(() => {}, () => {})
+    await svc.from("leads").delete().eq("id", leadId).then(() => {}, () => {})
     const { count } = await svc.from("contacts").select("id", { count: "exact", head: true }).eq("id", contactId)
     check("cleanup: seeded contact removed", (count ?? 0) === 0)
   }

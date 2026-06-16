@@ -244,10 +244,11 @@ export async function executeSequenceStep(
     if (decision === "send_and_claim") claimFirstTouch = true
   }
 
-  // ── Step 6: Load contact + agent ───────────────────────────────────────────
+  // ── Step 6: Load recipient (contact OR lead) + agent ───────────────────────
   let contact: Record<string, any> | null = null
   let agentUserId: string | null = null
   let agentId: string | null = null
+  const recipientEntity: "contact" | "lead" = contactId ? "contact" : "lead"
 
   if (contactId) {
     const { data } = await supabase
@@ -262,6 +263,28 @@ export async function executeSequenceStep(
       const { data: a } = await supabase
         .from("agents").select("user_id").eq("id", data.agent_id).maybeSingle()
       agentUserId = a?.user_id ?? null
+    }
+  } else if (enrollment.lead_id) {
+    // LEAD enrollment — the executor used to never load the recipient, so a lead's email/direct-mail
+    // step silently failed ("No email on contact"). Load the lead into the contact-shaped slot (its
+    // mailing_* fields map onto the address fields the adapters read).
+    const { data } = await supabase
+      .from("leads")
+      .select("id, first_name, last_name, email, phone, mailing_address, mailing_city, mailing_state, mailing_zip, agent_id")
+      .eq("id", enrollment.lead_id)
+      .maybeSingle()
+    if (data) {
+      contact = {
+        id: data.id, first_name: data.first_name, last_name: data.last_name,
+        email: data.email, phone: data.phone,
+        mailing_address: data.mailing_address, city: data.mailing_city, state: data.mailing_state, zip_code: data.mailing_zip,
+        agent_id: data.agent_id,
+      }
+      if (data.agent_id) {
+        agentId = data.agent_id
+        const { data: a } = await supabase.from("agents").select("user_id").eq("id", data.agent_id).maybeSingle()
+        agentUserId = a?.user_id ?? null
+      }
     }
   }
 
@@ -297,6 +320,7 @@ export async function executeSequenceStep(
     enrollmentId,
     step,
     contact: contact as any,
+    entity: recipientEntity,
     brokerageId,
     agentUserId,
     agentId,

@@ -78,13 +78,13 @@ async function main() {
 
   try {
     await svc.from("contacts").insert({ id: contactId, brokerage_id: brokerageId, first_name: "ZZ", last_name: "Persona", contact_type: "seller", buyer_stage: "nurture", home_owner_status: "owner", last_contacted_at: new Date("2026-03-16T12:00:00.000Z").toISOString() })
-    await svc.from("leads").insert({ id: leadId, brokerage_id: brokerageId, first_name: "ZZ", last_name: "LeadPersona", persona: "investor", home_owner_status: "owner", email: "zz.lp@example.com" })
+    await svc.from("leads").insert({ id: leadId, brokerage_id: brokerageId, first_name: "ZZ", last_name: "LeadPersona", persona: "investor", email: "zz.lp@example.com" })
 
     const cCopy = await generateEntityStepCopy({ svc, entity: "contact", id: contactId, intent: "re-engage", channel: "email", fallback: { subject: "f", body: "FALLBACK" }, generator: echoGen, now: NOW })
     check("contact copy is persona-grounded (seller audience + owner fact, not fallback)", /AUD:seller/.test(cCopy.body) && /owns their home/.test(cCopy.body), cCopy.body)
 
     const lCopy = await generateEntityStepCopy({ svc, entity: "lead", id: leadId, intent: "re-engage", channel: "email", fallback: { subject: "f", body: "FALLBACK" }, generator: echoGen, now: NOW })
-    check("lead copy reads the LEADS table (lead audience + owner fact)", /AUD:lead/.test(lCopy.body) && /owns their home/.test(lCopy.body), lCopy.body)
+    check("lead copy reads the LEADS table (lead audience, not contact)", /AUD:lead/.test(lCopy.body), lCopy.body)
 
     // Generator returns nothing → deterministic fallback (still produces copy, never blank).
     const nullGen = async () => null

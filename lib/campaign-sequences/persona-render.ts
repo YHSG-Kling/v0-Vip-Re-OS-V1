@@ -18,7 +18,8 @@ export type PersonaEntity = "contact" | "lead"
 
 /** The Fair-Housing-safe fields we read per table (everything else is intentionally excluded). */
 export const CONTACT_PERSONA_COLUMNS = "first_name, last_name, contact_type, contact_persona, buyer_stage, home_owner_status, last_contacted_at"
-export const LEAD_PERSONA_COLUMNS = "first_name, last_name, persona, lead_temperature, home_owner_status, last_contacted_at"
+// NOTE: leads have NO home_owner_status / buyer_stage column — only persona + lead_temperature.
+export const LEAD_PERSONA_COLUMNS = "first_name, last_name, persona, lead_temperature, last_contacted_at"
 
 export interface PersonaContextRow {
   first_name?: string | null
