@@ -139,7 +139,7 @@ export async function GET(request: NextRequest) {
       try {
         const { runReactivationCadence } = await import('@/lib/lead-pipeline/reactivation-cadence-runner')
         const rc = await runReactivationCadence({ brokerageId }, supabase)
-        reengaged += rc.emailed + rc.texted + rc.escalated
+        reengaged += rc.emailed + rc.texted + rc.mailed + rc.escalated
       } catch (err: unknown) {
         errors.push(`reactivation-cadence: ${err instanceof Error ? err.message : String(err)}`)
       }

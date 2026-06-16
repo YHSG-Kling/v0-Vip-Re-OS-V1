@@ -85,7 +85,9 @@ async function main() {
   const agentId = uuid()
 
   try {
-    await svc.from("contacts").insert({ id: contactId, brokerage_id: brokerageId, first_name: "ZZ", last_name: "Dormant", contact_type: "lead", agent_id: agentId, dnc_status: false, last_contacted_at: dormantSince(8) })
+    // Seed SMS-viable (phone + tcpa consent) so step 2 resolves to the SMS rung (vs the
+    // channel-by-disposition direct-mail/email fallback).
+    await svc.from("contacts").insert({ id: contactId, brokerage_id: brokerageId, first_name: "ZZ", last_name: "Dormant", contact_type: "lead", agent_id: agentId, dnc_status: false, phone: "+15555550199", tcpa_consent: true, sms_opt_out: false, last_contacted_at: dormantSince(8) })
 
     const r1 = await runReactivationCadence({ brokerageId, now: NOW, copyGenerator: stampGen }, svc)
     check("8d → an email rung is proposed", r1.emailed >= 1, JSON.stringify(r1))

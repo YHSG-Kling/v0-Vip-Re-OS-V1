@@ -30,6 +30,7 @@ export interface ReactivationRunResult {
   scanned: number
   emailed: number
   texted: number
+  mailed: number
   escalated: number
   held: number
 }
@@ -39,14 +40,14 @@ const STEP_KEY = (contactId: string, step: number) => `REACTIVATION step:${step}
 export async function runReactivationCadence(input: ReactivationRunInput, client?: Svc): Promise<ReactivationRunResult> {
   const svc = client ?? createServiceClient()
   const now = input.now ?? new Date().toISOString()
-  const out: ReactivationRunResult = { scanned: 0, emailed: 0, texted: 0, escalated: 0, held: 0 }
+  const out: ReactivationRunResult = { scanned: 0, emailed: 0, texted: 0, mailed: 0, escalated: 0, held: 0 }
   const nowMs = new Date(now).getTime()
 
   // Assigned, contactable, re-engage-allowed contacts. (last_contacted_at IS a live column —
   // the legacy stale-contact cron's created_at proxy predates it; this cadence uses the real one.)
   const { data: contacts } = await svc
     .from("contacts")
-    .select("id, first_name, last_name, contact_type, agent_id, status, dnc_status, isa_reengage_allowed, last_contacted_at, created_at, next_followup_at")
+    .select("id, first_name, last_name, contact_type, agent_id, status, dnc_status, isa_reengage_allowed, last_contacted_at, created_at, next_followup_at, phone, tcpa_consent, sms_opt_out, mailing_address_verified, direct_mail_opt_out")
     .eq("brokerage_id", input.brokerageId)
     .not("agent_id", "is", null)
     .eq("dnc_status", false)
@@ -54,6 +55,13 @@ export async function runReactivationCadence(input: ReactivationRunInput, client
     .neq("status", "inactive")
     .not("isa_reengage_allowed", "eq", false)
     .limit(input.limit ?? 200)
+
+  // One active reactivation preset for the brokerage — enables the direct-mail rung when a
+  // contact's SMS isn't viable but they have a deliverable address (channel-by-disposition).
+  const { data: preset } = await svc
+    .from("direct_mail_presets").select("id")
+    .eq("brokerage_id", input.brokerageId).eq("is_active", true).limit(1).maybeSingle()
+  const presetId = (preset as any)?.id ?? null
 
   for (const row of (contacts ?? []) as any[]) {
     // Honor an explicit future-intent date — if they asked to be reached later, don't nag yet.
@@ -89,22 +97,40 @@ export async function runReactivationCadence(input: ReactivationRunInput, client
     const firstName = row.first_name ?? null
     if (plan.action === "email" || plan.action === "sms") {
       const step = plan.step as 1 | 2
-      const channel = plan.action
+      // CHANNEL-BY-DISPOSITION (contacts are full-multichannel): step 1 is email; step 2 prefers
+      // a direct SMS, but when SMS isn't viable (no consented/reachable line) it reaches for
+      // DIRECT MAIL if there's a deliverable address + an active preset, else falls back to email.
+      let channel: "email" | "sms" | "direct_mail" = plan.action
+      if (plan.action === "sms") {
+        const smsViable = !!row.phone && row.tcpa_consent === true && row.sms_opt_out !== true && row.dnc_status !== true
+        const mailViable = !!presetId && row.mailing_address_verified === true && row.direct_mail_opt_out !== true
+        channel = smsViable ? "sms" : (mailViable ? "direct_mail" : "email")
+      }
       const fallback = reactivationFallbackCopy(step, firstName)
       const audience = reactivationAudience(row.contact_type)
-      const { loadContactPersona } = await import("@/lib/kernel/ai-copy")
-      const persona = await loadContactPersona(svc, row.id).catch(() => ({ audience }))
-      const draft = await generatePersonaCopy(
-        {
-          goal: `a brief, warm, no-pressure re-engagement ${channel === "email" ? "email" : "text"} to a contact who has gone quiet for ${daysDormant} days — invite them to pick back up, make it easy to say "later"`,
-          facts: [fallback.body],
-          channel: channel === "email" ? "email" : "sms",
-          persona: { ...persona, situation: "dormant contact reactivation" },
-          words: channel === "email" ? 80 : 40,
-        },
-        { subject: fallback.subject, body: fallback.body },
-        { generator: input.copyGenerator },
-      )
+
+      let subject = fallback.subject
+      let body = fallback.body
+      if (channel === "direct_mail") {
+        // The preset carries the locked copy; the approve path reads 'preset:<id>' from subject.
+        subject = `preset:${presetId}`
+      } else {
+        const { loadContactPersona } = await import("@/lib/kernel/ai-copy")
+        const persona = await loadContactPersona(svc, row.id).catch(() => ({ audience }))
+        const draft = await generatePersonaCopy(
+          {
+            goal: `a brief, warm, no-pressure re-engagement ${channel === "email" ? "email" : "text"} to a contact who has gone quiet for ${daysDormant} days — invite them to pick back up, make it easy to say "later"`,
+            facts: [fallback.body],
+            channel: channel === "email" ? "email" : "sms",
+            persona: { ...persona, situation: "dormant contact reactivation" },
+            words: channel === "email" ? 80 : 40,
+          },
+          { subject: fallback.subject, body: fallback.body },
+          { generator: input.copyGenerator },
+        )
+        subject = draft.subject ?? fallback.subject
+        body = draft.body
+      }
       const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
       const res = await proposeClientMessage(
         {
@@ -114,14 +140,14 @@ export async function runReactivationCadence(input: ReactivationRunInput, client
           entityId: row.id,
           recipientContactId: row.id,
           audience,
-          subject: draft.subject ?? fallback.subject,
-          body: draft.body,
-          rationale: `${STEP_KEY(row.id, step)} — ${plan.reason}`,
+          subject,
+          body,
+          rationale: `${STEP_KEY(row.id, step)} — ${plan.reason} (channel:${channel})`,
           channel,
         },
         svc,
       )
-      if (res.ok) { if (channel === "email") out.emailed++; else out.texted++ }
+      if (res.ok) { if (channel === "email") out.emailed++; else if (channel === "sms") out.texted++; else out.mailed++ }
     } else if (plan.action === "escalate") {
       // Hand to the responsible human + raise the bus signal that marks step 3 done (→ HOLD).
       try {
