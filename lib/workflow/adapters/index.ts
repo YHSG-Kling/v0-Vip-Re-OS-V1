@@ -116,6 +116,35 @@ const aiCallAdapter: ChannelAdapter = {
   },
 }
 
+// COMMISSION VIDEO adapter — a sequence step that commissions the VIDEO DIRECTOR's full assembly
+// (Remotion composition + persona hook + b-roll + tracked QR), staged for the render cron + human
+// approval. Distinct from the lightweight D-ID `video` step: this is the Asset Manager's library →
+// Video Director (commissionVideo) → render path. Leads have no agent → skipped (commission needs
+// an agent for the QR/contact attribution). The downstream send is a later step referencing the
+// staged project; commissioning is this step's deliverable (output carries the project id).
+const commissionVideoAdapter: ChannelAdapter = {
+  channel: "commission_video",
+  async execute(ctx: StepContext): Promise<StepResult> {
+    const { contact, step, brokerageId, agentUserId, entity } = ctx
+    if (entity === "lead" || !agentUserId) {
+      return { status: "skipped", providerKey: "video-director", error: "commission_video needs an assigned agent (skipped for unowned leads)" }
+    }
+    const { commissionSituationForStep } = await import("@/lib/video/commission-situation")
+    const situation = commissionSituationForStep(step as any, { contactId: contact?.id as string | undefined })
+    const { commissionVideo } = await import("@/lib/video/video-director")
+    const r = await commissionVideo(situation as any, { brokerageId, agentUserId, contactId: (contact?.id as string) ?? null })
+    // staged / already_staged = the Director did its job; blocked (compliance) = skip; else error.
+    const status: StepResult["status"] = r.ok ? "sent" : (r.status === "blocked" ? "skipped" : "error")
+    return {
+      status,
+      providerKey: "video-director",
+      messageId: r.videoProjectId,
+      error: r.ok ? undefined : (r.reason ?? (r.violations?.join("; "))),
+      output: { video_project_id: r.videoProjectId ?? null, composition_id: r.compositionId ?? null, commission_status: r.status },
+    }
+  },
+}
+
 // ─── Register all adapters ────────────────────────────────────────────────────
 
 registry.register(emailAdapter)
@@ -141,5 +170,6 @@ registry.register(addToSegmentAdapter)
 registry.register(removeFromCampaignAdapter)
 registry.register(inAppAdapter)
 registry.register(aiCallAdapter)
+registry.register(commissionVideoAdapter)
 
 export { registry }
