@@ -645,12 +645,13 @@ export interface CommissionOpts {
   /** MLS-clean cut → the outro carries NO agent QR (mirrors QrOutroBadge). */
   mlsClean?: boolean
   /**
-   * OPTIONAL self-improving seam. When an injected/loaded scored-outcomes map is
-   * supplied, commissionVideo consults selectVideoFormatLearned — which still
-   * returns the deterministic default unless REAL per-brokerage outcomes clear the
-   * sample+margin gate (lib/video/format-learning). Omitted → current behavior
-   * EXACTLY (the pure expert default). Pass `true` to load outcomes for the
-   * brokerage on-read; pass a ScoredFormats to inject a precomputed map (tests).
+   * SELF-IMPROVING seam — now ON BY DEFAULT so every Director commission consults the
+   * brokerage's REAL video outcomes (qr_scan_events + social engagement). It stays
+   * HONEST: selectVideoFormatLearned returns the deterministic expert default unless a
+   * competing format clears the sample+margin gate (lib/video/format-learning), so with
+   * empty/thin data the choice is byte-identical to the pure default. Pass `false` to
+   * FREEZE the expert default (no DB read); pass a ScoredFormats to inject a precomputed
+   * map (tests). The chosen source + WHY are stamped onto video_metadata for audit.
    */
   formatLearning?: boolean | ScoredFormats
 }
@@ -685,22 +686,23 @@ export async function commissionVideo(
   const svc: AnyClient = client ?? createServiceClient()
 
   // 1. Resolve the format + assembly structure (pure).
-  //    By default this is the deterministic expert choice. When formatLearning is
-  //    supplied, we consult the SELF-IMPROVING layer — which still returns the
-  //    default unless REAL per-brokerage outcomes clear the sample+margin gate. The
-  //    chosen source + WHY are stamped onto video_metadata for auditability.
+  //    Learning is ON BY DEFAULT: we consult the SELF-IMPROVING layer, which still
+  //    returns the expert default unless REAL per-brokerage outcomes clear the
+  //    sample+margin gate (so empty/thin data === the pure default). Pass
+  //    formatLearning:false to FREEZE the default (no DB read). The chosen source +
+  //    WHY are stamped onto video_metadata for auditability.
   let format = selectVideoFormat(situation)
   let formatSource: "default" | "learned" = "default"
-  let formatWhy = "Expert default (no learning consulted)."
+  let formatWhy = "Expert default (learning consulted; not enough data to override)."
   let learnedMood: MusicMood | null = null
-  if (opts.formatLearning) {
+  if (opts.formatLearning !== false) {
     try {
       let scored: ScoredFormats
-      if (opts.formatLearning === true) {
+      if (opts.formatLearning && opts.formatLearning !== true) {
+        scored = opts.formatLearning // injected precomputed map (tests)
+      } else {
         const { loadFormatOutcomes } = await import("@/lib/video/format-learning")
         scored = await loadFormatOutcomes(opts.brokerageId, svc)
-      } else {
-        scored = opts.formatLearning
       }
       const learned = selectVideoFormatLearned(situation, scored)
       format = learned.format
@@ -709,8 +711,11 @@ export async function commissionVideo(
       if (learned.formatSource === "learned") learnedMood = learned.mood
     } catch (e) {
       // Learning is an enhancement, never a gate — fall back to the expert default.
+      formatWhy = "Expert default (format-learning read failed; default kept)."
       console.warn("[video-director] format-learning consult failed; using default:", (e as Error).message)
     }
+  } else {
+    formatWhy = "Expert default (learning disabled for this commission)."
   }
   const spec = assemblySpec(situation, format)
 
