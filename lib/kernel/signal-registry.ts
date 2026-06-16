@@ -74,6 +74,7 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
   farm_play_convened:             { consumers: [], disposition: "feed_only", kind: "escalation", what: "a farm play convened the managers around a neighborhood opportunity" },
   bidding_war_convened:           { consumers: [], disposition: "feed_only", kind: "escalation", what: "a bidding-war concierge convened the team around multiple offers" },
   first_touch_claimed:            { consumers: [], disposition: "feed_only", kind: "handoff",    what: "a manager claimed the first touch on a new lead (the bullpen race resolved)" },
+  open_house_lead_handoff:        { consumers: [], disposition: "feed_only", kind: "handoff",    what: "the hot, unrepresented buyer leads from a Listing Concierge open house handed to the AI ISA to qualify — the seller-event → buyer-pipeline bridge, made visible on the bus" },
   agent_overloaded:               { consumers: [], disposition: "feed_only", kind: "escalation", what: "capacity guardian flagged an agent's load — surfaced for the broker (advisory)" },
 }
 

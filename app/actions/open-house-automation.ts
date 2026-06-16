@@ -703,13 +703,40 @@ export async function processEventFollowups(eventId: string) {
     // Calculate lead scores
     for (const attendee of attendees) {
       const leadScore = calculateAttendeeLeadScore(attendee)
-
+      attendee.ai_lead_score = leadScore // keep the in-memory copy fresh for the handoff below
       await supabase.from("open_house_attendees").update({ ai_lead_score: leadScore }).eq("id", attendee.id)
     }
 
     // Segment and trigger follow-ups
     const hotLeads = attendees.filter((a: any) => a.ai_lead_score >= 70)
     const warmLeads = attendees.filter((a: any) => a.ai_lead_score >= 40 && a.ai_lead_score < 70)
+
+    // CROSS-MANAGER BRIDGE — hand the hot, unrepresented buyers from this Listing Concierge event to
+    // the AI ISA over the bus so they enter the buyer pipeline instead of dying as a dashboard count.
+    // Manager-orchestrated; best-effort (never fails the follow-up).
+    try {
+      const { data: ev } = await supabase
+        .from("open_houses")
+        .select("brokerage_id, listing_id, listings(address, city, state)")
+        .eq("id", eventId)
+        .maybeSingle()
+      const brokerageId = (ev as any)?.brokerage_id ?? null
+      if (brokerageId) {
+        const l = (ev as any)?.listings
+        const propertyAddress = l ? [l.address, l.city, l.state].filter(Boolean).join(", ") : null
+        const { handoffOpenHouseLeads } = await import("@/lib/intelligence/open-house-lead-routing-runner")
+        await handoffOpenHouseLeads({
+          brokerageId, eventId, listingId: (ev as any)?.listing_id ?? null, propertyAddress,
+          attendees: attendees.map((a: any) => ({
+            id: a.id, ai_lead_score: a.ai_lead_score, interest_level: a.interest_level,
+            name: a.name ?? a.attendee_name, email: a.email, phone: a.phone,
+            contact_id: a.contact_id, has_agent: a.has_agent ?? a.working_with_agent ?? false,
+          })),
+        }, supabase as any)
+      }
+    } catch (err) {
+      console.warn("[open-house] hot-lead handoff failed:", err)
+    }
 
     // Generate analytics
     await generateEventAnalytics(eventId)
