@@ -32,6 +32,8 @@ export async function GET(req: NextRequest) {
   const errors: string[] = []
   let processed = 0
   let skipped = 0
+  let reciprocityFlagged = 0
+  let reciprocityLinked = 0
 
   try {
     const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
@@ -66,6 +68,19 @@ export async function GET(req: NextRequest) {
           errors.push(`Tx ${tx.id}: ${err.message}`)
         }
       }
+    }
+
+    // REFERRAL-RECIPROCITY TRACKER (Sphere) — per brokerage, flag one-sided partner
+    // relationships (they refer us, we don't reciprocate) so the agent protects their best
+    // referrers. Honest: outbound is only counted for partners linked to a vendor.
+    const { runReferralReciprocity } = await import("@/lib/referrals/referral-reciprocity-runner")
+    const { data: brokerages } = await supabase.from("brokerages").select("id").is("deleted_at", null)
+    for (const b of (brokerages ?? []) as Array<{ id: string }>) {
+      try {
+        const rec = await runReferralReciprocity({ brokerageId: b.id }, supabase)
+        reciprocityFlagged += rec.escalated
+        reciprocityLinked += rec.linked
+      } catch (e: any) { errors.push(`reciprocity ${b.id}: ${e?.message ?? String(e)}`) }
     }
   } catch (err: any) {
     errors.push(`Referral asks cron failed: ${err.message}`)
