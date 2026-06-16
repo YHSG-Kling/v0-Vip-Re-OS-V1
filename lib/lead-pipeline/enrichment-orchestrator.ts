@@ -94,7 +94,7 @@ export async function processEnrichmentQueue(
       const table = entityType === 'lead' ? 'leads' : 'contacts'
       const { data: entity, error: entityError } = await supabase
         .from(table)
-        .select('id, first_name, last_name, email, phone')
+        .select('id, first_name, last_name, email, phone, enrichment_profile')
         .eq('id', entityId)
         .single()
 
@@ -269,6 +269,12 @@ export async function processEnrichmentQueue(
           // stays in enrichment_profile.phones for audit.
           const enrichedAt = new Date().toISOString()
           const contactEnrichmentColumns = peopleDataProfileToContactColumns(profile, { enrichedAt })
+          // RE-ENRICH → RE-ENGAGE HANDOFF: when a refresh returns a MATERIALLY changed fact (new
+          // homeowner, job change, new life event), stamp last_life_event_detected so the EXISTING
+          // life-event detector (referral-radar) treats it as a fresh opportunity for the right
+          // manager — not just a quiet row update. Reuses the detector; no duplicate life-event logic.
+          const { materialEnrichmentChange } = await import('@/lib/lead-pipeline/material-enrichment-change')
+          const matChange = materialEnrichmentChange((entity as any).enrichment_profile, profile)
           await supabase
             .from('contacts')
             .update({
@@ -279,6 +285,7 @@ export async function processEnrichmentQueue(
               enrichment_confidence: enriched.enrichmentConfidence,
               email_verified: emailFlagVerified,
               enrichment_profile: profile,
+              ...(matChange.changed && { last_life_event_detected: enrichedAt }),
             })
             .eq('id', entityId)
         }
