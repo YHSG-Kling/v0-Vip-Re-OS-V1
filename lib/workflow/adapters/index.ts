@@ -125,14 +125,24 @@ const aiCallAdapter: ChannelAdapter = {
 const commissionVideoAdapter: ChannelAdapter = {
   channel: "commission_video",
   async execute(ctx: StepContext): Promise<StepResult> {
-    const { contact, step, brokerageId, agentUserId, entity } = ctx
-    if (entity === "lead" || !agentUserId) {
-      return { status: "skipped", providerKey: "video-director", error: "commission_video needs an assigned agent (skipped for unowned leads)" }
+    const { contact, step, brokerageId, agentUserId, entity, supabase } = ctx
+    // Resolve the sender: a contact's assigned agent (solo_agent tier), or — for a LEAD / unowned
+    // record — the brokerage's system user for BRAND-marketing video (brokerage tier). Videos DO go
+    // out for leads; they just carry the brokerage's brand identity instead of a personal agent's.
+    let senderUserId: string | null = agentUserId ?? null
+    let tier: "solo_agent" | "brokerage" = "solo_agent"
+    if (!senderUserId) {
+      const { data: bk } = await supabase.from("brokerages").select("ai_isa_system_user_id").eq("id", brokerageId).maybeSingle()
+      senderUserId = (bk as any)?.ai_isa_system_user_id ?? null
+      tier = "brokerage"
+    }
+    if (!senderUserId) {
+      return { status: "skipped", providerKey: "video-director", error: "commission_video has no sender (no agent, no brokerage system user)" }
     }
     const { commissionSituationForStep } = await import("@/lib/video/commission-situation")
-    const situation = commissionSituationForStep(step as any, { contactId: contact?.id as string | undefined })
+    const situation = commissionSituationForStep(step as any, { contactId: contact?.id as string | undefined, tier })
     const { commissionVideo } = await import("@/lib/video/video-director")
-    const r = await commissionVideo(situation as any, { brokerageId, agentUserId, contactId: (contact?.id as string) ?? null })
+    const r = await commissionVideo(situation as any, { brokerageId, agentUserId: senderUserId, contactId: (contact?.id as string) ?? null })
     // staged / already_staged = the Director did its job; blocked (compliance) = skip; else error.
     const status: StepResult["status"] = r.ok ? "sent" : (r.status === "blocked" ? "skipped" : "error")
     return {
