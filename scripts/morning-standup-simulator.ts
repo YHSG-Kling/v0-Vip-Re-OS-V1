@@ -41,6 +41,7 @@ async function main() {
       { id: "fresh", subject: "Fresh draft", hoursWaiting: 1 },
       { id: "old", subject: "Old draft", hoursWaiting: 6 },
     ],
+    slippingClient: null,
     reengage: { contactId: "c9", name: "Avery Stone", reasons: ["high intent"], daysCold: 21 },
   })
   check("fire ALWAYS ranks #1", full[0].kind === "fire" && full[0].rank === 1)
@@ -49,13 +50,25 @@ async function main() {
   check("capped at 3 moves", full.length === 3)
   check("overdue count surfaced past the SLA", full[1].line.includes(`past the ${APPROVAL_SLA_HOURS}-hour`))
 
+  // A slipping LIFETIME relationship (health-scored) outranks a propensity cooling lead.
+  const slipping = rankStandup({
+    fireDrills: [],
+    approvals: [],
+    slippingClient: { contactId: "vip1", name: "Pat Rivera", band: "at_risk", score: 28 },
+    reengage: { contactId: "c9", name: "Avery Stone", reasons: ["high intent"], daysCold: 21 },
+  })
+  check("slipping lifetime client (health) outranks the propensity re-engage", slipping[0].kind === "health" && slipping[0].entityId === "vip1")
+  check("health line names the band + score", /at_risk/.test(slipping[0].line) && /28\/100/.test(slipping[0].line))
+  check("the propensity re-engage still follows", slipping.some((i) => i.kind === "reengage"))
+
   const noFire = rankStandup({
     fireDrills: [],
     approvals: [{ id: "a", subject: "Only draft", hoursWaiting: 2 }],
+    slippingClient: null,
     reengage: null,
   })
   check("no fire → approvals lead; fresh draft still surfaces", noFire[0].kind === "approval" && !noFire[0].line.includes("past the"))
-  const clear = rankStandup({ fireDrills: [], approvals: [], reengage: null })
+  const clear = rankStandup({ fireDrills: [], approvals: [], slippingClient: null, reengage: null })
   check("a clear day ranks nothing", clear.length === 0)
   check("compose: clear day is honest + encouraging", composeStandup("Dana", clear).includes("Go list something"))
   check("compose: ranked + manager-attributed", composeStandup("Dana", full).includes("1. Deal Coordinator:") && composeStandup("Dana", full).includes("2. Campaign Orchestrator:"))

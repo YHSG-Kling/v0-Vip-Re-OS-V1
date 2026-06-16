@@ -31,18 +31,22 @@ export interface StandupItem {
   /** The spoken line for this move. */
   line: string
   /** Machine tag for the UI / follow-on voice verbs. */
-  kind: "fire" | "approval" | "reengage"
+  kind: "fire" | "approval" | "health" | "reengage"
   entityId: string | null
 }
 
 export interface StandupInputs {
   fireDrills: Array<{ entityId: string; title: string }>
   approvals: Array<{ id: string; subject: string | null; hoursWaiting: number }>
+  /** A lifetime relationship that has decayed to at-risk/dormant — health-scored, outranks a
+   *  propensity cooling lead because it's a KNOWN relationship slipping away. */
+  slippingClient: { contactId: string; name: string; band: string; score: number } | null
   reengage: { contactId: string; name: string; reasons: string[]; daysCold: number } | null
 }
 
 /** Pure: rank the day. Fires first (most expensive to ignore), then aging approvals
- *  (overdue before fresh), then the warmest cooling relationship. ≤3 spoken moves. */
+ *  (overdue before fresh), then the slipping lifetime relationship, then the warmest cooling
+ *  propensity lead. ≤3 spoken moves. */
 export function rankStandup(inputs: StandupInputs): StandupItem[] {
   const items: StandupItem[] = []
   let rank = 1
@@ -59,6 +63,11 @@ export function rankStandup(inputs: StandupInputs): StandupItem[] {
     const od = overdue.length
     items.push({ rank: rank++, manager: "campaign_orchestrator", kind: "approval", entityId: topApproval.id,
       line: `${total} message${total === 1 ? "" : "s"} wait on your approval${od > 0 ? `, ${od} past the ${APPROVAL_SLA_HOURS}-hour mark` : ""} — start with "${topApproval.subject ?? "the oldest"}" (${Math.round(topApproval.hoursWaiting)}h waiting).` })
+  }
+  if (inputs.slippingClient && items.length < 3) {
+    const s = inputs.slippingClient
+    items.push({ rank: rank++, manager: "sphere_of_influence", kind: "health", entityId: s.contactId,
+      line: `${s.name} is a relationship slipping away — health is ${s.band} (${s.score}/100). Reconnect personally before it goes cold for good.` })
   }
   if (inputs.reengage && items.length < 3) {
     const r = inputs.reengage
@@ -139,9 +148,22 @@ export async function runMorningStandup(
     }
   }
 
+  // A lifetime relationship slipping to at-risk/dormant — health-scored, agent-scoped. Best-effort.
+  let slippingClient: StandupInputs["slippingClient"] = null
+  try {
+    const { getHealthPrioritizedContacts } = await import("@/lib/intelligence/health-prioritizer-runner")
+    const ranked = await getHealthPrioritizedContacts(supabase, brokerageId, { agentId: agentUserId, limit: 300, now: now.toISOString() })
+    const top = ranked.find((r) => r.priority >= 3 && myIds.has(r.contactId)) // at_risk or dormant, the agent's own
+    if (top) {
+      const c = contactRows.find((cc) => cc.id === top.contactId)
+      slippingClient = { contactId: top.contactId, name: [c?.first_name, c?.last_name].filter(Boolean).join(" ").trim() || "a client", band: top.band, score: top.score }
+    }
+  } catch { /* best-effort — standup still ranks without it */ }
+
   const items = rankStandup({
     fireDrills: ((fires ?? []) as any[]).filter((f) => f.entity_id).map((f) => ({ entityId: f.entity_id, title: f.title ?? "an uncovered deadline" })),
     approvals,
+    slippingClient,
     reengage: best ? { contactId: best.contactId, name: best.name, reasons: best.reasons, daysCold: best.daysCold } : null,
   })
   return { spoken: composeStandup(opts.firstName ?? null, items), items }
