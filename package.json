@@ -177,12 +177,11 @@
     "test:relist-recovery": "tsx scripts/relist-recovery-simulator.ts",
     "test:stale-preapproval": "tsx scripts/stale-preapproval-reengage-simulator.ts",
     "test:channel-preference": "tsx scripts/channel-preference-gate-simulator.ts",
-    "test:reactivation-cadence": "tsx scripts/reactivation-cadence-simulator.ts",
+    "test:reactivation-sequence": "tsx scripts/reactivation-sequence-simulator.ts",
     "test:phone-scrub": "tsx scripts/phone-scrub-simulator.ts",
     "test:manager-standup": "tsx scripts/manager-standup-simulator.ts",
     "test:direct-mail-channel": "tsx scripts/direct-mail-channel-simulator.ts",
     "test:lead-recipient": "tsx scripts/lead-recipient-dispatch-simulator.ts",
-    "test:lead-reactivation-cadence": "tsx scripts/lead-reactivation-cadence-simulator.ts",
     "test:sequence-response-stop": "tsx scripts/sequence-response-stop-simulator.ts",
     "test:persona-render": "tsx scripts/persona-render-simulator.ts",
     "test:sequence-persona-copy": "tsx scripts/sequence-persona-copy-simulator.ts"
