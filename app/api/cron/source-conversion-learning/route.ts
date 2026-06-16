@@ -75,6 +75,23 @@ export async function GET(request: NextRequest) {
         }, svc)
         advised++
       }
+
+      // SOURCE LIFETIME-HEALTH — the full arc (lead→contact→thriving/dormant), not just first close.
+      // Records each source's lifetime verdict (scraper viability accumulates it) and flags the
+      // money-pits the close-rate alone misses: sources that convert cheap but produce fading
+      // relationships. Best-effort; never fails the conversion learner.
+      try {
+        const { loadSourceLifetimeHealth } = await import("@/lib/lead-pipeline/source-lifetime-health-runner")
+        const lifetime = await loadSourceLifetimeHealth(b.id, {}, svc)
+        if (lifetime.fading.length > 0 || lifetime.lasting.length > 0) {
+          await publishManagerSignal({
+            brokerageId: b.id, fromManager: "data_steward", toManager: "campaign_orchestrator",
+            signalType: "source_lifetime_health_advice",
+            message: `Lifetime-quality of leads — lasting [${lifetime.lasting.join(", ") || "none"}], fading [${lifetime.fading.join(", ") || "none"}] by relationship health, not just first close.`,
+            payload: { lasting: lifetime.lasting, fading: lifetime.fading, summaries: lifetime.summaries },
+          }, svc)
+        }
+      } catch { /* best-effort — lifetime health never fails the conversion learner */ }
     }
 
     const summary = { scanned, advised }

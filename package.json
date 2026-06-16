@@ -195,6 +195,7 @@
     "test:relationship-health": "tsx scripts/relationship-health-simulator.ts",
     "test:channel-order": "tsx scripts/channel-order-simulator.ts",
     "test:source-health": "tsx scripts/source-health-simulator.ts",
+    "test:source-lifetime-health": "tsx scripts/source-lifetime-health-simulator.ts",
     "test:second-opinion": "tsx scripts/second-opinion-simulator.ts",
     "test:steer-my-day": "tsx scripts/steer-my-day-simulator.ts",
     "test:health-lifecycle": "tsx scripts/health-lifecycle-simulator.ts",
