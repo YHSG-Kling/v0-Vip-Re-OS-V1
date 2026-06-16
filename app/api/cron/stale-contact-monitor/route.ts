@@ -144,6 +144,16 @@ export async function GET(request: NextRequest) {
         errors.push(`reactivation-cadence: ${err instanceof Error ? err.message : String(err)}`)
       }
 
+      // STALE-LEAD REACTIVATION LADDER — the lead-side mirror on the approved pre-consent
+      // channels ONLY (email + direct mail): 10d email → 24d direct mail → 45d escalate.
+      try {
+        const { runLeadReactivationCadence } = await import('@/lib/lead-pipeline/lead-reactivation-cadence-runner')
+        const lr = await runLeadReactivationCadence({ brokerageId }, supabase)
+        reengaged += lr.emailed + lr.mailed + lr.escalated
+      } catch (err: unknown) {
+        errors.push(`lead-reactivation-cadence: ${err instanceof Error ? err.message : String(err)}`)
+      }
+
       results.push({
         brokerageId,
         staleCount: staleContacts?.length ?? 0,
