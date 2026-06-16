@@ -91,7 +91,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
     "rationale", "recipient_contact_id", "recipient_lead_id", "send_error", "sent_at", "status", "subject",
   ],
   leads: [
-    "next_followup_at", "next_followup_reason",
+    "next_followup_at", "next_followup_reason", "home_owner_status", "life_events", "dnc_status",
     "address", "agent_id", "ai_isa_owner", "ai_outreach_paused", "assigned_owner", "brokerage_id",
     "budget_max", "budget_min", "call_stop_flag", "campaign_attribution_id", "city", "contact_count",
     "contact_id", "converted_at", "cost_per_record", "created_at", "days_in_stage", "dedupe_status",

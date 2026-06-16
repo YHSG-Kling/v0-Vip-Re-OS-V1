@@ -72,10 +72,11 @@ export async function runReactivationEnrollment(input: ReactivationEnrollInput, 
   // ── Quiet LEADS (AI-ISA owned, pre-conversion) — brokerage/AI-ISA assigned, email/direct-mail only ──
   const { data: leads } = await svc
     .from("leads")
-    .select("id, status, lifecycle_state, last_contacted_at, created_at, next_followup_at")
+    .select("id, status, lifecycle_state, last_contacted_at, created_at, next_followup_at, dnc_status")
     .eq("brokerage_id", input.brokerageId)
     .eq("ai_isa_owner", true)
     .neq("lifecycle_state", "converted")
+    .not("dnc_status", "is", true) // m233: leads now carry DNC — never reactivate a suppressed lead
     .not("status", "in", '("archived","inactive","dead")')
     .limit(limit)
 

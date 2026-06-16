@@ -6,7 +6,7 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { skipTraceWithPeopleData } from '@/lib/external/peopledata-client'
 import { scrubPhonesForPatch } from '@/lib/compliance/phone-scrub-runner'
-import { peopleDataProfileToContactColumns } from '@/lib/lead-pipeline/enrichment-column-map'
+import { peopleDataProfileToContactColumns, peopleDataProfileToLeadColumns } from '@/lib/lead-pipeline/enrichment-column-map'
 import { trackVendorUsageService } from '@/lib/vendor-governance'
 import {
   handleLeadScored,
@@ -208,6 +208,9 @@ export async function processEnrichmentQueue(
             .update({
               ...(primaryEmail && { email: primaryEmail }),
               ...leadPhonePatch,
+              // First-class lead enrichment (m233): promote home_owner_status + life_events out of
+              // the jsonb so lead persona/segmentation read them directly (parity with contacts).
+              ...peopleDataProfileToLeadColumns(profile),
               last_enriched_at: new Date().toISOString(),
               enrichment_status: 'complete',
               enrichment_provider: 'peopledata',

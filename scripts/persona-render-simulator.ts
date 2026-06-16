@@ -16,6 +16,7 @@
  * Run: npx tsx scripts/persona-render-simulator.ts   (npm run test:persona-render)
  */
 import { buildPersonaContext } from "../lib/campaign-sequences/persona-render"
+import { peopleDataProfileToLeadColumns } from "../lib/lead-pipeline/enrichment-column-map"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -53,6 +54,15 @@ async function main() {
   check("lead audience is 'lead' + situation from persona field", l.persona.audience === "lead" && /first time buyer/.test(l.persona.situation ?? ""))
   check("lead ownership fact comes from enrichment_profile jsonb", l.facts.some(f => /owns their home/.test(f)))
   check("protected field INSIDE enrichment_profile (income) does NOT leak", !l.facts.join(" ").toLowerCase().includes("income") && !l.facts.join(" ").includes("240000"))
+
+  // m233: leads now promote home_owner_status + life_events to first-class columns (subset mapper).
+  const leadCols = peopleDataProfileToLeadColumns({ home_owner_status: "owner", life_events: [{ type: "new_baby" }], household_income: "250000", age_range: "35-44" } as any)
+  check("lead mapper promotes home_owner_status + life_events only", leadCols.home_owner_status === "owner" && Array.isArray(leadCols.life_events))
+  check("lead mapper does NOT emit contact-only columns (age_range/income)", !("age_range" in leadCols) && !("household_income" in leadCols))
+
+  // Persona always resolves — never fails a send on a missing persona.
+  const bare = buildPersonaContext({}, "contact", NOW)
+  check("empty row → persona still has an audience (no session failure)", !!bare.persona.audience)
 
   // FAIR HOUSING: protected-class inputs must NOT leak into facts.
   const fh = buildPersonaContext(

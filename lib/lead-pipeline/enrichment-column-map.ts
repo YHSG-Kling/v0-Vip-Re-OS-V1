@@ -111,3 +111,23 @@ export function peopleDataProfileToContactColumns(
 
   return out
 }
+
+/**
+ * Map an enrichment profile blob to the LEADS first-class columns (m233). Leads carry a SUBSET of
+ * the contact columns — only home_owner_status + life_events are promoted here (the rest stay in
+ * enrichment_profile jsonb and are extracted at lead→contact promotion). Only emits a key when the
+ * source value is genuinely present, so it spreads straight into a leads update.
+ */
+export function peopleDataProfileToLeadColumns(
+  profile: EnrichmentProfileLike | null | undefined,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (!profile || typeof profile !== 'object') return out
+  if (typeof profile.home_owner_status === 'string' && profile.home_owner_status.trim() !== '') {
+    out.home_owner_status = profile.home_owner_status
+  }
+  if (Array.isArray(profile.life_events) && profile.life_events.length > 0) {
+    out.life_events = profile.life_events
+  }
+  return out
+}

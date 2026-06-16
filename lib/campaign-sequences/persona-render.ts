@@ -20,9 +20,8 @@ export type PersonaEntity = "contact" | "lead"
  *  enrichment_profile (jsonb) carries the PeopleData payload — leads hold home ownership ONLY in
  *  there (no first-class column), so reading it completes the lineage raw→leads→contacts→copy. */
 export const CONTACT_PERSONA_COLUMNS = "first_name, last_name, contact_type, contact_persona, buyer_stage, home_owner_status, enrichment_profile, last_contacted_at"
-// NOTE: leads have NO home_owner_status / buyer_stage column — only persona + lead_temperature +
-// the enrichment_profile jsonb (which DOES carry home_owner_status from PeopleData).
-export const LEAD_PERSONA_COLUMNS = "first_name, last_name, persona, lead_temperature, enrichment_profile, last_contacted_at"
+// Leads now carry first-class home_owner_status (m233); enrichment_profile remains the fallback.
+export const LEAD_PERSONA_COLUMNS = "first_name, last_name, persona, lead_temperature, home_owner_status, enrichment_profile, last_contacted_at"
 
 export interface PersonaContextRow {
   first_name?: string | null
@@ -69,7 +68,9 @@ export function buildPersonaContext(row: PersonaContextRow, entity: PersonaEntit
   }
   const persona: CopyPersona = {
     name,
-    audience,
+    // GUARANTEE a persona always resolves — never let a missing/blank persona fail a send. Falls
+    // back to the entity kind ("contact"/"lead") so generatePersonaCopy always has an audience.
+    audience: (audience && String(audience).trim()) || entity,
     situation: situationBits.join(", ") || null,
   }
 
