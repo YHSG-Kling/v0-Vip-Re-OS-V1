@@ -108,6 +108,18 @@ export async function persistMessageWithContext(
       await trackOutboundVendorCost(message, context)
     }
 
+    // STEP 5: RESPONSE-DRIVEN STOP — an inbound reply (client_to_agent) means the person engaged,
+    // so terminate any active multi-channel sequences for them ("keep trying UNTIL they respond").
+    // Best-effort; never fails the message persist.
+    if (direction === 'client_to_agent') {
+      try {
+        const { stopSequencesOnResponse } = await import('@/lib/campaign-sequences/enrollment-engine')
+        await stopSequencesOnResponse({ brokerageId: context.brokerageId, contactId: context.contactId }, supabase)
+      } catch (e) {
+        console.warn('[v0] [COMMUNICATION SPINE] stopSequencesOnResponse skipped:', e)
+      }
+    }
+
     return {
       success: true,
       messageId: newMessage.id,

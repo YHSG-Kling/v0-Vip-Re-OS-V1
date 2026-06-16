@@ -182,7 +182,8 @@
     "test:manager-standup": "tsx scripts/manager-standup-simulator.ts",
     "test:direct-mail-channel": "tsx scripts/direct-mail-channel-simulator.ts",
     "test:lead-recipient": "tsx scripts/lead-recipient-dispatch-simulator.ts",
-    "test:lead-reactivation-cadence": "tsx scripts/lead-reactivation-cadence-simulator.ts"
+    "test:lead-reactivation-cadence": "tsx scripts/lead-reactivation-cadence-simulator.ts",
+    "test:sequence-response-stop": "tsx scripts/sequence-response-stop-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

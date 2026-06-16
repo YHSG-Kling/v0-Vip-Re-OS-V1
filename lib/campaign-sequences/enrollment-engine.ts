@@ -17,7 +17,9 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
 export interface EnrollContactParams {
   sequenceId: string
-  contactId: string
+  /** Provide exactly ONE of contactId / leadId. Leads enroll too (the table supports lead_id). */
+  contactId?: string
+  leadId?: string
   brokerageId: string
   enrolledBy?: string
   abVariant?: "A" | "B"
@@ -34,6 +36,15 @@ export interface EnrollResult {
 
 export async function enrollContact(params: EnrollContactParams): Promise<EnrollResult> {
   const supabase = createServiceClient()
+
+  // Exactly one recipient kind. (Leads enroll into the approved pre-consent channels only — the
+  // step-executor already enforces lead-channel gating; this just lets the loop address them.)
+  const isLead = !!params.leadId && !params.contactId
+  const recipientCol = isLead ? "lead_id" : "contact_id"
+  const recipientId = isLead ? params.leadId! : params.contactId
+  if (!recipientId) {
+    return { success: false, error: "enrollContact requires exactly one of contactId / leadId" }
+  }
 
   // Validate sequence exists, is active, and compliance_gated=true
   const { data: sequence, error: seqErr } = await supabase
@@ -61,7 +72,7 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
     .from("sequence_enrollments")
     .select("id, status")
     .eq("sequence_id", params.sequenceId)
-    .eq("contact_id", params.contactId)
+    .eq(recipientCol, recipientId)
     .in("status", ["active", "paused"])
     .maybeSingle()
 
@@ -99,7 +110,7 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
     .from("sequence_enrollments")
     .insert({
       sequence_id: params.sequenceId,
-      contact_id: params.contactId,
+      [recipientCol]: recipientId,
       brokerage_id: params.brokerageId,
       status: "active",
       current_step: 0,
@@ -122,8 +133,8 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
   await processKernelEvent({
     event: KernelEvent.ISA_QUALIFICATION_STARTED,
     brokerageId: params.brokerageId,
-    entityType: "contact",
-    entityId: params.contactId,
+    entityType: isLead ? "lead" : "contact",
+    entityId: recipientId,
     suppressEnrollment: true,
   }).catch(() => {})
 
@@ -154,6 +165,33 @@ export async function resumeEnrollment(enrollmentId: string): Promise<{ success:
 
   if (error) return { success: false, error: error.message }
   return { success: true }
+}
+
+/**
+ * RESPONSE-DRIVEN STOP — the "keep trying UNTIL they respond" terminator.
+ *
+ * The whole point of the multi-channel cadence is to keep reaching out until the person answers
+ * (positive OR negative). When a contact/lead REPLIES on any channel (an inbound message lands),
+ * every active/paused sequence they're enrolled in must stop immediately — continuing to drip at
+ * someone who already engaged is exactly the over-touch the system is built to avoid. Wired into
+ * the communication spine's inbound path so ANY channel's reply terminates the cadence. Idempotent,
+ * never throws.
+ */
+export async function stopSequencesOnResponse(
+  params: { brokerageId: string; contactId?: string; leadId?: string },
+  client?: ReturnType<typeof createServiceClient>,
+): Promise<{ unenrolled: number }> {
+  if (!params.contactId && !params.leadId) return { unenrolled: 0 }
+  const supabase = client ?? createServiceClient()
+  let q = supabase
+    .from("sequence_enrollments")
+    .update({ status: "unenrolled", completed_at: new Date().toISOString() })
+    .eq("brokerage_id", params.brokerageId)
+    .in("status", ["active", "paused"])
+  q = params.contactId ? q.eq("contact_id", params.contactId) : q.eq("lead_id", params.leadId!)
+  const { data, error } = await q.select("id")
+  if (error) return { unenrolled: 0 }
+  return { unenrolled: data?.length ?? 0 }
 }
 
 export async function unenrollContact(
