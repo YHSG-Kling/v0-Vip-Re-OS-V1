@@ -14,7 +14,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { planReactivationStep, reactivationFallbackCopy, reactivationAudience, followupSuppresses, type ReactivationThresholds } from "./reactivation-cadence"
-import { generatePersonaCopy, type CopyGenerator } from "@/lib/kernel/ai-copy"
+import { type CopyGenerator } from "@/lib/kernel/ai-copy"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -115,19 +115,17 @@ export async function runReactivationCadence(input: ReactivationRunInput, client
         // The preset carries the locked copy; the approve path reads 'preset:<id>' from subject.
         subject = `preset:${presetId}`
       } else {
-        const { loadContactPersona } = await import("@/lib/kernel/ai-copy")
-        const persona = await loadContactPersona(svc, row.id).catch(() => ({ audience }))
-        const draft = await generatePersonaCopy(
-          {
-            goal: `a brief, warm, no-pressure re-engagement ${channel === "email" ? "email" : "text"} to a contact who has gone quiet for ${daysDormant} days — invite them to pick back up, make it easy to say "later"`,
-            facts: [fallback.body],
-            channel: channel === "email" ? "email" : "sms",
-            persona: { ...persona, situation: "dormant contact reactivation" },
-            words: channel === "email" ? 80 : 40,
-          },
-          { subject: fallback.subject, body: fallback.body },
-          { generator: input.copyGenerator },
-        )
+        // Persona+enrichment-grounded copy (NOT a hardcoded template): the intent is the goal,
+        // the contact's Fair-Housing-safe enriched facts ground the generation.
+        const { generateEntityStepCopy } = await import("@/lib/campaign-sequences/persona-render-runner")
+        const draft = await generateEntityStepCopy({
+          svc, entity: "contact", id: row.id,
+          intent: `a brief, warm, no-pressure re-engagement ${channel === "email" ? "email" : "text"} to a ${audience} who has gone quiet for ${daysDormant} days — invite them to pick back up, make it easy to say "later"`,
+          channel: channel === "email" ? "email" : "sms",
+          words: channel === "email" ? 80 : 40,
+          fallback: { subject: fallback.subject, body: fallback.body },
+          generator: input.copyGenerator,
+        })
         subject = draft.subject ?? fallback.subject
         body = draft.body
       }

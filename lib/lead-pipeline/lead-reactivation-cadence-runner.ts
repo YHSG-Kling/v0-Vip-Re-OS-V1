@@ -13,7 +13,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { planLeadReactivationStep, leadReactivationCopy } from "./lead-reactivation-cadence"
 import { followupSuppresses, type ReactivationThresholds } from "./reactivation-cadence"
-import { generatePersonaCopy, type CopyGenerator } from "@/lib/kernel/ai-copy"
+import { type CopyGenerator } from "@/lib/kernel/ai-copy"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -102,17 +102,17 @@ export async function runLeadReactivationCadence(input: LeadReactivationRunInput
       let subject = fallback.subject
       let body = fallback.body
       if (channel === "email") {
-        const draft = await generatePersonaCopy(
-          {
-            goal: `a brief, warm, no-pressure re-engagement email to a real-estate LEAD who has gone quiet for ${daysDormant} days — leave the door open, make it easy to reply "later"`,
-            facts: [fallback.body],
-            channel: "email",
-            persona: { audience: "lead", situation: "stale lead reactivation" },
-            words: 80,
-          },
-          { subject: fallback.subject, body: fallback.body },
-          { generator: input.copyGenerator },
-        )
+        // Persona+enrichment-grounded copy from the LEADS table (frozen once converted): the
+        // intent is the goal, the lead's Fair-Housing-safe enriched facts ground the generation.
+        const { generateEntityStepCopy } = await import("@/lib/campaign-sequences/persona-render-runner")
+        const draft = await generateEntityStepCopy({
+          svc, entity: "lead", id: row.id,
+          intent: `a brief, warm, no-pressure re-engagement email to a real-estate lead who has gone quiet for ${daysDormant} days — leave the door open, make it easy to reply "later"`,
+          channel: "email",
+          words: 80,
+          fallback: { subject: fallback.subject, body: fallback.body },
+          generator: input.copyGenerator,
+        })
         subject = draft.subject ?? fallback.subject
         body = draft.body
       } else {
