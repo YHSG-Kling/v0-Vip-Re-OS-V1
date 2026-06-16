@@ -80,17 +80,21 @@ export async function executeSequenceStep(
   // ── Step 2: Fetch next step ────────────────────────────────────────────────
   const nextStepNumber = (enrollment.current_step ?? 0) + 1
 
-  const { data: step, error: stepErr } = await supabase
+  // Fetch ALL active rows for this step number — an A/B sequence has one per variant — and pick the
+  // one matching the enrollment's variant. Non-A/B sequences have a single row (returned as-is), so
+  // behaviour is unchanged. (Was .maybeSingle(), which would error the moment a 2nd variant existed.)
+  const { data: stepRows, error: stepErr } = await supabase
     .from("campaign_sequence_steps")
     .select("*")
     .eq("sequence_id", enrollment.sequence_id)
     .eq("step_number", nextStepNumber)
     .eq("is_active", true)
-    .maybeSingle()
 
   if (stepErr) {
     return { status: "error", reason: `Step fetch error: ${stepErr.message}` }
   }
+  const { pickStepVariant } = await import("./ab-variant")
+  const step = pickStepVariant(stepRows as any[], enrollment.ab_variant)
 
   if (!step) {
     await supabase

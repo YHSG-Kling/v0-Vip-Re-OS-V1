@@ -49,7 +49,7 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
   // Validate sequence exists, is active, and compliance_gated=true
   const { data: sequence, error: seqErr } = await supabase
     .from("campaign_sequences")
-    .select("id, is_active, compliance_gated, brokerage_id")
+    .select("id, is_active, compliance_gated, brokerage_id, is_ab_test")
     .eq("id", params.sequenceId)
     .eq("brokerage_id", params.brokerageId)
     .single()
@@ -116,7 +116,8 @@ export async function enrollContact(params: EnrollContactParams): Promise<Enroll
       current_step: 0,
       enrolled_at: new Date().toISOString(),
       next_step_at: nextStepAt,
-      ab_variant: params.abVariant ?? null,
+      // A/B: honor an explicit variant, else split 50/50 when the sequence is_ab_test, else null.
+      ab_variant: (await import("./ab-variant")).assignAbVariant({ isAbTest: (sequence as any).is_ab_test, provided: params.abVariant ?? null }),
     })
     .select("id")
     .single()
