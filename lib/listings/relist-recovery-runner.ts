@@ -118,6 +118,16 @@ async function recover(
     svc,
   )
 
+  // CONSENSUS MEMORY — the listing went off-market WITHOUT selling: the strategic plays on this
+  // listing (a price drop's "a cut will move buyers" read) were proven WRONG. Resolve any open
+  // second-opinion huddles for this listing as a LOSS so the consulted manager's track record sees
+  // the failure, not just the wins. Idempotent; keyed by the listing entity (not the seller huddle
+  // below, which is keyed by the seller contact). Best-effort.
+  try {
+    const { resolveConsultOutcomes } = await import("@/lib/kernel/consult-outcome-resolver")
+    await resolveConsultOutcomes({ brokerageId: args.brokerageId, entityId: args.listingId, success: false }, svc)
+  } catch { /* best-effort — the recovery outreach still went out */ }
+
   let callRouted = false
   if (plan.recommendCall) {
     try {

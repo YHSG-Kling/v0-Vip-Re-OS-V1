@@ -52,7 +52,7 @@ async function main() {
   if (!brokerage) { console.log("  ⏭  Skipped — need a real brokerage."); return report() }
   const brokerageId = (brokerage as any).id
   const uuid = () => (globalThis.crypto ?? require("node:crypto").webcrypto).randomUUID()
-  const contactWin = uuid(), contactLoss = uuid()
+  const contactWin = uuid(), contactLoss = uuid(), listingEntity = uuid()
   const contactIds = [contactWin, contactLoss]
   try {
     // WIN path — a relist_recovery huddle (consult shopping_agent), then the deal works out.
@@ -88,13 +88,25 @@ async function main() {
     const { data: lossFb } = await svc.from("ai_feedback_log")
       .select("rating, context_snapshot").eq("brokerage_id", brokerageId).eq("source_system", "second_opinion:offer_strategy").eq("source_record_id", contactLoss)
     check("the LOSS is a -1 keyed by deal_coordinator", ((lossFb ?? []) as any[]).some((r) => r.rating === -1 && r.context_snapshot?.consult === "deal_coordinator"))
+
+    // LISTING-ENTITY path — a price_drop huddle keyed by the LISTING (entity_id, not contact_id),
+    // resolved by entity (the real price-reduction → deal-closed/relist wiring uses this key).
+    const h3 = await requestSecondOpinion({ brokerageId, fromManager: "listing_concierge", playType: "price_drop", entityType: "listing", entityId: listingEntity }, svc)
+    check("a price_drop huddle was raised to shopping_agent on the listing", h3.requested && h3.consult === "shopping_agent")
+    const r3 = await resolveConsultOutcomes({ brokerageId, entityId: listingEntity, success: true }, svc)
+    check("resolving by ENTITY id (listing) records the verdict", r3.resolved === 1 && r3.consults.includes("shopping_agent"), JSON.stringify(r3))
+    const { data: listFb } = await svc.from("ai_feedback_log")
+      .select("rating, context_snapshot").eq("brokerage_id", brokerageId).eq("source_system", "second_opinion:price_drop").eq("source_record_id", listingEntity)
+    check("the listing verdict is a +1 keyed by shopping_agent", ((listFb ?? []) as any[]).some((r) => r.rating === 1 && r.context_snapshot?.consult === "shopping_agent"))
   } finally {
-    for (const cid of contactIds) {
+    for (const cid of [...contactIds, listingEntity]) {
       await svc.from("ai_feedback_log").delete().eq("brokerage_id", brokerageId).eq("source_record_id", cid).then(() => {}, () => {})
       await svc.from("manager_signals").delete().eq("brokerage_id", brokerageId).eq("contact_id", cid).eq("signal_type", "second_opinion_requested").then(() => {}, () => {})
+      await svc.from("manager_signals").delete().eq("brokerage_id", brokerageId).eq("entity_id", cid).eq("signal_type", "second_opinion_requested").then(() => {}, () => {})
     }
-    const { count: fbLeft } = await svc.from("ai_feedback_log").select("id", { count: "exact", head: true }).in("source_record_id", contactIds)
-    const { count: sigLeft } = await svc.from("manager_signals").select("id", { count: "exact", head: true }).in("contact_id", contactIds).eq("signal_type", "second_opinion_requested")
+    const allIds = [...contactIds, listingEntity]
+    const { count: fbLeft } = await svc.from("ai_feedback_log").select("id", { count: "exact", head: true }).in("source_record_id", allIds)
+    const { count: sigLeft } = await svc.from("manager_signals").select("id", { count: "exact", head: true }).in("entity_id", allIds).eq("signal_type", "second_opinion_requested")
     check("cleanup: huddles + verdicts removed (count == 0)", (fbLeft ?? 0) === 0 && (sigLeft ?? 0) === 0)
   }
   report()

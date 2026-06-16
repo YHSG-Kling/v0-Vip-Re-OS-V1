@@ -194,9 +194,10 @@ export async function advanceTransactionStage(params: {
       // clients). The Sphere consumes by proposing the lifetime welcome into the gate.
       try {
         const { data: txn } = await svcClient.from("transactions")
-          .select("contact_id, buyer_contact_id, seller_contact_id, deal_name, property_address")
+          .select("contact_id, buyer_contact_id, seller_contact_id, deal_name, property_address, listing_id")
           .eq("id", params.transactionId).maybeSingle()
         const contactId = (txn as any)?.contact_id ?? (txn as any)?.buyer_contact_id ?? (txn as any)?.seller_contact_id ?? null
+        const closedListingId = (txn as any)?.listing_id ?? null
         if (contactId) {
           const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
           await publishManagerSignal({
@@ -211,12 +212,13 @@ export async function advanceTransactionStage(params: {
           }, svcClient)
 
           // CONSENSUS MEMORY — a closed deal is the outcome that PROVES the strategic plays right
-          // (offer strategy, relist recovery, etc.). Resolve any open second-opinion huddles for this
-          // client/transaction so the consulted managers' track records build from real outcomes.
+          // (offer strategy, a price drop that moved buyers, relist recovery, etc.). Resolve any open
+          // second-opinion huddles for this client AND the closed listing so the consulted managers'
+          // track records build from real wins, not just the failures.
           try {
             const { resolveConsultOutcomes } = await import("@/lib/kernel/consult-outcome-resolver")
             await resolveConsultOutcomes({
-              brokerageId: auth.brokerageId, contactId, entityId: params.transactionId, success: true,
+              brokerageId: auth.brokerageId, contactId, entityId: closedListingId, success: true,
             }, svcClient)
           } catch (err) {
             console.error("[transaction-stage-machine] consult outcome resolve failed:", err)

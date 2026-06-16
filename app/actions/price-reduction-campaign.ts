@@ -62,6 +62,20 @@ export async function launchPriceReductionCampaign(listingId: string): Promise<L
     console.error("[price-reduction-campaign] price_reduced signal failed:", err)
   }
 
+  // CONSENSUS MEMORY — a price drop is a STRATEGIC play: raise a second-opinion huddle to the
+  // Shopping Agent ("will a cut actually move buyers, or leave money on the table?"). The outcome
+  // resolves it later — a deal closing on this listing proves the read right; the listing expiring
+  // proves it wrong (consult-outcome-resolver), so the huddle's track record builds from real results.
+  try {
+    const { requestSecondOpinion } = await import("@/lib/kernel/second-opinion-runner")
+    await requestSecondOpinion({
+      brokerageId: ctx.brokerageId, fromManager: "listing_concierge",
+      playType: "price_drop", entityType: "listing", entityId: listingId,
+    }, svc)
+  } catch (err) {
+    console.error("[price-reduction-campaign] price_drop second opinion failed:", err)
+  }
+
   // 1) Deliverable-gated paid-ad creative (DRAFT → ad_creative approval queue).
   const { produceListingAdCampaign } = await import("@/lib/ads/listing-ad-producer")
   const ad = await produceListingAdCampaign(ctx.brokerageId, listingId, "price_reduction", svc)
