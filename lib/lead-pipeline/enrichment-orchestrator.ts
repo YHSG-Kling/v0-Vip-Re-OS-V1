@@ -5,6 +5,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { skipTraceWithPeopleData } from '@/lib/external/peopledata-client'
+import { scrubPhonesForPatch } from '@/lib/compliance/phone-scrub-runner'
 import { peopleDataProfileToContactColumns } from '@/lib/lead-pipeline/enrichment-column-map'
 import { trackVendorUsageService } from '@/lib/vendor-governance'
 import {
@@ -124,6 +125,25 @@ export async function processEnrichmentQueue(
         const primaryPhone = enriched.phones?.[0] ?? null
         const secondaryPhone = enriched.phones?.[1] ?? null
 
+        // PHONE SCRUB + CLEAN-PRIMARY ELECTION — PeopleData returns these in arbitrary order and
+        // unscrubbed. Scrub against BatchData (DNC + TCPA-litigator) and ELECT the clean line as
+        // the primary so the first number the system reaches for is contactable, with dnc_status/
+        // phone_status populated for the outbound gates. Provider-gated: when BatchData is
+        // unconfigured/out-of-balance it DEFERS and we keep the naive ordering (no fabricated flags).
+        const phoneCandidates = [primaryPhone, secondaryPhone].filter(Boolean) as string[]
+        const scrub = await scrubPhonesForPatch(phoneCandidates)
+        const useScrub = !scrub.deferred && Object.keys(scrub.patch).length > 0
+        const naivePhonePatch = {
+          ...(primaryPhone && { phone: primaryPhone }),
+          ...(secondaryPhone && { phone_secondary: secondaryPhone }),
+        }
+        // Contacts carry the full gate columns; leads only have phone / phone_secondary, so leads
+        // take the elected ORDERING without the gate fields (writing absent columns would crash).
+        const contactPhonePatch = useScrub ? scrub.patch : naivePhonePatch
+        const leadPhonePatch = useScrub
+          ? { ...(scrub.patch.phone !== undefined && { phone: scrub.patch.phone }), phone_secondary: scrub.patch.phone_secondary ?? null }
+          : naivePhonePatch
+
         // Mailing address from enrichment provider — prefer the structured streetAddress (PDL
         // street_addresses[0]) and fall back to the legacy single-string `address`.
         const mailingStreet = (enriched as any).streetAddress ?? enriched.address ?? null
@@ -187,8 +207,7 @@ export async function processEnrichmentQueue(
             .from('leads')
             .update({
               ...(primaryEmail && { email: primaryEmail }),
-              ...(primaryPhone && { phone: primaryPhone }),
-              ...(secondaryPhone && { phone_secondary: secondaryPhone }),
+              ...leadPhonePatch,
               last_enriched_at: new Date().toISOString(),
               enrichment_status: 'complete',
               enrichment_provider: 'peopledata',
@@ -251,8 +270,7 @@ export async function processEnrichmentQueue(
             .from('contacts')
             .update({
               ...(primaryEmail && { email: primaryEmail }),
-              ...(primaryPhone && { phone: primaryPhone }),
-              ...(secondaryPhone && { phone_secondary: secondaryPhone }),
+              ...contactPhonePatch,
               ...contactEnrichmentColumns,
               last_enriched_at: enrichedAt,
               enrichment_confidence: enriched.enrichmentConfidence,
