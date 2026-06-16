@@ -200,6 +200,7 @@
     "test:health-lifecycle": "tsx scripts/health-lifecycle-simulator.ts",
     "test:outcome-autopsy": "tsx scripts/outcome-autopsy-simulator.ts",
     "test:consensus-memory": "tsx scripts/consensus-memory-simulator.ts",
+    "test:consensus-memory-runner": "tsx scripts/consensus-memory-runner-simulator.ts",
     "test:learning-outcomes": "tsx scripts/learning-outcomes-simulator.ts",
     "test:voice-report": "tsx scripts/voice-report-format-simulator.ts",
     "test:lead-warmth": "tsx scripts/lead-warmth-simulator.ts",

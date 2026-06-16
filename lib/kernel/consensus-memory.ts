@@ -46,3 +46,23 @@ export function consultWeight(conf: ConsultConfidence): number {
     case "unreliable": return 0.2
   }
 }
+
+/** The ai_feedback_log source_system namespace for a play's second-opinion outcomes. Pure. */
+export function consultSystem(playType: string): string {
+  return `second_opinion:${(playType ?? "").trim()}`
+}
+
+export interface ConsultTrackRecord {
+  consult: string
+  playType: string
+  calls: number
+  accuracy: number
+  confidence: ConsultConfidence
+  weight: number
+}
+
+/** A one-line, human read of a track record for the coordination feed. Pure. */
+export function describeTrackRecord(tr: ConsultTrackRecord): string {
+  if (tr.calls === 0) return `no track record yet on ${tr.playType} — giving their read a fair hearing`
+  return `${tr.consult}'s read on ${tr.playType} has been ${tr.confidence} (${Math.round(tr.accuracy * 100)}% over ${tr.calls}) — weight ${tr.weight.toFixed(1)}`
+}

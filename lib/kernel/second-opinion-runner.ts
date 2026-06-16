@@ -8,6 +8,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { secondOpinionFor } from "./second-opinion"
+import { getConsultTrackRecord, describeTrackRecord } from "./consensus-memory-runner"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -36,6 +37,15 @@ export async function requestSecondOpinion(
     if (prior) return { requested: false, consult: verdict.consult }
   }
 
+  // Consensus memory — read the consulted manager's accumulated track record on this play so the
+  // huddle conveys whose read has earned trust (and at what weight). Best-effort; never blocks.
+  let trackNote = ""
+  let track: Awaited<ReturnType<typeof getConsultTrackRecord>> | null = null
+  try {
+    track = await getConsultTrackRecord(svc, input.brokerageId, { consult: verdict.consult, playType: input.playType })
+    trackNote = ` (${describeTrackRecord(track)})`
+  } catch { /* no history yet — proceed unweighted */ }
+
   try {
     const { publishManagerSignal } = await import("./manager-signals")
     const r = await publishManagerSignal({
@@ -43,11 +53,15 @@ export async function requestSecondOpinion(
       fromManager: input.fromManager as any,
       toManager: verdict.consult as any,
       signalType: "second_opinion_requested",
-      message: `Before the ${input.playType} play: ${verdict.reason}.${input.context ? ` Context: ${input.context}` : ""}`,
+      message: `Before the ${input.playType} play: ${verdict.reason}.${trackNote}${input.context ? ` Context: ${input.context}` : ""}`,
       entityType: input.entityType ?? (input.contactId ? "contact" : "brokerage"),
       entityId: input.entityId ?? input.contactId ?? input.brokerageId,
       contactId: input.contactId ?? null,
-      payload: { playType: input.playType, requestedBy: input.fromManager },
+      payload: {
+        playType: input.playType,
+        requestedBy: input.fromManager,
+        trackRecord: track ? { calls: track.calls, accuracy: track.accuracy, confidence: track.confidence, weight: track.weight } : null,
+      },
     }, svc)
     return { requested: !!(r as any).ok, consult: verdict.consult }
   } catch {
