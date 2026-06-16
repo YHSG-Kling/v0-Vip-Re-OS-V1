@@ -10,7 +10,7 @@
 //
 // assembleReceipts is PURE (no I/O), unit-tested directly; the loader pulls the rows.
 
-export type ReceiptAction = "sent" | "opened" | "replied" | "skipped" | "blocked" | "failed"
+export type ReceiptAction = "sent" | "opened" | "replied" | "skipped" | "blocked" | "failed" | "staged"
 
 export interface ReceiptEntry {
   at: string
@@ -43,11 +43,23 @@ export interface TouchRow {
   metadata: { manager?: string | null; ai_intent?: string | null } | null
   sent_at: string | null
 }
+export interface VideoProjectRow {
+  title: string | null
+  script_content: string | null
+  video_type: string | null
+  status: string | null
+  approval_status: string | null
+  /** video_metadata.requested_via — which manager commissioned it (e.g. "asset_manager"). */
+  requested_via?: string | null
+  created_at: string | null
+}
 
 export interface AssembleReceiptsInput {
   stepExecutions?: StepExecRow[]
   complianceLogs?: ComplianceRow[]
   touchpoints?: TouchRow[]
+  /** ai_video_projects commissioned for this contact (e.g. a personal win-back). */
+  videoProjects?: VideoProjectRow[]
 }
 
 const BLOCKED_STATUSES = new Set(["skipped", "blocked", "authority_blocked"])
@@ -83,6 +95,21 @@ export function assembleReceipts(input: AssembleReceiptsInput): ReceiptEntry[] {
     const mgr = t.metadata?.manager ?? null
     const intent = t.metadata?.ai_intent
     out.push({ at: t.sent_at ?? "", channel: t.channel, action: "sent", manager: mgr, summary: `${mgr ?? "a manager"} sent a ${t.channel ?? "touch"}${intent ? ` — intent: "${intent}"` : ""}` })
+  }
+
+  // Commissioned videos (a personal win-back, an anniversary reel) — the AI team's highest-emotion
+  // play. Surface what it is + the hook + where it sits (pending approval vs sent), so "why did they
+  // get that?" includes the video, not just text touches.
+  for (const v of input.videoProjects ?? []) {
+    const mgr = v.requested_via ?? "asset_manager"
+    const kind = (v.video_type ?? "video").replace(/_/g, " ")
+    const hook = (v.script_content ?? v.title ?? "").trim()
+    const where = v.approval_status === "approved" || v.status === "sent" || v.status === "published"
+      ? "approved" : "pending approval"
+    out.push({
+      at: v.created_at ?? "", channel: "video", action: "staged", manager: mgr,
+      summary: `${mgr} commissioned a personal ${kind} video${hook ? ` — "${hook}"` : ""} (${where})`,
+    })
   }
 
   // Newest first; entries without a timestamp sink to the bottom.

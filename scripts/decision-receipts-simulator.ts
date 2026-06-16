@@ -44,6 +44,9 @@ function main() {
     touchpoints: [
       { channel: "email", metadata: { manager: "ai_isa", ai_intent: "a warm re-engagement" }, sent_at: "2026-06-10T10:00:00Z" },
     ],
+    videoProjects: [
+      { title: "Win-back", script_content: "It's been 3 years since you got the keys — you crossed my mind today.", video_type: "memory_video", status: "remotion_pending", approval_status: "pending_review", requested_via: "asset_manager", created_at: "2026-06-15T12:00:00Z" },
+    ],
   })
 
   check("a send is recorded", receipts.some((r) => r.action === "sent" && /email sent|sent a email/i.test(r.summary)))
@@ -53,7 +56,8 @@ function main() {
   check("a compliance BLOCK captures quiet hours + local time", receipts.some((r) => r.action === "blocked" && /quiet hours/i.test(r.summary) && /22:00/.test(r.summary)))
   check("an ALLOWED compliance decision is NOT noise (omitted)", !receipts.some((r) => /allowed/i.test(r.summary)))
   check("provenance touch carries manager + intent", receipts.some((r) => r.manager === "ai_isa" && /warm re-engagement/.test(r.summary)))
-  check("newest entry first (time-ordered desc)", receipts.length > 1 && (receipts[0].at >= receipts[receipts.length - 1].at))
+  check("a commissioned WIN-BACK VIDEO appears with hook + manager + pending state", receipts.some((r) => r.action === "staged" && r.manager === "asset_manager" && /memory video/i.test(r.summary) && /crossed my mind/i.test(r.summary) && /pending approval/i.test(r.summary)))
+  check("newest entry first (time-ordered desc) — the video sorts by its time", receipts.length > 1 && (receipts[0].at >= receipts[receipts.length - 1].at) && receipts[0].action === "staged")
   check("empty input → empty trail", assembleReceipts({}).length === 0)
 
   report()
