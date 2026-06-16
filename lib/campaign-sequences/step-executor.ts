@@ -503,6 +503,7 @@ export async function executeSequenceStep(
       stepId:       step.id,
       stepChannel:  step.channel,
       sentAt:       now,
+      aiIntent:     (step as any).ai_intent ?? null,
     })
   }
 

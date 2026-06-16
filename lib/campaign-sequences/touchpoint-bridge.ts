@@ -34,6 +34,26 @@ export function touchpointChannelForStep(stepChannel: string): string | null {
   return STEP_TO_TOUCHPOINT_CHANNEL[stepChannel] ?? null
 }
 
+// PROVENANCE — which manager produced this touch. The send itself is the Campaign Orchestrator's
+// job, but the channel's owning manager is the meaningful attribution for "why did my client get
+// this?": voice is the AI ISA's, social/direct-mail are the Marketing Agent's, video is assembled
+// by the Asset Manager (Video Director). Pure + defaulting (campaign_orchestrator) so it never throws.
+const CHANNEL_TO_MANAGER: Record<string, string> = {
+  ai_call:     "ai_isa",
+  voice_drop:  "ai_isa",
+  social_post: "marketing_agent",
+  direct_mail: "marketing_agent",
+  video:       "asset_manager",
+  newsletter:  "campaign_orchestrator",
+  email:       "campaign_orchestrator",
+  sms:         "campaign_orchestrator",
+}
+
+/** Pure: the manager credited with a touch on this channel (defaults to campaign_orchestrator). */
+export function touchpointManagerForChannel(stepChannel: string): string {
+  return CHANNEL_TO_MANAGER[stepChannel] ?? "campaign_orchestrator"
+}
+
 export interface RecordSequenceTouchpointInput {
   brokerageId: string
   sequenceId:  string
@@ -42,6 +62,8 @@ export interface RecordSequenceTouchpointInput {
   stepId:      string
   stepChannel: string
   sentAt:      string
+  /** PROVENANCE: the intent that GENERATED this touch's copy (step.ai_intent), for "why this?". */
+  aiIntent?:   string | null
 }
 
 /**
@@ -64,7 +86,15 @@ export async function recordSequenceTouchpoint(
       status:       "sent",
       sent_at:      input.sentAt,
       source:       "sequence",
-      metadata:     { enrollment_id: input.enrollmentId, step_id: input.stepId, step_channel: input.stepChannel },
+      // Provenance — manager + sequence + ai_intent + channel make every touch answerable in the
+      // Command Center: "why did my client get this, and which manager produced it?".
+      metadata:     {
+        enrollment_id: input.enrollmentId,
+        step_id:       input.stepId,
+        step_channel:  input.stepChannel,
+        manager:       touchpointManagerForChannel(input.stepChannel),
+        ai_intent:     input.aiIntent ?? null,
+      },
     })
     return !error
   } catch {
