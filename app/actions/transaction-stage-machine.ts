@@ -209,6 +209,18 @@ export async function advanceTransactionStage(params: {
             entityId: params.transactionId,
             contactId,
           }, svcClient)
+
+          // CONSENSUS MEMORY — a closed deal is the outcome that PROVES the strategic plays right
+          // (offer strategy, relist recovery, etc.). Resolve any open second-opinion huddles for this
+          // client/transaction so the consulted managers' track records build from real outcomes.
+          try {
+            const { resolveConsultOutcomes } = await import("@/lib/kernel/consult-outcome-resolver")
+            await resolveConsultOutcomes({
+              brokerageId: auth.brokerageId, contactId, entityId: params.transactionId, success: true,
+            }, svcClient)
+          } catch (err) {
+            console.error("[transaction-stage-machine] consult outcome resolve failed:", err)
+          }
         }
       } catch (err) {
         console.error("[transaction-stage-machine] deal_closed signal failed:", err)
