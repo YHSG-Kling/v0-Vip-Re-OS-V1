@@ -86,12 +86,33 @@ const inAppAdapter: ChannelAdapter = {
   },
 }
 
-// AI Call adapter (placeholder for Layer 4 voice system)
+// AI Call adapter — places a real outbound AI voice call as a sequence step via the voice engine.
+// The voice agent uses the existing voice-verb tool-registry DURING the call; this adapter only
+// INITIATES it. initiateVoiceCall is provider-gated (clean failure if VAPI/Twilio unconfigured) and
+// enforces call_stop_flag + DNC before any vendor call. The executor's TCPA gate + lead-only gate
+// already screen ai_call upstream (consent required; leads never reach voice) — defence in depth.
 const aiCallAdapter: ChannelAdapter = {
   channel: "ai_call",
-  async execute(_ctx: StepContext): Promise<StepResult> {
-    // AI calling is handled by the ISA voice system — log intent here
-    return { status: "sent", providerKey: "ai_call" }
+  async execute(ctx: StepContext): Promise<StepResult> {
+    const { contact, agentId, entity } = ctx
+    if (entity === "lead") {
+      return { status: "skipped", providerKey: "ai_call", error: "ai_call not permitted for unconsented leads (email/direct-mail only)" }
+    }
+    if (!contact?.id || !contact?.phone) {
+      return { status: "error", providerKey: "ai_call", error: "No contact phone for ai_call" }
+    }
+    const { initiateVoiceCall } = await import("@/lib/voice-engine/call-executor")
+    const vendor = process.env.VAPI_API_KEY ? "vapi_isa" : "twilio"
+    const r = await initiateVoiceCall(
+      { contactId: contact.id as string, initiatorRole: "ai", callType: "outbound", vendor, agentId: agentId ?? undefined },
+      contact.phone as string,
+    )
+    return {
+      status: r.success ? "sent" : "error",
+      providerKey: "ai_call",
+      messageId: r.vendorCallId ?? r.callId,
+      error: r.error,
+    }
   },
 }
 
