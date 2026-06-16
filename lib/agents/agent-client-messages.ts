@@ -16,6 +16,9 @@ export interface ProposeClientMessageInput {
   entityType:            string
   entityId?:             string | null
   recipientContactId?:   string | null
+  /** Pre-conversion LEAD recipient (mutually exclusive with recipientContactId). Leads use the
+   *  approved pre-consent channels only — email + direct mail. */
+  recipientLeadId?:      string | null
   audience:              "seller" | "buyer" | "lead" | "agent"
   subject?:              string | null
   body:                  string
@@ -35,6 +38,7 @@ export async function proposeClientMessage(
     entity_type: input.entityType,
     entity_id: input.entityId ?? null,
     recipient_contact_id: input.recipientContactId ?? null,
+    recipient_lead_id: input.recipientLeadId ?? null,
     audience: input.audience,
     subject: input.subject ?? null,
     body: input.body,
@@ -92,13 +96,47 @@ export async function approveClientMessage(
   if (editedBody?.trim()) patch.body = editedBody
   const { data: claimed } = await supabase.from("agent_client_messages")
     .update(patch).eq("id", messageId).in("status", ["proposed", "approved"])
-    .select("brokerage_id, entity_type, entity_id, recipient_contact_id, audience, subject, body, channel").single()
+    .select("brokerage_id, entity_type, entity_id, recipient_contact_id, recipient_lead_id, audience, subject, body, channel").single()
   if (!claimed) return { status: "skipped", result: { reason: "not in proposed/approved state" } }
-  const m = claimed as { brokerage_id: string; entity_type: string; entity_id: string | null; recipient_contact_id: string | null; audience: string; subject: string | null; body: string; channel: string }
+  const m = claimed as { brokerage_id: string; entity_type: string; entity_id: string | null; recipient_contact_id: string | null; recipient_lead_id: string | null; audience: string; subject: string | null; body: string; channel: string }
 
   try {
     const channel = m.channel ?? "portal"
-    if (channel === "sms" || channel === "voice_drop" || channel === "email") {
+    if (m.recipient_lead_id && !m.recipient_contact_id) {
+      // LEAD recipient (pre-conversion, no contact row) — email + direct mail ONLY. Leads carry
+      // no phone-consent columns and have no portal surface, so other channels are rejected.
+      const { data: ld } = await supabase.from("leads")
+        .select("email, first_name, last_name, email_opt_out, direct_mail_opt_out, mailing_address, mailing_address_verified, mailing_city, mailing_state, mailing_zip")
+        .eq("id", m.recipient_lead_id).maybeSingle()
+      const lead = ld as { email?: string | null; first_name?: string | null; last_name?: string | null; email_opt_out?: boolean | null; direct_mail_opt_out?: boolean | null; mailing_address?: string | null; mailing_address_verified?: boolean | null; mailing_city?: string | null; mailing_state?: string | null; mailing_zip?: string | null } | null
+      if (!lead) return await fail(supabase, messageId, "no recipient lead for this channel")
+
+      if (channel === "email") {
+        const { canDispatchToContact } = await import("@/lib/compliance/contact-channel-gate")
+        const gate = canDispatchToContact({ email_opt_out: lead.email_opt_out }, "email")
+        if (!gate.allowed) return await fail(supabase, messageId, gate.reason ?? "blocked by compliance gate")
+        if (!lead.email) return await fail(supabase, messageId, "lead has no email")
+        const { dispatchEmail } = await import("@/lib/providers/dispatch")
+        const r = await dispatchEmail({ brokerageId: m.brokerage_id, leadId: m.recipient_lead_id, from: "", to: lead.email, subject: m.subject ?? "An update from your agent", html: `<p>${m.body.replace(/\n/g, "<br/>")}</p>`, text: m.body, channelPurpose: "update", systemSource: "agent_client_message" })
+        if (!r.success) return await fail(supabase, messageId, r.error ?? "email send failed")
+      } else if (channel === "direct_mail") {
+        if (lead.direct_mail_opt_out) return await fail(supabase, messageId, "lead opted out of direct mail")
+        const presetId = (m.subject && /preset:/.test(m.subject)) ? m.subject.replace(/.*preset:/, "").trim() : null
+        if (!presetId) return await fail(supabase, messageId, "direct_mail needs a preset (subject 'preset:<id>')")
+        if (!lead.mailing_address || !lead.mailing_address_verified || !lead.mailing_city || !lead.mailing_state || !lead.mailing_zip)
+          return await fail(supabase, messageId, "no deliverable mailing address on file")
+        const { orchestratePresetSend } = await import("@/lib/direct-mail/orchestrate-preset-send")
+        const r = await orchestratePresetSend({
+          brokerageId: m.brokerage_id, presetId, leadId: m.recipient_lead_id,
+          recipientName: `${lead.first_name ?? ""} ${lead.last_name ?? ""}`.trim() || "Neighbor",
+          mailingAddress: lead.mailing_address, city: lead.mailing_city, state: lead.mailing_state, zip: lead.mailing_zip,
+          systemSource: "agent_client_message",
+        })
+        if (!r.success) return await fail(supabase, messageId, r.error ?? r.fellBackReason ?? "direct mail send failed")
+      } else {
+        return await fail(supabase, messageId, "leads support email + direct mail only")
+      }
+    } else if (channel === "sms" || channel === "voice_drop" || channel === "email") {
       // Direct channels need the contact's identifier + the canonical suppression gate
       // (TCPA consent, DNC, per-channel opt-out / unsubscribe) — one source of truth.
       const { canDispatchToContact, honorsChannelPreference, CONTACT_CONSENT_COLUMNS, CONTACT_PREFERENCE_COLUMN } = await import("@/lib/compliance/contact-channel-gate")

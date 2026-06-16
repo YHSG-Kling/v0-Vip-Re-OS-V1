@@ -88,7 +88,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   agent_client_messages: [
     "agent_kind", "approved_at", "approved_by", "audience", "body", "brokerage_id", "channel",
     "created_at", "entity_id", "entity_type", "id", "managed_agent_session_id", "proposed_at",
-    "rationale", "recipient_contact_id", "send_error", "sent_at", "status", "subject",
+    "rationale", "recipient_contact_id", "recipient_lead_id", "send_error", "sent_at", "status", "subject",
   ],
   leads: [
     "next_followup_at", "next_followup_reason",

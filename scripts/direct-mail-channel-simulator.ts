@@ -13,6 +13,7 @@
  *
  * Run: npx tsx scripts/direct-mail-channel-simulator.ts   (npm run test:direct-mail-channel)
  */
+export {} // module scope (no top-level import) so the shared harness vars don't leak to global
 let passed = 0, failed = 0
 const failures: string[] = []
 function check(name: string, cond: boolean, detail?: string) {
