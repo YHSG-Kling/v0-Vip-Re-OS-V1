@@ -224,6 +224,22 @@ export async function launchListingAction(params: {
         .maybeSingle()
 
       if (listing) {
+        // CONSENSUS MEMORY — launching a listing is a STRATEGIC play: raise a pre-launch huddle to the
+        // Shopping Agent for a read on live buyer appetite at this price (listing_launch → shopping_agent).
+        // The outcome resolves it later — a deal closing on this listing proves the read right, the listing
+        // expiring proves it wrong (consult-outcome-resolver) — so the pre-launch pricing read builds a
+        // track record over time. Best-effort; never blocks the launch.
+        try {
+          const { requestSecondOpinion } = await import("@/lib/kernel/second-opinion-runner")
+          await requestSecondOpinion({
+            brokerageId: (listing as any).brokerage_id, fromManager: "listing_concierge",
+            playType: "listing_launch", entityType: "listing", entityId: params.listingId,
+            context: "pre-launch read on buyer appetite at this price",
+          }, svc)
+        } catch {
+          // Non-fatal — the huddle is an enhancement, the launch proceeds.
+        }
+
         const baseUrl = process.env.NEXT_PUBLIC_APP_URL
         if (!baseUrl) {
           // Base URL not configured — skip QR generation but continue action
