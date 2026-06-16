@@ -21,9 +21,10 @@ interface StepSeed {
   step_name: string
   channel: string
   delay_days: number
+  /** The INTENT only — the copy itself is GENERATED per-person from persona + Fair-Housing-safe
+   *  enrichment at send time (renderSequenceStep). No hardcoded subject/body lives on the step;
+   *  if generation ever fails, the adapter skips rather than sending filler. */
   ai_intent: string
-  subject: string | null
-  body: string
 }
 
 // Multi-channel, persona-driven. delay_days is relative to the PREVIOUS step. Leads auto-skip the
@@ -34,20 +35,14 @@ const STEPS: StepSeed[] = [
   {
     step_number: 1, step_name: "Warm re-intro email", channel: "email", delay_days: 0,
     ai_intent: "a warm, no-pressure check-in re-engaging someone who's gone quiet — leave the door open, make it easy to reply 'later'",
-    subject: "Still here whenever you're ready",
-    body: "It's been a little while, so I wanted to check in — no pressure at all. If now's a better time or anything's changed, just reply and I'll pick right back up.",
   },
   {
     step_number: 2, step_name: "Friendly text nudge", channel: "sms", delay_days: 7,
     ai_intent: "a brief, friendly text nudge to reconnect — one line, no pressure",
-    subject: null,
-    body: "Just keeping the door open — happy to help whenever the timing's right for you. Reply anytime.",
   },
   {
     step_number: 3, step_name: "Value-forward email", channel: "email", delay_days: 7,
     ai_intent: "a short, value-forward second email — offer something genuinely helpful (a quick market read, or a simple question) while staying low-pressure",
-    subject: "One quick thing",
-    body: "Whenever you're ready, I'm glad to send over what's new in your area or answer anything you're wondering about. Either way, no rush at all.",
   },
 ]
 

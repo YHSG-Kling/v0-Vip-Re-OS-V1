@@ -60,6 +60,9 @@ export interface RenderedStep {
   signatureIncluded:    boolean
   /** Token replacements that fired (for debug + observability). */
   tokensReplaced:       Record<string, string>
+  /** True when the message body is blank — e.g. persona generation produced nothing and there was
+   *  no template fallback. Adapters MUST refuse to dispatch (never send blank/ungenerated copy). */
+  empty:                boolean
 }
 
 export async function renderSequenceStep(input: RenderStepInput): Promise<RenderedStep> {
@@ -134,6 +137,7 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
   const replaced: Record<string, string> = {}
   const subject = interpolate(subjectTemplate, tokens, replaced)
   const body    = interpolate(bodyTemplate, tokens, replaced)
+  const bodyIsEmpty = !body.trim() // persona generation yielded nothing + no template fallback
 
   // ── Brand-voice check (advisory + hard-block on violations) ──────────────
   // Resolution order: brokerage → team → agent (most-specific wins).
@@ -161,6 +165,7 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
         brandVoiceNotes:      voice.notes,
         signatureIncluded:    false,
         tokensReplaced:       replaced,
+        empty:                bodyIsEmpty,
       }
     }
     const assembled: AssembledEmail = await assembleEmail({
@@ -179,6 +184,7 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
       brandVoiceNotes:      voice.notes,
       signatureIncluded:    assembled.signatureIncluded,
       tokensReplaced:       replaced,
+      empty:                bodyIsEmpty,
     }
   }
 
@@ -191,6 +197,7 @@ export async function renderSequenceStep(input: RenderStepInput): Promise<Render
     brandVoiceNotes:      voice.notes,
     signatureIncluded:    false,
     tokensReplaced:       replaced,
+    empty:                bodyIsEmpty,
   }
 }
 

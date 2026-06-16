@@ -27,6 +27,11 @@ export const smsAdapter: ChannelAdapter = {
       personaIntent: (step as any).ai_intent ?? null,
     })
 
+    if (rendered.empty) {
+      // Never send blank/hardcoded filler — skip; re-touched next tick.
+      return { status: "error", providerKey: "sms", error: "no copy generated — not sending blank/ungenerated sms" }
+    }
+
     if (rendered.brandVoiceViolations.length > 0) {
       return {
         status: "error",

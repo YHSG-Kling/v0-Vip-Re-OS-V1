@@ -28,6 +28,12 @@ export const emailAdapter: ChannelAdapter = {
       channelPurpose: "campaign",
     })
 
+    if (rendered.empty) {
+      // Persona generation produced nothing and there was no template fallback — never send blank
+      // or hardcoded filler. Skipped; the contact is re-touched on the next cron tick.
+      return { status: "error", providerKey: "email", error: "no copy generated — not sending blank/ungenerated email" }
+    }
+
     if (rendered.brandVoiceViolations.length > 0) {
       return {
         status: "error",

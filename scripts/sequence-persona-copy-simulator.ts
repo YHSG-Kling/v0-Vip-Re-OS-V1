@@ -76,6 +76,14 @@ async function main() {
     check("no ai_intent → static template body used", /STATIC TEMPLATE BODY for ZZ/.test(tmpl.htmlBody), tmpl.htmlBody.slice(0, 200))
     check("no ai_intent → token interpolation still fires ({{first_name}})", /Hi ZZ/.test(tmpl.subject ?? ""))
 
+    // No hardcoded fallback: ai_intent + failed generation + no template body → empty (adapter skips).
+    const blank = await renderSequenceStep({
+      brokerageId, contactId, agentUserId: null,
+      step: { channel: "email", subject: null, body: null },
+      personaIntent: "re-engage", generator: (async () => null) as any,
+    })
+    check("ai_intent + failed generation + no template → empty=true (never sends blank/filler)", blank.empty === true, JSON.stringify({ empty: blank.empty }))
+
     // LEAD entity → renderSequenceStep reads the LEADS table (was contacts-only, so leads couldn't render).
     await svc.from("leads").insert({ id: leadId, brokerage_id: brokerageId, first_name: "ZZ", last_name: "RenderLead", email: "zz.rl@example.com", persona: "investor", last_contacted_at: new Date(Date.now() - 60 * 86_400_000).toISOString() })
     const leadRender = await renderSequenceStep({
