@@ -208,6 +208,7 @@
     "test:showing-feedback-routing": "tsx scripts/showing-feedback-routing-simulator.ts",
     "test:listing-stall-predictor": "tsx scripts/listing-stall-predictor-simulator.ts",
     "test:open-house-lead-routing": "tsx scripts/open-house-lead-routing-simulator.ts",
+    "test:inbound-seller-intent": "tsx scripts/inbound-seller-intent-simulator.ts",
     "test:manager-outbound-eval": "tsx scripts/manager-outbound-eval-simulator.ts",
     "test:learning-outcomes": "tsx scripts/learning-outcomes-simulator.ts",
     "test:voice-report": "tsx scripts/voice-report-format-simulator.ts",

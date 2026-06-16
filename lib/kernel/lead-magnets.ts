@@ -458,6 +458,19 @@ export async function captureFormSubmission(
       qualification_data: input.submissionData,
       submitted_at: submittedAt,
     })
+
+    // MANAGER-ORCHESTRATED — a valuation lead magnet (they gave us a property address) is strong
+    // inbound seller intent. Hand it to the Listing Concierge over the bus for a gated precise-CMA
+    // follow-up, so the team responds like a listing lead. Best-effort; never blocks the capture.
+    try {
+      const { publishInboundSellerIntent } = await import("@/lib/intelligence/inbound-seller-intent-runner")
+      await publishInboundSellerIntent({
+        brokerageId: input.brokerageId, contactId, source: "lead_magnet:home_valuation",
+        property: { address: data.property_address, city: data.city ?? null, state: data.state ?? null, estimatedValue: null },
+      }, supabase)
+    } catch (err) {
+      console.warn("[lead-magnets] seller-intent handoff failed:", err)
+    }
   }
 
   // Log lifecycle event

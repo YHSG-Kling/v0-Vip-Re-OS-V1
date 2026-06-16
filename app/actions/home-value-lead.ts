@@ -110,5 +110,18 @@ export async function captureHomeValueLead(input: HomeValueLeadInput): Promise<{
     is_read: false,
   })
 
+  // MANAGER-ORCHESTRATED — a "what's my home worth" request is the strongest inbound SELLER intent.
+  // Hand it to the Listing Concierge over the bus so it responds like a human listing lead (a gated
+  // precise-CMA follow-up), instead of leaving the lead to rot in the agent's inbox. Best-effort.
+  try {
+    const { publishInboundSellerIntent } = await import("@/lib/intelligence/inbound-seller-intent-runner")
+    await publishInboundSellerIntent({
+      brokerageId: input.brokerageId, contactId: contact.id, source: "home_value_tool",
+      property: { address: input.property.address, city: input.property.city, state: input.property.state, estimatedValue: input.property.estimatedValue },
+    }, svc)
+  } catch (err) {
+    console.warn("[home-value-lead] seller-intent handoff failed:", err)
+  }
+
   return { success: true, contactId: contact.id }
 }

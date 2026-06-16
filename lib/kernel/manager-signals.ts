@@ -609,6 +609,28 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }, ctx.supabase)
     return res.ok ? `proposed a gated early "${play}" recommendation (message ${res.id})` : null
   },
+  // Inbound seller intent → Listing Concierge: a homeowner asked "what's my home worth" (a home-value
+  // tool / valuation magnet) — the strongest INBOUND seller signal. The concierge responds like a
+  // human listing lead: a GATED follow-up offering a precise CMA beyond the instant estimate. Never
+  // auto-sent. (Distinct from the outbound scraped seller_intent_hot, which is raw-lead-shaped.)
+  "listing_concierge:home_value_seller_intent": async (signal, ctx) => {
+    if (!signal.contactId) return null
+    const p = (signal.payload ?? {}) as Record<string, unknown>
+    const addr = (p.property_address as string | undefined) ?? "your home"
+    const est = typeof p.estimated_value === "number" ? p.estimated_value : null
+    const estLine = est ? ` The instant tool put it around $${Math.round(est).toLocaleString()}, but` : " The instant estimate is a starting point —"
+
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "listing_concierge", entityType: "contact",
+      entityId: signal.contactId, recipientContactId: signal.contactId, audience: "seller",
+      subject: `A precise value for ${addr}`,
+      body: `Thanks for checking your home's value!${estLine} an automated number can't see what makes ${addr} special — recent upgrades, the exact block, how it shows. I'd be glad to put together a precise, no-obligation comparative market analysis (CMA) with real local comps so you have an accurate number whether you're just curious or starting to think about a move. Want me to prepare it?`,
+      rationale: `INBOUND SELLER INTENT (${(p.intent_strength as string) ?? "warm"}) — homeowner requested a home value; gated CMA-offer follow-up proposed so the team responds like a listing lead (manager-orchestrated, not a lead left in the inbox).`,
+      channel: "portal",
+    }, ctx.supabase)
+    return res.ok ? `proposed a gated CMA-offer follow-up to the homeowner (message ${res.id})` : null
+  },
   // autopsy has already classified the failure reason and proposed a gated coaching
   // brief (proposeClientMessage). The Recruiting Manager's handler here surfaces a
   // NOTIFICATION to the broker/team-lead so the coaching prompt is never invisible —
