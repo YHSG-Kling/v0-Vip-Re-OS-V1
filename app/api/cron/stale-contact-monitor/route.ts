@@ -113,6 +113,16 @@ export async function GET(request: NextRequest) {
         errors.push(`offer-rejection-recovery: ${err instanceof Error ? err.message : String(err)}`)
       }
 
+      // EXPIRED/WITHDRAWN LISTING RE-LIST RECOVERY (seller-side mirror) — re-engage a seller
+      // whose listing came off the market without selling, before a competitor calls.
+      try {
+        const { runRelistRecovery } = await import('@/lib/listings/relist-recovery-runner')
+        const rel = await runRelistRecovery({ brokerageId }, supabase)
+        reengaged += rel.recovered
+      } catch (err: unknown) {
+        errors.push(`relist-recovery: ${err instanceof Error ? err.message : String(err)}`)
+      }
+
       results.push({
         brokerageId,
         staleCount: staleContacts?.length ?? 0,
