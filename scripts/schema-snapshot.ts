@@ -160,7 +160,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
     "earnest_money", "earnest_money_due_at", "earnest_money_due_days", "escalation_cap",
     "escalation_clause", "esign_completed_at", "esign_provider", "esign_sent_at", "esign_status",
     "financing_contingency_days", "financing_type", "form_provider_ref", "form_source",
-    "fully_signed_contract_received_at", "has_counter", "id", "inspection_period_days",
+    "fully_signed_contract_received_at", "has_counter", "id", "inspection_period_days", "metadata",
     "is_winning_offer", "listing_id", "notes", "offer_document_name", "offer_document_url",
     "offer_documents", "offer_number", "offer_price", "offer_type", "parent_offer_id",
     "possession_terms", "property_address", "property_address_ai_filled", "provider_envelope_id",
