@@ -18,14 +18,18 @@ export function spokenReceipts(contactName: string | null, receipts: ReceiptEntr
   return `Here's the trail for ${who}: ${lines.join("; ")}.`
 }
 
-/** Spoken "who needs you first + what the team plans today" from the steer-my-day digest. Pure. */
+/** Spoken "who needs you first + what the team plans today" from the steer-my-day digest. The work
+ *  queue spans the whole funnel, so a lead is named as a lead and a lifetime client as a client. Pure. */
 export function spokenSteerDay(steer: SteerMyDay, names?: Record<string, string>): string {
   if (!steer) return "Nothing to steer today."
   if (steer.workFirst.length === 0) {
     return `${steer.headline}.`
   }
   const who = steer.workFirst
-    .map((w) => `${names?.[w.contactId] ?? "a client"} (${w.band}, ${w.score})`)
+    .map((w) => {
+      const name = names?.[w.id] ?? (w.kind === "lead" ? "a lead" : "a client")
+      return w.kind === "lead" ? `${name} (lead, ${w.band}, ${w.score})` : `${name} (${w.band}, ${w.score})`
+    })
     .join(", ")
   return `${steer.headline}. Work these first: ${who}.`
 }

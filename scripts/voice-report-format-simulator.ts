@@ -43,15 +43,17 @@ function main() {
   console.log("\n[spokenSteerDay — 'who's slipping?']")
   const steer = {
     workFirst: [
-      { contactId: "c1", score: 18, band: "dormant" as const, priority: 4, drivers: [] },
-      { contactId: "c2", score: 32, band: "at_risk" as const, priority: 3, drivers: [] },
+      { kind: "contact" as const, id: "c1", score: 18, band: "dormant" as const, priority: 4, drivers: [] },
+      { kind: "contact" as const, id: "c2", score: 32, band: "at_risk" as const, priority: 3, drivers: [] },
+      { kind: "lead" as const, id: "l1", score: 25, band: "at_risk" as const, priority: 3, drivers: [] },
     ],
     planned: { total: 5, willSend: 3, blocked: 2 },
-    headline: "2 clients slipping — work them first · your team plans 3 sends today (2 held by the gates)",
+    headline: "3 slipping (2 clients, 1 lead) — work them first · your team plans 3 sends today (2 held by the gates)",
   }
-  const spoken = spokenSteerDay(steer, { c1: "Pat Rivera", c2: "Dana Cole" })
+  const spoken = spokenSteerDay(steer, { c1: "Pat Rivera", c2: "Dana Cole", l1: "Sam Lee" })
   check("speaks the headline + names the slipping clients with band/score", /slipping/.test(spoken) && /Pat Rivera \(dormant, 18\)/.test(spoken) && /Dana Cole \(at_risk, 32\)/.test(spoken))
-  check("calm day → reassuring, no list", /on top of it/.test(spokenSteerDay({ workFirst: [], planned: { total: 0, willSend: 0, blocked: 0 }, headline: "no clients slipping — you're on top of it" })))
+  check("a slipping LEAD is named as a lead (whole-funnel work queue)", /Sam Lee \(lead, at_risk, 25\)/.test(spoken))
+  check("calm day → reassuring, no list", /on top of it/.test(spokenSteerDay({ workFirst: [], planned: { total: 0, willSend: 0, blocked: 0 }, headline: "no one slipping — you're on top of it" })))
 
   console.log("\n[voice tool pool registration + gating]")
   const slip = getVoiceTool("whos_slipping")
