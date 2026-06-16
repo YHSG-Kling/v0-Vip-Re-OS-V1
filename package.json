@@ -198,6 +198,7 @@
     "test:second-opinion": "tsx scripts/second-opinion-simulator.ts",
     "test:steer-my-day": "tsx scripts/steer-my-day-simulator.ts",
     "test:health-lifecycle": "tsx scripts/health-lifecycle-simulator.ts",
+    "test:winback-personalization": "tsx scripts/winback-personalization-simulator.ts",
     "test:outcome-autopsy": "tsx scripts/outcome-autopsy-simulator.ts",
     "test:consensus-memory": "tsx scripts/consensus-memory-simulator.ts",
     "test:consensus-memory-runner": "tsx scripts/consensus-memory-runner-simulator.ts",

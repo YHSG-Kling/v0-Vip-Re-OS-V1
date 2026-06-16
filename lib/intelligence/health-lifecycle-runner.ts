@@ -27,10 +27,13 @@ export async function runHealthLifecyclePlays(brokerageId: string, client?: Svc,
   const decaying = ranked.filter((r) => r.priority >= 3) // at_risk or dormant
   if (decaying.length === 0) return out
 
-  // Need contact_type + agent to match the play to who they are and to attribute a win-back video.
+  // Need contact_type + agent to match the play to who they are and to attribute a win-back video;
+  // first_name + home_anniversary + city personalize the win-back script (their last positive moment).
   const ids = decaying.map((d) => d.contactId)
-  const { data: contacts } = await svc.from("contacts").select("id, contact_type, agent_id").in("id", ids)
-  const byId = new Map<string, { type: string | null; agentId: string | null }>(((contacts ?? []) as any[]).map((c) => [c.id, { type: c.contact_type ?? null, agentId: c.agent_id ?? null }]))
+  const { data: contacts } = await svc.from("contacts").select("id, contact_type, agent_id, first_name, home_anniversary, city").in("id", ids)
+  const byId = new Map<string, { type: string | null; agentId: string | null; firstName: string | null; homeAnniversary: string | null; city: string | null }>(
+    ((contacts ?? []) as any[]).map((c) => [c.id, { type: c.contact_type ?? null, agentId: c.agent_id ?? null, firstName: c.first_name ?? null, homeAnniversary: c.home_anniversary ?? null, city: c.city ?? null }]),
+  )
   const typeById = new Map<string, string | null>([...byId.entries()].map(([k, v]) => [k, v.type]))
 
   // Resolve a valid sender users.id: the contact's agent (agents.user_id) or the brokerage system user.
@@ -85,10 +88,20 @@ export async function runHealthLifecyclePlays(brokerageId: string, client?: Svc,
       try {
         const sender = await senderFor(byId.get(d.contactId)?.agentId ?? null)
         if (sender) {
+          // Personalize the win-back script to who they are + their last positive moment (the home
+          // anniversary) so the D-ID/ElevenLabs note reads one-to-one, not generic. Fair-Housing-safe.
+          const c = byId.get(d.contactId)
+          const { winbackPersonalization } = await import("./winback-personalization")
+          const pers = winbackPersonalization({
+            firstName: c?.firstName ?? null,
+            contactType: c?.type ?? null,
+            homeAnniversary: c?.homeAnniversary ?? null,
+            city: c?.city ?? null,
+          })
           const { commissionVideo } = await import("@/lib/video/video-director")
           const r = await commissionVideo(
             { kind: wb.kind as any, tier: "solo_agent", targetChannel: "email", facts: { contact_id: d.contactId } } as any,
-            { brokerageId, agentUserId: sender, contactId: d.contactId },
+            { brokerageId, agentUserId: sender, contactId: d.contactId, persona: pers.persona, extraFacts: pers.facts },
             svc,
           )
           if ((r as any).ok) out.winbackVideosStaged++

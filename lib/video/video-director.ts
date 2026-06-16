@@ -635,6 +635,13 @@ export interface CommissionOpts {
   /** Injectable persona-copy generator seam (tests pass () => null for the
    *  deterministic fallback; production routes through the AI gateway). */
   copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator
+  /** Personalize the hook to a specific person (win-back: their name + situation).
+   *  Omitted → the generic "audience" persona (unchanged behavior). */
+  persona?: import("@/lib/kernel/ai-copy").CopyPersona
+  /** Extra grounded facts the hook copy MAY use (e.g. a win-back's last positive
+   *  moment — a home anniversary). Fair-Housing-safe, no fabrication; appended to
+   *  the situation facts. Omitted → situation facts only (unchanged behavior). */
+  extraFacts?: string[]
   /** MLS-clean cut → the outro carries NO agent QR (mirrors QrOutroBadge). */
   mlsClean?: boolean
   /**
@@ -776,7 +783,7 @@ export async function commissionVideo(
     const { runWithComplianceRedraft } = await import("@/lib/kernel/compliance-redraft")
     const { evaluateOutbound } = await import("@/lib/kernel/compliance")
 
-    const facts = factStrings(situation, fallbackHook)
+    const facts = [...factStrings(situation, fallbackHook), ...(opts.extraFacts ?? [])]
 
     const result = await runWithComplianceRedraft({
       draft: async ({ violations: priorViolations }) => {
@@ -785,7 +792,7 @@ export async function commissionVideo(
             goal: `a ${situation.kind.replace(/_/g, " ")} video hook headline${priorViolations.length ? ` (rewrite to clear: ${priorViolations.join("; ")})` : ""}`,
             facts,
             channel: situation.targetChannel,
-            persona: { audience: "audience" },
+            persona: opts.persona ?? { audience: "audience" },
             words: 8,
           },
           { body: fallbackHook },
