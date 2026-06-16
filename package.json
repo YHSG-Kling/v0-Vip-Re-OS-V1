@@ -169,7 +169,8 @@
     "test:price-advisor": "tsx scripts/price-advisor-simulator.ts",
     "test:creative-fatigue": "tsx scripts/creative-fatigue-simulator.ts",
     "test:net-sheet-surprise": "tsx scripts/net-sheet-surprise-simulator.ts",
-    "test:negotiation-outcome": "tsx scripts/negotiation-outcome-simulator.ts"
+    "test:negotiation-outcome": "tsx scripts/negotiation-outcome-simulator.ts",
+    "test:trid-clock": "tsx scripts/trid-disclosure-clock-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

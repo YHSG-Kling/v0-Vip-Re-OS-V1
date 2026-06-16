@@ -39,6 +39,8 @@ export async function GET(request: NextRequest) {
       expiring_certs: 0,
       expired_certs: 0,
       trid_violations: 0,
+      trid_deadlines_flagged: 0,
+      trid_deadlines_escalated: 0,
       expired_content_deactivated: 0,
       cold_lead_violations_detected: 0,
     }
@@ -63,6 +65,20 @@ export async function GET(request: NextRequest) {
       const compliance = await monitorTRIDComplianceService(txn.id, supabase)
       if (!compliance.compliant) {
         results.trid_violations += compliance.violations.length
+      }
+    }
+
+    // FORWARD-LOOKING TRID DISCLOSURE CLOCK — per brokerage, warn BEFORE the Closing
+    // Disclosure / Loan Estimate deadline (not after, like the post-hoc monitor above).
+    const { runTridDisclosureClock } = await import("@/lib/compliance/trid-disclosure-clock-runner")
+    const { data: clockBrokerages } = await supabase.from("brokerages").select("id").is("deleted_at", null)
+    for (const b of (clockBrokerages ?? []) as Array<{ id: string }>) {
+      try {
+        const clock = await runTridDisclosureClock({ brokerageId: b.id }, supabase)
+        results.trid_deadlines_flagged += clock.flagged
+        results.trid_deadlines_escalated += clock.escalated
+      } catch (e) {
+        console.error(`[ComplianceMonitoring] TRID clock ${b.id}:`, e)
       }
     }
 
