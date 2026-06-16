@@ -846,7 +846,17 @@ function Step3Fill({ state, providerInfo }: { state: WizardState; providerInfo: 
 
       {myFormsList.length > 0 && (
         <div className="space-y-3">
-          <p className="text-sm text-muted-foreground">Forms from your library — fields are pre-filled where possible. Review and complete any remaining fields.</p>
+          <p className="text-sm text-muted-foreground">Forms from your library. You fill in the offer terms; the known property details on file are shown below to carry into each form.</p>
+          {(() => {
+            const known = [state.propertyAddress, state.propertyCity, state.propertyState].filter(Boolean).join(", ")
+            return (
+              <p className="text-xs rounded-md bg-muted/40 border px-3 py-2">
+                {known
+                  ? <>Known property info to carry in: <span className="font-medium">{known}</span>. Complete the remaining fields on each form.</>
+                  : <>No property info on file yet — enter the property details directly on the form.</>}
+              </p>
+            )
+          })()}
           {myFormsList.map(f => (
             <div key={f.formRef} className="border rounded-lg overflow-hidden">
               <div className="px-4 py-2 bg-muted/50 border-b flex items-center gap-2">
@@ -854,7 +864,6 @@ function Step3Fill({ state, providerInfo }: { state: WizardState; providerInfo: 
                 <span className="text-sm font-medium">{f.name}</span>
               </div>
               <div className="p-4">
-                <p className="text-xs text-muted-foreground mb-3">Pre-filled: property address, buyer/seller name, agent info.</p>
                 <a href={f.formRef} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs underline text-primary">
                   <ExternalLink className="h-3 w-3" />
                   Open form to review
