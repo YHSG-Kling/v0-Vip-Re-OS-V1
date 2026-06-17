@@ -20,7 +20,9 @@ import {
   detectOurCitation,
   scoreCitationVisibility,
   buildCitationQuery,
+  buildLandingCitationQuery,
   runCitationMonitor,
+  runLandingPageCitationMonitor,
   CITATION_PLATFORMS,
   siteOrigin,
   type SearchFetcher,
@@ -89,6 +91,12 @@ async function main() {
   const q = buildCitationQuery({ brandName: "Summit Realty Group", title: "Luxury Loft Tour", city: "Austin", state: "TX" })
   check("query: names subject + place + brand", q.includes("Luxury Loft Tour") && q.includes("Austin, TX") && q.includes("Summit Realty Group"))
 
+  // buildLandingCitationQuery — the real demand QUESTION + place, BRAND-FREE (honest signal).
+  const lq = buildLandingCitationQuery({ topQuestion: "How much is my home worth in Austin?", fallback: "Home value", area: "Austin, TX" })
+  check("landing query: uses the real demand question + place, brand-free", lq.includes("How much is my home worth") && lq.includes("in Austin, TX") && !/summit realty group/i.test(lq))
+  const lqFallback = buildLandingCitationQuery({ topQuestion: null, fallback: "First-Time Buyer Guide", area: null })
+  check("landing query: falls back to the page headline when no FAQ question", lqFallback.includes("First-Time Buyer Guide"))
+
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY && !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
   if (!hasCreds) { console.log("\n[Layer 2] ⏭ no Supabase creds — pure layer only"); report(); return }
 
@@ -97,6 +105,7 @@ async function main() {
   const svc = createServiceClient()
   const TAG = `Cit${Date.now()}`
   const cleanup: Array<{ table: string; id: string }> = []
+  let lmObsSlug = ""
 
   try {
     const { data: agent } = await svc.from("agents").select("id, user_id, brokerage_id")
@@ -161,14 +170,71 @@ async function main() {
     const r4 = await runCitationMonitor(brokerageId, { searchFetcher: deadFetcher, windowDays: 7 }, svc)
     const page4 = r4.pages.find((p) => p.projectId === projectId)
     check("degrade: rail unavailable → not_checked, visibility null (never fabricated)", page4?.visibility.score === null && r4.notChecked >= CITATION_PLATFORMS.length && r4.cited === 0)
+
+    // ── Lead-magnet / FAQ landing page coverage (/lm/[slug]) ──
+    console.log("\n[Layer 2 · landing pages — /lm/[slug] GEO ingress]")
+    lmObsSlug = `${TAG.toLowerCase()}-lm-feedface`
+    const landingContent = {
+      headline: `${TAG} What's My Home Worth`, subhead: "Get a real local estimate.", cta: "Get my estimate",
+      bullets: ["Local comps, not a national guess", "No obligation"],
+      topics: ["home value", "selling timeline"],
+      faq: [
+        { question: `How much is my ${TAG} home worth right now?`, answer: "A local expert can give you a precise figure from recent comparable sales in your neighborhood." },
+        { question: "How long does it take to sell a home?", answer: "It depends on price and the local market; we map out a realistic timeline up front." },
+      ],
+      faqJsonLd: JSON.stringify({ "@context": "https://schema.org", "@type": "FAQPage", mainEntity: [] }),
+      fromTopics: true, generatedAt: new Date().toISOString(),
+    }
+    const { data: form } = await svc.from("lead_capture_forms").insert({
+      brokerage_id: brokerageId, name: `${TAG} Home Value`, slug: lmObsSlug, is_active: true, landing_content: landingContent,
+    }).select("id").single()
+    if (!form) { console.log("  ⏭ could not seed lead magnet"); } else {
+      const formId = (form as any).id
+      cleanup.push({ table: "lead_capture_forms", id: formId })
+
+      const lmCitingFetcher: SearchFetcher = async () => ({
+        text: `You can get a local estimate at ${origin}/lm/${lmObsSlug} — it uses recent comps.`, provider: "tavily",
+      })
+      const lr1 = await runLandingPageCitationMonitor(brokerageId, { searchFetcher: lmCitingFetcher }, svc)
+      const lmPage = lr1.pages.find((p) => p.formId === formId)
+      check("landing run: our lead-magnet page was monitored", !!lmPage && lr1.pagesMonitored >= 1)
+      check("landing run: cited per platform, visibility 1.0", lmPage?.visibility.score === 1 && lr1.cited >= CITATION_PLATFORMS.length && lr1.notCited === 0)
+      check("landing run: cited_url points at /lm/<slug>", (lmPage?.citedUrl ?? "").includes(lmObsSlug))
+
+      const { count: lmRows } = await svc.from("ai_search_landing_citation_observations")
+        .select("id", { count: "exact", head: true }).eq("form_id", formId)
+      check("landing db: one row per platform (no duplicates)", (lmRows ?? 0) === CITATION_PLATFORMS.length)
+
+      // Idempotent rerun — UPSERT overwrites the day's rows.
+      await runLandingPageCitationMonitor(brokerageId, { searchFetcher: lmCitingFetcher }, svc)
+      const { count: lmRows2 } = await svc.from("ai_search_landing_citation_observations")
+        .select("id", { count: "exact", head: true }).eq("form_id", formId)
+      check("landing idempotency: rerun does not append", (lmRows2 ?? 0) === CITATION_PLATFORMS.length)
+
+      // Unrelated answer → not_cited; dead rail → not_checked (honest degrade).
+      const lmUnrelated: SearchFetcher = async () => ({ text: "Zillow shows several homes in that area.", provider: "exa" })
+      const lr3 = await runLandingPageCitationMonitor(brokerageId, { searchFetcher: lmUnrelated }, svc)
+      const lmPage3 = lr3.pages.find((p) => p.formId === formId)
+      check("landing run: unrelated answer → not_cited, visibility 0.0", lmPage3?.visibility.score === 0 && lr3.cited === 0)
+
+      const lmDead: SearchFetcher = async () => ({ text: "", provider: "none" })
+      const lr4 = await runLandingPageCitationMonitor(brokerageId, { searchFetcher: lmDead }, svc)
+      const lmPage4 = lr4.pages.find((p) => p.formId === formId)
+      check("landing degrade: rail down → not_checked, visibility null", lmPage4?.visibility.score === null && lr4.notChecked >= CITATION_PLATFORMS.length)
+    }
   } finally {
-    // Reverse-delete. Observations cascade on the reel delete, but delete explicitly first to assert the path.
+    // Reverse-delete. Observations cascade on the parent delete, but delete explicitly first to assert the path.
     try { await svc.from("ai_search_citation_observations").delete().eq("public_slug", `${TAG.toLowerCase()}-reel-deadbeef`) } catch {}
+    if (lmObsSlug) { try { await svc.from("ai_search_landing_citation_observations").delete().eq("public_slug", lmObsSlug) } catch {} }
     for (const c of [...cleanup].reverse()) { try { await svc.from(c.table).delete().eq("id", c.id) } catch {} }
     const { count } = await svc.from("ai_video_projects").select("id", { count: "exact", head: true }).ilike("title", `${TAG}%`)
     check("cleanup verified (reel + observations gone)", (count ?? 0) === 0)
     const { count: obsLeft } = await svc.from("ai_search_citation_observations").select("id", { count: "exact", head: true }).eq("public_slug", `${TAG.toLowerCase()}-reel-deadbeef`)
     check("cleanup: observation count == 0", (obsLeft ?? 0) === 0)
+    if (lmObsSlug) {
+      const { count: lmLeft } = await svc.from("ai_search_landing_citation_observations").select("id", { count: "exact", head: true }).eq("public_slug", lmObsSlug)
+      check("cleanup: landing observation count == 0", (lmLeft ?? 0) === 0)
+    }
   }
   report()
 }

@@ -215,6 +215,24 @@ export function buildCitationQuery(args: {
   return [subject, place ? `in ${place}` : "", `by ${brand}`].filter(Boolean).join(" ").trim()
 }
 
+/**
+ * PURE: the query we issue for a LEAD-MAGNET / FAQ landing page. Unlike a reel (a
+ * branded listing query), a lead-magnet page targets an INFORMATIONAL question an AI
+ * search engine actually answers — so we issue the real demand QUESTION itself
+ * (optionally placed), brand-FREE, and then detect whether the answer cites US. Keeping
+ * the brand OUT of the query is the honest signal: "for this real question, does AI
+ * search surface our page on its own merits?"
+ */
+export function buildLandingCitationQuery(args: {
+  topQuestion: string | null
+  fallback:    string | null
+  area:        string | null
+}): string {
+  const q = (args.topQuestion && args.topQuestion.trim()) || (args.fallback && args.fallback.trim()) || "real estate help"
+  const place = args.area && args.area.trim() ? `in ${args.area.trim()}` : ""
+  return [q.replace(/\s+/g, " ").trim(), place].filter(Boolean).join(" ").trim()
+}
+
 // ── The runner ──
 
 export interface CitationMonitorOptions {
@@ -371,6 +389,142 @@ export async function runCitationMonitor(
       visibility: scoreCitationVisibility(pageObs),
       citedUrl,
     })
+  }
+
+  result.visibility = scoreCitationVisibility(allObs)
+  return result
+}
+
+// ── Lead-magnet / FAQ landing-page citation monitor (the GEO INGRESS for /lm/[slug]) ──
+//
+// The natural pair to the AI lead-magnet copy + GEO FAQ now published on /lm/[slug]:
+// that work makes a lead-magnet page CITABLE (real demand copy + schema.org FAQPage
+// JSON-LD); this tracks whether AI search engines ACTUALLY cite it. It reuses the SAME
+// pure core (detectOurCitation / scoreCitationVisibility) + the same gated web-search
+// rail, recording honest observations into ai_search_landing_citation_observations
+// (FK'd to lead_capture_forms — reels and landing pages are kept in their own tables).
+
+export interface LandingCitationMonitorResult {
+  pagesMonitored: number
+  observations:   number
+  cited:          number
+  notCited:       number
+  notChecked:     number
+  visibility:     VisibilityScore
+  pages: Array<{
+    formId:     string
+    slug:       string
+    title:      string | null
+    visibility: VisibilityScore
+    citedUrl:   string | null
+  }>
+}
+
+/** Narrow the persisted landing_content jsonb to the bits the monitor needs. */
+function landingForMonitor(raw: unknown): { headline: string | null; faq: Array<{ question: string; answer: string }> } | null {
+  if (!raw || typeof raw !== "object") return null
+  const lc = raw as Record<string, unknown>
+  const faqRaw = Array.isArray(lc.faq) ? lc.faq : []
+  const faq = faqRaw.filter((f): f is { question: string; answer: string } =>
+    !!f && typeof f === "object" && typeof (f as any).question === "string" && typeof (f as any).answer === "string")
+  return { headline: typeof lc.headline === "string" ? lc.headline : null, faq }
+}
+
+/**
+ * Run one citation-monitor pass for a brokerage's LEAD-MAGNET / FAQ landing pages.
+ *
+ * For each active lead magnet that has AI-built landing copy with a FAQ (i.e. real GEO
+ * content worth being cited for), issue ONE gated external query built from the page's
+ * top FAQ question and, per platform, record an honest observation (cited / not_cited /
+ * not_checked) — idempotent per (form, platform, day) via the UPSERT. The query is the
+ * real demand QUESTION (brand-free); detection still looks for our /lm/[slug] URL,
+ * domain, or brand. Always tenant-scoped; never spends beyond the one gated search/page.
+ */
+export async function runLandingPageCitationMonitor(
+  brokerageId: string,
+  opts: CitationMonitorOptions & { area?: string | null } = {},
+  client?: Svc,
+): Promise<LandingCitationMonitorResult> {
+  const supabase = client ?? createServiceClient()
+  const now = opts.now ?? new Date()
+  const fetcher = opts.searchFetcher ?? realSearchFetcher
+  const platforms = opts.platforms ?? [...CITATION_PLATFORMS]
+  const maxPages = opts.maxPages ?? 25
+  const observedOn = now.toISOString().slice(0, 10)
+
+  const result: LandingCitationMonitorResult = {
+    pagesMonitored: 0, observations: 0, cited: 0, notCited: 0, notChecked: 0,
+    visibility: scoreCitationVisibility([]), pages: [],
+  }
+
+  const { data: brk } = await supabase.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
+  const brandName = (brk as { name: string | null } | null)?.name ?? null
+  const host = siteHost()
+  const origin = siteOrigin()
+
+  // Active lead magnets that carry AI landing copy (the citable GEO surface).
+  const { data: forms } = await supabase.from("lead_capture_forms")
+    .select("id, name, slug, landing_content")
+    .eq("brokerage_id", brokerageId)
+    .eq("is_active", true)
+    .not("landing_content", "is", null)
+    .limit(maxPages)
+  const pages = (forms ?? []) as Array<{ id: string; name: string | null; slug: string | null; landing_content: unknown }>
+
+  const allObs: CitationObservation[] = []
+
+  for (const page of pages) {
+    if (!page.slug) continue
+    const landing = landingForMonitor(page.landing_content)
+    // Only pages with a real FAQ have GEO content worth a citation check.
+    if (!landing || landing.faq.length === 0) continue
+    result.pagesMonitored += 1
+
+    const slug = page.slug
+    const pageUrl = `${origin}/lm/${slug}`
+    const target: DetectionTarget = {
+      slugs:   [pageUrl, `/lm/${slug}`, slug],
+      domains: [host],
+      brands:  [brandName].filter((b): b is string => !!b && b.trim().length >= 3),
+    }
+
+    const query = buildLandingCitationQuery({
+      topQuestion: landing.faq[0]?.question ?? null,
+      fallback:    landing.headline ?? page.name,
+      area:        opts.area ?? null,
+    })
+
+    const fetched = await fetcher({ query, brokerageId }).catch(() => ({ text: "", provider: "none" }))
+    const ran = fetched.provider !== "none" && fetched.text.trim().length > 0
+    const detection = ran ? detectOurCitation(fetched.text, target) : { cited: false, matched: null, kind: null as null }
+    const outcome: CitationOutcome = !ran ? "not_checked" : detection.cited ? "cited" : "not_cited"
+    const citedUrl = outcome === "cited" ? detection.matched : null
+
+    const pageObs: CitationObservation[] = []
+    for (const platform of platforms) {
+      const { error } = await supabase.from("ai_search_landing_citation_observations")
+        .upsert({
+          brokerage_id: brokerageId,
+          form_id:      page.id,
+          public_slug:  slug,
+          platform,
+          query,
+          outcome,
+          cited_url:    citedUrl,
+          provider:     fetched.provider,
+          observed_on:  observedOn,
+          observed_at:  now.toISOString(),
+        }, { onConflict: "form_id,platform,observed_on" })
+      if (error) continue
+      const ob: CitationObservation = { platform, outcome }
+      pageObs.push(ob); allObs.push(ob)
+      result.observations += 1
+      if (outcome === "cited") result.cited += 1
+      else if (outcome === "not_cited") result.notCited += 1
+      else result.notChecked += 1
+    }
+
+    result.pages.push({ formId: page.id, slug, title: page.name, visibility: scoreCitationVisibility(pageObs), citedUrl })
   }
 
   result.visibility = scoreCitationVisibility(allObs)
