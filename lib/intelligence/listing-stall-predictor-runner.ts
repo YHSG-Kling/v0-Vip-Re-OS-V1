@@ -9,6 +9,8 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { predictListingStall } from "./listing-stall-predictor"
+import { getPredictorTuning } from "./predictor-learning-runner"
+import { shouldFireWithTuning } from "./predictor-learning"
 
 type Svc = ReturnType<typeof createServiceClient>
 const DAY = 86_400_000
@@ -55,6 +57,13 @@ export async function predictAndPublishStall(args: PredictStallArgs, client?: Sv
     return { published: false, risk: prediction.risk, play: prediction.recommendedPlay }
   }
   if (!args.sellerContactId) return { published: false, risk: prediction.risk, play: prediction.recommendedPlay }
+
+  // SELF-IMPROVING — consult the brokerage's listing-stall track record; raise the bar if its plays
+  // have been missing (only the strongest signal fires). Honest on thin data.
+  const tuning = await getPredictorTuning(svc, args.brokerageId, "listing_stall").catch(() => null)
+  if (tuning && !shouldFireWithTuning(prediction.risk, tuning)) {
+    return { published: false, risk: prediction.risk, play: prediction.recommendedPlay }
+  }
 
   // Idempotent: don't re-predict the same play for the same listing within ~10 days.
   const since = new Date(nowMs - 10 * DAY).toISOString()

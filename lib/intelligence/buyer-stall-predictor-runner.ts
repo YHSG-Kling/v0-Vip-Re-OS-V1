@@ -8,6 +8,8 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { predictBuyerStall } from "./buyer-stall-predictor"
+import { getPredictorTuning } from "./predictor-learning-runner"
+import { shouldFireWithTuning } from "./predictor-learning"
 
 type Svc = ReturnType<typeof createServiceClient>
 const DAY = 86_400_000
@@ -42,6 +44,14 @@ export async function predictAndPublishBuyerStall(args: PredictBuyerStallArgs, c
   const prediction = predictBuyerStall({ toursTotal, toursLast30, toursPrev30, offersMade: offersMade ?? 0, daysSinceFirstTour })
 
   if (!prediction.willStall || !prediction.recommendedPlay || prediction.recommendedPlay === "hold") {
+    return { published: false, risk: prediction.risk, play: prediction.recommendedPlay }
+  }
+
+  // SELF-IMPROVING — consult this brokerage's accumulated record for the buyer-stall predictor. If its
+  // plays have been landing, fire at the normal bar; if they've been missing, only the strongest
+  // signal passes (raise the bar). Honest on thin data (unproven → fires normally).
+  const tuning = await getPredictorTuning(svc, args.brokerageId, "buyer_stall").catch(() => null)
+  if (tuning && !shouldFireWithTuning(prediction.risk, tuning)) {
     return { published: false, risk: prediction.risk, play: prediction.recommendedPlay }
   }
 

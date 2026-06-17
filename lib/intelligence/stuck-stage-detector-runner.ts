@@ -9,6 +9,8 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { detectStuckStage, ownerForStage, expectedDwellForStage } from "./stuck-stage-detector"
+import { getPredictorTuning } from "./predictor-learning-runner"
+import { shouldFireWithTuning } from "./predictor-learning"
 
 type Svc = ReturnType<typeof createServiceClient>
 const DAY = 86_400_000
@@ -39,6 +41,13 @@ export async function detectAndPublishStuckStage(args: StuckStageArgs, client?: 
 
   const result = detectStuckStage({ stage, daysInStage, expectedMaxDays: expectedDwellForStage(stage), hasOpenAction })
   if (!result.stuck) return { published: false, stuck: false, stage, severity: result.severity }
+
+  // SELF-IMPROVING — consult the brokerage's stuck-stage track record; if its nudges have been
+  // missing, only surface the strongest (overdue) cases. Honest on thin data.
+  const tuning = await getPredictorTuning(svc, args.brokerageId, "stuck_stage").catch(() => null)
+  if (tuning && !shouldFireWithTuning(result.severity, tuning)) {
+    return { published: false, stuck: true, stage, severity: result.severity }
+  }
 
   const owner = ownerForStage(stage)
 
