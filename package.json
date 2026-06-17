@@ -218,6 +218,7 @@
     "test:dual-transaction-timing": "tsx scripts/dual-transaction-timing-simulator.ts",
     "test:stuck-stage-detector": "tsx scripts/stuck-stage-detector-simulator.ts",
     "test:predictor-learning": "tsx scripts/predictor-learning-simulator.ts",
+    "test:predictor-outcome-resolver": "tsx scripts/predictor-outcome-resolver-simulator.ts",
     "test:manager-outbound-eval": "tsx scripts/manager-outbound-eval-simulator.ts",
     "test:learning-outcomes": "tsx scripts/learning-outcomes-simulator.ts",
     "test:voice-report": "tsx scripts/voice-report-format-simulator.ts",

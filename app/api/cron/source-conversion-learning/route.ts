@@ -59,6 +59,13 @@ export async function GET(request: NextRequest) {
         await runChannelOrderLearning(b.id, svc)
       } catch { /* best-effort */ }
 
+      // PREDICTOR OUTCOME RESOLUTION — close the self-tuning loop: settle each predictor play (did the
+      // contact re-engage after the gated nudge?) and record the win/loss so the predictors learn.
+      try {
+        const { resolvePredictorOutcomes } = await import("@/lib/intelligence/predictor-outcome-resolver")
+        await resolvePredictorOutcomes(b.id, {}, svc)
+      } catch { /* best-effort — never fails the source learner */ }
+
       const scored = await loadSourceConversions(b.id, {}, svc)
       if (scored.ranked.length === 0) continue
 
