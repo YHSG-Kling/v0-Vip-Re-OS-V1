@@ -42,6 +42,7 @@ import { createClient } from "@/lib/supabase/client"
 import { createOffer } from "@/app/actions/buyer-offers"
 import { submitForSignature } from "@/app/actions/buyer-offer/submit-for-signature"
 import { prefillStorageFormAction } from "@/app/actions/buyer-offer/prefill-storage-form"
+import { buildEsignAnchorPlanAction } from "@/app/actions/buyer-offer/esign-anchor-plan"
 import Link from "next/link"
 
 type TransactionProvider = "dotloop" | "docusign" | "skyslope" | "authentisign"
@@ -90,6 +91,8 @@ interface WizardState {
   selectedForms: FormRef[]
   // Step 3 — Fill Forms (provider forms filled via iframe; "my forms" tracked manually)
   filledFormRefs: string[]
+  // Step 3 — in-app filled storage PDFs (filled path + preview URL), keyed by formRef
+  filledForms?: Record<string, { filledPath?: string; previewUrl?: string }>
   // Step 4 — Signers
   signers: Signer[]
   // Step 5/6
@@ -441,7 +444,7 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
               }}
             />
           )}
-          {step === 3 && <Step3Fill state={state} providerInfo={providerInfo} />}
+          {step === 3 && <Step3Fill state={state} providerInfo={providerInfo} update={update} />}
           {step === 4 && <Step4Signers state={state} update={update} mode={mode} />}
           {step === 5 && <Step5ESign state={state} mode={mode} esignProvider={esignProvider} busy={busy} onSubmit={mode === "offer" ? handleSubmitOffer : handleSubmitOffer} />}
           {step === 6 && state.offerId && (
@@ -837,9 +840,9 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
 
 // ─── Step 3 — Fill Forms ─────────────────────────────────────────────────────
 
-interface FilledFormState { loading: boolean; previewUrl?: string; filledFields?: string[]; unresolvedFields?: string[]; error?: string }
+interface FilledFormState { loading: boolean; filledPath?: string; previewUrl?: string; filledFields?: string[]; unresolvedFields?: string[]; error?: string }
 
-function Step3Fill({ state, providerInfo }: { state: WizardState; providerInfo: { provider: TransactionProvider; embedUrl: string | null } | null | "loading" }) {
+function Step3Fill({ state, providerInfo, update }: { state: WizardState; providerInfo: { provider: TransactionProvider; embedUrl: string | null } | null | "loading"; update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void }) {
   const myFormsList = state.selectedForms.filter(f => f.source === "my_forms")
   const hasProvider = state.selectedForms.some(f => f.source === "transaction_provider")
 
@@ -860,7 +863,7 @@ function Step3Fill({ state, providerInfo }: { state: WizardState; providerInfo: 
       }).then(res => {
         if (cancelled) return
         setFilled(prev => ({ ...prev, [f.formRef]: res.success
-          ? { loading: false, previewUrl: res.previewUrl, filledFields: res.filledFields, unresolvedFields: res.unresolvedFields }
+          ? { loading: false, filledPath: res.filledPath, previewUrl: res.previewUrl, filledFields: res.filledFields, unresolvedFields: res.unresolvedFields }
           : { loading: false, error: res.error } }))
       }).catch(() => {
         if (!cancelled) setFilled(prev => ({ ...prev, [f.formRef]: { loading: false, error: "prefill failed" } }))
@@ -869,6 +872,15 @@ function Step3Fill({ state, providerInfo }: { state: WizardState; providerInfo: 
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.selectedForms])
+
+  // Sync the in-app filled storage forms (filled path + preview) up to wizard state so Step 5 can
+  // build the e-sign anchor plan from them.
+  useEffect(() => {
+    const map: Record<string, { filledPath?: string; previewUrl?: string }> = {}
+    for (const [ref, fs] of Object.entries(filled)) if (fs.filledPath || fs.previewUrl) map[ref] = { filledPath: fs.filledPath, previewUrl: fs.previewUrl }
+    if (Object.keys(map).length > 0) update("filledForms", map)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filled])
 
   return (
     <div className="space-y-4">
@@ -991,6 +1003,8 @@ function Step4Signers({ state, update, mode }: { state: WizardState; update: <K 
 
 // ─── Step 5 — Send for E-Sign ─────────────────────────────────────────────────
 
+interface AnchorPlanView { loading: boolean; anchorCount?: number; recipientRoles?: string[]; ambiguous?: Array<{ fieldName: string; reason: string }>; safe?: boolean; safetyViolations?: string[]; error?: string }
+
 function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
   state: WizardState
   mode: "offer" | "listing"
@@ -998,9 +1012,54 @@ function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
   busy: boolean
   onSubmit: () => void
 }) {
+  // E-SIGN AREA CHECK — for each in-app filled storage PDF, build the provider-agnostic anchor plan so
+  // the agent can confirm each signature/initial area is set for the right party before sending.
+  const [plans, setPlans] = useState<Record<string, AnchorPlanView>>({})
+  const filledForms = state.filledForms ?? {}
+  useEffect(() => {
+    let cancelled = false
+    for (const [ref, ff] of Object.entries(filledForms)) {
+      if (!ff.filledPath || plans[ref]) continue
+      setPlans(prev => ({ ...prev, [ref]: { loading: true } }))
+      buildEsignAnchorPlanAction({ filledPath: ff.filledPath, provider: esignProvider }).then(res => {
+        if (cancelled) return
+        setPlans(prev => ({ ...prev, [ref]: res.success
+          ? { loading: false, anchorCount: res.anchorCount, recipientRoles: res.recipientRoles, ambiguous: res.ambiguous, safe: res.safe, safetyViolations: res.safetyViolations }
+          : { loading: false, error: res.error } }))
+      }).catch(() => { if (!cancelled) setPlans(prev => ({ ...prev, [ref]: { loading: false, error: "anchor plan failed" } })) })
+    }
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.filledForms, esignProvider])
+
+  const planEntries = Object.entries(plans)
+
   return (
     <div className="space-y-4">
       <h3 className="font-semibold">Review & Send for E-Sign</h3>
+
+      {planEntries.length > 0 && (
+        <div className="rounded-lg border p-4 space-y-2">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">E-sign areas</p>
+          {planEntries.map(([ref, p]) => {
+            const name = state.selectedForms.find(f => f.formRef === ref)?.name ?? "Form"
+            return (
+              <div key={ref} className="text-xs flex items-start gap-2">
+                {p.loading ? <span className="text-muted-foreground">Checking {name}…</span> : p.error ? (
+                  <span className="text-muted-foreground">{name}: areas set manually in the provider.</span>
+                ) : (
+                  <span>
+                    <span className="font-medium">{name}</span>: {p.anchorCount ?? 0} area(s) set for {(p.recipientRoles ?? []).join(", ") || "signers"}.
+                    {p.safe === false && <span className="text-destructive"> ⚠ placement issue — review.</span>}
+                    {p.ambiguous && p.ambiguous.length > 0 && <span className="text-amber-600"> {p.ambiguous.length} area(s) need manual placement.</span>}
+                    {p.safe === true && (!p.ambiguous || p.ambiguous.length === 0) && <span className="text-emerald-600"> ✓ all areas confirmed.</span>}
+                  </span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       <div className="rounded-lg border p-4 space-y-3 bg-muted/30">
         <div>
