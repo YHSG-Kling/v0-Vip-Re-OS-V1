@@ -15,7 +15,7 @@
  */
 import { PDFDocument } from "pdf-lib"
 import { deriveEsignAnchors } from "../lib/forms/esign-anchors"
-import { anchorsForProvider, recipientRolesForProvider, type EsignProvider } from "../lib/forms/esign-anchor-adapters"
+import { anchorsForProvider, recipientRolesForProvider, docusignTabsByRecipient, type EsignProvider } from "../lib/forms/esign-anchor-adapters"
 import { evalAnchorPlacement, evalAnchorExecution } from "../lib/forms/esign-anchor-eval"
 import { buildEsignAnchorPlan } from "../lib/forms/esign-anchor-plan"
 
@@ -66,6 +66,13 @@ async function main() {
   }
   check("docusign uses signHere anchor tabs", anchorsForProvider("docusign", d.anchors).some(t => (t.tab as any).tabType === "signHere" && (t.tab as any).anchorString === "Buyer Signature"))
   check("dotloop maps buyer → BUYER participant role", recipientRolesForProvider("dotloop", d.anchors).includes("BUYER"))
+
+  console.log("\n[provider send — tags flow to the recipient payload]")
+  const dsTags = anchorsForProvider("docusign", d.anchors)
+  check("docusign tags are SignatureTag-shaped (anchorKey/role/type/recipientRole/tab)", dsTags.every(t => !!t.anchorKey && !!t.role && !!t.type && !!t.recipientRole && !!t.tab))
+  const grouped = docusignTabsByRecipient(dsTags)
+  check("docusign tabs group per recipient into signHereTabs/initialHereTabs", !!grouped["Buyer"]?.signHereTabs && (grouped["Buyer"].signHereTabs as unknown[]).length >= 1 && !!grouped["Buyer"]?.initialHereTabs)
+  check("a buyer's tabs never land under the seller recipient", !((grouped["Seller"]?.signHereTabs as unknown[] | undefined)?.some((t: any) => /buyer/i.test(String(t.anchorString)))))
 
   console.log("\n[placement safety eval — wrong party impossible]")
   check("clean anchors pass placement safety", evalAnchorPlacement(d).ok)

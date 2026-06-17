@@ -66,6 +66,16 @@ export interface AttachFormsResponse {
   error?: string
 }
 
+/** A provider-agnostic signature placement tag (from lib/forms/esign-anchor-adapters anchorsForProvider).
+ *  The `tab` is already shaped for the target provider's API; providers forward it into their request. */
+export interface SignatureTag {
+  anchorKey: string
+  role: string
+  type: "signature" | "initial" | "date"
+  recipientRole: string
+  tab: Record<string, unknown>
+}
+
 export interface SendForSignatureRequest {
   externalTransactionId: string
   documentId: string
@@ -75,6 +85,10 @@ export interface SendForSignatureRequest {
     role: string
   }>
   message?: string
+  /** OPTIONAL signature/initial/date placement tags. When present, the provider places the marks at
+   *  these anchors instead of relying on the agent to drag tabs in the provider UI. Provider-shaped
+   *  by anchorsForProvider; absent → current behavior (manual placement in the provider). */
+  tags?: SignatureTag[]
 }
 
 export interface SendForSignatureResponse {

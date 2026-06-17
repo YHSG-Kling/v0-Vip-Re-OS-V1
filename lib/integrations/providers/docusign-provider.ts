@@ -157,14 +157,22 @@ export class DocusignProvider implements ITransactionProvider {
 
   async sendForSignature(request: SendForSignatureRequest): Promise<SendForSignatureResponse> {
     try {
-      // 1. Add recipients (signers)
-      const signers = request.signers.map((s, i) => ({
-        email:        s.email,
-        name:         s.name,
-        recipientId:  String(i + 1),
-        routingOrder: String(i + 1),
-        roleName:     s.role,
-      }))
+      // Group any placement tags into DocuSign's per-recipient tab buckets (pure, tested helper).
+      const { docusignTabsByRecipient } = await import("@/lib/forms/esign-anchor-adapters")
+      const tabsByRole = docusignTabsByRecipient((request.tags ?? []) as any)
+
+      // 1. Add recipients (signers) — attach the matching tabs when placement tags were supplied.
+      const signers = request.signers.map((s, i) => {
+        const tabs = tabsByRole[s.role]
+        return {
+          email:        s.email,
+          name:         s.name,
+          recipientId:  String(i + 1),
+          routingOrder: String(i + 1),
+          roleName:     s.role,
+          ...(tabs ? { tabs } : {}),
+        }
+      })
       const recipientsRes = await this.request(`/envelopes/${request.externalTransactionId}/recipients`, {
         method: "POST",
         body: { signers },

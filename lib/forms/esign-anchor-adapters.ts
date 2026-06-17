@@ -67,3 +67,21 @@ export function recipientRolesForProvider(provider: EsignProvider, anchors: Esig
   const roleMap = RECIPIENT_ROLE[provider] ?? RECIPIENT_ROLE.generic
   return Array.from(new Set((anchors ?? []).map((a) => roleMap[a.role])))
 }
+
+const DOCUSIGN_TAB_GROUP: Record<string, string> = { signHere: "signHereTabs", initialHere: "initialHereTabs", dateSigned: "dateSignedTabs" }
+
+/**
+ * Group DocuSign-shaped tags into per-recipient-role tab buckets, the exact shape DocuSign's recipient
+ * payload wants: { "<recipientRole>": { signHereTabs:[], initialHereTabs:[], dateSignedTabs:[] } }. Pure.
+ */
+export function docusignTabsByRecipient(tags: ProviderTag[]): Record<string, Record<string, unknown[]>> {
+  const out: Record<string, Record<string, unknown[]>> = {}
+  for (const t of tags ?? []) {
+    const tab = t.tab as Record<string, unknown>
+    const group = DOCUSIGN_TAB_GROUP[String(tab.tabType ?? "")] ?? "signHereTabs"
+    const role = String(tab.recipientRole ?? t.recipientRole)
+    const bucket = out[role] ?? (out[role] = {})
+    ;(bucket[group] = (bucket[group] as unknown[]) ?? []).push(tab)
+  }
+  return out
+}

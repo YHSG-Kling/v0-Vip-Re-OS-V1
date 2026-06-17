@@ -16,6 +16,10 @@ interface SubmitForSignatureParams {
     email: string
     role: "buyer" | "co_buyer" | "agent"
   }>
+  /** OPTIONAL signature placement tags (from the wizard's anchor plan, anchorsForProvider). When
+   *  present they're forwarded to the provider so the marks place automatically. Absent → the agent
+   *  places tabs in the provider UI (current behavior). */
+  tags?: import("@/lib/integrations/providers/transaction-provider.interface").SignatureTag[]
 }
 
 export async function submitForSignature(params: SubmitForSignatureParams) {
@@ -175,6 +179,9 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
         externalTransactionId: envelopeId,
         documentId:            offerId,
         signers:               signers.map((s) => ({ email: s.email, name: s.name, role: s.role })),
+        // Forward the provider-shaped placement tags when the caller supplied them (the wizard's
+        // anchor plan) so the provider places the marks automatically instead of manual tabbing.
+        ...(params.tags && params.tags.length > 0 ? { tags: params.tags } : {}),
       })
 
       await supabase.from("activities").insert({
