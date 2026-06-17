@@ -16,6 +16,7 @@ import { parseNaturalLanguageQuery, mergeIntentWithContext, intentToFilters } fr
 import { inferBuyerPersona } from './persona-inference'
 import { generateMatchExplanation } from './explanation-generator'
 import { logBatchBuyerSearchMatches, appendBuyerSearchPreferences } from './search-logger'
+import { sanitizeExplanation } from './fair-housing'
 import { scoreBuyerForListing, type BuyerProfile, type ListingProfile } from '@/lib/property-matching'
 import type { ParsedBuyerIntent } from './intent-parser'
 
@@ -23,6 +24,10 @@ import type { ParsedBuyerIntent } from './intent-parser'
 
 export interface BuyerSearchResult {
   listing_id: string
+  /** street address for the portal card (platform listings); external feeds supply their own. */
+  address: string | null
+  /** display photo for the portal card. */
+  primary_photo_url: string | null
   headline: string
   bullets: string[]
   narrative: string
@@ -120,9 +125,9 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     const filters = intentToFilters(enrichedIntent)
     let q = supabase
       .from('listings')
-      .select('id, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at')
+      .select('id, address, primary_photo_url, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at')
       .eq('status', 'active')
-      .not('deleted_at', 'is', null)
+      .is('deleted_at', null)  // deleted_at IS NULL = NOT soft-deleted (was inverted: returned only deleted rows)
 
     if (filters.priceRange?.max) q = q.lte('list_price', filters.priceRange.max)
     if (filters.priceRange?.min) q = q.gte('list_price', filters.priceRange.min)
@@ -227,10 +232,13 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
 
     // 6. Generate buyer-friendly explanations
     const results: BuyerSearchResult[] = viableListings.map(({ listing, matchScore, confidence }) => {
-      const exp = generateMatchExplanation(listing, enrichedIntent, persona, matchScore)
+      // Fair-Housing: neutralize any protected-class steering in the buyer-facing copy we author.
+      const exp = sanitizeExplanation(generateMatchExplanation(listing, enrichedIntent, persona, matchScore))
       const isExternal = (listing as any).__external === true
       return {
         listing_id: listing.id,
+        address: isExternal ? ((listing as any).__address ?? null) : ((listing as any).address ?? null),
+        primary_photo_url: isExternal ? ((listing as any).__photo_url ?? null) : ((listing as any).primary_photo_url ?? null),
         headline: exp.headline,
         bullets: exp.bullets,
         narrative: exp.narrative,
@@ -338,7 +346,7 @@ export async function explainPropertyMatchCore(params: {
       inferred_intent: insight?.inferred_intent,
       health_score: insight?.health_score,
     })
-    const explanation = generateMatchExplanation(listing as ListingProfile, minimalIntent, persona, matchScore.score)
+    const explanation = sanitizeExplanation(generateMatchExplanation(listing as ListingProfile, minimalIntent, persona, matchScore.score))
 
     return {
       success: true,

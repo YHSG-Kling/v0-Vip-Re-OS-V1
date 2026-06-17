@@ -57,14 +57,17 @@ export function parseNaturalLanguageQuery(query: string): ParsedBuyerIntent {
   let confidencePoints = 0
 
   // 1. PRICE EXTRACTION
-  // Patterns: "$400k", "$400,000", "under 500k", "300-400k", "budget of 350000"
+  // Patterns: "$400k", "$400,000", "under 500k", "300-400k", "budget of 350000", "$1.5m".
+  // The k/m suffix is captured INSIDE the group so parsePrice can scale it (the suffix used to fall
+  // outside the capture, so "under 500k" parsed as $500 — breaking the price filter).
+  const NUM = String.raw`(\$?[\d,]+\.?\d*\s*[km]?)`
   const pricePatterns = [
-    /\$?([\d,]+)k?\s*[-–to]+\s*\$?([\d,]+)k?/i, // Range: "300k-400k"
-    /under\s+\$?([\d,]+)k?/i, // Max: "under 500k"
-    /below\s+\$?([\d,]+)k?/i, // Max: "below 400k"
-    /max\s+\$?([\d,]+)k?/i, // Max: "max 450k"
-    /budget\s+of\s+\$?([\d,]+)k?/i, // Max: "budget of 400k"
-    /around\s+\$?([\d,]+)k?/i, // Target: "around 350k"
+    new RegExp(`${NUM}\\s*(?:[-–]|to)\\s*${NUM}`, "i"), // Range: "300k-400k", "300k to 400k"
+    new RegExp(`under\\s+${NUM}`, "i"),     // Max: "under 500k"
+    new RegExp(`below\\s+${NUM}`, "i"),     // Max: "below 400k"
+    new RegExp(`max\\s+${NUM}`, "i"),       // Max: "max 450k"
+    new RegExp(`budget\\s+of\\s+${NUM}`, "i"), // Max: "budget of 400k"
+    new RegExp(`around\\s+${NUM}`, "i"),    // Target: "around 350k"
   ]
 
   for (const pattern of pricePatterns) {
@@ -198,10 +201,11 @@ export function parseNaturalLanguageQuery(query: string): ParsedBuyerIntent {
   }
 
   // 8. LIFESTYLE SIGNALS
+  // FAIR HOUSING: we do NOT infer familial status (family/kids/schools) or age (senior/retiree) —
+  // those are protected classes and steering on them is illegal. Only buyer-INTENT signals that are
+  // not protected classes are inferred (commute/transit = relocation intent; investment = investor).
   const lifestyleMap = {
-    family: ['family', 'kids', 'children', 'school', 'playground', 'safe neighborhood'],
     professional: ['commute', 'downtown', 'walkable', 'transit', 'work', 'office'],
-    retiree: ['retirement', 'senior', 'quiet', 'peaceful', 'low maintenance', 'single story'],
     investor: ['investment', 'rental', 'cash flow', 'roi', 'appreciation'],
   }
 
@@ -295,17 +299,16 @@ export function mergeIntentWithContext(
 }
 
 /**
- * Parse price string to number
+ * Parse a price token to a number, scaling the k (thousands) / m (millions) suffix.
+ * "$500k" → 500000, "1.5m" → 1500000, "400,000" → 400000, "450" → 450.
  */
 function parsePrice(value: string): number {
-  // Remove commas and handle "k" suffix
-  const cleaned = value.replace(/,/g, '')
-  
-  if (cleaned.toLowerCase().endsWith('k')) {
-    return parseInt(cleaned) * 1000
-  }
-  
-  return parseInt(cleaned)
+  const cleaned = value.replace(/[$,\s]/g, '').toLowerCase()
+  const num = parseFloat(cleaned)
+  if (Number.isNaN(num)) return NaN
+  if (cleaned.endsWith('k')) return Math.round(num * 1000)
+  if (cleaned.endsWith('m')) return Math.round(num * 1_000_000)
+  return Math.round(num)
 }
 
 /**
