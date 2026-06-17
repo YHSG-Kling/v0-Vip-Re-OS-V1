@@ -46,7 +46,7 @@ export async function GET(req: NextRequest) {
           .from("agents")
           .select("id")
           .eq("brokerage_id", brokerage.id)
-          .eq("status", "active")
+          .eq("is_active", true)
 
         const agentIds = (agents ?? []).map((a) => a.id)
         if (agentIds.length === 0) continue

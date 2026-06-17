@@ -153,14 +153,14 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     context.transactionId
       ? supabase
           .from("deal_team_members")
-          .select("id, member_type, agent_id, external_name, external_company, external_phone, external_email, scheduled_date, agent:agents(id, profile_photo_url, users(first_name, last_name, phone, email))")
+          .select("id, member_type, agent_id, external_name, external_company, external_phone, external_email, scheduled_date, agent:agents(id, profile_image_url, users(first_name, last_name, phone, email))")
           .eq("transaction_id", context.transactionId)
       : Promise.resolve({ data: [] }),
     // Primary agent
     context.agentId
       ? supabase
           .from("agents")
-          .select("id, profile_photo_url, users(first_name, last_name, phone, email)")
+          .select("id, profile_image_url, users(first_name, last_name, phone, email)")
           .eq("id", context.agentId)
           .single()
       : Promise.resolve({ data: null }),
@@ -198,7 +198,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     agent: m.agent
       ? {
           id: m.agent.id,
-          profile_photo_url: m.agent.profile_photo_url,
+          profile_photo_url: m.agent.profile_image_url,
           first_name: (m.agent.users as any)?.first_name ?? null,
           last_name: (m.agent.users as any)?.last_name ?? null,
           phone: (m.agent.users as any)?.phone ?? null,
@@ -209,7 +209,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
   const primaryAgent = agentResult.data
     ? {
         id: (agentResult.data as any).id,
-        profile_photo_url: (agentResult.data as any).profile_photo_url,
+        profile_photo_url: (agentResult.data as any).profile_image_url,
         first_name: ((agentResult.data as any).users as any)?.first_name ?? null,
         last_name: ((agentResult.data as any).users as any)?.last_name ?? null,
         phone: ((agentResult.data as any).users as any)?.phone ?? null,

@@ -84,7 +84,7 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
       if (!listing.agent_id) return null
       const { data: agentRow } = await service
         .from("agents")
-        .select("user_id, profile_photo_url")
+        .select("user_id, profile_image_url")
         .eq("user_id", listing.agent_id)
         .maybeSingle()
       if (!agentRow) return null
@@ -119,7 +119,7 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
   const agentPhone: string | null = (agentInfo?.userRow as any)?.phone ?? null
   const agentEmail: string | null = agentInfo?.userRow?.email ?? null
   const agentPhoto: string | null =
-    agentInfo?.agentRow?.profile_photo_url ?? agentInfo?.userRow?.avatar_url ?? null
+    agentInfo?.agentRow?.profile_image_url ?? agentInfo?.userRow?.avatar_url ?? null
 
   const brokerageName: string | null = (brokerageResult as any)?.data?.name ?? null
 

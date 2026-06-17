@@ -96,7 +96,7 @@ export default async function IntelligencePage() {
       .from("agents")
       .select("id, gamification_points, profile_image_url, users(first_name, last_name)")
       .eq("brokerage_id", brokerageId)
-      .eq("status", "active")
+      .eq("is_active", true)
       .order("gamification_points", { ascending: false })
       .limit(20),
   ])

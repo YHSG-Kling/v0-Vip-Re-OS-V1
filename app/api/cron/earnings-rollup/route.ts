@@ -40,7 +40,7 @@ export async function GET(req: NextRequest) {
     const { data: agents, error: agentsError } = await supabase
       .from("agents")
       .select("id, brokerage_id")
-      .eq("status", "active")
+      .eq("is_active", true)
 
     if (agentsError) {
       errors.push(`Failed to load agents: ${agentsError.message}`)
