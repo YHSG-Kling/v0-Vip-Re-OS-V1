@@ -369,7 +369,7 @@ export async function captureFormSubmission(
   // Verify form exists and is active
   const { data: form, error: formError } = await supabase
     .from("lead_capture_forms")
-    .select("id, is_active, agent_id")
+    .select("id, is_active, agent_id, metadata")
     .eq("id", input.formId)
     .eq("brokerage_id", input.brokerageId)
     .maybeSingle()
@@ -470,6 +470,20 @@ export async function captureFormSubmission(
       }, supabase)
     } catch (err) {
       console.warn("[lead-magnets] seller-intent handoff failed:", err)
+    }
+  }
+
+  // DELIVER THE MAGNET — generate the deliverable copy the contact asked for (gated, Fair-Housing-safe)
+  // and record it so the enrolled sequence/messaging path ships it. The thing a lead magnet was always
+  // missing: it now actually DELIVERS the guide/report. Best-effort; never blocks the capture.
+  const magnetType = ((form.metadata as any)?.magnetType ?? "generic_form") as
+    "home_valuation" | "buyer_guide" | "seller_guide" | "market_report" | "listing_alert" | "open_house" | "generic_form"
+  if (contactId) {
+    try {
+      const { deliverMagnet } = await import("@/lib/marketing/lead-magnet-delivery-runner")
+      await deliverMagnet({ brokerageId: input.brokerageId, contactId, agentUserId: form.agent_id, magnetType, ctx: { area: data.city ?? null } }, supabase)
+    } catch (err) {
+      console.warn("[lead-magnets] deliverable failed:", err)
     }
   }
 
