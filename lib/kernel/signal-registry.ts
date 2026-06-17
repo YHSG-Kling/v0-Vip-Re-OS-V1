@@ -83,6 +83,7 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
   listing_marketing_ready:        { consumers: [], disposition: "feed_only", kind: "handoff",    what: "a listing reached coming-soon or went live — the Listing Concierge → Campaign Orchestrator marketing handoff, made visible on the bus (the kernel-event fanout still enrolls the sequences; this makes the team coordination legible)" },
   offer_docs_ready:               { consumers: [], disposition: "feed_only", kind: "handoff",    what: "a signed offer packet passed the completeness scan (all required forms present + signed) — the Deal Coordinator handoff that the docs are verified and ready to send to the listing agent (the agent is also notified)" },
   agent_overloaded:               { consumers: [], disposition: "feed_only", kind: "escalation", what: "capacity guardian flagged an agent's load — surfaced for the broker (advisory)" },
+  geo_visibility_gap:             { consumers: [], disposition: "feed_only", kind: "update",      what: "the GEO loop closed — a published lead-magnet/FAQ landing page has been checked enough times across enough days by AI search and is STILL never cited (persistently invisible); the Campaign Orchestrator surfaces a precise refresh recommendation (regenerate the FAQ from fresh demand topics) so monitoring becomes remediation, not just a number" },
 }
 
 /** Look up a signal's spec (undefined = uncatalogued, which test:signal-integrity fails on). */
