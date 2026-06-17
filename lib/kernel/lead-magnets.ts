@@ -390,13 +390,19 @@ export async function captureFormSubmission(
   if (data.email) {
     const { data: existingContact } = await supabase
       .from("contacts")
-      .select("id")
+      .select("id, agent_id")
       .eq("email", data.email)
       .eq("brokerage_id", input.brokerageId)
       .maybeSingle()
 
     if (existingContact) {
       contactId = existingContact.id
+      // Claim an UNOWNED contact for the magnet's agent — a returning-but-unassigned person who fills
+      // out this agent's lead magnet becomes that agent's lead. Never reassign a contact another agent
+      // already owns (no lead-stealing). The contacts.agent_id trigger emits contact_agent_assigned.
+      if (!(existingContact as any).agent_id && form.agent_id) {
+        await supabase.from("contacts").update({ agent_id: form.agent_id }).eq("id", contactId)
+      }
     } else {
       // Stamp the new contact's intent from the magnet so determinePortalView shows the right portal +
       // education (a buyer guide → buyer portal; a seller/home-value magnet → seller portal).

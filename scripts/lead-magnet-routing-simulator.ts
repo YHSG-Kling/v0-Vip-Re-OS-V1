@@ -90,11 +90,41 @@ async function main() {
     const { data: sig } = await svc.from("manager_signals")
       .select("to_manager, signal_type").eq("brokerage_id", brokerageId).eq("entity_id", contactId).eq("signal_type", "lead_magnet_handoff").maybeSingle()
     check(`[${magnetType}] handed off to ${expectManager}`, (sig as any)?.to_manager === expectManager, JSON.stringify(sig))
+
+    // ASSIGNMENT: a NEW lead from this agent's magnet is owned by that agent (contacts.agent_id).
+    check(`[${magnetType}] new lead assigned to the magnet's agent`, (c as any) && (await svc.from("contacts").select("agent_id").eq("id", contactId).maybeSingle()).data?.agent_id === agentId)
+    return formId
   }
 
   try {
-    await runCase("buyer_guide", "shopping_agent", "buyer")
+    const buyerFormId = await runCase("buyer_guide", "shopping_agent", "buyer")
     await runCase("seller_guide", "listing_concierge", "seller")
+
+    // ── Assignment edge cases: claim an UNOWNED contact; never steal an OWNED one ──
+    const claimEmail = `zz-claim-${Date.now()}@example.com`
+    const { data: unowned } = await svc.from("contacts").insert({
+      brokerage_id: brokerageId, first_name: "ZZ", last_name: `Unowned-${Date.now()}`, email: claimEmail, contact_type: "buyer",
+    }).select("id, agent_id").single()
+    contactIds.push((unowned as any).id)
+    check("seed: the existing contact starts UNOWNED (agent_id null)", (unowned as any).agent_id == null)
+    await captureFormSubmission({ formId: buyerFormId, brokerageId, source: "lead_magnet:buyer_guide", submissionData: { email: claimEmail, first_name: "ZZ", last_name: "Unowned" } } as any)
+    const { data: claimed } = await svc.from("contacts").select("agent_id").eq("id", (unowned as any).id).maybeSingle()
+    check("UNOWNED existing contact is CLAIMED by the magnet's agent", (claimed as any)?.agent_id === agentId, JSON.stringify(claimed))
+
+    // No-steal: an existing contact already owned by a DIFFERENT agent is left untouched.
+    const { data: otherAgent } = await svc.from("agents").select("id").eq("brokerage_id", brokerageId).neq("id", agentId).limit(1).maybeSingle()
+    if (otherAgent) {
+      const ownedEmail = `zz-owned-${Date.now()}@example.com`
+      const { data: owned } = await svc.from("contacts").insert({
+        brokerage_id: brokerageId, agent_id: (otherAgent as any).id, first_name: "ZZ", last_name: `Owned-${Date.now()}`, email: ownedEmail, contact_type: "buyer",
+      }).select("id").single()
+      contactIds.push((owned as any).id)
+      await captureFormSubmission({ formId: buyerFormId, brokerageId, source: "lead_magnet:buyer_guide", submissionData: { email: ownedEmail } } as any)
+      const { data: stillOwned } = await svc.from("contacts").select("agent_id").eq("id", (owned as any).id).maybeSingle()
+      check("OWNED existing contact is NOT stolen (keeps original agent)", (stillOwned as any)?.agent_id === (otherAgent as any).id)
+    } else {
+      console.log("  ⏭  no-steal sub-check skipped (only one agent in brokerage)")
+    }
   } finally {
     for (const cid of contactIds) {
       await svc.from("manager_signals").delete().eq("entity_id", cid).then(() => {}, () => {})
