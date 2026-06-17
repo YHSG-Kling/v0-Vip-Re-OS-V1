@@ -241,6 +241,7 @@ export async function createLeadMagnet(
       tcpa_disclosure_text: input.tcpaDisclosureText ?? "By submitting this form, you consent to receive communications from us. You may opt out at any time.",
       thank_you_message: input.thankYouMessage ?? "Thank you! We'll be in touch shortly.",
       redirect_url: input.redirectUrl ?? null,
+      magnet_type: input.magnetType,
       is_active: true,
       submission_count: 0,
     })
@@ -369,7 +370,7 @@ export async function captureFormSubmission(
   // Verify form exists and is active
   const { data: form, error: formError } = await supabase
     .from("lead_capture_forms")
-    .select("id, is_active, agent_id, metadata")
+    .select("id, is_active, agent_id, magnet_type")
     .eq("id", input.formId)
     .eq("brokerage_id", input.brokerageId)
     .maybeSingle()
@@ -397,20 +398,26 @@ export async function captureFormSubmission(
     if (existingContact) {
       contactId = existingContact.id
     } else {
-      // Create a new contact from form submission
+      // Stamp the new contact's intent from the magnet so determinePortalView shows the right portal +
+      // education (a buyer guide → buyer portal; a seller/home-value magnet → seller portal).
+      const captureMagnetType = ((form as any).magnet_type ?? "generic_form") as string
+      const { classifyMagnetIntent } = await import("@/lib/marketing/lead-magnet-intent")
+      const intentRouting = classifyMagnetIntent(captureMagnetType)
+      const newRow: Record<string, unknown> = {
+        first_name: data.first_name ?? "",
+        last_name:  data.last_name ?? "",
+        email:      data.email,
+        phone:      data.phone ?? null,
+        source:     input.source ?? "lead_magnet",
+        source_channel: "online_form",
+        brokerage_id: input.brokerageId,
+        agent_id:   form.agent_id,
+        status:     "lead",
+      }
+      if (intentRouting.contactType) newRow.contact_type = intentRouting.contactType
       const { data: newContact } = await supabase
         .from("contacts")
-        .insert({
-          first_name: data.first_name ?? "",
-          last_name:  data.last_name ?? "",
-          email:      data.email,
-          phone:      data.phone ?? null,
-          source:     input.source ?? "lead_magnet",
-          source_channel: "online_form",
-          brokerage_id: input.brokerageId,
-          agent_id:   form.agent_id,
-          status:     "lead",
-        })
+        .insert(newRow)
         .select("id")
         .maybeSingle()
 
@@ -476,7 +483,7 @@ export async function captureFormSubmission(
   // DELIVER THE MAGNET — generate the deliverable copy the contact asked for (gated, Fair-Housing-safe)
   // and record it so the enrolled sequence/messaging path ships it. The thing a lead magnet was always
   // missing: it now actually DELIVERS the guide/report. Best-effort; never blocks the capture.
-  const magnetType = ((form.metadata as any)?.magnetType ?? "generic_form") as
+  const magnetType = ((form as any).magnet_type ?? "generic_form") as
     "home_valuation" | "buyer_guide" | "seller_guide" | "market_report" | "listing_alert" | "open_house" | "generic_form"
   if (contactId) {
     try {
@@ -484,6 +491,28 @@ export async function captureFormSubmission(
       await deliverMagnet({ brokerageId: input.brokerageId, contactId, agentUserId: form.agent_id, magnetType, ctx: { area: data.city ?? null } }, supabase)
     } catch (err) {
       console.warn("[lead-magnets] deliverable failed:", err)
+    }
+
+    // MANAGER HANDOFF BY INTENT — capture → the right manager. home_valuation already got the stronger
+    // precise-CMA handoff above; route the rest (buyer guides → Shopping Agent, seller guides → Listing
+    // Concierge) onto the bus so the team picks the lead up. Best-effort; never blocks the capture.
+    try {
+      const { classifyMagnetIntent } = await import("@/lib/marketing/lead-magnet-intent")
+      const routing = classifyMagnetIntent(magnetType)
+      if (routing.manager && !routing.isHomeValue) {
+        const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+        await publishManagerSignal({
+          brokerageId: input.brokerageId,
+          fromManager: "ai_isa",          // the intake/qualification desk hands off
+          toManager: routing.manager,     // shopping_agent (buyer) | listing_concierge (seller)
+          signalType: "lead_magnet_handoff",
+          message: `New ${routing.intent} lead from a ${magnetType.replace(/_/g, " ")} — route to ${routing.manager.replace(/_/g, " ")} for qualification + the gated follow-up.`,
+          entityType: "contact", entityId: contactId, contactId,
+          payload: { magnetType, intent: routing.intent, source: input.source ?? "lead_magnet" },
+        }, supabase)
+      }
+    } catch (err) {
+      console.warn("[lead-magnets] manager handoff failed:", err)
     }
   }
 

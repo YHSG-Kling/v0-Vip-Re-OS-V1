@@ -25,6 +25,7 @@
     "test:geo-gap": "tsx scripts/geo-gap-simulator.ts",
     "test:buyer-saves": "tsx scripts/buyer-saves-simulator.ts",
     "test:voice-coverage": "tsx scripts/voice-coverage-simulator.ts",
+    "test:lead-magnet-routing": "tsx scripts/lead-magnet-routing-simulator.ts",
     "test:deliverables": "tsx scripts/deliverables-summary-simulator.ts",
     "test:agent-scorecard": "tsx scripts/agent-scorecard-simulator.ts",
     "test:mobile-approval": "tsx scripts/mobile-approval-simulator.ts",
