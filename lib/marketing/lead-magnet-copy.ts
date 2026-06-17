@@ -30,6 +30,28 @@ export interface MagnetDeliverable {
   body: string
 }
 
+/**
+ * The AI-generated landing surface PERSISTED on a lead magnet (lead_capture_forms.landing_content):
+ * the page copy + the GEO FAQ + its schema.org JSON-LD, all built from real demand topics. Rendered on
+ * /lm/[slug] so the page gets CITED by AI search, not just indexed. Marketing copy only — separate from
+ * the kernel-owned portal view/education.
+ */
+export interface LandingContent {
+  headline: string
+  subhead: string
+  cta: string
+  bullets: string[]
+  /** the real buyer/seller demand topics the copy was grounded in (for the agent's reference). */
+  topics: string[]
+  /** the AI-visibility FAQ (real questions + concise, agent-authored answers). */
+  faq: Array<{ question: string; answer: string }>
+  /** schema.org FAQPage JSON-LD (raw JSON string) for the page <head>; null when no FAQ. */
+  faqJsonLd: string | null
+  /** true when grounded in live demand topics (vs the deterministic fallback). */
+  fromTopics: boolean
+  generatedAt: string
+}
+
 export interface CopyContext {
   /** the agent/brokerage trade name, for branding the copy. */
   brand?: string | null

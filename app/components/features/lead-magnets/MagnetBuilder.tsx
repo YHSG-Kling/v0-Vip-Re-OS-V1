@@ -1,8 +1,10 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { createLeadMagnetAction, publishLeadMagnetAction } from "@/app/actions/lead-magnets-actions"
+import { createLeadMagnetAction, publishLeadMagnetAction, saveMagnetLandingContentAction } from "@/app/actions/lead-magnets-actions"
+import { generateLeadMagnetCopyAction } from "@/app/actions/marketing/lead-magnet-copy"
 import type { CreateLeadMagnetInput } from "@/lib/kernel/lead-magnets"
+import type { LandingContent } from "@/lib/marketing/lead-magnet-copy"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -17,7 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { Bell, CheckCircle2, Loader2 } from "lucide-react"
+import { Bell, CheckCircle2, Loader2, Sparkles } from "lucide-react"
 
 interface Props {
   brokerageId: string
@@ -59,10 +61,46 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
   const [channels, setChannels] = useState<string[]>(["qr_code", "landing_page"])
   // notifyByEmail: email notifications not yet implemented; kept false until wired up
 
+  // AI landing copy — built from real buyer/seller demand topics + the GEO FAQ/JSON-LD.
+  const [area, setArea] = useState("")
+  const [brand, setBrand] = useState("")
+  const [landing, setLanding] = useState<LandingContent | null>(null)
+  const [isGenerating, setIsGenerating] = useState(false)
+
   function toggleChannel(channel: string) {
     setChannels((prev) =>
       prev.includes(channel) ? prev.filter((c) => c !== channel) : [...prev, channel]
     )
+  }
+
+  function handleGenerateCopy() {
+    setError(null)
+    setIsGenerating(true)
+    ;(async () => {
+      try {
+        const res = await generateLeadMagnetCopyAction({ magnetType, area: area.trim() || null, brand: brand.trim() || null })
+        if (!res.success || !res.landing) { setError(res.error ?? "Could not generate copy"); return }
+        const lc: LandingContent = {
+          headline:   res.landing.headline,
+          subhead:    res.landing.subhead,
+          cta:        res.landing.cta,
+          bullets:    res.landing.bullets,
+          topics:     res.topics ?? [],
+          faq:        res.faq ?? [],
+          faqJsonLd:  res.faqJsonLd ?? null,
+          fromTopics: !!res.landing.fromTopics,
+          generatedAt: new Date().toISOString(),
+        }
+        setLanding(lc)
+        // Seed the editable fields from the AI draft (the agent can still tweak before saving).
+        if (!title.trim()) setTitle(lc.headline)
+        setDescription(lc.subhead)
+      } catch (err: any) {
+        setError(err?.message ?? "Could not generate copy")
+      } finally {
+        setIsGenerating(false)
+      }
+    })()
   }
 
   function handleCreate() {
@@ -81,6 +119,12 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
       if (!result.success || !result.magnetId) {
         setError(result.error ?? "Failed to create lead magnet")
         return
+      }
+
+      // Persist the AI landing copy + GEO FAQ/JSON-LD so the public page can render it.
+      if (landing) {
+        const saved = await saveMagnetLandingContentAction(result.magnetId, landing)
+        if (!saved.success) { setError(saved.error ?? "Created, but failed to save AI landing copy"); return }
       }
 
       setCreatedMagnet({ magnetId: result.magnetId, slug: title.trim().toLowerCase().replace(/\s+/g, "-") })
@@ -170,7 +214,7 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
         {/* Type */}
         <div className="space-y-2">
           <Label>Magnet Type</Label>
-          <Select value={magnetType} onValueChange={(v) => setMagnetType(v as any)}>
+          <Select value={magnetType} onValueChange={(v) => { setMagnetType(v as any); setLanding(null) }}>
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
@@ -185,6 +229,60 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
               ))}
             </SelectContent>
           </Select>
+        </div>
+
+        {/* AI copy — built from what buyers/sellers are actually asking, with a GEO FAQ for AI-search visibility */}
+        <div className="space-y-3 rounded-lg border border-dashed p-4 bg-muted/20">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary" />
+            <p className="text-sm font-medium">Let AI write this page</p>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Grounded in real buyer/seller questions for your area, plus an FAQ that gets the page cited by
+            AI search (ChatGPT, Perplexity, Google AI Overviews) — not just indexed.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="ai-area" className="text-xs">Area / market <span className="text-muted-foreground">(optional)</span></Label>
+              <Input id="ai-area" value={area} onChange={(e) => setArea(e.target.value)} placeholder="e.g. Austin, TX" />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="ai-brand" className="text-xs">Brand <span className="text-muted-foreground">(optional)</span></Label>
+              <Input id="ai-brand" value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="e.g. The Kling Group" />
+            </div>
+          </div>
+          <Button type="button" variant="secondary" size="sm" onClick={handleGenerateCopy} disabled={isGenerating}>
+            {isGenerating ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}
+            {landing ? "Regenerate copy" : "Generate copy"}
+          </Button>
+
+          {landing && (
+            <div className="space-y-3 pt-1">
+              <div className="flex items-center gap-2 text-xs text-green-700">
+                <CheckCircle2 className="h-4 w-4" />
+                <span>{landing.fromTopics ? "Built from live demand topics" : "Built from a safe baseline (live topics unavailable)"}</span>
+              </div>
+              {landing.bullets.length > 0 && (
+                <ul className="list-disc pl-5 text-xs text-muted-foreground space-y-0.5">
+                  {landing.bullets.map((b, i) => <li key={i}>{b}</li>)}
+                </ul>
+              )}
+              {landing.topics.length > 0 && (
+                <p className="text-xs text-muted-foreground"><span className="font-medium">Topics:</span> {landing.topics.slice(0, 6).join(" · ")}</p>
+              )}
+              {landing.faq.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium">FAQ for AI visibility ({landing.faq.length})</p>
+                  <ul className="space-y-1">
+                    {landing.faq.slice(0, 3).map((f, i) => (
+                      <li key={i} className="text-xs text-muted-foreground"><span className="font-medium text-foreground">{f.question}</span> — {f.answer}</li>
+                    ))}
+                  </ul>
+                  {landing.faqJsonLd && <p className="text-[11px] text-green-700">✓ schema.org FAQPage markup will be embedded on the published page</p>}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Title */}

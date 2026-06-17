@@ -53,6 +53,31 @@ export async function createLeadMagnetAction(input: {
   }
 }
 
+/**
+ * Persist the AI-generated landing copy + GEO FAQ + JSON-LD onto a lead magnet so the public
+ * /lm/[slug] page can render it for AI-search visibility. Brokerage-scoped (a user can only write
+ * to their own brokerage's magnet). Marketing copy only — separate from the kernel-owned portal view.
+ */
+export async function saveMagnetLandingContentAction(
+  magnetId: string,
+  landing: import("@/lib/marketing/lead-magnet-copy").LandingContent,
+) {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
+    const supabase = createServiceClient()
+    const { error } = await supabase
+      .from("lead_capture_forms")
+      .update({ landing_content: landing })
+      .eq("id", magnetId)
+      .eq("brokerage_id", ctx.brokerageId)
+    if (error) return { success: false as const, error: error.message }
+    return { success: true as const }
+  } catch (err: any) {
+    return { success: false as const, error: err?.message ?? "Failed to save landing content" }
+  }
+}
+
 // Delegates to kernel publishLeadMagnet which reads/writes lead_capture_forms
 export async function publishLeadMagnetAction(magnetId: string) {
   try {
