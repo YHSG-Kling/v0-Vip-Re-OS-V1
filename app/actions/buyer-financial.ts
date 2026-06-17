@@ -342,7 +342,7 @@ export async function getBrokerageLenders(params: {
     .select("id, first_name, last_name, email, phone")
     .eq("brokerage_id", ctx.brokerageId)
     .eq("user_type", "lender")
-    .eq("is_active", true)
+    .is("deleted_at", null)
     .order("last_name", { ascending: true })
 
   if (error) return { success: false, error: error.message }
