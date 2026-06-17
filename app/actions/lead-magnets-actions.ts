@@ -36,16 +36,16 @@ export async function createLeadMagnetAction(input: {
       thankYouMessage: input.thank_you_message,
       tcpaDisclosureText: input.tcpa_text,
     })
-    // Persist notification preference in settings if magnet was created
+    // Persist the notification preference. There is NO `settings` column (the old write silently
+    // errored AND failed the whole create) — stash it in the landing_content jsonb bag (the public page
+    // ignores unknown keys). Non-fatal: the magnet exists regardless of whether the preference persists.
     if (result.success && result.magnetId && input.notify_on_submission !== undefined) {
       const supabase = createServiceClient()
       const { error: notifyError } = await supabase
         .from("lead_capture_forms")
-        .update({ settings: { notify_on_submission: input.notify_on_submission } })
+        .update({ landing_content: { notify_on_submission: input.notify_on_submission } })
         .eq("id", result.magnetId)
-      if (notifyError) {
-        return { success: false as const, error: "Failed to save notification preference: " + notifyError.message }
-      }
+      if (notifyError) console.warn("[lead-magnets] notify preference not saved:", notifyError.message)
     }
     return result
   } catch (err: any) {
@@ -101,8 +101,18 @@ export async function updateMagnetSettingsAction(magnetId: string, settings: Rec
     const supabase = createServiceClient()
     const ctx = await getAgentContext()
     if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
-    const updatePayload: Record<string, unknown> = { settings }
-    if (isActive !== undefined) updatePayload.is_active = isActive
+    // Map known setting keys to REAL lead_capture_forms columns — there is no `settings` column, so the
+    // old `{ settings }` write silently errored (every settings update failed). isActive may arrive as
+    // the 3rd arg OR inside the settings bag (the MagnetLibrary toggle passes { isActive }).
+    const s = (settings ?? {}) as Record<string, unknown>
+    const updatePayload: Record<string, unknown> = {}
+    if (typeof s.name === "string") updatePayload.name = s.name
+    if (typeof s.thankYouMessage === "string") updatePayload.thank_you_message = s.thankYouMessage
+    if (typeof s.redirectUrl === "string") updatePayload.redirect_url = s.redirectUrl
+    if (typeof s.tcpaDisclosureText === "string") updatePayload.tcpa_disclosure_text = s.tcpaDisclosureText
+    const active = isActive !== undefined ? isActive : (typeof s.isActive === "boolean" ? s.isActive : undefined)
+    if (active !== undefined) updatePayload.is_active = active
+    if (Object.keys(updatePayload).length === 0) return { success: false as const, error: "No recognized settings to update" }
     const { error } = await supabase
       .from("lead_capture_forms")
       .update(updatePayload)

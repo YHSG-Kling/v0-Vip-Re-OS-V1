@@ -14,6 +14,11 @@
  * Last synced: 2026-06-09.
  */
 export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
+  lead_capture_forms: [
+    "agent_id", "brokerage_id", "created_at", "fields", "id", "is_active", "landing_content",
+    "magnet_type", "name", "redirect_url", "slug", "submission_count", "tcpa_disclosure_text",
+    "thank_you_message", "updated_at",
+  ],
   contacts: [
     "next_followup_at", "next_followup_reason",
     "address", "age_range", "agent_id", "ai_autopilot_level", "ai_conversion_probability", "ai_insights",

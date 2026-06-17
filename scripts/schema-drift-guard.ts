@@ -23,6 +23,7 @@ import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 import { resolveTableManager } from "../lib/kernel/manager-registry"
 
 const BASELINE_PATH = join(process.cwd(), "scripts/schema-drift-baseline.json")
+const UNGUARDED_BASELINE_PATH = join(process.cwd(), "scripts/schema-drift-unguarded-baseline.json")
 const vkey = (v: { file: string; table: string; op: string; column: string }) => `${v.file}::${v.table}.${v.column}::${v.op}`
 
 let passed = 0, failed = 0
@@ -291,12 +292,56 @@ function testScan() {
   }
 }
 
+// ── Layer 3: coverage ratchet — every table the code touches must be ACCOUNTED FOR ───────────
+// The original guard only column-checks GUARDED tables; a `.from("unguarded_table")` was skipped
+// entirely. That's exactly how lead_capture_forms.metadata + property_interests phantom columns shipped
+// (both unguarded). This ratchet collects every referenced table and fails when a NEW one is neither
+// guarded (column-checked) nor on the acknowledged-unguarded burn-down list — so you can't introduce a
+// `.from("new_table")` without consciously guarding it or acknowledging it. Regenerate with
+// GUARD_WRITE_BASELINE=1.
+function testCoverage() {
+  console.log("\n[Layer 3 · table coverage ratchet]")
+  const root = process.cwd()
+  const files: string[] = []
+  for (const d of ["app", "lib"]) { try { walk(join(root, d), files) } catch {} }
+  const referenced = new Set<string>()
+  const fromRe = /\.from\(\s*["'`]([a-z_][a-z0-9_]*)["'`]\s*\)/g
+  // Only a SUPABASE query counts — `.from("x")` immediately chained to a PostgREST verb. This excludes
+  // Buffer.from("base64") / Array.from("...") / other library .from() calls whose arg isn't a table.
+  const PG_VERB = /^\s*(?:\.\s*)?(select|insert|upsert|update|delete|eq|neq|gt|gte|lt|lte|like|ilike|in|is|or|order|limit|range|match|single|maybeSingle|rpc|contains|filter|not|count)\b/
+  for (const f of files) {
+    let src = ""
+    try { src = readFileSync(f, "utf8") } catch { continue }
+    if (!src.includes(".from(")) continue
+    let m: RegExpExecArray | null
+    while ((m = fromRe.exec(src))) {
+      const after = src.slice(m.index + m[0].length, m.index + m[0].length + 40)
+      if (PG_VERB.test(after)) referenced.add(m[1])
+    }
+  }
+  const unguarded = [...referenced].filter((t) => !GUARDED.has(t)).sort()
+
+  if (process.env.GUARD_WRITE_BASELINE === "1") {
+    writeFileSync(UNGUARDED_BASELINE_PATH, JSON.stringify(unguarded, null, 2) + "\n")
+    console.log(`  ⚙  wrote unguarded baseline: ${unguarded.length} acknowledged tables`)
+  }
+  const acknowledged = new Set<string>(existsSync(UNGUARDED_BASELINE_PATH) ? JSON.parse(readFileSync(UNGUARDED_BASELINE_PATH, "utf8")) : [])
+  const fresh = unguarded.filter((t) => !acknowledged.has(t))
+  const nowGuarded = [...acknowledged].filter((t) => GUARDED.has(t) || !referenced.has(t))
+
+  console.log(`  · ${referenced.size} tables referenced — ${GUARDED.size} column-guarded, ${acknowledged.size} acknowledged-unguarded (burn-down)`)
+  check("no NEW unguarded table — add it to schema-snapshot (column-check) or acknowledge it (GUARD_WRITE_BASELINE=1)",
+    fresh.length === 0, fresh.join(", "))
+  if (nowGuarded.length > 0) console.log(`  ↘  ${nowGuarded.length} acknowledged tables are now guarded/unused — run GUARD_WRITE_BASELINE=1 to tighten.`)
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Schema-drift guard (no code may reference a column the live table lacks)")
   console.log("══════════════════════════════════════════════════")
   testPure()
   testScan()
+  testCoverage()
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
