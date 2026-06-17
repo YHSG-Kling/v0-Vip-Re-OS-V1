@@ -461,9 +461,13 @@ export async function aiGenerateEventInvitation(params: {
   try {
     const { data: agent } = await supabase
       .from("agents")
-      .select("first_name, last_name, email, phone")
+      .select("id, users(first_name, last_name)")
       .eq("id", params.agentId)
       .single()
+    // Agent identity lives on the joined users row (agents.user_id → users), NOT on agents — selecting
+    // first_name/last_name off agents directly errors the query (silent null), so the host was blank.
+    const u = (agent?.users ?? null) as { first_name?: string; last_name?: string } | null
+    const hostName = `${u?.first_name ?? ""} ${u?.last_name ?? ""}`.trim() || "your agent"
 
     const { object: invitation } = await generateObject({
       model: "openai/gpt-4o",
@@ -486,7 +490,7 @@ Type: ${params.eventType}
 Date: ${params.eventDetails.date}
 Location: ${params.eventDetails.location}
 Description: ${params.eventDetails.description || ""}
-Host: ${agent?.first_name} ${agent?.last_name}
+Host: ${hostName}
 Target audience: ${params.targetSegment || "All lifetime customers and sphere"}
 
 Generate:
