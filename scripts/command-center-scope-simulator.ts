@@ -160,6 +160,36 @@ async function main() {
       !nobody.sessions.some((s) => s.id === one.sessionId || s.id === two.sessionId))
     check("unknown agent: sees none of the seeded actions",
       !nobody.pendingActions.some((p) => p.id === one.actionId || p.id === two.actionId))
+
+    // ── Location isolation (multi-location brokerage) — two offices never see each other ──
+    const { data: locA } = await svc.from("locations").insert({ brokerage_id: brokerageId, name: `${TAG}LocA` }).select("id").single()
+    const { data: locB } = await svc.from("locations").insert({ brokerage_id: brokerageId, name: `${TAG}LocB` }).select("id").single()
+    cleanup.push({ table: "locations", id: (locA as any).id }, { table: "locations", id: (locB as any).id })
+
+    const seedAtLocation = async (locationId: string, label: string) => {
+      const { data: c } = await svc.from("contacts").insert({
+        brokerage_id: brokerageId, location_id: locationId, first_name: "ZZLoc", last_name: `${label}-${Date.now()}`,
+        email: `zz-loc-${label}-${Date.now()}@example.com`, contact_type: "buyer",
+      }).select("id").single()
+      cleanup.push({ table: "contacts", id: (c as any).id })
+      const { data: s } = await svc.from("managed_agent_sessions").insert({
+        managed_agent_id: (ma as any).id, brokerage_id: brokerageId, anthropic_session_id: `${TAG}loc${label}`,
+        entity_type: "contact", entity_id: (c as any).id, status: "running",
+      }).select("id").single()
+      cleanup.push({ table: "managed_agent_sessions", id: (s as any).id })
+      return (s as any).id as string
+    }
+    const sessA = await seedAtLocation((locA as any).id, "A")
+    const sessB = await seedAtLocation((locB as any).id, "B")
+
+    const scopeLocA = resolveEgressScope({ userType: "admin", userId: "loc-admin-a", brokerageId, locationId: (locA as any).id })
+    const locAView = await loadCommandCenter({ scope: scopeLocA, limit: 200 })
+    check("location A admin: sees location A's session", locAView.sessions.some((s) => s.id === sessA))
+    check("location A admin: does NOT see location B's session (isolation)", !locAView.sessions.some((s) => s.id === sessB))
+    check("location A admin: brokerage-wide aggregates withheld", locAView.standup.length === 0 && locAView.managerTalk.length === 0)
+
+    const brkAll = await loadCommandCenter({ scope: resolveEgressScope({ userType: "broker", userId: "broker-2", brokerageId }), limit: 200 })
+    check("broker (all locations): sees BOTH offices' sessions", brkAll.sessions.some((s) => s.id === sessA) && brkAll.sessions.some((s) => s.id === sessB))
   } finally {
     for (const c of [...cleanup].reverse()) await svc.from(c.table).delete().eq("id", c.id).then(() => {}, () => {})
     const { count } = await svc.from("managed_agent_sessions").select("id", { count: "exact", head: true }).ilike("anthropic_session_id", `${TAG}%`)

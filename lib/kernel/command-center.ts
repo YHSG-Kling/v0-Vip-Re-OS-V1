@@ -100,14 +100,13 @@ export interface CommandCenterParams {
    * (the multi-tier egress made real on the Command Center). When set, scope.brokerageId
    * is authoritative (overrides brokerageId).
    *
-   *  · brokerage / location → brokerage-wide. (Location-level isolation needs a
-   *    locations table that does not exist in the schema yet, so a location scope
-   *    HONESTLY degrades to brokerage rather than filtering on a column that isn't
-   *    there — see resolveEgressScope.)
-   *  · team  → only the sessions/actions/messages on entities (contacts/listings)
-   *    owned by that team; brokerage-wide aggregates (standup, P&L, manager talk,
-   *    content queue) are withheld so a narrower scope never sees the whole house.
-   *  · agent → the same, narrowed to the one agent's own book of business.
+   *  · brokerage → brokerage-wide (broker / broker_admin / superadmin / single-office admin).
+   *  · location  → only the sessions/actions/messages on entities (contacts/listings) at that office
+   *    (multi-location brokerages — a location admin never sees a sibling office's work).
+   *  · team  → only the entities owned by that team.
+   *  · agent → narrowed to the one agent's own book of business.
+   *  For location/team/agent, brokerage-wide aggregates (standup, P&L, manager talk, content queue)
+   *  are withheld so a narrower scope never sees the whole house.
    *
    * Omit entirely for the platform-wide superadmin view.
    */
@@ -128,6 +127,13 @@ async function resolveScopedEntities(
   scope: EgressScope,
   brokerageId: string,
 ): Promise<{ contactIds: string[]; listingIds: string[] }> {
+  if (scope.kind === "location" && scope.locationId) {
+    const [cs, ls] = await Promise.all([
+      supabase.from("contacts").select("id").eq("brokerage_id", brokerageId).eq("location_id", scope.locationId),
+      supabase.from("listings").select("id").eq("brokerage_id", brokerageId).eq("location_id", scope.locationId),
+    ])
+    return { contactIds: (cs.data ?? []).map((r: any) => r.id), listingIds: (ls.data ?? []).map((r: any) => r.id) }
+  }
   if (scope.kind === "team" && scope.teamId) {
     const [cs, ls] = await Promise.all([
       supabase.from("contacts").select("id").eq("brokerage_id", brokerageId).eq("team_id", scope.teamId),
@@ -158,12 +164,13 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // scope.brokerageId is authoritative when a scope is supplied.
   const brokerageId = scope?.brokerageId ?? params.brokerageId
 
-  // brokerage & location scope impose no entity restriction (location isolation has
-  // no backing column yet — see CommandCenterParams.scope); team & agent scope do.
-  const entityScoped = !!scope && (scope.kind === "team" || scope.kind === "agent")
-  // brokerage-wide aggregates (standup, P&L, manager talk, dial batches, content
-  // queue) are only shown to a brokerage-wide viewer — withheld from a narrower scope.
-  const brokerageWide = !scope || scope.kind === "brokerage" || scope.kind === "location"
+  // location / team / agent scope restrict to the entities (contacts/listings) owned by that
+  // location / team / agent (resolved through the entity — the egress tables carry only brokerage_id).
+  const entityScoped = !!scope && (scope.kind === "location" || scope.kind === "team" || scope.kind === "agent")
+  // brokerage-wide aggregates (standup, P&L, manager talk, dial batches, content queue) are only shown
+  // to a brokerage-wide viewer — withheld from a narrower scope (incl. a single-location admin, whose
+  // aggregates aren't location-segmented yet).
+  const brokerageWide = !scope || scope.kind === "brokerage"
 
   // For team/agent scope, resolve which sessions (and client contacts) are in view,
   // THROUGH the owned entities — the egress tables carry only brokerage_id.

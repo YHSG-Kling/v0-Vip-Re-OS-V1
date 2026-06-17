@@ -31,11 +31,19 @@ export default async function CommandCenterPage() {
   const brokerageId = userData?.brokerage_id ?? undefined
   if (!["admin", "broker", "superadmin"].includes(userType)) redirect("/dashboard")
 
-  // Resolve the egress scope so the surface shows the right slice. superadmin =
-  // platform-wide (no scope); everyone else is scoped through resolveEgressScope
-  // (admin/broker → brokerage-wide today; ready for finer team/agent tiers).
+  // Resolve the egress scope so the surface shows the right slice. superadmin = platform-wide (no
+  // scope). For everyone else, resolve their office (agents.location_id) + team so a multi-location
+  // admin is scoped to their location while broker/broker_admin see all locations.
+  let locationId: string | null = null
+  let teamId: string | null = null
+  if (userType !== "superadmin" && brokerageId) {
+    const { data: agentRow } = await supabase
+      .from("agents").select("location_id, team_id").eq("user_id", user.id).eq("brokerage_id", brokerageId).maybeSingle()
+    locationId = (agentRow as any)?.location_id ?? null
+    teamId = (agentRow as any)?.team_id ?? null
+  }
   const scope = userType !== "superadmin" && brokerageId
-    ? resolveEgressScope({ userType, userId: user.id, brokerageId })
+    ? resolveEgressScope({ userType, userId: user.id, brokerageId, locationId, teamId })
     : undefined
 
   const data = await loadCommandCenter({
