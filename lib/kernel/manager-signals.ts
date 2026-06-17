@@ -133,6 +133,32 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }, ctx.supabase)
     return res.ok ? `proposed lifetime welcome (gate message ${res.id})` : null
   },
+  // Asset Manager → Campaign Orchestrator: a published landing page AI search persistently never cites.
+  // The Orchestrator proposes a ONE-TAP gated regenerate_faq action (rebuild the FAQ + schema.org block
+  // from fresh demand topics). Deduped so a re-fired gap signal never stacks duplicate proposals.
+  "campaign_orchestrator:geo_visibility_gap": async (signal, ctx) => {
+    if (!signal.entityId) return null  // the lead_capture_form id
+    const { data: existing } = await ctx.supabase
+      .from("marketing_agent_actions")
+      .select("id")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("action_type", "regenerate_faq")
+      .in("status", ["proposed", "approved"])
+      .contains("action_input", { form_id: signal.entityId })
+      .maybeSingle()
+    if (existing) return "FAQ regeneration already proposed for this page"
+    const { recordProposedActions } = await import("@/lib/agents/marketing-agent-actions")
+    const res = await recordProposedActions({
+      brokerageId: ctx.brokerageId,
+      managedAgentSessionId: null,
+      actions: [{
+        action_type: "regenerate_faq",
+        action_input: { form_id: signal.entityId, slug: (signal.payload as any)?.slug ?? null },
+        rationale: signal.message,
+      }],
+    })
+    return res.inserted > 0 ? `proposed FAQ regeneration for ${(signal.payload as any)?.slug ?? signal.entityId}` : null
+  },
   // Listing Concierge → Shopping Agent: a price drop on an IN-HOUSE listing — inventory
   // talking to demand. The buyer side re-matches: every buyer who SAVED this listing gets
   // a price-improved alert proposed into the gate (capped, never autonomous).

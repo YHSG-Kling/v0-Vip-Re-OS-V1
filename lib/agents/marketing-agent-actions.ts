@@ -42,6 +42,8 @@ export type MarketingActionType =
   // Wave 48 — cross-manager handoff (listing active / deal closed → coordinated push).
   | "promote_new_listing"
   | "just_sold_campaign"
+  // GEO remediation — regenerate a persistently-uncited landing page's FAQ from fresh demand topics.
+  | "regenerate_faq"
 
 export interface ProposedAction {
   action_type: MarketingActionType
@@ -736,6 +738,45 @@ async function runHandler(
         bypassPolicy: true,
       })
       return { status: r.ok ? "succeeded" : "failed", result: { listing_id: listingId, promo: eventType, dispatch_status: r.status, reason: r.reason ?? null } }
+    }
+
+    case "regenerate_faq": {
+      // GEO remediation: a published landing page that AI search persistently never cites gets its FAQ
+      // rebuilt from FRESH demand topics + a new schema.org FAQPage block, then persisted to
+      // lead_capture_forms.landing_content (what the public /lm/[slug] page renders). Same composition
+      // the builder uses, so the page picks up the improvement on next render. Idempotent.
+      const svc = createServiceClient()
+      const formId = String(input.form_id ?? input.formId ?? "")
+      if (!formId) return { status: "failed", result: { error: "form_id required" } }
+      const { data: form } = await svc.from("lead_capture_forms")
+        .select("id, brokerage_id, magnet_type, slug, landing_content")
+        .eq("id", formId).eq("brokerage_id", brokerageId).maybeSingle()
+      if (!form) return { status: "failed", result: { error: "form not found or tenant mismatch" } }
+
+      const magnetType = ((form as any).magnet_type ?? "generic_form") as import("@/lib/marketing/lead-magnet-copy").MagnetType
+      const prev = ((form as any).landing_content ?? {}) as Record<string, unknown>
+      const ctx = { area: (prev.area as string) ?? null, brand: (prev.brand as string) ?? null }
+
+      const { fetchContentTopics } = await import("@/lib/marketing/content-topics-runner")
+      const topics = await fetchContentTopics(magnetType, ctx.area).catch(() => [])
+      const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+      const { landingPageCopyFromTopics } = await import("@/lib/marketing/lead-magnet-copy")
+      const { buildFaqFromTopics, faqJsonLdScript } = await import("@/lib/marketing/geo-faq")
+
+      const landing = await landingPageCopyFromTopics(magnetType, topics, ctx, { copyGenerator: realCopyGenerator })
+      const faq = await buildFaqFromTopics(topics, magnetType, ctx, { copyGenerator: realCopyGenerator })
+      if (faq.length === 0) return { status: "skipped", result: { reason: "no fresh demand topics available to rebuild the FAQ" } }
+
+      const nextLandingContent = {
+        ...prev,
+        headline: landing.headline, subhead: landing.subhead, cta: landing.cta, bullets: landing.bullets,
+        faq, faqJsonLd: faqJsonLdScript(faq, { brand: ctx.brand }),
+        faq_regenerated_at: new Date().toISOString(),
+      }
+      const { error: upErr } = await svc.from("lead_capture_forms")
+        .update({ landing_content: nextLandingContent }).eq("id", formId)
+      if (upErr) return { status: "failed", result: { error: upErr.message } }
+      return { status: "succeeded", result: { form_id: formId, slug: (form as any).slug ?? null, faq_count: faq.length, from_topics: landing.fromTopics, topics: topics.length } }
     }
 
     default: {
