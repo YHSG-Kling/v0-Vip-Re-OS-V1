@@ -17,6 +17,9 @@ export async function generateLeadMagnetCopyAction(input: { magnetType: string; 
   landing?: LandingCopy & { fromTopics?: boolean }
   deliverable?: MagnetDeliverable | null
   topics?: string[]
+  /** the AI-visibility FAQ (real questions + answers) + its schema.org JSON-LD for the page <head>. */
+  faq?: Array<{ question: string; answer: string }>
+  faqJsonLd?: string | null
   error?: string
 }> {
   const supabase = await createClient()
@@ -36,10 +39,17 @@ export async function generateLeadMagnetCopyAction(input: { magnetType: string; 
     ? await prepareMagnetDeliverable(magnetType, ctx, { topics, copyGenerator: realCopyGenerator })
     : null
 
+  // AI-VISIBILITY (GEO) — turn the real questions into a FAQ + schema.org FAQPage JSON-LD so the page
+  // gets cited by AI search (ChatGPT / Perplexity / Gemini / Google AI Overviews), not just indexed.
+  const { buildFaqFromTopics, faqJsonLdScript } = await import("@/lib/marketing/geo-faq")
+  const faq = await buildFaqFromTopics(topics, magnetType, ctx, { copyGenerator: realCopyGenerator })
+
   return {
     success: true,
     landing,
     deliverable: deliverable ?? (magnetHasDeliverable(magnetType) ? magnetDeliverableCopy(magnetType, ctx) : null),
     topics: topics.map((t) => t.topic),
+    faq,
+    faqJsonLd: faq.length ? faqJsonLdScript(faq, { brand: input.brand ?? null }) : null,
   }
 }

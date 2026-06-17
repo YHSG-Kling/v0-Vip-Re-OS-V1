@@ -97,6 +97,20 @@ async function main() {
   const aiDeliverable = await prepareMagnetDeliverable("buyer_guide", undefined, { topics, copyGenerator: echoGen })
   check("deliverable is grounded in the real topics", !!aiDeliverable && /down payment|pre-?approv/i.test(aiDeliverable.body))
 
+  console.log("\n[AI visibility (GEO) — FAQ + schema.org FAQPage JSON-LD]")
+  const { buildFaqFromTopics, faqPageJsonLd, faqJsonLdScript } = await import("../lib/marketing/geo-faq")
+  const ansGen = async (req: any) => ({ body: `Here's a clear answer: ${req.facts[0]}` })
+  const faq = await buildFaqFromTopics(topics, "buyer_guide", { brand: "Acme" }, { copyGenerator: ansGen })
+  check("FAQ is built from the real questions", faq.length >= 2 && faq.every((f) => f.question.endsWith("?") && f.answer.length > 0))
+  check("each FAQ item pairs a real question with an answer", faq.some((f) => /down payment/i.test(f.question)) && faq.some((f) => /down payment/i.test(f.answer)))
+  const ld = faqPageJsonLd(faq, { brand: "Acme", url: "https://acme.example/buyer-guide" })
+  check("emits a schema.org FAQPage (the AI-search citation structure)", (ld as any)["@type"] === "FAQPage" && Array.isArray((ld as any).mainEntity) && (ld as any).mainEntity[0]["@type"] === "Question" && (ld as any).mainEntity[0].acceptedAnswer["@type"] === "Answer")
+  check("JSON-LD serializes for a <script> tag", (() => { try { const o = JSON.parse(faqJsonLdScript(faq, { brand: "Acme" })); return o["@type"] === "FAQPage" } catch { return false } })())
+  check("no topics → no FAQ (honest, no fabricated Q&A)", (await buildFaqFromTopics([], "buyer_guide", undefined, {})).length === 0)
+  // A non-question topic is still framed as a clean question for AI search.
+  const framed = await buildFaqFromTopics([{ topic: "closing costs for buyers", score: 3 }], "buyer_guide", undefined, {})
+  check("a non-question topic is framed as a question", framed[0]?.question.endsWith("?"))
+
   report()
 }
 
