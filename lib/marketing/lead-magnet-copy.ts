@@ -150,18 +150,52 @@ export function magnetHasDeliverable(magnetType: MagnetType): boolean {
   return magnetType !== "generic_form"
 }
 
+// ── AI copy BUILT FROM REAL DEMAND TOPICS (the deterministic copy is only the fallback) ──────────
+
+import type { ContentTopic } from "./content-topics"
+
+/**
+ * Generate the landing copy from the REAL topics buyers/sellers are asking (content-topics) via the
+ * injected AI generator. The deterministic landingPageCopy is the safety fallback when there are no
+ * topics or the generator is unavailable — so the copy is genuinely AI-built from demand, never just
+ * boilerplate. Fair-Housing safety: topics are pre-filtered (content-topics drops steering language)
+ * and the runner still clears the compliance gate.
+ */
+export async function landingPageCopyFromTopics(
+  magnetType: MagnetType, topics: ContentTopic[], ctx: CopyContext | undefined,
+  opts: { copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator } = {},
+): Promise<LandingCopy & { fromTopics: boolean }> {
+  const fallback = landingPageCopy(magnetType, ctx)
+  if (!topics?.length || !opts.copyGenerator) return { ...fallback, fromTopics: false }
+  try {
+    const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
+    const facts = topics.slice(0, 6).map((t) => t.topic)
+    const sub = await generatePersonaCopy(
+      { goal: `a landing-page subheadline for a ${magnetType.replace(/_/g, " ")} that speaks to what buyers/sellers are actually asking`, facts, channel: "landing_page", persona: { audience: "audience" }, words: 28 },
+      { body: fallback.subhead }, { generator: opts.copyGenerator },
+    )
+    // The value bullets become the top real questions, answered as benefits.
+    const bullets = topics.slice(0, 3).map((t) => t.topic.replace(/\?+$/, "")).filter(Boolean)
+    return { headline: fallback.headline, subhead: (sub.body || fallback.subhead).trim(), cta: fallback.cta, bullets: bullets.length ? bullets : fallback.bullets, fromTopics: true }
+  } catch {
+    return { ...fallback, fromTopics: false }
+  }
+}
+
 export interface PrepareMagnetOpts {
   /** injectable persona-copy generator seam (tests pass () => null for the deterministic copy). */
   copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator
   /** the gate seam (tests pass a pass-through; production routes evaluateOutbound). */
   gate?: (text: string) => Promise<{ allowed: boolean; violations: string[] }>
+  /** the REAL topics buyers/sellers are asking (content-topics) — the AI grounds the copy in them. */
+  topics?: ContentTopic[]
 }
 
 /**
- * Prepare the deliverable copy a contact gets for filling out the form — gated. Returns null when the
- * magnet ships no deliverable (e.g. generic_form) or the copy can't clear the gate. The AI generator +
- * gate are injectable seams; with the defaults it's deterministic + self-allowed (the copy is FH-safe).
- * Not server-only (the simulator drives it) — no DB I/O here; the runner records the delivery.
+ * Prepare the deliverable copy a contact gets for filling out the form — BUILT from the real demand
+ * topics when supplied (the AI answers what people are actually asking), gated. The deterministic copy
+ * is the fallback when there are no topics / no generator / the gate blocks. Not server-only (the
+ * simulator drives it) — no DB I/O here; the runner records the delivery.
  */
 export async function prepareMagnetDeliverable(
   magnetType: MagnetType, ctx: CopyContext | undefined, opts: PrepareMagnetOpts = {},
@@ -173,8 +207,11 @@ export async function prepareMagnetDeliverable(
   if (opts.copyGenerator) {
     try {
       const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
+      // Ground the AI in the real questions people are asking (when we have them) so the deliverable
+      // answers genuine demand, not boilerplate; the deterministic copy seeds the safe baseline.
+      const facts = (opts.topics?.length ? opts.topics.slice(0, 6).map((t) => t.topic) : []).concat(fallback.body)
       const draft = await generatePersonaCopy(
-        { goal: `the deliverable content for a ${magnetType.replace(/_/g, " ")} lead magnet`, facts: [fallback.body], channel: "email", persona: { audience: "audience" }, words: 160 },
+        { goal: `the deliverable content for a ${magnetType.replace(/_/g, " ")} lead magnet that answers what buyers/sellers are actually asking`, facts, channel: "email", persona: { audience: "audience" }, words: 180 },
         { body: fallback.body }, { generator: opts.copyGenerator },
       )
       body = (draft.body || fallback.body).trim()

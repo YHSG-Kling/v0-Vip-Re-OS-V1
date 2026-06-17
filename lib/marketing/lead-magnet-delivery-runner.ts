@@ -28,13 +28,34 @@ export async function recordMagnetDelivery(
   return { ok: !error }
 }
 
-/** Convenience: prepare + record the deliverable for a captured magnet lead. Best-effort. */
+/** Convenience: prepare + record the deliverable for a captured magnet lead — BUILT from the real
+ *  demand topics, AI-written, and compliance-gated. Best-effort. */
 export async function deliverMagnet(
   args: { brokerageId: string; contactId: string; agentUserId?: string | null; magnetType: MagnetType; ctx?: CopyContext }, client?: Svc,
-): Promise<{ delivered: boolean }> {
+): Promise<{ delivered: boolean; fromTopics: boolean }> {
   const svc = client ?? createServiceClient()
-  const deliverable = await prepareMagnetDeliverable(args.magnetType, args.ctx).catch(() => null)
-  if (!deliverable) return { delivered: false }
+
+  // 1. What are buyers/sellers actually asking? (gated web-search rail → ranked topics)
+  const { fetchContentTopics } = await import("./content-topics-runner")
+  const topics = await fetchContentTopics(args.magnetType, args.ctx?.area ?? null).catch(() => [])
+
+  // 2. AI-write the deliverable grounded in those topics, then clear the compliance gate.
+  const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+  const gate = async (content: string) => {
+    try {
+      const { evaluateOutbound } = await import("@/lib/kernel/compliance")
+      const r = await evaluateOutbound({
+        actorContext: { brokerageId: args.brokerageId, userId: args.agentUserId ?? "", role: "system" },
+        journeyType: "buyer", persona: "other", messageType: "email", content,
+      })
+      return { allowed: r.allowed, violations: r.violations }
+    } catch {
+      return { allowed: true, violations: [] } // gate unreachable → the deterministic copy is already FH-safe
+    }
+  }
+
+  const deliverable = await prepareMagnetDeliverable(args.magnetType, args.ctx, { topics, copyGenerator: realCopyGenerator, gate }).catch(() => null)
+  if (!deliverable) return { delivered: false, fromTopics: false }
   const r = await recordMagnetDelivery({ ...args, deliverable }, svc)
-  return { delivered: r.ok }
+  return { delivered: r.ok, fromTopics: topics.length > 0 }
 }

@@ -11,7 +11,8 @@
  *
  * Run: npx tsx scripts/lead-magnet-copy-simulator.ts   (npm run test:lead-magnet-copy)
  */
-import { landingPageCopy, magnetDeliverableCopy, magnetHasDeliverable, prepareMagnetDeliverable, type MagnetType } from "../lib/marketing/lead-magnet-copy"
+import { landingPageCopy, magnetDeliverableCopy, magnetHasDeliverable, prepareMagnetDeliverable, landingPageCopyFromTopics, type MagnetType } from "../lib/marketing/lead-magnet-copy"
+import { extractContentTopics, topicSearchQuery } from "../lib/marketing/content-topics"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -66,6 +67,35 @@ async function main() {
   check("a failing gate blocks delivery (returns null)", blocked === null)
   const noDeliverable = await prepareMagnetDeliverable("generic_form", undefined, {})
   check("generic_form prepares no deliverable", noDeliverable === null)
+
+  console.log("\n[content topics — built from REAL demand, not hardcoded]")
+  check("topic query targets what people actually ask (per magnet)", /first time home buyer/i.test(topicSearchQuery("buyer_guide")) && /reddit|forum/i.test(topicSearchQuery("buyer_guide")))
+  // Simulated web-search texts (Reddit/forum-style) — the kind the gated rail returns.
+  const searchTexts = [
+    "How much do I need for a down payment on my first home?",
+    "What closing costs should a first-time buyer expect?",
+    "Should I get pre-approved before I start looking at houses?",
+    "How much do I need for a down payment on my first home?", // exact dup → recurrence ranks it first
+    "The weather was nice today and I went for a walk.", // noise → dropped (no intent)
+    "Is this a good neighborhood for families with kids?", // FH steering → dropped
+  ]
+  const topics = extractContentTopics(searchTexts, { limit: 5 })
+  check("extracts real buyer questions from search texts", topics.some((t) => /down payment/i.test(t.topic)) && topics.some((t) => /pre-?approv/i.test(t.topic)))
+  check("noise (non-real-estate) is dropped", !topics.some((t) => /weather|walk/i.test(t.topic)))
+  check("Fair-Housing steering topic is dropped", !topics.some((t) => /families|kids/i.test(t.topic)))
+  check("a recurring question ranks higher", topics[0] && /down payment/i.test(topics[0].topic))
+
+  // The AI landing copy is BUILT from those real topics (injected generator echoes them).
+  const echoGen = async (req: any) => ({ body: `Real answers to: ${req.facts.slice(0, 2).join("; ")}` })
+  const aiLanding = await landingPageCopyFromTopics("buyer_guide", topics, { brand: "Acme" }, { copyGenerator: echoGen })
+  check("landing subhead is AI-written from the real topics", aiLanding.fromTopics && /down payment|pre-?approv/i.test(aiLanding.subhead))
+  check("value bullets become the top real questions", aiLanding.bullets.some((b) => /down payment/i.test(b)))
+  // No topics / no generator → safe deterministic fallback (never a blank).
+  const fb = await landingPageCopyFromTopics("buyer_guide", [], undefined, {})
+  check("no topics → falls back to safe deterministic copy", !fb.fromTopics && !!fb.headline && !!fb.subhead)
+  // Deliverable grounded in topics.
+  const aiDeliverable = await prepareMagnetDeliverable("buyer_guide", undefined, { topics, copyGenerator: echoGen })
+  check("deliverable is grounded in the real topics", !!aiDeliverable && /down payment|pre-?approv/i.test(aiDeliverable.body))
 
   report()
 }
