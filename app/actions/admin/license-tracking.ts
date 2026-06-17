@@ -65,20 +65,20 @@ export async function getBrokerageAgentLicenseStatuses(
       first_name,
       last_name,
       email,
-      license_expiry,
-      agent_licenses (
-        license_number,
-        license_state,
-        expiry_date,
-        verification_status
-      ),
       agents (
         id,
+        license_expiry,
         ethics_completed_at,
         ethics_due_date,
         ce_hours_required,
         ce_hours_completed,
-        ce_cycle_end_date
+        ce_cycle_end_date,
+        agent_licenses (
+          license_number,
+          license_state,
+          expiry_date,
+          verification_status
+        )
       )
     `)
     .eq("brokerage_id", brokerageId)
@@ -90,10 +90,11 @@ export async function getBrokerageAgentLicenseStatuses(
   const now = Date.now()
 
   const statuses: AgentLicenseStatus[] = (agents ?? []).map((a: any) => {
-    const license = Array.isArray(a.agent_licenses) ? a.agent_licenses[0] : a.agent_licenses
     const agentRow = Array.isArray(a.agents) ? a.agents[0] : a.agents
+    // license_expiry + agent_licenses live on the AGENT (agent_licenses FK is agent_id), not users.
+    const license = Array.isArray(agentRow?.agent_licenses) ? agentRow.agent_licenses[0] : agentRow?.agent_licenses
 
-    const expiryRaw = license?.expiry_date ?? a.license_expiry ?? null
+    const expiryRaw = license?.expiry_date ?? agentRow?.license_expiry ?? null
     const daysUntilExpiry = expiryRaw
       ? Math.ceil((new Date(expiryRaw).getTime() - now) / 86_400_000)
       : null
