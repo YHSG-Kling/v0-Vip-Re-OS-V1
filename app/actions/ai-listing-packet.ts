@@ -295,7 +295,7 @@ export async function compileSellerDisclosure(listing: any) {
       .from("client_documents")
       .select("*")
       .eq("listing_id", listing.id)
-      .ilike("document_category", "%disclosure%")
+      .ilike("doc_category", "%disclosure%")
 
     // Get state-specific disclosure requirements
     const stateRequirements = getStateDisclosureRequirements(listing.state)

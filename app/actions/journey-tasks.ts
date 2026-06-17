@@ -75,7 +75,6 @@ export async function completeTask(data: {
         document_type: data.formData.document_type,
         document_name: data.formData.document_name || data.taskName,
         status: "submitted",
-        submitted_at: new Date().toISOString(),
         metadata: data.formData,
       })
     }
