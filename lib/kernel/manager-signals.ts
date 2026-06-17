@@ -91,6 +91,15 @@ export async function publishManagerSignal(
 /** A signal handler: acts on one signal, returns the action taken (or null to leave open). */
 export type SignalHandler = (signal: ManagerSignal, ctx: { brokerageId: string; supabase: Svc }) => Promise<string | null>
 
+/** Resolve a users.id to notify for a contact — the contact's assigned agent. Best-effort. */
+async function resolveLoanAgentUser(supabase: Svc, contactId: string): Promise<string | null> {
+  const { data: c } = await supabase.from("contacts").select("agent_id").eq("id", contactId).maybeSingle()
+  const agentId = (c as any)?.agent_id
+  if (!agentId) return null
+  const { data: a } = await supabase.from("agents").select("user_id").eq("id", agentId).maybeSingle()
+  return (a as any)?.user_id ?? null
+}
+
 /** The registered conversations — to_manager:signal_type → handler. Handlers act by
  *  proposing GOVERNED deliverables (the gate), never autonomous sends. */
 export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
@@ -641,6 +650,47 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       channel: "portal",
     }, ctx.supabase)
     return res.ok ? `proposed a gated buyer "${play}" reset (message ${res.id})` : null
+  },
+  // Loan-milestone sync → Deal Coordinator: a financing milestone landed. Keep the buyer + agent on
+  // the same page — propose a GATED buyer update (when the milestone is buyer-appropriate) and notify
+  // the agent. A denial NEVER auto-messages the buyer (sensitive — the agent calls personally).
+  "deal_coordinator:loan_milestone": async (signal, ctx) => {
+    if (!signal.contactId) return null
+    const p = (signal.payload ?? {}) as Record<string, unknown>
+    const audience = (p.audience as string | undefined) ?? "agent"
+    const buyerMessage = (p.buyerMessage as string | null | undefined) ?? null
+    const agentNote = (p.agentNote as string | undefined) ?? null
+    const milestone = (p.milestone as string | undefined) ?? "update"
+    const actions: string[] = []
+
+    // (1) Gated buyer update — only when the plan provides one (denials carry null).
+    if ((audience === "buyer" || audience === "both") && buyerMessage) {
+      const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+      const res = await proposeClientMessage({
+        brokerageId: ctx.brokerageId, agentKind: "deal_coordinator", entityType: "contact",
+        entityId: signal.contactId, recipientContactId: signal.contactId, audience: "buyer",
+        subject: "An update on your loan",
+        body: buyerMessage,
+        rationale: `LOAN-MILESTONE SYNC — "${milestone}" milestone; gated buyer update so they're never in the dark.`,
+        channel: "portal",
+      }, ctx.supabase)
+      if (res.ok) actions.push(`proposed a gated buyer loan update (message ${res.id})`)
+    }
+
+    // (2) Notify the agent (the prompt to act / the sensitive-call flag).
+    if (agentNote) {
+      const agentUserId = await resolveLoanAgentUser(ctx.supabase, signal.contactId)
+      if (agentUserId) {
+        const { error } = await ctx.supabase.from("notifications").insert({
+          user_id: agentUserId, brokerage_id: ctx.brokerageId,
+          title: `Loan update: ${milestone.replace(/_/g, " ")}`, body: agentNote,
+          type: "loan_milestone", entity_type: "contact", entity_id: signal.contactId,
+          priority: milestone === "denied" || milestone === "delay" ? "high" : "medium", is_read: false,
+        })
+        if (!error) actions.push("notified the agent")
+      }
+    }
+    return actions.length ? actions.join("; ") : null
   },
   // Inbound seller intent → Listing Concierge: a homeowner asked "what's my home worth" (a home-value
   // tool / valuation magnet) — the strongest INBOUND seller signal. The concierge responds like a
