@@ -266,6 +266,9 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
  */
 export const TABLE_MANAGER: Record<string, ManagerKey> = {
   contacts:                     "data_steward",
+  // AI agent templates (the configurable AI workforce) are platform config — the data steward owns
+  // their integrity so the schema-drift burn-down + egress have a named owner for them.
+  ai_agent_templates:           "data_steward",
   leads:                        "ai_isa",
   raw_scraped_leads:            "data_steward",
   property_preferences:         "shopping_agent",

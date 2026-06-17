@@ -72,10 +72,10 @@ export async function generateBrokerBrief(params: {
       .limit(10),
     supabase
       .from("agents")
-      .select("id, license_expiration_date, users!inner(first_name, last_name, brokerage_id)")
+      .select("id, license_expiry, users!inner(first_name, last_name, brokerage_id)")
       .eq("users.brokerage_id", params.brokerageId)
-      .lte("license_expiration_date", sixtyDaysOut)
-      .order("license_expiration_date", { ascending: true })
+      .lte("license_expiry", sixtyDaysOut)
+      .order("license_expiry", { ascending: true })
       .limit(5),
     supabase
       .from("compliance_events")
@@ -107,7 +107,7 @@ export async function generateBrokerBrief(params: {
   }>
   const expiringLicenses = (expiringLicensesRes.data ?? []) as unknown as Array<{
     id: string
-    license_expiration_date: string
+    license_expiry: string
     users: { first_name: string | null; last_name: string | null }
   }>
   const complianceEvents = (complianceEventsRes.data ?? []) as unknown as Array<{
@@ -140,7 +140,7 @@ export async function generateBrokerBrief(params: {
   // License expirations
   if (priorities.length < 3 && expiringLicenses.length > 0) {
     const days = Math.ceil(
-      (new Date(expiringLicenses[0].license_expiration_date).getTime() - Date.now()) / (24 * 60 * 60 * 1000)
+      (new Date(expiringLicenses[0].license_expiry).getTime() - Date.now()) / (24 * 60 * 60 * 1000)
     )
     const agentName = `${expiringLicenses[0].users.first_name ?? ""} ${expiringLicenses[0].users.last_name ?? ""}`.trim() || "Agent"
     priorities.push({

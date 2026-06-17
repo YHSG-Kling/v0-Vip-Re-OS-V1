@@ -181,7 +181,7 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       const { data: agentData } = await supabase
         .from("agents")
         .select("id, brokerage_id")
-        .eq("slug", agentSlug)
+        .eq("public_slug", agentSlug)
         .single()
 
       if (agentData) {
@@ -521,7 +521,7 @@ export async function getHomeValueResult(requestId: string) {
     const { data: agentData } = await supabase
       .from("agents")
       .select("id, phone_mobile, profile_image_url, users(first_name, last_name, email)")
-      .eq("slug", agentSlug)
+      .eq("public_slug", agentSlug)
       .single()
 
     if (agentData) {
@@ -900,7 +900,7 @@ export async function getAgentBySlug(slug: string) {
   const { data: agent } = await supabase
     .from("agents")
     .select("id, user_id, phone_mobile, profile_image_url, brokerage_id, users(first_name, last_name, email)")
-    .eq("ref_agent_slug", slug)
+    .eq("public_slug", slug)
     .maybeSingle()
 
   if (!agent) return null

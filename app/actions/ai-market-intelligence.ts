@@ -243,7 +243,7 @@ export async function getMarketAlerts(params: {
     // Get agent's focus areas
     const { data: agentProfile } = await supabase
       .from("agents")
-      .select("focus_areas, specializations")
+      .select("specializations")
       .eq("id", params.agentId)
       .single()
 
@@ -275,7 +275,6 @@ export async function getMarketAlerts(params: {
       }),
       prompt: `Generate market alerts based on recent data:
 
-Agent Focus Areas: ${JSON.stringify(agentProfile?.focus_areas || [])}
 Specializations: ${JSON.stringify(agentProfile?.specializations || [])}
 
 Recent Market Data:

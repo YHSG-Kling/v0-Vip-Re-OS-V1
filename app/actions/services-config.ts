@@ -95,17 +95,39 @@ export async function getServicesRegistry() {
 // AI AGENT TEMPLATES
 // ============================================================================
 
+/** Map an ai_agent_templates row to the flat shape the settings UI renders. The per-template AI config
+ *  (agent_type/system_prompt/model/temperature/capabilities) lives in the template_config jsonb. */
+function mapTemplateRow(t: any) {
+  const c = (t?.template_config ?? {}) as Record<string, unknown>
+  return {
+    id: t.id,
+    agent_name: t.template_name ?? "",
+    active: !!t.is_active,
+    agent_type: (c.agent_type as string) ?? "",
+    system_prompt: (c.system_prompt as string) ?? "",
+    model: (c.model as string) ?? "",
+    temperature: typeof c.temperature === "number" ? c.temperature : 0.7,
+    capabilities: Array.isArray(c.capabilities) ? c.capabilities : [],
+  }
+}
+
 export async function getAIAgentTemplates() {
   const supabase = await createClient()
+  const { brokerageId } = await getAgentContext()
 
-  const { data, error } = await supabase.from("agents").select("*").order("created_at", { ascending: true })
+  // AI agent templates live in ai_agent_templates — NOT the human `agents` table (that was the bug:
+  // this screen listed/inserted human agents). Show the brokerage's own templates + any global ones.
+  let query = supabase.from("ai_agent_templates").select("*").order("created_at", { ascending: true })
+  if (brokerageId) query = query.or(`brokerage_id.eq.${brokerageId},is_global.eq.true`)
+  else query = query.eq("is_global", true)
+  const { data, error } = await query
 
   if (error) {
     console.error("Error fetching AI agent templates:", error)
     return { agents: [] }
   }
 
-  return { agents: data || [] }
+  return { agents: (data || []).map(mapTemplateRow) }
 }
 
 export async function createAIAgentTemplate(params: {
@@ -117,17 +139,24 @@ export async function createAIAgentTemplate(params: {
   capabilities: string[]
 }) {
   const supabase = await createClient()
+  const { brokerageId } = await getAgentContext()
+  if (!brokerageId) return { success: false as const, error: "Not authenticated" }
 
+  // Flat config fields go into the template_config jsonb; identity into template_name/is_active.
   const { data, error } = await supabase
-    .from("agents")
+    .from("ai_agent_templates")
     .insert({
-      agent_name: params.agent_name,
-      agent_type: params.agent_type,
-      system_prompt: params.system_prompt,
-      model: params.model,
-      temperature: params.temperature,
-      capabilities: params.capabilities,
-      active: true,
+      brokerage_id: brokerageId,
+      template_name: params.agent_name,
+      description: params.agent_type,
+      template_config: {
+        agent_type: params.agent_type,
+        system_prompt: params.system_prompt,
+        model: params.model,
+        temperature: params.temperature,
+        capabilities: params.capabilities,
+      },
+      is_active: true,
     })
     .select()
     .single()
@@ -135,18 +164,25 @@ export async function createAIAgentTemplate(params: {
   if (error) throw error
 
   revalidatePath("/settings/services")
-  return { success: true, agent: data }
+  return { success: true as const, agent: mapTemplateRow(data) }
 }
 
 export async function toggleAIAgentTemplate(agentId: string, active: boolean) {
   const supabase = await createClient()
+  const { brokerageId } = await getAgentContext()
+  if (!brokerageId) return { success: false as const, error: "Not authenticated" }
 
-  const { error } = await supabase.from("agents").update({ active }).eq("id", agentId)
+  // Brokerage-scoped so a user can only toggle their own templates (global templates stay read-only here).
+  const { error } = await supabase
+    .from("ai_agent_templates")
+    .update({ is_active: active })
+    .eq("id", agentId)
+    .eq("brokerage_id", brokerageId)
 
   if (error) throw error
 
   revalidatePath("/settings/services")
-  return { success: true }
+  return { success: true as const }
 }
 
 // ============================================================================
