@@ -55,3 +55,47 @@ export async function loadSourceConversions(
 
   return scoreSourceConversions([...agg.values()])
 }
+
+/**
+ * Close the lead-source learning loop: score the brokerage's sources, and for each active market whose
+ * enabled set has a CLEAR enable/disable delta (trusted ROI past the floor — never on thin samples),
+ * publish a GATED lead_source_waste signal so the team proposes a one-tap reallocation a human approves.
+ * Read-only here (the proposal + approval do the writes). Capped + idempotent (dedupe per market).
+ */
+export async function runSourceReallocationScan(
+  brokerageId: string,
+  opts: { sinceDays?: number; maxMarkets?: number } = {},
+  client?: Svc,
+): Promise<{ scanned: number; signalled: number }> {
+  if (!brokerageId) return { scanned: 0, signalled: 0 }
+  const svc = client ?? createServiceClient()
+  const scored = await loadSourceConversions(brokerageId, { sinceDays: opts.sinceDays }, svc)
+  if (scored.ranked.length === 0) return { scanned: 0, signalled: 0 }
+
+  const { data: markets } = await svc.from("lead_scraping_markets")
+    .select("id, city, state, enabled_sources").eq("brokerage_id", brokerageId).eq("is_active", true)
+    .order("priority", { ascending: true }).limit(opts.maxMarkets ?? 25)
+  const rows = (markets ?? []) as Array<{ id: string; city: string | null; state: string | null; enabled_sources: string[] | null }>
+  if (rows.length === 0) return { scanned: 0, signalled: 0 }
+
+  const { recommendSourceAllocation } = await import("./source-conversion-learning")
+  const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+  let signalled = 0
+  for (const m of rows) {
+    const rec = recommendSourceAllocation(scored, m.enabled_sources ?? [])
+    if (rec.enable.length === 0 && rec.disable.length === 0) continue
+    const where = [m.city, m.state].filter(Boolean).join(", ") || "this market"
+    const parts: string[] = []
+    if (rec.disable.length) parts.push(`turn OFF ${rec.disable.join(", ")} (costing more than they return)`)
+    if (rec.enable.length) parts.push(`turn ON ${rec.enable.join(", ")} (proven winners)`)
+    const r = await publishManagerSignal({
+      brokerageId, fromManager: "data_steward", toManager: "campaign_orchestrator",
+      signalType: "lead_source_waste",
+      message: `Lead-source learning for ${where}: ${parts.join("; ")}.`,
+      entityType: "lead_scraping_market", entityId: m.id,
+      payload: { market_id: m.id, enable: rec.enable, disable: rec.disable, reasons: rec.reasons },
+    }, svc)
+    if (r.ok) signalled++
+  }
+  return { scanned: rows.length, signalled }
+}

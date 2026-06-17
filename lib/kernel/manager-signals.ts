@@ -159,6 +159,26 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     })
     return res.inserted > 0 ? `proposed FAQ regeneration for ${(signal.payload as any)?.slug ?? signal.entityId}` : null
   },
+  // Data Steward → Campaign Orchestrator: the lead-source learner found a money-pit / a winner that's
+  // off. The Orchestrator proposes a ONE-TAP gated reallocate_lead_sources action for that market.
+  // Deduped per market so a re-fired waste signal never stacks duplicate proposals.
+  "campaign_orchestrator:lead_source_waste": async (signal, ctx) => {
+    if (!signal.entityId) return null  // the lead_scraping_market id
+    const enable = ((signal.payload as any)?.enable ?? []) as string[]
+    const disable = ((signal.payload as any)?.disable ?? []) as string[]
+    if (enable.length === 0 && disable.length === 0) return "no source changes to propose"
+    const { data: existing } = await ctx.supabase
+      .from("marketing_agent_actions")
+      .select("id").eq("brokerage_id", ctx.brokerageId).eq("action_type", "reallocate_lead_sources")
+      .in("status", ["proposed", "approved"]).contains("action_input", { market_id: signal.entityId }).maybeSingle()
+    if (existing) return "source reallocation already proposed for this market"
+    const { recordProposedActions } = await import("@/lib/agents/marketing-agent-actions")
+    const res = await recordProposedActions({
+      brokerageId: ctx.brokerageId, managedAgentSessionId: null,
+      actions: [{ action_type: "reallocate_lead_sources", action_input: { market_id: signal.entityId, enable, disable }, rationale: signal.message }],
+    })
+    return res.inserted > 0 ? `proposed source reallocation for market ${signal.entityId}` : null
+  },
   // Listing Concierge → Shopping Agent: a price drop on an IN-HOUSE listing — inventory
   // talking to demand. The buyer side re-matches: every buyer who SAVED this listing gets
   // a price-improved alert proposed into the gate (capped, never autonomous).

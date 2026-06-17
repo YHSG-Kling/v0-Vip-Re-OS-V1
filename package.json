@@ -24,6 +24,7 @@
     "test:buyer-nl-search": "tsx scripts/buyer-nl-search-simulator.ts",
     "test:geo-gap": "tsx scripts/geo-gap-simulator.ts",
     "test:geo-remediation": "NODE_OPTIONS=--conditions=react-server tsx scripts/geo-remediation-simulator.ts",
+    "test:source-reallocation": "NODE_OPTIONS=--conditions=react-server tsx scripts/source-reallocation-simulator.ts",
     "test:buyer-saves": "tsx scripts/buyer-saves-simulator.ts",
     "test:voice-coverage": "tsx scripts/voice-coverage-simulator.ts",
     "test:voice-buyer-search": "NODE_OPTIONS=--conditions=react-server tsx scripts/voice-buyer-search-simulator.ts",

@@ -44,6 +44,8 @@ export type MarketingActionType =
   | "just_sold_campaign"
   // GEO remediation — regenerate a persistently-uncited landing page's FAQ from fresh demand topics.
   | "regenerate_faq"
+  // Lead-source learning — turn ON proven winners / turn OFF money-pit scrape sources for a market.
+  | "reallocate_lead_sources"
 
 export interface ProposedAction {
   action_type: MarketingActionType
@@ -777,6 +779,28 @@ async function runHandler(
         .update({ landing_content: nextLandingContent }).eq("id", formId)
       if (upErr) return { status: "failed", result: { error: upErr.message } }
       return { status: "succeeded", result: { form_id: formId, slug: (form as any).slug ?? null, faq_count: faq.length, from_topics: landing.fromTopics, topics: topics.length } }
+    }
+
+    case "reallocate_lead_sources": {
+      // Self-learning lead-gen: turn ON proven winners / turn OFF money-pit scrape sources for ONE
+      // market, based on the source-conversion learner's recommendation. enabled_sources := (current ∪
+      // enable) \ disable. Idempotent (re-applying the same delta is a no-op). Tenant-checked.
+      const svc = createServiceClient()
+      const marketId = String(input.market_id ?? input.marketId ?? "")
+      const enable = Array.isArray(input.enable) ? (input.enable as unknown[]).map(String) : []
+      const disable = Array.isArray(input.disable) ? (input.disable as unknown[]).map(String) : []
+      if (!marketId) return { status: "failed", result: { error: "market_id required" } }
+      if (enable.length === 0 && disable.length === 0) return { status: "skipped", result: { reason: "no source changes to apply" } }
+      const { data: market } = await svc.from("lead_scraping_markets")
+        .select("id, brokerage_id, enabled_sources").eq("id", marketId).eq("brokerage_id", brokerageId).maybeSingle()
+      if (!market) return { status: "failed", result: { error: "market not found or tenant mismatch" } }
+      const current = new Set<string>(((market as any).enabled_sources ?? []) as string[])
+      for (const s of enable) current.add(s)
+      for (const s of disable) current.delete(s)
+      const next = [...current].sort()
+      const { error: upErr } = await svc.from("lead_scraping_markets").update({ enabled_sources: next }).eq("id", marketId)
+      if (upErr) return { status: "failed", result: { error: upErr.message } }
+      return { status: "succeeded", result: { market_id: marketId, enabled: next, turned_on: enable, turned_off: disable } }
     }
 
     default: {
