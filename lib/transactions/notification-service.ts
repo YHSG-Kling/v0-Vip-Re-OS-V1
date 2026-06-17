@@ -45,7 +45,7 @@ export class NotificationService {
     // Get recipient profiles for SMS eligibility (phone + consent)
     const { data: profiles } = await this.supabase
       .from("users")
-      .select("id, email, full_name, phone, communication_preferences")
+      .select("id, email, first_name, last_name, phone, communication_preferences")
       .in("id", params.recipientIds)
 
     // Send in-app — log every attempt
@@ -154,14 +154,14 @@ export class NotificationService {
 
   private async sendEmailNotification(
     params: NotificationParams,
-    profiles?: Array<{ id: string; email: string; full_name: string | null }>
+    profiles?: Array<{ id: string; email: string; first_name: string | null; last_name: string | null }>
   ): Promise<void> {
     // Get recipient email addresses if not provided
     let recipientProfiles = profiles
     if (!recipientProfiles) {
       const { data } = await this.supabase
         .from("users")
-        .select("id, email, full_name")
+        .select("id, email, first_name, last_name")
         .in("id", params.recipientIds)
       recipientProfiles = data ?? []
     }
@@ -172,7 +172,7 @@ export class NotificationService {
     for (const profile of recipientProfiles) {
       await this.supabase.from("email_queue").insert({
         to_email: profile.email,
-        to_name: profile.full_name,
+        to_name: `${profile.first_name ?? ""} ${profile.last_name ?? ""}`.trim() || null,
         subject: params.title,
         body: this.formatEmailBody(params.message, params.metadata),
         template: "transaction_notification",

@@ -51,10 +51,10 @@ export default async function OffersPage({
   if (agentIds.length > 0) {
     const { data: agentUsers } = await supabase
       .from("users")
-      .select("id, full_name")
+      .select("id, first_name, last_name")
       .in("id", agentIds)
     if (agentUsers) {
-      agentNameMap = Object.fromEntries(agentUsers.map((u) => [u.id, u.full_name ?? "Unknown"]))
+      agentNameMap = Object.fromEntries(agentUsers.map((u: any) => [u.id, `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || "Unknown"]))
     }
   }
 

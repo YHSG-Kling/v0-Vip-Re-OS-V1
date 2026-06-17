@@ -339,14 +339,14 @@ export async function getBrokerageLenders(params: {
 
   const { data, error } = await supabase
     .from("users")
-    .select("id, full_name, email, phone")
+    .select("id, first_name, last_name, email, phone")
     .eq("brokerage_id", ctx.brokerageId)
     .eq("user_type", "lender")
     .eq("is_active", true)
-    .order("full_name", { ascending: true })
+    .order("last_name", { ascending: true })
 
   if (error) return { success: false, error: error.message }
-  return { success: true, lenders: (data ?? []).map((u) => ({ id: u.id, full_name: u.full_name ?? "Unnamed Lender", email: u.email ?? null, phone: u.phone ?? null })) }
+  return { success: true, lenders: (data ?? []).map((u: any) => ({ id: u.id, full_name: `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || "Unnamed Lender", email: u.email ?? null, phone: u.phone ?? null })) }
 }
 
 // ─── LOAD MORTGAGE BROKER PARTNERS ───────────────────────────────────────────

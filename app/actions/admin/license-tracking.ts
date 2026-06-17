@@ -62,7 +62,8 @@ export async function getBrokerageAgentLicenseStatuses(
     .from("users")
     .select(`
       id,
-      full_name,
+      first_name,
+      last_name,
       email,
       license_expiry,
       agent_licenses (
@@ -82,7 +83,7 @@ export async function getBrokerageAgentLicenseStatuses(
     `)
     .eq("brokerage_id", brokerageId)
     .eq("user_type", "agent")
-    .order("full_name")
+    .order("last_name")
 
   if (error) return { agents: [], error: error.message }
 
@@ -104,7 +105,7 @@ export async function getBrokerageAgentLicenseStatuses(
 
     return {
       userId: a.id,
-      fullName: a.full_name ?? a.email ?? "Unknown Agent",
+      fullName: `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() || a.email || "Unknown Agent",
       email: a.email ?? "",
       licenseNumber: license?.license_number ?? null,
       licenseState: license?.license_state ?? null,

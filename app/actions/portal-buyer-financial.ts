@@ -99,13 +99,11 @@ export async function connectBuyerToLenderFromPortalAction(input: {
     if (agentRow?.user_id) {
       agentUserId = agentRow.user_id
       const { data: u } = await supabase
-        .from("users").select("first_name, last_name, full_name")
+        .from("users").select("first_name, last_name")
         .eq("id", agentUserId).maybeSingle()
-      const u2 = u as { first_name?: string; last_name?: string; full_name?: string } | null
+      const u2 = u as { first_name?: string; last_name?: string } | null
       if (u2) {
-        agentName = u2.full_name?.trim()
-          ?? `${u2.first_name ?? ""} ${u2.last_name ?? ""}`.trim()
-          ?? agentName
+        agentName = `${u2.first_name ?? ""} ${u2.last_name ?? ""}`.trim() || agentName
       }
     }
   }

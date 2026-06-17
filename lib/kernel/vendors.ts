@@ -534,7 +534,7 @@ export async function assignVendorToListing(
   // Fetch agent contact info for email
   const { data: agentProfile } = await supabase
     .from("users")
-    .select("full_name, email, phone")
+    .select("first_name, last_name, email, phone")
     .eq("id", agentUserId)
     .maybeSingle()
 
@@ -544,7 +544,7 @@ export async function assignVendorToListing(
     const scheduledStr = scheduledDate
       ? new Date(scheduledDate).toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })
       : "TBD — the agent will confirm timing shortly"
-    const agentName = (agentProfile as any)?.full_name ?? "the agent"
+    const agentName = `${(agentProfile as any)?.first_name ?? ""} ${(agentProfile as any)?.last_name ?? ""}`.trim() || "the agent"
     const agentEmail = (agentProfile as any)?.email ?? ""
     const agentPhone = (agentProfile as any)?.phone ?? ""
     sendEmail({
@@ -666,7 +666,7 @@ export async function assignVendorToTransaction(
   // Fetch agent contact info for email
   const { data: agentProfileTxn } = await supabase
     .from("users")
-    .select("full_name, email, phone")
+    .select("first_name, last_name, email, phone")
     .eq("id", agentUserId)
     .maybeSingle()
 
@@ -675,7 +675,7 @@ export async function assignVendorToTransaction(
     const scheduledStr = scheduledDate
       ? new Date(scheduledDate).toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })
       : "TBD — the agent will confirm timing shortly"
-    const agentName = (agentProfileTxn as any)?.full_name ?? "the agent"
+    const agentName = `${(agentProfileTxn as any)?.first_name ?? ""} ${(agentProfileTxn as any)?.last_name ?? ""}`.trim() || "the agent"
     const agentEmail = (agentProfileTxn as any)?.email ?? ""
     const agentPhone = (agentProfileTxn as any)?.phone ?? ""
     sendEmail({

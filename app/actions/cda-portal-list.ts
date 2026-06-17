@@ -95,10 +95,10 @@ export async function listCdasForComplianceReviewAction(): Promise<{
   )
   const userIds = (agentsRes.data ?? []).map(a => a.user_id).filter(Boolean) as string[]
   const usersRes = userIds.length
-    ? await supabase.from("users").select("id, full_name").in("id", userIds)
-    : { data: [] as Array<{ id: string; full_name: string | null }> }
+    ? await supabase.from("users").select("id, first_name, last_name").in("id", userIds)
+    : { data: [] as Array<{ id: string; first_name: string | null; last_name: string | null }> }
   const nameByUserId = new Map<string, string | null>(
-    (usersRes.data ?? []).map(u => [u.id, u.full_name])
+    (usersRes.data ?? []).map((u: any) => [u.id, `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || null])
   )
   const userIdByAgent = new Map<string, string | null>(
     (agentsRes.data ?? []).map(a => [a.id, a.user_id])
