@@ -135,12 +135,18 @@ export class DotloopProvider implements ITransactionProvider {
 
       const { apiKey, profileId } = credentials
 
+      // Placement fields per participant (when the wizard supplied anchor tags). anchorsForProvider
+      // ("dotloop") shaped each as { fieldName, participantRole, kind }; group by canonical role.
+      const { tabsByCanonicalRole } = await import("@/lib/forms/esign-anchor-adapters")
+      const fieldsByRole = tabsByCanonicalRole((request.tags ?? []) as any)
+
       // Add participants to the loop
       for (const signer of request.signers) {
+        const fields = fieldsByRole[signer.role]
         await this.request(
           apiKey,
           `/profile/${profileId}/loop/${request.externalTransactionId}/participant`,
-          { method: "POST", body: { email: signer.email, full_name: signer.name, role: signer.role } },
+          { method: "POST", body: { email: signer.email, full_name: signer.name, role: signer.role, ...(fields ? { fields } : {}) } },
         )
       }
 

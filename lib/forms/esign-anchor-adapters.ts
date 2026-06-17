@@ -71,17 +71,30 @@ export function recipientRolesForProvider(provider: EsignProvider, anchors: Esig
 const DOCUSIGN_TAB_GROUP: Record<string, string> = { signHere: "signHereTabs", initialHere: "initialHereTabs", dateSigned: "dateSignedTabs" }
 
 /**
- * Group DocuSign-shaped tags into per-recipient-role tab buckets, the exact shape DocuSign's recipient
- * payload wants: { "<recipientRole>": { signHereTabs:[], initialHereTabs:[], dateSignedTabs:[] } }. Pure.
+ * Group DocuSign-shaped tags into per-recipient tab buckets keyed by the CANONICAL role (buyer /
+ * seller / …) so they line up with the signer list the send passes (whose roles are canonical). The
+ * value is the exact shape DocuSign's recipient payload wants:
+ * { "<canonicalRole>": { signHereTabs:[], initialHereTabs:[], dateSignedTabs:[] } }. Pure.
  */
 export function docusignTabsByRecipient(tags: ProviderTag[]): Record<string, Record<string, unknown[]>> {
   const out: Record<string, Record<string, unknown[]>> = {}
   for (const t of tags ?? []) {
     const tab = t.tab as Record<string, unknown>
     const group = DOCUSIGN_TAB_GROUP[String(tab.tabType ?? "")] ?? "signHereTabs"
-    const role = String(tab.recipientRole ?? t.recipientRole)
-    const bucket = out[role] ?? (out[role] = {})
+    const bucket = out[t.role] ?? (out[t.role] = {})
     ;(bucket[group] = (bucket[group] as unknown[]) ?? []).push(tab)
+  }
+  return out
+}
+
+/**
+ * Group any provider's tags into per-signer tab lists keyed by the CANONICAL role — the shape
+ * Dotloop / SkySlope / Authentisign want when attaching placement fields to each participant. Pure.
+ */
+export function tabsByCanonicalRole(tags: ProviderTag[]): Record<string, unknown[]> {
+  const out: Record<string, unknown[]> = {}
+  for (const t of tags ?? []) {
+    ;(out[t.role] = out[t.role] ?? []).push(t.tab)
   }
   return out
 }

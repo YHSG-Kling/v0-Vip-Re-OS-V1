@@ -122,6 +122,10 @@ export class SkyslopeProvider implements ITransactionProvider {
 
   async sendForSignature(request: SendForSignatureRequest): Promise<SendForSignatureResponse> {
     try {
+      // Placement fields per signer (when the wizard supplied anchor tags). anchorsForProvider
+      // ("skyslope") shaped each as { kind, field, role }; group by canonical role.
+      const { tabsByCanonicalRole } = await import("@/lib/forms/esign-anchor-adapters")
+      const fieldsByRole = tabsByCanonicalRole((request.tags ?? []) as any)
       const res = await this.request(`/files/${request.externalTransactionId}/signatures`, {
         method: "POST",
         body: {
@@ -131,6 +135,7 @@ export class SkyslopeProvider implements ITransactionProvider {
             email: s.email,
             name:  s.name,
             role:  s.role,
+            ...(fieldsByRole[s.role] ? { fields: fieldsByRole[s.role] } : {}),
           })),
           message: request.message ?? "Please review and sign.",
         },

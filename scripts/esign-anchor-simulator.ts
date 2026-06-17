@@ -15,7 +15,7 @@
  */
 import { PDFDocument } from "pdf-lib"
 import { deriveEsignAnchors } from "../lib/forms/esign-anchors"
-import { anchorsForProvider, recipientRolesForProvider, docusignTabsByRecipient, type EsignProvider } from "../lib/forms/esign-anchor-adapters"
+import { anchorsForProvider, recipientRolesForProvider, docusignTabsByRecipient, tabsByCanonicalRole, type EsignProvider } from "../lib/forms/esign-anchor-adapters"
 import { evalAnchorPlacement, evalAnchorExecution } from "../lib/forms/esign-anchor-eval"
 import { buildEsignAnchorPlan } from "../lib/forms/esign-anchor-plan"
 
@@ -71,8 +71,11 @@ async function main() {
   const dsTags = anchorsForProvider("docusign", d.anchors)
   check("docusign tags are SignatureTag-shaped (anchorKey/role/type/recipientRole/tab)", dsTags.every(t => !!t.anchorKey && !!t.role && !!t.type && !!t.recipientRole && !!t.tab))
   const grouped = docusignTabsByRecipient(dsTags)
-  check("docusign tabs group per recipient into signHereTabs/initialHereTabs", !!grouped["Buyer"]?.signHereTabs && (grouped["Buyer"].signHereTabs as unknown[]).length >= 1 && !!grouped["Buyer"]?.initialHereTabs)
-  check("a buyer's tabs never land under the seller recipient", !((grouped["Seller"]?.signHereTabs as unknown[] | undefined)?.some((t: any) => /buyer/i.test(String(t.anchorString)))))
+  check("docusign tabs group per recipient (by canonical role) into signHereTabs/initialHereTabs", !!grouped["buyer"]?.signHereTabs && (grouped["buyer"].signHereTabs as unknown[]).length >= 1 && !!grouped["buyer"]?.initialHereTabs)
+  check("a buyer's tabs never land under the seller recipient", !((grouped["seller"]?.signHereTabs as unknown[] | undefined)?.some((t: any) => /buyer/i.test(String(t.anchorString)))))
+  // The other providers attach placement fields per signer by canonical role (Dotloop/SkySlope/Authentisign).
+  const dlByRole = tabsByCanonicalRole(anchorsForProvider("dotloop", d.anchors))
+  check("dotloop/skyslope/authentisign group fields by canonical signer role", Array.isArray(dlByRole["buyer"]) && (dlByRole["buyer"] as unknown[]).length >= 1 && !dlByRole["buyer"].some((f: any) => /seller/i.test(String(f.participantRole))))
 
   console.log("\n[placement safety eval — wrong party impossible]")
   check("clean anchors pass placement safety", evalAnchorPlacement(d).ok)

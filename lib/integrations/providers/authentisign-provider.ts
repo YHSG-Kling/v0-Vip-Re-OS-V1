@@ -116,11 +116,15 @@ export class AuthentisignProvider implements ITransactionProvider {
 
   async sendForSignature(request: SendForSignatureRequest): Promise<SendForSignatureResponse> {
     try {
+      // Placement fields per participant (when the wizard supplied anchor tags). anchorsForProvider
+      // ("authentisign") shaped each as { kind, field, role }; group by canonical role.
+      const { tabsByCanonicalRole } = await import("@/lib/forms/esign-anchor-adapters")
+      const fieldsByRole = tabsByCanonicalRole((request.tags ?? []) as any)
       // Authentisign requires participants added before send.
       const participantsRes = await this.request(`/signings/${request.externalTransactionId}/participants`, {
         method: "POST",
         body: {
-          participants: request.signers.map((s, i) => ({ order: i + 1, email: s.email, name: s.name, role: s.role })),
+          participants: request.signers.map((s, i) => ({ order: i + 1, email: s.email, name: s.name, role: s.role, ...(fieldsByRole[s.role] ? { fields: fieldsByRole[s.role] } : {}) })),
         },
       })
       if (!participantsRes.ok) {
