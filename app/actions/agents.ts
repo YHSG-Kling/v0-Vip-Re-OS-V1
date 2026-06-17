@@ -273,19 +273,9 @@ async function checkAndAwardAchievements(agentId: string, currentPoints: number)
       earned_at: new Date().toISOString(),
     })
 
-    // Update badges array on agent
-    const { data: agent } = await supabase.from("agents").select("badges").eq("id", agentId).single()
-
-    const currentBadges = agent?.badges || []
-    if (!currentBadges.includes(achievement.badge_icon)) {
-      await supabase
-        .from("agents")
-        .update({
-          badges: [...currentBadges, achievement.badge_icon],
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", agentId)
-    }
+    // Achievement is recorded in agent_achievements (above). The agents.badges array was a phantom
+    // denormalization (column never existed, read nowhere else); badge awards live in agent_badges,
+    // owned by the gamification path — no duplicate copy on agents.
   }
 }
 

@@ -58,7 +58,6 @@ export async function GET(req: NextRequest) {
       .from("agents")
       .select("id, brokerage_id, commission_split")
       .eq("is_active", true)
-      .is("deleted_at", null)
 
     if (agentsErr) throw new Error(`Failed to load agents: ${agentsErr.message}`)
 

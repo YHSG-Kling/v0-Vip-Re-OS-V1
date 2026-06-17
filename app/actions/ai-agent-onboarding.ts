@@ -415,7 +415,6 @@ export async function completeAISessionStep(params: {
         .update({
           is_active: true,
           onboarding_status: "completed",
-          onboarding_completed_at: new Date().toISOString(),
         })
         .eq("id", session.agent_id)
 
@@ -593,14 +592,22 @@ Check if license format matches ${params.licenseState} standards.`,
 
     // Update agent record
     if (verification.isValid) {
+      // license_expiry is a real agents column; the verification STATUS lives in the canonical
+      // agent_licenses table (verification_status/verified_at) — NOT on agents (those were phantom
+      // columns). Routing it there keeps a single source of truth with the onboarding/license flow.
       await supabase
         .from("agents")
         .update({
-          license_verified: true,
-          license_verified_at: new Date().toISOString(),
           license_expiry: verification.extractedExpiry,
         })
         .eq("id", params.agentId)
+      await supabase
+        .from("agent_licenses")
+        .update({
+          verification_status: "verified",
+          verified_at: new Date().toISOString(),
+        })
+        .eq("agent_id", params.agentId)
 
       // Complete the license verification step
       const { data: session } = await supabase
@@ -881,7 +888,6 @@ export async function certifyAgent(params: {
       .update({
         is_active: true,
         onboarding_status: "completed",
-        onboarding_completed_at: new Date().toISOString(),
       })
       .eq("id", params.agentId)
 

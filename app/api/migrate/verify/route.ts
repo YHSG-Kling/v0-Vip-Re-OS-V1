@@ -21,7 +21,7 @@ export async function GET(request: Request) {
 
     // Check contacts
     try {
-      const { data, error } = await supabase.from("contacts").select("count", { count: "exact" }).limit(1)
+      const { count, error } = await supabase.from("contacts").select("id", { count: "exact", head: true })
       if (error) {
         if (error.code === "PGRST116") {
           results.errors.push("Contacts table: Table does not exist - run SQL schema script")
@@ -29,7 +29,7 @@ export async function GET(request: Request) {
           results.errors.push(`Contacts table: ${error.message}`)
         }
       } else {
-        results.contacts = data?.[0]?.count || 0
+        results.contacts = count || 0
       }
     } catch (error) {
       results.errors.push(`Contacts table: ${error instanceof Error ? error.message : "Unknown error"}`)
@@ -37,7 +37,7 @@ export async function GET(request: Request) {
 
     // Check users
     try {
-      const { data, error } = await supabase.from("users").select("count", { count: "exact" }).limit(1)
+      const { count, error } = await supabase.from("users").select("id", { count: "exact", head: true })
       if (error) {
         if (error.code === "PGRST116") {
           results.errors.push("Users table: Table does not exist - run SQL schema script")
@@ -45,7 +45,7 @@ export async function GET(request: Request) {
           results.errors.push(`Users table: ${error.message}`)
         }
       } else {
-        results.users = data?.[0]?.count || 0
+        results.users = count || 0
       }
     } catch (error) {
       results.errors.push(`Users table: ${error instanceof Error ? error.message : "Unknown error"}`)
@@ -69,7 +69,7 @@ export async function GET(request: Request) {
 
     // Check listings
     try {
-      const { data, error } = await supabase.from("listings").select("count", { count: "exact" }).limit(1)
+      const { count, error } = await supabase.from("listings").select("id", { count: "exact", head: true })
       if (error) {
         if (error.code === "PGRST116") {
           results.errors.push("Listings table: Table does not exist")
@@ -77,7 +77,7 @@ export async function GET(request: Request) {
           results.errors.push(`Listings table: ${error.message}`)
         }
       } else {
-        results.listings = data?.[0]?.count || 0
+        results.listings = count || 0
       }
     } catch (error) {
       results.errors.push(`Listings table: ${error instanceof Error ? error.message : "Unknown error"}`)
@@ -85,7 +85,7 @@ export async function GET(request: Request) {
 
     // Check agents
     try {
-      const { data, error } = await supabase.from("agents").select("count", { count: "exact" }).limit(1)
+      const { count, error } = await supabase.from("agents").select("id", { count: "exact", head: true })
       if (error) {
         if (error.code === "PGRST116") {
           results.errors.push("Agents table: Table does not exist")
@@ -93,7 +93,7 @@ export async function GET(request: Request) {
           results.errors.push(`Agents table: ${error.message}`)
         }
       } else {
-        results.agents = data?.[0]?.count || 0
+        results.agents = count || 0
       }
     } catch (error) {
       results.errors.push(`Agents table: ${error instanceof Error ? error.message : "Unknown error"}`)
@@ -101,7 +101,7 @@ export async function GET(request: Request) {
 
     // Check vendors
     try {
-      const { data, error } = await supabase.from("vendors").select("count", { count: "exact" }).limit(1)
+      const { count, error } = await supabase.from("vendors").select("id", { count: "exact", head: true })
       if (error) {
         if (error.code === "PGRST116") {
           results.errors.push("Vendors table: Table does not exist")
@@ -109,7 +109,7 @@ export async function GET(request: Request) {
           results.errors.push(`Vendors table: ${error.message}`)
         }
       } else {
-        results.vendors = data?.[0]?.count || 0
+        results.vendors = count || 0
       }
     } catch (error) {
       results.errors.push(`Vendors table: ${error instanceof Error ? error.message : "Unknown error"}`)
