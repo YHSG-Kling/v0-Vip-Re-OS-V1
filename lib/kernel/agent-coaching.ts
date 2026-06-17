@@ -361,7 +361,7 @@ export async function buildCoachingStats(
 
   // Roster (active agents only) — id + user_id (calendar is keyed by agent_user_id).
   const { data: agentRows } = await supabase
-    .from("agents").select("id, user_id").eq("brokerage_id", brokerageId).eq("active", true).limit(2000)
+    .from("agents").select("id, user_id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(2000)
   const agents = (agentRows ?? []) as Array<{ id: string; user_id: string | null }>
   if (agents.length === 0) return []
   const agentIds = agents.map((a) => a.id)

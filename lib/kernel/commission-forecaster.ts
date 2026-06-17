@@ -456,7 +456,7 @@ export async function runCommissionForecaster(
   const yearStart = new Date(Date.UTC(year, 0, 1)).toISOString().slice(0, 10)
 
   const { data: agentRows, error: agentErr } = await supabase
-    .from("agents").select("id, user_id").eq("brokerage_id", brokerageId).eq("active", true).limit(2000)
+    .from("agents").select("id, user_id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(2000)
   if (agentErr) { result.errors.push(`agents: ${agentErr.message}`); return result }
   const agents = (agentRows ?? []) as Array<{ id: string; user_id: string | null }>
 

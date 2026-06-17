@@ -417,9 +417,9 @@ export async function getBrokerageAgents() {
     const supabase = await createClient()
     const { data, error } = await supabase
       .from("agents")
-      .select("id, brokerage_id, user_id, active")
+      .select("id, brokerage_id, user_id, is_active")
       .eq("brokerage_id", brokerageId)
-      .eq("active", true)
+      .eq("is_active", true)
       .order("created_at", { ascending: false })
 
     if (error) return { success: false, error: error.message, agents: [] }

@@ -204,7 +204,6 @@ export async function createOrRepairUserDomainRecords(
             brokerage_id:   brokerageId,
             team_id:        teamId ?? null,
             is_active:      true,
-            active:         true,
             onboarding_status: "pending",
             created_at:     new Date().toISOString(),
             updated_at:     new Date().toISOString(),
