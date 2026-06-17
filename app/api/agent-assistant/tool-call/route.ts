@@ -254,7 +254,8 @@ async function runTool(
     case "standup_action":
     case "voice_followup":
     case "start_marketing":
-    case "cut_promo": {
+    case "cut_promo":
+    case "find_properties": {
       const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
       return dispatchTeamCommand(
         toolName,

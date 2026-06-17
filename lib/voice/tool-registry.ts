@@ -350,6 +350,18 @@ export const voiceTools: Record<string, VoiceTool> = {
     description: "Cut a promo reel for a listing — 'cut a promo reel for 44 Birch'. Manual trigger on the canonical Remotion + D-ID + ElevenLabs rail (Fair Housing pre-flight, cooldown debounce). Social drafts still land for human approval. Pass address_query.",
   },
 
+  // ── Buyer search (read-only — the agent searches FOR a buyer, by voice) ────
+  find_properties: {
+    name: "find_properties",
+    category: "lookup",
+    authority: "agent_or_isa",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Search inventory + the market for a buyer by voice — 'find the Hendersons a 3-bed under 500k in Austin'. Resolves the buyer by name or contact_id, runs the natural-language match across our listings + RentCast/IDX (Fair-Housing-sanitized; external results are display-only, no MLS facts stored), and reads back the top matches. Read-only.",
+  },
+
   // -- Studio Session (batch content calendar commissioning) -----------------
   book_studio_session: {
     name: "book_studio_session",

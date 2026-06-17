@@ -37,8 +37,18 @@ export const TEAM_QUERY_COMMANDS = new Set<string>(["team_query", "area_query", 
  *  per-step compliance for marketing enrollment; stand-up items routed to their rail). */
 export const TEAM_ACTION_COMMANDS = new Set<string>(["standup_action", "voice_followup", "start_marketing", "cut_promo"])
 
-/** All team-coordination commands this dispatcher routes (read-only + acting). */
-export const TEAM_COMMANDS = new Set<string>([...TEAM_QUERY_COMMANDS, ...TEAM_ACTION_COMMANDS])
+/** Read-only buyer commands — search inventory + the market for a buyer, by voice. */
+export const BUYER_COMMANDS = new Set<string>(["find_properties"])
+
+/** All team-coordination commands this dispatcher routes (read-only + acting + buyer). */
+export const TEAM_COMMANDS = new Set<string>([...TEAM_QUERY_COMMANDS, ...TEAM_ACTION_COMMANDS, ...BUYER_COMMANDS])
+
+/** Speak a price the way a person would say it ("$1.2 million" / "$450 thousand"). */
+function formatSpokenPrice(price: number | null | undefined): string {
+  if (!price) return "an unlisted price"
+  if (price >= 1_000_000) return `$${(price / 1_000_000).toFixed(1)} million`
+  return `$${Math.round(price / 1000)} thousand`
+}
 
 export function isTeamCommand(name: string): boolean {
   return TEAM_COMMANDS.has(name)
@@ -123,6 +133,24 @@ export async function dispatchTeamCommand(
       const { voiceCutPromo } = await import("@/lib/kernel/voice-delegation")
       const r = await voiceCutPromo({ brokerageId: ctx.brokerageId, agentUserId: ctx.agentUserId, addressQuery }, svc)
       return { ok: r.ok, spoken: r.spoken, data: { addressQuery } }
+    }
+
+    case "find_properties": {
+      // "Find the Hendersons a 3-bed under 500k in Austin" — resolve the buyer, run the natural-language
+      // match (our inventory + RentCast/IDX, Fair-Housing-sanitized in the explanation layer), read back
+      // the top matches. Read-only — no outbound, no listing data persisted for external results.
+      const resolved = await resolveContactId(params, ctx.brokerageId, svc)
+      if (!resolved.contactId) return { ok: false, spoken: resolved.spoken ?? "Who's the search for? Give me the buyer's name." }
+      const query = String(params.query ?? params.search ?? params.criteria ?? params.naturalLanguageQuery ?? "").trim()
+      if (query.length < 5) return { ok: false, spoken: "What are they looking for? Tell me beds, baths, price range, and the area." }
+      const { searchPropertiesCore } = await import("@/lib/buyer-search")
+      const r: any = await searchPropertiesCore({ contactId: resolved.contactId, naturalLanguageQuery: query, options: { limit: 5, logSignals: true } })
+      if (!r.success) return { ok: false, spoken: "I couldn't run that search — try rephrasing the criteria." }
+      const results: any[] = r.results ?? []
+      if (results.length === 0) return { ok: true, spoken: "Nothing matches those criteria in our inventory or the market right now. Want to widen the search?", data: { count: 0 } }
+      const top = results[0]
+      const spoken = `I found ${results.length} ${results.length === 1 ? "match" : "matches"}. The top one is a ${top.bedrooms}-bed, ${top.bathrooms}-bath in ${top.city} at ${formatSpokenPrice(top.price)}.${top.headline ? ` ${top.headline}` : ""} Want the rest?`
+      return { ok: true, spoken, data: { count: results.length, contactId: resolved.contactId, top: { listing_id: top.listing_id ?? null, city: top.city, price: top.price, source: top.source ?? "platform" } } }
     }
 
     default:
