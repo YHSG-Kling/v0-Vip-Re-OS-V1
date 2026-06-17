@@ -100,74 +100,45 @@ async function resolvePersonaContext(
   try {
     const supabase = await createClient()
 
-    // Look up agent persona — persona_id override or the agent's default persona
+    // Agent display name lives on the joined users row.
     const { data: agent } = await supabase
       .from("agents")
-      .select(`
-        id,
-        ai_persona_id,
-        communication_style,
-        users (
-          first_name,
-          last_name,
-          email,
-          phone
-        ),
-        personas:ai_personas (
-          id,
-          persona_name,
-          communication_style,
-          tone_of_voice,
-          key_phrases,
-          avoided_phrases,
-          personality_traits,
-          example_openings
-        )
-      `)
+      .select(`id, users ( first_name, last_name )`)
       .eq("id", agentId)
       .single()
 
     if (!agent) return ""
 
-    const persona = (agent as any).personas
+    // Agent-scoped AI persona — the canonical ai_identity_profiles table (the same store the voice /
+    // widget / ISA stack uses). The old path queried agents.ai_persona_id → ai_personas, neither of
+    // which exists, so persona context silently never loaded.
+    const { data: persona } = await supabase
+      .from("ai_identity_profiles")
+      .select("persona_label, tone, formality_level, followup_style, prohibited_language")
+      .eq("scope_type", "agent")
+      .eq("scope_id", agentId)
+      .maybeSingle()
+
     let contextLines: string[] = []
 
     if (persona) {
-      contextLines.push(`AGENT PERSONA: ${persona.persona_name}`)
-      if (persona.communication_style) {
-        contextLines.push(`Communication Style: ${persona.communication_style}`)
+      if (persona.persona_label) contextLines.push(`AGENT PERSONA: ${persona.persona_label}`)
+      if (persona.tone) contextLines.push(`Tone: ${persona.tone}`)
+      if (persona.formality_level) contextLines.push(`Formality: ${persona.formality_level}`)
+      if (persona.followup_style) contextLines.push(`Follow-up Style: ${persona.followup_style}`)
+      if (Array.isArray(persona.prohibited_language) && persona.prohibited_language.length) {
+        contextLines.push(`Avoid: ${(persona.prohibited_language as string[]).join("; ")}`)
       }
-      if (persona.tone_of_voice) {
-        contextLines.push(`Tone: ${persona.tone_of_voice}`)
-      }
-      if (persona.personality_traits?.length) {
-        contextLines.push(`Traits: ${persona.personality_traits.join(", ")}`)
-      }
-      if (persona.key_phrases?.length) {
-        contextLines.push(`Preferred Phrases: ${persona.key_phrases.join("; ")}`)
-      }
-      if (persona.avoided_phrases?.length) {
-        contextLines.push(`Avoid: ${persona.avoided_phrases.join("; ")}`)
-      }
-      if (persona.example_openings?.length) {
-        contextLines.push(
-          `Example Openings:\n${persona.example_openings.map((e: string) => `  - ${e}`).join("\n")}`
-        )
-      }
-    } else {
-      // Fallback: use agent's own communication_style field
-      if (agent.communication_style) {
-        contextLines.push(`Agent Style: ${agent.communication_style}`)
-      }
-      const agentFullName = [
-        (agent.users as any)?.first_name,
-        (agent.users as any)?.last_name,
-      ]
-        .filter(Boolean)
-        .join(" ")
-      if (agentFullName) {
-        contextLines.push(`Agent Name: ${agentFullName}`)
-      }
+    }
+
+    const agentFullName = [
+      (agent.users as any)?.first_name,
+      (agent.users as any)?.last_name,
+    ]
+      .filter(Boolean)
+      .join(" ")
+    if (agentFullName) {
+      contextLines.push(`Agent Name: ${agentFullName}`)
     }
 
     const context = contextLines.length ? contextLines.join("\n") : ""

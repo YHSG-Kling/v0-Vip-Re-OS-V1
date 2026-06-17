@@ -269,6 +269,9 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   // AI agent templates (the configurable AI workforce) are platform config — the data steward owns
   // their integrity so the schema-drift burn-down + egress have a named owner for them.
   ai_agent_templates:           "data_steward",
+  // The AI identity/persona profiles (tone, voice, persona label) drive every AI manager's voice;
+  // the AI ISA is the heaviest consumer (calls, voice, outreach) and owns their integrity.
+  ai_identity_profiles:         "ai_isa",
   leads:                        "ai_isa",
   raw_scraped_leads:            "data_steward",
   property_preferences:         "shopping_agent",

@@ -1240,8 +1240,6 @@
   "lib/ai/models.ts::compliance_flags.description::insert",
   "lib/ai/models.ts::compliance_flags.flag_type::insert",
   "lib/ai/models.ts::compliance_flags.flag_type::insert",
-  "lib/ai/pipeline.ts::agents.ai_persona_id::select",
-  "lib/ai/pipeline.ts::agents.communication_style::select",
   "lib/alerts/alert-notifier.ts::platform_credentials.provider_name::eq",
   "lib/application/ai-isa.ts::ai_isa_campaigns.contacts_targeted::update",
   "lib/application/ai-isa.ts::ai_isa_campaigns.vapi_assistant_id::select",
