@@ -45,7 +45,7 @@ export default async function TeamPage({
     contact.agent_id
       ? supabase
           .from("agents")
-          .select("id, first_name, last_name, phone, email, profile_photo_url, bio")
+          .select("id, profile_photo_url, bio, users(first_name, last_name, phone, email)")
           .eq("id", contact.agent_id)
           .single()
       : Promise.resolve({ data: null }),
@@ -53,7 +53,7 @@ export default async function TeamPage({
     activeTransaction
       ? supabase
           .from("deal_team_members")
-          .select("id, member_type, agent_id, external_name, external_company, external_phone, external_email, scheduled_date, agent:agents(id, first_name, last_name, phone, email, profile_photo_url)")
+          .select("id, member_type, agent_id, external_name, external_company, external_phone, external_email, scheduled_date, agent:agents(id, profile_photo_url, users(first_name, last_name, phone, email))")
           .eq("transaction_id", activeTransaction.id)
       : Promise.resolve({ data: [] }),
     // Transaction lenders
@@ -75,7 +75,29 @@ export default async function TeamPage({
   ])
 
   const primaryAgent = agentResult.data
-  const dealTeamMembers = dealTeamResult.data ?? []
+    ? {
+        id: (agentResult.data as any).id,
+        profile_photo_url: (agentResult.data as any).profile_photo_url,
+        bio: (agentResult.data as any).bio,
+        first_name: ((agentResult.data as any).users as any)?.first_name ?? null,
+        last_name: ((agentResult.data as any).users as any)?.last_name ?? null,
+        phone: ((agentResult.data as any).users as any)?.phone ?? null,
+        email: ((agentResult.data as any).users as any)?.email ?? null,
+      }
+    : null
+  const dealTeamMembers = (dealTeamResult.data ?? []).map((m: any) => ({
+    ...m,
+    agent: m.agent
+      ? {
+          id: m.agent.id,
+          profile_photo_url: m.agent.profile_photo_url,
+          first_name: (m.agent.users as any)?.first_name ?? null,
+          last_name: (m.agent.users as any)?.last_name ?? null,
+          phone: (m.agent.users as any)?.phone ?? null,
+          email: (m.agent.users as any)?.email ?? null,
+        }
+      : null,
+  }))
   const lender = lenderResult.data
   const titleEscrow = titleResult.data
 

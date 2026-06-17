@@ -14,8 +14,8 @@ interface RankingEntry {
   agent_id: string | null
   agents: {
     id: string
-    first_name: string | null
-    last_name: string | null
+    // Identity lives on the joined users row (agents.user_id → users), not on agents.
+    users: { first_name: string | null; last_name: string | null } | null
     gamification_points: number | null
     profile_image_url: string | null
   } | null
@@ -63,11 +63,11 @@ export function LeaderboardWidget({ rankings, currentAgentId, className }: Leade
             const RankIcon = rankConfig?.icon
 
             const agentName = entry.agents
-              ? `${entry.agents.first_name || ""} ${entry.agents.last_name || ""}`.trim() || "Unknown"
+              ? `${entry.agents.users?.first_name || ""} ${entry.agents.users?.last_name || ""}`.trim() || "Unknown"
               : "Unknown"
 
             const initials = entry.agents
-              ? `${entry.agents.first_name?.[0] || ""}${entry.agents.last_name?.[0] || ""}`.toUpperCase()
+              ? `${entry.agents.users?.first_name?.[0] || ""}${entry.agents.users?.last_name?.[0] || ""}`.toUpperCase()
               : "?"
 
             return (

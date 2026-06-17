@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
   // when the user hasn't picked yet — never a hardcoded platform default.
   const { data: agentRow } = await supabase
     .from("agents")
-    .select("id, full_name, conv_ai_agent_id")
+    .select("id, conv_ai_agent_id, users(first_name, last_name, email, phone)")
     .eq("id", ctx.agentId)
     .maybeSingle()
 
@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Agent profile not found" }, { status: 404 })
   }
 
-  const agentName = (agentRow.full_name as string | null)?.trim() || "Agent"
+  const agentName = [(agentRow.users as any)?.first_name, (agentRow.users as any)?.last_name].filter(Boolean).join(" ").trim() || "Agent"
   const resolved = await resolveSelfVoice(ctx.userId)
 
   // ── Provision (or reuse) the ElevenLabs Conv-AI agent ────────────────────

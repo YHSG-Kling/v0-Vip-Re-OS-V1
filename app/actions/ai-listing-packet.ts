@@ -112,7 +112,7 @@ export async function generateListingPacket(config: ListingPacketConfig) {
     if (listing.agent_id) {
       const { data: agent } = await service
         .from("agents")
-        .select("first_name, last_name, email, phone, license_number")
+        .select("license_number, users(first_name, last_name, email, phone)")
         .eq("id", listing.agent_id)
         .single()
       agentData = agent
@@ -236,9 +236,9 @@ Property Details:
 Special Features: ${listing.features?.join(", ") || "N/A"}
 Description: ${listing.description || "Beautiful property in excellent condition"}
 
-Agent: ${listing.agents?.first_name} ${listing.agents?.last_name}
-Phone: ${listing.agents?.phone}
-Email: ${listing.agents?.email}
+Agent: ${(listing.agents?.users as any)?.first_name} ${(listing.agents?.users as any)?.last_name}
+Phone: ${(listing.agents?.users as any)?.phone}
+Email: ${(listing.agents?.users as any)?.email}
 
 Generate a compelling flyer with:
 1. Attention-grabbing headline

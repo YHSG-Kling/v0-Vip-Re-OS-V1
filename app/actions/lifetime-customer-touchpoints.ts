@@ -178,9 +178,11 @@ export async function sendReferralRequest(contactId: string, opts?: TouchpointAc
 
   if (!contact) throw new Error("Contact not found")
 
-  const { data: agent } = await supabase.from("agents").select("full_name").eq("id", agentId).single()
+  const { data: agent } = await supabase.from("agents").select("users(first_name, last_name)").eq("id", agentId).single()
 
-  const message = `Hi ${contact.first_name}! I've been thinking about you - hope everything's going great with your home! Quick question: I'm trying to help more families find their perfect home. If you know anyone thinking about buying or selling, I'd love to give them the same experience you had. No pressure at all - just wanted to put it on your radar. ${agent?.full_name || "Your Agent"}`
+  const agentFullName = [(agent?.users as any)?.first_name, (agent?.users as any)?.last_name].filter(Boolean).join(" ")
+
+  const message = `Hi ${contact.first_name}! I've been thinking about you - hope everything's going great with your home! Quick question: I'm trying to help more families find their perfect home. If you know anyone thinking about buying or selling, I'd love to give them the same experience you had. No pressure at all - just wanted to put it on your radar. ${agentFullName || "Your Agent"}`
 
   const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
     brokerage_id: brokerageId,

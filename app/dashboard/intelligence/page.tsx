@@ -94,7 +94,7 @@ export default async function IntelligencePage() {
     // Get team activity data
     supabase
       .from("agents")
-      .select("id, first_name, last_name, gamification_points, profile_image_url")
+      .select("id, gamification_points, profile_image_url, users(first_name, last_name)")
       .eq("brokerage_id", brokerageId)
       .eq("status", "active")
       .order("gamification_points", { ascending: false })
@@ -122,7 +122,7 @@ export default async function IntelligencePage() {
   const processedRankings = leaderboardData.rankings.map(r => ({
     rank: r.rank_position,
     agentId: r.agent_id,
-    agentName: r.agents ? `${(r.agents as any).first_name || ""} ${(r.agents as any).last_name || ""}`.trim() : "Unknown",
+    agentName: r.agents ? `${(r.agents as any).users?.first_name || ""} ${(r.agents as any).users?.last_name || ""}`.trim() || "Unknown" : "Unknown",
     avatarUrl: (r.agents as any)?.profile_image_url,
     points: (r.agents as any)?.gamification_points || 0,
     tier: getTierFromPoints((r.agents as any)?.gamification_points || 0),
@@ -159,7 +159,7 @@ export default async function IntelligencePage() {
   // Process team activity for heatmap
   const teamMembers = (teamActivity.data || []).map((agent, index) => ({
     id: agent.id,
-    name: `${agent.first_name || ""} ${agent.last_name || ""}`.trim() || "Unknown",
+    name: [(agent.users as any)?.first_name, (agent.users as any)?.last_name].filter(Boolean).join(" ") || "Unknown",
     points: agent.gamification_points || 0,
     tier: getTierFromPoints(agent.gamification_points || 0),
     activityScore: Math.min(100, Math.round(((agent.gamification_points || 0) / 500) * 100)),

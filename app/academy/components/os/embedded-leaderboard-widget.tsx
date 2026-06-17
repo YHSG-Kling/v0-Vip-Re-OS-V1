@@ -67,11 +67,11 @@ export function EmbeddedLeaderboardWidget({ agentId }: EmbeddedLeaderboardWidget
                     <div className="flex items-center gap-2">
                       {getRankIcon(index + 1)}
                       <span className={`text-sm ${isCurrentAgent ? "font-semibold" : ""}`}>
-                        {agent.name || agent.agent_name || "Agent"}
+                        {`${agent.agents?.users?.first_name || ""} ${agent.agents?.users?.last_name || ""}`.trim() || "Agent"}
                         {isCurrentAgent && " (You)"}
                       </span>
                     </div>
-                    <span className="text-sm font-medium">{(agent.points || 0).toLocaleString()} pts</span>
+                    <span className="text-sm font-medium">{(agent.agents?.gamification_points ?? agent.metric_value ?? 0).toLocaleString()} pts</span>
                   </div>
                 )
               })}

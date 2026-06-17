@@ -396,7 +396,7 @@ async function handleRequestShowingInHouseListing(params: {
   // 4. Notify the listing agent
   const { data: agentRow } = await supabase
     .from("agents")
-    .select("user_id, first_name")
+    .select("user_id, users(first_name, last_name, email, phone)")
     .eq("id", listing.agent_id)
     .maybeSingle()
 
@@ -418,7 +418,7 @@ async function handleRequestShowingInHouseListing(params: {
   return NextResponse.json({
     result: "showing_booked",
     showing_id: showing.id,
-    message: `Perfect — you're set for ${new Date(requestedAt).toLocaleString()} at ${listing.address ?? "the property"}. ${agentRow?.first_name ?? "The listing agent"} will text you a confirmation shortly.`,
+    message: `Perfect — you're set for ${new Date(requestedAt).toLocaleString()} at ${listing.address ?? "the property"}. ${(agentRow?.users as any)?.first_name ?? "The listing agent"} will text you a confirmation shortly.`,
   })
 }
 

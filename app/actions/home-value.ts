@@ -520,11 +520,21 @@ export async function getHomeValueResult(requestId: string) {
   if (agentSlug) {
     const { data: agentData } = await supabase
       .from("agents")
-      .select("id, first_name, last_name, phone_mobile, email, profile_image_url")
+      .select("id, phone_mobile, profile_image_url, users(first_name, last_name, email)")
       .eq("slug", agentSlug)
       .single()
 
-    agent = agentData
+    if (agentData) {
+      const agentUser = (agentData.users as any) ?? null
+      agent = {
+        id: agentData.id,
+        first_name: agentUser?.first_name ?? null,
+        last_name: agentUser?.last_name ?? null,
+        phone_mobile: agentData.phone_mobile ?? null,
+        email: agentUser?.email ?? null,
+        profile_image_url: agentData.profile_image_url ?? null,
+      }
+    }
   }
 
   const vr = estimate.valuation_requests as any

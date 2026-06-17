@@ -124,7 +124,7 @@ export async function resolveBrandContext(args: ResolveBrandArgs): Promise<Brand
       : Promise.resolve({ data: null }),
     args.agentUserId
       ? svc.from("agents")
-          .select("first_name, last_name, phone_office, phone_mobile, photo_url, license_number, license_state")
+          .select("phone_office, phone_mobile, photo_url, license_number, license_state, users(first_name, last_name)")
           .eq("user_id", args.agentUserId)
           .maybeSingle()
       : Promise.resolve({ data: null }),
@@ -154,8 +154,7 @@ export async function resolveBrandContext(args: ResolveBrandArgs): Promise<Brand
     tagline?: string | null
   } | null
   const agent = (agentR.data ?? null) as {
-    first_name?: string | null
-    last_name?: string | null
+    users?: { first_name?: string | null; last_name?: string | null } | null
     phone_office?: string | null
     phone_mobile?: string | null
     photo_url?: string | null
@@ -165,7 +164,7 @@ export async function resolveBrandContext(args: ResolveBrandArgs): Promise<Brand
 
   const brokerageName = (b.name ?? "").trim() || `Brokerage ${args.brokerageId.slice(0, 8)}`
   const teamName      = team?.name?.trim() || null
-  const agentName     = agent ? [agent.first_name, agent.last_name].filter(Boolean).join(" ") || null : null
+  const agentName     = agent?.users ? [agent.users.first_name, agent.users.last_name].filter(Boolean).join(" ") || null : null
 
   // ── Cascade resolution per field ────────────────────────────────────────
   const logoUrl   = team?.logo_url?.trim() || b.logo_url?.trim() || null

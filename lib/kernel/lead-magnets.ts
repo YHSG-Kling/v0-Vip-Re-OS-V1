@@ -537,7 +537,7 @@ export async function captureFormSubmission(
     try {
       const { data: agentRow } = await supabase
         .from("agents")
-        .select("user_id, display_name")
+        .select("user_id, users(first_name, last_name, email, phone)")
         .eq("id", form.agent_id)
         .maybeSingle()
 

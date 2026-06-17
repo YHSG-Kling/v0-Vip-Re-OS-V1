@@ -60,7 +60,7 @@ export async function getAgentPointsAndTier(agentId: string) {
 
   const { data: agent, error } = await supabase
     .from("agents")
-    .select("id, first_name, last_name, gamification_points")
+    .select("id, gamification_points, users(first_name, last_name)")
     .eq("id", agentId)
     .single()
 
@@ -95,7 +95,7 @@ export async function getAgentPointsAndTier(agentId: string) {
 
   return {
     agentId: agent?.id,
-    agentName: `${agent?.first_name || ""} ${agent?.last_name || ""}`.trim(),
+    agentName: `${(agent?.users as any)?.first_name || ""} ${(agent?.users as any)?.last_name || ""}`.trim(),
     points,
     currentTier,
     nextTier,
@@ -270,7 +270,7 @@ export async function getLeaderboard(options: {
       scope,
       period_label,
       computed_at,
-      agents:agent_id(id, first_name, last_name, gamification_points, profile_image_url)
+      agents:agent_id(id, gamification_points, profile_image_url, users(first_name, last_name))
     `)
     .eq("brokerage_id", profile.brokerage_id)
     .eq("scope", options.scope)
@@ -332,7 +332,7 @@ export async function getLeaderboardWidget(params: { agentId: string }) {
       metric_type,
       metric_value,
       agent_id,
-      agents:agent_id(id, first_name, last_name, gamification_points, profile_image_url)
+      agents:agent_id(id, gamification_points, profile_image_url, users(first_name, last_name))
     `)
     .eq("brokerage_id", agent.brokerage_id)
     .eq("scope", "agent")

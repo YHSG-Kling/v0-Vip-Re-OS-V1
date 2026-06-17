@@ -77,17 +77,38 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
   if (transaction?.id) {
     const { data: dt } = await lifetimeSupabase
       .from("deal_team_members")
-      .select("id, member_type, agent_id, external_name, external_company, external_phone, external_email, scheduled_date, agent:agents(id, first_name, last_name, phone, email, profile_photo_url)")
+      .select("id, member_type, agent_id, external_name, external_company, external_phone, external_email, scheduled_date, agent:agents(id, profile_photo_url, users(first_name, last_name, phone, email))")
       .eq("transaction_id", transaction.id)
-    dealTeamMembers = dt ?? []
+    dealTeamMembers = (dt ?? []).map((m: any) => ({
+      ...m,
+      agent: m.agent
+        ? {
+            id: m.agent.id,
+            profile_photo_url: m.agent.profile_photo_url,
+            first_name: (m.agent.users as any)?.first_name ?? null,
+            last_name: (m.agent.users as any)?.last_name ?? null,
+            phone: (m.agent.users as any)?.phone ?? null,
+            email: (m.agent.users as any)?.email ?? null,
+          }
+        : null,
+    }))
   }
   if (contact.agent_id) {
     const { data: pa } = await lifetimeSupabase
       .from("agents")
-      .select("id, first_name, last_name, phone, email, profile_photo_url")
+      .select("id, profile_photo_url, users(first_name, last_name, phone, email)")
       .eq("id", contact.agent_id)
       .maybeSingle()
     primaryAgent = pa
+      ? {
+          id: pa.id,
+          profile_photo_url: (pa as any).profile_photo_url,
+          first_name: (pa.users as any)?.first_name ?? null,
+          last_name: (pa.users as any)?.last_name ?? null,
+          phone: (pa.users as any)?.phone ?? null,
+          email: (pa.users as any)?.email ?? null,
+        }
+      : null
   }
 
   // Get last market update touchpoint

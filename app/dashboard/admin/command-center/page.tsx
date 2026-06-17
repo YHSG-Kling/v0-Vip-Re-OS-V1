@@ -58,11 +58,14 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     const [{ data: locs }, { data: teams }, { data: agentsList }] = await Promise.all([
       supabase.from("locations").select("id, name").eq("brokerage_id", brokerageId).order("name").limit(100),
       supabase.from("teams").select("id, name").eq("brokerage_id", brokerageId).order("name").limit(100),
-      supabase.from("agents").select("user_id, display_name").eq("brokerage_id", brokerageId).not("user_id", "is", null).order("display_name").limit(200),
+      supabase.from("agents").select("user_id, users(first_name, last_name)").eq("brokerage_id", brokerageId).not("user_id", "is", null).limit(200),
     ])
     for (const l of (locs ?? []) as any[]) scopeOptions.push({ value: `location:${l.id}`, label: `Office — ${l.name}` })
     for (const t of (teams ?? []) as any[]) scopeOptions.push({ value: `team:${t.id}`, label: `Team — ${t.name}` })
-    for (const a of (agentsList ?? []) as any[]) scopeOptions.push({ value: `agent:${a.user_id}`, label: `Agent — ${a.display_name ?? a.user_id}` })
+    for (const a of (agentsList ?? []) as any[]) {
+      const displayName = [(a.users as any)?.first_name, (a.users as any)?.last_name].filter(Boolean).join(" ")
+      scopeOptions.push({ value: `agent:${a.user_id}`, label: `Agent — ${displayName || a.user_id}` })
+    }
 
     // Apply a valid drill-down only if it matches an offered option (prevents scope-escalation via URL).
     if (view && scopeOptions.some((o) => o.value === view)) {

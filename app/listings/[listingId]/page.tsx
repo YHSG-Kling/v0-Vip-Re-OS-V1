@@ -84,13 +84,13 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
       if (!listing.agent_id) return null
       const { data: agentRow } = await service
         .from("agents")
-        .select("user_id, phone, profile_photo_url")
+        .select("user_id, profile_photo_url")
         .eq("user_id", listing.agent_id)
         .maybeSingle()
       if (!agentRow) return null
       const { data: userRow } = await service
         .from("users")
-        .select("name, email, avatar_url")
+        .select("name, email, phone, avatar_url")
         .eq("id", agentRow.user_id ?? listing.agent_id)
         .maybeSingle()
       return { agentRow, userRow }
@@ -116,7 +116,7 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
   const heroPhoto = photos[0]
 
   const agentName: string | null = agentInfo?.userRow?.name ?? null
-  const agentPhone: string | null = agentInfo?.agentRow?.phone ?? null
+  const agentPhone: string | null = (agentInfo?.userRow as any)?.phone ?? null
   const agentEmail: string | null = agentInfo?.userRow?.email ?? null
   const agentPhoto: string | null =
     agentInfo?.agentRow?.profile_photo_url ?? agentInfo?.userRow?.avatar_url ?? null

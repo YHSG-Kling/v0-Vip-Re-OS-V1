@@ -106,13 +106,18 @@ export default async function AIQualityPage() {
         if (qualifiedAgents.length > 0) {
           const { data: agents } = await serviceSupabase
             .from("agents")
-            .select("id, first_name, last_name")
+            .select("id, users(first_name, last_name)")
             .in(
               "id",
               qualifiedAgents.map((a) => a.agent_id)
             )
 
-          const agentNameMap = new Map(agents?.map((a) => [a.id, `${a.first_name} ${a.last_name}`]) || [])
+          const agentNameMap = new Map(
+            agents?.map((a) => [
+              a.id,
+              [(a.users as any)?.first_name, (a.users as any)?.last_name].filter(Boolean).join(" "),
+            ]) || []
+          )
 
           return qualifiedAgents.map((a) => ({
             ...a,

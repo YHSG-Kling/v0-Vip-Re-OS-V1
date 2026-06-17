@@ -50,8 +50,7 @@ interface AgentRow {
   id:           string
   user_id:      string | null
   brokerage_id: string
-  first_name:   string | null
-  last_name:    string | null
+  users?:       { first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null } | null
 }
 
 export async function GET(req: NextRequest) {
@@ -110,7 +109,7 @@ export async function GET(req: NextRequest) {
     // Fetch agents with at least one active farm_territory in this brokerage.
     const { data: agents } = await svc
       .from("agents")
-      .select("id, user_id, brokerage_id, first_name, last_name, is_active")
+      .select("id, user_id, brokerage_id, is_active, users(first_name, last_name, email, phone)")
       .eq("brokerage_id", broker.id)
       .eq("is_active", true)
       .limit(500)

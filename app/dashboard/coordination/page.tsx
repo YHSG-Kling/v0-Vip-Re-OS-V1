@@ -51,11 +51,11 @@ export default async function CoordinationPage() {
   if (agentIds.length > 0) {
     const { data: agents } = await supabase
       .from('agents')
-      .select('id, first_name, last_name')
+      .select('id, users(first_name, last_name)')
       .in('id', agentIds)
-    
+
     agentNames = (agents || []).reduce((acc, a) => {
-      acc[a.id] = `${a.first_name} ${a.last_name}`
+      acc[a.id] = [(a.users as any)?.first_name, (a.users as any)?.last_name].filter(Boolean).join(" ")
       return acc
     }, {} as Record<string, string>)
   }

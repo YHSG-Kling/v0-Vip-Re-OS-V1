@@ -206,13 +206,13 @@ async function runHandler(
       if (!agentId) return { status: "failed", result: { error: "agent_id required" } }
       const svc = createServiceClient()
       const { data: agent } = await svc.from("agents")
-        .select("id, brokerage_id, first_name, last_name, photo_url")
+        .select("id, brokerage_id, photo_url, users(first_name, last_name, email, phone)")
         .eq("id", agentId)
         .maybeSingle()
-      const a = agent as { id: string; brokerage_id: string | null; first_name: string | null; last_name: string | null; photo_url: string | null } | null
+      const a = agent as { id: string; brokerage_id: string | null; photo_url: string | null; users?: { first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null } | null } | null
       if (!a) return { status: "failed", result: { error: "agent not found" } }
       if (a.brokerage_id !== brokerageId) return { status: "failed", result: { error: "tenant mismatch" } }
-      const name = [a.first_name, a.last_name].filter(Boolean).join(" ") || agentId.slice(0, 8)
+      const name = [(a.users as any)?.first_name, (a.users as any)?.last_name].filter(Boolean).join(" ") || agentId.slice(0, 8)
       const { data: errRow, error } = await svc.from("automation_errors").insert({
         brokerage_id:  brokerageId,
         workflow_name: "asset_manager_headshot_request",

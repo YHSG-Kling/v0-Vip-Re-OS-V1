@@ -170,7 +170,7 @@ export async function generateMarketUpdateEmail(
   // Get agent info
   const { data: agent } = await supabase
     .from("agents")
-    .select("first_name, last_name, email, phone")
+    .select("users(first_name, last_name, email, phone)")
     .eq("id", agentId)
     .single()
 
@@ -194,9 +194,9 @@ Insight Data:
 - Buyer Signals: ${insight.buyer_indicators?.join(", ") || "None"}
 - Seller Signals: ${insight.seller_indicators?.join(", ") || "None"}
 
-Agent: ${agent?.first_name} ${agent?.last_name}
-Phone: ${agent?.phone || "N/A"}
-Email: ${agent?.email || "N/A"}`,
+Agent: ${(agent?.users as any)?.first_name} ${(agent?.users as any)?.last_name}
+Phone: ${(agent?.users as any)?.phone || "N/A"}
+Email: ${(agent?.users as any)?.email || "N/A"}`,
   })
 
   return {

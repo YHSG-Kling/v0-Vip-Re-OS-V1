@@ -94,7 +94,7 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     context.agentId
       ? supabase
           .from("agents")
-          .select("id, first_name, last_name")
+          .select("id, users(first_name, last_name)")
           .eq("id", context.agentId)
           .single()
       : Promise.resolve({ data: null }),
@@ -132,7 +132,9 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
   const photoCount = mediaResult.count ?? 0
   const socialPosts = socialPostsResult.data ?? []
   const agent = agentResult.data
-  const agentName = agent ? `${agent.first_name} ${agent.last_name}`.trim() : null
+  const agentName = agent
+    ? [(agent.users as any)?.first_name, (agent.users as any)?.last_name].filter(Boolean).join(" ") || null
+    : null
   const nextMilestone = nextMilestoneResult.data
   const latestUpdate = updatesResult.data
 

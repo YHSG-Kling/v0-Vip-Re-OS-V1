@@ -113,7 +113,7 @@ export async function buildCallContext(params: {
     params.agentId
       ? supabase
           .from('agents')
-          .select('first_name, last_name, voice_id')
+          .select('voice_id, users(first_name, last_name, email, phone)')
           .eq('id', params.agentId)
           .maybeSingle()
           .then((r) => r.data)
@@ -191,8 +191,8 @@ export async function buildCallContext(params: {
   const assistantName = identity?.assistant_name ?? brandVoice.assistantName ?? 'your real estate assistant'
   const tone = brandVoice.tone ?? identity?.tone ?? 'professional'
   const formality = brandVoice.formalityLevel ?? identity?.formality_level ?? 'semi_formal'
-  const agentFirstName = agentRow?.first_name ?? 'one of our agents'
-  const agentFullName = [agentRow?.first_name, agentRow?.last_name].filter(Boolean).join(' ')
+  const agentFirstName = (agentRow as any)?.users?.first_name ?? 'one of our agents'
+  const agentFullName = [(agentRow as any)?.users?.first_name, (agentRow as any)?.users?.last_name].filter(Boolean).join(' ')
   const contactFirstName = (personRow as any).first_name ?? 'there'
 
   // Brokerage display name for pre-assignment intros (already loaded in parallel above)

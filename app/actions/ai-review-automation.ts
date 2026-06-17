@@ -120,7 +120,7 @@ export async function aiGenerateReviewRequest(params: {
 
     const { data: agent } = await supabase
       .from("agents")
-      .select("first_name, last_name")
+      .select("users(first_name, last_name)")
       .eq("id", params.agentId)
       .single()
 
@@ -155,7 +155,7 @@ export async function aiGenerateReviewRequest(params: {
       }),
       prompt: `Generate a ${params.channel} review request for ${params.platform}:
 
-Agent: ${agent?.first_name} ${agent?.last_name}
+Agent: ${(agent?.users as any)?.first_name} ${(agent?.users as any)?.last_name}
 Client: ${transaction.contacts?.first_name} ${transaction.contacts?.last_name}
 Property: ${transaction.property_address}
 Transaction type: ${transaction.deal_type}
@@ -244,7 +244,7 @@ export async function aiGenerateReviewResponse(params: {
   try {
     const { data: agent } = await supabase
       .from("agents")
-      .select("first_name, last_name")
+      .select("users(first_name, last_name)")
       .eq("id", params.agentId)
       .single()
 
@@ -271,7 +271,7 @@ export async function aiGenerateReviewResponse(params: {
 Reviewer: ${params.reviewerName}
 Rating: ${params.rating}/5 stars
 Review: "${params.reviewText}"
-Agent: ${agent?.first_name} ${agent?.last_name}
+Agent: ${(agent?.users as any)?.first_name} ${(agent?.users as any)?.last_name}
 
 Guidelines:
 ${isPositive ? `

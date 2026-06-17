@@ -135,18 +135,16 @@ export async function aiGenerateSubjectLines(params: {
         .maybeSingle(),
       supabase
         .from("agents")
-        .select("first_name, last_name, full_name")
+        .select("users(first_name, last_name)")
         .eq("user_id", sessionUserId)
         .maybeSingle(),
     ])
 
     const city = brokerageData?.city ?? brokerageData?.state ?? "your area"
     const brokerageName = brokerageData?.name ?? "our brokerage"
-    const agentName =
-      agentData?.full_name ??
-      (agentData?.first_name
-        ? `${agentData.first_name} ${agentData.last_name ?? ""}`.trim()
-        : "your agent")
+    const agentUser = (agentData?.users as any) ?? null
+    const composedAgentName = [agentUser?.first_name, agentUser?.last_name].filter(Boolean).join(" ")
+    const agentName = composedAgentName || "your agent"
 
     const { object: subjectLines } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),

@@ -280,7 +280,7 @@ export async function aiGenerateThankYouNote(params: {
 
     const { data: agent } = await supabase
       .from("agents")
-      .select("first_name, last_name")
+      .select("users(first_name, last_name)")
       .eq("id", params.agentId)
       .maybeSingle()
 
@@ -301,7 +301,7 @@ export async function aiGenerateThankYouNote(params: {
       }),
       prompt: `Write a ${params.handwritten ? "handwritten-style" : "typed"} thank you note:
 
-From: ${agent?.first_name} ${agent?.last_name}
+From: ${(agent?.users as any)?.first_name} ${(agent?.users as any)?.last_name}
 To: ${contact.first_name} ${contact.last_name}
 Occasion: ${params.occasion}
 ${params.giftDescription ? `Gift being sent: ${params.giftDescription}` : ""}

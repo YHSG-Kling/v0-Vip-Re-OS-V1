@@ -156,9 +156,12 @@ export async function loadUsageOverview(): Promise<{
   if (agentIds.length) {
     const { data: agents } = await supabase
       .from("agents")
-      .select("id, full_name")
+      .select("id, users(first_name, last_name)")
       .in("id", agentIds)
-    for (const a of agents ?? []) nameByAgent.set(a.id, a.full_name ?? "Agent")
+    for (const a of agents ?? []) {
+      const composed = [(a.users as any)?.first_name, (a.users as any)?.last_name].filter(Boolean).join(" ")
+      nameByAgent.set(a.id, composed || "Agent")
+    }
   }
 
   const topConsumers: TopConsumer[] = sorted.map((s) => ({

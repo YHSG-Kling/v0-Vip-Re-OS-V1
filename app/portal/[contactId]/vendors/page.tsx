@@ -100,7 +100,7 @@ export default async function ClientVendorsPage({
       audienceTags,
     }),
     contact.agent_id
-      ? supabase.from("agents").select("id, first_name, last_name").eq("id", contact.agent_id).maybeSingle()
+      ? supabase.from("agents").select("id, users(first_name, last_name)").eq("id", contact.agent_id).maybeSingle()
       : Promise.resolve({ data: null }),
   ])
 
@@ -112,7 +112,7 @@ export default async function ClientVendorsPage({
     vendors: { name?: string; category?: string; phone?: string; email?: string } | null
     vendor_jobs: Array<{ id: string; status: string | null; cost_estimate: number | null; cost_actual: number | null }> | null
   }>
-  const agent = (agentRes as { data?: { first_name: string | null } | null }).data ?? null
+  const agent = (agentRes as { data?: { users?: { first_name?: string | null; last_name?: string | null } | null } | null }).data ?? null
 
   // Group curated vendors by category for clean rendering
   const byCategory = new Map<string, VendorDirectoryEntry[]>()
@@ -223,7 +223,7 @@ export default async function ClientVendorsPage({
               {portalView === "lifetime" ? "Homeowner Services" : "Recommended Professionals"}
             </CardTitle>
             <CardDescription>
-              {agent ? `Recommended by ${agent.first_name ?? "your agent"}` : "Vetted by your brokerage"}
+              {agent ? `Recommended by ${(agent.users as any)?.first_name ?? "your agent"}` : "Vetted by your brokerage"}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">

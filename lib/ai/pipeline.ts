@@ -105,9 +105,14 @@ async function resolvePersonaContext(
       .from("agents")
       .select(`
         id,
-        full_name,
         ai_persona_id,
         communication_style,
+        users (
+          first_name,
+          last_name,
+          email,
+          phone
+        ),
         personas:ai_personas (
           id,
           persona_name,
@@ -154,8 +159,14 @@ async function resolvePersonaContext(
       if (agent.communication_style) {
         contextLines.push(`Agent Style: ${agent.communication_style}`)
       }
-      if (agent.full_name) {
-        contextLines.push(`Agent Name: ${agent.full_name}`)
+      const agentFullName = [
+        (agent.users as any)?.first_name,
+        (agent.users as any)?.last_name,
+      ]
+        .filter(Boolean)
+        .join(" ")
+      if (agentFullName) {
+        contextLines.push(`Agent Name: ${agentFullName}`)
       }
     }
 

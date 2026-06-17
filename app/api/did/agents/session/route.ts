@@ -94,7 +94,7 @@ export async function POST(request: NextRequest) {
 
   const { data: agentRow } = await supabase
     .from("agents")
-    .select("id, full_name, voice_id")
+    .select("id, voice_id, users(first_name, last_name, email, phone)")
     .eq("id", contact.agent_id)
     .maybeSingle()
 
@@ -174,7 +174,7 @@ export async function POST(request: NextRequest) {
     presenterId,
     elevenLabsVoiceId: voiceId,
     personality,
-    agentName: agentRow.full_name ?? "Agent",
+    agentName: [(agentRow.users as any)?.first_name, (agentRow.users as any)?.last_name].filter(Boolean).join(" ") || "Agent",
   })
 
   if (!ensured.ok) {
