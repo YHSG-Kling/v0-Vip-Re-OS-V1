@@ -18,11 +18,23 @@ export interface FairHousingScan {
   flagged: string[]
 }
 
+export interface FairHousingOpts {
+  /**
+   * Set true ONLY when the property is a verified housing-for-older-persons (55+/62+) community — the
+   * Fair Housing Act's age exemption. When true, age language (55+, senior, active-adult) is permitted
+   * and left intact; otherwise it is neutralized. Default false (the safe default).
+   */
+  seniorCommunity?: boolean
+}
+
 /**
- * Ordered neutralizations. Each entry rewrites a protected-class STEERING phrase into a neutral,
- * fact-based equivalent (or removes it). Order matters — more specific phrases first.
+ * ALWAYS-neutralized steering — illegal regardless of context. Note what is DELIBERATELY allowed:
+ *   · factual PROXIMITY ("near schools", "close to work", "minutes to downtown") is legal and untouched;
+ *   · NAMING a neighborhood is legal and untouched;
+ *   · only the protected-class STEERING (familial-status marketing, safety/crime proxies, and quality
+ *     adjectives that editorialize schools into a familial-status signal) is removed.
  */
-const NEUTRALIZATIONS: Array<{ re: RegExp; to: string; label: string }> = [
+const ALWAYS: Array<{ re: RegExp; to: string; label: string }> = [
   // ── Familial status (the most common real-estate FHA trap) ──
   { re: /\byour family['’]s [a-z ]*?needs\b/gi, to: "your needs", label: "familial-status" },
   { re: /\b(your |a )?growing family\b/gi, to: "your needs", label: "familial-status" },
@@ -35,23 +47,24 @@ const NEUTRALIZATIONS: Array<{ re: RegExp; to: string; label: string }> = [
   { re: /\bchild[- ]friendly\b/gi, to: "well-located", label: "familial-status" },
   { re: /\bperfect for (kids|children)\b/gi, to: "well-located", label: "familial-status" },
 
-  // ── Schools as a familial-status proxy (steering) ──
-  { re: /\b(top-rated|top|great|good|excellent|highly[- ]rated)\s+school district\b/gi, to: "great location", label: "schools-proxy" },
-  { re: /\bschool district\b/gi, to: "location", label: "schools-proxy" },
-  { re: /\b(top-rated|top|great|good|excellent|highly[- ]rated)\s+schools\b/gi, to: "great location", label: "schools-proxy" },
+  // ── Schools: factual proximity is fine; strip only the editorializing QUALITY adjective, keep the
+  //    noun so "near the school district" / "close to schools" survives. ──
+  { re: /\b(top[- ]rated|top|great|good|excellent|highly[- ]rated|best)\s+(school district|schools?)\b/gi, to: "$2", label: "schools-quality" },
 
-  // ── Safety/crime as a proxy ──
+  // ── Safety/crime as a proxy (explicitly not allowed) ──
   { re: /\b(very |extremely )?safe neighborhood\b/gi, to: "neighborhood", label: "safety-proxy" },
   { re: /\b(very |extremely )?safe area\b/gi, to: "area", label: "safety-proxy" },
   { re: /\bcrime[- ]free\b/gi, to: "", label: "safety-proxy" },
 
-  // ── Age (seniors / retirees) ──
+  // ── Religion / national origin proxies ──
+  { re: /\bwalking distance to (church|churches|synagogue|mosque|temple)\b/gi, to: "a walkable location", label: "religion" },
+]
+
+/** Age steering — neutralized UNLESS the property is a verified 55+ community (FHA age exemption). */
+const AGE: Array<{ re: RegExp; to: string; label: string }> = [
   { re: /\bperfect for (seniors|retirees)\b/gi, to: "low-maintenance", label: "age" },
   { re: /\bsenior[- ]friendly\b/gi, to: "low-maintenance", label: "age" },
   { re: /\bempty[- ]nesters?\b/gi, to: "", label: "age" },
-
-  // ── Religion / national origin proxies ──
-  { re: /\bwalking distance to (church|churches|synagogue|mosque|temple)\b/gi, to: "a walkable location", label: "religion" },
 ]
 
 /** Tidy whitespace/punctuation left behind by removals, and fix capitalization. Pure. */
@@ -72,11 +85,12 @@ function tidy(s: string): string {
  * Neutralize protected-class steering in a single string. Pure + total. Returns the cleaned text plus
  * the labels of what was flagged (for an honest audit trail). Empty/whitespace → unchanged.
  */
-export function scanFairHousing(text: string): FairHousingScan {
+export function scanFairHousing(text: string, opts: FairHousingOpts = {}): FairHousingScan {
   if (!text || !text.trim()) return { clean: text ?? "", flagged: [] }
   let out = text
   const flagged: string[] = []
-  for (const { re, to, label } of NEUTRALIZATIONS) {
+  const rules = opts.seniorCommunity ? ALWAYS : [...ALWAYS, ...AGE]
+  for (const { re, to, label } of rules) {
     if (re.test(out)) {
       flagged.push(label)
       out = out.replace(re, to)
@@ -86,17 +100,17 @@ export function scanFairHousing(text: string): FairHousingScan {
 }
 
 /** Convenience: the cleaned string only. Pure. */
-export function sanitizeFairHousing(text: string): string {
-  return scanFairHousing(text).clean
+export function sanitizeFairHousing(text: string, opts: FairHousingOpts = {}): string {
+  return scanFairHousing(text, opts).clean
 }
 
 /** Sanitize a whole buyer-facing match explanation (headline + bullets + narrative + CTA). Pure. */
-export function sanitizeExplanation<T extends { headline: string; bullets: string[]; narrative: string; callToAction: string }>(exp: T): T {
+export function sanitizeExplanation<T extends { headline: string; bullets: string[]; narrative: string; callToAction: string }>(exp: T, opts: FairHousingOpts = {}): T {
   return {
     ...exp,
-    headline: sanitizeFairHousing(exp.headline),
-    bullets: (exp.bullets ?? []).map(sanitizeFairHousing).filter((b) => b.trim().length > 0),
-    narrative: sanitizeFairHousing(exp.narrative),
-    callToAction: sanitizeFairHousing(exp.callToAction),
+    headline: sanitizeFairHousing(exp.headline, opts),
+    bullets: (exp.bullets ?? []).map((b) => sanitizeFairHousing(b, opts)).filter((b) => b.trim().length > 0),
+    narrative: sanitizeFairHousing(exp.narrative, opts),
+    callToAction: sanitizeFairHousing(exp.callToAction, opts),
   }
 }

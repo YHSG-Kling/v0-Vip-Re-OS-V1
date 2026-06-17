@@ -81,9 +81,9 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   ],
   saved_properties: [
     "added_to_tour", "ai_match_score", "bathrooms", "bedrooms", "brokerage_id", "city",
-    "contact_id", "dismissed", "dismissed_reason", "external_property_id", "id", "list_price",
-    "listing_id", "listing_url", "match_reasons", "mls_number", "notes", "primary_photo_url",
-    "property_address", "property_type", "saved_at", "source", "sqft", "state", "user_id",
+    "contact_id", "dismissed", "dismissed_reason", "external_property_id", "id", "interest_level",
+    "list_price", "listing_id", "listing_url", "match_reasons", "mls_number", "notes",
+    "primary_photo_url", "property_address", "property_type", "saved_at", "source", "sqft", "state", "user_id",
   ],
   agent_client_messages: [
     "agent_kind", "approved_at", "approved_by", "audience", "body", "brokerage_id", "channel",

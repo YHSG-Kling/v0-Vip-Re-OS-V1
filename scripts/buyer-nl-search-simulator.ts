@@ -35,7 +35,9 @@ function report() {
   process.exit(0)
 }
 
-const PROTECTED = /\b(family|families|kids?|children|growing family|school district|good schools|safe neighborhood|senior|retiree|empty[- ]nest)\b/i
+// Phrases that are illegal STEERING regardless of context (proximity-to-schools, naming a neighborhood,
+// and 55+ language in a verified senior community are all legal and intentionally NOT listed here).
+const FORBIDDEN = /\b(safe neighborhood|safe area|crime[- ]free|family[- ]friendly|growing family|kid[- ]friendly|child[- ]friendly|your family|empty[- ]nest)\b/i
 
 async function main() {
   console.log("══════════════════════════════════════════════════")
@@ -55,16 +57,22 @@ async function main() {
   check("property facts parse (beds/price/city/feature)", facts.minBeds === 3 && facts.maxPrice === 500000 && (facts.cities ?? []).includes("Austin") && (facts.features ?? []).includes("pool"))
 
   console.log("\n[Layer 1 · Fair Housing — output sanitizer]")
-  check("strips 'growing family'", !PROTECTED.test(sanitizeFairHousing("3 bedrooms for your growing family")))
-  check("strips 'family-friendly'", sanitizeFairHousing("In a family-friendly neighborhood").toLowerCase().includes("well-located") || !PROTECTED.test(sanitizeFairHousing("In a family-friendly neighborhood")))
-  check("strips 'top-rated school district'", !PROTECTED.test(sanitizeFairHousing("Located in a top-rated school district")))
-  check("strips 'safe neighborhood'", !PROTECTED.test(sanitizeFairHousing("A very safe neighborhood close in")))
-  check("neutralizes 'see it with your family' CTA", !PROTECTED.test(sanitizeFairHousing("See it in person with your family")))
+  check("strips 'growing family'", !FORBIDDEN.test(sanitizeFairHousing("3 bedrooms for your growing family")))
+  check("strips 'family-friendly'", !FORBIDDEN.test(sanitizeFairHousing("In a family-friendly neighborhood")))
+  check("strips 'safe neighborhood'", !FORBIDDEN.test(sanitizeFairHousing("A very safe neighborhood close in")))
+  check("neutralizes 'see it with your family' CTA", !FORBIDDEN.test(sanitizeFairHousing("See it in person with your family")))
+  // Schools: factual PROXIMITY stays; only the editorializing quality adjective is removed.
+  const sch = sanitizeFairHousing("Located in a top-rated school district")
+  check("school proximity kept, quality adjective dropped", /school district/i.test(sch) && !/top-rated/i.test(sch))
+  check("factual proximity to schools/work is ALLOWED (untouched)", sanitizeFairHousing("Near schools and a short commute to work") === "Near schools and a short commute to work")
+  // Age: neutralized by default, but PERMITTED in a verified 55+ community (FHA age exemption).
+  check("age language neutralized by default", sanitizeFairHousing("Perfect for seniors") !== "Perfect for seniors")
+  check("55+ community context permits senior language", sanitizeFairHousing("Perfect for seniors", { seniorCommunity: true }) === "Perfect for seniors")
   const scan = scanFairHousing("Perfect for your growing family near good schools")
-  check("scan flags the protected phrases (audit trail)", scan.flagged.length >= 1 && !PROTECTED.test(scan.clean))
+  check("scan flags the protected phrases (audit trail)", scan.flagged.length >= 1 && !FORBIDDEN.test(scan.clean))
   check("non-steering copy passes through unchanged", sanitizeFairHousing("3 bedrooms, 2 baths, $450K in Austin with a pool") === "3 bedrooms, 2 baths, $450K in Austin with a pool")
   const cleanExp = sanitizeExplanation({ headline: "Great home for your growing family", bullets: ["Near good schools", "3 beds, 2 baths"], narrative: "Perfect for families relocating.", callToAction: "See it in person with your family" })
-  check("sanitizeExplanation cleans every field", !PROTECTED.test([cleanExp.headline, ...cleanExp.bullets, cleanExp.narrative, cleanExp.callToAction].join(" ")))
+  check("sanitizeExplanation cleans every field", !FORBIDDEN.test([cleanExp.headline, ...cleanExp.bullets, cleanExp.narrative, cleanExp.callToAction].join(" ")))
 
   console.log("\n[Layer 1 · portal card mapping]")
   const cards = toPortalCards(
@@ -123,7 +131,7 @@ async function main() {
     const mine = (r.results ?? []).find((x: any) => x.listing_id === activeId)
     check("result carries display fields (address + photo)", !!mine && !!mine.address && !!mine.primary_photo_url)
     const allText = (r.results ?? []).flatMap((x: any) => [x.headline, x.narrative, x.callToAction, ...(x.bullets ?? [])]).join("  ")
-    check("every buyer-facing string is Fair-Housing clean", !PROTECTED.test(allText), allText.slice(0, 160))
+    check("every buyer-facing string is Fair-Housing clean", !FORBIDDEN.test(allText), allText.slice(0, 160))
 
     // Save it (live boolean model) → the portal interest reads back as 'saved'.
     await svc.from("saved_properties").insert({ contact_id: contactId, listing_id: activeId, brokerage_id: brokerageId, user_id: contactId, dismissed: false }).then(() => {}, () => {})

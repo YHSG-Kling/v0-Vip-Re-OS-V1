@@ -235,10 +235,12 @@ export function SmartSearchWidget({ contactId, preferences, className }: SmartSe
     [optimisticInterests]
   )
 
-  // Convert saved BuyerPropertyInterest → PropertyResult
+  // Convert saved BuyerPropertyInterest → PropertyResult. Internal saves key on listing_id; external
+  // (RentCast/IDX) saves reconstruct the synthetic "ext_<source>_<id>" handle so actions round-trip.
   const savedAsResults: PropertyResult[] = (savedData ?? []).map(
     (interest: BuyerPropertyInterest) => ({
-      id:                interest.listing_id,
+      id:                interest.listing_id
+        ?? (interest.source && interest.external_property_id ? `ext_${interest.source}_${interest.external_property_id}` : interest.id),
       address:           interest.listing?.address,
       property_address:  interest.listing?.property_address,
       list_price:        interest.listing?.list_price,

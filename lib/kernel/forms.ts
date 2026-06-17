@@ -13,8 +13,12 @@
 //     On final submit, status → 'submitted'. On esign launch → 'sent_for_signature'.
 //  3. E-sign is TRANSPORT ONLY — the provider module handles API calls.
 //     The kernel logs events, updates status, does NOT talk to provider APIs directly.
-//  4. Buyer property actions write to `property_interests` (canonical table).
-//     interest_level: 'saved' | 'favorited' | 'dismissed' | 'not_interested' | 'offer_requested'
+//  4. Buyer property actions write to `saved_properties` (the canonical per-listing table).
+//     interest_level: 'saved' | 'favorited' | 'dismissed' | 'not_interested' | 'tour_requested' | 'offer_requested'.
+//     DATA-LAW SPLIT: our OWN brokerage listings store listing_id + a denormalized snapshot of our own
+//     listing; EXTERNAL (RentCast/IDX) listings store ONLY source/external_property_id/listing_url —
+//     never the MLS facts (display re-fetches from the URL). (`property_interests` is the separate
+//     saved-search CRITERIA table — not per-listing interest.)
 //  5. All mutations emit KernelEvent via lifecycle_events.
 //  6. Every command returns KernelFormsResult — never throws to caller.
 //
@@ -103,10 +107,17 @@ export interface ProviderDocument {
 export interface BuyerPropertyInterest {
   id: string
   contact_id: string
-  listing_id: string
+  /** null for an EXTERNAL (RentCast/IDX) save — those reference source + listing_url, not a listing row. */
+  listing_id: string | null
   interest_level: BuyerPropertyInterestLevel
   notes?: string
   saved_at: string
+  /** 'platform' for our listings; 'rentcast' | 'idx' for external (display via listing_url only). */
+  source?: string | null
+  /** external feed id (lets the UI reconstruct the synthetic "ext_<source>_<id>" action handle). */
+  external_property_id?: string | null
+  /** external listing URL (data-display rule: external properties are shown by URL, not stored facts). */
+  listing_url?: string | null
   listing?: {
     id: string
     address?: string
@@ -700,11 +711,13 @@ export async function syncEsignDocuments(input: {
 
 // ─── COMMAND 9: recordBuyerPropertyAction ───────────────────────────────────
 //
-// Records a buyer's action on a specific property.
-// Uses property_interests table (canonical table for buyer↔property interest).
-// Upserts by (contact_id, listing_id) — one record per contact/property pair.
-// interest_level transition rules:
-//   dismissed + offer_requested → disallowed (guard enforced here)
+// Records a buyer's action on a specific property, in the canonical `saved_properties` table.
+//   · OUR listings  → store listing_id + a denormalized snapshot of OUR OWN listing.
+//   · EXTERNAL (RentCast/IDX, listing_id "ext_<source>_<externalId>") → store ONLY
+//     source/external_property_id/listing_url; NEVER the MLS facts (data-display rules).
+// No unique constraint exists, so it check-then-writes (idempotent per contact/property).
+// interest_level transition rules: dismissed + offer_requested → disallowed (guard enforced here);
+// offers are only available on our own listings.
 
 export async function recordBuyerPropertyAction(input: {
   contact_id: string
@@ -717,65 +730,97 @@ export async function recordBuyerPropertyAction(input: {
   try {
     const supabase = createServiceClient()
 
-    // Guard: dismissed cannot escalate to offer without going through saved first
-    if (input.interest_level === "offer_requested") {
-      const { data: existing } = await supabase
-        .from("property_interests")
-        .select("interest_level")
-        .eq("contact_id", input.contact_id)
-        .eq("listing_id", input.listing_id)
-        .maybeSingle()
+    // saved_properties.user_id is NOT NULL — resolve the owning agent's user (agents.id → user_id).
+    let ownerUserId: string | null = null
+    if (input.agent_id) {
+      const { data: a } = await supabase.from("agents").select("user_id").eq("id", input.agent_id).maybeSingle()
+      ownerUserId = (a as any)?.user_id ?? null
+    }
+    if (!ownerUserId) {
+      const { data: c } = await supabase.from("contacts").select("agent_id").eq("id", input.contact_id).maybeSingle()
+      const aid = (c as any)?.agent_id
+      if (aid) { const { data: a } = await supabase.from("agents").select("user_id").eq("id", aid).maybeSingle(); ownerUserId = (a as any)?.user_id ?? null }
+    }
+    if (!ownerUserId) return { success: false, error: "No owning agent user for this contact (saved_properties requires an owner)" }
 
-      if (existing?.interest_level === "dismissed" || existing?.interest_level === "not_interested") {
-        return {
-          success: false,
-          error: "Cannot request an offer on a dismissed property. Save it first.",
-        }
+    // External synthetic id: "ext_<source>_<externalId>" (from the buyer-search engine).
+    const isExternal = input.listing_id.startsWith("ext_")
+    let source: string | null = null, externalId: string | null = null
+    if (isExternal) {
+      const rest = input.listing_id.slice(4)
+      const us = rest.indexOf("_")
+      source = us > 0 ? rest.slice(0, us) : "external"
+      externalId = us > 0 ? rest.slice(us + 1) : rest
+    }
+
+    const dismissed   = input.interest_level === "dismissed" || input.interest_level === "not_interested"
+    const addedToTour = input.interest_level === "tour_requested"
+
+    // Find an existing row (no unique constraint → check-then-write).
+    const findQ = supabase.from("saved_properties").select("id, dismissed, interest_level").eq("contact_id", input.contact_id)
+    const { data: existing } = isExternal
+      ? await findQ.eq("source", source!).eq("external_property_id", externalId!).maybeSingle()
+      : await findQ.eq("listing_id", input.listing_id).maybeSingle()
+
+    // Guard: a dismissed property cannot escalate straight to an offer; offers are our-listings only.
+    if (input.interest_level === "offer_requested") {
+      if (isExternal) return { success: false, error: "Offers are only available on our brokerage's listings." }
+      if (existing && ((existing as any).dismissed || ["dismissed", "not_interested"].includes((existing as any).interest_level))) {
+        return { success: false, error: "Cannot request an offer on a dismissed property. Save it first." }
       }
     }
 
-    const { data: upserted, error } = await supabase
-      .from("property_interests")
-      .upsert(
-        {
-          contact_id:     input.contact_id,
-          listing_id:     input.listing_id,
-          interest_level: input.interest_level,
-          notes:          input.notes ?? null,
-          saved_at:       new Date().toISOString(),
-        },
-        { onConflict: "contact_id,listing_id" }
-      )
-      .select("id")
-      .single()
+    let savedId: string
+    if (existing) {
+      const { error } = await supabase.from("saved_properties").update({
+        interest_level: input.interest_level, dismissed, added_to_tour: addedToTour,
+        notes: input.notes ?? null, saved_at: new Date().toISOString(),
+      }).eq("id", (existing as any).id)
+      if (error) throw error
+      savedId = (existing as any).id
+    } else {
+      const row: Record<string, unknown> = {
+        contact_id: input.contact_id, user_id: ownerUserId, brokerage_id: input.brokerage_id,
+        interest_level: input.interest_level, dismissed, added_to_tour: addedToTour,
+        notes: input.notes ?? null, saved_at: new Date().toISOString(),
+      }
+      if (isExternal) {
+        // Compliance: URL/attribution only — never the external MLS facts.
+        row.source = source
+        row.external_property_id = externalId
+      } else {
+        row.listing_id = input.listing_id
+        // Denormalize OUR OWN listing's facts for display (permitted for our inventory).
+        const { data: l } = await supabase.from("listings")
+          .select("address, list_price, bedrooms, bathrooms, primary_photo_url, city, state")
+          .eq("id", input.listing_id).maybeSingle()
+        if (l) Object.assign(row, {
+          property_address: (l as any).address ?? null, list_price: (l as any).list_price ?? null,
+          bedrooms: (l as any).bedrooms ?? null, bathrooms: (l as any).bathrooms ?? null,
+          primary_photo_url: (l as any).primary_photo_url ?? null, city: (l as any).city ?? null, state: (l as any).state ?? null,
+        })
+      }
+      const { data: inserted, error } = await supabase.from("saved_properties").insert(row).select("id").single()
+      if (error || !inserted) throw error ?? new Error("Failed to record property action")
+      savedId = (inserted as any).id
+    }
 
-    if (error || !upserted) throw error ?? new Error("Failed to record property action")
-
-    // Emit event based on action level
+    // Emit a lifecycle event (our listings only — external has no listing_id FK to reference).
     const eventMap: Partial<Record<BuyerPropertyInterestLevel, KernelEvent>> = {
       saved:          KernelEvent.PROPERTY_MATCH_FOUND,
       favorited:      KernelEvent.PROPERTY_RECOMMENDED,
       offer_requested: KernelEvent.BUYER_OFFER_ELIGIBLE,
     }
     const event = eventMap[input.interest_level]
-    if (event) {
-      await supabase
-        .from("lifecycle_events")
-        .insert({
-          entity_type:  "contact",
-          entity_id:    input.contact_id,
-          event_type:   event,
-          brokerage_id: input.brokerage_id,
-          metadata: {
-            listing_id:     input.listing_id,
-            interest_level: input.interest_level,
-            agent_id:       input.agent_id,
-          },
-          created_at: new Date().toISOString(),
-        })
+    if (event && !isExternal) {
+      await supabase.from("lifecycle_events").insert({
+        entity_type: "contact", entity_id: input.contact_id, event_type: event, brokerage_id: input.brokerage_id,
+        metadata: { listing_id: input.listing_id, interest_level: input.interest_level, agent_id: input.agent_id },
+        created_at: new Date().toISOString(),
+      })
     }
 
-    return { success: true, data: { interest_id: upserted.id } }
+    return { success: true, data: { interest_id: savedId } }
   } catch (error: any) {
     return { success: false, error: error.message }
   }
@@ -803,13 +848,14 @@ export async function loadBuyerSavedProperties(input: {
       ? ["saved", "favorited", "dismissed", "not_interested", "offer_requested", "tour_requested"]
       : ["saved", "favorited", "offer_requested", "tour_requested"]
 
+    // Canonical per-listing table. interest_level IS NOT NULL filters OUT system market-watch refs
+    // (those carry notes='market_watch_ref' and no interest_level). Internal saves carry a denormalized
+    // snapshot of our own listing; external saves carry only source/listing_url (no MLS facts).
     const { data, error, count } = await supabase
-      .from("property_interests")
+      .from("saved_properties")
       .select(
-        `id, contact_id, listing_id, interest_level, notes, saved_at,
-         listings!listing_id (
-           id, address, property_address, list_price, bedrooms, bathrooms, primary_photo_url
-         )`,
+        `id, contact_id, listing_id, interest_level, dismissed, added_to_tour, notes, saved_at,
+         source, external_property_id, listing_url, property_address, list_price, bedrooms, bathrooms, primary_photo_url`,
         { count: "exact" }
       )
       .eq("contact_id", input.contact_id)
@@ -819,25 +865,32 @@ export async function loadBuyerSavedProperties(input: {
 
     if (error) throw error
 
-    const interests: BuyerPropertyInterest[] = (data ?? []).map((row: any) => ({
-      id:             row.id,
-      contact_id:     row.contact_id,
-      listing_id:     row.listing_id,
-      interest_level: row.interest_level,
-      notes:          row.notes,
-      saved_at:       row.saved_at,
-      listing:        row.listings
-        ? {
-            id:                row.listings.id,
-            address:           row.listings.address,
-            property_address:  row.listings.property_address,
-            list_price:        row.listings.list_price,
-            bedrooms:          row.listings.bedrooms,
-            bathrooms:         row.listings.bathrooms,
-            primary_photo_url: row.listings.primary_photo_url,
-          }
-        : undefined,
-    }))
+    const interests: BuyerPropertyInterest[] = (data ?? []).map((row: any) => {
+      const hasFacts = row.property_address != null || row.list_price != null
+      return {
+        id:             row.id,
+        contact_id:     row.contact_id,
+        listing_id:     row.listing_id ?? null,
+        interest_level: row.interest_level ?? (row.dismissed ? "dismissed" : row.added_to_tour ? "tour_requested" : "saved"),
+        notes:          row.notes,
+        saved_at:       row.saved_at,
+        source:         row.source ?? (row.listing_id ? "platform" : null),
+        external_property_id: row.external_property_id ?? null,
+        listing_url:    row.listing_url ?? null,
+        // Internal listings carry a stored snapshot of OUR OWN facts; external saves are URL-only.
+        listing:        hasFacts
+          ? {
+              id:                row.listing_id ?? row.id,
+              address:           row.property_address ?? undefined,
+              property_address:  row.property_address ?? undefined,
+              list_price:        row.list_price ?? undefined,
+              bedrooms:          row.bedrooms ?? undefined,
+              bathrooms:         row.bathrooms ?? undefined,
+              primary_photo_url: row.primary_photo_url ?? undefined,
+            }
+          : undefined,
+      }
+    })
 
     return {
       success: true,
