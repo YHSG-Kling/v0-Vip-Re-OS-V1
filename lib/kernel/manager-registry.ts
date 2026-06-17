@@ -280,6 +280,9 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   saved_properties:             "shopping_agent",
   agent_client_messages:        "campaign_orchestrator",
   remotion_composition_renders: "asset_manager",
+  // Per-agent D-ID avatar + ElevenLabs voice-clone profiles — the asset manager owns the video/avatar
+  // production domain, so it owns the voice/avatar identity these renders consume.
+  agent_voice_profiles:         "asset_manager",
   notifications:                "campaign_orchestrator",
   assignment_log:               "ai_isa",
   ai_daily_briefings:           "ai_isa",

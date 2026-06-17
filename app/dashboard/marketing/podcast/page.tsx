@@ -47,14 +47,17 @@ export default async function PodcastPage() {
       totalPlays = count ?? 0
     }
 
-    // Check if agent has an ElevenLabs voice clone configured
+    // Check if agent has an ElevenLabs voice clone configured. The voice clone lives on the canonical
+    // agent_voice_profiles (by agent_id) — not on users (which has no elevenlabs_voice_id column).
     if (agentId) {
-      const { data: userRow } = await supabase
-        .from("users")
+      const { data: vp } = await supabase
+        .from("agent_voice_profiles")
         .select("elevenlabs_voice_id")
-        .eq("id", agentId)
+        .eq("agent_id", agentId)
+        .order("is_default", { ascending: false })
+        .limit(1)
         .maybeSingle()
-      hasVoiceClone = !!userRow?.elevenlabs_voice_id
+      hasVoiceClone = !!vp?.elevenlabs_voice_id
     }
   } catch (error) {
     console.error("[Podcast] Failed to load initial data:", error)
