@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { loadCommandCenter } from "@/lib/kernel/command-center"
+import { resolveEgressScope } from "@/lib/kernel/egress-scope"
 import { computeManagerTrust } from "@/lib/kernel/outcome-learning"
 import { CommandCenterClient } from "./command-center-client"
 import { TrustMeter } from "./trust-meter"
@@ -30,8 +31,16 @@ export default async function CommandCenterPage() {
   const brokerageId = userData?.brokerage_id ?? undefined
   if (!["admin", "broker", "superadmin"].includes(userType)) redirect("/dashboard")
 
+  // Resolve the egress scope so the surface shows the right slice. superadmin =
+  // platform-wide (no scope); everyone else is scoped through resolveEgressScope
+  // (admin/broker → brokerage-wide today; ready for finer team/agent tiers).
+  const scope = userType !== "superadmin" && brokerageId
+    ? resolveEgressScope({ userType, userId: user.id, brokerageId })
+    : undefined
+
   const data = await loadCommandCenter({
     brokerageId: userType === "superadmin" ? undefined : brokerageId,
+    scope,
     limit:       100,
   })
 

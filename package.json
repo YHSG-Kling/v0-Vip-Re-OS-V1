@@ -20,6 +20,7 @@
     "test:agent-governance": "tsx scripts/agent-governance-simulator.ts",
     "test:spend-governance": "tsx scripts/spend-governance-simulator.ts",
     "test:command-center": "tsx scripts/command-center-simulator.ts",
+    "test:command-center-scope": "tsx scripts/command-center-scope-simulator.ts",
     "test:deliverables": "tsx scripts/deliverables-summary-simulator.ts",
     "test:agent-scorecard": "tsx scripts/agent-scorecard-simulator.ts",
     "test:mobile-approval": "tsx scripts/mobile-approval-simulator.ts",

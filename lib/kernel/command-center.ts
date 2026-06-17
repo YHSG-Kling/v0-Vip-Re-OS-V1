@@ -18,6 +18,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { loadContentApprovalActions, type ContentQueue } from "./approval-sources"
 import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
 import { resolveActionManager, type ManagerKey } from "./manager-registry"
+import type { EgressScope } from "./egress-scope"
 
 // Re-export so existing importers (simulators, server actions) keep working.
 export { evaluateApprovalSla }
@@ -93,18 +94,102 @@ export interface CommandCenterParams {
   /** Scope to one brokerage; omit (superadmin) for platform-wide. */
   brokerageId?: string
   limit?:       number
+  /**
+   * EGRESS SCOPE — restrict every actionable surface to what THIS user oversees,
+   * so a team lead sees only their team's work and a solo agent sees only their own
+   * (the multi-tier egress made real on the Command Center). When set, scope.brokerageId
+   * is authoritative (overrides brokerageId).
+   *
+   *  · brokerage / location → brokerage-wide. (Location-level isolation needs a
+   *    locations table that does not exist in the schema yet, so a location scope
+   *    HONESTLY degrades to brokerage rather than filtering on a column that isn't
+   *    there — see resolveEgressScope.)
+   *  · team  → only the sessions/actions/messages on entities (contacts/listings)
+   *    owned by that team; brokerage-wide aggregates (standup, P&L, manager talk,
+   *    content queue) are withheld so a narrower scope never sees the whole house.
+   *  · agent → the same, narrowed to the one agent's own book of business.
+   *
+   * Omit entirely for the platform-wide superadmin view.
+   */
+  scope?: EgressScope
+}
+
+/** UUID that matches no row — used so an empty scoped-id list filters to nothing
+ *  (an agent who owns no entities sees an empty queue, never the whole brokerage). */
+const NO_MATCH_UUID = "00000000-0000-0000-0000-000000000000"
+
+/**
+ * Resolve the entity ids a team/agent scope is allowed to see, THROUGH the entity
+ * the work runs on (the egress tables carry only brokerage_id — agent/team ownership
+ * lives on the contact/listing). Pure read; never throws upstream.
+ */
+async function resolveScopedEntities(
+  supabase: ReturnType<typeof createServiceClient>,
+  scope: EgressScope,
+  brokerageId: string,
+): Promise<{ contactIds: string[]; listingIds: string[] }> {
+  if (scope.kind === "team" && scope.teamId) {
+    const [cs, ls] = await Promise.all([
+      supabase.from("contacts").select("id").eq("brokerage_id", brokerageId).eq("team_id", scope.teamId),
+      supabase.from("listings").select("id").eq("brokerage_id", brokerageId).eq("team_id", scope.teamId),
+    ])
+    return { contactIds: (cs.data ?? []).map((r: any) => r.id), listingIds: (ls.data ?? []).map((r: any) => r.id) }
+  }
+  if (scope.kind === "agent" && scope.agentUserId) {
+    // scope.agentUserId is a USER id; map it to this brokerage's agent row(s), then
+    // to the contacts/listings that agent owns.
+    const { data: agentRows } = await supabase
+      .from("agents").select("id").eq("brokerage_id", brokerageId).eq("user_id", scope.agentUserId)
+    const agentIds = (agentRows ?? []).map((r: any) => r.id)
+    if (agentIds.length === 0) return { contactIds: [], listingIds: [] }
+    const [cs, ls] = await Promise.all([
+      supabase.from("contacts").select("id").eq("brokerage_id", brokerageId).in("agent_id", agentIds),
+      supabase.from("listings").select("id").eq("brokerage_id", brokerageId).in("agent_id", agentIds),
+    ])
+    return { contactIds: (cs.data ?? []).map((r: any) => r.id), listingIds: (ls.data ?? []).map((r: any) => r.id) }
+  }
+  return { contactIds: [], listingIds: [] }
 }
 
 export async function loadCommandCenter(params: CommandCenterParams = {}): Promise<CommandCenterData> {
   const supabase = createServiceClient()
   const limit = params.limit ?? 50
+  const scope = params.scope
+  // scope.brokerageId is authoritative when a scope is supplied.
+  const brokerageId = scope?.brokerageId ?? params.brokerageId
+
+  // brokerage & location scope impose no entity restriction (location isolation has
+  // no backing column yet — see CommandCenterParams.scope); team & agent scope do.
+  const entityScoped = !!scope && (scope.kind === "team" || scope.kind === "agent")
+  // brokerage-wide aggregates (standup, P&L, manager talk, dial batches, content
+  // queue) are only shown to a brokerage-wide viewer — withheld from a narrower scope.
+  const brokerageWide = !scope || scope.kind === "brokerage" || scope.kind === "location"
+
+  // For team/agent scope, resolve which sessions (and client contacts) are in view,
+  // THROUGH the owned entities — the egress tables carry only brokerage_id.
+  let sessionIdFilter: string[] | null = null
+  let contactIdFilter: string[] | null = null
+  if (entityScoped && brokerageId) {
+    const { contactIds, listingIds } = await resolveScopedEntities(supabase, scope!, brokerageId)
+    contactIdFilter = contactIds.length ? contactIds : [NO_MATCH_UUID]
+    const entityIds = [...contactIds, ...listingIds]
+    if (entityIds.length === 0) {
+      sessionIdFilter = [NO_MATCH_UUID]
+    } else {
+      const { data: scopedSessions } = await supabase
+        .from("managed_agent_sessions").select("id").eq("brokerage_id", brokerageId).in("entity_id", entityIds)
+      const ids = (scopedSessions ?? []).map((r: any) => r.id)
+      sessionIdFilter = ids.length ? ids : [NO_MATCH_UUID]
+    }
+  }
 
   const sessionsQuery = supabase
     .from("managed_agent_sessions")
     .select("id, entity_type, entity_id, status, created_at, last_event_at, ended_at, managed_agents!managed_agent_sessions_managed_agent_id_fkey(agent_kind)")
     .order("created_at", { ascending: false })
     .limit(limit)
-  if (params.brokerageId) sessionsQuery.eq("brokerage_id", params.brokerageId)
+  if (brokerageId) sessionsQuery.eq("brokerage_id", brokerageId)
+  if (sessionIdFilter) sessionsQuery.in("id", sessionIdFilter)
 
   const marketingQuery = supabase
     .from("marketing_agent_actions")
@@ -112,7 +197,8 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
-  if (params.brokerageId) marketingQuery.eq("brokerage_id", params.brokerageId)
+  if (brokerageId) marketingQuery.eq("brokerage_id", brokerageId)
+  if (sessionIdFilter) marketingQuery.in("managed_agent_session_id", sessionIdFilter)
 
   const assetQuery = supabase
     .from("asset_manager_actions")
@@ -120,7 +206,8 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
-  if (params.brokerageId) assetQuery.eq("brokerage_id", params.brokerageId)
+  if (brokerageId) assetQuery.eq("brokerage_id", brokerageId)
+  if (sessionIdFilter) assetQuery.in("managed_agent_session_id", sessionIdFilter)
 
   // Ads Manager — paid-ad spend actions awaiting a human (launch/pause/budget/scale).
   const adsQuery = supabase
@@ -129,7 +216,8 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
-  if (params.brokerageId) adsQuery.eq("brokerage_id", params.brokerageId)
+  if (brokerageId) adsQuery.eq("brokerage_id", brokerageId)
+  if (sessionIdFilter) adsQuery.in("managed_agent_session_id", sessionIdFilter)
 
   // Customer-facing content awaiting human RELEASE — social posts (incl. avatar/
   // listing reels + GBP), email newsletters, direct-mail campaigns. Loaded via
@@ -138,7 +226,11 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // send/publish cron only ships the 'approved' value, so a pending row cannot
   // reach a consumer.
   const now = new Date()
-  const contentPromise = loadContentApprovalActions(supabase, { brokerageId: params.brokerageId, limit, now })
+  // Content approvals (social / email / direct-mail) are brokerage-level marketing,
+  // not tied to one agent's book — withheld from a team/agent scope.
+  const contentPromise = brokerageWide
+    ? loadContentApprovalActions(supabase, { brokerageId, limit, now })
+    : Promise.resolve([] as Awaited<ReturnType<typeof loadContentApprovalActions>>)
 
   // Deal-critical managers' proposed client messages (seller/buyer updates) awaiting
   // human approval — nothing reaches a client until released here.
@@ -148,7 +240,9 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
-  if (params.brokerageId) clientMsgQuery.eq("brokerage_id", params.brokerageId)
+  if (brokerageId) clientMsgQuery.eq("brokerage_id", brokerageId)
+  // A team/agent scope sees only messages to its own clients.
+  if (contactIdFilter) clientMsgQuery.in("recipient_contact_id", contactIdFilter)
 
   const [sessionsRes, marketingRes, assetRes, adsRes, clientMsgRes, contentActions] = await Promise.all([sessionsQuery, marketingQuery, assetQuery, adsQuery, clientMsgQuery, contentPromise])
 
@@ -231,11 +325,11 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   let standup: import("@/lib/intelligence/manager-standup").ManagerStandupLine[] = []
   let weeklyPnl: import("@/lib/intelligence/manager-weekly-pnl").ManagerWeeklyScorecard[] = []
   let deliverables: import("@/lib/intelligence/deliverables-summary").DeliverablesSummary | null = null
-  if (params.brokerageId) {
+  if (brokerageWide && brokerageId) {
     const [standupRes, pnlRes, delivRes] = await Promise.allSettled([
-      import("@/lib/intelligence/manager-standup").then((m) => m.generateManagerStandup(params.brokerageId!)),
-      import("@/lib/intelligence/manager-weekly-pnl").then((m) => m.generateManagerWeeklyPnl(params.brokerageId!)),
-      import("@/lib/intelligence/deliverables-summary").then((m) => m.generateDeliverablesSummary({ brokerageId: params.brokerageId! })),
+      import("@/lib/intelligence/manager-standup").then((m) => m.generateManagerStandup(brokerageId)),
+      import("@/lib/intelligence/manager-weekly-pnl").then((m) => m.generateManagerWeeklyPnl(brokerageId)),
+      import("@/lib/intelligence/deliverables-summary").then((m) => m.generateDeliverablesSummary({ brokerageId })),
     ])
     if (standupRes.status === "fulfilled") standup = standupRes.value
     else console.error("[command-center] manager standup failed:", standupRes.reason)
@@ -248,17 +342,17 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // Proposed AI ISA dial batches awaiting approval — surfaced as a one-tap callout.
   let dialBatches: CommandCenterData["dialBatches"] = []
   let managerTalk: import("@/lib/kernel/manager-signals").ManagerTalkLine[] = []
-  if (params.brokerageId) {
+  if (brokerageWide && brokerageId) {
     try {
       const { loadRecentManagerTalk } = await import("@/lib/kernel/manager-signals")
-      managerTalk = await loadRecentManagerTalk(params.brokerageId, 12, supabase)
+      managerTalk = await loadRecentManagerTalk(brokerageId, 12, supabase)
     } catch (err) {
       console.error("[command-center] manager talk failed:", err)
     }
     const { data: db } = await supabase
       .from("ai_isa_call_batches")
       .select("id, proposed_count, proposed_at")
-      .eq("brokerage_id", params.brokerageId).eq("status", "proposed")
+      .eq("brokerage_id", brokerageId).eq("status", "proposed")
       .order("proposed_at", { ascending: true }).limit(50)
     dialBatches = ((db ?? []) as Array<{ id: string; proposed_count: number; proposed_at: string | null }>)
       .map((b) => ({ id: b.id, proposedCount: b.proposed_count ?? 0, proposedAt: b.proposed_at }))
