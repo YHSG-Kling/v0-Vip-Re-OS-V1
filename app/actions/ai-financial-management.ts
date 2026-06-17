@@ -242,7 +242,7 @@ export async function aiCalculateCommission(params: CommissionEntry) {
     // Get agent's commission structure
     const { data: agentProfile } = await supabase
       .from("agents")
-      .select("commission_split, brokerage_id, cap_amount, cap_current")
+      .select("commission_split, brokerage_id, cap_amount, cap_progress")
       .eq("user_id", params.agentId)
       .maybeSingle()
 
@@ -288,8 +288,8 @@ export async function aiCalculateCommission(params: CommissionEntry) {
 
     // Check cap status
     let cappedAmount = 0
-    if (agentProfile?.cap_amount && agentProfile?.cap_current) {
-      const remainingToCap = agentProfile.cap_amount - agentProfile.cap_current
+    if (agentProfile?.cap_amount && agentProfile?.cap_progress) {
+      const remainingToCap = agentProfile.cap_amount - agentProfile.cap_progress
       if (remainingToCap <= 0) {
         // Agent is capped, gets 100%
         cappedAmount = brokerageShare
@@ -349,7 +349,7 @@ Provide JSON with tax estimates:
       await supabase
         .from("agents")
         .update({
-          cap_current: (agentProfile.cap_current || 0) + brokerageShare,
+          cap_progress: (agentProfile.cap_progress || 0) + brokerageShare,
         })
         .eq("user_id", params.agentId)
     }
