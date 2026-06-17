@@ -214,6 +214,7 @@
     "test:offer-esign-flow": "tsx scripts/offer-esign-flow-simulator.ts",
     "test:pdf-form-fill": "tsx scripts/pdf-form-fill-simulator.ts",
     "test:esign-anchors": "tsx scripts/esign-anchor-simulator.ts",
+    "test:buyer-stall-predictor": "tsx scripts/buyer-stall-predictor-simulator.ts",
     "test:manager-outbound-eval": "tsx scripts/manager-outbound-eval-simulator.ts",
     "test:learning-outcomes": "tsx scripts/learning-outcomes-simulator.ts",
     "test:voice-report": "tsx scripts/voice-report-format-simulator.ts",

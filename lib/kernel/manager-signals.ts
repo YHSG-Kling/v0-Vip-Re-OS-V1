@@ -609,6 +609,39 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }, ctx.supabase)
     return res.ok ? `proposed a gated early "${play}" recommendation (message ${res.id})` : null
   },
+  // Buyer-stall predictor → Shopping Agent: a buyer has toured a lot with no offer (fatigue /
+  // expectations / drifting away). The Shopping Agent resets the conversation with a GATED buyer
+  // message — recalibrate expectations, or re-energize with fresh matches. Never auto-sent.
+  "shopping_agent:buyer_stall_predicted": async (signal, ctx) => {
+    if (!signal.contactId) return null
+    const p = (signal.payload ?? {}) as Record<string, unknown>
+    const play = (p.play as string | undefined) ?? null
+    const reasons = Array.isArray(p.reasons) ? (p.reasons as string[]).slice(0, 2) : []
+    if (!play || play === "hold") return null
+
+    const copy: Record<string, { subject: string; body: string }> = {
+      recalibrate: {
+        subject: "Let's find your home faster",
+        body: `We've seen some great homes together, and I want to make sure we're zeroed in on the one that's truly right for you. ${reasons.length ? `I've noticed ${reasons.join("; ")}. ` : ""}Could we take 15 minutes to revisit your must-haves and the numbers? Sometimes a small adjustment to the target opens up exactly what you're looking for — and I'd rather get you there sooner than later.`,
+      },
+      re_energize: {
+        subject: "A fresh look — new homes for you",
+        body: `It's been a little while since we were out looking, and the inventory has shifted. ${reasons.length ? `${reasons.join("; ")}. ` : ""}I'd love to pull a fresh set of homes matched to what you described and get you back out there. Want me to put together a new short list this week?`,
+      },
+    }
+    const msg = copy[play]
+    if (!msg) return null
+
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "shopping_agent", entityType: "contact",
+      entityId: signal.contactId, recipientContactId: signal.contactId, audience: "buyer",
+      subject: msg.subject, body: msg.body,
+      rationale: `BUYER-STALL PREDICTOR — buyer touring without writing an offer; gated "${play}" reset proposed so the agent gets ahead of fatigue/drift (manager-orchestrated).`,
+      channel: "portal",
+    }, ctx.supabase)
+    return res.ok ? `proposed a gated buyer "${play}" reset (message ${res.id})` : null
+  },
   // Inbound seller intent → Listing Concierge: a homeowner asked "what's my home worth" (a home-value
   // tool / valuation magnet) — the strongest INBOUND seller signal. The concierge responds like a
   // human listing lead: a GATED follow-up offering a precise CMA beyond the instant estimate. Never
