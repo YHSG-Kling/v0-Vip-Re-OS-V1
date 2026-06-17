@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { ScopeSwitcher } from "./scope-switcher"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -64,7 +65,16 @@ function timeAgo(iso: string | null): string {
   return `${Math.floor(h / 24)}d ago`
 }
 
-export function CommandCenterClient({ data, scope }: { data: CommandCenterData; scope: "platform" | "brokerage" }) {
+export function CommandCenterClient({
+  data, scope, scopeLabel, canSwitch = false, scopeOptions = [], currentView = "all",
+}: {
+  data: CommandCenterData
+  scope: "platform" | "brokerage"
+  scopeLabel?: string
+  canSwitch?: boolean
+  scopeOptions?: import("./scope-switcher").ScopeOption[]
+  currentView?: string
+}) {
   const [actions, setActions] = useState<CommandCenterAction[]>(data.pendingActions)
   const [summary, setSummary] = useState(data.summary)
 
@@ -88,13 +98,16 @@ export function CommandCenterClient({ data, scope }: { data: CommandCenterData; 
 
   return (
     <div className="p-6 space-y-6 max-w-6xl mx-auto">
-      <header className="flex items-center justify-between">
+      <header className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold">Agent Command Center</h1>
           <p className="text-sm text-muted-foreground">
-            {scope === "platform" ? "Platform-wide" : "Your brokerage"} — live manager sessions + action approvals
+            {scopeLabel ?? (scope === "platform" ? "Platform-wide" : "Your brokerage")} — live manager sessions + action approvals
           </p>
         </div>
+        {scopeLabel && (
+          <ScopeSwitcher label={scopeLabel} canSwitch={canSwitch} options={scopeOptions} current={currentView} />
+        )}
       </header>
 
       {/* Summary */}
