@@ -410,7 +410,7 @@ export async function getSellerDocuments(contactId: string, transactionId: strin
   // Get client documents — scoped to caller's brokerage
   const { data: clientDocs } = await supabase
     .from("client_documents")
-    .select("id, document_type, file_name, file_url, created_at, status")
+    .select("id, document_type, file_name:document_name, file_url:document_url, created_at, status")
     .eq("contact_id", contactId)
     .eq("brokerage_id", access.brokerageId)
     .order("created_at", { ascending: false })
@@ -433,7 +433,7 @@ export async function getSellerDocuments(contactId: string, transactionId: strin
     if (txValid) {
       const { data: txDocs } = await supabase
         .from("transaction_documents")
-        .select("id, document_type, file_name, file_url, created_at, status")
+        .select("id, document_type, file_name:document_name, file_url:document_url, created_at, status")
         .eq("transaction_id", transactionId)
         .eq("brokerage_id", access.brokerageId)
         .order("created_at", { ascending: false })

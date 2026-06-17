@@ -800,9 +800,9 @@ export async function attachVendorDeliverable(
     .insert({
       brokerage_id:  brokerageId,
       uploaded_by:   agentUserId,
-      doc_type:      "vendor_deliverable",
-      doc_name:      fileName ?? description,
-      file_url:      documentUrl,
+      document_type: "vendor_deliverable",
+      document_name: fileName ?? description,
+      document_url:  documentUrl,
       notes:         description,
       // Link to the booking's transaction or listing if available
       transaction_id: booking.transaction_id ?? null,

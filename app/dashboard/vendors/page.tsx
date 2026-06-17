@@ -72,9 +72,9 @@ export default async function VendorsPage() {
     // Vendor deliverables — client_documents with doc_type = 'vendor_deliverable'
     supabase
       .from("client_documents")
-      .select("id, doc_name, file_url, notes, created_at, metadata")
+      .select("id, doc_name:document_name, file_url:document_url, notes, created_at, metadata")
       .eq("brokerage_id", profile.brokerage_id)
-      .eq("doc_type", "vendor_deliverable")
+      .eq("document_type", "vendor_deliverable")
       .order("created_at", { ascending: false })
       .limit(100)
       .then(r => r.data || []),
