@@ -216,6 +216,7 @@
     "test:esign-anchors": "tsx scripts/esign-anchor-simulator.ts",
     "test:buyer-stall-predictor": "tsx scripts/buyer-stall-predictor-simulator.ts",
     "test:dual-transaction-timing": "tsx scripts/dual-transaction-timing-simulator.ts",
+    "test:stuck-stage-detector": "tsx scripts/stuck-stage-detector-simulator.ts",
     "test:manager-outbound-eval": "tsx scripts/manager-outbound-eval-simulator.ts",
     "test:learning-outcomes": "tsx scripts/learning-outcomes-simulator.ts",
     "test:voice-report": "tsx scripts/voice-report-format-simulator.ts",
