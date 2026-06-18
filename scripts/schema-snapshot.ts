@@ -429,7 +429,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   newsletter_scheduled_sends: ["ab_test_variant", "agent_id", "brokerage_id", "created_at", "id", "newsletter_id", "personalization_variables", "preview_text", "recipient_count", "recipient_segment", "scheduled_send_time", "scheduled_time", "sections_included", "send_status", "sent_time", "subject_line", "template_id"],
   newsletter_sections: ["brokerage_id", "content", "created_at", "id", "newsletter_id", "order_index", "section_type", "target_locations", "target_personas", "title"],
   newsletter_sends: ["brokerage_id", "campaign_id", "clicked_at", "contact_id", "id", "opened_at", "provider_message_id", "queued_at", "sent_at", "status", "subject", "template_id"],
-  newsletter_seo_scores: ["created_at", "id", "keywords", "newsletter_id", "score"],
+  newsletter_seo_scores: ["analyzed_at", "created_at", "h1_present", "id", "keyword_count", "keyword_density", "overall_seo_score", "primary_keyword", "readability_score", "scheduled_send_id", "word_count"],
   newsletter_subscribers: ["agent_id", "brokerage_id", "contact_id", "created_at", "email", "first_name", "id", "last_name", "source", "status", "subscribed_at", "unsubscribed_at"],
   newsletter_teasers: ["agent_id", "brokerage_id", "content", "created_at", "id", "source_id", "source_type", "status", "updated_at"],
   newsletter_templates: ["agent_id", "brokerage_id", "content", "created_at", "id", "is_active", "name", "preheader_text", "scope", "subject_line", "team_id", "updated_at"],

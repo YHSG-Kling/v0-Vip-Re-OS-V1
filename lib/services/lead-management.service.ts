@@ -68,12 +68,13 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
     let error: any
 
     if (table === "contacts") {
+      // lead_behavioral_data has no PostgREST FK to contacts — embedding it errors the
+      // whole query (PGRST200). It's an event log keyed by lead_id, fetched separately.
       const result = await supabase
         .from("contacts")
         .select(`
           *,
           lead_intelligence(*),
-          lead_behavioral_data(*),
           property_interactions(*),
           buyer_persona(*)
         `)
@@ -87,7 +88,6 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
         .select(`
           *,
           lead_intelligence(*),
-          lead_behavioral_data(*),
           lead_idx_property_interactions(*),
           lead_motivated_seller_signals(*)
         `)
@@ -95,6 +95,14 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
         .single()
       record = result.data
       error = result.error
+      // lead_behavioral_data has no FK to leads — fetch separately (event log).
+      if (record) {
+        const { data: behavioral } = await supabase
+          .from("lead_behavioral_data")
+          .select("*")
+          .eq("lead_id", params.id)
+        record.lead_behavioral_data = behavioral || []
+      }
     }
 
     if (error || !record) {
@@ -143,13 +151,8 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
         })
         .eq("id", params.id)
 
-      // Store scoring history
-      await supabase.from("lead_behavioral_data").upsert({
-        contact_id: params.id,
-        engagement_score: engagementScore,
-        intent_signals: intentScore,
-        last_engagement_date: new Date().toISOString(),
-      })
+      // Score is persisted on contacts.lead_score above. lead_behavioral_data is an
+      // event-capture table keyed on lead_id with no contact-score columns — no write here.
     } else {
       // Update leads table
       await supabase
@@ -163,12 +166,16 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
         })
         .eq("id", params.id)
 
-      // Store scoring history in lead_engagement_scores
+      // Store scoring snapshot in lead_engagement_scores (live: overall_score + per-factor
+      // int columns + score_breakdown jsonb; no score_type/score_value/factors columns).
       await supabase.from("lead_engagement_scores").insert({
         lead_id: params.id,
-        score_type: "composite",
-        score_value: totalScore,
-        factors: {
+        overall_score: totalScore,
+        email_engagement_score: engagementScore,
+        property_interest_score: intentScore,
+        response_rate_score: responsivenessScore,
+        recency_score: recencyScore,
+        score_breakdown: {
           engagement: engagementScore,
           recency: recencyScore,
           intent: intentScore,

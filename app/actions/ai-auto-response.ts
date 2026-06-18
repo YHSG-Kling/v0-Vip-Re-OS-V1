@@ -5,21 +5,19 @@ import { getAgentContext } from "@/lib/identity"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { resolveModel } from "@/lib/ai/resolve-model"
 
-// Get auto-response settings for the current user
+// Get auto-response settings for the current agent
 export async function getAutoResponseSettings() {
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const { agentId } = await getAgentContext()
 
-  if (!user) {
+  if (!agentId) {
     return { success: false, error: "Not authenticated", settings: null }
   }
 
   const { data, error } = await supabase
     .from("auto_response_settings")
     .select("*")
-    .eq("user_id", user.id)
+    .eq("agent_id", agentId)
     .single()
 
   if (error && error.code !== "PGRST116") {
@@ -27,19 +25,16 @@ export async function getAutoResponseSettings() {
     return { success: false, error: error.message, settings: null }
   }
 
-  // Return default settings if none exist
+  // Return default settings if none exist (live schema columns only).
   if (!data) {
     return {
       success: true,
       settings: {
-        enabled: false,
-        auto_respond_to_new_leads: true,
-        auto_respond_to_inquiries: true,
-        business_hours_only: false,
-        response_delay_minutes: 2,
-        max_auto_responses_per_conversation: 3,
+        is_enabled: false,
         tone: "professional",
-        include_agent_signature: true,
+        delay_minutes: 5,
+        keywords: [],
+        custom_prompt: null,
       },
     }
   }
@@ -49,31 +44,31 @@ export async function getAutoResponseSettings() {
 
 // Update auto-response settings
 export async function updateAutoResponseSettings(settings: {
-  enabled: boolean
-  auto_respond_to_new_leads?: boolean
-  auto_respond_to_inquiries?: boolean
-  business_hours_only?: boolean
-  response_delay_minutes?: number
-  max_auto_responses_per_conversation?: number
+  is_enabled?: boolean
   tone?: string
-  include_agent_signature?: boolean
+  delay_minutes?: number
+  keywords?: string[]
+  custom_prompt?: string | null
 }) {
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const { agentId, brokerageId } = await getAgentContext()
 
-  if (!user) {
+  if (!agentId) {
     return { success: false, error: "Not authenticated" }
   }
 
+  // auto_response_settings is keyed by agent_id (NOT NULL, UNIQUE, FK→agents).
   const { error } = await supabase
     .from("auto_response_settings")
-    .upsert({
-      user_id: user.id,
-      ...settings,
-      updated_at: new Date().toISOString(),
-    })
+    .upsert(
+      {
+        agent_id: agentId,
+        brokerage_id: brokerageId,
+        ...settings,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "agent_id" },
+    )
 
   if (error) {
     console.error("Error updating auto-response settings:", error)
@@ -204,12 +199,18 @@ export async function trackBehavioralEvent(params: {
     return { success: false, error: "Not authenticated" }
   }
 
-  const { error } = await supabase.from("behavioral_patterns").insert({
-    contact_id: params.contactId,
-    pattern_type: params.eventType,
-    pattern_data: params.eventData || {},
-    points_awarded: params.pointsAwarded || 0,
-    tracked_at: new Date().toISOString(),
+  // behavioral_patterns is a brokerage pattern-definition CATALOG, not an event log.
+  // Per-entity events belong in lead_behavioral_data (keyed by lead_id, event_type NOT NULL).
+  const { brokerageId } = await getAgentContext()
+  const { error } = await supabase.from("lead_behavioral_data").insert({
+    lead_id: params.contactId,
+    event_type: params.eventType,
+    event_data: {
+      ...(params.eventData || {}),
+      points_awarded: params.pointsAwarded || 0,
+    },
+    brokerage_id: brokerageId,
+    occurred_at: new Date().toISOString(),
   })
 
   if (error) {
@@ -237,12 +238,12 @@ export async function trackBehavioralEvent(params: {
 export async function calculateLeadScore(contactId: string) {
   const supabase = await createClient()
 
-  // Get all behavioral events for this contact
+  // Get all behavioral events for this contact (lead_behavioral_data event log)
   const { data: events } = await supabase
-    .from("behavioral_patterns")
+    .from("lead_behavioral_data")
     .select("*")
-    .eq("contact_id", contactId)
-    .order("tracked_at", { ascending: false })
+    .eq("lead_id", contactId)
+    .order("occurred_at", { ascending: false })
 
   // Get contact info
   const { data: contact } = await supabase
@@ -281,8 +282,8 @@ export async function calculateLeadScore(contactId: string) {
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
 
   events.forEach((event) => {
-    const eventDate = new Date(event.tracked_at)
-    const points = eventPoints[event.pattern_type] || event.points_awarded || 0
+    const eventDate = new Date(event.occurred_at)
+    const points = eventPoints[event.event_type] || event.event_data?.points_awarded || 0
 
     score += points
 
@@ -304,9 +305,9 @@ export async function calculateLeadScore(contactId: string) {
   // Intent score based on high-value actions
   const highIntentEvents = events.filter(
     (e) =>
-      e.pattern_type === "showing_request" ||
-      e.pattern_type === "cma_request" ||
-      e.pattern_type === "document_download"
+      e.event_type === "showing_request" ||
+      e.event_type === "cma_request" ||
+      e.event_type === "document_download"
   )
   intent = highIntentEvents.length * 20
 

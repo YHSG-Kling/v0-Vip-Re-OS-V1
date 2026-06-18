@@ -237,12 +237,10 @@ async function checkCompliance(
         await supabase.from("compliance_flags").insert({
           user_id: context.userId,
           brokerage_id: context.brokerageId,
-          flag_type: "tcpa_violation",
+          violation_type: "tcpa_violation", // real column (was phantom flag_type)
           severity: "critical",
-          description: violation.message,
-          content_snippet: content.slice(0, 500),
+          flagged_content: `${violation.message} :: ${content.slice(0, 400)}`, // was phantom content_snippet/description
           detected_at: new Date().toISOString(),
-          auto_detected: true,
           status: "flagged"
         })
       }
@@ -272,12 +270,10 @@ async function checkCompliance(
               await supabase.from("compliance_flags").insert({
                 user_id: context.userId,
                 brokerage_id: context.brokerageId,
-                flag_type: "fair_housing_violation",
+                violation_type: "fair_housing_violation", // real column (was phantom flag_type)
                 severity: violation.severity,
-                description: violation.message,
-                content_snippet: content.slice(0, 500),
+                flagged_content: `${violation.message} :: ${content.slice(0, 400)}`, // was phantom content_snippet/description
                 detected_at: new Date().toISOString(),
-                auto_detected: true,
                 status: "flagged"
               })
             }

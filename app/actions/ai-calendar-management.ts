@@ -318,12 +318,10 @@ export async function suggestAppointmentSlots(params: {
   try {
     const supabase = await createClient()
 
-    // Get agent's availability and preferences
-    const { data: agent } = await supabase
-      .from("users")
-      .select("working_hours, time_zone, calendar_preferences")
-      .eq("id", params.agentId)
-      .maybeSingle()
+    // public.users has no working_hours/time_zone/calendar_preferences columns
+    // (multi-consumer table; LIVE canonical). Calendar prefs aren't persisted yet —
+    // default downstream via the existing fallbacks.
+    const agent = null as { working_hours?: unknown; time_zone?: string | null } | null
 
     // Get existing showings for next 2 weeks
     const startDate = new Date()
@@ -374,7 +372,7 @@ Duration: ${params.duration} minutes
 Urgency: ${params.urgency || 'medium'}
 Preferred Days: ${params.preferredDays?.join(', ') || 'Any'}
 
-Agent Working Hours: ${JSON.stringify(agent?.working_hours) || '9am-6pm'}
+Agent Working Hours: ${(agent?.working_hours ? JSON.stringify(agent.working_hours) : null) || '9am-6pm'}
 Agent Time Zone: ${agent?.time_zone || 'America/New_York'}
 
 Contact Preference: ${contact?.preferred_contact_time || 'Any time'}
@@ -561,10 +559,10 @@ export async function blockCalendarTime(params: {
       .from("calendar_blocks")
       .insert({
         agent_id: params.agentId,
-        start_time: params.startTime,
-        end_time: params.endTime,
-        title: params.title,
+        starts_at: params.startTime, // real columns are starts_at/ends_at
+        ends_at: params.endTime,
         block_type: params.type,
+        metadata: { title: params.title }, // no title column → metadata jsonb
       })
       .select()
       .single()
@@ -782,7 +780,7 @@ export async function generateWeeklyPlan(params: {
       .from("agent_goals")
       .select("*")
       .eq("agent_id", params.agentId)
-      .eq("period", "weekly")
+      .eq("year", startDate.getUTCFullYear()) // agent_goals partitions by year, not period
 
     const { object: weeklyPlan } = await generateObject({
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
@@ -826,7 +824,7 @@ export async function generateWeeklyPlan(params: {
 Week: ${params.weekStartDate} to ${endDate.toISOString().split('T')[0]}
 
 Scheduled Appointments: ${appointments?.length || 0}
-${appointments?.map((a: any) => `- ${a.start_time}: ${a.title}`).join('\n') || 'None'}
+${appointments?.map((a: any) => `- ${a.scheduled_at}: ${a.notes ?? 'Appointment'}`).join('\n') || 'None'}
 
 Pending Tasks: ${tasks?.length || 0}
 ${tasks?.map((t: any) => `- ${t.title} (Due: ${t.due_date})`).join('\n') || 'None'}
