@@ -139,16 +139,18 @@ export async function getMarketplaceTemplates(filters?: {
 }) {
   const supabase = await createClient()
 
-  let query = supabase.from("template_marketplace").select("*").in("visibility", ["global", "brokerage_only"])
+  // Alias live columns (template_name/template_body/rating/usage_count) to the names the UI expects.
+  let query = supabase
+    .from("template_marketplace")
+    .select("id, name:template_name, description:template_body, template_type, visibility, average_rating:rating, clone_count:usage_count, metadata, created_at, updated_at")
+    .in("visibility", ["global", "brokerage_only"])
 
-  if (filters?.tags && filters.tags.length > 0) {
-    query = query.contains("tags", filters.tags)
-  }
+  // NOTE: live template_marketplace has no `tags` column — tag filtering is a no-op.
   if (filters?.searchQuery) {
-    query = query.or(`name.ilike.%${filters.searchQuery}%,description.ilike.%${filters.searchQuery}%`)
+    query = query.or(`template_name.ilike.%${filters.searchQuery}%,template_body.ilike.%${filters.searchQuery}%`)
   }
-  if (filters?.sortBy === "popular")        query = query.order("clone_count", { ascending: false })
-  else if (filters?.sortBy === "top_rated") query = query.order("average_rating", { ascending: false })
+  if (filters?.sortBy === "popular")        query = query.order("usage_count", { ascending: false })
+  else if (filters?.sortBy === "top_rated") query = query.order("rating", { ascending: false })
   else                                       query = query.order("created_at", { ascending: false })
 
   const { data, error } = await query
@@ -164,7 +166,7 @@ export async function cloneTemplate(templateId: string) {
 
   const { data: template, error: fetchError } = await supabase
     .from("template_marketplace")
-    .select("*")
+    .select("id, name:template_name, template_type, metadata, usage_count")
     .eq("id", templateId)
     .single()
   if (fetchError || !template) return { error: "Template not found" }
@@ -172,16 +174,19 @@ export async function cloneTemplate(templateId: string) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: "Not authenticated" }
 
+  // plan_tasks (live, merged playbook table): task_description is NOT NULL; playbook
+  // fields are playbook_name/trigger_type/steps/target_persona_ids/active. Clone source
+  // data lives in template.metadata. No agent_id column on plan_tasks.
+  const meta = (template.metadata as any) || {}
   const { data: clonedPlaybook, error: cloneError } = await supabase
     .from("plan_tasks")
     .insert({
-      name:            `${template.name} (Copy)`,
-      description:     template.description,
-      trigger_type:    template.source_playbook?.trigger_type || "manual",
-      audience_filter: template.source_playbook?.audience_filter || {},
-      steps:           template.source_playbook?.steps || [],
-      agent_id:        user.id,
-      is_active:       false,
+      task_description:   `${template.name} (Copy)`,
+      playbook_name:      `${template.name} (Copy)`,
+      trigger_type:       meta.trigger_type || "manual",
+      steps:              meta.steps || [],
+      target_persona_ids: meta.target_persona_ids || [],
+      active:             false,
     })
     .select()
     .single()
@@ -189,7 +194,7 @@ export async function cloneTemplate(templateId: string) {
 
   await supabase
     .from("template_marketplace")
-    .update({ clone_count: (template.clone_count || 0) + 1 })
+    .update({ usage_count: ((template.usage_count as number) || 0) + 1 })
     .eq("id", templateId)
 
   revalidatePath("/academy")
@@ -206,12 +211,12 @@ export async function addTemplateFeedback(data: {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: "Not authenticated" }
 
+  // template_feedback has no feedback_type column (nothing reads it). Drop it.
   const { error } = await supabase.from("template_feedback").insert({
-    template_id:   data.templateId,
-    user_id:       user.id,
-    feedback_type: data.feedbackType,
-    comment:       data.comment,
-    rating:        data.rating,
+    template_id: data.templateId,
+    user_id:     user.id,
+    comment:     data.comment,
+    rating:      data.rating, // CHECK rating BETWEEN 1 AND 5
   })
   if (error) return { error: "Failed to add feedback" }
 
@@ -221,15 +226,11 @@ export async function addTemplateFeedback(data: {
 
 export async function getTemplateFeedback(templateId: string) {
   const supabase = await createClient()
+  // template_feedback.user_id FKs auth.users (not public.users) — no embeddable
+  // public.users relationship, so select the row only.
   const { data, error } = await supabase
     .from("template_feedback")
-    .select(`
-      *,
-      user:user_id (
-        name,
-        avatar_url
-      )
-    `)
+    .select("*")
     .eq("template_id", templateId)
     .order("created_at", { ascending: false })
     .limit(10)

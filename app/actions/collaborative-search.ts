@@ -67,7 +67,7 @@ export async function getCollaborativeSearches(contactId: string) {
       collaborative_search_properties(*)
     `)
     .eq("contact_id", contactId)
-    .eq("is_active", true)
+    .eq("status", "active")
     .order("created_at", { ascending: false })
 
   if (error) {
@@ -251,7 +251,7 @@ export async function addPropertyToSearch(
     .from("collaborative_search_properties")
     .select("id")
     .eq("collaborative_search_id", searchId)
-    .eq("property_id", propertyId)
+    .eq("property_mls_id", propertyId)
     .single()
 
   if (existing) {
@@ -262,7 +262,7 @@ export async function addPropertyToSearch(
     .from("collaborative_search_properties")
     .insert({
       collaborative_search_id: searchId,
-      property_id: propertyId,
+      property_mls_id: propertyId, // real column (was phantom property_id)
       property_data: propertyData,
       added_by_email: addedByEmail,
       notes,
@@ -286,7 +286,7 @@ export async function removePropertyFromSearch(searchId: string, propertyId: str
     .from("collaborative_search_properties")
     .update({ status: "removed" })
     .eq("collaborative_search_id", searchId)
-    .eq("property_id", propertyId)
+    .eq("property_mls_id", propertyId)
 
   if (error) {
     console.error("[v0] Error removing property:", error)
@@ -309,7 +309,7 @@ export async function getSearchProperties(searchId: string) {
     `)
     .eq("collaborative_search_id", searchId)
     .eq("status", "active")
-    .order("created_at", { ascending: false })
+    .order("added_at", { ascending: false })
 
   if (error) {
     console.error("[v0] Error fetching search properties:", error)

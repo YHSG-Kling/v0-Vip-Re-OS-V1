@@ -255,21 +255,26 @@ Include market updates, educational content, and soft check-ins.
 Make content warm and personal, not salesy.`,
     })
 
-    // Save campaign — stamp brokerage_id from session
+    // Save campaign — repointed from the brokerage-level template table
+    // `campaign_sequences` (wrong target, none of these columns exist there) to the
+    // per-contact `drip_campaigns` table. Homeless fields go in metadata (jsonb);
+    // status "draft" → "paused" (drip_campaigns CHECK); campaign_type → drip_type.
     const { data: savedCampaign, error } = await supabase
-      .from("campaign_sequences")
+      .from("drip_campaigns")
       .insert({
         agent_id: params.agentId,
         contact_id: params.contactId,
         brokerage_id: auth.brokerageId,
-        campaign_type: params.campaignType,
-        campaign_name: campaign.campaignName,
-        description: campaign.description,
-        duration_days: durationDays,
-        touchpoints: campaign.touchpoints,
-        total_touchpoints: campaign.totalTouchpoints,
-        status: "draft",
-        ai_generated: true,
+        drip_type: params.campaignType,
+        status: "paused",
+        metadata: {
+          ai_generated: true,
+          campaign_name: campaign.campaignName,
+          description: campaign.description,
+          duration_days: durationDays,
+          touchpoints: campaign.touchpoints,
+          total_touchpoints: campaign.totalTouchpoints,
+        },
       })
       .select()
       .single()

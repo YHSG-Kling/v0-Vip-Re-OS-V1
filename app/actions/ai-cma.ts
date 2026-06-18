@@ -123,16 +123,19 @@ export async function generateAICMA(params: CMAParams) {
     // 5. Generate presentation content
     const presentation = await generateCMAPresentation(params, comparables, marketTrends, pricingStrategy)
 
-    // 6. Save CMA report — only insert columns that exist in cma_reports schema
+    // 6. Save CMA report — only insert columns that exist in cma_reports schema.
+    // contact_id is NOT NULL on cma_reports; a CMA must be tied to a contact.
+    if (!params.contactId) {
+      return { success: false, error: "A contact is required to generate a CMA" }
+    }
     const { data: cmaReport, error } = await supabase
       .from("cma_reports")
       .insert({
         agent_id: params.agentId,
-        contact_id: params.contactId ?? null,
+        contact_id: params.contactId,
         listing_id: params.listingId ?? null,
-        property_address: params.propertyAddress,
-        property_city: params.propertyCity,
-        property_state: params.propertyState,
+        // city/state have no columns on cma_reports — fold into property_address.
+        property_address: [params.propertyAddress, params.propertyCity, params.propertyState].filter(Boolean).join(", "),
         property_zip: params.propertyZip ?? null,
         property_type: params.propertyType,
         bedrooms: params.bedrooms,
@@ -147,7 +150,7 @@ export async function generateAICMA(params: CMAParams) {
         price_range_high: pricingStrategy.priceRangeHigh,
         comparable_count: comparables.length,
         market_conditions: marketTrends.marketType,
-        status: "completed",
+        status: "ready", // CHECK: draft|ready|presented|archived
         disclaimer_included: true,
       })
       .select("id")
@@ -303,7 +306,7 @@ async function analyzeMarketTrends(
     .select("*")
     .eq("city", params.propertyCity)
     .eq("state", params.propertyState)
-    .order("recorded_date", { ascending: false })
+    .order("data_date", { ascending: false })
     .limit(12)
 
   // Calculate trends or use defaults
@@ -716,14 +719,15 @@ Provide adjustment recommendation in JSON:
     if (jsonMatch) {
       const recommendation = JSON.parse(jsonMatch[0])
       
-      // Log recommendation
+      // Log recommendation onto the canonical cma_price_adjustments columns
+      // (cma_report_id/adjustment_type/adjustment_amount/rationale). The legacy
+      // cma_id/current_price/recommended_price/recommendation/days_on_market/showing_count
+      // columns never existed on the live table.
       await supabase.from("cma_price_adjustments").insert({
-        cma_id: cmaId,
-        current_price: currentListPrice,
-        recommended_price: recommendation.suggestedNewPrice,
-        recommendation: recommendation,
-        days_on_market: daysOnMarket,
-        showing_count: showingCount,
+        cma_report_id: cmaId,
+        adjustment_type: "price_recommendation",
+        adjustment_amount: (recommendation.suggestedNewPrice ?? currentListPrice) - currentListPrice,
+        rationale: `Recommended ${recommendation.recommendedAction ?? "adjustment"}: $${currentListPrice.toLocaleString()} → $${(recommendation.suggestedNewPrice ?? currentListPrice).toLocaleString()} (${recommendation.percentageChange ?? 0}%). DOM ${daysOnMarket}, ${showingCount} showings. ${recommendation.rationale ?? ""}`.trim(),
       })
 
       return { success: true, recommendation }

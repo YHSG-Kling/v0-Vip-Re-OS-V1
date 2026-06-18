@@ -199,7 +199,7 @@ export async function optimizePhotoOrder(listingId: string) {
       .from("listing_photos")
       .select("*")
       .eq("listing_id", listingId)
-      .order("display_order")
+      .order("order_index")
 
     if (!photos || photos.length === 0) {
       return { success: true, reordered: 0 }
@@ -212,7 +212,7 @@ export async function optimizePhotoOrder(listingId: string) {
     for (let i = 0; i < orderedPhotos.length; i++) {
       await supabase
         .from("listing_photos")
-        .update({ display_order: i + 1 })
+        .update({ order_index: i + 1 })
         .eq("id", orderedPhotos[i].id)
     }
 
@@ -279,8 +279,8 @@ export async function processVendorPhotos(params: {
         .insert({
           listing_id: params.listingId,
           photo_url: photoUrl,
-          display_order: index + 1,
-          uploaded_by: params.vendorName,
+          order_index: index + 1, // real column (was phantom display_order)
+          // uploaded_by is a uuid FK→users; params.vendorName is a name string, not a user id — omit.
           ai_analysis_completed: false,
         })
         .select()
@@ -362,7 +362,7 @@ export async function validatePhotoQuality(listingId: string) {
     }
 
     // Check hero photo
-    const heroPhoto = photos.find((p) => p.is_hero_image)
+    const heroPhoto = photos.find((p) => p.is_hero)
     if (!heroPhoto) {
       issues.push("No hero image selected")
     } else if (heroPhoto.ai_quality_score !== null && heroPhoto.ai_quality_score < 85) {
@@ -490,7 +490,7 @@ export async function getPhotoPerformanceStats(listingId: string) {
         : null,
       roomCoverage: (roomTypes.size / expectedRooms) * 100,
       enhancedCount: photos.filter((p) => p.enhancement_applied).length,
-      heroImageQuality: photos.find((p) => p.is_hero_image)?.ai_quality_score ?? null,
+      heroImageQuality: photos.find((p) => p.is_hero)?.ai_quality_score ?? null,
     }
   } catch (error) {
     console.error("Get photo stats error:", error)
