@@ -306,7 +306,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   feature_usage_tracking: ["brokerage_id", "exceeded", "feature_key", "id", "last_incremented", "limit_amount", "period_end", "period_start", "team_id", "usage_count", "user_id"],
   financial_reports: ["agent_id", "ai_analysis", "brokerage_id", "created_at", "deductible_expenses", "expenses_by_category", "generated_at", "id", "net_profit", "period_end", "period_start", "report_type", "total_expenses", "total_income"],
   form_field_maps: ["field_position_map", "form_id", "form_pdf_url", "intake_field_to_form_field", "learned_from_count", "packet_type", "state", "updated_at"],
-  form_submissions: ["brokerage_id", "contact_id", "form_id", "id", "ip_address", "source", "submission_data", "submitted_at", "tcpa_consent_given", "user_agent"],
+  form_submissions: ["agent_id", "brokerage_id", "contact_id", "context_id", "context_type", "created_at", "form_id", "form_name", "id", "ip_address", "source", "status", "submission_data", "submitted_at", "tcpa_consent_given", "updated_at", "user_agent"],
   gamification_badges: ["badge_description", "badge_icon", "badge_name", "badge_tier", "brokerage_id", "created_at", "id", "is_active", "required_points", "trigger_event"],
   generated_content: ["agent_id", "agent_percentage", "brokerage_id", "contact_id", "content", "content_type", "created_at", "id", "metadata", "prospect_id", "quality_score", "them_percentage"],
   generated_documents: ["agent_id", "blob_id", "blob_url", "brokerage_id", "contact_id", "created_at", "document_type", "file_name", "file_size", "id", "listing_id", "metadata", "transaction_id"],

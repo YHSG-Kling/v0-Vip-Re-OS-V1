@@ -451,7 +451,7 @@ export async function saveFormDraft(input: {
       const { error } = await supabase
         .from("form_submissions")
         .update({
-          field_values: input.field_values,
+          submission_data: input.field_values,
           updated_at:   new Date().toISOString(),
         })
         .eq("id", existing.id)
@@ -468,7 +468,7 @@ export async function saveFormDraft(input: {
           form_name:     input.form_name,
           context_type:  input.context_type,
           context_id:    input.context_id,
-          field_values:  input.field_values,
+          submission_data:  input.field_values,
           status:        "draft",
           created_at:    new Date().toISOString(),
           updated_at:    new Date().toISOString(),
@@ -502,7 +502,7 @@ export async function loadFormDraft(input: {
 
     const { data, error } = await supabase
       .from("form_submissions")
-      .select("id, form_name, context_type, context_id, field_values, status, created_at, updated_at")
+      .select("id, form_name, context_type, context_id, field_values:submission_data, status, created_at, updated_at")
       .eq("brokerage_id", input.brokerage_id)
       .eq("agent_id", input.agent_id)
       .eq("form_name", input.form_name)
