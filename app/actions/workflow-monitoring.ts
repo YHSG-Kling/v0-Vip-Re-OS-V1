@@ -35,7 +35,7 @@ export async function getWorkflowExecutions(filters?: {
     let query = supabase
       .from("workflow_executions")
       .select("*, workflow_step_executions(count)")
-      .order("created_at", { ascending: false })
+      .order("started_at", { ascending: false })
 
     if (filters?.status) {
       query = query.eq("status", filters.status)
@@ -78,7 +78,7 @@ export async function getWorkflowExecutionDetails(executionId: string) {
       .from("workflow_step_executions")
       .select("*")
       .eq("execution_id", executionId)
-      .order("created_at", { ascending: true })
+      .order("started_at", { ascending: true })
 
     if (stepsError) {
       return { success: false, error: stepsError.message, execution: null, steps: [] as any[] }
@@ -128,8 +128,8 @@ export async function getWorkflowStats() {
   return safeQuery(async () => {
     const { data: executions } = await supabase
       .from("workflow_executions")
-      .select("status, workflow_id, created_at")
-      .gte("created_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+      .select("status, workflow_id, started_at")
+      .gte("started_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
 
     if (!executions) {
       return {

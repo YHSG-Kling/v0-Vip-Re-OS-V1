@@ -94,7 +94,7 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
 
     const { data: insight } = await supabase
       .from('conversation_insights')
-      .select('inferred_intent, urgency_level, overall_sentiment, health_score, updated_at')
+      .select('inferred_intent:context_summary, urgency_level:escalation_urgency, overall_sentiment, health_score, updated_at')
       .eq('contact_id', contactId)
       .order('updated_at', { ascending: false })
       .limit(1)
@@ -321,7 +321,7 @@ export async function explainPropertyMatchCore(params: {
 
     const { data: insight } = await supabase
       .from('conversation_insights')
-      .select('inferred_intent, urgency_level, overall_sentiment, health_score')
+      .select('inferred_intent:context_summary, urgency_level:escalation_urgency, overall_sentiment, health_score')
       .eq('contact_id', contactId)
       .order('updated_at', { ascending: false })
       .limit(1)

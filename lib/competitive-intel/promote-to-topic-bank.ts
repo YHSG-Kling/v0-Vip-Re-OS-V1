@@ -69,7 +69,7 @@ export async function promoteCompetitorAdsToTopicBank(args: {
 
   const { data: adsData } = await svc
     .from("competitor_ads")
-    .select("id, competitor_id, page_name, ad_headline, ad_copy, ad_creative_title, ad_creative_body, categories, geo_relevance, engagement_score")
+    .select("id, competitor_id, ad_headline, ad_copy, categories, geo_relevance, engagement_score, raw_payload")
     .eq("brokerage_id", args.brokerageId)
     .gte("first_seen_at", since)
     .gte("engagement_score", MIN_ENGAGEMENT)  // floor: nothing below platform min ever lands
@@ -79,14 +79,12 @@ export async function promoteCompetitorAdsToTopicBank(args: {
   type AdRow = {
     id: string
     competitor_id: string | null
-    page_name: string | null
     ad_headline: string | null
     ad_copy: string | null
-    ad_creative_title: string | null
-    ad_creative_body: string | null
     categories: string[] | null
     geo_relevance: Record<string, unknown> | null
     engagement_score: number | null
+    raw_payload: Record<string, unknown> | null
   }
   // Per-watchlist threshold filter — runs AFTER the SQL platform-min
   // floor so we only enforce a HIGHER bar, never a lower one.
@@ -124,13 +122,11 @@ export async function promoteCompetitorAdsToTopicBank(args: {
       continue
     }
 
-    // Title precedence: explicit creative title > legacy ad_headline >
-    // first 60 chars of body. ad_headline + ad_copy come from the
-    // legacy ad-monitor.ts ingest path; ad_creative_title + ad_creative
-    // _body come from the Meta adapter — both supported so the
-    // promoter is source-agnostic.
+    // Title precedence: ad_headline > first chars of body. The Exa/Meta adapter
+    // writes its creative title into ad_headline and body into ad_copy (the live
+    // competitor_ads columns), so a single canonical read is source-agnostic.
     const title =
-      (ad.ad_creative_title ?? ad.ad_headline ?? ad.ad_creative_body ?? ad.ad_copy ?? "")
+      (ad.ad_headline ?? ad.ad_copy ?? "")
         .toString()
         .trim()
         .slice(0, 120)
@@ -140,7 +136,7 @@ export async function promoteCompetitorAdsToTopicBank(args: {
     }
 
     const valueAngle =
-      (ad.ad_creative_body ?? ad.ad_copy ?? "")
+      (ad.ad_copy ?? "")
         .toString()
         .trim()
         .slice(0, 400) || null
@@ -168,7 +164,7 @@ export async function promoteCompetitorAdsToTopicBank(args: {
         raw_data:          {
           promoted_from_competitor_ad_id: ad.id,
           promoted_at:                    new Date().toISOString(),
-          competitor_page:                ad.page_name ?? null,
+          competitor_page:                (ad.raw_payload?.page_name as string | undefined) ?? null,
         },
       })
       .select("id")

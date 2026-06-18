@@ -119,18 +119,18 @@ export async function GET(req: NextRequest) {
             source_platform:     ad.source_platform,
             provider_ad_id:      ad.provider_ad_id,
             competitor_name:     competitor.competitor_name,
-            page_name:           ad.page_name,
+            // competitor_ads has no ad_creative_title/ad_creative_body/ad_landing_url/
+            // page_name columns: title→ad_headline, body→ad_copy (already set above),
+            // landing url→landing_page_url, page_name→raw_payload.
             ad_headline:         ad.ad_creative_title ?? "",
             ad_copy:             ad.ad_creative_body ?? "",
-            ad_creative_title:   ad.ad_creative_title,
-            ad_creative_body:    ad.ad_creative_body,
-            ad_landing_url:      ad.ad_landing_url,
+            landing_page_url:    ad.ad_landing_url,
             ad_delivery_start:   ad.ad_delivery_start,
             ad_delivery_stop:    ad.ad_delivery_stop,
             geo_relevance:       geo,
             engagement_score:    ad.engagement_score,
             categories:          ad.categories,
-            raw_payload:         ad.raw_payload,
+            raw_payload:         { ...(ad.raw_payload ?? {}), page_name: ad.page_name },
             last_seen_at:        new Date().toISOString(),
           }, {
             onConflict: "source_platform,provider_ad_id",

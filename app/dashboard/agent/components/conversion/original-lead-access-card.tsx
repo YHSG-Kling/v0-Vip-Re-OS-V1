@@ -118,16 +118,19 @@ export function OriginalLeadAccessCard({ contactId, leadId }: OriginalLeadAccess
       setConversations(convos)
 
       // Get qualification history
+      // ai_isa_qualifications: no created_at (use qualified_at) / qualification_reason
+      // / urgency_level columns — the rationale lives in qualification_signals +
+      // qualification_result.
       const { data: qualifications } = await supabase
         .from("ai_isa_qualifications")
-        .select("id, qualification_reason, urgency_level, created_at, qualification_signals")
+        .select("id, qualification_result, created_at:qualified_at, qualification_signals")
         .eq("contact_id", contactId)
-        .order("created_at", { ascending: false })
+        .order("qualified_at", { ascending: false })
         .limit(10)
 
       const history: QualificationEvent[] = (qualifications || []).map((q: any) => ({
         id: q.id,
-        event: q.qualification_reason || "Qualification updated",
+        event: q.qualification_signals?.summary || q.qualification_result || "Qualification updated",
         details: q.qualification_signals?.summary || null,
         timestamp: q.created_at,
       }))

@@ -26,17 +26,28 @@ export function DeadlineIntelligencePanel({ brokerageId }: DeadlineIntelligenceP
             id,
             transaction_id,
             deadline_type,
-            due_date,
+            deadline_date,
             status,
-            assigned_to,
-            priority,
             created_at
           `)
           .eq('brokerage_id', brokerageId)
-          .order('due_date', { ascending: true })
+          .order('deadline_date', { ascending: true })
           .limit(20)
 
-        setDeadlines(data || [])
+        // transaction_deadlines.status is pending|completed|extended|missed|waived;
+        // derive the time-based display state the panel renders from deadline_date.
+        const now = Date.now()
+        const withDisplay = (data || []).map((d: any) => {
+          const due = d.deadline_date ? new Date(d.deadline_date).getTime() : null
+          const done = d.status === 'completed' || d.status === 'waived'
+          let display_status: 'overdue' | 'due_soon' | 'on_track' = 'on_track'
+          if (!done) {
+            if (d.status === 'missed' || (due !== null && due < now)) display_status = 'overdue'
+            else if (due !== null && due - now <= 3 * 24 * 60 * 60 * 1000) display_status = 'due_soon'
+          }
+          return { ...d, display_status }
+        })
+        setDeadlines(withDisplay)
       } catch (error) {
         console.error('Error fetching deadlines:', error)
       } finally {
@@ -73,8 +84,8 @@ export function DeadlineIntelligencePanel({ brokerageId }: DeadlineIntelligenceP
     }
   }
 
-  const overdueCount = deadlines.filter(d => d.status === 'overdue').length
-  const dueSoonCount = deadlines.filter(d => d.status === 'due_soon').length
+  const overdueCount = deadlines.filter(d => d.display_status === 'overdue').length
+  const dueSoonCount = deadlines.filter(d => d.display_status === 'due_soon').length
 
   return (
     <Card className="border-l-4 border-l-blue-500">
@@ -109,17 +120,17 @@ export function DeadlineIntelligencePanel({ brokerageId }: DeadlineIntelligenceP
                 className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 transition-colors"
               >
                 <div className="flex items-center gap-3 flex-1">
-                  <div className={`p-2 rounded-lg ${getStatusColor(deadline.status)}`}>
-                    {getIcon(deadline.status)}
+                  <div className={`p-2 rounded-lg ${getStatusColor(deadline.display_status)}`}>
+                    {getIcon(deadline.display_status)}
                   </div>
                   <div className="flex-1">
                     <p className="font-medium text-sm">{deadline.deadline_type}</p>
                     <p className="text-xs text-muted-foreground">
-                      Due: {new Date(deadline.due_date).toLocaleDateString()}
+                      Due: {deadline.deadline_date ? new Date(deadline.deadline_date).toLocaleDateString() : '—'}
                     </p>
                   </div>
                 </div>
-                <Badge variant="outline">{deadline.priority}</Badge>
+                <Badge variant="outline">{deadline.status}</Badge>
               </div>
             ))
           )}

@@ -270,14 +270,16 @@ export async function runGhostReengagement(
     } catch (err) {
       // Log to automation_errors — never abort the loop
       const supabaseErr = createServiceClient()
+      // automation_errors canonical shape: workflow_name (NOT NULL) + error_message
+      // + lead_id; no entity_id/entity_type/error_type/message columns.
       await supabaseErr
         .from('automation_errors')
         .insert({
           brokerage_id: brokerageId,
-          entity_type: 'lead',
-          entity_id: leadId,
-          error_type: 'ghost_reengagement',
-          message: err instanceof Error ? err.message : String(err),
+          lead_id: leadId,
+          workflow_name: 'ghost_reengagement',
+          error_message: err instanceof Error ? err.message : String(err),
+          severity: 'medium',
           status: 'open',
           created_at: new Date().toISOString(),
         })

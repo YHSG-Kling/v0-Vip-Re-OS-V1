@@ -177,7 +177,7 @@ export async function resolveSellerContext(
   if (listing) {
     const { data: metricsData } = await supabase
       .from("listing_metrics")
-      .select("id, listing_id, total_views, showing_count, inquiry_count, favorite_count")
+      .select("id, listing_id, total_views:views, showing_count:showings, inquiry_count:inquiries, favorite_count:saves")
       .eq("listing_id", listing.id)
       .maybeSingle()
 

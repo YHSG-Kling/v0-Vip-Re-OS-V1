@@ -30,9 +30,11 @@ export async function POST(req: NextRequest) {
     }
 
     // Fetch attendee row
+    // open_house_attendees real columns: event_id (not open_house_id), a single
+    // `name` (no first/last split), interest_level text enum (not numeric).
     const { data: attendee, error: attendeeErr } = await supabase
       .from("open_house_attendees")
-      .select("id, open_house_id, contact_id, first_name, last_name, email, phone, brokerage_id, property_interest_level")
+      .select("id, event_id, contact_id, name, email, phone, brokerage_id, interest_level")
       .eq("id", attendeeId)
       .maybeSingle()
 
@@ -49,17 +51,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Attendee has no email — cannot convert" }, { status: 400 })
     }
 
+    // open_house_attendees stores a single `name`; split for the kernel's
+    // first/last contract (the kernel re-joins them anyway).
+    const nameParts = (attendee.name ?? "").trim().split(/\s+/)
+    // interest_level is the text enum hot|warm|cold|no_interest; the kernel
+    // expects the 1-5 numeric scale (it maps back to text internally).
+    const interestNumeric =
+      attendee.interest_level === "hot" ? 5
+      : attendee.interest_level === "warm" ? 3
+      : attendee.interest_level === "cold" ? 2
+      : attendee.interest_level === "no_interest" ? 1
+      : 3
+
     // Use kernel flow to resolve or create contact and update attendee
     const checkInResult = await completeOpenHouseCheckInAction({
       brokerage_id: userRow.brokerage_id,
       agent_id: user.id,
-      open_house_id: attendee.open_house_id,
-      first_name: attendee.first_name ?? "",
-      last_name: attendee.last_name ?? undefined,
+      open_house_id: attendee.event_id,
+      first_name: nameParts[0] ?? "",
+      last_name: nameParts.slice(1).join(" ") || undefined,
       email: attendee.email,
       phone: attendee.phone ?? undefined,
       check_in_method: "manual",
-      interest_level: attendee.property_interest_level ?? 3,
+      interest_level: interestNumeric,
     })
 
     if (!checkInResult.success || !checkInResult.contact_id) {

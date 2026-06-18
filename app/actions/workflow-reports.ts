@@ -68,16 +68,13 @@ export async function getWorkflowReport(filters: WorkflowReportFilters): Promise
     const toDate   = filters.toDate   ?? new Date().toISOString()
 
     // ── 1. Resolve which sequence ids fall in scope ─────────────────────────
-    let sequenceQuery = supabase
+    // campaign_sequences carries no agent_id/team_id — ownership is created_by +
+    // brokerage_id. Sequence-level team/agent scoping isn't expressible here; per-
+    // agent attribution is applied downstream at the enrollment level (enrolled_by).
+    const sequenceQuery = supabase
       .from("campaign_sequences")
-      .select("id, name, agent_id, team_id")
+      .select("id, name")
       .eq("brokerage_id", filters.brokerageId)
-
-    if (filters.scope === "team" && filters.teamId) {
-      sequenceQuery = sequenceQuery.eq("team_id", filters.teamId)
-    } else if (filters.scope === "agent" && filters.agentId) {
-      sequenceQuery = sequenceQuery.eq("agent_id", filters.agentId)
-    }
 
     const { data: sequences } = await sequenceQuery
     const sequenceIds = (sequences ?? []).map(s => s.id)

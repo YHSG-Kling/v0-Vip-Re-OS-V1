@@ -99,7 +99,7 @@ export async function previewSearchIntent(params: {
 
     const [{ data: contact }, { data: insight }] = await Promise.all([
       supabase.from('contacts').select('notes').eq('id', contactId).single(),
-      supabase.from('conversation_insights').select('inferred_intent, urgency_level, health_score')
+      supabase.from('conversation_insights').select('inferred_intent:context_summary, urgency_level:escalation_urgency, health_score')
         .eq('contact_id', contactId).order('updated_at', { ascending: false }).limit(1).maybeSingle(),
     ])
 

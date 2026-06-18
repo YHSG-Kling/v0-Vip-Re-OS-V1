@@ -75,32 +75,46 @@ export async function resolveStaffLearningContext(
     // Workload spike — count active transactions where this TC is the
     // primary coordinator (transaction_coordinators table or
     // transaction_participants role='tc').
-    const { count: activeTcDeals } = await supabase
+    // transaction_coordinators is a roster (no transaction_id/coordinator_user_id);
+    // the TC↔transaction link is the transaction_assignments junction.
+    const { data: tcRow } = await supabase
       .from("transaction_coordinators")
-      .select("transaction_id", { count: "exact", head: true })
+      .select("id")
+      .eq("user_id", userId)
       .eq("brokerage_id", brokerageId)
-      .eq("coordinator_user_id", userId)
-    if ((activeTcDeals ?? 0) >= 15) gapTags.push("tc_workload_spike")
+      .maybeSingle()
+    let activeTcDeals = 0
+    if (tcRow?.id) {
+      const { count } = await supabase
+        .from("transaction_assignments")
+        .select("transaction_id", { count: "exact", head: true })
+        .eq("brokerage_id", brokerageId)
+        .eq("coordinator_id", tcRow.id)
+      activeTcDeals = count ?? 0
+    }
+    if (activeTcDeals >= 15) gapTags.push("tc_workload_spike")
 
-    // Open closing-prep checklist items needing TC attention
+    // Open closing-prep checklist items (closing_checklist_items has no owner
+    // column — open items at brokerage scope are the TC backlog signal).
     const { count: openChecklist } = await supabase
       .from("closing_checklist_items")
       .select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
       .eq("completed", false)
-      .eq("owner", "tc")
     if ((openChecklist ?? 0) >= 10) gapTags.push("tc_closing_backlog")
   }
 
   if (role === "compliance_officer") {
     // Unresolved compliance events in last 30 days
     const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+    // compliance_events has no status column — it's a gate log; a blocked event
+    // (allowed=false) is the "unresolved/needs-attention" signal.
     const { count: unresolvedComp } = await supabase
       .from("compliance_events")
       .select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
       .gte("created_at", since)
-      .neq("status", "resolved")
+      .eq("allowed", false)
     if ((unresolvedComp ?? 0) >= 1) gapTags.push("unresolved_compliance_events")
 
     // Open tenant safety findings

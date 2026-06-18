@@ -40,11 +40,14 @@ export async function getDocuments(params?: { contactId?: string; transactionId?
       }
     }
 
+    // Contact/transaction/type-filtered listing lives on `documents` (the
+    // contact-keyed doc table); transaction_documents has no contact_id and the
+    // documents_uploaded_by_fkey embed only exists on `documents`.
     let query = supabase
-      .from("transaction_documents")
-      .select("*, uploaded_by_agent:agents!documents_uploaded_by_fkey(first_name, last_name)")
+      .from("documents")
+      .select("*")
       .eq("brokerage_id", ctx.brokerageId)
-      .order("uploaded_at", { ascending: false })
+      .order("created_at", { ascending: false })
 
     if (params?.contactId) query = query.eq("contact_id", params.contactId)
     if (params?.transactionId) query = query.eq("transaction_id", params.transactionId)
@@ -66,13 +69,13 @@ export async function deleteDocument(documentId: string) {
     // Get document to delete blob
     const { data: doc } = await supabase
       .from("transaction_documents")
-      .select("file_url")
+      .select("storage_url")
       .eq("id", documentId)
       .single()
 
-    if (doc?.file_url) {
+    if (doc?.storage_url) {
       try {
-        await del(doc.file_url)
+        await del(doc.storage_url)
       } catch (blobError) {
         console.error("Error deleting blob:", blobError)
       }
@@ -396,7 +399,7 @@ Use simple language, avoid jargon, and be reassuring.`,
         const { data: stateReqs } = brokerageState
           ? await supabase
               .from("state_compliance_requirements")
-              .select("requirement_name, description, document_type, severity")
+              .select("requirement_name, description, document_type")
               .eq("state", brokerageState)
               .eq("document_type", classification.document_type)
           : { data: null }

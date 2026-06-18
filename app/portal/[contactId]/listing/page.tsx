@@ -73,7 +73,7 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     // Listing metrics
     supabase
       .from("listing_metrics")
-      .select("total_views, showing_count, inquiry_count, favorite_count")
+      .select("total_views:views, showing_count:showings, inquiry_count:inquiries, favorite_count:saves")
       .eq("listing_id", listing.id)
       .order("date", { ascending: false })
       .limit(1)

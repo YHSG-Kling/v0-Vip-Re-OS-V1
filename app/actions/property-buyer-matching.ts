@@ -87,7 +87,7 @@ export async function matchBuyersForListing(params: {
     const contactIds = contacts.map((c) => c.id)
     const { data: insights } = await supabase
       .from('conversation_insights')
-      .select('contact_id, inferred_intent, urgency_level, overall_sentiment, health_score, updated_at')
+      .select('contact_id, inferred_intent:context_summary, urgency_level:escalation_urgency, overall_sentiment, health_score, updated_at')
       .in('contact_id', contactIds)
 
     const insightsMap = new Map(insights?.map((i) => [i.contact_id, i]) || [])
@@ -195,7 +195,7 @@ export async function scoreSingleBuyerForListing(params: {
     // Fetch conversation insights
     const { data: insight } = await supabase
       .from('conversation_insights')
-      .select('inferred_intent, urgency_level, overall_sentiment, health_score, updated_at')
+      .select('inferred_intent:context_summary, urgency_level:escalation_urgency, overall_sentiment, health_score, updated_at')
       .eq('contact_id', contactId)
       .order('updated_at', { ascending: false })
       .limit(1)

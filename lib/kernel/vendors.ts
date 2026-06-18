@@ -225,7 +225,7 @@ export interface ReferralPartnerRow {
   contact_name:   string | null
   contact_email:  string | null
   contact_phone:  string | null
-  status:         string | null
+  status:         boolean | null
   notes:          string | null
 }
 
@@ -861,7 +861,9 @@ export async function loadPartnerDirectory(
       .limit(50),
     supabase
       .from("referral_partners")
-      .select("id, brokerage_id, partner_name, partner_type, contact_name, contact_email, contact_phone, status, notes")
+      // No contact_name/contact_email/contact_phone/status columns: name→company_name,
+      // email/phone are flat, status→active (boolean). Aliased to preserve the row shape.
+      .select("id, brokerage_id, partner_name, partner_type, contact_name:company_name, contact_email:email, contact_phone:phone, status:active, notes")
       .eq("brokerage_id", brokerageId)
       .order("partner_name"),
   ])

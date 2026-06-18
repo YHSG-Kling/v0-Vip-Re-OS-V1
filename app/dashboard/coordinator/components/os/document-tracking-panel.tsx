@@ -24,18 +24,19 @@ export function DocumentTrackingPanel({ brokerageId }: DocumentTrackingPanelProp
           .select(`
             id,
             transaction_id,
-            document_type,
-            filename,
+            doc_type,
+            doc_label,
             status,
-            signed,
-            uploaded_at,
-            expires_at
+            uploaded_at
           `)
           .eq('brokerage_id', brokerageId)
           .order('uploaded_at', { ascending: false })
           .limit(15)
 
-        setDocuments(data || [])
+        // transaction_documents has no `signed` column; status CHECK is
+        // missing|requested|uploaded|under_review|approved|rejected — an approved
+        // doc is the signed/executed state.
+        setDocuments((data || []).map((d: any) => ({ ...d, signed: d.status === 'approved' })))
       } catch (error) {
         console.error('Error fetching documents:', error)
       } finally {
@@ -92,8 +93,8 @@ export function DocumentTrackingPanel({ brokerageId }: DocumentTrackingPanelProp
                 <div className="flex items-center gap-2 flex-1">
                   {getStatusIcon(doc.signed, doc.status)}
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm truncate">{doc.document_type}</p>
-                    <p className="text-xs text-muted-foreground truncate">{doc.filename}</p>
+                    <p className="font-medium text-sm truncate">{doc.doc_type}</p>
+                    <p className="text-xs text-muted-foreground truncate">{doc.doc_label}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
