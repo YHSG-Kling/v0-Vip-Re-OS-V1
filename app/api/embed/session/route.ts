@@ -167,7 +167,8 @@ export async function POST(request: NextRequest) {
       visitor_id: body.visitorId,
       origin: body.origin ?? null,
       referrer: body.referrer ?? null,
-      page_url: body.pageUrl ?? null,
+      // embed_sessions has no page_url column — keep the full URL in metadata.
+      metadata: { page_url: body.pageUrl ?? null },
       user_agent: request.headers.get("user-agent") ?? null,
       did_session_ref: ensured.didAgentId,
     })

@@ -346,7 +346,7 @@ export async function getGiftAnalytics(params: { agentId: string; year?: number 
       .select(`
         *,
         contacts(first_name, last_name),
-        referrals:contacts(referrals!referrer_contact_id(id))
+        referrals:contacts(referrals!referred_contact_id(id))
       `)
       .eq("agent_id", params.agentId)
       .gte("created_at", `${year}-01-01`)
@@ -367,7 +367,7 @@ export async function getGiftAnalytics(params: { agentId: string; year?: number 
     const { data: referralsFromGifted } = await supabase
       .from("referrals")
       .select("id")
-      .in("referrer_contact_id", giftedContactIds)
+      .in("referred_contact_id", giftedContactIds)
       .gte("created_at", `${year}-01-01`)
 
     const referralCount = referralsFromGifted?.length || 0

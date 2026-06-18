@@ -86,7 +86,7 @@ export async function recommendActionsForAgent(params: {
   // ── Rule 2: Conversion focus — stale tour-eligible / offer-eligible buyers ──
   const { data: staleBuyers } = await svc
     .from("contacts")
-    .select("id, first_name, last_name, buyer_stage, last_buyer_activity_at, updated_at")
+    .select("id, first_name, last_name, buyer_stage, updated_at")
     .eq("agent_id", params.agentId)
     .in("buyer_stage", ["BUYER_TOUR_ELIGIBLE", "BUYER_OFFER_ELIGIBLE", "BUYER_TOURING"])
     .order("updated_at", { ascending: true })
@@ -94,7 +94,7 @@ export async function recommendActionsForAgent(params: {
 
   const now = Date.now()
   for (const b of staleBuyers ?? []) {
-    const last = new Date(b.last_buyer_activity_at ?? b.updated_at ?? now).getTime()
+    const last = new Date(b.updated_at ?? now).getTime()
     const daysIdle = (now - last) / 86_400_000
     if (daysIdle < 14) continue
     const expectedGCI = b.buyer_stage === "BUYER_OFFER_ELIGIBLE" ? 600_000 : 400_000  // ~$6k / $4k median GCI in cents

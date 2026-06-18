@@ -25,7 +25,7 @@ export async function sendVendorBookingConfirmation(params: {
     // Get vendor and property details
     const { data: vendor } = await supabase
       .from("vendor_directory")
-      .select("company_name, contact_name")
+      .select("name")
       .eq("id", params.vendorId)
       .single()
 
@@ -47,7 +47,7 @@ export async function sendVendorBookingConfirmation(params: {
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #16a34a;">New Service Booking Confirmation</h2>
-        <p>Hi ${vendor.contact_name || vendor.company_name},</p>
+        <p>Hi ${vendor.name},</p>
         <p>You've received a new booking request:</p>
         
         <div style="background: #f0fdf4; border-left: 4px solid #16a34a; padding: 16px; margin: 20px 0;">
@@ -118,7 +118,7 @@ export async function sendVendorServiceReminder(params: {
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <h2 style="color: #ea580c;">Service Reminder</h2>
-        <p>Hi ${vendor.contact_name || vendor.company_name},</p>
+        <p>Hi ${vendor.name},</p>
         <p>This is a reminder about an upcoming service deadline:</p>
         
         <div style="background: #fff7ed; border-left: 4px solid #ea580c; padding: 16px; margin: 20px 0;">
@@ -132,7 +132,7 @@ export async function sendVendorServiceReminder(params: {
       </div>
     `
 
-    console.log(`[v0] Sending service reminder to ${vendor.contact_email}`)
+    console.log(`[v0] Sending service reminder to ${vendor.email}`)
 
     await supabase.from("vendor_communications").insert({
       vendor_id: params.vendorId,

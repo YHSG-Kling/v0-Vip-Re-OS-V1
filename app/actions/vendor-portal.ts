@@ -236,7 +236,6 @@ export async function updateVendorJobStatus(data: {
       .from("vendor_assignments")
       .update({
         status: "completed",
-        updated_at: new Date().toISOString(),
       })
       .eq("id", job.assignment_id)
       .eq("vendor_id", gate.vendorId)

@@ -167,12 +167,16 @@ export async function validateAndPersist(
 
   // 3. Update cap tracking (fetch → add → update)
   if (context.capApplied || context.amountTowardsCap > 0) {
+    // agent_cap_tracking has no is_active/updated_at — the active row is the one whose
+    // anniversary window contains today.
+    const nowDate = new Date().toISOString().slice(0, 10)
     const { data: capTracking } = await supabase
       .from('agent_cap_tracking')
       .select('*')
       .eq('agent_id', context.agentId)
       .eq('brokerage_id', context.brokerageId)
-      .eq('is_active', true)
+      .lte('anniversary_start', nowDate)
+      .gte('anniversary_end', nowDate)
       .single()
 
     if (capTracking) {
@@ -183,8 +187,7 @@ export async function validateAndPersist(
         .from('agent_cap_tracking')
         .update({
           cap_paid_to_date: newPaidToDate,
-          is_capped: isCapped,
-          updated_at: new Date().toISOString()
+          is_capped: isCapped
         })
         .eq('id', capTracking.id)
     }

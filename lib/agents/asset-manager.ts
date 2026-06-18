@@ -269,8 +269,7 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
     // re-render.
     const { data: perfRows } = await svc
       .from("content_asset_persona_performance")
-      .select("asset_type, persona, performance_score, persona_samples_count, updated_at")
-      .eq("brokerage_id", brokerageId)
+      .select("asset_type, persona, performance_score, persona_samples_count, computed_at")
       .lt("performance_score", 30)
       .gte("persona_samples_count", 5)
       .order("performance_score", { ascending: true })

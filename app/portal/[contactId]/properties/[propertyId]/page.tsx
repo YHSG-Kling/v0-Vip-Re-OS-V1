@@ -29,7 +29,7 @@ export default async function PropertyDetailsPage({
       .maybeSingle(),
     supabase
       .from("showing_requests")
-      .select("id, status, feedback_rating, feedback_notes, requested_date")
+      .select("id, status, requested_date")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false }),
     getSmartInsights(propertyId, contactId).catch(() => null),

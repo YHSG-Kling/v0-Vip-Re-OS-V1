@@ -236,7 +236,7 @@ async function runHandler(
       // picks them up on its next tick. When personas[] is empty, all
       // variants for the asset are queued.
       let q = svc.from("asset_persona_renders")
-        .update({ status: "queued", updated_at: new Date().toISOString() } as Record<string, unknown>, { count: "exact" })
+        .update({ status: "queued" } as Record<string, unknown>, { count: "exact" })
         .eq("brokerage_id", brokerageId)
         .eq("asset_id", assetId)
         .eq("asset_type", assetType)
@@ -262,7 +262,7 @@ async function runHandler(
       // Backfill the linkage via marketing_assets — depends on
       // schema; use a generic listing_id column update if present.
       const { error } = await svc.from("marketing_assets")
-        .update({ listing_id: listingId } as Record<string, unknown>)
+        .update({ source_table: "listings", source_id: listingId } as Record<string, unknown>)
         .eq("id", assetId)
         .eq("brokerage_id", brokerageId)
       if (error) return { status: "failed", result: { error: error.message } }

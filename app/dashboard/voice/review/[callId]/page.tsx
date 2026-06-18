@@ -64,7 +64,7 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
       id,
       agent_id,
       contact_id,
-      call_status,
+      status,
       direction,
       started_at,
       ended_at,
@@ -233,7 +233,7 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
               <Badge variant="outline">
                 {voiceCall.direction === "inbound" ? "Inbound" : "Outbound"}
               </Badge>
-              <Badge variant="outline">{voiceCall.call_status}</Badge>
+              <Badge variant="outline">{voiceCall.status}</Badge>
               {isaCall && (
                 <Badge className={getOutcomeBadgeColor(isaCall.lead_quality_score)}>
                   {isaCall.appointment_set ? "Qualified" : "Unqualified"}

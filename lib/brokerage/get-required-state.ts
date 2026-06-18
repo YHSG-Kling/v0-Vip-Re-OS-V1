@@ -8,16 +8,16 @@ export async function getRequiredPrimaryState(brokerageId: string): Promise<stri
   const supabase = createServiceClient()
 
   const { data, error } = await supabase
-    .from("global_settings")
-    .select("primary_state")
-    .eq("brokerage_id", brokerageId)
+    .from("brokerages")
+    .select("state")
+    .eq("id", brokerageId)
     .single()
 
-  if (error || !data?.primary_state) {
-    throw new Error(`Brokerage ${brokerageId} must configure primary_state in global_settings`)
+  if (error || !data?.state) {
+    throw new Error(`Brokerage ${brokerageId} must configure state`)
   }
 
-  return data.primary_state
+  return data.state
 }
 
 /**
@@ -28,10 +28,10 @@ export async function getPrimaryState(brokerageId: string): Promise<string | nul
   const supabase = createServiceClient()
 
   const { data } = await supabase
-    .from("global_settings")
-    .select("primary_state")
-    .eq("brokerage_id", brokerageId)
+    .from("brokerages")
+    .select("state")
+    .eq("id", brokerageId)
     .single()
 
-  return data?.primary_state || null
+  return data?.state || null
 }

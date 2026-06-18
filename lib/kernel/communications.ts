@@ -445,7 +445,7 @@ export async function sendInboxReply(
     // Load contact for compliance gate
     const { data: contact } = await supabase
       .from("contacts")
-      .select("id, first_name, last_name, email, phone, contact_type, brokerage_id, consent_type, tcpa_consent, dnc_status")
+      .select("id, first_name, last_name, email, phone, contact_type, brokerage_id, tcpa_consent_source, tcpa_consent, dnc_status")
       .eq("id", contactId)
       .eq("brokerage_id", actorContext.brokerageId)
       .maybeSingle()
@@ -464,7 +464,7 @@ export async function sendInboxReply(
         phone: contact.phone,
         contact_type: contact.contact_type,
         brokerage_id: contact.brokerage_id,
-        consent_type: contact.consent_type,
+        consent_type: contact.tcpa_consent_source,
         tcpa_consent: contact.tcpa_consent,
         dnc_status: contact.dnc_status,
       } as unknown as KernelContact,

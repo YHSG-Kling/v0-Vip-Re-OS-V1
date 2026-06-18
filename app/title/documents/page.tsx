@@ -14,7 +14,7 @@ export default async function TitleDocumentsPage() {
 
   const { data: documents } = await supabase
     .from('documents')
-    .select('id, title, document_type, status, created_at, storage_url')
+    .select('id, document_type, status, created_at, storage_url')
     .order('created_at', { ascending: false })
     .limit(30)
 
@@ -37,7 +37,7 @@ export default async function TitleDocumentsPage() {
                 <div className="flex items-center gap-3">
                   <FileText className="w-4 h-4 text-gray-400" />
                   <div>
-                    <p className="text-sm font-medium">{doc.title || 'Untitled'}</p>
+                    <p className="text-sm font-medium">{doc.document_type || 'Untitled'}</p>
                     <p className="text-xs text-gray-500">{doc.document_type} · {new Date(doc.created_at).toLocaleDateString()}</p>
                   </div>
                 </div>

@@ -30,11 +30,11 @@ export async function resolveWidgetNotificationTarget(
   if (scope === "team") {
     const { data } = await supabase
       .from("teams")
-      .select("team_lead_user_id, name")
+      .select("team_lead_id, name")
       .eq("id", ownerId)
       .maybeSingle()
-    if (!data?.team_lead_user_id) return null
-    return { user_id: data.team_lead_user_id, display_name: data.name ?? "Team Lead" }
+    if (!data?.team_lead_id) return null
+    return { user_id: data.team_lead_id, display_name: data.name ?? "Team Lead" }
   }
 
   // Brokerage scope: check global_settings.additional_settings.lead_router_user_id first

@@ -269,7 +269,7 @@ export async function getEmbedAnalytics(params: {
   // Pull sessions in the window
   const { data: sessions } = await supabase
     .from("embed_sessions")
-    .select("id, embed_widget_id, contact_id, page_url, started_at")
+    .select("id, embed_widget_id, contact_id, origin, started_at")
     .in("embed_widget_id", widgetIds)
     .gte("started_at", since)
     .order("started_at", { ascending: false })
@@ -284,7 +284,7 @@ export async function getEmbedAnalytics(params: {
     // Top pages (by session count, top 10)
     const pageMap: Record<string, { sessions: number; leads: number }> = {}
     for (const r of wRows) {
-      const key = r.page_url ?? "(unknown)"
+      const key = r.origin ?? "(unknown)"
       if (!pageMap[key]) pageMap[key] = { sessions: 0, leads: 0 }
       pageMap[key].sessions++
       if (r.contact_id) pageMap[key].leads++

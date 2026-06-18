@@ -1353,9 +1353,10 @@ export async function recalculateCommissionStateCommand(params: {
       transaction_id:       params.transactionId,
       brokerage_id:         params.brokerageId,
       agent_id:             params.agentId,
-      gross_commission:     grossCommission,
-      agent_commission:     agentNet,
       total_commission:     grossCommission,
+      // commission_calculations has no gross_commission/agent_commission columns —
+      // fold into the existing breakdown_json.
+      breakdown_json:       { gross_commission: grossCommission, agent_commission: agentNet },
       calculation_version:  1,
       calculated_at:        new Date().toISOString(),
     } as any)

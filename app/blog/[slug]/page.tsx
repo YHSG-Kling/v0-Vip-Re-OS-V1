@@ -76,7 +76,7 @@ async function getPost(slug: string): Promise<{ post: BlogPostRow; brokerage: Br
   if (!p) return null
   const [{ data: brokerage }, authorRes] = await Promise.all([
     svc.from("brokerages")
-      .select("name, logo_url, brand_primary_color, city, state")
+      .select("name, logo_url, brand_primary_color:primary_color, city, state")
       .eq("id", p.brokerage_id)
       .maybeSingle(),
     p.agent_user_id

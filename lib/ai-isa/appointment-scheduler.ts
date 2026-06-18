@@ -70,11 +70,11 @@ export async function scheduleISAAppointment(params: {
   const { error: activityError } = await supabase
     .from('ai_isa_activities')
     .insert({
-      brokerage_id:      params.brokerageId,
-      lead_id:           params.leadId ?? null,
-      contact_id:        params.contactId ?? null,
-      activity_type:     'appointment_set',
-      calendar_event_id: calendarEvent.id,
+      brokerage_id:        params.brokerageId,
+      lead_id:             params.leadId ?? null,
+      contact_id:          params.contactId ?? null,
+      activity_type:       'appointment_set',
+      qualifying_response: { calendar_event_id: calendarEvent.id },
     })
 
   if (activityError) {
@@ -111,7 +111,6 @@ export async function scheduleISAAppointment(params: {
           brokerage_id: params.brokerageId,
           sla_type:    'appointment',
           target_at:   params.startAt.toISOString(),
-          status:      'pending',
           created_at:  new Date().toISOString(),
         })
 

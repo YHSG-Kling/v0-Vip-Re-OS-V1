@@ -147,7 +147,7 @@ export async function POST(req: NextRequest) {
           source,
           source_channel: 'widget',
           source_family: 'direct',
-          source_page_url: source_page_url ?? null,
+          metadata: { source_page_url: source_page_url ?? null },
           notes: message ?? null,
           contact_type: 'prospect',
           tcpa_consent: !!tcpa_consent,

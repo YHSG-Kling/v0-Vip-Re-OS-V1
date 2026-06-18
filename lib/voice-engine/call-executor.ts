@@ -133,7 +133,6 @@ export async function initiateVoiceCall(
         direction: metadata.callType,
         call_type: 'ai_isa_call',
         status: 'initiated',
-        initiated_by: metadata.initiatorRole,
         started_at: new Date().toISOString(),
       })
       .select('id')

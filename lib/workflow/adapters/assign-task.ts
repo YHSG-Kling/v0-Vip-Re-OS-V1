@@ -91,12 +91,12 @@ export const assignTaskAdapter: ChannelAdapter = {
             if (tx?.id) {
               const { data: va } = await supabase
                 .from("vendor_assignments")
-                .select("vendor_user_id")
+                .select("assigned_by_agent_id")
                 .eq("transaction_id", tx.id)
                 .order("created_at", { ascending: false })
                 .limit(1)
                 .maybeSingle()
-              assigneeUserId = (va as any)?.vendor_user_id ?? null
+              assigneeUserId = (va as any)?.assigned_by_agent_id ?? null
             }
           }
           break

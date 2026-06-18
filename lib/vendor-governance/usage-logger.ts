@@ -105,7 +105,7 @@ export async function logVendorUsage(event: VendorUsageEvent): Promise<UsageLogR
         error_message: `Failed to log ${event.vendorName} usage: ${error.message}`,
         severity: 'medium',
         status: 'open',
-        metadata: { ...event },
+        context_json: JSON.stringify({ ...event }),
       })
 
       return {
@@ -121,7 +121,7 @@ export async function logVendorUsage(event: VendorUsageEvent): Promise<UsageLogR
         error_message: `Anomaly detected: ${anomaly.reason}`,
         severity: 'low',
         status: 'open',
-        metadata: { usageId: data.id, ...event },
+        context_json: JSON.stringify({ usageId: data.id, ...event }),
       })
     }
 
