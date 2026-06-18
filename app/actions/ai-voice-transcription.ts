@@ -121,6 +121,7 @@ Extract:
         transcript_id: params.transcriptId,
         contact_id: params.contactId,
         agent_id: params.agentId,
+        brokerage_id: contact?.brokerage_id,
         transcript: params.transcript,
         call_type: params.callType,
         call_duration: params.callDuration,
@@ -161,10 +162,20 @@ Extract:
 
     // Log compliance flags if any
     if (analysis.complianceFlags.length > 0) {
+      // compliance_events.actor_user_id FKs users; params.agentId is an agents.id, so resolve the
+      // agent's user_id for the actor.
+      const { data: agentRow } = await supabase.from("agents").select("user_id").eq("id", params.agentId).maybeSingle()
       await supabase.from("compliance_events").insert({
-        agent_id: params.agentId,
-        contact_id: params.contactId,
-        event_type: "call_compliance_flags",
+        // Mapped onto the canonical gate-event schema (13 consumers); severity + details carry the
+        // richer voice-flag metadata.
+        actor_role: "agent",
+        actor_user_id: agentRow?.user_id ?? null,
+        brokerage_id: contact?.brokerage_id,
+        entity_type: "contact",
+        entity_id: params.contactId,
+        gate_name: "call_compliance_flags",
+        allowed: false,
+        violations: analysis.complianceFlags,
         severity: analysis.complianceFlags.some(f => f.severity === "critical") ? "high" : "medium",
         details: {
           call_analysis_id: savedAnalysis?.id,
