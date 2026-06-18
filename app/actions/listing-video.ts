@@ -49,7 +49,7 @@ export async function generateListingVideo(params: {
       .from('listing_photos')
       .select('*')
       .eq('listing_id', property.id)
-      .order('display_order')
+      .order('order_index')
 
     photos = listingPhotos || []
 
@@ -71,11 +71,16 @@ export async function generateListingVideo(params: {
       .from('ai_video_projects')
       .insert({
         agent_id: params.agentId,
-        contact_id: params.propertyId,
-        video_type: videoType,
+        listing_id: property.id, // this is a listing video, not a contact
+        video_type: mapVideoType(videoType), // map to the CHECK-valid vocabulary
         heygen_status: 'pending',
-        script_generated_by: 'ai',
+        is_ai_generated: true,
         duration_seconds: getDurationForType(videoType),
+        video_metadata: {
+          format: videoType,
+          aspect_ratio: getAspectRatio(videoType),
+          script_generated_by: 'ai',
+        },
       })
       .select()
       .single()
@@ -87,19 +92,29 @@ export async function generateListingVideo(params: {
     // 3. AI selects best photos
     const selectedPhotos = await selectPhotosForVideo(photos, videoType, property)
 
-    // 4. Save selected assets
-    for (let i = 0; i < selectedPhotos.photos.length; i++) {
-      await supabase.from('video_assets').insert({
-        video_project_id: project.id,
-        asset_type: 'photo',
-        asset_url: selectedPhotos.photos[i].file_url,
-        duration_seconds: selectedPhotos.durations[i] || 3.0,
-        sort_order: i + 1,
-        transition_effect: selectedPhotos.transitions[i] || 'fade',
-        ai_selected: true,
-        selection_reasoning: selectedPhotos.reasoning,
+    // 4. Persist the AI-selected photo manifest on the project row.
+    //    video_assets is the brokerage stock-clip library (a different feature),
+    //    so per-project scene rows live in ai_video_projects.video_metadata.
+    const sceneAssets = selectedPhotos.photos.map((p: any, i: number) => ({
+      asset_type: 'photo',
+      asset_url: p.photo_url,
+      duration_seconds: selectedPhotos.durations[i] || 3.0,
+      sort_order: i + 1,
+      transition_effect: selectedPhotos.transitions[i] || 'fade',
+      ai_selected: true,
+    }))
+    await supabase
+      .from('ai_video_projects')
+      .update({
+        video_metadata: {
+          format: videoType,
+          aspect_ratio: getAspectRatio(videoType),
+          script_generated_by: 'ai',
+          scenes: sceneAssets,
+          selection_reasoning: selectedPhotos.reasoning,
+        },
       })
-    }
+      .eq('id', project.id)
 
     // 5. Generate narration script
     const script = await generateVideoNarration(property, videoType, selectedPhotos.photos)
@@ -112,18 +127,17 @@ export async function generateListingVideo(params: {
       .from('ai_video_projects')
       .update({
         script_content: script,
-        them_first_score: Math.round(validation.overall_score * 100),
-        heygen_status: validation.passed ? 'pending' : 'pending',
-        compliance_approved: validation.passed,
+        heygen_status: 'pending',
+        compliance_status: validation.passed ? 'passed' : 'needs_review',
+        provider_metadata: { them_first_score: Math.round(validation.overall_score * 100) },
       })
       .eq('id', project.id)
 
-    // 8. Queue video generation
+    // 8. Queue video generation (real column is project_id)
     await supabase.from('video_generation_queue').insert({
-      video_project_id: project.id,
+      project_id: project.id,
       priority: 5,
       status: 'queued',
-      estimated_completion_minutes: 15,
     })
 
     revalidatePath('/dashboard/marketing/videos')
@@ -187,9 +201,9 @@ Available Photos: ${allPhotos.length}
 ${allPhotos
   .map(
     (p, i) => `
-${i + 1}. ${p.photo_type} - ${p.room_name || 'N/A'}
-   Quality: ${p.ai_quality_score || 'N/A'}/100
-   Order: ${p.display_order}
+${i + 1}. photo - ${p.photo_url}
+   Hero: ${p.is_hero ? 'yes' : 'no'}
+   Order: ${p.order_index}
 `,
   )
   .join('\n')}
@@ -394,7 +408,9 @@ export async function publishVideoToPlatforms(params: {
     await supabase
       .from('ai_video_projects')
       .update({
-        distributed_via: params.platforms,
+        is_published: true,
+        published_at: new Date().toISOString(),
+        provider_metadata: { distributed_via: params.platforms },
       })
       .eq('id', params.projectId)
 
@@ -452,6 +468,18 @@ export async function getVideoProjects(agentId: string) {
 // ============================================
 // HELPER FUNCTIONS
 // ============================================
+
+// Map this feature's format vocabulary onto the ai_video_projects.video_type CHECK.
+function mapVideoType(videoType: string): string {
+  const map: Record<string, string> = {
+    full_tour: 'listing_tour',
+    social_snippet: 'social_reel',
+    instagram_story: 'social_reel',
+    reel: 'social_reel',
+    drone_highlight: 'listing_tour',
+  }
+  return map[videoType] || 'listing_tour'
+}
 
 function getDurationForType(videoType: string): number {
   const durations: Record<string, number> = {

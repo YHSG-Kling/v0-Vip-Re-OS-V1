@@ -266,9 +266,12 @@ export async function generateMilestones(transactionId: string, transactionType:
   ]
 
   const milestones = transactionType === "sale" ? sellerMilestones : buyerMilestones
+  // Map seed fields onto real columns: name→milestone_name (NOT NULL),
+  // category→milestone_type. order_index has no column on transaction_milestones.
   const milestonesWithTransactionId = milestones.map((m) => ({
-    ...m,
     transaction_id: transactionId,
+    milestone_name: m.name,
+    milestone_type: m.category,
     status: "pending",
   }))
 
@@ -310,7 +313,7 @@ export async function getTransactionMilestones(transactionId: string) {
     .from("transaction_milestones")
     .select("*")
     .eq("transaction_id", transactionId)
-    .order("due_date", { ascending: true })
+    .order("target_date", { ascending: true })
 
   if (error) {
     console.error("Error getting milestones:", error)
@@ -321,7 +324,7 @@ export async function getTransactionMilestones(transactionId: string) {
 
 export async function updateMilestone(
   milestoneId: string,
-  updates: Partial<{ status: string; due_date: string; notes: string; assigned_to: string }>,
+  updates: Partial<{ status: string; target_date: string; notes: string; assigned_to: string }>,
 ) {
   const supabase = await createClient()
   const { data, error } = await supabase
@@ -598,7 +601,7 @@ export async function updateInspection(
   updates: Partial<{
     status: string; scheduled_date: string; completed_date: string
     inspector_name: string; inspector_company: string; inspector_email: string
-    inspector_phone: string; cost: number; report_received: boolean
+    inspector_phone: string; cost: number
     report_url: string; issues_found: string; notes: string
   }>,
 ) {
@@ -623,9 +626,9 @@ export async function completeInspection(inspectionId: string, reportUrl?: strin
   const { data, error } = await supabase
     .from("transaction_inspections")
     .update({
-      status: "completed",
-      completed_date: new Date().toISOString(),
-      report_received: !!reportUrl,
+      // "report received" is a status value, not a boolean column.
+      status: reportUrl ? "report_received" : "completed",
+      completed_date: new Date().toISOString().split("T")[0], // DATE column
       report_url: reportUrl,
       issues_found: issuesFound,
     })
@@ -1182,10 +1185,18 @@ export async function respondToRepairRequest(
   notes?: string,
 ) {
   const supabase = await createClient()
+  // Map response → status CHECK (requested|countered|approved|rejected|withdrawn|completed).
+  const RESPONSE_STATUS: Record<"accepted" | "rejected" | "counter", string> = {
+    accepted: "approved",
+    rejected: "rejected",
+    counter: "countered",
+  }
   const updates: Record<string, unknown> = {
-    status: response === "counter" ? "countered" : response,
+    status: RESPONSE_STATUS[response],
     response_note: notes,
-    ...(response === "counter" && counterOffer !== undefined ? { repair_credit_amount: counterOffer } : {}),
+    responded_at: new Date().toISOString(),
+    // counter offer goes into estimated_cost (the only numeric offer column).
+    ...(response === "counter" && counterOffer !== undefined ? { estimated_cost: counterOffer } : {}),
   }
 
   const { data, error } = await supabase
@@ -1213,9 +1224,21 @@ export async function finalizeRepairNegotiation(
   finalAmount?: number,
 ) {
   const supabase = await createClient()
+  // Map resolution → status CHECK; finalAmount→actual_cost; persist the
+  // resolution detail in notes (no resolution/final_amount/resolved_at columns).
+  const RESOLUTION_STATUS: Record<"repair" | "credit" | "as_is", string> = {
+    repair: "completed",
+    credit: "approved",
+    as_is: "rejected",
+  }
   const { data, error } = await supabase
     .from("transaction_repair_negotiations")
-    .update({ status: "resolved", resolution, final_amount: finalAmount, resolved_at: new Date().toISOString() })
+    .update({
+      status: RESOLUTION_STATUS[resolution] ?? "completed",
+      actual_cost: finalAmount ?? null,
+      responded_at: new Date().toISOString(),
+      notes: `Resolved: ${resolution}${finalAmount != null ? ` ($${finalAmount})` : ""}`,
+    })
     .eq("id", requestId)
     .select("*, transactions(id)")
     .single()
@@ -1345,8 +1368,8 @@ Return JSON array of milestones.`
         milestone_name: milestone.name,
         milestone_type: milestone.type || "date_driven",
         target_date: milestone.target_date,
-        status: "upcoming",
-        client_visible: true,
+        status: "pending", // CHECK: pending|completed|overdue|cancelled
+        is_client_visible: true,
       })
     }
   }
@@ -1359,7 +1382,7 @@ export async function generateCostBreakdown(transactionId: string) {
   const { data: transaction } = await supabase.from("transactions").select("*").eq("id", transactionId).single()
   if (!transaction) return { success: false }
 
-  const isSeller = transaction.transaction_type === "seller_side"
+  const isSeller = transaction.deal_type === "seller"
 
   const costPrompt = `Generate transparent cost breakdown for ${isSeller ? "SELLER" : "BUYER"}:
 
@@ -1407,11 +1430,11 @@ Return JSON with detailed breakdown.`
       const cost: any = costData
       await supabase.from("cost_breakdown_tracking").insert({
         transaction_id: transactionId,
-        cost_type: costType,
+        cost_category: isSeller ? "seller_closing" : "buyer_closing",
+        item_name: costType,
         estimated_amount: cost.amount || cost.total || cost,
-        explanation: cost.explanation || "",
-        transparency_note: cost.transparency_note || "",
-        paid_by: isSeller ? "seller" : "buyer",
+        party: isSeller ? "seller" : "buyer", // CHECK: buyer|seller
+        status: "estimated",
       })
     }
   }
@@ -1505,15 +1528,16 @@ Return JSON array of tasks.`
 
     if (checklistRecord) {
       for (const task of checklist.data.tasks) {
+        // task_items links to the transaction via checklist_id → smart_checklists,
+        // not a direct transaction_id. Real columns: title/description/assigned_to/
+        // completed (no status/client_visible).
         await supabase.from("task_items").insert({
           checklist_id: checklistRecord.id,
-          transaction_id: transactionId,
-          task_name: task.task_name,
-          task_description: task.task_description,
-          assigned_to_role: task.assigned_to_role,
+          title: task.task_name,
+          description: task.task_description,
+          assigned_to: task.assigned_to_role,
           priority: task.priority,
-          status: "pending",
-          client_visible: task.client_visible !== false,
+          completed: false,
         })
       }
     }
@@ -1526,7 +1550,7 @@ export async function detectTransactionIssues(transactionId: string) {
   const supabase = await createClient()
   const { data: transaction } = await supabase
     .from("transactions")
-    .select(`*, transaction_milestones(*), transaction_lenders(*), task_items(*)`)
+    .select(`*, transaction_milestones(*), transaction_lenders(*)`)
     .eq("id", transactionId)
     .single()
 
@@ -1535,9 +1559,24 @@ export async function detectTransactionIssues(transactionId: string) {
   const overdueMilestones = transaction.transaction_milestones?.filter(
     (m: any) => m.status !== "completed" && new Date(m.target_date) < new Date(),
   )
-  const overdueTasks = transaction.task_items?.filter(
-    (t: any) => t.status !== "completed" && new Date(t.due_date) < new Date(),
-  )
+
+  // task_items has no direct FK to transactions — it links via
+  // checklist_id → smart_checklists.transaction_id. Fetch through the checklists.
+  const { data: txChecklists } = await supabase
+    .from("smart_checklists")
+    .select("id")
+    .eq("transaction_id", transactionId)
+  const checklistIds = (txChecklists || []).map((c: any) => c.id)
+  let overdueTasks: any[] = []
+  if (checklistIds.length > 0) {
+    const { data: tasks } = await supabase
+      .from("task_items")
+      .select("completed, due_date")
+      .in("checklist_id", checklistIds)
+    overdueTasks = (tasks || []).filter(
+      (t: any) => !t.completed && t.due_date && new Date(t.due_date) < new Date(),
+    )
+  }
 
   const issuePrompt = `Analyze transaction health:
 
@@ -2225,7 +2264,7 @@ export async function autoProgressMilestone(transactionId: string, completedMile
 
   await supabase
     .from("transaction_milestones")
-    .update({ status: "completed", completed_date: new Date().toISOString() })
+    .update({ status: "completed", completed_at: new Date().toISOString() })
     .eq("transaction_id", transactionId)
     .eq("milestone_name", completedMilestone)
 

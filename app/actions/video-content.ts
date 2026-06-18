@@ -15,6 +15,31 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 // AI-powered video script and content creation
 // =====================================================
 
+// Map a free-form video_type onto the video_scripts_library.script_type CHECK
+// (property_tour|buyer_education|market_update|agent_intro|listing_presentation).
+function mapScriptType(videoType: string): string {
+  const map: Record<string, string> = {
+    full_tour: "property_tour",
+    listing_tour: "property_tour",
+    just_listed: "property_tour",
+    listing_promo: "property_tour",
+    open_house_promo: "property_tour",
+    social_snippet: "property_tour",
+    instagram_story: "property_tour",
+    reel: "property_tour",
+    buyer_education: "buyer_education",
+    education: "buyer_education",
+    market_update: "market_update",
+    agent_intro: "agent_intro",
+    welcome: "agent_intro",
+    testimonial: "agent_intro",
+    presentation: "listing_presentation",
+    listing_presentation: "listing_presentation",
+    presentation_chapter: "listing_presentation",
+  }
+  return map[videoType] || "property_tour"
+}
+
 export async function generateVideoScript(params: {
   video_type: string
   context_type: string
@@ -56,19 +81,21 @@ Make it conversational, engaging, and authentic. Keep it under 90 seconds.`,
 
   const script = scriptResponse.text
 
-  // Save video asset record
+  // Persist the AI script in video_scripts_library (the canonical AI-script home).
+  // video_assets is the brokerage stock-clip library — a different concept.
   const { data: video, error } = await supabase
-    .from("video_assets")
+    .from("video_scripts_library")
     .insert({
       brokerage_id: profile.brokerage_id,
       agent_id: agentId,
-      video_type: params.video_type,
-      context_type: params.context_type,
-      context_id: params.context_id,
-      audience_segment: params.audience_segment,
-      script,
-      status: "draft",
-      compliance_approved: false,
+      script_type: mapScriptType(params.video_type),
+      title: `${params.video_type} script${params.context_type ? ` (${params.context_type})` : ""}`,
+      script_content: script,
+      listing_id: params.context_type === "listing" ? params.context_id : null,
+      contact_id: params.context_type === "contact" ? params.context_id : null,
+      brand_voice_tone: params.tone ?? null,
+      approval_status: "draft",
+      created_by: user.id,
     })
     .select()
     .single()
@@ -123,10 +150,10 @@ export async function approveAndGenerateVideo(payload: any) {
     })
     .eq("id", script_id)
 
-  // Update video status to generating
+  // Update render lifecycle on the project (ai_video_projects), not the stock library.
   if (video_id) {
     await supabase
-      .from("video_assets")
+      .from("ai_video_projects")
       .update({ status: "generating" })
       .eq("id", video_id)
   }
@@ -138,13 +165,14 @@ export async function handleVideoPublished(payload: any) {
   const supabase = await createServerClient()
   const { video_id, platforms, user_id } = payload
 
-  // Update video status
+  // Update publish state on the project (ai_video_projects). published_platforms
+  // has no canonical column; the platforms list is carried in the payload/notification.
   await supabase
-    .from("video_assets")
+    .from("ai_video_projects")
     .update({
       status: "published",
+      is_published: true,
       published_at: new Date().toISOString(),
-      published_platforms: platforms,
     })
     .eq("id", video_id)
 
@@ -208,15 +236,19 @@ export async function createShortClip(params: {
   if (!user) throw new Error("Not authenticated")
 
   // Create short clip record
+  // Canonical video_snippets columns (matches video-repurposing.ts):
+  // long_form_video_id→video_project_id, clip_*_sec→*_seconds, target_platform→
+  // platform_target, status→approval_status ('draft'), snippet_title is NOT NULL.
   const { data: clip, error } = await supabase
     .from("video_snippets")
     .insert({
-      long_form_video_id: params.long_form_video_id,
-      clip_start_sec: params.clip_start_sec,
-      clip_end_sec: params.clip_end_sec,
+      video_project_id: params.long_form_video_id,
+      start_seconds: params.clip_start_sec,
+      end_seconds: params.clip_end_sec,
+      snippet_title: params.caption_text?.slice(0, 80) || `Clip ${params.clip_start_sec}-${params.clip_end_sec}s`,
       caption_text: params.caption_text,
-      target_platform: params.target_platform,
-      status: "queued",
+      platform_target: params.target_platform,
+      approval_status: "draft",
     })
     .select()
     .single()

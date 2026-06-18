@@ -211,7 +211,6 @@ export async function markInspectionCompleteAction(params: {
   const result = await updateInspection(params.inspectionId, {
     status: "report_received",
     completed_date: new Date().toISOString(),
-    report_received: true,
   })
 
   if (!result.success) {
@@ -272,7 +271,6 @@ export async function uploadInspectionReportAction(params: {
   // Update inspection with report URL
   await updateInspection(params.inspectionId, {
     report_url: params.reportUrl,
-    report_received: true,
     status: "report_received",
   })
 

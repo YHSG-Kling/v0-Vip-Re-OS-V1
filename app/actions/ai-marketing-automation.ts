@@ -59,8 +59,8 @@ export async function generateAINewsletter(params: NewsletterGenerationParams): 
       params.includeMarketData
         ? supabase
             .from("market_data")
-            .select("median_sale_price, avg_days_on_market, active_listings, price_per_sqft, recorded_date")
-            .order("recorded_date", { ascending: false })
+            .select("median_sale_price, median_list_price, avg_days_on_market, active_listings, recorded_date:data_date")
+            .order("data_date", { ascending: false })
             .limit(1)
             .maybeSingle()
         : Promise.resolve({ data: null }),
@@ -104,7 +104,7 @@ ${marketData ? `MARKET DATA:
 - Median Price: $${marketData.median_sale_price?.toLocaleString() || "N/A"}
 - Days on Market: ${marketData.avg_days_on_market || "N/A"}
 - Active Inventory: ${marketData.active_listings || "N/A"} homes
-- Price Per Sqft: $${marketData.price_per_sqft || "N/A"}` : ""}
+- Median List Price: $${marketData.median_list_price?.toLocaleString() || "N/A"}` : ""}
 
 ${featuredListings.length > 0 ? `FEATURED LISTINGS:
 ${featuredListings.map((l: any) => `- ${l.address}, ${l.city} - $${l.list_price?.toLocaleString()} | ${l.bedrooms}bd/${l.bathrooms}ba`).join("\n")}` : ""}
@@ -145,17 +145,19 @@ Return JSON:
     }
 
     // Save to database
+    // Canonical newsletter table is newsletter_campaigns (ai-newsletter.ts, send/
+    // analytics, sections/sends FK chains all target it). subject→subject_line;
+    // preheader/quality_score/them_percentage are returned to the caller via the
+    // spread below but are not columns here (they live in the JSON content).
     const { data: saved, error: saveError } = await supabase
-      .from("newsletters")
+      .from("newsletter_campaigns")
       .insert({
         agent_id: params.agentId,
-        subject: newsletter.subject,
-        preheader: newsletter.preheader,
-        content: newsletter,
-        audience_segment: params.audienceSegment,
-        quality_score: newsletter.qualityScore,
-        them_percentage: newsletter.themPercentage,
+        campaign_name: newsletter.subject ?? "AI Newsletter",
+        subject_line: newsletter.subject,
+        content: JSON.stringify(newsletter),
         status: "draft",
+        is_ai_generated: true,
       })
       .select()
       .single()
@@ -351,18 +353,22 @@ Return JSON:
     const estimatedTargets = params.farmAreaZip ? 500 : 100
 
     // Save to database
+    // Map to the canonical direct_mail_campaigns columns: mail_type→piece_type
+    // (free text), target_count→quantity, estimated_cost→per_piece_cost (unit;
+    // total derives as quantity*per_piece_cost), headline+content→copy_text.
+    // status must satisfy the CHECK (planning|approved|printed|mailed).
     const { data: saved, error: saveError } = await supabase
       .from("direct_mail_campaigns")
       .insert({
         agent_id: params.agentId,
-        mail_type: params.mailType,
+        campaign_name: `${params.mailType} – ${params.targetAudience}`,
+        piece_type: params.mailType,
         target_audience: params.targetAudience,
-        property_id: params.propertyId,
-        headline: mailContent.headline,
-        content: mailContent,
-        target_count: estimatedTargets,
-        estimated_cost: estimatedTargets * costPerPiece[params.mailType],
-        status: "draft",
+        copy_text: JSON.stringify({ headline: mailContent.headline, ...mailContent }),
+        quantity: estimatedTargets,
+        per_piece_cost: costPerPiece[params.mailType],
+        status: "planning",
+        is_ai_generated: true,
       })
       .select()
       .single()
