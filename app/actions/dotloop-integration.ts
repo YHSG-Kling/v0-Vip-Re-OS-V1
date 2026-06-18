@@ -577,17 +577,21 @@ export async function generateDocumentFromTemplate(data: {
     .from("client_documents")
     .insert({
       document_name: data.documentName,
-      document_category: template.template_category,
       document_type: template.template_type,
       contact_id: data.contactId,
       transaction_id: data.transactionId,
-      user_id: data.userId,
-      template_id: data.templateId,
+      uploaded_by: data.userId,
       document_url: template.template_file_url,
-      generated_content: documentContent,
-      processing_status: "verified",
-      compliance_checked: template.is_compliance_approved,
+      content: documentContent,
       signature_status: template.requires_client_signature ? "pending_signature" : null,
+      // Generation provenance + flags live in the metadata bag (no separate columns). doc_category is
+      // a CHECK-constrained intake taxonomy, so the free-form template category stays in metadata too.
+      metadata: {
+        template_id: data.templateId,
+        template_category: template.template_category,
+        processing_status: "verified",
+        compliance_checked: template.is_compliance_approved,
+      },
     })
     .select()
     .single()
