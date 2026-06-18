@@ -279,7 +279,7 @@ export async function aiWriteNewsletterContent(params: {
       .from("newsletter_subscribers")
       .select("contact:contacts!newsletter_subscribers_contact_id_fkey(contact_persona, city, state)")
       .eq("brokerage_id", sessionBrokerageId)
-      .eq("subscribed", true)
+      .eq("status", "subscribed")
       .limit(500)
     const personaCounts = new Map<string, number>()
     const locationCounts = new Map<string, { city: string | null; state: string | null; count: number }>()
@@ -599,9 +599,9 @@ export async function aiOptimizeSendTime(params: {
     // Get historical email performance
     const { data: emailStats } = await supabase
       .from("newsletter_scheduled_sends")
-      .select("sent_at, open_rate, click_rate")
-      .eq("agent_id", sessionAgentId ?? sessionUserId)
-      .order("sent_at", { ascending: false })
+      .select("sent_at:sent_time, newsletter:newsletter_campaigns!inner(open_rate, click_rate, agent_id)")
+      .eq("newsletter.agent_id", sessionAgentId ?? sessionUserId)
+      .order("sent_time", { ascending: false })
       .limit(50)
 
     const { object: optimization } = await generateObject({
@@ -780,10 +780,7 @@ export async function createNewsletterCampaign(params: {
       .insert({
         campaign_name: params.title, // campaign_name NOT title
         subject_line: params.subjectLine,
-        preheader_text: params.preheaderText,
-        template_id: params.template,
-        content: params.content,
-        audience_segment: params.audienceSegment,
+        content: typeof params.content === "string" ? params.content : JSON.stringify(params.content),
         status: params.scheduledAt ? "scheduled" : "draft",
         send_date: params.scheduledAt ?? null, // send_date NOT scheduled_at
         brokerage_id: sessionBrokerageId, // session-derived
@@ -859,8 +856,7 @@ export async function createNewsletterCampaign(params: {
       .from("newsletter_subscribers")
       .select("*", { count: "exact", head: true })
       .eq("agent_id", agentsTableId) // agents.id NOT params.agentId
-      .eq("segment", params.audienceSegment)
-      .eq("subscribed", true)
+      .eq("status", "subscribed")
 
     // Kernel: Fire NEWSLETTER_SCHEDULED if scheduled
     if (params.scheduledAt && newsletter) {
@@ -954,7 +950,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
       .select("id, contact_id, email, first_name, last_name, status, agent_id, contact:contacts(id, email, first_name, last_name, contact_persona, city, state, zip_code)")
       .eq("brokerage_id", sessionBrokerageId)
       .eq("agent_id", sessionAgentId ?? sessionUserId)
-      .eq("status", "active")
+      .eq("status", "subscribed")
 
     if (!subscribers || subscribers.length === 0) {
       return { success: false, error: "No active subscribers for this agent" }
@@ -1102,7 +1098,7 @@ export async function getNewsletterAnalytics(params: { newsletterId: string; age
       .from("newsletter_scheduled_sends")
       .select("*")
       .eq("newsletter_id", params.newsletterId)
-      .order("sent_at", { ascending: false })
+      .order("sent_time", { ascending: false })
       .limit(1)
       .maybeSingle()
 
@@ -1164,9 +1160,9 @@ export async function aiAnalyzeNewsletterPerformance(params: { agentId?: string 
     const { data: sends } = await supabase
       .from("newsletter_scheduled_sends")
       .select("*, newsletter:newsletter_campaigns!inner(*)")
-      .eq("agent_id", sessionAgentId ?? sessionUserId)
+      .eq("newsletter.agent_id", sessionAgentId ?? sessionUserId)
       .eq("newsletter.brokerage_id", sessionBrokerageId)
-      .order("sent_at", { ascending: false })
+      .order("sent_time", { ascending: false })
       .limit(20)
 
     const { object: analysis } = await generateObject({
@@ -1434,27 +1430,22 @@ export async function manageSubscriberBatch(params: {
           agent_id: sessionAgentId ?? sessionUserId,
           brokerage_id: sessionBrokerageId,
           contact_id: contactId,
-          segment: params.segment || "all",
-          subscribed: true,
+          status: "subscribed",
           subscribed_at: new Date().toISOString(),
         })
         affected++
       } else if (params.action === "remove") {
         await supabase
           .from("newsletter_subscribers")
-          .update({ subscribed: false, unsubscribed_at: new Date().toISOString() })
+          .update({ status: "unsubscribed", unsubscribed_at: new Date().toISOString() })
           .eq("contact_id", contactId)
           .eq("agent_id", sessionAgentId ?? sessionUserId)
           .eq("brokerage_id", sessionBrokerageId)
         affected++
       } else if (params.action === "update_segment" && params.segment) {
-        await supabase
-          .from("newsletter_subscribers")
-          .update({ segment: params.segment })
-          .eq("contact_id", contactId)
-          .eq("agent_id", sessionAgentId ?? sessionUserId)
-          .eq("brokerage_id", sessionBrokerageId)
-        affected++
+        // Segments are not modeled on newsletter_subscribers (audience targeting lives at the
+        // newsletter_sections level via target_personas/target_locations). No-op rather than write a
+        // phantom column.
       }
     }
 
