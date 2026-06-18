@@ -153,7 +153,7 @@ export async function GET(req: NextRequest) {
             .maybeSingle()
           const lr = listingRow as { address: string | null; city: string | null; state: string | null } | null
           const { data: brokerage } = await svc.from("brokerages")
-            .select("name, logo_url, brand_primary_color, brand_accent_color")
+            .select("name, logo_url, brand_primary_color:primary_color")
             .eq("id", p.brokerage_id)
             .maybeSingle()
           const br = brokerage as { name: string | null; logo_url: string | null; brand_primary_color: string | null; brand_accent_color: string | null } | null

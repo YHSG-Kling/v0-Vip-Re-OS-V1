@@ -352,9 +352,9 @@ export async function getOpenHouseFeedback(openHouseId: string): Promise<{
     // feedback_rating/feedback_comments columns on open_house_attendees
     const { data: fbRows, error: fbError } = await service
       .from("open_house_feedback")
-      .select("id, attendee_id, event_id, rating, liked_most, concerns, price_opinion, interested_in_offer, submitted_at")
+      .select("id, attendee_id, event_id, rating, liked_most, concerns, price_opinion, interested_in_offer, submitted_at:created_at")
       .eq("event_id", openHouseId)
-      .order("submitted_at", { ascending: false })
+      .order("created_at", { ascending: false })
 
     if (!fbError && fbRows) {
       // Enrich with attendee name/email

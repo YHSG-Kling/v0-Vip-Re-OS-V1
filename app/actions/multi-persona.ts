@@ -54,9 +54,10 @@ export async function getBrokerageDashboard(_brokerageId?: string) {
       .select("*")
       .eq("brokerage_id", brokerageId)
       .not("status", "in", "(closed,lost)"),
-    // compliance_checks: allowed=false means a violation was detected
+    // compliance_events is the gate ledger; allowed=false means a blocked/violation event
+    // (compliance_checks is the separate doc-scan table with no `allowed` column).
     supabase
-      .from("compliance_checks")
+      .from("compliance_events")
       .select("*")
       .eq("brokerage_id", brokerageId)
       .eq("allowed", false)
@@ -489,7 +490,7 @@ export async function getComplianceOfficerDashboard(_officerId?: string) {
   const [{ data: pendingReviews }, { data: recentViolations }] =
     await Promise.all([
       supabase
-        .from("compliance_checks")
+        .from("compliance_events")
         .select("*")
         .eq("allowed", false)
         .eq("brokerage_id", auth.brokerageId)

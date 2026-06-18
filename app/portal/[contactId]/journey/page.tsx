@@ -77,7 +77,7 @@ export default async function PortalJourneyPage({
     transaction
       ? supabase
           .from("transaction_milestones")
-          .select("id, transaction_id, milestone_name, milestone_type, target_date, completed_date, status, assigned_to, notes, is_client_visible")
+          .select("id, transaction_id, milestone_name, milestone_type, target_date, completed_date:completed_at, status, notes, is_client_visible")
           .eq("transaction_id", transaction.id)
           .eq("is_client_visible", true)
           .order("target_date", { ascending: true, nullsFirst: false })

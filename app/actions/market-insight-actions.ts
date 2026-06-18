@@ -78,7 +78,7 @@ export async function refreshMarketDataAction(marketArea: string) {
   const result = await refreshMarketData(
     brokerageId!,
     marketArea,
-    source?.zip_code,
+    source?.zip_codes?.[0],
     source?.city,
     source?.state
   )
@@ -98,7 +98,7 @@ export async function generateInsightAction(
   // Get source info for zipCode
   const { data: source } = await supabase
     .from("market_data_sources")
-    .select("zip_code")
+    .select("zip_codes")
     .eq("brokerage_id", brokerageId)
     .eq("market_area", marketArea)
     .single()
@@ -107,7 +107,7 @@ export async function generateInsightAction(
     brokerageId: brokerageId!,
     agentId: agentId!,
     marketArea,
-    zipCode: source?.zip_code,
+    zipCode: source?.zip_codes?.[0],
     forceRegenerate,
   })
 
@@ -143,7 +143,7 @@ export async function getRecentCMAReports(marketArea: string) {
 
   const { data } = await supabase
     .from("cma_reports")
-    .select("id, property_address, estimated_value, created_at, agent_id")
+    .select("id, property_address, estimated_value:recommended_price, created_at, agent_id")
     .eq("brokerage_id", brokerageId)
     .ilike("property_address", `%${marketArea}%`)
     .order("created_at", { ascending: false })

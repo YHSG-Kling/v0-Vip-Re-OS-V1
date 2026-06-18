@@ -105,7 +105,7 @@ export default function ContactDetailPane({ contact, sentimentSummary, agentId }
     const supabase = createClient()
     supabase
       .from("ai_isa_activities")
-      .select("id, activity_type, channel, status, notes, created_at")
+      .select("id, activity_type, channel, status:outcome, notes:summary, created_at")
       .eq("contact_id", contact.id)
       .order("created_at", { ascending: false })
       .limit(10)

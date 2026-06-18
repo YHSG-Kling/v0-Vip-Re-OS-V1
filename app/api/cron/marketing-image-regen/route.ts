@@ -71,7 +71,7 @@ export async function GET(req: NextRequest) {
   try {
     // Rebuild brand hints from the tenant so the regen preserves treatment.
     const [{ data: b }, { data: u }] = await Promise.all([
-      svc.from("brokerages").select("name, logo_url, brand_primary_color, license_number").eq("id", asset.brokerage_id).maybeSingle(),
+      svc.from("brokerages").select("name, logo_url, brand_primary_color:primary_color, license_number").eq("id", asset.brokerage_id).maybeSingle(),
       asset.agent_user_id
         ? svc.from("users").select("first_name, last_name").eq("id", asset.agent_user_id).maybeSingle()
         : Promise.resolve({ data: null } as { data: null }),

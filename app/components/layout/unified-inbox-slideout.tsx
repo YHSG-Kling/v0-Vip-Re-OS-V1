@@ -174,11 +174,13 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
   const loadInbox = useCallback(() => {
     startTransition(async () => {
       const supabase = createClient()
+      // conversations has no `channel` (modeled as `type`) or `last_message_preview`
+      // (derived from the joined messages) — mirrors the canonical inbox hub.
       const { data } = await supabase
         .from("conversations")
         .select(
-          "id, type, channel, unread_count, last_message_at, last_message_preview, sentiment, urgency_score, " +
-            "contacts(id, first_name, last_name)"
+          "id, type, unread_count, last_message_at, sentiment, urgency_score, " +
+            "contacts(id, first_name, last_name), messages!messages_conversation_id_fkey(body, created_at)"
         )
         .order("last_message_at", { ascending: false })
         .limit(20)
@@ -191,24 +193,28 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
         (data as unknown as Array<{
           id: string
           type: string
-          channel: string | null
           unread_count: number
           last_message_at: string
-          last_message_preview: string | null
           sentiment: string | null
           urgency_score: number | null
           contacts: { id: string; first_name: string | null; last_name: string | null } | null
-        }>).map((row) => ({
-          id: row.id,
-          type: row.type,
-          channel: row.channel,
-          unread_count: row.unread_count ?? 0,
-          last_message_at: row.last_message_at,
-          last_message_preview: row.last_message_preview,
-          sentiment: row.sentiment,
-          urgency_score: row.urgency_score,
-          contact: row.contacts,
-        }))
+          messages: { body: string | null; created_at: string }[] | null
+        }>).map((row) => {
+          const latest = (row.messages ?? [])
+            .slice()
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
+          return {
+            id: row.id,
+            type: row.type,
+            channel: row.type,
+            unread_count: row.unread_count ?? 0,
+            last_message_at: row.last_message_at,
+            last_message_preview: latest?.body ?? null,
+            sentiment: row.sentiment,
+            urgency_score: row.urgency_score,
+            contact: row.contacts,
+          }
+        })
       )
       setSelectedIndex(0)
     })

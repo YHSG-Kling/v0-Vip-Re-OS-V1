@@ -40,7 +40,7 @@ export default async function DashboardHelpPage() {
   // Fetch agent's brokerage info for support contact details
   const { data: brokerage } = await supabase
     .from('brokerages')
-    .select('name, support_email, support_phone')
+    .select('name, support_email:email, support_phone:phone')
     .eq('id', ctx.brokerageId ?? '')
     .single()
 

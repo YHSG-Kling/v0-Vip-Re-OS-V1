@@ -15,7 +15,7 @@ export default async function ISAScriptsPage() {
 
   const { data: scripts } = await supabase
     .from('video_scripts_library')
-    .select('id, title, script_type, persona, status, created_at')
+    .select('id, title, script_type, status:approval_status, created_at')
     .order('created_at', { ascending: false })
     .limit(30)
 
@@ -62,7 +62,6 @@ export default async function ISAScriptsPage() {
                   <p className="font-medium">{script.title || 'Untitled Script'}</p>
                   <div className="flex items-center gap-2 mt-1">
                     <Badge variant="outline" className="text-xs">{script.script_type || 'General'}</Badge>
-                    {script.persona && <Badge variant="outline" className="text-xs">{script.persona}</Badge>}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">

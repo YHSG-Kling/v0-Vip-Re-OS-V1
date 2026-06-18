@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
     if (!camp) throw new Error("newsletter_campaign not found")
 
     const { data: brokerage } = await svc.from("brokerages")
-      .select("name, logo_url, brand_primary_color, brand_accent_color")
+      .select("name, logo_url, brand_primary_color:primary_color")
       .eq("id", camp.brokerage_id)
       .maybeSingle()
     const br = brokerage as { name: string | null; logo_url: string | null; brand_primary_color: string | null; brand_accent_color: string | null } | null

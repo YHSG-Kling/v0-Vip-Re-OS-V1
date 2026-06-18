@@ -340,7 +340,7 @@ async function loadListingFacts(svc: ReturnType<typeof createServiceClient>, lis
 
 async function loadBrandContext(svc: ReturnType<typeof createServiceClient>, brokerageId: string, agentUserId: string): Promise<BrandContext> {
   const { data: b } = await svc.from("brokerages")
-    .select("name, logo_url, brand_primary_color, brand_accent_color")
+    .select("name, logo_url, brand_primary_color:primary_color")
     .eq("id", brokerageId)
     .maybeSingle()
   const br = b as { name: string | null; logo_url: string | null; brand_primary_color: string | null; brand_accent_color: string | null } | null

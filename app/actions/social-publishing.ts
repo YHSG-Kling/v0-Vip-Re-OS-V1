@@ -444,7 +444,7 @@ export async function updateSocialPost(
   if (params.content !== undefined) updateData.content = params.content
   if (params.mediaUrls !== undefined) updateData.media_urls = params.mediaUrls
   if (params.scheduledFor !== undefined) updateData.scheduled_for = params.scheduledFor
-  if (params.platforms !== undefined) updateData.platforms = params.platforms
+  if (params.platforms !== undefined) updateData.platform = params.platforms?.[0]
   if (params.status !== undefined) updateData.status = params.status
 
   const { data, error } = await supabase
@@ -509,7 +509,7 @@ export async function getSocialAnalytics(dateRange?: {
     .select(`
       id,
       content,
-      platforms,
+      platform,
       scheduled_for,
       published_at,
       status,

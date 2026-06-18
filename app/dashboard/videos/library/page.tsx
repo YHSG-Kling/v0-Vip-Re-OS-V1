@@ -254,8 +254,9 @@ function VideoLibraryContent() {
     const { data: project, error: projectError } = await supabase
       .from("ai_video_projects")
       .select("id")
-      .eq("source_type", "script_library")
-      .eq("source_id", script.id)
+      // source_type/source_id live inside the video_metadata jsonb (no real columns)
+      .eq("video_metadata->>source_type", "script_library")
+      .eq("video_metadata->>source_id", script.id)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle()

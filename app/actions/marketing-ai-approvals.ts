@@ -84,7 +84,7 @@ export async function listPendingMarketingAssetsAction(): Promise<
       .eq("brokerage_id", auth.brokerageId).eq("approval_status", "pending_review").limit(50),
     // Sprint 9 cont. v2: video scripts library
     svc.from("video_scripts_library")
-      .select("id, script_title, script_body, brand_voice_tone, created_at, ai_generated")
+      .select("id, script_title:title, script_body:script_content, brand_voice_tone, created_at, ai_generated")
       .eq("brokerage_id", auth.brokerageId).eq("approval_status", "pending_review").limit(50),
   ])
 
