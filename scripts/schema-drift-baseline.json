@@ -861,7 +861,6 @@
   "lib/intelligence/user-type-briefs/tc-compliance-lender-vendor.ts::vendor_assignments.deliverable_due_date::lte",
   "lib/intelligence/user-type-briefs/tc-compliance-lender-vendor.ts::vendor_assignments.deliverable_due_date::select",
   "lib/intelligence/user-type-briefs/tc-compliance-lender-vendor.ts::vendor_assignments.deliverable_due_date::select",
-  "lib/kernel/ai-tools.ts::ai_tool_usage.output_data::select",
   "lib/kernel/approval-queue-aggregator.ts::newsletter_campaigns.updated_at::select",
   "lib/kernel/billing.ts::billing_usage.updated_at::update",
   "lib/kernel/billing.ts::cost_allocation.cost_per_unit::select",

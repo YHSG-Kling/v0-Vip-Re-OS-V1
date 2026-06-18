@@ -170,7 +170,7 @@ export async function loadAiToolsWorkspace(
     const [usageRes, savedRes] = await Promise.all([
       supabase
         .from("ai_tool_usage")
-        .select("id, tool_name, success, execution_time_ms, tokens_used, created_at, output_data")
+        .select("id, tool_name, success, execution_time_ms, tokens_used, created_at, output_data:output_text")
         .eq("user_id", ctx.userId)
         .order("created_at", { ascending: false })
         .limit(limit),
