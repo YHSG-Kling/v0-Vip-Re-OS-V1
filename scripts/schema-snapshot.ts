@@ -296,7 +296,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   error_resolution_log: ["action_by", "action_by_user_id", "action_type", "brokerage_id", "created_at", "error_id", "id", "notes", "resolution_metadata", "retry_attempt", "retry_result"],
   error_stack_traces: ["brokerage_id", "created_at", "error_hash", "error_id", "error_type", "file_path", "function_name", "id", "line_number", "runtime_context", "stack_trace"],
   event_processing_log: ["brokerage_id", "created_at", "error_message", "event_id", "handler", "id", "processing_time_ms", "status"],
-  external_behavior: ["brokerage_id", "contact_id", "event_data", "event_type", "id", "occurred_at", "source"],
+  external_behavior: ["activity_type", "behavioral_signal_id", "brokerage_id", "confidence_score", "contact_id", "detected_interest_level", "detected_via_zenrows", "id", "location", "occurred_at", "property_addresses_viewed", "scraped_at", "search_criteria_json", "source"],
   facebook_custom_audiences: ["ad_campaign_id", "agent_user_id", "audience_name", "audience_type", "brokerage_id", "consent_basis", "created_at", "external_audience_id", "id", "last_synced_at", "lookalike_seed_audience_id", "scope_type", "source_rule", "status", "target_platform", "updated_at"],
   fair_housing_logs: ["agent_id", "ai_analysis", "brokerage_id", "communication_text", "contact_id", "created_at", "flagged_phrases", "id", "interaction_type", "protected_class_mentioned", "risk_score", "steering_risk_detected"],
   farm_territories: ["agent_id", "brokerage_id", "city", "created_at", "id", "is_active", "marketing_budget_monthly", "name", "notes", "state", "updated_at", "zip_codes"],

@@ -1550,11 +1550,12 @@ export async function scrapeExternalBehavior(targetLocation: { city: string; sta
       await supabase.from("external_behavior").insert({
         brokerage_id: auth.brokerageId,
         source: property.source || "zillow",
-        behavior_type: "property_view",
-        property_address: property.address,
+        activity_type: "property_view",
+        property_addresses_viewed: property.address ? [property.address] : [],
         location: targetLocation.city,
         detected_interest_level: "researching",
-        timestamp: new Date().toISOString(),
+        detected_via_zenrows: true,
+        scraped_at: new Date().toISOString(),
       })
 
       // Store enriched property intelligence
@@ -1615,11 +1616,12 @@ export async function trackExternalActivity(data: {
       behavioral_signal_id: signal.id,
       brokerage_id: auth.brokerageId,
       source: data.source,
-      behavior_type: data.behaviorType,
-      property_address: data.propertyAddress,
+      activity_type: data.behaviorType,
+      property_addresses_viewed: data.propertyAddress ? [data.propertyAddress] : [],
       location: data.location,
       detected_interest_level: "active",
-      timestamp: new Date().toISOString(),
+      detected_via_zenrows: true,
+      scraped_at: new Date().toISOString(),
     })
 
     // Update signal strength based on external activity
