@@ -26,8 +26,8 @@ interface Document {
   id: string
   document_name: string
   document_type: string
-  file_url: string
-  signature_status: "not_required" | "pending_signature" | "signed"
+  document_url: string
+  signature_status: "not_required" | "pending_signature" | "signed" | null
   created_at: string
   uploaded_by: string
 }
@@ -47,7 +47,7 @@ const demoDocuments: Document[] = [
     id: "demo-1",
     document_name: "Purchase Agreement.pdf",
     document_type: "contract",
-    file_url: "#",
+    document_url: "#",
     signature_status: "pending_signature",
     created_at: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
     uploaded_by: "agent",
@@ -56,7 +56,7 @@ const demoDocuments: Document[] = [
     id: "demo-2",
     document_name: "Pre-Approval Letter.pdf",
     document_type: "financial",
-    file_url: "#",
+    document_url: "#",
     signature_status: "signed",
     created_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
     uploaded_by: "client",
@@ -65,7 +65,7 @@ const demoDocuments: Document[] = [
     id: "demo-3",
     document_name: "Property Disclosure.pdf",
     document_type: "disclosure",
-    file_url: "#",
+    document_url: "#",
     signature_status: "not_required",
     created_at: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
     uploaded_by: "agent",
@@ -155,7 +155,7 @@ export function ClientDocumentsWidget({ contactId, compact = false }: ClientDocu
     }
   }
 
-  const getStatusBadge = (status: string) => {
+  const getStatusBadge = (status: string | null) => {
     switch (status) {
       case "signed":
         return (

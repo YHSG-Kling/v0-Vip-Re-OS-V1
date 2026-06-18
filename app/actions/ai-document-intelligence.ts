@@ -67,7 +67,7 @@ export async function aiClassifyDocument(params: {
       prompt: `Analyze this real estate document and classify it:
 
 Document Name: ${document.document_name}
-File Type: ${document.file_type}
+File Type: ${document.document_type}
 Document Content/Text: ${textToAnalyze}
 
 Classify the document type, extract key data points (dates, amounts, parties, addresses, terms), identify any compliance issues, and note any missing required fields.`,
@@ -77,9 +77,11 @@ Classify the document type, extract key data points (dates, amounts, parties, ad
     await supabase
       .from("client_documents")
       .update({
-        document_category: object.category,
-        ai_classification: object,
-        processing_status: "processed",
+        // AI outputs consolidate into the canonical ai_metadata bag (no separate ai_* columns). The
+        // AI's coarse category is preserved inside classification; doc_category is a CHECK-constrained
+        // intake taxonomy (contract/disclosure/title/...) and is intentionally NOT overwritten by the
+        // free-form AI category (would violate client_documents_doc_category_check).
+        ai_metadata: { ...(document.ai_metadata || {}), classification: object, processing_status: "processed" },
       })
       .eq("id", params.documentId)
 
@@ -155,12 +157,16 @@ Provide a comprehensive analysis including:
 7. Potential negotiation points`,
     })
 
-    // Store analysis
+    // Store analysis in the canonical ai_metadata bag (merge to preserve any prior classification)
+    const { data: priorDoc } = await supabase
+      .from("client_documents")
+      .select("ai_metadata")
+      .eq("id", params.documentId)
+      .single()
     await supabase
       .from("client_documents")
       .update({
-        ai_analysis: object,
-        processing_status: "analyzed",
+        ai_metadata: { ...(priorDoc?.ai_metadata || {}), analysis: object, processing_status: "analyzed" },
       })
       .eq("id", params.documentId)
 
@@ -302,8 +308,8 @@ export async function aiVerifySignatures(params: {
       prompt: `Analyze signature requirements for this document:
       
 Document: ${document.document_name}
-Category: ${document.document_category || "unknown"}
-Dotloop Status: ${dotloopDoc?.signature_status || "not in Dotloop"}
+Category: ${document.doc_category || "unknown"}
+Dotloop Status: ${dotloopDoc?.status || "not in Dotloop"}
 
 Determine what signatures are required and their current status. Return as JSON:
 {
@@ -320,8 +326,10 @@ Determine what signatures are required and their current status. Return as JSON:
     await supabase
       .from("client_documents")
       .update({
-        signature_status: verification.allSignaturesPresent ? "complete" : "pending",
-        ai_signature_check: verification,
+        // Align with the portal vocabulary (signed / pending_signature); ai_signature_check
+        // detail goes into the ai_metadata bag.
+        signature_status: verification.allSignaturesPresent ? "signed" : "pending_signature",
+        ai_metadata: { ...(document.ai_metadata || {}), signature_check: verification },
       })
       .eq("id", params.documentId)
 
@@ -482,10 +490,10 @@ export async function aiCompareDocuments(params: {
       prompt: `Compare these two document versions and identify all changes:
 
 Document 1 (Original): ${doc1.document_name}
-Content: ${doc1.ai_analysis?.content || "Content not available"}
+Content: ${doc1.content || doc1.ai_metadata?.analysis?.content || "Content not available"}
 
-Document 2 (Modified): ${doc2.document_name}  
-Content: ${doc2.ai_analysis?.content || "Content not available"}
+Document 2 (Modified): ${doc2.document_name}
+Content: ${doc2.content || doc2.ai_metadata?.analysis?.content || "Content not available"}
 
 Provide detailed comparison with risk assessment.`,
     })
