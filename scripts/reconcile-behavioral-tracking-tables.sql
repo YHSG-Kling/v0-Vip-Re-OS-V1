@@ -1,0 +1,5 @@
+-- reconcile-behavioral-tracking-tables.sql — applied via MCP migration
+-- reconcile_behavioral_tracking_tables_to_lead_intelligence. behavioral_signals/site_activity/
+-- intelligence_signals_log were stubbed with a "contact-signal" design but their SOLE user
+-- (lead-intelligence.ts) uses a visitor-session-tracking design. Empty tables, no other refs.
+-- Dropped the conflicting wrong-design columns, added the real ones. See migration for full DDL.
