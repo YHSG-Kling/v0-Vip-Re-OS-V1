@@ -213,7 +213,7 @@ export async function loadBillingWorkspace(
     const { data: subscription, error: subError } = await supabase
       .from("subscriptions")
       .select(
-        "id,brokerage_id,tier_name,status,current_period_start,current_period_end,cancelled_at"
+        "id,brokerage_id,tier_id,status,current_period_start,current_period_end,cancelled_at,subscription_tiers:tier_id(tier_name,monthly_price_cents,features)"
       )
       .eq("brokerage_id", input.brokerageId)
       .maybeSingle()
@@ -225,19 +225,8 @@ export async function loadBillingWorkspace(
       }
     }
 
-    // Fetch tier details
-    const { data: tier, error: tierError } = await supabase
-      .from("subscription_tiers")
-      .select("tier_name,tier_key,features,price_monthly")
-      .eq("tier_name", subscription?.tier_name || "free")
-      .maybeSingle()
-
-    if (tierError) {
-      return {
-        success: false,
-        error: `Failed to load tier: ${tierError.message}`,
-      }
-    }
+    // Tier details come from the embedded subscription_tiers (joined via tier_id)
+    const tier = (subscription as any)?.subscription_tiers ?? null
 
     // Fetch feature entitlements
     const featuresIncluded: string[] = tier?.features || []
@@ -258,26 +247,20 @@ export async function loadBillingWorkspace(
     // Build feature map
     const { data: allFeatures, error: featuresError } = await supabase
       .from("feature_flags")
-      .select("feature_key,feature_name")
+      .select("feature_key,display_name")
 
     const features =
       allFeatures?.map((f) => ({
         featureKey: f.feature_key,
-        featureName: f.feature_name,
+        featureName: f.display_name,
         included: featuresIncluded.includes(f.feature_key),
         reason: featuresIncluded.includes(f.feature_key)
           ? ("tier_included" as const)
           : ("disabled" as const),
       })) || []
 
-    // Calculate costs
-    const { data: costAllocation, error: costError } = await supabase
-      .from("cost_allocation")
-      .select("metric,cost_per_unit")
-      .eq("brokerage_id", input.brokerageId)
-      .limit(1)
-
-    const monthlyRecurring = tier?.price_monthly || 0
+    // Calculate costs (tier price is already stored in cents)
+    const monthlyRecurring = tier?.monthly_price_cents || 0
     const estimatedOverage = 0 // Simplified for now
 
     return {
@@ -286,7 +269,7 @@ export async function loadBillingWorkspace(
         ? [
             {
               brokerageId: subscription.brokerage_id,
-              tierName: subscription.tier_name,
+              tierName: tier?.tier_name,
               status: subscription.status,
               currentPeriodStart: subscription.current_period_start,
               currentPeriodEnd: subscription.current_period_end,
@@ -322,7 +305,7 @@ export async function resolveSubscriptionTier(
 
     const { data: subscription, error: subError } = await supabase
       .from("subscriptions")
-      .select("tier_name,status,cancelled_at")
+      .select("tier_id,status,cancelled_at")
       .eq("brokerage_id", input.brokerageId)
       .maybeSingle()
 
@@ -344,8 +327,8 @@ export async function resolveSubscriptionTier(
 
     const { data: tier, error: tierError } = await supabase
       .from("subscription_tiers")
-      .select("tier_name,tier_key,price_monthly")
-      .eq("tier_name", subscription.tier_name)
+      .select("tier_name,monthly_price_cents")
+      .eq("id", subscription.tier_id)
       .maybeSingle()
 
     if (tierError || !tier) {
@@ -360,8 +343,8 @@ export async function resolveSubscriptionTier(
       success: true,
       tier: {
         tierName: tier.tier_name,
-        tierKey: tier.tier_key,
-        priceMonthly: tier.price_monthly,
+        tierKey: tier.tier_name,
+        priceMonthly: tier.monthly_price_cents,
       },
       isCancelled: subscription.status === "cancelled",
     }
@@ -393,7 +376,7 @@ export async function resolveFeatureEntitlement(
       .eq("feature_key", input.featureKey)
       .maybeSingle()
 
-    if (override && override.override_type === "enable_trial") {
+    if (override && override.override_type === "grant_trial") {
       const now = new Date().toISOString()
       if (override.trial_ends_at && override.trial_ends_at > now) {
         return {
@@ -416,7 +399,7 @@ export async function resolveFeatureEntitlement(
     // Check tier inclusion
     const { data: subscription, error: subError } = await supabase
       .from("subscriptions")
-      .select("tier_name")
+      .select("tier_id")
       .eq("brokerage_id", input.brokerageId)
       .maybeSingle()
 
@@ -431,7 +414,7 @@ export async function resolveFeatureEntitlement(
     const { data: tier, error: tierError } = await supabase
       .from("subscription_tiers")
       .select("features")
-      .eq("tier_name", subscription.tier_name)
+      .eq("id", subscription.tier_id)
       .maybeSingle()
 
     if (!tier) {
@@ -508,7 +491,6 @@ export async function recordUsageEvent(
         .from("billing_usage")
         .update({
           [column]: newTotal,
-          updated_at: new Date().toISOString(),
         })
         .eq("brokerage_id", input.brokerageId)
 
@@ -522,8 +504,8 @@ export async function recordUsageEvent(
       const insertData: Record<string, any> = {
         brokerage_id: input.brokerageId,
         [column]: input.units,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        // period_label is NOT NULL — the current billing month (YYYY-MM)
+        period_label: new Date().toISOString().slice(0, 7),
       }
 
       const { error: insertError } = await supabase
@@ -580,16 +562,17 @@ export async function applyFeatureOverride(
 
     const now = new Date()
     const appliedAt = now.toISOString()
+    // feature_access_overrides.override_type CHECK allows only grant_trial | disable.
+    const mappedOverrideType = input.overrideType === "disable" ? "disable" : "grant_trial"
+    const trialEndsAt = mappedOverrideType === "grant_trial" ? input.trialEndsAt : null
 
     if (existingOverride) {
       // Update existing
       const { error: updateError } = await supabase
         .from("feature_access_overrides")
         .update({
-          override_type: input.overrideType,
-          trial_ends_at:
-            input.overrideType === "enable_trial" ? input.trialEndsAt : null,
-          updated_at: appliedAt,
+          override_type: mappedOverrideType,
+          trial_ends_at: trialEndsAt,
         })
         .eq("id", existingOverride.id)
 
@@ -606,12 +589,10 @@ export async function applyFeatureOverride(
         .insert({
           brokerage_id: input.brokerageId,
           feature_key: input.featureKey,
-          override_type: input.overrideType,
-          trial_ends_at:
-            input.overrideType === "enable_trial" ? input.trialEndsAt : null,
-          applied_by: input.actorContext.userId,
+          override_type: mappedOverrideType,
+          trial_ends_at: trialEndsAt,
+          created_by: input.actorContext.userId,
           created_at: appliedAt,
-          updated_at: appliedAt,
         })
 
       if (insertError) {
@@ -671,7 +652,7 @@ export async function calculateOverageExposure(
     // Fetch tier limits
     const { data: subscription, error: subError } = await supabase
       .from("subscriptions")
-      .select("tier_name")
+      .select("tier_id")
       .eq("brokerage_id", input.brokerageId)
       .maybeSingle()
 
@@ -684,18 +665,22 @@ export async function calculateOverageExposure(
 
     const { data: tier, error: tierError } = await supabase
       .from("subscription_tiers")
-      .select("limits")
-      .eq("tier_name", subscription.tier_name)
+      .select("max_agents,max_brokerages,features")
+      .eq("id", subscription.tier_id)
       .maybeSingle()
 
-    if (!tier || !tier.limits) {
+    if (!tier) {
       return {
         success: false,
         error: "Tier limits not found",
       }
     }
 
-    const limits = tier.limits as Record<string, number>
+    // Per-metric caps live in the tier's features jsonb (plus the structured max_agents).
+    const limits = {
+      active_agents: tier.max_agents ?? 0,
+      ...(((tier.features as any)?.limits ?? {}) as Record<string, number>),
+    } as Record<string, number>
     const metrics: Record<string, any> = {}
     let totalExposureCents = 0
 
@@ -753,7 +738,7 @@ export async function loadRevenueSummary(
     // Fetch subscriptions in date range
     const { data: subscriptions, error: subError } = await supabase
       .from("subscriptions")
-      .select("tier_name,price_monthly,status,created_at,cancelled_at")
+      .select("status,created_at,cancelled_at,subscription_tiers:tier_id(tier_name,monthly_price_cents)")
       .gte("created_at", input.dateRange.from)
       .lte("created_at", input.dateRange.to)
 
@@ -783,7 +768,10 @@ export async function loadRevenueSummary(
     let cancelledCount = 0
 
     for (const sub of subscriptions) {
-      const key = input.aggregateBy === "tier" ? sub.tier_name : "all"
+      const tierRow = (sub as any).subscription_tiers
+      const key = input.aggregateBy === "tier" ? tierRow?.tier_name : "all"
+      // monthly_price_cents is ALREADY in cents — do NOT multiply by 100.
+      const priceCents = tierRow?.monthly_price_cents ?? 0
 
       if (!summaryByTier[key]) {
         summaryByTier[key] = {
@@ -795,11 +783,11 @@ export async function loadRevenueSummary(
       }
 
       summaryByTier[key].count += 1
-      summaryByTier[key].mrrCents += sub.price_monthly * 100
-      summaryByTier[key].arrCents += sub.price_monthly * 100 * 12
+      summaryByTier[key].mrrCents += priceCents
+      summaryByTier[key].arrCents += priceCents * 12
 
-      totalMRR += sub.price_monthly * 100
-      totalARR += sub.price_monthly * 100 * 12
+      totalMRR += priceCents
+      totalARR += priceCents * 12
 
       if (sub.status === "cancelled") {
         cancelledCount += 1
@@ -859,11 +847,17 @@ export async function updateSubscriptionState(
 
     if (input.newStatus === "cancelled") {
       updateData.cancelled_at = now
-      updateData.cancellation_reason = input.cancellationReason
+      // cancellation_reason is not modeled on subscriptions; the reason is captured via the audit/event log.
     }
 
     if (input.tier) {
-      updateData.tier_name = input.tier
+      // input.tier is a tier_name; subscriptions links to the tier via tier_id.
+      const { data: tierRow } = await supabase
+        .from("subscription_tiers")
+        .select("id")
+        .eq("tier_name", input.tier)
+        .maybeSingle()
+      if (tierRow) updateData.tier_id = tierRow.id
     }
 
     const { error: updateError } = await supabase
@@ -888,7 +882,10 @@ export async function updateSubscriptionState(
         .from("billing_invoices")
         .insert({
           brokerage_id: input.brokerageId,
-          status: "due",
+          // amount_cents is NOT NULL; a cancellation invoice carries no charge by default (0). The final
+          // amount is reconciled by the Stripe webhook (system of record).
+          amount_cents: 0,
+          status: "open",
           due_date: dueDate.toISOString(),
           created_at: now,
         })
