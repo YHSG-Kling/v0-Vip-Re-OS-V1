@@ -101,8 +101,8 @@ export async function createChatSession(data: {
     .from("conversations")
     .insert({
       agent_id: data.agentId,
-      lead_id: data.leadId && isValidUUID(data.leadId) ? data.leadId : null,
-      session_type: data.sessionType,
+      contact_id: data.leadId && isValidUUID(data.leadId) ? data.leadId : null,
+      type: data.sessionType,
       context_data: contextData,
     })
     .select()
@@ -117,12 +117,12 @@ export async function createChatSession(data: {
 
   // Create welcome message
   await supabase.from("messages").insert({
-    session_id: session.id,
+    conversation_id: session.id,
     sender_type: "ai_assistant",
-    message_content: data.leadId
+    body: data.leadId
       ? `I'm ready to help you engage with this lead using them-first communication. I have their profile loaded and can suggest personalized approaches.`
       : `I'm here to assist you. What would you like help with today?`,
-    message_type: "system",
+    type: "system",
   })
 
   revalidatePath("/dashboard/chat")
@@ -167,10 +167,10 @@ export async function sendChatMessage(data: {
   const { data: message, error } = await supabase
     .from("messages")
     .insert({
-      session_id: data.sessionId,
+      conversation_id: data.sessionId,
       sender_type: isClientMessage ? "client" : "agent",
       sender_id: data.senderId,
-      message_content: data.messageContent,
+      body: data.messageContent,
       them_first_analysis: themFirstAnalysis,
       compliance_flagged: !complianceCheck.passed,
       compliance_issues: complianceCheck.issues,
@@ -182,7 +182,7 @@ export async function sendChatMessage(data: {
           }
         : null,
     })
-    .select()
+    .select("*, message_content:body, message_type:type")
     .single()
 
   if (error) throw error
@@ -191,7 +191,7 @@ export async function sendChatMessage(data: {
   await supabase
     .from("conversations")
     .update({
-      last_activity_at: new Date().toISOString(),
+      last_message_at: new Date().toISOString(),
       them_first_score: themFirstAnalysis.score,
     })
     .eq("id", data.sessionId)
@@ -201,10 +201,10 @@ export async function sendChatMessage(data: {
     const aiResponse = await generateAiResponse(data.sessionId, data.messageContent)
 
     await supabase.from("messages").insert({
-      session_id: data.sessionId,
+      conversation_id: data.sessionId,
       sender_type: "ai_assistant",
-      message_content: aiResponse.message,
-      message_type: aiResponse.type,
+      body: aiResponse.message,
+      type: aiResponse.type,
       metadata: aiResponse.metadata,
     })
 
@@ -369,7 +369,7 @@ async function generateAiResponse(sessionId: string, userMessage: string): Promi
   const { data: messages } = await supabase
     .from("messages")
     .select("*")
-    .eq("session_id", sessionId)
+    .eq("conversation_id", sessionId)
     .order("created_at", { ascending: true })
     .limit(20)
 
@@ -385,7 +385,7 @@ Lead Information:
 `
     : "No lead selected"
 
-  const conversationHistory = messages?.map((m) => `${m.sender_type}: ${m.message_content}`).join("\n") || ""
+  const conversationHistory = messages?.map((m) => `${m.sender_type}: ${m.body}`).join("\n") || ""
 
   // Create AI prompt with them-first philosophy
   const prompt = `You are an AI assistant helping a real estate agent communicate with leads and clients using a "them-first" communication philosophy.
@@ -627,7 +627,7 @@ export async function getChatSession(sessionId: string) {
         lead_intelligence (*),
         lead_behavioral_data (*)
       ),
-      messages (*),
+      messages (*, message_content:body, message_type:type),
       ai_suggestions (*)
     `)
     .eq("id", sessionId)
@@ -650,6 +650,8 @@ export async function getAgentChatSessions(agentId: string) {
     .select(
       `
       *,
+      session_type:type,
+      last_activity_at:last_message_at,
       contacts (
         first_name,
         last_name,
@@ -661,8 +663,8 @@ export async function getAgentChatSessions(agentId: string) {
     `,
     )
     .eq("agent_id", agentId)
-    .eq("session_status", "active")
-    .order("last_activity_at", { ascending: false })
+    .eq("status", "active")
+    .order("last_message_at", { ascending: false })
 
   if (error) {
     console.error("[v0] Error fetching chat sessions:", error)
@@ -678,7 +680,7 @@ export async function endChatSession(sessionId: string) {
   const { error } = await supabase
     .from("conversations")
     .update({
-      session_status: "completed",
+      status: "completed",
       ended_at: new Date().toISOString(),
     })
     .eq("id", sessionId)
