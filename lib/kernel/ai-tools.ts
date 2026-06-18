@@ -239,8 +239,8 @@ export async function runAiTool(
         user_id: ctx.userId,
         brokerage_id: ctx.brokerageId,
         tool_name: toolName,
-        input_data: params,
-        output_data: { text: outputText },
+        context_json: params,
+        output_text: outputText,
         tokens_used: tokensUsed,
         execution_time_ms: executionTimeMs,
         success,
@@ -354,11 +354,11 @@ export async function attachAiOutputToEntity(
     // Insert into ai_assistant_notes
     const { error: noteErr } = await supabase.from("ai_assistant_notes").insert({
       brokerage_id: ctx.brokerageId,
-      user_id: ctx.userId,
+      created_by: ctx.userId,
       entity_type: entityType,
       entity_id: entityId,
       tool_name: saved.tool_name,
-      content: note ?? saved.output_text,
+      note_text: note ?? saved.output_text,
       saved_output_id: savedOutputId,
     })
 
