@@ -37,7 +37,7 @@ export async function getTitleDashboard(titleUserId: string) {
     .select(`
       id,
       transaction_id,
-      title_company,
+      title_company:title_company_name,
       escrow_number,
       title_status,
       earnest_money_status,
@@ -160,7 +160,7 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
   // Fetch milestones (filtered to title-visible ones)
   const { data: milestones } = await supabase
     .from("transaction_milestones")
-    .select("id, milestone_name, milestone_type, target_date, completed_date, status")
+    .select("id, milestone_name, milestone_type, target_date, completed_date:completed_at, status")
     .eq("transaction_id", transactionId)
     .in("milestone_name", [...TITLE_VISIBLE_MILESTONES])
     .order("target_date", { ascending: true, nullsFirst: false })
@@ -168,9 +168,9 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
   // Fetch documents uploaded by title
   const { data: documents } = await supabase
     .from("transaction_documents")
-    .select("id, document_type, file_name, file_url, created_at, uploaded_by")
+    .select("id, document_type:doc_type, file_name:doc_label, file_url:storage_url, created_at, uploaded_by")
     .eq("transaction_id", transactionId)
-    .in("document_type", [
+    .in("doc_type", [
       "title_commitment",
       "settlement_statement",
       "final_closing_disclosure",
@@ -248,9 +248,9 @@ export async function uploadTitleDocument(data: {
     .insert({
       transaction_id: data.transactionId,
       brokerage_id: actor.brokerageId,
-      document_type: data.documentType,
-      file_name: data.fileName,
-      file_url: data.fileUrl,
+      doc_type: data.documentType,
+      doc_label: data.fileName,
+      storage_url: data.fileUrl,
       uploaded_by: actor.userId,
       uploaded_by_type: "title",
       metadata,
