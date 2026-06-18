@@ -581,7 +581,7 @@ export async function enrichPropertyIntelligence(propertyData: {
       .from("property_intelligence")
       .insert({
         brokerage_id: auth.brokerageId,
-        address: propertyData.address,
+        property_address: propertyData.address,
         city: propertyData.city,
         state: propertyData.state,
         zip: propertyData.zip,
