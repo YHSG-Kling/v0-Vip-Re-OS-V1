@@ -203,31 +203,36 @@ export async function generateVendorBrief(params: {
 
   const sevenDaysOut = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
+  // vendor_assignments real columns: vendor_id, scheduled_date (no deliverable_due_date),
+  // status CHECK pending|confirmed|in_progress|completed|cancelled, address via transactions
+  // (no listings FK). NOTE: there is no user→vendor link in the schema (vendors has no
+  // user_id), so this brief is scoped to the brokerage's vendor-deliverable workload.
+  // Per-vendor scoping requires a vendors.user_id link — flagged for product.
   const [openJobsRes, dueSoonRes, overdueRes] = await Promise.all([
     supabase
       .from("vendor_assignments")
       .select("id", { count: "exact", head: true })
-      .eq("assigned_to_user_id", params.userId)
-      .in("status", ["assigned", "in_progress", "scheduled"]),
+      .eq("brokerage_id", params.brokerageId)
+      .in("status", ["pending", "confirmed", "in_progress"]),
     supabase
       .from("vendor_assignments")
-      .select("id, deliverable_due_date, listings(address)")
-      .eq("assigned_to_user_id", params.userId)
-      .gte("deliverable_due_date", today)
-      .lte("deliverable_due_date", sevenDaysOut)
+      .select("id, scheduled_date, transactions(property_address)")
+      .eq("brokerage_id", params.brokerageId)
+      .gte("scheduled_date", today)
+      .lte("scheduled_date", sevenDaysOut)
       .limit(5),
     supabase
       .from("vendor_assignments")
-      .select("id, deliverable_due_date")
-      .eq("assigned_to_user_id", params.userId)
-      .lt("deliverable_due_date", today)
+      .select("id, scheduled_date")
+      .eq("brokerage_id", params.brokerageId)
+      .lt("scheduled_date", today)
       .neq("status", "completed")
       .limit(5),
   ])
 
   const openCount = openJobsRes.count ?? 0
-  const dueSoon = (dueSoonRes.data ?? []) as unknown as Array<{ id: string; deliverable_due_date: string | null; listings: { address: string | null } | null }>
-  const overdue = (overdueRes.data ?? []) as unknown as Array<{ id: string; deliverable_due_date: string | null }>
+  const dueSoon = (dueSoonRes.data ?? []) as unknown as Array<{ id: string; scheduled_date: string | null; transactions: { property_address: string | null } | null }>
+  const overdue = (overdueRes.data ?? []) as unknown as Array<{ id: string; scheduled_date: string | null }>
 
   const priorities: BriefPriority[] = []
 
@@ -245,7 +250,7 @@ export async function generateVendorBrief(params: {
     priorities.push({
       id: "due-soon",
       title: `${dueSoon.length} deliverable${dueSoon.length === 1 ? "" : "s"} due this week`,
-      body: dueSoon[0].listings?.address ?? "Property deliverables — see job list",
+      body: dueSoon[0].transactions?.property_address ?? "Property deliverables — see job list",
       severity: "medium",
       ctas: [{ label: "View calendar", href: "/vendor/jobs" }],
     })

@@ -590,7 +590,7 @@ export async function generateCampaignROIReport(
     const { data: roiRows, error: roiErr } = await supabase
       .from("campaign_roi")
       .select(`
-        id, campaign_id, total_spend, total_leads, total_conversions,
+        id, marketing_campaign_id, total_spend, total_leads, total_conversions,
         total_revenue, roi_percentage,
         marketing_campaigns(campaign_name, status, budget_total, budget_spent)
       `)
@@ -707,9 +707,10 @@ export async function generateTeamPerformanceReport(
     const supabase = await createServiceClient()
     const { ctx } = input
 
+    // team_performance has no team_name/agent_count; name comes via teams FK embed.
     const { data: teamPerf, error } = await supabase
       .from("team_performance")
-      .select("id, team_name, total_revenue, goal_amount, agent_count")
+      .select("id, team_id, total_revenue, goal_amount, teams(name)")
       .eq("brokerage_id", ctx.brokerageId)
       .order("total_revenue", { ascending: false })
       .limit(20)
@@ -718,13 +719,13 @@ export async function generateTeamPerformanceReport(
 
     const teams = (teamPerf ?? []).map(t => ({
       id:             t.id,
-      team_name:      t.team_name ?? "Unnamed Team",
+      team_name:      ((t.teams as { name?: string } | null)?.name) ?? "Unnamed Team",
       total_revenue:  t.total_revenue  ?? 0,
       goal_amount:    t.goal_amount    ?? 0,
       attainment_pct: t.goal_amount && t.goal_amount > 0
         ? Math.round(((t.total_revenue ?? 0) / t.goal_amount) * 100)
         : 0,
-      agent_count:    t.agent_count ?? 0,
+      agent_count:    0, // no agent_count column on team_performance
     }))
 
     return { success: true, data: { teams } }
@@ -1002,11 +1003,13 @@ export async function exportReportPdf(
 
     // Store Blob URL in ai_assistant_notes for audit trail
     await supabase.from("ai_assistant_notes").insert({
-      agent_id:    ctx.agentId,
-      entity_type: "report",
-      entity_id:   crypto.randomUUID(),
-      note:        JSON.stringify({ type: "pdf_export", url: blob.url, title, reportType }),
-      created_at:  new Date().toISOString(),
+      brokerage_id: ctx.brokerageId, // NOT NULL
+      created_by:   ctx.userId,      // NOT NULL (no agent_id column)
+      entity_type:  "report",
+      entity_id:    crypto.randomUUID(),
+      note_text:    JSON.stringify({ type: "pdf_export", url: blob.url, title, reportType }), // was phantom note
+      source:       "ai_assistant",
+      created_at:   new Date().toISOString(),
     }).select()
 
     await emitEvent(supabase, ctx, KernelEvent.REPORT_EXPORTED_PDF, crypto.randomUUID(), {
@@ -1033,10 +1036,10 @@ export async function emailReport(
     const supabase = await createServiceClient()
 
     const { error } = await supabase.from("email_queue").insert({
-      to,
+      to_email:     to, // real column (was phantom `to`)
       subject,
       body,
-      agent_id:    ctx.agentId,
+      metadata:     { agent_id: ctx.agentId }, // no agent_id column on email_queue
       brokerage_id: ctx.brokerageId,
       status:      "pending",
       created_at:  new Date().toISOString(),

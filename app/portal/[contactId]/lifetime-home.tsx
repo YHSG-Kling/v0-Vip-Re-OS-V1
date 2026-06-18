@@ -261,10 +261,10 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
                   >
                     <div>
                       <p className="font-medium text-sm">
-                        {v.vendors?.business_name || v.business_name}
+                        {v.name}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {v.category || v.service_type}
+                        {v.category}
                       </p>
                     </div>
                     <div className="flex items-center gap-1.5">
@@ -274,7 +274,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
                           <span className="text-xs">{v.rating}</span>
                         </div>
                       )}
-                      {v.is_featured && !v.rating && (
+                      {v.preferred && !v.rating && (
                         <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
                       )}
                     </div>

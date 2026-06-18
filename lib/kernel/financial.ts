@@ -321,15 +321,16 @@ export async function loadFinancialWorkspace(
         return { success: false, error: "Agent identity verification failed" }
       }
     } else {
-      // Broker/admin path: no agents row — verify they own or belong to the brokerage
-      const { data: brokerage } = await supabase
-        .from("brokerages")
+      // Broker/admin path: no agents row — verify they belong to the brokerage.
+      // brokerages has no owner_id column; canonical membership is users.brokerage_id.
+      const { data: ownerUser } = await supabase
+        .from("users")
         .select("id")
-        .eq("id", ctx.brokerageId)
-        .eq("owner_id", ctx.userId)
+        .eq("id", ctx.userId)
+        .eq("brokerage_id", ctx.brokerageId)
         .maybeSingle()
 
-      if (!brokerage) {
+      if (!ownerUser) {
         // Also accept admin users with a matching agents row linked to the brokerage
         const { data: adminAgent } = await supabase
           .from("agents")
@@ -1007,18 +1008,22 @@ export async function emailFinancialReport(
 
     const queuedAt = new Date().toISOString()
 
-    // Insert to email_queue
+    // Insert to email_queue (canonical columns: to_email NOT NULL, template, metadata jsonb,
+    // status; no recipient_email/template_type/variables/priority/scheduled_for). One row per recipient.
     const { error: queueError } = await supabase
       .from("email_queue")
-      .insert({
-        recipient_email:  recipients.join(","),
-        subject:          subject ?? `Financial Report - ${reportType}`,
-        template_type:    "financial_report",
-        variables:        { reportType, message, brokerageId },
-        priority:         "normal",
-        scheduled_for:    queuedAt,
-        created_at:       queuedAt,
-      })
+      .insert(
+        recipients.map((to_email: string) => ({
+          brokerage_id: brokerageId,
+          to_email,
+          subject:    subject ?? `Financial Report - ${reportType}`,
+          body:       message ?? null,
+          template:   "financial_report",
+          metadata:   { reportType, message, brokerageId, priority: "normal" },
+          status:     "pending",
+          created_at: queuedAt,
+        })),
+      )
 
     if (queueError) {
       return { success: false, error: `Queue failed: ${queueError.message}` }

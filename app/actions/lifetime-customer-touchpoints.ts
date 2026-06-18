@@ -301,6 +301,10 @@ export async function calculateEngagementScore(contactId: string) {
 
   const agentId = await resolveAgentId(supabase, user.id)
   if (!agentId) throw new Error("Agent profile not found")
+  // client_engagement_scores.brokerage_id is NOT NULL — resolve from the agent.
+  const { data: agentRow } = await supabase
+    .from("agents").select("brokerage_id").eq("id", agentId).maybeSingle()
+  const brokerageId = agentRow?.brokerage_id ?? null
 
   const { data: touchpoints } = await supabase
     .from("lifetime_customer_touchpoints")
@@ -308,7 +312,8 @@ export async function calculateEngagementScore(contactId: string) {
     .eq("contact_id", contactId)
     .eq("status", "sent")
 
-  const { data: referrals } = await supabase.from("referrals").select("*").eq("referring_contact_id", contactId)
+  // referrals given BY this contact: canonical column is referred_by (text).
+  const { data: referrals } = await supabase.from("referrals").select("*").eq("referred_by", contactId)
 
   const totalTouchpoints = touchpoints?.length || 0
   const respondedTouchpoints = touchpoints?.filter((t) => t.engagement_data?.replied).length || 0
@@ -324,17 +329,20 @@ export async function calculateEngagementScore(contactId: string) {
     Math.round(responseRate * 0.4 + engagementScore * 0.4 + referralsGiven * 5),
   )
 
+  // client_engagement_scores real columns: score/touchpoints_count/referrals_given/
+  // last_interaction/calculated_at (no engagement_score/referral_potential_score/
+  // total_touchpoints/touchpoints_responded/response_rate/last_calculated_at). UNIQUE(contact_id).
+  // referralPotentialScore/respondedTouchpoints/responseRate remain computed for the return value.
   const { error } = await supabase.from("client_engagement_scores").upsert({
+    brokerage_id: brokerageId,
     contact_id: contactId,
     agent_id: agentId,
-    engagement_score: engagementScore,
-    referral_potential_score: referralPotentialScore,
-    total_touchpoints: totalTouchpoints,
-    touchpoints_responded: respondedTouchpoints,
-    response_rate: responseRate,
+    score: engagementScore,
+    touchpoints_count: totalTouchpoints,
     referrals_given: referralsGiven,
-    last_calculated_at: new Date().toISOString(),
-  })
+    last_interaction: new Date().toISOString(),
+    calculated_at: new Date().toISOString(),
+  }, { onConflict: "contact_id" })
 
   if (error) throw error
 

@@ -112,7 +112,7 @@ export async function getLifetimeContext(contactId: string) {
     .select("*")
     .eq("contact_id", contactId)
     .eq("brokerage_id", access.brokerageId)
-    .order("sent_at", { ascending: false })
+    .order("sent_date", { ascending: false })
     .limit(5)
 
   // Get referrals submitted by this contact — scoped (live schema column is referred_by)
@@ -200,7 +200,7 @@ export async function submitReferral(data: {
       referral_name: data.referredName,
       source_contact_name: data.referredName,
       notes: data.referredContact + (data.relationship ? ` (${data.relationship})` : ""),
-      status: "new",
+      status: "received", // CHECK: received|contacted|qualified|assigned|under_contract|closed|lost (no 'new')
       agent_id: contact.agent_id,
       brokerage_id: contact.brokerage_id,
     })
@@ -308,7 +308,7 @@ export async function getTransactionHistory(contactId: string) {
   // Get transaction documents — scoped
   const { data: documents } = await supabase
     .from("transaction_documents")
-    .select("id, document_type, file_name, file_url, created_at")
+    .select("id, document_type:doc_type, file_name:doc_label, file_url:storage_url, created_at")
     .eq("transaction_id", transaction.id)
     .eq("brokerage_id", access.brokerageId)
     .order("created_at", { ascending: false })
@@ -341,7 +341,7 @@ export async function getMarketUpdates(contactId: string) {
     .eq("contact_id", contactId)
     .eq("brokerage_id", access.brokerageId)
     .in("touchpoint_type", ["market_update", "anniversary"])
-    .order("sent_at", { ascending: false })
+    .order("sent_date", { ascending: false })
 
   return {
     estimates: estimates || [],
@@ -388,16 +388,14 @@ export async function getVendorResources(contactId: string) {
 
   const supabase = createServiceClient()
 
+  // vendor_directory is a flat table (no vendor_id FK / vendors embed; no is_featured).
+  // Real ranking column is display_priority; portal visibility via visible_in_portal.
   const { data: vendors } = await supabase
     .from("vendor_directory")
-    .select(`
-      id,
-      category,
-      is_featured,
-      vendors:vendor_id(id, business_name, vendor_type, phone, email, website_url, rating_avg, is_verified)
-    `)
+    .select("id, category, name, phone, email, website, rating, preferred, display_priority, visible_in_portal")
     .eq("brokerage_id", access.brokerageId)
-    .order("is_featured", { ascending: false })
+    .eq("visible_in_portal", true)
+    .order("display_priority", { ascending: false })
 
   return vendors || []
 }

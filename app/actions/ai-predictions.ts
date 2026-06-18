@@ -1006,14 +1006,17 @@ Provide ACTIONABLE coaching. Respond with JSON:
 
     // Flag compliance issues if any
     if (result.complianceIssues?.length > 0) {
+      // compliance_flags canonical columns: violation_type/flagged_content/content_type;
+      // status CHECK is flagged|reviewed|resolved|overridden (no 'open'); no entity_type/
+      // entity_id/description/flag_type columns. (contact_id omitted: data.leadId may be a
+      // leads.id, and contact_id FKs contacts — avoid an FK violation.)
       await supabase.from("compliance_flags").insert({
-        entity_type: "conversation",
-        entity_id: intelligence?.id || data.conversationId,
-        flag_type: "fair_housing_violation",
+        content_type: data.conversationType,
+        violation_type: "fair_housing_violation",
         severity: "high",
-        description: `Compliance issues detected: ${result.complianceIssues.join(", ")}`,
-        flagged_content: data.transcript,
-        status: "open",
+        flagged_content: `Compliance issues detected: ${result.complianceIssues.join(", ")} :: ${data.transcript}`,
+        status: "flagged",
+        detected_at: new Date().toISOString(),
       })
     }
 
@@ -1562,19 +1565,14 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
 
   const commissionStructure = await getDefaultCommissionStructure(brokerageId)
 
-  // Get all leads with property ownership in agent's service areas
-  const { data: leads, error } = await supabase
+  // lead_property_ownership has no PostgREST FK to leads — embedding it errors the query.
+  // Fetch leads, then their ownership rows separately (canonical pattern, see lead-intelligence.ts).
+  const { data: agentLeads, error } = await supabase
     .from("leads")
-    .select(
-      `
-      *,
-      lead_property_ownership(*)
-    `,
-    )
+    .select("*")
     .eq("agent_id", agentId)
-    .not("lead_property_ownership", "is", null)
 
-  if (error || !leads) {
+  if (error || !agentLeads) {
     console.error("[v0] Error fetching leads with property ownership:", error)
     return {
       totalCMAsGenerated: 0,
@@ -1584,10 +1582,24 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
     }
   }
 
+  const { data: ownershipRows } = await supabase
+    .from("lead_property_ownership")
+    .select("*")
+    .in("lead_id", agentLeads.map((l) => l.id))
+
+  const ownershipByLead = new Map<string, any[]>()
+  for (const row of ownershipRows || []) {
+    const arr = ownershipByLead.get(row.lead_id) || []
+    arr.push(row)
+    ownershipByLead.set(row.lead_id, arr)
+  }
+  // Only leads that actually own property (replaces the phantom .not(...) filter)
+  const leads = agentLeads.filter((l) => (ownershipByLead.get(l.id)?.length ?? 0) > 0)
+
   const cmaResults = []
 
   for (const lead of leads) {
-    const propertyOwnership = lead.lead_property_ownership || []
+    const propertyOwnership = ownershipByLead.get(lead.id) || []
 
     for (const property of propertyOwnership) {
       try {
@@ -2064,18 +2076,20 @@ Find TOP 10 arbitrage opportunities:
 
     // Save opportunities to database
     for (const opp of arbitrage.opportunities || []) {
+      // ai_insights has no insight_data column → fold the payload into estimated_impact
+      // (jsonb). entity_id is uuid; opp.mlsId is an MLS string → keep it in the payload, not entity_id.
       await supabase.from("ai_insights").insert({
         insight_type: "opportunity",
         entity_type: "property",
-        entity_id: opp.mlsId,
         insight_title: `Hidden Gem: ${opp.belowMarketPercent}% Below Market`,
         insight_description: `${opp.address} - $${opp.belowMarket?.toLocaleString()} below market value`,
-        insight_data: opp,
         actionable_steps: [opp.actionRequired],
         priority: opp.urgency === "high" ? "critical" : "high",
         estimated_impact: {
           potential_profit: opp.investmentPotential?.profit,
           roi: opp.investmentPotential?.roi,
+          mls_id: opp.mlsId,
+          opportunity: opp,
         },
       })
     }

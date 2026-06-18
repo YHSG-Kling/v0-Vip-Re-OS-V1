@@ -262,10 +262,10 @@ export async function aiSelectTargetAudience(params: {
     // Get agent's past performance
     const { data: pastCampaigns } = await supabase
       .from("direct_mail_campaigns")
-      .select("target_criteria, response_rate, roi")
+      .select("target_audience, estimated_response_rate")
       .eq("agent_id", params.agentId)
-      .not("response_rate", "is", null)
-      .order("roi", { ascending: false })
+      .not("estimated_response_rate", "is", null)
+      .order("estimated_response_rate", { ascending: false })
       .limit(10)
 
     const { object: targeting } = await generateObject({
@@ -797,7 +797,7 @@ export async function getDirectMailAnalytics(params: { agentId: string; campaign
     cost: totalCost,
     costPerResponse: responseCount > 0 ? totalCost / responseCount : totalCost,
     status: c.status,
-    sentDate: c.submitted_at ?? c.mailing_date ?? null,
+    sentDate: c.mailing_date ?? null,
   }
 })
     return { success: true, analytics }
@@ -829,7 +829,7 @@ export async function aiAnalyzeCampaignPerformance(params: { agentId: string; br
       .from("direct_mail_campaigns")
       .select("*, responses:direct_mail_responses(*)")
       .eq("agent_id", params.agentId)
-      .not("submitted_at", "is", null)
+      .not("mailing_date", "is", null)
 
     const { object: analysis } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),

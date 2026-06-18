@@ -164,46 +164,43 @@ export default async function ResourcesPage({
                           <div className="flex items-start justify-between">
                             <div className="space-y-1">
                               <div className="flex items-center gap-2">
-                                <p className="font-medium">{v.vendors?.business_name}</p>
-                                {v.is_featured && (
+                                <p className="font-medium">{v.name}</p>
+                                {v.preferred && (
                                   <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
-                                )}
-                                {v.vendors?.is_verified && (
-                                  <CheckCircle2 className="h-4 w-4 text-green-600" />
                                 )}
                               </div>
                               <p className="text-sm text-muted-foreground">
-                                {v.vendors?.vendor_type}
+                                {v.category}
                               </p>
                             </div>
-                            {v.vendors?.rating_avg && (
+                            {v.rating && (
                               <Badge variant="secondary" className="text-xs">
                                 <Star className="h-3 w-3 mr-1 text-yellow-500 fill-yellow-500" />
-                                {v.vendors.rating_avg.toFixed(1)}
+                                {Number(v.rating).toFixed(1)}
                               </Badge>
                             )}
                           </div>
                           <div className="mt-3 flex flex-wrap gap-2">
-                            {v.vendors?.phone && (
+                            {v.phone && (
                               <Button variant="outline" size="sm" asChild>
-                                <a href={`tel:${v.vendors.phone}`}>
+                                <a href={`tel:${v.phone}`}>
                                   <Phone className="h-3 w-3 mr-1" />
-                                  {v.vendors.phone}
+                                  {v.phone}
                                 </a>
                               </Button>
                             )}
-                            {v.vendors?.email && (
+                            {v.email && (
                               <Button variant="outline" size="sm" asChild>
-                                <a href={`mailto:${v.vendors.email}`}>
+                                <a href={`mailto:${v.email}`}>
                                   <Mail className="h-3 w-3 mr-1" />
                                   Email
                                 </a>
                               </Button>
                             )}
-                            {v.vendors?.website_url && (
+                            {v.website && (
                               <Button variant="outline" size="sm" asChild>
                                 <a
-                                  href={v.vendors.website_url}
+                                  href={v.website}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                 >

@@ -642,15 +642,22 @@ export async function prepareListingEmailCampaign(params: {
     const recipients = await getListingCampaignRecipients(params.transactionId, params.campaignType, listing)
 
     const brokerageId = (listing as any).brokerage_id ?? transaction.brokerage_id ?? null
+    if (!brokerageId) {
+      return { success: false, error: "Could not resolve brokerage for campaign" }
+    }
+    const emailSubject = emailContent.data?.subject || `New Listing: ${listing.address}`
 
+    // email_campaigns: subject_line NOT NULL; campaign_format (CHECK one_off|drip|...) replaces
+    // phantom campaign_type; audience_filter jsonb replaces phantom target_segment.
     const { data: campaign, error } = await supabase
       .from("email_campaigns")
       .insert({
         brokerage_id: brokerageId,
         agent_id: transaction.agent_id,
         campaign_name: `${params.campaignType} - ${listing.address}`,
-        campaign_type: "one_time",
-        target_segment: determineListingSegment(params.campaignType),
+        subject_line: emailSubject,
+        campaign_format: "one_off",
+        audience_filter: { segment: determineListingSegment(params.campaignType) },
         status: "draft",
       })
       .select()
@@ -662,14 +669,23 @@ export async function prepareListingEmailCampaign(params: {
       return { success: false, error: "AI failed to generate email content" }
     }
 
+    // email_templates canonical columns: name/slug(NOT NULL)/subject/body/template_type(CHECK).
+    const TEMPLATE_TYPE_MAP: Record<string, string> = {
+      coming_soon: "offer",
+      launch: "offer",
+      open_house: "reminder",
+      price_drop: "offer",
+      sold: "closing",
+    }
     const { data: template } = await supabase
       .from("email_templates")
       .insert({
-        agent_id: transaction.agent_id,
-        template_name: `${params.campaignType} - ${listing.address}`,
-        template_type: params.campaignType,
-        subject_line: emailContent.data.subject || `New Listing: ${listing.address}`,
-        email_body: emailContent.data.generated_content,
+        brokerage_id: brokerageId,
+        name: `${params.campaignType} - ${listing.address}`,
+        slug: `${params.campaignType}-${listing.id}-${Date.now()}`,
+        template_type: TEMPLATE_TYPE_MAP[params.campaignType] ?? "followup",
+        subject: emailSubject,
+        body: emailContent.data.generated_content,
         variables: {
           property_address: listing.address,
           property_city: listing.city,
