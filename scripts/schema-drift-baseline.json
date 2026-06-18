@@ -363,8 +363,6 @@
   "app/actions/documents.ts::transaction_documents.contact_id::eq",
   "app/actions/documents.ts::transaction_documents.document_type::eq",
   "app/actions/documents.ts::transaction_documents.file_url::select",
-  "app/actions/dotloop-integration.ts::document_sharing_links.current_access_count::update",
-  "app/actions/dotloop-integration.ts::signature_requests.expires_at::insert",
   "app/actions/email-campaigns.ts::email_campaigns.campaign_type::insert",
   "app/actions/email-campaigns.ts::email_campaigns.target_segment::insert",
   "app/actions/email-campaigns.ts::email_templates.agent_id::insert",
