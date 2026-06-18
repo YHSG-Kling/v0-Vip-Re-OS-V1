@@ -251,7 +251,7 @@ export async function getSEOKeywords(agentId: string) {
   const { data, error } = await supabase
     .from("seo_keywords")
     .select("*")
-    .eq("agent_id", agentId)
+    .eq("agent_user_id", agentId)
     .eq("is_active", true)
     .order("search_volume", { ascending: false })
 
@@ -272,16 +272,23 @@ export async function addSEOKeyword(data: {
   category?: string
 }) {
   const supabase = await createClient()
+  const ctx = await getAgentContext()
 
   const { data: keyword, error } = await supabase
     .from("seo_keywords")
     .insert({
-      agent_id: data.agentId,
+      agent_user_id: data.agentId,
+      brokerage_id: ctx.brokerageId,
+      created_by: ctx.userId,
+      visibility_scope: "agent",
       keyword: data.keyword,
+      // keyword_type is a constrained enum (primary/secondary/long_tail/local/question);
+      // map the primary flag onto it. The free-form `category` has no canonical home and is dropped.
+      keyword_type: data.isPrimary ? "primary" : "secondary",
       search_volume: data.searchVolume,
       competition: data.competition,
       is_primary: data.isPrimary || false,
-      category: data.category,
+      is_active: true,
     })
     .select()
     .single()
@@ -979,19 +986,10 @@ export async function generateBlogPost(params: {
       .select()
       .single()
 
-    if (result.seo_keywords_used && savedContent) {
-      await Promise.all(
-        result.seo_keywords_used.map((keyword: string) =>
-          supabase.from("seo_keywords").insert({
-            agent_id: params.agentId,
-            keyword,
-            content_id: savedContent.id,
-            search_volume: 0,
-            difficulty: 50,
-          })
-        )
-      )
-    }
+    // The keywords used are already stored on the content row above
+    // (ai_generated_content.seo_keywords). The previous per-keyword insert into the seo_keywords
+    // LIBRARY was redundant and invalid (a library entry is brokerage-scoped, not content-scoped, and
+    // it omitted the required brokerage_id/visibility_scope) — removed to avoid duplication.
 
     await logContentGeneration({
       agentId: params.agentId,
