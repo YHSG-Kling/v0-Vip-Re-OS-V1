@@ -889,13 +889,13 @@ export async function generateAIEducation(
   try {
     const { data: bv } = await supabase
       .from("brand_voice_profile")
-      .select("tone, key_messages, prohibited_words")
+      .select("tone, key_brand_messages, prohibited_words")
       .or(`team_id.eq.${input.teamId ?? "00000000-0000-0000-0000-000000000000"},brokerage_id.eq.${input.brokerageId}`)
       .order("team_id", { ascending: false, nullsFirst: false })
       .limit(1)
       .maybeSingle()
     brandVoiceTone     = (bv?.tone as string | null) ?? null
-    brandVoiceKeywords = ((bv?.key_messages as string[] | null) ?? []) as string[]
+    brandVoiceKeywords = ((bv?.key_brand_messages as string[] | null) ?? []) as string[]
   } catch {
     // brand_voice_profile lookup is best-effort; failures don't block generation
   }

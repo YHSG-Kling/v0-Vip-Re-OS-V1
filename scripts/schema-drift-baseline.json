@@ -1104,7 +1104,6 @@
   "lib/kernel/cron-logging.ts::cron_execution_logs.context_id::eq",
   "lib/kernel/cron-logging.ts::cron_execution_logs.context_id::eq",
   "lib/kernel/cron-logging.ts::cron_execution_logs.context_id::insert",
-  "lib/kernel/education.ts::brand_voice_profile.key_messages::select",
   "lib/kernel/education.ts::lifecycle_events.contact_id::insert",
   "lib/kernel/financial.ts::brokerages.owner_id::eq",
   "lib/kernel/financial.ts::email_queue.priority::insert",
