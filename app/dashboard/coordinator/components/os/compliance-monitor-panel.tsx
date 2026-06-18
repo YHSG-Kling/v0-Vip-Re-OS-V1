@@ -25,26 +25,32 @@ export function ComplianceMonitorPanel({ brokerageId }: ComplianceMonitorPanelPr
           .select(`
             id,
             transaction_id,
-            issue_type,
-            severity,
-            description,
+            check_label,
+            failure_reason,
             status,
+            is_blocking,
             created_at
           `)
           .eq('brokerage_id', brokerageId)
           .order('created_at', { ascending: false })
           .limit(12)
 
-        setCompliance(data || [])
-
-        // Calculate stats
-        if (data) {
-          setStats({
-            critical: data.filter((c: any) => c.severity === 'critical').length,
-            warnings: data.filter((c: any) => c.severity === 'warning').length,
-            resolved: data.filter((c: any) => c.status === 'resolved').length,
-          })
-        }
+        // transaction_compliance_log is a check log (check_label, failure_reason,
+        // status pending|pass|fail|waived|needs_review, is_blocking) — derive the
+        // panel's issue/severity view-model from those real columns.
+        const mapped = (data || []).map((c: any) => {
+          const severity =
+            c.is_blocking && c.status === 'fail' ? 'critical'
+            : c.status === 'needs_review' || c.status === 'pending' ? 'warning'
+            : 'info'
+          return { ...c, issue_type: c.check_label, description: c.failure_reason, severity }
+        })
+        setCompliance(mapped)
+        setStats({
+          critical: mapped.filter((c: any) => c.severity === 'critical').length,
+          warnings: mapped.filter((c: any) => c.severity === 'warning').length,
+          resolved: mapped.filter((c: any) => c.status === 'pass' || c.status === 'waived').length,
+        })
       } catch (error) {
         console.error('Error fetching compliance:', error)
       } finally {

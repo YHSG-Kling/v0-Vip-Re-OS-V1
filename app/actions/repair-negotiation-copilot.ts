@@ -112,7 +112,7 @@ export async function repairNegotiationCoPilot(params: {
       .maybeSingle(),
     supabase
       .from("transaction_repair_negotiations")
-      .select("id, item_description, estimated_cost, priority, status, requested_by, response_note, repair_credit_amount, resolution, final_amount, created_at")
+      .select("id, item_description, estimated_cost, priority, status, requested_by, response_note, actual_cost, created_at")
       .eq("transaction_id", params.transactionId)
       .order("created_at", { ascending: true }),
     supabase
@@ -133,9 +133,7 @@ export async function repairNegotiationCoPilot(params: {
     status: string
     requested_by: string | null
     response_note: string | null
-    repair_credit_amount: number | null
-    resolution: string | null
-    final_amount: number | null
+    actual_cost: number | null
   }>
 
   if (rawRepairs.length === 0) {

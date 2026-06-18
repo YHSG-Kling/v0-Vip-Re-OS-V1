@@ -63,14 +63,14 @@ export function ConversionCoachingCard({ contactId }: ConversionCoachingCardProp
       // Get qualification signals to derive coaching
       const { data: qualification } = await supabase
         .from("ai_isa_qualifications")
-        .select("qualification_signals, urgency_level")
+        .select("qualification_signals, qualification_result")
         .eq("contact_id", contactId)
-        .order("created_at", { ascending: false })
+        .order("qualified_at", { ascending: false })
         .limit(1)
         .maybeSingle()
 
       const signals = qualification?.qualification_signals || {}
-      const urgency = qualification?.urgency_level || "medium"
+      const urgency = (qualification?.qualification_signals as { urgency?: string } | null)?.urgency || "medium"
 
       // Build coaching based on signals
       const coachingData: CoachingData = {

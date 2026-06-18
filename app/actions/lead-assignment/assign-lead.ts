@@ -18,9 +18,9 @@ export async function assignLead(
   if (!user?.id) throw new Error("Unauthorized")
 
   const { data: profile } = await supabase
-    .from("user_profiles")
+    .from("users")
     .select("brokerage_id, user_type")
-    .eq("user_id", user.id)
+    .eq("id", user.id)
     .single()
 
   if (!profile?.brokerage_id) throw new Error("No brokerage found for user")
@@ -62,9 +62,9 @@ export async function manualAssignLead(
   if (!user?.id) throw new Error("Unauthorized")
 
   const { data: profile } = await supabase
-    .from("user_profiles")
+    .from("users")
     .select("brokerage_id, user_type")
-    .eq("user_id", user.id)
+    .eq("id", user.id)
     .single()
 
   if (!["admin", "broker", "superadmin"].includes(profile?.user_type ?? "")) {
@@ -116,9 +116,9 @@ export async function claimLeadAction(
   if (!user?.id) throw new Error("Unauthorized")
 
   const { data: profile } = await supabase
-    .from("user_profiles")
+    .from("users")
     .select("brokerage_id, user_type")
-    .eq("user_id", user.id)
+    .eq("id", user.id)
     .single()
 
   if (!profile?.brokerage_id) throw new Error("No brokerage found for user")

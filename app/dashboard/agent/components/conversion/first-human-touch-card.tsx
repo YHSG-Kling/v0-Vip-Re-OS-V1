@@ -50,23 +50,25 @@ export function FirstHumanTouchCard({
       // Get qualification signals to determine best approach
       const { data: qualification } = await supabase
         .from("ai_isa_qualifications")
-        .select("qualification_signals, urgency_level")
+        .select("qualification_signals, qualification_result")
         .eq("contact_id", contactId)
-        .order("created_at", { ascending: false })
+        .order("qualified_at", { ascending: false })
         .limit(1)
         .maybeSingle()
 
-      // Get engagement history to see preferred channel
+      // Get engagement history to see preferred channel.
+      // ai_isa_engagement_tracking timestamp is event_at; event_type CHECK is
+      // sent|delivered|opened|clicked|replied|bounced|unsubscribed|suppressed.
       const { data: engagements } = await supabase
         .from("ai_isa_engagement_tracking")
         .select("channel, event_type, metadata")
         .eq("contact_id", contactId)
-        .in("event_type", ["positive_response", "opened", "clicked", "replied"])
-        .order("created_at", { ascending: false })
+        .in("event_type", ["opened", "clicked", "replied"])
+        .order("event_at", { ascending: false })
         .limit(5)
 
       const signals = qualification?.qualification_signals || {}
-      const urgency = qualification?.urgency_level || "medium"
+      const urgency = (qualification?.qualification_signals as { urgency?: string } | null)?.urgency || "medium"
 
       // Determine best channel based on engagement history
       const channelResponses = (engagements || []).reduce((acc: Record<string, number>, e: any) => {

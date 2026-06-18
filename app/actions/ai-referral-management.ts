@@ -252,16 +252,9 @@ Generate:
 6. Whether to update the referrer`,
     })
 
-    // Update referral with AI insights
-    await supabase
-      .from("referrals")
-      .update({
-        ai_conversion_probability: nurtureStrategy.conversionProbability,
-        ai_next_action: nurtureStrategy.nextBestAction.action,
-        ai_nurture_strategy: nurtureStrategy,
-      })
-      .eq("id", params.referralId)
-
+    // referrals has no ai_conversion_probability/ai_next_action/ai_nurture_strategy
+    // columns (and no jsonb to fold into) — the strategy is returned to the caller
+    // intact below, so nothing is persisted to a phantom column.
     return { success: true, nurtureStrategy }
   } catch (error) {
     return handleError(error, "nurturePendingReferral")

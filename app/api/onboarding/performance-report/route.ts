@@ -132,11 +132,15 @@ Make the narrative personalized and actionable. If they're doing well, acknowled
             report_type: 'onboarding_coaching',
             period_start: onboarding?.start_date || new Date().toISOString(),
             period_end: new Date().toISOString(),
-            metrics,
+            // agent_performance_reports has no overall_score/strengths/improvement_areas
+            // columns — fold them into the metrics jsonb (mirrored on read in GET).
+            metrics: {
+              ...metrics,
+              overall_score: reportData.overall_score,
+              strengths: reportData.strengths,
+              improvement_areas: reportData.improvement_areas,
+            },
             ai_summary: reportData.ai_narrative,
-            overall_score: reportData.overall_score,
-            strengths: reportData.strengths,
-            improvement_areas: reportData.improvement_areas,
             recommendations: reportData.recommended_actions,
           })
       } catch (err) {
@@ -174,10 +178,10 @@ export async function GET(request: NextRequest) {
     hasReport: true,
     report: {
       id: report.id,
-      overallScore: report.overall_score,
+      overallScore: report.metrics?.overall_score,
       aiNarrative: report.ai_summary,
-      strengths: report.strengths || [],
-      improvementAreas: report.improvement_areas || [],
+      strengths: report.metrics?.strengths || [],
+      improvementAreas: report.metrics?.improvement_areas || [],
       recommendedActions: report.recommendations || [],
       createdAt: report.created_at,
     },

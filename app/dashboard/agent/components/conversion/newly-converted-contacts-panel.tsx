@@ -64,11 +64,9 @@ export function NewlyConvertedContactsPanel({ agentId, brokerageId }: NewlyConve
           lifecycle_state,
           created_at,
           ai_isa_qualifications (
-            qualification_reason,
-            urgency_level,
-            next_action,
+            qualification_result,
             qualification_signals,
-            created_at
+            qualified_at
           )
         `)
         .eq("brokerage_id", brokerageId)
@@ -107,9 +105,12 @@ export function NewlyConvertedContactsPanel({ agentId, brokerageId }: NewlyConve
             email: c.email,
             phone: c.phone,
             lifecycle_state: c.lifecycle_state,
-            qualification_reason: qualification?.qualification_reason || "Qualified via ISA",
-            urgency_level: qualification?.urgency_level || "medium",
-            next_action: qualification?.next_action || "Initial outreach",
+            qualification_reason: qualification?.qualification_signals?.summary || qualification?.qualification_result || "Qualified via ISA",
+            urgency_level: qualification?.qualification_signals?.urgency || "medium",
+            next_action:
+              qualification?.qualification_result === "appointment_set" ? "Confirm appointment"
+              : qualification?.qualification_result === "needs_follow_up" ? "Follow up"
+              : "Initial outreach",
             source_lead_name: sourceLead
               ? `${sourceLead.first_name || ""} ${sourceLead.last_name || ""}`.trim() || sourceLead.source
               : null,

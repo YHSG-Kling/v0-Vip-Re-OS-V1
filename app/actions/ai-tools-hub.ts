@@ -94,13 +94,13 @@ export async function executeAITool(
     result = { error: error.message }
   }
   
-  // Log usage
+  // Log usage. ai_tool_usage real columns: context_json (was input_data),
+  // output_text (was output_data); no user_type column.
   await supabase.from("ai_tool_usage").insert({
     user_id: userId,
-    user_type: userType,
     tool_name: toolName,
-    input_data: params,
-    output_data: result,
+    context_json: JSON.stringify(params ?? {}),
+    output_text: typeof result === "string" ? result : JSON.stringify(result ?? {}),
     execution_time_ms: Date.now() - startTime,
     success,
     tokens_used: result?.tokensUsed || 0,

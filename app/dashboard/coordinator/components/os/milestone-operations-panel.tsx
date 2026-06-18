@@ -26,12 +26,10 @@ export function MilestoneOperationsPanel({ brokerageId }: MilestoneOperationsPan
             transaction_id,
             milestone_name,
             target_date,
-            completed_date,
-            status,
-            sequence
+            status
           `)
           .eq('brokerage_id', brokerageId)
-          .order('sequence', { ascending: true })
+          .order('target_date', { ascending: true })
           .limit(20)
 
         setMilestones(data || [])

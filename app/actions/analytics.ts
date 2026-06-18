@@ -14,11 +14,13 @@ export async function aggregateValueDelivered(agentId: string, date: Date) {
   // Pull from multiple sources (would need actual tracking tables)
   const [toolUsage, educationalContent, helpfulResponses] = await Promise.all([
     // Tool usage (from public tools if exists)
+    // tool_usage_sessions has no date/email_captured columns — filter the day via
+    // created_at range (timestamptz).
     supabase
       .from("tool_usage_sessions")
       .select("*")
-      .eq("date", dateStr)
-      .is("email_captured", null), // Anonymous = pure value
+      .gte("created_at", dateStr)
+      .lt("created_at", new Date(new Date(dateStr).getTime() + 86400000).toISOString().slice(0, 10)),
 
     // Educational content downloads
     supabase.from("educational_content_downloads").select("*").eq("downloaded_date", dateStr),
@@ -113,7 +115,7 @@ export async function calculateTrustCapital(agentId: string, periodDays: number 
     .from("contacts")
     .select("*")
     .eq("agent_id", agentId)
-    .eq("referral_source", "client_referral")
+    .eq("source", "client_referral")
     .gte("created_at", startDate.toISOString())
 
   // Calculate metrics

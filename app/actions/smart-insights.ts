@@ -544,13 +544,17 @@ export async function updateShowingFeedback(
 ) {
   const supabase = await createClient()
 
+  // Feedback lives on `showings` (rating/feedback/buyer_interest_level), not
+  // showing_requests (a scheduling request with no feedback columns + a status
+  // CHECK that excludes "completed").
   const { error } = await supabase
-    .from("showing_requests")
+    .from("showings")
     .update({
-      feedback_rating: rating,
-      feedback_notes: notes,
-      interested_level: interestedLevel,
+      rating: rating,
+      feedback: notes,
+      buyer_interest_level: interestedLevel,
       status: "completed",
+      completed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
     .eq("id", showingId)

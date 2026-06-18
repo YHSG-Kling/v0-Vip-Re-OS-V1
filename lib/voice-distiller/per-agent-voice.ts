@@ -110,16 +110,25 @@ export async function distillVoiceForAgent(args: {
   // 2. Pull historical samples. Cap per-source so a prolific
   //    newsletter writer doesn't drown out blog + social signal.
   const since = new Date(Date.now() - SAMPLE_LOOKBACK_DAYS * 86_400_000).toISOString()
+  // newsletter_campaigns.agent_id and social_posts.agent_id are agents.id FKs,
+  // whereas blog_posts.agent_user_id is the users.id. Resolve the agent row once so
+  // the newsletter/social filters match (the body columns are both `content`).
+  const { data: agentRow } = await svc.from("agents")
+    .select("id")
+    .eq("user_id", args.agentUserId)
+    .eq("brokerage_id", args.brokerageId)
+    .maybeSingle()
+  const agentRowId = agentRow?.id ?? args.agentUserId
   const [newslettersR, blogsR, socialR] = await Promise.all([
     svc.from("newsletter_campaigns")
-      .select("id, subject_line, body_html")
+      .select("id, subject_line, body_html:content")
       .eq("brokerage_id", args.brokerageId)
-      .eq("created_by_user_id", args.agentUserId)
+      .eq("agent_id", agentRowId)
       .gte("created_at", since)
       .order("created_at", { ascending: false })
       .limit(6),
     svc.from("blog_posts")
-      .select("id, title, body_markdown")
+      .select("id, title, body_markdown:content")
       .eq("brokerage_id", args.brokerageId)
       .eq("agent_user_id", args.agentUserId)
       .gte("created_at", since)
@@ -128,7 +137,7 @@ export async function distillVoiceForAgent(args: {
     svc.from("social_posts")
       .select("id, content")
       .eq("brokerage_id", args.brokerageId)
-      .eq("agent_user_id", args.agentUserId)
+      .eq("agent_id", agentRowId)
       .gte("created_at", since)
       .order("created_at", { ascending: false })
       .limit(8),

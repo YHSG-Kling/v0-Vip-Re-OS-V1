@@ -45,7 +45,7 @@ export function HandoffContextCard({ contactId, leadId }: HandoffContextCardProp
         .from("ai_isa_qualifications")
         .select("*")
         .eq("contact_id", contactId)
-        .order("created_at", { ascending: false })
+        .order("qualified_at", { ascending: false })
         .limit(1)
         .maybeSingle()
 
@@ -59,13 +59,15 @@ export function HandoffContextCard({ contactId, leadId }: HandoffContextCardProp
         .limit(1)
         .maybeSingle()
 
-      // Get engagement tracking for positive response
+      // Get engagement tracking for a positive (replied) engagement.
+      // event_type CHECK has no "positive_response" — "replied" is the positive signal;
+      // timestamp is event_at.
       const { data: engagementData } = await supabase
         .from("ai_isa_engagement_tracking")
         .select("event_type, channel, metadata")
         .eq("contact_id", contactId)
-        .eq("event_type", "positive_response")
-        .order("created_at", { ascending: false })
+        .eq("event_type", "replied")
+        .order("event_at", { ascending: false })
         .limit(1)
         .maybeSingle()
 
@@ -73,13 +75,13 @@ export function HandoffContextCard({ contactId, leadId }: HandoffContextCardProp
       const signals = qualification?.qualification_signals || {}
 
       const handoffContext: HandoffContext = {
-        handoffReason: qualification?.qualification_reason || "Qualified lead ready for agent follow-up",
+        handoffReason: signals.summary || qualification?.qualification_result || "Qualified lead ready for agent follow-up",
         lastConversationSummary: lastActivity?.description || signals.last_conversation_summary || null,
         qualificationSummary: signals.summary || "Lead has been qualified by AI ISA",
         positiveResponseContext: engagementData?.metadata?.context || signals.positive_response_context || null,
         appointmentSignal: signals.appointment_intent === true || !!signals.appointment_requested,
         appointmentDetails: signals.appointment_details || signals.preferred_time || null,
-        urgencyLevel: qualification?.urgency_level || "medium",
+        urgencyLevel: signals.urgency || "medium",
         qualificationScore: qualification?.qualification_score || null,
         motivationIndicators: signals.motivation_indicators || [],
         financingConfidence: signals.financing_status || signals.pre_approved ? "Pre-approved" : null,

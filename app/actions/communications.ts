@@ -257,8 +257,8 @@ export async function getCommunicationStats(params?: { agentId?: string; startDa
       .eq("brokerage_id", u.brokerage_id)
 
     if (params?.agentId) query = query.eq("agent_id", params.agentId)
-    if (params?.startDate) query = query.gte("sent_at", params.startDate)
-    if (params?.endDate) query = query.lte("sent_at", params.endDate)
+    if (params?.startDate) query = query.gte("created_at", params.startDate)
+    if (params?.endDate) query = query.lte("created_at", params.endDate)
 
     const { data, error } = await query
 
@@ -271,7 +271,7 @@ export async function getCommunicationStats(params?: { agentId?: string; startDa
       email: data?.filter((c: any) => c.type === "email").length || 0,
       call: data?.filter((c: any) => c.type === "call").length || 0,
       byDay: data?.reduce((acc: any, c: any) => {
-        const day = new Date(c.sent_at).toISOString().split('T')[0]
+        const day = new Date(c.created_at).toISOString().split('T')[0]
         acc[day] = (acc[day] || 0) + 1
         return acc
       }, {})
@@ -291,7 +291,7 @@ export async function getRecentCommunications(contactId: string, limit = 20) {
       .from("messages")
       .select("*")
       .eq("contact_id", contactId)
-      .order("sent_at", { ascending: false })
+      .order("created_at", { ascending: false })
       .limit(limit)
 
     if (error) throw error

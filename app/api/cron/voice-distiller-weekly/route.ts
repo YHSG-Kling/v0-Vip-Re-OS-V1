@@ -43,9 +43,9 @@ export async function GET(req: NextRequest) {
   const since = new Date(Date.now() - 90 * 86_400_000).toISOString()
   const [newsletterCreators, blogCreators] = await Promise.all([
     svc.from("newsletter_campaigns")
-      .select("brokerage_id, created_by_user_id")
+      .select("brokerage_id, agent_id")
       .gte("created_at", since)
-      .not("created_by_user_id", "is", null)
+      .not("agent_id", "is", null)
       .limit(5000),
     svc.from("blog_posts")
       .select("brokerage_id, agent_user_id")
@@ -54,8 +54,20 @@ export async function GET(req: NextRequest) {
       .limit(5000),
   ])
   const pairs = new Set<string>()
-  for (const r of (newsletterCreators.data ?? []) as Array<{ brokerage_id: string | null; created_by_user_id: string | null }>) {
-    if (r.brokerage_id && r.created_by_user_id) pairs.add(`${r.brokerage_id}|${r.created_by_user_id}`)
+  // newsletter_campaigns.agent_id is agents.id — resolve to the canonical user id
+  // so the pairs are uniform (brokerage_id|userId) for distillVoiceForAgent.
+  const newsletterRows = (newsletterCreators.data ?? []) as Array<{ brokerage_id: string | null; agent_id: string | null }>
+  const agentIds = [...new Set(newsletterRows.map((r) => r.agent_id).filter(Boolean))] as string[]
+  const agentIdToUser = new Map<string, string>()
+  if (agentIds.length) {
+    const { data: agentRows } = await svc.from("agents").select("id, user_id").in("id", agentIds)
+    for (const a of (agentRows ?? []) as Array<{ id: string; user_id: string | null }>) {
+      if (a.user_id) agentIdToUser.set(a.id, a.user_id)
+    }
+  }
+  for (const r of newsletterRows) {
+    const uid = r.agent_id ? agentIdToUser.get(r.agent_id) : null
+    if (r.brokerage_id && uid) pairs.add(`${r.brokerage_id}|${uid}`)
   }
   for (const r of (blogCreators.data ?? []) as Array<{ brokerage_id: string | null; agent_user_id: string | null }>) {
     if (r.brokerage_id && r.agent_user_id) pairs.add(`${r.brokerage_id}|${r.agent_user_id}`)

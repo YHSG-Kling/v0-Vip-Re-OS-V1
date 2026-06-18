@@ -308,14 +308,13 @@ IMPORTANT RULES:
       return { flagged: false, guardFailed: true, violations: [], notes: [], content: "", brandVoiceChecked: false }
     })
 
-    // Save generated content
+    // Save generated content. listing_marketing_content is listing/brokerage-scoped
+    // (no agent_id/status/target_audience columns) — the audience/style folds into
+    // the content blob like the canonical ai-marketing-automation writer.
     await supabase.from("listing_marketing_content").insert({
-      agent_id: agentId,
       brokerage_id: brokerageId,
       content_type: "ai_descriptions",
-      content: descriptions,
-      target_audience: params.style,
-      status: "draft",
+      content: { ...descriptions, target_audience: params.style },
     })
 
     return {

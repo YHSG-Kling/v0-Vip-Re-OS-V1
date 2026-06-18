@@ -168,7 +168,7 @@ export async function getContactTimeline(contactId: string) {
         .from("messages")
         .select("*")
         .eq("contact_id", contactId)
-        .order("sent_at", { ascending: false }),
+        .order("created_at", { ascending: false }),
       supabase
         .from("contact_notes")
         .select("*")
@@ -180,7 +180,7 @@ export async function getContactTimeline(contactId: string) {
     const timeline = [
       ...(interactions.data || []).map((i: any) => ({ ...i, type: "interaction", date: i.created_at })),
       ...(tasks.data || []).map((t: any) => ({ ...t, type: "task", date: t.created_at })),
-      ...(communications.data || []).map((c: any) => ({ ...c, type: "communication", date: c.sent_at })),
+      ...(communications.data || []).map((c: any) => ({ ...c, type: "communication", date: c.created_at })),
       ...(notes.data || []).map((n: any) => ({ ...n, type: "note", date: n.created_at }))
     ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
 

@@ -26,19 +26,25 @@ export default async function MentorshipPage() {
       .maybeSingle(),
     supabase
       .from("agent_mentor_relationships")
-      .select("mentor_id, status, suggested_topics, agents:mentor_id(id, user:users(full_name, email, phone))")
-      .eq("mentee_id", agent.id)
+      // live columns: mentee_agent_id/mentor_agent_id (not mentee_id/mentor_id);
+      // suggested topics are stored in the notes text column by the onboarding writer.
+      .select("mentor_agent_id, status, notes, agents:mentor_agent_id(id, user:users(full_name, email, phone))")
+      .eq("mentee_agent_id", agent.id)
       .eq("status", "active")
       .maybeSingle(),
   ])
 
   const mentorData = relationship
     ? {
-        mentorId: relationship.mentor_id as string,
+        mentorId: relationship.mentor_agent_id as string,
         mentorName: (relationship.agents as any)?.user?.full_name ?? "Your Mentor",
         mentorEmail: (relationship.agents as any)?.user?.email ?? null,
         mentorPhone: (relationship.agents as any)?.user?.phone ?? null,
-        suggestedTopics: (relationship.suggested_topics as string[]) ?? [],
+        suggestedTopics: (() => {
+          const n = relationship.notes
+          if (!n) return [] as string[]
+          try { const p = JSON.parse(n); return Array.isArray(p) ? p : [n] } catch { return [n] }
+        })(),
         matchScore: session?.mentor_match_score ?? null,
         matchReason: session?.mentor_match_reason ?? null,
       }
