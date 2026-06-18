@@ -296,20 +296,13 @@ export async function aiVerifySignatures(params: {
       return { success: false, error: "Document not found" }
     }
 
-    // Check Dotloop for signature status if integrated
-    const { data: dotloopDoc } = await supabase
-      .from("dotloop_documents")
-      .select("*")
-      .eq("document_id", params.documentId)
-      .maybeSingle()
-
     const { text } = await generateText({
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Analyze signature requirements for this document:
       
 Document: ${document.document_name}
 Category: ${document.doc_category || "unknown"}
-Dotloop Status: ${dotloopDoc?.status || "not in Dotloop"}
+Dotloop Status: ${document.signature_status || "not in Dotloop"}
 
 Determine what signatures are required and their current status. Return as JSON:
 {

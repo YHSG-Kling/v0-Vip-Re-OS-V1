@@ -69,7 +69,7 @@ export async function syncDotloopDocuments(data: DotloopSyncData) {
             document_name: document.name,
             document_type: mapFolderToDocType(folder.name),
             status: document.is_signed ? "signed" : "pending_signature",
-            url: document.url,
+            document_url: document.url,
           })
 
           if (!error) syncedCount++

@@ -6,7 +6,7 @@
  * "code references a column the table doesn't have → query silently errors" bug class (which broke
  * buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: every table the code actually queries is column-guarded here — 688 tables.
+ * COVERAGE: every table the code actually queries is column-guarded here — 687 tables.
  * Tables referenced in code but absent from the live schema (RPC names / phantom tables) stay on
  * scripts/schema-drift-unguarded-baseline.json.
  *
@@ -171,7 +171,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   chat_sessions: ["agent_id", "brokerage_id", "capture_state", "contact_id", "created_at", "id", "lead_id", "metadata", "session_type", "source", "status", "updated_at", "visitor_fingerprint", "widget_session_token"],
   chat_templates: ["agent_id", "allowed_lead_types", "brokerage_id", "compliance_approved", "created_at", "id", "is_active", "template_body", "template_category", "template_name", "updated_at", "usage_count"],
   client_detailed_personas: ["agent_id", "ai_summary", "brokerage_id", "buying_triggers", "contact_id", "created_at", "demographics", "id", "pain_points", "persona_name", "psychographics", "updated_at"],
-  client_documents: ["ai_metadata", "brokerage_id", "contact_id", "content", "created_at", "doc_category", "document_name", "document_type", "document_url", "expiration_date", "id", "is_financial_verification", "listing_id", "metadata", "notes", "signature_status", "status", "transaction_id", "uploaded_by", "verification_amount", "verification_lender", "verified_at", "verified_by"],
+  client_documents: ["ai_metadata", "brokerage_id", "contact_id", "content", "created_at", "doc_category", "document_name", "document_type", "document_url", "dotloop_document_id", "dotloop_folder_name", "dotloop_loop_id", "expiration_date", "id", "is_financial_verification", "listing_id", "metadata", "notes", "signature_provider", "signature_status", "signed_at", "status", "transaction_id", "uploaded_by", "verification_amount", "verification_lender", "verified_at", "verified_by"],
   client_engagement_scores: ["agent_id", "brokerage_id", "calculated_at", "contact_id", "created_at", "id", "last_interaction", "referrals_given", "score", "touchpoints_count"],
   client_friendly_updates: ["ai_generated", "brokerage_id", "created_at", "id", "read_at", "sent_via", "tone", "transaction_id", "update_text", "update_type"],
   client_gifts: ["acknowledged_at", "actual_cost", "agent_id", "ai_reasoning", "brokerage_id", "budget_max", "budget_min", "contact_id", "created_at", "delivered_at", "delivery_address", "delivery_notes", "estimated_cost", "gift_description", "gift_name", "gift_type", "id", "occasion", "personalization_note", "scheduled_delivery", "sent_at", "source", "status", "tracking_number", "transaction_id", "updated_at", "vendor_name", "vendor_url"],
@@ -282,7 +282,6 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   document_sharing_links: ["access_level", "created_at", "document_id", "expires_at", "id", "is_active", "metadata", "password_hash", "requires_password", "share_token", "shared_by", "shared_with_email"],
   document_templates: ["created_at", "id", "is_active", "is_compliance_approved", "metadata", "requires_client_signature", "state_specific", "template_category", "template_content", "template_file_url", "template_name", "template_type", "updated_at"],
   documents: ["brokerage_id", "classification", "classification_confidence", "contact_id", "content", "created_at", "document_type", "extracted_fields", "id", "listing_id", "metadata", "scan_error", "scanned_at", "state_code", "state_form_id", "status", "storage_url", "summary", "template_id", "transaction_id", "updated_at"],
-  dotloop_documents: ["brokerage_id", "created_at", "document_id", "document_name", "document_type", "id", "loop_id", "metadata", "status", "synced_at"],
   drip_campaigns: ["agent_id", "brokerage_id", "completed_at", "contact_id", "created_at", "drip_type", "id", "metadata", "paused_at", "started_at", "status", "updated_at"],
   earnings_history: ["agent_id", "agent_net", "brokerage_id", "brokerage_net", "cap_applied", "commission_id", "gross_commission", "id", "paid_date", "recorded_at", "total_fees", "transaction_id"],
   email_campaigns: ["agent_id", "approval_status", "audience_filter", "audience_segment_id", "bounce_rate", "brand_compliance_passed", "brokerage_id", "campaign_format", "campaign_name", "click_rate", "content", "created_at", "created_by", "delivered_count", "id", "kernel_event_id", "marketing_campaign_id", "open_rate", "parent_campaign_id", "preview_text", "recipient_count", "send_date", "sent_at", "status", "subject_line", "template_id", "unsubscribe_rate", "updated_at"],
