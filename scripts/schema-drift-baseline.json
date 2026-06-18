@@ -1,11 +1,1 @@
-[
-  "app/actions/ai-client-portal.ts::transactions.transaction_id::eq",
-  "app/actions/ai-insights.ts::agents.agent_id::eq",
-  "app/actions/seller-coaching.ts::agents.agent_id::eq",
-  "app/actions/social-publishing.ts::users.user_id::in",
-  "app/api/did/generate-video/route.ts::ai_video_projects.input_props::update",
-  "app/api/did/generate-video/route.ts::ai_video_projects.voiceover_url::update",
-  "lib/kernel/listings.ts::listings.license_number::select",
-  "lib/kernel/listings.ts::listings.license_state::select",
-  "lib/repurpose/actions.ts::repurpose_pipelines.sourceUrl::insert"
-]
+[]

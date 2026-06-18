@@ -81,8 +81,19 @@ function firstArg(s: string): string {
  *  colon), casts (`col::type`), json paths (`col->>x`), and hints (`col!inner`). */
 export function parseSelectColumns(literal: string): string[] {
   const cols: string[] = []
-  // strip embedded relations, including any `alias:` and `!hint` before the `(...)`.
-  const cleaned = literal.replace(/([a-z_][a-z0-9_]*\s*:\s*)?[a-z_][a-z0-9_]*\s*(![a-z_]+)?\s*\([^)]*\)/gi, " ")
+  // strip embedded relations — `[alias:]name[!hint]( … )` — with proper paren matching
+  // so NESTED embeds (agent:agent_id(id, brokerage:brokerage_id(license_number))) are
+  // fully removed (a `[^)]*` regex stops at the first ')' and leaks inner columns).
+  let cleaned = ""
+  for (let i = 0; i < literal.length; ) {
+    const mm = literal.slice(i).match(/^([a-z_][a-z0-9_]*\s*:\s*)?[a-z_][a-z0-9_]*\s*(![a-z_]+)?\s*\(/i)
+    if (mm) {
+      const parenOpen = i + mm[0].length - 1
+      const close = matchParen(literal, parenOpen)
+      if (close !== -1) { cleaned += " "; i = close + 1; continue }
+    }
+    cleaned += literal[i]; i++
+  }
   for (let part of cleaned.split(",")) {
     part = part.trim()
     if (!part || part === "*") continue
@@ -131,12 +142,21 @@ export function parseObjectTopLevelKeys(objText: string): string[] {
 function extractConditionalSpreadKeys(s: string): string[] {
   const keys: string[] = []
   let i = 0
+  let depth = 0
+  let q: string | null = null
   while (i < s.length) {
-    const sp = s.indexOf("...", i)
-    if (sp === -1) break
-    let j = sp + 3
+    const ch = s[i]
+    if (q) { if (ch === q && s[i - 1] !== "\\") q = null; i++; continue }
+    if (ch === '"' || ch === "'" || ch === "`") { q = ch; i++; continue }
+    if (ch === "{") { depth++; i++; continue }
+    if (ch === "}") { depth--; i++; continue }
+    // Only a spread at the insert object's TOP level (depth 1) writes real columns.
+    // A `...(cond && {k})` nested inside a jsonb VALUE object (depth >= 2) is jsonb
+    // content, not a column — skip it (that was the input_props/sourceUrl FP source).
+    if (!(depth === 1 && ch === "." && s.slice(i, i + 3) === "...")) { i++; continue }
+    let j = i + 3
     while (j < s.length && /\s/.test(s[j])) j++
-    if (s[j] !== "(") { i = sp + 3; continue } // not a parenthesised spread (e.g. ...obj, ...fn())
+    if (s[j] !== "(") { i += 3; continue } // not a parenthesised spread (e.g. ...obj, ...fn())
     const close = matchParen(s, j)
     if (close === -1) break
     const inner = s.slice(j + 1, close)
@@ -153,6 +173,31 @@ function extractConditionalSpreadKeys(s: string): string[] {
     i = close + 1
   }
   return keys
+}
+
+/** The contiguous fluent method chain starting at `startIdx` (the char just after a
+ *  `.from("x")`). Consumes directly-chained `.method( … )` calls across whitespace and
+ *  stops at the first token that is NOT `.method(` — i.e. a statement boundary. This is
+ *  how we keep a later `query = query.eq("col", …)` reassignment from being attributed to
+ *  the wrong (most-recent) from(). */
+export function contiguousChain(src: string, startIdx: number): string {
+  let i = startIdx
+  while (i < src.length) {
+    while (i < src.length && /\s/.test(src[i])) i++
+    if (src[i] !== ".") break
+    const mm = src.slice(i).match(/^\.\s*[a-zA-Z_$][\w$]*\s*\(/)
+    if (!mm) break
+    const parenOpen = i + mm[0].length - 1
+    const close = matchParen(src, parenOpen)
+    if (close === -1) break
+    const args = src.slice(parenOpen + 1, close)
+    // A callback / nested-query argument (`.then(r => …)`, `.map(…)`) opens a DIFFERENT
+    // table scope — stop before it so its inner filters/orders aren't attributed to THIS
+    // from() (that re-attributed home_value_estimates.order("generated_at") to cma_reports).
+    if (args.includes("=>") || args.includes("function") || args.includes(".from(")) break
+    i = close + 1
+  }
+  return src.slice(startIdx, i)
 }
 
 function matchParen(s: string, open: number): number {
@@ -191,6 +236,18 @@ function testPure() {
     JSON.stringify(parseObjectTopLevelKeys("{ a: 1, ...mapCols(profile, { enrichedAt: t }), b: 2 }")) === JSON.stringify(["a", "b"]))
   check("parseObjectTopLevelKeys: nested value object inside conditional spread value is not double-counted",
     JSON.stringify(parseObjectTopLevelKeys("{ ...(c && { col: { deep: 1 } }) }")) === JSON.stringify(["col"]))
+  check("parseObjectTopLevelKeys: conditional spread INSIDE a jsonb value is NOT a column (input_props/sourceUrl FP)",
+    JSON.stringify(parseObjectTopLevelKeys("{ provider_metadata: { ...(c && { voiceover_url: u, input_props: p }) }, status: 'x' }")) === JSON.stringify(["provider_metadata", "status"]))
+  check("parseSelectColumns: NESTED embeds are fully stripped (no leaked inner columns)",
+    JSON.stringify(parseSelectColumns("id, agent:agent_id(id, license_number, brokerage:brokerage_id(license_number, license_state)), status")) === JSON.stringify(["id", "status"]))
+  // Filter attribution stops at the from()'s contiguous chain — a reassigned-variable
+  // filter on a different table is NOT pulled in (agent_id/transaction_id/user_id FP).
+  {
+    const snippet = `.from("agents").select("id").eq("user_id", uid).maybeSingle()\n  if (!row) return\n  query = query.eq("agent_id", row.id)`
+    const ch = contiguousChain(snippet, snippet.indexOf(".from(") + `.from("agents")`.length)
+    check("contiguousChain: excludes reassigned-variable filter (query = query.eq(...))",
+      ch.includes('eq("user_id"') && !ch.includes('eq("agent_id"'))
+  }
   // The exact bug we fixed must be caught:
   const badSel = parseSelectColumns("preferred_price_max, preferred_features, inferred_max_price")
   check("catches the legacy phantom column (preferred_features ∉ property_preferences)",
@@ -236,9 +293,14 @@ function scanFile(file: string, src: string): Violation[] {
       }
     }
     // FILTER / order column args (the first string arg is a real column). A filter on a
-    // phantom column errors the query the same way a select does. Skip embed paths (col
-    // with a `.`) and the .or()/.filter() string DSL (column names live inside a string).
-    for (const fm of chain.matchAll(/\.(eq|neq|gt|gte|lt|lte|like|ilike|in|is|contains|containedBy|order|not)\(\s*["'`]([a-zA-Z_][a-zA-Z0-9_.]*)["'`]/g)) {
+    // phantom column errors the query the same way a select does. Scope to the CONTIGUOUS
+    // method chain hanging directly off this .from() — a `query = query.eq("col", …)`
+    // reassignment is a separate statement (not directly chained) and must NOT be
+    // attributed to the most-recent from() (that mis-attributed agent_id/transaction_id/
+    // user_id to the wrong table). Skip embed paths (col with a `.`) and the .or()/.filter()
+    // string DSL (column names live inside a string).
+    const filterChain = contiguousChain(src, m.index + m[0].length)
+    for (const fm of filterChain.matchAll(/\.(eq|neq|gt|gte|lt|lte|like|ilike|in|is|contains|containedBy|order|not)\(\s*["'`]([a-zA-Z_][a-zA-Z0-9_.]*)["'`]/g)) {
       const col = fm[2]
       if (col.includes(".")) continue
       if (!set.has(col)) v.push({ file, table, op: fm[1], column: col })
