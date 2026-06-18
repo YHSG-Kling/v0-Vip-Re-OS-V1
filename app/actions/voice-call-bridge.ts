@@ -53,7 +53,7 @@ export async function initiateWhisperBridge(params: {
     // Get contact and agent details
     const { data: contact } = await supabase
       .from("contacts")
-      .select("first_name, last_name, phone, buyer_stage, last_property_viewed")
+      .select("first_name, last_name, phone, buyer_stage")
       .eq("id", contactId)
       .single()
 
@@ -93,18 +93,32 @@ export async function initiateWhisperBridge(params: {
       return { success: false, error: callResult.error }
     }
 
-    // Log whisper bridge call
-    const { error: logError } = await supabase.from("call_whisper_logs").insert({
-      contact_id: contactId,
-      agent_id: agentUserId,
-      whisper_text: whisperText,
-      twilio_call_sid: callResult.callSid,
-      agent_phone: agent.phone,
-      contact_phone: contact.phone,
-    })
+    // Canonical call record lives on voice_calls; call_whisper_logs only stores the whisper text
+    // (keyed by voice_call_id). The provider call sid is the voice_calls.vapi_call_id pointer.
+    const { data: voiceCall, error: vcError } = await supabase
+      .from("voice_calls")
+      .insert({
+        brokerage_id: ctx.brokerageId,
+        agent_id: ctx.agentId ?? null,
+        contact_id: contactId,
+        direction: "outbound",
+        call_type: "agent_call",
+        status: "initiated",
+        phone_from: agent.phone,
+        phone_to: contact.phone,
+        vapi_call_id: callResult.callSid,
+      })
+      .select("id")
+      .single()
 
-    if (logError) {
-      console.error("[Whisper Bridge] Failed to log call:", logError)
+    if (vcError || !voiceCall) {
+      console.error("[Whisper Bridge] Failed to create voice_calls row:", vcError)
+    } else {
+      const { error: logError } = await supabase.from("call_whisper_logs").insert({
+        voice_call_id: voiceCall.id,
+        whisper_text: whisperText,
+      })
+      if (logError) console.error("[Whisper Bridge] Failed to log whisper:", logError)
     }
 
     // Create activity log — Agent task (correct location, no changes) — activity_type: whisper_bridge_initiated, call_made
@@ -148,9 +162,9 @@ export async function updateWhisperBridgeStatus(params: {
   try {
     // Verify the call record belongs to this brokerage (via contact)
     const { data: callRow } = await svc
-      .from("call_whisper_logs")
-      .select("contact_id")
-      .eq("twilio_call_sid", params.callSid)
+      .from("voice_calls")
+      .select("id, contact_id")
+      .eq("vapi_call_id", params.callSid)
       .maybeSingle()
     if (!callRow) {
       return { success: false, error: "Call not found" }
@@ -166,15 +180,18 @@ export async function updateWhisperBridgeStatus(params: {
       }
     }
 
+    // voice_calls.status + outcome are enum-constrained; map provider values to the allowed sets.
+    const VALID_STATUS = ["initiated","ringing","in_progress","completed","failed","no_answer","voicemail","blocked"]
+    const VALID_OUTCOME = ["appointment_set","callback_requested","not_interested","voicemail_left","no_answer","transferred","completed","authority_blocked"]
+    const voiceUpdate: Record<string, unknown> = {
+      status: VALID_STATUS.includes(params.status) ? params.status : "in_progress",
+      duration_seconds: params.duration ?? null,
+    }
+    if (params.outcome && VALID_OUTCOME.includes(params.outcome)) voiceUpdate.outcome = params.outcome
     const { error } = await svc
-      .from("call_whisper_logs")
-      .update({
-        call_connected: params.status === "completed",
-        call_duration_seconds: params.duration,
-        outcome: params.outcome || params.status,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("twilio_call_sid", params.callSid)
+      .from("voice_calls")
+      .update(voiceUpdate)
+      .eq("id", callRow.id)
 
     if (error) {
       console.error("[Whisper Bridge] Failed to update status:", error)
@@ -222,7 +239,7 @@ export async function triggerVapiVoiceBot(params: {
     // Get contact details
     const { data: contact } = await supabase
       .from("contacts")
-      .select("first_name, last_name, phone, last_property_viewed, budget_max, buyer_stage")
+      .select("first_name, last_name, phone, budget_max, buyer_stage")
       .eq("id", contactId)
       .single()
 
@@ -443,11 +460,13 @@ export async function getWhisperBridgeCalls(_agentId?: string) {
   const supabase = await createClient()
 
   try {
-    // Scope by the authenticated user's user_id (call_whisper_logs.agent_id is users.id)
+    // Whisper-bridge calls are voice_calls of type agent_call; the whisper text is the embedded
+    // call_whisper_logs child. Scope by agent (voice_calls.agent_id is agents.id).
     const { data, error } = await supabase
-      .from("call_whisper_logs")
-      .select("*, contacts(first_name, last_name, phone)")
-      .eq("agent_id", ctx.userId)
+      .from("voice_calls")
+      .select("*, contacts(first_name, last_name, phone), call_whisper_logs(whisper_text, delivered_at, agent_heard)")
+      .eq("call_type", "agent_call")
+      .eq("agent_id", ctx.agentId)
       .order("created_at", { ascending: false })
       .limit(50)
 
