@@ -56,7 +56,7 @@ export async function getAdminStats() {
     service
       .from("automation_errors")
       .select("*")
-      .eq("resolved", false)
+      .neq("status", "resolved")
       .order("created_at", { ascending: false })
       .limit(5),
   ])

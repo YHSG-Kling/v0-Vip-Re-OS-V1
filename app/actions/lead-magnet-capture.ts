@@ -36,7 +36,7 @@ export async function captureFormSubmissionAction(input: CaptureFormInput) {
         form_id: input.formId,
         brokerage_id: input.brokerageId,
         source: input.source ?? "website",
-        tcpa_consent: input.tcpaConsentGiven ?? false,
+        tcpa_consent_given: input.tcpaConsentGiven ?? false,
         submission_data: input.submissionData,
         submitted_at: new Date().toISOString(),
       })

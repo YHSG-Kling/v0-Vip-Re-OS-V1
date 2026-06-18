@@ -619,7 +619,7 @@ export async function finalizeTour(params: {
       contact_id: tour.contact_id,
       direction:  'outbound',
       body:       'Your tour is confirmed. Tap to view the itinerary, route, and per-property details.',
-      sent_at:    nowIso,
+      created_at: nowIso,
     }).then(() => null, () => null)
   }
 

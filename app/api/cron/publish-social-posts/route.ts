@@ -325,7 +325,7 @@ export async function GET(request: Request) {
         console.error(`[cron/publish-social-posts] Failed to publish post ${post.id}:`, postError.message)
 
         // Get current retry count
-        const retryCount = (post.retry_count || 0) + 1
+        const retryCount = (post.error_count || 0) + 1
 
         // UPDATE social_posts SET status='failed', error_message, retry_count+1
         await supabase
@@ -333,7 +333,7 @@ export async function GET(request: Request) {
           .update({
             status: "failed",
             error_message: postError.message,
-            retry_count: retryCount,
+            error_count: retryCount,
             updated_at: new Date().toISOString(),
           })
           .eq("id", post.id)

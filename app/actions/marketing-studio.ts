@@ -516,15 +516,15 @@ export async function approveAsset(assetId: string) {
   // Also run real-estate compliance gate for ad/social assets
   const { data: asset } = await supabase
     .from("marketing_assets")
-    .select("asset_type, content_text")
+    .select("asset_type, preview_text")
     .eq("id", assetId)
     .maybeSingle()
 
-  if (asset?.content_text) {
+  if (asset?.preview_text) {
     const contentType =
       asset.asset_type === "ad" ? "ad" : "social_post"
     const reGate = await runComplianceGate({
-      content: asset.content_text,
+      content: asset.preview_text,
       brokerageId,
       authorUserId: userId,
       contentType,

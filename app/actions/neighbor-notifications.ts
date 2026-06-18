@@ -202,7 +202,7 @@ export async function launchNeighborNotification(params: {
         agent_id: (campaign as { agent_user_id: string | null }).agent_user_id,
         campaign_name: `Neighbor Notification — ${(campaign as { listing_id: string }).listing_id}`,
         target_audience: "neighbors_of_new_listing",
-        mailing_type: "postcard",
+        piece_type: "postcard",
         status: "queued",
         copy_text: "Your neighbor just listed their home — know anyone who'd love to live nearby?",
       })

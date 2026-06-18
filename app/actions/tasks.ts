@@ -146,7 +146,7 @@ export async function createTask(params: {
         title: params.title,
         description: params.description,
         due_date: params.dueDate,
-        assigned_to: params.assignedTo,
+        assigned_to_agent_id: params.assignedTo,
         contact_id: params.contactId,
         listing_id: params.listingId,
         transaction_id: params.transactionId,

@@ -307,7 +307,7 @@ export async function togglePlaybookStatus(playbookId: string, enabled: boolean)
 
   const { data, error } = await supabase
     .from("plan_tasks")
-    .update({ enabled, updated_at: new Date().toISOString() })
+    .update({ active: enabled })
     .eq("id", playbookId)
     .select()
     .single()

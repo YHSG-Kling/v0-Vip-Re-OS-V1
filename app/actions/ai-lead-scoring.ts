@@ -116,7 +116,6 @@ Provide a JSON response with:
     // Log scoring event
     await supabase.from("lead_score_history").insert({
       contact_id: params.contactId,
-      agent_id: params.agentId,
       overall_score: scores.overallScore,
       engagement_score: scores.engagement,
       intent_score: scores.intent,

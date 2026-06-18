@@ -158,7 +158,7 @@ export async function GET(request: NextRequest) {
         const { data: existingMemoryVideo } = await supabase
           .from("ai_video_projects")
           .select("id")
-          .eq("lead_id", txn.lead_id)
+          .eq("video_metadata->>lead_id", txn.lead_id)
           .eq("video_type", "memory_video")
           .limit(1)
 

@@ -268,7 +268,6 @@ export async function trackPropertyView(data: {
 
     await supabase.from("property_views").insert({
       contact_id: data.contactId,
-      mls_number: data.mlsNumber,
       time_spent_seconds: data.timeSpent,
     })
 

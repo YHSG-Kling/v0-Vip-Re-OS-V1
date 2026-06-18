@@ -86,7 +86,7 @@ export async function GET(req: NextRequest) {
         const { data: existing } = await supabase
           .from("review_requests")
           .select("id")
-          .eq("transaction_id", txn.id)
+          .eq("contact_id", txn.contact_id)
           .limit(1)
           .maybeSingle()
 
