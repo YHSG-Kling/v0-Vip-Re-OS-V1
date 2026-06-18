@@ -53,9 +53,9 @@ export async function POST(req: NextRequest) {
     let resolvedBrokerageId: string = brokerageId ?? ""
     if (!resolvedBrokerageId) {
       const { data: profile } = await svc
-        .from("user_profiles")
+        .from("users")
         .select("brokerage_id")
-        .eq("user_id", user.id)
+        .eq("id", user.id)
         .single()
       resolvedBrokerageId = profile?.brokerage_id ?? ""
     }

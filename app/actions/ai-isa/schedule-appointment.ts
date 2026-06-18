@@ -29,9 +29,9 @@ export async function scheduleAppointment(
 
   // Resolve agentId + brokerageId from the current user's profile
   const { data: profile, error: profileError } = await supabase
-    .from('user_profiles')
+    .from('users')
     .select('id, brokerage_id, user_type')
-    .eq('user_id', user.id)
+    .eq('id', user.id)
     .maybeSingle()
 
   if (profileError || !profile) {

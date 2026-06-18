@@ -784,7 +784,9 @@ export async function recordCompletion(
   }
 
   await supabase.from("lifecycle_events").insert({
-    contact_id: input.contactId,
+    brokerage_id: input.brokerageId,
+    entity_type: "contact",
+    entity_id: input.contactId,
     event_type: "education_completed",
     metadata: {
       module_id: input.resourceId,

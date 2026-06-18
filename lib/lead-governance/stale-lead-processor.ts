@@ -72,15 +72,15 @@ export async function processStaleLeadsAndSLA(
 
         // b) Find broker/admin user_id for this brokerage
         const { data: adminUsers } = await supabase
-          .from("user_profiles")
-          .select("user_id")
+          .from("users")
+          .select("id")
           .eq("brokerage_id", brokerageId)
           .in("user_type", ["broker", "admin", "superadmin"])
           .limit(5)
 
         for (const admin of adminUsers ?? []) {
           await supabase.from("notifications").insert({
-            user_id:     admin.user_id,
+            user_id:     admin.id,
             brokerage_id: brokerageId,
             type:        "sla_breach",
             priority:    "high",

@@ -28,7 +28,7 @@ export default async function ISACalendarPage() {
 
   // Get user profile for brokerage context
   const { data: profile } = await supabase
-    .from("user_profiles")
+    .from("users")
     .select("id, brokerage_id, user_type")
     .eq("id", user.id)
     .single()

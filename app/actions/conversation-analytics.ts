@@ -342,7 +342,7 @@ export async function runWeeklyAIAudit() {
       // Get conversation messages from communications table
       const { data: messages } = await supabase
         .from("messages")
-        .select("message, created_at, direction")
+        .select("body, created_at, direction")
         .eq("contact_id", conv.contact_id)
         .gte("created_at", weekAgo)
         .order("created_at", { ascending: true })
@@ -352,7 +352,7 @@ export async function runWeeklyAIAudit() {
       // Convert to conversation format
       const conversationHistory = messages.map((msg) => ({
         role: msg.direction === "outbound" ? "assistant" : "user",
-        content: msg.message || "",
+        content: msg.body || "",
         timestamp: msg.created_at,
       }))
 

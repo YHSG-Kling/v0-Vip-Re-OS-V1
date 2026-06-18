@@ -734,7 +734,7 @@ export async function getAIISAEngagementStatus(leadId: string) {
 
   const { data: messages } = await supabase
     .from('messages')
-    .select('id, direction, channel')
+    .select('id, direction, type')
     .eq('contact_id', leadId)
 
   const inboundCount =

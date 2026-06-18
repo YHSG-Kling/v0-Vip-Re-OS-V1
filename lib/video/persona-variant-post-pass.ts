@@ -260,7 +260,7 @@ async function resolveTopBrokeragePersonas(
     .from("newsletter_subscribers")
     .select("contact:contacts!newsletter_subscribers_contact_id_fkey(contact_persona)")
     .eq("brokerage_id", brokerageId)
-    .eq("subscribed", true)
+    .eq("status", "subscribed")
     .limit(1000)
   const counts = new Map<string, number>()
   for (const row of (subs ?? []) as Array<{ contact?: { contact_persona?: string | null } | Array<{ contact_persona?: string | null }> | null }>) {

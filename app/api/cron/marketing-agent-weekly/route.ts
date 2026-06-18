@@ -61,7 +61,7 @@ export async function GET(req: NextRequest) {
         svc.from("newsletter_campaigns").select("id", { count: "exact", head: true })
           .eq("brokerage_id", b.id).eq("status", "sent").gte("send_date", since7d),
         svc.from("newsletter_subscribers").select("id", { count: "exact", head: true })
-          .eq("brokerage_id", b.id).eq("subscribed", true),
+          .eq("brokerage_id", b.id).eq("status", "subscribed"),
       ])
       const newsletterCadenceSignal =
         (activeSubs.count ?? 0) > 0 && (recentSends.count ?? 0) === 0 ? 1 : 0

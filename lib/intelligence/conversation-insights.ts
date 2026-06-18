@@ -181,7 +181,7 @@ export async function updateConversationMemory(
   // Step 1: Load last 20 messages for this conversation
   const { data: messages, error: msgError } = await supabase
     .from('messages')
-    .select('id, content, sender_type, created_at')
+    .select('id, body, sender_type, created_at')
     .eq('conversation_id', conversationId)
     .order('created_at', { ascending: false })
     .limit(20)
@@ -208,7 +208,7 @@ export async function updateConversationMemory(
   // Format messages for AI analysis (reverse to chronological order)
   const formattedMessages = messages
     .reverse()
-    .map((m) => `[${m.sender_type}]: ${m.content}`)
+    .map((m) => `[${m.sender_type}]: ${m.body}`)
     .join('\n')
 
   // Step 2: Check for existing insight record

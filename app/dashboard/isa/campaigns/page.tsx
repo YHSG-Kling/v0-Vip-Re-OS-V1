@@ -21,9 +21,9 @@ export default async function ISACampaignsPage() {
 
   // Resolve brokerage_id from user profile
   const { data: profile } = await supabase
-    .from("user_profiles")
+    .from("users")
     .select("brokerage_id, role")
-    .eq("user_id", user.id)
+    .eq("id", user.id)
     .single()
 
   if (!profile?.brokerage_id) {

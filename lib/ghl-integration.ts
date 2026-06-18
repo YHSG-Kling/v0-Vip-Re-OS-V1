@@ -175,7 +175,7 @@ export class GHLIntegration {
         contactId: contact?.ghl_contact_id ?? "",
         locationId: process.env.GHL_LOCATION_ID || "",
         type: "SMS", // Can be configured based on channel
-        message: message.message,
+        message: message.body,
         direction: message.sender_type === "agent" ? "outbound" : "inbound",
       }
 
@@ -186,7 +186,7 @@ export class GHLIntegration {
       }
 
       // Mark message as synced
-      await supabase.from("messages").update({ ghl_synced: true }).eq("id", messageId)
+      await supabase.from("messages").update({ metadata: { ghl_synced: true } }).eq("id", messageId)
 
       return { success: true }
     } catch (error) {

@@ -62,8 +62,7 @@ Generate a post that resonates with their situation and needs.`
         quality_score: quality.score / 100,
         them_percentage: quality.themPercentage,
         agent_percentage: quality.agentPercentage,
-        warnings: quality.warnings,
-        metadata: { audienceSegment, platform },
+        metadata: { audienceSegment, platform, warnings: quality.warnings },
       })
       .select()
       .single()

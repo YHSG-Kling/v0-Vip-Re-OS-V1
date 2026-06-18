@@ -269,7 +269,8 @@ export async function setMilestonePortalVisibility(
   const { data: evt, error: fetchError } = await supabase
     .from("lifecycle_events")
     .select("id, metadata")
-    .eq("listing_id", listingId)
+    .eq("entity_type", "listing")
+    .eq("entity_id", listingId)
     .eq("brokerage_id", callerRow.brokerage_id)
     .eq("metadata->>to_state", stage)
     .order("created_at", { ascending: false })

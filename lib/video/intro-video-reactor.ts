@@ -330,7 +330,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
         .from("newsletter_subscribers")
         .select("id")
         .eq("contact_id", input.contactId)
-        .eq("subscribed", true)
+        .eq("status", "subscribed")
         .limit(1)
         .maybeSingle()
       isNewsletterSubscriber = !!sub

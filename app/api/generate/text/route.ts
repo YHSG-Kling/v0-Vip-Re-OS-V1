@@ -78,8 +78,7 @@ Generate a brief, them-focused text message.`
         quality_score: quality.score / 100,
         them_percentage: quality.themPercentage,
         agent_percentage: quality.agentPercentage,
-        warnings: quality.warnings,
-        metadata: { messageType },
+        metadata: { messageType, warnings: quality.warnings },
       })
       .select()
       .single()
