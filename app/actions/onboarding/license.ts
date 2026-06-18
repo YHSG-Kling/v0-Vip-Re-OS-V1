@@ -131,7 +131,7 @@ export async function getAgentLicenseStatus(
     // Get license record
     const { data: licenseRecord } = await supabase
       .from("agent_licenses")
-      .select("id, license_number, license_state, license_type, expiry_date, verification_status, document_url")
+      .select("id, license_number, license_state, license_type, expiry_date:expiration_date, verification_status, document_url")
       .eq("agent_id", agentId)
       .eq("brokerage_id", agent.brokerage_id)
       .order("created_at", { ascending: false })
@@ -141,10 +141,10 @@ export async function getAgentLicenseStatus(
     // Get contract record
     const { data: contractRecord } = await supabase
       .from("contract_signatures")
-      .select("id, status, sent_at, signed_at, provider")
+      .select("id, status:esign_status, sent_at, signed_at:fully_signed_at, provider:provider_name")
       .eq("agent_id", agentId)
       .eq("brokerage_id", agent.brokerage_id)
-      .eq("contract_type", "ica")
+      .eq("contract_type", "independent_contractor")
       .order("created_at", { ascending: false })
       .limit(1)
       .single()
@@ -259,7 +259,7 @@ export async function submitLicenseDetails(
         license_number: data.licenseNumber,
         license_state: data.licenseState,
         license_type: data.licenseType,
-        expiry_date: data.expiryDate,
+        expiration_date: data.expiryDate,
         document_url: data.documentUrl || null,
         verification_status: "pending",
       })
@@ -376,11 +376,11 @@ export async function submitEOInsurance(
       return { success: false, error: "E&O insurance expiry date must be in the future" }
     }
 
-    // Update the most recent license record with E&O info in notes
-    // (E&O columns may not exist on agents table, so store in license notes)
+    // Update the most recent license record with E&O info using the dedicated
+    // E&O columns on agent_licenses (eo_insurance_carrier/policy/coverage/expiration).
     const { data: licenseRecord } = await supabase
       .from("agent_licenses")
-      .select("id, notes")
+      .select("id")
       .eq("agent_id", user.id)
       .eq("brokerage_id", agent.brokerage_id)
       .order("created_at", { ascending: false })
@@ -388,18 +388,13 @@ export async function submitEOInsurance(
       .single()
 
     if (licenseRecord) {
-      const eoInfo = {
-        eo_insurer: data.insurerName,
-        eo_policy_number: data.policyNumber,
-        eo_coverage_amount: data.coverageAmount,
-        eo_expiry_date: data.expiryDate,
-        eo_certificate_url: data.certificateUrl,
-      }
-
       await supabase
         .from("agent_licenses")
         .update({
-          notes: JSON.stringify(eoInfo),
+          eo_insurance_carrier: data.insurerName,
+          eo_policy_number: data.policyNumber,
+          eo_coverage_amount: data.coverageAmount,
+          eo_expiration_date: data.expiryDate,
           updated_at: new Date().toISOString(),
         })
         .eq("id", licenseRecord.id)
@@ -493,10 +488,10 @@ export async function sendContractForSignature(
       .insert({
         brokerage_id: brokerageId,
         agent_id: agentId,
-        contract_type: "ica", // Independent Contractor Agreement
-        provider: provider.providerKey,
-        provider_document_id: providerDocumentId,
-        status: "sent",
+        contract_type: "independent_contractor", // Independent Contractor Agreement
+        provider_name: provider.providerKey,
+        provider_envelope_id: providerDocumentId,
+        esign_status: "sent",
         sent_at: new Date().toISOString(),
       })
       .select("id")
@@ -538,7 +533,7 @@ export async function getContractStatus(
 
     const { data: contract, error: contractError } = await supabase
       .from("contract_signatures")
-      .select("status, signed_at, provider, provider_document_id")
+      .select("status:esign_status, signed_at:fully_signed_at, provider:provider_name, provider_envelope_id")
       .eq("id", contractSignatureId)
       .single()
 
@@ -605,8 +600,8 @@ export async function markContractSignedManually(
     await supabase
       .from("contract_signatures")
       .update({
-        status: "signed",
-        signed_at: now,
+        esign_status: "fully_signed",
+        fully_signed_at: now,
       })
       .eq("id", contractSignatureId)
 

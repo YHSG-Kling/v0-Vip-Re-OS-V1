@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { MapPin, Clock, Phone, Navigation, CheckCircle, Home, ChevronRight } from "lucide-react"
 import { format } from "date-fns"
 import { toast } from "sonner"
-import { updateShowingStatus } from "@/app/actions/showings"
+import { completeShowing } from "@/app/actions/showings"
 
 interface Showing {
   id: string
@@ -57,7 +57,7 @@ export function ShowingDayPanel({ showings, onShowingSelect }: ShowingDayPanelPr
 
   const handleCompleteShowing = (showingId: string) => {
     startTransition(async () => {
-      const result = await updateShowingStatus(showingId, "completed")
+      const result = await completeShowing(showingId)
       if (result.success) {
         toast.success("Showing marked as completed")
       } else {

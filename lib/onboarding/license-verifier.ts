@@ -200,19 +200,17 @@ async function handleVerificationSuccess(
     .update({
       verification_status: "verified",
       verified_at: now,
-      notes: result.resultDetail,
       updated_at: now,
     })
     .eq("id", params.agentLicenseId)
 
-  // Insert license_verifications record
+  // Insert license_verifications record (canonical columns + CHECK-valid values)
   await supabase.from("license_verifications").insert({
     brokerage_id: params.brokerageId,
-    agent_license_id: params.agentLicenseId,
-    method: result.method,
-    result: "pass",
-    result_detail: result.resultDetail,
-    verified_at: now,
+    license_id: params.agentLicenseId,
+    verification_method: result.method === "nipr" ? "nipr_api" : result.method === "ai_document_analysis" ? "document_ai" : "manual",
+    verification_result: "passed",
+    raw_response: { detail: result.resultDetail },
   })
 
   // Fire kernel event
@@ -254,20 +252,19 @@ async function handleVerificationFailure(
   await supabase
     .from("agent_licenses")
     .update({
-      verification_status: "pending_review",
-      notes: result.resultDetail,
+      verification_status: "pending", // CHECK: unverified|pending|verified|failed (no pending_review)
       updated_at: now,
     })
     .eq("id", params.agentLicenseId)
 
-  // Insert license_verifications record
+  // Insert license_verifications record (canonical columns + CHECK-valid values)
   await supabase.from("license_verifications").insert({
     brokerage_id: params.brokerageId,
-    agent_license_id: params.agentLicenseId,
-    method: result.method,
-    result: "fail",
-    result_detail: result.resultDetail,
-    verified_at: now,
+    license_id: params.agentLicenseId,
+    verification_method: result.method === "nipr" ? "nipr_api" : result.method === "ai_document_analysis" ? "document_ai" : "manual",
+    verification_result: "failed",
+    failure_reasons: [result.resultDetail],
+    raw_response: { detail: result.resultDetail },
   })
 
   // Fire kernel event for failed verification

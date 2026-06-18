@@ -95,6 +95,7 @@ export async function setupLocalNewsSource(
     .from('local_news_sources')
     .insert({
       brokerage_id: userData.brokerage_id,
+      name: marketName || zipCodes.join(','), // NOT NULL on local_news_sources
       market_zip_codes: zipCodes,
       market_name: marketName,
       refresh_frequency: refreshFrequency,

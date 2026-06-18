@@ -199,7 +199,7 @@ export async function logMilestoneOverdue(params: {
   milestone_id: string
   milestone_title: string
   days_overdue: number
-  listing_id: string
+  listing_id?: string | null
 }): Promise<Event> {
   return logEventAndTrigger({
     brokerage_id: params.brokerage_id,

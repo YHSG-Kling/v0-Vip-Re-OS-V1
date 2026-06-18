@@ -293,9 +293,8 @@ export async function getShowings(contactId: string) {
 
 export async function updateShowingStatus(
   showingId: string,
-  status: "pending" | "confirmed" | "completed" | "cancelled" | "rescheduled",
-  confirmedDate?: string,
-  agentNotes?: string
+  status: "pending" | "approved" | "needs_reschedule" | "denied" | "cancelled",
+  sellerNotes?: string
 ) {
   try {
     const supabase = await createClient()
@@ -303,9 +302,9 @@ export async function updateShowingStatus(
     const { error } = await supabase
       .from("showing_requests")
       .update({
-        status,
-        confirmed_date: confirmedDate,
-        agent_notes: agentNotes,
+        status, // CHECK: pending|approved|needs_reschedule|denied|cancelled
+        ...(sellerNotes !== undefined ? { seller_notes: sellerNotes } : {}),
+        ...(status === "approved" ? { seller_approved: true, seller_approved_at: new Date().toISOString() } : {}),
         updated_at: new Date().toISOString(),
       })
       .eq("id", showingId)
@@ -322,34 +321,25 @@ export async function updateShowingStatus(
   }
 }
 
-export async function submitShowingFeedback(
-  showingId: string,
-  feedbackRating: number,
-  feedbackNotes: string,
-  interestedLevel: "very_interested" | "interested" | "neutral" | "not_interested"
-) {
+// Mark an actual scheduled showing (showings table) as completed. The mobile
+// day-panel operates on showings rows, not showing_requests.
+export async function completeShowing(showingId: string) {
   try {
     const supabase = await createClient()
 
     const { error } = await supabase
-      .from("showing_requests")
-      .update({
-        feedback_rating: feedbackRating,
-        feedback_notes: feedbackNotes,
-        interested_level: interestedLevel,
-        status: "completed",
-        updated_at: new Date().toISOString(),
-      })
+      .from("showings")
+      .update({ status: "completed", completed_at: new Date().toISOString() })
       .eq("id", showingId)
 
     if (error) {
-      console.error("Error submitting feedback:", error)
+      console.error("Error completing showing:", error)
       return { success: false, error: error.message }
     }
 
     return { success: true }
   } catch (error: any) {
-    console.error("Error in submitShowingFeedback:", error)
+    console.error("Error in completeShowing:", error)
     return { success: false, error: error.message }
   }
 }
@@ -365,14 +355,28 @@ export async function createShowing(params: {
   try {
     const supabase = await createClient()
 
+    // brokerage_id + requested_date/start/end are NOT NULL on showing_requests.
+    const { data: c } = await supabase
+      .from("contacts").select("brokerage_id").eq("id", params.contactId).maybeSingle()
+    const startTime = `${params.scheduledTime}:00`
+    const [eh, em] = params.scheduledTime.split(":").map(Number)
+    const endTotal = eh * 60 + em + 30
+    const endTime = `${String(Math.floor(endTotal / 60) % 24).padStart(2, "0")}:${String(endTotal % 60).padStart(2, "0")}:00`
+
     const { data, error } = await supabase
       .from("showing_requests")
       .insert({
-        contact_id: params.contactId,
-        property_id: params.propertyId,
-        property_address: params.propertyAddress,
-        confirmed_date: `${params.scheduledDate} ${params.scheduledTime}`,
-        status: "confirmed",
+        contact_id:           params.contactId,
+        brokerage_id:         c?.brokerage_id ?? null,
+        listing_id:           params.propertyId, // real column is listing_id
+        property_address:     params.propertyAddress,
+        requested_date:       params.scheduledDate,
+        requested_start_time: startTime,
+        requested_end_time:   endTime,
+        status:               "approved", // CHECK-valid; "confirmed" is not allowed
+        seller_approved:      true,
+        seller_approved_at:   new Date().toISOString(),
+        source:               "agent_input",
       })
       .select()
       .single()
@@ -419,7 +423,7 @@ export async function cancelShowing(showingId: string, reason?: string) {
       .from("showing_requests")
       .update({
         status: "cancelled",
-        agent_notes: reason,
+        ...(reason !== undefined ? { seller_notes: reason } : {}),
         updated_at: new Date().toISOString(),
       })
       .eq("id", showingId)
@@ -444,9 +448,10 @@ export async function confirmShowing(showingId: string, confirmedDate: string) {
     const { data, error } = await supabase
       .from("showing_requests")
       .update({
-        status:         "confirmed",
-        confirmed_date: confirmedDate,
-        updated_at:     new Date().toISOString(),
+        status:             "approved", // CHECK-valid; "confirmed" is not allowed
+        seller_approved:    true,
+        seller_approved_at: new Date().toISOString(),
+        updated_at:         new Date().toISOString(),
       })
       .eq("id", showingId)
       .select("id, contact_id, brokerage_id, listing_id, requested_date")
@@ -489,21 +494,6 @@ export async function confirmShowing(showingId: string, confirmedDate: string) {
   }
 }
 
-export async function getShowingFeedback(showingId: string) {
-  try {
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-      .from("showing_requests")
-      .select("feedback_rating, feedback_notes, interested_level")
-      .eq("id", showingId)
-      .single()
-
-    if (error) throw error
-
-    return { success: true, feedback: data }
-  } catch (error: any) {
-    console.error("Error in getShowingFeedback:", error)
-    return { success: false, error: error.message }
-  }
-}
+// NOTE: getShowingFeedback (by listingId) is canonically defined in seller-updates.ts —
+// the showing_requests-based duplicate that lived here wrote/read phantom feedback
+// columns and had no live consumer, so it was removed. See app/actions/index.ts.

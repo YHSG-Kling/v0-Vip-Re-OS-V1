@@ -143,7 +143,7 @@ export {
   updateShowing,
   cancelShowing,
   confirmShowing,
-  getShowingFeedback,
+  completeShowing,
 } from "./showings"
 
 // Tour management

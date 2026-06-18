@@ -17,7 +17,7 @@ export async function handleSuggestionAccepted(payload: any) {
   // Mark suggestion as accepted
   await supabase
     .from("smart_assistant_suggestions")
-    .update({ status: "accepted", accepted_at: new Date().toISOString() })
+    .update({ status: "accepted" })
     .eq("id", suggestion_id)
 
   // Log the acceptance for learning
@@ -148,11 +148,10 @@ export async function createTransactionMilestone(params: {
     .from("transaction_milestones")
     .insert({
       brokerage_id: profile.brokerage_id,
-      listing_id: params.listing_id,
+      milestone_name: params.milestone_type, // NOT NULL on transaction_milestones
       milestone_type: params.milestone_type,
       title: params.title,
-      due_date: params.due_date,
-      responsible_party: params.responsible_party,
+      target_date: params.due_date, // real column is target_date (not due_date)
       description: params.description,
       status: "pending",
     })
@@ -181,14 +180,14 @@ export async function checkOverdueMilestones() {
     .select("*")
     .eq("brokerage_id", profile.brokerage_id)
     .eq("status", "pending")
-    .lt("due_date", new Date().toISOString())
+    .lt("target_date", new Date().toISOString())
 
   if (!overdueMilestones || overdueMilestones.length === 0) {
     return { success: true, count: 0 }
   }
 
   for (const milestone of overdueMilestones) {
-    const daysOverdue = Math.floor((Date.now() - new Date(milestone.due_date).getTime()) / (1000 * 60 * 60 * 24))
+    const daysOverdue = Math.floor((Date.now() - new Date(milestone.target_date).getTime()) / (1000 * 60 * 60 * 24))
 
     await logMilestoneOverdue({
       brokerage_id: profile.brokerage_id,
@@ -196,7 +195,7 @@ export async function checkOverdueMilestones() {
       milestone_id: milestone.id,
       milestone_title: milestone.title,
       days_overdue: daysOverdue,
-      listing_id: milestone.listing_id,
+      listing_id: null, // transaction_milestones links via transaction_id, not listing_id
     })
   }
 
@@ -217,7 +216,7 @@ export async function completeMilestone(params: { milestone_id: string; completi
     .update({
       status: "completed",
       completed_at: new Date().toISOString(),
-      completion_notes: params.completion_notes,
+      notes: params.completion_notes, // real column is notes (not completion_notes)
     })
     .eq("id", params.milestone_id)
     .select()
@@ -263,8 +262,8 @@ export async function generateDailyGameplan(userId: string) {
     .select("*, listings(*)")
     .eq("brokerage_id", profile.brokerage_id)
     .eq("status", "pending")
-    .lt("due_date", new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString())
-    .order("due_date", { ascending: true })
+    .lt("target_date", new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString())
+    .order("target_date", { ascending: true })
     .limit(10)
 
   // Get overdue tasks
@@ -283,7 +282,7 @@ export async function generateDailyGameplan(userId: string) {
     .select("*, generated_videos(*), contacts(*)")
     .eq("agent_id", userId)
     .eq("brokerage_id", profile.brokerage_id)
-    .eq("status", "approved")
+    .eq("approval_status", "approved")
     .is("generated_videos.published_at", null)
     .limit(5)
 
@@ -298,7 +297,7 @@ Generate a daily gameplan for ${profile.first_name}. Organize into 3 columns:
 ${hotLeads?.map((lead) => `- ${lead.first_name} ${lead.last_name} (Score: ${lead.lead_score}) - Stage: ${lead.stage}`).join("\n") || "No hot leads today"}
 
 **DEALS TO PROTECT (At-Risk Transactions):**
-${atRiskDeals?.map((deal) => `- ${deal.listings?.property_address || "Property"} - ${deal.title} (Due: ${new Date(deal.due_date).toLocaleDateString()})`).join("\n") || "No at-risk deals"}
+${atRiskDeals?.map((deal) => `- ${deal.listings?.property_address || "Property"} - ${deal.title} (Due: ${new Date(deal.target_date).toLocaleDateString()})`).join("\n") || "No at-risk deals"}
 
 **CONTENT TO POST (Ready to Publish):**
 ${contentReady?.map((content) => `- Video: ${content.title || "Untitled"} for ${content.contacts?.first_name || "social media"}`).join("\n") || "No content ready"}
@@ -487,31 +486,52 @@ export async function suggestNextActions(agentId: string) {
 // Helper functions for task execution
 async function initiateCall(contactId: string, agentId: string) {
   const supabase = await createClient()
-  
-  // Create call log entry
-  const { data: callLog, error } = await supabase
-    .from("voice_calls")
-    .insert({
-      contact_id: contactId,
-      agent_id: agentId,
-      call_type: "outbound",
-      status: "initiated",
-      initiated_at: new Date().toISOString(),
-    })
-    .select()
-    .single()
-  
-  if (error) {
-    console.error("[copilot] Failed to create call log:", error)
-    return { success: false, error: "Failed to initiate call" }
-  }
-  
-  // Log activity — resolve brokerage_id from the agent's user record
+
+  // voice_calls requires brokerage_id + phone_to (NOT NULL) and agent_id is a FK
+  // to agents(id) — but `agentId` here is a users.id, so resolve the agents row.
   const { data: agentUser } = await supabase
     .from("users")
     .select("brokerage_id")
     .eq("id", agentId)
     .maybeSingle()
+  const agentsId = await agentIdForUser(supabase, agentId)
+  const { data: contactRow } = await supabase
+    .from("contacts")
+    .select("phone")
+    .eq("id", contactId)
+    .maybeSingle()
+
+  if (!agentUser?.brokerage_id) {
+    return { success: false, error: "Agent has no brokerage scope" }
+  }
+  if (!agentsId) {
+    return { success: false, error: "No agent profile for current user" }
+  }
+  if (!contactRow?.phone) {
+    return { success: false, error: "Contact has no phone number on file" }
+  }
+
+  // Create call log entry (real columns: direction='outbound', call_type='agent_call',
+  // started_at; phone_to + brokerage_id are NOT NULL)
+  const { data: callLog, error } = await supabase
+    .from("voice_calls")
+    .insert({
+      contact_id: contactId,
+      agent_id: agentsId,
+      brokerage_id: agentUser.brokerage_id,
+      phone_to: contactRow.phone,
+      direction: "outbound",
+      call_type: "agent_call",
+      status: "initiated",
+      started_at: new Date().toISOString(),
+    })
+    .select()
+    .single()
+
+  if (error) {
+    console.error("[copilot] Failed to create call log:", error)
+    return { success: false, error: "Failed to initiate call" }
+  }
 
   await supabase.from("activities").insert({
     brokerage_id: agentUser?.brokerage_id ?? null,
@@ -670,7 +690,7 @@ async function postVideoContent(videoId: string, platforms: string[]) {
   // Get video details
   const { data: video } = await supabase
     .from("video_content")
-    .select("*, agent_id, title, video_url, thumbnail_url")
+    .select("*, agent_id, brokerage_id, title, video_url, thumbnail_url")
     .eq("id", videoId)
     .single()
   
@@ -681,14 +701,16 @@ async function postVideoContent(videoId: string, platforms: string[]) {
   // Create scheduled posts for each platform
   const posts = []
   for (const platform of platforms) {
+    // social_posts has no video_id/thumbnail_url columns; the video is linked via
+    // post_brief (the pattern used by distribute-video.ts / lib/kernel/video.ts).
     const { data: post } = await supabase.from("social_posts").insert({
+      brokerage_id: video.brokerage_id,
       agent_id: video.agent_id,
-      video_id: videoId,
       platform,
       post_type: "custom",
       content: video.title,
       media_urls: [video.video_url],
-      thumbnail_url: video.thumbnail_url,
+      post_brief: `video:${videoId}`,
       status: "scheduled",
       scheduled_for: new Date(Date.now() + 30 * 60 * 1000).toISOString(), // 30 mins from now
     }).select().single()

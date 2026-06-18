@@ -193,18 +193,22 @@ export async function processVoiceCommand(params: {
         success = false
     }
 
-    // Log command to database
+    // Log command to database. Canonical voice_commands columns: user_id (FK→users,
+    // NOT agents), brokerage_id, raw_transcript (NOT NULL); intent → parsed_intent
+    // (command_type left NULL — its CHECK doesn't cover these free-form intents);
+    // contact_id/session_id have no columns here, folded into entities jsonb;
+    // response → action_result jsonb.
     await supabase.from("voice_commands").insert({
-      session_id: sessionId,
-      agent_id: agentId,
-      contact_id: relatedContactId,
-      command_text: commandText,
-      intent_detected: intent.type,
-      entities_extracted: intent.entities,
+      user_id: caller.userId,
+      brokerage_id: caller.brokerageId,
+      raw_transcript: commandText,
+      parsed_intent: intent.type,
+      entities: { ...intent.entities, contact_id: relatedContactId ?? null, session_id: sessionId ?? null },
       action_taken: actionTaken,
-      response_text: response,
+      action_result: { response },
       success,
       confidence_score: intent.confidence,
+      source: "web",
     })
 
     // Update session command count
@@ -239,8 +243,9 @@ export async function startVoiceSession(_agentId?: string, context?: any) {
     .from("voice_assistant_sessions")
     .insert({
       agent_id: caller.agentId,
+      brokerage_id: caller.brokerageId,
       session_start: new Date().toISOString(),
-      context: context || {},
+      context_state: context || {},
     })
     .select()
     .single()
@@ -319,11 +324,8 @@ export async function getVoiceConfig(_agentId?: string) {
       .from("voice_assistant_config")
       .insert({
         agent_id: agentId,
-        voice_enabled: true,
+        brokerage_id: caller.brokerageId,
         wake_word: "hey assistant",
-        voice_type: "female",
-        voice_speed: 1.0,
-        proactive_alerts: true,
       })
       .select()
       .single()
@@ -353,9 +355,17 @@ export async function updateVoiceConfig(_agentId: string | undefined, updates: a
 
   const supabase = await createClient()
 
+  // Whitelist to real voice_assistant_config columns (UI may still send the old
+  // voice_enabled/voice_type/voice_speed/proactive_alerts phantom keys).
   const { data, error } = await supabase
     .from("voice_assistant_config")
-    .update({ ...updates, updated_at: new Date().toISOString() })
+    .update({
+      ...(updates.wake_word !== undefined ? { wake_word: updates.wake_word } : {}),
+      ...(updates.auto_briefing !== undefined ? { auto_briefing: updates.auto_briefing } : {}),
+      ...(updates.preferred_commands !== undefined ? { preferred_commands: updates.preferred_commands } : {}),
+      ...(updates.voice_profile_id !== undefined ? { voice_profile_id: updates.voice_profile_id } : {}),
+      updated_at: new Date().toISOString(),
+    })
     .eq("agent_id", agentId)
     .select()
     .single()
@@ -378,14 +388,13 @@ export async function getVoiceCommandHistory(_agentId?: string, limit = 50) {
   if (!caller.agentId) {
     return { success: false, error: "No agent profile for current user" }
   }
-  const agentId = caller.agentId
-
   const supabase = await createClient()
 
+  // voice_commands is owned by user_id (FK→users); there is no contact_id FK to embed.
   const { data, error } = await supabase
     .from("voice_commands")
-    .select("*, contacts(first_name, last_name)")
-    .eq("agent_id", agentId)
+    .select("*")
+    .eq("user_id", caller.userId)
     .order("created_at", { ascending: false })
     .limit(limit)
 
