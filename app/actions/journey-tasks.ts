@@ -243,17 +243,25 @@ export async function handleTaskCompletedEvent(payload: any) {
 export async function handleStageCompletedEvent(payload: any) {
   const supabase = await createClient()
   
-  // Create a celebration notification
+  // Create a celebration notification. client_portal_messages canonical columns:
+  // body + direction (agent_to_client) + channel + read; agent_id/brokerage_id NOT NULL.
   try {
-    await supabase.from("client_portal_messages").insert({
-      contact_id: payload.contact_id,
-      message_type: "milestone",
-      title: `Stage Complete: ${payload.stage_name}`,
-      content: `Congratulations! You've completed the ${payload.stage_name} stage. Moving on to ${payload.next_stage_name}.`,
-      is_from_agent: true,
-    })
+    const { data: c } = await supabase
+      .from("contacts").select("agent_id, brokerage_id").eq("id", payload.contact_id).maybeSingle()
+    if (c?.agent_id && c?.brokerage_id) {
+      await supabase.from("client_portal_messages").insert({
+        contact_id: payload.contact_id,
+        agent_id: c.agent_id,
+        brokerage_id: c.brokerage_id,
+        direction: "agent_to_client",
+        channel: "portal",
+        body: `Stage Complete: ${payload.stage_name}\n\nCongratulations! You've completed the ${payload.stage_name} stage. Moving on to ${payload.next_stage_name}.`,
+        metadata: { kind: "milestone", stage_name: payload.stage_name },
+        read: false,
+      })
+    }
   } catch {
-    // Table might not exist
+    // non-critical
   }
 
   return { success: true }
@@ -262,17 +270,24 @@ export async function handleStageCompletedEvent(payload: any) {
 export async function handleAllTasksCompletedEvent(payload: any) {
   const supabase = await createClient()
   
-  // Send celebration message
+  // Send celebration message (canonical client_portal_messages shape).
   try {
-    await supabase.from("client_portal_messages").insert({
-      contact_id: payload.contact_id,
-      message_type: "celebration",
-      title: "Journey Complete!",
-      content: "Congratulations on completing your real estate journey! We're honored to have been part of this milestone.",
-      is_from_agent: true,
-    })
+    const { data: c } = await supabase
+      .from("contacts").select("agent_id, brokerage_id").eq("id", payload.contact_id).maybeSingle()
+    if (c?.agent_id && c?.brokerage_id) {
+      await supabase.from("client_portal_messages").insert({
+        contact_id: payload.contact_id,
+        agent_id: c.agent_id,
+        brokerage_id: c.brokerage_id,
+        direction: "agent_to_client",
+        channel: "portal",
+        body: "Journey Complete!\n\nCongratulations on completing your real estate journey! We're honored to have been part of this milestone.",
+        metadata: { kind: "celebration" },
+        read: false,
+      })
+    }
   } catch {
-    // Table might not exist
+    // non-critical
   }
 
   return { success: true }

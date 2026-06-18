@@ -1045,27 +1045,23 @@ export async function updateAgentVideoProfile(data: {
   if (!agentRow) throw new Error("Agent not found")
   if (agentRow.brokerage_id !== auth.brokerageId) throw new Error("Forbidden")
 
-  // SCHEMA DRIFT: live agent_voice_profiles has heygen_voice_clone_id,
-  // elevenlabs_voice_id, did_*, preferred_avatar_provider, profile_name,
-  // sample_count, training_status, quality_score, is_default — NOT
-  // heygen_avatar_id / default_voice_id / default_background_id /
-  // branding_preset_id / intro_script / outro_script / default_style.
-  // Insert silently drops unknown columns; preserved here so the function
-  // doesn't blow up but the actual settings won't persist.
+  // Canonical agent_voice_profiles (D-ID + ElevenLabs). Avatar/voice map to
+  // did_avatar_id / elevenlabs_voice_id; branding/background/intro/outro/style have
+  // no column here (those live on video_branding_presets). profile_name is NOT NULL
+  // with no default. UNIQUE index is on agent_id → upsert must target onConflict:agent_id.
+  const patch: Record<string, unknown> = {
+    agent_id: data.agentId,
+    brokerage_id: auth.brokerageId,
+    profile_name: "Default Profile",
+    preferred_avatar_provider: "did",
+    updated_at: new Date().toISOString(),
+  }
+  if (data.heygenAvatarId !== undefined) patch.did_avatar_id = data.heygenAvatarId
+  if (data.defaultVoiceId !== undefined) patch.elevenlabs_voice_id = data.defaultVoiceId
+
   const { data: profile, error } = await supabase
     .from("agent_voice_profiles")
-    .upsert({
-      agent_id: data.agentId,
-      brokerage_id: auth.brokerageId,
-      heygen_avatar_id: data.heygenAvatarId,
-      default_voice_id: data.defaultVoiceId,
-      default_background_id: data.defaultBackgroundId,
-      branding_preset_id: data.brandingPresetId,
-      intro_script: data.introScript,
-      outro_script: data.outroScript,
-      default_style: data.defaultStyle,
-      updated_at: new Date().toISOString(),
-    })
+    .upsert(patch, { onConflict: "agent_id" })
     .select()
     .single()
 
@@ -1338,9 +1334,13 @@ export async function generateVideoFromScript(params: {
         brokerageId: auth.brokerageId ?? undefined,
       })
       if (didRes.success && (didRes as { videoId?: string }).videoId) {
+        // The D-ID provider job id has no column on video_generation_queue; its canonical
+        // home is ai_video_projects.provider_job_id (see create-video-project + poll-did-videos).
+        // This legacy path creates no project row, so only advance status + log the job id.
         await supabase.from("video_generation_queue")
-          .update({ heygen_video_id: (didRes as { videoId?: string }).videoId, status: "generating" })
+          .update({ status: "generating" })
           .eq("id", queueRecord.id)
+        console.log(`[v0] D-ID video_id=${(didRes as { videoId?: string }).videoId} queue=${queueRecord.id}`)
       } else {
         console.warn("[v0] D-ID kick deferred, video stays queued:", (didRes as { error?: string }).error)
       }

@@ -20,7 +20,7 @@ export async function logTouchpoint({
   contactId,
   touchpointType,
   notes,
-  channel = "manual",
+  channel = "in_app",
 }: {
   contactId: string
   touchpointType: string
@@ -30,6 +30,8 @@ export async function logTouchpoint({
   const supabase = await createClient()
   const { agentId, brokerageId } = await getAgentContext()
 
+  // Real columns: scheduled_date (NOT NULL, date), sent_date (date), engagement_data (jsonb,
+  // not "notes"); status CHECK uses 'sent' not 'completed'; channel CHECK excludes 'manual'.
   const { data, error } = await supabase
     .from("lifetime_customer_touchpoints")
     .insert({
@@ -38,9 +40,10 @@ export async function logTouchpoint({
       brokerage_id: brokerageId,
       touchpoint_type: touchpointType,
       channel,
-      notes,
-      status: "completed",
-      sent_at: new Date().toISOString(),
+      engagement_data: notes ? { notes } : {},
+      status: "sent",
+      scheduled_date: new Date().toISOString().split("T")[0],
+      sent_date: new Date().toISOString().split("T")[0],
     })
     .select()
     .single()
@@ -86,9 +89,10 @@ export async function sendMarketUpdate({
       contact_id: contactId,
       agent_id: agentId,
       brokerage_id: brokerageId,
-      message_body: messageBody,
-      direction: "outbound",
+      body: messageBody, // real column (was phantom message_body)
+      direction: "agent_to_client", // CHECK: agent_to_client|client_to_agent
       channel: "portal",
+      read: false,
       read_at: null,
     })
     .select()
@@ -107,9 +111,10 @@ export async function sendMarketUpdate({
       agent_id: agentId,
       brokerage_id: brokerageId,
       touchpoint_type: "market_update",
-      channel: "portal",
-      status: "completed",
-      sent_at: new Date().toISOString(),
+      channel: "in_app", // CHECK excludes 'portal'
+      status: "sent",
+      scheduled_date: new Date().toISOString().split("T")[0],
+      sent_date: new Date().toISOString().split("T")[0],
     })
 
   if (touchpointError) {
@@ -191,7 +196,7 @@ export async function getLifetimeCustomers({
   // Get engagement scores for these contacts
   const { data: engagementScores } = await supabase
     .from("client_engagement_scores")
-    .select("contact_id, engagement_score, referral_potential_score, last_touchpoint_date, computed_at")
+    .select("contact_id, engagement_score:score, last_touchpoint_date:last_interaction, computed_at:calculated_at, referrals_given, touchpoints_count")
     .in("contact_id", contactIds)
 
   // Merge data together
@@ -232,7 +237,7 @@ export async function getTouchpointTimeline(contactId: string) {
     .eq("contact_id", contactId)
     .eq("agent_id", agentId)
     .eq("brokerage_id", brokerageId)
-    .order("sent_at", { ascending: false })
+    .order("sent_date", { ascending: false })
     .limit(20)
 
   if (error) {
@@ -345,9 +350,9 @@ export async function scheduleTouchpoint({
       agent_id: agentId,
       brokerage_id: brokerageId,
       touchpoint_type: touchpointType,
-      scheduled_for: scheduledFor,
-      notes,
-      status: "pending",
+      scheduled_date: scheduledFor.split("T")[0], // real column is scheduled_date (date)
+      message_template: notes ?? null, // no notes column; store in message_template
+      status: "scheduled", // CHECK: scheduled|sent|completed|skipped|failed
     })
     .select()
     .single()
@@ -372,7 +377,7 @@ export async function getAISuggestedTouchpoint(contactId: string) {
     .from("contacts")
     .select(`
       *,
-      client_engagement_scores(engagement_score, last_touchpoint_date),
+      client_engagement_scores(engagement_score:score, last_touchpoint_date:last_interaction),
       transactions(actual_close_date:close_date, property_address)
     `)
     .eq("id", contactId)

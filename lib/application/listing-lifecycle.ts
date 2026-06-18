@@ -144,7 +144,8 @@ export async function markListingLiveService(
     const supabase = await createClient()
     await supabase.from("listing_packet_jobs").insert({
       listing_id: params.listing_id,
-      agent_id: agentId,
+      agent_user_id: agentId, // real column (FK→users.id); was phantom agent_id
+      job_type: "mls_packet",
       status: "pending",
       config: {
         includeFlyer: true,
@@ -152,7 +153,6 @@ export async function markListingLiveService(
         includePropertyReports: true,
         includeBinderCopies: true,
       },
-      created_at: new Date().toISOString(),
     })
   } catch (packetError) {
     console.error("[listing-lifecycle] Failed to queue listing packet job:", packetError)
@@ -312,7 +312,7 @@ async function triggerStageActions(listingId: string, stage: string, agentId: st
       await createTask(agentId, listingId, "Send closing congratulations", 0)
       await trackClosingGift(listing.id)
       await scheduleReviewRequests(listing.seller_contact_id, listing.id)
-      await enrollLifetimeCustomer(listing.seller_contact_id)
+      await enrollLifetimeCustomer(listing.seller_contact_id, listing.brokerage_id, agentId)
       break
     case "post_close":
       await createTask(agentId, listingId, "30-day check-in call", 30)
@@ -378,40 +378,57 @@ async function trackClosingGift(listingId: string) {
   }
 }
 
-async function scheduleReviewRequests(contactId: string, transactionId: string) {
+async function scheduleReviewRequests(contactId: string, _transactionId: string) {
   const supabase = await createClient()
-  const reviewDays = [3, 5, 7]
-  for (const days of reviewDays) {
+  // review_requests is contact-keyed, one row per platform (no transaction_id /
+  // scheduled_send_date columns; platform is singular). Matches lib/kernel/reputation.ts.
+  const platforms = ["google", "zillow", "facebook"]
+  for (const platform of platforms) {
     await supabase.from("review_requests").insert({
-      transaction_id: transactionId,
       contact_id: contactId,
-      scheduled_send_date: new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString(),
-      platforms: ["google", "zillow", "facebook"],
+      platform,
       status: "scheduled",
     })
   }
 }
 
-async function enrollLifetimeCustomer(contactId: string) {
+async function enrollLifetimeCustomer(contactId: string, brokerageId: string, userId: string) {
   const supabase = await createClient()
   await supabase
     .from("contacts")
     .update({ status: "lifetime_customer" })
     .eq("id", contactId)
 
+  // agent_id FK targets agents.id, not users.id — resolve the caller's agent row.
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", userId)
+    .maybeSingle()
+  if (!agentRow?.id) {
+    console.error("[listing-lifecycle] enrollLifetimeCustomer: no agent row for user", userId)
+    return
+  }
+
+  // touchpoint_type CHECK-valid values; scheduled_date NOT NULL (date); brokerage_id+agent_id
+  // NOT NULL; no message_template column → engagement_data jsonb.
   const touchpoints = [
-    { days: 30, type: "check_in", message: "How are you settling in?" },
-    { days: 90, type: "market_update", message: "Quarterly market report" },
-    { days: 180, type: "home_maintenance", message: "Seasonal maintenance tips" },
-    { days: 365, type: "anniversary", message: "Happy home anniversary!" },
+    { days: 30,  type: "post_close_30_day", channel: "sms",   message: "How are you settling in?" },
+    { days: 90,  type: "market_update",     channel: "email", message: "Quarterly market report" },
+    { days: 180, type: "custom",            channel: "email", message: "Seasonal maintenance tips" },
+    { days: 365, type: "home_anniversary",  channel: "video", message: "Happy home anniversary!" },
   ]
 
   for (const touchpoint of touchpoints) {
     await supabase.from("lifetime_customer_touchpoints").insert({
-      contact_id: contactId,
+      brokerage_id:    brokerageId,
+      contact_id:      contactId,
+      agent_id:        agentRow.id,
       touchpoint_type: touchpoint.type,
-      scheduled_date: new Date(Date.now() + touchpoint.days * 24 * 60 * 60 * 1000).toISOString(),
-      message_template: touchpoint.message,
+      channel:         touchpoint.channel,
+      scheduled_date:  new Date(Date.now() + touchpoint.days * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
+      status:          "scheduled",
+      engagement_data: { message: touchpoint.message },
     })
   }
 }
@@ -662,14 +679,14 @@ export async function handleClosingApproachingService(payload: any) {
 
 export async function triggerReviewSequenceService(payload: any) {
   const supabase = await createClient()
-  const { listing_id, contact_id } = payload
-  const reviewDays = [3, 5, 7]
-  for (const days of reviewDays) {
+  const { contact_id } = payload
+  // review_requests is contact-keyed, one row per platform. listing_id /
+  // scheduled_send_date / platforms were phantom columns.
+  const platforms = ["google", "zillow", "facebook"]
+  for (const platform of platforms) {
     await supabase.from("review_requests").insert({
-      listing_id,
       contact_id,
-      scheduled_send_date: new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString(),
-      platforms: ["google", "zillow", "facebook"],
+      platform,
       status: "scheduled",
     })
   }
@@ -709,7 +726,7 @@ export async function sendReviewRequestService(requestId: string, platform: stri
 
   await supabase
     .from("review_requests")
-    .update({ request_sent_at: new Date().toISOString(), platform_sent: platform })
+    .update({ sent_at: new Date().toISOString(), status: "sent" })
     .eq("id", requestId)
 
   return { success: true }

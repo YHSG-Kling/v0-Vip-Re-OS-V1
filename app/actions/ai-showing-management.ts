@@ -351,10 +351,11 @@ export async function aiOptimizeShowingRoute(params: {
       return { success: false, error: "No showings found for this date" }
     }
 
-    // Get agent's starting location
+    // Get agent's starting location from their brokerage (users has no address columns;
+    // brokerages exposes city/state only).
     const { data: agent } = await supabase
       .from("users")
-      .select("address, city, state")
+      .select("brokerages(name, city, state)")
       .eq("id", params.agentId)
       .single()
 
@@ -363,7 +364,7 @@ export async function aiOptimizeShowingRoute(params: {
       model: "openai/gpt-4o",
       prompt: `You are a real estate showing route optimizer. Create an optimal route.
 
-AGENT STARTING LOCATION: ${agent?.address || "Office"}, ${agent?.city || ""}, ${agent?.state || ""}
+AGENT STARTING LOCATION: ${(agent as any)?.brokerages?.name || "Office"}, ${(agent as any)?.brokerages?.city || ""}, ${(agent as any)?.brokerages?.state || ""}
 
 SHOWINGS TO SCHEDULE:
 ${showings
@@ -610,15 +611,15 @@ JSON response:
     }
 
     // Create feedback request record
+    // Live schema: showing_id, brokerage_id, sent_at, ai_analysis. The generated
+    // form has no dedicated column → store under ai_analysis.feedback_form.
     const { data: feedback, error } = await supabase
       .from("showing_feedback_requests")
       .insert({
         showing_id: showingId,
-        contact_id: showing.contact_id,
-        property_id: showing.property_id,
-        feedback_form: feedbackForm,
+        brokerage_id: (showing as any).brokerage_id ?? null,
+        ai_analysis: { feedback_form: feedbackForm },
         sent_at: new Date().toISOString(),
-        status: "pending",
       })
       .select()
       .single()
@@ -653,13 +654,14 @@ export async function aiAnalyzeShowingFeedback(feedbackId: string) {
       .from("showing_feedback_requests")
       .select(`
         *,
-        showings(*, listings(*)),
-        contacts(*)
+        showings(*, listings(*), contacts(*), showing_feedback(*))
       `)
       .eq("id", feedbackId)
       .single()
 
-    if (!feedback || !feedback.responses) {
+    // Feedback content lives on showing_feedback (joined via showing_id).
+    const responses = (feedback as any)?.showings?.showing_feedback?.[0] ?? null
+    if (!feedback || !responses) {
       return { success: false, error: "No feedback responses found" }
     }
 
@@ -669,10 +671,10 @@ export async function aiAnalyzeShowingFeedback(feedbackId: string) {
       prompt: `Analyze this showing feedback and recommend next steps.
 
 PROPERTY: ${feedback.showings?.listings?.address}
-PRICE: $${feedback.showings?.listings?.price?.toLocaleString()}
+PRICE: $${feedback.showings?.listings?.list_price?.toLocaleString()}
 
 BUYER FEEDBACK:
-${JSON.stringify(feedback.responses, null, 2)}
+${JSON.stringify(responses, null, 2)}
 
 Analyze and provide:
 {
@@ -702,17 +704,17 @@ Analyze and provide:
     await supabase
       .from("showing_feedback_requests")
       .update({
-        ai_analysis: analysisResult,
+        ai_analysis: { ...analysisResult, analyzed_at: new Date().toISOString() },
         interest_score: analysisResult.interestScore,
-        analyzed_at: new Date().toISOString(),
       })
       .eq("id", feedbackId)
 
     // Update contact's lead score based on showing feedback
-    if (analysisResult.interestScore && feedback.contact_id) {
+    const feedbackContactId = (feedback as any).showings?.contacts?.id ?? (feedback as any).showings?.contact_id
+    if (analysisResult.interestScore && feedbackContactId) {
       const scoreAdjustment = Math.round((analysisResult.interestScore - 50) / 5)
       await supabase.rpc("adjust_lead_score", {
-        p_contact_id: feedback.contact_id,
+        p_contact_id: feedbackContactId,
         p_adjustment: scoreAdjustment,
         p_reason: "showing_feedback",
       })
