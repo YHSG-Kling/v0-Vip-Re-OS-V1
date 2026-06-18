@@ -120,12 +120,13 @@ async function checkDocumentsVerified(
   supabase: SupabaseClient,
   listingId: string
 ): Promise<ReadinessCheckResult> {
+  // Listing-stage documents live in `documents` (keyed by listing_id), not
+  // transaction_documents (keyed by transaction_id, no listing_id/is_required).
   const { data, error } = await supabase
-    .from("transaction_documents")
+    .from("documents")
     .select("id, document_type, status")
     .eq("listing_id", listingId)
-    .eq("is_required", true)
-  
+
   if (error) {
     return {
       check: "documents_verified",
@@ -133,8 +134,9 @@ async function checkDocumentsVerified(
       reason: `Error checking documents: ${error.message}`,
     }
   }
-  
-  const unverifiedDocs = data?.filter((d) => d.status !== "verified") || []
+
+  // documents.status terminal/verified states are 'complete' and 'signed'.
+  const unverifiedDocs = data?.filter((d) => !["complete", "signed"].includes(d.status)) || []
   
   return {
     check: "documents_verified",
@@ -184,12 +186,14 @@ async function checkMediaApproved(
   supabase: SupabaseClient,
   listingId: string
 ): Promise<ReadinessCheckResult> {
-  // Check for approved photos
+  // Photo approval state lives on listing_media.is_approved (listing_photos has no
+  // approval concept). Filter to photo media for the 10-photo minimum.
   const { data: photos } = await supabase
-    .from("listing_photos")
-    .select("id, status")
+    .from("listing_media")
+    .select("id, is_approved")
     .eq("listing_id", listingId)
-    .eq("status", "approved")
+    .eq("media_type", "photo")
+    .eq("is_approved", true)
   
   const hasApprovedPhotos = (photos?.length || 0) >= 10 // Minimum 10 photos
   

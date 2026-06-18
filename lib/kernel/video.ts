@@ -167,10 +167,15 @@ export async function createVideoProject(
       agent_id: input.agentId,
       brokerage_id: input.brokerageId,
       title: input.title,
-      description: input.description,
-      campaign_id: input.campaignId,
-      source_type: input.sourceType,
-      source_id: input.sourceId,
+      // ai_video_projects has no description/source_type/source_id columns — these
+      // fold into the video_metadata jsonb. campaign_id is the canonical FK
+      // marketing_campaign_id.
+      marketing_campaign_id: input.campaignId,
+      video_metadata: {
+        description: input.description,
+        source_type: input.sourceType,
+        source_id: input.sourceId,
+      },
       status: "setup",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -214,7 +219,7 @@ export async function generateVideoScript(
   // Generate script using AI (using openai provider function)
   const scriptText = await generateScriptViaAI({
     title: project.title,
-    description: project.description,
+    description: (project.video_metadata as { description?: string } | null)?.description,
     strategy: input.contentStrategy,
     tone: input.tone,
     durationSeconds: input.duration,
@@ -227,7 +232,7 @@ export async function generateVideoScript(
   const { error: updateError } = await supabase
     .from("ai_video_projects")
     .update({
-      script_text: scriptText,
+      script_content: scriptText,
       status: "scripting",
       updated_at: new Date().toISOString(),
     })
@@ -428,7 +433,7 @@ export async function loadVideoGenerationState(
   return {
     projectId: project.id,
     status: project.status,
-    scriptText: project.script_text,
+    scriptText: project.script_content,
     settings: project.provider_metadata,
     heygenStatus: project.heygen_status,
     videoUrl: project.video_url,

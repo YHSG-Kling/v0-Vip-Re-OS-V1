@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
     const { data: messages } = await supabase
       .from("messages")
       .select("*")
-      .eq("session_id", sessionId)
+      .eq("conversation_id", sessionId)
       .order("created_at", { ascending: true })
       .limit(50)
 
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
     const conversationHistory = messages
       ?.map((msg) => {
         const role = msg.sender_type === "agent" ? "user" : "model"
-        return `${role}: ${msg.message}`
+        return `${role}: ${msg.body}`
       })
       .join("\n")
 
@@ -104,13 +104,14 @@ Generate a response that helps the agent communicate more effectively while main
           }
 
           // Save AI suggestion to database
+          // ai_suggestions live columns: session_id, suggestion_type, suggestion_content,
+          // confidence_score (no message_id/content/them_first_score columns — the
+          // them-first score is still returned to the client in the SSE done event below).
           await supabase.from("ai_suggestions").insert({
             session_id: sessionId,
-            message_id: null, // Will be linked when message is sent
             suggestion_type: "response",
-            content: fullResponse,
-            them_first_score: complianceCheck.score,
-            confidence: 0.9,
+            suggestion_content: fullResponse,
+            confidence_score: 0.9,
           })
 
           // Send completion signal

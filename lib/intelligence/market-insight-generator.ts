@@ -182,21 +182,18 @@ export async function refreshMarketData(
   if (!stats) {
     const { data: cmaData } = await supabase
       .from('cma_reports')
-      .select('market_analysis, estimated_value, created_at')
+      .select('recommended_price, created_at')
       .eq('brokerage_id', brokerageId)
       .ilike('property_address', `%${marketArea}%`)
       .gte('created_at', new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString())
       .limit(50)
 
     if (cmaData && cmaData.length > 0) {
-      const avgDom =
-        cmaData.reduce((sum, r) => {
-          const dom = r.market_analysis?.days_on_market
-          return sum + (typeof dom === 'number' ? dom : 0)
-        }, 0) / cmaData.length
-
+      // cma_reports carries no days-on-market signal (market_conditions is free text,
+      // not structured), so DOM is unknown at this tier — left at 0 like the other
+      // unavailable fields below.
       const avgPrice =
-        cmaData.reduce((sum, r) => sum + (r.estimated_value || 0), 0) / cmaData.length
+        cmaData.reduce((sum, r) => sum + (r.recommended_price || 0), 0) / cmaData.length
 
       const sold30d = cmaData.filter(
         (r) => new Date(r.created_at) > new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
@@ -207,7 +204,7 @@ export async function refreshMarketData(
         new_listings_30d: 0,
         sold_listings_30d: sold30d,
         median_sale_price: Math.round(avgPrice),
-        avg_days_on_market: Math.round(avgDom),
+        avg_days_on_market: 0,
         list_to_sale_ratio: 0,
         months_of_inventory: 0,
         price_trend_pct_1yr: 0,
@@ -333,10 +330,11 @@ export async function generateMarketInsight(
       .order('snapshot_month', { ascending: false })
       .limit(6),
 
-    // Recent CMA reports
+    // Recent CMA reports (estimated_value is the canonical recommended_price; aliased
+    // to preserve the downstream return shape)
     supabase
       .from('cma_reports')
-      .select('city, estimated_value, created_at')
+      .select('estimated_value:recommended_price, created_at')
       .eq('brokerage_id', req.brokerageId)
       .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
       .limit(20),
@@ -432,11 +430,15 @@ Avg CMA Value: $${cmaReports.length > 0 ? Math.round(cmaReports.reduce((s, r) =>
       competition_alert: insight.competition_alert,
       buyer_indicators: insight.buyer_indicators,
       seller_indicators: insight.seller_indicators,
-      key_stats: insight.key_stats,
-      source_data: {
-        market_data_id: data.id,
-        trends_count: trends.length,
-        cma_count: cmaReports.length,
+      // market_insights has no source_data column — provenance is folded into the
+      // existing key_stats jsonb under a `source` key (no data lost).
+      key_stats: {
+        ...(insight.key_stats as Record<string, unknown>),
+        source: {
+          market_data_id: data.id,
+          trends_count: trends.length,
+          cma_count: cmaReports.length,
+        },
       },
     })
     .select('id')

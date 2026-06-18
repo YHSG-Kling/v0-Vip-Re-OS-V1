@@ -225,16 +225,19 @@ Based on typical ${(transaction.property_state || 'Florida')} real estate timeli
     // Auto-create suggested deadlines
     for (const deadline of deadlineAnalysis.suggestedDeadlines) {
       const existing = transaction.transaction_deadlines?.find(
-        (d: any) => d.task_name?.toLowerCase() === deadline.task.toLowerCase()
+        (d: any) => d.deadline_type?.toLowerCase() === deadline.task.toLowerCase()
       )
 
       if (!existing) {
+        // transaction_deadlines canonical columns: deadline_type (was task_name),
+        // deadline_date (date, was due_date). No ai_suggested/auto_reminder columns
+        // exist — reminders fire off calendar_events, not this table.
         await supabase.from("transaction_deadlines").insert({
           transaction_id: params.transactionId,
-          task_name: deadline.task,
-          due_date: deadline.suggestedDate,
-          ai_suggested: true,
-          auto_reminder: deadline.autoReminder,
+          brokerage_id: transaction.brokerage_id,
+          deadline_type: deadline.task,
+          deadline_date: new Date(deadline.suggestedDate).toISOString().slice(0, 10),
+          status: "pending",
           notes: deadline.reason,
         })
       }

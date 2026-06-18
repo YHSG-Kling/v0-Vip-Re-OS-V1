@@ -74,16 +74,16 @@ export async function getLenderTransactionDetail(transactionId: string, lenderId
 
   const { data: milestones } = await supabase
     .from("transaction_milestones")
-    .select("id, milestone_name, milestone_type, target_date, completed_date, status")
+    .select("id, milestone_name, milestone_type, target_date, completed_date:completed_at, status")
     .eq("transaction_id", transactionId)
     .in("milestone_name", [...LENDER_VISIBLE_MILESTONES])
     .order("target_date", { ascending: true, nullsFirst: false })
 
   const { data: documents } = await supabase
     .from("transaction_documents")
-    .select("id, document_type, file_name, file_url, created_at, uploaded_by")
+    .select("id, document_type:doc_type, file_name:doc_label, file_url:storage_url, created_at, uploaded_by")
     .eq("transaction_id", transactionId)
-    .in("document_type", ["loan_commitment", "appraisal", "closing_disclosure", "loan_conditions"])
+    .in("doc_type", ["loan_commitment", "appraisal", "closing_disclosure", "loan_conditions"])
     .order("created_at", { ascending: false })
 
   let daysUntilClose: number | null = null
@@ -143,7 +143,7 @@ export async function uploadLenderDocument(data: {
       doc_label: data.fileName,
       storage_url: data.fileUrl,
       uploaded_by: actor.userId,
-      status: "pending_review",
+      status: "under_review",
     })
     .select()
     .single()
