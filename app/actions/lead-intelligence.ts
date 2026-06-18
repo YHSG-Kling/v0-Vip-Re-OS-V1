@@ -872,9 +872,9 @@ async function syncIDXBrokerActivity(leadId: string, lead: any) {
     const activity = await idx.getLeadActivity(lead.email)
 
     for (const interaction of activity) {
-      await supabase.from("idx_property_interactions").insert({
+      await supabase.from("lead_idx_property_interactions").insert({
         lead_id: leadId,
-        property_mls_id: interaction.mlsID,
+        mls_number: interaction.mlsID,
         property_address: interaction.address,
         property_details: {
           price: interaction.listPrice,
@@ -884,9 +884,9 @@ async function syncIDXBrokerActivity(leadId: string, lead: any) {
           propertyType: interaction.propType,
         },
         interaction_type: interaction.type,
-        time_spent_seconds: interaction.timeSpent,
+        view_duration_seconds: interaction.timeSpent,
         interaction_metadata: interaction.metadata,
-        interacted_at: interaction.timestamp,
+        occurred_at: interaction.timestamp,
       })
     }
   } catch (error) {
@@ -1038,7 +1038,7 @@ async function updateIntelligenceProfile(leadId: string, dataSources: string[]) 
 
   const { data: propertySearches } = await supabase.from("lead_property_searches").select("*").eq("lead_id", leadId)
 
-  const { data: idxInteractions } = await supabase.from("idx_property_interactions").select("*").eq("lead_id", leadId)
+  const { data: idxInteractions } = await supabase.from("lead_idx_property_interactions").select("*").eq("lead_id", leadId)
 
   const { data: engagementScores } = await supabase
     .from("lead_engagement_scores")
