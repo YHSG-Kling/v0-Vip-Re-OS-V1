@@ -569,7 +569,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   sms_presets: ["body", "brokerage_id", "compliance_event_id", "created_at", "created_by", "id", "is_active", "name", "scope_id", "scope_type", "updated_at"],
   social_accounts: ["access_token", "account_name", "agent_id", "brokerage_id", "created_at", "expires_at", "external_id", "id", "is_active", "metadata", "platform", "refresh_token", "updated_at"],
   social_engagement_tracking: ["brokerage_id", "captured_at", "clicks_count", "comments_count", "id", "impressions_count", "leads_generated", "likes_count", "platform", "saves_count", "shares_count", "social_post_id"],
-  social_intelligence: ["brokerage_id", "contact_id", "created_at", "detected_at", "id", "platform", "signal_data", "signal_type"],
+  social_intelligence: ["ai_intent_score", "author_name", "brokerage_id", "contact_id", "created_at", "detected_at", "detected_location", "id", "intent_keywords_matched", "intent_summary", "keywords", "location_city", "location_state", "location_zip", "post_content", "post_url", "posted_date", "scraped_at", "source", "urgency_level"],
   social_media_accounts: ["access_token", "account_id", "account_name", "agent_id", "brokerage_id", "created_at", "id", "is_active", "platform", "refresh_token", "scope", "token_expires_at", "updated_at", "user_id"],
   social_media_analytics: ["brokerage_id", "clicks", "created_at", "engagements", "external_post_id", "id", "impressions", "measured_at", "metadata", "platform", "post_id", "published_at"],
   social_post_baselines_28d: ["brokerage_id", "click_through_rate", "engagement_rate", "last_measured_at", "platform", "post_type", "posts_measured", "total_clicks", "total_engagements", "total_impressions", "window_start"],
