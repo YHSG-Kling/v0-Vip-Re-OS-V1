@@ -346,7 +346,8 @@ export async function escalateToHuman(params: {
     suggestion_type: 'agent_escalation',
     title: `AI Agent Escalation: ${session.agent_type}`,
     description: params.reason,
-    priority: params.urgency === 'critical' ? 'urgent' : params.urgency,
+    // smart_assistant_suggestions.priority is constrained to low/medium/high; map critical -> high.
+    priority: params.urgency === 'critical' ? 'high' : params.urgency,
     action_url: `/${session.entity_type}s/${session.entity_id}`,
     metadata: {
       session_id: params.sessionId,
