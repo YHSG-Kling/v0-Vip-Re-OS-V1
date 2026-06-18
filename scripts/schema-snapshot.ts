@@ -672,7 +672,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   vendor_ratings: ["avg_agent_rating", "avg_client_rating", "brokerage_id", "five_star_count", "id", "last_updated", "one_star_count", "total_bookings", "vendor_id"],
   vendor_reviews: ["brokerage_id", "created_at", "id", "rating", "review", "user_id", "vendor_id"],
   vendor_usage_tracking: ["agent_id", "brokerage_id", "cost_per_unit", "created_at", "id", "lead_id", "request_metadata", "total_cost", "units_used", "usage_type", "vendor_name"],
-  vendors: ["access_level", "brokerage_id", "category", "created_at", "email", "estimated_turnaround_days", "id", "name", "notes", "phone", "rating", "updated_at", "website"],
+  vendors: ["access_level", "brokerage_id", "category", "created_at", "email", "estimated_turnaround_days", "id", "name", "notes", "phone", "rating", "status", "updated_at", "website"],
   video_assets: ["agent_id", "brokerage_id", "category", "created_at", "created_by", "description", "duration_seconds", "id", "license_attribution", "license_url", "music_loop", "music_volume_pct", "scope_id", "scope_type", "tags", "team_id", "thumbnail_url", "title", "video_url"],
   video_branding_presets: ["agent_id", "brokerage_id", "created_at", "font_family", "heygen_avatar_id", "heygen_template_id", "heygen_voice_id", "id", "intro_animation", "is_default", "logo_url", "outro_animation", "preset_name", "primary_color", "secondary_color", "social_handles", "updated_at", "watermark_position"],
   video_completion_tracking: ["agent_id", "brokerage_id", "completed", "completed_at", "created_at", "id", "last_position_seconds", "percent_watched", "training_video_id", "updated_at"],

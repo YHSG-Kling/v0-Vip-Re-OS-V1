@@ -70,29 +70,7 @@ export function PartnerCommandStrip({ brokerageId }: PartnerCommandStripProps) {
         })
       }
 
-      // Check for expiring vendor contracts (within 30 days)
-      const thirtyDaysFromNow = new Date()
-      thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30)
-      
-      const { data: expiringContracts } = await supabase
-        .from("vendors")
-        .select("id")
-        .eq("brokerage_id", brokerageId)
-        .eq("status", "active")
-        .not("contract_end_date", "is", null)
-        .lte("contract_end_date", thirtyDaysFromNow.toISOString())
-
-      if (expiringContracts && expiringContracts.length > 0) {
-        priorityActions.push({
-          id: "expiring-contracts",
-          type: "warning",
-          title: "Expiring Contracts",
-          description: `${expiringContracts.length} contracts expiring within 30 days`,
-          cta: "Review",
-          href: "/dashboard/vendors?filter=expiring",
-          count: expiringContracts.length,
-        })
-      }
+      // (Expiring-contracts surfacing removed: vendors has no contract_end_date column / data source.)
 
       // Check total active vendors
       const { count: activeCount } = await supabase

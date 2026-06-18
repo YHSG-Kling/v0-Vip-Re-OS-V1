@@ -27,19 +27,19 @@ interface AdoptionMetrics {
 }
 
 interface SetupBlocker {
-  integration_type: string
-  is_configured: boolean
+  provider_type: string
+  status: string
 }
 
 interface TrainingProgress {
   status: string
-  completion_percentage: number
+  score: number | null
 }
 
 interface Provider {
-  integration_type: string
-  is_configured: boolean
-  configured_at?: string
+  provider_type: string
+  status: string
+  last_health_check_at?: string
 }
 
 interface RecentOnboarding {

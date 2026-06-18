@@ -56,7 +56,7 @@ export async function aiCategorizeExpense(params: {
     // Get agent's expense history for pattern matching
     const { data: recentExpenses } = await supabase
       .from("business_expenses")
-      .select("category, vendor, description")
+      .select("category, description")
       .eq("agent_id", params.agentId)
       .order("created_at", { ascending: false })
       .limit(50)
@@ -192,9 +192,7 @@ export async function getExpenses(params?: {
       query = query.eq("category", params.category)
     }
 
-    if (params?.status) {
-      query = query.eq("status", params.status)
-    }
+    // business_expenses has no status column — filter removed (phantom).
 
     if (params?.startDate) {
       query = query.gte("expense_date", params.startDate)
@@ -408,7 +406,7 @@ const summary = summaryResult.data
 
 const { data: expenses } = await supabase
   .from("business_expenses")
-  .select("category, amount, is_deductible, deduction_percentage")
+  .select("category, amount")
   .eq("agent_id", params.agentId)
   .gte("expense_date", params.startDate)
   .lte("expense_date", params.endDate)
@@ -432,11 +430,10 @@ const transactionCount = summary.closedTransactions
       expensesByCategory[e.category] = (expensesByCategory[e.category] || 0) + e.amount
     })
 
+    // business_expenses has no is_deductible/deduction_percentage columns — treat all
+    // recorded business expenses as fully deductible.
     const deductibleExpenses =
-      expenses?.filter((e: any) => e.is_deductible).reduce((sum: number, e: any) => {
-        const pct = typeof e.deduction_percentage === "number" ? e.deduction_percentage : 100
-        return sum + (e.amount * pct) / 100
-      }, 0) || 0
+      expenses?.reduce((sum: number, e: any) => sum + (e.amount || 0), 0) || 0
     
     // AI Analysis and Projections
     const { text: financialAnalysis } = await generateText({
@@ -728,12 +725,12 @@ export async function aiCreateBudget(params: {
 
     const { data: lastYearCommissions } = await supabase
       .from("commissions")
-      .select("agent_net")
+      .select("agent_commission")
       .eq("agent_id", params.agentId)
       .gte("created_at", `${lastYear}-01-01`)
       .lte("created_at", `${lastYear}-12-31`)
 
-    const lastYearIncome = lastYearCommissions?.reduce((sum: number, c: any) => sum + (c.agent_net || 0), 0) || 0
+    const lastYearIncome = lastYearCommissions?.reduce((sum: number, c: any) => sum + (c.agent_commission || 0), 0) || 0
     const lastYearTotalExpenses = lastYearExpenses?.reduce((sum: number, e: any) => sum + (e.amount || 0), 0) || 0
 
     // Categorize last year's expenses

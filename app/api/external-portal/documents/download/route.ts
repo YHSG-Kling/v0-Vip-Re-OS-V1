@@ -29,17 +29,41 @@ export async function GET(request: NextRequest) {
 
     const supabase = await createClient()
 
-    // Verify document exists and belongs to this partner
+    // documents has no name/file_url/partner_id/partner_type columns. Real cols are
+    // document_type/storage_url; partner access is scoped via the document's transaction
+    // membership (title_company_users / lender_portal_users), NOT a column on documents.
     const { data: document, error: docError } = await supabase
       .from("documents")
-      .select("id, name, file_url, partner_id, partner_type, transaction_id, created_at")
+      .select("id, document_type, storage_url, transaction_id, created_at")
       .eq("id", docId)
-      .eq("partner_id", partnerId)
-      .eq("partner_type", partnerType)
       .single()
 
     if (docError || !document) {
-      console.error("[v0] Document not found or access denied:", docError)
+      console.error("[v0] Document not found:", docError)
+      return NextResponse.json(
+        { success: false, error: "Document not found or access denied" },
+        { status: 404 }
+      )
+    }
+
+    // Partner scoping: confirm this partner is attached to the document's transaction.
+    const partnerTable =
+      partnerType === "lender" ? "lender_portal_users" :
+      partnerType === "title"  ? "title_company_users" : null
+    if (!document.transaction_id || !partnerTable) {
+      // vendor downloads are not modeled via documents.transaction_id — deny by default.
+      return NextResponse.json(
+        { success: false, error: "Document not found or access denied" },
+        { status: 404 }
+      )
+    }
+    const { data: access } = await supabase
+      .from(partnerTable)
+      .select("id")
+      .eq("user_id", partnerId)
+      .eq("transaction_id", document.transaction_id)
+      .maybeSingle()
+    if (!access) {
       return NextResponse.json(
         { success: false, error: "Document not found or access denied" },
         { status: 404 }
@@ -54,21 +78,19 @@ export async function GET(request: NextRequest) {
       downloaded_at: new Date().toISOString(),
     })
 
-    // Return document download link or direct download if file_url is accessible
-    if (!document.file_url) {
+    if (!document.storage_url) {
       return NextResponse.json(
         { success: false, error: "Document file URL not available" },
         { status: 404 }
       )
     }
 
-    // Redirect to the file URL or return it for client-side download
     return NextResponse.json({
       success: true,
       document: {
         id: document.id,
-        name: document.name,
-        fileUrl: document.file_url,
+        name: document.document_type,
+        fileUrl: document.storage_url,
         downloadedAt: new Date().toISOString(),
       },
     })

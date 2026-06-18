@@ -4,7 +4,7 @@ import { BookOpen } from 'lucide-react'
 
 interface TrainingProgress {
   status: string
-  completion_percentage: number
+  score: number | null
 }
 
 interface TrainingProgressPanelProps {
@@ -13,12 +13,13 @@ interface TrainingProgressPanelProps {
 }
 
 export function TrainingProgressPanel({ trainingProgress, brokerageId }: TrainingProgressPanelProps) {
-  const completed = trainingProgress.filter(t => t.status === 'completed').length
+  // agent_courses status CHECK: not_started|in_progress|passed|failed
+  const completed = trainingProgress.filter(t => t.status === 'passed').length
   const inProgress = trainingProgress.filter(t => t.status === 'in_progress').length
   const notStarted = trainingProgress.filter(t => t.status === 'not_started').length
-  
+
   const avgProgress = trainingProgress.length
-    ? Math.round(trainingProgress.reduce((sum, t) => sum + (t.completion_percentage || 0), 0) / trainingProgress.length)
+    ? Math.round(trainingProgress.reduce((sum, t) => sum + (t.score || 0), 0) / trainingProgress.length)
     : 0
 
   return (

@@ -2,9 +2,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { CheckCircle2, Clock } from 'lucide-react'
 
 interface Provider {
-  integration_type: string
-  is_configured: boolean
-  configured_at?: string
+  provider_type: string
+  status: string
+  last_health_check_at?: string
 }
 
 interface ProviderReadinessPanelProps {
@@ -13,7 +13,7 @@ interface ProviderReadinessPanelProps {
 }
 
 export function ProviderReadinessPanel({ providers, brokerageId }: ProviderReadinessPanelProps) {
-  const configured = providers.filter(p => p.is_configured).length
+  const configured = providers.filter(p => p.status === "connected").length
   const total = providers.length
   const readiness = total > 0 ? Math.round((configured / total) * 100) : 0
 
@@ -33,10 +33,10 @@ export function ProviderReadinessPanel({ providers, brokerageId }: ProviderReadi
         {/* Provider List */}
         <div className="space-y-2">
           {providers.map(provider => (
-            <div key={provider.integration_type} className="flex items-center justify-between p-2 bg-gray-50 rounded">
-              <span className="text-sm font-medium">{provider.integration_type}</span>
+            <div key={provider.provider_type} className="flex items-center justify-between p-2 bg-gray-50 rounded">
+              <span className="text-sm font-medium">{provider.provider_type}</span>
               <div className="flex items-center gap-2">
-                {provider.is_configured ? (
+                {provider.status === "connected" ? (
                   <>
                     <CheckCircle2 className="h-4 w-4 text-green-600" />
                     <span className="text-xs text-green-600">Ready</span>

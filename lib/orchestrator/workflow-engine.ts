@@ -87,15 +87,19 @@ export class WorkflowOrchestrator {
       .insert({
         workflow_id: config.id,
         workflow_name: config.name,
-        trigger_type: config.trigger,
-        trigger_data: context.triggerData || {},
-        context: context,
+        // workflow_executions has no trigger_type/trigger_data/contact_id/listing_id/
+        // transaction_id columns — fold them into the context jsonb (no data lost).
+        context: {
+          ...context,
+          triggerType: config.trigger,
+          triggerData: context.triggerData ?? {},
+          contactId: context.contactId ?? null,
+          listingId: context.listingId ?? null,
+          transactionId: context.transactionId ?? null,
+        },
         status: "running",
         agent_id: context.agentId,
         brokerage_id: context.brokerageId,
-        contact_id: context.contactId,
-        listing_id: context.listingId,
-        transaction_id: context.transactionId,
         started_at: new Date().toISOString(),
       })
       .select()

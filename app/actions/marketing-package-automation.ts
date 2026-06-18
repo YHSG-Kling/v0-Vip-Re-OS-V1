@@ -273,15 +273,17 @@ async function selectOptimalVendor(serviceType: string, transactionId: string) {
     const { data: vendors } = await supabase
       .from("vendor_directory")
       .select("*")
-      .contains("services_offered", [serviceType])
-      .eq("status", "active")
-      .gte("quality_score", 75)
+      // vendor_directory real cols: category (single), visible_in_portal (active flag),
+      // rating (0-5). services_offered/status/quality_score were phantom.
+      .eq("category", serviceType)
+      .eq("visible_in_portal", true)
+      .gte("rating", 3.75) // rescaled from quality_score>=75 (0-100) → rating>=3.75 (0-5)
 
     if (!vendors || vendors.length === 0) return null
 
     // Score vendors based on multiple factors
     const scoredVendors = vendors.map((vendor) => {
-      let score = vendor.quality_score || 0
+      let score = (vendor.rating || 0) * 20 // rating 0-5 → 0-100 to keep downstream bonuses on scale
 
       // Proximity bonus (if location data available)
       const distance = calculateDistance(listing, vendor)
@@ -334,9 +336,9 @@ export async function getVendorRecommendations(serviceType: string, transactionI
   const { data: vendors } = await supabase
     .from("vendor_directory")
     .select("*")
-    .contains("services_offered", [serviceType])
-    .eq("status", "active")
-    .order("quality_score", { ascending: false })
+    .eq("category", serviceType)
+    .eq("visible_in_portal", true)
+    .order("rating", { ascending: false, nullsFirst: false })
     .limit(5)
 
   return vendors || []

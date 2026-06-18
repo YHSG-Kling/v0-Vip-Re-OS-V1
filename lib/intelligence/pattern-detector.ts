@@ -212,7 +212,6 @@ export async function scanEntityForPatterns(
           pattern_type: pattern.pattern_type,
           status: "active",
           expires_at: expiresAt.toISOString(),
-          compliance_approved: false,
         })
         .select()
         .single()
@@ -235,7 +234,6 @@ export async function scanEntityForPatterns(
           predicted_within_days: 7,
           probability: evaluation.confidence,
           recommended_action: pattern.recommended_action,
-          compliance_approved: false,
         })
         .select()
         .single()
@@ -249,8 +247,8 @@ export async function scanEntityForPatterns(
           evaluation.reasoning || `Pattern detected: ${pattern.pattern_name}`,
         priority: evaluation.confidence >= 0.8 ? "high" : "medium",
         context_type: "behavioral_pattern",
-        context_id: detection.id,
-        suggested_action: pattern.recommended_action,
+        action_type: pattern.recommended_action, // real column (was phantom suggested_action)
+        metadata: { detection_id: detection.id, pattern_id: pattern.id, pattern_slug: pattern.pattern_slug }, // context_id has no column
       })
 
       // emitKernelEvent does INSERT + reactor fan-out (notifications + sequences + portal) in one
@@ -654,9 +652,10 @@ export async function recordPredictionOutcome(
     agent_id: agentId,
     brokerage_id: brokerageId,
     source_system: "behavioral_pattern",
-    feedback_type: "outcome",
+    source_record_type: "prediction", // canonical provenance (no feedback_type column)
+    source_record_id: predictionId,
     rating: outcome === "correct" ? 1 : -1,
-    context: { prediction_id: predictionId },
+    context_snapshot: { prediction_id: predictionId, outcome }, // real jsonb col (was phantom context)
   })
 
   // Emit outcome event through the canonical emitter — INSERT + reactor fan-out.

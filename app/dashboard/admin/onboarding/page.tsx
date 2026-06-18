@@ -39,21 +39,23 @@ export default async function AdminOnboardingOsPage() {
     .eq("brokerage_id", userData.brokerage_id)
 
   // Fetch setup blockers (incomplete integrations)
+  // brokerage_integrations real cols: provider_type, status (connected/error/not_configured),
+  // last_health_check_at — not integration_type/is_configured/configured_at.
   const { data: integrations } = await service
     .from("brokerage_integrations")
-    .select("integration_type, is_configured")
+    .select("provider_type, status")
     .eq("brokerage_id", userData.brokerage_id)
 
-  // Fetch training progress
+  // Fetch training progress (agent_courses has score, not completion_percentage)
   const { data: trainingProgress } = await service
     .from("agent_courses")
-    .select("status, completion_percentage")
+    .select("status, score")
     .eq("brokerage_id", userData.brokerage_id)
 
   // Fetch provider readiness
   const { data: providers } = await service
     .from("brokerage_integrations")
-    .select("integration_type, is_configured, configured_at")
+    .select("provider_type, status, last_health_check_at")
     .eq("brokerage_id", userData.brokerage_id)
 
   // Fetch health metrics
@@ -70,7 +72,7 @@ export default async function AdminOnboardingOsPage() {
 
   const stalledCount = adoptionMetrics?.filter(m => m.status === "stalled").length || 0
   
-  const configuredIntegrations = integrations?.filter(i => i.is_configured).length || 0
+  const configuredIntegrations = integrations?.filter(i => i.status === "connected").length || 0
   const totalIntegrations = integrations?.length || 0
 
   return (
@@ -84,7 +86,7 @@ export default async function AdminOnboardingOsPage() {
         completedAgents: adoptionMetrics?.filter(m => m.status === "completed").length || 0,
         stalledCount,
       }}
-      setupBlockers={integrations?.filter(i => !i.is_configured) || []}
+      setupBlockers={integrations?.filter(i => i.status !== "connected") || []}
       trainingProgress={trainingProgress || []}
       providers={providers || []}
       recentOnboardings={recentOnboardings || []}
