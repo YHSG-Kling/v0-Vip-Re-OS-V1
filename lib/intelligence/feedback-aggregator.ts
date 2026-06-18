@@ -105,7 +105,7 @@ export async function computeWeeklyMetrics(
           negative_count: negativeCount,
           approval_rate: approvalRate,
           top_negative_themes: topNegativeThemes,
-          updated_at: new Date().toISOString(),
+          computed_at: new Date().toISOString(),
         },
         {
           onConflict: "brokerage_id,source_system,week_start",

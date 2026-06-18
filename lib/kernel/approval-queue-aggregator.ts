@@ -57,7 +57,7 @@ export async function aggregatePendingApprovals(
     await Promise.all([
       svc
         .from("newsletter_campaigns")
-        .select("id, agent_id, campaign_name, subject_line, status, approval_status, created_at, updated_at")
+        .select("id, agent_id, campaign_name, subject_line, status, approval_status, created_at")
         .eq("brokerage_id", brokerageId)
         .eq("approval_status", "pending")
         .order("created_at", { ascending: false })
@@ -233,12 +233,13 @@ async function cascade(
   if (!targetId) return { success: false, error: "Invalid id" }
 
   // Helper for per-content-table updates with brokerage scoping
-  async function updateApprovalStatus(table: string, type: ApprovalSource) {
+  async function updateApprovalStatus(table: string, type: ApprovalSource, hasUpdatedAt = true) {
     let query = svc
       .from(table)
       .update({
         approval_status: outcome,
-        updated_at: new Date().toISOString(),
+        // newsletter_campaigns has no updated_at column
+        ...(hasUpdatedAt ? { updated_at: new Date().toISOString() } : {}),
       })
       .eq("id", targetId)
       .eq("brokerage_id", ctx.brokerageId)
@@ -250,7 +251,7 @@ async function cascade(
 
   switch (prefix) {
     case "nl":
-      return updateApprovalStatus("newsletter_campaigns", "newsletter")
+      return updateApprovalStatus("newsletter_campaigns", "newsletter", false)
     case "em":
       return updateApprovalStatus("email_campaigns", "email")
     case "acv": {

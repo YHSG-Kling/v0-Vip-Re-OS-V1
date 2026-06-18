@@ -570,7 +570,7 @@ export async function captureFormSubmission(
         .select("id")
         .eq("brokerage_id", input.brokerageId)
         .eq("sequence_type", "lead_magnet")
-        .eq("status", "active")
+        .eq("is_active", true)
         .limit(1)
         .maybeSingle()
 

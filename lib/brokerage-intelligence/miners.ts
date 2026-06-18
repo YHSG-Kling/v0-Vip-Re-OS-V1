@@ -365,7 +365,7 @@ export async function mineDripEngagement(input: MinerInput): Promise<MinerInsigh
 
   const { data: enrollments } = await svc
     .from("sequence_enrollments")
-    .select("contact_id, agent_id, status, enrolled_at, completed_at")
+    .select("contact_id, agent_id:enrolled_by, status, enrolled_at, completed_at")
     .eq("brokerage_id", input.brokerageId)
     .gte("enrolled_at", since)
     .limit(10000)

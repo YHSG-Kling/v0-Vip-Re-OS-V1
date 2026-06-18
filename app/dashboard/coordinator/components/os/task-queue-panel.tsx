@@ -25,7 +25,7 @@ export function TaskQueuePanel({ brokerageId }: TaskQueuePanelProps) {
           .select(`
             id,
             transaction_id,
-            task_name,
+            task_name:title,
             assigned_to,
             due_date,
             priority,

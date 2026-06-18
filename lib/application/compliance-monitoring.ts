@@ -102,25 +102,20 @@ export async function trackCertificationExpirationService(agentId: string, clien
     .eq("agent_id", agentId)
 
   const expiringCerts = certifications?.filter((cert) => {
-    const expDate = new Date(cert.expiration_date)
+    const expDate = new Date(cert.expires_at)
     return expDate <= thirtyDaysFromNow && expDate > today
   })
 
   const expiredCerts = certifications?.filter((cert) => {
-    const expDate = new Date(cert.expiration_date)
+    const expDate = new Date(cert.expires_at)
     return expDate <= today
   })
 
-  for (const cert of expiringCerts || []) {
-    await supabase.from("agent_certifications").update({ status: "expiring_soon" }).eq("id", cert.id)
-  }
-
-  for (const cert of expiredCerts || []) {
-    await supabase.from("agent_certifications").update({ status: "expired" }).eq("id", cert.id)
-  }
+  // agent_certifications has no status column — the expiring/expired/active lifecycle
+  // is fully derived from expires_at, so there is nothing to persist.
 
   return {
-    active: certifications?.filter((c) => c.status === "active").length || 0,
+    active: certifications?.filter((c) => !c.expires_at || new Date(c.expires_at) > today).length || 0,
     expiring: expiringCerts?.length || 0,
     expired: expiredCerts?.length || 0,
   }

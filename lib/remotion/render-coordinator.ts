@@ -296,7 +296,7 @@ async function pickStockAsset(
       .eq("scope_id",   scopeId)
       .eq("category",   category)
       .not("video_url", "is", null)
-    if (mood) q = q.eq("music_mood", mood)
+    if (mood) q = q.contains("tags", [mood])
     const { data } = await q.order("created_at", { ascending: false }).limit(1).maybeSingle()
     return data as { id: string; video_url: string; music_volume_pct: number | null; music_loop: boolean | null } | null
   }

@@ -101,7 +101,7 @@ export async function canAdvanceStage(
   if (txn?.contact_id) {
     const { data: dealBreakerFlags } = await supabase
       .from("compliance_flags")
-      .select("id, flag_type, severity, status")
+      .select("id, flag_type:violation_type, severity, status")
       .eq("contact_id", txn.contact_id)
       .eq("severity", "deal_breaker")
       .in("status", ["unresolved", "flagged"])

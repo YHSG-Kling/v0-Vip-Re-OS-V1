@@ -166,11 +166,13 @@ export async function aggregatePerformance(): Promise<{ topics_updated: number }
   const podcastPlays = new Map<string, number>()
   if (podcastEpisodeAssetIds.size > 0) {
     try {
+      // podcast_episodes has no play counter column yet — bucket at 0 (soft signal,
+      // wired when a play_count exists).
       const { data } = await svc.from("podcast_episodes")
-        .select("id, play_count")
+        .select("id")
         .in("id", Array.from(podcastEpisodeAssetIds))
-      for (const r of (data ?? []) as Array<{ id: string; play_count?: number | null }>) {
-        podcastPlays.set(r.id, r.play_count ?? 0)
+      for (const r of (data ?? []) as Array<{ id: string }>) {
+        podcastPlays.set(r.id, 0)
       }
     } catch (e) {
       console.error("[performance-aggregator] podcast_episodes batch lookup failed:", (e as Error).message)

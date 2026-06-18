@@ -79,7 +79,7 @@ export async function orchestrateAdRetargetSend(
   // metadata for downstream attribution.
   const { data: campaign, error } = await svc.from("ad_campaigns").insert({
     brokerage_id:   args.brokerageId,
-    title:          preset.name,
+    campaign_name:  preset.name,
     status:         "draft",
     created_at:     new Date().toISOString(),
   } as Record<string, unknown>).select("id").single()

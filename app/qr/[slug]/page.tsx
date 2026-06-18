@@ -18,7 +18,7 @@ export default async function QRLandingPage({ params }: PageProps) {
       label,
       purpose,
       brokerage_id,
-      agent_user_id,
+      agent_user_id:agent_id,
       listing_id
     `)
     .eq('slug', slug)

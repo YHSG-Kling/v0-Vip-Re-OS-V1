@@ -125,7 +125,7 @@ export async function calibrateSystemPrompts(
         description: `Approval rate ${data.approvalRate}% — suggested improvements available. Review the calibration log for recommended prompt changes.`,
         priority: "medium",
         context_type: "ai_quality",
-        context_payload: {
+        metadata: {
           source_system: sourceSystem,
           approval_rate: data.approvalRate,
           calibration_log_id: insertedLog?.id,

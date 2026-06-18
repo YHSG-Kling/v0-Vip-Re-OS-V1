@@ -174,12 +174,12 @@ export async function recordSuppressionEvent(
   const supabase = await createServiceClient()
 
   try {
+    // contact_suppression_list real cols: suppression_reason (no suppression_type/
+    // reason/recorded_at; created_at defaults).
     const { error } = await supabase.from("contact_suppression_list").insert({
       contact_id: contactId,
-      suppression_type: suppressionType,
-      reason,
+      suppression_reason: `${suppressionType}: ${reason}`,
       source,
-      recorded_at: new Date().toISOString(),
     })
 
     if (error) {

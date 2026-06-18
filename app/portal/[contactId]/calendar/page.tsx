@@ -20,7 +20,7 @@ export default async function CalendarPage({ params }: { params: Promise<{ conta
       .from("showing_requests")
       .select("*")
       .eq("contact_id", contactId)
-      .order("confirmed_date", { ascending: true }),
+      .order("requested_date", { ascending: true }),
 
     supabase
       .from("transactions")

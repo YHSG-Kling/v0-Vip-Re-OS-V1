@@ -6,14 +6,20 @@ export async function GET(request: Request, { params }: { params: Promise<{ cont
   const supabase = await createClient()
 
   // Fetch all events for this contact
-  const [showingsResult, transactionsResult, deadlinesResult] = await Promise.all([
+  const [showingsResult, transactionsResult] = await Promise.all([
     supabase.from("showing_requests").select("*").eq("contact_id", contactId),
     supabase.from("transactions").select("*, transaction_milestones(*)").eq("contact_id", contactId),
-    supabase.from("transaction_deadlines").select("*").eq("contact_id", contactId),
   ])
 
   const showings = showingsResult.data || []
   const transactions = transactionsResult.data || []
+
+  // transaction_deadlines is transaction-keyed (no contact_id) — fetch via the
+  // contact's transactions.
+  const txnIds = transactions.map((t: any) => t.id)
+  const deadlinesResult = txnIds.length
+    ? await supabase.from("transaction_deadlines").select("*").in("transaction_id", txnIds)
+    : { data: [], error: null }
   const deadlines = deadlinesResult.error ? [] : deadlinesResult.data || []
 
   // Extract milestones
@@ -24,10 +30,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ cont
 
   const events = [
     ...showings
-      .filter((s: any) => s.confirmed_date)
+      .filter((s: any) => s.requested_date)
       .map((s: any) => ({
         uid: `showing-${s.id}@realestate-portal`,
-        dtstart: formatDate(new Date(s.confirmed_date)),
+        dtstart: formatDate(new Date(s.requested_date)),
         summary: `Property Showing: ${s.property_address || "Scheduled Viewing"}`,
         description: `Status: ${s.status || "pending"}`,
       })),
@@ -40,11 +46,11 @@ export async function GET(request: Request, { params }: { params: Promise<{ cont
         description: `Status: ${m.status || "pending"}`,
       })),
     ...deadlines
-      .filter((d: any) => d.deadline)
+      .filter((d: any) => d.deadline_date)
       .map((d: any) => ({
         uid: `deadline-${d.id}@realestate-portal`,
-        dtstart: formatDate(new Date(d.deadline)),
-        summary: `DEADLINE: ${d.title || d.description || "Important Deadline"}`,
+        dtstart: formatDate(new Date(d.deadline_date)),
+        summary: `DEADLINE: ${d.deadline_type || d.description || "Important Deadline"}`,
         description: `Status: ${d.status || "pending"} - ACTION REQUIRED`,
       })),
   ]

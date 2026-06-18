@@ -619,7 +619,7 @@ async function runHandler(
               brokerage_id: brokerageId,
               content:      t.value_angle ?? t.topic_title,
               status:       "draft",
-              metadata:     { topic_id: topicId, source: "marketing_agent_omnipresence" },
+              post_brief:   { topic_id: topicId, source: "marketing_agent_omnipresence" },
               created_at:   new Date().toISOString(),
             }).select("id").single()
             fanout.social = error

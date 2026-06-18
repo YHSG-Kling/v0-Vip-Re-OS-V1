@@ -91,7 +91,7 @@ async function searchKBFallback(
 
   const { data, error } = await supabase
     .from('help_topics_kb')
-    .select('id, title, content, topic_category, tags')
+    .select('id, title, content, topic_category:category, tags')
     .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
     .eq('is_active', true)
     .or(`title.ilike.%${query}%,content.ilike.%${query}%`)

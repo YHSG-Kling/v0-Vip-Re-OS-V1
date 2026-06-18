@@ -415,7 +415,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         .from("newsletter_scheduled_sends")
         .select("*, newsletter:newsletter_campaigns(campaign_name)")
         .eq("agent_id", userId)
-        .order("sent_at", { ascending: false })
+        .order("sent_time", { ascending: false })
         .limit(10)
       setScheduledSends(sends || [])
 
@@ -1630,7 +1630,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
 
               // Also mark scheduled sends from newsletter state
               for (const s of scheduledSends) {
-                const sentAt = s.sent_at || s.scheduled_at
+                const sentAt = s.sent_time || s.scheduled_time
                 if (sentAt) {
                   const key = format(new Date(sentAt), "yyyy-MM-dd")
                   eventDateSet.add(key)
@@ -2068,8 +2068,8 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                                   {send.newsletter?.campaign_name || "Newsletter"}
                                 </p>
                                 <p className="text-xs text-muted-foreground">
-                                  {send.sent_at
-                                    ? format(new Date(send.sent_at), "MMM d, h:mm a")
+                                  {send.sent_time
+                                    ? format(new Date(send.sent_time), "MMM d, h:mm a")
                                     : "Pending"}
                                 </p>
                               </div>

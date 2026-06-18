@@ -52,7 +52,7 @@ export async function ShareMyHomeCard({ listingId, listingAddress }: Props) {
   const { data: posts } = await supabase
     .from("social_posts")
     .select("id, content, platform, media_urls, published_at, status")
-    .in("campaign_id", campaignIds)
+    .in("marketing_campaign_id", campaignIds)
     .not("status", "eq", "draft")
     .order("published_at", { ascending: false })
     .limit(6)

@@ -29,7 +29,7 @@ export default async function SocialPage({ params }: { params: Promise<{ contact
   const { data: socialPosts } = await supabase
     .from("social_posts")
     .select("*, social_post_analytics(*)")
-    .eq("linked_listing_id", listing.id)
+    .eq("listing_id", listing.id)
     .order("scheduled_for", { ascending: false })
 
   // Fetch published posts if no listing-linked posts

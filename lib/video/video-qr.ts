@@ -224,7 +224,6 @@ export async function mintVideoQr(
           destination_type: dest.destinationType,
           slug: newSlug,
           listing_id: args.listingId ?? null,
-          contact_id: args.contactId ?? null,
           is_active: true,
           scan_count: 0,
           lead_count: 0,

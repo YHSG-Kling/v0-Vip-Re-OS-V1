@@ -45,7 +45,7 @@ export async function GET(request: Request) {
     // Get distinct market areas from active sources
     const { data: sources, error } = await supabase
       .from("market_data_sources")
-      .select("brokerage_id, market_area, zip_code")
+      .select("brokerage_id, market_area, zip_codes")
       .eq("is_active", true)
 
     if (error) {
@@ -80,7 +80,7 @@ export async function GET(request: Request) {
         const result = await generateMarketInsight({
           brokerageId: source.brokerage_id,
           marketArea: source.market_area,
-          zipCode: source.zip_code,
+          zipCode: source.zip_codes?.[0],
           forceRegenerate: false, // Use cache if available
         })
 
