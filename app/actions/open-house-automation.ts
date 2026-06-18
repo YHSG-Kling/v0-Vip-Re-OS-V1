@@ -39,7 +39,7 @@ export async function scheduleOpenHouse(params: {
     const supabase = await createClient()
 
     const { data, error } = await supabase
-      .from("open_houses")
+      .from("open_house_events")
       .insert({
         listing_id: params.listingId,
         agent_id: params.agentId,
@@ -114,17 +114,14 @@ export async function recordVisitor(params: {
       const { data, error } = await supabase
         .from("open_house_attendees")
         .insert({
-          open_house_id: params.openHouseId,
+          event_id: params.openHouseId,
           contact_id: params.contactId,
-          first_name: params.firstName,
-          last_name: params.lastName,
+          name: `${params.firstName ?? ""} ${params.lastName ?? ""}`.trim(),
           email: params.email,
           phone: params.phone,
           notes: params.notes,
-          property_interest_level: mapInterestLevel(params.interestLevel),
-          checked_in: true,
+          interest_level: mapInterestLevelText(params.interestLevel),
           check_in_time: new Date().toISOString(),
-          rsvp_status: "confirmed",
         })
         .select()
         .maybeSingle()
@@ -179,6 +176,19 @@ function mapInterestLevel(interest?: string): number {
   return levelMap[interest || "somewhat_interested"] || 3
 }
 
+// open_house_attendees.interest_level is CHECK-constrained to hot|warm|cold|no_interest.
+function mapInterestLevelText(interest?: string): "hot" | "warm" | "cold" | "no_interest" {
+  const m: Record<string, "hot" | "warm" | "cold" | "no_interest"> = {
+    not_interested: "no_interest",
+    just_looking: "cold",
+    somewhat_interested: "warm",
+    interested: "warm",
+    very_interested: "hot",
+    ready_to_offer: "hot",
+  }
+  return m[interest || "somewhat_interested"] || "warm"
+}
+
 // ============================================
 // AI TIMING OPTIMIZER
 // ============================================
@@ -214,10 +224,10 @@ export async function optimizeOpenHouseTiming(params: { propertyId: string; agen
 
     // Get historical data
     const { data: historical } = await supabase
-      .from("open_houses")
-      .select("*, open_house_analytics(*)")
-      .eq("property_type", property?.property_type)
-      .order("actual_attendance", { ascending: false })
+      .from("open_house_events")
+      .select("*, listing:listings!inner(property_type), open_house_analytics(*)")
+      .eq("listing.property_type", property?.property_type)
+      .order("event_date", { ascending: false })
       .limit(20)
 
     const prompt = `Analyze optimal open house timing for this property:
@@ -359,7 +369,7 @@ export async function generatePersonalizedInvite(params: { contactId: string; ev
     const { data: contact } = await supabase.from("contacts").select("*").eq("id", params.contactId).maybeSingle()
 
     const { data: event } = await supabase
-      .from("open_houses")
+      .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("id", params.eventId)
       .maybeSingle()
@@ -468,7 +478,7 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
     try {
       const { data: contact } = await supabase.from("contacts").select("*").eq("id", contactId).maybeSingle()
 
-      const { data: event } = await supabase.from("open_houses").select("*").eq("id", params.eventId).maybeSingle()
+      const { data: event } = await supabase.from("open_house_events").select("*").eq("id", params.eventId).maybeSingle()
 
       // Generate personalized content
       const inviteResult = await generatePersonalizedInvite({ contactId, eventId: params.eventId })
@@ -513,7 +523,7 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
 
   // Update marketing reach
   await supabase
-    .from("open_houses")
+    .from("open_house_events")
     .update({ marketing_reach: params.contactIds.length })
     .eq("id", params.eventId)
 
@@ -547,8 +557,8 @@ export async function handleRSVP(params: { eventId: string; invitationId: string
     await supabase
       .from("open_house_invitations")
       .update({
-        rsvp_status: params.response,
-        rsvp_at: new Date().toISOString(),
+        rsvp_response: params.response,
+        rsvp_updated_at: new Date().toISOString(),
       })
       .eq("id", params.invitationId)
 
@@ -594,7 +604,7 @@ export async function predictAttendance(eventId: string) {
 
   try {
     const { data: event } = await supabase
-      .from("open_houses")
+      .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("id", eventId)
       .maybeSingle()
@@ -602,13 +612,13 @@ export async function predictAttendance(eventId: string) {
     const { data: invitations } = await supabase.from("open_house_invitations").select("*").eq("event_id", eventId)
 
     const { data: historical } = await supabase
-      .from("open_houses")
-      .select("*, open_house_analytics(*)")
-      .eq("property_type", event?.property?.property_type)
+      .from("open_house_events")
+      .select("*, listing:listings!inner(property_type), open_house_analytics(*)")
+      .eq("listing.property_type", event?.property?.property_type)
       .limit(10)
 
-    const rsvpYes = invitations?.filter((i: any) => i.rsvp_status === "yes").length || 0
-    const rsvpMaybe = invitations?.filter((i: any) => i.rsvp_status === "maybe").length || 0
+    const rsvpYes = invitations?.filter((i: any) => i.rsvp_response === "yes").length || 0
+    const rsvpMaybe = invitations?.filter((i: any) => i.rsvp_response === "maybe").length || 0
 
     const prompt = `Predict attendance for open house event.
 
@@ -665,9 +675,9 @@ OUTPUT FORMAT (JSON):
 
     // Store prediction
     await supabase
-      .from("open_houses")
+      .from("open_house_events")
       .update({
-        predicted_attendance: prediction.predicted_attendance_mid,
+        attendance_prediction: prediction.predicted_attendance_mid,
       })
       .eq("id", eventId)
 
@@ -691,7 +701,7 @@ export async function processEventFollowups(eventId: string) {
 
   try {
     // Mark event as completed
-    await supabase.from("open_houses").update({ status: "completed" }).eq("id", eventId)
+    await supabase.from("open_house_events").update({ status: "completed" }).eq("id", eventId)
 
     // Get all attendees
     const { data: attendees } = await supabase.from("open_house_attendees").select("*").eq("event_id", eventId)
@@ -716,7 +726,7 @@ export async function processEventFollowups(eventId: string) {
     // Manager-orchestrated; best-effort (never fails the follow-up).
     try {
       const { data: ev } = await supabase
-        .from("open_houses")
+        .from("open_house_events")
         .select("brokerage_id, listing_id, listings(address, city, state)")
         .eq("id", eventId)
         .maybeSingle()
@@ -760,12 +770,12 @@ function calculateAttendeeLeadScore(attendee: any): number {
   let score = 0
 
   // Interest level (0-40 points)
+  // attendee.interest_level is the canonical CHECK vocab (hot|warm|cold|no_interest).
   const interestScores: Record<string, number> = {
-    ready_to_offer: 40,
-    very_interested: 30,
-    somewhat_interested: 20,
-    just_looking: 10,
-    not_interested: 0,
+    hot: 40,
+    warm: 25,
+    cold: 10,
+    no_interest: 0,
   }
   score += interestScores[attendee.interest_level] || 0
 
@@ -789,7 +799,7 @@ function calculateAttendeeLeadScore(attendee: any): number {
 async function generateEventAnalytics(eventId: string) {
   const supabase = await createClient()
 
-  const { data: event } = await supabase.from("open_houses").select("*").eq("id", eventId).maybeSingle()
+  const { data: event } = await supabase.from("open_house_events").select("*").eq("id", eventId).maybeSingle()
 
   const { data: attendees } = await supabase.from("open_house_attendees").select("*").eq("event_id", eventId)
 
@@ -798,14 +808,14 @@ async function generateEventAnalytics(eventId: string) {
   const analytics = {
     event_id: eventId,
     total_invites_sent: invitations?.length || 0,
-    rsvp_yes_count: invitations?.filter((i: any) => i.rsvp_status === "yes").length || 0,
-    rsvp_maybe_count: invitations?.filter((i: any) => i.rsvp_status === "maybe").length || 0,
-    rsvp_no_count: invitations?.filter((i: any) => i.rsvp_status === "no").length || 0,
+    rsvp_yes_count: invitations?.filter((i: any) => i.rsvp_response === "yes").length || 0,
+    rsvp_maybe_count: invitations?.filter((i: any) => i.rsvp_response === "maybe").length || 0,
+    rsvp_no_count: invitations?.filter((i: any) => i.rsvp_response === "no").length || 0,
     total_attendance: attendees?.length || 0,
-    attendance_vs_predicted: (attendees?.length || 0) - (event?.predicted_attendance || 0),
+    attendance_vs_predicted: (attendees?.length || 0) - (event?.attendance_prediction || 0),
     serious_buyers_count:
       attendees?.filter(
-        (a: any) => a.interest_level === "very_interested" || a.interest_level === "ready_to_offer"
+        (a: any) => a.interest_level === "hot"
       ).length || 0,
     avg_lead_score:
       attendees && attendees.length > 0
@@ -842,7 +852,7 @@ export async function createOpenHouseEvent(params: {
 
   try {
     const { data: event, error } = await supabase
-      .from("open_houses")
+      .from("open_house_events")
       .insert({
         agent_id: params.agentId,
         listing_id: params.propertyId,
@@ -874,7 +884,7 @@ export async function getOpenHouseEvents(agentId: string) {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("open_houses")
+    .from("open_house_events")
     .select("*, property:listings(*), analytics:open_house_analytics(*)")
     .eq("agent_id", agentId)
     .order("event_date", { ascending: false })
@@ -906,7 +916,7 @@ export async function fetchWeatherForEvent(eventId: string) {
 
   try {
     const { data: event } = await supabase
-      .from("open_houses")
+      .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("id", eventId)
       .maybeSingle()
@@ -929,7 +939,7 @@ export async function fetchWeatherForEvent(eventId: string) {
 
     // Store weather forecast
     await supabase
-      .from("open_houses")
+      .from("open_house_events")
       .update({
         weather_forecast: weather,
       })
@@ -941,7 +951,7 @@ export async function fetchWeatherForEvent(eventId: string) {
     
     // Send weather alert to agent
     const { data: event } = await supabase
-      .from("open_houses")
+      .from("open_house_events")
       .select("agent_id")
       .eq("id", eventId)
       .maybeSingle()
@@ -1000,7 +1010,7 @@ export async function generatePerformanceInsights(eventId: string) {
   try {
     const { data: analytics } = await supabase.from("open_house_analytics").select("*").eq("event_id", eventId).maybeSingle()
 
-    const { data: event } = await supabase.from("open_houses").select("*").eq("id", eventId).maybeSingle()
+    const { data: event } = await supabase.from("open_house_events").select("*").eq("id", eventId).maybeSingle()
 
     if (!analytics || !event) {
       return { error: "Analytics data not found" }
@@ -1015,9 +1025,9 @@ Invitations:
 - RSVP Rate: ${((analytics.rsvp_yes_count / analytics.total_invites_sent) * 100).toFixed(1)}%
 
 Attendance:
-- Predicted: ${event.predicted_attendance}
+- Predicted: ${event.attendance_prediction}
 - Actual: ${analytics.total_attendance}
-- Accuracy: ${((analytics.total_attendance / event.predicted_attendance) * 100).toFixed(1)}%
+- Accuracy: ${((analytics.total_attendance / event.attendance_prediction) * 100).toFixed(1)}%
 
 Lead Quality:
 - Serious Buyers: ${analytics.serious_buyers_count}
@@ -1081,7 +1091,7 @@ export async function sendFeedbackRequestToAttendee(attendeeId: string) {
     }
 
     const { data: event } = await supabase
-      .from("open_houses")
+      .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("id", attendee.event_id)
       .maybeSingle()
@@ -1186,7 +1196,7 @@ export async function monitorCompetingEvents(eventId: string) {
 
   try {
     const { data: event } = await supabase
-      .from("open_houses")
+      .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("id", eventId)
       .maybeSingle()
@@ -1197,7 +1207,7 @@ export async function monitorCompetingEvents(eventId: string) {
 
     // Query for other open houses in the area on same date
     const { data: competingEvents } = await supabase
-      .from("open_houses")
+      .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("event_date", event.event_date)
       .neq("id", eventId)
@@ -1227,7 +1237,7 @@ export async function monitorCompetingEvents(eventId: string) {
 
     // Store competing events data
     await supabase
-      .from("open_houses")
+      .from("open_house_events")
       .update({
         competing_events_data: competingData,
       })
@@ -1285,7 +1295,7 @@ export async function checkInAttendee(params: {
         email: params.contactEmail,
         name: params.contactName,
         phone: params.contactPhone ?? null,
-        interest_level: params.interestLevel || "unknown",
+        interest_level: mapInterestLevelText(params.interestLevel),
         check_in_time: new Date().toISOString(),
         arrival_time: new Date().toISOString(),
         working_with_agent: false,

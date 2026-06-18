@@ -266,17 +266,18 @@ export async function createOpenHouseAttendeeFromContact(input: {
     const { data: attendee, error: insertErr } = await supabase
       .from("open_house_attendees")
       .insert({
-        open_house_id,
+        event_id: open_house_id,
         contact_id,
-        first_name: first_name.trim(),
-        last_name: (last_name || "").trim(),
+        name: `${first_name.trim()} ${(last_name || "").trim()}`.trim(),
         email: email ? email.trim().toLowerCase() : null,
         phone: phone ? phone.replace(/\D/g, "") : null,
-        check_in_method,
-        property_interest_level: interest_level,
-        checked_in: true,
+        // interest_level is CHECK-constrained (hot|warm|cold|no_interest); map the numeric 1-5 input.
+        interest_level:
+          interest_level == null ? "warm"
+          : interest_level >= 4 ? "hot"
+          : interest_level >= 3 ? "warm"
+          : interest_level >= 2 ? "cold" : "no_interest",
         check_in_time: new Date().toISOString(),
-        rsvp_status: "confirmed",
         notes,
       })
       .select("id")

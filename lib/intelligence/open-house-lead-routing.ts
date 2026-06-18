@@ -29,7 +29,7 @@ export interface OpenHouseHandoff {
   name: string | null
 }
 
-const HOT_INTEREST = new Set(["ready_to_offer", "very_interested"])
+const HOT_INTEREST = new Set(["hot"])
 const DEFAULT_MIN_SCORE = 70
 
 /**
