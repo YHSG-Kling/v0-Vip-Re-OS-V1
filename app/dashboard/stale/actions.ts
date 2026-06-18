@@ -75,9 +75,9 @@ export async function loadStaleQueue(): Promise<{ data: StaleLoad } | { error: s
 
   // Brokerage stale-contact threshold (matches the cron's source-of-truth).
   const { data: brokerageRow } = await svc
-    .from("brokerages")
+    .from("global_settings")
     .select("additional_settings")
-    .eq("id", brokerageId)
+    .eq("brokerage_id", brokerageId)
     .maybeSingle()
   const settings = brokerageRow?.additional_settings as Record<string, unknown> | null
   const staleContactDays =

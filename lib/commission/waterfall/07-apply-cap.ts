@@ -14,12 +14,16 @@ export async function applyCap(
   const supabase = createServiceClient()
 
   // Get cap tracking record
+  // agent_cap_tracking has no is_active — the active row is the one whose anniversary
+  // window contains today.
+  const nowDate = new Date().toISOString().slice(0, 10)
   const { data: capTracking } = await supabase
     .from('agent_cap_tracking')
     .select('*')
     .eq('agent_id', context.agentId)
     .eq('brokerage_id', context.brokerageId)
-    .eq('is_active', true)
+    .lte('anniversary_start', nowDate)
+    .gte('anniversary_end', nowDate)
     .maybeSingle()
 
   // No cap configured

@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
   const { data: voiceProfile } = await supabase
     .from("agent_voice_profiles")
     .select("did_photo_url, did_video_url")
-    .eq("user_id", agentId)
+    .eq("agent_id", agentId)
     .maybeSingle()
 
   const sourceUrl = voiceProfile?.did_video_url ?? voiceProfile?.did_photo_url ?? null

@@ -31,7 +31,7 @@ export async function triggerGHLWorkflow(params: {
     const { data: credentials } = await supabase
       .from("platform_credentials")
       .select("*")
-      .eq("agent_id", params.agentId)
+      .eq("agent_user_id", params.agentId)
       .eq("platform", "gohighlevel")
       .single()
 

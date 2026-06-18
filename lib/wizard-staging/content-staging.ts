@@ -277,7 +277,6 @@ export async function stageBlogDraft(
       content: intake.topic ? `# ${intake.title}\n\n${intake.topic}` : `# ${intake.title}\n\n`,
       publish_status: "draft",
       visibility_scope: "agent",
-      compliance_approved: false,
       category: intake.category ?? null,
     })
     .select("id, title")

@@ -37,10 +37,20 @@ export async function GET(request: Request) {
     // Fetch all active brokerages
     const { data: brokerages, error: brErr } = await supabase
       .from('brokerages')
-      .select('id, additional_settings')
+      .select('id')
       .eq('is_active', true)
 
     if (brErr) throw new Error(`Failed to load brokerages: ${brErr.message}`)
+
+    // Ghost thresholds live in global_settings.additional_settings (per brokerage),
+    // not on brokerages.
+    const { data: settingsRows } = await supabase
+      .from('global_settings')
+      .select('brokerage_id, additional_settings')
+    const settingsByBrokerage = new Map<string, Record<string, unknown>>()
+    for (const r of settingsRows ?? []) {
+      if (r.brokerage_id) settingsByBrokerage.set(r.brokerage_id as string, (r.additional_settings as Record<string, unknown>) ?? {})
+    }
 
     const results: Array<{
       brokerageId: string
@@ -54,7 +64,7 @@ export async function GET(request: Request) {
 
     for (const brokerage of brokerages ?? []) {
       try {
-        const settings = brokerage.additional_settings as Record<string, unknown> | null
+        const settings = settingsByBrokerage.get(brokerage.id) ?? null
         const thresholdDays =
           typeof settings?.ghost_threshold_days === 'number'
             ? settings.ghost_threshold_days

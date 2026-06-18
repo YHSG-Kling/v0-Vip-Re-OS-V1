@@ -12,11 +12,20 @@ export default async function VendorPortfolioPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  const { data: vendor } = await supabase
-    .from('vendors')
-    .select('id, name, category, notes, rating, website, portfolio_urls')
+  const { data: ra } = await supabase
+    .from('user_role_assignments')
+    .select('vendor_id')
     .eq('user_id', user.id)
+    .not('vendor_id', 'is', null)
     .maybeSingle()
+
+  const { data: vendor } = ra?.vendor_id
+    ? await supabase
+        .from('vendors')
+        .select('id, name, category, notes, rating, website')
+        .eq('id', ra.vendor_id)
+        .maybeSingle()
+    : { data: null }
 
   return (
     <div className="p-6 space-y-6">
@@ -42,9 +51,7 @@ export default async function VendorPortfolioPage() {
             {vendor.notes && <p className="text-sm text-gray-600 mb-3">{vendor.notes}</p>}
             {vendor.website && <a href={vendor.website} target="_blank" rel="noreferrer" className="text-sm text-blue-600 hover:underline">{vendor.website}</a>}
             {vendor.rating > 0 && <p className="text-sm mt-2">Rating: {vendor.rating}/5</p>}
-            {(!vendor.portfolio_urls || vendor.portfolio_urls.length === 0) && (
-              <p className="text-sm text-gray-400 mt-4 text-center py-4">No portfolio items yet. Add your completed work to attract more clients.</p>
-            )}
+            <p className="text-sm text-gray-400 mt-4 text-center py-4">No portfolio items yet. Add your completed work to attract more clients.</p>
           </CardContent>
         </Card>
       ) : (

@@ -84,7 +84,7 @@ export async function launchAIISACampaignService(params: {
 
   await supabase
     .from("ai_isa_campaigns")
-    .update({ contacts_targeted: queuedCount })
+    .update({ leads_targeted: queuedCount })
     .eq("id", campaign.id)
 
   return {
@@ -120,7 +120,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
 
   const { data: campaign } = await supabase
     .from("ai_isa_campaigns")
-    .select("vapi_assistant_id, campaign_type")
+    .select("campaign_type")
     .eq("id", campaignId)
     .single()
 
@@ -176,7 +176,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
 
   const callData = await initiateCall({
     phoneNumber:      contact.phone,
-    assistantId:      campaign.vapi_assistant_id,
+    assistantId:      process.env.VAPI_ISA_ASSISTANT_ID!,
     assistantOverrides,
     contactId,
     brokerageId,
@@ -208,7 +208,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
       voice_call_id: voiceCallRow?.id ?? null,
       brokerage_id:  brokerageId,
       vapi_call_id:  callData.id,
-      assistant_id:  campaign.vapi_assistant_id ?? null,
+      assistant_id:  process.env.VAPI_ISA_ASSISTANT_ID ?? null,
       agent_id:      loginId,
       contact_id:    contactId,
     })

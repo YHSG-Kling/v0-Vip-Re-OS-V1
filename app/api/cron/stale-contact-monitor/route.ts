@@ -45,11 +45,20 @@ export async function GET(request: NextRequest) {
   // brokerages table has no is_active column — fetch all and rely on contacts filter
   const { data: brokerages } = await supabase
     .from('brokerages')
-    .select('id, additional_settings')
+    .select('id')
+
+  // Thresholds live in global_settings.additional_settings (per brokerage).
+  const { data: settingsRows } = await supabase
+    .from('global_settings')
+    .select('brokerage_id, additional_settings')
+  const settingsByBrokerage = new Map<string, Record<string, unknown>>()
+  for (const r of settingsRows ?? []) {
+    if (r.brokerage_id) settingsByBrokerage.set(r.brokerage_id as string, (r.additional_settings as Record<string, unknown>) ?? {})
+  }
 
   for (const brokerage of brokerages ?? []) {
     const brokerageId = brokerage.id
-    const settings = brokerage.additional_settings as Record<string, unknown> | null
+    const settings = settingsByBrokerage.get(brokerageId) ?? null
 
     // Use brokerage-configured threshold or default 14 days
     const staleDays =

@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
   const { data: voiceProfile } = await supabase
     .from("agent_voice_profiles")
     .select("elevenlabs_voice_id")
-    .eq("user_id", agentId)
+    .eq("agent_id", agentId)
     .maybeSingle()
 
   const voiceId = voiceProfile?.elevenlabs_voice_id

@@ -13,11 +13,7 @@ export default async function VendorConnectionsPage() {
   // Resolve this vendor's id (role assignment first, then direct vendors.user_id link).
   const { data: ra } = await supabase
     .from("user_role_assignments").select("vendor_id").eq("user_id", user.id).not("vendor_id", "is", null).maybeSingle()
-  let vendorId = (ra?.vendor_id as string | null) ?? null
-  if (!vendorId) {
-    const { data: v } = await supabase.from("vendors").select("id").eq("user_id", user.id).maybeSingle()
-    vendorId = (v?.id as string | null) ?? null
-  }
+  const vendorId = (ra?.vendor_id as string | null) ?? null
 
   const data = vendorId
     ? await getConnectionCenter({ scope: "vendor", id: vendorId })

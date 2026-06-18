@@ -20,13 +20,22 @@ export default async function TitleDashboardPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  // Get title company/vendor ID for this user
-  const { data: vendor } = await supabase
-    .from('vendors')
-    .select('id')
+  // Get title company/vendor ID for this user (canonical linkage via user_role_assignments)
+  const { data: ra } = await supabase
+    .from('user_role_assignments')
+    .select('vendor_id')
     .eq('user_id', user.id)
-    .eq('category', 'title')
+    .not('vendor_id', 'is', null)
     .maybeSingle()
+
+  const { data: vendor } = ra?.vendor_id
+    ? await supabase
+        .from('vendors')
+        .select('id')
+        .eq('id', ra.vendor_id)
+        .eq('category', 'title')
+        .maybeSingle()
+    : { data: null }
 
   const titleCompanyId = vendor?.id || user.id
 

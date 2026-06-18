@@ -546,7 +546,6 @@ Return ONLY the script text.`
           ai_generated: true,
           is_active: true,
           created_by: agent_id ?? null,
-          compliance_approved: false,
         })
         .select()
         .single()

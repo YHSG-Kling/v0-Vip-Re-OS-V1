@@ -63,20 +63,9 @@ export async function assembleEmail(params: AssembleEmailParams): Promise<Assemb
   if (userRow?.email_signature) {
     signatureHtml = userRow.email_signature
     signatureText = stripHtml(userRow.email_signature)
-  } else if (userRow?.team_id) {
-    // 2. Team-level signature lives inside teams.branding_override JSONB
-    const { data: team } = await supabase
-      .from('teams')
-      .select('branding_override')
-      .eq('id', userRow.team_id)
-      .maybeSingle()
-
-    const teamSig = (team?.branding_override as any)?.email_signature_html
-    if (teamSig) {
-      signatureHtml = teamSig
-      signatureText = stripHtml(teamSig)
-    }
   }
+  // (No team-tier signature: teams has no branding_override jsonb. The waterfall
+  // falls through to the brokerage-level signature below.)
 
   if (!signatureHtml) {
     // 3. Fall back to brokerage-level signature

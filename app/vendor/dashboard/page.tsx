@@ -23,14 +23,15 @@ export default async function VendorDashboardPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  // Get vendor ID for this user
-  const { data: vendor } = await supabase
-    .from('vendors')
-    .select('id')
+  // Get vendor ID for this user (canonical linkage: user_role_assignments.vendor_id)
+  const { data: ra } = await supabase
+    .from('user_role_assignments')
+    .select('vendor_id')
     .eq('user_id', user.id)
+    .not('vendor_id', 'is', null)
     .maybeSingle()
 
-  const vendorId = vendor?.id || user.id
+  const vendorId = (ra?.vendor_id as string | null) || user.id
 
   let bookings: any[] = []
   try {
@@ -44,9 +45,10 @@ export default async function VendorDashboardPage() {
 
   // Today's AI brief — open jobs, due-soon deliverables, overdue
   const { data: vendorRow } = await supabase
-    .from('vendors')
+    .from('user_role_assignments')
     .select('brokerage_id')
     .eq('user_id', user.id)
+    .not('vendor_id', 'is', null)
     .maybeSingle()
 
   const vendorBrief = await generateUserTypeBrief({

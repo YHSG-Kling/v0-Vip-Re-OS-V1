@@ -33,12 +33,18 @@ export default function OrchestratorEventsPage() {
   const loadEvents = async () => {
     try {
       const supabase = createClient()
+      // lifecycle_events has no status column — derive it from processed/error.
       const { data } = await supabase
         .from("lifecycle_events")
-        .select("id, event_type, entity_type, entity_id, status, created_at, processed_at")
+        .select("id, event_type, entity_type, entity_id, processed, error, created_at, processed_at")
         .order("created_at", { ascending: false })
         .limit(100)
-      setEvents(data ?? [])
+      setEvents(
+        (data ?? []).map((r: any) => ({
+          ...r,
+          status: r.error ? "failed" : r.processed ? "processed" : "pending",
+        }))
+      )
     } catch (error) {
       console.error("Failed to load events:", error)
     } finally {

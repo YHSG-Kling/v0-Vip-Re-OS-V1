@@ -439,9 +439,15 @@ export async function GET(
     let brokerageId: string | null = (userData?.brokerage_id as string | null) ?? null
 
     if (scope === "vendor") {
-      const { data: v } = await supabase.from("vendors").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
-      ownerId = (v?.id as string | null) ?? null
-      brokerageId = brokerageId ?? ((v?.brokerage_id as string | null) ?? null)
+      // canonical vendor linkage: user_role_assignments.vendor_id (vendors has no user_id)
+      const { data: ra } = await supabase
+        .from("user_role_assignments")
+        .select("vendor_id, brokerage_id")
+        .eq("user_id", user.id)
+        .not("vendor_id", "is", null)
+        .maybeSingle()
+      ownerId = (ra?.vendor_id as string | null) ?? null
+      brokerageId = brokerageId ?? ((ra?.brokerage_id as string | null) ?? null)
     } else if (scope === "contact") {
       const { data: c } = await supabase.from("contacts").select("id, brokerage_id").eq("contact_user_id", user.id).maybeSingle()
       ownerId = (c?.id as string | null) ?? null

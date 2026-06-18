@@ -151,7 +151,6 @@ Respond ONLY with valid JSON (no markdown):
         score_rationale: parsed.rationale ?? null,
         risk_flags: riskFlags,
         coaching_insight: parsed.coaching_insight ?? null,
-        compliance_approved: false,
       })
 
       // UPDATE cma_comparables with score summary

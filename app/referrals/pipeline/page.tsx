@@ -15,10 +15,10 @@ export default async function ReferralPipelinePage() {
 
   const { data: referrals } = await supabase
     .from("referrals")
-    .select("*, referring_contact:contacts!referring_contact_id(first_name, last_name)")
+    .select("*, referred_contact:contacts!referred_contact_id(first_name, last_name)")
     .eq("agent_id", agentId)
     .eq("brokerage_id", brokerageId)
-    .order("referral_date", { ascending: false })
+    .order("created_at", { ascending: false })
 
   const statusColors = {
     new: "bg-blue-100 text-blue-700",
@@ -50,12 +50,12 @@ export default async function ReferralPipelinePage() {
           id: r.id,
           referral_name: r.referred_name,
           status: r.status,
-          source_contact_id: r.referring_contact_id,
-          source_contact_name: r.referring_contact
-            ? `${r.referring_contact.first_name} ${r.referring_contact.last_name}`
+          source_contact_id: r.referred_contact_id,
+          source_contact_name: r.referred_contact
+            ? `${r.referred_contact.first_name} ${r.referred_contact.last_name}`
             : undefined,
-          created_at: r.referral_date,
-          value_estimate: r.potential_value,
+          created_at: r.created_at,
+          value_estimate: r.value_estimate,
         }))}
       />
 
@@ -123,7 +123,7 @@ export default async function ReferralPipelinePage() {
                     )}
                     <div>
                       <p className="text-muted-foreground">Referral Date</p>
-                      <p className="font-medium">{new Date(referral.referral_date).toLocaleDateString()}</p>
+                      <p className="font-medium">{new Date(referral.created_at).toLocaleDateString()}</p>
                     </div>
                   </div>
 

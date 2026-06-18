@@ -159,7 +159,6 @@ Respond ONLY with valid JSON (no markdown):
       trend_percentage: trendPercentage,
       days_to_sell_estimate: daysToSellEstimate,
       market_factors: marketFactors,
-      compliance_approved: false,
     })
     .select("id")
     .single()

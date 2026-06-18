@@ -82,19 +82,9 @@ async function resolveActor(owner?: OwnerHint): Promise<Actor | null> {
       const v = await requireVendorActor(owner.id)
       return { userId: v.userId, agentId: null, brokerageId: v.brokerageId, scope: "vendor", ownerId: v.vendorId, isBrokerageManager: false, userType: "vendor" }
     } catch {
-      // Fallback: the vendor row is linked directly to this auth user (vendors.user_id).
-      try {
-        const supabase = await createClient()
-        const { data: { user } } = await supabase.auth.getUser()
-        if (!user) return null
-        const svc = createServiceClient()
-        const { data: vendorRow } = await svc
-          .from("vendors").select("id, brokerage_id").eq("id", owner.id).eq("user_id", user.id).maybeSingle()
-        if (!vendorRow?.brokerage_id) return null
-        return { userId: user.id, agentId: null, brokerageId: vendorRow.brokerage_id as string, scope: "vendor", ownerId: vendorRow.id as string, isBrokerageManager: false, userType: "vendor" }
-      } catch {
-        return null
-      }
+      // No valid vendor role assignment for this user/vendor pair (vendors has no
+      // user_id — the canonical linkage is user_role_assignments, resolved above).
+      return null
     }
   }
   if (owner?.scope === "contact") {

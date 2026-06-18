@@ -129,7 +129,7 @@ async function resolveIdentity(
       ? supabase
           .from('agent_voice_profiles')
           .select('did_photo_url, did_video_url')
-          .eq('user_id', agentId)
+          .eq('agent_id', agentId)
           .maybeSingle()
       : Promise.resolve({ data: null }),
     agentId

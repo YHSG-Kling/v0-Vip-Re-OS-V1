@@ -77,7 +77,7 @@ export async function sendAlertNotification(
         .from("platform_credentials")
         .select("api_key, config")
         .eq("brokerage_id", brokerageId)
-        .eq("provider_name", "sendgrid")
+        .eq("platform", "sendgrid")
         .eq("is_active", true)
         .maybeSingle()
 
