@@ -267,8 +267,8 @@ export async function getEducationModules(
   const service = createServiceClient()
 
   const { data, error } = await service
-    .from("onboarding_quizzes")
-    .select("id, title, description, target_roles, required, content_body, quiz_questions, created_at")
+    .from("learning_modules")
+    .select("id, title, description:summary, target_roles:audience_roles, required, content_body:body, quiz_questions, created_at")
     .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
 
@@ -291,16 +291,16 @@ export async function createEducationModule(params: {
   const service = createServiceClient()
 
   const { data, error } = await service
-    .from("onboarding_quizzes")
+    .from("learning_modules")
     .insert({
       brokerage_id: auth.brokerageId,
       title: params.title,
-      description: params.description,
-      target_roles: params.targetRoles,
+      summary: params.description,
+      audience_roles: params.targetRoles,
       required: params.required,
-      content_body: params.contentBody,
+      body: params.contentBody,
       quiz_questions: params.quizQuestions,
-      passing_score: 80,
+      status: "draft",
     })
     .select("id")
     .single()
@@ -317,7 +317,7 @@ export async function deleteEducationModule(moduleId: string): Promise<{ success
 
   // Verify the module belongs to caller's brokerage before deleting
   const { data: existing } = await service
-    .from("onboarding_quizzes")
+    .from("learning_modules")
     .select("brokerage_id")
     .eq("id", moduleId)
     .maybeSingle()
@@ -327,7 +327,7 @@ export async function deleteEducationModule(moduleId: string): Promise<{ success
   }
 
   const { error } = await service
-    .from("onboarding_quizzes")
+    .from("learning_modules")
     .delete()
     .eq("id", moduleId)
     .eq("brokerage_id", existing.brokerage_id)
