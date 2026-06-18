@@ -92,7 +92,7 @@ export async function generateAINewsletter(params: NewsletterGenerationParams): 
 
 BRAND VOICE:
 ${brandVoice ? `Tone: ${brandVoice.tone_attributes?.join(", ") || "professional"}` : "Professional and helpful"}
-${brandVoice?.key_phrases ? `Key phrases: ${brandVoice.key_phrases.join(", ")}` : ""}
+${brandVoice?.key_brand_messages ? `Key phrases: ${brandVoice.key_brand_messages.join(", ")}` : ""}
 
 AUDIENCE: ${params.audienceSegment}
 ${audiencePrompts[params.audienceSegment]}

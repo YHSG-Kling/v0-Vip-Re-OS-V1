@@ -57,9 +57,9 @@ export default function BrandVoicePage() {
         setStyle(profile.style ?? "")
         setBrandPersonality(profile.brand_personality ?? "")
         setTargetAudience(profile.target_audience ?? "")
-        setKeywordsText((profile.keywords ?? []).join(", "))
-        setAvoidWordsText((profile.avoid_words ?? []).join(", "))
-        setExamplePostsText((profile.example_posts ?? []).join("\n\n"))
+        setKeywordsText((profile.preferred_words ?? []).join(", "))
+        setAvoidWordsText((profile.prohibited_words ?? []).join(", "))
+        setExamplePostsText((profile.tone_examples ?? []).join("\n\n"))
       }
       setLoading(false)
     }

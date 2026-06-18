@@ -68,12 +68,12 @@ export async function updateBrandVoiceProfile(data: {
       agent_id: data.agentId,
       tone: data.tone,
       style: data.style,
-      keywords: data.keywords,
-      avoid_words: data.avoidWords,
+      preferred_words: data.keywords,
+      prohibited_words: data.avoidWords,
       target_audience: data.targetAudience,
       brand_personality: data.brandPersonality,
       content_guidelines: data.contentGuidelines,
-      example_posts: data.examplePosts,
+      tone_examples: data.examplePosts,
       updated_at: new Date().toISOString(),
     })
     .select()
@@ -1412,14 +1412,14 @@ OUTPUT FORMAT (JSON):
 
     if (brandVoice) {
       // Update brand voice with learnings
-      const updatedAvoidWords = [...(brandVoice.avoid_words || []), ...(learnings.words_to_avoid || [])]
-      const updatedKeyPhrases = [...(brandVoice.key_phrases || []), ...(learnings.preferred_phrases || [])]
+      const updatedAvoidWords = [...(brandVoice.prohibited_words || []), ...(learnings.words_to_avoid || [])]
+      const updatedKeyPhrases = [...(brandVoice.key_brand_messages || []), ...(learnings.preferred_phrases || [])]
 
       await supabase
         .from("brand_voice_profile")
         .update({
-          avoid_words: Array.from(new Set(updatedAvoidWords)),
-          key_phrases: Array.from(new Set(updatedKeyPhrases)),
+          prohibited_words: Array.from(new Set(updatedAvoidWords)),
+          key_brand_messages: Array.from(new Set(updatedKeyPhrases)),
           writing_style_notes: `${brandVoice.writing_style_notes || ""}\n${learnings.style_notes || ""}`,
         })
         .eq("agent_id", content.agent_id)
