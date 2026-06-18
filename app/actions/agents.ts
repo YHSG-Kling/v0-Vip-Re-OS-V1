@@ -152,8 +152,7 @@ export async function awardPoints(agentId: string, points: number, reason: strin
     agent_id: agentId,
     points,
     reason,
-    category,
-    balance_after: newPoints,
+    reference_type: category, // real column; running balance lives on agents.gamification_points
   })
 
   if (logError) {
@@ -243,7 +242,7 @@ export async function getAgentAchievements(agentId: string) {
       achievement:achievements(*)
     `)
     .eq("agent_id", agentId)
-    .order("earned_at", { ascending: false })
+    .order("unlocked_at", { ascending: false })
 
   if (error) {
     console.error("Error fetching agent achievements:", error)
@@ -270,7 +269,7 @@ async function checkAndAwardAchievements(agentId: string, currentPoints: number)
     await supabase.from("agent_achievements").insert({
       agent_id: agentId,
       achievement_id: achievement.id,
-      earned_at: new Date().toISOString(),
+      // unlocked_at has default now()
     })
 
     // Achievement is recorded in agent_achievements (above). The agents.badges array was a phantom
@@ -422,9 +421,9 @@ export async function getAgentExpenses(agentId: string, year?: number) {
     .from("business_expenses")
     .select("*")
     .eq("agent_id", agentId)
-    .gte("date", startDate)
-    .lte("date", endDate)
-    .order("date", { ascending: false })
+    .gte("expense_date", startDate)
+    .lte("expense_date", endDate)
+    .order("expense_date", { ascending: false })
 
   if (error) {
     console.error("Error fetching agent expenses:", error)
@@ -439,40 +438,20 @@ export async function addAgentExpense(expenseData: {
   category: "marketing" | "education" | "technology" | "transportation" | "office" | "other"
   description: string
   amount: number
-  date: string
+  expense_date: string
   receipt_url?: string
-  is_reimbursable: boolean
 }) {
   const supabase = await createClient()
 
+  // business_expenses has no status/is_reimbursable columns; real date col is expense_date.
   const { data, error } = await supabase
     .from("business_expenses")
-    .insert({
-      ...expenseData,
-      status: expenseData.is_reimbursable ? "pending" : "n/a",
-    })
+    .insert({ ...expenseData })
     .select()
     .single()
 
   if (error) {
     console.error("Error adding expense:", error)
-    return { error: error.message }
-  }
-
-  revalidatePath("/admin/agent-roster")
-  return { data }
-}
-
-export async function updateExpenseStatus(
-  expenseId: string,
-  status: "pending" | "approved" | "rejected" | "reimbursed",
-) {
-  const supabase = await createClient()
-
-  const { data, error } = await supabase.from("business_expenses").update({ status }).eq("id", expenseId).select().single()
-
-  if (error) {
-    console.error("Error updating expense status:", error)
     return { error: error.message }
   }
 
@@ -491,8 +470,8 @@ export async function getExpenseSummary(agentId: string, year?: number) {
     .from("business_expenses")
     .select("category, amount")
     .eq("agent_id", agentId)
-    .gte("date", startDate)
-    .lte("date", endDate)
+    .gte("expense_date", startDate)
+    .lte("expense_date", endDate)
 
   if (error) {
     console.error("Error fetching expense summary:", error)
@@ -784,7 +763,7 @@ export async function getBrokerageStats(brokerageId?: string) {
     let gciQuery = supabase
       .from("agent_commissions")
       .select("gross_commission")
-      .gte("date", startOfMonth.toISOString())
+      .gte("close_date", startOfMonth.toISOString().split("T")[0])
 
     if (brokerageId) {
       gciQuery = gciQuery.eq("brokerage_id", brokerageId)
@@ -801,8 +780,8 @@ export async function getBrokerageStats(brokerageId?: string) {
     let lastGciQuery = supabase
       .from("agent_commissions")
       .select("gross_commission")
-      .gte("date", lastMonthStart.toISOString())
-      .lt("date", lastMonthEnd.toISOString())
+      .gte("close_date", lastMonthStart.toISOString().split("T")[0])
+      .lt("close_date", lastMonthEnd.toISOString().split("T")[0])
 
     if (brokerageId) {
       lastGciQuery = lastGciQuery.eq("brokerage_id", brokerageId)

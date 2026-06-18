@@ -77,21 +77,10 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
   if (transaction?.id) {
     const { data: dt } = await lifetimeSupabase
       .from("deal_team_members")
-      .select("id, member_type, agent_id, external_name, external_company, external_phone, external_email, scheduled_date, agent:agents(id, profile_image_url, users(first_name, last_name, phone, email))")
+      .select("id, member_type, external_name:name, external_company:company, external_phone:phone, external_email:email")
       .eq("transaction_id", transaction.id)
-    dealTeamMembers = (dt ?? []).map((m: any) => ({
-      ...m,
-      agent: m.agent
-        ? {
-            id: m.agent.id,
-            profile_photo_url: m.agent.profile_image_url,
-            first_name: (m.agent.users as any)?.first_name ?? null,
-            last_name: (m.agent.users as any)?.last_name ?? null,
-            phone: (m.agent.users as any)?.phone ?? null,
-            email: (m.agent.users as any)?.email ?? null,
-          }
-        : null,
-    }))
+    // deal_team_members has no agent_id/FK to agents — members render as external contacts.
+    dealTeamMembers = (dt ?? []).map((m: any) => ({ ...m, agent: null }))
   }
   if (contact.agent_id) {
     const { data: pa } = await lifetimeSupabase

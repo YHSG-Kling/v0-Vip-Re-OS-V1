@@ -159,15 +159,15 @@ export async function getListingDetails(contactId: string) {
       .maybeSingle(),
     supabase
       .from("listing_engagement")
-      .select("id, event_type, event_date, source")
+      .select("id, event_type:engagement_type, event_date:created_at")
       .eq("listing_id", listing.id)
-      .order("event_date", { ascending: false })
+      .order("created_at", { ascending: false })
       .limit(100),
     supabase
       .from("listing_price_changes")
-      .select("id, old_price, new_price, change_date, reason")
+      .select("id, old_price, new_price, change_date:created_at, reason:change_reason")
       .eq("listing_id", listing.id)
-      .order("change_date", { ascending: false }),
+      .order("created_at", { ascending: false }),
   ])
 
   return {
@@ -339,7 +339,7 @@ export async function getMarketPosition(contactId: string) {
   // Get neighborhood report if available
   const { data: report } = await supabase
     .from("neighborhood_reports")
-    .select("id, listing_id, median_home_price, ai_summary, generated_at, comparable_count")
+    .select("id, listing_id, median_home_price, ai_summary, generated_at")
     .eq("listing_id", listing.id)
     .order("generated_at", { ascending: false })
     .maybeSingle()
@@ -433,7 +433,7 @@ export async function getSellerDocuments(contactId: string, transactionId: strin
     if (txValid) {
       const { data: txDocs } = await supabase
         .from("transaction_documents")
-        .select("id, document_type, file_name:document_name, file_url:document_url, created_at, status")
+        .select("id, document_type:doc_type, file_name:doc_label, file_url:storage_url, created_at, status")
         .eq("transaction_id", transactionId)
         .eq("brokerage_id", access.brokerageId)
         .order("created_at", { ascending: false })

@@ -259,14 +259,37 @@ export async function sendMessage(
     const own = await assertOwnership("contacts", contactId, brokerageId)
     if (!own.ok) return { success: false, error: own.error }
 
+    // messages.conversation_id is NOT NULL — resolve or create the conversation first.
+    let conversationId: string | null = null
+    {
+      const { data: conv } = await supabase
+        .from("conversations")
+        .select("id")
+        .eq("contact_id", contactId)
+        .maybeSingle()
+      if (conv?.id) {
+        conversationId = conv.id
+      } else {
+        const { data: newConv } = await supabase
+          .from("conversations")
+          .insert({ contact_id: contactId, agent_id: agentId, brokerage_id: brokerageId })
+          .select("id")
+          .single()
+        conversationId = newConv?.id ?? null
+      }
+    }
+    if (!conversationId) return { success: false, error: "Could not resolve conversation" }
+
     const { data: msg } = await supabase
       .from("messages")
       .insert({
+        conversation_id: conversationId,
         contact_id: contactId,
         agent_id: agentId,
         brokerage_id: brokerageId,
-        content: message,
-        channel,
+        type: channel,        // real column for the medium (email/sms/in_app)
+        direction: "outbound",
+        body: message,        // real column (was phantom "content")
         status: "sent",
       })
       .select()
@@ -414,13 +437,13 @@ export async function triggerComplianceChecklist(
     const own = await assertOwnership("transactions", transactionId, brokerageId)
     if (!own.ok) return { success: false, error: own.error }
 
+    // compliance_checklists has no agent_id/status; checklist_type is NOT NULL.
     const { data: checklist } = await supabase
       .from("compliance_checklists")
       .insert({
         transaction_id: transactionId,
-        agent_id: agentId,
         brokerage_id: brokerageId,
-        status: "active",
+        checklist_type: "disclosures",
       })
       .select()
       .single()
@@ -456,13 +479,14 @@ export async function generateScriptContent(
       prompt: `Generate a ${scriptType} script for a real estate agent. Context: ${JSON.stringify(context)}`,
     })
 
-    // Store generated script
+    // Store generated script. scripts is scoped by created_by (no agent_id/brokerage_id);
+    // title is NOT NULL; script_type→category; status CHECK is draft|approved|archived.
     await supabase.from("scripts").insert({
-      agent_id: agentId,
-      brokerage_id: brokerageId,
-      script_type: scriptType,
+      title: `${scriptType} script`,
+      category: scriptType,
       content: script,
-      status: "generated",
+      status: "draft",
+      created_by: ctx.userId,
     })
 
     return { success: true, content: script }
@@ -502,7 +526,7 @@ export async function sendNewsletterCampaign(
     // Mark campaign as sent
     await supabase
       .from("newsletter_campaigns")
-      .update({ status: "sent", sent_at: new Date().toISOString() })
+      .update({ status: "sent", send_date: new Date().toISOString() })
       .eq("id", campaignId)
 
     return { success: true, sentCount: campaign.recipient_count }
@@ -578,10 +602,8 @@ export async function logUserActivity(
       .from("audit_log")
       .insert({
         user_id: ctx.userId,
-        brokerage_id: ctx.brokerageId,
         action: activity,
-        details,
-        created_at: new Date().toISOString(),
+        after: details ?? null, // canonical payload column (no brokerage_id/details columns)
       })
       .select()
       .single()

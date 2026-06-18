@@ -112,7 +112,7 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
     activeTransaction
       ? supabase
           .from("deal_team_members")
-          .select("id, member_type, agent_id, external_name, external_company, external_phone, external_email, scheduled_date, agent:agents(id, first_name, last_name, phone, email, profile_photo_url)")
+          .select("id, member_type, external_name:name, external_company:company, external_phone:phone, external_email:email")
           .eq("transaction_id", activeTransaction.id)
       : Promise.resolve({ data: [] }),
     // Primary agent - resolved outside Promise.all via kernel identity function

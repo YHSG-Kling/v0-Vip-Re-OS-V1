@@ -153,7 +153,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     context.transactionId
       ? supabase
           .from("deal_team_members")
-          .select("id, member_type, agent_id, external_name, external_company, external_phone, external_email, scheduled_date, agent:agents(id, profile_image_url, users(first_name, last_name, phone, email))")
+          .select("id, member_type, external_name:name, external_company:company, external_phone:phone, external_email:email")
           .eq("transaction_id", context.transactionId)
       : Promise.resolve({ data: [] }),
     // Primary agent
@@ -193,19 +193,8 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
     CLIENT_VISIBLE_MILESTONES.includes(m.milestone_name as any)
   )
 
-  const dealTeamMembers = (dealTeamResult.data ?? []).map((m: any) => ({
-    ...m,
-    agent: m.agent
-      ? {
-          id: m.agent.id,
-          profile_photo_url: m.agent.profile_image_url,
-          first_name: (m.agent.users as any)?.first_name ?? null,
-          last_name: (m.agent.users as any)?.last_name ?? null,
-          phone: (m.agent.users as any)?.phone ?? null,
-          email: (m.agent.users as any)?.email ?? null,
-        }
-      : null,
-  }))
+  // deal_team_members has no agent_id/FK to agents — members render as external contacts.
+  const dealTeamMembers = (dealTeamResult.data ?? []).map((m: any) => ({ ...m, agent: null }))
   const primaryAgent = agentResult.data
     ? {
         id: (agentResult.data as any).id,

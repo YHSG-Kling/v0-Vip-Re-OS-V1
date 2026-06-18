@@ -53,14 +53,14 @@ export default async function TeamPage({
     activeTransaction
       ? supabase
           .from("deal_team_members")
-          .select("id, member_type, agent_id, external_name, external_company, external_phone, external_email, scheduled_date, agent:agents(id, profile_image_url, users(first_name, last_name, phone, email))")
+          .select("id, member_type, external_name:name, external_company:company, external_phone:phone, external_email:email")
           .eq("transaction_id", activeTransaction.id)
       : Promise.resolve({ data: [] }),
     // Transaction lenders
     activeTransaction
       ? supabase
           .from("transaction_lenders")
-          .select("id, lender_name, loan_officer_name, loan_officer_phone, loan_officer_email, loan_status, loan_amount, loan_type")
+          .select("id, lender_name, loan_officer_name, loan_officer_phone, loan_officer_email, loan_status:underwriting_status, loan_amount, loan_type")
           .eq("transaction_id", activeTransaction.id)
           .maybeSingle()
       : Promise.resolve({ data: null }),
@@ -68,7 +68,7 @@ export default async function TeamPage({
     activeTransaction
       ? supabase
           .from("transaction_title_escrow")
-          .select("id, company_name, officer_name, officer_phone, officer_email, closing_status")
+          .select("id, company_name:title_company_name, officer_name:title_officer_name, officer_phone:title_officer_phone, officer_email:title_officer_email, closing_status:title_status")
           .eq("transaction_id", activeTransaction.id)
           .maybeSingle()
       : Promise.resolve({ data: null }),
@@ -85,19 +85,8 @@ export default async function TeamPage({
         email: ((agentResult.data as any).users as any)?.email ?? null,
       }
     : null
-  const dealTeamMembers = (dealTeamResult.data ?? []).map((m: any) => ({
-    ...m,
-    agent: m.agent
-      ? {
-          id: m.agent.id,
-          profile_photo_url: m.agent.profile_image_url,
-          first_name: (m.agent.users as any)?.first_name ?? null,
-          last_name: (m.agent.users as any)?.last_name ?? null,
-          phone: (m.agent.users as any)?.phone ?? null,
-          email: (m.agent.users as any)?.email ?? null,
-        }
-      : null,
-  }))
+  // deal_team_members has no agent_id/FK to agents — members render as external contacts.
+  const dealTeamMembers = (dealTeamResult.data ?? []).map((m: any) => ({ ...m, agent: null }))
   const lender = lenderResult.data
   const titleEscrow = titleResult.data
 

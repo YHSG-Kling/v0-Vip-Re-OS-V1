@@ -66,26 +66,22 @@ export function ErrorDetailsPanel({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg">{details.error_type}</CardTitle>
+        <CardTitle className="text-lg">{details.workflow_name}</CardTitle>
         <CardDescription>
-          {details.error_count} errors in this group
+          {details.severity} · {details.status}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Recent Errors */}
+        {/* Error detail (single record) */}
         <div>
-          <h4 className="font-medium text-sm mb-2">Recent Errors</h4>
+          <h4 className="font-medium text-sm mb-2">Error</h4>
           <div className="space-y-2 max-h-48 overflow-y-auto">
-            {details.automation_errors?.slice(0, 3).map((error: any) => (
-              <div key={error.id} className="p-2 bg-muted rounded text-xs">
-                <p className="font-mono text-red-600 truncate">
-                  {error.error_message}
-                </p>
-                <p className="text-muted-foreground">
-                  {new Date(error.created_at).toLocaleString()}
-                </p>
-              </div>
-            ))}
+            <div className="p-2 bg-muted rounded text-xs">
+              <p className="font-mono text-red-600 truncate">{details.error_message}</p>
+              <p className="text-muted-foreground">
+                {details.created_at ? new Date(details.created_at).toLocaleString() : ""}
+              </p>
+            </div>
           </div>
         </div>
 

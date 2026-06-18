@@ -164,19 +164,29 @@ export async function getErrorMetrics() {
     .eq("brokerage_id", brokerageId)
     .gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
 
-  // Get top error types
-  const { data: topErrors } = await supabase
-    .from("automation_errors")
-    .select("error_type, error_count")
+  // Top error types live on error_stack_traces.error_type (automation_errors has no
+  // error_type/error_count). Aggregate in JS (PostgREST has no GROUP BY).
+  const { data: stackRows } = await supabase
+    .from("error_stack_traces")
+    .select("error_type")
     .eq("brokerage_id", brokerageId)
-    .order("error_count", { ascending: false })
-    .limit(5)
 
-  // Get retry success rate
-  const { data: retryStats } = await supabase
-    .from("automation_errors")
-    .select("status, retry_count")
+  const typeCounts = new Map<string, number>()
+  for (const row of stackRows || []) {
+    const t = (row as any).error_type || "unknown"
+    typeCounts.set(t, (typeCounts.get(t) || 0) + 1)
+  }
+  const topErrors = [...typeCounts.entries()]
+    .map(([error_type, error_count]) => ({ error_type, error_count }))
+    .sort((a, b) => b.error_count - a.error_count)
+    .slice(0, 5)
+
+  // Retry stats come from error_resolution_log (auto_retry rows), not automation_errors.
+  const { data: retryRows } = await supabase
+    .from("error_resolution_log")
+    .select("retry_result")
     .eq("brokerage_id", brokerageId)
+    .eq("action_type", "auto_retry")
     .gte("created_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
 
   const severity = {
@@ -186,13 +196,13 @@ export async function getErrorMetrics() {
     low: severityCounts?.filter(e => e.severity === "low").length || 0,
   }
 
-  const totalRetries = retryStats?.reduce((sum, e) => sum + (e.retry_count || 0), 0) || 0
-  const successfulRetries = retryStats?.filter(e => e.status === "resolved").length || 0
+  const totalRetries = retryRows?.length || 0
+  const successfulRetries = retryRows?.filter(r => (r as any).retry_result === "success").length || 0
   const retrySuccessRate = totalRetries > 0 ? (successfulRetries / totalRetries) * 100 : 0
 
   return {
     severityCounts: severity,
-    topErrors: topErrors || [],
+    topErrors,
     retrySuccessRate: Math.round(retrySuccessRate),
     totalErrors24h: severityCounts?.length || 0,
   }
