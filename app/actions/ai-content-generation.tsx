@@ -1564,7 +1564,7 @@ export async function checkCompliance(params: { contentId: string; content: stri
   await supabase
     .from("ai_generated_content")
     .update({
-      compliance_checked: true,
+      compliance_approved: flags.length === 0,
       compliance_flags: flags,
       compliance_status: flags.length > 0 ? "needs_revision" : "approved",
     })
@@ -1954,7 +1954,7 @@ function getVariationSeed(content: string): number {
 }
 
 async function generateVariant(baseContent: any, testVariable: string) {
-  const seed = getVariationSeed(baseContent.generated_text ?? baseContent.metadata?.subject_line ?? testVariable)
+  const seed = getVariationSeed(baseContent.generated_content ?? baseContent.metadata?.subject_line ?? testVariable)
 
   const prompts: Record<string, string> = {
     subject_line: `Generate alternative subject line for this email.
@@ -1963,19 +1963,19 @@ Requirements: Different approach (question vs statement, curiosity vs benefit, e
 Keep same topic but fresh angle.`,
 
     opening_hook: `Rewrite opening paragraph with different hook strategy.
-Original: "${baseContent.generated_text?.substring(0, 200) || ""}"
+Original: "${baseContent.generated_content?.substring(0, 200) || ""}"
 Try a ${["question", "statistic", "story", "bold statement"][seed % 4]} approach.`,
 
     cta: `Generate alternative call-to-action.
 Original: "${baseContent.metadata?.cta_text || ""}"
 Make it more ${["urgent", "soft", "benefit-focused", "curiosity-driven"][seed % 4]}.`,
 
-    length: `${baseContent.generated_text?.length > 500 ? "Shorten" : "Expand"} this content while keeping key points.
-Original length: ${baseContent.generated_text?.length} characters
-Target: ${baseContent.generated_text?.length > 500 ? "50%" : "150%"} of original`,
+    length: `${baseContent.generated_content?.length > 500 ? "Shorten" : "Expand"} this content while keeping key points.
+Original length: ${baseContent.generated_content?.length} characters
+Target: ${baseContent.generated_content?.length > 500 ? "50%" : "150%"} of original`,
 
     tone: `Rewrite entire content with different tone.
-Original: ${baseContent.generated_text}
+Original: ${baseContent.generated_content}
 New tone: ${["more professional", "more casual", "more energetic", "more empathetic"][seed % 4]}
 Keep same information, change how it's presented.`,
   }
@@ -2001,7 +2001,7 @@ Keep same information, change how it's presented.`,
     .insert({
       agent_id: baseContent.agent_id,
       content_type: baseContent.content_type,
-      generated_text: response.text,
+      generated_content: response.text,
       ai_model_used: response.model,
       prompt_used: prompts[testVariable],
       metadata: {
