@@ -31,8 +31,6 @@
   "lib/kernel/suppression-sync.ts::contact_suppression_list.suppression_type::insert",
   "lib/remotion/render-coordinator.ts::video_assets.music_mood::eq",
   "lib/repurpose/actions.ts::repurpose_pipelines.sourceUrl::insert",
-  "lib/transactions/role-guard.ts::deal_team_members.member_id::eq",
-  "lib/transactions/role-guard.ts::deal_team_members.member_id::eq",
   "lib/transactions/stage-progression.ts::compliance_flags.flag_type::select",
   "lib/video/video-qr.ts::qr_codes.contact_id::insert"
 ]
