@@ -169,6 +169,7 @@ Provide actionable recommendations.`,
       .from("agent_onboarding_sessions")
       .insert({
         agent_id: agent.id,
+        brokerage_id: params.brokerageId,
         recruit_id: params.recruitId,
         status: "in_progress",
         start_date: new Date().toISOString(),
@@ -621,7 +622,7 @@ Check if license format matches ${params.licenseState} standards.`,
           .from("agent_onboarding_steps")
           .select("id")
           .eq("session_id", session.id)
-          .eq("name", "License Verification")
+          .eq("step_title", "License Verification")
           .single()
 
   if (step) {
