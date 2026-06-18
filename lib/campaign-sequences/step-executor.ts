@@ -458,7 +458,7 @@ export async function executeSequenceStep(
     provider_status: dispatchResult.status === "sent" ? "sent" : "failed",
     error_message: dispatchResult.error ?? null,
     outreach_log_id: isaOutreachLogId,
-    created_at: now,
+    // message_provider_logs timestamp column is sent_at (defaults now()) — no created_at.
   })
 
   // ── Step 13: Kernel events ─────────────────────────────────────────────────

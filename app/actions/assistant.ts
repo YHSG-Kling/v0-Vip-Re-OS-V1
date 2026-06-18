@@ -154,8 +154,8 @@ export async function dismissSuggestion(suggestionId: string): Promise<void> {
   await supabase
     .from("smart_assistant_suggestions")
     .update({
+      // no actioned_at column — status is the canonical action record
       status: "dismissed",
-      actioned_at: new Date().toISOString(),
     })
     .eq("id", suggestionId)
 }
@@ -166,8 +166,8 @@ export async function completeSuggestion(suggestionId: string): Promise<void> {
   await supabase
     .from("smart_assistant_suggestions")
     .update({
+      // no actioned_at column — status is the canonical action record
       status: "actioned",
-      actioned_at: new Date().toISOString(),
     })
     .eq("id", suggestionId)
 }

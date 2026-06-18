@@ -163,7 +163,6 @@ Generate a detailed role-play scenario including:
         action: "coaching_scenario_generated",
         entity_type: "training_scenario",
         entity_id: params.agentId,
-        brokerage_id: params.brokerageId,
         user_id: params.agentId,
         after: {
           scenario_type: params.scenarioType,
@@ -318,7 +317,6 @@ Provide evaluation including:
         action: "practice_session_evaluated",
         entity_type: "training_evaluation",
         entity_id: params.agentId,
-        brokerage_id: params.brokerageId,
         user_id: params.agentId,
         after: {
           score: evaluation.score

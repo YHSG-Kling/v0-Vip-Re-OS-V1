@@ -181,8 +181,8 @@ export async function getContactCopilotSuggestions(contactId: string) {
   let query = supabase
     .from("smart_assistant_suggestions")
     .select("*")
-    .eq("context_id", contactId)
-    .eq("context_type", "contact")
+    // contact link is folded into the metadata jsonb (no context_id column)
+    .eq("metadata->>contact_id", contactId)
     .eq("status", "pending")
     .eq("brokerage_id", brokerageId)
 
@@ -272,12 +272,14 @@ export async function getContactDocuments(contactId: string) {
   if (!gate.ok) return { documents: [], error: gate.error }
 
   const supabase = await createClient()
+  // Contact-keyed docs live on `documents` (transaction_documents has no contact_id
+  // and no documents_uploaded_by_fkey).
   const { data, error } = await supabase
-    .from("transaction_documents")
-    .select("*, uploaded_by_agent:agents!transaction_documents_uploaded_by_fkey(first_name, last_name)")
+    .from("documents")
+    .select("*")
     .eq("contact_id", contactId)
     .eq("brokerage_id", gate.brokerageId)
-    .order("uploaded_at", { ascending: false })
+    .order("created_at", { ascending: false })
 
   return { documents: data || [], error }
 }

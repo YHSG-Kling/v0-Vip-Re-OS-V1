@@ -201,14 +201,25 @@ async function loadBrokerageCredential(
   field: string,
 ): Promise<string | null> {
   try {
+    // integration_credentials stores discrete columns (api_key/api_secret/webhook_url),
+    // not a `credentials` jsonb, and keys by provider_name. Map the requested field;
+    // fields with no real column (e.g. twilio from_number) return null → caller falls
+    // back to env/manual send.
     const { data } = await supabase
       .from("integration_credentials")
-      .select("credentials")
+      .select("api_key, api_secret, webhook_url")
       .eq("brokerage_id", brokerageId)
-      .eq("provider", provider)
+      .eq("provider_name", provider)
       .maybeSingle()
-    const creds = (data?.credentials ?? null) as Record<string, string> | null
-    return creds?.[field] ?? null
+    if (!data) return null
+    const map: Record<string, string | null> = {
+      api_key: data.api_key,
+      account_sid: data.api_key,
+      api_secret: data.api_secret,
+      auth_token: data.api_secret,
+      webhook_url: data.webhook_url,
+    }
+    return map[field] ?? null
   } catch {
     return null
   }

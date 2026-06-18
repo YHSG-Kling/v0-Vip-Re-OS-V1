@@ -66,7 +66,7 @@ export async function updateScrapingMarket(
     const supabase = await createClient()
     const { data, error } = await supabase
       .from("lead_scraping_markets")
-      .update({ ...updates, updated_at: new Date().toISOString() })
+      .update(updates)
       .eq("id", id)
       .select()
       .single()
@@ -104,7 +104,7 @@ export async function getScrapingKeywords() {
     const { data, error } = await supabase
       .from("lead_scraping_keywords")
       .select("*")
-      .order("category", { ascending: true })
+      .order("keyword_type", { ascending: true })
       .order("weight", { ascending: false })
 
     if (error) throw error
@@ -123,7 +123,13 @@ export async function createScrapingKeyword(keywordData: {
 }) {
   try {
     const supabase = await createClient()
-    const { data, error } = await supabase.from("lead_scraping_keywords").insert(keywordData).select().single()
+    // live column is keyword_type, not category
+    const { category, ...rest } = keywordData
+    const { data, error } = await supabase
+      .from("lead_scraping_keywords")
+      .insert({ ...rest, keyword_type: category })
+      .select()
+      .single()
 
     if (error) throw error
     revalidatePath("/admin/lead-scraping")
@@ -146,7 +152,10 @@ export async function updateScrapingKeyword(
 ) {
   try {
     const supabase = await createClient()
-    const { data, error } = await supabase.from("lead_scraping_keywords").update(updates).eq("id", id).select().single()
+    // live column is keyword_type, not category
+    const { category, ...rest } = updates
+    const dbUpdates = category !== undefined ? { ...rest, keyword_type: category } : rest
+    const { data, error } = await supabase.from("lead_scraping_keywords").update(dbUpdates).eq("id", id).select().single()
 
     if (error) throw error
     revalidatePath("/admin/lead-scraping")

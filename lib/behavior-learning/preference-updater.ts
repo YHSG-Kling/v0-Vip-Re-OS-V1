@@ -52,7 +52,7 @@ export async function updatePreferencesFromSignal(
       agent_id:          agentId,
       brokerage_id:      brokerageId,
       signal_type:       signal,
-      property_snapshot: property,  // jsonb column
+      metadata:          property,  // jsonb column (was property_snapshot)
       list_price:        property.price,
       bedrooms:          property.bedrooms,
       bathrooms:         property.bathrooms,
@@ -76,7 +76,7 @@ export async function updatePreferencesFromSignal(
   // Step 3 — Load all signals for this contact to compute running averages
   const { data: allLogs, error: logsErr } = await supabase
     .from("buyer_behavior_log")
-    .select("signal_type, list_price, bedrooms, bathrooms, city, property_type, property_snapshot")
+    .select("signal_type, list_price, bedrooms, bathrooms, city, property_type, property_snapshot:metadata")
     .eq("contact_id", contactId)
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
@@ -187,7 +187,7 @@ export async function updateBuyerPreferences(
 
   const { data: lastLog } = await supabase
     .from("buyer_behavior_log")
-    .select("signal_type, list_price, bedrooms, bathrooms, city, property_type, property_snapshot")
+    .select("signal_type, list_price, bedrooms, bathrooms, city, property_type, property_snapshot:metadata")
     .eq("contact_id", contactId)
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })

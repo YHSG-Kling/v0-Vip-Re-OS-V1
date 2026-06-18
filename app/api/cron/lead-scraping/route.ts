@@ -470,7 +470,7 @@ export async function GET(request: Request) {
                     sourceRecordId:  `nextdoor-${(post as any).post_id ?? `${Date.now()}-${Math.random()}`}`,
                     source:          "nextdoor",
                     behaviorType:    "social_intent",
-                    intentType:      matchedKeyword.category === "buying_intent" ? "buyer" : "seller",
+                    intentType:      matchedKeyword.keyword_type === "buying_intent" ? "buyer" : "seller",
                     intentSignals:   [matchedKeyword.keyword],
                     firstName:       nameParts[0] || null,
                     lastName:        nameParts.slice(1).join(" ") || null,

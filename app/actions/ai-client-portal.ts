@@ -174,8 +174,9 @@ export async function getJourneyMilestones(params: {
   try {
     let query = supabase
       .from("transaction_milestones")
-      .select("*, transactions(*)")
-      .order("due_date", { ascending: true })
+      // due_date is target_date; alias keeps any downstream .due_date read working.
+      .select("*, transactions(*), due_date:target_date")
+      .order("target_date", { ascending: true })
 
     if (params.transactionId) {
       query = query.eq("transaction_id", params.transactionId)

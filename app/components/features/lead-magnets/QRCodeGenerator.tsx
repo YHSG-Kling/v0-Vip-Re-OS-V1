@@ -66,7 +66,7 @@ export function QRCodeGenerator({
 
       setQrResult({
         qrCodeId: result.qrCode?.id ?? "",
-        qrImageUrl: result.qrCode?.qr_image_url ?? undefined,
+        qrImageUrl: undefined,
         targetUrl,
         slug: magnetSlug,
       })

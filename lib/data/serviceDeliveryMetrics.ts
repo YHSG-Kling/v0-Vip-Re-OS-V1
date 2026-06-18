@@ -33,17 +33,17 @@ export async function getServiceDeliveryMetrics(
   else if (timeRange === "90d") startDate.setDate(now.getDate() - 90)
 
   // Query milestones
+  // transaction_milestones has no listing_id and no FK to listings; it carries its
+  // own brokerage_id. due_date is target_date (aliased to keep m.due_date below).
   const { data: milestones } = await supabase
     .from("transaction_milestones")
     .select(`
       id,
-      due_date,
+      due_date:target_date,
       completed_at,
-      status,
-      listing_id,
-      listings!inner(brokerage_id)
+      status
     `)
-    .eq("listings.brokerage_id", brokerageId)
+    .eq("brokerage_id", brokerageId)
     .gte("created_at", startDate.toISOString())
 
   const onTime =
@@ -114,7 +114,7 @@ export async function getTransactionRisks(brokerageId: string): Promise<Transact
   const transactionIds = transactions.map((t: any) => t.id)
   const { data: milestones } = await supabase
     .from("transaction_milestones")
-    .select("id, transaction_id, status, due_date, completed_at")
+    .select("id, transaction_id, status, due_date:target_date, completed_at")
     .in("transaction_id", transactionIds)
 
   const milestonesMap = new Map<string, any[]>()

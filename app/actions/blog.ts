@@ -224,7 +224,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
       // the brokerage's other marketing.
       const { data: brokerage } = await supabase
         .from("brokerages")
-        .select("name, dba_name, license_number, license_state, logo_url, brand_primary_color")
+        .select("name, dba_name:dba, license_number, license_state, logo_url, brand_primary_color:primary_color")
         .eq("id", params.brokerageId)
         .maybeSingle()
       const b = brokerage as { name: string | null; dba_name: string | null; license_number: string | null; license_state: string | null; logo_url: string | null; brand_primary_color: string | null } | null

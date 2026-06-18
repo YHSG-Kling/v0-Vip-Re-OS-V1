@@ -33,11 +33,13 @@ export async function getAgentProviderCredentials(params: {
 
   const supabase = createServiceClient()
 
+  // platform_credentials stores discrete columns (no `credentials` jsonb); scope is
+  // agent_user_id, provider key is `platform`.
   const { data, error } = await supabase
     .from("platform_credentials")
-    .select("credentials")
-    .eq("user_id", agentId)
-    .eq("provider", provider.toLowerCase())
+    .select("api_key, access_token, refresh_token, config")
+    .eq("agent_user_id", agentId)
+    .eq("platform", provider.toLowerCase())
     .eq("is_active", true)
     .single()
 
@@ -46,7 +48,12 @@ export async function getAgentProviderCredentials(params: {
     throw new Error(`Provider credentials not found for ${provider}`)
   }
 
-  const credentials = data.credentials as ProviderCredentials
+  const credentials: ProviderCredentials = {
+    apiKey: data.api_key,
+    accessToken: data.access_token ?? undefined,
+    refreshToken: data.refresh_token ?? undefined,
+    profileId: (data.config as { profileId?: string } | null)?.profileId,
+  }
 
   if (!credentials.apiKey) {
     throw new Error("Invalid provider credentials: missing apiKey")

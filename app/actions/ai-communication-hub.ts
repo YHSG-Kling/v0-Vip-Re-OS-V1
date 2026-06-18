@@ -241,7 +241,7 @@ export async function sendMessage(params: {
           provider_message_id: dispatchResult.messageId ?? null,
           provider_status:     dispatchResult.success ? "sent" : "failed",
           error_message:       dispatchResult.error ?? null,
-          created_at:          now,
+          // message_provider_logs timestamp column is sent_at (defaults now()) — no created_at.
         })
       } catch (err) {
         // Silent fail for logging - don't block message send on log failure
@@ -647,10 +647,11 @@ export async function prioritizeInbox(params: {
     // Get unread/unresponded messages — scoped to caller's agent record
     const { data: messages } = await supabase
       .from("messages")
+      // messages has no `responded` column — inbound + recency approximates the
+      // unanswered queue.
       .select("*, contacts(*)")
       .eq("agent_id", effAgentId)
       .eq("direction", "inbound")
-      .eq("responded", false)
       .order("created_at", { ascending: false })
       .limit(params.limit || 50)
 

@@ -396,12 +396,13 @@ export async function learnFromBuyerFeedback(params: {
     }
 
     // Save feedback
+    // property_feedback real columns: feedback_type (not feedback), disliked_features (not reasons)
     await supabase.from("property_feedback").insert({
       contact_id: params.contactId,
       property_id: params.propertyId,
       brokerage_id: ctx.brokerageId,
-      feedback: params.feedback,
-      reasons: params.reasons,
+      feedback_type: params.feedback,
+      disliked_features: params.reasons,
       created_at: new Date().toISOString(),
     })
 
@@ -426,7 +427,7 @@ export async function learnFromBuyerFeedback(params: {
         }),
         prompt: `Based on this buyer's property feedback history, suggest preference updates:
 
-${allFeedback.map(f => `- ${f.feedback}: ${f.listings?.address} (${f.reasons?.join(", ") || "no reasons"})`).join("\n")}
+${allFeedback.map(f => `- ${f.feedback_type}: ${f.listings?.address} (${f.disliked_features?.join(", ") || "no reasons"})`).join("\n")}
 
 Analyze patterns in what they love vs hate and suggest specific preference field updates.`,
       })

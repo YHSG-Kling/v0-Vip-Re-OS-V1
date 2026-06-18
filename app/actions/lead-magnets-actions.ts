@@ -162,14 +162,19 @@ export async function generateQRCodeAction(input: { magnetId: string; url: strin
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
     if (!form) return { success: false as const, error: "Magnet not found" }
+    // qr_codes has no magnet_id/qr_image_url; label + slug are NOT NULL (slug UNIQUE).
+    const slug = `lm-${(globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)).replace(/-/g, "").slice(0, 12)}`
     const { data, error } = await supabase
       .from("qr_codes")
       .insert({
-        magnet_id: input.magnetId,
-        target_url: input.url,
         brokerage_id: ctx.brokerageId,
+        label: `Lead Magnet QR: ${input.magnetId}`,
+        slug,
+        target_url: input.url,
+        purpose: "general",
+        destination_type: "landing_page",
       })
-      .select("id, qr_image_url")
+      .select("id, slug, target_url")
       .single()
     if (error) return { success: false as const, error: error.message }
     return { success: true as const, qrCode: data }
