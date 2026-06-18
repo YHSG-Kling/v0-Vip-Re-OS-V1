@@ -441,36 +441,46 @@ export async function trackCreditUsage(agentId: string, amount: number) {
   } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
-  // Get current month's usage
+  // Get current month's usage. agentId must be an agents.id (FK target); callers
+  // passing a users.id must translate via agentIdForUser (see createCreditAccount).
   const currentMonth = new Date().getMonth() + 1
   const currentYear = new Date().getFullYear()
+  const periodStart = `${currentYear}-${currentMonth.toString().padStart(2, "0")}-01`
 
+  // Credit budget lives in its dedicated agent_credit_budgets table (agent_metrics
+  // is a shared EAV metrics table with none of these columns).
   const { data: usage } = await supabase
-    .from("agent_metrics")
+    .from("agent_credit_budgets")
     .select("credit_budget_used, credit_budget_limit")
     .eq("agent_id", agentId)
-    .gte("period_start", `${currentYear}-${currentMonth.toString().padStart(2, "0")}-01`)
-    .single()
+    .eq("period_start", periodStart)
+    .maybeSingle()
 
   const newUsed = (usage?.credit_budget_used || 0) + amount
   const limit = usage?.credit_budget_limit || 5000 // default limit
 
-  // Update usage
-  await supabase.from("agent_metrics").upsert({
-    agent_id: agentId,
-    credit_budget_used: newUsed,
-    credit_budget_limit: limit,
-    period_start: `${currentYear}-${currentMonth.toString().padStart(2, "0")}-01`,
-    updated_at: new Date().toISOString(),
-  })
+  // Update usage (UNIQUE(agent_id, period_start) → conflict target accumulates)
+  await supabase.from("agent_credit_budgets").upsert(
+    {
+      agent_id: agentId,
+      credit_budget_used: newUsed,
+      credit_budget_limit: limit,
+      period_start: periodStart,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "agent_id,period_start" },
+  )
 
   // Check if approaching limit
   const percentUsed = (newUsed / limit) * 100
 
   if (percentUsed >= 80) {
-    // Send warning notification
+    // Send warning notification. notifications.user_id is a users.id; agentId is an
+    // agents.id here, so resolve the owning user.
+    const { data: ownerAgent } = await supabase
+      .from("agents").select("user_id").eq("id", agentId).maybeSingle()
     await supabase.from("notifications").insert({
-      user_id: agentId,
+      user_id: ownerAgent?.user_id ?? user.id,
       type: "credit_budget_warning",
       title: "Credit Budget Alert",
       body: `You've used ${percentUsed.toFixed(0)}% of your monthly credit budget ($${newUsed.toLocaleString()} of $${limit.toLocaleString()})`,
@@ -524,8 +534,11 @@ export async function createCreditAccount(params: {
 
   if (error) throw error
 
-  // Track credit usage
-  await trackCreditUsage(user.id, params.credit_amount)
+  // Track credit usage. trackCreditUsage keys on agents.id; we hold a users.id here.
+  const creditAgentId = await agentIdForUser(supabase, user.id)
+  if (creditAgentId) {
+    await trackCreditUsage(creditAgentId, params.credit_amount)
+  }
 
   return { success: true, account: data }
 }

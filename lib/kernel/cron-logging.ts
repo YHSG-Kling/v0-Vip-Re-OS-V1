@@ -78,8 +78,7 @@ export async function createCronRunContext(
     const { error: insertError } = await supabase
       .from("cron_execution_logs")
       .insert({
-        id:          context_id,
-        context_id,
+        id:          context_id, // correlation key (no context_id column; id is the key)
         cron_name:   input.cron_name,
         cron_path:   input.cron_path,
         status:      "started",
@@ -120,10 +119,11 @@ export async function recordCronStart(
     const { error: updateError } = await supabase
       .from("cron_execution_logs")
       .update({
-        status:   "running",
+        // 'started' is the only legal non-terminal status (CHECK: started|completed|failed|timeout)
+        status:   "started",
         metadata: input.input_count != null ? { input_count: input.input_count } : {},
       })
-      .eq("context_id", input.context_id)
+      .eq("id", input.context_id)
       .eq("status", "started")
 
     if (updateError) {
@@ -132,8 +132,8 @@ export async function recordCronStart(
         .from("cron_execution_logs")
         .insert({
           id:         input.context_id,
-          context_id: input.context_id,
-          status:     "running",
+          cron_path:  "unknown", // NOT NULL; original context lost on this fallback path
+          status:     "started",
           started_at: new Date().toISOString(),
           metadata:   { input_count: input.input_count },
         })
@@ -173,8 +173,8 @@ export async function recordCronProgress(
         records_processed: input.records_processed,
         metadata:          input.metadata_delta,
       })
-      .eq("context_id", input.context_id)
-      .eq("status", "running")
+      .eq("id", input.context_id)
+      .eq("status", "started")
 
     if (error) {
       console.error("[cron-kernel] recordCronProgress error:", error.message)
@@ -215,7 +215,7 @@ export async function recordCronSuccess(
     const { data: logEntry, error: readError } = await supabase
       .from("cron_execution_logs")
       .select("*")
-      .eq("context_id", input.context_id)
+      .eq("id", input.context_id)
       .order("started_at", { ascending: false })
       .limit(1)
       .maybeSingle()
@@ -230,7 +230,7 @@ export async function recordCronSuccess(
     const { error: updateError } = await supabase
       .from("cron_execution_logs")
       .update({
-        status:            "success",
+        status:            "completed", // CHECK: started|completed|failed|timeout
         completed_at,
         duration_ms,
         records_processed: input.records_processed ?? logEntry.records_processed,
@@ -240,7 +240,7 @@ export async function recordCronSuccess(
           ...input.metadata,
         },
       })
-      .eq("context_id", input.context_id)
+      .eq("id", input.context_id)
 
     if (updateError) {
       console.error("[cron-kernel] recordCronSuccess update error:", updateError.message)
@@ -307,7 +307,7 @@ export async function recordCronFailure(
     const { data: logEntry, error: readError } = await supabase
       .from("cron_execution_logs")
       .select("*")
-      .eq("context_id", input.context_id)
+      .eq("id", input.context_id)
       .order("started_at", { ascending: false })
       .limit(1)
       .maybeSingle()
@@ -325,7 +325,7 @@ export async function recordCronFailure(
     const { error: updateError } = await supabase
       .from("cron_execution_logs")
       .update({
-        status:        "failure",
+        status:        "failed", // CHECK: started|completed|failed|timeout
         completed_at,
         duration_ms,
         error_message: truncatedError,
@@ -336,7 +336,7 @@ export async function recordCronFailure(
           error_stack:      stack?.slice(0, 1000),
         },
       })
-      .eq("context_id", input.context_id)
+      .eq("id", input.context_id)
 
     if (updateError) {
       console.error("[cron-kernel] recordCronFailure update error:", updateError.message)

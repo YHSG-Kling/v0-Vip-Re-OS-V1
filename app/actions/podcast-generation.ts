@@ -1365,7 +1365,7 @@ Return as JSON array of {hook: string, body: string, suggested_caption: string, 
 }
 
 export async function generatePodcastBlogPost(params: { episodeId: string }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, agentId, brokerageId } = await getAgentContext()
   if (!agentId || !brokerageId) return { success: false, error: "Missing agent context" }
   const supabase = await createClient()
   const { data: episode } = await supabase
@@ -1397,12 +1397,12 @@ ${episode.script.slice(0, 6000)}`,
         .from("blog_posts")
         .insert({
           brokerage_id: brokerageId,
-          author_id: agentId,
+          agent_user_id: userId, // FK→users.id (canonical, matches blog.ts)
+          created_by: userId,
           title: blogTitle,
-          content_md: text,
-          status: "draft",
-          source_type: "podcast",
-          source_id: episode.id,
+          content: text, // real column (was phantom content_md)
+          publish_status: "draft", // CHECK-valid; was phantom status
+          is_ai_generated: true,
         })
         .select("id")
         .single()
@@ -1480,7 +1480,7 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
   try {
     const { data: events } = await supabase
       .from("podcast_analytics_events")
-      .select("event_type, episode_id, platform, duration_listened_seconds, completion_pct, occurred_at, created_at")
+      .select("event_type, episode_id, platform, duration_listened_seconds, created_at")
       .eq("brokerage_id", brokerageId)
 
     const rows = events ?? []
@@ -1537,7 +1537,7 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
     }
     for (const r of rows) {
       if (r.event_type !== "play") continue
-      const ts = (r.occurred_at ?? r.created_at) as string | null
+      const ts = r.created_at as string | null
       if (!ts || ts < sinceTrend) continue
       const key = ts.slice(0, 10)
       if (key in trendMap) trendMap[key] += 1

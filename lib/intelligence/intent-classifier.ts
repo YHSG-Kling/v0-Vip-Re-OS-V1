@@ -101,40 +101,44 @@ Return the classification with a confidence score (0-100) and a brief suggested_
 
     await supabase.from('smart_assistant_suggestions').insert({
       brokerage_id: brokerageId,
-      contact_id: contactId,
       title: 'Low-confidence message classification',
       description: `Message: "${message.slice(0, 200)}..." - Original classification: ${result.intent_primary} (${result.confidence}% confidence)`,
       priority: 'low',
       suggestion_type: 'review_needed',
+      metadata: { contact_id: contactId }, // no contact_id column on smart_assistant_suggestions
     })
   }
 
   // Cancel transaction signal - high priority intervention
   if (result.intent_primary === 'cancel_transaction' && result.confidence >= 70) {
-    // Get transaction ID from contact if exists
-    const { data: contact } = await supabase
-      .from('contacts')
+    // proactive_interventions requires NOT-NULL transaction_id (FK→transactions).
+    // Resolve the contact's most recent active transaction; only insert if one exists.
+    const { data: txn } = await supabase
+      .from('transactions')
       .select('id')
-      .eq('id', contactId)
-      .single()
+      .eq('contact_id', contactId)
+      .not('status', 'in', '(closed,lost)')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
 
-    await supabase.from('proactive_interventions').insert({
-      brokerage_id: brokerageId,
-      contact_id: contactId,
-      issue_detected: 'Customer cancellation signal detected',
-      severity: 'high',
-      ai_recommendation: result.suggested_action,
-      source: 'intent_classifier',
-      status: 'pending',
-    })
+    if (txn?.id) {
+      await supabase.from('proactive_interventions').insert({
+        transaction_id: txn.id,
+        brokerage_id: brokerageId,
+        issue_detected: 'Customer cancellation signal detected',
+        severity: 'high',
+        ai_recommendation: result.suggested_action,
+      })
+    }
 
     await supabase.from('smart_assistant_suggestions').insert({
       brokerage_id: brokerageId,
-      contact_id: contactId,
       title: 'Urgent: Cancel transaction signal detected',
       description: `Customer message indicates potential cancellation. Confidence: ${result.confidence}%. Recommended action: ${result.suggested_action}`,
       priority: 'high',
       suggestion_type: 'intervention_needed',
+      metadata: { contact_id: contactId },
     })
   }
 
@@ -142,11 +146,11 @@ Return the classification with a confidence score (0-100) and a brief suggested_
   if (result.intent_primary === 'unsubscribe' && result.confidence >= 60) {
     await supabase.from('smart_assistant_suggestions').insert({
       brokerage_id: brokerageId,
-      contact_id: contactId,
       title: 'DNC request detected',
       description: `Contact may want to unsubscribe from communications. Review and update contact preferences.`,
       priority: 'high',
       suggestion_type: 'compliance',
+      metadata: { contact_id: contactId },
     })
   }
 
@@ -154,11 +158,11 @@ Return the classification with a confidence score (0-100) and a brief suggested_
   if (result.intent_primary === 'ready_to_offer' && result.confidence >= 75) {
     await supabase.from('smart_assistant_suggestions').insert({
       brokerage_id: brokerageId,
-      contact_id: contactId,
       title: 'Offer signal detected',
       description: result.suggested_action,
       priority: 'high',
       suggestion_type: 'opportunity',
+      metadata: { contact_id: contactId },
     })
   }
 

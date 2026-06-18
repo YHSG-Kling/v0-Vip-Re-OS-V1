@@ -129,7 +129,7 @@ STATE: ${params.state}
 TRANSACTION VALUE: $${transaction?.price?.toLocaleString() || "Unknown"}
 
 DOCUMENT CONTENT/METADATA:
-${document.extracted_text || document.description || "No text extracted - review based on metadata only"}
+${(document.extracted_data?.text as string) || document.notes || "No text extracted - review based on metadata only"}
 
 STATE REQUIREMENTS:
 ${stateRequirements?.map(r => `- ${r.requirement_name}: ${r.description}`).join("\n") || "Standard state requirements apply"}
@@ -195,13 +195,22 @@ Be thorough but practical. Focus on actionable issues.`,
       await supabase.from("transaction_tasks").insert(tasks)
     }
 
-    // Log compliance event if issues found
+    // Log compliance event if issues found. Canonical gate-event schema is
+    // compliance_events (compliance_checks is a different table: check_type/status/findings).
+    // actor_user_id FKs users.id — ctx.agentId is an agents.id, so resolve it.
     if (review.issues.length > 0) {
-      await supabase.from("compliance_checks").insert({
-        transaction_id: params.transactionId,
+      const { data: agentRow } = ctx.agentId
+        ? await supabase.from("agents").select("user_id").eq("id", ctx.agentId).maybeSingle()
+        : { data: null }
+      await supabase.from("compliance_events").insert({
         brokerage_id: brokerageId,
-        agent_id: agentId,
-        event_type: "contract_review_issues",
+        actor_role: ctx.role,
+        actor_user_id: agentRow?.user_id ?? ctx.userId,
+        entity_type: "transaction",
+        entity_id: params.transactionId,
+        gate_name: "contract_review_issues",
+        allowed: false,
+        violations: review.issues,
         severity: criticalIssues.length > 0 ? "high" : "medium",
         details: {
           document_id: params.documentId,
@@ -267,7 +276,7 @@ export async function reviewTransactionDocuments(params: {
 
     const reviews = []
     for (const doc of documents) {
-      const docType = inferDocumentType(doc.name || doc.document_type)
+      const docType = inferDocumentType(doc.doc_label || doc.doc_type)
       // reviewContract runs its own auth + brokerage gate — safe to call
       const result = await reviewContract({
         documentId: doc.id,
@@ -334,11 +343,11 @@ export async function compareContractVersions(params: {
       model: resolveModel("openai/gpt-4o"),
       prompt: `Compare these two versions of a real estate document and identify all changes:
 
-VERSION 1 (${doc1.name}):
-${doc1.extracted_text || "No text available"}
+VERSION 1 (${doc1.doc_label}):
+${(doc1.extracted_data?.text as string) || "No text available"}
 
-VERSION 2 (${doc2.name}):
-${doc2.extracted_text || "No text available"}
+VERSION 2 (${doc2.doc_label}):
+${(doc2.extracted_data?.text as string) || "No text available"}
 
 Provide:
 1. Summary of all changes
@@ -385,7 +394,7 @@ export async function generateDocumentChecklist(params: {
     // Get existing documents — scoped by brokerage
     const { data: existingDocs } = await supabase
       .from("transaction_documents")
-      .select("document_type, name")
+      .select("doc_type, doc_label")
       .eq("transaction_id", params.transactionId)
       .eq("brokerage_id", ctx.brokerageId)
 
@@ -420,7 +429,7 @@ export async function generateDocumentChecklist(params: {
       prompt: `Generate a comprehensive document checklist for a ${params.transactionType} transaction in ${params.state}.
 
 EXISTING DOCUMENTS:
-${existingDocs?.map(d => `- ${d.name || d.document_type}`).join("\n") || "None uploaded yet"}
+${existingDocs?.map(d => `- ${d.doc_label || d.doc_type}`).join("\n") || "None uploaded yet"}
 
 STATE REQUIREMENTS:
 ${stateReqs?.map(r => `- ${r.requirement_name} (${r.required ? "Required" : "Optional"})`).join("\n") || "Standard requirements"}

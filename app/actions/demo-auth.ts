@@ -91,20 +91,27 @@ export async function demoSignIn(userEmail: string) {
         };
       }
 
-      // Store demo user profile
+      // Store demo user in the canonical users table (user_profiles is a thin
+      // extension table without these columns). Map demo role → users.user_type
+      // (CHECK-constrained); the original role string is kept in the free-text role col.
+      const USER_TYPE_MAP: Record<string, string> = {
+        manager: 'admin',
+        buyer: 'contact',
+        seller: 'contact',
+      };
+      const userType = USER_TYPE_MAP[demoUser.role] ?? demoUser.role;
+
       const { error: profileError } = await supabase
-        .from('user_profiles')
+        .from('users')
         .upsert(
           {
             id: signUpData.user.id,
             email: demoUser.email,
             first_name: demoUser.firstName,
             last_name: demoUser.lastName,
-            role: demoUser.role,
-            agency: demoUser.agency,
-            specialization: demoUser.specialization,
-            state: demoUser.state,
-            is_demo: true,
+            user_type: userType,        // NOT NULL + CHECK
+            role: demoUser.role,        // free-text display role
+            brokerage: demoUser.agency, // canonical home for "agency"
             created_at: new Date().toISOString(),
           },
           { onConflict: 'id' }
