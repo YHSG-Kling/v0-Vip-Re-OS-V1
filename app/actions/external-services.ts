@@ -6,9 +6,21 @@
  * This file preserves existing function signatures for backward compatibility.
  */
 
-import { sendSMS, sendEmail } from "@/lib/providers/messaging"
+import { dispatchSms, dispatchEmail } from "@/lib/providers/dispatch"
+import { createServiceClient } from "@/lib/supabase/service"
 import { createTransfer } from "@/lib/providers/payment"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+
+/** Resolve the brokerage for the consent/de-confliction gate — given, else from the contact. */
+async function resolveBrokerageId(contactId?: string, given?: string): Promise<string> {
+  if (given) return given
+  if (!contactId) return ""
+  try {
+    const svc = createServiceClient()
+    const { data } = await svc.from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+    return (data as any)?.brokerage_id ?? ""
+  } catch { return "" }
+}
 
 // ─── AVATAR / EXPLAINER VIDEO ─────────────────────────────────────────────────
 // BUSINESS RULE (platform-locked): the avatar/explainer-video engine is D-ID +
@@ -89,9 +101,15 @@ export async function sendTwilioSMS(params: {
   to: string
   message: string
   contactId?: string
+  brokerageId?: string
 }) {
   try {
-    return await sendSMS(params)
+    // Route through the gate (consent/opt-out/DNC/quiet-hours/de-confliction) — no raw send.
+    const brokerageId = await resolveBrokerageId(params.contactId, params.brokerageId)
+    return await dispatchSms({
+      brokerageId, to: params.to, message: params.message,
+      contactId: params.contactId, systemSource: "external_services",
+    })
   } catch (error: any) {
     console.error("[External Services] Twilio error:", error)
     return { success: false, error: error.message }
@@ -106,9 +124,16 @@ export async function sendSendGridEmail(params: {
   text?: string
   from?: string
   contactId?: string
+  brokerageId?: string
 }) {
   try {
-    return await sendEmail(params)
+    // Route through the gate (suppression/consent/de-confliction) — no raw send.
+    const brokerageId = await resolveBrokerageId(params.contactId, params.brokerageId)
+    return await dispatchEmail({
+      brokerageId, to: params.to, subject: params.subject, html: params.html, text: params.text,
+      from: params.from ?? (process.env.SENDGRID_FROM_EMAIL || "noreply@yourdomain.com"),
+      contactId: params.contactId, channelPurpose: "transactional", systemSource: "external_services",
+    })
   } catch (error: any) {
     console.error("[External Services] SendGrid error:", error)
     return { success: false, error: error.message }

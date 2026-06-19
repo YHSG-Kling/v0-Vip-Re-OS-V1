@@ -3,7 +3,7 @@
 import { createServerClient } from "@/lib/supabase/server"
 import { agentIdForUser } from "@/lib/agents/agent-for-user"
 import { logCreditStatusUpdated } from "@/lib/events"
-import { sendSMS } from "@/lib/providers/messaging"
+import { dispatchSms } from "@/lib/providers/dispatch"
 
 // =====================================================
 // CREDIT COPILOT SERVER ACTIONS
@@ -326,6 +326,14 @@ export async function advanceCreditFlow(accountId: string, toStage: string, note
 async function triggerCreditFlowActions(accountId: string, stage: string, account: any) {
   const supabase = await createServerClient()
 
+  // Resolve the brokerage so every client SMS routes through the consent/quiet-hours/de-confliction
+  // gate (dispatchSms) instead of the raw sender — no ungoverned egress.
+  let brokerageId: string = account?.brokerage_id ?? ""
+  if (!brokerageId && account?.contact_id) {
+    const { data: c } = await supabase.from("contacts").select("brokerage_id").eq("id", account.contact_id).maybeSingle()
+    brokerageId = (c as any)?.brokerage_id ?? ""
+  }
+
   switch (stage) {
     case "flow_a": // Initial Lead
       // Create follow-up task
@@ -352,9 +360,11 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
 
       // Send encouragement SMS
       if (account.contact.phone) {
-        await sendSMS({
+        await dispatchSms({
+          brokerageId,
           to: account.contact.phone,
           contactId: account.contact_id,
+          systemSource: "credit_copilot",
           message: `Hi ${account.contact.first_name}! Just checking in on your credit application. Let me know if you need any help completing it. I'm here to support you!`,
         })
       }
@@ -383,9 +393,11 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
     case "flow_d": // Approved
       // Send congratulations SMS
       if (account.contact.phone) {
-        await sendSMS({
+        await dispatchSms({
+          brokerageId,
           to: account.contact.phone,
           contactId: account.contact_id,
+          systemSource: "credit_copilot",
           message: `🎉 Great news ${account.contact.first_name}! Your credit application has been approved. Next steps coming soon!`,
         })
       }

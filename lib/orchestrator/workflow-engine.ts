@@ -1,6 +1,6 @@
 
 import { createClient } from "@/lib/supabase/server"
-import { sendSMS, sendEmail } from "@/lib/providers/messaging"
+import { dispatchSms, dispatchEmail } from "@/lib/providers/dispatch"
 import { generateVideoScript } from "@/lib/content-generation"
 
 /**
@@ -222,18 +222,25 @@ export class WorkflowOrchestrator {
 
     switch (action) {
       case "send_email":
-        return await sendEmail({
+        // Route through the gate (suppression/consent/de-confliction) — no raw send.
+        return await dispatchEmail({
+          brokerageId: context.brokerageId ?? "",
           to: context.contactEmail ?? context.email ?? "",
+          from: context.fromEmail ?? (process.env.SENDGRID_FROM_EMAIL || "noreply@yourdomain.com"),
           subject: params.subject ?? "",
           html: params.body ?? params.html ?? "",
           contactId: context.contactId,
+          channelPurpose: "campaign",
+          systemSource: "workflow",
         })
 
       case "send_sms":
-        return await sendSMS({
+        return await dispatchSms({
+          brokerageId: context.brokerageId ?? "",
           to: context.contactPhone ?? context.phone ?? "",
           message: params.message ?? "",
           contactId: context.contactId,
+          systemSource: "workflow",
         })
 
       case "create_task":

@@ -713,11 +713,14 @@ export async function sendReviewRequestService(requestId: string, platform: stri
   const message = `Hi ${request.contact?.first_name}! Hope you're loving your new home at ${request.transaction?.address}! Your feedback means everything. Would you mind sharing your experience? Takes 60 seconds: ${reviewLinks[platform]}`
 
   if (request.contact?.phone) {
-    const { sendSMS } = await import("@/lib/providers/messaging")
-    const smsResult = await sendSMS({
+    // Route through the gate (consent/opt-out/DNC/quiet-hours/de-confliction) — no raw send.
+    const { dispatchSms } = await import("@/lib/providers/dispatch")
+    const smsResult = await dispatchSms({
+      brokerageId: (request.contact as any).brokerage_id ?? "",
       to: request.contact.phone,
       message,
       contactId: request.contact_id,
+      systemSource: "review_request",
     })
     if (!smsResult.success) {
       console.error("[listing-lifecycle] SMS send failed:", smsResult.error)

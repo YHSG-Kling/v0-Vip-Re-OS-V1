@@ -36,11 +36,10 @@ const ALLOWLIST: Record<string, { cls: Class; why: string }> = {
   "app/api/cron/weekly-income-digest/route.ts": { cls: "non-client", why: "agent-facing weekly digest (to the user themselves, not a client)" },
   "app/actions/lender-status-request.ts":       { cls: "b2b-transactional", why: "transactional request to a lender (B2B, not consumer marketing)" },
   "lib/kernel/vendors.ts":                      { cls: "b2b-transactional", why: "vendor-facing email (B2B service coordination)" },
-  "app/actions/external-services.ts":           { cls: "known-gap", why: "TODO: route client sends through dispatchEmail/dispatchSms (no inline consent today)" },
-  "app/actions/credit-copilot.ts":              { cls: "known-gap", why: "TODO: route client SMS through dispatchSms (no inline consent today)" },
-  "lib/orchestrator/workflow-engine.ts":        { cls: "known-gap", why: "TODO: route workflow sends through the dispatch gate (no inline consent today)" },
-  "lib/application/listing-lifecycle.ts":       { cls: "known-gap", why: "TODO: route the listing-lifecycle client SMS through dispatchSms (no inline consent today)" },
-  "lib/showings/dispatchers.ts":                { cls: "known-gap", why: "TODO: route showing notifications via sendViaTwilio through the dispatch gate" },
+  "lib/showings/dispatchers.ts":                { cls: "b2b-transactional", why: "agent-to-agent showing coordination (listing agent's phone, no consumer contact) via the connector-gateway adapter" },
+  // Client sends below were CLOSED this PR — they now route through lib/providers/dispatch.ts
+  // (credit-copilot, listing-lifecycle, external-services, workflow-engine) and no longer touch
+  // the raw senders, so they fall off this list entirely. Zero known-gaps remain.
 }
 
 // ── Walk lib/ + app/ for every file that touches the low-level senders ──
@@ -78,6 +77,8 @@ const knownGaps = Object.entries(ALLOWLIST).filter(([, v]) => v.cls === "known-g
 check("every allowlisted file is actually still an importer (no stale allowlist entry)",
   Object.keys(ALLOWLIST).every((f) => importers.includes(f)),
   Object.keys(ALLOWLIST).filter((f) => !importers.includes(f)).join(", "))
+check("ZERO known-gap consumer sends remain — every client send is routed through the gate",
+  knownGaps.length === 0, knownGaps.join(", "))
 
 console.log(`\n  ℹ ${importers.length} files touch the senders · ${knownGaps.length} KNOWN-GAP (route-through-dispatch TODOs):`)
 for (const g of knownGaps) console.log(`     - ${g}`)
