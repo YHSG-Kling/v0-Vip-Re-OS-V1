@@ -637,8 +637,27 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
             {action.slaLevel === "due" && (
               <Badge className="bg-amber-100 text-amber-800">SLA due · {Math.round(action.ageHours)}h</Badge>
             )}
+            {action.compliance && (
+              <Badge
+                className={
+                  action.compliance.status === "blocked" ? "bg-red-100 text-red-800"
+                  : action.compliance.status === "advisory" ? "bg-amber-100 text-amber-800"
+                  : "bg-green-100 text-green-800"
+                }
+                title={action.compliance.findings.join(" • ") || "Consent verified, no Fair Housing language"}
+              >
+                ⚖️ Compliance Officer: {action.compliance.status === "blocked" ? "Blocked" : action.compliance.status === "advisory" ? "Advisory" : "Cleared"}
+              </Badge>
+            )}
           </div>
           {action.rationale && <p className="text-sm text-muted-foreground mt-1">{action.rationale}</p>}
+          {action.compliance && action.compliance.findings.length > 0 && (
+            <ul className="mt-1 space-y-0.5">
+              {action.compliance.findings.map((f, i) => (
+                <li key={i} className={`text-xs ${action.compliance!.status === "blocked" ? "text-red-700" : "text-amber-700"}`}>⚖️ {f}</li>
+              ))}
+            </ul>
+          )}
           {action.actionType === "approve_prelisting_delivery" && <DeliveryPreview input={action.actionInput} />}
           {action.queue === "social" && <SocialPreview input={action.actionInput} />}
           {action.queue === "newsletter" && <NewsletterPreview input={action.actionInput} />}
@@ -668,7 +687,7 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
         </div>
         <div className="flex gap-2 shrink-0">
           <Button size="sm" variant="outline" disabled={pending} onClick={() => run("reject")}>{action.queue === "transaction_task" ? "Dismiss" : action.queue === "transaction_smart_task" ? "Cancel" : action.queue === "agent_followup" ? "Skip" : "Reject"}</Button>
-          <Button size="sm" disabled={pending} onClick={() => run("approve")}>{pending ? "…" : action.actionType === "approve_prelisting_delivery" ? "Release" : isClientMsg ? "Approve & Send" : action.queue === "transaction_task" ? "Resolve" : action.queue === "transaction_smart_task" ? "Done" : action.queue === "agent_followup" ? "Done" : action.queue === "predictive_listing" ? "Approve & Queue" : action.queue === "blog" ? "Approve & Publish" : action.queue === "podcast" ? "Approve & Distribute" : "Approve"}</Button>
+          <Button size="sm" disabled={pending || action.compliance?.status === "blocked"} title={action.compliance?.status === "blocked" ? "Compliance Officer blocked this — the recipient withdrew or revoked this channel" : undefined} onClick={() => run("approve")}>{pending ? "…" : action.compliance?.status === "blocked" ? "Blocked" : action.actionType === "approve_prelisting_delivery" ? "Release" : isClientMsg ? "Approve & Send" : action.queue === "transaction_task" ? "Resolve" : action.queue === "transaction_smart_task" ? "Done" : action.queue === "agent_followup" ? "Done" : action.queue === "predictive_listing" ? "Approve & Queue" : action.queue === "blog" ? "Approve & Publish" : action.queue === "podcast" ? "Approve & Distribute" : "Approve"}</Button>
         </div>
       </div>
     </Card>

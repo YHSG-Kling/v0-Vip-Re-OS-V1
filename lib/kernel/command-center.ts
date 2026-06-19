@@ -18,6 +18,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { loadContentApprovalActions, type ContentQueue } from "./approval-sources"
 import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
 import { resolveActionManager, type ManagerKey } from "./manager-registry"
+import { compliancePreflight } from "./manager-dissent"
 import type { EgressScope } from "./egress-scope"
 
 // Re-export so existing importers (simulators, server actions) keep working.
@@ -51,6 +52,9 @@ export interface CommandCenterAction {
   /** The Claude manager accountable for this activity on the egress (zero orphans). */
   managerKey:   ManagerKey
   managerLabel: string
+  /** Compliance Officer PRE-FLIGHT verdict (client_message proposals only) — the consent +
+   *  Fair Housing sign-off the human sees BEFORE approving. Absent for non-outbound queues. */
+  compliance?: { status: "clear" | "advisory" | "blocked"; manager: ManagerKey; findings: string[] }
 }
 
 export interface ManagerBreakdownEntry {
@@ -253,6 +257,26 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
 
   const [sessionsRes, marketingRes, assetRes, adsRes, clientMsgRes, contentActions] = await Promise.all([sessionsQuery, marketingQuery, assetQuery, adsQuery, clientMsgQuery, contentPromise])
 
+  // Compliance Officer pre-flight needs each recipient's consent state (withdrawn / revoked
+  // channel) — batch it in ONE query keyed by contact id; Fair Housing is pure on the body.
+  const recipientIds = Array.from(new Set(
+    ((clientMsgRes.data ?? []) as any[]).map((m) => m.recipient_contact_id).filter(Boolean),
+  )) as string[]
+  const consentMap = new Map<string, { withdrawn: boolean; emailRevoked: boolean; smsRevoked: boolean }>()
+  if (recipientIds.length > 0) {
+    const { data: contactRows } = await supabase
+      .from("contacts")
+      .select("id, nurture_status, email_opt_out, email_unsubscribed, sms_opt_out")
+      .in("id", recipientIds)
+    for (const c of (contactRows ?? []) as any[]) {
+      consentMap.set(c.id, {
+        withdrawn: c.nurture_status === "withdrawn",
+        emailRevoked: !!c.email_opt_out || !!c.email_unsubscribed,
+        smsRevoked: !!c.sms_opt_out,
+      })
+    }
+  }
+
   const sessions: CommandCenterSession[] = (sessionsRes.data ?? []).map((s: any) => ({
     id:          s.id,
     agentKind:   s.managed_agents?.agent_kind ?? null,
@@ -290,11 +314,16 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // actual seller/buyer message the human is releasing).
   const mapClientMsg = (m: any): RawAction => {
     const sla = evaluateApprovalSla(m.proposed_at ?? null, now)
+    const consent = consentMap.get(m.recipient_contact_id) ?? { withdrawn: false, emailRevoked: false, smsRevoked: false }
+    const compliance = compliancePreflight(
+      { proposer: m.agent_kind ?? "agent", channel: m.channel ?? "portal", subject: m.subject ?? null, body: m.body ?? "" },
+      { recipientWithdrawn: consent.withdrawn, emailRevoked: consent.emailRevoked, smsRevoked: consent.smsRevoked, hoursSinceLastSend: null, openFireDrill: false },
+    )
     return {
       id: m.id, queue: "client_message", brokerageId: m.brokerage_id, actionType: "approve_client_message",
       rationale: `${(m.agent_kind ?? "agent").replace(/_/g, " ")} drafted a ${m.audience} update via ${m.channel ?? "portal"} — review/edit before it reaches the client.`,
       actionInput: { agent_kind: m.agent_kind, entity_type: m.entity_type, audience: m.audience, subject: m.subject, body: m.body, briefing: m.rationale, recipient_contact_id: m.recipient_contact_id, channel: m.channel ?? "portal" },
-      status: "proposed", proposedAt: m.proposed_at ?? null, ageHours: sla.ageHours, slaLevel: sla.level,
+      status: "proposed", proposedAt: m.proposed_at ?? null, ageHours: sla.ageHours, slaLevel: sla.level, compliance,
     }
   }
 
