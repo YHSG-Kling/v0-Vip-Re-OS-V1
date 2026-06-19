@@ -27,7 +27,7 @@ import {
   rankOffersByNet,
   type OfferNetInput,
   type SellerCosts,
-} from "@/lib/kernel/offer-net-sheet"
+} from "@/lib/offers/net-sheet-calc"
 
 interface InteractiveNetSheetProps {
   listingAddress?: string | null
