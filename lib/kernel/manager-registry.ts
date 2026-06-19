@@ -11,10 +11,17 @@
  * Command Center UI (client) share ONE source of truth for manager identity + labels —
  * no drift between a server map and a hand-kept client KIND_LABEL.
  *
- * All 11 managers mirror managed_agents.agent_kind (lib/agents/spawn-helper.ts AgentKind):
- * the 7 core managers + Ads Manager (m193) + AI ISA (m197, lead qualification/nurture) +
- * Recruiting Manager (m215, agent recruiting / talent pipeline — brokerage growth) +
- * Data Steward (m203, data integrity / identity / field stewardship across the lead spine).
+ * 13 accountable managers. The first 11 mirror managed_agents.agent_kind (lib/agents/spawn-helper.ts
+ * AgentKind) — the lead-working bench: the 7 core managers + Ads Manager (m193) + AI ISA (m197,
+ * lead qualification/nurture) + Recruiting Manager (m215, agent recruiting / talent pipeline —
+ * brokerage growth) + Data Steward (m203, data integrity / identity / field stewardship).
+ * The final 2 are BACK-OFFICE OVERSIGHT managers — orthogonal to the customer journey, so they do
+ * NOT split a sales boundary (and are not spawned as autonomous lead-working agents); they exist to
+ * make two cross-cutting functions ACCOUNTABLE instead of diffused into Data Steward / Deal Coord:
+ *   · Compliance Officer — Fair Housing peer-review, consent/TCPA suppression + recovery, the
+ *                          regulatory-change watcher (the named owner those domains escalate to).
+ *   · Finance Manager    — commission ledger/disbursement, brokerage P&L, billing, budgets,
+ *                          the GCI/commission forecast (back-office money, distinct from the TC).
  *
  * ── PRESERVED MANAGER BOUNDARIES (the product's governance contract) ──────────
  * Sides of the business map to managers precisely — no blurring:
@@ -48,6 +55,8 @@ export type ManagerKey =
   | "ai_isa"
   | "data_steward"
   | "recruiting_manager"
+  | "compliance_officer"
+  | "finance_manager"
 
 export interface ManagerInfo {
   key:    ManagerKey
@@ -72,6 +81,10 @@ export const MANAGERS: Record<ManagerKey, ManagerInfo> = {
   ai_isa:                { key: "ai_isa",                label: "AI ISA",                domain: "Lead qualification, nurture & re-engagement", accent: "bg-emerald-100 text-emerald-800" },
   data_steward:          { key: "data_steward",          label: "Data Steward",          domain: "Data integrity, identity & field stewardship", accent: "bg-slate-200 text-slate-800" },
   recruiting_manager:    { key: "recruiting_manager",    label: "Recruiting Manager",    domain: "Agent recruiting & talent pipeline (brokerage growth)", accent: "bg-amber-100 text-amber-900" },
+  // ── Back-office OVERSIGHT managers (not lead-working agent_kinds) — orthogonal to the
+  //    sales journey; they make compliance & finance ACCOUNTABLE instead of diffused. ──
+  compliance_officer:    { key: "compliance_officer",    label: "Compliance Officer",    domain: "Fair Housing, consent & regulatory governance", accent: "bg-cyan-100 text-cyan-800" },
+  finance_manager:       { key: "finance_manager",       label: "Finance Manager",       domain: "Commissions, brokerage P&L & back-office finance", accent: "bg-lime-100 text-lime-800" },
 }
 
 /**
@@ -111,14 +124,14 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
   schema_drift_guard:         { manager: "data_steward", proof: "test:schema-drift",       what: "No code references a column the live table lacks; baseline burn-down ratchet" },
   signal_bus_integrity:       { manager: "data_steward", proof: "test:signal-integrity",   what: "THE BUS ZERO-ORPHANS GUARD — every inter-manager signal_type published on manager_signals is catalogued in SIGNAL_REGISTRY with its disposition (handled by a manager inbox vs surfaced feed-only for a human) + coordination kind. Mirrors test:egress-coverage for the coordination layer: a scan of every publishManagerSignal call proves no orphan signal (a published type missing from the catalog fails), every 'handled' entry has a real SIGNAL_HANDLERS consumer (no dead promise), every handler is declared (no undeclared consumer), and each declared kind matches classifyCoordination (the Command Center feed renders it as declared). The coordination differentiator stays GOVERNED, not a free-for-all" },
   conversation_memory:        { manager: "data_steward", proof: "test:conversation-memory", what: "THE CONTEXT SPINE — one durable, shared running summary per contact (last touch, stated preferences, open commitment, mood) persisted to contacts.metadata->'context_spine' (REUSED jsonb, no new table) so every manager (AI ISA, agent, concierges, Director) acts on the SAME memory and nobody forgets what was discussed. composeContextSummary reads ONLY real interaction rows (honest empty when none, never invents a fact); it SUMMARIZES, it is NOT a second state machine (buyer_stage/contact_type stay canonical). Injectable AI summarizer seam; team-query's bullpen now surfaces the persisted spine instead of only recomputing live" },
-  regulatory_change_watcher:  { manager: "data_steward", proof: "test:regulatory-watcher", what: "REGULATORY-CHANGE WATCHER — keeps the compliance GATES current automatically: scans the gated external-search rail (Tavily/Exa) for recent real-estate reg changes (TCPA/CAN-SPAM/FTC/Fair-Housing-HUD/NAR/state RE commissions), PURE matchAffectedSurfaces maps each REAL sourced change to the OS surfaces it touches (the 5-gate cascade, FAIR_HOUSING_PATTERNS, state_protected_classes, the BBA/authority gate), classifyChangeSeverity reads a binding/advisory tier + an effective date parsed LITERALLY (never invented), records an idempotent observation (m224 reg_change_observations, per change-signature x ISO week) and ESCALATES a GATED brief to the compliance/broker owner (manager_signals bus + notifications). NEVER fabricates a regulation or an effective date; search unavailable -> no changes, nothing escalated; weekly cron" },
+  regulatory_change_watcher:  { manager: "compliance_officer", proof: "test:regulatory-watcher", what: "REGULATORY-CHANGE WATCHER — keeps the compliance GATES current automatically: scans the gated external-search rail (Tavily/Exa) for recent real-estate reg changes (TCPA/CAN-SPAM/FTC/Fair-Housing-HUD/NAR/state RE commissions), PURE matchAffectedSurfaces maps each REAL sourced change to the OS surfaces it touches (the 5-gate cascade, FAIR_HOUSING_PATTERNS, state_protected_classes, the BBA/authority gate), classifyChangeSeverity reads a binding/advisory tier + an effective date parsed LITERALLY (never invented), records an idempotent observation (m224 reg_change_observations, per change-signature x ISO week) and ESCALATES a GATED brief to the compliance/broker owner (manager_signals bus + notifications). NEVER fabricates a regulation or an effective date; search unavailable -> no changes, nothing escalated; weekly cron" },
   lossless_promotion:         { manager: "data_steward", proof: "test:data-steward",       what: "raw → leads → contacts moves identity/address/enrichment without loss" },
   source_conversion_learner:  { manager: "data_steward", proof: "test:source-conversion", what: "SOURCE-CONVERSION LEARNER — which scrape/lead SOURCES actually convert (lead→contact→close) for THIS brokerage, so spend flows to winners and money-pits get flagged. The scraping analog of video format_learning: pure scoreSourceConversions folds per-source rates (lead→contact, contact→close, ROI = revenue/spend, cost_per_contact) + max-scales a trust-gated 0..1 score (untrusted = unknown = 0, not 'bad'); pure recommendSourceAllocation advises enable/disable/HOLD with the gate NON-NEGOTIABLE — a source below MIN_SOURCE_SAMPLE (8) leads is HELD, never flipped (honest on thin data), and a trusted source is only DISABLED when ROI ≤ 1.0x (costing more than it returns). ADVISORY only — humans keep lead_scraping_markets.enabled_sources; every call carries a why. Composes the existing source path (leads.source → leads.contact_id → transactions) + cost_per_record; no new tables, no duplication of source-intent-map (semantics) or source-analytics (live UI ROI)" },
   import_field_mapping:       { manager: "data_steward", proof: "test:data-steward",       what: "CSV/CRM imports: known fields map, unmapped columns preserved in notes" },
   import_value_normalization: { manager: "data_steward", proof: "test:data-steward",       what: "Imported values reconciled to canonical vocabulary (synonyms + gated AI match)" },
   dedup_merge:                { manager: "data_steward", proof: "test:data-steward",       what: "Dedup merges fill empties and preserve conflicts in notes — never drop" },
   enrichment_conservation:    { manager: "data_steward", proof: "test:data-steward",       what: "PeopleData enrichment lands in first-class columns AND jsonb" },
-  consent_suppression:        { manager: "data_steward", proof: "test:lead-pipeline",      what: "TCPA consent/opt-out provenance carries faithfully — no fabricated consent" },
+  consent_suppression:        { manager: "compliance_officer", proof: "test:lead-pipeline",      what: "TCPA consent/opt-out provenance carries faithfully — no fabricated consent" },
   manager_boundaries:         { manager: "data_steward", proof: "test:manager-ownership",  what: "Buyer/seller/lead/lifetime boundaries preserved: tours+offers=buyer (Shopping), in-house showings=listing side, ISA activities=AI ISA, sphere=lifetime past clients" },
   dual_portal:                { manager: "asset_manager",  proof: "test:dual-portal", what: "DUAL-JOURNEY PORTAL — a contact who is BOTH buyer AND seller (contact_type='both', 'must sell to buy') sees BOTH journeys in a tabbed Buy|Sell portal instead of collapsing to one; resolveDualPortalView is additive on top of determinePortalView (single buyer/seller/lifetime resolution unchanged for everyone), surfaces the linker's stamped sale→buy dependency banner when gated (dualBannerPredicate); reuses journey_states + the existing buyer/seller home components + transparency_updates, no new tables" },
   dual_intent_linker:         { manager: "data_steward", proof: "test:dual-intent",        what: "ONE contact who is BOTH seller AND buyer (the 'must sell to buy' case): closes a real spine gap — motivationToContactType maps 'both'→'buyer' so the lead→contact spine NEVER writes contact_type='both' even though event-reactor spawns BOTH managers + both agents accept it. linkDualJourneys sets contact_type='both' and writes TWO journey_states rows for the one contact (composite user_id ${contact}:buyer / :seller to satisfy UNIQUE(user_id), per JOURNEY_PROGRESS_CONTRACT §70) so Shopping Agent (buy) AND Listing Concierge (sell) both work the person; pure detectDualIntent + sellMustPrecedeBuy surface the dependency (purchase contingent on the sale closing → gated, reason sale_funds_purchase) via the existing transparency_updates; idempotent, honest no-op when only one side has signal — no new tables" },
@@ -150,8 +163,8 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
   warm_handoff:               { manager: "campaign_orchestrator", proof: "test:warm-handoff", what: "THE WARM HANDOFF — when a portal conversation needs a human, the agent is pulled in WITH the full brief instead of a bare 'someone needs you' ping. Kills two anxieties at once: the client's 'I have to explain all this again' and the agent's 'I'm walking in blind.' Composes existing primitives — the portal chat TRANSCRIPT (chat_messages, robust to the role/content vs sender_type drift) + the durable CONTEXT SPINE (contacts.metadata.context_spine) + the 11-manager TEAM BRIEF (runTeamQuery) + the ISA qualification brief — into ONE agent-facing briefing. Pure composeHandoffBrief assembles it (no fabrication; empty stays empty) with a DETERMINISTIC suggestedFocus (back-out → retention; lawsuit → legal-sensitive loop-in broker; scared → empathy; open commitment → pick it up). runWarmHandoff persists the brief to contacts.metadata.warm_handoff (the proven jsonb the spine uses — no schema risk) + routes a warm_handoff notification to the agent; wired into the portal-ai-chat escalation, best-effort. A CONVERSATION-level handoff (the existing acceptAIISAHandoff is a lead→contact CONVERSION handoff — different)" },
   appointment_whisper:        { manager: "campaign_orchestrator", proof: "test:whisper",    what: "The Whisper — T-30 hallway briefing: the managers' combined knowledge on the next client whispered to the agent in the user's CONFIGURED assistant voice (audio on EVERY tier; text only when no voice is configured)" },
   fire_drills:                { manager: "deal_coordinator", proof: "test:fire-drill",  what: "The 9pm save — UNCOVERED deadline (contingency live + prerequisite missing) convenes the team: CRITICAL save-plan briefing (assistant voice on every tier), client-calming draft into the gate, audit line on the bus" },
-  consent_recovery_chain:     { manager: "data_steward", proof: "test:consent-recovery", what: "Revoked consent is a CHAIN not a flag: fallback to the channel the client still allows (gated) → enrichment re-run for updated contact info → only then a respectful withdraw via the Sphere (history kept, never a delete)" },
-  manager_dissent:            { manager: "campaign_orchestrator", proof: "test:manager-dissent", what: "Peer review before the human sees a proposal: a DIFFERENT manager checks Fair Housing (shared pattern list), consent, fire-drill timing + spacing — visible dissent notes; vetoes only for withdrawn/revoked (auditable, no forged approver)" },
+  consent_recovery_chain:     { manager: "compliance_officer", proof: "test:consent-recovery", what: "Revoked consent is a CHAIN not a flag: fallback to the channel the client still allows (gated) → enrichment re-run for updated contact info → only then a respectful withdraw via the Sphere (history kept, never a delete)" },
+  manager_dissent:            { manager: "compliance_officer", proof: "test:manager-dissent", what: "Peer review before the human sees a proposal: a DIFFERENT manager checks Fair Housing (shared pattern list), consent, fire-drill timing + spacing — visible dissent notes; vetoes only for withdrawn/revoked (auditable, no forged approver)" },
   partners_meeting:           { manager: "campaign_orchestrator", proof: "test:partners-meeting", what: "Sunday Night Partners' Meeting — the week presented by the AI team (plays, drills, whispers, recoveries, dissents, deals + the one ask) as D-ID avatar video / assistant-voice audio / memo, every tier" },
   cron_dispatch:              { manager: "data_steward", proof: "test:cron-dispatch", what: "One heartbeat, every schedule — vercel.json keeps ONE per-minute cron; the registry preserves all 100+ loop schedules verbatim (Vercel's 40-cron cap was failing every deployment at config validation); drift closed both directions (route ⇄ registry ⇄ vercel.json)" },
   voice_bullpen_wiring:       { manager: "campaign_orchestrator", proof: "test:voice-team", what: "THE SPOKEN BULLPEN — the AI-team coordination commands (team_query/area_query/morning_standup) are now reachable from the ElevenLabs Conv AI SPOKEN voice admin, not just the internal voice route: registered in lib/voice/tool-registry.ts (read-only, gates:[], correct authority — team/area allow agent_or_isa, standup is agent-only) and dispatched through ONE shared lib/voice/team-commands.ts that calls the SAME kernel backends (runTeamQuery/runAreaQuery/runMorningStandup) the internal route uses — both front-ends share the dispatch, no drift, no duplicated logic. 'Hey team, what do you know about the Hendersons / what's near 44 Birch / what should I do today' (read-only) PLUS the acting verbs — standup_action ('knock out number two'), voice_followup ('send the Hendersons a follow-up' — proposal→approval gate, consent re-checked, gates:['evaluate_outbound']), start_marketing (gated sequence enrollment), cut_promo ('cut a reel for 44 Birch' — Remotion+D-ID rail, Fair Housing pre-flight) — all now work by voice. Acting verbs delegate to backends that enforce their OWN gate; nothing sends autonomously. Registry authority enforced (followup agent_or_isa; standup/cut_promo agent-only)." },
@@ -166,7 +179,7 @@ export const MAINTENANCE_DOMAINS: Record<string, { manager: ManagerKey; proof: s
   initiative_ledger:          { manager: "campaign_orchestrator", proof: "test:idle-hands", what: "'While you were away' — one leadership card per idle-hands pass that produced work (social drafts, reels, notes, data fixes, pre-drafts, seasonal plays), 12h dedupe; the morning proof the team worked overnight" },
   seasonal_plays:             { manager: "campaign_orchestrator", proof: "test:idle-hands", what: "Quarter-aware campaigns staged INACTIVE once per season (Spring Sellers / Summer Movers / Fall Market Reset / Year-End Gratitude) — the human activates; nothing runs until then; idempotent by season name" },
   persona_copy:               { manager: "campaign_orchestrator", proof: "test:ai-copy", what: "Copy is NEVER hardcoded — every play generates its wording per the contact's persona (name, audience, situation, brand tone) + the real facts through the AI gateway, with a deterministic fallback so a play always produces safe real copy; Fair Housing enforced in the system prompt" },
-  commission_forecaster:      { manager: "deal_coordinator", proof: "test:commission-forecaster", what: "Live commission/GCI forecast per agent from the real pipeline (closed YTD + probability-weighted in-progress) → cap distance + pace-to-goal + the 1-2 deals to push; gated agent summary (optional assistant-voice audio); cap read if configured, honestly says so when not" },
+  commission_forecaster:      { manager: "finance_manager", proof: "test:commission-forecaster", what: "Live commission/GCI forecast per agent from the real pipeline (closed YTD + probability-weighted in-progress) → cap distance + pace-to-goal + the 1-2 deals to push; gated agent summary (optional assistant-voice audio); cap read if configured, honestly says so when not" },
   seller_decision_room:       { manager: "listing_concierge", proof: "test:seller-decision", what: "THE SELLER DECISION ROOM — turns offer_net_sheet's net comparison into a GUIDED, seller-facing decision that kills 'which offer is actually best for me?'. Pure buildSellerDecisionRoom models each offer's OUTCOME — net to you (computeNetProceeds) + when it closes + how likely it is to close (scoreBuyerStrength, extracted to the shared pure lib/offers/offer-strength.ts so the multi-offer matrix + decision room share ONE certainty-of-close scorer, no drift) — names the highest-money vs the safest-bet, surfaces when the highest NET isn't the highest STICKER price (the insight sellers miss), and recommends the offer balancing money + certainty (deterministic: both → clear pick; else 60% net / 40% certainty, explained). Reuses the real accept/counter/reject actions (compliance-gated); composer is pure, no parallel math" },
   price_drop_preemptor:       { manager: "listing_concierge", proof: "test:price-advisor", what: "PRICE-DROP PRE-EMPTOR (the delta) — stale-listing DETECTION already existed (pattern-detector 'price_reduction_likely' on DOM≥15 + showings; listing-health DOM/showings scoring + LISTING_AT_RISK_DETECTED); what was MISSING is the RECOMMENDATION. Pure computePriceDropRecommendation suggests a new list price anchored to comps + DOM pressure (30–44d −2%, 45–59 −3%, 60–89 −4%, 90+ −6%, +1% when showings are very cold) NEVER below the comp median (comps are the floor), with the justification (DOM, cooling showing velocity recent-vs-prior, comp gap) + confidence. HONESTLY declines when not stale yet (DOM<30 → hold) or when the listing is priced in line with comps (the problem is exposure/condition, not price → refresh marketing). The Listing Concierge proposes the GATED seller conversation off the recommendation. Composes existing signals; no duplicate detection, no fabricated price (comp-anchored)" },
   negotiation_outcome_learning: { manager: "listing_concierge", proof: "test:negotiation-outcome", what: "NEGOTIATION-OUTCOME LEARNER (verified white space + feeds a STARVED consumer) — the negotiation copilot's context builder (lib/negotiation/analyzer.ts) ALREADY read brokerage_intelligence_insights for the pattern_keys `win_rate_by_offer_strength` + `appraisal_gap_outcomes` to ground its counter-strategy in THIS brokerage's real local outcomes, but NOTHING ever mined them (dead reads — and it was selecting non-existent summary/confidence columns, so the read silently returned nothing; fixed to read headline/lift_pct). Offer TERMS are captured (offers.financing_type/down_payment_percent/appraisal_gap/earnest_money/contingencies) and OUTCOMES tracked (status accepted/rejected/withdrawn, is_winning_offer) but no module learned which terms correlate with WINNING. Pure offer-term-outcomes.ts splits the brokerage's RESOLVED offers into cohorts — strong (canonical scoreBuyerStrength ≥70) vs weak (<50), and appraisal-gap-covered vs not — and measures the acceptance-rate LIFT, emitting a grounded no-fabrication one-liner the copilot consumes. HONEST: only terminal offers count; a cohort below MIN_COHORT or a lift below MIN_LIFT publishes nothing (never a win rate from 2 offers, never a spurious pattern when terms don't separate outcomes). mineOfferTermOutcomes runs in the EXISTING weekly brokerage-intelligence-mine cron (no new cron); reuses the canonical certainty-of-close scorer (no parallel math). The local-market negotiation intelligence competitors can't show" },
@@ -312,7 +325,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   // manager via charter rules (data steward owns the data/identity/audit/system spine).
   // ─────────────────────────────────────────────────────────────────────────
   // data_steward (236)
-  accounting_sync_log: "data_steward",
+  accounting_sync_log: "finance_manager",
   ai_assistant_notes: "data_steward",
   ai_autopilot_actions: "data_steward",
   ai_autopilot_plans: "data_steward",
@@ -340,21 +353,21 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   automation_logs: "data_steward",
   behavioral_patterns: "data_steward",
   behavioral_signals: "data_steward",
-  billing_invoices: "data_steward",
-  billing_usage: "data_steward",
-  brokerage_cda_templates: "data_steward",
-  brokerage_earnings: "data_steward",
-  brokerage_fee_types: "data_steward",
+  billing_invoices: "finance_manager",
+  billing_usage: "finance_manager",
+  brokerage_cda_templates: "finance_manager",
+  brokerage_earnings: "finance_manager",
+  brokerage_fee_types: "finance_manager",
   brokerage_form_library: "data_steward",
   brokerage_forms: "data_steward",
   brokerage_integrations: "data_steward",
   brokerage_intelligence_insights: "data_steward",
-  brokerage_p_l: "data_steward",
+  brokerage_p_l: "finance_manager",
   brokerage_settings: "data_steward",
   brokerages: "data_steward",
-  budgets: "data_steward",
+  budgets: "finance_manager",
   business_card_scans: "data_steward",
-  business_expenses: "data_steward",
+  business_expenses: "finance_manager",
   calculator_history: "data_steward",
   calendar_blocks: "data_steward",
   calendar_provider_accounts: "data_steward",
@@ -415,7 +428,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   error_stack_traces: "data_steward",
   event_processing_log: "data_steward",
   external_behavior: "data_steward",
-  fair_housing_logs: "data_steward",
+  fair_housing_logs: "compliance_officer",
   fatigue_alerts: "data_steward",
   feature_access_overrides: "data_steward",
   feature_flags: "data_steward",
@@ -476,7 +489,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   qr_codes: "data_steward",
   qr_scan_events: "data_steward",
   quickbooks_sync_log: "data_steward",
-  reg_change_observations: "data_steward",
+  reg_change_observations: "compliance_officer",
   revenue_protection_snapshots: "data_steward",
   script_variations: "data_steward",
   scripts: "data_steward",
@@ -558,20 +571,20 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   closing_disclosure_agreement_revisions: "deal_coordinator",
   closing_gifts: "deal_coordinator",
   closing_notifications: "deal_coordinator",
-  commission_adjustments: "deal_coordinator",
-  commission_calculations: "deal_coordinator",
-  commission_distributions: "deal_coordinator",
-  commission_records: "deal_coordinator",
-  commission_splits: "deal_coordinator",
-  commission_structures: "deal_coordinator",
-  commissions: "deal_coordinator",
-  compliance_alerts: "deal_coordinator",
-  compliance_checklists: "deal_coordinator",
-  compliance_checks: "deal_coordinator",
-  compliance_events: "deal_coordinator",
-  compliance_flags: "deal_coordinator",
-  compliance_rules: "deal_coordinator",
-  compliance_tasks: "deal_coordinator",
+  commission_adjustments: "finance_manager",
+  commission_calculations: "finance_manager",
+  commission_distributions: "finance_manager",
+  commission_records: "finance_manager",
+  commission_splits: "finance_manager",
+  commission_structures: "finance_manager",
+  commissions: "finance_manager",
+  compliance_alerts: "compliance_officer",
+  compliance_checklists: "compliance_officer",
+  compliance_checks: "compliance_officer",
+  compliance_events: "compliance_officer",
+  compliance_flags: "compliance_officer",
+  compliance_rules: "compliance_officer",
+  compliance_tasks: "compliance_officer",
   contract_reviews: "deal_coordinator",
   contract_signatures: "deal_coordinator",
   deal_autopsy_observations: "deal_coordinator",

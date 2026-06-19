@@ -114,7 +114,21 @@ check("boundary preservation is itself a governed burn domain",
 
 console.log("\n[6 · every manager is well-formed]")
 const keys = Object.keys(MANAGERS) as ManagerKey[]
-check("all 11 managers present (deal/shopping/listing/sphere/campaign/marketing/asset/ads/ai_isa/data_steward/recruiting)", keys.length === 11)
+check("all 13 managers present (11 lead-working agent_kinds + Compliance Officer & Finance Manager back-office oversight)", keys.length === 13)
+// The two back-office oversight managers own their cross-cutting functions explicitly (no longer
+// diffused into Data Steward / Deal Coordinator) — a re-map here is a product decision, not a refactor.
+check("COMPLIANCE: Fair Housing logs → Compliance Officer",
+  resolveTableManager("fair_housing_logs").key === "compliance_officer")
+check("COMPLIANCE: compliance_flags (transaction + Fair Housing checks) → Compliance Officer",
+  resolveTableManager("compliance_flags").key === "compliance_officer")
+check("COMPLIANCE: the regulatory-change watcher is owned by the Compliance Officer it escalates to",
+  resolveMaintenanceManager("regulatory_change_watcher").key === "compliance_officer")
+check("FINANCE: the commission ledger → Finance Manager (disbursement is back-office, not the TC)",
+  resolveTableManager("commissions").key === "finance_manager")
+check("FINANCE: brokerage P&L → Finance Manager",
+  resolveTableManager("brokerage_p_l").key === "finance_manager")
+check("DEAL boundary intact: transactions still → Deal Coordinator (commissions moved, the deal didn't)",
+  resolveTableManager("transactions").key === "deal_coordinator")
 for (const k of keys) {
   const m = MANAGERS[k]
   check(`${k} has label + domain + matching key`, m.key === k && m.label.length > 0 && m.domain.length > 0)
