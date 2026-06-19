@@ -83,7 +83,33 @@ check("ZERO known-gap consumer sends remain — every client send is routed thro
 console.log(`\n  ℹ ${importers.length} files touch the senders · ${knownGaps.length} KNOWN-GAP (route-through-dispatch TODOs):`)
 for (const g of knownGaps) console.log(`     - ${g}`)
 
+// ── 3. SOCIAL PUBLISH — the other consumer-reaching primitive — only from approval-gated chokepoints ──
+console.log("\n[3 · the social-publish primitive is only reached from an approval-gated chokepoint]")
+const SOCIAL_MODULE = "@/lib/social/publisher"
+const SOCIAL_PRIMITIVE = /\bpublishToSocialPlatform\b/
+const SOCIAL_ALLOWLIST: Record<string, string> = {
+  "app/api/cron/publish-social-posts/route.ts": "approval-gated — publishes ONLY social_posts with approval_status='approved'",
+}
+const socialCallers = files
+  .map((abs) => ({ abs, src: readFileSync(abs, "utf8") }))
+  .filter(({ abs, src }) => !abs.endsWith("lib/social/publisher.ts") && src.includes(SOCIAL_MODULE) && SOCIAL_PRIMITIVE.test(src))
+  .map(({ abs }) => relative(root, abs).replace(/\\/g, "/"))
+for (const f of socialCallers) {
+  check(`${f} — ${SOCIAL_ALLOWLIST[f] ? "approval-gated" : "UNREVIEWED"}`, f in SOCIAL_ALLOWLIST,
+    SOCIAL_ALLOWLIST[f] ? undefined : "NEW direct social publish — must publish only approved posts or be reviewed")
+}
+check("no NEW direct social-publish caller (broadcast egress stays approval-gated)",
+  socialCallers.every((f) => f in SOCIAL_ALLOWLIST), socialCallers.filter((f) => !(f in SOCIAL_ALLOWLIST)).join(", "))
+
+// ── 4. NO BACKDOOR — the gate cannot be told to skip consent ──
+console.log("\n[4 · the gate has no consent-skip backdoor]")
+const gateSrc = readFileSync(join(root, "lib/providers/dispatch.ts"), "utf8")
+const BACKDOOR = /\b(skipSuppression|skipConsent|skipCompliance|bypassGate|bypassConsent|forceSend|ignoreSuppression|disableGate|skipGate)\b/
+const m = gateSrc.match(BACKDOOR)
+check("lib/providers/dispatch.ts exposes NO consent-skip flag (no force/bypass/skip-suppression backdoor)",
+  m === null, m ? `found '${m[0]}'` : undefined)
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-console.log(` ✅ EGRESS_SEND_GUARD_PASS — no ungoverned egress; ${importers.length} sender-touching files all reviewed, surface frozen`)
+console.log(` ✅ EGRESS_SEND_GUARD_PASS — no ungoverned egress across email/SMS/voice + social; ${importers.length} sender files reviewed, ${socialCallers.length} social-publish chokepoint(s) approval-gated, gate has no backdoor`)
