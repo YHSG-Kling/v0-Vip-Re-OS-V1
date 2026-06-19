@@ -79,6 +79,37 @@ async function recordClientMessageDecision(
   } catch { /* audit is best-effort — never breaks the decision */ }
 }
 
+/**
+ * Record a BROADCAST content decision (social/newsletter/blog/…) to the compliance ledger — the
+ * Fair Housing verdict recomputed server-side from the item's copy (no per-recipient consent, so
+ * advisory-only). Completes the ledger: every outbound copy decision is recorded, not just 1:1
+ * messages. Best-effort; only the outbound-copy queues (skips internal transaction/task queues).
+ */
+async function recordContentDecision(
+  queue: Queue,
+  actionId: string,
+  actor: { userId: string; role: string; brokerageId: string | null },
+  decision: "approved" | "rejected",
+): Promise<void> {
+  try {
+    const { OUTBOUND_COPY_QUEUES, extractProposalCopy } = await import("@/lib/kernel/command-center")
+    if (!OUTBOUND_COPY_QUEUES.has(queue)) return
+    const svc = createServiceClient()
+    const { loadOneContentAction } = await import("@/lib/kernel/approval-sources")
+    const action = await loadOneContentAction(queue as ContentQueue, actionId, svc)
+    if (!action) return
+    const text = extractProposalCopy(action.actionInput)
+    if (!text) return
+    const { recordEgressComplianceDecision } = await import("@/lib/kernel/compliance-ledger")
+    await recordEgressComplianceDecision({
+      brokerageId: action.brokerageId ?? actor.brokerageId ?? "",
+      actorUserId: actor.userId, actorRole: actor.role,
+      queue, entityId: actionId, channel: "content",
+      text, consent: { recipientWithdrawn: false, emailRevoked: false, smsRevoked: false }, decision,
+    }, svc)
+  } catch { /* audit is best-effort — never breaks the decision */ }
+}
+
 /** Confirm the action exists, is still proposed, and is in the approver's scope. */
 async function loadScopedAction(queue: AgentQueue, actionId: string, brokerageId: string | null, isSuperadmin: boolean) {
   const svc = createServiceClient()
@@ -99,6 +130,7 @@ export async function approveAgentAction(params: { queue: Queue; actionId: strin
   // Social posts approve through the existing, self-scoping social action — the
   // Command Center is just a second (unified) surface onto the SAME write.
   if (params.queue === "social") {
+    await recordContentDecision(params.queue, params.actionId, actor, "approved")
     const { approveSocialPost } = await import("@/app/actions/social-media-automation")
     const res = await approveSocialPost(params.actionId)
     revalidatePath("/dashboard/admin/command-center")
@@ -107,6 +139,7 @@ export async function approveAgentAction(params: { queue: Queue; actionId: strin
   // Newsletter + direct-mail + ad-creative + predictive-touch + transaction-task
   // all release through the content-approval registry.
   if (params.queue === "newsletter" || params.queue === "direct_mail" || params.queue === "ad_creative" || params.queue === "predictive_listing" || params.queue === "transaction_task" || params.queue === "transaction_smart_task" || params.queue === "agent_followup" || params.queue === "blog" || params.queue === "podcast") {
+    await recordContentDecision(params.queue, params.actionId, actor, "approved")
     const res = await approveContentSource(params.queue, params.actionId, { userId: actor.userId, brokerageId: actor.brokerageId, isSuperadmin: actor.isSuperadmin })
     revalidatePath("/dashboard/admin/command-center")
     return { ok: res.ok, status: res.status, error: res.error }
@@ -138,12 +171,14 @@ export async function rejectAgentAction(params: { queue: Queue; actionId: string
   if ("error" in actor) return { ok: false, error: actor.error }
 
   if (params.queue === "social") {
+    await recordContentDecision(params.queue, params.actionId, actor, "rejected")
     const { rejectSocialPost } = await import("@/app/actions/social-media-automation")
     const res = await rejectSocialPost(params.actionId, undefined, "Rejected in Command Center")
     revalidatePath("/dashboard/admin/command-center")
     return { ok: !!res.success, status: "rejected" as const, error: res.error }
   }
   if (params.queue === "newsletter" || params.queue === "direct_mail" || params.queue === "ad_creative" || params.queue === "predictive_listing" || params.queue === "transaction_task" || params.queue === "transaction_smart_task" || params.queue === "agent_followup" || params.queue === "blog" || params.queue === "podcast") {
+    await recordContentDecision(params.queue, params.actionId, actor, "rejected")
     const res = await rejectContentSource(params.queue, params.actionId, { userId: actor.userId, brokerageId: actor.brokerageId, isSuperadmin: actor.isSuperadmin })
     revalidatePath("/dashboard/admin/command-center")
     return { ok: res.ok, status: "rejected" as const, error: res.error }

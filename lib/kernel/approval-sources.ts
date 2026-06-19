@@ -332,6 +332,20 @@ export async function loadContentApprovalActions(
   return results.flat()
 }
 
+/** Load ONE content action by id (the same registry select + toAction the full loader uses),
+ *  so a decision-time consumer (the compliance ledger) can read its copy without re-deriving
+ *  per-queue field maps. Returns null when the row is gone. */
+export async function loadOneContentAction(
+  queue: ContentQueue, id: string, client?: Svc,
+): Promise<ContentApprovalAction | null> {
+  const src = CONTENT_SOURCES[queue]
+  if (!src) return null
+  const svc = client ?? createServiceClient()
+  const { data } = await svc.from(src.table).select(src.select).eq("id", id).maybeSingle()
+  if (!data) return null
+  try { return src.toAction(data, new Date()) } catch { return null }
+}
+
 export interface ContentApprovalResult { ok: boolean; status?: string; error?: string }
 
 /**
