@@ -27,7 +27,7 @@ const TABLE: Record<AgentQueue, "marketing_agent_actions" | "asset_manager_actio
 }
 
 /** Resolve the acting user and confirm they may approve agent actions. */
-async function requireApprover(): Promise<{ userId: string; brokerageId: string | null; isSuperadmin: boolean } | { error: string }> {
+async function requireApprover(): Promise<{ userId: string; brokerageId: string | null; isSuperadmin: boolean; role: string } | { error: string }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: "Not authenticated" }
@@ -38,7 +38,45 @@ async function requireApprover(): Promise<{ userId: string; brokerageId: string 
     .maybeSingle()
   const role = u?.user_type ?? "agent"
   if (!["admin", "broker", "superadmin"].includes(role)) return { error: "Not authorized to approve agent actions" }
-  return { userId: user.id, brokerageId: u?.brokerage_id ?? null, isSuperadmin: role === "superadmin" }
+  return { userId: user.id, brokerageId: u?.brokerage_id ?? null, isSuperadmin: role === "superadmin", role }
+}
+
+/**
+ * Record an outbound client-message decision to the Compliance Officer's audit ledger — the
+ * verdict is recomputed SERVER-SIDE from the final copy + the recipient's live consent, so the
+ * record is tamper-proof. Best-effort: never blocks or fails the approve/reject it documents.
+ */
+async function recordClientMessageDecision(
+  actionId: string,
+  actor: { userId: string; role: string; brokerageId: string | null },
+  decision: "approved" | "rejected",
+  editedBody?: string,
+): Promise<void> {
+  try {
+    const svc = createServiceClient()
+    const { data: m } = await svc.from("agent_client_messages")
+      .select("brokerage_id, channel, body, recipient_contact_id")
+      .eq("id", actionId).maybeSingle()
+    if (!m) return
+    let consent = { recipientWithdrawn: false, emailRevoked: false, smsRevoked: false }
+    if ((m as any).recipient_contact_id) {
+      const { data: c } = await svc.from("contacts")
+        .select("nurture_status, email_opt_out, email_unsubscribed, sms_opt_out")
+        .eq("id", (m as any).recipient_contact_id).maybeSingle()
+      if (c) consent = {
+        recipientWithdrawn: (c as any).nurture_status === "withdrawn",
+        emailRevoked: !!(c as any).email_opt_out || !!(c as any).email_unsubscribed,
+        smsRevoked: !!(c as any).sms_opt_out,
+      }
+    }
+    const { recordEgressComplianceDecision } = await import("@/lib/kernel/compliance-ledger")
+    await recordEgressComplianceDecision({
+      brokerageId: (m as any).brokerage_id ?? actor.brokerageId ?? "",
+      actorUserId: actor.userId, actorRole: actor.role,
+      queue: "client_message", entityId: actionId, channel: (m as any).channel ?? "portal",
+      text: editedBody ?? (m as any).body ?? "", consent, decision,
+    }, svc)
+  } catch { /* audit is best-effort — never breaks the decision */ }
 }
 
 /** Confirm the action exists, is still proposed, and is in the approver's scope. */
@@ -77,6 +115,7 @@ export async function approveAgentAction(params: { queue: Queue; actionId: strin
   if (params.queue === "client_message") {
     const { approveClientMessage } = await import("@/lib/agents/agent-client-messages")
     const res = await approveClientMessage(params.actionId, actor.userId, params.editedBody)
+    await recordClientMessageDecision(params.actionId, actor, "approved", params.editedBody)
     revalidatePath("/dashboard/admin/command-center")
     return { ok: res.status === "sent", status: res.status, result: res.result }
   }
@@ -110,6 +149,7 @@ export async function rejectAgentAction(params: { queue: Queue; actionId: string
     return { ok: res.ok, status: "rejected" as const, error: res.error }
   }
   if (params.queue === "client_message") {
+    await recordClientMessageDecision(params.actionId, actor, "rejected")
     const { rejectClientMessage } = await import("@/lib/agents/agent-client-messages")
     const res = await rejectClientMessage(params.actionId, actor.userId)
     revalidatePath("/dashboard/admin/command-center")
