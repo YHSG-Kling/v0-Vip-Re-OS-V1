@@ -124,3 +124,70 @@ export async function recordEgressComplianceDecision(d: EgressDecision, client?:
     return { recorded: false }
   }
 }
+
+// ── The on-demand ledger view (the regulatory artifact a broker hands an auditor) ──
+
+export interface LedgerRowView {
+  id: string
+  when: string | null
+  /** The Command Center queue the decision acted on (client_message / social / …). */
+  queue: string
+  channel: string
+  severity: "clear" | "advisory" | "blocked" | string
+  /** Did it ship (approved) vs held (rejected)? */
+  released: boolean
+  /** Released over an OPEN Compliance Officer objection — the line a broker defends. */
+  releasedOverObjection: boolean
+  findings: string[]
+  actorUserId: string | null
+}
+
+/** PURE: a raw compliance_events row → the display view. */
+export function mapLedgerRow(e: Record<string, unknown>): LedgerRowView {
+  return {
+    id: String(e.id ?? ""),
+    when: (e.created_at as string | null) ?? null,
+    queue: String(e.entity_type ?? "—"),
+    channel: String(e.message_type ?? "—"),
+    severity: (e.severity as string) ?? "clear",
+    released: !!e.allowed,
+    releasedOverObjection: (e.details as any)?.approved_despite_advisory === true,
+    findings: Array.isArray(e.violations) ? (e.violations as string[]) : [],
+    actorUserId: (e.actor_user_id as string | null) ?? null,
+  }
+}
+
+export interface ComplianceLedgerView {
+  rows: LedgerRowView[]
+  summary: ComplianceLedgerSummary
+  sinceDays: number
+  severity: string | null
+}
+
+/**
+ * Load the compliance ledger for a window — the Compliance Officer's on-demand audit report.
+ * The summary always reflects the FULL window (so the disposition totals are honest regardless of
+ * the row-level severity filter); `rows` honor the filter. Brokerage-scoped unless null (superadmin).
+ */
+export async function loadComplianceLedger(
+  brokerageId: string | null,
+  opts: { sinceDays?: number; severity?: string; limit?: number } = {},
+  client?: Svc,
+): Promise<ComplianceLedgerView> {
+  const svc = client ?? createServiceClient()
+  const sinceDays = Math.min(365, Math.max(1, Math.round(opts.sinceDays ?? 30)))
+  const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString()
+  const severity = opts.severity && ["clear", "advisory", "blocked"].includes(opts.severity) ? opts.severity : null
+
+  let q = svc.from("compliance_events")
+    .select("id, created_at, entity_type, message_type, severity, allowed, violations, details, actor_user_id")
+    .eq("gate_name", PREFLIGHT_GATE).gte("created_at", since)
+    .order("created_at", { ascending: false }).limit(Math.min(2000, opts.limit ?? 1000))
+  if (brokerageId) q = q.eq("brokerage_id", brokerageId)
+  const { data } = await q
+  const all = (data ?? []) as Array<Record<string, unknown>>
+
+  const summary = summarizeComplianceLedger(all.map((r) => ({ severity: r.severity as any, allowed: !!r.allowed, details: r.details as any })))
+  const filtered = severity ? all.filter((r) => r.severity === severity) : all
+  return { rows: filtered.map(mapLedgerRow), summary, sinceDays, severity }
+}

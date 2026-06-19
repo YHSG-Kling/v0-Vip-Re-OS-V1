@@ -8,7 +8,7 @@
  * flagging the number a broker must defend (approved-despite-advisory); summarizeComplianceLedger rolls a
  * window into the disposition report. Layer 2 (live, creds-gated): a real insert → read-back → cleanup.
  */
-import { buildComplianceEvent, summarizeComplianceLedger, recordEgressComplianceDecision, PREFLIGHT_GATE, type EgressDecision } from "../lib/kernel/compliance-ledger"
+import { buildComplianceEvent, summarizeComplianceLedger, recordEgressComplianceDecision, mapLedgerRow, loadComplianceLedger, PREFLIGHT_GATE, type EgressDecision } from "../lib/kernel/compliance-ledger"
 import { createServiceClient } from "../lib/supabase/service"
 
 let passed = 0, failed = 0
@@ -59,6 +59,18 @@ check("summary counts every disposition",
 check("summary surfaces the two numbers a broker defends: approved-despite-advisory + rejected",
   summary.approvedDespiteAdvisory === 2 && summary.rejected === 1)
 
+console.log("\n[2b · mapLedgerRow — the audit-report view of a stored event]")
+const view = mapLedgerRow({
+  id: "e1", created_at: "2026-06-18T12:00:00Z", entity_type: "client_message", message_type: "email",
+  severity: "advisory", allowed: true, violations: ["Fair Housing (high): ..."],
+  details: { approved_despite_advisory: true }, actor_user_id: "u9",
+})
+check("row view maps queue/channel/severity/findings + the released-over-objection flag",
+  view.queue === "client_message" && view.channel === "email" && view.severity === "advisory" &&
+  view.released === true && view.releasedOverObjection === true && view.findings.length === 1 && view.actorUserId === "u9")
+check("a held (rejected) row maps released=false",
+  mapLedgerRow({ id: "e2", allowed: false, severity: "advisory", violations: [], details: {} }).released === false)
+
 async function main() {
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY && !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
   if (!hasCreds) {
@@ -79,6 +91,9 @@ async function main() {
   const { data: row } = await svc.from("compliance_events").select("severity, allowed, violations, gate_name").eq("entity_id", tag).maybeSingle()
   check("live: read-back matches (advisory, allowed, on the pre-flight gate)",
     (row as any)?.severity === "advisory" && (row as any)?.allowed === true && (row as any)?.gate_name === PREFLIGHT_GATE)
+  const view = await loadComplianceLedger((bk as any).id, { sinceDays: 1 }, svc)
+  check("live: loadComplianceLedger surfaces the event + counts it in the disposition summary",
+    view.rows.some((r) => r.id) && view.summary.total >= 1 && view.summary.advisory >= 1)
   await svc.from("compliance_events").delete().eq("entity_id", tag)
   const { count } = await svc.from("compliance_events").select("id", { count: "exact", head: true }).eq("entity_id", tag)
   check("live: cleanup verified — 0 test events remain", (count ?? 0) === 0)

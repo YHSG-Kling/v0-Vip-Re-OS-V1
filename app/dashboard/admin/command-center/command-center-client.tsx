@@ -106,6 +106,9 @@ export function CommandCenterClient({
           <p className="text-sm text-muted-foreground">
             {scopeLabel ?? (scope === "platform" ? "Platform-wide" : "Your brokerage")} — live manager sessions + action approvals
           </p>
+          <a href="/dashboard/admin/compliance-ledger" className="mt-1 inline-block text-xs text-cyan-700 underline hover:text-cyan-900">
+            ⚖️ Compliance Ledger — every outbound disposition →
+          </a>
         </div>
         {scopeLabel && (
           <ScopeSwitcher label={scopeLabel} canSwitch={canSwitch} options={scopeOptions} current={currentView} />
