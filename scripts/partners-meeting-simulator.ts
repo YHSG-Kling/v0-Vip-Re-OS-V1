@@ -39,21 +39,26 @@ async function main() {
     consentFallbacks: 1, withdrawnRespectfully: 1, handoffs: 9, dissents: 3,
     proposalsSent: 12, proposalsPending: 5, dealsClosed: 2,
     gciClosedThisWeek: 18000, gciWeightedPipeline: 1_200_000,
+    complianceReviewed: 31, complianceAdvisories: 4, complianceReleasedOverObjection: 1,
   }, "Dana")
   check("script: greets the partner by name + the week", full.startsWith("Dana, good evening") && full.includes("week of 2026-06-07"))
   check("script: every earned line present (plays, drill, whispers, handoffs, dissents)",
     full.includes("2 coordinated team plays") && full.includes("1 uncovered deadline") && full.includes("4 appointment briefings") && full.includes("9 manager-to-manager handoffs") && full.includes("3 objections"))
   check("script: Finance Manager reports booked GCI + weighted pipeline (real money, abbreviated)",
     full.includes("Finance Manager: $18K in gross commission booked this week, with $1.2M weighted in the pipeline."))
+  check("script: Compliance Officer reports the pre-flight ledger + the released-over-objection number",
+    full.includes("Compliance Officer: 31 outbound messages pre-flighted this week.") && full.includes("4 needed a Fair Housing or consent fix") && full.includes("1 was released over an open objection"))
   check("script: closes on the ONE ask (5 pending approvals)", full.includes("5 proposals in the approval queue"))
   const zero = composePartnersMeetingScript({
     weekLabel: "the week of 2026-06-07", teamPlays: 0, fireDrills: 0, whispers: 0,
     consentFallbacks: 0, withdrawnRespectfully: 0, handoffs: 0, dissents: 0,
     proposalsSent: 0, proposalsPending: 0, dealsClosed: 0,
     gciClosedThisWeek: 0, gciWeightedPipeline: 0,
+    complianceReviewed: 0, complianceAdvisories: 0, complianceReleasedOverObjection: 0,
   }, null)
   check("script: a zero week fabricates NO wins", !zero.includes("closed") && !zero.includes("team play") && !zero.includes("deadline"))
   check("script: a dry-money week stays silent on finance (no fabricated GCI)", !zero.includes("Finance Manager"))
+  check("script: a quiet compliance week stays silent (no fabricated review count)", !zero.includes("Compliance Officer"))
   check("script: zero week still closes honestly (queue clear)", zero.includes("approval queue is clear"))
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&

@@ -14,6 +14,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { dealCommission, toPipeline, forecastGci } from "@/lib/kernel/commission-forecaster"
+import { summarizeComplianceLedger, PREFLIGHT_GATE } from "@/lib/kernel/compliance-ledger"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -33,6 +34,12 @@ export interface WeekInBusiness {
   gciClosedThisWeek: number
   /** Probability-weighted gross commission still in the in-progress pipeline (Σ commission × win%). */
   gciWeightedPipeline: number
+  /** Compliance Officer's line: outbound decisions pre-flighted this week. */
+  complianceReviewed: number
+  /** …of those, how many needed a Fair Housing / consent fix (advisory + blocked). */
+  complianceAdvisories: number
+  /** …and how many a human RELEASED over an open objection — the number a broker must defend. */
+  complianceReleasedOverObjection: number
 }
 
 /** Speak a dollar figure the way a partner would ("$1.2M" / "$180K" / "$3,200"). */
@@ -62,6 +69,16 @@ export function composePartnersMeetingScript(w: WeekInBusiness, audienceName?: s
   if (w.withdrawnRespectfully > 0) parts.push(`${w.withdrawnRespectfully} relationship${w.withdrawnRespectfully === 1 ? "" : "s"} released respectfully after every recovery step came back empty.`)
   if (w.handoffs > 0) parts.push(`${w.handoffs} manager-to-manager handoff${w.handoffs === 1 ? "" : "s"} crossed the bus without you lifting a finger.`)
   if (w.dissents > 0) parts.push(`Quality control: peer review raised ${w.dissents} objection${w.dissents === 1 ? "" : "s"} before anything reached your desk.`)
+  if (w.complianceReviewed > 0) {
+    const fixes = w.complianceAdvisories > 0
+      ? ` ${w.complianceAdvisories} needed a Fair Housing or consent fix and ${w.complianceAdvisories === 1 ? "was" : "were"} flagged before release.`
+      : ` Every one cleared Fair Housing and consent.`
+    let line = `Compliance Officer: ${w.complianceReviewed} outbound message${w.complianceReviewed === 1 ? "" : "s"} pre-flighted this week.${fixes}`
+    if (w.complianceReleasedOverObjection > 0) {
+      line += ` ${w.complianceReleasedOverObjection} ${w.complianceReleasedOverObjection === 1 ? "was" : "were"} released over an open objection — on the record for your review.`
+    }
+    parts.push(line)
+  }
   if (w.proposalsSent > 0) parts.push(`${w.proposalsSent} approved message${w.proposalsSent === 1 ? "" : "s"} went out to clients.`)
   parts.push(
     w.proposalsPending > 0
@@ -154,6 +171,12 @@ export async function producePartnersMeeting(
   const gciClosedThisWeek = ((closedRows ?? []) as any[]).reduce((s, t) => s + dealCommission(t), 0)
   const gciWeightedPipeline = forecastGci(0, toPipeline((pipelineRows ?? []) as any[]), now).weightedPipeline
 
+  // Compliance Officer's week — the ledger this PR now writes (gate_name='compliance_preflight').
+  const { data: ledgerRows } = await supabase.from("compliance_events")
+    .select("severity, allowed, details")
+    .eq("brokerage_id", brokerageId).eq("gate_name", PREFLIGHT_GATE).gte("created_at", weekAgo).limit(2000)
+  const led = summarizeComplianceLedger((ledgerRows ?? []) as any[])
+
   const weekStart = new Date(now.getTime() - 7 * 86_400_000)
   const week: WeekInBusiness = {
     weekLabel: `the week of ${weekStart.toISOString().slice(0, 10)}`,
@@ -169,6 +192,9 @@ export async function producePartnersMeeting(
     dealsClosed: closed.count ?? 0,
     gciClosedThisWeek,
     gciWeightedPipeline,
+    complianceReviewed: led.total,
+    complianceAdvisories: led.advisory + led.blocked,
+    complianceReleasedOverObjection: led.approvedDespiteAdvisory,
   }
 
   // ── The partners: leadership first, agents as fallback ──
