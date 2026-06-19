@@ -109,6 +109,27 @@ const m = gateSrc.match(BACKDOOR)
 check("lib/providers/dispatch.ts exposes NO consent-skip flag (no force/bypass/skip-suppression backdoor)",
   m === null, m ? `found '${m[0]}'` : undefined)
 
+// ── 5. NO CONNECTOR BYPASS — a consumer message must not go via a raw messaging-connector call ──
+console.log("\n[5 · no consumer send via a raw messaging-connector (bypassing the consent gate)]")
+const CONNECTOR_SEND = /callConnector[\s\S]{0,300}connector:\s*["'](twilio|telnyx|bandwidth|sendgrid)["']/
+const CONNECTOR_ALLOWLIST: Record<string, string> = {
+  "lib/providers/messaging/index.ts":      "the provider layer (called BY dispatch.ts, behind the gate)",
+  "lib/providers/messaging/sms-adapters.ts": "the provider adapters (behind the gate)",
+  "lib/showings/dispatchers.ts":           "agent-to-agent showing coordination (B2B, no consumer contact)",
+  "lib/onboarding/integration-tester.ts":  "onboarding self-test send (the agent tests their OWN integration, not a consumer)",
+  "app/actions/phone-provisioning.ts":     "Twilio number provisioning (admin API, not a message)",
+}
+const connectorSenders = files
+  .map((abs) => ({ abs, src: readFileSync(abs, "utf8") }))
+  .filter(({ src }) => CONNECTOR_SEND.test(src))
+  .map(({ abs }) => relative(root, abs).replace(/\\/g, "/"))
+for (const f of connectorSenders) {
+  check(`${f} — ${CONNECTOR_ALLOWLIST[f] ? "reviewed" : "UNREVIEWED"}`, f in CONNECTOR_ALLOWLIST,
+    CONNECTOR_ALLOWLIST[f] ? undefined : "consumer message via raw connector — route through dispatchSms/dispatchEmail (the gate)")
+}
+check("no consumer message bypasses the gate via a raw messaging-connector",
+  connectorSenders.every((f) => f in CONNECTOR_ALLOWLIST), connectorSenders.filter((f) => !(f in CONNECTOR_ALLOWLIST)).join(", "))
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }

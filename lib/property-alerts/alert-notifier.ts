@@ -2,8 +2,7 @@
 // All channel delivery writes through the real tables only
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { dispatchEmail } from "@/lib/providers/dispatch"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { dispatchEmail, dispatchSms } from "@/lib/providers/dispatch"
 import type { AlertProperty } from "./alert-matcher"
 
 export interface DeliverResult {
@@ -86,30 +85,21 @@ export async function deliverAlertResults(
   // ── SMS ───────────────────────────────────────────────────────────────────
   if (channels.includes("sms") && contact.phone) {
     try {
-      const { data: twilioCred } = await supabase
-        .from("platform_credentials")
-        .select("api_key, account_id, config")
-        .eq("brokerage_id", brokerageId)
-        .eq("platform", "twilio")
-        .eq("is_active", true)
-        .maybeSingle()
-
-      if (twilioCred?.api_key && twilioCred?.account_id) {
-        const fromPhone = (twilioCred.config as any)?.from_phone ?? ""
-        const body = `${n} ${n === 1 ? "property matches" : "properties match"} your search! View now: ${portalUrl}`
-
-        await callConnector({
-          connector: "twilio",
-          baseUrl: "https://api.twilio.com",
-          path: `/2010-04-01/Accounts/${twilioCred.account_id}/Messages.json`,
-          method: "POST",
-          auth: { style: "basic", username: twilioCred.account_id, password: twilioCred.api_key },
-          bodyType: "form",
-          body: { To: contact.phone, From: fromPhone, Body: body },
-        })
-
+      const body = `${n} ${n === 1 ? "property matches" : "properties match"} your search! View now: ${portalUrl}`
+      // Route through the gate (consent/opt-out/DNC/quiet-hours/de-confliction + provider cascade)
+      // instead of a raw Twilio callConnector — a property-alert SMS is consumer egress.
+      const res = await dispatchSms({
+        brokerageId,
+        to: contact.phone,
+        message: body,
+        contactId: alert.contact_id,
+        systemSource: "property_alerts",
+      })
+      if (res.success) {
         channelsUsed.push("sms")
         sent++
+      } else {
+        errors.push(`sms: ${res.error ?? "blocked by gate"}`)
       }
     } catch (err: any) {
       console.error("[alert-notifier] sms error:", err?.message)
