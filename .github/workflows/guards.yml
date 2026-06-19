@@ -11,11 +11,8 @@
 #   · egress-scope      — egress scoping rules hold
 #   · voice-coverage    — voice admin tool registry is complete
 #   · manager-signals   — the bus publish/consume contract
+#   · manager-ownership — every live-snapshot table maps to an accountable manager (zero orphans)
 #   · command-center    — the aggregator loads cleanly
-#
-# NOTE: test:manager-ownership (every snapshot table → an explicit manager) is a separate
-# aspirational burn-down (~480 tables still fall to the fallback owner) and is intentionally
-# NOT yet blocking. It is the next zero-orphans cleanup, tracked separately.
 name: guards
 
 on:
