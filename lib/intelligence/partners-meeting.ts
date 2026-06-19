@@ -13,6 +13,7 @@
 // tests); every number comes from a real table — nothing fabricated.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { dealCommission, toPipeline, forecastGci } from "@/lib/kernel/commission-forecaster"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -28,6 +29,18 @@ export interface WeekInBusiness {
   proposalsSent: number
   proposalsPending: number
   dealsClosed: number
+  /** Finance Manager's line: gross commission BOOKED from deals closed this week. */
+  gciClosedThisWeek: number
+  /** Probability-weighted gross commission still in the in-progress pipeline (Σ commission × win%). */
+  gciWeightedPipeline: number
+}
+
+/** Speak a dollar figure the way a partner would ("$1.2M" / "$180K" / "$3,200"). */
+function fmtUsd(n: number): string {
+  const v = Math.round(Math.max(0, n))
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
+  if (v >= 10_000) return `$${Math.round(v / 1000)}K`
+  return `$${v.toLocaleString("en-US")}`
 }
 
 /** Pure: the partners'-meeting script — spoken, warm, only lines the team actually
@@ -36,6 +49,12 @@ export function composePartnersMeetingScript(w: WeekInBusiness, audienceName?: s
   const parts: string[] = []
   parts.push(`${audienceName ? `${audienceName}, good` : "Good"} evening — your team, checking in on ${w.weekLabel}.`)
   if (w.dealsClosed > 0) parts.push(`We closed ${w.dealsClosed} deal${w.dealsClosed === 1 ? "" : "s"} this week.`)
+  // Finance Manager's line — only the money the team actually earned/forecast (a dry week stays silent).
+  if (w.gciClosedThisWeek > 0 || w.gciWeightedPipeline > 0) {
+    const booked = w.gciClosedThisWeek > 0 ? `${fmtUsd(w.gciClosedThisWeek)} in gross commission booked this week` : `no commission booked this week`
+    const pipeline = w.gciWeightedPipeline > 0 ? `, with ${fmtUsd(w.gciWeightedPipeline)} weighted in the pipeline` : ""
+    parts.push(`Finance Manager: ${booked}${pipeline}.`)
+  }
   if (w.teamPlays > 0) parts.push(`The managers huddled and ran ${w.teamPlays} coordinated team play${w.teamPlays === 1 ? "" : "s"} instead of scattered touches.`)
   if (w.fireDrills > 0) parts.push(`We caught ${w.fireDrills} uncovered deadline${w.fireDrills === 1 ? "" : "s"} before ${w.fireDrills === 1 ? "it" : "they"} burned a deal — save plans went out the same hour.`)
   if (w.whispers > 0) parts.push(`${w.whispers} appointment briefing${w.whispers === 1 ? "" : "s"} whispered before you walked in.`)
@@ -122,6 +141,19 @@ export async function producePartnersMeeting(
       .eq("brokerage_id", brokerageId).eq("status", "closed").gte("updated_at", weekAgo),
   ])
 
+  // ── Finance Manager's numbers — gross commission booked this week + weighted pipeline, from the
+  //    SAME pure commission math the forecaster uses (dealCommission/forecastGci) — no second formula. ──
+  const [{ data: closedRows }, { data: pipelineRows }] = await Promise.all([
+    supabase.from("transactions")
+      .select("estimated_commission, commission_amount, commission_percentage, purchase_price")
+      .eq("brokerage_id", brokerageId).eq("status", "closed").gte("updated_at", weekAgo).limit(500),
+    supabase.from("transactions")
+      .select("id, deal_name, property_address, estimated_commission, commission_amount, commission_percentage, purchase_price, win_probability, stage, estimated_close_date, close_date")
+      .eq("brokerage_id", brokerageId).in("status", ["active", "under_contract", "closing"]).is("deleted_at", null).limit(500),
+  ])
+  const gciClosedThisWeek = ((closedRows ?? []) as any[]).reduce((s, t) => s + dealCommission(t), 0)
+  const gciWeightedPipeline = forecastGci(0, toPipeline((pipelineRows ?? []) as any[]), now).weightedPipeline
+
   const weekStart = new Date(now.getTime() - 7 * 86_400_000)
   const week: WeekInBusiness = {
     weekLabel: `the week of ${weekStart.toISOString().slice(0, 10)}`,
@@ -135,6 +167,8 @@ export async function producePartnersMeeting(
     proposalsSent: sent.count ?? 0,
     proposalsPending: pending.count ?? 0,
     dealsClosed: closed.count ?? 0,
+    gciClosedThisWeek,
+    gciWeightedPipeline,
   }
 
   // ── The partners: leadership first, agents as fallback ──

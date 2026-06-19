@@ -15,7 +15,7 @@
  *
  * Run: npx tsx scripts/manager-dissent-simulator.ts  (npm run test:manager-dissent)
  */
-import { pickReviewer, reviewProposal, runManagerDissent, REVIEW_MARK } from "../lib/kernel/manager-dissent"
+import { pickReviewer, reviewProposal, runManagerDissent, REVIEW_MARK, evaluateCompliance, compliancePreflight } from "../lib/kernel/manager-dissent"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -62,6 +62,27 @@ async function main() {
   check("…but the Deal Coordinator's own fire-drill comms are exempt", fireDc.verdict === "pass")
   const spacing = reviewProposal({ proposer: "sphere_of_influence", channel: "portal", subject: "Hi", body: "Checking in!" }, { ...cleanCtx, hoursSinceLastSend: 5 })
   check("client heard from us 5h ago → spacing DISSENT", spacing.verdict === "dissent" && spacing.objections[0].includes("5h ago"))
+
+  console.log("\n[Layer 1b · Compliance Officer pre-flight — the named owner of consent + Fair Housing]")
+  const pf = (body: string, ctx = cleanCtx, channel = "portal") =>
+    compliancePreflight({ proposer: "shopping_agent", channel, subject: null, body }, ctx)
+  check("clean copy → preflight CLEAR, owned by the Compliance Officer",
+    pf("Hope the move went smoothly — here if you need anything.").status === "clear" &&
+    pf("Hope the move went smoothly.").manager === "compliance_officer")
+  check("Fair Housing steering → preflight ADVISORY (human still decides), finding names the fix",
+    (() => { const r = pf("This home is perfect for families in a safe neighborhood."); return r.status === "advisory" && r.findings.some((f) => f.startsWith("Fair Housing")) })())
+  check("withdrawn relationship → preflight BLOCKED (a consent hard-stop)",
+    pf("Checking in!", { ...cleanCtx, recipientWithdrawn: true }).status === "blocked")
+  check("revoked email on an email proposal → preflight BLOCKED",
+    pf("Checking in!", { ...cleanCtx, emailRevoked: true }, "email").status === "blocked")
+  // evaluateCompliance is the ONE shared evaluator reviewProposal composes — the slices must agree.
+  const fhBody = "This home is perfect for families and in a safe neighborhood."
+  const ev = evaluateCompliance({ proposer: "shopping_agent", channel: "portal", subject: null, body: fhBody }, cleanCtx)
+  const rv = reviewProposal({ proposer: "shopping_agent", channel: "portal", subject: null, body: fhBody }, cleanCtx)
+  check("evaluateCompliance advisories are exactly reviewProposal's Fair Housing objections (one source, no drift)",
+    ev.advisories.length >= 2 && ev.advisories.every((a) => rv.objections.includes(a)))
+  check("a coordination-only flag (spacing) is NOT attributed to compliance",
+    evaluateCompliance({ proposer: "sphere_of_influence", channel: "portal", subject: null, body: "Checking in!" }, { ...cleanCtx, hoursSinceLastSend: 5 }).advisories.length === 0)
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
@@ -114,7 +135,7 @@ async function main() {
       (a2 as any).status === "proposed" && ((a2 as any).rationale ?? "").includes("DISSENTS") && ((a2 as any).rationale ?? "").includes("perfect for families"))
     const { data: a3 } = await svc.from("agent_client_messages").select("status, send_error, approved_by").eq("id", pGone).single()
     check("withdrawn recipient → machine VETO (rejected, audit trail, NO forged approver)",
-      (a3 as any).status === "rejected" && ((a3 as any).send_error ?? "").includes("vetoed by peer review") && (a3 as any).approved_by === null)
+      (a3 as any).status === "rejected" && ((a3 as any).send_error ?? "").includes("Compliance Officer pre-flight") && (a3 as any).approved_by === null)
 
     const r2 = await runManagerDissent(brokerageId, {}, svc)
     const reReviewed = [pClean, pFh].filter(() => false).length // marks present → skipped

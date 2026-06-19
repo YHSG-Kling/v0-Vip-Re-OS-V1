@@ -60,30 +60,64 @@ export interface ReviewVerdict {
   objections: string[]
 }
 
-/** Pure: the review. Vetoes are reserved for proposals that must never reach the
- *  human; everything else is dissent (annotated) — the human stays the decider. */
-export function reviewProposal(p: ProposalUnderReview, ctx: ReviewContext): ReviewVerdict {
-  const vetoes: string[] = []
-  const objections: string[] = []
+/** The Compliance Officer's slice of the review — the regulatory findings this manager is
+ *  ACCOUNTABLE for (Fair Housing steering + revoked/withdrawn consent), separated from the
+ *  peer reviewer's coordination checks (fire-drill timing, spacing). `blocking` findings are
+ *  hard stops (a proposal that must never reach the human → veto); `advisories` annotate. */
+export interface ComplianceFinding {
+  blocking: string[]
+  advisories: string[]
+}
 
+/** Pure: the Compliance Officer's pre-flight on a proposal — consent first (a closed channel
+ *  or a withdrawn relationship is a hard block), then Fair Housing steering language against
+ *  the SHARED pattern list (one source of truth with the messaging + ads gates). Owned by the
+ *  Compliance Officer; reused by reviewProposal so there is exactly one compliance evaluator. */
+export function evaluateCompliance(p: ProposalUnderReview, ctx: ReviewContext): ComplianceFinding {
+  const blocking: string[] = []
   if (ctx.recipientWithdrawn) {
-    vetoes.push("relationship is WITHDRAWN — the consent chain promised nothing further would be proposed")
+    blocking.push("relationship is WITHDRAWN — the consent chain promised nothing further would be proposed")
   }
   if (p.channel === "email" && ctx.emailRevoked) {
-    vetoes.push("the recipient revoked email — this channel is closed to us")
+    blocking.push("the recipient revoked email — this channel is closed to us")
   }
   if (p.channel === "sms" && ctx.smsRevoked) {
-    vetoes.push("the recipient revoked sms — this channel is closed to us")
+    blocking.push("the recipient revoked sms — this channel is closed to us")
   }
-  if (vetoes.length > 0) return { verdict: "veto", objections: vetoes }
 
+  const advisories: string[] = []
   const text = `${p.subject ?? ""} ${p.body}`
   for (const fh of FAIR_HOUSING_PATTERNS) {
     fh.pattern.lastIndex = 0
     if (fh.pattern.test(text)) {
-      objections.push(`Fair Housing (${fh.severity}): "${fh.phrase}" — say "${fh.fix}" instead (${fh.reference})`)
+      advisories.push(`Fair Housing (${fh.severity}): "${fh.phrase}" — say "${fh.fix}" instead (${fh.reference})`)
     }
   }
+  return { blocking, advisories }
+}
+
+/** The Compliance Officer's pre-flight VERDICT for the egress (Command Center proposal card):
+ *  blocked (a hard consent stop), advisory (Fair Housing language to fix), or clear. Always
+ *  attributed to the compliance_officer so the human sees WHO cleared it, not anonymous output. */
+export interface CompliancePreflight {
+  manager: ManagerKey
+  status: "clear" | "advisory" | "blocked"
+  findings: string[]
+}
+export function compliancePreflight(p: ProposalUnderReview, ctx: ReviewContext): CompliancePreflight {
+  const c = evaluateCompliance(p, ctx)
+  const status = c.blocking.length > 0 ? "blocked" : c.advisories.length > 0 ? "advisory" : "clear"
+  return { manager: "compliance_officer", status, findings: [...c.blocking, ...c.advisories] }
+}
+
+/** Pure: the full peer review. The Compliance Officer's findings (consent + Fair Housing) compose
+ *  FIRST — a consent block is a veto; everything else is dissent (annotated) and the human stays
+ *  the decider. The peer reviewer adds coordination checks (fire-drill timing, spacing) on top. */
+export function reviewProposal(p: ProposalUnderReview, ctx: ReviewContext): ReviewVerdict {
+  const compliance = evaluateCompliance(p, ctx)
+  if (compliance.blocking.length > 0) return { verdict: "veto", objections: compliance.blocking }
+
+  const objections = [...compliance.advisories]
   if (ctx.openFireDrill && p.proposer !== "deal_coordinator") {
     objections.push("a FIRE DRILL is live on this client's deal — hold routine touches until the save lands")
   }
@@ -163,19 +197,31 @@ export async function runManagerDissent(
 
     const reviewer = pickReviewer(p.agent_kind)
     const reviewerLabel = MANAGERS[reviewer].label
-    const result = reviewProposal(
-      { proposer: p.agent_kind, channel: p.channel, subject: p.subject, body: p.body }, ctx,
-    )
+    const complianceLabel = MANAGERS.compliance_officer.label
+    const proposal = { proposer: p.agent_kind, channel: p.channel, subject: p.subject, body: p.body }
+    // The Compliance Officer owns the consent + Fair Housing slice; the peer reviewer owns the
+    // coordination slice (timing/spacing) — attributed separately so the human sees WHO flagged what.
+    const compliance = evaluateCompliance(proposal, ctx)
+    const result = reviewProposal(proposal, ctx)
+    const coordination = result.objections.filter((o) => !compliance.advisories.includes(o))
     reviewed += 1
 
     if (result.verdict === "veto") {
-      // Machine veto — auditable, no forged human approver, only while still proposed.
+      // Machine veto — a Compliance Officer pre-flight HARD STOP (consent). Auditable, no forged
+      // human approver, only while still proposed.
       const { data: done } = await supabase.from("agent_client_messages")
-        .update({ status: "rejected", send_error: `vetoed by peer review (${reviewerLabel}): ${result.objections[0]}` })
+        .update({ status: "rejected", send_error: `vetoed by ${complianceLabel} pre-flight: ${result.objections[0]}` })
         .eq("id", p.id).eq("status", "proposed").select("id").maybeSingle()
       if (done) vetoes += 1
     } else if (result.verdict === "dissent") {
-      const annotation = `\n\n${REVIEW_MARK} PEER REVIEW — ${reviewerLabel} DISSENTS:\n${result.objections.map((o) => `- ${o}`).join("\n")}`
+      // The Compliance Officer leads the header when Fair Housing is involved (it owns that finding);
+      // otherwise the coordination peer reviewer does. Each line is attributed inline to its owner.
+      const who = compliance.advisories.length > 0 ? complianceLabel : reviewerLabel
+      const lines = [
+        ...compliance.advisories.map((o) => `- [${complianceLabel}] ${o}`),
+        ...coordination.map((o) => `- [${reviewerLabel}] ${o}`),
+      ]
+      const annotation = `\n\n${REVIEW_MARK} PEER REVIEW — ${who} DISSENTS:\n${lines.join("\n")}`
       const { data: done } = await supabase.from("agent_client_messages")
         .update({ rationale: `${p.rationale ?? ""}${annotation}` })
         .eq("id", p.id).eq("status", "proposed").select("id").maybeSingle()
