@@ -22,6 +22,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { isAudienceUploadEligible, AUDIENCE_CONSENT_COLUMNS } from "@/lib/ads/audience-eligibility"
 import { createHash } from "node:crypto"
 
 export const dynamic = "force-dynamic"
@@ -123,14 +124,14 @@ export async function GET(req: NextRequest) {
     const leadIds    = rows.map((r) => r.lead_id).filter((id): id is string => !!id)
     const [contactsR, leadsR] = await Promise.all([
       contactIds.length > 0
-        ? svc.from("contacts").select("id, email, phone, first_name, last_name").in("id", contactIds)
+        ? svc.from("contacts").select(`id, email, phone, first_name, last_name, ${AUDIENCE_CONSENT_COLUMNS}`).in("id", contactIds)
         : Promise.resolve({ data: [] }),
       leadIds.length > 0
         ? svc.from("leads").select("id, email, phone, first_name, last_name, mailing_zip").in("id", leadIds)
         : Promise.resolve({ data: [] }),
     ])
-    const contactById = new Map<string, { email: string | null; phone: string | null; first_name: string | null; last_name: string | null }>()
-    for (const r of (contactsR.data ?? []) as Array<{ id: string; email: string | null; phone: string | null; first_name: string | null; last_name: string | null }>) {
+    const contactById = new Map<string, any>()
+    for (const r of (contactsR.data ?? []) as any[]) {
       contactById.set(r.id, r)
     }
     const leadById = new Map<string, { email: string | null; phone: string | null; first_name: string | null; last_name: string | null; mailing_zip: string | null }>()
@@ -145,9 +146,12 @@ export async function GET(req: NextRequest) {
     const schema = ["EMAIL", "PHONE", "FN", "LN", "ZIP", "COUNTRY"]
     const data: string[][] = []
     const rowIdByIndex: string[] = []  // parallel index so we can mark per-row outcomes
+    const suppressedRowIds: string[] = []  // contacts who revoked the PII-share (CCPA do-not-share)
     for (const r of rows) {
       const src = r.contact_id ? contactById.get(r.contact_id) : (r.lead_id ? leadById.get(r.lead_id) : null)
       if (!src) continue
+      // PII-share gate: never upload a withdrawn / fully-opted-out contact's identifiers to Meta.
+      if (r.contact_id && !isAudienceUploadEligible(src)) { suppressedRowIds.push(r.id); continue }
       const email = src.email ? hash(src.email) : ""
       const phone = src.phone ? hash(normalizePhone(src.phone)) : ""
       const fn    = src.first_name ? hash(src.first_name) : ""
@@ -160,11 +164,16 @@ export async function GET(req: NextRequest) {
       rowIdByIndex.push(r.id)
     }
 
+    // CCPA do-not-share: drop opted-out / withdrawn contacts from the audience (never uploaded).
+    if (suppressedRowIds.length > 0) {
+      await svc.from("audience_members").update({ sync_status: "removed" }).in("id", suppressedRowIds)
+    }
+
     if (data.length === 0) {
       await svc.from("audience_members")
         .update({ sync_status: "failed" })
-        .in("id", rows.map((r) => r.id))
-      totalFailed += rows.length
+        .in("id", rows.map((r) => r.id).filter((id) => !suppressedRowIds.includes(id)))
+      totalFailed += rows.length - suppressedRowIds.length
       audienceRuns.push({ audience_id: audienceId, attempted: rows.length, synced: 0, rejected: rows.length, error: "no_identifiable_pii" })
       continue
     }
