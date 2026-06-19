@@ -442,6 +442,11 @@ export async function loadBrokerageFinancialSummary(
       .select("*", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId)
 
+    const { count: teamCount } = await supabase
+      .from("teams")
+      .select("*", { count: "exact", head: true })
+      .eq("brokerage_id", brokerageId)
+
     const { data: commissions } = await supabase
       .from("agent_commissions")
       .select("status")
@@ -461,7 +466,7 @@ export async function loadBrokerageFinancialSummary(
         ytdGrossIncome:      ytdGross,
         ytdAgentSplits:      ytdAgentSplits,
         ytdBrokerageNet:     ytdGross - ytdAgentSplits,
-        teamCount:           0,  // TODO: fetch from teams table
+        teamCount:           teamCount ?? 0,
         agentCount:          agentCount ?? 0,
         pendingCommissions,
         approvedCommissions,
@@ -947,8 +952,41 @@ export async function createCommissionRecord(
     return { success: false, error: String(error) }
   }
 }
+// ── Report serialization (pure, testable) ──────────────────────────────────────
+const fmtMoney = (n: number) => `$${Math.round(Number(n) || 0).toLocaleString("en-US")}`
+
+/** PURE: flatten a brokerage financial summary into labelled rows for CSV/PDF. */
+export function financialReportRows(
+  s: BrokerageFinancialSummary,
+  meta: { reportType: string; dateFrom?: string | null; dateTo?: string | null; generatedAt: string },
+): Array<[string, string]> {
+  return [
+    ["Report Type", meta.reportType],
+    ["Period From", meta.dateFrom ?? "—"],
+    ["Period To", meta.dateTo ?? "—"],
+    ["Generated", meta.generatedAt],
+    ["MTD Gross Income", fmtMoney(s.mtdGrossIncome)],
+    ["MTD Agent Splits", fmtMoney(s.mtdAgentSplits)],
+    ["MTD Brokerage Net", fmtMoney(s.mtdBrokerageNet)],
+    ["YTD Gross Income", fmtMoney(s.ytdGrossIncome)],
+    ["YTD Agent Splits", fmtMoney(s.ytdAgentSplits)],
+    ["YTD Brokerage Net", fmtMoney(s.ytdBrokerageNet)],
+    ["Agents", String(s.agentCount)],
+    ["Teams", String(s.teamCount)],
+    ["Pending Commissions", String(s.pendingCommissions)],
+    ["Approved Commissions", String(s.approvedCommissions)],
+  ]
+}
+
+/** PURE: RFC-4180 CSV (quote-escaped). */
+export function rowsToCsv(header: [string, string], rows: Array<[string, string]>): string {
+  const esc = (v: string) => `"${String(v).replace(/"/g, '""')}"`
+  return [header, ...rows].map((r) => r.map(esc).join(",")).join("\r\n")
+}
+
 /**
- * exportFinancialReport — CSV/PDF export with audit trail
+ * exportFinancialReport — REAL CSV/PDF export with audit trail. Serializes live brokerage financials
+ * into a downloadable data-URI (no fake URL, no storage dependency): CSV via rowsToCsv, PDF via pdf-lib.
  */
 export async function exportFinancialReport(
   input: ExportFinancialReportInput
@@ -962,10 +1000,37 @@ export async function exportFinancialReport(
       return { success: false, error: "Insufficient permissions to export reports" }
     }
 
-    // TODO: Implement CSV/PDF generation logic
-    // For now, return a placeholder blob URL
     const generatedAt = new Date().toISOString()
     const filename = `financial-report-${reportType}-${generatedAt.split("T")[0]}.${format}`
+
+    // Pull the LIVE brokerage financials and serialize them — real data, real downloadable file.
+    const summaryRes = await loadBrokerageFinancialSummary({ ctx, brokerageId })
+    if (!summaryRes.success || !summaryRes.data) {
+      return { success: false, error: summaryRes.error ?? "Could not load financials to export" }
+    }
+    const rows = financialReportRows(summaryRes.data, { reportType, dateFrom, dateTo, generatedAt })
+
+    let fileUrl: string
+    if (format === "csv") {
+      const csv = rowsToCsv(["Metric", "Value"], rows)
+      fileUrl = `data:text/csv;base64,${Buffer.from(csv, "utf8").toString("base64")}`
+    } else {
+      const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib")
+      const pdf = await PDFDocument.create()
+      const page = pdf.addPage([612, 792])
+      const font = await pdf.embedFont(StandardFonts.Helvetica)
+      const bold = await pdf.embedFont(StandardFonts.HelveticaBold)
+      let y = 740
+      page.drawText("Financial Report", { x: 50, y, size: 18, font: bold, color: rgb(0.1, 0.1, 0.1) })
+      y -= 34
+      for (const [k, v] of rows) {
+        page.drawText(`${k}`, { x: 50, y, size: 11, font: bold })
+        page.drawText(v, { x: 300, y, size: 11, font })
+        y -= 22
+      }
+      const bytes = await pdf.save()
+      fileUrl = `data:application/pdf;base64,${Buffer.from(bytes).toString("base64")}`
+    }
 
     // Emit lifecycle event
     await supabase
@@ -981,7 +1046,7 @@ export async function exportFinancialReport(
     return {
       success: true,
       data: {
-        fileUrl:     `https://storage.example.com/${filename}`,  // Placeholder
+        fileUrl,
         format,
         generatedAt,
       },
