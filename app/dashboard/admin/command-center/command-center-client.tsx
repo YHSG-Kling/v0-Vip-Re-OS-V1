@@ -9,6 +9,7 @@ import { approveAgentAction, rejectAgentAction } from "@/app/actions/command-cen
 import type { CommandCenterData, CommandCenterAction, CommandCenterSession } from "@/lib/kernel/command-center"
 import { MANAGERS } from "@/lib/kernel/manager-registry"
 import { ManagerTalkFeed } from "./manager-talk-feed"
+import { CommandBar } from "./command-bar"
 
 const SESSION_BADGE: Record<string, string> = {
   running:    "bg-green-100 text-green-800",
@@ -182,6 +183,9 @@ export function CommandCenterClient({
           </a>
         </section>
       )}
+
+      {/* Command your team (text) — routes through the SAME dispatcher the voice admin uses. */}
+      <CommandBar />
 
       {/* Managers talking — the inter-manager bus made visible: who told whom what,
           and what the addressed manager did about it. Registry-driven identity +

@@ -20,16 +20,19 @@ import type { StandupItem } from "@/lib/kernel/morning-standup"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-const WORD_ORDINALS: Record<string, number> = {
-  one: 1, first: 1, two: 2, second: 2, three: 3, third: 3,
-}
+// Explicit ordinal words (first/second/third) are checked BEFORE the cardinals (one/two/three)
+// so "do the third one" resolves to 3 — the cardinal "one" is a pronoun there, not the rank.
+const WORD_ORDINALS: Array<[string, number]> = [
+  ["first", 1], ["second", 2], ["third", 3],
+  ["one", 1], ["two", 2], ["three", 3],
+]
 
-/** Pure: parse a spoken ordinal — "number two", "the second one", "#2", "do 1", "first". */
+/** Pure: parse a spoken ordinal — "number two", "the second one", "#2", "do 1", "the third one". */
 export function parseOrdinal(text: string): number | null {
   const t = text.toLowerCase()
   const digit = t.match(/(?:number|item|#|no\.?|task)\s*([1-3])\b/) ?? t.match(/\b([1-3])\b/)
   if (digit) return Number(digit[1])
-  for (const [word, n] of Object.entries(WORD_ORDINALS)) {
+  for (const [word, n] of WORD_ORDINALS) {
     if (new RegExp(`\\b${word}\\b`).test(t)) return n
   }
   return null

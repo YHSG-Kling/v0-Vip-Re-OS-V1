@@ -29,29 +29,17 @@ export interface TeamCommandResult {
   data?: Record<string, unknown>
 }
 
-/** The read-only bullpen commands. */
-export const TEAM_QUERY_COMMANDS = new Set<string>(["team_query", "area_query", "morning_standup"])
-
-/** The ACTING commands — each delegates to a backend that enforces its own gate
- *  (proposal→approval + consent re-check for follow-ups; Fair Housing pre-flight for promos;
- *  per-step compliance for marketing enrollment; stand-up items routed to their rail). */
-export const TEAM_ACTION_COMMANDS = new Set<string>(["standup_action", "voice_followup", "start_marketing", "cut_promo"])
-
-/** Read-only buyer commands — search inventory + the market for a buyer, by voice. */
-export const BUYER_COMMANDS = new Set<string>(["find_properties"])
-
-/** All team-coordination commands this dispatcher routes (read-only + acting + buyer). */
-export const TEAM_COMMANDS = new Set<string>([...TEAM_QUERY_COMMANDS, ...TEAM_ACTION_COMMANDS, ...BUYER_COMMANDS])
+// Command-name catalog + isTeamCommand live in a PURE module so client/test code can import them
+// without this server-only file; re-exported here so existing importers of team-commands keep working.
+export {
+  TEAM_QUERY_COMMANDS, TEAM_ACTION_COMMANDS, BUYER_COMMANDS, TEAM_COMMANDS, isTeamCommand,
+} from "./team-command-names"
 
 /** Speak a price the way a person would say it ("$1.2 million" / "$450 thousand"). */
 function formatSpokenPrice(price: number | null | undefined): string {
   if (!price) return "an unlisted price"
   if (price >= 1_000_000) return `$${(price / 1_000_000).toFixed(1)} million`
   return `$${Math.round(price / 1000)} thousand`
-}
-
-export function isTeamCommand(name: string): boolean {
-  return TEAM_COMMANDS.has(name)
 }
 
 /** Resolve a contactId from a structured contact_id param, else from a spoken person name via the

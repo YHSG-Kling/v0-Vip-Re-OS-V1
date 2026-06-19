@@ -129,3 +129,42 @@ export async function rejectAgentAction(params: { queue: Queue; actionId: string
   revalidatePath("/dashboard/admin/command-center")
   return { ok: true, status: "skipped" as const }
 }
+
+/**
+ * COMMAND YOUR TEAM (text) — the One Command Center capstone: the human types a plain-language
+ * instruction and it routes through the SAME dispatcher the voice admin uses (no second brain).
+ * The deterministic parser maps the text to a { name, params }; read-only commands return the
+ * team's spoken answer, ACTING verbs delegate to backends that each enforce their own gate
+ * (proposal→approval + consent re-check for follow-ups, Fair Housing pre-flight for promos, etc.)
+ * — nothing sends autonomously. Ambiguous text returns a rephrase prompt rather than mis-route.
+ */
+export async function runTeamCommand(
+  text: string,
+): Promise<{ ok: boolean; spoken: string; command?: string; acting?: boolean }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, spoken: "You're not signed in." }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id, first_name")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, spoken: "I can't find your brokerage — contact your admin." }
+
+  const { parseTeamCommandText } = await import("@/lib/voice/parse-team-command")
+  const parsed = parseTeamCommandText(text)
+  if (!parsed) {
+    return { ok: false, spoken: "I didn't catch a team command in that. Try \"what should I do today\", \"what do you know about <name>\", \"anything near <address>\", or \"cut a reel for <listing>\"." }
+  }
+
+  const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
+  const { TEAM_ACTION_COMMANDS } = await import("@/lib/voice/team-command-names")
+  const r = await dispatchTeamCommand(
+    parsed.name,
+    parsed.params,
+    { brokerageId: u.brokerage_id, agentUserId: user.id, firstName: u.first_name ?? null },
+  )
+  const acting = TEAM_ACTION_COMMANDS.has(parsed.name)
+  if (acting && r.ok) revalidatePath("/dashboard/admin/command-center")
+  return { ok: r.ok, spoken: r.spoken, command: parsed.name, acting }
+}
