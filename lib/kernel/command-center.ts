@@ -27,6 +27,23 @@ export type { ApprovalSlaLevel }
 
 export type ManagerSessionStatus = "running" | "idle" | "terminated" | "error"
 
+/** Outbound CLIENT-FACING copy queues — broadcast/message content the Compliance Officer
+ *  pre-flights for Fair Housing (no single-recipient consent to block on, so advisory-only).
+ *  client_message is handled separately (it carries per-recipient consent → can hard-block). */
+export const OUTBOUND_COPY_QUEUES = new Set<string>([
+  "social", "newsletter", "direct_mail", "ad_creative", "predictive_listing", "blog", "podcast",
+])
+/** The human-readable copy keys across every content source's actionInput (lib/kernel/approval-sources).
+ *  Whitelisted so the Fair Housing scan reads real copy, never URLs/ids/config. */
+const COPY_KEYS = [
+  "content", "content_preview", "subject", "subject_line", "body", "copy_text",
+  "headline", "primary_text", "description", "call_to_action", "title", "excerpt",
+] as const
+/** Pure: pull the outbound copy out of an action's input for the Fair Housing scan. */
+export function extractProposalCopy(input: Record<string, unknown>): string {
+  return COPY_KEYS.map((k) => (typeof input[k] === "string" ? (input[k] as string) : "")).filter(Boolean).join("  ")
+}
+
 export interface CommandCenterSession {
   id:          string
   agentKind:   string | null
@@ -341,7 +358,19 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   const pendingActions: CommandCenterAction[] = rawActions
     .map((a): CommandCenterAction => {
       const mgr = resolveActionManager(a.queue, (a.actionInput?.agent_kind as string | null) ?? null)
-      return { ...a, managerKey: mgr.key, managerLabel: mgr.label }
+      // Extend the Compliance Officer pre-flight to ALL outbound copy (client_message already
+      // carries its consent-aware verdict); broadcast content is Fair-Housing-advisory only.
+      let compliance = a.compliance
+      if (!compliance && OUTBOUND_COPY_QUEUES.has(a.queue)) {
+        const copy = extractProposalCopy(a.actionInput)
+        if (copy) {
+          compliance = compliancePreflight(
+            { proposer: mgr.key, channel: "content", subject: null, body: copy },
+            { recipientWithdrawn: false, emailRevoked: false, smsRevoked: false, hoursSinceLastSend: null, openFireDrill: false },
+          )
+        }
+      }
+      return { ...a, managerKey: mgr.key, managerLabel: mgr.label, compliance }
     })
     .sort((a, b) => slaRank[a.slaLevel] - slaRank[b.slaLevel] || (a.proposedAt ?? "").localeCompare(b.proposedAt ?? ""))
 

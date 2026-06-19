@@ -23,6 +23,8 @@ import { dirname, join } from "node:path"
 import {
   MANAGERS, MAINTENANCE_DOMAINS, QUEUE_MANAGER, TABLE_MANAGER, type ManagerKey,
 } from "../lib/kernel/manager-registry"
+import { OUTBOUND_COPY_QUEUES, extractProposalCopy } from "../lib/kernel/command-center"
+import { compliancePreflight } from "../lib/kernel/manager-dissent"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -86,6 +88,30 @@ console.log("\n[5 · coverage breadth — the governance graph is substantial]")
 check("≥ 11 managers registered", allManagers.length >= 11)
 check("≥ 18 burn domains governed", domains.length >= 18)
 check("every domain proof string is well-formed (test:*)", domains.every(([, d]) => /^test:[a-z0-9-]+$/.test(d.proof)))
+
+// ── 6. Compliance Officer pre-flights every OUTBOUND-COPY queue (no unreviewed egress) ──
+console.log("\n[6 · Compliance Officer pre-flights every outbound-copy queue]")
+const emptyCtx = { recipientWithdrawn: false, emailRevoked: false, smsRevoked: false, hoursSinceLastSend: null, openFireDrill: false }
+const preflight = (input: Record<string, unknown>) =>
+  compliancePreflight({ proposer: "marketing_agent", channel: "content", subject: null, body: extractProposalCopy(input) }, emptyCtx)
+// Each content source stores its copy under a different key — the scan must read them all.
+const FH = "This home is perfect for families in a safe neighborhood."
+const COPY_BY_QUEUE: Record<string, Record<string, unknown>> = {
+  social: { content: FH }, newsletter: { subject_line: "Open house", content_preview: FH },
+  direct_mail: { copy_text: FH }, ad_creative: { headline: "Tour today", primary_text: FH },
+  predictive_listing: { subject: "Thinking of selling?", body: FH }, blog: { title: "Guide", content_preview: FH },
+  podcast: { title: "Episode 4", description: FH },
+}
+for (const q of OUTBOUND_COPY_QUEUES) {
+  const v = preflight(COPY_BY_QUEUE[q] ?? {})
+  check(`'${q}': Fair Housing copy → Compliance Officer ADVISORY`, v.manager === "compliance_officer" && v.status === "advisory")
+}
+check("clean broadcast copy → Compliance Officer CLEARED",
+  preflight({ content: "Newly listed — 3 bed, 2 bath. Open Saturday, come take a look." }).status === "clear")
+check("every outbound-copy queue is a real Command Center queue (no phantom surface)",
+  Array.from(OUTBOUND_COPY_QUEUES).every((q) => q in QUEUE_MANAGER))
+check("broadcast content is advisory-only (no single-recipient consent → never a hard block)",
+  Array.from(OUTBOUND_COPY_QUEUES).every((q) => preflight(COPY_BY_QUEUE[q] ?? {}).status !== "blocked"))
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
