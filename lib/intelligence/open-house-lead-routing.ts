@@ -29,7 +29,10 @@ export interface OpenHouseHandoff {
   name: string | null
 }
 
-const HOT_INTEREST = new Set(["hot"])
+// Hot interest across BOTH vocabularies in use: the temperature scale ("hot") and the engagement
+// scale ("very_interested" / "ready_to_offer"). A ready-to-offer buyer with a LOW AI score is
+// exactly the open-house lead we must not drop — interest overrides score.
+const HOT_INTEREST = new Set(["hot", "very_interested", "ready_to_offer"])
 const DEFAULT_MIN_SCORE = 70
 
 /**

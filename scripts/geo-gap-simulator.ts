@@ -48,8 +48,11 @@ async function main() {
   check("recommendation names the page + cadence", /\/lm\/abc/.test(geoGapRecommendation("abc", { cited: 0, notCited: 6, notChecked: 0, distinctCheckedDays: 3 })))
 
   // The signal must be catalogued and its kind must match the live classifier (signal-integrity parity).
+  // The GEO loop was upgraded from feed-only to HANDLED: the Campaign Orchestrator consumes the gap
+  // and proposes a gated regenerate_faq action (a real SIGNAL_HANDLERS consumer exists).
   const spec = signalSpec("geo_visibility_gap")
-  check("geo_visibility_gap is catalogued (feed_only)", !!spec && spec.disposition === "feed_only")
+  check("geo_visibility_gap is catalogued (handled — Campaign Orchestrator proposes regenerate_faq)",
+    !!spec && spec.disposition === "handled" && (spec.consumers ?? []).includes("campaign_orchestrator"))
   check("declared kind matches classifyCoordination", !!spec && spec.kind === classifyCoordination("geo_visibility_gap"))
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY && !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
