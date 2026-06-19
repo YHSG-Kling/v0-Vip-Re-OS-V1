@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "start": "next start",
     "type-check": "tsc --noEmit",
+    "guard": "npm run type-check && npm run test:schema-drift && npm run test:signal-integrity && npm run test:egress-coverage && npm run test:egress-scope && npm run test:voice-coverage && npm run test:manager-signals && npm run test:command-center",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:scrapers": "tsx scripts/scraper-simulator.ts",

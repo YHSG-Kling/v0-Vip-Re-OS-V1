@@ -873,6 +873,9 @@ export async function consumeManagerSignals(
 
 export interface ManagerTalkLine {
   id: string
+  /** Registry keys so the UI resolves accent/domain from MANAGERS (no drift). */
+  fromKey: string
+  toKey: string
   fromLabel: string
   toLabel: string
   message: string
@@ -897,6 +900,8 @@ export async function loadRecentManagerTalk(
     .order("created_at", { ascending: false }).limit(limit)
   return ((data ?? []) as any[]).map((r) => ({
     id: r.id,
+    fromKey: r.from_manager,
+    toKey: r.to_manager,
     fromLabel: (r.from_manager in MANAGERS ? MANAGERS[r.from_manager as ManagerKey].label : r.from_manager),
     toLabel: (r.to_manager in MANAGERS ? MANAGERS[r.to_manager as ManagerKey].label : r.to_manager),
     message: r.message,

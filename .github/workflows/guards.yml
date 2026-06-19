@@ -1,0 +1,45 @@
+# Egress integrity harness — the schema/coordination/governance contract, enforced.
+#
+# Ratcheted: schema-drift baseline is 0, so ANY new phantom-column reference fails here.
+# This is what makes the egress "harnessed" — the guards that were manual now block merge.
+#
+# Blocking gates (all proven green):
+#   · type-check        — no TS errors
+#   · schema-drift      — no code references a column the live table lacks (baseline 0)
+#   · signal-integrity  — every inter-manager signal_type is catalogued + has a real consumer
+#   · egress-coverage   — every governed deliverable maps to an owning manager queue
+#   · egress-scope      — egress scoping rules hold
+#   · voice-coverage    — voice admin tool registry is complete
+#   · manager-signals   — the bus publish/consume contract
+#   · command-center    — the aggregator loads cleanly
+#
+# NOTE: test:manager-ownership (every snapshot table → an explicit manager) is a separate
+# aspirational burn-down (~480 tables still fall to the fallback owner) and is intentionally
+# NOT yet blocking. It is the next zero-orphans cleanup, tracked separately.
+name: guards
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "claude/**"
+
+concurrency:
+  group: guards-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  egress-guards:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run egress integrity guards
+        run: npm run guard

@@ -54,20 +54,24 @@ export interface ManagerInfo {
   label:  string
   /** One-line domain the manager is accountable for (UI tooltip / grouping). */
   domain: string
+  /** Tailwind accent (bg + text) for the manager's identity chip in the Command
+   *  Center "managers talking" feed — registry-owned so the UI can't drift from a
+   *  hand-kept color map. */
+  accent: string
 }
 
 export const MANAGERS: Record<ManagerKey, ManagerInfo> = {
-  deal_coordinator:      { key: "deal_coordinator",      label: "Deal Coordinator",      domain: "Transactions & closings" },
-  shopping_agent:        { key: "shopping_agent",        label: "Shopping Agent",        domain: "Buyer journey" },
-  listing_concierge:     { key: "listing_concierge",     label: "Listing Concierge",     domain: "Sellers & listings" },
-  sphere_of_influence:   { key: "sphere_of_influence",   label: "Sphere Manager",        domain: "Lifetime closed & past clients — repeat & referral" },
-  campaign_orchestrator: { key: "campaign_orchestrator", label: "Campaign Orchestrator", domain: "Multi-touch campaigns & content" },
-  marketing_agent:       { key: "marketing_agent",       label: "Marketing Manager",     domain: "Brand & promotion" },
-  asset_manager:         { key: "asset_manager",         label: "Asset Manager",         domain: "Media & brand library" },
-  ads_manager:           { key: "ads_manager",           label: "Ads Manager",           domain: "Paid advertising" },
-  ai_isa:                { key: "ai_isa",                label: "AI ISA",                domain: "Lead qualification, nurture & re-engagement" },
-  data_steward:          { key: "data_steward",          label: "Data Steward",          domain: "Data integrity, identity & field stewardship" },
-  recruiting_manager:    { key: "recruiting_manager",    label: "Recruiting Manager",    domain: "Agent recruiting & talent pipeline (brokerage growth)" },
+  deal_coordinator:      { key: "deal_coordinator",      label: "Deal Coordinator",      domain: "Transactions & closings", accent: "bg-red-100 text-red-800" },
+  shopping_agent:        { key: "shopping_agent",        label: "Shopping Agent",        domain: "Buyer journey", accent: "bg-sky-100 text-sky-800" },
+  listing_concierge:     { key: "listing_concierge",     label: "Listing Concierge",     domain: "Sellers & listings", accent: "bg-teal-100 text-teal-800" },
+  sphere_of_influence:   { key: "sphere_of_influence",   label: "Sphere Manager",        domain: "Lifetime closed & past clients — repeat & referral", accent: "bg-violet-100 text-violet-800" },
+  campaign_orchestrator: { key: "campaign_orchestrator", label: "Campaign Orchestrator", domain: "Multi-touch campaigns & content", accent: "bg-indigo-100 text-indigo-800" },
+  marketing_agent:       { key: "marketing_agent",       label: "Marketing Manager",     domain: "Brand & promotion", accent: "bg-purple-100 text-purple-800" },
+  asset_manager:         { key: "asset_manager",         label: "Asset Manager",         domain: "Media & brand library", accent: "bg-orange-100 text-orange-800" },
+  ads_manager:           { key: "ads_manager",           label: "Ads Manager",           domain: "Paid advertising", accent: "bg-rose-100 text-rose-800" },
+  ai_isa:                { key: "ai_isa",                label: "AI ISA",                domain: "Lead qualification, nurture & re-engagement", accent: "bg-emerald-100 text-emerald-800" },
+  data_steward:          { key: "data_steward",          label: "Data Steward",          domain: "Data integrity, identity & field stewardship", accent: "bg-slate-200 text-slate-800" },
+  recruiting_manager:    { key: "recruiting_manager",    label: "Recruiting Manager",    domain: "Agent recruiting & talent pipeline (brokerage growth)", accent: "bg-amber-100 text-amber-900" },
 }
 
 /**
@@ -317,7 +321,7 @@ export function resolveTableManager(table: string): ManagerInfo {
 
 /** Fallback owner for any activity not yet mapped — surfaced so nothing is ever truly orphaned. */
 export const FALLBACK_MANAGER: ManagerInfo = {
-  key: "marketing_agent", label: "Operations", domain: "Unassigned — needs an owner",
+  key: "marketing_agent", label: "Operations", domain: "Unassigned — needs an owner", accent: "bg-slate-100 text-slate-700",
 }
 
 /**
