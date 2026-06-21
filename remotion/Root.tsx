@@ -36,6 +36,7 @@ import { PostcardFront4x6 } from "./PostcardFront4x6"
 import { PostcardBack4x6 } from "./PostcardBack4x6"
 import { PostcardFront6x9 } from "./PostcardFront6x9"
 import { PostcardBack6x9 } from "./PostcardBack6x9"
+import { PartnersMeetingReel } from "./PartnersMeetingReel"
 
 // 25 seconds @ 30 fps = 750 frames. 1080×1920 = vertical 9:16 — the
 // canonical social-reel format (TikTok / IG Reels / YouTube Shorts /
@@ -893,6 +894,41 @@ export const RemotionRoot: React.FC = () => {
             phone:           "(555) 555-1212",
             licenseLine:     "CA License # 02345678",
             shortDisclosure: "Equal Housing Opportunity. All information deemed reliable but not guaranteed.",
+          },
+        }}
+      />
+      {/* THE PARTNERS' MEETING — the AI team's weekly recap show, narrated by the broker's D-ID
+          avatar. Earned stat cards (deals/plays/drills/whispers/handoffs) + the Finance Manager's
+          booked-GCI card + the Compliance Officer's pre-flight disposition (the differentiator) +
+          the one ask. 1920×1080 desk/TV format, 30s @ 30fps = 900 frames; the composition packs the
+          earned cards into the card window so a quiet week is honest, not padded. */}
+      <Composition
+        id="PartnersMeetingReel"
+        component={PartnersMeetingReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={900}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={{
+          weekLabel: "the week of 2026-06-15",
+          cards: [
+            { value: "2", label: "DEALS CLOSED", sub: "this week", kind: "team" },
+            { value: "3", label: "TEAM PLAYS", sub: "managers coordinated, not scattered", kind: "team" },
+            { value: "1", label: "DEADLINES SAVED", sub: "caught before they burned a deal", kind: "team" },
+            { value: "$18K", label: "GROSS COMMISSION BOOKED", sub: "$1.2M weighted in the pipeline", kind: "finance" },
+            { value: "31", label: "OUTBOUND PRE-FLIGHTED", sub: "4 Fair-Housing/consent fixes caught · 1 released over objection", kind: "compliance" },
+          ],
+          oneAsk: "5 proposals waiting on you",
+          narration: null,
+          agentName: "Your Team",
+          avatarVideoUrl: null,
+          agentPhotoUrl: null,
+          brand: {
+            primaryColor: "#0F172A",
+            accentColor: "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark: true,
+            logoUrl: null,
           },
         }}
       />
