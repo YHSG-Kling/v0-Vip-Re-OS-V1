@@ -562,6 +562,54 @@ export async function loadCommissionDistributions(
 /**
  * recalculateCommissionState — Trigger cap recalculation + audit trail
  */
+// ── Cap anniversary state (pure, testable) ──────────────────────────────────────
+export interface CapRecordLite {
+  cap_amount: number | null
+  cap_paid_to_date: number | null
+  is_capped: boolean | null
+  anniversary_start: string
+  anniversary_end: string
+}
+export interface CapState {
+  isCapped: boolean
+  capPaidToDate: number
+  anniversaryStart: string
+  anniversaryEnd: string
+  /** The cap YEAR elapsed → the window advanced and the cap reset (the anniversary logic). */
+  rolledOver: boolean
+  /** Anything to persist (rollover or an is_capped flip). */
+  changed: boolean
+}
+
+/**
+ * PURE: the agent-cap state for `now`. A cap applies only while we're inside the anniversary year
+ * AND the agent has paid their full cap. When the year has elapsed, the window ROLLS FORWARD by
+ * whole years (handling multiple missed years) and the cap RESETS to 0 — the brokerage cap is an
+ * annual reset, not a lifetime total. No cap configured (cap_amount ≤ 0) is never "capped".
+ */
+export function computeCapState(r: CapRecordLite, now: Date = new Date()): CapState {
+  let start = new Date(r.anniversary_start)
+  let end = new Date(r.anniversary_end)
+  let capPaid = Number(r.cap_paid_to_date) || 0
+  let rolledOver = false
+  while (!isNaN(end.getTime()) && now.getTime() > end.getTime()) {
+    start = new Date(start); start.setFullYear(start.getFullYear() + 1)
+    end = new Date(end); end.setFullYear(end.getFullYear() + 1)
+    capPaid = 0
+    rolledOver = true
+  }
+  const capAmount = Number(r.cap_amount) || 0
+  const withinYear = isNaN(end.getTime()) || now.getTime() <= end.getTime()
+  const isCapped = capAmount > 0 && capPaid >= capAmount && withinYear
+  const changed = rolledOver || isCapped !== !!r.is_capped
+  return {
+    isCapped, capPaidToDate: capPaid,
+    anniversaryStart: isNaN(start.getTime()) ? r.anniversary_start : start.toISOString(),
+    anniversaryEnd: isNaN(end.getTime()) ? r.anniversary_end : end.toISOString(),
+    rolledOver, changed,
+  }
+}
+
 export async function recalculateCommissionState(
   input: RecalculateCommissionStateInput
 ): Promise<KernelFinancialResult<{ recalculated: number; capped: number; updated_at: string }>> {
@@ -575,21 +623,25 @@ export async function recalculateCommissionState(
       .select("*")
       .eq("brokerage_id", brokerageId)
 
-    // TODO: Implement anniversary logic to determine if each agent is capped
+    // Anniversary cap logic: capped within the cap year once fully paid; the window rolls forward
+    // and the cap RESETS when the anniversary year elapses (computeCapState — pure, tested).
     const now = new Date()
     let capped = 0
 
     for (const record of capTracking ?? []) {
-      const anniversaryEnd = new Date(record.anniversary_end)
-      const isCapped = record.cap_paid_to_date >= record.cap_amount && now <= anniversaryEnd
-
-      if (isCapped !== record.is_capped) {
+      const st = computeCapState(record as CapRecordLite, now)
+      if (st.changed) {
         await supabase
           .from("agent_cap_tracking")
-          .update({ is_capped: isCapped })
+          .update({
+            is_capped: st.isCapped,
+            ...(st.rolledOver
+              ? { cap_paid_to_date: st.capPaidToDate, anniversary_start: st.anniversaryStart, anniversary_end: st.anniversaryEnd }
+              : {}),
+          })
           .eq("id", record.id)
-        if (isCapped) capped++
       }
+      if (st.isCapped) capped++
     }
 
     // Emit lifecycle event
