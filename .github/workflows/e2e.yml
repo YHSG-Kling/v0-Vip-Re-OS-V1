@@ -1,0 +1,33 @@
+name: e2e
+# END-TO-END FLOW TESTS — runs the simulators' LIVE layers (seed → run → assert → cleanup) against a
+# real Supabase database. These are skipped in the per-push `guards` workflow (no DB there); here they
+# execute the full business-process journey for real when the SUPABASE secrets are configured.
+#
+# Triggers: nightly + manual (these are DB-heavy, so not on every push). Without the secrets the
+# simulators skip their live layer gracefully and the run still passes (safe for forks).
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 7 * * *"   # 07:00 UTC nightly
+
+jobs:
+  e2e-flows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Provided via repo Secrets; empty → simulators skip the live layer (still exit 0).
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Type-check
+        run: npm run type-check
+      - name: Run end-to-end business-process flows (live DB seed/assert/cleanup)
+        run: npm run test:e2e:flows
