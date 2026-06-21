@@ -1,7 +1,0 @@
-export { default as ChatWidget } from './ChatWidget'
-export { default as ChatInterface } from './ChatInterface'
-export { default as ChatSessionsList } from './ChatSessionsList'
-export { default as LeadInsightsPanel } from './LeadInsightsPanel'
-export { default as TemplateSelector } from './TemplateSelector'
-export { ThemFirstChatAssistant } from './ThemFirstChatAssistant'
-export { default as ThemFirstCoach } from './ThemFirstCoach'

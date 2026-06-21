@@ -1,5 +1,0 @@
-export { ContactForm } from './ContactForm'
-export { default as ContactDetailModal } from './ContactDetailModal'
-export { ContactEditForm } from './ContactEditForm'
-export { ContactDetail } from './ContactDetail'
-export { ContactsList } from './ContactsList'
