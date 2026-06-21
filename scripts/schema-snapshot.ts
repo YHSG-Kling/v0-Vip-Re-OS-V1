@@ -703,4 +703,12 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   workflow_step_executions: ["action_type", "completed_at", "error_message", "execution_id", "id", "params", "result", "retry_count", "started_at", "status", "step_id", "step_name"],
   workflow_step_runs: ["attribution_source", "blocked_reason", "channel", "conversion_value_cents", "converted_at", "created_at", "duration_ms", "enrollment_id", "finished_at", "id", "output_variable_name", "provider_key", "provider_message_id", "started_at", "status", "step_id", "step_output"],
   workflow_webhook_events: ["brokerage_id", "contact_id", "event_type", "id", "payload", "received_at", "source"],
+  // Live-schema conformance (MCP introspection): code-referenced live tables the snapshot had missed.
+  long_form_videos: ["created_at", "description", "id", "published_at", "script_id", "status", "title", "video_url"],
+  transparency_videos: ["created_at", "description", "duration_seconds", "id", "thumbnail_url", "title", "video_url"],
+  journey_blueprints: ["actions_json", "cards_json", "created_at", "id", "is_active", "persona", "priority_order", "stage", "team_visibility_enabled", "tools_enabled", "transparency_videos_enabled"],
+  credit_status: ["brokerage_id", "contact_id", "credit_score", "debt_to_income", "id", "last_updated", "notes"],
+  marketing_stats: ["channel", "clicks", "conversions", "created_at", "date", "id", "impressions", "spend"],
+  keywords: ["competition", "created_at", "id", "keyword", "notes", "search_volume"],
+  user_activity: ["activity_type", "created_at", "description", "id", "metadata_json", "user_id"],
 }

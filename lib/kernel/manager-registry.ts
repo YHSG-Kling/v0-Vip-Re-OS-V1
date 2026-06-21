@@ -1007,6 +1007,14 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   audience_sync_runs: "ads_manager",
   competitor_ads: "ads_manager",
   facebook_custom_audiences: "ads_manager",
+  // ── Live-schema conformance (MCP introspection) — code-referenced tables the snapshot had missed ──
+  long_form_videos: "asset_manager",
+  transparency_videos: "asset_manager",
+  journey_blueprints: "data_steward",
+  credit_status: "ai_isa",
+  marketing_stats: "marketing_agent",
+  keywords: "marketing_agent",
+  user_activity: "data_steward",
 }
 
 /** Resolve the manager accountable for a maintenance/burn domain (never undefined). */
