@@ -1,6 +1,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { loadLeadIntakeCockpit, REJECTION_REASON_LABEL } from "@/lib/kernel/lead-intake-cockpit"
+import { listRawLeadsForReview } from "@/app/actions/lead-promotion/promote-lead"
+import { RawLeadsReviewPanel } from "./raw-leads-review"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 
@@ -34,6 +36,9 @@ export default async function LeadIntakeCockpitPage() {
 
   const data = await loadLeadIntakeCockpit(brokerageId)
   const { funnel } = data
+
+  const rawLeadsRes = await listRawLeadsForReview({ limit: 100 })
+  const rawLeadRows = rawLeadsRes.ok ? rawLeadsRes.rows : []
 
   const stageCards: Array<{ label: string; value: number; hint?: string }> = [
     { label: "Raw scraped", value: funnel.rawTotal, hint: "all rows on the bench" },
@@ -172,6 +177,8 @@ export default async function LeadIntakeCockpitPage() {
           </div>
         </>
       )}
+
+      <RawLeadsReviewPanel initialRows={rawLeadRows} />
     </div>
   )
 }

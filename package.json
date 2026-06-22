@@ -35,6 +35,7 @@
     "test:lead-readiness-handoff": "tsx scripts/lead-readiness-handoff-simulator.ts",
     "test:commission-disclosure": "tsx scripts/commission-disclosure-simulator.ts",
     "test:multi-offer-rules": "tsx scripts/multi-offer-rules-simulator.ts",
+    "test:raw-lead-promotion": "tsx scripts/raw-lead-promotion-simulator.ts",
     "test:fatigue": "tsx scripts/fatigue-simulator.ts",
     "test:cma-presentation": "tsx scripts/cma-presentation-simulator.ts",
     "test:newsletter-seo-score": "tsx scripts/newsletter-seo-score-simulator.ts",

@@ -205,3 +205,74 @@ export async function promoteLead(
     }
   }
 }
+
+// ── Admin Raw Leads review list (brokerage-scoped) ──────────────────────────
+export interface RawLeadReviewRow {
+  id: string
+  firstName: string | null
+  lastName: string | null
+  email: string | null
+  phone: string | null
+  city: string | null
+  state: string | null
+  source: string | null
+  sourceFamily: string | null
+  processingStatus: string | null
+  dedupeStatus: string | null
+  leadId: string | null
+  promotionAttempts: number | null
+  errorMessage: string | null
+  createdAt: string
+}
+
+/**
+ * Lists recent raw_scraped_leads for the caller's brokerage so an admin can review
+ * and manually promote them (un-promoted first). Same role gate + brokerage scoping
+ * as promoteLead, so every listed record is promotable by the caller.
+ */
+export async function listRawLeadsForReview(opts?: {
+  limit?: number
+}): Promise<{ ok: true; rows: RawLeadReviewRow[] } | { ok: false; error: string }> {
+  const authClient = await createClient()
+  const { data: { user } } = await authClient.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: callerRow } = await authClient
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!callerRow?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
+  if (!PROMOTE_ROLES.includes(callerRow.user_type ?? "")) {
+    return { ok: false, error: "Only brokers and admins can review raw leads" }
+  }
+
+  const supabase = createServiceClient()
+  const { data, error } = await supabase
+    .from("raw_scraped_leads")
+    .select("id, first_name, last_name, email, phone, city, state, source, source_family, processing_status, dedupe_status, lead_id, promotion_attempts, error_message, created_at")
+    .eq("brokerage_id", callerRow.brokerage_id)
+    // un-promoted first, then most recent
+    .order("lead_id", { ascending: true, nullsFirst: true })
+    .order("created_at", { ascending: false })
+    .limit(opts?.limit ?? 100)
+  if (error) return { ok: false, error: error.message }
+
+  const rows: RawLeadReviewRow[] = (data ?? []).map((r: Record<string, unknown>) => ({
+    id: r.id as string,
+    firstName: (r.first_name as string | null) ?? null,
+    lastName: (r.last_name as string | null) ?? null,
+    email: (r.email as string | null) ?? null,
+    phone: (r.phone as string | null) ?? null,
+    city: (r.city as string | null) ?? null,
+    state: (r.state as string | null) ?? null,
+    source: (r.source as string | null) ?? null,
+    sourceFamily: (r.source_family as string | null) ?? null,
+    processingStatus: (r.processing_status as string | null) ?? null,
+    dedupeStatus: (r.dedupe_status as string | null) ?? null,
+    leadId: (r.lead_id as string | null) ?? null,
+    promotionAttempts: (r.promotion_attempts as number | null) ?? null,
+    errorMessage: (r.error_message as string | null) ?? null,
+    createdAt: r.created_at as string,
+  }))
+  return { ok: true, rows }
+}
