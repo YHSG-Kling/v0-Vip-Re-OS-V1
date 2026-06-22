@@ -28,6 +28,11 @@ import {
 } from '@/lib/kernel/newsletter/section-types'
 import { deleteTemplate } from '@/app/actions/newsletter/delete-template'
 import { submitTemplateForApproval } from '@/app/actions/newsletter/approve-template'
+import {
+  updateTemplate,
+  type UpdateTemplateInput,
+} from '@/app/actions/newsletter/update-template'
+import { Pencil } from 'lucide-react'
 
 interface Template {
   id: string
@@ -53,6 +58,15 @@ export function TemplateBuilder() {
   const [loading, setLoading] = useState(true)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null)
+  const [editForm, setEditForm] = useState({
+    templateName: '',
+    templateDescription: '',
+    brandColors: { primary: '#000000', secondary: '#FFFFFF', accent: '#0066CC' },
+    logoUrl: '',
+    isDefault: false,
+  })
   const { toast } = useToast()
 
   // Form state
@@ -198,6 +212,70 @@ export function TemplateBuilder() {
       toast({
         title: 'Error',
         description: error instanceof Error ? error.message : 'Failed to delete template',
+        variant: 'destructive',
+      })
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  function handleOpenEdit(template: Template) {
+    setEditingTemplateId(template.id)
+    setEditForm({
+      templateName: template.template_name,
+      templateDescription: template.template_description ?? '',
+      brandColors: {
+        primary: template.brand_colors?.primary ?? '#000000',
+        secondary: template.brand_colors?.secondary ?? '#FFFFFF',
+        accent: template.brand_colors?.accent ?? '#0066CC',
+      },
+      logoUrl: template.logo_url ?? '',
+      isDefault: template.is_default,
+    })
+    setIsEditDialogOpen(true)
+  }
+
+  async function handleUpdateTemplate() {
+    if (!editingTemplateId) return
+
+    try {
+      setIsSaving(true)
+
+      if (!editForm.templateName.trim()) {
+        toast({
+          title: 'Validation Error',
+          description: 'Template name is required',
+          variant: 'destructive',
+        })
+        return
+      }
+
+      const input: UpdateTemplateInput = {
+        templateId: editingTemplateId,
+        templateName: editForm.templateName,
+        templateDescription: editForm.templateDescription,
+        brandColors: editForm.brandColors,
+        logoUrl: editForm.logoUrl,
+        isDefault: editForm.isDefault,
+      }
+
+      const result = await updateTemplate(input)
+
+      if (result.success) {
+        toast({
+          title: 'Success',
+          description: result.message,
+        })
+
+        setIsEditDialogOpen(false)
+        setEditingTemplateId(null)
+        await loadTemplates()
+      }
+    } catch (error) {
+      console.error('Failed to update template:', error)
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to update template',
         variant: 'destructive',
       })
     } finally {
@@ -434,6 +512,17 @@ export function TemplateBuilder() {
                   </div>
 
                   <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleOpenEdit(template)}
+                      disabled={isSaving}
+                      className="gap-2"
+                    >
+                      <Pencil className="w-4 h-4" />
+                      Edit
+                    </Button>
+
                     {template.approval_status === 'draft' && (
                       <Button
                         size="sm"
@@ -468,6 +557,139 @@ export function TemplateBuilder() {
           ))
         )}
       </div>
+
+      {/* Edit Template Dialog */}
+      <Dialog
+        open={isEditDialogOpen}
+        onOpenChange={open => {
+          setIsEditDialogOpen(open)
+          if (!open) setEditingTemplateId(null)
+        }}
+      >
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Edit Newsletter Template</DialogTitle>
+            <DialogDescription>
+              Update the name, description, branding, and default status of this template
+            </DialogDescription>
+          </DialogHeader>
+
+          <Tabs defaultValue="basic" className="space-y-4">
+            <TabsList>
+              <TabsTrigger value="basic">Basic Info</TabsTrigger>
+              <TabsTrigger value="branding">Branding</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="basic" className="space-y-4">
+              <div>
+                <Label htmlFor="edit-template-name">Template Name *</Label>
+                <Input
+                  id="edit-template-name"
+                  placeholder="e.g., Weekly Market Update"
+                  value={editForm.templateName}
+                  onChange={e => setEditForm({ ...editForm, templateName: e.target.value })}
+                />
+              </div>
+
+              <div>
+                <Label htmlFor="edit-template-description">Description</Label>
+                <Input
+                  id="edit-template-description"
+                  placeholder="What is this template for?"
+                  value={editForm.templateDescription}
+                  onChange={e =>
+                    setEditForm({ ...editForm, templateDescription: e.target.value })
+                  }
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="edit-is-default"
+                  checked={editForm.isDefault}
+                  onChange={e => setEditForm({ ...editForm, isDefault: e.target.checked })}
+                  className="w-4 h-4"
+                />
+                <Label htmlFor="edit-is-default" className="cursor-pointer">
+                  Set as default template
+                </Label>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="branding" className="space-y-4">
+              <div>
+                <Label htmlFor="edit-logo-url">Logo URL</Label>
+                <Input
+                  id="edit-logo-url"
+                  placeholder="https://example.com/logo.png"
+                  value={editForm.logoUrl}
+                  onChange={e => setEditForm({ ...editForm, logoUrl: e.target.value })}
+                />
+              </div>
+
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <Label htmlFor="edit-primary-color">Primary Color</Label>
+                  <Input
+                    id="edit-primary-color"
+                    type="color"
+                    value={editForm.brandColors.primary}
+                    onChange={e =>
+                      setEditForm({
+                        ...editForm,
+                        brandColors: { ...editForm.brandColors, primary: e.target.value },
+                      })
+                    }
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="edit-secondary-color">Secondary Color</Label>
+                  <Input
+                    id="edit-secondary-color"
+                    type="color"
+                    value={editForm.brandColors.secondary}
+                    onChange={e =>
+                      setEditForm({
+                        ...editForm,
+                        brandColors: { ...editForm.brandColors, secondary: e.target.value },
+                      })
+                    }
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="edit-accent-color">Accent Color</Label>
+                  <Input
+                    id="edit-accent-color"
+                    type="color"
+                    value={editForm.brandColors.accent}
+                    onChange={e =>
+                      setEditForm({
+                        ...editForm,
+                        brandColors: { ...editForm.brandColors, accent: e.target.value },
+                      })
+                    }
+                  />
+                </div>
+              </div>
+            </TabsContent>
+          </Tabs>
+
+          <div className="flex gap-3 justify-end pt-4">
+            <Button
+              variant="outline"
+              onClick={() => setIsEditDialogOpen(false)}
+              disabled={isSaving}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleUpdateTemplate} disabled={isSaving} className="gap-2">
+              {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+              Save Changes
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

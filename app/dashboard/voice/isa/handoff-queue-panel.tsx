@@ -15,6 +15,7 @@ import {
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { KernelEvent } from "@/lib/kernel/events"
+import { BookAppointmentDialog } from "./book-appointment-dialog"
 
 interface QualifiedContact {
   id: string
@@ -202,21 +203,33 @@ export function HandoffQueuePanel({ queue: initialQueue, brokerageId, agentId }:
                   </p>
                 </div>
 
-                <Button
-                  size="sm"
-                  className="shrink-0"
-                  disabled={claiming === item.id}
-                  onClick={() => handleTakeCall(item.id, item.contact_id)}
-                >
-                  {claiming === item.id ? (
-                    <span className="text-xs">Claiming...</span>
-                  ) : (
-                    <>
-                      <ArrowRight className="h-3 w-3 mr-1" />
-                      <span className="text-xs">Hand Off to Human Agent</span>
-                    </>
+                <div className="flex flex-col items-stretch gap-2 shrink-0">
+                  {item.contact_id && (
+                    <BookAppointmentDialog
+                      contactId={item.contact_id}
+                      contactName={`${item.contacts?.first_name ?? ""} ${item.contacts?.last_name ?? ""}`.trim()}
+                      onBooked={() =>
+                        setLocalQueue((prev) =>
+                          prev.filter((q) => q.id !== item.id),
+                        )
+                      }
+                    />
                   )}
-                </Button>
+                  <Button
+                    size="sm"
+                    disabled={claiming === item.id}
+                    onClick={() => handleTakeCall(item.id, item.contact_id)}
+                  >
+                    {claiming === item.id ? (
+                      <span className="text-xs">Claiming...</span>
+                    ) : (
+                      <>
+                        <ArrowRight className="h-3 w-3 mr-1" />
+                        <span className="text-xs">Hand Off to Human Agent</span>
+                      </>
+                    )}
+                  </Button>
+                </div>
               </div>
             ))}
           </div>

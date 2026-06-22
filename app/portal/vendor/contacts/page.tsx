@@ -4,6 +4,7 @@ import { Users, Phone, Mail, Building2, Lock } from "lucide-react"
 import { listVendorAssignedContactsAction } from "@/app/actions/vendor-contact-access"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import { ContactMessagePanel } from "./contact-message-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -21,6 +22,16 @@ export default async function VendorContactsPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
+
+  // Resolve the calling vendor's own id so the message panel can address the
+  // vendor↔contact thread (same role-assignment lookup the list action uses).
+  const { data: roleRow } = await supabase
+    .from("user_role_assignments")
+    .select("vendor_id")
+    .eq("user_id", user.id)
+    .not("vendor_id", "is", null)
+    .maybeSingle()
+  const vendorId = (roleRow?.vendor_id as string | null) ?? null
 
   const r = await listVendorAssignedContactsAction()
   if (!r.ok) {
@@ -87,6 +98,13 @@ export default async function VendorContactsPage() {
                 <p className="text-[10px] text-muted-foreground pt-1">
                   Assigned {new Date(c.granted_at).toLocaleDateString()}
                 </p>
+                {vendorId && (
+                  <ContactMessagePanel
+                    vendorId={vendorId}
+                    contactId={c.contact_id}
+                    contactName={c.contact_name}
+                  />
+                )}
               </CardContent>
             </Card>
           ))}
