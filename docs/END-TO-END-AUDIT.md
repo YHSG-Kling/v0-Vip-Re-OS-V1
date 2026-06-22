@@ -118,6 +118,9 @@ to shrink the baseline as debt is burned down. Categories for the burn-down:
   rollback-offer, sync-documents, acknowledge-commission, create-dotloop-loop, resolve-property-prefill) —
   the *wired* siblings (submit-for-signature, track-offer-lifecycle, prefill-offer, convert-to-transaction)
   are live; confirm these 8 are superseded by `buyer-offers.ts` before deleting (watch multi-offer/rollback).
+- **Burned down so far:** `revenue-pipeline.ts` → wired into `/dashboard/financials/pipeline` (broker
+  probability-weighted 30/60/90-day GCI forecast); math extracted to the pure
+  `lib/financials/revenue-projection.ts` + `test:revenue-pipeline` (13 checks). Baseline 55 → **54**.
 - **Unwired features → wire if valuable** (`instant-property-alerts`, `ai-isa/{classify-outcome,schedule-
   appointment}`, `lead-assignment/*`, `lead-promotion/*`, `lead-readiness/*`, `contact-promotion/*`,
   `voice-engine/process-voice-call`, `scrape-social-media`, `marketing-intelligence`, `property-buyer-

@@ -46,7 +46,6 @@
   "app/actions/outbound-dispatch.ts",
   "app/actions/properties.ts",
   "app/actions/property-buyer-matching.ts",
-  "app/actions/revenue-pipeline.ts",
   "app/actions/scrape-social-media.ts",
   "app/actions/settings/list-integration-credentials.ts",
   "app/actions/settings/update-integration-credentials.ts",

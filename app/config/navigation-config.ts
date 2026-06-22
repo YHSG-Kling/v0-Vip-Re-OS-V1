@@ -262,6 +262,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'DollarSign',
         children: [
           { id: 'brokerage-pl', label: 'Brokerage P&L', href: '/dashboard/financials/brokerage' },
+          { id: 'revenue-pipeline', label: 'Revenue Pipeline', href: '/dashboard/financials/pipeline' },
           { id: 'team-financials', label: 'Team Financials', href: '/dashboard/financials/team' },
           { id: 'commissions', label: 'Commissions', href: '/dashboard/financials/commissions' },
           { id: 'expenses', label: 'Expenses', href: '/dashboard/financials/expenses' },

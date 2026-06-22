@@ -29,6 +29,7 @@
     "test:financial-export": "tsx scripts/financial-export-simulator.ts",
     "test:no-dead-components": "tsx scripts/dead-component-guard.ts",
     "test:no-orphan-actions": "tsx scripts/orphan-action-guard.ts",
+    "test:revenue-pipeline": "tsx scripts/revenue-pipeline-simulator.ts",
     "test:partners-meeting-reel": "tsx scripts/partners-meeting-reel-simulator.ts",
     "demo:seed-run": "tsx scripts/demo-seed-and-run.ts",
     "test:academy-learning": "tsx scripts/academy-learning-simulator.ts",
