@@ -80,6 +80,19 @@ script executed where the DB is reachable. This is the single most valuable vali
 | 15 | Academy learner side missing (reader/quiz/cert) | `/academy/module/[id]` reader→quiz→`agent_certifications`; de-mocked the hub; `test:academy-learning` |
 | 16 | User support was a static mock | Real Help Center + ticketing wired to `support_tickets`/`knowledge_articles`/`help_topics_kb`; admin triage queue; `test:support` |
 | 17 | Multi-location was an orphan schema | Office CRUD + agent↔office assignment on `locations`/`agents.location_id`; `test:locations` |
+| 18 | **Manager evals written but never surfaced** | Manager Trust Scorecard over `agent_outcome_evaluations` → trust tier → recommended autonomy posture; `test:manager-trust` — the certifiable-governance moat |
+
+### Drift investigated this cycle (NOT consolidated — both sides legitimately used)
+- `notification-actions.ts` (markOneRead/markAllRead, used by `/notifications`) vs `notifications.ts`
+  (getNotifications/createNotification, used by the bell): two thin kernel wrappers with different
+  callers — marginal benefit, real regression risk; left as-is. Larger candidates (offer-creation vs
+  `buyer-offer/`, marketing-campaigns vs marketing-studio, the 3 showing-dispatch handlers) need a
+  dedicated investigation pass before any merge.
+
+### Verified NOT gaps (backend + UI both exist — code-grep "orphan" lists were stale)
+- Commissions/earnings: `app/dashboard/financials/*` (9 pages incl. commissions, payouts, agent, reports).
+- Gamification: `/dashboard/leaderboard` + `components/gamification/*` (PointsBadge, BadgeGrid).
+- Always reconcile candidate gaps against the **live DB + actual pages** before building (see §3 lesson).
 
 ## 5. Remaining gaps / open items (prioritized)
 
