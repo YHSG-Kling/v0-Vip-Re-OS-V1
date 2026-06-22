@@ -8,7 +8,6 @@
   "app/actions/ai.ts",
   "app/actions/buyer-offer/create-dotloop-loop.ts",
   "app/actions/buyer-offer/create-offer.ts",
-  "app/actions/buyer-offer/handle-multi-offer.ts",
   "app/actions/buyer-offer/handle-offer-response.ts",
   "app/actions/buyer-offer/resolve-property-prefill.ts",
   "app/actions/buyer-offer/rollback-offer.ts",
@@ -23,11 +22,9 @@
   "app/actions/lead-assignment/assign-agent.ts",
   "app/actions/lead-assignment/escalate-stale-lead.ts",
   "app/actions/lead-promotion/promote-lead.ts",
-  "app/actions/lead-signal-ingest.ts",
   "app/actions/lender-status-request.ts",
   "app/actions/listing-promo-manual-trigger.ts",
   "app/actions/listing/submit-listing-for-signature.ts",
-  "app/actions/marketing-package-automation.ts",
   "app/actions/marketing/publish-guide-to-gbp.ts",
   "app/actions/neighbor-notifications.ts",
   "app/actions/newsletter/fetch-local-news.ts",
@@ -43,6 +40,5 @@
   "app/actions/settings/update-integration-credentials.ts",
   "app/actions/vendor-governance/track-usage.ts",
   "app/actions/vendor-messages.ts",
-  "app/actions/video/generate-script.ts",
   "app/actions/voice-engine/process-voice-call.ts"
 ]

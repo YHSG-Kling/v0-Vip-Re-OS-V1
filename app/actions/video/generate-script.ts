@@ -4,65 +4,14 @@ import { createClient } from "@/lib/supabase/server"
 import { generateAIResponse } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { isValidUUID } from "@/lib/validations"
-
-export interface GenerateVideoScriptParams {
-  brokerageId: string
-  agentId: string
-  userId: string
-  /** What the video is about — free-text brief from the user */
-  description: string
-  /** Canonical video type */
-  videoType:
-    | "property_tour"
-    | "market_update"
-    | "agent_intro"
-    | "listing_presentation"
-    | "buyer_education"
-    | "seller_update"
-    | "testimonial"
-    | "tips"
-    | "custom"
-  /** Delivery tone */
-  tone: "professional" | "friendly" | "luxury" | "educational"
-  /** Target duration in seconds — controls word-count target */
-  targetDurationSeconds?: number
-  /** Optional listing context pre-fill */
-  listingContext?: {
-    address: string
-    city: string
-    state: string
-    listPrice: number
-    bedrooms?: number
-    bathrooms?: number
-    sqft?: number
-    features?: string[]
-  }
-  /** Optional brand voice tone from ai_identity_profiles */
-  brandVoiceTone?: string
-  saveToLibrary?: boolean
-}
-
-export interface GenerateVideoScriptResult {
-  success: boolean
-  script?: string
-  wordCount?: number
-  estimatedDurationSeconds?: number
-  savedScriptId?: string
-  error?: string
-  complianceBlocked?: boolean
-  /** Advisory compliance notes from post-generation check — not a hard block */
-  complianceWarnings?: string[]
-}
-
-const TONE_INSTRUCTIONS: Record<string, string> = {
-  professional: "Use a polished, authoritative tone. Speak with confidence and expertise. Avoid slang.",
-  friendly:
-    "Use a warm, conversational tone. Speak as if talking to a friend. Be approachable and genuine.",
-  luxury:
-    "Use elevated, aspirational language. Evoke exclusivity and lifestyle. Focus on the experience, not just facts.",
-  educational:
-    "Use a clear, informative tone. Explain concepts simply. Use structure (numbered points where helpful).",
-}
+import {
+  TONE_INSTRUCTIONS,
+  targetWordCount,
+  estimateDurationSeconds,
+  videoTypeToContactType,
+  type GenerateVideoScriptParams,
+  type GenerateVideoScriptResult,
+} from "@/lib/video/script-structure"
 
 function buildTypeSystemContext(): Record<string, string> {
   const currentYear = new Date().getFullYear()
@@ -86,34 +35,6 @@ function buildTypeSystemContext(): Record<string, string> {
     custom:
       "You are writing a real estate video script for an agent. Follow the provided description closely.",
   }
-}
-
-/**
- * Map video type to the appropriate synthetic broadcast contact_type.
- * This determines the audience context for the compliance gate.
- */
-function videoTypeToContactType(
-  videoType: GenerateVideoScriptParams["videoType"]
-): "buyer" | "seller" {
-  switch (videoType) {
-    case "seller_update":
-    case "listing_presentation":
-      return "seller"
-    case "buyer_education":
-    case "tips":
-    case "property_tour":
-    case "market_update":
-    case "agent_intro":
-    case "testimonial":
-    case "custom":
-    default:
-      return "buyer"
-  }
-}
-
-function targetWordCount(durationSeconds: number): number {
-  // 150 words ≈ 60 seconds (2.5 words/second speaking pace)
-  return Math.round((durationSeconds / 60) * 150)
 }
 
 export async function generateVideoScript(
@@ -317,7 +238,7 @@ Fair Housing compliance (Gate 4 — mandatory):
 
   const words = script.split(/\s+/).filter(Boolean)
   const wordCount = words.length
-  const estimatedDurationSeconds = Math.round((wordCount / 150) * 60)
+  const estimatedDurationSeconds = estimateDurationSeconds(wordCount)
 
   // ── Optionally save to video_scripts_library ─────────────────────────────────
   let savedScriptId: string | undefined

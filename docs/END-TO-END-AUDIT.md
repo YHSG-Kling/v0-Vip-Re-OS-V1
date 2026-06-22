@@ -122,9 +122,16 @@ to shrink the baseline as debt is burned down. Categories for the burn-down:
   `create-offer` (likely superseded by `buyer-offers.createOffer` — the one confirm-then-delete candidate).
   These touch the critical offer/compliance path → resolve in a **dedicated focused pass** (wire the
   compliance/multi-offer features; confirm-then-delete only `create-offer`). Do NOT bulk-delete.
-- **Burned down so far:** `revenue-pipeline.ts` → wired into `/dashboard/financials/pipeline` (broker
-  probability-weighted 30/60/90-day GCI forecast); math extracted to the pure
-  `lib/financials/revenue-projection.ts` + `test:revenue-pipeline` (13 checks). Baseline 55 → **54**.
+- **Burn-down in progress (wiring dormant features live, not deleting):** `revenue-pipeline` →
+  `/dashboard/financials/pipeline`; `instant-property-alerts` → SMS-first alerts + CRM "Text First Look";
+  `property-buyer-matching` → "Matching Buyers" listing panel; `marketing-intelligence` → Market
+  Intelligence page; `lead-readiness/evaluate-readiness` → Lead Readiness panel; `acknowledge-commission`
+  → NAR-2024 commission-disclosure dialog (unblocked submit-for-signature); `buyer-portal-matches` →
+  portal TopMatches; `ai-document-intelligence` → contract-review "Analyze with AI"; `fb-audience-templates`
+  → Ads audience gallery; `handle-multi-offer` → buyer offers multi-offer status banner. Each has a pure
+  test + a baseline shrink. **Method:** sensitive offer/egress/compliance orphans done solo; safer display
+  orphans fanned out to parallel sub-agents (with strict no-commit / no-shared-file rules, integrated by
+  the parent). Baseline 55 → **~42** and shrinking.
 - **Unwired features → wire if valuable** (`instant-property-alerts`, `ai-isa/{classify-outcome,schedule-
   appointment}`, `lead-assignment/*`, `lead-promotion/*`, `lead-readiness/*`, `contact-promotion/*`,
   `voice-engine/process-voice-call`, `scrape-social-media`, `marketing-intelligence`, `property-buyer-

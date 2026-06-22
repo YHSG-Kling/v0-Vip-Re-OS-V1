@@ -3,20 +3,20 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { isValidUUID } from "@/lib/validations";
 import { getOfferLifecycleState } from "./track-offer-lifecycle";
+import { evaluateOfferLimit } from "@/lib/offers/multi-offer-rules";
 
 /**
  * System 7.1A Domain 2: Multi-Offer Management
  * Module: Multi-Offer Handler
- * 
+ *
  * Enforces multi-offer governance rules:
  * - Max 3 pending offers per buyer
  * - No duplicate offers on same listing
  * - Conflicts detection (same buyer, same listing)
- * 
+ *
  * Per System 5.1D: Multi-offer support WITHOUT state corruption
+ * Limit rule lives in the pure lib/offers/multi-offer-rules.ts (unit-tested).
  */
-
-const MAX_PENDING_OFFERS = 3;
 
 /**
  * Check if buyer can submit another offer
@@ -53,18 +53,11 @@ export async function canBuyerSubmitOffer(
       }
     }
 
-    if (pendingCount >= MAX_PENDING_OFFERS) {
-      return {
-        success: true,
-        can_submit: false,
-        reason: `Maximum ${MAX_PENDING_OFFERS} pending offers reached`,
-        pending_count: pendingCount
-      };
-    }
-
+    const verdict = evaluateOfferLimit(pendingCount);
     return {
       success: true,
-      can_submit: true,
+      can_submit: verdict.can_submit,
+      reason: verdict.reason,
       pending_count: pendingCount
     };
   } catch (error: any) {

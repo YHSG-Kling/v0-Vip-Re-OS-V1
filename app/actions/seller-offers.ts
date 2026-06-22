@@ -12,6 +12,7 @@ import crypto from "crypto"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { incrementUsage } from "@/lib/usage"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { ingestOfferLostSignalAction } from "@/app/actions/lead-signal-ingest"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 // Every seller-side offer action (accept / counter / reject / portal-link /
@@ -390,6 +391,16 @@ export async function rejectOffer(params: {
 
   const supabase = createServiceClient()
 
+  // Capture the buyer-contact + price before flipping status so we can record
+  // the "offer lost" behavioral signal against that buyer afterwards.
+  const { data: rejectedOffer } = await supabase
+    .from("offers")
+    .select("contact_id, offer_price")
+    .eq("id", offerId)
+    .eq("brokerage_id", brokerageId)
+    .eq("listing_id", listingId)
+    .maybeSingle()
+
   const { error } = await supabase
     .from("offers")
     .update({
@@ -403,6 +414,18 @@ export async function rejectOffer(params: {
     .eq("listing_id", listingId)
 
   if (error) return { success: false, error: error.message }
+
+  // Behavioral lead-intelligence signal: a tracked buyer-contact just lost an
+  // offer — they remain in-market and highly motivated. Boosts intent /
+  // motivation scores, idempotent per (contact, source, day). Only fires when
+  // the offer is linked to a CRM contact; never blocks the rejection.
+  if (rejectedOffer?.contact_id) {
+    await ingestOfferLostSignalAction({
+      contactId:   rejectedOffer.contact_id,
+      offerId,
+      offerAmount: Number(rejectedOffer.offer_price ?? 0),
+    }).catch(() => {})
+  }
 
   // Canonical fan-out: lifecycle event + staff notification + buyer portal
   // update ("Offer not accepted") so the buyer learns the outcome.

@@ -43,6 +43,7 @@ import {
   Trash2,
 } from "lucide-react"
 import { assignTierToListing, createTier, createTierBudget, createTierDistribution, deleteTierBudget, deleteTierDistribution, updateTier } from "@/lib/listings/tier-assigner"
+import { MarketingPackagePanel } from "./marketing-package-panel"
 
 interface MarketingTierClientProps {
   listing: {
@@ -87,6 +88,16 @@ interface MarketingTierClientProps {
   userId: string
   brokerageId: string
   isAdmin: boolean
+  transactionId: string | null
+  activePackage: {
+    id: string
+    package_name: string | null
+    package_type: string | null
+    status: string | null
+    total_estimated_cost: number | null
+    included_services: string[] | null
+    activated_at: string | null
+  } | null
 }
 
 export function MarketingTierClient({
@@ -100,6 +111,8 @@ export function MarketingTierClient({
   userId,
   brokerageId,
   isAdmin,
+  transactionId,
+  activePackage,
 }: MarketingTierClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -224,8 +237,9 @@ export function MarketingTierClient({
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <div className="overflow-x-auto">
-          <TabsList className="flex min-w-max sm:grid sm:w-full sm:grid-cols-5">
+          <TabsList className={`flex min-w-max sm:grid sm:w-full ${isAdmin ? "sm:grid-cols-6" : "sm:grid-cols-5"}`}>
             <TabsTrigger value="summary" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Summary</TabsTrigger>
+            <TabsTrigger value="package" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Package</TabsTrigger>
             <TabsTrigger value="budgets" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Budgets</TabsTrigger>
             <TabsTrigger value="distributions" className="min-h-[44px] sm:min-h-0 min-w-[110px] sm:min-w-0">Requirements</TabsTrigger>
             <TabsTrigger value="campaigns" className="min-h-[44px] sm:min-h-0 min-w-[100px] sm:min-w-0">Campaigns</TabsTrigger>
@@ -333,6 +347,11 @@ export function MarketingTierClient({
               </CardContent>
             </Card>
           )}
+        </TabsContent>
+
+        {/* PACKAGE TAB */}
+        <TabsContent value="package" className="space-y-4 mt-4">
+          <MarketingPackagePanel transactionId={transactionId} activePackage={activePackage} />
         </TabsContent>
 
         {/* BUDGETS TAB */}

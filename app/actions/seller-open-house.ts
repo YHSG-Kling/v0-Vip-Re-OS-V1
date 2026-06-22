@@ -7,6 +7,8 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { markOpenHouseCompleted } from "@/app/actions/seller-listing/execution-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { ingestOpenHouseAttendeeSignalAction } from "@/app/actions/lead-signal-ingest"
+import { interestLevelToSignalScale } from "@/lib/lead-intelligence/interest-level"
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -662,7 +664,7 @@ export async function convertAttendeeToContact(params: {
 
   const { data: attendee } = await supabase
     .from("open_house_attendees")
-    .select("id, name, email, phone, tcpa_consent, contact_id, event_id, brokerage_id")
+    .select("id, name, email, phone, tcpa_consent, contact_id, event_id, brokerage_id, interest_level")
     .eq("id", params.attendeeId)
     .maybeSingle()
 
@@ -725,6 +727,16 @@ export async function convertAttendeeToContact(params: {
     .update({ contact_id: contactId })
     .eq("id", params.attendeeId)
     .eq("brokerage_id", auth.brokerageId)
+
+  // Record a behavioral lead-intelligence signal: an open-house attendee just
+  // became a tracked contact. Pushes engagement/intent/overall scores UP and
+  // is idempotent per (contact, source, day) — never blocks the conversion.
+  await ingestOpenHouseAttendeeSignalAction({
+    contactId,
+    attendeeId: params.attendeeId,
+    listingId: params.listingId,
+    interestLevel: interestLevelToSignalScale(attendee.interest_level),
+  }).catch(() => {})
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true, contactId, isNew: !existingContact }

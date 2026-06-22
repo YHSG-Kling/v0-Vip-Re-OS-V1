@@ -97,6 +97,32 @@ export default async function ListingMarketingTierPage({ params }: PageProps) {
     .select("id, asset_type, asset_name, campaign_id")
     .eq("campaign_id", campaigns?.[0]?.id ?? "00000000-0000-0000-0000-000000000000")
 
+  // Resolve the listing's transaction — marketing packages activate against a
+  // transaction row (per-deal marketing package, distinct from the price tier).
+  const { data: transaction } = await supabase
+    .from("transactions")
+    .select("id")
+    .eq("listing_id", listingId)
+    .eq("brokerage_id", userRow.brokerage_id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  const transactionId = transaction?.id ?? null
+
+  // Load the most recent marketing package for that transaction (if any).
+  let activePackage = null
+  if (transactionId) {
+    const { data: pkg } = await supabase
+      .from("listing_marketing_packages")
+      .select("id, package_name, package_type, status, total_estimated_cost, included_services, activated_at")
+      .eq("transaction_id", transactionId)
+      .order("activated_at", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle()
+    activePackage = pkg
+  }
+
   const isAdmin = ["broker", "broker_owner", "admin", "superadmin"].includes(userRow.user_type ?? "")
 
   return (
@@ -111,6 +137,8 @@ export default async function ListingMarketingTierPage({ params }: PageProps) {
       userId={user.id}
       brokerageId={userRow.brokerage_id}
       isAdmin={isAdmin}
+      transactionId={transactionId}
+      activePackage={activePackage}
     />
   )
 }

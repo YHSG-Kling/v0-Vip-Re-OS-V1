@@ -9,6 +9,11 @@ import { handleError } from "@/lib/errors"
 import { sendVendorBookingConfirmation } from "@/lib/communications"
 import { syncToPlatform } from "@/lib/platform-sync" // Import syncToPlatform function
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import {
+  getPackageServices,
+  calculatePackageCost,
+  getPackageDisplayName,
+} from "@/lib/marketing/package-catalog"
 
 // ============================================
 // TENANT GUARDS
@@ -95,15 +100,14 @@ export async function activateMarketingPackage(params: {
       return { success: false, error: "Transaction not found" }
     }
 
-    const listing = transaction.listings
-    const services = getPackageServices(params.packageType, listing)
+    const services = getPackageServices(params.packageType)
 
     // Create marketing package
     const { data: marketingPackage, error } = await supabase
       .from("listing_marketing_packages")
       .insert({
         transaction_id: params.transactionId,
-        package_name: `${params.packageType.charAt(0).toUpperCase() + params.packageType.slice(1)} Package`,
+        package_name: getPackageDisplayName(params.packageType),
         package_type: params.packageType,
         included_services: services,
         total_estimated_cost: calculatePackageCost(params.packageType),
@@ -135,52 +139,6 @@ export async function activateMarketingPackage(params: {
     console.error("Activate marketing package error:", error)
     return { success: false, error: "Failed to activate package" }
   }
-}
-
-function getPackageServices(packageType: string, listing: any): string[] {
-  const baseServices = ["mls_syndication", "listing_description", "social_media_posts"]
-
-  const packageServices: Record<string, string[]> = {
-    basic: [...baseServices],
-    standard: [...baseServices, "professional_photos", "virtual_tour", "email_campaign"],
-    premium: [
-      ...baseServices,
-      "professional_photos",
-      "virtual_tour",
-      "drone_photos",
-      "video_walkthrough",
-      "email_campaign",
-      "facebook_ads",
-      "instagram_ads",
-    ],
-    luxury: [
-      ...baseServices,
-      "professional_photos",
-      "twilight_photos",
-      "drone_photos",
-      "drone_video",
-      "cinematic_video",
-      "virtual_staging",
-      "3d_matterport",
-      "email_campaign",
-      "facebook_ads",
-      "instagram_ads",
-      "google_ads",
-      "print_materials",
-    ],
-  }
-
-  return packageServices[packageType] || packageServices.basic
-}
-
-function calculatePackageCost(packageType: string): number {
-  const costs: Record<string, number> = {
-    basic: 0,
-    standard: 500,
-    premium: 1500,
-    luxury: 3500,
-  }
-  return costs[packageType] || 0
 }
 
 // ============================================

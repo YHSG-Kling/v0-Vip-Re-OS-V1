@@ -3,6 +3,7 @@
 import { useState, useTransition, useEffect } from "react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
+import { MultiOfferStatusBanner } from "@/app/components/offer/multi-offer-status-banner"
 import { OfferInitiationFlow } from "./components/offer-initiation-flow"
 import { recordOfferOutcome, getConnectedEsignProvider } from "@/app/actions/buyer-offers"
 import { getMlsNumberByAddress } from "@/app/actions/seller-offers"
@@ -290,6 +291,12 @@ export function OffersClient({
             </Link>
           )}
         </div>
+
+        {offers.length > 0 && (
+          <div className="px-6 pt-4">
+            <MultiOfferStatusBanner contactId={contactId} />
+          </div>
+        )}
 
         {offers.length === 0 ? (
           <div className="flex flex-col items-center justify-center flex-1 gap-3 py-20">

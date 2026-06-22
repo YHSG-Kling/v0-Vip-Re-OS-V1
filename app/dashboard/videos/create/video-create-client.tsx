@@ -54,7 +54,7 @@ import {
   SellerUpdateVideoModeCard,
 } from "../components/business-context"
 import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdateMode } from "../components/business-context"
-import { generateVideoScript } from "@/app/actions/video-generation"
+import { generateVideoScript } from "@/app/actions/video/generate-script"
 import { BrollPicker } from "../components/BrollPicker"
 import { getAgentSettings } from "@/app/actions/agent-settings"
 
