@@ -96,10 +96,12 @@ script executed where the DB is reachable. This is the single most valuable vali
   offer-bridge). Deleting it would have broken the offer lifecycle. Investigation prevented a regression.
 - **KEPT `ai-offer-creation.ts` + `buyer-offers.ts` separate** — complementary layers (AI strategy/
   orchestration vs canonical CRUD), both actively imported; merging = high-risk churn, low benefit.
-- **DEFERRED `marketing-campaigns.ts`** — a genuine ungoverned duplicate of the compliance-gated
-  `marketing-studio.ts`, BUT actively consumed by the URL-only (no-nav) `dashboard/admin/marketing-
-  campaigns` page. Safe consolidation = migrate that admin surface to Studio's gated actions + confirm
-  its ROI summary isn't lost. Next dedicated drift task (do NOT blind-delete — would break the page).
+- **DELETED `app/actions/marketing-campaigns.ts`** (850 lines) — precise grep (the first pass matched
+  the *separate* `marketing-campaigns-admin.ts` by substring) proved it has **zero importers**: no
+  barrel re-export, no callers of its exports (the `createMarketingCampaign` namesake in
+  `lib/kernel/marketing.ts` is a distinct kernel-level fn; the admin page uses `-admin.ts`). It was the
+  orphaned **ungoverned** legacy shadow of the compliance-gated `marketing-studio.ts` (live UI at
+  `/dashboard/marketing/studio`). Removing it closes an ungoverned campaign path. tsc/build green.
 - **KEPT showings trio separate** (`showings` buyer-intake / `dispatch-showing` connector / `ai-showing-
   management` agent tours) — distinct stages, no overlapping exports.
 
