@@ -12,6 +12,7 @@ import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { getFinancialDefaults } from "@/lib/brokerage/get-brokerage-settings"
+import { computeNetSheetScenario } from "@/lib/cma/net-sheet-math"
 
 export interface NetSheetInput {
   listingId: string
@@ -189,49 +190,23 @@ function calculateScenario(
   closingCostPercent: number,
 ): NetSheetScenario {
   // Commission Engine 8.0 will compute final values.
-  // Use resolver rates from getDefaultCommissionStructure() passed in via commissionStructure.
-  const listingCommission = salePrice * (commissionStructure?.agentListingSideRate ?? 0)
-  const buyerCommission = salePrice * (commissionStructure?.agentBuyerSideRate ?? 0)
-
-  // If a fixed dollar amount is provided use it; otherwise derive from brokerage closing_cost_percent.
-  const closingCosts = input.closingCosts ?? (salePrice * closingCostPercent)
-  const mortgagePayoff = input.mortgagePayoffAmount || input.mortgageBalance || 0
-  const propertyTaxes = input.propertyTaxes || 0
-  const hoaFees = input.hoaFees || 0
-  const repairCredits = input.repairCredits || 0
-  const sellerConcessions = input.sellerConcessions || 0
-  
-  const totalCosts = 
-    listingCommission +
-    buyerCommission +
-    closingCosts +
-    mortgagePayoff +
-    propertyTaxes +
-    hoaFees +
-    repairCredits +
-    sellerConcessions
-  
-  const netProceeds = salePrice - totalCosts
-  
-  return {
+  // Pure arithmetic lives in @/lib/cma/net-sheet-math (computeNetSheetScenario).
+  return computeNetSheetScenario(
     scenarioName,
     salePrice,
-    grossProceeds: salePrice,
-    totalCosts,
-    netProceeds,
-    breakdown: {
-      salePrice,
-      listingCommission,
-      buyerCommission,
-      closingCosts,
-      mortgagePayoff,
-      propertyTaxes,
-      hoaFees,
-      repairCredits,
-      sellerConcessions,
-      otherCosts: 0
-    }
-  }
+    {
+      closingCosts: input.closingCosts,
+      mortgagePayoffAmount: input.mortgagePayoffAmount,
+      mortgageBalance: input.mortgageBalance,
+      propertyTaxes: input.propertyTaxes,
+      hoaFees: input.hoaFees,
+      repairCredits: input.repairCredits,
+      sellerConcessions: input.sellerConcessions,
+    },
+    commissionStructure?.agentListingSideRate ?? 0,
+    commissionStructure?.agentBuyerSideRate ?? 0,
+    closingCostPercent,
+  )
 }
 
 /**

@@ -6,6 +6,7 @@ import { CMA_DISCLAIMER } from "@/lib/cma/disclaimer"
 import { CMAReportTab } from "./tabs/cma-report-tab"
 import { NetSheetTab } from "./tabs/net-sheet-tab"
 import { PricingIntelligenceTab } from "./tabs/pricing-intelligence-tab"
+import { PresentationTab } from "./tabs/presentation-tab"
 import type {
   CMAPageData,
   NetSheetPageData,
@@ -22,6 +23,7 @@ interface Listing {
   list_price: number | null
   agent_id: string | null
   brokerage_id: string | null
+  seller_contact_id?: string | null
   property_type?: string | null
   bedrooms?: number | null
   bathrooms?: number | null
@@ -74,6 +76,12 @@ export function CMAClient({ listing, cmaData, netSheetData, pricingData }: Props
               >
                 Pricing Intelligence
               </TabsTrigger>
+              <TabsTrigger
+                value="presentation"
+                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-foreground text-muted-foreground px-0 h-10 bg-transparent whitespace-nowrap min-h-[44px]"
+              >
+                Presentation
+              </TabsTrigger>
             </TabsList>
           </div>
 
@@ -87,6 +95,9 @@ export function CMAClient({ listing, cmaData, netSheetData, pricingData }: Props
             </TabsContent>
             <TabsContent value="pricing" className="mt-0 h-full">
               <PricingIntelligenceTab listing={listing} data={pricingData} />
+            </TabsContent>
+            <TabsContent value="presentation" className="mt-0 h-full">
+              <PresentationTab listing={listing} />
             </TabsContent>
           </div>
         </Tabs>

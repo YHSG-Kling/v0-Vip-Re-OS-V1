@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { getSEOScore } from '@/app/actions/newsletter/get-seo-score'
 
 export interface ScheduleNewsletterInput {
   templateId: string
@@ -15,6 +16,11 @@ export interface ScheduleNewsletterInput {
   sectionsIncluded: string[]
   personalizationVariables?: Record<string, string>
   abTestVariant?: string
+  /** Optional assembled HTML body — when present, an SEO score is computed and
+   *  persisted (newsletter_seo_scores) against the new scheduled send. */
+  htmlContent?: string
+  /** Primary keyword to score keyword density against (defaults to subject). */
+  primaryKeyword?: string
 }
 
 export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
@@ -89,9 +95,23 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
 
   if (error) throw new Error(`Failed to schedule newsletter: ${error.message}`)
 
+  // Score + persist SEO for the new scheduled send when a body was supplied.
+  // newsletter_seo_scores rows are keyed by this scheduledSendId.
+  let seoScore: Awaited<ReturnType<typeof getSEOScore>> | null = null
+  if (input.htmlContent) {
+    seoScore = await getSEOScore({
+      scheduledSendId: scheduled.id,
+      subjectLine: input.subjectLine,
+      previewText: input.previewText ?? '',
+      htmlContent: input.htmlContent,
+      primaryKeyword: input.primaryKeyword || input.subjectLine,
+    })
+  }
+
   return {
     success: true,
     scheduledSendId: scheduled.id,
+    seoScore,
     message: 'Newsletter scheduled successfully',
   }
 }

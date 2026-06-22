@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { StagedDraftBanner } from "@/app/components/shared/staged-draft-banner"
 import {
@@ -71,6 +71,7 @@ import {
   scheduleEmailCampaign,
   deleteEmailCampaign,
 } from "@/app/actions/email-campaigns"
+import { computeSeoScore } from "@/lib/newsletter/seo-score"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
@@ -479,6 +480,22 @@ export function NewslettersClient({
     useSensor(PointerSensor),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
+
+  // Live, draft-time SEO/readability score over the assembled email body.
+  // Pure (lib/newsletter/seo-score.ts) — recomputes as the user edits content,
+  // subject, or topic. The same math is persisted server-side by getSEOScore
+  // once a send is scheduled (newsletter_seo_scores, keyed by scheduledSendId).
+  const seoBreakdown = useMemo(() => {
+    if (wizard.generatedSections.length === 0) return null
+    const html = wizard.generatedSections
+      .map((s) => `<h1>${s.title}</h1>\n<p>${s.content}</p>`)
+      .join("\n")
+    return computeSeoScore({
+      subjectLine: wizard.subjectLine,
+      htmlContent: html,
+      primaryKeyword: wizard.topic || wizard.campaignName,
+    })
+  }, [wizard.generatedSections, wizard.subjectLine, wizard.topic, wizard.campaignName])
 
   function updateWizard(patch: Partial<WizardData>) {
     setWizard((prev) => ({ ...prev, ...patch }))
@@ -1064,6 +1081,68 @@ export function NewslettersClient({
                 sections={wizard.generatedSections}
                 onEditSection={setEditingSection}
               />
+
+              {/* Live SEO Score — recomputes as you edit content & subject. */}
+              {seoBreakdown && (
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <TrendingUp className="h-4 w-4 text-emerald-500" />
+                      SEO Score
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex items-center gap-4">
+                      <div
+                        className={`text-3xl font-bold tabular-nums ${
+                          seoBreakdown.overallScore >= 85
+                            ? "text-emerald-600"
+                            : seoBreakdown.overallScore >= 70
+                            ? "text-amber-600"
+                            : "text-red-600"
+                        }`}
+                      >
+                        {seoBreakdown.overallScore}
+                        <span className="text-base text-muted-foreground font-normal">/100</span>
+                      </div>
+                      <div className="flex-1 grid grid-cols-3 gap-2 text-center">
+                        <div>
+                          <p className="text-sm font-semibold tabular-nums">{seoBreakdown.readabilityScore}</p>
+                          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Readability</p>
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold tabular-nums">{seoBreakdown.keywordDensity.toFixed(1)}%</p>
+                          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Kw Density</p>
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold tabular-nums">{seoBreakdown.wordCount}</p>
+                          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Words</p>
+                        </div>
+                      </div>
+                    </div>
+                    {seoBreakdown.recommendations.length > 0 ? (
+                      <div className="space-y-1">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                          Recommendations
+                        </p>
+                        <ul className="space-y-1">
+                          {seoBreakdown.recommendations.map((rec, i) => (
+                            <li key={i} className="text-xs text-muted-foreground flex items-start gap-1.5">
+                              <span className="text-amber-500 mt-0.5">•</span>
+                              {rec}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-emerald-600 flex items-center gap-1.5">
+                        <Check className="h-3.5 w-3.5" />
+                        Looks great — no SEO issues detected.
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
             </div>
           )}
 

@@ -23,6 +23,7 @@ import {
   verifyContactAddressAction,
 } from "@/app/actions/contact-quick-actions"
 import { convertOutsideInquiryToRepresentedBuyer } from "@/app/actions/convert-outside-inquiry"
+import { ContactFatigueGuard } from "@/components/contact/ContactFatigueGuard"
 import { Sparkles, Mail, MapPin, AlertCircle, CheckCircle2, UserCheck } from "lucide-react"
 
 export interface ContactQuickActionsProps {
@@ -97,6 +98,10 @@ export function ContactQuickActions(props: ContactQuickActionsProps) {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Reach-out fatigue guard — tells the agent whether this contact is over-contacted
+            before they fire any outreach action below. Read-only; renders nothing until loaded. */}
+        <ContactFatigueGuard contactId={props.contactId} />
+
         {/* Convert outside inquiry → represented buyer (only renders pre-conversion) */}
         {showConvert && (
           <div className="space-y-2 rounded border border-amber-200 bg-amber-50/60 p-3">
