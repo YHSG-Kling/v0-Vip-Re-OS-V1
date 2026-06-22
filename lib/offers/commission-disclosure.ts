@@ -8,7 +8,14 @@
 // HARD-BLOCKS until offers.buyer_commission_acknowledged_at is set.
 
 export type CommissionPayer = "seller" | "buyer" | "split" | "either"
-export type DisclosureMethod = "click_through" | "wet_signature" | "docusign" | "dotloop"
+/**
+ * Disclosure methods. `click_through` (buyer self-ack) and `wet_signature` are recorded
+ * inline. `esign` is a REQUEST intent only — the action resolves the brokerage's connected
+ * provider via resolveESignProviderForActor (agent→team→brokerage cascade; dotloop/docusign/
+ * skyslope/authentisign) and STORES the resolved provider (docusign/dotloop per the column
+ * CHECK). The agent never picks the provider — that is the app's ownership-cascade rule.
+ */
+export type DisclosureMethod = "click_through" | "wet_signature" | "esign" | "docusign" | "dotloop"
 
 export interface CommissionDisclosureInput {
   disclosedBuyerCommissionPct?: number
@@ -53,7 +60,7 @@ export function resolveDisclosureMethod(
   return requested ?? (isBuyer ? "click_through" : "wet_signature")
 }
 
-/** Methods that dispatch through an external e-sign provider (vs recorded inline). */
+/** Methods that dispatch through the brokerage's connected e-sign provider (vs recorded inline). */
 export function isEsignDispatchMethod(method: DisclosureMethod): boolean {
-  return method === "docusign" || method === "dotloop"
+  return method === "esign" || method === "docusign" || method === "dotloop"
 }

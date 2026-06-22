@@ -50,9 +50,13 @@ check("buyer default method = click_through", resolveDisclosureMethod(undefined,
 check("agent default method = wet_signature", resolveDisclosureMethod(undefined, false) === "wet_signature")
 check("explicit method wins", resolveDisclosureMethod("docusign", true) === "docusign")
 
-// E-sign dispatch classification
-check("docusign + dotloop dispatch via provider", isEsignDispatchMethod("docusign") && isEsignDispatchMethod("dotloop"))
+// E-sign dispatch classification — 'esign' is the request intent (provider resolved
+// server-side via the cascade); docusign/dotloop are the resolved/stored values.
+check("esign request dispatches via the resolved provider", isEsignDispatchMethod("esign"))
+check("resolved docusign/dotloop still classify as dispatch", isEsignDispatchMethod("docusign") && isEsignDispatchMethod("dotloop"))
 check("wet_signature + click_through recorded inline", !isEsignDispatchMethod("wet_signature") && !isEsignDispatchMethod("click_through"))
+check("agent may pick e-signature (not click-through)", validateCommissionDisclosure(
+  { affirmativeConsent: true, disclosedBuyerCommissionPct: 2.5, disclosedCommissionPayer: "seller", disclosureMethod: "esign" }, false) === null)
 
 console.log("\n──────────────────────────────────────────────────")
 if (fail > 0) { console.log(` RESULT: ${pass} passed, ${fail} failed`); process.exit(1) }

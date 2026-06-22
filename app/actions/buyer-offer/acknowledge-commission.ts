@@ -22,18 +22,19 @@ import { revalidatePath } from "next/cache"
 import { resolveESignProviderForActor } from "@/lib/integrations/resolve-esign-provider"
 import {
   validateCommissionDisclosure, resolveDisclosureMethod, isEsignDispatchMethod,
+  type CommissionPayer, type DisclosureMethod,
 } from "@/lib/offers/commission-disclosure"
 
 export interface AcknowledgeCommissionInput {
   offerId: string
   disclosedBuyerCommissionPct?:  number
   disclosedBuyerCommissionFlat?: number
-  disclosedCommissionPayer:      "seller" | "buyer" | "split" | "either"
+  disclosedCommissionPayer:      CommissionPayer
   disclosedCommissionNotes?:     string
   affirmativeConsent:            boolean
-  /** When the agent records the acknowledgment via wet sig / DocuSign instead of
-   *  the buyer self-clicking, set this. Else 'click_through'. */
-  disclosureMethod?:             "click_through" | "wet_signature" | "docusign" | "dotloop"
+  /** Buyer self-ack → 'click_through'. Agent-recorded → 'wet_signature' (on file) or
+   *  'esign' (dispatched via the brokerage's connected provider, resolved server-side). */
+  disclosureMethod?:             DisclosureMethod
 }
 
 export async function acknowledgeBuyerCommissionAction(

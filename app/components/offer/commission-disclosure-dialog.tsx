@@ -46,7 +46,7 @@ export function CommissionDisclosureDialog({
         affirmativeConsent: consent,
       })
       if (r.ok) {
-        onDone({ ok: true, message: method === "docusign" || method === "dotloop"
+        onDone({ ok: true, message: method === "esign"
           ? "Commission disclosure sent to the buyer for e-signature." : "Commission disclosure acknowledged." })
         setOpen(false)
       } else {
@@ -107,10 +107,14 @@ export function CommissionDisclosureDialog({
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="wet_signature">Wet signature (on file)</SelectItem>
-                <SelectItem value="docusign">Send via DocuSign</SelectItem>
-                <SelectItem value="dotloop">Send via Dotloop</SelectItem>
+                <SelectItem value="esign">Send for e-signature</SelectItem>
               </SelectContent>
             </Select>
+            {method === "esign" && (
+              <p className="text-xs text-muted-foreground">
+                Uses your brokerage&apos;s connected e-sign provider (resolved automatically).
+              </p>
+            )}
           </div>
           <div className="space-y-1">
             <Label htmlFor="cd-notes">Notes (optional)</Label>
@@ -125,7 +129,7 @@ export function CommissionDisclosureDialog({
           <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
           <Button onClick={submit} disabled={busy || !consent}>
             {busy && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
-            {method === "docusign" || method === "dotloop" ? "Send for E-Signature" : "Record Acknowledgment"}
+            {method === "esign" ? "Send for E-Signature" : "Record Acknowledgment"}
           </Button>
         </DialogFooter>
       </DialogContent>
