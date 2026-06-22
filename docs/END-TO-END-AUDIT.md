@@ -100,3 +100,30 @@ not architectural. In order:
 No competitor can claim — let alone CI-prove — "nothing reaches a consumer outside one consent-governed,
 Fair-Housing-cleared, audited gate, narrated back to the broker by the AI team that did the work."
 That is the moat. Ship it.
+
+## 7. Trigger & reachability sweep (running log)
+
+### Closed
+- **AI ISA inbound-intent capstone was unwired** (FIXED). `processInboundEmail` (reply → classify
+  intent → convert) had zero callers; `app/api/providers/inbound` fired `ISA_REPLY_RECEIVED` (recorded
+  + read by ghost-reengagement) but the event-reactor never classified/converted. Now wired: lead
+  email replies call `processInboundEmail` (signature-verified ingress forwards `CRON_SECRET`),
+  negative→halt / ambiguous→nurture / positive→convert. Idempotent, best-effort.
+- **10 orphan admin pages** wired into a "Brokerage Ops & Insights" submenu (§4 #..).
+
+### Open — for the dedicated UI pass (investigate before wiring; possible drift)
+- `dashboard/superadmin/platform` — ⚠ likely **duplicate** of the linked `/admin/platform`. Decide
+  canonical, merge or remove the other (do NOT just add a 2nd nav entry).
+- `dashboard/compliance/queue` — may overlap the compliance nav's existing `/approvals` ("Approvals
+  Queue"). Confirm distinct purpose before linking.
+- `dashboard/documents/contract-review`, `dashboard/ai-isa/settings` — feature pages with no inbound
+  link; confirm intended entry point.
+- Settings sub-pages on the `/dashboard/settings/*` path (`required-documents`, etc.) and ISA wizard
+  sub-pages (`isa/calling/dial`, `isa/campaigns/new`, `onboarding/ai-call-setup`) — likely reached via
+  section sidebars / wizards (computed hrefs); verify each in the UI pass.
+
+### Open — product decisions (not code gaps)
+- `scrapeCraigslist`, `scrapeBatchDataMotivated` — built scraper integrations with 0 callers; not in
+  the active `lead-scraping` cron path. Wire as sources, or prune as deprecated.
+- **SMS inbound is opt-out-only** by design (no general SMS reply→intent handler). If SMS-reply
+  auto-conversion is desired, add an SMS-channel sibling to `processInboundEmail`.
