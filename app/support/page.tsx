@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 
-// Support page - redirects to external help
+// In-app help center + ticketing (replaces the old external redirect to Vercel help).
 export default function SupportPage() {
-  redirect('https://vercel.com/help')
+  redirect('/dashboard/help')
 }

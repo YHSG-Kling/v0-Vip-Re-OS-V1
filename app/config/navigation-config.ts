@@ -103,6 +103,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         ],
       },
       { id: 'academy', label: 'Academy', href: '/academy', icon: 'BookOpen' },
+      { id: 'help-support', label: 'Help & Support', href: '/dashboard/help', icon: 'LifeBuoy' },
       { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare' },
       { id: 'divider2', divider: true },
       {
@@ -188,6 +189,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'dashboard', label: 'Broker Dashboard', href: '/dashboard/brokerage', icon: 'LayoutGrid' },
       { id: 'operations', label: 'Operations', href: '/dashboard/operations', icon: 'Activity' },
       { id: 'team', label: 'My Team', href: '/dashboard/team', icon: 'Users' },
+      { id: 'help-support', label: 'Help & Support', href: '/dashboard/help', icon: 'LifeBuoy' },
       { id: 'lead-intel', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
       { id: 'acquisition', label: 'Lead Acquisition', href: '/dashboard/acquisition', icon: 'Zap' },
       { id: 'analytics', label: 'Analytics', href: '/analytics', icon: 'BarChart3' },
@@ -385,6 +387,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'forms', label: 'Forms Manager', href: '/dashboard/admin/forms', icon: 'FileText' },
       { id: 'knowledge', label: 'Knowledge Base', href: '/dashboard/admin/knowledge', icon: 'BookOpen' },
       { id: 'lead-lineage', label: 'Lead Lineage', href: '/dashboard/admin/lead-lineage', icon: 'GitBranch' },
+      { id: 'support-tickets', label: 'Support Tickets', href: '/dashboard/admin/support-tickets', icon: 'LifeBuoy' },
       { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare', badgeKey: 'pending_approvals' },
       { id: 'divider1', divider: true },
       {
