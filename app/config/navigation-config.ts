@@ -44,6 +44,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+          { id: 'market-intelligence', label: 'Market Intelligence', href: '/dashboard/marketing/intelligence' },
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'brand-voice', label: 'BrandVoice Profile', href: '/dashboard/marketing/studio/brand-voice' },
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
@@ -233,6 +234,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+          { id: 'market-intelligence', label: 'Market Intelligence', href: '/dashboard/marketing/intelligence' },
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },

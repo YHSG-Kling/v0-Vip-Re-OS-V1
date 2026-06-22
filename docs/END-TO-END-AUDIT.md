@@ -114,10 +114,14 @@ strict rule: investigate each → **wire if it benefits, delete only if dead/sup
 in `scripts/orphan-action-baseline.json`; the guard **fails on any NEW orphan** (stops drift now) and nudges
 to shrink the baseline as debt is burned down. Categories for the burn-down:
 - **Demo scaffolding** (`demo-login`, `demo-contacts`) — product decision (keep for sales-demo mode, or delete).
-- **Partial refactor** (8 × `buyer-offer/*`: create-offer, handle-offer-response, handle-multi-offer,
-  rollback-offer, sync-documents, acknowledge-commission, create-dotloop-loop, resolve-property-prefill) —
-  the *wired* siblings (submit-for-signature, track-offer-lifecycle, prefill-offer, convert-to-transaction)
-  are live; confirm these 8 are superseded by `buyer-offers.ts` before deleting (watch multi-offer/rollback).
+- **Offer-execution features, NOT a delete cluster** (8 × `buyer-offer/*`) — investigation corrected an
+  earlier wrong hypothesis: these are substantial unwired **capabilities**, several **compliance-critical**:
+  `acknowledge-commission` (buyer commission disclosure — post-NAR-settlement legal requirement),
+  `handle-multi-offer` (duplicate / over-limit guardrails), `sync-documents` (e-sign doc sync),
+  `rollback-offer`, `handle-offer-response`, `create-dotloop-loop`, `resolve-property-prefill`,
+  `create-offer` (likely superseded by `buyer-offers.createOffer` — the one confirm-then-delete candidate).
+  These touch the critical offer/compliance path → resolve in a **dedicated focused pass** (wire the
+  compliance/multi-offer features; confirm-then-delete only `create-offer`). Do NOT bulk-delete.
 - **Burned down so far:** `revenue-pipeline.ts` → wired into `/dashboard/financials/pipeline` (broker
   probability-weighted 30/60/90-day GCI forecast); math extracted to the pure
   `lib/financials/revenue-projection.ts` + `test:revenue-pipeline` (13 checks). Baseline 55 → **54**.
