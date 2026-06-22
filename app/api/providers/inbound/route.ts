@@ -179,6 +179,28 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     console.error("[InboundRouter] processKernelEvent failed:", err)
   }
 
+  // ── Step 8b: AI ISA inbound-intent classification + conversion (LEAD replies) ────
+  // The autonomy capstone: a lead's reply is read, its intent classified, and self-routed to the
+  // right conversion milestone (positive_reply / criteria_request / preapproval / showing) via the
+  // canonical handoff — negative replies HALT, ambiguous keep nurturing. The route already verified
+  // the provider signature, so we forward CRON_SECRET as the trusted-internal token the handler
+  // documents (handle-inbound-email.ts: "webhook ingress should forward CRON_SECRET in internalSecret").
+  // Best-effort + idempotent — never breaks ingress. (Contacts route through their own portal/qual loop.)
+  if (entityType === "lead" && entityId && inbound.fromEmail) {
+    try {
+      const { processInboundEmail } = await import("@/app/actions/ai-isa/handle-inbound-email")
+      await processInboundEmail({
+        leadId: entityId,
+        fromEmail: inbound.fromEmail,
+        subject: inbound.subject ?? "",
+        body: inbound.text ?? inbound.subject ?? "",
+        internalSecret: process.env.CRON_SECRET,
+      })
+    } catch (err) {
+      console.error("[InboundRouter] inbound-intent classification failed:", err)
+    }
+  }
+
   // ── Step 9: Return success ──────────────────────────────────────────────────
   return NextResponse.json({ linked: true, entityType, entityId })
 }
