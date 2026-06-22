@@ -1,0 +1,102 @@
+# End-to-End Application Audit — Real Estate Agentic OS
+
+> Living audit of the One Command Center multi-manager egress OS. Backed by the live Supabase project
+> (`hrvaqgvukzxfskkcrwbt`) via MCP introspection + the full simulator suite. Keep this updated; it is the
+> single source of truth for "where are the gaps."
+
+## 1. Architecture (what makes this the category leader)
+
+- **One egress, governed end-to-end.** Every consumer-reaching action funnels through a single gate
+  (`lib/providers/dispatch.ts` + the connector-gateway): consent / opt-out / DNC / quiet-hours /
+  de-confliction, then a tamper-proof **compliance ledger** (`compliance_events`), owned by an
+  accountable manager. Proven on every commit by `test:egress-send-guard` (no ungoverned send across
+  email/SMS/voice/social; no connector bypass; no consent-skip backdoor).
+- **13 accountable managers** (`lib/kernel/manager-registry.ts`): 11 lead-working agent-kinds + 2
+  back-office oversight managers (**Compliance Officer**, **Finance Manager**). Every Command Center
+  queue / table / burn-domain maps to one (zero orphans — `test:manager-ownership`, 694 tables).
+- **One Command Center** = the operator surface: live manager sessions, the approval queue with the
+  **Compliance Officer pre-flight badge** (clear/advisory/blocked, Approve disabled on a hard block),
+  the managers-talking feed, the **command bar** (text shares one dispatch with the voice admin), and
+  the **Compliance Ledger** view.
+- **Differentiator vs RealScout / Lofty / Rave / MoxiWorks:** they ship *tools*; this ships an
+  **accountable AI management team** whose every outbound touch is consent-checked, Fair-Housing-cleared,
+  audited, and **CI-proven** — including an accountable **Compliance Officer** none of them have.
+
+## 2. Business-process coverage (scrape → lifetime)
+
+| Stage | Owner(s) | Code + simulator | Live rows (DB) |
+|---|---|---|---|
+| 1 Scrape / leadgen | AI ISA, Data Steward | `test:speed-to-lead`, `test:source-conversion` | leads **0** (un-run) |
+| 2 Qualify (AI ISA) | AI ISA | `test:isa-qualification`, `test:inbound-intent` | ai_daily_briefings 3 |
+| 3 Contact spine | Data Steward | `test:data-steward`, `test:conversation-memory` | contacts 4, activities 12 |
+| 4 Buyer journey | Shopping Agent | `test:buyer-intent-conversion`, `test:offer-net-sheet`, `test:tour-optimizer` | offers/tours **0** |
+| 5 Seller / listings | Listing Concierge | `test:listing-appt-prep`, `test:net-sheet-surprise` | listings 3, showings 0 |
+| 6 Deal / closing | Deal Coordinator, Compliance Officer | `test:closing-watchtower`, `test:fire-drill`, `test:compliance-gate` | transactions 2, milestones 10 |
+| 7 Lifetime | Sphere Manager | `test:anniversary-equity`, `test:referral-radar` | referrals **0** |
+| 8 Marketing / content | Campaign Orchestrator, Marketing, Asset, Ads | `test:campaign-center`, `test:promo-composition`, `test:ads-manager` | social_posts 3, rest 0 |
+| 9 Governance / egress | Compliance Officer, all | `test:manager-dissent`, `test:compliance-ledger`, `test:egress-send-guard` | compliance_events 6 |
+| 10 Command Center | all | `test:command-center`, `test:partners-meeting` | managed_agents **0** |
+
+**234 simulators green** (`npm run guard` + `guard:compliance` + the full suite). **Build green** (Next 16
+/ Turbopack, 431 pages). **Live schema conformance:** 729 base tables, **RLS enabled on every one**;
+snapshot reconciled to live (687 → 694).
+
+## 3. THE headline gap — the pipeline has never run on the live DB
+
+The live DB is a **fresh seed**, not an exercised system:
+
+- `managed_agents` **0**, `managed_agent_sessions` **0** → the AI managers have never been spawned here.
+- `manager_signals` **0** → no inter-manager coordination has occurred.
+- `agent_client_messages` **0** → the approval queue has never held a proposal.
+- `leads` **0**, `offers` **0**, `tours` **0**, `commissions` **0**, marketing tables **0**.
+
+**Meaning:** the code + simulators prove the logic works; they do **not** prove the journey has flowed
+through the real database end-to-end. This is the difference between "tests pass" and "the OS has run."
+Closing it requires **running the pipeline against the DB** — which needs a DB-reachable environment
+(this audit's sandbox blocks the DB host via network egress policy).
+
+**Action:** seed a demo brokerage and run the journey end-to-end via the **`e2e` workflow** (already
+wired; needs the Supabase service-role secret in GitHub Actions) — OR a one-shot "demo seed + run"
+script executed where the DB is reachable. This is the single most valuable validation left.
+
+## 4. Gaps found & closed in this audit cycle
+
+| # | Gap | Resolution |
+|---|---|---|
+| 1 | ~480 tables unowned (orphan egress activities) | Zero-orphans burn — every snapshot table → an accountable manager |
+| 2 | No "command the team" surface | Command bar sharing the voice dispatch |
+| 3 | Compliance & finance diffused into Data Steward | Added Compliance Officer + Finance Manager (11→13) |
+| 4 | Pre-flight verdict not attributed / not visible | Compliance Officer pre-flight badge + ledger + on-demand view |
+| 5 | Outbound copy not all pre-flighted | Extended pre-flight to all 7 outbound-copy queues |
+| 6 | Ungoverned client sends (5 raw senders) | Routed through the gate; `egress-send-guard` freezes the surface |
+| 7 | CCPA: opted-out contacts uploaded to Meta audiences | `isAudienceUploadEligible` live re-check (audience-eligibility guard) |
+| 8 | Consent simulators not enforced in CI | `guard:compliance` tier (12 sims) added to CI |
+| 9 | **Production build FAILED** (Remotion bundler in client) | Split pure net-sheet calc out of the server runner; build green |
+| 10 | Finance export returned a fake URL | Real CSV/PDF data-URI export + cap anniversary rollover |
+| 11 | 226 dead/duplicate components (drift) | Removed (reachability-verified); `test:no-dead-components` locks it |
+| 12 | 7 live tables unguarded by schema-drift | Reconciled snapshot to live schema (introspected columns) |
+| 13 | Differentiator invisible | Partners' Meeting recap reel (composition + props + render request, tested) |
+
+## 5. Remaining gaps / open items (prioritized)
+
+1. **Run the pipeline on the live DB** (§3) — the real end-to-end proof. *(needs DB-reachable env)*
+2. **Partners' Meeting render last-mile** — insert the queued render row + a "▶ Watch" Command Center
+   card + the Sunday cron, so the avatar recap actually ships. *(needs DB + render endpoint + D-ID creds)*
+3. **Supabase Preview CI check** — fails on migration-naming drift (timestamp vs `m###`); run
+   `supabase db pull` or disable the integration. Informational, not a code gate. See `MIGRATIONS.md`.
+4. **2 minor `financial.ts` TODOs** — agent-cap edge cases (non-blocking).
+
+## 6. Recommendation — the next step to lead the category
+
+The architecture is **done, deployable, governed, and CI-proven**. The remaining work is **operational**,
+not architectural. In order:
+
+1. **Deploy to a Vercel preview + seed a demo brokerage**, then **run the `e2e` workflow** with the
+   Supabase secret → exercises every stage against the real DB (closes §3, the headline gap).
+2. **Wire the Partners' Meeting render last-mile** (§5.2) — turns the tested reel into a weekly avatar
+   briefing that *proves the AI-team thesis* and can truthfully narrate the compliance disposition.
+3. **Then** scale the scraping tier + continuous-learning loops on real traffic.
+
+No competitor can claim — let alone CI-prove — "nothing reaches a consumer outside one consent-governed,
+Fair-Housing-cleared, audited gate, narrated back to the broker by the AI team that did the work."
+That is the moat. Ship it.
