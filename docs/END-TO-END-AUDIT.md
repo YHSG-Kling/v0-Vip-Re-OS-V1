@@ -127,3 +127,25 @@ That is the moat. Ship it.
   the active `lead-scraping` cron path. Wire as sources, or prune as deprecated.
 - **SMS inbound is opt-out-only** by design (no general SMS reply→intent handler). If SMS-reply
   auto-conversion is desired, add an SMS-channel sibling to `processInboundEmail`.
+
+### Pass 2 — orphan pages (investigate-then-consolidate)
+WIRED (genuine top-level surfaces, kept + linked):
+- `dashboard/superadmin/platform` (rich platform-overview; distinct from the `/admin/platform` hub) →
+  added to the hub's Platform Controls + superadmin sidebar as "Platform Overview".
+- `dashboard/ai-isa/settings` (462-line Master Control) → AI-ISA Console nav "ISA Settings".
+- `dashboard/compliance/queue` (distinct from `/approvals`) → compliance nav "Compliance Queue".
+
+REMOVAL CANDIDATES — confirmed DUPLICATE/SUPERSEDED by investigation (0 path-refs + a canonical
+replacement exists). Do NOT wire (would re-introduce drift); confirm no unique richer functionality,
+then delete:
+- `dashboard/isa/campaigns/new` — the campaigns client already has an inline "New Campaign" modal
+  (`setShowCreate`); this standalone page is the orphaned duplicate creation surface.
+- `dashboard/isa/calling/dial` — the calling page's CTA links to `/dashboard/voice/isa`; this dial
+  page is the superseded variant.
+
+NEEDS A HOME/DUP DECISION (thin or ambiguous; investigate in the focused UI pass before wiring/removing):
+- `dashboard/documents/contract-review` (44 lines), `dashboard/onboarding/ai-call-setup`,
+  `dashboard/financials/agent/fees`, `dashboard/settings/required-documents` (note: SettingsSidebar
+  uses the `/settings/*` path space, not `/dashboard/settings/*`).
+
+Confirmed reachable (not orphans): `dashboard/calculators`, `dashboard/support`.
