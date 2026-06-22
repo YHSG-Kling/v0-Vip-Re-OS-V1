@@ -38,6 +38,8 @@ export function OfferActionsBar(props: {
             setState(s => ({ ...s, compliance_passed: true, transaction_id: extractTxId(r.message) ?? "pending" }))
           } else if (r.kind === "counter") {
             setState(s => ({ ...s, seller_response_type: "countered" }))
+          } else if (r.kind === "commission") {
+            setState(s => ({ ...s, commission_acknowledged: true }))
           }
         }
         // Always pull canonical data so workspace below re-renders

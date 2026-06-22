@@ -59,6 +59,7 @@ import {
   Info,
   Loader2,
   Rocket,
+  LayoutTemplate,
 } from "lucide-react"
 import { predictPerformanceAction } from "@/app/actions/content-prediction"
 import { PredictionWidget, type PredictionData } from "@/app/components/prediction-widget"
@@ -79,6 +80,7 @@ import {
   deleteAudience,
 } from "@/lib/ads/facebook-audience-sync"
 import type { AudienceType, SourceRule } from "@/lib/ads/facebook-audience-sync-types"
+import type { AudienceTemplate } from "@/lib/ads/fb-audience-templates"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -152,6 +154,20 @@ interface AdsDashboardClientProps {
   performanceData: AdPerformance[]
   audiences: Audience[]
   adConnections?: Array<{ platform: string; connected: boolean; accountId: string | null }>
+  audienceTemplates?: AudienceTemplate[]
+}
+
+// ─── AUDIENCE-TEMPLATE CATEGORY STYLING ─────────────────────────────────────
+
+const TEMPLATE_CATEGORY_META: Record<
+  AudienceTemplate["category"],
+  { label: string; badge: string }
+> = {
+  remarketing: { label: "Remarketing", badge: "bg-blue-100 text-blue-700" },
+  lookalike: { label: "Lookalike", badge: "bg-purple-100 text-purple-700" },
+  exclusion: { label: "Exclusion", badge: "bg-red-100 text-red-700" },
+  geo: { label: "Geo", badge: "bg-amber-100 text-amber-700" },
+  lifecycle: { label: "Lifecycle / Sphere", badge: "bg-green-100 text-green-700" },
 }
 
 // ─── STATUS CONFIG ────────────────────────────────────────────────────────────
@@ -228,6 +244,7 @@ export function AdsDashboardClient({
   performanceData,
   audiences: initialAudiences,
   adConnections = [],
+  audienceTemplates = [],
 }: AdsDashboardClientProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -288,6 +305,14 @@ export function AdsDashboardClient({
     contactTags: "",
     consentBasis: "",
   })
+  // When the agent launches the Create Audience dialog from a prebuilt
+  // template, we stash the template's full SourceRule + audienceType here so
+  // it flows straight to createAudience (the dialog's own source picker only
+  // covers the 3 generic source types).
+  const [templateOverride, setTemplateOverride] = useState<{
+    sourceRule: SourceRule
+    audienceType: AudienceType
+  } | null>(null)
   const [isSyncing, setIsSyncing] = useState<string | null>(null)
 
   // Prediction state
@@ -453,25 +478,30 @@ export function AdsDashboardClient({
 
     setIsLoading(true)
 
-    const sourceRule: SourceRule = {
-      type: newAudience.sourceRuleType,
-      filters: {
-        days_lookback: newAudience.daysLookback,
-        contact_tags: newAudience.contactTags ? newAudience.contactTags.split(",").map((t) => t.trim()) : [],
-      },
-    }
+    // A template-sourced audience carries its own SourceRule + type; a
+    // manually-built one is assembled from the dialog's generic source picker.
+    const sourceRule: SourceRule = templateOverride
+      ? templateOverride.sourceRule
+      : {
+          type: newAudience.sourceRuleType,
+          filters: {
+            days_lookback: newAudience.daysLookback,
+            contact_tags: newAudience.contactTags ? newAudience.contactTags.split(",").map((t) => t.trim()) : [],
+          },
+        }
 
     const result = await createAudience(userId, {
       brokerageId,
       agentId: userId,
       audienceName: newAudience.audienceName,
-      audienceType: newAudience.audienceType,
+      audienceType: templateOverride ? templateOverride.audienceType : newAudience.audienceType,
       sourceRule,
       consentBasis: newAudience.consentBasis,
     })
 
     if (result.success) {
       setIsCreateAudienceOpen(false)
+      setTemplateOverride(null)
       setNewAudience({
         audienceName: "",
         audienceType: "custom",
@@ -486,6 +516,21 @@ export function AdsDashboardClient({
     }
 
     setIsLoading(false)
+  }
+
+  // Pre-fill the Create Audience dialog from a prebuilt template and open it.
+  const handleUseTemplate = (template: AudienceTemplate) => {
+    setTemplateOverride({
+      sourceRule: template.sourceRule,
+      audienceType: template.audienceType,
+    })
+    setNewAudience((prev) => ({
+      ...prev,
+      audienceName: template.name,
+      audienceType: template.audienceType,
+      consentBasis: template.consentBasis,
+    }))
+    setIsCreateAudienceOpen(true)
   }
 
   const handleSyncAudience = async (audienceId: string) => {
@@ -885,6 +930,72 @@ export function AdsDashboardClient({
           {/* AUDIENCES TAB */}
           {/* ═══════════════════════════════════════════════════════════════════ */}
           <TabsContent value="audiences" className="space-y-4">
+            {/* ─── PREBUILT AUDIENCE TEMPLATES GALLERY ─────────────────────── */}
+            {audienceTemplates.length > 0 && (
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center gap-2">
+                    <LayoutTemplate className="h-5 w-5 text-muted-foreground" />
+                    <CardTitle className="text-base">Prebuilt Audience Templates</CardTitle>
+                  </div>
+                  <CardDescription>
+                    One-click, real-estate-tuned targeting recipes. Pick one to pre-fill the
+                    Create Audience form with a curated source rule and consent basis.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                    {audienceTemplates.map((template) => {
+                      const categoryMeta = TEMPLATE_CATEGORY_META[template.category]
+                      return (
+                        <Card key={template.id} className="flex flex-col bg-muted/30">
+                          <CardContent className="flex flex-1 flex-col p-4">
+                            <div className="mb-2 flex items-start justify-between gap-2">
+                              <span className="text-sm font-medium leading-tight">{template.name}</span>
+                              <Badge className={`${categoryMeta.badge} shrink-0`}>{categoryMeta.label}</Badge>
+                            </div>
+                            <p className="mb-3 text-xs text-muted-foreground line-clamp-3">
+                              {template.description}
+                            </p>
+                            <div className="mb-3 space-y-1.5 text-[11px] text-muted-foreground">
+                              <div className="flex items-center gap-1.5">
+                                <Target className="h-3 w-3 shrink-0" />
+                                <span className="capitalize">
+                                  {template.audienceType.replace("_", " ")} &middot; {template.sourceRule.type.replace(/_/g, " ")}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <Users className="h-3 w-3 shrink-0" />
+                                <span>Est. reach: {template.estimatedSizeLabel}</span>
+                              </div>
+                            </div>
+                            {template.recommendedFor.length > 0 && (
+                              <div className="mb-3 flex flex-wrap gap-1">
+                                {template.recommendedFor.slice(0, 3).map((rec) => (
+                                  <Badge key={rec} variant="outline" className="text-[10px] font-normal">
+                                    {rec}
+                                  </Badge>
+                                ))}
+                              </div>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="mt-auto w-full"
+                              onClick={() => handleUseTemplate(template)}
+                            >
+                              <Plus className="mr-1 h-4 w-4" />
+                              Use Template
+                            </Button>
+                          </CardContent>
+                        </Card>
+                      )
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             <div className="flex items-center justify-between">
               <p className="text-muted-foreground">
                 Custom audiences for Facebook ad targeting and retargeting
@@ -1344,12 +1455,20 @@ export function AdsDashboardClient({
         {/* ═══════════════════════════════════════════════════════════════════ */}
         {/* CREATE AUDIENCE DIALOG */}
         {/* ═══════════════════════════════════════════════════════════════════ */}
-        <Dialog open={isCreateAudienceOpen} onOpenChange={setIsCreateAudienceOpen}>
+        <Dialog
+          open={isCreateAudienceOpen}
+          onOpenChange={(open) => {
+            setIsCreateAudienceOpen(open)
+            if (!open) setTemplateOverride(null)
+          }}
+        >
           <DialogContent className="max-w-lg">
             <DialogHeader>
               <DialogTitle>Create Custom Audience</DialogTitle>
               <DialogDescription>
-                Create a Facebook custom audience for ad targeting
+                {templateOverride
+                  ? "Prefilled from a prebuilt template. Review the consent basis, then create."
+                  : "Create a Facebook custom audience for ad targeting"}
               </DialogDescription>
             </DialogHeader>
 
@@ -1363,47 +1482,59 @@ export function AdsDashboardClient({
                 />
               </div>
 
-              <div>
-                <Label>Source</Label>
-                <Select
-                  value={newAudience.sourceRuleType}
-                  onValueChange={(v) =>
-                    setNewAudience({ ...newAudience, sourceRuleType: v as "website_visitors" | "contact_list" | "engagement" })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="contact_list">Contact List (CRM)</SelectItem>
-                    <SelectItem value="website_visitors">Website Visitors</SelectItem>
-                    <SelectItem value="engagement">Engaged Contacts</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {newAudience.sourceRuleType === "website_visitors" && (
-                <div>
-                  <Label>Days Lookback</Label>
-                  <Input
-                    type="number"
-                    value={newAudience.daysLookback}
-                    onChange={(e) => setNewAudience({ ...newAudience, daysLookback: parseInt(e.target.value) || 30 })}
-                    min={1}
-                    max={180}
-                  />
+              {templateOverride ? (
+                <div className="rounded-md border bg-muted/40 p-3">
+                  <Label className="text-xs text-muted-foreground">Source (from template)</Label>
+                  <p className="mt-1 text-sm font-medium capitalize">
+                    {templateOverride.audienceType.replace("_", " ")} &middot;{" "}
+                    {templateOverride.sourceRule.type.replace(/_/g, " ")}
+                  </p>
                 </div>
-              )}
+              ) : (
+                <>
+                  <div>
+                    <Label>Source</Label>
+                    <Select
+                      value={newAudience.sourceRuleType}
+                      onValueChange={(v) =>
+                        setNewAudience({ ...newAudience, sourceRuleType: v as "website_visitors" | "contact_list" | "engagement" })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="contact_list">Contact List (CRM)</SelectItem>
+                        <SelectItem value="website_visitors">Website Visitors</SelectItem>
+                        <SelectItem value="engagement">Engaged Contacts</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
 
-              {newAudience.sourceRuleType === "contact_list" && (
-                <div>
-                  <Label>Contact Tags (comma-separated, optional)</Label>
-                  <Input
-                    value={newAudience.contactTags}
-                    onChange={(e) => setNewAudience({ ...newAudience, contactTags: e.target.value })}
-                    placeholder="buyer, hot-lead"
-                  />
-                </div>
+                  {newAudience.sourceRuleType === "website_visitors" && (
+                    <div>
+                      <Label>Days Lookback</Label>
+                      <Input
+                        type="number"
+                        value={newAudience.daysLookback}
+                        onChange={(e) => setNewAudience({ ...newAudience, daysLookback: parseInt(e.target.value) || 30 })}
+                        min={1}
+                        max={180}
+                      />
+                    </div>
+                  )}
+
+                  {newAudience.sourceRuleType === "contact_list" && (
+                    <div>
+                      <Label>Contact Tags (comma-separated, optional)</Label>
+                      <Input
+                        value={newAudience.contactTags}
+                        onChange={(e) => setNewAudience({ ...newAudience, contactTags: e.target.value })}
+                        placeholder="buyer, hot-lead"
+                      />
+                    </div>
+                  )}
+                </>
               )}
 
               <div>

@@ -33,6 +33,8 @@
     "test:first-look-text": "tsx scripts/first-look-text-simulator.ts",
     "test:property-buyer-match": "tsx scripts/property-buyer-match-simulator.ts",
     "test:lead-readiness-handoff": "tsx scripts/lead-readiness-handoff-simulator.ts",
+    "test:commission-disclosure": "tsx scripts/commission-disclosure-simulator.ts",
+    "test:fb-audience-templates": "tsx scripts/fb-audience-templates-simulator.ts",
     "test:partners-meeting-reel": "tsx scripts/partners-meeting-reel-simulator.ts",
     "demo:seed-run": "tsx scripts/demo-seed-and-run.ts",
     "test:academy-learning": "tsx scripts/academy-learning-simulator.ts",

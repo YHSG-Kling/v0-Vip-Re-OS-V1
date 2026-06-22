@@ -30,6 +30,7 @@ import { submitOfferToCompliance }     from "@/app/actions/buyer-offer/submit-to
 import { flagOfferCompliance }         from "@/app/actions/buyer-offer/flag-compliance"
 import { recordSellerResponse }        from "@/app/actions/buyer-offer/record-seller-response"
 import { recordSellerSignedCounter }   from "@/app/actions/buyer-offer/record-seller-signed-counter"
+import { CommissionDisclosureDialog }  from "@/app/components/offer/commission-disclosure-dialog"
 
 export interface OfferAgentActionsState {
   buyer_signed:                  boolean
@@ -37,6 +38,8 @@ export interface OfferAgentActionsState {
   fully_signed_contract_on_file: boolean
   compliance_passed:             boolean
   transaction_id:                string | null
+  /** NAR-2024 buyer commission disclosure recorded? submit-for-signature blocks until true. */
+  commission_acknowledged:       boolean
 }
 
 export interface OfferAgentActionsProps {
@@ -172,8 +175,22 @@ export function OfferAgentActions({ offerId, agentUserId, state, onResult }: Off
   const canSubmit  = state.buyer_signed && state.fully_signed_contract_on_file
                       && !state.compliance_passed && !state.transaction_id
 
+  const needsCommissionDisclosure = !state.commission_acknowledged && !state.transaction_id
+
   return (
     <div className="flex flex-wrap gap-2 items-center">
+      {needsCommissionDisclosure && (
+        <CommissionDisclosureDialog
+          offerId={offerId}
+          onDone={(r) => report("commission", r.ok, r.message)}
+        />
+      )}
+      {state.commission_acknowledged && !state.transaction_id && (
+        <span className="text-xs text-emerald-700 inline-flex items-center gap-1">
+          <CheckCircle2 className="h-3 w-3" />
+          Commission disclosed
+        </span>
+      )}
       <Button size="sm" variant="default" onClick={submit} disabled={!canSubmit || pending}>
         {busy === "submit" ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Send className="h-3 w-3 mr-1" />}
         Submit to compliance
@@ -228,6 +245,7 @@ export function offerRowToActionsState(o: {
   fully_signed_contract_received_at?: string | null
   compliance_passed_at?: string | null
   transaction_id?: string | null
+  buyer_commission_acknowledged_at?: string | null
 }): OfferAgentActionsState {
   return {
     buyer_signed:                  !!o.buyer_signed_at,
@@ -235,5 +253,6 @@ export function offerRowToActionsState(o: {
     fully_signed_contract_on_file: !!o.fully_signed_contract_received_at,
     compliance_passed:             !!o.compliance_passed_at,
     transaction_id:                (o.transaction_id as string | null) ?? null,
+    commission_acknowledged:       !!o.buyer_commission_acknowledged_at,
   }
 }

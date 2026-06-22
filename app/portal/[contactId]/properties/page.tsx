@@ -4,6 +4,8 @@ import PersonaPropertiesDashboard from "@/app/components/portal/PersonaPropertie
 import { getPersonaConfig } from "@/lib/portal"
 import { determinePortalView } from "@/lib/kernel/portal"
 import { getRecommendedProperties } from "@/app/actions/ai-client-portal"
+import { getBuyerPortalMatches } from "@/app/actions/buyer-portal-matches"
+import { TopMatchesPanel } from "@/app/portal/[contactId]/components/TopMatchesPanel"
 
 export default async function PropertiesPage({ params }: { params: Promise<{ contactId: string }> }) {
   const { contactId } = await params
@@ -170,14 +172,28 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     : { success: false, properties: [] }
   const recommendedProperties = recommendedResult.properties ?? []
 
+  // Buyer's cached AI property matches (property_matches upserts). Resolved via
+  // the unified property-facts resolver so external-MLS matches surface too.
+  // Buyer-only; auth + brokerage ownership are enforced inside the action.
+  const topMatchesResult = portalView.view === "buyer"
+    ? await getBuyerPortalMatches(contactId, 6).catch(() => ({ success: false, matches: [] }))
+    : { success: false, matches: [] }
+  const topMatches = topMatchesResult.matches ?? []
+
   // Parse custom_fields
   const customFields = typeof contact.custom_fields === "string" 
     ? JSON.parse(contact.custom_fields || "{}") 
     : contact.custom_fields || {}
 
   return (
-    <PersonaPropertiesDashboard
-      contact={contact}
+    <>
+      {topMatches.length > 0 && (
+        <div className="max-w-6xl mx-auto px-4 pt-6">
+          <TopMatchesPanel contactId={contactId} matches={topMatches} />
+        </div>
+      )}
+      <PersonaPropertiesDashboard
+        contact={contact}
       customFields={customFields}
       persona={persona}
       personaConfig={personaConfig}
@@ -193,6 +209,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
       buyerSmartSearches={buyerSmartSearches}
       buyerInferredPrefs={buyerInferredPrefs}
       sellerListing={sellerListing}
-    />
+      />
+    </>
   )
 }

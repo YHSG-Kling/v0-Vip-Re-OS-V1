@@ -20,6 +20,9 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import { resolveESignProviderForActor } from "@/lib/integrations/resolve-esign-provider"
+import {
+  validateCommissionDisclosure, resolveDisclosureMethod, isEsignDispatchMethod,
+} from "@/lib/offers/commission-disclosure"
 
 export interface AcknowledgeCommissionInput {
   offerId: string
@@ -36,16 +39,6 @@ export interface AcknowledgeCommissionInput {
 export async function acknowledgeBuyerCommissionAction(
   input: AcknowledgeCommissionInput,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  if (!input.affirmativeConsent) {
-    return { ok: false, error: "Buyer must affirmatively acknowledge the commission terms" }
-  }
-  if (!input.disclosedBuyerCommissionPct && !input.disclosedBuyerCommissionFlat) {
-    return { ok: false, error: "Commission percentage or flat amount required (NAR 2024 — explicit comp terms mandatory)" }
-  }
-  if (!input.disclosedCommissionPayer) {
-    return { ok: false, error: "Commission payer required (seller / buyer / split / either)" }
-  }
-
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
@@ -89,19 +82,19 @@ export async function acknowledgeBuyerCommissionAction(
     return { ok: false, error: "Only the buyer or an authorized agent can acknowledge" }
   }
 
-  // If agent is recording, force a disclosureMethod different from 'click_through'
-  if (!isBuyer && (input.disclosureMethod ?? "click_through") === "click_through") {
-    return { ok: false, error: "Agent must record acknowledgment via wet_signature, docusign, or dotloop" }
-  }
+  // NAR-2024 disclosure validation (consent + explicit comp terms + payer, and an
+  // agent recording on the buyer's behalf may not use the buyer's self-click path).
+  const validationError = validateCommissionDisclosure(input, isBuyer)
+  if (validationError) return { ok: false, error: validationError }
 
   const hdrs = await headers()
-  let method = input.disclosureMethod ?? (isBuyer ? "click_through" : "wet_signature")
+  let method = resolveDisclosureMethod(input.disclosureMethod, isBuyer)
 
   // If method is docusign/dotloop, dispatch through the brokerage's configured
   // e-sign provider so the buyer receives an actual signing email through the
   // platform they expect. The provider's webhook will update signed_at when the
   // buyer signs; click_through and wet_signature are recorded inline below.
-  if (method === "docusign" || method === "dotloop") {
+  if (isEsignDispatchMethod(method)) {
     try {
       // user → team → brokerage cascade — agent's own DocuSign/Dotloop wins
       const resolved = await resolveESignProviderForActor({

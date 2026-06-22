@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { AdsDashboardClient } from "./ads-dashboard-client"
 import { getAdConnections } from "@/lib/ads/connection-status"
+import { listAudienceTemplates } from "@/app/actions/fb-audience-templates"
 
 export const dynamic = "force-dynamic"
 
@@ -85,6 +86,11 @@ export default async function AdsCampaignsPage() {
   // Ad-account connection status (drives the Connect card + the launch gate).
   const adConnections = await getAdConnections(profile.brokerage_id)
 
+  // Prebuilt one-click audience templates (static catalog) surfaced as a
+  // gallery in the Audiences tab — agents pick a template to pre-fill the
+  // Create Audience dialog.
+  const audienceTemplates = await listAudienceTemplates()
+
   return (
     <AdsDashboardClient
       userId={user.id}
@@ -95,6 +101,7 @@ export default async function AdsCampaignsPage() {
       performanceData={performanceData}
       audiences={audiences || []}
       adConnections={adConnections}
+      audienceTemplates={audienceTemplates}
     />
   )
 }

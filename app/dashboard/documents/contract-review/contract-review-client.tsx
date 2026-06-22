@@ -23,6 +23,7 @@ import {
   ChevronUp,
   Upload,
   GitCompare,
+  Sparkles,
 } from "lucide-react"
 import {
   reviewTransactionDocuments,
@@ -31,6 +32,7 @@ import {
   applyContractExtraction,
   compareContractVersions,
 } from "@/app/actions/ai-contract-review"
+import { aiAnalyzeContract } from "@/app/actions/ai-document-intelligence"
 
 interface Transaction {
   id: string
@@ -95,6 +97,17 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
   const [comparing, setComparing] = useState(false)
   const [compareResult, setCompareResult] = useState<string | null>(null)
 
+  // AI contract analysis state (ai-document-intelligence.aiAnalyzeContract)
+  const [analyzeOpen, setAnalyzeOpen] = useState(false)
+  const [analyzeDocs, setAnalyzeDocs] = useState<{ id: string; name: string }[]>([])
+  const [analyzeDocId, setAnalyzeDocId] = useState("")
+  const [analyzeText, setAnalyzeText] = useState("")
+  const [analyzeContractType, setAnalyzeContractType] =
+    useState<"purchase" | "listing" | "lease" | "addendum">("purchase")
+  const [analyzing, setAnalyzing] = useState(false)
+  const [analysisResult, setAnalysisResult] = useState<any>(null)
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null)
+
   // Contract extraction state
   const [extractOpen, setExtractOpen] = useState(false)
   const [contractText, setContractText] = useState("")
@@ -137,6 +150,39 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
       .select("id, doc_label, doc_type")
       .eq("transaction_id", selectedTxId)
     setTxDocs((data ?? []).map((d: any) => ({ id: d.id, name: d.doc_label ?? d.doc_type ?? d.id })))
+  }
+
+  async function loadAnalyzeDocs() {
+    if (!selectedTxId) return
+    const { createClient } = await import("@/lib/supabase/client")
+    const supabase = createClient()
+    const { data } = await supabase
+      .from("client_documents")
+      .select("id, document_name")
+      .eq("transaction_id", selectedTxId)
+    setAnalyzeDocs((data ?? []).map((d: any) => ({ id: d.id, name: d.document_name ?? d.id })))
+  }
+
+  async function handleAnalyzeContract() {
+    if (!analyzeDocId || !analyzeText.trim()) return
+    setAnalyzing(true)
+    setAnalysisResult(null)
+    setAnalyzeError(null)
+    try {
+      const res = await aiAnalyzeContract({
+        documentId: analyzeDocId,
+        agentId,
+        contractText: analyzeText,
+        contractType: analyzeContractType,
+      })
+      if (res.success && res.analysis) {
+        setAnalysisResult(res.analysis)
+      } else {
+        setAnalyzeError(res.error ?? "Analysis failed")
+      }
+    } finally {
+      setAnalyzing(false)
+    }
   }
 
   async function handleCompare() {
@@ -457,6 +503,203 @@ export function ContractReviewClient({ agentId, agentState, transactions }: Prop
                 </div>
                 <p className="text-xs text-muted-foreground">
                   Saving will update the transaction record and create milestone entries for each deadline.
+                </p>
+              </div>
+            )}
+          </CardContent>
+        )}
+      </Card>
+
+      {/* ─── AI CONTRACT ANALYSIS ─────────────────────────────────────── */}
+      <Card>
+        <CardHeader className="pb-2">
+          <button
+            className="flex items-center justify-between w-full text-left"
+            onClick={() => {
+              setAnalyzeOpen((o) => !o)
+              if (!analyzeOpen) loadAnalyzeDocs()
+            }}
+          >
+            <div>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-primary" />
+                Analyze Contract with AI
+              </CardTitle>
+              <CardDescription className="mt-0.5 text-xs">
+                Pick a transaction document, paste its text → AI surfaces key terms, risks, deadlines, and negotiation points
+              </CardDescription>
+            </div>
+            {analyzeOpen ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+          </button>
+        </CardHeader>
+        {analyzeOpen && (
+          <CardContent className="space-y-4">
+            {!selectedTxId && (
+              <p className="text-xs text-amber-600">Select a transaction above before analyzing a contract.</p>
+            )}
+            {analyzeDocs.length === 0 && selectedTxId && (
+              <p className="text-xs text-muted-foreground">No documents found for this transaction.</p>
+            )}
+            {analyzeDocs.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs">Document</Label>
+                  <Select value={analyzeDocId} onValueChange={setAnalyzeDocId}>
+                    <SelectTrigger className="mt-1 h-8">
+                      <SelectValue placeholder="Pick document…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {analyzeDocs.map((d) => (
+                        <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Contract type</Label>
+                  <Select
+                    value={analyzeContractType}
+                    onValueChange={(v) => setAnalyzeContractType(v as "purchase" | "listing" | "lease" | "addendum")}
+                  >
+                    <SelectTrigger className="mt-1 h-8">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="purchase">Purchase</SelectItem>
+                      <SelectItem value="listing">Listing</SelectItem>
+                      <SelectItem value="lease">Lease</SelectItem>
+                      <SelectItem value="addendum">Addendum</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            )}
+            <div>
+              <Label className="text-xs">Contract text</Label>
+              <Textarea
+                value={analyzeText}
+                onChange={(e) => setAnalyzeText(e.target.value)}
+                placeholder="Paste the full contract text here…"
+                rows={6}
+                className="mt-1 text-xs font-mono resize-y"
+              />
+            </div>
+            <Button
+              onClick={handleAnalyzeContract}
+              disabled={!analyzeDocId || !analyzeText.trim() || analyzing}
+              className="gap-1.5"
+            >
+              {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+              Analyze Contract
+            </Button>
+
+            {analyzeError && <p className="text-xs text-red-600">{analyzeError}</p>}
+
+            {analysisResult && (
+              <div className="space-y-4 pt-2 border-t">
+                {analysisResult.summary && (
+                  <div>
+                    <p className="text-sm font-medium mb-1">Summary</p>
+                    <p className="text-xs text-muted-foreground leading-relaxed">{analysisResult.summary}</p>
+                  </div>
+                )}
+
+                {Array.isArray(analysisResult.keyTerms) && analysisResult.keyTerms.length > 0 && (
+                  <div>
+                    <p className="text-sm font-medium mb-1">Key Terms</p>
+                    <div className="space-y-1.5">
+                      {analysisResult.keyTerms.map((t: any, i: number) => (
+                        <div key={i} className="flex items-center justify-between gap-2 text-xs">
+                          <span className="font-medium">{t.term}</span>
+                          <span className="text-muted-foreground truncate">{t.value}</span>
+                          <Badge variant="outline" className="text-[10px] whitespace-nowrap">{t.importance}</Badge>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {Array.isArray(analysisResult.risks) && analysisResult.risks.length > 0 && (
+                  <div>
+                    <p className="text-sm font-medium mb-1">Risks</p>
+                    <div className="space-y-2">
+                      {analysisResult.risks.map((r: any, i: number) => {
+                        const sev = r.severity === "high"
+                          ? "text-red-700 border-red-200"
+                          : r.severity === "medium"
+                          ? "text-amber-700 border-amber-200"
+                          : "text-blue-700 border-blue-200"
+                        return (
+                          <div key={i} className="flex gap-2 p-2 rounded-lg border bg-muted/30">
+                            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500 mt-0.5" />
+                            <div className="min-w-0 flex-1 space-y-0.5">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className="text-xs font-medium">{r.risk}</p>
+                                <Badge variant="outline" className={`text-[10px] ${sev}`}>{r.severity}</Badge>
+                              </div>
+                              {r.mitigation && <p className="text-xs text-muted-foreground">{r.mitigation}</p>}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {Array.isArray(analysisResult.deadlines) && analysisResult.deadlines.length > 0 && (
+                  <div>
+                    <p className="text-sm font-medium mb-1">Deadlines</p>
+                    <div className="space-y-1.5">
+                      {analysisResult.deadlines.map((d: any, i: number) => (
+                        <div key={i} className="flex items-center justify-between gap-2 text-xs">
+                          <span>{d.description}</span>
+                          <span className="text-muted-foreground">{d.date}</span>
+                          <Badge
+                            variant="outline"
+                            className={
+                              d.daysRemaining <= 3
+                                ? "text-red-700 border-red-200"
+                                : d.daysRemaining <= 10
+                                ? "text-amber-700 border-amber-200"
+                                : "text-muted-foreground"
+                            }
+                          >
+                            {d.daysRemaining}d
+                          </Badge>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {Array.isArray(analysisResult.unusualClauses) && analysisResult.unusualClauses.length > 0 && (
+                  <div>
+                    <p className="text-sm font-medium mb-1">Unusual Clauses</p>
+                    <ul className="list-disc pl-5 space-y-0.5 text-xs text-muted-foreground">
+                      {analysisResult.unusualClauses.map((c: string, i: number) => <li key={i}>{c}</li>)}
+                    </ul>
+                  </div>
+                )}
+
+                {Array.isArray(analysisResult.negotiationPoints) && analysisResult.negotiationPoints.length > 0 && (
+                  <div>
+                    <p className="text-sm font-medium mb-1">Negotiation Points</p>
+                    <ul className="list-disc pl-5 space-y-0.5 text-xs text-muted-foreground">
+                      {analysisResult.negotiationPoints.map((p: string, i: number) => <li key={i}>{p}</li>)}
+                    </ul>
+                  </div>
+                )}
+
+                {Array.isArray(analysisResult.recommendations) && analysisResult.recommendations.length > 0 && (
+                  <div>
+                    <p className="text-sm font-medium mb-1">Recommendations</p>
+                    <ul className="list-disc pl-5 space-y-0.5 text-xs text-muted-foreground">
+                      {analysisResult.recommendations.map((r: string, i: number) => <li key={i}>{r}</li>)}
+                    </ul>
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Analysis saved to the document record (ai_metadata.analysis).
                 </p>
               </div>
             )}
