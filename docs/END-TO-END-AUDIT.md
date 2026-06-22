@@ -138,6 +138,26 @@ to shrink the baseline as debt is burned down. Categories for the burn-down:
   matching`, `revenue-pipeline`, `newsletter/*`, `settings/*-integration-credentials`, `video/generate-
   script`, `neighbor-notifications`, `creditWorkflows`, …). Each needs a home (UI/cron/kernel) or deletion.
 
+### Remaining orphan disposition map (26) — investigated; each needs a decision, NOT a bulk delete
+The easy + medium tiers are done (29 resolved: 19 wired live, 10 deleted dead/redundant). The remainder
+is the architectural tier — investigated and characterized so the call is informed:
+- **Governed, built, but UNWIRED orchestrators** (`respond-to-contact`, `classify-outcome`,
+  `orchestrate-post-assignment`, `ai-transaction-coordinator`, `outbound-dispatch`, `voice-engine/
+  process-voice-call`, `promote-lead` is now WIRED). Each overlaps a canonical kernel/cron path
+  (`respond-to-contact`↔`ingestMessage`; `classify-outcome`↔`lib/kernel/ai-isa`; `outbound-dispatch`
+  routes through `dispatch.ts`) but is NOT an exact duplicate — superseded-leaning. Resolution = either
+  wire to its trigger (cron/webhook/command-bar) or confirm the canonical fully covers it, then delete.
+  Do NOT bulk-delete (would remove governed, working capability).
+- **`buyer-offer/*` compliance cluster** (create-offer, handle-offer-response, sync-documents,
+  rollback-offer, create-dotloop-loop, resolve-property-prefill) — dedicated offer-flow pass.
+- **Egress senders — ALL GOVERNED** (audited): `lender-status-request` (B2B allowlist),
+  `neighbor-notifications` (direct_mail_campaigns pipeline), `publish-guide-to-gbp` (social approval
+  queue, never auto-publishes), `outbound-dispatch` (gate). No ungoverned holes. `scrape-social-media`
+  + `voice-engine` are inbound, not egress.
+- **Credential code** (`settings/list|update-integration-credentials`) — security/supersession review.
+- **Demo files** (`demo-login`, `demo-contacts`) — product decision: keep for sales-demo mode vs delete.
+- **`ai.ts`** — catch-all; needs export-by-export investigation.
+
 ### Verified NOT gaps (backend + UI both exist — code-grep "orphan" lists were stale)
 - Commissions/earnings: `app/dashboard/financials/*` (9 pages incl. commissions, payouts, agent, reports).
 - Gamification: `/dashboard/leaderboard` + `components/gamification/*` (PointsBadge, BadgeGrid).
