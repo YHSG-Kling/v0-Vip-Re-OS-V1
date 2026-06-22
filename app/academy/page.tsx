@@ -12,11 +12,12 @@ import {
   getAcademyContent,
   getMarketplaceTemplates,
   cloneTemplate,
-  incrementViewCount,
   getTopContributors,
 } from "@/app/actions/academy"
 import { generateLearningPath } from "@/app/actions/ai-training-coaching"
 import { getAgentPointsAndTier } from "@/app/actions/gamification"
+import { getAcademyViewer, getFeaturedModule } from "@/app/actions/academy-learning"
+import { useRouter } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
 import {
   AcademyCommandStrip,
@@ -34,11 +35,13 @@ export default function AcademyPage() {
   const [contributors, setContributors] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const { toast } = useToast()
+  const router = useRouter()
 
-  // OS State
-  const [agentId] = useState("current-agent") // Will be resolved from auth context
-  const [brokerageId] = useState("current-brokerage")
-  const [agentName] = useState("Agent")
+  // OS State — identity resolved from the auth context (never a placeholder id).
+  const [agentId, setAgentId] = useState("")
+  const [brokerageId, setBrokerageId] = useState("")
+  const [agentName, setAgentName] = useState("Agent")
+  const [featured, setFeatured] = useState<{ id: string; title: string; summary: string | null; estimatedMinutes: number | null; hasQuiz: boolean } | null>(null)
   const [currentPoints, setCurrentPoints] = useState<number | undefined>(undefined)
   const [currentTier, setCurrentTier] = useState<string | undefined>(undefined)
   const [generatingPath, setGeneratingPath] = useState(false)
@@ -46,19 +49,35 @@ export default function AcademyPage() {
   const [inProgressContent, _setInProgressContent] = useState<any[]>([])
 
   useEffect(() => {
+    loadViewer()
+  }, [])
+
+  useEffect(() => {
     loadData()
-    loadGamificationData()
   }, [searchQuery])
 
-  async function loadGamificationData() {
+  async function loadViewer() {
     try {
-      const data = await getAgentPointsAndTier(agentId)
-      if (data) {
-        setCurrentPoints(data.points)
-        setCurrentTier(data.currentTier)
+      const viewer = await getAcademyViewer()
+      if (viewer) {
+        setAgentId(viewer.agentId)
+        setBrokerageId(viewer.brokerageId)
+        setAgentName(viewer.agentName)
+        if (viewer.agentId) {
+          try {
+            const data = await getAgentPointsAndTier(viewer.agentId)
+            if (data) {
+              setCurrentPoints(data.points)
+              setCurrentTier(data.currentTier)
+            }
+          } catch (error) {
+            console.error("Error loading gamification data:", error)
+          }
+        }
       }
+      setFeatured(await getFeaturedModule())
     } catch (error) {
-      console.error("Error loading gamification data:", error)
+      console.error("Error loading academy viewer:", error)
     }
   }
 
@@ -154,28 +173,31 @@ export default function AcademyPage() {
 
         {/* Learning Center Tab */}
         <TabsContent value="learning" className="space-y-6">
-          {/* Featured Section */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Featured Course</CardTitle>
-              <CardDescription>Master the "Them First" approach</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="flex gap-6">
-                <div className="w-48 h-32 bg-muted rounded-lg flex items-center justify-center">
-                  <Play className="h-12 w-12" />
+          {/* Featured Section — real top-priority published module */}
+          {featured && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Featured Module</CardTitle>
+                <CardDescription>Your brokerage's top learning pick</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex gap-6">
+                  <div className="w-48 h-32 bg-muted rounded-lg flex items-center justify-center">
+                    <BookOpen className="h-12 w-12" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-lg font-semibold mb-2">{featured.title}</h3>
+                    <p className="text-sm text-muted-foreground mb-4">
+                      {featured.summary || "Open this module to start learning."}
+                      {featured.estimatedMinutes ? ` • ~${featured.estimatedMinutes} min` : ""}
+                      {featured.hasQuiz ? " • includes a knowledge check" : ""}
+                    </p>
+                    <Button onClick={() => router.push(`/academy/module/${featured.id}`)}>Start Learning</Button>
+                  </div>
                 </div>
-                <div className="flex-1">
-                  <h3 className="text-lg font-semibold mb-2">Empathy-First Communication Mastery</h3>
-                  <p className="text-sm text-muted-foreground mb-4">
-                    Learn how to build trust and close more deals by leading with feelings, not solutions. 12 video
-                    lessons, 3 hours total.
-                  </p>
-                  <Button>Start Learning</Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Resource Categories */}
           <div className="grid md:grid-cols-3 gap-4">
@@ -234,11 +256,9 @@ export default function AcademyPage() {
                     title={content.title}
                     author={content.created_by_name || "System"}
                     views={content.view_count}
-                    downloads={content.downloads || 0}
-                    rating={content.rating || 4.5}
-                    duration={content.duration || ""}
-                    videoUrl={content.video_url}
+                    estimatedMinutes={content.estimated_minutes}
                     contentId={content.id}
+                    onOpen={() => router.push(`/academy/module/${content.id}`)}
                   />
                 ))
             )}
@@ -278,36 +298,19 @@ export default function AcademyPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               {contributors.length === 0 ? (
-                <>
-                  <ContributorCard
-                    name="Sarah Johnson"
-                    contributions={12}
-                    upvotes={456}
-                    avatar="/placeholder.svg?height=40&width=40"
-                  />
-                  <ContributorCard
-                    name="Mike Chen"
-                    contributions={8}
-                    upvotes={389}
-                    avatar="/placeholder.svg?height=40&width=40"
-                  />
-                  <ContributorCard
-                    name="Lisa Park"
-                    contributions={6}
-                    upvotes={267}
-                    avatar="/placeholder.svg?height=40&width=40"
-                  />
-                </>
+                <p className="text-sm text-muted-foreground py-4 text-center">
+                  No contributors yet — publish a learning module to appear here.
+                </p>
               ) : (
                 contributors
                   .slice(0, 5)
                   .map((contributor) => (
                     <ContributorCard
-                      key={contributor.id}
-                      name={contributor.name || "Anonymous"}
-                      contributions={contributor.contribution_count || 0}
-                      upvotes={contributor.upvotes || 0}
-                      avatar={contributor.avatar_url || "/placeholder.svg?height=40&width=40"}
+                      key={contributor.user_id}
+                      name={contributor.full_name || "Anonymous"}
+                      contributions={contributor.module_count || 0}
+                      upvotes={contributor.total_views || 0}
+                      avatar="/placeholder.svg?height=40&width=40"
                     />
                   ))
               )}
@@ -319,20 +322,9 @@ export default function AcademyPage() {
               <CardTitle>Recent Feedback</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <FeedbackCard
-                author="Tom Wilson"
-                resource="Listing Launch Playbook"
-                comment="This template saved me hours! The pre-listing checklist is gold."
-                rating={5}
-                date="2 days ago"
-              />
-              <FeedbackCard
-                author="Emily Davis"
-                resource="Objection Handling Video"
-                comment="The empathy approach really works. Closed 3 deals using these techniques."
-                rating={5}
-                date="5 days ago"
-              />
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                No template feedback yet — clone a template and leave a review to get the conversation started.
+              </p>
             </CardContent>
           </Card>
         </TabsContent>
@@ -388,23 +380,17 @@ function CategoryCard({ icon: Icon, title, count, description }: any) {
   )
 }
 
-// Component: Resource Card
-function ResourceCard({ type, title, author, views, downloads, rating, duration, videoUrl, contentId }: any) {
+// Component: Resource Card — opens the in-app module reader (records the view server-side)
+function ResourceCard({ type, title, author, views, estimatedMinutes, onOpen }: any) {
   const icons: any = {
     video: Play,
     loom_link: Play,
     sop: FileText,
     case_study: BookOpen,
     playbook_breakdown: BookOpen,
+    article: BookOpen,
   }
   const Icon = icons[type] || FileText
-
-  const handleView = async () => {
-    await incrementViewCount(contentId)
-    if (videoUrl) {
-      window.open(videoUrl, "_blank")
-    }
-  }
 
   return (
     <Card>
@@ -417,17 +403,12 @@ function ResourceCard({ type, title, author, views, downloads, rating, duration,
             <h4 className="font-medium truncate">{title}</h4>
             <div className="flex items-center gap-3 text-sm text-muted-foreground mt-1">
               <span>by {author}</span>
-              {duration && <span>• {duration}</span>}
-              {views && <span>• {views.toLocaleString()} views</span>}
-              {downloads > 0 && <span>• {downloads} downloads</span>}
+              {estimatedMinutes ? <span>• ~{estimatedMinutes} min</span> : null}
+              {views ? <span>• {views.toLocaleString()} views</span> : null}
             </div>
           </div>
-          <div className="flex items-center gap-1">
-            <Star className="h-4 w-4 fill-yellow-500 text-yellow-500" />
-            <span className="font-medium">{rating.toFixed(1)}</span>
-          </div>
-          <Button size="sm" onClick={handleView}>
-            {type === "video" || type === "loom_link" ? "Watch" : "Download"}
+          <Button size="sm" onClick={onOpen}>
+            Open
           </Button>
         </div>
       </CardContent>
@@ -498,28 +479,3 @@ function ContributorCard({ name, contributions, upvotes, avatar }: any) {
   )
 }
 
-// Component: Feedback Card
-function FeedbackCard({ author, resource, comment, rating, date }: any) {
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Avatar className="h-8 w-8">
-            <AvatarFallback>{author[0]}</AvatarFallback>
-          </Avatar>
-          <div>
-            <p className="font-medium text-sm">{author}</p>
-            <p className="text-xs text-muted-foreground">on {resource}</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-1">
-          {[...Array(rating)].map((_, i) => (
-            <Star key={i} className="h-3 w-3 fill-yellow-500 text-yellow-500" />
-          ))}
-        </div>
-      </div>
-      <p className="text-sm">{comment}</p>
-      <p className="text-xs text-muted-foreground">{date}</p>
-    </div>
-  )
-}

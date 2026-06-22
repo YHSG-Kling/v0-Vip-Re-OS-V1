@@ -30,6 +30,7 @@
     "test:no-dead-components": "tsx scripts/dead-component-guard.ts",
     "test:partners-meeting-reel": "tsx scripts/partners-meeting-reel-simulator.ts",
     "demo:seed-run": "tsx scripts/demo-seed-and-run.ts",
+    "test:academy-learning": "tsx scripts/academy-learning-simulator.ts",
     "test:e2e:flows": "npm run test:data-steward && npm run test:isa-qualification && npm run test:buyer-intent-conversion && npm run test:seller-appt-conversion && npm run test:speed-to-lead && npm run test:commission-forecaster && npm run test:offer-net-sheet && npm run test:closing-watchtower && npm run test:compliance-gate && npm run test:compliance-ledger && npm run test:manager-dissent && npm run test:command-center && npm run test:partners-meeting && npm run test:dual-portal && npm run test:warm-handoff && npm run test:consent-recovery",
     "test:command-center-scope": "tsx scripts/command-center-scope-simulator.ts",
     "test:buyer-nl-search": "tsx scripts/buyer-nl-search-simulator.ts",
