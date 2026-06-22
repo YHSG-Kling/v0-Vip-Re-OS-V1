@@ -7,7 +7,7 @@
  * fabricated win), with the Finance + Compliance cards (the differentiator) and the narration sourced
  * from the SAME composePartnersMeetingScript the avatar speaks.
  */
-import { buildPartnersMeetingReelProps } from "../lib/intelligence/partners-meeting-reel-props"
+import { buildPartnersMeetingReelProps, buildPartnersMeetingRenderRequest } from "../lib/intelligence/partners-meeting-reel-props"
 import type { WeekInBusiness } from "../lib/intelligence/partners-meeting"
 
 let passed = 0, failed = 0
@@ -61,6 +61,13 @@ const partial = buildPartnersMeetingReelProps({ ...ZERO, dealsClosed: 1, complia
 check("partial week shows exactly the deals + compliance cards",
   partial.cards.length === 2 && partial.cards.some((c) => c.label === "DEALS CLOSED") &&
   partial.cards.some((c) => c.kind === "compliance" && /all cleared Fair Housing & consent/.test(c.sub ?? "")))
+
+console.log("\n[4 · render request → the render-queue contract]")
+const req = buildPartnersMeetingRenderRequest(FULL, { agentName: "Dana" })
+check("targets the registered PartnersMeetingReel composition at 1920×1080 / 900 frames",
+  req.compositionId === "PartnersMeetingReel" && req.width === 1920 && req.height === 1080 && req.durationInFrames === 900)
+check("carries the earned reel props as inputProps (cards + one ask)",
+  req.inputProps.cards.length === full.cards.length && req.inputProps.oneAsk === full.oneAsk)
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)

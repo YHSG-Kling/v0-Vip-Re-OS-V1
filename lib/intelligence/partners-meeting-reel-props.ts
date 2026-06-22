@@ -111,3 +111,29 @@ export function buildPartnersMeetingReelProps(
     },
   }
 }
+
+/** The render-queue request for the PartnersMeetingReel composition (mirrors the render endpoint's
+ *  remotion_composition_renders contract: composition id + dimensions + input_props). PURE — the
+ *  caller inserts this as a queued render row; the composition-render-queue cron renders it to MP4. */
+export interface PartnersMeetingRenderRequest {
+  compositionId: "PartnersMeetingReel"
+  width: number
+  height: number
+  durationInFrames: number
+  inputProps: PartnersMeetingReelProps
+}
+
+/** PURE: WeekInBusiness → a ready-to-queue render request (the registered composition id + the reel
+ *  props as inputProps). 1920×1080 / 30s defaults match the Root.tsx registration. */
+export function buildPartnersMeetingRenderRequest(
+  w: WeekInBusiness,
+  opts: Parameters<typeof buildPartnersMeetingReelProps>[1] = {},
+): PartnersMeetingRenderRequest {
+  return {
+    compositionId: "PartnersMeetingReel",
+    width: 1920,
+    height: 1080,
+    durationInFrames: 900,
+    inputProps: buildPartnersMeetingReelProps(w, opts),
+  }
+}
