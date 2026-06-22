@@ -15,14 +15,36 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import { createVideoProject, deleteVideoProject } from "@/app/actions/listing-media"
+import { manuallyTriggerListingPromo } from "@/app/actions/listing-promo-manual-trigger"
 import {
   PlusIcon,
   VideoIcon,
   Trash2Icon,
   ExternalLinkIcon,
   ClockIcon,
+  SparklesIcon,
 } from "lucide-react"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { toast } from "@/hooks/use-toast"
+
+// Wave 27 — the 7 lifecycle promo moments. Mirrors the LISTING_PROMO_EVENT_TYPES
+// the reactor templates support; kept as a local label map so the panel offers
+// the agent an explicit, human-readable promo to generate on demand.
+const PROMO_EVENTS: { value: string; label: string }[] = [
+  { value: "coming_soon",         label: "Coming Soon" },
+  { value: "just_listed",         label: "Just Listed" },
+  { value: "open_house_announce", label: "Open House — Announce" },
+  { value: "open_house_reminder", label: "Open House — Reminder" },
+  { value: "price_reduction",     label: "Price Reduction" },
+  { value: "under_contract",      label: "Under Contract" },
+  { value: "just_sold",           label: "Just Sold" },
+]
 
 interface VideoProject {
   id: string
@@ -70,6 +92,8 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
   const [isPending, startTransition] = useTransition()
   const [createOpen, setCreateOpen] = useState(false)
   const [selectedTemplate, setSelectedTemplate] = useState<VideoTemplate | null>(null)
+  const [promoEvent, setPromoEvent] = useState<string>("just_listed")
+  const [promoPending, startPromoTransition] = useTransition()
   const [form, setForm] = useState({
     title:           "",
     scriptContent:   "",
@@ -115,6 +139,43 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
     })
   }
 
+  const handleGeneratePromo = () => {
+    startPromoTransition(async () => {
+      const result = await manuallyTriggerListingPromo({
+        listingId,
+        eventType: promoEvent as
+          | "coming_soon"
+          | "just_listed"
+          | "open_house_announce"
+          | "open_house_reminder"
+          | "price_reduction"
+          | "under_contract"
+          | "just_sold",
+      })
+      const label = PROMO_EVENTS.find(e => e.value === promoEvent)?.label ?? promoEvent
+      if (result.status === "remotion_pending") {
+        toast({
+          title: `${label} promo queued`,
+          description: result.reason ?? "Staged for the listing-promo render pipeline.",
+        })
+        return
+      }
+      if (result.status === "already_queued") {
+        toast({
+          title: "Already queued",
+          description: result.reason ?? "A promo for this event is already in flight.",
+        })
+        return
+      }
+      // skipped / failed
+      toast({
+        title: result.status === "skipped" ? "Promo not generated" : "Promo failed",
+        description: result.reason ?? "Unable to generate this promo.",
+        variant: "destructive",
+      })
+    })
+  }
+
   const handleDelete = (id: string) => {
     startTransition(async () => {
       const result = await deleteVideoProject(id)
@@ -126,6 +187,49 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
 
   return (
     <div className="flex flex-col gap-4">
+      {/* On-demand listing promo — Wave 27 manual trigger. Stages a row in the
+          governed listing-promo render pipeline (no direct egress). */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base font-medium flex items-center gap-2">
+            <SparklesIcon className="w-4 h-4 text-primary" />
+            Generate Listing Promo
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <p className="text-sm text-muted-foreground mb-3">
+            Kick off an AI promo video for a specific lifecycle moment. It runs
+            through the same compliance + render pipeline as auto-generated
+            promos.
+          </p>
+          <div className="flex items-end gap-3 flex-wrap">
+            <div className="flex flex-col gap-1.5 min-w-48">
+              <Label htmlFor="promoEvent">Moment</Label>
+              <Select value={promoEvent} onValueChange={setPromoEvent}>
+                <SelectTrigger id="promoEvent">
+                  <SelectValue placeholder="Select a moment" />
+                </SelectTrigger>
+                <SelectContent>
+                  {PROMO_EVENTS.map(e => (
+                    <SelectItem key={e.value} value={e.value}>
+                      {e.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              onClick={handleGeneratePromo}
+              disabled={promoPending}
+              className="flex items-center gap-2"
+            >
+              <SparklesIcon className="w-4 h-4" />
+              {promoPending ? "Generating..." : "Generate Promo"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Toolbar */}
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">

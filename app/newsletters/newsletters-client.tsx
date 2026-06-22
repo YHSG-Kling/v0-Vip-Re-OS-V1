@@ -57,6 +57,8 @@ import {
   X,
   RefreshCw,
   Eye,
+  Newspaper,
+  Settings2,
 } from "lucide-react"
 import {
   aiGenerateSubjectLines,
@@ -71,6 +73,7 @@ import {
   scheduleEmailCampaign,
   deleteEmailCampaign,
 } from "@/app/actions/email-campaigns"
+import { fetchLocalNews, setupLocalNewsSource } from "@/app/actions/newsletter/fetch-local-news"
 import { computeSeoScore } from "@/lib/newsletter/seo-score"
 import { format } from "date-fns"
 import { toast } from "sonner"
@@ -189,6 +192,56 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 const STEP_LABELS = ["Setup", "Sections", "Content", "Preview", "Timing", "Send"]
+
+// ─── Local News helpers ──────────────────────────────────────────────────────
+// A row from newsletter_local_content has a free-form jsonb `content` column
+// plus zip_code / relevance_score. Normalize it into a display shape so the
+// agent can preview headlines and insert them into the newsletter.
+
+interface LocalNewsRow {
+  id?: string
+  zip_code?: string | null
+  relevance_score?: number | null
+  content?: unknown
+}
+
+interface NormalizedHeadline {
+  key: string
+  title: string
+  summary: string
+  zip: string | null
+  score: number | null
+  ctaUrl?: string
+}
+
+function asString(v: unknown): string | undefined {
+  return typeof v === "string" && v.trim() ? v.trim() : undefined
+}
+
+function normalizeLocalNews(row: LocalNewsRow, idx: number): NormalizedHeadline {
+  const c = (row.content ?? {}) as Record<string, unknown>
+  const title =
+    asString(c.title) ??
+    asString(c.headline) ??
+    asString(c.name) ??
+    (typeof row.content === "string" ? asString(row.content) : undefined) ??
+    "Untitled local item"
+  const summary =
+    asString(c.summary) ??
+    asString(c.description) ??
+    asString(c.excerpt) ??
+    asString(c.body) ??
+    ""
+  const ctaUrl = asString(c.url) ?? asString(c.link)
+  return {
+    key: row.id ?? `local-${idx}`,
+    title,
+    summary,
+    zip: row.zip_code ?? null,
+    score: typeof row.relevance_score === "number" ? row.relevance_score : null,
+    ctaUrl,
+  }
+}
 
 // ─── Sortable Section Item ───────────────────────────────────────────────────
 
@@ -464,6 +517,18 @@ export function NewslettersClient({
   const [subjectVariantsLoading, setSubjectVariantsLoading] = useState(false)
   const [editingSection, setEditingSection] = useState<number | null>(null)
 
+  // ── Pull Local News panel (Step 3) ──────────────────────────────────────
+  // Wires fetchLocalNews / setupLocalNewsSource: the agent enters market ZIPs,
+  // pulls curated local headlines (ordered by relevance_score, server-side),
+  // and inserts any of them as a "Local News" section into the newsletter.
+  const [localNewsZips, setLocalNewsZips] = useState("")
+  const [localNewsMarket, setLocalNewsMarket] = useState("")
+  const [localNewsFreq, setLocalNewsFreq] = useState<"hourly" | "daily" | "weekly">("daily")
+  const [localNewsLoading, setLocalNewsLoading] = useState(false)
+  const [localNewsSaving, setLocalNewsSaving] = useState(false)
+  const [localHeadlines, setLocalHeadlines] = useState<NormalizedHeadline[]>([])
+  const [localNewsFetched, setLocalNewsFetched] = useState(false)
+
   // Campaign list actions
   const [sendingId, setSendingId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -504,7 +569,81 @@ export function NewslettersClient({
   function openWizard() {
     setWizard(INITIAL_WIZARD)
     setStep(1)
+    setLocalNewsZips("")
+    setLocalNewsMarket("")
+    setLocalNewsFreq("daily")
+    setLocalHeadlines([])
+    setLocalNewsFetched(false)
     setWizardOpen(true)
+  }
+
+  // ── Local News handlers ──────────────────────────────────────────────────
+
+  function parseZips(raw: string): string[] {
+    return Array.from(
+      new Set(
+        raw
+          .split(/[\s,]+/)
+          .map((z) => z.trim())
+          .filter((z) => /^\d{5}$/.test(z))
+      )
+    )
+  }
+
+  async function handlePullLocalNews() {
+    const zips = parseZips(localNewsZips)
+    if (zips.length === 0) {
+      toast.error("Enter at least one 5-digit ZIP code")
+      return
+    }
+    setLocalNewsLoading(true)
+    try {
+      const rows = (await fetchLocalNews(zips, 10)) as LocalNewsRow[]
+      setLocalHeadlines(rows.map((r, i) => normalizeLocalNews(r, i)))
+      setLocalNewsFetched(true)
+      if (rows.length === 0) {
+        toast.info("No fresh local items for those ZIPs yet — configure a source to start collecting.")
+      } else {
+        toast.success(`Pulled ${rows.length} local headline${rows.length === 1 ? "" : "s"}`)
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to pull local news")
+    } finally {
+      setLocalNewsLoading(false)
+    }
+  }
+
+  async function handleSaveNewsSource() {
+    const zips = parseZips(localNewsZips)
+    if (zips.length === 0) {
+      toast.error("Enter at least one 5-digit ZIP code")
+      return
+    }
+    setLocalNewsSaving(true)
+    try {
+      const res = await setupLocalNewsSource(zips, localNewsMarket.trim() || undefined, localNewsFreq)
+      if (res.success) {
+        toast.success(res.message ?? "News source saved")
+      } else {
+        toast.error("Failed to save news source")
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save news source")
+    } finally {
+      setLocalNewsSaving(false)
+    }
+  }
+
+  function insertHeadline(h: NormalizedHeadline) {
+    const section: GeneratedSection = {
+      type: "Local News",
+      title: h.title,
+      content: h.summary || h.title,
+      ctaText: h.ctaUrl ? "Read More" : undefined,
+      ctaUrl: h.ctaUrl,
+    }
+    updateWizard({ generatedSections: [...wizard.generatedSections, section] })
+    toast.success("Headline added to newsletter")
   }
 
   function closeWizard() {
@@ -1000,6 +1139,134 @@ export function NewslettersClient({
                       ))}
                     </div>
                   )}
+                </CardContent>
+              </Card>
+
+              {/* ── Pull Local News ── */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Newspaper className="h-4 w-4 text-sky-500" />
+                    Pull Local News
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-xs text-muted-foreground">
+                    Enter your market ZIP codes to pull curated local headlines. Insert any of
+                    them as a section, or configure a recurring source to keep them flowing in.
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Market ZIP Codes</Label>
+                      <Input
+                        placeholder="e.g. 90210, 90211"
+                        value={localNewsZips}
+                        onChange={(e) => setLocalNewsZips(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Market Name (optional)</Label>
+                      <Input
+                        placeholder="e.g. Beverly Hills"
+                        value={localNewsMarket}
+                        onChange={(e) => setLocalNewsMarket(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-end gap-3">
+                    <Button onClick={handlePullLocalNews} disabled={localNewsLoading} className="gap-2">
+                      {localNewsLoading ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Pulling…
+                        </>
+                      ) : (
+                        <>
+                          <Newspaper className="h-4 w-4" />
+                          Pull Local News
+                        </>
+                      )}
+                    </Button>
+
+                    <div className="flex items-end gap-2">
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Auto-refresh</Label>
+                        <Select
+                          value={localNewsFreq}
+                          onValueChange={(v) => setLocalNewsFreq(v as "hourly" | "daily" | "weekly")}
+                        >
+                          <SelectTrigger className="h-9 w-28">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="hourly">Hourly</SelectItem>
+                            <SelectItem value="daily">Daily</SelectItem>
+                            <SelectItem value="weekly">Weekly</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <Button
+                        variant="outline"
+                        onClick={handleSaveNewsSource}
+                        disabled={localNewsSaving}
+                        className="gap-1.5"
+                      >
+                        {localNewsSaving ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Settings2 className="h-3.5 w-3.5" />
+                        )}
+                        Save Source
+                      </Button>
+                    </div>
+                  </div>
+
+                  {localHeadlines.length > 0 ? (
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                        {localHeadlines.length} headline{localHeadlines.length === 1 ? "" : "s"} — click to insert
+                      </p>
+                      {localHeadlines.map((h) => (
+                        <div
+                          key={h.key}
+                          className="flex items-start justify-between gap-3 border rounded-md p-3"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium truncate">{h.title}</p>
+                            {h.summary && (
+                              <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">{h.summary}</p>
+                            )}
+                            <div className="flex items-center gap-2 mt-1">
+                              {h.zip && (
+                                <Badge variant="outline" className="text-[10px]">
+                                  {h.zip}
+                                </Badge>
+                              )}
+                              {h.score !== null && (
+                                <span className="text-[10px] text-muted-foreground">
+                                  relevance {h.score.toFixed(0)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 text-xs gap-1 shrink-0"
+                            onClick={() => insertHeadline(h)}
+                          >
+                            <Plus className="h-3 w-3" />
+                            Insert
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : localNewsFetched ? (
+                    <p className="text-xs text-muted-foreground italic">
+                      No local items yet for those ZIPs. Save a source above and items will appear here once collected.
+                    </p>
+                  ) : null}
                 </CardContent>
               </Card>
 
