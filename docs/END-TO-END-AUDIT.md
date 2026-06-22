@@ -85,9 +85,23 @@ script executed where the DB is reachable. This is the single most valuable vali
 ### Drift investigated this cycle (NOT consolidated — both sides legitimately used)
 - `notification-actions.ts` (markOneRead/markAllRead, used by `/notifications`) vs `notifications.ts`
   (getNotifications/createNotification, used by the bell): two thin kernel wrappers with different
-  callers — marginal benefit, real regression risk; left as-is. Larger candidates (offer-creation vs
-  `buyer-offer/`, marketing-campaigns vs marketing-studio, the 3 showing-dispatch handlers) need a
-  dedicated investigation pass before any merge.
+  callers — marginal benefit, real regression risk; left as-is.
+
+### Drift resolved (full dependency investigation first — two "delete" candidates were FALSE)
+- **DELETED `app/actions/offer-management.ts`** — `@deprecated DO NOT USE`, zero importers (verified:
+  no import path, no barrel re-export; the `submitOffer` hits were a local wizard fn), superseded by
+  the compliance-gated `seller-offers.ts`. tsc/build green after removal.
+- **KEPT `app/actions/buyer-offer/` (19 files)** — a sweep flagged it "dead code"; precise grep proved
+  it's **heavily used** (lib/kernel/offers, buyer-broker/gate, em-receipt-watcher cron, form wizards,
+  offer-bridge). Deleting it would have broken the offer lifecycle. Investigation prevented a regression.
+- **KEPT `ai-offer-creation.ts` + `buyer-offers.ts` separate** — complementary layers (AI strategy/
+  orchestration vs canonical CRUD), both actively imported; merging = high-risk churn, low benefit.
+- **DEFERRED `marketing-campaigns.ts`** — a genuine ungoverned duplicate of the compliance-gated
+  `marketing-studio.ts`, BUT actively consumed by the URL-only (no-nav) `dashboard/admin/marketing-
+  campaigns` page. Safe consolidation = migrate that admin surface to Studio's gated actions + confirm
+  its ROI summary isn't lost. Next dedicated drift task (do NOT blind-delete — would break the page).
+- **KEPT showings trio separate** (`showings` buyer-intake / `dispatch-showing` connector / `ai-showing-
+  management` agent tours) — distinct stages, no overlapping exports.
 
 ### Verified NOT gaps (backend + UI both exist — code-grep "orphan" lists were stale)
 - Commissions/earnings: `app/dashboard/financials/*` (9 pages incl. commissions, payouts, agent, reports).
