@@ -11,7 +11,7 @@
  * Live run:  SUPABASE_URL=… SUPABASE_SERVICE_ROLE_KEY=… npx tsx scripts/manager-trust-simulator.ts
  */
 import { randomUUID } from "node:crypto"
-import { scoreEvals, tierFor, autonomyFor, teamTrust, MIN_EVALS_FOR_TIER } from "../lib/managers/eval-scoring"
+import { scoreEvals, tierFor, autonomyFor, teamTrust, effectiveAutonomy, isAutonomyPosture, MIN_EVALS_FOR_TIER } from "../lib/managers/eval-scoring"
 
 function selfTest(): void {
   let pass = 0, fail = 0
@@ -42,6 +42,11 @@ function selfTest(): void {
 
   const team = teamTrust([trusted.tier ? trusted : trusted, monitored, probation])
   check("team rollup aggregates volume", team.total === 30 && team.trustedCount === 1)
+
+  // Autonomy override (broker policy of record) wins over the recommendation.
+  check("broker override beats a 'trusted/autonomous' recommendation", effectiveAutonomy(trusted.autonomy, "approval_required") === "approval_required")
+  check("no override → follow recommendation", effectiveAutonomy(monitored.autonomy, null) === "review_recommended")
+  check("garbage override is ignored", effectiveAutonomy(trusted.autonomy, "banana" as never) === "autonomous" && !isAutonomyPosture("banana"))
 
   if (fail > 0) { console.log(` RESULT: ${pass} passed, ${fail} failed`); process.exit(1) }
   console.log(` RESULT: ${pass} passed, 0 failed`)
@@ -100,6 +105,15 @@ async function main(): Promise<void> {
     check("seeded 10 graded outcomes", score.total === 10)
     check("90% pass rate computed from live rows", score.passRate === 90)
     check("manager earns 'trusted' + 'autonomous'", score.tier === "trusted" && score.autonomy === "autonomous")
+
+    // Broker override (policy of record) persisted on managed_agents.config.autonomy_tier.
+    const nowIso = new Date().toISOString()
+    await svc.from("managed_agents").update({ config: { autonomy_tier: "approval_required", autonomy_updated_at: nowIso } }).eq("id", agentId)
+    const { data: reread } = await svc.from("managed_agents").select("config").eq("id", agentId).single()
+    const override = (reread?.config as Record<string, unknown> | null)?.autonomy_tier
+    check("override persisted to config", isAutonomyPosture(override))
+    check("effective posture honors the override over the 'trusted' recommendation",
+      effectiveAutonomy(score.autonomy, isAutonomyPosture(override) ? override : null) === "approval_required")
 
     if (!ok) throw new Error("one or more live assertions failed")
     console.log("\n✅ MANAGER_TRUST — graded outcomes → trust tier → autonomy ran end-to-end on the live DB.")

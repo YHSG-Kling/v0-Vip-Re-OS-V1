@@ -1,11 +1,16 @@
 "use client"
 
+import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
-import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot } from "lucide-react"
-import type { ManagerTrustRow } from "@/app/actions/admin/manager-evals"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot, Lock } from "lucide-react"
+import { useToast } from "@/hooks/use-toast"
+import { setManagerAutonomy, type ManagerTrustRow } from "@/app/actions/admin/manager-evals"
 import type { TrustTier, AutonomyPosture } from "@/lib/managers/eval-scoring"
+
+const FOLLOW_REC = "__recommended__"
 
 const TIER_META: Record<TrustTier, { label: string; className: string; icon: typeof ShieldCheck }> = {
   trusted: { label: "Trusted", className: "bg-emerald-100 text-emerald-700 border-emerald-200", icon: ShieldCheck },
@@ -21,12 +26,32 @@ const AUTONOMY_LABEL: Record<AutonomyPosture, string> = {
 }
 
 export function ManagerTrustClient({
-  managers, team,
+  managers: initialManagers, team,
 }: {
   managers: ManagerTrustRow[]
   team: { passRate: number; total: number; trustedCount: number; managerCount: number }
 }) {
+  const { toast } = useToast()
+  const [managers, setManagers] = useState<ManagerTrustRow[]>(initialManagers)
+  const [saving, setSaving] = useState<string | null>(null)
   const hasData = team.total > 0
+
+  async function changeAutonomy(m: ManagerTrustRow, value: string) {
+    const posture = value === FOLLOW_REC ? null : (value as AutonomyPosture)
+    setSaving(m.agentKind)
+    const prev = managers
+    setManagers((cur) => cur.map((x) => (x.agentKind === m.agentKind
+      ? { ...x, overrideAutonomy: posture, effectiveAutonomy: posture ?? x.score.autonomy }
+      : x)))
+    const r = await setManagerAutonomy(m.agentKind, posture)
+    setSaving(null)
+    if (!r.ok) {
+      setManagers(prev)
+      toast({ title: "Could not update policy", description: r.error, variant: "destructive" })
+    } else {
+      toast({ title: `${m.label} policy updated`, description: posture ? `Now: ${AUTONOMY_LABEL[posture]}` : "Reverted to the eval recommendation." })
+    }
+  }
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -77,10 +102,37 @@ export function ManagerTrustClient({
                     </p>
                     <p className="text-xs text-muted-foreground mt-1">{m.domain}</p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap justify-end">
                     <Badge className={`${meta.className} gap-1`}><TierIcon className="h-3 w-3" />{meta.label}</Badge>
-                    <Badge variant="outline" className="text-xs">{AUTONOMY_LABEL[m.score.autonomy]}</Badge>
+                    <Badge variant={m.overrideAutonomy ? "default" : "outline"} className="text-xs gap-1">
+                      {m.overrideAutonomy && <Lock className="h-3 w-3" />}
+                      {AUTONOMY_LABEL[m.effectiveAutonomy]}
+                    </Badge>
                   </div>
+                </div>
+
+                {/* Broker governance: override the autonomy posture (policy of record) */}
+                <div className="flex items-center justify-between gap-3 pt-1">
+                  <span className="text-xs text-muted-foreground">
+                    {m.overrideAutonomy
+                      ? <>Broker override active · eval recommends <em>{AUTONOMY_LABEL[m.score.autonomy]}</em></>
+                      : <>Following eval recommendation</>}
+                  </span>
+                  <Select
+                    value={m.overrideAutonomy ?? FOLLOW_REC}
+                    onValueChange={(v) => changeAutonomy(m, v)}
+                    disabled={!m.isActive || saving === m.agentKind}
+                  >
+                    <SelectTrigger className="w-56 h-8 text-xs">
+                      <SelectValue placeholder={m.isActive ? "Set policy" : "Not active yet"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={FOLLOW_REC}>Follow eval recommendation</SelectItem>
+                      <SelectItem value="autonomous">Override: may act autonomously</SelectItem>
+                      <SelectItem value="review_recommended">Override: review recommended</SelectItem>
+                      <SelectItem value="approval_required">Override: approval required</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="flex items-center gap-3">
                   <Progress value={m.score.passRate} className="flex-1" />

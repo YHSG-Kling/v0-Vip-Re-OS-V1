@@ -19,6 +19,20 @@ export function isPassResult(r: string): boolean { return r === PASS_RESULT }
 export type TrustTier = "trusted" | "monitored" | "probation" | "insufficient_data"
 export type AutonomyPosture = "autonomous" | "review_recommended" | "approval_required"
 
+export const AUTONOMY_POSTURES: readonly AutonomyPosture[] = ["autonomous", "review_recommended", "approval_required"]
+export function isAutonomyPosture(x: unknown): x is AutonomyPosture {
+  return typeof x === "string" && (AUTONOMY_POSTURES as readonly string[]).includes(x)
+}
+
+/**
+ * The EFFECTIVE posture a manager operates under: a broker's explicit override
+ * (governance policy of record, stored on managed_agents.config) always wins over
+ * the eval-derived recommendation. This is what an enforcement layer would gate on.
+ */
+export function effectiveAutonomy(recommended: AutonomyPosture, override?: AutonomyPosture | null): AutonomyPosture {
+  return isAutonomyPosture(override) ? override : recommended
+}
+
 /** Below this many graded outcomes we don't claim a trust tier (small-sample guard). */
 export const MIN_EVALS_FOR_TIER = 5
 
