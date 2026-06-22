@@ -21,7 +21,7 @@ export const ACTOR_REGISTRY: Record<ApifyTask, string[]> = {
   reddit:     ["trudax/reddit-scraper", "trudax/reddit-scraper-lite", "oxylabs/reddit-scraper"],
   facebook:   ["apify/facebook-posts-scraper", "apify/facebook-pages-scraper", "easyapi/facebook-posts-search-scraper"],
   instagram:  ["apify/instagram-scraper", "apify/instagram-hashtag-scraper", "apify/instagram-search-scraper"],
-  craigslist: ["epctex/craigslist-scraper", "ivanvs/craigslist-scraper"],
+  craigslist: ["epctex/craigslist-scraper", "ivanvs/craigslist-scraper", "lukaskrivka/craigslist-scraper"],
   google:     ["apify/google-search-scraper", "scraping-fish/google-search-results-scraper"],
   linkedin:   ["apimaestro/linkedin-posts-search-scraper", "curious_coder/linkedin-post-search-scraper", "harvestapi/linkedin-post-search"],
 }
