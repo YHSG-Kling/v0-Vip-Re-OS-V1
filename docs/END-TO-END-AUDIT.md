@@ -105,6 +105,25 @@ script executed where the DB is reachable. This is the single most valuable vali
 - **KEPT showings trio separate** (`showings` buyer-intake / `dispatch-showing` connector / `ai-showing-
   management` agent tours) — distinct stages, no overlapping exports.
 
+### Orphaned server actions — durable ratchet + burn-down backlog (NEW)
+A module-graph reachability guard (`test:no-orphan-actions`, in the `guard` CI tier) proves every file
+under `app/actions` is imported by something (app/lib/scripts). It found **55** action files imported by
+**nothing** — real drift, but mostly **unwired features, not dead duplicates** (e.g. `creditWorkflows.ts`
+has live credit-referral fns; bulk-deletion would destroy intended functionality). Resolution follows the
+strict rule: investigate each → **wire if it benefits, delete only if dead/superseded**. The 55 are frozen
+in `scripts/orphan-action-baseline.json`; the guard **fails on any NEW orphan** (stops drift now) and nudges
+to shrink the baseline as debt is burned down. Categories for the burn-down:
+- **Demo scaffolding** (`demo-login`, `demo-contacts`) — product decision (keep for sales-demo mode, or delete).
+- **Partial refactor** (8 × `buyer-offer/*`: create-offer, handle-offer-response, handle-multi-offer,
+  rollback-offer, sync-documents, acknowledge-commission, create-dotloop-loop, resolve-property-prefill) —
+  the *wired* siblings (submit-for-signature, track-offer-lifecycle, prefill-offer, convert-to-transaction)
+  are live; confirm these 8 are superseded by `buyer-offers.ts` before deleting (watch multi-offer/rollback).
+- **Unwired features → wire if valuable** (`instant-property-alerts`, `ai-isa/{classify-outcome,schedule-
+  appointment}`, `lead-assignment/*`, `lead-promotion/*`, `lead-readiness/*`, `contact-promotion/*`,
+  `voice-engine/process-voice-call`, `scrape-social-media`, `marketing-intelligence`, `property-buyer-
+  matching`, `revenue-pipeline`, `newsletter/*`, `settings/*-integration-credentials`, `video/generate-
+  script`, `neighbor-notifications`, `creditWorkflows`, …). Each needs a home (UI/cron/kernel) or deletion.
+
 ### Verified NOT gaps (backend + UI both exist — code-grep "orphan" lists were stale)
 - Commissions/earnings: `app/dashboard/financials/*` (9 pages incl. commissions, payouts, agent, reports).
 - Gamification: `/dashboard/leaderboard` + `components/gamification/*` (PointsBadge, BadgeGrid).
