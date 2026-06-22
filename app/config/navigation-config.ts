@@ -338,6 +338,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'campaigns', label: 'Campaigns', href: '/dashboard/isa/campaigns', icon: 'Megaphone' },
       { id: 'scripts', label: 'Scripts', href: '/dashboard/isa/scripts', icon: 'FileText' },
       { id: 'analytics', label: 'My Stats', href: '/dashboard/isa/analytics', icon: 'BarChart3' },
+      { id: 'isa-settings', label: 'ISA Settings', href: '/dashboard/ai-isa/settings', icon: 'Settings' },
       { id: 'intelligence', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence', icon: 'Brain' },
       { id: 'divider1', divider: true },
       {
@@ -521,6 +522,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'policies', label: 'Policies', href: '/compliance/policies', icon: 'FileText' },
       { id: 'reports', label: 'Reports', href: '/compliance/reports', icon: 'BarChart3' },
       { id: 'full-compliance', label: 'Full Compliance Center', href: '/dashboard/compliance', icon: 'Shield' },
+      { id: 'compliance-queue', label: 'Compliance Queue', href: '/dashboard/compliance/queue', icon: 'ListChecks' },
       { id: 'comm-intel', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence', icon: 'Brain' },
       { id: 'approvals', label: 'Approvals Queue', href: '/approvals', icon: 'CheckSquare' },
       { id: 'ai-quality', label: 'AI Quality', href: '/dashboard/ai-quality', icon: 'Sparkles' },
@@ -627,6 +629,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   superadmin: {
     sidebarItems: [
       { id: 'platform', label: 'Platform Admin', href: '/admin/platform', icon: 'ShieldAlert' },
+      { id: 'platform-overview', label: 'Platform Overview', href: '/dashboard/superadmin/platform', icon: 'TrendingUp' },
       { id: 'brokerages', label: 'Brokerages', href: '/admin/brokerages', icon: 'Building2' },
       { id: 'users', label: 'All Users', href: '/admin/users', icon: 'Users' },
       { id: 'divider1', divider: true },

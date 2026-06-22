@@ -82,6 +82,7 @@ export default async function PlatformAdminPage() {
           <CardHeader><CardTitle className="text-base">Platform Controls</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-2 gap-2">
             {[
+              { label: 'Platform Overview', href: '/dashboard/superadmin/platform', icon: TrendingUp },
               { label: 'Brokerages', href: '/admin/brokerages', icon: Building2 },
               { label: 'All Users', href: '/admin/users', icon: Users },
               { label: 'Billing Admin', href: '/admin/billing', icon: CreditCard },
