@@ -20,6 +20,7 @@ import { VendorBookingButton } from "@/app/components/dashboard/listings/lifecyc
 import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecycle/decision-history-panel"
 import { ComingSoonCommandCard } from "@/app/components/dashboard/listings/lifecycle/coming-soon-command-card"
 import { PreListingWorkflowPanel } from "@/app/components/dashboard/listings/lifecycle/pre-listing-workflow-panel"
+import { MatchingBuyersPanel } from "@/app/components/dashboard/listings/lifecycle/matching-buyers-panel"
 import { PriceReductionSheet } from "../components/price-reduction-sheet"
 import { ListingPacketPanel } from "@/app/components/dashboard/listings/lifecycle/listing-packet-panel"
 import { ListingFormsPanel } from "@/app/components/dashboard/listings/lifecycle/listing-forms-panel"
@@ -316,6 +317,11 @@ const { data: listingVendorBookings } = await supabase
             </div>
           </div>
         )}
+
+        {/* Matching Buyers — on-demand listing→buyer smart match (System 5.1A) */}
+        <div className="mb-4">
+          <MatchingBuyersPanel listingId={listingId} />
+        </div>
 
         {/* Listing Health Radar — daily-scored health for this active listing */}
         <div className="mb-4">
