@@ -10,6 +10,7 @@ import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { LeadQuickActions } from "@/components/lead/LeadQuickActions"
+import { LeadReadinessPanel } from "@/components/lead/LeadReadinessPanel"
 
 export const dynamic = "force-dynamic"
 
@@ -69,6 +70,8 @@ export default async function LeadDetailPage({ params }: PageProps) {
           <div className="flex gap-2"><span className="text-muted-foreground w-24">Address</span> <span>{addr || "—"}</span></div>
         </CardContent>
       </Card>
+
+      <LeadReadinessPanel leadId={lead.id} />
 
       <LeadQuickActions
         leadId={lead.id}
