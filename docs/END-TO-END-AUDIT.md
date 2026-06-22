@@ -76,6 +76,10 @@ script executed where the DB is reachable. This is the single most valuable vali
 | 11 | 226 dead/duplicate components (drift) | Removed (reachability-verified); `test:no-dead-components` locks it |
 | 12 | 7 live tables unguarded by schema-drift | Reconciled snapshot to live schema (introspected columns) |
 | 13 | Differentiator invisible | Partners' Meeting recap reel (composition + props + render request, tested) |
+| 14 | Headline e2e proof had no runner | `demo:seed-run` — turnkey seed→`processRawRecord`→assert→self-clean script (proves the pipeline on a real DB) |
+| 15 | Academy learner side missing (reader/quiz/cert) | `/academy/module/[id]` reader→quiz→`agent_certifications`; de-mocked the hub; `test:academy-learning` |
+| 16 | User support was a static mock | Real Help Center + ticketing wired to `support_tickets`/`knowledge_articles`/`help_topics_kb`; admin triage queue; `test:support` |
+| 17 | Multi-location was an orphan schema | Office CRUD + agent↔office assignment on `locations`/`agents.location_id`; `test:locations` |
 
 ## 5. Remaining gaps / open items (prioritized)
 
@@ -110,6 +114,9 @@ That is the moat. Ship it.
   email replies call `processInboundEmail` (signature-verified ingress forwards `CRON_SECRET`),
   negative→halt / ambiguous→nurture / positive→convert. Idempotent, best-effort.
 - **10 orphan admin pages** wired into a "Brokerage Ops & Insights" submenu (§4 #..).
+- **`onboarding/ai-call-setup`** (a complete broker AI-call-handling page with zero inbound links)
+  wired into the admin nav as "AI Call Handling". Onboarding is otherwise already substantial
+  (~8,600 lines) — buildout focused on the genuinely-thin areas (Academy learner, Support, Locations).
 
 ### Open — for the dedicated UI pass (investigate before wiring; possible drift)
 - `dashboard/superadmin/platform` — ⚠ likely **duplicate** of the linked `/admin/platform`. Decide
