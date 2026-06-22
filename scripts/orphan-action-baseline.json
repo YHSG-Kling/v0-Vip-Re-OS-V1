@@ -24,7 +24,6 @@
   "app/actions/demo-login.ts",
   "app/actions/fatigue.ts",
   "app/actions/fb-audience-templates.ts",
-  "app/actions/instant-property-alerts.ts",
   "app/actions/lead-assignment/assign-agent.ts",
   "app/actions/lead-assignment/escalate-stale-lead.ts",
   "app/actions/lead-promotion/promote-lead.ts",

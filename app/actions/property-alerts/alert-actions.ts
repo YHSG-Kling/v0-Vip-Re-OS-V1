@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { runAlert } from "@/lib/property-alerts/alert-engine"
+import { ensureSmsFirstChannels } from "@/app/actions/instant-property-alerts"
 import { IDXBrokerClient } from "@/lib/idxbroker-client"
 
 // ── Auth helpers ─────────────────────────────────────────────────────────────
@@ -192,6 +193,8 @@ export async function createPropertyAlert(params: {
   if (error) return { success: false, error: error.message }
 
   if (params.frequency === "instant") {
+    // Instant alerts go SMS-first (98% open vs 25% email) before the first fire.
+    await ensureSmsFirstChannels(data.id)
     await runAlert(data.id)
   }
 

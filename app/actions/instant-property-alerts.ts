@@ -22,6 +22,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { sendSMS } from "@/lib/providers/messaging"
+import { firstLookConsentBlock } from "@/lib/property-alerts/first-look-consent"
 
 export async function ensureSmsFirstChannels(alertId: string) {
   const supabase = createServiceClient()
@@ -64,10 +65,8 @@ export async function sendFirstLookText(input: {
   if (!contact || contact.brokerage_id !== auth.brokerageId) {
     return { success: false, error: "contact_not_found" }
   }
-  if (!contact.phone) return { success: false, error: "no_phone_on_file" }
-  if (contact.dnc_status || contact.sms_opt_out) {
-    return { success: false, error: "consent_blocked" }
-  }
+  const block = firstLookConsentBlock(contact)
+  if (block) return { success: false, error: block }
 
   let propertyLine = ""
   let portalUrl = input.externalListingUrl ?? ""

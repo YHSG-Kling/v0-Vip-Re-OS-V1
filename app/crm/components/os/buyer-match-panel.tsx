@@ -22,6 +22,7 @@ import {
   notifyNewMatches,
 } from "@/app/actions/ai-property-matching"
 import { searchAndPushToBuyer } from "@/app/actions/ai-buyer-search-push"
+import { sendFirstLookText } from "@/app/actions/instant-property-alerts"
 import { requestShowing } from "@/app/actions/smart-insights"
 import { updateContact } from "@/app/actions/contacts"
 import { toast } from "sonner"
@@ -92,6 +93,8 @@ export function BuyerMatchPanel({
   const [loading, setLoading] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [showingLoading, setShowingLoading] = useState(false)
+  // First-look SMS (immediate text preview of a single listing to the buyer)
+  const [textingId, setTextingId] = useState<string | null>(null)
   // Notify new matches
   const [notifyLoading, setNotifyLoading] = useState(false)
   const [notifyResult, setNotifyResult] = useState<{ notified: number } | null>(null)
@@ -208,6 +211,28 @@ export function BuyerMatchPanel({
       console.error("Schedule showing failed:", err)
     } finally {
       setShowingLoading(false)
+    }
+  }
+
+  const handleFirstLookText = async (match: PropertyMatch) => {
+    setTextingId(match.listing_id)
+    try {
+      const res = await sendFirstLookText({ contactId, listingId: match.listing_id })
+      if (res.success) {
+        toast.success(`First-look text sent to ${firstName}`)
+      } else {
+        const reason: Record<string, string> = {
+          no_phone_on_file: "No phone number on file for this buyer.",
+          consent_blocked: "This buyer has opted out of SMS or is on the DNC list.",
+          contact_not_found: "Buyer record not found.",
+          unauthenticated: "Please sign in again.",
+        }
+        toast.error(reason[res.error ?? ""] ?? "Could not send the text.")
+      }
+    } catch {
+      toast.error("Could not send the text.")
+    } finally {
+      setTextingId(null)
     }
   }
 
@@ -487,6 +512,20 @@ export function BuyerMatchPanel({
                   >
                     <Calendar className="h-3 w-3 mr-1" />
                     Schedule Showing
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleFirstLookText(match)}
+                    disabled={textingId === match.listing_id}
+                    title="Text an immediate first-look preview of this property to the buyer (SMS, consent-checked)"
+                  >
+                    {textingId === match.listing_id ? (
+                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    ) : (
+                      <Send className="h-3 w-3 mr-1" />
+                    )}
+                    Text First Look
                   </Button>
                 </div>
 
