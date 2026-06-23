@@ -67,6 +67,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/objection-library",              schedule: "0 13 * * 1" },
   { path: "/api/cron/referral-radar",                 schedule: "0 12 * * 1" },
   { path: "/api/cron/returning-customer-reengagement", schedule: "0 13 * * *" },
+  { path: "/api/cron/manager-learning",               schedule: "0 8 * * 1" },
   { path: "/api/cron/commission-forecaster",          schedule: "0 12 * * 1" },
   { path: "/api/cron/offer-net-sheet",                schedule: "*/15 * * * *" },
   { path: "/api/cron/inventory-radar",                schedule: "0 */6 * * *" },

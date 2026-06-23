@@ -250,6 +250,20 @@ from manufacturing risky changes — two were stale flags, one was a non-issue, 
   Data (lib/data-guard + RLS), Manager (autonomy-gate + manager-registry), Compliance (national+state
   FH + TCPA + ledger), Egress (dispatch.ts + egress-send-guard).
 
+- **MANAGER LEARNING LOOP — SHIPPED** (the loop that turns a GRADED team into a SELF-IMPROVING one).
+  Outcomes were measured (strategy_outcomes, marketing weekly, rubric, lost-deal categories) but
+  never fed back into future behavior. lib/managers/learning-loop.ts reads a brokerage's recent
+  outcomes (lost-deal categories + strategy outcomes), derives LEARNED ADJUSTMENTS, and writes them
+  to brokerage_settings.settings.learned_adjustments (the shared store — NOT new schema, NOT
+  managed_agents pollution). Honest: below MIN sample it derives nothing. First WIRED consumer is
+  multi-manager: financing_risk_sensitivity=high (set when a brokerage keeps losing deals on
+  financing) tightens the Deal-Save Huddle's lender/earnest-money threshold (85 vs 70), so the NEXT
+  deal convenes the huddle — and notifies the lender — EARLIER. Past losses → future behavior, the
+  loop CLOSES. Cron manager-learning (weekly, CRON_REGISTRY). Proof: test:manager-learning (11 pure
+  derivation + consumption, + creds-gated self-cleaning live layer: seed lost-on-financing deals →
+  learn → assert written → run the huddle on a BORDERLINE financing deal and assert it now convenes).
+  harness:integrity stays 10/10; cron-dispatch 17; build exit 0.
+
 PATTERN (recurring): the four-pillar audits repeatedly over-flagged "gaps/drift" that grounding
 in the LIVE code/schema disproved (#3 here; lead-intelligence + buyer_stage + sphere dedupe in the
 consolidation pass). Always verify the audit's prose against the live DB + actual modules before

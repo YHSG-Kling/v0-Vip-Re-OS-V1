@@ -61,8 +61,17 @@ export const HUDDLE_SIGNAL = "deal_save_huddle"
 
 /** A component is "failing" when it scored below the pass bar OR carries explicit issues. */
 export const COMPONENT_FAIL_THRESHOLD = 70
-export function isFailingComponent(c: HealthComponentLite): boolean {
-  return c.score < COMPONENT_FAIL_THRESHOLD || (c.issues?.length ?? 0) > 0
+/** When the learning loop set financing_risk_sensitivity=high (this brokerage keeps losing deals
+ *  on financing), the lender/earnest-money components fail at a STRICTER bar so the huddle convenes
+ *  — and the lender is notified — EARLIER on the next deal. This is the learning loop CLOSING. */
+export const FINANCING_HIGH_SENSITIVITY_THRESHOLD = 85
+const FINANCING_COMPONENTS = new Set(["LENDER", "EARNEST_MONEY"])
+
+export function isFailingComponent(c: HealthComponentLite, opts?: { financingSensitivityHigh?: boolean }): boolean {
+  const threshold = opts?.financingSensitivityHigh && FINANCING_COMPONENTS.has(c.category)
+    ? FINANCING_HIGH_SENSITIVITY_THRESHOLD
+    : COMPONENT_FAIL_THRESHOLD
+  return c.score < threshold || (c.issues?.length ?? 0) > 0
 }
 
 const RISK_RANK: Record<DealRiskLevel, number> = { healthy: 0, watch: 1, at_risk: 2, critical: 3 }
@@ -86,11 +95,15 @@ export interface HuddleBucket {
   issues: string[]
 }
 
-/** PURE: route the FAILING components to the manager that owns each save. */
-export function routeFailingComponents(components: HealthComponentLite[]): HuddleBucket[] {
+/** PURE: route the FAILING components to the manager that owns each save. The learned
+ *  financingSensitivityHigh flag (from the Manager Learning Loop) tightens the financing bar. */
+export function routeFailingComponents(
+  components: HealthComponentLite[],
+  opts?: { financingSensitivityHigh?: boolean },
+): HuddleBucket[] {
   const byManager = new Map<ManagerKey, HuddleBucket>()
   for (const c of components) {
-    if (!isFailingComponent(c)) continue
+    if (!isFailingComponent(c, opts)) continue
     const manager = COMPONENT_OWNER[c.category]
     if (!manager) continue
     const b = byManager.get(manager) ?? { manager, categories: [], issues: [] }
@@ -209,7 +222,17 @@ export async function runDealSaveHuddle(
   client?: Svc,
 ): Promise<DealSaveHuddleResult> {
   const supabase: Svc = client ?? createServiceClient()
-  const buckets = routeFailingComponents(params.components)
+
+  // LEARNING LOOP CLOSING — if this brokerage keeps losing deals on financing, the Manager
+  // Learning Loop set financing_risk_sensitivity=high; tighten the financing bar so the huddle
+  // (and the lender notification) fires EARLIER. Best-effort — never blocks the huddle.
+  let financingSensitivityHigh = false
+  try {
+    const { getLearnedAdjustment } = await import("@/lib/managers/learning-loop")
+    financingSensitivityHigh = (await getLearnedAdjustment(params.brokerageId, "financing_risk_sensitivity", supabase)) === "high"
+  } catch { /* no learned signal — normal threshold */ }
+
+  const buckets = routeFailingComponents(params.components, { financingSensitivityHigh })
   const empty = { convened: false, coordinatorTaskCreated: false, delegatedTo: [] as ManagerKey[], notifiedUsers: 0, clientWarningProposed: false, vendorsNotified: [] as string[] }
   if (buckets.length === 0) return { ...empty, reason: "no failing components" }
 
