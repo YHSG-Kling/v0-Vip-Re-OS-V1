@@ -206,7 +206,8 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     rec.source,
     rec.normalized_preview?.intentSignals ?? [],
   )
-  const urgencyLevel = scoreToUrgencyLevel(computedScore)
+  // urgency_level is derived from the FUSED score at promotion (scoreToUrgencyLevel below),
+  // so the deterministic source baseline alone is no longer used for it here.
 
   // ── STEP 4B: Identity gate — require at least one usable anchor ────────────
   // Anchors: email, phone, full name + location, or property address.
@@ -378,6 +379,29 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   const promoFirst = (enriched.first_name ?? firstName ?? '').trim()
   const promoLast  = (enriched.last_name  ?? lastName  ?? '').trim()
 
+  // ── AI INTENT AT INGEST — read the content, fuse it into the score ─────────
+  // Best-effort: a confident high-intent read on content-bearing sources (social/search)
+  // lifts the deterministic source baseline and fills lead_type when the source is ambiguous.
+  // Structured sources (no text) and any model failure return null → source score stands.
+  const {
+    classifyRawRecordIntent, assembleRecordContent, fuseLeadScore, resolveLeadType,
+  } = await import("@/lib/lead-pipeline/ai-intent-classifier")
+  const { analyzeLead } = await import("@/lib/ai/lead-analyzer")
+  const recordContent = assembleRecordContent(rec)
+  const aiIntent = await classifyRawRecordIntent(
+    { content: recordContent, authorName: [promoFirst, promoLast].filter(Boolean).join(" ") || undefined },
+    analyzeLead,
+  )
+  const fusedScore = fuseLeadScore(computedScore, aiIntent)
+  const fusedUrgency = scoreToUrgencyLevel(fusedScore)
+  const sourceLeadType = sourceSemantics.leadType !== 'unknown'
+    ? sourceSemantics.leadType
+    : (rec.normalized_preview?.intentType as 'buyer' | 'seller' | 'unknown' | undefined ?? 'unknown')
+  const fusedLeadType = aiIntent ? resolveLeadType(sourceLeadType, aiIntent.intentType) : sourceLeadType
+  const fusedMotivationConfidence = aiIntent
+    ? Math.max((rec.raw_data?.motivation_confidence as number | null) ?? (computedScore / 100), aiIntent.confidence * (aiIntent.score / 100))
+    : ((rec.raw_data?.motivation_confidence as number | null) ?? (computedScore / 100))
+
   // ── STEP 5: Promote to leads with Kernel OS ownership fields ────────────────
   const { data: newLead, error: createError } = await supabase
     .from('leads')
@@ -389,15 +413,13 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       phone:                 enriched.phone        ?? phone,
       phone_secondary:       enriched.phone_secondary ?? null,
       source:                rec.source,
-      // STEP 5 + source-intent-map: lead_type, motivation_type, urgency_level from SOURCE_MAP
-      lead_type:             sourceSemantics.leadType !== 'unknown'
-                               ? sourceSemantics.leadType
-                               : (rec.normalized_preview?.intentType ?? null),
+      // STEP 5 + source-intent-map + AI intent fusion: source baseline, lifted by a confident
+      // content read (lead_type filled when the source is ambiguous; score/urgency fused).
+      lead_type:             fusedLeadType !== 'unknown' ? fusedLeadType : null,
       motivation_type:       (rec.raw_data?.motivation_type as string | null) ?? sourceSemantics.motivationType,
-      motivation_confidence: (rec.raw_data?.motivation_confidence as number | null)
-                               ?? (computedScore / 100),
-      urgency_level:         urgencyLevel,
-      lead_score:            computedScore,
+      motivation_confidence: fusedMotivationConfidence,
+      urgency_level:         fusedUrgency,
+      lead_score:            fusedScore,
       enrichment_status:     'completed',
       enrichment_confidence: enriched.enrichmentConfidence,
       last_enriched_at:      new Date().toISOString(),

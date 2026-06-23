@@ -181,6 +181,31 @@ from manufacturing risky changes — two were stale flags, one was a non-issue, 
   the approval queue (never auto-send), and the de-conflict gate runs on all five dispatch paths
   (`dispatch.ts` 161/328/446/562/705), capping actual sends. At worst queue clutter, not spam. Recorded.
 
+### ✅ FRONTIER ROADMAP #1–#3 (2026-06-23)
+- **#1 Governed Autonomy Loop — SHIPPED.** dispatch.ts now enforces each manager's trust
+  posture (lib/managers/autonomy-gate.ts): autonomous send by an `approval_required` manager is
+  HELD; broker override wins; eval-derived posture persisted to managed_agents.config for
+  closed-loop enforcement; human-approved sends bypass; absence of signal ⇒ allow (zero day-one
+  regression). Gate inferred from systemSource so it's live across autonomous senders without
+  rewiring. Proof: test:autonomy-gate (12), egress-send-guard still 21, build exit 0.
+- **#2 AI Intent at Ingest — SHIPPED.** pipeline-processor now reads record content with the LLM
+  (lib/lead-pipeline/ai-intent-classifier.ts) and FUSES intent into the existing lead fields
+  (lead_score lifted → cascades to urgency_level; lead_type filled on ambiguous social/search
+  sources) — NO new columns (verified vs live `leads`: only lead_score/lead_type/urgency_level/
+  motivation_confidence exist there; intent_score/etc. live on `contacts`). Injectable analyzer
+  seam = deterministic tests, zero model spend; best-effort (source score is the floor). Proof:
+  test:ai-intent-ingest (24).
+- **#3 Video Team Coordination — ALREADY COMPLETE (stale audit flag).** lib/kernel/video-
+  coordination.ts already emits campaign_orchestrator:video_ready (always) + ads_manager:
+  video_ready (promotable kinds) + campaign_orchestrator:video_compliance_failed (failure),
+  called from poll-did-videos on completion AND failure. Verified green: test:video-coordination
+  (12), test:video-director (23), test:video-qr (18).
+
+PATTERN (recurring): the four-pillar audits repeatedly over-flagged "gaps/drift" that grounding
+in the LIVE code/schema disproved (#3 here; lead-intelligence + buyer_stage + sphere dedupe in the
+consolidation pass). Always verify the audit's prose against the live DB + actual modules before
+building — that verification IS the deliverable as much as the code.
+
 ### Earlier orphan disposition map (historical) — investigated; each needed a decision, NOT a bulk delete
 The easy + medium tiers are done (29 resolved: 19 wired live, 10 deleted dead/redundant). The remainder
 is the architectural tier — investigated and characterized so the call is informed:
