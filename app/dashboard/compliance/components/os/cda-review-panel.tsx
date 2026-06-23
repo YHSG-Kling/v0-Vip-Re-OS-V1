@@ -73,6 +73,8 @@ export function CdaReviewPanel() {
       } else {
         if ("error" in res && res.error === "signature_check_failed_use_manual_override") {
           toast.error("Required signatures missing — use Manual Override with a reason if you still need to approve")
+        } else if ("error" in res && res.error === "contract_check_failed_use_manual_override") {
+          toast.error("CDA split doesn't match the agent's brokerage contract — use Manual Override with a reason if it's intentional")
         } else {
           toast.error("error" in res ? res.error : "Approval failed")
         }
@@ -160,10 +162,11 @@ export function CdaReviewPanel() {
                 <div className="flex gap-2">
                   <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
                   <div>
-                    <p className="font-medium text-amber-900">Required signatures are missing</p>
+                    <p className="font-medium text-amber-900">A compliance gate failed</p>
                     <p className="text-amber-800 text-xs mt-1">
-                      Manual override is logged with your name + reason. Use only when you've
-                      verified docs out-of-band.
+                      Required signatures are missing or the CDA split doesn't match the agent's
+                      brokerage contract. Manual override is logged with your name + reason — use only
+                      when you've verified out-of-band that the disbursement is correct.
                     </p>
                   </div>
                 </div>
@@ -208,6 +211,9 @@ interface RowProps {
 function CdaRow({ item, pending, compact, onApprove, onOpenDialog }: RowProps) {
   const sigPassed = item.signatureCheckPassed === true
   const sigFailed = item.signatureCheckPassed === false
+  const contractPassed = item.contractCheckPassed === true
+  const contractFailed = item.contractCheckPassed === false
+  const contractBlocker = (item.contractDiscrepancies ?? []).some(d => d.severity === "blocker")
   const overridden = !!item.manualOverrideBy
 
   return (
@@ -225,6 +231,8 @@ function CdaRow({ item, pending, compact, onApprove, onOpenDialog }: RowProps) {
           )}
           {sigPassed && <Badge className="bg-green-100 text-green-800 text-[10px]"><CheckCircle className="h-3 w-3 mr-1" /> Sigs OK</Badge>}
           {sigFailed && !overridden && <Badge variant="destructive" className="text-[10px]"><FileWarning className="h-3 w-3 mr-1" /> Missing sigs</Badge>}
+          {contractPassed && <Badge className="bg-green-100 text-green-800 text-[10px]"><CheckCircle className="h-3 w-3 mr-1" /> Split OK</Badge>}
+          {contractFailed && contractBlocker && !overridden && <Badge variant="destructive" className="text-[10px]"><AlertTriangle className="h-3 w-3 mr-1" /> Split ≠ contract</Badge>}
           {overridden && <Badge variant="outline" className="text-[10px] border-amber-500 text-amber-700">Override on file</Badge>}
         </div>
         <p className="text-xs text-muted-foreground mt-1">
@@ -242,6 +250,15 @@ function CdaRow({ item, pending, compact, onApprove, onOpenDialog }: RowProps) {
             )}
           </div>
         )}
+        {contractFailed && item.contractDiscrepancies && item.contractDiscrepancies.length > 0 && !compact && (
+          <div className="mt-2 text-xs text-red-700 space-y-0.5">
+            {item.contractDiscrepancies.slice(0, 3).map((d, i) => (
+              <div key={i}>
+                • {d.field === "agent_split" ? "Agent split" : "Gross commission"}: CDA shows {d.actual}{d.field === "agent_split" ? "%" : ""} vs contract {d.expected}{d.field === "agent_split" ? "%" : ""} ({d.severity})
+              </div>
+            ))}
+          </div>
+        )}
         {item.status === "changes_requested" && item.changesRequestedNotes && (
           <p className="text-xs text-muted-foreground italic mt-1">"{item.changesRequestedNotes}"</p>
         )}
@@ -256,7 +273,7 @@ function CdaRow({ item, pending, compact, onApprove, onOpenDialog }: RowProps) {
             onClick={() => onOpenDialog(item.id, "request_changes")}>
             Request changes
           </Button>
-          {sigFailed && !overridden && (
+          {(sigFailed || (contractFailed && contractBlocker)) && !overridden && (
             <Button size="sm" variant="outline" disabled={pending}
               onClick={() => onOpenDialog(item.id, "manual_override")}
               className="gap-1 border-amber-500 text-amber-700 hover:bg-amber-50">

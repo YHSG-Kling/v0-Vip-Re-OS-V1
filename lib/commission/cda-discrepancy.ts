@@ -60,3 +60,58 @@ export function expectedGrossFromTerms(t: {
   }
   return null
 }
+
+/**
+ * PURE: verify the CDA's IMPLIED agent split (agent_net / gross) matches the agent's brokerage
+ * CONTRACT split (agent_commission_profiles.split_percent). This is the compliance check the
+ * business process names explicitly — "the agent's contract with the brokerage agrees with the
+ * split." A material deviation is a BLOCKER (the CDA would pay against the contract).
+ */
+export function checkSplitAgainstContract(input: {
+  computedGross: number
+  computedAgentNet: number
+  contractSplitPct: number | null | undefined
+  tolerancePct?: number
+  blockerPct?: number
+}): CdaDiscrepancy[] {
+  const tolerancePct = input.tolerancePct ?? 1.5
+  const blockerPct = input.blockerPct ?? 5
+  const contract = input.contractSplitPct
+  if (contract == null || !Number.isFinite(contract) || contract <= 0) return []
+  if (!Number.isFinite(input.computedGross) || input.computedGross <= 0) return []
+
+  const impliedSplit = (input.computedAgentNet / input.computedGross) * 100
+  const diff = Math.abs(impliedSplit - contract)
+  if (diff < tolerancePct) return []
+  return [{
+    field: "agent_split",
+    expected: Math.round(contract * 10) / 10,
+    actual: Math.round(impliedSplit * 10) / 10,
+    deltaPct: Math.round(diff * 10) / 10,
+    severity: diff >= blockerPct ? "blocker" : "warning",
+  }]
+}
+
+/**
+ * PURE: the full Compliance contract verdict — combines the gross compare and the split-vs-contract
+ * compare into one go/no-go the compliance officer sees before approving the CDA. `contractSplitPct`
+ * is the agent's CONTRACT split already adjusted for cap status (a capped agent keeps 100%, so the
+ * caller passes 100 when the cap is met). `passed` is false iff any discrepancy is a BLOCKER —
+ * warnings surface but don't block (compliance can still approve on a small, explainable delta).
+ */
+export function buildCdaContractVerdict(input: {
+  computedGross: number
+  computedAgentNet: number
+  expectedGross: number | null | undefined
+  contractSplitPct: number | null | undefined
+}): { passed: boolean; discrepancies: CdaDiscrepancy[] } {
+  const discrepancies = [
+    ...computeCdaDiscrepancies({ computedGross: input.computedGross, expectedGross: input.expectedGross }),
+    ...checkSplitAgainstContract({
+      computedGross: input.computedGross,
+      computedAgentNet: input.computedAgentNet,
+      contractSplitPct: input.contractSplitPct,
+    }),
+  ]
+  return { passed: !discrepancies.some(d => d.severity === "blocker"), discrepancies }
+}

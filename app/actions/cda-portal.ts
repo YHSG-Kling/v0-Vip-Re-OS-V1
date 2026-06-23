@@ -50,6 +50,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { revalidatePath } from "next/cache"
+import { buildCdaContractVerdict, expectedGrossFromTerms, type CdaDiscrepancy } from "@/lib/commission/cda-discrepancy"
 
 const COMPLIANCE_ROLES = new Set([
   "compliance_officer",
@@ -90,6 +91,65 @@ async function recordRevision(opts: {
     acted_by: opts.actedBy,
   })
 }
+
+// ─── Contract / split compliance verdict ─────────────────────────────────────
+//
+// The business step the compliance officer performs at approval: "be sure the
+// agent's contract with the brokerage agrees with the split and cap." We compute
+// it LIVE (always reflects the CURRENT contract — a stored snapshot could go stale
+// between submit and approve) from agent_commission_profiles + agent_cap_tracking
+// and the CDA's own gross/agent_net. A capped agent keeps 100%, so the effective
+// split is 100 once cap_paid_to_date ≥ cap_amount. A BLOCKER-level mismatch must be
+// resolved (or manually overridden, same as the signature gate) before approval.
+
+export interface CdaContractVerdict {
+  passed: boolean
+  discrepancies: CdaDiscrepancy[]
+  contractSplitPct: number | null
+  capReached: boolean
+}
+
+type SupabaseClient = Awaited<ReturnType<typeof createClient>>
+
+async function loadCdaContractVerdict(
+  supabase: SupabaseClient,
+  cda: { transaction_id: string; brokerage_id: string; agent_id: string; gross_commission: number | null; agent_net: number | null },
+): Promise<CdaContractVerdict | null> {
+  const [{ data: txn }, { data: profile }, { data: cap }] = await Promise.all([
+    supabase.from("transactions")
+      .select("estimated_commission, purchase_price, commission_percentage")
+      .eq("id", cda.transaction_id).maybeSingle(),
+    supabase.from("agent_commission_profiles")
+      .select("split_percent, cap_amount")
+      .eq("agent_id", cda.agent_id).eq("is_active", true)
+      .order("effective_date", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("agent_cap_tracking")
+      .select("cap_amount, cap_paid_to_date")
+      .eq("agent_id", cda.agent_id).eq("brokerage_id", cda.brokerage_id)
+      .order("cap_paid_to_date", { ascending: false }).limit(1).maybeSingle(),
+  ])
+
+  const contractSplit = (profile as { split_percent?: number | null } | null)?.split_percent ?? null
+  // No contract on file ⇒ nothing to check against (grandfathered, like signature_check null).
+  if (contractSplit == null || !Number.isFinite(contractSplit)) return null
+
+  const capAmount = Number((cap as { cap_amount?: number } | null)?.cap_amount ?? (profile as { cap_amount?: number } | null)?.cap_amount ?? 0)
+  const capPaid = Number((cap as { cap_paid_to_date?: number } | null)?.cap_paid_to_date ?? 0)
+  const capReached = capAmount > 0 && capPaid >= capAmount
+  const effectiveSplit = capReached ? 100 : contractSplit
+
+  const verdict = buildCdaContractVerdict({
+    computedGross: Number(cda.gross_commission ?? 0),
+    computedAgentNet: Number(cda.agent_net ?? 0),
+    expectedGross: expectedGrossFromTerms((txn ?? {}) as Record<string, number | null>),
+    contractSplitPct: effectiveSplit,
+  })
+  return { ...verdict, contractSplitPct: contractSplit, capReached }
+}
+
+// The compliance review panel surfaces this verdict for every CDA in its queue via the batched
+// listCdasForComplianceReviewAction (one set of lookups for the whole queue); approveCdaAction
+// re-checks it live as the hard gate below. No per-CDA read action needed.
 
 // ─── 1. Preliminary CD upload trigger ────────────────────────────────────────
 
@@ -453,7 +513,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
     .select(
-      "id, transaction_id, brokerage_id, agent_id, status, agent_signed_off_at, revision_number, signature_check_passed, manual_override_by",
+      "id, transaction_id, brokerage_id, agent_id, status, agent_signed_off_at, revision_number, signature_check_passed, manual_override_by, gross_commission, agent_net",
     )
     .eq("id", input.cdaId)
     .maybeSingle()
@@ -474,6 +534,16 @@ export async function approveCdaAction(input: { cdaId: string }) {
     return {
       success: false as const,
       error: "signature_check_failed_use_manual_override",
+    }
+  }
+  // Contract gate — the agent's brokerage CONTRACT (split + cap) must agree with
+  // the CDA's split. A BLOCKER-level mismatch can't be approved without the same
+  // manual override the signature gate uses. Computed live from the current contract.
+  const contractVerdict = await loadCdaContractVerdict(supabase, cda)
+  if (contractVerdict && !contractVerdict.passed && !cda.manual_override_by) {
+    return {
+      success: false as const,
+      error: "contract_check_failed_use_manual_override",
     }
   }
 

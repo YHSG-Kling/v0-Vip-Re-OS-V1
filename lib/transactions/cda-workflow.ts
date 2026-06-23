@@ -48,8 +48,8 @@ export async function generateCDAPreview(params: {
     throw new Error(`[cda-workflow] Failed to create CDA: ${cdaError?.message}`)
   }
   
-  // Run comparison against the contract terms (real — was a placeholder).
-  const discrepancies = await compareCDAToExpected(params.transactionId, commissionResult)
+  // Run comparison against the contract terms + the agent's brokerage split (real — was a placeholder).
+  const discrepancies = await compareCDAToExpected(params.transactionId, params.agentId, commissionResult)
   
   if (discrepancies.length > 0) {
     // Notify compliance officer + broker
@@ -204,19 +204,27 @@ export async function approveCDA(params: {
   return { success: true }
 }
 
-async function compareCDAToExpected(transactionId: string, commissionResult: any): Promise<any[]> {
-  // Compare the COMPUTED gross commission to the contract-derived expected gross. A material
-  // mismatch means the brokerage would authorize the wrong disbursement — block it for Compliance.
+// NOTE: the compliance "request changes" revision loop lives in app/actions/cda-portal.ts
+// (requestCdaChangesAction) — RLS-gated, audited to closing_disclosure_agreement_revisions, and
+// wired to the compliance review panel. This file is the transaction-tab / kernel side (preview,
+// submit, approve+deliver); it intentionally does NOT duplicate that loop.
+
+async function compareCDAToExpected(transactionId: string, agentId: string, commissionResult: any): Promise<any[]> {
+  // The COMPLIANCE compare: (1) computed gross vs the contract-derived expected gross, and
+  // (2) the CDA's implied agent split vs the agent's brokerage CONTRACT split. A material mismatch
+  // on either means the brokerage would authorize the wrong disbursement — surfaced for Compliance.
   const supabase = createServiceClient()
-  const { data: t } = await supabase
-    .from("transactions")
-    .select("estimated_commission, purchase_price, commission_percentage")
-    .eq("id", transactionId)
-    .maybeSingle()
-  const { computeCdaDiscrepancies, expectedGrossFromTerms } = await import("@/lib/commission/cda-discrepancy")
-  const expectedGross = expectedGrossFromTerms((t ?? {}) as Record<string, number | null>)
-  return computeCdaDiscrepancies({
-    computedGross: Number(commissionResult?.gross_commission ?? 0),
-    expectedGross,
+  const [{ data: t }, { data: profile }] = await Promise.all([
+    supabase.from("transactions").select("estimated_commission, purchase_price, commission_percentage").eq("id", transactionId).maybeSingle(),
+    supabase.from("agent_commission_profiles").select("split_percent").eq("agent_id", agentId).eq("is_active", true).order("effective_date", { ascending: false }).limit(1).maybeSingle(),
+  ])
+  const { computeCdaDiscrepancies, expectedGrossFromTerms, checkSplitAgainstContract } = await import("@/lib/commission/cda-discrepancy")
+  const computedGross = Number(commissionResult?.gross_commission ?? 0)
+  const grossDisc = computeCdaDiscrepancies({ computedGross, expectedGross: expectedGrossFromTerms((t ?? {}) as Record<string, number | null>) })
+  const splitDisc = checkSplitAgainstContract({
+    computedGross,
+    computedAgentNet: Number(commissionResult?.net_to_agent ?? 0),
+    contractSplitPct: (profile as { split_percent?: number } | null)?.split_percent ?? null,
   })
+  return [...grossDisc, ...splitDisc]
 }

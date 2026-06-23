@@ -9,7 +9,7 @@
  *     closing agent (title/escrow officer). Live layer asserts the no-contact path (no real email).
  */
 import { randomUUID } from "node:crypto"
-import { computeCdaDiscrepancies, expectedGrossFromTerms } from "../lib/commission/cda-discrepancy"
+import { computeCdaDiscrepancies, expectedGrossFromTerms, checkSplitAgainstContract, buildCdaContractVerdict } from "../lib/commission/cda-discrepancy"
 
 let pass = 0, fail = 0
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; console.log(`  ✗ ${n}`) } }
@@ -28,6 +28,36 @@ function pureLayer(): void {
   const block = computeCdaDiscrepancies({ computedGross: 14000, expectedGross: 12000 })
   check("~17% over ⇒ a BLOCKER discrepancy", block.length === 1 && block[0].severity === "blocker")
   check("no expected ⇒ no false discrepancy", computeCdaDiscrepancies({ computedGross: 12000, expectedGross: null }).length === 0)
+
+  console.log("\n[CDA split vs brokerage contract · pure — does the agent's split agree with their contract]")
+  // 70% contract split: $12,000 gross × 70% = $8,400 agent net. Implied == contract ⇒ clean.
+  check("implied split == contract (70%) ⇒ no discrepancy",
+    checkSplitAgainstContract({ computedGross: 12000, computedAgentNet: 8400, contractSplitPct: 70 }).length === 0)
+  // Agent net $8,760 ⇒ implied 73% vs 70% contract = 3% over ⇒ warning.
+  const splitWarn = checkSplitAgainstContract({ computedGross: 12000, computedAgentNet: 8760, contractSplitPct: 70 })
+  check("~3% over contract split ⇒ a WARNING", splitWarn.length === 1 && splitWarn[0].field === "agent_split" && splitWarn[0].severity === "warning")
+  // Agent net $10,200 ⇒ implied 85% vs 70% contract = 15% over ⇒ blocker (CDA would pay against contract).
+  const splitBlock = checkSplitAgainstContract({ computedGross: 12000, computedAgentNet: 10200, contractSplitPct: 70 })
+  check("~15% over contract split ⇒ a BLOCKER", splitBlock.length === 1 && splitBlock[0].severity === "blocker")
+  check("no contract on file ⇒ no false discrepancy",
+    checkSplitAgainstContract({ computedGross: 12000, computedAgentNet: 8400, contractSplitPct: null }).length === 0)
+
+  console.log("\n[CDA compliance verdict · pure — the gross + split go/no-go compliance approves on]")
+  // Clean: gross matches terms, split matches contract ⇒ passes, no discrepancies.
+  const clean = buildCdaContractVerdict({ computedGross: 12000, computedAgentNet: 8400, expectedGross: 12000, contractSplitPct: 70 })
+  check("matching gross + split ⇒ passes, no discrepancies", clean.passed === true && clean.discrepancies.length === 0)
+  // Split blows the contract (85% vs 70%) ⇒ a BLOCKER ⇒ does NOT pass (compliance must override).
+  const splitBust = buildCdaContractVerdict({ computedGross: 12000, computedAgentNet: 10200, expectedGross: 12000, contractSplitPct: 70 })
+  check("split far over contract ⇒ blocker ⇒ NOT passed", splitBust.passed === false && splitBust.discrepancies.some(d => d.field === "agent_split" && d.severity === "blocker"))
+  // Capped agent keeps 100%: caller passes effective split = 100, so an all-to-agent CDA is correct.
+  const capped = buildCdaContractVerdict({ computedGross: 12000, computedAgentNet: 12000, expectedGross: 12000, contractSplitPct: 100 })
+  check("capped agent (effective 100% split) ⇒ all-to-agent CDA passes", capped.passed === true)
+  // Same all-to-agent CDA but the agent is NOT capped (70% contract) ⇒ blocker.
+  const cappedWrong = buildCdaContractVerdict({ computedGross: 12000, computedAgentNet: 12000, expectedGross: 12000, contractSplitPct: 70 })
+  check("uncapped agent paid 100% ⇒ blocker ⇒ NOT passed", cappedWrong.passed === false)
+  // A small warning-level gross drift does NOT block approval.
+  const warnOnly = buildCdaContractVerdict({ computedGross: 12500, computedAgentNet: 8750, expectedGross: 12000, contractSplitPct: 70 })
+  check("warning-level drift only ⇒ still passes", warnOnly.passed === true && warnOnly.discrepancies.length > 0)
 }
 
 async function liveLayer(): Promise<void> {
