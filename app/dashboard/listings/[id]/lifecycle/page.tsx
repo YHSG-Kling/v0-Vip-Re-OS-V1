@@ -22,6 +22,7 @@ import { ComingSoonCommandCard } from "@/app/components/dashboard/listings/lifec
 import { PreListingWorkflowPanel } from "@/app/components/dashboard/listings/lifecycle/pre-listing-workflow-panel"
 import { MatchingBuyersPanel } from "@/app/components/dashboard/listings/lifecycle/matching-buyers-panel"
 import { PriceReductionSheet } from "../components/price-reduction-sheet"
+import { NeighborNotificationCard } from "../components/neighbor-notification-card"
 import { ListingPacketPanel } from "@/app/components/dashboard/listings/lifecycle/listing-packet-panel"
 import { ListingFormsPanel } from "@/app/components/dashboard/listings/lifecycle/listing-forms-panel"
 import { CheckCircle } from "lucide-react"
@@ -473,6 +474,12 @@ const { data: listingVendorBookings } = await supabase
           agentId={user.id}
           brokerageId={userRow.brokerage_id}
           status={(listing as any).status ?? null}
+        />
+        <NeighborNotificationCard
+          listingId={listingId}
+          brokerageId={userRow.brokerage_id}
+          agentUserId={user.id}
+          sellerContactId={listing.seller_contact_id ?? null}
         />
         <StageTimeline
           listing={listing}

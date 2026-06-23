@@ -135,8 +135,17 @@ export function ManagerTrustClient({
                   </Select>
                 </div>
                 <div className="flex items-center gap-3">
+                  <span className="text-xs text-muted-foreground w-20">Rubric</span>
                   <Progress value={m.score.passRate} className="flex-1" />
                   <span className="text-sm tabular-nums w-12 text-right">{m.score.total > 0 ? `${m.score.passRate}%` : "—"}</span>
+                </div>
+                {/* CLOSED LEARNING LOOP — real-world outcome effectiveness alongside the rubric */}
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-muted-foreground w-20">Outcomes</span>
+                  <Progress value={m.outcomeEffectiveness} className="flex-1" />
+                  <span className="text-sm tabular-nums w-12 text-right">
+                    {m.outcomeBand === "no_data" ? "—" : `${m.outcomeEffectiveness}%`}
+                  </span>
                 </div>
                 <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
                   <span>{m.score.satisfied}/{m.score.total} satisfied</span>

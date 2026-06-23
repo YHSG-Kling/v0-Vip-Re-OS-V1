@@ -6,9 +6,10 @@ import { MagnetLibrary } from "@/app/components/features/lead-magnets/MagnetLibr
 import { MagnetBuilder } from "@/app/components/features/lead-magnets/MagnetBuilder"
 import { QRCodeGenerator } from "@/app/components/features/lead-magnets/QRCodeGenerator"
 import { PerformanceDashboard } from "@/app/components/features/lead-magnets/PerformanceDashboard"
+import { PublishGuideToGbp } from "@/app/components/features/lead-magnets/PublishGuideToGbp"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ArrowLeft, BarChart2, FileText, QrCode, Magnet } from "lucide-react"
+import { ArrowLeft, BarChart2, FileText, QrCode, Magnet, Building2 } from "lucide-react"
 
 type View = "library" | "new" | "detail"
 
@@ -23,6 +24,7 @@ interface SelectedMagnet {
   id: string
   name: string
   slug: string
+  magnetType?: string
   qrCodeId?: string
 }
 
@@ -67,7 +69,7 @@ export default function AgentLeadMagnetsPage() {
       const supabase = createClient()
       const { data: form } = await supabase
         .from("lead_capture_forms")
-        .select("id, name, slug")
+        .select("id, name, slug, magnet_type")
         .eq("id", magnetId)
         .eq("brokerage_id", ctx.brokerageId)
         .single()
@@ -83,7 +85,7 @@ export default function AgentLeadMagnetsPage() {
           .eq("is_active", true)
           .maybeSingle()
 
-        setSelected({ id: form.id, name: form.name, slug: form.slug, qrCodeId: qr?.id })
+        setSelected({ id: form.id, name: form.name, slug: form.slug, magnetType: (form as { magnet_type?: string }).magnet_type, qrCodeId: qr?.id })
         setView("detail")
       }
     })
@@ -174,6 +176,10 @@ export default function AgentLeadMagnetsPage() {
               <FileText className="h-4 w-4" />
               Preview
             </TabsTrigger>
+            <TabsTrigger value="gbp" className="flex items-center gap-2">
+              <Building2 className="h-4 w-4" />
+              Google Business
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="analytics">
@@ -207,6 +213,13 @@ export default function AgentLeadMagnetsPage() {
                 className="w-full h-[600px] border-0"
               />
             </div>
+          </TabsContent>
+
+          <TabsContent value="gbp">
+            <PublishGuideToGbp
+              defaultMagnetType={selected.magnetType}
+              magnetSlug={selected.slug}
+            />
           </TabsContent>
         </Tabs>
       )}

@@ -6,8 +6,6 @@
   "app/actions/demo-login.ts",
   "app/actions/lender-status-request.ts",
   "app/actions/listing/submit-listing-for-signature.ts",
-  "app/actions/marketing/publish-guide-to-gbp.ts",
-  "app/actions/neighbor-notifications.ts",
   "app/actions/newsletter/schedule-newsletter.ts",
   "app/actions/onboarding/assistant.ts",
   "app/actions/scrape-social-media.ts",

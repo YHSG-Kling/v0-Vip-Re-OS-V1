@@ -24,6 +24,10 @@ import {
   scoreEvals, teamTrust, effectiveAutonomy, isAutonomyPosture,
   type ManagerEvalScore, type AutonomyPosture,
 } from "@/lib/managers/eval-scoring"
+import {
+  scoreStrategyOutcomes, scoreMarketingOutcomes, effectivenessBand,
+  type EffectivenessBand,
+} from "@/lib/managers/outcome-attribution"
 
 const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 
@@ -43,6 +47,11 @@ export interface ManagerTrustRow {
   effectiveAutonomy: AutonomyPosture
   /** Whether this manager has an instantiated managed_agents row (override is settable only then). */
   isActive: boolean
+  /** CLOSED LEARNING LOOP — 0–100 real-world decision effectiveness (outcomes attributed
+   *  back to this manager's decisions), sitting alongside the rubric pass-rate. */
+  outcomeEffectiveness: number
+  outcomeSample: number
+  outcomeBand: EffectivenessBand
 }
 
 export interface ManagerTrustScorecard {
@@ -124,6 +133,48 @@ export async function getManagerTrustScorecard(): Promise<
     if (isAutonomyPosture(ov)) overrideByKind.set(kind, ov)
   }
 
+  // 3c) CLOSED LEARNING LOOP — attribute REAL business outcomes back to the manager
+  //     whose decision produced them (effectiveness alongside the rubric pass-rate).
+  const effByKind = new Map<string, { effectiveness: number; sample: number }>()
+  // Shopping Agent: offer-strategy recommendations → strategy_outcomes (accepted/countered/…).
+  let soQ = svc.from("strategy_outcomes").select("outcome, deviation_from_recommendation").limit(5000)
+  if (!isPlatform) soQ = soQ.eq("brokerage_id", ctx.brokerageId as string)
+  const { data: strategyRows } = await soQ
+  if ((strategyRows ?? []).length > 0) {
+    const s = scoreStrategyOutcomes((strategyRows ?? []) as never[])
+    effByKind.set("shopping_agent", { effectiveness: s.effectiveness, sample: s.total })
+  }
+  // Marketing/Campaign managers: weekly outcomes (plan quality + realized engagement) → by session→kind.
+  let moQ = svc.from("marketing_agent_weekly_outcomes")
+    .select("spawned_session_id, plan_quality_score, realized_open_rate, realized_click_rate").limit(5000)
+  if (!isPlatform) moQ = moQ.eq("brokerage_id", ctx.brokerageId as string)
+  const { data: mktRows } = await moQ
+  if ((mktRows ?? []).length > 0) {
+    const mktSessionIds = Array.from(new Set((mktRows ?? []).map((r) => r.spawned_session_id as string).filter(Boolean)))
+    const mktSessionToAgent = new Map<string, string>()
+    if (mktSessionIds.length > 0) {
+      const { data: ms } = await svc.from("managed_agent_sessions").select("id, managed_agent_id").in("id", mktSessionIds)
+      for (const s of ms ?? []) mktSessionToAgent.set(s.id as string, s.managed_agent_id as string)
+    }
+    const byKind = new Map<string, typeof mktRows>()
+    for (const r of mktRows ?? []) {
+      const kind = agentToKind.get(mktSessionToAgent.get(r.spawned_session_id as string) ?? "")
+        ?? (await (async () => {
+          const aid = mktSessionToAgent.get(r.spawned_session_id as string)
+          if (!aid) return null
+          const { data } = await svc.from("managed_agents").select("agent_kind").eq("id", aid).maybeSingle()
+          return (data?.agent_kind as string | null) ?? null
+        })())
+      if (!kind) continue
+      const arr = byKind.get(kind) ?? []
+      arr.push(r); byKind.set(kind, arr)
+    }
+    for (const [kind, rows] of byKind) {
+      const m = scoreMarketingOutcomes((rows ?? []) as never[])
+      effByKind.set(kind, { effectiveness: m.effectiveness, sample: m.weeks })
+    }
+  }
+
   // 4) Render the FULL team (every registered manager), even those with no evals yet.
   const managers: ManagerTrustRow[] = (Object.keys(MANAGERS) as ManagerKey[])
     .map((kind) => {
@@ -131,8 +182,12 @@ export async function getManagerTrustScorecard(): Promise<
       const b = buckets.get(kind)
       const score = scoreEvals(b?.evals ?? [])
       const override = overrideByKind.get(kind) ?? null
+      const eff = effByKind.get(kind) ?? { effectiveness: 0, sample: 0 }
       return {
         agentKind: kind,
+        outcomeEffectiveness: eff.effectiveness,
+        outcomeSample: eff.sample,
+        outcomeBand: effectivenessBand(eff.effectiveness, eff.sample),
         label: info.label,
         domain: info.domain,
         accent: info.accent,
