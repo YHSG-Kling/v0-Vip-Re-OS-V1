@@ -60,8 +60,10 @@ export function ManagerTrustClient({
         <div>
           <h1 className="text-2xl font-bold">Manager Trust & Evaluation</h1>
           <p className="text-sm text-muted-foreground">
-            Every AI manager is graded on each outcome-graded session. Trust tier drives the recommended
-            autonomy posture — the certifiable governance no other platform can show.
+            Every AI manager is graded on each outcome-graded session. Trust tier drives the autonomy
+            posture, which is <strong>enforced at the egress</strong> — a manager set to (or recommended)
+            <em> approval required</em> can&apos;t send unattended; its outreach routes to the approval
+            queue. The certifiable governance no other platform can show.
           </p>
         </div>
       </div>

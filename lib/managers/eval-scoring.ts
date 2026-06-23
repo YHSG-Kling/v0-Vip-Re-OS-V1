@@ -27,7 +27,7 @@ export function isAutonomyPosture(x: unknown): x is AutonomyPosture {
 /**
  * The EFFECTIVE posture a manager operates under: a broker's explicit override
  * (governance policy of record, stored on managed_agents.config) always wins over
- * the eval-derived recommendation. This is what an enforcement layer would gate on.
+ * the eval-derived recommendation. This is what the dispatch autonomy gate enforces.
  */
 export function effectiveAutonomy(recommended: AutonomyPosture, override?: AutonomyPosture | null): AutonomyPosture {
   return isAutonomyPosture(override) ? override : recommended
@@ -56,9 +56,11 @@ export function tierFor(passRate: number, total: number): TrustTier {
 
 /**
  * Recommended autonomy posture per tier. Conservative by construction: anything
- * short of a proven track record requires a human in the loop. This is the
- * recommendation the Command Center surfaces (enforcement in dispatch is a
- * follow-up once a persisted autonomy column exists).
+ * short of a proven track record requires a human in the loop. The Command Center
+ * surfaces this, and it is now ENFORCED at the egress: lib/managers/autonomy-gate.ts
+ * resolves this posture (persisted to managed_agents.config.autonomy_recommended; a
+ * broker override on .autonomy_tier wins) and dispatch.ts HOLDS an autonomous send
+ * from a manager on `approval_required`.
  */
 export function autonomyFor(tier: TrustTier): AutonomyPosture {
   switch (tier) {
