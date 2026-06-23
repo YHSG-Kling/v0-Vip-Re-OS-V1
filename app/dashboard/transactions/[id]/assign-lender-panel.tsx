@@ -37,6 +37,8 @@ interface AssignLenderPanelProps {
   userType: string
 }
 
+import { LenderStatusRequestButton } from "./lender-status-request-button"
+
 export function AssignLenderPanel({
   transactionId,
   currentLenderId,
@@ -87,6 +89,8 @@ export function AssignLenderPanel({
             No lender assigned
           </Badge>
         )}
+
+        {currentLender && <LenderStatusRequestButton transactionId={transactionId} />}
 
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>

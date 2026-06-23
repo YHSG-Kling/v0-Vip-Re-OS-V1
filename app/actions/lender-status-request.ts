@@ -20,23 +20,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { sendSMS, sendEmail } from "@/lib/providers/messaging"
-
-const REQUESTABLE_ITEMS = [
-  "appraisal_status",
-  "underwriting_status",
-  "conditions_outstanding",
-  "clear_to_close_eta",
-  "loan_commitment_letter",
-] as const
-type RequestableItem = (typeof REQUESTABLE_ITEMS)[number]
-
-const ITEM_LABEL: Record<RequestableItem, string> = {
-  appraisal_status: "appraisal status",
-  underwriting_status: "underwriting status",
-  conditions_outstanding: "outstanding conditions",
-  clear_to_close_eta: "clear-to-close ETA",
-  loan_commitment_letter: "loan commitment letter",
-}
+import { REQUESTABLE_ITEMS, ITEM_LABEL, type RequestableItem } from "@/lib/lenders/status-request-items"
 
 export async function requestLenderStatusUpdateAction(input: {
   transactionId: string
