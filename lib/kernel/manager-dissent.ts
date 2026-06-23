@@ -24,6 +24,10 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { FAIR_HOUSING_PATTERNS } from "@/lib/compliance-rules/fair-housing-patterns"
+// Pure formatter is safe to import statically; the DB-backed state evaluator + resolver are
+// dynamic-imported inside runManagerDissent so this module stays simulator-importable
+// (state-fair-housing.ts is server-only).
+import { formatStateFairHousingAdvisory } from "@/lib/compliance-rules/state-fair-housing-format"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -155,6 +159,15 @@ export async function runManagerDissent(
     .eq("brokerage_id", brokerageId).eq("status", "proposed")
     .limit(100)
 
+  // State-specific protected classes (CA source-of-income, NY arrest record, MA marital
+  // status, …) extend the national FAIR_HOUSING_PATTERNS. The national patterns are pure;
+  // the state rules are reference data, so they're resolved here at the async runner and
+  // folded into the Compliance Officer's advisories — closing the gap where client messages
+  // only got the national check while marketing content already got national + state.
+  // Dynamic import keeps this module (deliberately not server-only) simulator-importable.
+  const { resolveBrokerageState, evaluateStateProtectedClasses } = await import("@/lib/compliance-rules/state-fair-housing")
+  const stateCode = await resolveBrokerageState(brokerageId)
+
   let reviewed = 0, passed = 0, dissents = 0, vetoes = 0
 
   for (const p of (proposals ?? []) as any[]) {
@@ -204,6 +217,15 @@ export async function runManagerDissent(
     const compliance = evaluateCompliance(proposal, ctx)
     const result = reviewProposal(proposal, ctx)
     const coordination = result.objections.filter((o) => !compliance.advisories.includes(o))
+
+    // State protected-class advisories (DB-backed, brokerage's state). Same advisory weight
+    // as the national Fair Housing findings — annotated, the human stays the decider.
+    let stateAdvisories: string[] = []
+    if (stateCode) {
+      const violations = await evaluateStateProtectedClasses({ content: `${p.subject ?? ""} ${p.body}`, stateCode })
+      stateAdvisories = violations.map((v) => formatStateFairHousingAdvisory(v, stateCode))
+    }
+    const complianceAdvisories = [...compliance.advisories, ...stateAdvisories]
     reviewed += 1
 
     if (result.verdict === "veto") {
@@ -213,12 +235,13 @@ export async function runManagerDissent(
         .update({ status: "rejected", send_error: `vetoed by ${complianceLabel} pre-flight: ${result.objections[0]}` })
         .eq("id", p.id).eq("status", "proposed").select("id").maybeSingle()
       if (done) vetoes += 1
-    } else if (result.verdict === "dissent") {
+    } else if (result.verdict === "dissent" || complianceAdvisories.length > 0) {
       // The Compliance Officer leads the header when Fair Housing is involved (it owns that finding);
       // otherwise the coordination peer reviewer does. Each line is attributed inline to its owner.
-      const who = compliance.advisories.length > 0 ? complianceLabel : reviewerLabel
+      // A state-only finding (national-clear but state-flagged) still escalates pass → dissent here.
+      const who = complianceAdvisories.length > 0 ? complianceLabel : reviewerLabel
       const lines = [
-        ...compliance.advisories.map((o) => `- [${complianceLabel}] ${o}`),
+        ...complianceAdvisories.map((o) => `- [${complianceLabel}] ${o}`),
         ...coordination.map((o) => `- [${reviewerLabel}] ${o}`),
       ]
       const annotation = `\n\n${REVIEW_MARK} PEER REVIEW — ${who} DISSENTS:\n${lines.join("\n")}`

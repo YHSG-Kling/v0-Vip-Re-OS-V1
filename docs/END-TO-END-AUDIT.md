@@ -155,6 +155,32 @@ file under `app/actions` is imported by something. The final 7 were resolved by 
   `EXEMPT` set with a "REMOVE AT GO-LIVE" note. Everything else is now wired or gone.
 The drift ratchet stays armed: any NEW orphan fails CI at baseline 0.
 
+### ✅ DRIFT-CONSOLIDATION PASS (2026-06-23) — four flagged items, grounded in the LIVE schema
+A fresh four-pillar audit (governance / lead-gen / video+voice / lifecycle+compliance) flagged four
+"drift" items. Verifying each against the **live** DB (not the audit's prose) is exactly what kept us
+from manufacturing risky changes — two were stale flags, one was a non-issue, one was real:
+- **#1 `app/actions/lead-intelligence.ts` "schema drift"** → **stale documentation, not code drift.**
+  All 20 tables it writes exist live with the columns the code uses (`behavioral_signals.visitor_id`,
+  `site_activity.behavioral_signal_id`, `social_intelligence.ai_intent_score`, `google_search_intelligence`,
+  …); the schema was migrated forward. The 80-line "SCHEMA-DRIFT WARNING" header was itself the drift —
+  it even misled the audit agent. Replaced with an accurate, dated, verified-against-live note. No code
+  change (the code is correct).
+- **#2 State Fair-Housing not consulted on live outbound** → **REAL gap, fixed.** State protected
+  classes (`state_protected_classes`: 49 active rules across CA/CO/IL/MA/MD/NJ/NY/WA — e.g. source-of-
+  income "no Section 8") were only checked in the marketing-content action, NOT on the two biggest live
+  surfaces: the client-message dissent path (`manager-dissent.ts:runManagerDissent`) and the social/ads
+  gate (`real-estate-compliance-gate.ts:runComplianceGate`), which ran national `FAIR_HOUSING_PATTERNS`
+  only. Wired `evaluateStateProtectedClasses` into both (advisory weight; national-clear+state-flagged ⇒
+  dissent), behind one shared pure formatter (`state-fair-housing-format.ts`). Proven against live CA data
+  + `test:state-fair-housing` (pure + creds-gated self-cleaning live layer) in the guard tier.
+- **#3 `buyer_stage='BUYER_LIFETIME'` never auto-set on close** → **not a functional gap.** `portal.ts`
+  resolves lifetime via THREE harmonized reads (`buyer_stage` OR closed-transaction-no-active fallback OR
+  `contact_type`), and the close path already sets `contact_type='lifetime_customer'`. Cosmetic-only;
+  not worth a risky change to the frozen lifecycle state machine. Recorded as verified.
+- **#4 Five sphere runners can each propose in one week** → **not customer-facing.** All five propose to
+  the approval queue (never auto-send), and the de-conflict gate runs on all five dispatch paths
+  (`dispatch.ts` 161/328/446/562/705), capping actual sends. At worst queue clutter, not spam. Recorded.
+
 ### Earlier orphan disposition map (historical) — investigated; each needed a decision, NOT a bulk delete
 The easy + medium tiers are done (29 resolved: 19 wired live, 10 deleted dead/redundant). The remainder
 is the architectural tier — investigated and characterized so the call is informed:

@@ -134,15 +134,17 @@ export async function runComplianceGate(
   params: RunComplianceGateParams
 ): Promise<RunComplianceGateResult> {
   let brokerageName: string | undefined
+  let stateCode: string | null = null
   if (params.brokerageId) {
     const { createServiceClient } = await import('@/lib/supabase/service')
     const supabase = createServiceClient()
     const { data } = await supabase
       .from('brokerages')
-      .select('name')
+      .select('name, state')
       .eq('id', params.brokerageId)
       .maybeSingle()
     brokerageName = data?.name ?? undefined
+    stateCode = (data?.state as string | null)?.toUpperCase() ?? null
   }
 
   const result = await realEstateComplianceGate({
@@ -152,15 +154,26 @@ export async function runComplianceGate(
     requireAttribution: params.contentType === 'ad' || params.contentType === 'social_post',
   })
 
+  // State-specific protected classes (source-of-income, marital status, …) extend the
+  // national Fair Housing blockers — surfaced as warnings so the human stays the decider,
+  // matching the client-message dissent path (one complete rule set across all gates).
+  const stateWarnings: string[] = []
+  if (stateCode) {
+    const { evaluateStateProtectedClasses, formatStateFairHousingAdvisory } = await import('@/lib/compliance-rules/state-fair-housing')
+    const sv = await evaluateStateProtectedClasses({ content: params.content, stateCode })
+    for (const v of sv) stateWarnings.push(formatStateFairHousingAdvisory(v, stateCode))
+  }
+
   const violations: RunComplianceGateResult['violations'] = [
     ...result.blockers.map((b) => ({ rule: 'blocker', severity: 'blocker' as const, detail: b })),
     ...result.warnings.map((w) => ({ rule: 'warning', severity: 'warning' as const, detail: w })),
+    ...stateWarnings.map((w) => ({ rule: 'state_fair_housing', severity: 'warning' as const, detail: w })),
   ]
 
   return {
     passed: result.passed,
     violations,
-    requiresHumanReview: result.warnings.length > 0,
+    requiresHumanReview: result.warnings.length > 0 || stateWarnings.length > 0,
   }
 }
 

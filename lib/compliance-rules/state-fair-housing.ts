@@ -102,6 +102,10 @@ export async function evaluateStateProtectedClasses(params: {
   return violations
 }
 
+// The canonical advisory formatter lives in the pure (non-server-only) sibling so simulators
+// and client paths can reuse it; re-exported here for callers already importing from this module.
+export { formatStateFairHousingAdvisory } from "./state-fair-housing-format"
+
 /**
  * Resolve the state for a brokerage (used by the compliance engine to know
  * which extra classes apply). Returns null when brokerage has no state.
