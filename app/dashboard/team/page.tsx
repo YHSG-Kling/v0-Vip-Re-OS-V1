@@ -250,6 +250,14 @@ export default async function TeamDashboard() {
               Activity Heatmap
             </Button>
           </Link>
+          {isTeamLead && (
+            <Link href="/dashboard/team/members">
+              <Button size="sm" variant="outline" className="text-xs gap-1.5">
+                <Users className="h-3 w-3" />
+                Members &amp; Splits
+              </Button>
+            </Link>
+          )}
           <Link href="/dashboard/leaderboard">
             <Button size="sm" variant="outline" className="text-xs gap-1.5">
               <Award className="h-3 w-3" />

@@ -315,6 +315,25 @@ QUEUED (real, larger surface — next focused passes): team_members CRUD + Finan
 location-scoped reporting (egress-scope into reporting.ts); connector-healing apply step; onboarding
 setup-assistant escalation surface; license-verification manual-review queue.
 
+### ✅ TEAM MANAGEMENT — member write-path closed (2026-06-23)
+The org schema was fully present (teams/team_members/locations + agents.team_id/location_id) and
+location CRUD already existed (app/actions/admin/locations.ts, test:locations). The REAL gap: teams
+could be created (multi-persona.createTeam) and BOTH the team dashboard (getTeamDashboard) and the
+Finance commission waterfall (lib/commission/waterfall/08-team-split.ts:applyTeamSplit — verified
+WIRED into lib/commission/index.ts + engine.ts, and it already handles the empty case + a
+negative-balance guard) READ team_members, but NOTHING wrote it — so every team's commission split
+was a silent no-op. Closed it: lib/teams/membership.ts (pure split-validation + the >100%
+agent-funded cap), app/actions/admin/team-members.ts (addTeamMember / removeTeamMember /
+listTeamMembers — broker/admin/team-lead gated, brokerage+team scoped, cross-tenant safe), and a
+/dashboard/team/members management UI (team picker → assign agent + role + split + source) linked
+from the team dashboard. Multi-manager loop: the team lead / Recruiting Manager builds the roster →
+the Finance Manager splits deals by it. Proof: test:team-membership (8 pure rules + a creds-gated
+self-cleaning live layer that seeds members and asserts applyTeamSplit consumes them — agent-funded
+deducted, brokerage-funded tracked-not-deducted). tsc 0; harness:integrity 10/10; build exit 0.
+NOTE (flagged, NOT changed — out of scope): applyTeamSplit queries team_members by the CLOSING
+agent's own membership row; whether the split should distribute to the team LEAD vs back to the
+closing agent is a commission-math question for a separate, careful Finance pass.
+
 PATTERN (recurring): the four-pillar audits repeatedly over-flagged "gaps/drift" that grounding
 in the LIVE code/schema disproved (#3 here; lead-intelligence + buyer_stage + sphere dedupe in the
 consolidation pass). Always verify the audit's prose against the live DB + actual modules before
