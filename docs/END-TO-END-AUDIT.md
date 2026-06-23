@@ -222,10 +222,16 @@ from manufacturing risky changes — two were stale flags, one was a non-issue, 
   COMPLIANCE/INSPECTION → Compliance Officer (flags the contingency-clock exposure to the broker),
   TITLE/DOCUMENTS/MILESTONES → the coordinator's own task. Delegated over the manager-signals bus
   (visible in the "managers talking" feed; new signal deal_save_huddle catalogued + handled +
-  classified as escalation). Internal drive-to-done only (no client egress). Triggered from the
-  scorer on a worsening tier change, best-effort. Proof: test:deal-save-huddle (16 pure + creds-
-  gated self-cleaning live layer); signal-integrity 5/5; harness 8/8; build exit 0. THIS is the
-  human-deal-team-in-software differentiator: a deal wobbles → the AI team huddles, each on its part.
+  classified as escalation). Triggered from the scorer on a worsening tier change, best-effort.
+  ROUTING (per owner correction): recipients are always the Transaction Coordinator + the deal's
+  AGENT (NOT the broker — operational, their job); earnest money is the TC's job AND proposes an
+  URGENT gated buyer warning; the loan is Finance's analysis, deadlines/contingencies are
+  Compliance's — but both keep the TC + agent aware (notifyDealTeam resolves TC via coordinator_id
+  and agent via agent_id→agents.user_id). Internal drive-to-done + one gated client warning only.
+  Proof: test:deal-save-huddle (17 pure + creds-gated self-cleaning live layer that seeds a
+  TC+agent+buyer and asserts TC/agent notified, broker not, buyer warning proposed); signal-
+  integrity 5/5; harness 8/8; build exit 0. THIS is the human-deal-team-in-software differentiator:
+  a deal wobbles → the AI team huddles, each on its part, the right humans aware.
 
 PATTERN (recurring): the four-pillar audits repeatedly over-flagged "gaps/drift" that grounding
 in the LIVE code/schema disproved (#3 here; lead-intelligence + buyer_stage + sphere dedupe in the

@@ -371,43 +371,47 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       ? `escalated the failed render to ${notified} responsible recipient${notified === 1 ? "" : "s"} (no silent dead reel)`
       : null
   },
-  // Deal Coordinator → Finance Manager: a deal worsened and the FINANCING side is the risk
-  // (lender milestone / earnest money). Finance opens a drive-to-done task — work the loan,
-  // confirm the clear-to-close ETA. Part of the Deal-Save Huddle (deal-save-huddle.ts).
+  // Deal Coordinator → Finance Manager: a deal worsened and the LOAN side is the risk. Finance
+  // opens a drive-to-done task (assigned to the TC) and keeps the TC + agent aware — work the
+  // loan, confirm the clear-to-close ETA. NOT the broker (operational). Part of the Deal-Save Huddle.
   "finance_manager:deal_save_huddle": async (signal, ctx) => {
     if (!signal.entityId) return null
     const play = (signal.payload?.play as string | undefined) ?? "Work the financing side and confirm the clear-to-close ETA."
     const cats = (signal.payload?.categories as string[] | undefined) ?? []
+    const { resolveTransactionTeamUsers, notifyDealTeam } = await import("@/lib/kernel/deal-save-huddle")
+    const team = await resolveTransactionTeamUsers(ctx.supabase, signal.entityId)
+    const priority = signal.payload?.risk_level === "critical" ? "high" : "medium"
     const title = `[Deal-Save Huddle · Finance] ${cats.join(", ") || "financing"}`
     const { data: dup } = await ctx.supabase.from("transaction_tasks").select("id")
       .eq("transaction_id", signal.entityId).eq("title", title).in("status", ["pending", "in_progress"]).limit(1).maybeSingle()
-    if (dup) return "financing drive-to-done task already open (deduped)"
-    const { error } = await ctx.supabase.from("transaction_tasks").insert({
-      transaction_id: signal.entityId, brokerage_id: ctx.brokerageId, title, description: play,
-      priority: signal.payload?.risk_level === "critical" ? "high" : "medium",
-      category: "financing", ai_generated: true, status: "pending",
+    let opened = false
+    if (!dup) {
+      const { error } = await ctx.supabase.from("transaction_tasks").insert({
+        transaction_id: signal.entityId, brokerage_id: ctx.brokerageId, title, description: play,
+        priority, category: "financing", ai_generated: true, status: "pending",
+        assigned_user_id: team.coordinatorUserId ?? null,
+      })
+      opened = !error
+    }
+    await notifyDealTeam(ctx.supabase, {
+      team, brokerageId: ctx.brokerageId, transactionId: signal.entityId,
+      type: "deal_save_huddle", title: "Deal at risk — financing", body: play, priority: priority as "high" | "medium",
     })
-    return error ? null : "opened a financing drive-to-done task (work the loan / confirm CTC)"
+    return opened ? "opened a financing drive-to-done task (TC + agent notified)" : "financing task already open; TC + agent kept aware"
   },
   // Deal Coordinator → Compliance Officer: a deal worsened and the DEADLINE/CONTINGENCY clock is
-  // the risk. Compliance flags the exposure to the broker/admins so a slipping contingency never
-  // lapses unseen. Part of the Deal-Save Huddle.
+  // the risk. Compliance flags the exposure to the TC + agent (the people who work the deal — NOT
+  // the broker) so a slipping contingency never lapses unseen. Part of the Deal-Save Huddle.
   "compliance_officer:deal_save_huddle": async (signal, ctx) => {
     if (!signal.entityId) return null
     const play = (signal.payload?.play as string | undefined) ?? "Verify the contingency clock; flag any slipping deadline."
-    const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
-    let notified = 0
-    for (const m of (mgrs ?? []) as Array<{ id: string }>) {
-      const { error } = await ctx.supabase.from("notifications").insert({
-        user_id: m.id, brokerage_id: ctx.brokerageId, type: "deal_save_huddle",
-        title: "Deal at risk — deadline/contingency exposure",
-        body: `${signal.message} ${play}`,
-        entity_type: "transaction", entity_id: signal.entityId, priority: "high", is_read: false,
-      })
-      if (!error) notified += 1
-    }
-    return notified > 0 ? `flagged the deadline/contingency exposure to ${notified} owner(s)` : null
+    const { resolveTransactionTeamUsers, notifyDealTeam } = await import("@/lib/kernel/deal-save-huddle")
+    const team = await resolveTransactionTeamUsers(ctx.supabase, signal.entityId)
+    const notified = await notifyDealTeam(ctx.supabase, {
+      team, brokerageId: ctx.brokerageId, transactionId: signal.entityId,
+      type: "deal_save_huddle", title: "Deal at risk — deadline/contingency exposure", body: play, priority: "high",
+    })
+    return notified > 0 ? `flagged the deadline/contingency exposure to the TC + agent (${notified})` : "deadline exposure noted (no TC/agent resolved to notify)"
   },
     // Recruiting Manager → Deal Coordinator: a recruit just became an ACTIVE AGENT (no
   // contacts yet — the rule). The Deal Coordinator sets up first-deal onboarding support:

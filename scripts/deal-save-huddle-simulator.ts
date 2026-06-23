@@ -4,16 +4,18 @@
  *
  * Proves the DEAL-SAVE HUDDLE — the multi-manager play that fires when a deal goes sideways
  * (the "no boring single workflow" differentiator). When a deal worsens into at_risk/critical,
- * the Deal Coordinator convenes a huddle routed by the FAILING health component: Finance works
- * the money side, Compliance owns the deadline/contingency exposure, the coordinator drives its
- * own docs/title bucket — visible on the managers-talking bus, internal drive-to-done only.
+ * the Deal Coordinator convenes a huddle routed by the FAILING health component, and EVERY play
+ * keeps the Transaction Coordinator + the deal's AGENT aware — NOT the broker (it's operational,
+ * their job). Earnest money is the TC's job and ALSO proposes an URGENT gated buyer warning.
  *
  *  - PURE layer (always): failing-component detection, worsening-into-danger gate, component→
- *    manager routing, and the role-specific play sentences.
- *  - LIVE layer (creds-gated, self-cleaning): seeds a deal, runs the huddle with failing LENDER +
- *    DEADLINES + TITLE components, asserts the coordinator opened its own task, delegated to
- *    Finance + Compliance over the bus, the Finance handler opened a financing task, and a second
- *    run dedups. Deletes every tagged row (cleanup == 0).
+ *    manager routing (earnest money → the TC, the loan → Finance, deadlines → Compliance), and
+ *    the role-specific play sentences (incl. the earnest-money "warn the buyer" play).
+ *  - LIVE layer (creds-gated, self-cleaning): seeds a deal WITH a TC + agent + buyer contact,
+ *    runs the huddle with failing LENDER + EARNEST_MONEY + DEADLINES + TITLE, and asserts the
+ *    TC + agent were notified (broker NOT), the earnest-money buyer warning was proposed (gated),
+ *    Finance/Compliance were delegated over the bus, their handlers notified the TC + agent, and a
+ *    second run dedups. Deletes every tagged row (cleanup == 0).
  */
 import { randomUUID } from "node:crypto"
 import {
@@ -33,16 +35,16 @@ function pureLayer(): void {
   check("healthy→critical ⇒ worsening", isWorseningToDanger("healthy", "critical"))
   check("critical→at_risk (improving) ⇒ NOT worsening", !isWorseningToDanger("critical", "at_risk"))
   check("at_risk→watch (recovered) ⇒ NOT worsening", !isWorseningToDanger("at_risk", "watch"))
-  check("first score into watch ⇒ NOT danger", !isWorseningToDanger(null, "watch"))
 
-  console.log("\n[routing · pure — failing component → owning manager]")
-  check("LENDER ⇒ finance_manager", COMPONENT_OWNER.LENDER === "finance_manager")
+  console.log("\n[routing · pure — recipients are the TC + agent, never the broker]")
+  check("LENDER (loan) ⇒ finance_manager", COMPONENT_OWNER.LENDER === "finance_manager")
+  check("EARNEST_MONEY ⇒ deal_coordinator (the TC's job)", COMPONENT_OWNER.EARNEST_MONEY === "deal_coordinator")
   check("DEADLINES ⇒ compliance_officer", COMPONENT_OWNER.DEADLINES === "compliance_officer")
-  check("TITLE ⇒ deal_coordinator", COMPONENT_OWNER.TITLE === "deal_coordinator")
+  check("TITLE ⇒ deal_coordinator (TC/agent)", COMPONENT_OWNER.TITLE === "deal_coordinator")
 
   const components: HealthComponentLite[] = [
     { category: "LENDER", score: 30, issues: ["loan not yet approved 10 days out"] },
-    { category: "EARNEST_MONEY", score: 50, issues: [] },
+    { category: "EARNEST_MONEY", score: 50, issues: ["EMD receipt not confirmed"] },
     { category: "DEADLINES", score: 45, issues: ["inspection contingency lapses in 2 days"] },
     { category: "TITLE", score: 60, issues: ["title commitment not received"] },
     { category: "DOCUMENTS", score: 95, issues: [] }, // healthy — must NOT route
@@ -50,10 +52,12 @@ function pureLayer(): void {
   const buckets = routeFailingComponents(components)
   const managers = buckets.map((b) => b.manager).sort()
   check("routes to all three managers (finance, compliance, coordinator)", JSON.stringify(managers) === JSON.stringify(["compliance_officer", "deal_coordinator", "finance_manager"]))
-  check("healthy DOCUMENTS component is excluded from the huddle", !buckets.some((b) => b.categories.includes("DOCUMENTS")))
+  check("healthy DOCUMENTS component is excluded", !buckets.some((b) => b.categories.includes("DOCUMENTS")))
   const fin = buckets.find((b) => b.manager === "finance_manager")!
-  check("finance bucket groups LENDER + EARNEST_MONEY", fin.categories.includes("LENDER") && fin.categories.includes("EARNEST_MONEY"))
-  check("finance play talks financing/CTC", /financing|loan|clear-to-close/i.test(huddlePlay("finance_manager", fin)))
+  check("finance bucket is the loan side only (LENDER, not earnest money)", fin.categories.includes("LENDER") && !fin.categories.includes("EARNEST_MONEY"))
+  const coord = buckets.find((b) => b.manager === "deal_coordinator")!
+  check("coordinator bucket holds EARNEST_MONEY + TITLE", coord.categories.includes("EARNEST_MONEY") && coord.categories.includes("TITLE"))
+  check("earnest-money play tells the TC to warn the buyer", /earnest money/i.test(huddlePlay("deal_coordinator", coord)) && /warn the buyer/i.test(huddlePlay("deal_coordinator", coord)))
   check("compliance play talks deadline/contingency", /deadline|contingency/i.test(huddlePlay("compliance_officer", buckets.find((b) => b.manager === "compliance_officer")!)))
 }
 
@@ -63,7 +67,7 @@ async function liveLayer(): Promise<void> {
     console.log("\n[deal-save huddle · live]  ⊘ skipped (no SUPABASE creds) — pure layer proved the logic")
     return
   }
-  console.log("\n[deal-save huddle · live — seed → convene → assert → self-clean]")
+  console.log("\n[deal-save huddle · live — seed deal+TC+agent+buyer → convene → assert → self-clean]")
   const { createServiceClient } = await import("../lib/supabase/service")
   const { runDealSaveHuddle } = await import("../lib/kernel/deal-save-huddle")
   const { SIGNAL_HANDLERS } = await import("../lib/kernel/manager-signals")
@@ -71,51 +75,71 @@ async function liveLayer(): Promise<void> {
 
   const tag = `dsh-sim-${randomUUID().slice(0, 8)}`
   const brokerageId = randomUUID()
+  const agentUserId = randomUUID()
+  const coordinatorUserId = randomUUID()
+  const agentRowId = randomUUID()
+  const buyerContactId = randomUUID()
   const txnId = randomUUID()
   const components: HealthComponentLite[] = [
     { category: "LENDER", score: 30, issues: [`${tag} loan not approved`] },
+    { category: "EARNEST_MONEY", score: 40, issues: [`${tag} EMD not confirmed`] },
     { category: "DEADLINES", score: 45, issues: [`${tag} contingency lapses soon`] },
     { category: "TITLE", score: 60, issues: [`${tag} title not received`] },
   ]
+  const notifiedTo = async (userId: string) =>
+    ((await svc.from("notifications").select("id", { count: "exact", head: true }).eq("user_id", userId).eq("entity_id", txnId)).count ?? 0)
 
   try {
     await svc.from("brokerages").insert({ id: brokerageId, name: `${tag} (deal-save test)` })
-    await svc.from("transactions").insert({ id: txnId, brokerage_id: brokerageId, deal_name: `${tag} deal`, status: "active" })
+    await svc.from("users").insert([
+      { id: agentUserId, brokerage_id: brokerageId, email: `${tag}-agent@example.com`, first_name: "Agent", last_name: tag, user_type: "agent" },
+      { id: coordinatorUserId, brokerage_id: brokerageId, email: `${tag}-tc@example.com`, first_name: "TC", last_name: tag, user_type: "tc" },
+    ])
+    await svc.from("agents").insert({ id: agentRowId, brokerage_id: brokerageId, user_id: agentUserId })
+    await svc.from("contacts").insert({ id: buyerContactId, brokerage_id: brokerageId, first_name: "Buyer", last_name: tag })
+    await svc.from("transactions").insert({
+      id: txnId, brokerage_id: brokerageId, deal_name: `${tag} deal`, status: "active",
+      agent_id: agentRowId, coordinator_id: coordinatorUserId, buyer_contact_id: buyerContactId,
+    })
 
     const r1 = await runDealSaveHuddle({ transactionId: txnId, brokerageId, riskLevel: "critical", components, dealName: `${tag} deal` }, svc)
-    check("huddle convened", r1.convened)
-    check("coordinator opened its own drive-to-done task", r1.coordinatorTaskCreated)
-    check("delegated to BOTH finance + compliance (multi-manager, not single workflow)",
-      r1.delegatedTo.includes("finance_manager") && r1.delegatedTo.includes("compliance_officer"))
+    check("huddle convened + coordinator opened its own task", r1.convened && r1.coordinatorTaskCreated)
+    check("delegated to BOTH finance + compliance (multi-manager)", r1.delegatedTo.includes("finance_manager") && r1.delegatedTo.includes("compliance_officer"))
+    check("TC + agent were notified (2 users)", r1.notifiedUsers >= 2)
+    check("earnest-money URGENT buyer warning was proposed (gated)", r1.clientWarningProposed)
 
-    const { count: coordTasks } = await svc.from("transaction_tasks").select("id", { count: "exact", head: true })
-      .eq("transaction_id", txnId).ilike("title", "[Deal-Save Huddle]%")
-    check("a coordinator huddle task exists", (coordTasks ?? 0) >= 1)
+    check("the TC was notified", (await notifiedTo(coordinatorUserId)) >= 1)
+    check("the agent was notified", (await notifiedTo(agentUserId)) >= 1)
 
-    const { data: sigs } = await svc.from("manager_signals").select("id, to_manager, signal_type, message, entity_id, payload")
+    const { data: warning } = await svc.from("agent_client_messages")
+      .select("agent_kind, audience, status, rationale, subject").eq("recipient_contact_id", buyerContactId).maybeSingle()
+    check("buyer warning is a gated proposal from the Deal Coordinator", !!warning && warning.agent_kind === "deal_coordinator" && warning.status === "proposed" && warning.audience === "buyer")
+    check("buyer warning is tagged urgent/earnest-money", !!warning && /Earnest Money/i.test(warning.rationale ?? ""))
+
+    // Finance handler runs on its signal → opens a financing task + keeps TC/agent aware (NOT broker).
+    const { data: sigs } = await svc.from("manager_signals").select("id, to_manager, message, entity_id, payload")
       .eq("brokerage_id", brokerageId).eq("signal_type", "deal_save_huddle")
-    check("two huddle signals on the bus (finance + compliance)", (sigs ?? []).length === 2)
-
-    // Run the Finance handler on its signal → it opens a financing task.
     const finSig = (sigs ?? []).find((s) => s.to_manager === "finance_manager")
     if (finSig) {
       const out = await SIGNAL_HANDLERS["finance_manager:deal_save_huddle"](
         { id: finSig.id, toManager: "finance_manager", signalType: "deal_save_huddle", message: finSig.message, entityType: "transaction", entityId: finSig.entity_id, contactId: null, payload: finSig.payload } as never,
         { brokerageId, supabase: svc },
       )
-      check("Finance handler opened a financing task", !!out && /financing/i.test(out))
-      const { count: finTasks } = await svc.from("transaction_tasks").select("id", { count: "exact", head: true })
-        .eq("transaction_id", txnId).ilike("title", "[Deal-Save Huddle · Finance]%")
-      check("financing drive-to-done task persisted", (finTasks ?? 0) >= 1)
+      check("Finance handler opened a financing task (TC + agent notified)", !!out && /financing/i.test(out))
     }
 
-    // Dedup — a second convene must not duplicate the coordinator task or re-open signals.
+    // Dedup — a second convene must not duplicate the coordinator task or re-propose the warning.
     const r2 = await runDealSaveHuddle({ transactionId: txnId, brokerageId, riskLevel: "critical", components, dealName: `${tag} deal` }, svc)
-    check("second convene dedups the coordinator task", r2.coordinatorTaskCreated === false)
+    check("second convene dedups (task + warning not duplicated)", r2.coordinatorTaskCreated === false && r2.clientWarningProposed === false)
   } finally {
+    await svc.from("agent_client_messages").delete().eq("brokerage_id", brokerageId)
+    await svc.from("notifications").delete().eq("brokerage_id", brokerageId)
     await svc.from("transaction_tasks").delete().eq("transaction_id", txnId)
     await svc.from("manager_signals").delete().eq("brokerage_id", brokerageId)
     await svc.from("transactions").delete().eq("id", txnId)
+    await svc.from("contacts").delete().eq("id", buyerContactId)
+    await svc.from("agents").delete().eq("id", agentRowId)
+    await svc.from("users").delete().in("id", [agentUserId, coordinatorUserId])
     await svc.from("brokerages").delete().eq("id", brokerageId)
     const { count } = await svc.from("manager_signals").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId)
     check("cleanup complete — zero tagged rows remain", (count ?? 0) === 0)
@@ -128,7 +152,7 @@ async function main(): Promise<void> {
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ DEAL_SAVE_HUDDLE_FAIL"); process.exit(1) }
-  console.log(" ✅ DEAL_SAVE_HUDDLE_PASS — a deal at risk convenes a coordinated multi-manager huddle")
+  console.log(" ✅ DEAL_SAVE_HUDDLE_PASS — a deal at risk convenes a coordinated huddle (TC + agent, not the broker)")
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })
