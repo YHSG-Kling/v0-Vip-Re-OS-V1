@@ -120,7 +120,7 @@ export async function getManagerTrustScorecard(): Promise<
 
   // 3b) Per-kind autonomy override (broker policy of record) from managed_agents.config.
   //     Fetch ALL of the brokerage's managed agents so overrides show even for kinds with no evals.
-  let agentRowQ = svc.from("managed_agents").select("agent_kind, config").is("archived_at", null)
+  let agentRowQ = svc.from("managed_agents").select("id, agent_kind, config").is("archived_at", null)
   if (!isPlatform) agentRowQ = agentRowQ.eq("brokerage_id", ctx.brokerageId as string)
   const { data: agentRows } = await agentRowQ
   const overrideByKind = new Map<string, AutonomyPosture | null>()
@@ -202,6 +202,22 @@ export async function getManagerTrustScorecard(): Promise<
       }
     })
     .sort((a, b) => b.score.total - a.score.total || a.label.localeCompare(b.label))
+
+  // CLOSED LOOP → ENFORCEMENT: persist each manager's eval-derived posture onto its
+  // managed_agents.config so the dispatch autonomy gate can enforce it even with no broker
+  // override (the override still wins). Best-effort, change-only; never blocks the read.
+  const postureByKind = new Map(managers.map((m) => [m.agentKind, m.score.autonomy]))
+  await Promise.all((agentRows ?? []).map(async (a) => {
+    const recommended = postureByKind.get(a.agent_kind as string)
+    if (!recommended) return
+    const cfg = (a.config ?? {}) as Record<string, unknown>
+    if (cfg.autonomy_recommended === recommended) return
+    try {
+      await svc.from("managed_agents")
+        .update({ config: { ...cfg, autonomy_recommended: recommended, autonomy_recommended_at: new Date().toISOString() } })
+        .eq("id", a.id as string)
+    } catch { /* best-effort — the scorecard read must not fail on a cache write */ }
+  }))
 
   const team = teamTrust(managers.map((m) => m.score))
   return { ok: true, managers, team: { ...team, managerCount: managers.length } }

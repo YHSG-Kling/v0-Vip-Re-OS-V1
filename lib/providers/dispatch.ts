@@ -28,6 +28,8 @@ import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 import { evaluateDeconflict, type DeconflictChannel } from "@/lib/kernel/deconflict"
 import { DECONFLICT_GATE_KEY } from "@/lib/campaign-sequences/deferral-policy"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveManagerAutonomy, autonomyDecision, managerForDispatch, HUMAN_APPROVED_SYSTEM_SOURCE } from "@/lib/managers/autonomy-gate"
+import type { ManagerKey } from "@/lib/kernel/manager-registry"
 
 // ─── SHARED TYPES ─────────────────────────────────────────────────────────────
 
@@ -52,6 +54,36 @@ interface DispatchActorContext {
    */
   contactId?: string
   agentId?: string
+  /**
+   * The governed AI manager performing this send. Set ONLY for autonomous (unattended)
+   * manager sends — it arms the autonomy gate: a manager on `approval_required` (broker
+   * policy or eval-derived) is held and must route to the approval queue instead. Leave
+   * unset for transactional / B2B / system sends (never gated).
+   */
+  managerKey?: ManagerKey
+  /** A human approved this send (approval queue). Bypasses the autonomy gate. */
+  humanApproved?: boolean
+}
+
+// ─── Autonomy gate — enforce the Manager Trust posture on AUTONOMOUS sends ──────
+// The single enforcement point for the certifiable-governance story: a manager may only
+// send unattended within its proven trust boundary. Opt-in by managerKey (so existing
+// callers are untouched); human-approved sends bypass; absence of a posture signal allows.
+async function autonomyGate(args: {
+  brokerageId: string
+  managerKey?: ManagerKey | null
+  humanApproved?: boolean
+  systemSource?: string
+}): Promise<DispatchResult | null> {
+  // Explicit managerKey wins; otherwise infer the owning manager from the systemSource so
+  // existing autonomous senders are governed without rewiring. No manager ⇒ not gated.
+  const managerKey = managerForDispatch(args.managerKey, args.systemSource)
+  if (!managerKey) return null
+  const humanApproved = args.humanApproved === true || args.systemSource === HUMAN_APPROVED_SYSTEM_SOURCE
+  const effective = await resolveManagerAutonomy(args.brokerageId, managerKey)
+  const decision = autonomyDecision({ managerKey, effective, humanApproved })
+  if (decision.allow) return null
+  return { success: false, providerKey: "autonomy_gate", error: `Outbound held: ${decision.reason}` }
 }
 
 interface DispatchResult {
@@ -102,6 +134,9 @@ export interface DispatchEmailParams extends DispatchActorContext {
 }
 
 export async function dispatchEmail(params: DispatchEmailParams): Promise<DispatchResult> {
+  // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
+  const autonomyHeld = await autonomyGate(params)
+  if (autonomyHeld) return autonomyHeld
   // ── COMPLIANCE GATE: Check if contact is eligible for outbound ───────────────
   if (params.contactId || params.leadId) {
     const supabase = await createServiceClient()
@@ -269,6 +304,9 @@ export interface DispatchSmsParams extends DispatchActorContext {
 }
 
 export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchResult> {
+  // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
+  const autonomyHeld = await autonomyGate(params)
+  if (autonomyHeld) return autonomyHeld
   // ── COMPLIANCE GATE: Check if contact is eligible for SMS ──────────────────
   if (params.contactId || params.leadId) {
     const supabase = await createServiceClient()
@@ -387,6 +425,9 @@ export interface DispatchPhoneParams extends DispatchActorContext {
 }
 
 export async function dispatchPhone(params: DispatchPhoneParams): Promise<DispatchResult> {
+  // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
+  const autonomyHeld = await autonomyGate(params)
+  if (autonomyHeld) return autonomyHeld
   // ── COMPLIANCE GATE: Check if contact is eligible for phone calls ───────────
   if (params.contactId || params.leadId) {
     const supabase = await createServiceClient()
@@ -524,6 +565,9 @@ export interface DispatchDirectMailParams extends DispatchActorContext {
 export async function dispatchDirectMail(
   params: DispatchDirectMailParams
 ): Promise<DispatchResult> {
+  // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
+  const autonomyHeld = await autonomyGate(params)
+  if (autonomyHeld) return autonomyHeld
   // ── Lead consent + verification gate ──────────────────────────────────────
   // Wave 36 — leads are unconsented for most channels; the only outbound
   // touches permitted to a lead row are direct_mail and email. For mail
@@ -698,6 +742,9 @@ export interface DispatchVideoParams extends DispatchActorContext {
 }
 
 export async function dispatchVideo(params: DispatchVideoParams): Promise<DispatchResult> {
+  // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
+  const autonomyHeld = await autonomyGate(params)
+  if (autonomyHeld) return autonomyHeld
   // ── De-Conflict gate (over-touch suppression) ────────────────────────────
   // D-ID renders are expensive AND avatar-video saturation hurts engagement;
   // default policy caps 1 video / 21 days per contact.
