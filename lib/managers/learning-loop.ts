@@ -94,7 +94,7 @@ export function deriveLearnedAdjustments(stats: OutcomeStats): LearnedAdjustment
 /** Window the learning loop looks back over. */
 export const LEARNING_WINDOW_DAYS = 180
 
-interface LearnedEntry { value: string; rationale: string; sample: number; computed_at: string }
+interface LearnedEntry { manager: LearnedManager; value: string; rationale: string; sample: number; computed_at: string }
 
 /**
  * Read recent outcomes for a brokerage, derive learned adjustments, and persist them to
@@ -146,7 +146,7 @@ export async function runManagerLearning(
 
   // Persist — merge into brokerage_settings.settings.learned_adjustments.
   const learned: Record<string, LearnedEntry> = {}
-  for (const a of adjustments) learned[a.key] = { value: a.value, rationale: a.rationale, sample: a.sample, computed_at: now.toISOString() }
+  for (const a of adjustments) learned[a.key] = { manager: a.manager, value: a.value, rationale: a.rationale, sample: a.sample, computed_at: now.toISOString() }
 
   const { data: existing } = await supabase.from("brokerage_settings").select("id, settings").eq("brokerage_id", brokerageId).maybeSingle()
   const prevSettings = ((existing as { settings?: Record<string, unknown> } | null)?.settings ?? {}) as Record<string, unknown>
@@ -163,11 +163,64 @@ export async function runManagerLearning(
   return { adjustments, written }
 }
 
-/** Read one learned adjustment for a brokerage (the value, or null). Best-effort. */
+/**
+ * Read one learned adjustment for a brokerage (the value, or null). The HUMAN OFF-SWITCH is
+ * enforced HERE, at the single read chokepoint every consumer (the huddle's financing
+ * sensitivity, the Shopping Agent's offer posture) goes through: a broker veto
+ * (settings.learned_vetoes[key]=true) makes this return null, so vetoing one adjustment
+ * instantly disables it everywhere. Best-effort.
+ */
 export async function getLearnedAdjustment(brokerageId: string, key: string, client?: Svc): Promise<string | null> {
   const supabase = client ?? createServiceClient()
   const { data } = await supabase.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
   const settings = ((data as { settings?: Record<string, unknown> } | null)?.settings ?? {}) as Record<string, unknown>
+  const vetoes = (settings.learned_vetoes ?? {}) as Record<string, boolean>
+  if (vetoes[key] === true) return null // broker vetoed this learned behavior
   const learned = (settings.learned_adjustments ?? {}) as Record<string, { value?: string } | undefined>
   return learned[key]?.value ?? null
+}
+
+export interface LearnedAdjustmentView {
+  key: string
+  manager: string
+  value: string
+  rationale: string
+  sample: number
+  computed_at: string | null
+  vetoed: boolean
+}
+
+/** List every learned adjustment for a brokerage (with its veto state) — the human-oversight read. */
+export async function listLearnedAdjustments(brokerageId: string, client?: Svc): Promise<LearnedAdjustmentView[]> {
+  const supabase = client ?? createServiceClient()
+  const { data } = await supabase.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
+  const settings = ((data as { settings?: Record<string, unknown> } | null)?.settings ?? {}) as Record<string, unknown>
+  const learned = (settings.learned_adjustments ?? {}) as Record<string, LearnedEntry | undefined>
+  const vetoes = (settings.learned_vetoes ?? {}) as Record<string, boolean>
+  return Object.entries(learned).map(([key, e]) => ({
+    key,
+    manager: e?.manager ?? "—",
+    value: e?.value ?? "",
+    rationale: e?.rationale ?? "",
+    sample: e?.sample ?? 0,
+    computed_at: e?.computed_at ?? null,
+    vetoed: vetoes[key] === true,
+  }))
+}
+
+/** Set or clear a broker veto on a learned adjustment. Best-effort; returns the new veto state. */
+export async function setLearnedAdjustmentVeto(brokerageId: string, key: string, vetoed: boolean, client?: Svc): Promise<{ ok: boolean; vetoed: boolean }> {
+  const supabase = client ?? createServiceClient()
+  const { data } = await supabase.from("brokerage_settings").select("id, settings").eq("brokerage_id", brokerageId).maybeSingle()
+  const settings = ((data as { settings?: Record<string, unknown> } | null)?.settings ?? {}) as Record<string, unknown>
+  const vetoes = { ...((settings.learned_vetoes ?? {}) as Record<string, boolean>) }
+  if (vetoed) vetoes[key] = true
+  else delete vetoes[key]
+  const nextSettings = { ...settings, learned_vetoes: vetoes }
+  if (data) {
+    const { error } = await supabase.from("brokerage_settings").update({ settings: nextSettings, updated_at: new Date().toISOString() }).eq("brokerage_id", brokerageId)
+    return { ok: !error, vetoed }
+  }
+  const { error } = await supabase.from("brokerage_settings").insert({ brokerage_id: brokerageId, settings: nextSettings })
+  return { ok: !error, vetoed }
 }

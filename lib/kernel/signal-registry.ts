@@ -55,7 +55,7 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
   deferral_stall_nudge:           { consumers: [], disposition: "feed_only", kind: "deferral",   what: "a deferred touch has stalled past its window — nudge to pick it back up" },
   relist_recovery:                { consumers: [], disposition: "feed_only", kind: "handoff",    what: "a listing expired/withdrawn — re-list recovery outreach + recommend a call" },
   offer_rejection_recovery:       { consumers: [], disposition: "feed_only", kind: "handoff",    what: "a buyer's offer was rejected — same-day regroup call routed to the ISA" },
-  rate_lock_watch:                { consumers: [], disposition: "feed_only", kind: "handoff",    what: "a rate-lock window is worth watching for a financing client" },
+  rate_lock_watch:                { consumers: ["finance_manager"],            disposition: "handled",   kind: "handoff",    what: "a financing client's rate lock is expiring vs the closing date — Finance opens a gated drive-to-done task to confirm an extension/relock before the rate (or the deal) is lost" },
   reverse_prospecting_call_candidate:{ consumers: [], disposition: "feed_only", kind: "handoff", what: "an MLS reverse-prospecting match surfaced a call candidate" },
   stale_preapproval_reengage:     { consumers: [], disposition: "feed_only", kind: "handoff",    what: "a pre-approval went stale — re-engage the buyer before it lapses" },
   referral_reciprocity:           { consumers: [], disposition: "feed_only", kind: "update",     what: "a referral partner is owed reciprocity — surface the give-back" },

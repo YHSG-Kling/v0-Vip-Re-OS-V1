@@ -399,6 +399,24 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     })
     return opened ? "opened a financing drive-to-done task (TC + agent notified)" : "financing task already open; TC + agent kept aware"
   },
+  // Deal Coordinator → Finance Manager: a financing client's rate lock is expiring vs the close
+  // date. Finance opens a gated drive-to-done task — confirm an extension/relock before the rate
+  // (or the deal) is lost. Was feed-only ("worth watching"); now actioned.
+  "finance_manager:rate_lock_watch": async (signal, ctx) => {
+    if (!signal.entityId) return null
+    const status = (signal.payload?.status as string | undefined) ?? "expiring"
+    const days = signal.payload?.daysToExpiry as number | undefined
+    const title = "[Rate Lock] confirm extension / relock"
+    const { data: dup } = await ctx.supabase.from("transaction_tasks").select("id")
+      .eq("transaction_id", signal.entityId).eq("title", title).in("status", ["pending", "in_progress"]).limit(1).maybeSingle()
+    if (dup) return "rate-lock task already open (deduped)"
+    const { error } = await ctx.supabase.from("transaction_tasks").insert({
+      transaction_id: signal.entityId, brokerage_id: ctx.brokerageId, title,
+      description: `Rate lock ${status}${typeof days === "number" ? ` (${days}d to expiry)` : ""}. Confirm extension status/cost with the lender or prepare to relock before close.`,
+      priority: status === "expired" ? "high" : "medium", category: "financing", ai_generated: true, status: "pending",
+    })
+    return error ? null : "opened a rate-lock financing task (confirm extension/relock)"
+  },
   // Deal Coordinator → Compliance Officer: a deal worsened and the DEADLINE/CONTINGENCY clock is
   // the risk. Compliance flags the exposure to the TC + agent (the people who work the deal — NOT
   // the broker) so a slipping contingency never lapses unseen. Part of the Deal-Save Huddle.

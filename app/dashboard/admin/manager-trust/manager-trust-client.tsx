@@ -5,9 +5,11 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot, Lock } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot, Lock, Brain, Undo2, Ban } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { setManagerAutonomy, type ManagerTrustRow } from "@/app/actions/admin/manager-evals"
+import { setManagerAutonomy, vetoLearnedAdjustment, type ManagerTrustRow } from "@/app/actions/admin/manager-evals"
+import type { LearnedAdjustmentView } from "@/lib/managers/learning-loop"
 import type { TrustTier, AutonomyPosture } from "@/lib/managers/eval-scoring"
 
 const FOLLOW_REC = "__recommended__"
@@ -26,15 +28,28 @@ const AUTONOMY_LABEL: Record<AutonomyPosture, string> = {
 }
 
 export function ManagerTrustClient({
-  managers: initialManagers, team,
+  managers: initialManagers, team, learned: initialLearned = [],
 }: {
   managers: ManagerTrustRow[]
   team: { passRate: number; total: number; trustedCount: number; managerCount: number }
+  learned?: LearnedAdjustmentView[]
 }) {
   const { toast } = useToast()
   const [managers, setManagers] = useState<ManagerTrustRow[]>(initialManagers)
+  const [learned, setLearned] = useState<LearnedAdjustmentView[]>(initialLearned)
   const [saving, setSaving] = useState<string | null>(null)
+  const [vetoing, setVetoing] = useState<string | null>(null)
   const hasData = team.total > 0
+
+  async function toggleVeto(key: string, vetoed: boolean) {
+    setVetoing(key)
+    const prev = learned
+    setLearned((cur) => cur.map((a) => (a.key === key ? { ...a, vetoed } : a)))
+    const r = await vetoLearnedAdjustment(key, vetoed)
+    setVetoing(null)
+    if (!r.ok) { setLearned(prev); toast({ title: "Could not update", description: r.error, variant: "destructive" }) }
+    else { toast({ title: vetoed ? "Learned behavior vetoed" : "Veto cleared", description: vetoed ? "This adjustment no longer affects any manager." : "This adjustment is active again." }) }
+  }
 
   async function changeAutonomy(m: ManagerTrustRow, value: string) {
     const posture = value === FOLLOW_REC ? null : (value as AutonomyPosture)
@@ -85,6 +100,45 @@ export function ManagerTrustClient({
           </CardContent>
         </Card>
       )}
+
+      {/* Manager Learning — what the managers learned from outcomes, with a human off-switch */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2"><Brain className="h-4 w-4" />What your managers learned</CardTitle>
+          <CardDescription>
+            The learning loop turns recent outcomes into adjustments that change behavior (e.g. a brokerage
+            losing deals on financing makes the Deal-Save Huddle intervene earlier). You can <strong>veto</strong>
+            {" "}any learned behavior — the off-switch is enforced everywhere instantly.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {learned.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-2">
+              Nothing learned yet — adjustments appear here once there's enough outcome history (the loop stays silent on a small sample, by design).
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {learned.map((a) => (
+                <div key={a.key} className={`flex items-start justify-between gap-3 rounded-lg border p-3 ${a.vetoed ? "opacity-60 bg-muted/40" : ""}`}>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Badge variant="outline" className="text-[11px]">{a.manager.replace(/_/g, " ")}</Badge>
+                      <span className="text-sm font-medium">{a.key.replace(/_/g, " ")}: <span className="text-primary">{a.value}</span></span>
+                      {a.vetoed && <Badge className="bg-gray-200 text-gray-700 border-gray-300 text-[11px]">vetoed</Badge>}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">{a.rationale}</p>
+                    {a.computed_at && <p className="text-[11px] text-muted-foreground mt-0.5">learned {new Date(a.computed_at).toLocaleDateString()} · sample {a.sample}</p>}
+                  </div>
+                  <Button size="sm" variant={a.vetoed ? "outline" : "ghost"} className={a.vetoed ? "" : "text-destructive"}
+                    onClick={() => toggleVeto(a.key, !a.vetoed)} disabled={vetoing === a.key}>
+                    {a.vetoed ? <><Undo2 className="h-3.5 w-3.5 mr-1" />Restore</> : <><Ban className="h-3.5 w-3.5 mr-1" />Veto</>}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

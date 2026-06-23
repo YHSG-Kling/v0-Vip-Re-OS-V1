@@ -196,6 +196,20 @@ export async function spawnShoppingAgentForBuyer(params: {
   })
   const buyerName = [contact.first_name, contact.last_name].filter(Boolean).join(" ") || contact.id.slice(0, 8)
 
+  // LEARNING LOOP — consume the learned offer posture (closes the loop: a brokerage whose offers
+  // keep getting rejected at aggressive deviations recommends closer to ask next time). Resolved
+  // through the single veto-aware chokepoint, so a broker veto disables it. Best-effort.
+  let offerPostureLine = ""
+  try {
+    const { getLearnedAdjustment } = await import("@/lib/managers/learning-loop")
+    const posture = await getLearnedAdjustment(params.brokerageId, "offer_posture")
+    if (posture === "conservative") {
+      offerPostureLine = "OFFER POSTURE (learned from recent outcomes): CONSERVATIVE — this brokerage's recent offers were often rejected at aggressive deviations from ask. Recommend CLOSER TO ASK and justify any below-ask with comps; do not over-discount."
+    } else if (posture === "data_supported") {
+      offerPostureLine = "OFFER POSTURE (learned from recent outcomes): DATA-SUPPORTED — the current offer strategy is landing well. Keep recommending with the same evidence-based rigor."
+    }
+  } catch { /* no learned posture — proceed normally */ }
+
   const kickoff = params.kickoff ?? [
     renderBrokerageContextForKickoff(brokerage),
     "",
@@ -207,6 +221,7 @@ export async function spawnShoppingAgentForBuyer(params: {
     `BBA: ${bba ? `${bba.agreement_type ?? "exclusive"}, expires ${bba.expiration_date ?? "no expiration"}` : "NONE — pre-representation"}`,
     `Financial verification: ${finStatus?.isVerified ? `verified via ${finStatus.verificationType}` : "NOT verified"}`,
     `Saved search configured: ${hasSavedSearch ? "YES" : "NO"}`,
+    offerPostureLine,
     "",
     `PERSONA VOICE GUIDANCE (mirror this in the buyer_digest): ${persona.aiContext}`,
     persona.sensitive ? "⚠️  SENSITIVE CONTEXT — use extra care; never assume the situation is voluntary." : "",

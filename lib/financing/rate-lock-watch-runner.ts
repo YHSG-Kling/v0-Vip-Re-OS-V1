@@ -116,7 +116,7 @@ async function escalate(
     }
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
     const sig = await publishManagerSignal({
-      brokerageId: args.brokerageId, fromManager: "deal_coordinator", toManager: "campaign_orchestrator",
+      brokerageId: args.brokerageId, fromManager: "deal_coordinator", toManager: "finance_manager",
       signalType: "rate_lock_watch", message: draft.body,
       entityType: "transaction", entityId: args.transactionId,
       payload: { status: verdict.status, bufferDays: verdict.bufferDays, daysToExpiry: verdict.daysToExpiry },

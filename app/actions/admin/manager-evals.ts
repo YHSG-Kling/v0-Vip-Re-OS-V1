@@ -266,3 +266,39 @@ export async function setManagerAutonomy(
   revalidatePath("/dashboard/admin/manager-trust")
   return { ok: true, updated }
 }
+
+// ── LEARNED ADJUSTMENTS — human oversight of what the managers LEARNED ───────────────────────
+// The Manager Learning Loop writes outcome-derived adjustments (e.g. financing_risk_sensitivity,
+// offer_posture) that change behavior. These give the broker VISIBILITY into every learned
+// signal and a one-click VETO — enforced at the single getLearnedAdjustment chokepoint, so a
+// veto instantly disables that learned behavior across every consumer.
+
+/** List every learned adjustment for the caller's brokerage (value + rationale + veto state). */
+export async function getLearnedAdjustmentsForBrokerage(): Promise<
+  { ok: true; rows: import("@/lib/managers/learning-loop").LearnedAdjustmentView[] } | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
+  const { listLearnedAdjustments } = await import("@/lib/managers/learning-loop")
+  const rows = await listLearnedAdjustments(ctx.brokerageId)
+  return { ok: true, rows }
+}
+
+/** Broker veto (or un-veto) a learned adjustment — the human off-switch over the learning loop. */
+export async function vetoLearnedAdjustment(
+  key: string,
+  vetoed: boolean,
+): Promise<{ ok: true; vetoed: boolean } | { ok: false; error: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  if (!["broker", "broker_admin", "admin", "superadmin"].includes(ctx.userType)) {
+    return { ok: false, error: "Forbidden — only a broker or admin can veto a learned adjustment" }
+  }
+  if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
+  if (!key?.trim()) return { ok: false, error: "Missing adjustment key" }
+  const { setLearnedAdjustmentVeto } = await import("@/lib/managers/learning-loop")
+  const r = await setLearnedAdjustmentVeto(ctx.brokerageId, key, vetoed)
+  revalidatePath("/dashboard/admin/manager-trust")
+  return r.ok ? { ok: true, vetoed: r.vetoed } : { ok: false, error: "Failed to update veto" }
+}

@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity"
-import { getManagerTrustScorecard } from "@/app/actions/admin/manager-evals"
+import { getManagerTrustScorecard, getLearnedAdjustmentsForBrokerage } from "@/app/actions/admin/manager-evals"
 import { ManagerTrustClient } from "./manager-trust-client"
 
 export const dynamic = "force-dynamic"
@@ -16,5 +16,7 @@ export default async function ManagerTrustPage() {
   if (!res.ok) {
     return <div className="p-6 text-red-600">Failed to load manager trust: {res.error}</div>
   }
-  return <ManagerTrustClient managers={res.managers} team={res.team} />
+  const learnedRes = await getLearnedAdjustmentsForBrokerage()
+  const learned = learnedRes.ok ? learnedRes.rows : []
+  return <ManagerTrustClient managers={res.managers} team={res.team} learned={learned} />
 }

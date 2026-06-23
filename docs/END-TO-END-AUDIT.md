@@ -264,6 +264,31 @@ from manufacturing risky changes — two were stale flags, one was a non-issue, 
   learn → assert written → run the huddle on a BORDERLINE financing deal and assert it now convenes).
   harness:integrity stays 10/10; cron-dispatch 17; build exit 0.
 
+### ✅ DEEP-GAP BATCH (2026-06-23) — second-order gaps from a 4-domain deep hunt
+A fresh exhaustive 4-domain gap hunt (lead-gen / deal / marketing-video-voice / lifetime-governance)
+surfaced ~30 second-order gaps; verifying each against live code (prior audits over-flag), the
+verified, highest-value, multi-manager batch was shipped:
+- **offer_posture loop CLOSED** — the Manager Learning Loop wrote offer_posture but nothing read it
+  (verified dangling loop). The Shopping Agent kickoff (lib/agents/shopping-agent.ts) now consumes
+  it via the veto-aware getLearnedAdjustment chokepoint: a brokerage whose offers keep getting
+  rejected aggressively gets a "recommend CLOSER TO ASK" posture line in every buyer session.
+- **Human off-switch over the learning loop** — the managers learned + acted, but the broker
+  couldn't SEE or VETO what they learned (governance blind spot). Added listLearnedAdjustments +
+  setLearnedAdjustmentVeto (lib/managers/learning-loop.ts), wired admin actions
+  (getLearnedAdjustmentsForBrokerage / vetoLearnedAdjustment), and a "What your managers learned"
+  card on /dashboard/admin/manager-trust with a per-adjustment Veto/Restore. The veto is enforced at
+  the SINGLE getLearnedAdjustment read chokepoint, so vetoing one learned behavior instantly
+  disables it across EVERY consumer (proven: veto financing sensitivity → the huddle stops convening
+  on a borderline deal).
+- **rate_lock_watch: feed_only → handled (multi-manager)** — an expiring rate lock was published to
+  campaign_orchestrator as a feed-only item nobody acted on. Re-routed deal_coordinator →
+  finance_manager, flipped to handled, added the finance handler that opens a gated drive-to-done
+  task to confirm an extension/relock before the rate (or deal) is lost.
+Proof: test:manager-learning (now 14 — adds veto off-switch + visibility) ; signal-integrity 5/5
+(56 catalogued, rate_lock_watch now handled) ; harness:integrity 10/10 ; tsc 0 ; build exit 0.
+QUEUED (verified, next batch): referral_reciprocity feed_only→handled, voiceCutPromo→video_ready
+coordination, closing-orchestration pending_actions→bus, format-learning→Marketing Agent snapshot.
+
 PATTERN (recurring): the four-pillar audits repeatedly over-flagged "gaps/drift" that grounding
 in the LIVE code/schema disproved (#3 here; lead-intelligence + buyer_stage + sphere dedupe in the
 consolidation pass). Always verify the audit's prose against the live DB + actual modules before

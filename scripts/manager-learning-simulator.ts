@@ -70,6 +70,7 @@ async function liveLayer(): Promise<void> {
   const tag = `ml-sim-${randomUUID().slice(0, 8)}`
   const brokerageId = randomUUID()
   const newDealId = randomUUID()
+  const newDealId2 = randomUUID()
   const lostIds = Array.from({ length: 5 }, () => randomUUID())
 
   try {
@@ -96,9 +97,26 @@ async function liveLayer(): Promise<void> {
     }, svc)
     check("the learned signal made the huddle convene on a borderline financing deal", huddle.convened)
     check("Finance was delegated earlier (loop closed: past losses → future behavior)", huddle.delegatedTo.includes("finance_manager"))
+
+    // HUMAN OFF-SWITCH — the broker vetoes the learned behavior; it disappears at the single read
+    // chokepoint, so a fresh borderline deal NO LONGER convenes the huddle.
+    const { setLearnedAdjustmentVeto, listLearnedAdjustments } = await import("../lib/managers/learning-loop")
+    await setLearnedAdjustmentVeto(brokerageId, "financing_risk_sensitivity", true, svc)
+    check("veto makes getLearnedAdjustment return null (off-switch at the chokepoint)",
+      (await getLearnedAdjustment(brokerageId, "financing_risk_sensitivity", svc)) === null)
+    const list = await listLearnedAdjustments(brokerageId, svc)
+    check("listLearnedAdjustments surfaces the adjustment with its veto state (broker visibility)",
+      list.some((a) => a.key === "financing_risk_sensitivity" && a.vetoed && a.manager === "deal_coordinator"))
+    await svc.from("transactions").insert({ id: newDealId2, brokerage_id: brokerageId, deal_name: `${tag} vetoed deal`, status: "active" })
+    const vetoedHuddle = await runDealSaveHuddle({
+      transactionId: newDealId2, brokerageId, riskLevel: "critical",
+      components: [{ category: "LENDER", score: 80, issues: [] }], dealName: `${tag} vetoed deal`,
+    }, svc)
+    check("with the adjustment vetoed, the SAME borderline deal no longer convenes the huddle", !vetoedHuddle.convened)
+    await setLearnedAdjustmentVeto(brokerageId, "financing_risk_sensitivity", false, svc) // restore
   } finally {
     await svc.from("manager_signals").delete().eq("brokerage_id", brokerageId)
-    await svc.from("transaction_tasks").delete().in("transaction_id", [newDealId])
+    await svc.from("transaction_tasks").delete().in("transaction_id", [newDealId, newDealId2])
     await svc.from("transactions").delete().eq("brokerage_id", brokerageId)
     await svc.from("brokerage_settings").delete().eq("brokerage_id", brokerageId)
     await svc.from("brokerages").delete().eq("id", brokerageId)
