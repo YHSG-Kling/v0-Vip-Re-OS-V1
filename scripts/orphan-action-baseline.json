@@ -9,7 +9,6 @@
   "app/actions/marketing/publish-guide-to-gbp.ts",
   "app/actions/neighbor-notifications.ts",
   "app/actions/newsletter/schedule-newsletter.ts",
-  "app/actions/offer-events.ts",
   "app/actions/onboarding/assistant.ts",
   "app/actions/scrape-social-media.ts",
   "app/actions/settings/list-integration-credentials.ts",
