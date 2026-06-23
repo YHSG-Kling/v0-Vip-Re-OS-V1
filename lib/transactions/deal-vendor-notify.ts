@@ -92,3 +92,57 @@ export async function notifyDealVendorsOfIssue(
 
   return { notified }
 }
+
+/**
+ * Deliver an APPROVED Closing Disclosure Agreement to the closing agent (the title company /
+ * escrow officer / closing attorney) — the disbursement authorization that tells them how to split
+ * the funds among agent / brokerage / TC (Model B). B2B-transactional (a counterparty on the deal),
+ * deduded by the CDA's own sent_to_title_at, audited. Returns the recipient email when sent.
+ */
+export async function deliverCdaToClosingAgent(
+  supabase: Svc,
+  params: { transactionId: string; brokerageId: string; grossCommission: number; agentNet: number; brokerageNet: number; tcNet?: number | null; dealName?: string | null },
+): Promise<{ delivered: boolean; recipient: string | null }> {
+  const { data: title } = await supabase
+    .from("transaction_title_escrow")
+    .select("title_officer_name, title_officer_email, title_company_email, escrow_officer_name, escrow_officer_email")
+    .eq("transaction_id", params.transactionId)
+    .maybeSingle()
+  const t = title as Record<string, string | null> | null
+  const recipient = t?.escrow_officer_email ?? t?.title_officer_email ?? t?.title_company_email ?? null
+  const name = t?.escrow_officer_name ?? t?.title_officer_name ?? "Closing team"
+  if (!recipient) return { delivered: false, recipient: null }
+
+  const { data: txn } = await supabase.from("transactions").select("property_address").eq("id", params.transactionId).maybeSingle()
+  const propertyLine = (txn as { property_address?: string | null } | null)?.property_address
+    ? ` for ${(txn as { property_address?: string | null }).property_address}`
+    : params.dealName ? ` for ${params.dealName}` : ""
+  const usd = (n: number) => `$${(Math.round(n * 100) / 100).toLocaleString()}`
+  const tcLine = params.tcNet && params.tcNet > 0 ? `\n• Transaction coordinator: ${usd(params.tcNet)}` : ""
+
+  const subject = `Approved Commission Disbursement Authorization${propertyLine}`
+  const body =
+    `Hi ${name},\n\n` +
+    `Our brokerage's compliance review of the commission disbursement${propertyLine} is complete and APPROVED. ` +
+    `Please disburse at closing as follows:\n\n` +
+    `• Gross commission to our brokerage's side: ${usd(params.grossCommission)}\n` +
+    `• Agent net: ${usd(params.agentNet)}\n` +
+    `• Brokerage net: ${usd(params.brokerageNet)}${tcLine}\n\n` +
+    `Reply to confirm receipt. Thank you for closing this one with us.`
+
+  try {
+    const r = await sendEmail({ to: recipient, subject, body, brokerageId: params.brokerageId } as never)
+    const ok = (r as { success?: boolean } | null)?.success
+    if (ok) {
+      await supabase.from("activities").insert({
+        brokerage_id: params.brokerageId, transaction_id: params.transactionId, entity_type: "transaction",
+        activity_type: "cda_delivered_to_title", title: "CDA delivered to the closing agent",
+        description: `Approved disbursement authorization sent to the title/escrow officer${propertyLine}.`,
+        notes: JSON.stringify({ recipient, grossCommission: params.grossCommission }),
+        status: "completed", completed_at: new Date().toISOString(), channel: "email",
+      })
+      return { delivered: true, recipient }
+    }
+  } catch { /* best-effort */ }
+  return { delivered: false, recipient }
+}

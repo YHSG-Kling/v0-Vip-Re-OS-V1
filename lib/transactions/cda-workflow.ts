@@ -48,8 +48,8 @@ export async function generateCDAPreview(params: {
     throw new Error(`[cda-workflow] Failed to create CDA: ${cdaError?.message}`)
   }
   
-  // Run comparison (placeholder - actual comparison logic based on your schema)
-  const discrepancies = await compareCDAToExpected(cda.id, commissionResult)
+  // Run comparison against the contract terms (real — was a placeholder).
+  const discrepancies = await compareCDAToExpected(params.transactionId, commissionResult)
   
   if (discrepancies.length > 0) {
     // Notify compliance officer + broker
@@ -138,15 +138,50 @@ export async function approveCDA(params: {
       compliance_approved_by: params.approverId
     })
     .eq("id", params.cdaId)
-  
+
   // Complete milestone
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
-    .select("transaction_id, brokerage_id")
+    .select("transaction_id, brokerage_id, gross_commission, agent_net, brokerage_net, uses_cda, sent_to_title_at")
     .eq("id", params.cdaId)
     .single()
-  
+
   if (cda) {
+    // ── DELIVER — the step that was missing. Compliance just APPROVED; now act on the model: ──
+    //  Model B (uses_cda): DELIVER the disbursement authorization to the closing agent (title /
+    //    escrow officer / closing attorney) — it dictates how they split funds at closing.
+    //  Model A (!uses_cda): funds come to the brokerage; record the non-CDA payout for Finance.
+    // Either way the deal team (Finance + TC + agent) is kept aware. Best-effort, idempotent.
+    try {
+      const { deliverCdaToClosingAgent } = await import("@/lib/transactions/deal-vendor-notify")
+      const { notifyDealTeam, resolveTransactionTeamUsers } = await import("@/lib/kernel/deal-save-huddle")
+      const team = await resolveTransactionTeamUsers(supabase, cda.transaction_id)
+      if (cda.uses_cda !== false && !cda.sent_to_title_at) {
+        const d = await deliverCdaToClosingAgent(supabase, {
+          transactionId: cda.transaction_id, brokerageId: cda.brokerage_id,
+          grossCommission: Number(cda.gross_commission ?? 0), agentNet: Number(cda.agent_net ?? 0), brokerageNet: Number(cda.brokerage_net ?? 0),
+        })
+        if (d.delivered) {
+          await supabase.from("closing_disclosure_agreement").update({
+            status: "delivered", sent_to_title_at: new Date().toISOString(), sent_to_title_recipient: d.recipient, sent_to_title_method: "email",
+          }).eq("id", params.cdaId)
+        }
+        await notifyDealTeam(supabase, {
+          team, brokerageId: cda.brokerage_id, transactionId: cda.transaction_id, type: "cda_delivered",
+          title: "CDA approved & delivered to the closing agent",
+          body: d.delivered ? `Disbursement authorization sent to ${d.recipient}.` : "CDA approved — no title/escrow contact on file yet; add one to deliver.",
+          priority: "medium",
+        })
+      } else if (cda.uses_cda === false) {
+        await notifyDealTeam(supabase, {
+          team, brokerageId: cda.brokerage_id, transactionId: cda.transaction_id, type: "cda_approved_brokerage_payout",
+          title: "Commission approved — brokerage will disburse",
+          body: "This deal pays through the brokerage (no CDA to title). Finance: queue the agent/TC payouts.",
+          priority: "medium",
+        })
+      }
+    } catch { /* best-effort — approval already recorded */ }
+
     await supabase
       .from("transaction_milestones")
       .update({ status: "completed", completed_at: new Date().toISOString() })
@@ -169,8 +204,19 @@ export async function approveCDA(params: {
   return { success: true }
 }
 
-async function compareCDAToExpected(cdaId: string, commissionResult: any): Promise<any[]> {
-  // Placeholder for comparison logic
-  // In production, this would compare CDA amounts to expected contract terms
-  return []
+async function compareCDAToExpected(transactionId: string, commissionResult: any): Promise<any[]> {
+  // Compare the COMPUTED gross commission to the contract-derived expected gross. A material
+  // mismatch means the brokerage would authorize the wrong disbursement — block it for Compliance.
+  const supabase = createServiceClient()
+  const { data: t } = await supabase
+    .from("transactions")
+    .select("estimated_commission, purchase_price, commission_percentage")
+    .eq("id", transactionId)
+    .maybeSingle()
+  const { computeCdaDiscrepancies, expectedGrossFromTerms } = await import("@/lib/commission/cda-discrepancy")
+  const expectedGross = expectedGrossFromTerms((t ?? {}) as Record<string, number | null>)
+  return computeCdaDiscrepancies({
+    computedGross: Number(commissionResult?.gross_commission ?? 0),
+    expectedGross,
+  })
 }

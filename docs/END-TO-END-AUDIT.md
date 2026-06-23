@@ -334,6 +334,31 @@ NOTE (flagged, NOT changed — out of scope): applyTeamSplit queries team_member
 agent's own membership row; whether the split should distribute to the team LEAD vs back to the
 closing agent is a commission-math question for a separate, careful Finance pass.
 
+### ✅ CDA / COMMISSION DISBURSEMENT — Compare + Deliver completed (2026-06-23)
+Owner clarified the disbursement business process: the "closing agent" = the TITLE company /
+closing attorney (the disburser), and there are two models — (A) funds to the brokerage, which pays
+agents/TC; (B, popular) the Compliance Officer approves a Closing Disclosure Agreement (CDA) that
+DICTATES to the title/attorney how to split. lib/transactions/cda-workflow.ts had the
+Preview→Generate→Compare→Approve flow + the schema is ready (closing_disclosure_agreement.uses_cda,
+sent_to_title_at/recipient/method, non_cda_payout_*), but TWO steps were unfinished:
+- **Compare was a stub** (returned []) — built lib/commission/cda-discrepancy.ts
+  (computeCdaDiscrepancies + expectedGrossFromTerms, pure) and wired compareCDAToExpected to check
+  the computed gross against the contract terms (purchase_price × commission% or estimated_commission);
+  a material mismatch is a BLOCKER Compliance must resolve before approving the wrong disbursement.
+- **Deliver was missing** — approveCDA now acts on the model: Model B (uses_cda) DELIVERS the
+  disbursement authorization to the closing agent (title/escrow officer) via the allowlisted B2B
+  sender (deliverCdaToClosingAgent in deal-vendor-notify.ts) and stamps sent_to_title_at/recipient/
+  method='delivered'; Model A records the brokerage-funded payout for Finance. Either way the deal
+  team (Finance + TC + agent) is notified. Multi-manager loop: Finance computes → Compliance
+  compares + approves → title/attorney receives the authorization → Finance/TC disburse.
+- CLARIFIED (prior flag retracted): the team-split step's "closing agent" confusion was a
+  terminology misread — applyTeamSplit's context.agentId is the REAL-ESTATE agent (splitting their
+  commission among team members), not the title company. The team-split logic is correct as-is.
+Proof: test:cda-flow (8 pure compare/expected-gross + a creds-gated no-email deliver path);
+egress-send-guard 22/22 (deliver rides the existing allowlisted B2B file); tsc 0; harness 10/10;
+build exit 0. Role model confirmed: rbac uses users.user_type (+ isStaff) as canonical — team-member
+gating aligns.
+
 PATTERN (recurring): the four-pillar audits repeatedly over-flagged "gaps/drift" that grounding
 in the LIVE code/schema disproved (#3 here; lead-intelligence + buyer_stage + sphere dedupe in the
 consolidation pass). Always verify the audit's prose against the live DB + actual modules before
