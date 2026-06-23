@@ -74,7 +74,10 @@ import {
   deleteEmailCampaign,
 } from "@/app/actions/email-campaigns"
 import { fetchLocalNews, setupLocalNewsSource } from "@/app/actions/newsletter/fetch-local-news"
+import { scheduleNewsletter } from "@/app/actions/newsletter/schedule-newsletter"
+import { listTemplates } from "@/app/actions/newsletter/list-templates"
 import { computeSeoScore } from "@/lib/newsletter/seo-score"
+import { validateScheduleTime } from "@/lib/newsletter/schedule-time"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
@@ -540,6 +543,14 @@ export function NewslettersClient({
   const [analyticsLoading, setAnalyticsLoading] = useState(false)
   const [analyticsLoaded, setAnalyticsLoaded] = useState(false)
 
+  // ── Governed scheduled send (Step 6) ──────────────────────────────────────
+  // Records an approved-template send into newsletter_scheduled_sends via the
+  // scheduleNewsletter action. The row is picked up by the governed cron that
+  // sends through the egress gate later — nothing is delivered to consumers here.
+  const [approvedTemplates, setApprovedTemplates] = useState<Array<{ id: string; template_name: string }>>([])
+  const [scheduleTemplateId, setScheduleTemplateId] = useState("")
+  const [isRegisteringSend, setIsRegisteringSend] = useState(false)
+
   // DnD sensors
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -574,7 +585,20 @@ export function NewslettersClient({
     setLocalNewsFreq("daily")
     setLocalHeadlines([])
     setLocalNewsFetched(false)
+    setScheduleTemplateId("")
     setWizardOpen(true)
+    // Load approved templates for the governed Schedule Send control (Step 6).
+    // Only approved templates can be scheduled (enforced server-side too).
+    listTemplates("approved")
+      .then((tpls) =>
+        setApprovedTemplates(
+          (tpls as Array<{ id: string; template_name: string }>).map((t) => ({
+            id: t.id,
+            template_name: t.template_name,
+          }))
+        )
+      )
+      .catch(() => setApprovedTemplates([]))
   }
 
   // ── Local News handlers ──────────────────────────────────────────────────
@@ -807,6 +831,48 @@ export function NewslettersClient({
       toast.error("Unexpected error creating newsletter")
     } finally {
       setIsSubmitting(false)
+    }
+  }
+
+  // ── Step 6: Register governed scheduled send ─────────────────────────────
+  // Wires scheduleNewsletter: validates the picked time (pure schedule-time lib),
+  // then writes a newsletter_scheduled_sends row against an approved template.
+  // The governed cron sends it through the egress gate later — no inline send.
+  async function handleRegisterScheduledSend() {
+    if (!scheduleTemplateId) {
+      toast.error("Select an approved template to schedule")
+      return
+    }
+    const verdict = validateScheduleTime(wizard.scheduleDate)
+    if (!verdict.valid || !verdict.date) {
+      toast.error(verdict.reason)
+      return
+    }
+    setIsRegisteringSend(true)
+    try {
+      const html = wizard.generatedSections
+        .map((s) => `<h1>${s.title}</h1>\n<p>${s.content}</p>`)
+        .join("\n")
+      const result = await scheduleNewsletter({
+        templateId: scheduleTemplateId,
+        subjectLine: wizard.subjectLine,
+        scheduledSendTime: verdict.date,
+        recipientSegment: { role: wizard.audienceSegment === "all" ? undefined : wizard.audienceSegment },
+        sectionsIncluded: wizard.sections,
+        htmlContent: html || undefined,
+        primaryKeyword: wizard.topic || wizard.campaignName,
+      })
+      if (result.success) {
+        toast.success(
+          `Send registered for ${format(verdict.date, "MMM d 'at' h:mm a")} — the governed cron will deliver it`
+        )
+      } else {
+        toast.error("Failed to register scheduled send")
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to register scheduled send")
+    } finally {
+      setIsRegisteringSend(false)
     }
   }
 
@@ -1546,6 +1612,65 @@ export function NewslettersClient({
                         value={wizard.scheduleDate}
                         onChange={(e) => updateWizard({ scheduleDate: e.target.value })}
                       />
+                      {wizard.scheduleDate &&
+                        !validateScheduleTime(wizard.scheduleDate).valid && (
+                          <p className="text-xs text-destructive">
+                            {validateScheduleTime(wizard.scheduleDate).reason}
+                          </p>
+                        )}
+                    </div>
+                  )}
+
+                  {/* Governed scheduled send — writes a newsletter_scheduled_sends
+                      row against an approved template; the cron delivers it later
+                      through the egress gate (no inline consumer send here). */}
+                  {wizard.sendMode === "scheduled" && (
+                    <div className="space-y-2 rounded-lg border border-dashed p-3">
+                      <Label className="text-xs">Governed Schedule Send (approved template)</Label>
+                      <Select value={scheduleTemplateId} onValueChange={setScheduleTemplateId}>
+                        <SelectTrigger>
+                          <SelectValue
+                            placeholder={
+                              approvedTemplates.length === 0
+                                ? "No approved templates"
+                                : "Select an approved template"
+                            }
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {approvedTemplates.map((t) => (
+                            <SelectItem key={t.id} value={t.id}>
+                              {t.template_name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        Records a governed scheduled send. The cron delivers it through the
+                        egress gate at the chosen time — nothing is sent now.
+                      </p>
+                      <Button
+                        variant="outline"
+                        className="w-full gap-2"
+                        disabled={
+                          isRegisteringSend ||
+                          !scheduleTemplateId ||
+                          !validateScheduleTime(wizard.scheduleDate).valid
+                        }
+                        onClick={handleRegisterScheduledSend}
+                      >
+                        {isRegisteringSend ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Registering…
+                          </>
+                        ) : (
+                          <>
+                            <Clock className="h-4 w-4" />
+                            Register Scheduled Send
+                          </>
+                        )}
+                      </Button>
                     </div>
                   )}
 

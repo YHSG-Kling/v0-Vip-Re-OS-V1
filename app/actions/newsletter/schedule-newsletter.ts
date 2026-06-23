@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { getSEOScore } from '@/app/actions/newsletter/get-seo-score'
+import { validateScheduleTime } from '@/lib/newsletter/schedule-time'
 
 export interface ScheduleNewsletterInput {
   templateId: string
@@ -52,9 +53,11 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
     throw new Error('Only approved templates can be scheduled')
   }
 
-  // Validate send time is in future
-  if (new Date(input.scheduledSendTime) <= new Date()) {
-    throw new Error('Send time must be in the future')
+  // Validate + normalize send time (pure lib/newsletter/schedule-time.ts —
+  // same check the wizard runs client-side before the round-trip).
+  const scheduleTime = validateScheduleTime(input.scheduledSendTime)
+  if (!scheduleTime.valid) {
+    throw new Error(scheduleTime.reason)
   }
 
   // Count contacts matching the recipient segment filters
@@ -82,7 +85,7 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
       agent_id: user.id,
       subject_line: input.subjectLine,
       preview_text: input.previewText,
-      scheduled_send_time: input.scheduledSendTime.toISOString(),
+      scheduled_send_time: scheduleTime.iso!,
       send_status: 'scheduled',
       recipient_segment: input.recipientSegment,
       recipient_count: recipientCount,
