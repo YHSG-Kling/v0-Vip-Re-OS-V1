@@ -213,6 +213,20 @@ from manufacturing risky changes — two were stale flags, one was a non-issue, 
   self-cleaning live layer); tsc 0; harness 8/8; build exit 0. No competitor re-engages a past
   client in hours, with their prior-deal context, fully governed.
 
+- **Deal-Save Huddle — SHIPPED** (the DEAL phase, the "no boring single workflow" play). The deal
+  phase was mature on MONITORING (deal-health-scorer, closing-war-room, watchtower, financing-pit-
+  stop) but a risk-tier change emitted ONE generic event (staff notifications) — a lonely workflow,
+  not a team response. Now when a deal WORSENS into at_risk/critical, the Deal Coordinator convenes
+  a coordinated huddle (lib/kernel/deal-save-huddle.ts) routed by the FAILING health component:
+  LENDER/EARNEST_MONEY → Finance Manager (opens a financing drive-to-done task), DEADLINES/
+  COMPLIANCE/INSPECTION → Compliance Officer (flags the contingency-clock exposure to the broker),
+  TITLE/DOCUMENTS/MILESTONES → the coordinator's own task. Delegated over the manager-signals bus
+  (visible in the "managers talking" feed; new signal deal_save_huddle catalogued + handled +
+  classified as escalation). Internal drive-to-done only (no client egress). Triggered from the
+  scorer on a worsening tier change, best-effort. Proof: test:deal-save-huddle (16 pure + creds-
+  gated self-cleaning live layer); signal-integrity 5/5; harness 8/8; build exit 0. THIS is the
+  human-deal-team-in-software differentiator: a deal wobbles → the AI team huddles, each on its part.
+
 PATTERN (recurring): the four-pillar audits repeatedly over-flagged "gaps/drift" that grounding
 in the LIVE code/schema disproved (#3 here; lead-intelligence + buyer_stage + sphere dedupe in the
 consolidation pass). Always verify the audit's prose against the live DB + actual modules before

@@ -917,6 +917,23 @@ export async function calculateDealHealth(params: {
         score_delta:         scoreDelta,
       },
     })
+
+    // ─── DEAL-SAVE HUDDLE — the multi-manager play, not a lonely notification ──
+    // When a deal WORSENS into at_risk/critical, the Deal Coordinator convenes a huddle routed
+    // by the failing component: Finance works the money side, Compliance owns the deadline
+    // exposure, the coordinator drives docs/title. Best-effort — never fails the scoring run.
+    const { isWorseningToDanger } = await import("@/lib/kernel/deal-save-huddle")
+    if (isWorseningToDanger(previousRiskLevel, riskLevel)) {
+      try {
+        const { runDealSaveHuddle } = await import("@/lib/kernel/deal-save-huddle")
+        await runDealSaveHuddle({
+          transactionId, brokerageId, riskLevel,
+          components: components.map((c) => ({ category: c.category, score: c.score, issues: c.issues })),
+        }, supabase)
+      } catch (e) {
+        console.error("[deal-health] deal-save huddle failed:", (e as Error).message)
+      }
+    }
   }
 
   return {
