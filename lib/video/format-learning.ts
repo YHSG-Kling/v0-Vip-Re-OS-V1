@@ -98,6 +98,32 @@ export interface ScoredFormats {
   maxMeanSignal: number
 }
 
+/** A compact learned-format winner for the Marketing Agent's weekly snapshot. */
+export interface TopFormat {
+  kind: string
+  channel: string
+  composition: string
+  mood: string
+  sample: number
+  meanSignal: number
+}
+
+/**
+ * PURE: the top learned-format cells (composition × channel × mood per situation kind) by mean
+ * signal, with a minimum sample so it's a real win not noise. This is how the Video Director's
+ * format learning reaches the Marketing Agent — the Agent biases the week's renders toward proven
+ * winners instead of always queuing the default composition.
+ */
+export function summarizeTopFormats(scored: ScoredFormats, opts?: { limit?: number; minSample?: number }): TopFormat[] {
+  const minSample = opts?.minSample ?? 2
+  const limit = opts?.limit ?? 3
+  return Object.values(scored.cells)
+    .filter((c) => c.sample >= minSample && c.meanSignal > 0)
+    .sort((a, b) => b.meanSignal - a.meanSignal)
+    .slice(0, limit)
+    .map((c) => ({ kind: c.kind, channel: c.channel, composition: c.compositionId, mood: c.mood, sample: c.sample, meanSignal: Math.round(c.meanSignal * 100) / 100 }))
+}
+
 /** What recommendFormatAdjustment returns: either the untouched default or a
  *  learned override, ALWAYS with a human-readable WHY for the audit trail. */
 export interface FormatRecommendation {

@@ -289,6 +289,32 @@ Proof: test:manager-learning (now 14 — adds veto off-switch + visibility) ; si
 QUEUED (verified, next batch): referral_reciprocity feed_only→handled, voiceCutPromo→video_ready
 coordination, closing-orchestration pending_actions→bus, format-learning→Marketing Agent snapshot.
 
+### ✅ DEEP-GAP BATCH #2 (2026-06-23) — deal-coordination + cross-manager, with heavy verification
+A second deep hunt added tier/org + onboarding/platform domains. Verifying each against live (the
+biggest-sounding claims were over-flagged), the shipped, verified, multi-manager subset:
+- **Closing pending-actions → the bus** — closing-orchestration wrote transaction_pending_actions
+  with a suggested_recipient but never published to the bus; urgent lender/title/escrow/inspection
+  items were TC-dashboard-only. Now a HIGH/URGENT action routes by recipient to the right manager:
+  lender → finance_manager (opens a gated closing task), title/escrow/inspection → compliance_officer
+  (flags the TC + agent). New signal transaction_action_pending (handled, escalation), 2 handlers,
+  TC keeps buyer/seller/agent items in the closing-concierge UI.
+- **Format-learning → the Marketing Agent** — the Video Director learned which composition × channel
+  × mood converts (real QR + engagement) but the Marketing Agent was blind to it. Added pure
+  summarizeTopFormats (lib/video/format-learning.ts) + a "LEARNED FORMAT WINNERS" block in the
+  Marketing Agent's weekly kickoff, so it biases renders toward proven winners. Director → Marketing
+  loop closed.
+VERIFIED-NOT-GAPS (dropped after grounding — the audit value of NOT building): voiceCutPromo already
+feeds the remotion_pending → render → D-ID → poll-did-videos pipeline that publishes the coordination
+signals on completion (no double-publish needed); referral_reciprocity feed_only is defensible (the
+partner has no contact record + the agent is already notified — reciprocation is human judgment);
+and "onboarding doesn't provision the 11 managed_agents" is BY DESIGN — spawn-helper.ts:182 creates
+managed_agents rows LAZILY per session (0 rows = pre-release, not a bug; bulk-provisioning would just
+create idle sessions). Proof: test:deal-coordination-extras (11 pure + creds-gated live Finance
+handler) ; signal-integrity 5/5 (57 catalogued) ; harness:integrity 10/10 ; tsc 0 ; build exit 0.
+QUEUED (real, larger surface — next focused passes): team_members CRUD + Finance team-split guard;
+location-scoped reporting (egress-scope into reporting.ts); connector-healing apply step; onboarding
+setup-assistant escalation surface; license-verification manual-review queue.
+
 PATTERN (recurring): the four-pillar audits repeatedly over-flagged "gaps/drift" that grounding
 in the LIVE code/schema disproved (#3 here; lead-intelligence + buyer_stage + sphere dedupe in the
 consolidation pass). Always verify the audit's prose against the live DB + actual modules before

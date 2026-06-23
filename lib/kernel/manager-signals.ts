@@ -399,6 +399,43 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     })
     return opened ? "opened a financing drive-to-done task (TC + agent notified)" : "financing task already open; TC + agent kept aware"
   },
+  // Deal Coordinator → Finance Manager: an URGENT closing pending action owned by the LENDER
+  // (e.g. clear-to-close not received N days out). Finance opens a gated drive-to-done task — not
+  // a buried dashboard item. From closing-orchestration; routed by suggested_recipient='lender'.
+  "finance_manager:transaction_action_pending": async (signal, ctx) => {
+    if (!signal.entityId) return null
+    const headline = (signal.payload?.headline as string | undefined) ?? signal.message
+    const detail = (signal.payload?.detail as string | undefined) ?? ""
+    const actionType = (signal.payload?.actionType as string | undefined) ?? "closing_action"
+    const title = `[Closing · Finance] ${headline}`.slice(0, 180)
+    const { resolveTransactionTeamUsers } = await import("@/lib/kernel/deal-save-huddle")
+    const team = await resolveTransactionTeamUsers(ctx.supabase, signal.entityId)
+    const { data: dup } = await ctx.supabase.from("transaction_tasks").select("id")
+      .eq("transaction_id", signal.entityId).eq("title", title).in("status", ["pending", "in_progress"]).limit(1).maybeSingle()
+    if (dup) return "closing finance task already open (deduped)"
+    const { error } = await ctx.supabase.from("transaction_tasks").insert({
+      transaction_id: signal.entityId, brokerage_id: ctx.brokerageId, title, description: detail || headline,
+      priority: signal.payload?.severity === "urgent" ? "high" : "medium", category: "closing",
+      ai_generated: true, status: "pending", assigned_user_id: team.coordinatorUserId ?? null,
+    })
+    return error ? null : `opened a gated closing task for the lender item (${actionType})`
+  },
+  // Deal Coordinator → Compliance Officer: an URGENT closing pending action owned by a
+  // deadline-bearing vendor (title/escrow/inspection). Compliance flags the TC + agent so the
+  // deadline exposure doesn't lapse unseen. From closing-orchestration.
+  "compliance_officer:transaction_action_pending": async (signal, ctx) => {
+    if (!signal.entityId) return null
+    const headline = (signal.payload?.headline as string | undefined) ?? signal.message
+    const detail = (signal.payload?.detail as string | undefined) ?? ""
+    const { resolveTransactionTeamUsers, notifyDealTeam } = await import("@/lib/kernel/deal-save-huddle")
+    const team = await resolveTransactionTeamUsers(ctx.supabase, signal.entityId)
+    const notified = await notifyDealTeam(ctx.supabase, {
+      team, brokerageId: ctx.brokerageId, transactionId: signal.entityId,
+      type: "transaction_action_pending", title: `Closing deadline exposure — ${headline}`.slice(0, 120),
+      body: detail || headline, priority: "high",
+    })
+    return notified > 0 ? `flagged the closing deadline exposure to the TC + agent (${notified})` : "deadline exposure noted (no TC/agent resolved)"
+  },
   // Deal Coordinator → Finance Manager: a financing client's rate lock is expiring vs the close
   // date. Finance opens a gated drive-to-done task — confirm an extension/relock before the rate
   // (or the deal) is lost. Was feed-only ("worth watching"); now actioned.

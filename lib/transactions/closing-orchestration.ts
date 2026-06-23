@@ -30,6 +30,15 @@ import { runDealAutopsy } from "@/lib/kernel/deal-autopsy"
 type Severity = "low" | "medium" | "high" | "urgent"
 type Recipient = "buyer" | "seller" | "lender" | "inspector" | "title" | "escrow" | "co_agent" | "agent"
 
+/** Which oversight manager a high-severity pending action escalates to (null = TC keeps it in the
+ *  closing-concierge UI). Lender items are Finance's; title/escrow/inspection deadline items are
+ *  Compliance's; buyer/seller/agent/co_agent items stay with the Deal Coordinator (the TC). */
+export function closingActionManager(recipient: Recipient): "finance_manager" | "compliance_officer" | null {
+  if (recipient === "lender") return "finance_manager"
+  if (recipient === "title" || recipient === "escrow" || recipient === "inspector") return "compliance_officer"
+  return null
+}
+
 interface DetectedAction {
   actionType:         string
   severity:           Severity
@@ -341,7 +350,25 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
         bucket_key:          d.bucketKey,
         status:              "open",
       })
-      if (!error) opened++
+      if (!error) {
+        opened++
+        // MULTI-MANAGER ESCALATION — an URGENT/HIGH pending action whose owner is the lender
+        // (financing) or a deadline-bearing vendor (title/escrow/inspection) is NOT just a TC
+        // dashboard item: it goes on the bus so Finance / Compliance act proactively. The Deal
+        // Coordinator's own buyer/seller/agent items stay in the closing-concierge UI.
+        const manager = closingActionManager(d.suggestedRecipient)
+        if (manager && (d.severity === "high" || d.severity === "urgent")) {
+          try {
+            const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+            await publishManagerSignal({
+              brokerageId: ctx.brokerageId, fromManager: "deal_coordinator", toManager: manager,
+              signalType: "transaction_action_pending", message: d.headline,
+              entityType: "transaction", entityId: ctx.id,
+              payload: { actionType: d.actionType, severity: d.severity, recipient: d.suggestedRecipient, headline: d.headline, detail: d.detail },
+            }, svc)
+          } catch { /* best-effort — the dashboard item already landed */ }
+        }
+      }
     }
 
     // Supersede rows whose condition has cleared (e.g., appraisal ordered)

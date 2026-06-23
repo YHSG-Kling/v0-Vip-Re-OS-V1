@@ -37,6 +37,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { spawnManagedAgentSession, type AgentTemplate, type SpawnResult } from "./spawn-helper"
 import { resolveBrokerageContext, renderBrokerageContextForKickoff } from "./brokerage-context"
 import { buildOutcomeFor, buildDefineOutcomeEvent } from "./outcomes"
+import { loadFormatOutcomes, summarizeTopFormats, type TopFormat } from "@/lib/video/format-learning"
 
 const MARKETING_AGENT_SYSTEM = `You are the Marketing Agent for a real-estate brokerage. You serve under whichever
 brokerage the kickoff names — name, tier, brand voice, prohibited words come from the kickoff.
@@ -156,6 +157,10 @@ interface MarketingSnapshot {
     realized_click_rate:        number | null
     plan_quality_score:         number | null
   }>
+  /** The Video Director's LEARNED format winners (composition × channel × mood by situation kind),
+   *  surfaced so the Marketing Agent biases this week's renders toward proven winners instead of
+   *  the default. Closes the loop: the Director learns, the Marketing Agent capitalizes. */
+  topFormats: TopFormat[]
   /** Wave 32 — blog channel oversight. The agent now sees the blog
    *  cadence policies that have fired in the trailing 28d (which agents
    *  have auto-spawn on), aggregate views + shares across published
@@ -446,6 +451,10 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
   // outcomes (filled by marketing-agent-weekly-measure cron). Surfaced
   // in the kickoff so the agent sees its own win/loss trend, not just
   // the current week's signals.
+  // Video Director's learned format winners (best-effort — empty until there's enough video data).
+  let topFormats: TopFormat[] = []
+  try { topFormats = summarizeTopFormats(await loadFormatOutcomes(brokerageId)) } catch { /* no format data yet */ }
+
   let priorPlanOutcomes: MarketingSnapshot["priorPlanOutcomes"] = []
   try {
     const fourWeeksAgo = new Date(Date.now() - 28 * 86_400_000)
@@ -804,6 +813,7 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
     personaEngagement,
     personaTopTopics,
     priorPlanOutcomes,
+    topFormats,
     blogChannel,
     listingPromoRenderStatus,
     socialChannel,
@@ -895,6 +905,12 @@ export async function spawnMarketingAgentForBrokerage(params: {
     ? `  ── trailing ${priorPlanAvg.n}-week avg:  open=${priorPlanAvg.open.toFixed(1)}%  click=${priorPlanAvg.click.toFixed(1)}%  → THIS WEEK'S PLAN should beat that.`
     : "  ── (not enough measured weeks yet to compute a trailing average)"
 
+  const formatLines = snap.topFormats.length === 0
+    ? "(no learned format winners yet — the Video Director needs more rendered+scanned videos per format)"
+    : snap.topFormats.map((f, i) =>
+        `  ${i + 1}. ${f.kind} on ${f.channel} → ${f.composition} (${f.mood} mood) · mean signal ${f.meanSignal} over ${f.sample} video${f.sample === 1 ? "" : "s"}`
+      ).join("\n")
+
   const kickoff = params.kickoff ?? [
     renderBrokerageContextForKickoff(brokerage),
     "",
@@ -948,6 +964,12 @@ export async function spawnMarketingAgentForBrokerage(params: {
     "",
     priorPlanLines,
     priorPlanAvgLine,
+    "",
+    "──── LEARNED FORMAT WINNERS (from the Video Director's real QR + engagement data) ────",
+    "The Video Director measures which composition × channel × mood actually converts",
+    "per situation. Bias THIS WEEK'S video renders toward these proven winners instead",
+    "of always queuing the default — propose the learned format for the matching kind/channel.",
+    formatLines,
     "",
     "──── WAVE 32 — BLOG CHANNEL OVERSIGHT (TRAILING 28 DAYS) ────",
     "Blog is now wired into the agentic loop: topic-bank-seeded articles",
