@@ -7,7 +7,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { LifeBuoy, Clock } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { updateTicketStatus, TICKET_STATUSES, type SupportTicket, type TicketStatus } from "@/app/actions/support"
+import { updateTicketStatus } from "@/app/actions/support"
+import { TICKET_STATUSES, type SupportTicket, type TicketStatus } from "@/lib/support/ticket-constants"
 
 const STATUS_BADGE: Record<string, string> = {
   open: "bg-blue-100 text-blue-700 border-blue-200",

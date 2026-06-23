@@ -18,9 +18,11 @@ import {
 import { useToast } from "@/hooks/use-toast"
 import {
   searchHelp, getHelpArticle, voteArticleHelpful, createSupportTicket,
+} from "@/app/actions/support"
+import {
   TICKET_CATEGORIES, TICKET_PRIORITIES,
   type HelpArticle, type SupportTicket,
-} from "@/app/actions/support"
+} from "@/lib/support/ticket-constants"
 
 const STATUS_BADGE: Record<string, { label: string; className: string }> = {
   open: { label: "Open", className: "bg-blue-100 text-blue-700 border-blue-200" },

@@ -1,9 +1,6 @@
 [
-  "app/actions/agent-orchestration/orchestrate-post-assignment.ts",
   "app/actions/agentic-tokens.ts",
-  "app/actions/ai-isa-contact/respond-to-contact.ts",
   "app/actions/ai-isa/classify-outcome.ts",
-  "app/actions/ai-transaction-coordinator.ts",
   "app/actions/ai.ts",
   "app/actions/buyer-offer/create-dotloop-loop.ts",
   "app/actions/buyer-offer/create-offer.ts",
@@ -20,7 +17,6 @@
   "app/actions/newsletter/schedule-newsletter.ts",
   "app/actions/offer-events.ts",
   "app/actions/onboarding/assistant.ts",
-  "app/actions/outbound-dispatch.ts",
   "app/actions/scrape-social-media.ts",
   "app/actions/settings/list-integration-credentials.ts",
   "app/actions/settings/update-integration-credentials.ts",

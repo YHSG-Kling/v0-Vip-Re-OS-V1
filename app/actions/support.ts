@@ -21,27 +21,14 @@ import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
-
-export const TICKET_STATUSES = ["open", "in_progress", "resolved", "closed"] as const
-export const TICKET_PRIORITIES = ["low", "medium", "high", "urgent"] as const
-export const TICKET_CATEGORIES = ["general", "technical", "billing", "onboarding", "compliance", "feature_request"] as const
-
-export type TicketStatus = (typeof TICKET_STATUSES)[number]
-export type TicketPriority = (typeof TICKET_PRIORITIES)[number]
+// Constants + types live in a non-"use server" module so clients can import them
+// directly (a "use server" file may only export async functions).
+import {
+  TICKET_STATUSES, TICKET_PRIORITIES, TICKET_CATEGORIES,
+  type TicketStatus, type TicketPriority, type SupportTicket, type HelpArticle,
+} from "@/lib/support/ticket-constants"
 
 const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead", "support"])
-
-export interface SupportTicket {
-  id: string
-  subject: string
-  description: string | null
-  status: string
-  priority: string
-  category: string | null
-  agentId: string | null
-  createdAt: string
-  updatedAt: string | null
-}
 
 function mapTicket(r: Record<string, unknown>): SupportTicket {
   return {
@@ -164,17 +151,6 @@ export async function updateTicketStatus(
 }
 
 // ─── Help center: knowledge articles + KB topics ─────────────────────────────
-export interface HelpArticle {
-  id: string
-  source: "article" | "kb"
-  title: string
-  excerpt: string | null
-  category: string | null
-  slug: string | null
-  helpfulCount: number
-  viewCount: number
-}
-
 export async function searchHelp(query?: string): Promise<HelpArticle[]> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return []

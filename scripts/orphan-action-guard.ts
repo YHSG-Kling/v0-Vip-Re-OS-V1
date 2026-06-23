@@ -52,7 +52,11 @@ function resolveSpec(spec: string, fromFile: string): string | null {
   return null
 }
 
-const importRe = /(?:from\s*|import\(\s*|require\(\s*)["']([^"']+)["']/g
+// Match ANY quoted module-specifier string (alias @/… or relative ./… ../…), not just
+// static `from`/`import()`/`require()` forms. This also catches DYNAMIC invocation —
+// e.g. the agent-registry's `lib: '@/app/actions/ai-transaction-coordinator'` and
+// `import('@/app/actions/…')` — so dynamically-wired actions are not false-flagged.
+const importRe = /["'](@\/[^"']+|\.{1,2}\/[^"']+)["']/g
 const used = new Set<string>()
 for (const f of all) {
   const src = readFileSync(join(root, f), "utf8")
