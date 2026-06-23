@@ -22,6 +22,7 @@ import {
   isFailingComponent, isWorseningToDanger, isRecoveringFromDanger, routeFailingComponents, huddlePlay,
   COMPONENT_OWNER, type HealthComponentLite,
 } from "../lib/kernel/deal-save-huddle"
+import { vendorTargets } from "../lib/transactions/deal-vendor-targets"
 
 let pass = 0, fail = 0
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; console.log(`  ✗ ${n}`) } }
@@ -63,6 +64,12 @@ function pureLayer(): void {
   check("coordinator bucket holds EARNEST_MONEY + TITLE", coord.categories.includes("EARNEST_MONEY") && coord.categories.includes("TITLE"))
   check("earnest-money play tells the TC to warn the buyer", /earnest money/i.test(huddlePlay("deal_coordinator", coord)) && /warn the buyer/i.test(huddlePlay("deal_coordinator", coord)))
   check("compliance play talks deadline/contingency", /deadline|contingency/i.test(huddlePlay("compliance_officer", buckets.find((b) => b.manager === "compliance_officer")!)))
+
+  console.log("\n[vendor routing · pure — notify the right B2B partner]")
+  check("LENDER component ⇒ notify the lender", vendorTargets(["LENDER"]).includes("lender"))
+  check("TITLE component ⇒ notify the title company", vendorTargets(["TITLE"]).includes("title"))
+  check("EARNEST_MONEY ⇒ notify escrow (holds the deposit)", vendorTargets(["EARNEST_MONEY"]).includes("escrow"))
+  check("DEADLINES alone ⇒ no vendor (internal clock)", vendorTargets(["DEADLINES"]).length === 0)
 }
 
 async function liveLayer(): Promise<void> {
@@ -111,6 +118,7 @@ async function liveLayer(): Promise<void> {
     check("delegated to BOTH finance + compliance (multi-manager)", r1.delegatedTo.includes("finance_manager") && r1.delegatedTo.includes("compliance_officer"))
     check("TC + agent were notified (2 users)", r1.notifiedUsers >= 2)
     check("earnest-money URGENT buyer warning was proposed (gated)", r1.clientWarningProposed)
+    check("vendor-notify wired; no lender/title on this deal ⇒ none notified (no spam, no real send)", Array.isArray(r1.vendorsNotified) && r1.vendorsNotified.length === 0)
 
     check("the TC was notified", (await notifiedTo(coordinatorUserId)) >= 1)
     check("the agent was notified", (await notifiedTo(agentUserId)) >= 1)

@@ -185,6 +185,7 @@ export interface DealSaveHuddleResult {
   delegatedTo: ManagerKey[]
   notifiedUsers: number
   clientWarningProposed: boolean
+  vendorsNotified: string[]
   reason?: string
 }
 
@@ -209,7 +210,7 @@ export async function runDealSaveHuddle(
 ): Promise<DealSaveHuddleResult> {
   const supabase: Svc = client ?? createServiceClient()
   const buckets = routeFailingComponents(params.components)
-  const empty = { convened: false, coordinatorTaskCreated: false, delegatedTo: [] as ManagerKey[], notifiedUsers: 0, clientWarningProposed: false }
+  const empty = { convened: false, coordinatorTaskCreated: false, delegatedTo: [] as ManagerKey[], notifiedUsers: 0, clientWarningProposed: false, vendorsNotified: [] as string[] }
   if (buckets.length === 0) return { ...empty, reason: "no failing components" }
 
   const team = await resolveTransactionTeamUsers(supabase, params.transactionId)
@@ -287,7 +288,22 @@ export async function runDealSaveHuddle(
     }
   }
 
-  return { convened: true, coordinatorTaskCreated, delegatedTo, notifiedUsers, clientWarningProposed }
+  // B2B leg — if a lender / title / escrow company is on the deal, notify whoever can move the
+  // failing item (loan officer for financing, title/escrow officer for title or earnest money).
+  // Deduped + audited + best-effort; the huddle never fails on a vendor send.
+  const allCategories = buckets.flatMap((b) => b.categories)
+  const allIssues = buckets.flatMap((b) => b.issues)
+  let vendorsNotified: string[] = []
+  try {
+    const { notifyDealVendorsOfIssue } = await import("@/lib/transactions/deal-vendor-notify")
+    const v = await notifyDealVendorsOfIssue(supabase, {
+      transactionId: params.transactionId, brokerageId: params.brokerageId,
+      dealName: deal, categories: allCategories, issues: allIssues,
+    })
+    vendorsNotified = v.notified
+  } catch { /* best-effort — vendor notice never breaks the huddle */ }
+
+  return { convened: true, coordinatorTaskCreated, delegatedTo, notifiedUsers, clientWarningProposed, vendorsNotified }
 }
 
 export interface DealSaveStandDownResult {

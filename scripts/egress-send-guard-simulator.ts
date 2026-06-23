@@ -35,6 +35,7 @@ const ALLOWLIST: Record<string, { cls: Class; why: string }> = {
   "app/api/agent-assistant/tool-call/route.ts": { cls: "gated-inline", why: "voice admin tool-call checks consent/opt-out inline before any send" },
   "app/api/cron/weekly-income-digest/route.ts": { cls: "non-client", why: "agent-facing weekly digest (to the user themselves, not a client)" },
   "app/actions/lender-status-request.ts":       { cls: "b2b-transactional", why: "transactional request to a lender (B2B, not consumer marketing)" },
+  "lib/transactions/deal-vendor-notify.ts":     { cls: "b2b-transactional", why: "Deal-Save Huddle B2B leg — notifies the loan officer / title-escrow officer of a deal issue (business counterparty on the file; deduped + audited)" },
   "lib/kernel/vendors.ts":                      { cls: "b2b-transactional", why: "vendor-facing email (B2B service coordination)" },
   "lib/showings/dispatchers.ts":                { cls: "b2b-transactional", why: "agent-to-agent showing coordination (listing agent's phone, no consumer contact) via the connector-gateway adapter" },
   // Client sends below were CLOSED this PR — they now route through lib/providers/dispatch.ts
