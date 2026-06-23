@@ -922,7 +922,7 @@ export async function calculateDealHealth(params: {
     // When a deal WORSENS into at_risk/critical, the Deal Coordinator convenes a huddle routed
     // by the failing component: Finance works the money side, Compliance owns the deadline
     // exposure, the coordinator drives docs/title. Best-effort — never fails the scoring run.
-    const { isWorseningToDanger } = await import("@/lib/kernel/deal-save-huddle")
+    const { isWorseningToDanger, isRecoveringFromDanger } = await import("@/lib/kernel/deal-save-huddle")
     if (isWorseningToDanger(previousRiskLevel, riskLevel)) {
       try {
         const { runDealSaveHuddle } = await import("@/lib/kernel/deal-save-huddle")
@@ -932,6 +932,15 @@ export async function calculateDealHealth(params: {
         }, supabase)
       } catch (e) {
         console.error("[deal-health] deal-save huddle failed:", (e as Error).message)
+      }
+    } else if (isRecoveringFromDanger(previousRiskLevel, riskLevel)) {
+      // FINISH THE LOOP — the deal recovered; stand the huddle down (expire its open signals,
+      // give the TC + agent the good news). Best-effort.
+      try {
+        const { standDownDealSaveHuddle } = await import("@/lib/kernel/deal-save-huddle")
+        await standDownDealSaveHuddle({ transactionId, brokerageId, newRiskLevel: riskLevel }, supabase)
+      } catch (e) {
+        console.error("[deal-health] deal-save stand-down failed:", (e as Error).message)
       }
     }
   }

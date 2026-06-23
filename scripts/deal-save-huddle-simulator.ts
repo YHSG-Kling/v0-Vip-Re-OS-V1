@@ -19,7 +19,7 @@
  */
 import { randomUUID } from "node:crypto"
 import {
-  isFailingComponent, isWorseningToDanger, routeFailingComponents, huddlePlay,
+  isFailingComponent, isWorseningToDanger, isRecoveringFromDanger, routeFailingComponents, huddlePlay,
   COMPONENT_OWNER, type HealthComponentLite,
 } from "../lib/kernel/deal-save-huddle"
 
@@ -35,6 +35,10 @@ function pureLayer(): void {
   check("healthy→critical ⇒ worsening", isWorseningToDanger("healthy", "critical"))
   check("critical→at_risk (improving) ⇒ NOT worsening", !isWorseningToDanger("critical", "at_risk"))
   check("at_risk→watch (recovered) ⇒ NOT worsening", !isWorseningToDanger("at_risk", "watch"))
+  check("at_risk→watch ⇒ RECOVERING (huddle stands down)", isRecoveringFromDanger("at_risk", "watch"))
+  check("critical→healthy ⇒ RECOVERING", isRecoveringFromDanger("critical", "healthy"))
+  check("watch→at_risk ⇒ NOT recovering (it worsened)", !isRecoveringFromDanger("watch", "at_risk"))
+  check("critical→at_risk ⇒ NOT recovering (still in danger)", !isRecoveringFromDanger("critical", "at_risk"))
 
   console.log("\n[routing · pure — recipients are the TC + agent, never the broker]")
   check("LENDER (loan) ⇒ finance_manager", COMPONENT_OWNER.LENDER === "finance_manager")
@@ -131,6 +135,17 @@ async function liveLayer(): Promise<void> {
     // Dedup — a second convene must not duplicate the coordinator task or re-propose the warning.
     const r2 = await runDealSaveHuddle({ transactionId: txnId, brokerageId, riskLevel: "critical", components, dealName: `${tag} deal` }, svc)
     check("second convene dedups (task + warning not duplicated)", r2.coordinatorTaskCreated === false && r2.clientWarningProposed === false)
+
+    // FINISH THE LOOP — the deal recovers; the huddle stands down (open signals expired, team told).
+    const { standDownDealSaveHuddle } = await import("../lib/kernel/deal-save-huddle")
+    const sd = await standDownDealSaveHuddle({ transactionId: txnId, brokerageId, newRiskLevel: "watch", dealName: `${tag} deal` }, svc)
+    check("stand-down expired the open huddle signals", sd.stoodDown >= 1)
+    check("stand-down told the TC + agent the good news", sd.notifiedUsers >= 1)
+    const { count: openSigs } = await svc.from("manager_signals").select("id", { count: "exact", head: true })
+      .eq("brokerage_id", brokerageId).eq("signal_type", "deal_save_huddle").eq("status", "open")
+    check("no open huddle signals remain after stand-down (loop closed)", (openSigs ?? 0) === 0)
+    const sd2 = await standDownDealSaveHuddle({ transactionId: txnId, brokerageId, newRiskLevel: "watch", dealName: `${tag} deal` }, svc)
+    check("stand-down is idempotent (nothing left to stand down)", sd2.stoodDown === 0)
   } finally {
     await svc.from("agent_client_messages").delete().eq("brokerage_id", brokerageId)
     await svc.from("notifications").delete().eq("brokerage_id", brokerageId)

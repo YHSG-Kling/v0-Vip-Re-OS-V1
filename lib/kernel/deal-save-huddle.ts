@@ -66,12 +66,18 @@ export function isFailingComponent(c: HealthComponentLite): boolean {
 }
 
 const RISK_RANK: Record<DealRiskLevel, number> = { healthy: 0, watch: 1, at_risk: 2, critical: 3 }
+const DANGER = new Set<DealRiskLevel>(["at_risk", "critical"])
 
 /** PURE: did the deal WORSEN into the danger zone (at_risk/critical and worse than before)? */
 export function isWorseningToDanger(prev: DealRiskLevel | null | undefined, next: DealRiskLevel): boolean {
-  if (next !== "at_risk" && next !== "critical") return false
+  if (!DANGER.has(next)) return false
   const prevRank = prev ? RISK_RANK[prev] ?? 0 : 0
   return RISK_RANK[next] > prevRank
+}
+
+/** PURE: did the deal RECOVER out of the danger zone (was at_risk/critical, now healthy/watch)? */
+export function isRecoveringFromDanger(prev: DealRiskLevel | null | undefined, next: DealRiskLevel): boolean {
+  return !!prev && DANGER.has(prev) && !DANGER.has(next)
 }
 
 export interface HuddleBucket {
@@ -282,4 +288,44 @@ export async function runDealSaveHuddle(
   }
 
   return { convened: true, coordinatorTaskCreated, delegatedTo, notifiedUsers, clientWarningProposed }
+}
+
+export interface DealSaveStandDownResult {
+  stoodDown: number
+  notifiedUsers: number
+}
+
+/**
+ * Stand the huddle DOWN when a deal recovers out of the danger zone — finishing the loop the
+ * huddle opened. Expires the open deal_save_huddle signals for the deal (the bus coordination
+ * closes) and gives the TC + agent the good news. The open drive-to-done tasks are left for the
+ * human to close (auto-completing them could falsely claim work that the recovery didn't do).
+ * Idempotent (only OPEN signals are expired); best-effort, never throws.
+ */
+export async function standDownDealSaveHuddle(
+  params: { transactionId: string; brokerageId: string; newRiskLevel: DealRiskLevel; dealName?: string | null },
+  client?: Svc,
+): Promise<DealSaveStandDownResult> {
+  const supabase: Svc = client ?? createServiceClient()
+  const { data: expired } = await supabase
+    .from("manager_signals")
+    .update({ status: "expired", consumed_at: new Date().toISOString(), consumed_action: `stood down — deal recovered to ${params.newRiskLevel}` })
+    .eq("brokerage_id", params.brokerageId)
+    .eq("signal_type", HUDDLE_SIGNAL)
+    .eq("entity_id", params.transactionId)
+    .eq("status", "open")
+    .select("id")
+  const stoodDown = (expired ?? []).length
+  if (stoodDown === 0) return { stoodDown: 0, notifiedUsers: 0 }
+
+  const team = await resolveTransactionTeamUsers(supabase, params.transactionId)
+  const deal = params.dealName?.trim() || team.dealName?.trim() || "the deal"
+  const notifiedUsers = await notifyDealTeam(supabase, {
+    team, brokerageId: params.brokerageId, transactionId: params.transactionId,
+    type: "deal_save_stood_down",
+    title: `Back on track — ${deal}`,
+    body: `Good news: ${deal} recovered to ${params.newRiskLevel}. The deal-save huddle stood down — close out any remaining items when you get a moment.`,
+    priority: "low",
+  })
+  return { stoodDown, notifiedUsers }
 }
