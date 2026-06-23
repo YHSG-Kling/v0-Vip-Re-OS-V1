@@ -1,0 +1,13 @@
+[
+  "agent.delegated_to_ai",
+  "image.generated",
+  "listing.stage_overridden",
+  "offer.created",
+  "onboarding.stalled",
+  "tour.completed",
+  "tour.confirmed",
+  "tour.planned",
+  "tour_stop.schedule_dispatched",
+  "transaction.documents_complete",
+  "transaction.stage_overridden"
+]
