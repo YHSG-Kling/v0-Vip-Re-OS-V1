@@ -43,6 +43,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
+import { resolveReportScope } from "./reporting-scope"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -51,6 +52,10 @@ export interface ReportingActorContext {
   agentId:     string
   brokerageId: string
   userType:    "agent" | "coordinator" | "broker" | "admin" | string
+  /** the actor's office (agents.location_id) — narrows a location admin's reports to their office. */
+  locationId?: string | null
+  /** the actor's team (agents.team_id / users.team_id) — narrows a team lead's reports to their team. */
+  teamId?:     string | null
 }
 
 export interface KernelReportingResult<T = void> {
@@ -481,7 +486,19 @@ export async function generateSourcePerformanceReport(
     const { ctx, dateFrom, dateTo, agentId } = input
     const from = dateFrom ?? ytdStart()
     const to   = dateTo   ?? new Date().toISOString()
-    const scopeAgentId = agentId ?? (ctx.userType === "agent" ? ctx.agentId : undefined)
+
+    // Resolve the actor's scope → the agent set the report may include. null = brokerage-wide.
+    const rs = await resolveReportScope(supabase, ctx)
+    let allowedAgentIds: Set<string> | null = null
+    if (agentId) {
+      if (rs.agentIds && !rs.agentIds.includes(agentId)) {
+        return { success: false, error: "agent_out_of_scope" }
+      }
+      allowedAgentIds = new Set([agentId])
+    } else if (rs.agentIds) {
+      allowedAgentIds = new Set(rs.agentIds)
+    }
+    const inScope = (aid: string | null | undefined) => !allowedAgentIds || (aid != null && allowedAgentIds.has(aid))
 
     // Direct contacts + transactions query for kernel-native aggregation
     const [
@@ -495,9 +512,8 @@ export async function generateSourcePerformanceReport(
         .gte("created_at", from)
         .lte("created_at", to)
         .is("deleted_at", null)
-        .then(r => scopeAgentId
-          ? { data: (r.data ?? []).filter(c => c.agent_id === scopeAgentId), error: r.error }
-          : r
+        .then(r =>
+          allowedAgentIds ? { data: (r.data ?? []).filter(c => inScope(c.agent_id)), error: r.error } : r
         ),
       supabase
         .from("transactions")
@@ -505,9 +521,8 @@ export async function generateSourcePerformanceReport(
         .eq("brokerage_id", ctx.brokerageId)
         .gte("created_at", from)
         .lte("created_at", to)
-        .then(r => scopeAgentId
-          ? { data: (r.data ?? []).filter(t => t.agent_id === scopeAgentId), error: r.error }
-          : r
+        .then(r =>
+          allowedAgentIds ? { data: (r.data ?? []).filter(t => inScope(t.agent_id)), error: r.error } : r
         ),
     ])
 
@@ -645,14 +660,28 @@ export async function generateTransactionPipelineReport(
   try {
     const supabase = await createServiceClient()
     const { ctx, agentId } = input
+    const rs = await resolveReportScope(supabase, ctx)
 
     let q = supabase
       .from("transactions")
       .select("id, status, stage, purchase_price, commission_amount, close_date, created_at")
       .eq("brokerage_id", ctx.brokerageId)
 
-    if (agentId) q = q.eq("agent_id", agentId)
-    else if (ctx.userType === "agent") q = q.eq("agent_id", ctx.agentId)
+    if (agentId) {
+      // Explicit agent: only if they fall inside the actor's scope (a location admin can't pull
+      // a different office's agent).
+      if (rs.agentIds && !rs.agentIds.includes(agentId)) {
+        return { success: false, error: "agent_out_of_scope" }
+      }
+      q = q.eq("agent_id", agentId)
+    } else if (rs.agentIds) {
+      // location / team / own-work scope. Empty members ⇒ the report is legitimately empty.
+      if (rs.agentIds.length === 0) {
+        return { success: true, data: { byStage: [], totalPipelineValue: 0, closedYTD: 0, closedYTDValue: 0 } }
+      }
+      q = q.in("agent_id", rs.agentIds)
+    }
+    // rs.agentIds === null ⇒ brokerage-wide (broker / single-office admin): no agent narrowing.
 
     const { data: txs, error } = await q
     if (error) throw error
@@ -706,14 +735,18 @@ export async function generateTeamPerformanceReport(
   try {
     const supabase = await createServiceClient()
     const { ctx } = input
+    const rs = await resolveReportScope(supabase, ctx)
 
     // team_performance has no team_name/agent_count; name comes via teams FK embed.
-    const { data: teamPerf, error } = await supabase
+    let tq = supabase
       .from("team_performance")
       .select("id, team_id, total_revenue, goal_amount, teams(name)")
       .eq("brokerage_id", ctx.brokerageId)
-      .order("total_revenue", { ascending: false })
-      .limit(20)
+    // A team lead sees only their own team's roll-up; broker/admin see every team.
+    if (rs.kind === "team" && rs.teamId) tq = tq.eq("team_id", rs.teamId)
+    tq = tq.order("total_revenue", { ascending: false }).limit(20)
+
+    const { data: teamPerf, error } = await tq
 
     if (error) throw error
 
@@ -742,6 +775,14 @@ export async function generateAgentPerformanceReport(
     const supabase = await createServiceClient()
     const { ctx, periodStart, periodEnd, agentId: targetAgentId } = input
     const agentId = targetAgentId ?? ctx.agentId
+
+    // A location/team admin can only generate (and persist) a report for an agent they oversee.
+    if (targetAgentId && targetAgentId !== ctx.agentId) {
+      const rs = await resolveReportScope(supabase, ctx)
+      if (rs.agentIds && !rs.agentIds.includes(targetAgentId)) {
+        return { success: false, error: "agent_out_of_scope" }
+      }
+    }
 
     const [
       { data: commissions },

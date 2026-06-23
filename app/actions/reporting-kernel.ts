@@ -44,16 +44,17 @@ async function resolveActorContext(): Promise<ReportingActorContext | null> {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("id, brokerage_id, user_type")
+    .select("id, brokerage_id, user_type, team_id")
     .eq("id", user.id)
     .maybeSingle()
 
   if (!profile?.brokerage_id) return null
 
-  // Resolve agents.id from user.id
+  // Resolve agents.id + the actor's office/team from user.id. location_id lives on agents
+  // (multi-location brokerages); team_id can be on either agents or users.
   const { data: agent } = await supabase
     .from("agents")
-    .select("id")
+    .select("id, location_id, team_id")
     .eq("user_id", user.id)
     .maybeSingle()
 
@@ -62,6 +63,8 @@ async function resolveActorContext(): Promise<ReportingActorContext | null> {
     agentId:     agent?.id ?? user.id,
     brokerageId: profile.brokerage_id,
     userType:    profile.user_type ?? "agent",
+    locationId:  agent?.location_id ?? null,
+    teamId:      agent?.team_id ?? (profile as { team_id?: string | null }).team_id ?? null,
   }
 }
 
