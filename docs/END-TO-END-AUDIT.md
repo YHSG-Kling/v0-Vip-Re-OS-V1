@@ -201,6 +201,18 @@ from manufacturing risky changes — two were stale flags, one was a non-issue, 
   called from poll-did-videos on completion AND failure. Verified green: test:video-coordination
   (12), test:video-director (23), test:video-qr (18).
 
+- **Returning-Customer Re-Engagement with Memory — SHIPPED** (the "lifetime" loop closer). When a
+  past client becomes active again (a CONTACT reactivation signal — fired by the inbound-intent
+  classifier when a lifetime contact shows positive intent, or any other source), the right
+  manager re-engages them WITH their prior-deal memory: Shopping Agent for a returning buyer,
+  Listing Concierge for a returning seller, recalling role/price-band/area/months-since-close from
+  their closed `transactions`. Gated (proposeClientMessage → approval queue, autonomy-gated by #1),
+  withdrawn excluded, idempotent per (contact)/60d. lib/kernel/returning-customer.ts +
+  app/api/cron/returning-customer-reengagement (registered in CRON_REGISTRY, daily) + a detect
+  hook in inbound-intent-classifier. Proof: test:returning-customer (20 pure + creds-gated
+  self-cleaning live layer); tsc 0; harness 8/8; build exit 0. No competitor re-engages a past
+  client in hours, with their prior-deal context, fully governed.
+
 PATTERN (recurring): the four-pillar audits repeatedly over-flagged "gaps/drift" that grounding
 in the LIVE code/schema disproved (#3 here; lead-intelligence + buyer_stage + sphere dedupe in the
 consolidation pass). Always verify the audit's prose against the live DB + actual modules before

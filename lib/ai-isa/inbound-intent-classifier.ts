@@ -386,6 +386,32 @@ export async function classifyAndRouteInbound(
     return { outcome: "nurtured", reason: "none" }
   }
 
+  // ── RETURNING-CUSTOMER hook ─────────────────────────────────────────────────
+  // A clear positive reply from a PAST client (the lead links to a lifetime contact) logs a
+  // contact reactivation signal so the Returning-Customer runner re-engages them WITH their
+  // prior-deal memory via the right manager (Shopping Agent / Listing Concierge). Additive +
+  // best-effort — it never affects the conversion routing below.
+  if (contactId) {
+    try {
+      const { data: c } = await svc
+        .from("contacts")
+        .select("contact_type, lifecycle_state, buyer_stage, nurture_status")
+        .eq("id", contactId)
+        .maybeSingle()
+      const { isReengageableLifetime } = await import("@/lib/kernel/returning-customer")
+      if (c && isReengageableLifetime({ id: contactId, ...(c as Record<string, unknown>) })) {
+        const { recordReactivationSignal } = await import("@/lib/ai-isa/long-term-nurture")
+        await recordReactivationSignal({
+          contactId,
+          brokerageId: params.brokerageId,
+          signalType: `returning_${classified.side}_${classified.reason}`,
+          signalStrength: 80,
+          signalData: { source: "inbound_intent", side: classified.side, reason: classified.reason },
+        })
+      }
+    } catch { /* best-effort — never blocks conversion routing */ }
+  }
+
   // ── Clear POSITIVE → route to the matching converter on the classified reason ─
   const propertyData =
     params.propertyData ??
