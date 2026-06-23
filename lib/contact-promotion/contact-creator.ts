@@ -44,6 +44,23 @@ export async function createContactFromLead(
 ): Promise<{ contactId?: string; error?: string }> {
   
   try {
+    // The contact belongs to the assigned agent's OFFICE + TEAM, so resolve them from the agent and
+    // stamp them on the contact. Without this every converted contact landed with location_id/team_id
+    // = null, so any location/team-scoped contacts query (the command center, a location admin's CRM,
+    // scoped reporting) silently excluded it even though its agent sits in that office. Best-effort —
+    // a missing agent row just leaves them null (same as before).
+    let agentLocationId: string | null = null
+    let agentTeamId: string | null = null
+    {
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("location_id, team_id")
+        .eq("id", data.agentId)
+        .maybeSingle()
+      agentLocationId = agentRow?.location_id ?? null
+      agentTeamId = agentRow?.team_id ?? null
+    }
+
     // Map lead data to contact schema
     // Only copy relationship-safe fields
     const contactData = {
@@ -65,6 +82,10 @@ export async function createContactFromLead(
       // Relationship context (agentId is agents.id — see ContactCreationData)
       agent_id: data.agentId,
       brokerage_id: data.brokerageId,
+      // Office + team inherited from the assigned agent so the contact rolls up to the right
+      // location/team in scoped reporting and the command center.
+      location_id: agentLocationId,
+      team_id: agentTeamId,
 
       // Contact type and persona — the ISA's qualified intent IS the contact type
       contact_type:
