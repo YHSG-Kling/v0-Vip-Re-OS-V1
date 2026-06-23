@@ -138,9 +138,13 @@ export async function generateObject<T extends z.ZodType>({
 
   const promptParts = [system, prompt].filter(Boolean).join("\n\n")
 
+  // Data Guard — strip high-confidence secrets before this raw model call (the generateObject
+  // shim is a model-boundary chokepoint, like lib/ai/models.ts).
+  const { redactSensitive } = await import("@/lib/data-guard")
+
   const { experimental_output } = await generateText({
     model: resolvedModel,
-    prompt: promptParts,
+    prompt: redactSensitive(promptParts).text,
     temperature: temperature ?? 0.5,
     experimental_output: Output.object({ schema }),
   })
@@ -160,9 +164,10 @@ export async function generateAIObject<T extends z.ZodType>(
   }
 ): Promise<{ success: boolean; object?: z.infer<T>; error?: string }> {
   try {
+    const { redactSensitive } = await import("@/lib/data-guard")
     const { experimental_output: object } = await generateText({
       model: resolveGatewayModel(resolveModel((options?.model ?? "openai/gpt-4o") as Parameters<typeof resolveModel>[0]) as string),
-      prompt,
+      prompt: redactSensitive(prompt).text,
       temperature: options?.temperature ?? 0.7,
       experimental_output: Output.object({ schema }),
     })

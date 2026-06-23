@@ -11,7 +11,7 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { EntityType } from "@/lib/kernel/types"
-import { generateText } from "ai"
+import { guardedGenerateText } from "@/lib/data-guard/guarded-generate"
 import { gateway } from "@ai-sdk/gateway"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -143,7 +143,7 @@ Return your analysis as JSON in this exact format:
 
 Be conservative — if you cannot clearly read or verify information, mark it as null and explain in verification_notes.`
 
-    const { text } = await generateText({
+    const { text } = await guardedGenerateText({
       model: gateway("anthropic/claude-sonnet-4"),
       prompt,
       maxOutputTokens: 1000,

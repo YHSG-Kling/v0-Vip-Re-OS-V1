@@ -233,6 +233,23 @@ from manufacturing risky changes — two were stale flags, one was a non-issue, 
   integrity 5/5; harness 8/8; build exit 0. THIS is the human-deal-team-in-software differentiator:
   a deal wobbles → the AI team huddles, each on its part, the right humans aware.
 
+- **DATA GUARD — SHIPPED** (the 5th security layer, the model-boundary twin of the Egress Guard).
+  The owner's security model names five guards; the Data Guard (classify + restrict sensitive data)
+  was the only one not formalized. Built lib/data-guard: redactSensitive/classifySensitive strip
+  high-confidence secrets (SSN/ITIN, EIN, card PAN, bank account/routing) from any system/prompt
+  BEFORE it reaches an LLM — conservatively (names, addresses, prices, phones untouched → zero
+  functional loss). Wired at every model chokepoint: lib/ai/models.ts (executeModelCall +
+  generateTextRouted + generateObjectRouted) and lib/ai/generate.ts (generateObject +
+  generateAIObject), plus a guardedGenerateText wrapper for direct callers. A CI ratchet
+  (test:data-guard-guard, in harness:integrity) proves each chokepoint redacts AND freezes the
+  surface: no NEW file may import the raw "ai" SDK call outside the chokepoints (35 legacy raw-SDK
+  importers baselined → burned down to 32 by migrating the 3 highest-PII paths: license-verifier,
+  inbound-intent-classifier, them-first/validator). Proof: test:data-guard (20 pure redaction) +
+  test:data-guard-guard (6); harness:integrity now 10 structural guards; tsc 0; build exit 0.
+  The five guards are now all real in code: Kernel (orchestrator + connector-gateway + AGIS tokens),
+  Data (lib/data-guard + RLS), Manager (autonomy-gate + manager-registry), Compliance (national+state
+  FH + TCPA + ledger), Egress (dispatch.ts + egress-send-guard).
+
 PATTERN (recurring): the four-pillar audits repeatedly over-flagged "gaps/drift" that grounding
 in the LIVE code/schema disproved (#3 here; lead-intelligence + buyer_stage + sphere dedupe in the
 consolidation pass). Always verify the audit's prose against the live DB + actual modules before

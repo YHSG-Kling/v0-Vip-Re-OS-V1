@@ -1,4 +1,4 @@
-import { generateText } from "ai"
+import { guardedGenerateText } from "@/lib/data-guard/guarded-generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 
 export type ContentType = "email" | "sms" | "video_script" | "social_post"
@@ -82,7 +82,7 @@ export async function validateThemFirstContent(
 
 async function analyzeContentStructure(content: string) {
   try {
-    const { text } = await generateText({
+    const { text } = await guardedGenerateText({
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Analyze this content and categorize each sentence into one of four categories:
 
@@ -123,7 +123,7 @@ Return ONLY valid JSON with percentage breakdown (must sum to 100):
 
 async function analyzeSentiment(content: string) {
   try {
-    const { text } = await generateText({
+    const { text } = await guardedGenerateText({
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Analyze the empathy and sentiment of this content:
 

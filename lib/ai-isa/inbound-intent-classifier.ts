@@ -35,7 +35,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText } from "ai"
+import { guardedGenerateText } from "@/lib/data-guard/guarded-generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import {
   detectNegativeIntent,
@@ -264,7 +264,7 @@ async function aiClassifier(
   ].filter(Boolean).join(" ")
 
   try {
-    const result = await generateText({
+    const result = await guardedGenerateText({
       model: resolveModel("openai/gpt-4o-mini"),
       system: `You classify an inbound real-estate lead REPLY into one intent. ${sideHint} ${knownHint}
 Choose EXACTLY one label:

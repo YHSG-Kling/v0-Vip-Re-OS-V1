@@ -354,14 +354,23 @@ async function executeModelCall(
     modelInstance = toGatewayModel(resolveModel(modelStr) as string)
   }
 
+  // ── DATA GUARD — the model-boundary checkpoint ────────────────────────────
+  // Redact high-confidence secrets (SSN/ITIN, EIN, card PAN, bank account/routing) from the
+  // system + prompt before they ever reach the LLM. The AI managers never need these; this
+  // prevents them leaking into prompt logs / provider retention. Conservative — leaves names,
+  // addresses, prices, phones untouched, so there is no functional loss.
+  const { redactSensitive } = await import("@/lib/data-guard")
+  const safeSystem = redactSensitive(system).text
+  const { text: safePrompt } = redactSensitive(prompt)
+
   const result = await generateText({
     model: modelInstance,
-    system,
-    prompt,
+    system: safeSystem || undefined,
+    prompt: safePrompt,
     temperature,
     maxOutputTokens: maxTokens,
   })
-  
+
   return {
     text: result.text,
     inputTokens: (result.usage as any)?.inputTokens ?? (result.usage as any)?.promptTokens ?? estimateTokens(prompt + (system || "")),
@@ -578,6 +587,13 @@ export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
   const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
   if (!fairUse.allowed) throw new Error(fairUse.message ?? "AI fair-use limit reached.")
 
+  // Data Guard — redact high-confidence secrets before either model call (primary + fallback).
+  {
+    const { redactSensitive } = await import("@/lib/data-guard")
+    if (request.prompt) request.prompt = redactSensitive(request.prompt).text
+    if (request.system) request.system = redactSensitive(request.system).text
+  }
+
   const primaryConfig = MODEL_CONFIG[routedModel] ?? MODEL_CONFIG['claude-sonnet']
   const primaryModelStr = `${primaryConfig.provider}/${primaryConfig.modelId}`
   const primaryInstance = toGatewayModel(resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0]) as string)
@@ -644,6 +660,13 @@ export async function generateTextRouted(
   const estTokens = estimateTokens((request.prompt ?? "") + (request.system ?? "")) + (request.maxTokens ?? 2000)
   const fairUse = await checkAIFairUse({ brokerageId: request.brokerageId, addTokens: estTokens })
   if (!fairUse.allowed) throw new Error(fairUse.message ?? "AI fair-use limit reached.")
+
+  // Data Guard — redact high-confidence secrets before either model call (primary + fallback).
+  {
+    const { redactSensitive } = await import("@/lib/data-guard")
+    if (request.prompt) request.prompt = redactSensitive(request.prompt).text
+    if (request.system) request.system = redactSensitive(request.system).text
+  }
 
   // Resolve primary model to gateway-wrapped provider instance
   const primaryConfig = MODEL_CONFIG[routedModel] ?? MODEL_CONFIG['claude-sonnet']
