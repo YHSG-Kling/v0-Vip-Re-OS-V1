@@ -71,6 +71,9 @@ for (const f of all) {
 // add here with a justification if a genuine convention-only action ever exists).
 const EXEMPT = new Set<string>([
   "app/actions/index.ts", // the barrel itself, imported as @/app/actions
+  // Demo-mode scaffolding — intentionally unwired; REMOVE AT GO-LIVE (owner decision).
+  "app/actions/demo-login.ts",
+  "app/actions/demo-contacts.ts",
 ])
 
 const actionFiles = all.filter((f) => f.startsWith("app/actions/") && f.endsWith(".ts") && !f.endsWith(".test.ts"))

@@ -1,11 +1,1 @@
-[
-  "app/actions/agentic-tokens.ts",
-  "app/actions/ai.ts",
-  "app/actions/demo-contacts.ts",
-  "app/actions/demo-login.ts",
-  "app/actions/listing/submit-listing-for-signature.ts",
-  "app/actions/onboarding/assistant.ts",
-  "app/actions/scrape-social-media.ts",
-  "app/actions/settings/list-integration-credentials.ts",
-  "app/actions/settings/update-integration-credentials.ts"
-]
+[]

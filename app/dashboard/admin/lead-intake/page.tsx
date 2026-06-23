@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { loadLeadIntakeCockpit, REJECTION_REASON_LABEL } from "@/lib/kernel/lead-intake-cockpit"
 import { listRawLeadsForReview } from "@/app/actions/lead-promotion/promote-lead"
 import { RawLeadsReviewPanel } from "./raw-leads-review"
+import { SocialScrapeTrigger } from "./social-scrape-trigger"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 
@@ -177,6 +178,8 @@ export default async function LeadIntakeCockpitPage() {
           </div>
         </>
       )}
+
+      <SocialScrapeTrigger />
 
       <RawLeadsReviewPanel initialRows={rawLeadRows} />
     </div>

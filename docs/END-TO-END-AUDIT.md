@@ -138,7 +138,24 @@ to shrink the baseline as debt is burned down. Categories for the burn-down:
   matching`, `revenue-pipeline`, `newsletter/*`, `settings/*-integration-credentials`, `video/generate-
   script`, `neighbor-notifications`, `creditWorkflows`, …). Each needs a home (UI/cron/kernel) or deletion.
 
-### Remaining orphan disposition map (26) — investigated; each needs a decision, NOT a bulk delete
+### ✅ ORPHAN BURN-DOWN COMPLETE — baseline 55 → **0** (zero orphaned server actions)
+`test:no-orphan-actions` now reports `NO_ORPHAN_ACTIONS_PASS` (full pass, not just a ratchet) — every
+file under `app/actions` is imported by something. The final 7 were resolved by grounded investigation:
+- **Wired (valuable, unwired):** `scrape-social-media` → Lead-Intake Cockpit `SocialScrapeTrigger`
+  (feeds `raw_scraped_leads` → the raw-leads review/promote panel); `agentic-tokens` (mint/list/revoke
+  AGIS Bearer tokens consumed by `/api/agentic-os/*` via `resolveAgenticCaller`) → new superadmin
+  **API Tokens** page (`/dashboard/superadmin/api-tokens`, scope-checkboxes + show-once raw token).
+- **Deleted (superseded/dead):** `listing/submit-listing-for-signature` (superseded by the governed
+  forms-kernel path — `TransactionFormEsignFlow` → `forms-kernel.ts`, wired in `ListingFormsPanel`);
+  `onboarding/assistant` (superseded by the streaming `/api/onboarding/assistant` route + `knowledge/
+  search.ts`); `ai.ts` (dead 19-line wrapper over `runPipelineSimple`, no callers); `settings/list|
+  update-integration-credentials` (superseded by per-provider governed surfaces — CRM `getCrmStatus/
+  connectCrm/disconnectCrm` at `/settings/crm`, Accounting at `/settings/accounting`).
+- **Exempted (go-live decision):** `demo-login`, `demo-contacts` — demo scaffolding, in the guard's
+  `EXEMPT` set with a "REMOVE AT GO-LIVE" note. Everything else is now wired or gone.
+The drift ratchet stays armed: any NEW orphan fails CI at baseline 0.
+
+### Earlier orphan disposition map (historical) — investigated; each needed a decision, NOT a bulk delete
 The easy + medium tiers are done (29 resolved: 19 wired live, 10 deleted dead/redundant). The remainder
 is the architectural tier — investigated and characterized so the call is informed:
 - **Governed, built, but UNWIRED orchestrators** (`respond-to-contact`, `classify-outcome`,
