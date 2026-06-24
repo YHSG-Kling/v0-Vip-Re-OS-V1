@@ -47,7 +47,50 @@ export async function scheduleListingAppointment(params: {
   const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
 
-  return scheduleListingAppointmentService(params, user.id, profile.brokerage_id)
+  const result = await scheduleListingAppointmentService(params, user.id, profile.brokerage_id)
+
+  // Fire the listing-appt-prep chain so the LISTING-side appointment ALSO runs the full managed
+  // prep (CMA → presentation built from it → per-chapter videos → pre-appointment drip → pre-listing
+  // postcard/letter), exactly like the contact-side bookSellerListingAppointment path. The service
+  // emits 'listing_appointment_scheduled' which matched NO chain/handler, so listing-side
+  // appointments silently skipped the entire prep. Chains trigger via triggerChainsForEvent (an
+  // app/ action — can't be imported from the lib/ service), so it's wired here. Best-effort — the
+  // appointment is already booked even if the chain trigger fails.
+  try {
+    const { data: listing } = await supabase
+      .from("listings")
+      .select("address, city, state, zip, bedrooms, bathrooms, sqft, lot_size, year_built, property_type")
+      .eq("id", params.listing_id)
+      .maybeSingle()
+    const appointmentAt =
+      (result as { listing?: { appointment_at?: string } } | null)?.listing?.appointment_at ??
+      new Date(`${params.appointment_date}T${params.appointment_time}`).toISOString()
+    const apptEventId = (result as { appointmentEventId?: string } | null)?.appointmentEventId ?? null
+    const { triggerChainsForEvent } = await import("@/app/actions/workflow-orchestrator")
+    await triggerChainsForEvent({
+      eventType: "listing.appointment_set",
+      // Dedupe the chain run on the calendar event so a re-schedule / double-submit reuses one run.
+      triggerEventId: apptEventId,
+      brokerageId: profile.brokerage_id,
+      contactId: params.contact_id,
+      agentUserId: user.id,
+      metadata: {
+        appointment_date: appointmentAt,
+        property_data: listing
+          ? {
+              address: listing.address, city: listing.city, state: listing.state, zip: listing.zip,
+              bedrooms: listing.bedrooms, bathrooms: listing.bathrooms, sqft: listing.sqft,
+              lotSize: listing.lot_size, yearBuilt: listing.year_built,
+              propertyType: listing.property_type ?? "single_family",
+            }
+          : {},
+      },
+    })
+  } catch (err) {
+    console.error("[scheduleListingAppointment] listing-appt-prep chain trigger failed:", err)
+  }
+
+  return result
 }
 
 export async function markListingSigned(params: {
