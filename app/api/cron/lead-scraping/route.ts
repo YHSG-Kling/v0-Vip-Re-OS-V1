@@ -291,7 +291,7 @@ export async function GET(request: Request) {
 
           // Data Steward owns scraping health: a sustained source outage escalates to the broker.
           if (sourceErr) {
-            await escalateScraperFailureIfNeeded(supabase, { brokerageId: market.brokerage_id, scraperType: "zillow_behavior", errorMessage: sourceErr.message })
+            await escalateScraperFailureIfNeeded(supabase, { scraperType: "zillow_behavior", errorMessage: sourceErr.message })
           }
 
           // Unified vendor-spend ledger (one gateway for all data-vendor cost).
@@ -400,7 +400,7 @@ export async function GET(request: Request) {
 
           // Data Steward owns scraping health: a sustained source outage escalates to the broker.
           if (sourceErr) {
-            await escalateScraperFailureIfNeeded(supabase, { brokerageId: market.brokerage_id, scraperType: "batchdata_motivated", errorMessage: sourceErr.message })
+            await escalateScraperFailureIfNeeded(supabase, { scraperType: "batchdata_motivated", errorMessage: sourceErr.message })
           }
         }
       }
@@ -633,7 +633,7 @@ export async function GET(request: Request) {
 
         // Data Steward owns scraping health: a sustained source outage escalates to the broker.
         if (sourceErr) {
-          await escalateScraperFailureIfNeeded(supabase, { brokerageId: market.brokerage_id, scraperType: "social_intent", errorMessage: sourceErr.message })
+          await escalateScraperFailureIfNeeded(supabase, { scraperType: "social_intent", errorMessage: sourceErr.message })
         }
 
         // Unified vendor-spend ledger (Apify + Exa + Tavily social scrape).

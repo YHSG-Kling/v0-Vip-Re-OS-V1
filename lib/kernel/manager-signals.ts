@@ -283,29 +283,6 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }
     return notified > 0 ? `routed a coaching prompt to ${notified} responsible manager${notified === 1 ? "" : "s"}` : null
   },
-  // Campaign Orchestrator → Data Steward: a scheduled lead-scraping source has failed to
-  // connect N times in a row. The Data Steward owns the SCRAPING half of the spine now, so
-  // it ESCALATES a high-priority alert to the brokerage broker/admins — a dead source must
-  // never silently dry up the lead funnel. Alert (notify the humans who can fix the
-  // connection / actor registry), not an autonomous reconfigure.
-  "data_steward:scraper_source_failed": async (signal, ctx) => {
-    const scraperType = (signal.payload?.scraperType as string | undefined) ?? signal.entityId ?? "a lead source"
-    const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
-    const managerIds = (mgrs ?? []) as Array<{ id: string }>
-    if (managerIds.length === 0) return "no broker/admin to alert about the scraper outage"
-    let notified = 0
-    for (const m of managerIds) {
-      const { error } = await ctx.supabase.from("notifications").insert({
-        user_id: m.id, brokerage_id: ctx.brokerageId, type: "scraper_source_failed",
-        title: `Lead scraping is failing: ${scraperType}`,
-        body: `${signal.message} Check the scraper connection / actor registry so new leads keep flowing.`,
-        entity_type: "scraper_source", entity_id: signal.entityId, priority: "high", is_read: false,
-      })
-      if (!error) notified += 1
-    }
-    return notified > 0 ? `alerted ${notified} broker/admin${notified === 1 ? "" : "s"} to the ${scraperType} scraper outage` : null
-  },
   // Marketing → Ads Manager: an organic content week outperformed — propose promoting it
   // as PAID. Lands in the existing ads approval queue (governed spend, human-approved).
   "ads_manager:content_winner": async (signal, ctx) => {

@@ -2,19 +2,19 @@
 /**
  * scripts/scraper-health-simulator.ts   (npm run test:scraper-health)
  * ─────────────────────────────────────────────────────────────────────────────
- * Proves the scraper-failure → manager → human loop is CLOSED.
+ * Proves the scraper-failure → self-heal → platform-admin loop is CLOSED.
  *
- * Before: a scheduled scrape that failed to connect was recorded to
- * scraper_executions then ORPHANED — no manager, no human alert, so a dead source
- * silently dried up the lead funnel. Now the Data Steward owns scraping health: on
- * the Nth CONSECUTIVE failure for a (brokerage, source) the cron escalates via
- * scraper_source_failed (campaign_orchestrator → data_steward), and the steward
- * handler raises a HIGH notification to the brokerage broker/admins.
+ * Raw scraping is PLATFORM-owned, so a sustained source outage is handed to the Data
+ * Steward's self-contained fixer (the connector-healer): on the Nth CONSECUTIVE
+ * platform-wide failure for a source, escalateScraperFailureIfNeeded maps the source
+ * to its connector and invokes proposeConnectorHealing — which auto-fixes the SAFE
+ * cases autonomously and escalates the rest to platform staff. Deduped so a flapping
+ * source doesn't spawn a proposal per execution.
  *
- * Layer 1 (pure): shouldEscalateScraperFailure fires only on N consecutive failures
- *   (no spam on a transient blip; a recovery in the window cancels it).
- * Layer 2 (live, gated): seed N failed executions → escalate publishes the signal →
- *   the steward handler notifies the broker → re-escalating is idempotent (deduped).
+ * Layer 1 (pure): shouldEscalateScraperFailure fires only on N consecutive failures;
+ *   scraperTypeToConnector maps the tracked sources to their connectors.
+ * Layer 2 (live, gated): seed N failed executions → escalate invokes the (injected)
+ *   healer for the right connector → a pending heal proposal DEDUPES a second pass.
  *   Reverse-delete; cleanup == 0.
  */
 import { randomUUID } from "node:crypto"
@@ -25,7 +25,11 @@ try {
   _require.cache[soPath] = { id: soPath, filename: soPath, loaded: true, exports: {} } as any
 } catch { /* nothing to shim */ }
 
-import { shouldEscalateScraperFailure, SCRAPER_FAILURE_THRESHOLD } from "../lib/lead-pipeline/scraper-health"
+import {
+  shouldEscalateScraperFailure,
+  scraperTypeToConnector,
+  SCRAPER_FAILURE_THRESHOLD,
+} from "../lib/lead-pipeline/scraper-health"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -33,14 +37,19 @@ const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ $
 
 function pureLayer(): void {
   console.log(`\n[Layer 1 · shouldEscalateScraperFailure — threshold ${SCRAPER_FAILURE_THRESHOLD}, most-recent-first]`)
-  check("3 consecutive failures ⇒ escalate", shouldEscalateScraperFailure(["failed", "failed", "failed"]) === true)
-  check("2 failures (below threshold count) ⇒ no escalate", shouldEscalateScraperFailure(["failed", "failed"]) === false)
-  check("a recovery (most recent = completed) ⇒ no escalate", shouldEscalateScraperFailure(["completed", "failed", "failed", "failed"]) === false)
-  check("a completed inside the window ⇒ no escalate", shouldEscalateScraperFailure(["failed", "completed", "failed"]) === false)
-  check("3 failed then an OLD completed ⇒ escalate (window is the recent 3)", shouldEscalateScraperFailure(["failed", "failed", "failed", "completed"]) === true)
-  check("empty history ⇒ no escalate", shouldEscalateScraperFailure([]) === false)
+  check("3 consecutive failures ⇒ heal", shouldEscalateScraperFailure(["failed", "failed", "failed"]) === true)
+  check("2 failures (below threshold) ⇒ no heal", shouldEscalateScraperFailure(["failed", "failed"]) === false)
+  check("a recovery (most recent = completed) ⇒ no heal", shouldEscalateScraperFailure(["completed", "failed", "failed", "failed"]) === false)
+  check("a completed inside the window ⇒ no heal", shouldEscalateScraperFailure(["failed", "completed", "failed"]) === false)
+  check("3 failed then an OLD completed ⇒ heal (window is the recent 3)", shouldEscalateScraperFailure(["failed", "failed", "failed", "completed"]) === true)
+  check("empty history ⇒ no heal", shouldEscalateScraperFailure([]) === false)
   check("custom threshold 2 honored", shouldEscalateScraperFailure(["failed", "failed"], 2) === true)
-  check("nulls in history are not 'failed'", shouldEscalateScraperFailure([null, "failed", "failed"]) === false)
+
+  console.log("\n[Layer 1 · scraperTypeToConnector — source → connector the healer fixes]")
+  check("zillow_behavior → zenrows", scraperTypeToConnector("zillow_behavior") === "zenrows")
+  check("batchdata_motivated → batchdata", scraperTypeToConnector("batchdata_motivated") === "batchdata")
+  check("social_intent → apify", scraperTypeToConnector("social_intent") === "apify")
+  check("an untracked source → null (no heal target)", scraperTypeToConnector("osint_signal") === null)
 }
 
 async function liveLayer(): Promise<void> {
@@ -49,63 +58,53 @@ async function liveLayer(): Promise<void> {
     console.log("\n[Layer 2 · live]  ⊘ skipped (no SUPABASE creds) — pure layer proved the escalation rule")
     return
   }
-  console.log("\n[Layer 2 · live — seed N failures → escalate → steward notifies broker → idempotent]")
+  console.log("\n[Layer 2 · live — seed N failures → self-heal invoked for the connector → deduped]")
   const { createServiceClient } = await import("../lib/supabase/service")
-  const { escalateScraperFailureIfNeeded } = await import("../lib/lead-pipeline/scraper-health")
-  const { SIGNAL_HANDLERS } = await import("../lib/kernel/manager-signals")
+  const { escalateScraperFailureIfNeeded, setScraperHealer } = await import("../lib/lead-pipeline/scraper-health")
   const svc = createServiceClient()
   const tag = `scrh-sim-${randomUUID().slice(0, 8)}`
   const brokerageId = randomUUID()
-  const brokerUserId = randomUUID()
   const scraperType = "zillow_behavior"
+  const execIds: string[] = []
+  let healerCalls: Array<{ connector: string }> = []
+  setScraperHealer(async ({ connector }) => { healerCalls.push({ connector }); return { proposalId: `fake-${connector}` } })
   try {
     await svc.from("brokerages").insert({ id: brokerageId, name: `${tag} (scraper health)` })
-    await svc.from("users").insert({ id: brokerUserId, brokerage_id: brokerageId, email: `${tag}@example.com`, user_type: "broker" })
 
-    // Seed N consecutive failed executions (staggered started_at, most recent last insert).
-    const base = Date.UTC(2026, 0, 1)
-    const rows = Array.from({ length: SCRAPER_FAILURE_THRESHOLD }, (_, i) => ({
-      id: randomUUID(), brokerage_id: brokerageId, scraper_type: scraperType, status: "failed",
-      started_at: new Date(base + i * 3_600_000).toISOString(), error_message: "connection timeout",
-    }))
+    // Seed N consecutive failed executions with RECENT timestamps so they are the latest 3.
+    const now = Date.now()
+    const rows = Array.from({ length: SCRAPER_FAILURE_THRESHOLD }, (_, i) => {
+      const id = randomUUID(); execIds.push(id)
+      return { id, brokerage_id: brokerageId, scraper_type: scraperType, status: "failed",
+        started_at: new Date(now - (SCRAPER_FAILURE_THRESHOLD - i) * 60_000).toISOString(), error_message: "connection timeout" }
+    })
     await svc.from("scraper_executions").insert(rows)
 
-    const r1 = await escalateScraperFailureIfNeeded(svc, { brokerageId, scraperType, errorMessage: "connection timeout" })
-    check("escalateScraperFailureIfNeeded escalated on the Nth consecutive failure", r1.escalated === true)
+    const r1 = await escalateScraperFailureIfNeeded(svc, { scraperType, errorMessage: "connection timeout", nowMs: now })
+    check("escalated on the Nth consecutive failure", r1.escalated === true)
+    check("resolved the source to its connector (zenrows)", r1.connector === "zenrows")
+    check("the self-healer was invoked once for zenrows", healerCalls.length === 1 && healerCalls[0].connector === "zenrows")
 
-    const { data: sigs } = await svc.from("manager_signals").select("*")
-      .eq("brokerage_id", brokerageId).eq("signal_type", "scraper_source_failed").eq("status", "open")
-    const sigList = (sigs ?? []) as any[]
-    check("one OPEN scraper_source_failed signal to the Data Steward", sigList.length === 1 && sigList[0].to_manager === "data_steward")
-    check("signal entity_id is the scraper source", sigList[0]?.entity_id === scraperType)
+    // Dedup: a pending heal proposal for the connector means the Steward is already on it.
+    const proposalId = randomUUID()
+    const ins = await svc.from("connector_healing_proposals").insert({
+      id: proposalId, connector: "zenrows", status: "pending", proposal_kind: "no_evidence",
+      proposal_summary: `${tag} dedup probe`, confidence: 0, failure_signature: "sim", failure_sample: [],
+      detected_at: new Date(now).toISOString(),
+    })
+    if (ins.error) { console.log(`  (note: proposal insert: ${ins.error.message})`) }
+    healerCalls = []
+    const r2 = await escalateScraperFailureIfNeeded(svc, { scraperType, errorMessage: "connection timeout", nowMs: now })
+    check("re-escalating is deduped while a heal proposal is pending", r2.escalated === false && r2.reason === "heal already pending")
+    check("the healer is NOT invoked again (no duplicate proposal)", healerCalls.length === 0)
 
-    // The steward handler escalates to the broker as a HIGH notification.
-    const sig = sigList[0]
-    const handler = SIGNAL_HANDLERS["data_steward:scraper_source_failed"]
-    const action = await handler({
-      id: sig.id, fromManager: sig.from_manager, toManager: sig.to_manager, signalType: sig.signal_type,
-      message: sig.message, entityType: sig.entity_type, entityId: sig.entity_id, contactId: sig.contact_id,
-      payload: sig.payload ?? {}, status: "open", createdAt: sig.created_at,
-    }, { brokerageId, supabase: svc })
-    check("steward handler returned an action (alerted the broker)", !!action && action.includes("alerted"))
-
-    const { data: notifs } = await svc.from("notifications").select("id, type, priority, user_id")
-      .eq("brokerage_id", brokerageId).eq("type", "scraper_source_failed")
-    const notifList = (notifs ?? []) as any[]
-    check("a HIGH scraper_source_failed notification reached the broker", notifList.length === 1 && notifList[0].priority === "high" && notifList[0].user_id === brokerUserId)
-
-    // Idempotent: re-escalating while the signal is open does NOT create a duplicate.
-    await escalateScraperFailureIfNeeded(svc, { brokerageId, scraperType, errorMessage: "connection timeout" })
-    const { count: openCount } = await svc.from("manager_signals").select("id", { count: "exact", head: true })
-      .eq("brokerage_id", brokerageId).eq("signal_type", "scraper_source_failed").eq("status", "open")
-    check("re-escalating is idempotent (still exactly one open signal)", (openCount ?? 0) === 1)
+    await svc.from("connector_healing_proposals").delete().eq("id", proposalId)
   } finally {
-    await svc.from("notifications").delete().eq("brokerage_id", brokerageId)
-    await svc.from("manager_signals").delete().eq("brokerage_id", brokerageId)
-    await svc.from("scraper_executions").delete().eq("brokerage_id", brokerageId)
-    await svc.from("users").delete().eq("id", brokerUserId)
+    setScraperHealer(null)
+    await svc.from("scraper_executions").delete().in("id", execIds)
+    await svc.from("connector_healing_proposals").delete().eq("connector", "zenrows").ilike("proposal_summary", `${tag}%`)
     await svc.from("brokerages").delete().eq("id", brokerageId)
-    const { count } = await svc.from("manager_signals").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId)
+    const { count } = await svc.from("scraper_executions").select("id", { count: "exact", head: true }).in("id", execIds)
     check("cleanup complete (no test rows remain)", (count ?? 0) === 0)
   }
 }
@@ -117,7 +116,7 @@ async function main(): Promise<void> {
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ SCRAPER_HEALTH_FAIL"); process.exit(1) }
-  console.log(" ✅ SCRAPER_HEALTH_PASS — a sustained scraper outage reaches the broker (loop closed)")
+  console.log(" ✅ SCRAPER_HEALTH_PASS — a sustained scraper outage self-heals → platform admin (loop closed)")
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })
