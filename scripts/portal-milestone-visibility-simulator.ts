@@ -3,22 +3,20 @@
  * scripts/portal-milestone-visibility-simulator.ts   (npm run test:portal-milestone-visibility)
  * ─────────────────────────────────────────────────────────────────────────────
  * Proves the KERNEL is the decision-maker for which transaction milestones a CLIENT
- * sees on their journey portal — and that the decision is keyed on the STABLE
- * canonical milestone_type, NOT the free-text milestone_name.
+ * sees on their journey portal, with two concerns deliberately SEPARATED:
+ *   • VISIBILITY = the agent-controlled is_client_visible flag (+ per-contact
+ *     overrides). The flag — never milestone_type — decides what the client sees, so
+ *     the agent's explicit show/hide choice is always respected.
+ *   • IDENTITY = the canonical milestone_type (resolveMilestoneIdentity), used to key
+ *     overrides stably across tier name variants and to drive education/reporting.
  *
- * The architecture (agreed): reporting/supporting the portal on free-text milestone
- * names across thousands of subscription tiers is unmanageable, so portal visibility,
- * completions, and reporting all key off the SAME small canonical vocabulary
- * (MILESTONE_NAMES). lib/kernel/portal.ts owns the rule; the journey page calls it.
+ * lib/kernel/portal.ts owns the rule; the journey page + portal home pages call it.
  *
  * Layer 1 (pure, no I/O) — isClientVisibleMilestone / selectClientMilestones:
- *   - a canonical client-visible milestone_type SHOWS even when the stale
- *     is_client_visible flag says false (the kernel decision supersedes the flag).
- *   - a canonical INTERNAL milestone_type (not in CLIENT_VISIBLE) HIDES even when the
- *     flag says true.
- *   - an un-backfilled row (milestone_type null / coarse category) falls back to the
- *     per-row is_client_visible flag, so live data renders unchanged during migration.
- *   - agent overrides hide — keyed by canonical milestone_type first, name as fallback.
+ *   - flag=true shows, flag=false hides, default (undefined) shows.
+ *   - a canonical milestone_type NEVER force-shows or force-hides against the flag.
+ *   - overrides hide (false) or force-show (true), keyed by canonical identity
+ *     (resolved from type OR human name), with raw name as the fallback key.
  *
  * Layer 2 (live, gated by SUPABASE_SERVICE_ROLE_KEY) — getPortalJourneyMilestones:
  *   - seed a real brokerage/contact/transaction with a spread of milestone rows,
@@ -62,48 +60,42 @@ function row(over: Partial<{ milestone_type: string | null; milestone_name: stri
 }
 
 function pureLayer(): void {
-  console.log("\n[Layer 1 · isClientVisibleMilestone — kernel decides by canonical milestone_type]")
+  console.log("\n[Layer 1 · isClientVisibleMilestone — agent-controlled is_client_visible flag decides]")
 
-  // canonical client-visible type SHOWS even with a stale is_client_visible=false flag.
-  check("canonical client-visible type SHOWS despite stale flag=false",
-    isClientVisibleMilestone(row({ milestone_type: "inspection_completed", is_client_visible: false })) === true)
+  // The flag rules. milestone_type (identity) NEVER overrides the agent's flag.
+  check("flag=true ⇒ SHOWS", isClientVisibleMilestone(row({ is_client_visible: true })) === true)
+  check("flag=false ⇒ HIDES", isClientVisibleMilestone(row({ is_client_visible: false })) === false)
+  check("flag undefined (default) ⇒ SHOWS", isClientVisibleMilestone({ milestone_name: "X" } as any) === true)
 
-  // canonical INTERNAL type HIDES even with flag=true (cda_delivered is canonical but internal).
-  check("canonical internal type HIDES despite flag=true",
-    isClientVisibleMilestone(row({ milestone_type: "cda_delivered", is_client_visible: true })) === false)
+  // A canonical milestone_type does NOT change visibility — the flag is respected.
+  check("canonical client-visible type + flag=false ⇒ HIDES (flag wins, type never force-shows)",
+    isClientVisibleMilestone(row({ milestone_type: "inspection_completed", is_client_visible: false })) === false)
+  check("canonical internal type + flag=true ⇒ SHOWS (flag wins, type never force-hides)",
+    isClientVisibleMilestone(row({ milestone_type: "cda_delivered", is_client_visible: true })) === true)
 
-  // un-backfilled (null type) → fall back to the flag.
-  check("null milestone_type + flag=true ⇒ SHOWS (transition fallback)",
-    isClientVisibleMilestone(row({ milestone_type: null, is_client_visible: true })) === true)
-  check("null milestone_type + flag=false ⇒ HIDES (transition fallback)",
-    isClientVisibleMilestone(row({ milestone_type: null, is_client_visible: false })) === false)
-
-  // coarse category (non-canonical) → fall back to the flag, never treated as canonical.
-  check("coarse category 'financial' + flag=true ⇒ SHOWS (fallback, not canonical)",
-    isClientVisibleMilestone(row({ milestone_type: "financial", is_client_visible: true })) === true)
-  check("coarse category 'financial' + flag=false ⇒ HIDES (fallback)",
-    isClientVisibleMilestone(row({ milestone_type: "financial", is_client_visible: false })) === false)
-
-  console.log("\n[Layer 1 · overrides — agent's per-contact hide list]")
-  // override keyed by canonical milestone_type wins.
-  check("override by canonical type hides a would-be-visible milestone",
+  console.log("\n[Layer 1 · overrides — agent's per-contact show/hide list]")
+  // override hides a flag-true row; keyed by canonical identity (resolved from type or name).
+  check("override=false by canonical identity hides a visible milestone",
     isClientVisibleMilestone(row({ milestone_type: "inspection_completed", is_client_visible: true }), { inspection_completed: false }) === false)
-  // override keyed by milestone_name (transition) hides an un-backfilled row.
-  check("override by milestone_name hides an un-backfilled row",
-    isClientVisibleMilestone(row({ milestone_type: null, milestone_name: "Home Inspection", is_client_visible: true }), { "Home Inspection": false }) === false)
-  // override === true never force-shows an internal canonical type (overrides only hide).
-  check("override=true does NOT un-hide a canonical internal type",
-    isClientVisibleMilestone(row({ milestone_type: "cda_delivered", is_client_visible: true }), { cda_delivered: true }) === false)
+  // identity resolves from the human name too — override keyed on the canonical id hides it.
+  check("override=false by identity resolved from a human name hides it",
+    isClientVisibleMilestone(row({ milestone_type: null, milestone_name: "Home Inspection", is_client_visible: true }), { inspection_deadline: false }) === false)
+  // override=true force-shows a flag-false row (agent re-enabled it).
+  check("override=true force-shows a flag-false milestone",
+    isClientVisibleMilestone(row({ milestone_type: "cda_delivered", is_client_visible: false }), { cda_delivered: true }) === true)
+  // override by raw name still works when no canonical identity resolves.
+  check("override=false by milestone_name works for an unmappable row",
+    isClientVisibleMilestone(row({ milestone_name: "Quarterly Newsletter", is_client_visible: true }), { "Quarterly Newsletter": false }) === false)
 
   console.log("\n[Layer 1 · selectClientMilestones — list filter]")
   const list = [
-    row({ milestone_type: "inspection_completed", milestone_name: "Home Inspection", is_client_visible: false }), // show (canonical)
-    row({ milestone_type: "cda_delivered", milestone_name: "CDA Delivered", is_client_visible: true }),            // hide (canonical internal)
-    row({ milestone_type: null, milestone_name: "Closing Day", is_client_visible: true }),                          // show (fallback)
-    row({ milestone_type: null, milestone_name: "Internal Note", is_client_visible: false }),                       // hide (fallback)
+    row({ milestone_type: "inspection_completed", milestone_name: "Home Inspection", is_client_visible: true }), // show (flag)
+    row({ milestone_type: "cda_delivered", milestone_name: "CDA Delivered", is_client_visible: false }),         // hide (flag)
+    row({ milestone_type: "closing_date", milestone_name: "Closing Day", is_client_visible: true }),             // show (flag)
+    row({ milestone_type: null, milestone_name: "Internal Note", is_client_visible: false }),                     // hide (flag)
   ]
   const visible = selectClientMilestones(list as any)
-  check("filters to exactly the kernel-visible rows",
+  check("filters to exactly the flag-visible rows",
     visible.length === 2 &&
     visible.some((m) => m.milestone_name === "Home Inspection") &&
     visible.some((m) => m.milestone_name === "Closing Day"))
@@ -128,25 +120,26 @@ async function liveLayer(): Promise<void> {
     await svc.from("transactions").insert({ id: txnId, brokerage_id: brokerageId, deal_name: `${tag} deal`, status: "active", buyer_contact_id: contactId })
 
     const seedRows = [
-      { transaction_id: txnId, milestone_name: "Home Inspection", milestone_type: "inspection_completed", status: "completed", is_client_visible: false }, // canonical visible (flag stale)
-      { transaction_id: txnId, milestone_name: "CDA Delivered",   milestone_type: "cda_delivered",        status: "pending",   is_client_visible: true  }, // canonical internal
-      { transaction_id: txnId, milestone_name: "Closing Day",     milestone_type: null,                   status: "pending",   is_client_visible: true  }, // fallback show
-      { transaction_id: txnId, milestone_name: "Internal Audit",  milestone_type: null,                   status: "pending",   is_client_visible: false }, // fallback hide
+      { transaction_id: txnId, milestone_name: "Home Inspection", milestone_type: "inspection_completed", status: "completed", is_client_visible: true  }, // flag → show
+      { transaction_id: txnId, milestone_name: "CDA Delivered",   milestone_type: "cda_delivered",        status: "pending",   is_client_visible: false }, // flag → hide
+      { transaction_id: txnId, milestone_name: "Closing Day",     milestone_type: "closing_date",         status: "pending",   is_client_visible: true  }, // flag → show
+      { transaction_id: txnId, milestone_name: "Internal Audit",  milestone_type: null,                   status: "pending",   is_client_visible: false }, // flag → hide
     ]
     await svc.from("transaction_milestones").insert(seedRows)
 
-    // Kernel read by contactId (resolves the transaction itself).
+    // Kernel read by contactId (resolves the transaction itself). The agent-controlled
+    // is_client_visible flag decides — milestone_type never overrides it.
     const visible = await getPortalJourneyMilestones(svc, { contactId })
     const names = visible.map((m) => m.milestone_name).sort()
-    check("kernel surfaces only client-visible-by-type rows (Closing Day + Home Inspection)",
+    check("kernel surfaces exactly the flag-visible rows (Closing Day + Home Inspection)",
       JSON.stringify(names) === JSON.stringify(["Closing Day", "Home Inspection"]))
-    check("the canonical INTERNAL milestone (CDA Delivered) never surfaces",
+    check("a flag-false milestone (CDA Delivered) never surfaces — even with a canonical type",
       !names.includes("CDA Delivered"))
 
-    // Agent override hides a would-be-visible milestone by canonical type.
+    // Agent override hides a flag-visible milestone, keyed on its canonical identity.
     await svc.from("contact_portal_preferences").insert({ contact_id: contactId, milestone_overrides: { inspection_completed: false } })
     const afterOverride = await getPortalJourneyMilestones(svc, { contactId })
-    check("portal-preferences override hides Home Inspection by canonical type",
+    check("portal-preferences override hides Home Inspection by canonical identity",
       !afterOverride.some((m) => m.milestone_name === "Home Inspection") &&
       afterOverride.some((m) => m.milestone_name === "Closing Day"))
   } finally {
@@ -168,7 +161,7 @@ async function main(): Promise<void> {
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ PORTAL_MILESTONE_VISIBILITY_FAIL"); process.exit(1) }
-  console.log(" ✅ PORTAL_MILESTONE_VISIBILITY_PASS — the kernel decides portal milestones by canonical milestone_type")
+  console.log(" ✅ PORTAL_MILESTONE_VISIBILITY_PASS — the agent-controlled flag decides; identity keys overrides")
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

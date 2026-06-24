@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
 import { ChevronLeft, ChevronRight, RefreshCw, CalendarClock, Loader2, CheckCircle2 } from "lucide-react"
 import { scheduleSmartFollowUps } from "@/app/actions/ai-calendar-management"
+import { milestoneCalendarCategory } from "@/lib/transactions/milestone-identity"
 import { CalendarRoleFilterBar, type CalendarRole } from "./calendar-role-filter-bar"
 import { CalendarTimelineView } from "./calendar-timeline-view"
 import { CalendarAgendaView } from "./calendar-agenda-view"
@@ -126,7 +127,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         supabase
           .from("transaction_milestones")
           .select(`
-            id, milestone_type, title, target_date, status, transaction_id,
+            id, milestone_type, milestone_name, title, target_date, status, transaction_id,
             transactions!inner(id, property_address, status, agent_id, contact_id, contacts(first_name, last_name))
           `)
           .eq("transactions.agent_id", agentId)
@@ -230,11 +231,14 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         if (!m.target_date) return
         const trx = m.transactions as any
         const dateStr = m.target_date
-        const milestoneType = (m.milestone_type || "deadline") as "inspection" | "appraisal" | "closing" | "appointment"
+        // Derive the calendar bucket from the canonical identity so coloring stays
+        // correct whether milestone_type holds a canonical id ("inspection_completed")
+        // or a legacy human name — milestoneCalendarCategory resolves both.
+        const milestoneType = milestoneCalendarCategory(m)
         const calEventType: UnifiedCalendarEvent["eventType"] =
           milestoneType === "inspection" ? "inspection" :
           milestoneType === "appraisal" ? "appraisal" :
-          milestoneType === "closing" || (milestoneType as string) === "close" ? "closing" :
+          milestoneType === "closing" ? "closing" :
           "appointment"
 
         unified.push({

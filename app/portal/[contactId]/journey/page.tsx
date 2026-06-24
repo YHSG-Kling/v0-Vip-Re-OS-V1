@@ -9,10 +9,11 @@ import {
   MILESTONE_EXPLANATIONS,
   MILESTONE_LESSON_MAP,
 } from "@/lib/portal/resolve-education-context"
+import { generationalCohortFromAge, cohortFraming, ageFromBirthday } from "@/lib/kernel/education"
 import JourneyClient from "./journey-client"
 
-// The client journey timeline shape is owned by the kernel (it decides visibility
-// by canonical milestone_type). The page consumes the kernel's PortalJourneyMilestone.
+// The client journey timeline shape is owned by the kernel (it decides visibility by
+// the agent-controlled is_client_visible flag). The page consumes PortalJourneyMilestone.
 export type TransactionMilestone = PortalJourneyMilestone
 
 export interface TransactionData {
@@ -38,13 +39,18 @@ export default async function PortalJourneyPage({
   // Get contact basic info
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, contact_type, buyer_stage")
+    .select("id, first_name, last_name, contact_type, buyer_stage, birthday")
     .eq("id", contactId)
     .single()
 
   if (!contact || contactError) {
     redirect("/portal?error=contact_not_found")
   }
+
+  // Persona tone: frame each milestone's explanation in the language this
+  // generation responds to (wording only — identity/visibility unchanged).
+  const cohort = generationalCohortFromAge(ageFromBirthday(contact.birthday))
+  const personaFraming = cohortFraming(cohort)
 
   // Determine portal view from kernel
   const portalView = await determinePortalView(supabase, { contactId })
@@ -87,6 +93,7 @@ export default async function PortalJourneyPage({
       responsiblePartyMap={MILESTONE_RESPONSIBLE_PARTY}
       explanationMap={MILESTONE_EXPLANATIONS}
       lessonMap={MILESTONE_LESSON_MAP}
+      personaFraming={personaFraming}
     />
   )
 }

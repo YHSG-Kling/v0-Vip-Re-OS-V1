@@ -27,6 +27,20 @@ export type GenerationalCohort =
   | "silent"       // pre-1946 (~age 80+)
   | "unknown"
 
+/** Whole-years age from an ISO birthday string (null when absent/invalid). Pure. */
+export function ageFromBirthday(birthday: string | null | undefined): number | null {
+  if (!birthday) return null
+  const birthDate = new Date(birthday)
+  if (Number.isNaN(birthDate.getTime())) return null
+  const today = new Date()
+  let age = today.getFullYear() - birthDate.getFullYear()
+  const beforeBirthday =
+    today.getMonth() < birthDate.getMonth() ||
+    (today.getMonth() === birthDate.getMonth() && today.getDate() < birthDate.getDate())
+  if (beforeBirthday) age -= 1
+  return age >= 0 ? age : null
+}
+
 /** Derive cohort from a numeric age. Pure utility, no DB access. */
 export function generationalCohortFromAge(age: number | null | undefined): GenerationalCohort {
   if (age == null || age <= 0 || !Number.isFinite(age)) return "unknown"
@@ -35,6 +49,27 @@ export function generationalCohortFromAge(age: number | null | undefined): Gener
   if (age < 62)  return "gen_x"
   if (age < 80)  return "boomer"
   return "silent"
+}
+
+// ─── COHORT TONE FRAMING ──────────────────────────────────────────────────────
+// PURE. A short, persona-appropriate lead-in that the portal prepends to a
+// milestone's plain-language explanation so the SAME factual content is FRAMED in
+// the language each generation responds to (the tone axis the cohort comment above
+// describes). Identity/visibility are unchanged — this is wording only.
+
+const COHORT_FRAMING: Record<GenerationalCohort, string> = {
+  gen_z:      "Quick version — ",
+  millennial: "Here's what this means for your move — ",
+  gen_x:      "Here's how this protects your investment — ",
+  boomer:     "Here's what's happening with your home — ",
+  silent:     "Here's what's happening, step by step — ",
+  unknown:    "",
+}
+
+/** Returns the cohort-appropriate lead-in for a milestone explanation (or "" when
+ *  the cohort is unknown, so callers render the explanation unchanged). */
+export function cohortFraming(cohort: GenerationalCohort): string {
+  return COHORT_FRAMING[cohort] ?? ""
 }
 
 // ─── DELIVERY CONFIG ──────────────────────────────────────────────────────────

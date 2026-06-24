@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { runPipelineSimple } from "@/lib/ai"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
@@ -266,21 +267,19 @@ export async function generateMilestones(transactionId: string, transactionType:
   ]
 
   const milestones = transactionType === "sale" ? sellerMilestones : buyerMilestones
-  // ⚠️ MILESTONE-IDENTITY RECONCILIATION (flagged): this is the LIVE milestone seed (the
-  // milestone_template_items path in lib/kernel/transactions.ts has 0 rows — dead). It sets
-  // milestone_type = the coarse CATEGORY ("financial"/"closing"/…), NOT the canonical milestone
-  // identity. But the kernel decides portal view + reporting across all tiers by a STABLE canonical
-  // milestone_type, and completion code matches snake_case identities (cda_delivered, gift_ordered),
-  // which exist in NEITHER field here — so those completions no-op (stuck "pending"). FIX (per the
-  // agreed architecture): map each seeded milestone to a canonical MILESTONE_NAMES value in
-  // milestone_type, keep name/category for display, complete + report + portal-decide by milestone_type,
-  // and unify this with the dead template path into ONE seed.
+  // MILESTONE IDENTITY: milestone_type carries the STABLE canonical identity
+  // (resolveMilestoneIdentity), NOT the coarse category — so completions, reporting,
+  // portal education, and the calendar all key off the same identity regardless of
+  // the human milestone_name across thousands of tiers. When a row can't be mapped we
+  // fall back to its category rather than null (keeps a non-empty type for display).
+  // Visibility stays the agent-controlled is_client_visible flag (default true) — the
+  // kernel decides the client view by that flag, never by milestone_type.
   // Map seed fields onto real columns: name→milestone_name (NOT NULL),
-  // category→milestone_type. order_index has no column on transaction_milestones.
+  // canonical identity→milestone_type. order_index has no column here.
   const milestonesWithTransactionId = milestones.map((m) => ({
     transaction_id: transactionId,
     milestone_name: m.name,
-    milestone_type: m.category,
+    milestone_type: resolveMilestoneIdentity({ milestone_name: m.name }) ?? m.category,
     status: "pending",
   }))
 

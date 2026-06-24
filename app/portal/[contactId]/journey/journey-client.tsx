@@ -36,6 +36,8 @@ interface JourneyClientProps {
   responsiblePartyMap: Record<string, string>
   explanationMap: Record<string, string>
   lessonMap: Record<string, string>
+  /** cohort-toned lead-in prepended to each milestone explanation (wording only) */
+  personaFraming?: string
 }
 
 export default function JourneyClient({
@@ -48,6 +50,7 @@ export default function JourneyClient({
   responsiblePartyMap,
   explanationMap,
   lessonMap,
+  personaFraming = "",
 }: JourneyClientProps) {
   const [expandedMilestones, setExpandedMilestones] = useState<Set<string>>(new Set())
   const printRef = useRef<HTMLDivElement>(null)
@@ -355,7 +358,7 @@ export default function JourneyClient({
                           </CollapsibleTrigger>
                           <CollapsibleContent className="pt-2">
                             <p className="text-sm text-muted-foreground leading-relaxed">
-                              {explanation}
+                              {personaFraming}{explanation}
                             </p>
                             {lessonKey && milestoneId && (
                               <Link
@@ -373,7 +376,7 @@ export default function JourneyClient({
                       {/* Print-only explanation */}
                       {explanation && (
                         <p className="mt-2 hidden text-sm text-gray-600 print:block">
-                          {explanation}
+                          {personaFraming}{explanation}
                         </p>
                       )}
                     </div>

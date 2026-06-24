@@ -45,6 +45,16 @@ export const CANONICAL_MILESTONE_IDS = [
   "closing_scheduled",
   "closing_date",
   "closed",
+  // internal transaction identities (no client education, but canonical for
+  // completion/reporting — written by ensureRequiredMilestones, targeted by the
+  // CDA / closing / gift completion code). Recognized so milestone_type resolves
+  // and overrides key on a stable identity.
+  "cda_delivered",
+  "cd_uploaded",
+  "funding_confirmed",
+  "inspector_approved",
+  "insurance_quote_approved",
+  "gift_ordered",
   // seller-side identities
   "listing_live",
   "first_showing",
@@ -140,6 +150,27 @@ const KEYWORD_RULES: Array<{ test: (n: string) => boolean; id: CanonicalMileston
 export interface MilestoneIdentityInput {
   milestone_type?: string | null
   milestone_name?: string | null
+}
+
+/** Coarse calendar bucket for a milestone — drives the calendar event color/type.
+ *  Derives from the canonical identity so it stays correct once milestone_type
+ *  carries a canonical id (e.g. "inspection_completed" → "inspection"). */
+export type MilestoneCalendarCategory = "inspection" | "appraisal" | "closing" | "appointment"
+
+export function milestoneCalendarCategory(row: MilestoneIdentityInput): MilestoneCalendarCategory {
+  const id = resolveMilestoneIdentity(row)
+  if (!id) return "appointment"
+  if (id.startsWith("inspection")) return "inspection"
+  if (id.startsWith("appraisal")) return "appraisal"
+  if (
+    id.startsWith("closing") ||
+    id === "clear_to_close_received" ||
+    id === "final_walkthrough_scheduled" ||
+    id === "closed"
+  ) {
+    return "closing"
+  }
+  return "appointment"
 }
 
 /**

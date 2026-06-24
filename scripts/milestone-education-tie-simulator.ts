@@ -103,7 +103,7 @@ async function main(): Promise<void> {
 
   // ── education maps + age delivery (lazy import after the server-only shim) ──
   const eduCtx = await import("../lib/portal/resolve-education-context")
-  const { getEducationDelivery } = await import("../lib/kernel/education")
+  const { getEducationDelivery, cohortFraming, generationalCohortFromAge, ageFromBirthday } = await import("../lib/kernel/education")
   const { MILESTONE_LESSON_MAP, MILESTONE_EXPLANATIONS, MILESTONE_RESPONSIBLE_PARTY, MILESTONE_LABEL_MAP } = eduCtx
 
   console.log("\n[5 · the EDUCATION TIE is real — a live milestone teaches the contact]")
@@ -131,6 +131,23 @@ async function main(): Promise<void> {
   check("50-65 → guide (detailed reading level)",
     getEducationDelivery({ ageSegment: "50-65" }).primaryFormat === "guide" && getEducationDelivery({ ageSegment: "50-65" }).readingLevel === "detailed")
   check("65+ → checklist", getEducationDelivery({ ageSegment: "65+" }).primaryFormat === "checklist")
+
+  console.log("\n[7 · WORDING-BY-PERSONA — cohort framing leads each milestone explanation]")
+  // Age → cohort → a distinct lead-in, so the SAME facts are framed per generation.
+  check("under-30 birthday → gen_z framing (quick version)",
+    cohortFraming(generationalCohortFromAge(ageFromBirthday("2002-05-01"))).startsWith("Quick"))
+  check("~38 birthday → millennial framing (your move)",
+    /your move/i.test(cohortFraming(generationalCohortFromAge(ageFromBirthday("1988-05-01")))))
+  check("~55 birthday → gen_x framing (your investment)",
+    /investment/i.test(cohortFraming(generationalCohortFromAge(ageFromBirthday("1971-05-01")))))
+  check("~70 birthday → boomer framing (your home)",
+    /your home/i.test(cohortFraming(generationalCohortFromAge(ageFromBirthday("1956-05-01")))))
+  check("no birthday → unknown cohort → empty framing (explanation unchanged)",
+    cohortFraming(generationalCohortFromAge(ageFromBirthday(null))) === "")
+  const cohorts = ["gen_z", "millennial", "gen_x", "boomer", "silent"] as const
+  check("each known cohort yields a distinct, non-empty framing",
+    new Set(cohorts.map((c) => cohortFraming(c))).size === cohorts.length &&
+    cohorts.every((c) => cohortFraming(c).length > 0))
 
   console.log("\n[meta] canonical id count: " + CANONICAL_MILESTONE_IDS.length)
   console.log("\n──────────────────────────────────────────────────")
