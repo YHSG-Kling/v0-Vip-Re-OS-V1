@@ -22,6 +22,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
+import { recordMatchesTerritory } from '@/lib/lead-pipeline/source-intent-map'
 import type { NormalizedScrapedRecord } from '@/lib/lead-pipeline/raw-record-types'
 import {
   isViableRecord,
@@ -79,6 +80,7 @@ export interface IngestBatchResult {
   inserted: number
   skipped_duplicate: number
   skipped_not_viable: number
+  skipped_territory: number
   rawIds: string[]
 }
 
@@ -407,6 +409,7 @@ export async function ingestRawSourceBatch(
     inserted: 0,
     skipped_duplicate: 0,
     skipped_not_viable: 0,
+    skipped_territory: 0,
     rawIds: [],
   }
 
@@ -438,11 +441,29 @@ export async function ingestRawSourceBatch(
 
   let batchError: Error | null = null
 
+  // Load the scraped market's geography once for the INGEST territory gate — a lead
+  // must belong to the active territory it was scraped for (recordMatchesTerritory
+  // passes through no-/partial-geo records; the promotion gate re-checks post-enrichment).
+  const { data: gateMarket } = await supabase
+    .from("lead_scraping_markets")
+    .select("city, state, zip_codes")
+    .eq("id", params.marketId)
+    .maybeSingle()
+  const marketGeo = gateMarket
+    ? { city: (gateMarket as any).city, state: (gateMarket as any).state, zip_codes: (gateMarket as any).zip_codes }
+    : null
+
   try {
     for (const record of params.records) {
       // Gate 1 — viability: must have at least one identity signal
       if (!isViableRecord(record)) {
         result.skipped_not_viable++
+        continue
+      }
+
+      // Gate 2 — territory: drop records that clearly belong to a different area.
+      if (marketGeo && !recordMatchesTerritory({ city: record.city, state: record.state, zip: record.zip }, marketGeo)) {
+        result.skipped_territory++
         continue
       }
 

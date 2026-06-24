@@ -36,7 +36,7 @@ import {
   buildLeadIdentityKey,
 } from "@/lib/lead-pipeline/raw-record-types"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { buildTerritoryPhrases, expandEnabledSources } from "@/lib/lead-pipeline/source-intent-map"
+import { buildTerritoryPhrases, expandEnabledSources, recordMatchesTerritory } from "@/lib/lead-pipeline/source-intent-map"
 import { meterVendorSpend, scraperTypeToVendor } from "@/lib/vendor-governance/meter-vendor"
 import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -256,6 +256,7 @@ export async function GET(request: Request) {
                     record,
                     brokerageId: market.brokerage_id,
                     marketId:    market.id,
+                    marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
                     executionId: execRecord?.id ?? null,
                   })
                   if (inserted) { sourceLeadsCreated++; results.total_leads_created++ }
@@ -364,6 +365,7 @@ export async function GET(request: Request) {
                   record:      seller,
                   brokerageId: market.brokerage_id,
                   marketId:    market.id,
+                  marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
                   executionId: execRecord?.id ?? null,
                 })
                 if (inserted) leadsCreated++
@@ -497,6 +499,7 @@ export async function GET(request: Request) {
                     record:      ndRecord,
                     brokerageId: market.brokerage_id,
                     marketId:    market.id,
+                    marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
                     executionId: execRecord?.id ?? null,
                   })
                   if (inserted) socialLeadsCreated++
@@ -509,7 +512,7 @@ export async function GET(request: Request) {
           const insertSocial = async (records: NormalizedScrapedRecord[]) => {
             for (const record of records) {
               const { inserted } = await insertRawRecord({
-                supabase, record, brokerageId: market.brokerage_id, marketId: market.id, executionId: execRecord?.id ?? null,
+                supabase, record, brokerageId: market.brokerage_id, marketId: market.id, marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes }, executionId: execRecord?.id ?? null,
               })
               if (inserted) socialLeadsCreated++
             }
@@ -669,7 +672,7 @@ export async function GET(request: Request) {
           })
           for (const record of records) {
             const { inserted } = await insertRawRecord({
-              supabase, record, brokerageId: market.brokerage_id, marketId: market.id, executionId: null,
+              supabase, record, brokerageId: market.brokerage_id, marketId: market.id, marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes }, executionId: null,
             })
             if (inserted) results.total_leads_created++
           }
@@ -843,11 +846,28 @@ interface InsertRawRecordParams {
   record: NormalizedScrapedRecord
   brokerageId: string
   marketId: string
+  /** The scraped market's geography — the INGEST territory gate drops records that
+   *  clearly belong to a different area (a lead must belong to an active territory). */
+  marketGeo?: { city?: string | null; state?: string | null; zip_codes?: string[] | null }
   executionId?: string | null
 }
 
-async function insertRawRecord(params: InsertRawRecordParams): Promise<{ inserted: boolean; rawId?: string }> {
-  if (!isViableRecord(params.record)) return { inserted: false }
+async function insertRawRecord(params: InsertRawRecordParams): Promise<{ inserted: boolean; rawId?: string; skipped?: string }> {
+  if (!isViableRecord(params.record)) return { inserted: false, skipped: "not_viable" }
+
+  // TERRITORY GATE AT INGEST — never write a lead that doesn't belong to the active
+  // territory it was scraped for. recordMatchesTerritory passes through records with no
+  // / partial geo (those resolve geo via enrichment and are re-checked by the promotion
+  // gate); it drops only CLEAR mismatches (wrong zip, or wrong city+state).
+  if (
+    params.marketGeo &&
+    !recordMatchesTerritory(
+      { city: params.record.city, state: params.record.state, zip: params.record.zip },
+      params.marketGeo,
+    )
+  ) {
+    return { inserted: false, skipped: "territory" }
+  }
 
   const identityKey = buildLeadIdentityKey(params.record)
 

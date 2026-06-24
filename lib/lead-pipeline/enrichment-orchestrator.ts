@@ -13,9 +13,9 @@ import {
   processKernelEvent,
 } from '@/lib/kernel'
 import { KernelEvent } from '@/lib/kernel/events'
+import { MAX_RETRIES, enrichmentRetryOutcome } from './enrichment-retry'
 
 const BATCH_SIZE = 10
-const MAX_RETRIES = 3
 
 type EntityType = 'lead' | 'contact'
 
@@ -379,16 +379,32 @@ export async function processEnrichmentQueue(
 
         result.succeeded++
       } else {
-        // Step 7: No data returned — increment retry, log cost (API charged)
+        // Step 7: No data returned — increment retry, log cost (API charged). On the
+        // FINAL attempt terminalize to 'failed' (NOT 'pending') so a permanently-
+        // unmatchable lead doesn't sit as a zombie 'pending' entry the fetch will never
+        // pick up again, and surface it to automation_errors like the exception path.
+        const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES)
         await supabase
           .from('lead_enrichment_queue')
           .update({
-            retry_count: entry.retry_count + 1,
+            retry_count: nextRetry,
             enrichment_cost: cost,
-            status: 'pending',
+            status,
             error_message: 'No match found in PeopleData',
           })
           .eq('id', entry.id)
+
+        if (isFinal) {
+          await supabase.from('automation_errors').insert({
+            brokerage_id: brokerageId,
+            workflow_name: 'enrichment_processor',
+            lead_id: entityType === 'lead' ? entityId : null,
+            error_message: 'No match found in PeopleData after max retries',
+            context_json: JSON.stringify({ entityType, entityId, queueEntryId: entry.id, reason: 'no_match' }),
+            status: 'open',
+            severity: 'low',
+          })
+        }
 
         await trackVendorUsageService({
           vendor: 'PeopleData',
@@ -402,14 +418,13 @@ export async function processEnrichmentQueue(
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      const nextRetry = entry.retry_count + 1
-      const isFinal = nextRetry >= (entry.max_retries ?? MAX_RETRIES)
+      const { nextRetry, isFinal, status } = enrichmentRetryOutcome(entry.retry_count, entry.max_retries ?? MAX_RETRIES)
 
       await supabase
         .from('lead_enrichment_queue')
         .update({
           retry_count: nextRetry,
-          status: isFinal ? 'failed' : 'pending',
+          status,
           error_message: message,
         })
         .eq('id', entry.id)
