@@ -275,5 +275,32 @@ async function handleVerificationFailure(
     entityId: params.onboardingId,
   })
 
+  // Hand the un-clearable verification to the humans who CAN clear it — the brokerage's compliance
+  // officers + admins. Without this the license sat in "pending" with a failed record and nobody was
+  // told, so the agent's onboarding silently stalled. Managers working together: the License Verifier
+  // escalates to Compliance/Admin for manual review instead of dropping it. Best-effort.
+  try {
+    const { data: reviewers } = await supabase
+      .from("users")
+      .select("id")
+      .eq("brokerage_id", params.brokerageId)
+      .in("user_type", ["compliance_officer", "admin", "broker", "broker_admin"])
+    for (const r of reviewers ?? []) {
+      await supabase.from("notifications").insert({
+        user_id:     r.id,
+        brokerage_id: params.brokerageId,
+        type:        "license_manual_review_required",
+        title:       "License needs manual review",
+        body:        `Auto-verification couldn't clear a ${params.licenseState} license (#${params.licenseNumber}). ${result.resultDetail}`,
+        entity_type: "agent_license",
+        entity_id:   params.agentLicenseId,
+        priority:    "high",
+        channel:     "in_app",
+      })
+    }
+  } catch (e) {
+    console.error("[L11-License] failed to notify reviewers:", e)
+  }
+
   console.log(`[L11-License] License ${params.licenseNumber} verification failed: ${result.resultDetail}`)
 }

@@ -1,6 +1,7 @@
 import { streamText, convertToModelMessages } from 'ai'
 import type { UIMessage } from 'ai'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { requireAuth } from '@/lib/kernel/api-auth'
 import { KernelEvent } from '@/lib/kernel/events'
 import { searchKB } from '@/lib/intelligence/kb-search'
@@ -91,14 +92,44 @@ ${kbContext || 'No specific documentation found for this query.'}`
             },
           })
 
+          // brokerage_id was missing — without it the escalation is invisible to every
+          // brokerage-scoped admin view (smart_assistant_suggestions is a tenant table).
           await supabase.from('smart_assistant_suggestions').insert({
             agent_id: agentId,
+            brokerage_id: brokerageId,
             title: 'Setup question needs admin review',
             description: latestQuery,
             context_type: 'onboarding_setup',
             priority: 'medium',
             status: 'pending',
           })
+
+          // Tell the brokerage's admins — the escalation previously reached no human (the suggestion
+          // sat unscoped with no notification). Mirrors the onboarding-health cron's admin alert.
+          // Service client: cross-user notification inserts are privileged. Best-effort.
+          try {
+            const service = createServiceClient()
+            const { data: admins } = await service
+              .from('users')
+              .select('id')
+              .eq('brokerage_id', brokerageId)
+              .in('user_type', ['admin', 'broker', 'broker_admin', 'superadmin'])
+            for (const adm of admins ?? []) {
+              await service.from('notifications').insert({
+                user_id: adm.id,
+                brokerage_id: brokerageId,
+                type: 'onboarding_setup_escalation',
+                title: 'Agent setup question needs review',
+                body: `The setup assistant couldn't fully answer: "${latestQuery.slice(0, 180)}". Reason: ${noKBResults ? 'no documentation found' : 'uncertain answer'}.`,
+                entity_type: 'agent',
+                entity_id: agentId,
+                priority: 'medium',
+                channel: 'in_app',
+              })
+            }
+          } catch (e) {
+            console.error('[onboarding/assistant] failed to notify admins of escalation:', e)
+          }
         }
       },
     })

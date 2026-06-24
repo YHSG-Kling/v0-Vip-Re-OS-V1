@@ -5,7 +5,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Users, TrendingUp, AlertCircle, Zap, ShieldCheck } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Users, TrendingUp, AlertCircle, Zap, ShieldCheck, CheckCircle2 } from 'lucide-react'
+import { toast } from 'sonner'
 import {
   OnboardingCommandStrip,
   AdoptionRadar,
@@ -16,7 +18,7 @@ import {
   AdoptionHealthPanel,
   OnboardingBatchActionsPanel,
 } from './components/os'
-import { getBrokerageAgentLicenseStatuses, type AgentLicenseStatus } from '@/app/actions/admin/license-tracking'
+import { getBrokerageAgentLicenseStatuses, reviewLicenseManually, type AgentLicenseStatus } from '@/app/actions/admin/license-tracking'
 import { CdaSetupPanel } from './components/os/cda-setup-panel'
 
 interface AdoptionMetrics {
@@ -74,15 +76,39 @@ export function AdminOnboardingOsClient({
   const [selectedBatch, setSelectedBatch] = useState<string[]>([])
   const [licenseStatuses, setLicenseStatuses] = useState<AgentLicenseStatus[]>([])
   const [licenseLoading, setLicenseLoading] = useState(false)
+  const [reviewingId, setReviewingId] = useState<string | null>(null)
   const [expiryFilter, setExpiryFilter] = useState<'all' | '30' | '60' | '90'>('all')
+
+  const loadLicenses = useCallback(() => {
+    setLicenseLoading(true)
+    return getBrokerageAgentLicenseStatuses(brokerageId)
+      .then(({ agents }) => setLicenseStatuses(agents ?? []))
+      .finally(() => setLicenseLoading(false))
+  }, [brokerageId])
 
   useEffect(() => {
     if (activeTab !== 'license') return
-    setLicenseLoading(true)
-    getBrokerageAgentLicenseStatuses(brokerageId)
-      .then(({ agents }) => setLicenseStatuses(agents ?? []))
-      .finally(() => setLicenseLoading(false))
-  }, [activeTab, brokerageId])
+    void loadLicenses()
+  }, [activeTab, loadLicenses])
+
+  const handleReviewLicense = useCallback((licenseId: string, decision: 'approve' | 'reject') => {
+    setReviewingId(licenseId)
+    const notes = decision === 'reject'
+      ? (typeof window !== 'undefined' ? window.prompt('Reason sent to the agent (optional):') ?? undefined : undefined)
+      : undefined
+    reviewLicenseManually({ licenseId, decision, notes })
+      .then((res) => {
+        if (res.success) {
+          toast.success(decision === 'approve' ? 'License verified' : 'License sent back to the agent')
+          void loadLicenses()
+        } else {
+          toast.error(res.error ?? 'Review failed')
+        }
+      })
+      .finally(() => setReviewingId(null))
+  }, [loadLicenses])
+
+  const needsReviewCount = licenseStatuses.filter((a) => a.needsManualReview).length
 
   const handleBatchAction = useCallback((_action: string, _agentIds: string[]) => {
     // Batch actions handled by OnboardingBatchActionsPanel
@@ -198,6 +224,9 @@ export function AdminOnboardingOsClient({
                 <CardTitle className="text-base flex items-center gap-2">
                   <ShieldCheck className="h-4 w-4 text-primary" />
                   License &amp; CE Compliance
+                  {needsReviewCount > 0 && (
+                    <Badge variant="destructive" className="text-[10px]">{needsReviewCount} need review</Badge>
+                  )}
                 </CardTitle>
                 <Select value={expiryFilter} onValueChange={(v) => setExpiryFilter(v as any)}>
                   <SelectTrigger className="w-40 h-8">
@@ -237,6 +266,8 @@ export function AdminOnboardingOsClient({
                           if (days === null) return true
                           return days <= Number(expiryFilter)
                         })
+                        // Licenses needing a human decision float to the top of the queue.
+                        .sort((a, b) => Number(b.needsManualReview) - Number(a.needsManualReview))
                         .map((a) => {
                           const days = a.daysUntilExpiry
                           const color =
@@ -273,7 +304,31 @@ export function AdminOnboardingOsClient({
                               <td className="py-2 pr-4 text-muted-foreground">
                                 {a.ceHoursCompleted}/{a.ceHoursRequired}h
                               </td>
-                              <td className="py-2">{badge}</td>
+                              <td className="py-2">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  {a.verificationStatus === 'verified' && (
+                                    <Badge className="bg-emerald-100 text-emerald-800 text-[10px]"><CheckCircle2 className="h-3 w-3 mr-1" />Verified</Badge>
+                                  )}
+                                  {a.needsManualReview && (
+                                    <Badge variant="destructive" className="text-[10px]"><AlertCircle className="h-3 w-3 mr-1" />Needs review</Badge>
+                                  )}
+                                  {badge}
+                                  {a.needsManualReview && a.licenseId && (
+                                    <span className="flex gap-1">
+                                      <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+                                        disabled={reviewingId === a.licenseId}
+                                        onClick={() => handleReviewLicense(a.licenseId!, 'approve')}>
+                                        Verify
+                                      </Button>
+                                      <Button size="sm" variant="outline" className="h-6 px-2 text-[11px] border-red-300 text-red-700 hover:bg-red-50"
+                                        disabled={reviewingId === a.licenseId}
+                                        onClick={() => handleReviewLicense(a.licenseId!, 'reject')}>
+                                        Reject
+                                      </Button>
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
                             </tr>
                           )
                         })}

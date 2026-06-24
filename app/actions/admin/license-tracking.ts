@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { licenseNeedsManualReview, manualReviewOutcome } from "@/lib/onboarding/license-review"
 
 // All functions in this file are brokerage-admin tooling. Previously every
 // one was unauthenticated and trusted caller-supplied brokerageId / agentId.
@@ -37,6 +38,7 @@ export interface AgentLicenseStatus {
   userId: string
   fullName: string
   email: string
+  licenseId: string | null
   licenseNumber: string | null
   licenseState: string | null
   expiryDate: string | null
@@ -46,6 +48,8 @@ export interface AgentLicenseStatus {
   ceHoursCompleted: number
   ceHoursRequired: number
   verificationStatus: string | null
+  /** true when auto-verification couldn't clear the license (pending/failed) → needs a human decision. */
+  needsManualReview: boolean
 }
 
 export async function getBrokerageAgentLicenseStatuses(
@@ -74,6 +78,7 @@ export async function getBrokerageAgentLicenseStatuses(
         ce_hours_completed,
         ce_cycle_end_date,
         agent_licenses (
+          id,
           license_number,
           license_state,
           expiry_date,
@@ -104,10 +109,12 @@ export async function getBrokerageAgentLicenseStatuses(
       ? Math.ceil((new Date(ethicsDue).getTime() - now) / 86_400_000)
       : null
 
+    const verificationStatus = license?.verification_status ?? null
     return {
       userId: a.id,
       fullName: `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() || a.email || "Unknown Agent",
       email: a.email ?? "",
+      licenseId: license?.id ?? null,
       licenseNumber: license?.license_number ?? null,
       licenseState: license?.license_state ?? null,
       expiryDate: expiryRaw,
@@ -116,11 +123,83 @@ export async function getBrokerageAgentLicenseStatuses(
       daysUntilEthicsExpiry,
       ceHoursCompleted: Number(agentRow?.ce_hours_completed ?? 0),
       ceHoursRequired: Number(agentRow?.ce_hours_required ?? 0),
-      verificationStatus: license?.verification_status ?? null,
+      verificationStatus,
+      needsManualReview: licenseNeedsManualReview(verificationStatus, !!license?.license_number),
     }
   })
 
   return { agents: statuses }
+}
+
+// ─── Manual license review (resolves the License Verifier's escalation) ───────
+
+/**
+ * A compliance officer / admin clears a license the auto-verifier couldn't (NIPR pending + AI
+ * inconclusive / no document). Sets the canonical verification_status, logs a manual
+ * license_verifications row for the audit trail, and tells the agent the outcome. This is the
+ * human end of the manager hand-off the License Verifier starts on failure.
+ */
+export async function reviewLicenseManually(input: {
+  licenseId: string
+  decision: "approve" | "reject"
+  notes?: string
+}): Promise<{ success: boolean; error?: string }> {
+  const auth = await requireAdminInBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const service = createServiceClient()
+  const { data: lic } = await service
+    .from("agent_licenses")
+    .select("id, agent_id, brokerage_id, license_number, license_state")
+    .eq("id", input.licenseId)
+    .maybeSingle()
+  if (!lic) return { success: false, error: "License not found" }
+  if (!auth.isSuperadmin && lic.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Forbidden" }
+  }
+
+  const outcome = manualReviewOutcome(input.decision)
+  const passed = outcome.verified
+  const now = new Date().toISOString()
+
+  await service
+    .from("agent_licenses")
+    .update({
+      verification_status: outcome.verificationStatus,
+      verified_at: passed ? now : null,
+      updated_at: now,
+    })
+    .eq("id", lic.id)
+
+  // Audit row — manual method, captures the reviewer + their notes.
+  await service.from("license_verifications").insert({
+    brokerage_id: lic.brokerage_id,
+    license_id: lic.id,
+    verification_method: "manual",
+    verification_result: outcome.verificationResult,
+    failure_reasons: passed ? null : [input.notes?.trim() || "Rejected on manual review"],
+    raw_response: { detail: input.notes?.trim() || `Manually ${input.decision}d`, reviewer_user_id: auth.userId },
+  })
+
+  // Tell the agent the outcome.
+  const { data: agentRow } = await service.from("agents").select("user_id").eq("id", lic.agent_id).maybeSingle()
+  if (agentRow?.user_id) {
+    await service.from("notifications").insert({
+      user_id: agentRow.user_id,
+      brokerage_id: lic.brokerage_id,
+      type: passed ? "license_verified" : "license_rejected",
+      title: passed ? "License verified" : "License review — action needed",
+      body: passed
+        ? `Your ${lic.license_state ?? ""} license (#${lic.license_number ?? ""}) was verified by your brokerage.`
+        : `Your ${lic.license_state ?? ""} license review needs attention${input.notes?.trim() ? `: ${input.notes.trim()}` : ". Please contact your admin."}`,
+      entity_type: "agent_license",
+      entity_id: lic.id,
+      priority: passed ? "normal" : "high",
+      channel: "in_app",
+    })
+  }
+
+  return { success: true }
 }
 
 // ─── CE log entries ──────────────────────────────────────────────────────────
