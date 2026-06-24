@@ -66,6 +66,66 @@ export interface MintMarketingQrArgs extends MarketingQrRefs {
   agentId?: string | null
   kind: MarketingQrKind
   origin?: string
+  /** When true AND a NEW code was minted, notify the owner to confirm/assign the destination URL. */
+  notifyOwner?: boolean
+  /** human label for the notification body, e.g. the property address. */
+  materialName?: string
+}
+
+const MATERIAL_LABELS: Record<MarketingQrKind, string> = {
+  listing_flyer: "listing flyer",
+  listing_packet: "listing packet",
+  open_house_flyer: "open-house flyer",
+  just_sold_flyer: "just-sold flyer",
+  cma: "CMA",
+}
+
+/**
+ * Tell the human who owns the piece to open the QR assignment page and confirm/customize the
+ * destination URL. The auto-derived URL is a sensible default (the listing page), but the owner may
+ * want it to point elsewhere (a landing page, a booking link). Routes to the AGENT who owns the
+ * material; with NO agent, falls back to the brokerage's broker-admins. Best-effort, never throws.
+ */
+async function notifyOwnerToAssignUrl(
+  svc: ReturnType<typeof createServiceClient>,
+  args: { brokerageId: string; agentId?: string | null; kind: MarketingQrKind; qrCodeId: string; materialName?: string },
+): Promise<void> {
+  try {
+    const piece = MATERIAL_LABELS[args.kind]
+    const where = args.materialName ? ` for ${args.materialName}` : ""
+    const body = `A QR code was added to your ${piece}${where}. Open the QR assignment page (Agent → QR Codes) to confirm or change where it points.`
+
+    // Resolve the owning agent's user; else the brokerage's broker-admins.
+    const recipients: string[] = []
+    if (args.agentId) {
+      const { data: a } = await svc.from("agents").select("user_id").eq("id", args.agentId).maybeSingle()
+      const uid = (a as { user_id?: string | null } | null)?.user_id ?? null
+      if (uid) recipients.push(uid)
+    }
+    if (recipients.length === 0) {
+      const { data: admins } = await svc
+        .from("users").select("id")
+        .eq("brokerage_id", args.brokerageId)
+        .in("user_type", ["broker_admin", "admin", "broker", "superadmin"])
+      for (const u of admins ?? []) recipients.push(u.id)
+    }
+
+    for (const userId of recipients) {
+      await svc.from("notifications").insert({
+        user_id: userId,
+        brokerage_id: args.brokerageId,
+        type: "qr_url_assignment_needed",
+        title: "Assign a destination for a new QR code",
+        body,
+        entity_type: "qr_code",
+        entity_id: args.qrCodeId,
+        priority: "medium",
+        channel: "in_app",
+      })
+    }
+  } catch {
+    /* best-effort */
+  }
 }
 
 /**
@@ -79,7 +139,8 @@ export async function mintMarketingQr(
   if (!args.brokerageId) return null
   const dest = qrDestinationForMaterial(args.kind)
   const entity = args.listingId ?? args.brokerageId
-  return mintTrackedQr(
+  const svc = client ?? createServiceClient()
+  const minted = await mintTrackedQr(
     {
       brokerageId: args.brokerageId,
       agentId: args.agentId ?? null,
@@ -90,6 +151,19 @@ export async function mintMarketingQr(
       purpose: args.kind === "open_house_flyer" ? "open_house" : "listing",
       origin: args.origin,
     },
-    client,
+    svc,
   )
+
+  // Only on a NEWLY minted code (never on idempotent re-use) tell the owner to confirm/assign the URL.
+  if (minted?.created && args.notifyOwner) {
+    await notifyOwnerToAssignUrl(svc, {
+      brokerageId: args.brokerageId,
+      agentId: args.agentId ?? null,
+      kind: args.kind,
+      qrCodeId: minted.qrCodeId,
+      materialName: args.materialName,
+    })
+  }
+
+  return minted
 }

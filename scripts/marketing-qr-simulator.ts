@@ -49,30 +49,42 @@ async function main(): Promise<void> {
   if (!hasCreds) {
     console.log("\n[marketing QR · live]  ⊘ skipped (no SUPABASE creds) — pure layer proved the mapping")
   } else {
-    console.log("\n[marketing QR · live — mint a real tracked code, idempotent re-mint, self-clean]")
+    console.log("\n[marketing QR · live — mint, idempotency, created flag, owner-assign notification → self-clean]")
     const { createServiceClient } = await import("../lib/supabase/service")
     const svc = createServiceClient()
     const tag = `MKTQR-${randomUUID().slice(0, 8)}`
     const brokerageId = randomUUID()
+    const adminUserId = randomUUID()
     let listingId: string | null = null
     try {
       await svc.from("brokerages").insert({ id: brokerageId, name: `${tag} Brokerage`, city: "Austin", state: "TX" })
+      await svc.from("users").insert({ id: adminUserId, brokerage_id: brokerageId, email: `admin+${tag}@demo.local`, first_name: "Broker", last_name: "Admin", user_type: "broker_admin" })
       const { data: lr } = await svc.from("listings").insert({ brokerage_id: brokerageId, status: "active", address: `${tag} 100 Main St` }).select("id").single()
       listingId = lr!.id as string
 
-      const first = await mintMarketingQr({ brokerageId, kind: "listing_flyer", listingId })
+      // First mint with notifyOwner (no agent → falls back to the broker-admin).
+      const first = await mintMarketingQr({ brokerageId, kind: "listing_packet", listingId, notifyOwner: true, materialName: "100 Main St" })
       check("mints a tracked code with a resolvable scan URL", !!first && /\/api\/qr\/scan\?slug=/.test(first.scanUrl))
       check("returns a valid PNG data URL", !!first && first.qrCodeDataUrl.startsWith("data:image/png;base64,"))
       check("destination_type is listing_detail", first?.destinationType === "listing_detail")
+      check("first mint reports created=true", first?.created === true)
 
-      const second = await mintMarketingQr({ brokerageId, kind: "listing_flyer", listingId })
+      const second = await mintMarketingQr({ brokerageId, kind: "listing_packet", listingId, notifyOwner: true })
       check("re-mint is idempotent (same slug reused)", !!second && !!first && second.slug === first.slug)
+      check("re-mint reports created=false", second?.created === false)
 
-      const { count } = await svc.from("qr_codes").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("label", `material:listing_flyer:${listingId}`)
+      const { count } = await svc.from("qr_codes").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("label", `material:listing_packet:${listingId}`)
       check("exactly ONE qr_codes row exists for (listing, kind)", (count ?? 0) === 1)
+
+      // The broker-admin got ONE assign-URL notification (only on the created mint, not the re-mint).
+      const { count: ncount } = await svc.from("notifications").select("id", { count: "exact", head: true })
+        .eq("user_id", adminUserId).eq("type", "qr_url_assignment_needed")
+      check("owner notified ONCE to assign the URL (created only, not re-mint)", (ncount ?? 0) === 1)
     } finally {
+      await svc.from("notifications").delete().eq("user_id", adminUserId)
       await svc.from("qr_codes").delete().eq("brokerage_id", brokerageId)
       if (listingId) await svc.from("listings").delete().eq("id", listingId)
+      await svc.from("users").delete().eq("id", adminUserId)
       await svc.from("brokerages").delete().eq("id", brokerageId)
       const { count } = await svc.from("qr_codes").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId)
       check("cleanup complete", (count ?? 0) === 0)

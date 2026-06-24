@@ -18,7 +18,7 @@ export default async function QRLandingPage({ params }: PageProps) {
       label,
       purpose,
       brokerage_id,
-      agent_user_id:agent_id,
+      agent_id,
       listing_id
     `)
     .eq('slug', slug)
@@ -29,19 +29,22 @@ export default async function QRLandingPage({ params }: PageProps) {
     notFound()
   }
 
-  // Fetch agent profile if present
+  // Fetch agent profile if present. qr_codes.agent_id is an agents.id (FK → agents.id), so resolve
+  // the name THROUGH agents → users. (Previously this looked the agents.id up directly in `users`,
+  // so the agent name never resolved and every QR landing showed an unbranded page.)
   let agentName: string | null = null
   let agentPhoto: string | null = null
 
-  if (qr.agent_user_id) {
+  if (qr.agent_id) {
     const { data: agent } = await supabase
-      .from('users')
-      .select('first_name, last_name')
-      .eq('id', qr.agent_user_id)
+      .from('agents')
+      .select('users(first_name, last_name)')
+      .eq('id', qr.agent_id)
       .maybeSingle()
 
-    agentName = agent ? `${agent.first_name || ''} ${agent.last_name || ''}`.trim() || null : null
-    agentPhoto = null // User profiles don't have photos in this schema
+    const u = Array.isArray(agent?.users) ? agent?.users[0] : agent?.users
+    agentName = u ? `${u.first_name || ''} ${u.last_name || ''}`.trim() || null : null
+    agentPhoto = null // agents has no avatar column in this schema
   }
 
   // Fetch listing info if linked

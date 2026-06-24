@@ -190,6 +190,10 @@ export async function generateListingPacket(config: ListingPacketConfig) {
       agentId: listing.agent_id ?? null,
       kind: "listing_packet",
       listingId: config.listingId,
+      // First time a packet QR is minted for this listing, notify the agent (or broker-admin) to
+      // confirm/assign the destination on the QR assignment page.
+      notifyOwner: true,
+      materialName: listing.address ?? undefined,
     })
 
     // Update packet job with generated content stored in config jsonb

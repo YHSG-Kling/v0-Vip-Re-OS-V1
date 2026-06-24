@@ -50,6 +50,8 @@ export interface MintedTrackedQr {
   /** data:image/png;base64,... ready for an <Img> / print template. */
   qrCodeDataUrl: string
   destinationType: string
+  /** true when THIS call minted a new row (vs. reusing an existing tracked code). */
+  created: boolean
 }
 
 export async function mintTrackedQr(
@@ -73,6 +75,7 @@ export async function mintTrackedQr(
 
     let qrCodeId: string
     let slug: string
+    let created = false
 
     if (existing?.id && existing?.slug) {
       qrCodeId = existing.id as string
@@ -106,6 +109,7 @@ export async function mintTrackedQr(
       if (error || !inserted?.id || !inserted?.slug) return null
       qrCodeId = inserted.id as string
       slug = inserted.slug as string
+      created = true
 
       // Patch target_url to the canonical scan redirector now the slug exists.
       await svc.from("qr_codes").update({ target_url: `${origin}/api/qr/scan?slug=${slug}` }).eq("id", qrCodeId)
@@ -119,7 +123,7 @@ export async function mintTrackedQr(
       color: { dark: "#000000", light: "#ffffff" },
     })
 
-    return { qrCodeId, slug, scanUrl, qrCodeDataUrl, destinationType: args.destinationType }
+    return { qrCodeId, slug, scanUrl, qrCodeDataUrl, destinationType: args.destinationType, created }
   } catch {
     return null
   }
