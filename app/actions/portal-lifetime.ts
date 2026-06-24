@@ -292,7 +292,7 @@ export async function getTransactionHistory(contactId: string) {
         id,
         milestone_name,
         status,
-        completed_at,
+        completed_date:completed_at,
         target_date
       )
     `)

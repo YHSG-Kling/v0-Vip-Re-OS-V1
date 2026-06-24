@@ -612,6 +612,16 @@ const CLIENT_VISIBLE_MILESTONE_TYPES: ReadonlySet<string> = new Set<string>(
   CLIENT_VISIBLE_MILESTONES,
 )
 
+// The minimal row shape the kernel visibility rule reads. Loose (optional
+// milestone_type / is_client_visible) so any milestone-row type a caller already
+// holds — the portal home pages' fetched rows, the journey reader's rows — satisfies
+// it without a projection.
+export interface MilestoneVisibilityInput {
+  milestone_name: string
+  milestone_type?: string | null
+  is_client_visible?: boolean | null
+}
+
 /**
  * isClientVisibleMilestone — the PURE kernel rule for one milestone row.
  *
@@ -624,7 +634,7 @@ const CLIENT_VISIBLE_MILESTONE_TYPES: ReadonlySet<string> = new Set<string>(
  *  3. Otherwise (un-backfilled row), defer to the per-row is_client_visible flag.
  */
 export function isClientVisibleMilestone(
-  m: Pick<PortalJourneyMilestone, "milestone_type" | "milestone_name" | "is_client_visible">,
+  m: MilestoneVisibilityInput,
   overrides: Record<string, boolean> = {},
 ): boolean {
   const type = m.milestone_type
@@ -644,12 +654,14 @@ export function isClientVisibleMilestone(
 
 /**
  * selectClientMilestones — PURE. Filters a milestone list to the client-visible
- * set using the kernel rule above. Unit-tested by the portal simulator.
+ * set using the kernel rule above. Generic so it returns the caller's own row type
+ * (it is a filter, not a projection) — portal home pages keep their fetched shape.
+ * Unit-tested by the portal simulator.
  */
-export function selectClientMilestones(
-  rows: PortalJourneyMilestone[],
+export function selectClientMilestones<T extends MilestoneVisibilityInput>(
+  rows: T[],
   overrides: Record<string, boolean> = {},
-): PortalJourneyMilestone[] {
+): T[] {
   return rows.filter((m) => isClientVisibleMilestone(m, overrides))
 }
 

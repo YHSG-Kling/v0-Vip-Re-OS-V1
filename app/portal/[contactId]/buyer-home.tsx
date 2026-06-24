@@ -7,12 +7,12 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
-import { CLIENT_VISIBLE_MILESTONES } from "@/lib/transactions/transaction-stages"
+import { selectClientMilestones } from "@/lib/kernel/portal"
 import { BUYER_MILESTONE_LABELS } from "@/lib/portal/resolve-education-context"
 import { getPersonaMessagingGuidelines } from "@/lib/buyer-search/persona-inference"
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { OfferStatusCard } from "@/app/components/portal/OfferStatusCard"
-import { MilestoneProgressBar } from "@/app/components/portal/MilestoneProgressBar"
+import { MilestoneProgressBar, type TransactionMilestone } from "@/app/components/portal/MilestoneProgressBar"
 import { PortalLiveFeed } from "@/app/components/portal/PortalLiveFeed"
 import { NegotiationMirrorPanel } from "@/app/components/negotiation/negotiation-mirror-panel"
 import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
@@ -210,10 +210,11 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
     completedLessonKeys = []
   }
 
-  // Filter milestones to client-visible only
-  const milestones = (milestonesResult.data ?? []).filter((m: any) =>
-    CLIENT_VISIBLE_MILESTONES.includes(m.milestone_name as any)
-  )
+  // Client-visible milestones — the KERNEL decides (by canonical milestone_type,
+  // with the is_client_visible flag as the transition fallback). Single source of
+  // truth: lib/kernel/portal.ts. Filtering here on milestone_name vs the canonical
+  // snake_case set silently dropped every human-named live milestone.
+  const milestones = selectClientMilestones((milestonesResult.data ?? []) as TransactionMilestone[])
 
   const dealTeamMembers = dealTeamResult.data ?? []
   const primaryAgent = agentInfo

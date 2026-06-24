@@ -3,7 +3,7 @@
 
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/server"
-import { CLIENT_VISIBLE_MILESTONES } from "@/lib/transactions/transaction-stages"
+import { selectClientMilestones } from "@/lib/kernel/portal"
 import { SELLER_MILESTONE_LABELS } from "@/lib/portal/resolve-education-context"
 import {
   resolveSellerContext,
@@ -23,7 +23,7 @@ import { ListingStatsCard } from "@/app/components/portal/ListingStatsCard"
 import { ShowingActivityStrip, ShowingFeedbackCard } from "@/app/components/portal/ShowingsFeedCard"
 import { SellerOfferCard } from "@/app/components/portal/SellerOfferCard"
 import { MarketPositionCard } from "@/app/components/portal/MarketPositionCard"
-import { MilestoneProgressBar } from "@/app/components/portal/MilestoneProgressBar"
+import { MilestoneProgressBar, type TransactionMilestone } from "@/app/components/portal/MilestoneProgressBar"
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
 import { NegotiationMirrorPanel } from "@/app/components/negotiation/negotiation-mirror-panel"
@@ -188,10 +188,11 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
       .limit(20),
   ])
 
-  // Filter milestones to client-visible only
-  const milestones = (milestonesResult.data ?? []).filter((m: any) =>
-    CLIENT_VISIBLE_MILESTONES.includes(m.milestone_name as any)
-  )
+  // Client-visible milestones — the KERNEL decides (by canonical milestone_type,
+  // with the is_client_visible flag as the transition fallback). Single source of
+  // truth: lib/kernel/portal.ts. Filtering here on milestone_name vs the canonical
+  // snake_case set silently dropped every human-named live milestone.
+  const milestones = selectClientMilestones((milestonesResult.data ?? []) as TransactionMilestone[])
 
   // deal_team_members has no agent_id/FK to agents — members render as external contacts.
   const dealTeamMembers = (dealTeamResult.data ?? []).map((m: any) => ({ ...m, agent: null }))
