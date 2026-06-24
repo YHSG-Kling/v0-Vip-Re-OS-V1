@@ -95,66 +95,6 @@ export async function logEventAndTrigger(eventInput: EventInput): Promise<Event>
 // CONVENIENCE FUNCTIONS - Typed event creators
 // =====================================================
 
-export async function logLeadCreated(params: {
-  brokerage_id: string
-  user_id: string
-  contact_id: string
-  source: string
-  timeline: string
-}): Promise<Event> {
-  return logEventAndTrigger({
-    brokerage_id: params.brokerage_id,
-    user_id: params.user_id,
-    event_type: KernelEvent.LEAD_CAPTURED,
-    payload: {
-      contact_id: params.contact_id,
-      source: params.source,
-      timeline: params.timeline,
-    },
-    source: "ui",
-    dedupe_key: `lead_created_${params.contact_id}`,
-  })
-}
-
-export async function logLeadTaggedHot(params: {
-  brokerage_id: string
-  user_id: string
-  contact_id: string
-  reason: string
-}): Promise<Event> {
-  return logEventAndTrigger({
-    brokerage_id: params.brokerage_id,
-    user_id: params.user_id,
-    event_type: KernelEvent.LEAD_TAGGED_HOT,
-    payload: {
-      contact_id: params.contact_id,
-      reason: params.reason,
-    },
-    source: "ui",
-  })
-}
-
-export async function logListingAppointmentSet(params: {
-  brokerage_id: string
-  user_id: string
-  listing_id: string
-  contact_id: string
-  appointment_date: string
-}): Promise<Event> {
-  return logEventAndTrigger({
-    brokerage_id: params.brokerage_id,
-    user_id: params.user_id,
-    event_type: KernelEvent.LISTING_APPOINTMENT_SCHEDULED,
-    payload: {
-      listing_id: params.listing_id,
-      contact_id: params.contact_id,
-      appointment_date: params.appointment_date,
-    },
-    source: "ui",
-    dedupe_key: `listing_appointment_${params.listing_id}_${params.appointment_date}`,
-  })
-}
-
 export async function logListingSigned(params: {
   brokerage_id: string
   user_id: string

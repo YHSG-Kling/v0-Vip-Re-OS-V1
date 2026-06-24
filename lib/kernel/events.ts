@@ -576,7 +576,9 @@ export enum KernelEvent {
   // never reaching the underscore-form KernelEvent reactor. Zero dotted rows
   // existed in production at consolidation time — no migration needed.
   LEAD_TAGGED_HOT                    = 'lead_tagged_hot',
-  LISTING_APPOINTMENT_SCHEDULED      = 'listing_appointment_scheduled',
+  // LISTING_APPOINTMENT_SCHEDULED ('listing_appointment_scheduled') retired — it was a duplicate of
+  // EVENT_TYPES.LISTING_APPOINTMENT_SET ('listing.appointment_set', the handled + chain-triggering
+  // event). Its only emitter (logListingAppointmentSet) reached no chain/handler and is removed.
   CREDIT_STATUS_UPDATED              = 'credit_status_updated',
   SEQUENCE_PAUSED_ON_REPLY           = 'sequence_paused_on_reply',
   NEGOTIATION_STRATEGY_READY         = 'negotiation_strategy_ready',

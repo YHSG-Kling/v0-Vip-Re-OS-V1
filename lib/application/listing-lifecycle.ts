@@ -3,7 +3,7 @@
 // Imported by both app/actions/ and lib/kernel/. Do NOT add "use server" here.
 
 import { createClient } from "@/lib/supabase/server"
-import { logListingAppointmentSet, logListingSigned, logListingLive } from "@/lib/events"
+import { logListingSigned, logListingLive } from "@/lib/events"
 import { revalidatePath } from "next/cache"
 
 // =====================================================
@@ -60,14 +60,11 @@ export async function scheduleListingAppointmentService(
 
   if (error) throw error
 
-  await logListingAppointmentSet({
-    brokerage_id: brokerageId,
-    user_id: agentId,
-    listing_id: params.listing_id,
-    contact_id: params.contact_id,
-    appointment_date: appointmentAt,
-  })
-
+  // NOTE: orchestration (the listing-appt-prep chain: CMA → presentation → chapter videos → drip →
+  // pre-listing postcard) is triggered explicitly by the scheduleListingAppointment server action via
+  // triggerChainsForEvent("listing.appointment_set"), which carries the listing's property_data. This
+  // service used to emit a separate logListingAppointmentSet('listing_appointment_scheduled') event
+  // that matched NO chain/handler — removed (drift consolidated onto the single canonical trigger).
   return { success: true, listing: data, appointmentEventId: calEvent.id }
 }
 
