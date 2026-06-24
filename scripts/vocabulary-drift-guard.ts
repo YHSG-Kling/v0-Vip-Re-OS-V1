@@ -18,7 +18,7 @@
  *
  * Run UPDATE_VOCAB_BASELINE=1 to (re)write the baseline after intentionally changing the legacy set.
  */
-import { readFileSync, writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -130,6 +130,71 @@ for (const c of CHECKS) {
     fail++
     fails.push(`${c.name}: NEW non-canonical case(s) ${JSON.stringify(newDrift)} — add to the canonical enum or fix the case`)
     console.log(`  ✗ ${c.name} — NEW drift: ${JSON.stringify(newDrift)}`)
+  }
+}
+
+// ── Chain-trigger check: every workflow chain's triggerEvent must be EMITTED somewhere ──────────
+// A chain that listens for an event no one emits is a DEAD flagship automation — the managers
+// silently skip it (exactly the listing-appt-prep risk: the chain only fires if its triggerEvent
+// string matches what callers pass to triggerChainsForEvent). This asserts every chain trigger is a
+// real, emitted event.
+function walkTs(dirs: string[]): string[] {
+  const out: string[] = []
+  const rec = (d: string) => {
+    let entries: string[]
+    try { entries = readdirSync(d) } catch { return }
+    for (const n of entries) {
+      if (n === "node_modules" || n.startsWith(".")) continue
+      const p = join(d, n)
+      if (statSync(p).isDirectory()) rec(p)
+      else if (/\.(ts|tsx)$/.test(n)) out.push(p)
+    }
+  }
+  for (const d of dirs) rec(join(root, d))
+  return out
+}
+
+const CHAINS_DIR_FRAG = "workflow-orchestrator/chains/"
+
+function chainTriggerEvents(): Array<{ event: string; file: string }> {
+  const dir = join(root, "lib/workflow-orchestrator/chains")
+  const out: Array<{ event: string; file: string }> = []
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".ts") || f === "index.ts") continue
+    const m = /triggerEvent:\s*"([^"]+)"/.exec(readFileSync(join(dir, f), "utf8"))
+    if (m) out.push({ event: m[1], file: `chains/${f}` })
+  }
+  return out
+}
+
+/** Every event string a caller can dispatch a chain on: EVENT_TYPES values + every `eventType:`/
+ *  `triggerEvent:` literal OUTSIDE the chain definitions (those are listeners, not emits). */
+function emittedEventStrings(): Set<string> {
+  const set = new Set<string>()
+  const types = read("lib/events/types.ts")
+  let m: RegExpExecArray | null
+  const tv = /:\s*"([a-z][a-z0-9._]+)"/g
+  while ((m = tv.exec(types))) set.add(m[1])
+  for (const f of walkTs(["app", "lib"])) {
+    if (f.replace(/\\/g, "/").includes(CHAINS_DIR_FRAG)) continue
+    const src = readFileSync(f, "utf8")
+    const re = /(?:eventType|triggerEvent):\s*"([^"]+)"/g
+    while ((m = re.exec(src))) set.add(m[1])
+  }
+  return set
+}
+
+{
+  const emitted = emittedEventStrings()
+  const triggers = chainTriggerEvents()
+  const dead = triggers.filter((t) => !emitted.has(t.event))
+  if (dead.length === 0) {
+    pass++
+    console.log(`  ✓ workflow chains — all ${triggers.length} triggerEvent(s) are emitted somewhere (no dead chain)`)
+  } else {
+    fail++
+    for (const d of dead) fails.push(`chain ${d.file}: triggerEvent "${d.event}" is never emitted — the chain is dead (managers skip it)`)
+    console.log(`  ✗ workflow chains — DEAD trigger(s): ${JSON.stringify(dead.map((d) => `${d.file}:${d.event}`))}`)
   }
 }
 
