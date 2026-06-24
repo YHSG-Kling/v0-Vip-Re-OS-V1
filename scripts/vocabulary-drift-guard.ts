@@ -81,13 +81,9 @@ const CHECKS: Check[] = [
     canonical: canonicalListingStages,
     mustBeCanonical: true,
   },
-  {
-    name: "triggerStageActions (LEGACY listing-stage switch)",
-    file: "lib/application/listing-lifecycle.ts",
-    fn: "triggerStageActions",
-    canonical: canonicalListingStages,
-    mustBeCanonical: false,
-  },
+  // The legacy triggerStageActions switch was RETIRED (dead lowercase vocabulary, redundant with the
+  // canonical flows) — its baseline entry is gone. Add the next vocabulary here as it's hardened
+  // (orchestrator EVENT_HANDLERS keys → EVENT_TYPES; manager-signal handler keys → signal-registry).
 ]
 
 // ── Run ─────────────────────────────────────────────────────────────────────

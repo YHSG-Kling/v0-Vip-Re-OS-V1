@@ -1,17 +1,1 @@
-{
-  "triggerStageActions (LEGACY listing-stage switch)": [
-    "appointment_scheduled",
-    "closed",
-    "cma_prepared",
-    "coming_soon",
-    "contingent",
-    "listing_agreement_signed",
-    "mls_active",
-    "offer_received",
-    "open_house",
-    "pending",
-    "post_close",
-    "pre_listing_ops",
-    "under_contract"
-  ]
-}
+{}
