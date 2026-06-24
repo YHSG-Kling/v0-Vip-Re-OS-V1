@@ -4,8 +4,6 @@ import { createClient } from "@/lib/supabase/server"
 import { getListingsService as getListings, createListingService as createListing } from "@/lib/application/listings"
 import {
   scheduleListingAppointmentService,
-  markListingSignedService,
-  markListingLiveService,
   updateListingStageService,
   advanceListingStageService,
   getListingTimelineService,
@@ -65,15 +63,16 @@ export async function scheduleListingAppointment(params: {
     const appointmentAt =
       (result as { listing?: { appointment_at?: string } } | null)?.listing?.appointment_at ??
       new Date(`${params.appointment_date}T${params.appointment_time}`).toISOString()
-    const apptEventId = (result as { appointmentEventId?: string } | null)?.appointmentEventId ?? null
     const { triggerChainsForEvent } = await import("@/app/actions/workflow-orchestrator")
+    const { listingApptPrepDedupeKey } = await import("@/lib/workflow-orchestrator/chains/listing-appt-prep")
     await triggerChainsForEvent({
       eventType: "listing.appointment_set",
-      // Dedupe the chain run on the calendar event so a re-schedule / double-submit reuses one run.
-      triggerEventId: apptEventId,
+      // Per-listing dedupe key — collapses this with the stage-pipeline + calendar paths into ONE prep.
+      triggerEventId: listingApptPrepDedupeKey(params.listing_id),
       brokerageId: profile.brokerage_id,
       contactId: params.contact_id,
       agentUserId: user.id,
+      listingId: params.listing_id,
       metadata: {
         appointment_date: appointmentAt,
         property_data: listing
@@ -93,40 +92,9 @@ export async function scheduleListingAppointment(params: {
   return result
 }
 
-export async function markListingSigned(params: {
-  listing_id: string
-  listing_agreement_signed_date: string
-  go_live_date: string
-  commission_rate?: number
-}) {
-  if (!params.listing_id) throw new Error("listing_id is required")
-
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
-  if (!profile?.brokerage_id) throw new Error("No brokerage found")
-
-  return markListingSignedService(params, user.id, profile.brokerage_id)
-}
-
-export async function markListingLive(params: {
-  listing_id: string
-  mls_number: string
-  mls_link?: string
-}) {
-  if (!params.listing_id || !params.mls_number) throw new Error("listing_id and mls_number are required")
-
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
-  if (!profile?.brokerage_id) throw new Error("No brokerage found")
-
-  return markListingLiveService(params, user.id, profile.brokerage_id)
-}
+// markListingSigned + markListingLive RETIRED — the UI drives go-live / agreement-signed through
+// advanceListingStage (triggerStageActions owns those stage cases + the MLS packet queue). These
+// duplicated that with orphaned-event side effects that never fired.
 
 export async function updateListingStage(params: {
   listing_id: string
@@ -209,7 +177,49 @@ export async function advanceListingStage(
     return { success: true, listingId, fromStage: listing.lifecycle_stage, toStage }
   }
 
-  return advanceListingStageService(listingId, toStage, agentId, notes)
+  const result = await advanceListingStageService(listingId, toStage, agentId, notes)
+
+  // Advancing a listing to the appointment_scheduled stage is one of the booking paths that must run
+  // the flagship listing-appt-prep chain (CMA → presentation → chapter videos → pre-appointment drip
+  // → pre-listing postcard). triggerStageActions (lib/) can't import the app/ chain trigger, so it's
+  // fired here. Deterministic per-listing dedupe key collapses this with the calendar + AI-ISA paths
+  // into ONE prep run (no double CMA/postcard). Best-effort — never block the stage advance.
+  if (toStage === "appointment_scheduled") {
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      const { data: listing } = await svc
+        .from("listings")
+        .select("brokerage_id, contact_id, seller_contact_id, appointment_at, address, city, state, zip, bedrooms, bathrooms, sqft, lot_size, year_built, property_type")
+        .eq("id", listingId)
+        .maybeSingle()
+      if (listing?.brokerage_id) {
+        const { triggerChainsForEvent } = await import("@/app/actions/workflow-orchestrator")
+        const { listingApptPrepDedupeKey } = await import("@/lib/workflow-orchestrator/chains/listing-appt-prep")
+        await triggerChainsForEvent({
+          eventType: "listing.appointment_set",
+          triggerEventId: listingApptPrepDedupeKey(listingId),
+          brokerageId: listing.brokerage_id,
+          contactId: listing.contact_id ?? listing.seller_contact_id ?? null,
+          agentUserId: user.id,
+          listingId,
+          metadata: {
+            appointment_date: listing.appointment_at ?? null,
+            property_data: {
+              address: listing.address, city: listing.city, state: listing.state, zip: listing.zip,
+              bedrooms: listing.bedrooms, bathrooms: listing.bathrooms, sqft: listing.sqft,
+              lotSize: listing.lot_size, yearBuilt: listing.year_built,
+              propertyType: listing.property_type ?? "single_family",
+            },
+          },
+        })
+      }
+    } catch (err) {
+      console.error("[advanceListingStage] listing-appt-prep chain trigger failed:", err)
+    }
+  }
+
+  return result
 }
 
 export async function getListingTimeline(listingId: string) {

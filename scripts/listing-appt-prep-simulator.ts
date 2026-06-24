@@ -59,10 +59,12 @@ import type { WorkflowChain } from "../lib/workflow-orchestrator/types"
 type ChainModule = typeof import("../lib/workflow-orchestrator/chains/listing-appt-prep")
 let listingApptPrepChain: WorkflowChain
 let setListingApptPrepExecutors: ChainModule["setListingApptPrepExecutors"]
+let listingApptPrepDedupeKey: ChainModule["listingApptPrepDedupeKey"]
 async function loadChain() {
   const m = await import("../lib/workflow-orchestrator/chains/listing-appt-prep")
   listingApptPrepChain = m.listingApptPrepChain
   setListingApptPrepExecutors = m.setListingApptPrepExecutors
+  listingApptPrepDedupeKey = m.listingApptPrepDedupeKey
 }
 
 let passed = 0, failed = 0
@@ -80,6 +82,13 @@ function testPure() {
 
   check("triggerEvent is listing.appointment_set",
     listingApptPrepChain.triggerEvent === "listing.appointment_set", listingApptPrepChain.triggerEvent)
+
+  // Deterministic per-listing dedupe key — every booking path (stage pipeline, calendar, AI-ISA)
+  // passes the SAME key for a listing so the engine collapses them to ONE prep run (no double spend).
+  check("dedupe key is deterministic per listing",
+    listingApptPrepDedupeKey("L-1") === "listing_appt_L-1" && listingApptPrepDedupeKey("L-1") === listingApptPrepDedupeKey("L-1"))
+  check("dedupe key differs across listings",
+    listingApptPrepDedupeKey("L-1") !== listingApptPrepDedupeKey("L-2"))
 
   const keys = listingApptPrepChain.steps.map((s) => s.key)
   const expected = [

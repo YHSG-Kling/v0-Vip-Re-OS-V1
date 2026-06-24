@@ -48,8 +48,6 @@ export {
 // ─── LISTING LIFECYCLE ────────────────────────────────────────────────────────
 export {
   scheduleListingAppointmentService,
-  markListingSignedService,
-  markListingLiveService,
   updateListingStageService,
   advanceListingStageService,
   scheduleClosingGift,

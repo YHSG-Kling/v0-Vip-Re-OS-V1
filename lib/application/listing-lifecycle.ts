@@ -3,7 +3,6 @@
 // Imported by both app/actions/ and lib/kernel/. Do NOT add "use server" here.
 
 import { createClient } from "@/lib/supabase/server"
-import { logListingSigned, logListingLive } from "@/lib/events"
 import { revalidatePath } from "next/cache"
 
 // =====================================================
@@ -68,95 +67,12 @@ export async function scheduleListingAppointmentService(
   return { success: true, listing: data, appointmentEventId: calEvent.id }
 }
 
-export async function markListingSignedService(
-  params: {
-    listing_id: string
-    listing_agreement_signed_date: string
-    go_live_date: string
-    commission_rate?: number
-  },
-  agentId: string,
-  brokerageId: string
-) {
-  const supabase = await createClient()
-
-  const { data, error} = await supabase
-    .from("listings")
-    .update({
-      lifecycle_stage: "LISTING_AGREEMENT_SIGNED",
-      // listing_agreement_signed_date doesn't exist in schema
-      go_live_date: params.go_live_date,
-      // commission_rate doesn't exist in listings table
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", params.listing_id)
-    .select()
-    .single()
-
-  if (error) throw error
-
-  await logListingSigned({
-    brokerage_id: brokerageId,
-    user_id: agentId,
-    listing_id: params.listing_id,
-    go_live_date: params.go_live_date,
-  })
-
-  return { success: true, listing: data }
-}
-
-export async function markListingLiveService(
-  params: { listing_id: string; mls_number: string; mls_link?: string },
-  agentId: string,
-  brokerageId: string
-) {
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("listings")
-    .update({
-      lifecycle_stage: "MLS_ACTIVE",
-      mls_number: params.mls_number,
-      mls_link: params.mls_link,
-      listing_date: new Date().toISOString().split("T")[0], // live_date doesn't exist, use listing_date
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", params.listing_id)
-    .select()
-    .single()
-
-  if (error) throw error
-
-  await logListingLive({
-    brokerage_id: brokerageId,
-    user_id: agentId,
-    listing_id: params.listing_id,
-    mls_number: params.mls_number,
-  })
-
-  // Queue packet generation — the app/ layer picks this up asynchronously.
-  // Avoids importing app/actions (lib→app violation). No behavior change:
-  // packet generation was already fire-and-forget.
-  try {
-    const supabase = await createClient()
-    await supabase.from("listing_packet_jobs").insert({
-      listing_id: params.listing_id,
-      agent_user_id: agentId, // real column (FK→users.id); was phantom agent_id
-      job_type: "mls_packet",
-      status: "pending",
-      config: {
-        includeFlyer: true,
-        includeDisclosures: true,
-        includePropertyReports: true,
-        includeBinderCopies: true,
-      },
-    })
-  } catch (packetError) {
-    console.error("[listing-lifecycle] Failed to queue listing packet job:", packetError)
-  }
-
-  return { success: true, listing: data }
-}
+// markListingSignedService + markListingLiveService were RETIRED. They duplicated the canonical stage
+// spine (advanceListingStageService → triggerStageActions) but fired orphaned underscore events
+// (logListingSigned/logListingLive) that matched NO dotted dispatcher handler, so their post-sign/live
+// tasks never ran anyway. The UI drives every stage change through advanceListingStage
+// (triggerStageActions owns the listing_agreement_signed + mls_active cases, and the MLS packet queue
+// moved into the mls_active case above). No remaining caller.
 
 export async function updateListingStageService(params: {
   listing_id: string
@@ -276,6 +192,26 @@ async function triggerStageActions(listingId: string, stage: string, agentId: st
       await createTask(agentId, listingId, "Schedule first open house", 3)
       await createTask(agentId, listingId, "Monitor showing activity daily", 1)
       await postListingToSocial(listing.id)
+      // Queue the MLS listing packet on go-live (migrated from the retired markListingLiveService so
+      // the canonical stage spine owns it). Idempotent — skip if a packet job already exists.
+      {
+        const { data: existingPacket } = await supabase
+          .from("listing_packet_jobs")
+          .select("id")
+          .eq("listing_id", listingId)
+          .eq("job_type", "mls_packet")
+          .limit(1)
+          .maybeSingle()
+        if (!existingPacket) {
+          await supabase.from("listing_packet_jobs").insert({
+            listing_id: listingId,
+            agent_user_id: agentId, // FK → users.id
+            job_type: "mls_packet",
+            status: "pending",
+            config: { includeFlyer: true, includeDisclosures: true, includePropertyReports: true, includeBinderCopies: true },
+          })
+        }
+      }
       break
     case "open_house":
       await createTask(agentId, listingId, "Prepare open house materials", 1)

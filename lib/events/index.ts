@@ -6,8 +6,6 @@ export { EVENT_TYPES } from "./types"
 export {
   registerEventDispatcher,
   logEventAndTrigger,
-  logListingSigned,
-  logListingLive,
   logMilestoneOverdue,
   logCreditStatusUpdated,
   logVideoGenerated,

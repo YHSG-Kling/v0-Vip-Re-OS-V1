@@ -71,6 +71,19 @@ const realExecutors: ListingApptPrepExecutors = {
 
 let activeExecutors: ListingApptPrepExecutors = realExecutors
 
+/**
+ * Deterministic dedupe key for the listing-appt-prep chain, keyed on the LISTING. Every booking
+ * path — the stage pipeline (advanceListingStage → appointment_scheduled), the calendar
+ * (ai-calendar-management.createAppointment), and the AI-ISA (bookSellerListingAppointment) — passes
+ * this as triggerEventId so they all collapse to ONE prep run per listing (the engine's
+ * findReusableRun matches on trigger_event_id first). Prevents double CMA / chapter-video renders /
+ * postcards when more than one path fires for the same appointment.
+ */
+export function listingApptPrepDedupeKey(listingId: string): string {
+  return `listing_appt_${listingId}`
+}
+
+
 /** Override the money-spending leaf executors (tests only). Pass null to reset to real. */
 export function setListingApptPrepExecutors(next: Partial<ListingApptPrepExecutors> | null): void {
   activeExecutors = next ? { ...realExecutors, ...next } : realExecutors

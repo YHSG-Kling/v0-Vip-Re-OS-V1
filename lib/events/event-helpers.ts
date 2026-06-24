@@ -95,43 +95,8 @@ export async function logEventAndTrigger(eventInput: EventInput): Promise<Event>
 // CONVENIENCE FUNCTIONS - Typed event creators
 // =====================================================
 
-export async function logListingSigned(params: {
-  brokerage_id: string
-  user_id: string
-  listing_id: string
-  go_live_date: string
-}): Promise<Event> {
-  return logEventAndTrigger({
-    brokerage_id: params.brokerage_id,
-    user_id: params.user_id,
-    event_type: KernelEvent.LISTING_AGREEMENT_SIGNED,
-    payload: {
-      listing_id: params.listing_id,
-      go_live_date: params.go_live_date,
-    },
-    source: "ui",
-    dedupe_key: `listing_signed_${params.listing_id}`,
-  })
-}
-
-export async function logListingLive(params: {
-  brokerage_id: string
-  user_id: string
-  listing_id: string
-  mls_number: string
-}): Promise<Event> {
-  return logEventAndTrigger({
-    brokerage_id: params.brokerage_id,
-    user_id: params.user_id,
-    event_type: KernelEvent.LISTING_PUBLISHED,
-    payload: {
-      listing_id: params.listing_id,
-      mls_number: params.mls_number,
-    },
-    source: "ui",
-    dedupe_key: `listing_live_${params.listing_id}`,
-  })
-}
+// logListingSigned + logListingLive RETIRED with the mark*Service callers — they emitted underscore
+// events (LISTING_AGREEMENT_SIGNED / LISTING_PUBLISHED) the dotted dispatcher switch never matched.
 
 export async function logMilestoneOverdue(params: {
   brokerage_id: string
