@@ -32,7 +32,21 @@ interface ProcessingResult {
 }
 
 // =====================================================
-// EVENT HANDLER REGISTRY - Dynamic lazy-loading of handlers
+// EVENT HANDLER REGISTRY — ⚠️ NOT CURRENTLY DISPATCHED.
+// =====================================================
+// orchestrateEvent() routes via the type-safe `switch (EVENT_TYPES.X)` below, NOT this map. This map
+// is the INTENDED wiring for BUILT-BUT-UNWIRED feature modules, and is the ONLY importer keeping them
+// referenced (so they're not flagged as orphans). DO NOT delete it or the modules — they are real
+// features awaiting wiring, not dead code:
+//   · @/app/actions/journey-tasks  → the CLIENT-PORTAL journey system (completeTask + submitTaskForm
+//     + getStageProgress + getTaskFormFields; emits journey.task_completed). Distinct from the general
+//     app/actions/tasks.ts. WIRING GAP: the portal journey UI doesn't yet call completeTask, so
+//     journey.task_completed is never emitted and handleTaskCompletedEvent never runs.
+//   · @/app/actions/video-content  → the VIDEO LIFECYCLE (generateVideoScript / createShortClip /
+//     handleVideoPublished / handleHighEngagement). video.generated is dispatched by the LOCAL
+//     handleVideoGenerated; video.script_approved/published/high_engagement are not yet emitted.
+// To activate: emit these events from the live flows (portal task UI; video publish/engagement) AND
+// dispatch them — either add cases to the switch or make orchestrateEvent consult this map.
 // =====================================================
 
 const EVENT_HANDLERS = {
