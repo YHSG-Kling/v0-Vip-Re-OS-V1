@@ -142,11 +142,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         console.error("[InboundRouter] processOptOut failed (non-blocking):", err)
       })
     } else if (optOutCheck.isOptOut && optOutCheck.confidence === "medium") {
-      // smart_assistant_suggestions: no brokerage_id, no contact_id, no metadata column
-      // Map to available columns: agent_id via entity lookup, action_payload_json for context
+      // A MEDIUM-confidence opt-out needs a human to confirm + suppress — failing to action it means
+      // we keep messaging someone who may have opted out (TCPA exposure). Previously this row carried
+      // NO brokerage_id / agent_id / user_id (the "no brokerage_id column" comment was wrong — it
+      // exists), so it was orphaned: invisible to every scoped view and reaching no one. Scope it to
+      // the brokerage, route it to the owning agent, and alert compliance/admins.
+      let ownerAgentId: string | null = null
+      if (entityType === "contact" && entityId) {
+        const { data: c } = await supabase.from("contacts").select("agent_id").eq("id", entityId).maybeSingle()
+        ownerAgentId = (c as { agent_id?: string | null } | null)?.agent_id ?? null
+      } else if (entityType === "lead" && entityId) {
+        const { data: l } = await supabase.from("leads").select("agent_id").eq("id", entityId).maybeSingle()
+        ownerAgentId = (l as { agent_id?: string | null } | null)?.agent_id ?? null
+      }
+
       await supabase
         .from("smart_assistant_suggestions")
         .insert({
+          brokerage_id: inbound.brokerageId,
+          agent_id: ownerAgentId,
           title: "Possible opt-out request received",
           description: `Message: "${messageText.slice(0, 200)}" — Review and suppress channel if needed.`,
           priority: "high",
@@ -163,6 +177,30 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           }),
         })
         .then(() => {}, () => {})
+
+      // Alert the humans who own consent — compliance officers + admins. Best-effort.
+      try {
+        const { data: reviewers } = await supabase
+          .from("users")
+          .select("id")
+          .eq("brokerage_id", inbound.brokerageId)
+          .in("user_type", ["compliance_officer", "admin", "broker", "broker_admin"])
+        for (const r of reviewers ?? []) {
+          await supabase.from("notifications").insert({
+            user_id: r.id,
+            brokerage_id: inbound.brokerageId,
+            type: "opt_out_review_required",
+            title: "Possible opt-out needs review",
+            body: `A ${optOutCheck.channel} message may be an opt-out: "${messageText.slice(0, 160)}". Confirm and suppress if needed.`,
+            entity_type: entityType ?? "contact",
+            entity_id: entityId ?? null,
+            priority: "high",
+            channel: "in_app",
+          })
+        }
+      } catch (e) {
+        console.error("[InboundRouter] failed to alert compliance of possible opt-out:", e)
+      }
     }
   }
 
