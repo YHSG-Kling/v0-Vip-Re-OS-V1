@@ -24,6 +24,12 @@ import { fileURLToPath } from "node:url"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const read = (p: string) => readFileSync(join(root, p), "utf8")
+
+/** Strip block + line comments so a code-pattern written INSIDE a comment (e.g. a doc example of a
+ *  `.eq("milestone_name","x")` call) is never mistaken for real code. Good enough for this guard. */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+}
 const BASELINE_PATH = join(root, "scripts", "vocabulary-drift-baseline.json")
 
 /** Pull the body of a named function via brace matching (handles nested braces). */
@@ -195,6 +201,46 @@ function emittedEventStrings(): Set<string> {
     fail++
     for (const d of dead) fails.push(`chain ${d.file}: triggerEvent "${d.event}" is never emitted — the chain is dead (managers skip it)`)
     console.log(`  ✗ workflow chains — DEAD trigger(s): ${JSON.stringify(dead.map((d) => `${d.file}:${d.event}`))}`)
+  }
+}
+
+// ── Milestone-name check: every code path that completes a milestone by name must target a REAL
+// milestone. The milestone system is the client-TRANSPARENCY mechanism — a `.eq("milestone_name","X")`
+// where X isn't a canonical milestone updates 0 rows (the milestone never completes, the portal never
+// shows progress). MILESTONE_NAMES (transaction-stages.ts) is the canonical vocabulary.
+function canonicalMilestoneNames(): Set<string> {
+  const src = read("lib/transactions/transaction-stages.ts")
+  const set = new Set<string>()
+  const block = /export const MILESTONE_NAMES\s*=\s*\{([\s\S]*?)\}\s*as const/.exec(src)
+  if (block) {
+    const re = /:\s*['"]([a-z_]+)['"]/g
+    let m: RegExpExecArray | null
+    while ((m = re.exec(block[1]))) set.add(m[1])
+  }
+  return set
+}
+
+{
+  const canon = canonicalMilestoneNames()
+  const targets: Array<{ name: string; file: string }> = []
+  for (const f of walkTs(["app", "lib"])) {
+    const src = stripComments(readFileSync(f, "utf8"))
+    const re = /\.eq\(\s*["']milestone_name["']\s*,\s*["']([^"']+)["']\s*\)/g
+    let m: RegExpExecArray | null
+    while ((m = re.exec(src))) targets.push({ name: m[1], file: f.replace(/\\/g, "/").split("/v0-Vip-Re-OS-V1/").pop() ?? f })
+  }
+  const unknown = targets.filter((t) => !canon.has(t.name))
+  if (canon.size === 0) {
+    fail++
+    fails.push("could not parse MILESTONE_NAMES from transaction-stages.ts — the milestone vocabulary check is blind")
+    console.log("  ✗ milestone names — could not read the canonical MILESTONE_NAMES")
+  } else if (unknown.length === 0) {
+    pass++
+    console.log(`  ✓ milestone targets — all ${targets.length} \`.eq(milestone_name,…)\` complete a real canonical milestone`)
+  } else {
+    fail++
+    for (const u of unknown) fails.push(`${u.file}: completes milestone_name "${u.name}" — NOT in MILESTONE_NAMES, so it updates 0 rows (no client transparency)`)
+    console.log(`  ✗ milestone targets — non-canonical: ${JSON.stringify(unknown.map((u) => u.name))}`)
   }
 }
 

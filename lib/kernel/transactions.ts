@@ -476,6 +476,15 @@ export async function seedTransactionMilestones(
   if (!items?.length) return { success: true, data: { count: 0 } }
 
   const baseDate = new Date(contractDate)
+  // ⚠️ TRANSPARENCY BUG (flagged for a data-model reconciliation): milestone_name is seeded from the
+  // template item's DISPLAY TITLE (e.g. "Clear to Close", "Home Inspection"), and milestone_type is
+  // whatever the template carries (often null). But several completion paths complete a milestone by
+  // its SNAKE_CASE canonical name (cda_delivered, gift_ordered) on the milestone_name column, or by
+  // milestone_type. Those match 0 rows against this data, so the milestone never completes and the
+  // client portal shows it stuck "pending". FIX: give each milestone a canonical, brokerage-independent
+  // identifier — populate milestone_template_items.milestone_type with a MILESTONE_NAMES value, seed
+  // transaction_milestones.milestone_type from it, and complete milestones by milestone_type (keep the
+  // free-text title for display only).
   const rows = items.map(item => ({
     transaction_id:    transactionId,
     brokerage_id:      brokerageId,
