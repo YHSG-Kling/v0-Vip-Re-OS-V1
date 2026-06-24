@@ -189,33 +189,13 @@ async function notifyPlatformStaffOfProposal(
   connector: string,
   proposal:  ProposalRow,
 ): Promise<void> {
-  // Resolve recipients via the platform-staff set used elsewhere (resolve-user-role.ts).
-  const { PLATFORM_STAFF_ROLES } = await import("@/lib/auth/resolve-user-role")
-  // platform_role is the canonical staff field; user_type='superadmin' is the legacy gate. Match
-  // either, then dedupe ids client-side so a superadmin who also has a platform_role isn't notified
-  // twice for the same proposal.
-  const platformRoles = (PLATFORM_STAFF_ROLES as readonly string[]).join(",")
-  const { data: staff } = await supabase
-    .from("users")
-    .select("id")
-    .or(`user_type.eq.superadmin,platform_role.in.(${platformRoles})`)
-    .limit(500)
-  if (!staff || staff.length === 0) return
-  const uniqueIds = Array.from(new Set(staff.map((u: any) => u.id as string).filter(Boolean)))
-  if (uniqueIds.length === 0) return
-
-  const title = `Healing proposal: ${connector}`
-  const body  = `${proposal.proposal_kind}: ${proposal.proposal_summary}`.slice(0, 480)
-  const rows = uniqueIds.map((id) => ({
-    user_id:      id,
-    type:         "connector_healing_proposal",
-    title,
-    body,
-    entity_type:  "connector_healing_proposal",
-    entity_id:    proposal.id,
-    priority:     "high",
-    channel:      "in_app",
-    is_read:      false,
-  }))
-  await supabase.from("notifications").insert(rows)
+  const { notifyPlatformStaff } = await import("@/lib/notifications/platform-staff")
+  await notifyPlatformStaff(supabase, {
+    type:       "connector_healing_proposal",
+    title:      `Healing proposal: ${connector}`,
+    body:       `${proposal.proposal_kind}: ${proposal.proposal_summary}`,
+    entityType: "connector_healing_proposal",
+    entityId:   proposal.id,
+    priority:   "high",
+  })
 }

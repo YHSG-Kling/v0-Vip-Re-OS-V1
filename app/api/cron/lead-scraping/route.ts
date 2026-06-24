@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { ZenrowsClient, BatchDataClient } from "@/lib/external"
 import { processRawRecord } from "@/lib/lead-pipeline"
 import { escalateScraperFailureIfNeeded } from "@/lib/lead-pipeline/scraper-health"
+import { MAX_PROMOTION_ATTEMPTS, STRANDED_STATUSES, reportStuckRawLeads } from "@/lib/lead-pipeline/promotion-gate-health"
 import {
   buildPropertySearchUrl,
   parsePropertySearchResults,
@@ -737,18 +738,15 @@ export async function GET(request: Request) {
     // trying — the info may become available later (PDL surfaces a new email, mailing address
     // verifies, etc.). We reset stranded rows to 'pending' so the promotion loop above re-runs
     // the full territory → identity → dedup → enrichment → eligibility flow on the next daily
-    // cron tick. Capped at 100 rows/run and 10 attempts/row so a permanently-unenrichable record
-    // never burns the budget forever.
-    const STRANDED_STATUSES = [
-      'insufficient_identity_for_promotion',
-      'insufficient_identity',
-      'insufficient_contact_data',
-    ]
+    // cron tick. Capped at 100 rows/run and MAX_PROMOTION_ATTEMPTS attempts/row so a
+    // permanently-unenrichable record never burns the budget forever. The cap +
+    // stranded-status vocabulary live in promotion-gate-health so the sweep and the
+    // stuck-record monitor below can't drift.
     const { data: stranded } = await supabase
       .from('raw_scraped_leads')
       .select('id, promotion_attempts')
-      .in('processing_status', STRANDED_STATUSES)
-      .lt('promotion_attempts', 10)
+      .in('processing_status', STRANDED_STATUSES as unknown as string[])
+      .lt('promotion_attempts', MAX_PROMOTION_ATTEMPTS)
       .order('updated_at', { ascending: true })
       .limit(100)
     for (const r of stranded ?? []) {
@@ -768,6 +766,12 @@ export async function GET(request: Request) {
         results.errors.push(`Re-enrich error for ${r.id}: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
+
+    // ── STUCK-RECORD WATCH — Data Steward surfaces permanently-unpromotable raws ──
+    // Records that exhausted the promotion cap (or territory_mismatch) are dropped by
+    // the sweep above and would accumulate silently. The Steward reports them to
+    // platform staff once/day so the platform fixes enrichment/territory config.
+    await reportStuckRawLeads(supabase)
 
     // ── RECRUIT PROMOTION PASS — promote pending raw recruiting prospects ─────
     // Mirrors the lead promotion pass: brokerage_id is NULL on platform-sourced
