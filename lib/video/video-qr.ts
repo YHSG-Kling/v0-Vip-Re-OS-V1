@@ -34,8 +34,8 @@
  * (app/actions/ai-direct-mail.ts).
  */
 import "server-only"
-import QRCode from "qrcode"
 import { createServiceClient } from "@/lib/supabase/service"
+import { mintTrackedQr, normalizeOrigin } from "@/lib/marketing/tracked-qr"
 
 /** Canonical video kinds that carry a tracked outro QR. */
 export type VideoQrKind =
@@ -69,12 +69,6 @@ export interface VideoQrDestination {
    *  always encodes the /api/qr/scan?slug= redirector — this URL is stored as
    *  qr_codes.target_url so the resolver can edit it without reprinting. */
   buildTargetUrl: (origin: string, refs: VideoQrEntityRefs) => string
-}
-
-const ORIGIN_FALLBACK = "https://app.vipagentos.com"
-
-function normalizeOrigin(origin?: string | null): string {
-  return (origin ?? process.env.NEXT_PUBLIC_APP_URL ?? ORIGIN_FALLBACK).replace(/\/$/, "")
 }
 
 /**
@@ -180,85 +174,29 @@ export async function mintVideoQr(
   args: MintVideoQrArgs,
   client?: AnyClient,
 ): Promise<MintedVideoQr | null> {
-  try {
-    if (!args.brokerageId || !args.agentUserId) return null
-
-    const svc: AnyClient = client ?? createServiceClient()
-    const origin = normalizeOrigin(args.origin)
-    const dest = qrDestinationForKind(args.kind)
-    const label = videoQrLabel(args)
-
-    // 1. Reuse an existing tracked code for this (entity, kind).
-    const { data: existing } = await svc
-      .from("qr_codes")
-      .select("id, slug, target_url, destination_type")
-      .eq("brokerage_id", args.brokerageId)
-      .eq("label", label)
-      .eq("is_active", true)
-      .maybeSingle()
-
-    let qrCodeId: string
-    let slug: string
-
-    if (existing?.id && existing?.slug) {
-      qrCodeId = existing.id as string
-      slug = existing.slug as string
-    } else {
-      // 2. Mint a fresh tracked row. Slug mirrors createQrCodeAction's recipe.
-      const newSlug = `${label
-        .toLowerCase()
-        .replace(/[^a-z0-9]/g, "-")
-        .replace(/-+/g, "-")
-        .slice(0, 40)}-${Date.now().toString(36)}`
-
-      const { data: inserted, error } = await svc
-        .from("qr_codes")
-        .insert({
-          brokerage_id: args.brokerageId,
-          agent_id: args.agentUserId,
-          label,
-          // target_url is patched to the real scan URL once we have the slug;
-          // the semantic destination URL is recorded as the resolver fallback.
-          target_url: dest.buildTargetUrl(origin, args),
-          purpose: "campaign",
-          destination_type: dest.destinationType,
-          slug: newSlug,
-          listing_id: args.listingId ?? null,
-          is_active: true,
-          scan_count: 0,
-          lead_count: 0,
-        })
-        .select("id, slug")
-        .maybeSingle()
-
-      if (error || !inserted?.id || !inserted?.slug) return null
-      qrCodeId = inserted.id as string
-      slug = inserted.slug as string
-
-      // Patch target_url to the canonical scan redirector now the slug exists.
-      const scanUrl = `${origin}/api/qr/scan?slug=${slug}`
-      await svc.from("qr_codes").update({ target_url: scanUrl }).eq("id", qrCodeId)
-    }
-
-    const scanUrl = `${origin}/api/qr/scan?slug=${slug}`
-
-    // 3. Encode the redirector — same options as the postcard renderer.
-    const qrCodeDataUrl = await QRCode.toDataURL(scanUrl, {
-      width: 600,
-      margin: 1,
-      errorCorrectionLevel: "M",
-      color: { dark: "#000000", light: "#ffffff" },
-    })
-
-    return {
-      qrCodeId,
-      slug,
-      scanUrl,
-      qrCodeDataUrl,
+  if (!args.brokerageId || !args.agentUserId) return null
+  const dest = qrDestinationForKind(args.kind)
+  // Delegate the DB write + PNG encode to the shared tracked-QR core; this module only owns the
+  // video KIND→destination mapping + the idempotency label.
+  const minted = await mintTrackedQr(
+    {
+      brokerageId: args.brokerageId,
+      agentId: args.agentUserId,
+      label: videoQrLabel(args),
       destinationType: dest.destinationType,
-    }
-  } catch {
-    // A video must still render without a QR — null = skip.
-    return null
+      targetUrl: dest.buildTargetUrl(normalizeOrigin(args.origin), args),
+      listingId: args.listingId ?? null,
+      purpose: "campaign",
+      origin: args.origin,
+    },
+    client,
+  )
+  if (!minted) return null
+  return {
+    qrCodeId: minted.qrCodeId,
+    slug: minted.slug,
+    scanUrl: minted.scanUrl,
+    qrCodeDataUrl: minted.qrCodeDataUrl,
+    destinationType: dest.destinationType,
   }
 }

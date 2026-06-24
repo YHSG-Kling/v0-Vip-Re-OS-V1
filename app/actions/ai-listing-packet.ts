@@ -6,6 +6,7 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { mintMarketingQr } from "@/lib/marketing/marketing-qr"
 
 // Stage values that indicate the listing is live on MLS and eligible for packet generation
 const MLS_LIVE_STAGES = ["live", "mls_active", "active", "mls_live", "for_sale", "MLS_ACTIVE"]
@@ -182,6 +183,15 @@ export async function generateListingPacket(config: ListingPacketConfig) {
       documents.push(appraiserReport)
     }
 
+    // Packet-level tracked QR for the binder cover — one scannable code to the live listing across
+    // the whole packet. Idempotent per listing; best-effort.
+    const packetQr = await mintMarketingQr({
+      brokerageId: auth.brokerageId,
+      agentId: listing.agent_id ?? null,
+      kind: "listing_packet",
+      listingId: config.listingId,
+    })
+
     // Update packet job with generated content stored in config jsonb
     await supabase
       .from("listing_packet_jobs")
@@ -191,6 +201,9 @@ export async function generateListingPacket(config: ListingPacketConfig) {
           ...config,
           sections: documents.map(d => d.type),
           content: documents,
+          qr: packetQr
+            ? { scanUrl: packetQr.scanUrl, qrCodeDataUrl: packetQr.qrCodeDataUrl, destinationType: packetQr.destinationType }
+            : null,
         },
       })
       .eq("id", packet.id)
@@ -261,10 +274,23 @@ Return as JSON:
 
     const flyerData = JSON.parse(flyerContent)
 
+    // Attach a tracked, scannable QR so the printed flyer drives the prospect to the live listing
+    // page (or RSVP). Reuses the shared tracked-QR core; idempotent per listing so re-generating the
+    // flyer keeps the same code. Best-effort — a mint failure never blocks the flyer.
+    const qr = await mintMarketingQr({
+      brokerageId: listing.brokerage_id ?? auth.brokerageId,
+      agentId: listing.agent_id ?? null,
+      kind: "listing_flyer",
+      listingId: listing.id ?? null,
+    })
+
     return {
       type: "listing_flyer",
       name: `Listing Flyer - ${listing.address}`,
-      content: flyerData,
+      content: {
+        ...flyerData,
+        qr: qr ? { scanUrl: qr.scanUrl, qrCodeDataUrl: qr.qrCodeDataUrl, destinationType: qr.destinationType } : null,
+      },
       status: "generated" as const,
       generatedAt: new Date().toISOString(),
     }
