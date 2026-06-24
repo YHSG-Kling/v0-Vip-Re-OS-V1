@@ -16,7 +16,7 @@ export function classifyCoordination(signalType: string | null | undefined): Coo
   // Something needs human/senior attention NOW.
   if (/escalat|fire_drill|overload|war_room|crushed_cap|stalling|risk_escalated|convened|huddle|deal_save|action_pending/.test(t)) return "escalation"
   // A compliance/quality flag was raised (not an emergency, but needs review).
-  if (/violation|compliance_failed|surprise|finding|regulatory|fatigue|autopsy|withdrawn/.test(t)) return "alert"
+  if (/violation|compliance_failed|surprise|finding|regulatory|fatigue|autopsy|withdrawn|source_failed/.test(t)) return "alert"
   // One manager handed work/an asset to another (claimed, ready, routed).
   if (/claim|ready|appointment|recovery|watch|handoff|candidate|reengage|call_/.test(t)) return "handoff"
   return "update"
