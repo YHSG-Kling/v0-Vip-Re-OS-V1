@@ -10,6 +10,7 @@ import { BookOpen } from "lucide-react"
 
 interface LearnPageProps {
   params: Promise<{ contactId: string }>
+  searchParams: Promise<{ milestone?: string }>
 }
 
 function LearnSkeleton() {
@@ -42,8 +43,9 @@ function LearnSkeleton() {
   )
 }
 
-export default async function LearnPage({ params }: LearnPageProps) {
+export default async function LearnPage({ params, searchParams }: LearnPageProps) {
   const { contactId } = await params
+  const { milestone: focusMilestone } = await searchParams
   const supabase = await createClient()
 
   // Verify contact exists — fetch stage + persona for header
@@ -115,6 +117,7 @@ export default async function LearnPage({ params }: LearnPageProps) {
           initialFeed={feed}
           agentId={contact.agent_id ?? null}
           contactFirstName={contact.first_name ?? null}
+          focusMilestone={focusMilestone ?? null}
         />
       </Suspense>
     </div>

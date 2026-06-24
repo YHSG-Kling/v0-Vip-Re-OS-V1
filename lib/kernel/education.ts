@@ -6,6 +6,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import type { EducationFormat, JourneyPhase, Persona } from "./types"
+import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
 
 // ─── AGE SEGMENT ──────────────────────────────────────────────────────────────
 
@@ -585,7 +586,7 @@ export async function getEducationPlan(params: GetEducationPlanParams): Promise<
       // Find the earliest incomplete milestone as the current position
       const { data: milestone } = await supabase
         .from("transaction_milestones")
-        .select("milestone_name")
+        .select("milestone_name, milestone_type")
         .eq("transaction_id", tx.id)
         .eq("status", "pending")
         .order("target_date", { ascending: true })
@@ -593,7 +594,9 @@ export async function getEducationPlan(params: GetEducationPlanParams): Promise<
         .maybeSingle()
 
       if (milestone?.milestone_name) {
-        resolvedMilestoneKey = milestone.milestone_name
+        // Anchor active-journey lessons on the canonical identity so
+        // filterToMilestone matches the catalog's milestoneKey vocabulary.
+        resolvedMilestoneKey = resolveMilestoneIdentity(milestone) ?? milestone.milestone_name
       }
     }
   }

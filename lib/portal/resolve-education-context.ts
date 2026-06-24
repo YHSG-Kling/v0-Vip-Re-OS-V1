@@ -9,6 +9,7 @@ import {
   type AgeSegment,
   type GenerationalCohort,
 } from "@/lib/kernel/education"
+import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
 
 // ─── MILESTONE LABEL MAPS ─────────────────────────────────────────────────────
 
@@ -202,7 +203,9 @@ export async function resolveEducationContext(
       .maybeSingle()
 
     if (milestone) {
-      currentMilestone = milestone.milestone_name
+      // Anchor on the canonical identity so the lesson/explanation maps resolve
+      // regardless of the tier's free-text milestone_name.
+      currentMilestone = resolveMilestoneIdentity(milestone) ?? milestone.milestone_name
     }
   }
 

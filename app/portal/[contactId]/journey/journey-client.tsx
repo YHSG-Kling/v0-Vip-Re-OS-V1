@@ -24,6 +24,7 @@ import {
 } from "lucide-react"
 import type { PortalView } from "@/lib/kernel/portal"
 import type { TransactionMilestone, TransactionData } from "./page"
+import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
 
 interface JourneyClientProps {
   contactId: string
@@ -269,10 +270,14 @@ export default function JourneyClient({
               {milestones.map((milestone, index) => {
                 const isExpanded = expandedMilestones.has(milestone.id)
                 const delayed = isDelayed(milestone)
-                const label = labelMap[milestone.milestone_name] || milestone.milestone_name?.replace(/_/g, " ") || "Milestone"
-                const responsibleParty = responsiblePartyMap[milestone.milestone_name] || "Your Team"
-                const explanation = explanationMap[milestone.milestone_name]
-                const lessonKey = lessonMap[milestone.milestone_name]
+                // Resolve the row's canonical identity FIRST, then key the education /
+                // copy maps on it — keying on the free-text milestone_name silently
+                // missed on live human-named data ("Home Inspection", "Closing Day").
+                const milestoneId = resolveMilestoneIdentity(milestone)
+                const label = (milestoneId && labelMap[milestoneId]) || milestone.milestone_name?.replace(/_/g, " ") || "Milestone"
+                const responsibleParty = (milestoneId && responsiblePartyMap[milestoneId]) || "Your Team"
+                const explanation = milestoneId ? explanationMap[milestoneId] : undefined
+                const lessonKey = milestoneId ? lessonMap[milestoneId] : undefined
                 const isCurrent = index === currentMilestoneIndex
 
                 return (
@@ -352,9 +357,9 @@ export default function JourneyClient({
                             <p className="text-sm text-muted-foreground leading-relaxed">
                               {explanation}
                             </p>
-                            {lessonKey && (
+                            {lessonKey && milestoneId && (
                               <Link
-                                href={`/portal/${contactId}/learn?lesson=${lessonKey}`}
+                                href={`/portal/${contactId}/learn?milestone=${milestoneId}`}
                                 className="mt-2 inline-flex items-center gap-1 text-sm text-primary hover:underline"
                               >
                                 <GraduationCap className="h-4 w-4" />

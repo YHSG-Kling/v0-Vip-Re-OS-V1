@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useMemo } from "react"
+import { useState, useCallback, useMemo, useEffect, useRef } from "react"
 import useSWR from "swr"
 import { Progress } from "@/app/components/ui/progress"
 import { Tabs, TabsList, TabsTrigger } from "@/app/components/ui/tabs"
@@ -20,6 +20,8 @@ interface LearnClientProps {
   agentId?: string | null
   /** contact first name for notification body */
   contactFirstName?: string | null
+  /** canonical milestone id to auto-open on arrival (journey "Learn about this step" deep-link) */
+  focusMilestone?: string | null
 }
 
 type FilterTab = "all" | "unread" | "completed"
@@ -31,10 +33,11 @@ const fetcher = async (url: string) => {
   return res.json()
 }
 
-export default function LearnClient({ contactId, initialFeed, agentId, contactFirstName }: LearnClientProps) {
+export default function LearnClient({ contactId, initialFeed, agentId, contactFirstName, focusMilestone }: LearnClientProps) {
   const [filter, setFilter] = useState<FilterTab>("all")
   const [selectedLesson, setSelectedLesson] = useState<LessonFeedItem | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const focusedRef = useRef(false)
 
   // Use SWR for data with initial data from server
   const { data: feed, mutate } = useSWR<LessonFeedResult>(
@@ -77,6 +80,21 @@ export default function LearnClient({ contactId, initialFeed, agentId, contactFi
     setSelectedLesson(lesson)
     setDrawerOpen(true)
   }, [])
+
+  // Journey deep-link: when the contact arrives from a milestone's "Learn about
+  // this step" link (/learn?milestone=<canonical id>), auto-open that milestone's
+  // lesson once. Matches on the lesson's canonical milestoneKey — the same identity
+  // the journey timeline resolved. Runs once per mount (focusedRef guard).
+  useEffect(() => {
+    if (focusedRef.current || !focusMilestone) return
+    const target =
+      currentFeed.lessons.find((l) => l.milestoneKey === focusMilestone) ?? null
+    if (target) {
+      focusedRef.current = true
+      setSelectedLesson(target)
+      setDrawerOpen(true)
+    }
+  }, [focusMilestone, currentFeed.lessons])
 
   // Handle lesson read — optimistic update + cross-system persistence + 100% agent notification.
   // Post-1043: persists via markResourceCompleted → learning_assignments (status='completed').

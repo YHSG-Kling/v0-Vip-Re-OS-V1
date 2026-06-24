@@ -20,6 +20,7 @@
 
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
 
 export interface GatedModule {
   id:                   string
@@ -80,24 +81,29 @@ export async function resolveMilestoneGatedFeed(
   if (txnId) {
     const { data: milestones } = await supabase
       .from("transaction_milestones")
-      .select("milestone_name, status, target_date")
+      .select("milestone_name, milestone_type, status, target_date")
       .eq("transaction_id", txnId)
       .eq("is_client_visible", true)
 
-    for (const m of (milestones ?? []) as Array<{ milestone_name: string; status: string }>) {
-      if (m.status === "completed") completedMilestones.add(m.milestone_name)
+    // Gate on the canonical identity (gated_until_milestone is authored in the
+    // canonical vocabulary) — the free-text milestone_name never matched.
+    for (const m of (milestones ?? []) as Array<{ milestone_name: string; milestone_type: string | null; status: string }>) {
+      if (m.status === "completed") {
+        const id = resolveMilestoneIdentity(m)
+        if (id) completedMilestones.add(id)
+      }
     }
     // Earliest pending = the customer's current milestone
     const { data: cur } = await supabase
       .from("transaction_milestones")
-      .select("milestone_name")
+      .select("milestone_name, milestone_type")
       .eq("transaction_id", txnId)
       .eq("is_client_visible", true)
       .eq("status", "pending")
       .order("target_date", { ascending: true })
       .limit(1)
       .maybeSingle()
-    currentMilestone = (cur?.milestone_name as string | null) ?? null
+    currentMilestone = cur ? resolveMilestoneIdentity(cur) : null
   }
 
   // 3. Completed learning_modules for this contact (post-Sprint-7 collapse)
