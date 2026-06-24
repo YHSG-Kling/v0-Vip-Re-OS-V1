@@ -1,5 +1,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
-import { CRITICAL_MILESTONES, CLIENT_VISIBLE_MILESTONES } from "./transaction-stages"
+import { CRITICAL_MILESTONES } from "./transaction-stages"
+import { resolveMilestoneIdentity } from "./milestone-identity"
+import { REQUIRED_MILESTONE_IDS, catalogEntry, deadlineBearingMilestones } from "./milestone-catalog"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 export interface CreateMilestoneParams {
@@ -36,59 +38,63 @@ export async function ensureRequiredMilestones(
 ): Promise<void> {
   const supabase = createServiceClient()
 
-  // Required milestone names for all transactions
-  const requiredMilestones = [
-    "earnest_money_due",
-    "inspection_deadline",
-    "inspection_completed",
-    "appraisal_ordered",
-    "appraisal_deadline",
-    "appraisal_completed",
-    "financing_deadline",
-    "clear_to_close_received",
-    "final_walkthrough_scheduled",
-    "cda_delivered",
-    "cd_uploaded",
-    "funding_confirmed",
-    "closing_date"
-  ]
-
-  // Get existing milestones
+  // Dedupe by canonical IDENTITY (not raw milestone_name) so a milestone the journey
+  // seeder already created with a human name ("Home Inspection") is recognised here
+  // by its identity (inspection_deadline) and NOT duplicated. Names stay snake_case
+  // for the rows we insert because completion code (cda-workflow, title watchtower,
+  // milestone-service.completeMilestone) matches these by milestone_name. Identity,
+  // visibility, and deadline metadata all come from the single milestone catalog.
   const { data: existing } = await supabase
     .from("transaction_milestones")
-    .select("milestone_name")
+    .select("id, milestone_name, milestone_type, target_date")
     .eq("transaction_id", transactionId)
     .eq("brokerage_id", brokerageId)
 
-  const existingNames = new Set(existing?.map(m => m.milestone_name) || [])
+  const existingById = new Map<string, { rowId: string; target_date: string | null }>()
+  for (const m of (existing ?? []) as Array<{ id: string; milestone_name: string; milestone_type: string | null; target_date: string | null }>) {
+    const id = resolveMilestoneIdentity(m)
+    if (id && !existingById.has(id)) existingById.set(id, { rowId: m.id, target_date: m.target_date })
+  }
 
-  // Create missing milestones. is_client_visible is set per-milestone based
-  // on the canonical CLIENT_VISIBLE_MILESTONES list — the seller/buyer
-  // portals filter milestones by this flag, so internal-only items
-  // (cda_delivered, cd_uploaded, etc.) don't leak into the client view.
-  const clientVisibleSet = new Set(CLIENT_VISIBLE_MILESTONES as string[])
-  const missingMilestones = requiredMilestones
-    .filter(name => !existingNames.has(name))
-    .map(name => ({
+  const now = new Date().toISOString()
+  const toInsert: Array<Record<string, unknown>> = []
+  const dateFills: Array<{ rowId: string; date: string }> = []
+
+  for (const id of REQUIRED_MILESTONE_IDS) {
+    const entry = catalogEntry(id)
+    const term = entry?.deadline ? contractTerms[entry.deadline.termKey] : undefined
+    const date = term ? new Date(term as string).toISOString().slice(0, 10) : null
+    const found = existingById.get(id)
+    if (found) {
+      // Fill the deadline date on a journey-seeded milestone that has none yet.
+      if (date && !found.target_date) dateFills.push({ rowId: found.rowId, date })
+      continue
+    }
+    toInsert.push({
       transaction_id: transactionId,
       brokerage_id: brokerageId,
-      milestone_name: name,
-      target_date: contractTerms[name]
-        ? new Date(contractTerms[name] as string).toISOString().slice(0, 10)
-        : null,
+      milestone_name: id,                          // snake_case — completion code matches by name
+      milestone_type: id,                          // canonical identity
+      is_client_visible: entry?.clientVisible ?? false,
+      target_date: date,
       status: "pending" as const,
-      is_client_visible: clientVisibleSet.has(name),
-      created_at: new Date().toISOString()
-    }))
+      created_at: now,
+    })
+  }
 
-  if (missingMilestones.length > 0) {
-    const { error } = await supabase
-      .from("transaction_milestones")
-      .insert(missingMilestones)
-
+  if (toInsert.length > 0) {
+    const { error } = await supabase.from("transaction_milestones").insert(toInsert)
     if (error) {
       throw new Error(`[milestone-service] Failed to create milestones: ${error.message}`)
     }
+  }
+
+  for (const fill of dateFills) {
+    await supabase
+      .from("transaction_milestones")
+      .update({ target_date: fill.date, updated_at: now })
+      .eq("id", fill.rowId)
+      .then(() => null, () => null)
   }
 
   // Mirror deadline-bearing milestones into transaction_deadlines so the
@@ -111,17 +117,17 @@ export async function ensureRequiredMilestones(
  * Only deadline-style items are mirrored — pure status milestones like
  * `inspection_completed` aren't deadlines, they're completion markers.
  */
+// Derived from the SINGLE milestone catalog so deadline metadata cannot drift from
+// the milestone definitions. milestone === the canonical id (== the contractTerms key).
 const DEADLINE_BEARING: Array<{
   milestone:        string
   deadlineType:     string
   calendarEventType?: "inspection" | "appraisal" | "financing_deadline" | "walkthrough" | "closing"
-}> = [
-  { milestone: "earnest_money_due",   deadlineType: "earnest_money" },
-  { milestone: "inspection_deadline", deadlineType: "inspection",  calendarEventType: "inspection" },
-  { milestone: "appraisal_deadline",  deadlineType: "appraisal",   calendarEventType: "appraisal" },
-  { milestone: "financing_deadline",  deadlineType: "financing",   calendarEventType: "financing_deadline" },
-  { milestone: "closing_date",        deadlineType: "closing",     calendarEventType: "closing" },
-]
+}> = deadlineBearingMilestones().map((e) => ({
+  milestone:         e.deadline.termKey,
+  deadlineType:      e.deadline.deadlineType,
+  calendarEventType: e.deadline.calendarEventType,
+}))
 
 export async function ensureTransactionDeadlines(
   transactionId: string,

@@ -44,6 +44,7 @@
     "test:cda-flow": "tsx scripts/cda-flow-simulator.ts",
     "test:portal-milestone-visibility": "tsx scripts/portal-milestone-visibility-simulator.ts",
     "test:milestone-education-tie": "tsx scripts/milestone-education-tie-simulator.ts",
+    "test:milestone-seeder-consolidation": "tsx scripts/milestone-seeder-consolidation-simulator.ts",
     "harness:integrity": "npm run test:schema-drift && npm run test:no-orphan-actions && npm run test:use-server-exports && npm run test:no-dead-components && npm run test:manager-ownership && npm run test:signal-integrity && npm run test:event-flow && npm run test:vocabulary-drift && npm run test:data-guard && npm run test:data-guard-guard && npm run test:egress-send-guard",
     "test:revenue-pipeline": "tsx scripts/revenue-pipeline-simulator.ts",
     "test:first-look-text": "tsx scripts/first-look-text-simulator.ts",

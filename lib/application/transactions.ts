@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
+import { milestoneJourneyFor } from "@/lib/transactions/milestone-catalog"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { runPipelineSimple } from "@/lib/ai"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
@@ -232,54 +232,17 @@ export async function updateTransaction(
 export async function generateMilestones(transactionId: string, transactionType: string) {
   const supabase = await createClient()
 
-  const buyerMilestones = [
-    { name: "Offer Submitted", order_index: 1, category: "contract" },
-    { name: "Offer Accepted", order_index: 2, category: "contract" },
-    { name: "Earnest Money Deposited", order_index: 3, category: "financial" },
-    { name: "Home Inspection Scheduled", order_index: 4, category: "inspection" },
-    { name: "Home Inspection Complete", order_index: 5, category: "inspection" },
-    { name: "Repair Negotiations Complete", order_index: 6, category: "inspection" },
-    { name: "Appraisal Ordered", order_index: 7, category: "financial" },
-    { name: "Appraisal Complete", order_index: 8, category: "financial" },
-    { name: "Loan Approved", order_index: 9, category: "financial" },
-    { name: "Title Search Complete", order_index: 10, category: "title" },
-    { name: "Final Walkthrough", order_index: 11, category: "closing" },
-    { name: "Closing Documents Signed", order_index: 12, category: "closing" },
-    { name: "Funds Transferred", order_index: 13, category: "closing" },
-    { name: "Keys Received", order_index: 14, category: "closing" },
-  ]
-
-  const sellerMilestones = [
-    { name: "Listing Agreement Signed", order_index: 1, category: "listing" },
-    { name: "Property Listed", order_index: 2, category: "listing" },
-    { name: "Offer Received", order_index: 3, category: "contract" },
-    { name: "Offer Accepted", order_index: 4, category: "contract" },
-    { name: "Earnest Money Received", order_index: 5, category: "financial" },
-    { name: "Buyer Inspection Complete", order_index: 6, category: "inspection" },
-    { name: "Repair Request Addressed", order_index: 7, category: "inspection" },
-    { name: "Appraisal Complete", order_index: 8, category: "financial" },
-    { name: "Buyer Financing Approved", order_index: 9, category: "financial" },
-    { name: "Title Clear", order_index: 10, category: "title" },
-    { name: "Closing Scheduled", order_index: 11, category: "closing" },
-    { name: "Closing Documents Signed", order_index: 12, category: "closing" },
-    { name: "Funds Received", order_index: 13, category: "closing" },
-    { name: "Keys Delivered", order_index: 14, category: "closing" },
-  ]
-
-  const milestones = transactionType === "sale" ? sellerMilestones : buyerMilestones
-  // MILESTONE IDENTITY: milestone_type carries the STABLE canonical identity
-  // (resolveMilestoneIdentity), NOT the coarse category — so completions, reporting,
-  // portal education, and the calendar all key off the same identity regardless of
-  // the human milestone_name across thousands of tiers. When a row can't be mapped we
-  // fall back to its category rather than null (keeps a non-empty type for display).
-  // Visibility stays the agent-controlled is_client_visible flag (default true) — the
-  // kernel decides the client view by that flag, never by milestone_type.
-  // Map seed fields onto real columns: name→milestone_name (NOT NULL),
-  // canonical identity→milestone_type. order_index has no column here.
-  const milestonesWithTransactionId = milestones.map((m) => ({
+  // Build the journey from the SINGLE canonical catalog (milestone-catalog.ts), so a
+  // directly-created transaction gets the SAME canonical identities, display names, and
+  // curated visibility as one created via the offer→transaction bridge. milestone_type
+  // carries the stable identity (drives education/reporting/calendar); milestone_name is
+  // the human label; is_client_visible is the curated default (agent-overridable).
+  const journey = milestoneJourneyFor(transactionType)
+  const milestonesWithTransactionId = journey.map((m) => ({
     transaction_id: transactionId,
     milestone_name: m.name,
-    milestone_type: resolveMilestoneIdentity({ milestone_name: m.name }) ?? m.category,
+    milestone_type: m.id,
+    is_client_visible: m.clientVisible,
     status: "pending",
   }))
 
