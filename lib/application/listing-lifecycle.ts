@@ -188,30 +188,14 @@ async function triggerStageActions(listingId: string, stage: string, agentId: st
       await createTask(agentId, listingId, 'Send "coming soon" to agent network', 1)
       await createTask(agentId, listingId, "Activate MLS listing in 48 hours", 2)
       break
+    // NOTE: this switch uses a LEGACY lowercase stage vocabulary that no longer matches the canonical
+    // UPPERCASE lifecycle stages, so it currently never fires from the UI (flagged for a dedicated
+    // reconciliation pass). The high-value automations (prep chain, MLS packet) are fired on the
+    // canonical stage names in app/actions/listing-lifecycle.ts::fireStageAutomations until then.
     case "mls_active":
       await createTask(agentId, listingId, "Schedule first open house", 3)
       await createTask(agentId, listingId, "Monitor showing activity daily", 1)
       await postListingToSocial(listing.id)
-      // Queue the MLS listing packet on go-live (migrated from the retired markListingLiveService so
-      // the canonical stage spine owns it). Idempotent — skip if a packet job already exists.
-      {
-        const { data: existingPacket } = await supabase
-          .from("listing_packet_jobs")
-          .select("id")
-          .eq("listing_id", listingId)
-          .eq("job_type", "mls_packet")
-          .limit(1)
-          .maybeSingle()
-        if (!existingPacket) {
-          await supabase.from("listing_packet_jobs").insert({
-            listing_id: listingId,
-            agent_user_id: agentId, // FK → users.id
-            job_type: "mls_packet",
-            status: "pending",
-            config: { includeFlyer: true, includeDisclosures: true, includePropertyReports: true, includeBinderCopies: true },
-          })
-        }
-      }
       break
     case "open_house":
       await createTask(agentId, listingId, "Prepare open house materials", 1)

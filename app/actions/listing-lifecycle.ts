@@ -174,20 +174,45 @@ export async function advanceListingStage(
       created_at: new Date().toISOString(),
     })
 
+    // A manual override still RUNS the stage's automations — the listing IS now at this stage, so its
+    // managers must act (prep chain, packet, …). The override only bypassed the PREREQUISITE gates.
+    await fireStageAutomations(listingId, toStage, overrideCtx.userId)
+
     return { success: true, listingId, fromStage: listing.lifecycle_stage, toStage }
   }
 
   const result = await advanceListingStageService(listingId, toStage, agentId, notes)
 
-  // Advancing a listing to the appointment_scheduled stage is one of the booking paths that must run
-  // the flagship listing-appt-prep chain (CMA → presentation → chapter videos → pre-appointment drip
-  // → pre-listing postcard). triggerStageActions (lib/) can't import the app/ chain trigger, so it's
-  // fired here. Deterministic per-listing dedupe key collapses this with the calendar + AI-ISA paths
-  // into ONE prep run (no double CMA/postcard). Best-effort — never block the stage advance.
-  if (toStage === "appointment_scheduled") {
-    try {
-      const { createServiceClient } = await import("@/lib/supabase/service")
-      const svc = createServiceClient()
+  // Run the canonical-stage automations (prep chain, packet) — see fireStageAutomations.
+  await fireStageAutomations(listingId, toStage, user.id)
+
+  return result
+}
+
+/**
+ * Canonical-stage automations, fired at the ACTION layer in BOTH the normal and override paths.
+ *
+ * WHY HERE (not triggerStageActions): triggerStageActions (lib/application) switches on a LEGACY
+ * lowercase stage vocabulary ("appointment_scheduled", "mls_active", "cma_prepared", …) that no longer
+ * matches the canonical UPPERCASE lifecycle stages ("APPOINTMENT_SET", "MLS_ACTIVE", …), so it hits
+ * `default` for every real UI stage advance — the stage automations there are dead. Reconciling that
+ * whole legacy switch is a dedicated pass; meanwhile the highest-value automations are fired here on
+ * the CANONICAL stage names so they actually run. A manual OVERRIDE bypasses prerequisites, not these
+ * consequences — the stage IS now that stage, so its automations must reflect reality.
+ */
+async function fireStageAutomations(listingId: string, toStage: string, actorUserId: string): Promise<void> {
+  try {
+    const { stageAutomationFor } = await import("@/lib/listing-lifecycle/stage-automations")
+    const automation = stageAutomationFor(toStage)
+    if (!automation) return
+
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+
+    if (automation === "listing_appt_prep") {
+      // Flagship pre-listing prep: CMA → presentation → chapter videos → pre-appointment drip →
+      // pre-listing postcard. Deterministic per-listing key collapses with the calendar + AI-ISA
+      // booking paths into ONE prep run (no double CMA/postcard).
       const { data: listing } = await svc
         .from("listings")
         .select("brokerage_id, contact_id, seller_contact_id, appointment_at, address, city, state, zip, bedrooms, bathrooms, sqft, lot_size, year_built, property_type")
@@ -201,7 +226,7 @@ export async function advanceListingStage(
           triggerEventId: listingApptPrepDedupeKey(listingId),
           brokerageId: listing.brokerage_id,
           contactId: listing.contact_id ?? listing.seller_contact_id ?? null,
-          agentUserId: user.id,
+          agentUserId: actorUserId,
           listingId,
           metadata: {
             appointment_date: listing.appointment_at ?? null,
@@ -214,12 +239,30 @@ export async function advanceListingStage(
           },
         })
       }
-    } catch (err) {
-      console.error("[advanceListingStage] listing-appt-prep chain trigger failed:", err)
+    } else if (automation === "mls_packet") {
+      // Queue the MLS listing packet on go-live (idempotent — skip if one already exists). Restored
+      // here on the canonical stage after the retired markListingLiveService (the legacy
+      // triggerStageActions "mls_active" case is dead).
+      const { data: existing } = await svc
+        .from("listing_packet_jobs")
+        .select("id")
+        .eq("listing_id", listingId)
+        .eq("job_type", "mls_packet")
+        .limit(1)
+        .maybeSingle()
+      if (!existing) {
+        await svc.from("listing_packet_jobs").insert({
+          listing_id: listingId,
+          agent_user_id: actorUserId, // FK → users.id
+          job_type: "mls_packet",
+          status: "pending",
+          config: { includeFlyer: true, includeDisclosures: true, includePropertyReports: true, includeBinderCopies: true },
+        })
+      }
     }
+  } catch (err) {
+    console.error("[fireStageAutomations] failed:", err)
   }
-
-  return result
 }
 
 export async function getListingTimeline(listingId: string) {

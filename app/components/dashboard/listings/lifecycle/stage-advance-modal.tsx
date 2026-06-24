@@ -114,6 +114,17 @@ export function StageAdvanceModal({ stage, canOverride, isPending, onConfirm, on
               )}
             </div>
           )}
+
+          {/* Automations notice — a manual stage change still runs the managers' downstream work, so
+              the operator is never surprised that moving a listing kicks off CMA prep, marketing, etc. */}
+          <div className="rounded-md border border-blue-200 bg-blue-50 p-2.5 flex gap-2">
+            <AlertTriangle className="w-3.5 h-3.5 text-blue-600 flex-shrink-0 mt-0.5" />
+            <p className="text-[11px] text-blue-900 leading-snug">
+              Moving to <strong>{stage.label}</strong> runs this stage&apos;s automations — tasks, marketing,
+              and any AI prep your managers handle for it.
+              {isOverride && " Overriding skips the readiness checks, but these automations still run."}
+            </p>
+          </div>
         </div>
 
         {/* Footer */}
