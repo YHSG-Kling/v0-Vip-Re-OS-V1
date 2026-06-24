@@ -10,6 +10,24 @@ export interface FuzzyMatchResult {
   }
 }
 
+/** The dedup auto-merge threshold (overall weighted score). */
+export const DEDUP_MERGE_THRESHOLD = 0.75
+
+/**
+ * isConfidentMatch — PURE. Whether a fuzzy result is strong enough to AUTO-MERGE.
+ *
+ * The overall score is a weighted average over the fields PRESENT in both records, so
+ * a NAME-only match normalizes to a perfect 1.0 (0.3 / 0.3) — which would auto-merge two
+ * DIFFERENT people who happen to share a name (PII conflation). An auto-merge therefore
+ * requires a STRONG IDENTIFIER match: an exact email OR an exact phone. Name similarity
+ * alone is never sufficient (a name-only record proceeds to enrichment and is re-deduped
+ * once it has a real identifier).
+ */
+export function isConfidentMatch(result: FuzzyMatchResult, threshold: number = DEDUP_MERGE_THRESHOLD): boolean {
+  const hasStrongIdentifier = result.details.emailScore === 1.0 || result.details.phoneScore === 1.0
+  return result.score >= threshold && hasStrongIdentifier
+}
+
 export function calculateFuzzyMatch(
   record1: { first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null },
   record2: { first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null }

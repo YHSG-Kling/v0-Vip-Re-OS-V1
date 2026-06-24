@@ -1,7 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { calculateFuzzyMatch } from './fuzzy-matcher'
+import { calculateFuzzyMatch, isConfidentMatch } from './fuzzy-matcher'
 import { skipTraceWithPeopleData } from '@/lib/external'
 import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -318,6 +318,20 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
         stage: 'post_enrichment_dedup',
       }
     } else {
+      // Lossless dedup (data_steward dedup_merge contract — "fill empties, never drop"):
+      // even though we keep the existing higher/equal-confidence record, FILL any empty
+      // reachable contact field it lacks from this duplicate. A duplicate with a phone the
+      // existing record is missing must not silently drop that phone.
+      const fillEmpty: Record<string, unknown> = {}
+      if (!postEnrichDuplicate.email && enriched.email) fillEmpty.email = enriched.email
+      if (!postEnrichDuplicate.phone && enriched.phone) fillEmpty.phone = enriched.phone
+      if (Object.keys(fillEmpty).length > 0) {
+        await supabase
+          .from(postEnrichDuplicate.type === 'lead' ? 'leads' : 'contacts')
+          .update({ ...fillEmpty, updated_at: new Date().toISOString() })
+          .eq('id', postEnrichDuplicate.id)
+      }
+
       await setStatus(supabase, rawRecordId, 'duplicate_post_enrich')
       await logDeduplication({
         raw_record_id:             rawRecordId,
@@ -326,8 +340,8 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
         stage:                     'post_enrichment',
         match_score:               postEnrichDuplicate.score,
         match_details:             postEnrichDuplicate.details,
-        action_taken:              'skipped',
-        skip_reason:               'Existing record has equal or better confidence',
+        action_taken:              Object.keys(fillEmpty).length > 0 ? 'merged' : 'skipped',
+        skip_reason:               'Existing record has equal or better confidence (empties filled)',
         old_enrichment_confidence: oldConfidence,
         new_enrichment_confidence: newConfidence,
       }, supabase)
@@ -596,13 +610,17 @@ async function findBestMatch(
   ]
 
   let bestMatch: typeof allRecords[0] & { score: number; details: any } | null = null
-  let highestScore = 0.75
+  let highestScore = 0
 
   for (const existing of allRecords) {
-    const { score, details } = calculateFuzzyMatch(record as any, existing)
-    if (score > highestScore) {
-      highestScore = score
-      bestMatch = { ...existing, score, details }
+    const result = calculateFuzzyMatch(record as any, existing)
+    // Auto-merge ONLY on a confident match — a high score backed by a STRONG identifier
+    // (exact email or phone). A name-only match (score 1.0 from name alone) is NOT
+    // enough: it would conflate distinct people who share a name. Such records proceed
+    // to enrichment and are re-deduped once they carry a real identifier.
+    if (isConfidentMatch(result) && result.score > highestScore) {
+      highestScore = result.score
+      bestMatch = { ...existing, score: result.score, details: result.details }
     }
   }
 
