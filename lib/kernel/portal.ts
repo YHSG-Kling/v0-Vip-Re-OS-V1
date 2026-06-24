@@ -9,6 +9,7 @@ import { processKernelEvent } from "./notification-engine"
 import { KernelEvent } from "./events"
 import type { AgeSegment } from "./education"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { CLIENT_VISIBLE_MILESTONES, MILESTONE_NAMES } from "@/lib/transactions/transaction-stages"
 import {
   PortalViewOutput,
   PortalModulesOutput,
@@ -573,6 +574,131 @@ export async function getPortalMilestones(params: {
   }
 
   return milestones
+}
+
+// ─── FUNCTION 1b: PORTAL JOURNEY MILESTONES (transaction_milestones) ───────────
+//
+// THE KERNEL IS THE DECISION-MAKER for which transaction milestones a CLIENT sees
+// on their journey portal. Per the agreed architecture, visibility is decided by
+// the STABLE canonical `milestone_type` (∈ CLIENT_VISIBLE_MILESTONES), NOT the
+// free-text `milestone_name`. Free-text names diverge across thousands of
+// subscription tiers ("Closing Day" vs "Closing Date" vs "Settlement"); reporting
+// and supporting the portal on those names would be a maintenance nightmare. The
+// canonical milestone_type vocabulary (MILESTONE_NAMES) is small and stable, so the
+// portal view, completions, and reporting all key off the SAME identity.
+//
+// TRANSITION: live rows are not yet backfilled with a canonical milestone_type
+// (it currently holds null or a coarse category like "financial"). Those rows fall
+// back to the per-row `is_client_visible` flag so nothing regresses while the seed
+// is migrated. Once milestone_type carries a canonical MILESTONE_NAMES value, the
+// kernel decision takes over automatically — no surface change required.
+
+export interface PortalJourneyMilestone {
+  id: string
+  transaction_id: string
+  milestone_name: string
+  milestone_type: string | null
+  target_date: string | null
+  completed_date: string | null
+  status: string
+  notes: string | null
+  is_client_visible: boolean | null
+}
+
+const ALL_CANONICAL_MILESTONE_TYPES: ReadonlySet<string> = new Set<string>(
+  Object.values(MILESTONE_NAMES),
+)
+const CLIENT_VISIBLE_MILESTONE_TYPES: ReadonlySet<string> = new Set<string>(
+  CLIENT_VISIBLE_MILESTONES,
+)
+
+/**
+ * isClientVisibleMilestone — the PURE kernel rule for one milestone row.
+ *
+ *  1. An explicit agent override (contact_portal_preferences.milestone_overrides)
+ *     always wins. Overrides are keyed by canonical milestone_type when present,
+ *     else by milestone_name (transition fallback). override === false hides.
+ *  2. If milestone_type is a canonical identity, the canonical CLIENT_VISIBLE set
+ *     decides — the seed-level is_client_visible flag becomes advisory (the whole
+ *     point of moving the decision into the kernel).
+ *  3. Otherwise (un-backfilled row), defer to the per-row is_client_visible flag.
+ */
+export function isClientVisibleMilestone(
+  m: Pick<PortalJourneyMilestone, "milestone_type" | "milestone_name" | "is_client_visible">,
+  overrides: Record<string, boolean> = {},
+): boolean {
+  const type = m.milestone_type
+  const isCanonicalType = type != null && ALL_CANONICAL_MILESTONE_TYPES.has(type)
+
+  // (1) explicit agent override — canonical key first, then name fallback
+  const overrideKey =
+    type != null && overrides[type] !== undefined ? type : m.milestone_name
+  if (overrides[overrideKey] === false) return false
+
+  // (2) kernel decision by canonical milestone_type
+  if (isCanonicalType) return CLIENT_VISIBLE_MILESTONE_TYPES.has(type as string)
+
+  // (3) transition fallback for rows without a canonical milestone_type
+  return m.is_client_visible !== false
+}
+
+/**
+ * selectClientMilestones — PURE. Filters a milestone list to the client-visible
+ * set using the kernel rule above. Unit-tested by the portal simulator.
+ */
+export function selectClientMilestones(
+  rows: PortalJourneyMilestone[],
+  overrides: Record<string, boolean> = {},
+): PortalJourneyMilestone[] {
+  return rows.filter((m) => isClientVisibleMilestone(m, overrides))
+}
+
+/**
+ * getPortalJourneyMilestones — the single entry point the journey portal calls.
+ * Resolves the contact's active transaction (when not supplied), reads ALL of its
+ * milestones (the kernel — not the query — decides visibility), applies the agent's
+ * per-contact overrides, and returns the client-visible timeline ordered by date.
+ */
+export async function getPortalJourneyMilestones(
+  supabase: SupabaseClient,
+  params: { contactId: string; transactionId?: string },
+): Promise<PortalJourneyMilestone[]> {
+  let transactionId = params.transactionId
+
+  if (!transactionId) {
+    const { data: txs } = await supabase
+      .from("transactions")
+      .select("id")
+      .or(`buyer_contact_id.eq.${params.contactId},seller_contact_id.eq.${params.contactId}`)
+      .not("status", "in", "(cancelled)")
+      .order("created_at", { ascending: false })
+      .limit(1)
+    transactionId = txs?.[0]?.id
+  }
+
+  if (!transactionId) return []
+
+  const [milestonesResult, prefsResult] = await Promise.all([
+    supabase
+      .from("transaction_milestones")
+      .select(
+        "id, transaction_id, milestone_name, milestone_type, target_date, completed_date:completed_at, status, notes, is_client_visible",
+      )
+      .eq("transaction_id", transactionId)
+      .order("target_date", { ascending: true, nullsFirst: false }),
+    supabase
+      .from("contact_portal_preferences")
+      .select("milestone_overrides")
+      .eq("contact_id", params.contactId)
+      .maybeSingle(),
+  ])
+
+  if (!milestonesResult.data) return []
+
+  const overrides =
+    (prefsResult.data?.milestone_overrides as Record<string, boolean>) ?? {}
+
+  return selectClientMilestones(milestonesResult.data as PortalJourneyMilestone[], overrides)
 }
 
 // ─── FUNCTION 2: getLifetimeTrack ─────────────────────────────────────────────

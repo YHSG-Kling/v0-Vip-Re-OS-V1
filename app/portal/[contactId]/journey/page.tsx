@@ -1,9 +1,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { determinePortalView } from "@/lib/kernel/portal"
-import { CLIENT_VISIBLE_MILESTONES } from "@/lib/transactions/transaction-stages"
+import { determinePortalView, getPortalJourneyMilestones } from "@/lib/kernel/portal"
+import type { PortalJourneyMilestone } from "@/lib/kernel/portal"
 import {
-  MILESTONE_LABEL_MAP,
   BUYER_MILESTONE_LABELS,
   SELLER_MILESTONE_LABELS,
   MILESTONE_RESPONSIBLE_PARTY,
@@ -12,18 +11,9 @@ import {
 } from "@/lib/portal/resolve-education-context"
 import JourneyClient from "./journey-client"
 
-export interface TransactionMilestone {
-  id: string
-  transaction_id: string
-  milestone_name: string
-  milestone_type?: string
-  target_date: string | null
-  completed_date: string | null
-  status: string
-  assigned_to: string | null
-  notes: string | null
-  is_client_visible?: boolean
-}
+// The client journey timeline shape is owned by the kernel (it decides visibility
+// by canonical milestone_type). The page consumes the kernel's PortalJourneyMilestone.
+export type TransactionMilestone = PortalJourneyMilestone
 
 export interface TransactionData {
   id: string
@@ -70,35 +60,15 @@ export default async function PortalJourneyPage({
 
   const transaction: TransactionData | null = transactions?.[0] ?? null
 
-  // Fetch milestones + portal preferences in parallel
-  let milestones: TransactionMilestone[] = []
-
-  const [milestonesResult, portalPrefsResult] = await Promise.all([
-    transaction
-      ? supabase
-          .from("transaction_milestones")
-          .select("id, transaction_id, milestone_name, milestone_type, target_date, completed_date:completed_at, status, notes, is_client_visible")
-          .eq("transaction_id", transaction.id)
-          .eq("is_client_visible", true)
-          .order("target_date", { ascending: true, nullsFirst: false })
-      : Promise.resolve({ data: null }),
-    supabase
-      .from("contact_portal_preferences")
-      .select("milestone_overrides")
-      .eq("contact_id", contactId)
-      .maybeSingle(),
-  ])
-
-  if (milestonesResult.data) {
-    // Apply agent-configured milestone visibility overrides.
-    // milestone_overrides = { "milestone_name": false } hides a milestone.
-    const overrides: Record<string, boolean> =
-      (portalPrefsResult.data?.milestone_overrides as Record<string, boolean>) ?? {}
-
-    milestones = (milestonesResult.data as TransactionMilestone[]).filter(
-      (m) => overrides[m.milestone_name] !== false
-    )
-  }
+  // The KERNEL decides which milestones the client sees (by canonical milestone_type,
+  // with the agent's per-contact overrides applied) — the page does not read or filter
+  // transaction_milestones itself. Single source of truth: lib/kernel/portal.ts.
+  const milestones: TransactionMilestone[] = transaction
+    ? await getPortalJourneyMilestones(supabase, {
+        contactId,
+        transactionId: transaction.id,
+      })
+    : []
 
   // Get label map based on portal view
   const labelMap = portalView.view === "seller" ? SELLER_MILESTONE_LABELS : BUYER_MILESTONE_LABELS
