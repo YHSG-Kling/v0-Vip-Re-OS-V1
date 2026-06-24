@@ -266,6 +266,15 @@ export async function generateMilestones(transactionId: string, transactionType:
   ]
 
   const milestones = transactionType === "sale" ? sellerMilestones : buyerMilestones
+  // ⚠️ MILESTONE-IDENTITY RECONCILIATION (flagged): this is the LIVE milestone seed (the
+  // milestone_template_items path in lib/kernel/transactions.ts has 0 rows — dead). It sets
+  // milestone_type = the coarse CATEGORY ("financial"/"closing"/…), NOT the canonical milestone
+  // identity. But the kernel decides portal view + reporting across all tiers by a STABLE canonical
+  // milestone_type, and completion code matches snake_case identities (cda_delivered, gift_ordered),
+  // which exist in NEITHER field here — so those completions no-op (stuck "pending"). FIX (per the
+  // agreed architecture): map each seeded milestone to a canonical MILESTONE_NAMES value in
+  // milestone_type, keep name/category for display, complete + report + portal-decide by milestone_type,
+  // and unify this with the dead template path into ONE seed.
   // Map seed fields onto real columns: name→milestone_name (NOT NULL),
   // category→milestone_type. order_index has no column on transaction_milestones.
   const milestonesWithTransactionId = milestones.map((m) => ({

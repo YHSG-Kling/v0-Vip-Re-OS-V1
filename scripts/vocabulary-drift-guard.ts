@@ -244,6 +244,47 @@ function canonicalMilestoneNames(): Set<string> {
   }
 }
 
+// ── Manager-name check: every signal addressed to/from a manager must name a REAL manager. The bus
+// dispatches on `${toManager}:${signalType}` (SIGNAL_HANDLERS) — a typo'd toManager has no handler, so
+// the hand-off is silently DROPPED and the managers don't coordinate. ManagerKey (manager-registry.ts)
+// is the canonical 13-manager vocabulary. (signal-integrity guards registry↔handlers; this guards the
+// PUBLISH side.)
+function canonicalManagers(): Set<string> {
+  const src = read("lib/kernel/manager-registry.ts")
+  const set = new Set<string>()
+  const m = /export type ManagerKey\s*=([\s\S]*?)(?:\n\n|\nexport)/.exec(src)
+  if (m) {
+    const re = /["']([a-z_]+)["']/g
+    let x: RegExpExecArray | null
+    while ((x = re.exec(m[1]))) set.add(x[1])
+  }
+  return set
+}
+
+{
+  const canon = canonicalManagers()
+  const refs: Array<{ name: string; file: string }> = []
+  for (const f of walkTs(["app", "lib"])) {
+    const src = stripComments(readFileSync(f, "utf8"))
+    const re = /(?:toManager|fromManager):\s*["']([a-z_]+)["']/g
+    let m: RegExpExecArray | null
+    while ((m = re.exec(src))) refs.push({ name: m[1], file: f.replace(/\\/g, "/").split("/v0-Vip-Re-OS-V1/").pop() ?? f })
+  }
+  const unknown = [...new Map(refs.filter((r) => !canon.has(r.name)).map((r) => [`${r.file}:${r.name}`, r])).values()]
+  if (canon.size === 0) {
+    fail++
+    fails.push("could not parse ManagerKey from manager-registry.ts — the manager-name check is blind")
+    console.log("  ✗ manager names — could not read the canonical ManagerKey union")
+  } else if (unknown.length === 0) {
+    pass++
+    console.log(`  ✓ manager names — all ${refs.length} to/fromManager refs name a real manager (${canon.size} canonical)`)
+  } else {
+    fail++
+    for (const u of unknown) fails.push(`${u.file}: signal to/from "${u.name}" — NOT a ManagerKey, so the hand-off is dropped (managers don't coordinate)`)
+    console.log(`  ✗ manager names — non-canonical: ${JSON.stringify(unknown.map((u) => `${u.file}:${u.name}`))}`)
+  }
+}
+
 if (update) {
   writeFileSync(BASELINE_PATH, JSON.stringify(newBaseline, null, 2) + "\n")
   console.log(`\n  ✎ baseline rewritten.`)
