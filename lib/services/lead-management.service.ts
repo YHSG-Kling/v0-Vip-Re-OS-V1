@@ -2,7 +2,8 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID, validateEmail, validatePhone } from "@/lib/validations"
-import { LEAD_TEMPERATURES, LEAD_SOURCES } from "@/lib/constants"
+import { LEAD_SOURCES } from "@/lib/constants"
+import { scoreToLeadTemperature } from "@/lib/data-steward/value-normalizer"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
 
 // ============================================
@@ -131,7 +132,7 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
     // ── Combined final score (70% baseline + 30% behavioral refinement) ─
     const totalScore = Math.max(0, Math.min(100, Math.round(baselineScore * 0.7 + behavioralScore * 0.3)))
 
-    const temperature = determineTemperature(totalScore)
+    const temperature = scoreToLeadTemperature(totalScore)
     const recommendations = generateLeadRecommendations(record, {
       engagement: engagementScore,
       recency: recencyScore,
@@ -388,16 +389,6 @@ function calculateResponsivenessScore(contact: any): number {
   else if (avgResponseHours < 24) score += 5
 
   return Math.min(score, 100)
-}
-
-/**
- * Determine temperature based on score
- */
-function determineTemperature(score: number): string {
-  if (score >= 80) return "hot"
-  if (score >= 60) return "warm"
-  if (score >= 40) return "cool"
-  return "cold"
 }
 
 /**

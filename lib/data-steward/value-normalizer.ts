@@ -133,6 +133,22 @@ export function sanitizeEnumValue(field: string, proposed: unknown): string | nu
   return vocab.canonical.includes(c) ? c : null
 }
 
+/**
+ * scoreToLeadTemperature — score (0–100) → CANONICAL lead_temperature.
+ *
+ * lead_temperature is a 3-band CHECK (hot/warm/cold) on contacts, leads, AND
+ * communication_audit_log. The lead-pipeline urgency scale is 4-band (it adds 'cool'),
+ * so a scorer that wrote its 4-band value straight into lead_temperature produced
+ * 'cool' — which the CHECK constraint REJECTS, so the score update threw and the
+ * score never persisted (silent for every mid-range 40–59 lead). This is the single
+ * source for score→temperature so that can't happen: 'cool' collapses into 'cold'.
+ */
+export function scoreToLeadTemperature(score: number): 'hot' | 'warm' | 'cold' {
+  if (score >= 70) return 'hot'
+  if (score >= 45) return 'warm'
+  return 'cold'
+}
+
 export interface RowEnumResult {
   /** field → canonical value (only resolved fields present). */
   resolved: Record<string, string>

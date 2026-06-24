@@ -56,7 +56,10 @@ export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number]
 // CONTACT/LEAD TYPES
 // ============================================
 
-export const LEAD_TEMPERATURES = ["hot", "warm", "cool", "cold"] as const
+// 3-band — MUST match the lead_temperature CHECK constraint on contacts/leads/
+// communication_audit_log (hot/warm/cold). "cool" belongs to the 4-band urgency_level
+// scale, NOT lead_temperature; writing it here violates the constraint and the row drops.
+export const LEAD_TEMPERATURES = ["hot", "warm", "cold"] as const
 export type LeadTemperature = (typeof LEAD_TEMPERATURES)[number]
 
 export const LEAD_SOURCES = [

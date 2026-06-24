@@ -14,6 +14,7 @@
  */
 
 import { peopleDataProfileToContactColumns } from '@/lib/lead-pipeline/enrichment-column-map'
+import { ENUM_VOCABULARIES, normalizeEnumValue } from '@/lib/data-steward/value-normalizer'
 
 export interface ContactCreationData {
   leadId: string
@@ -36,6 +37,33 @@ export function motivationToContactType(m: string | null | undefined): string | 
   if (lower.includes('both')) return 'buyer'
   if (lower.includes('buyer')) return 'buyer'
   return null
+}
+
+// Canonical contact_type vocabulary — the SINGLE source is the Data Steward's
+// ENUM_VOCABULARIES (which mirrors the contacts_contact_type_check CHECK constraint).
+// Any value NOT in this set is rejected by the database, so a contact insert with a
+// non-canonical contact_type fails and the lead is never promoted (a silent drop).
+export const CONTACT_TYPES = ENUM_VOCABULARIES.contact_type.canonical
+export type ContactType = (typeof CONTACT_TYPES)[number]
+
+/**
+ * resolveContactType — the lead→contact type decision, guaranteed to return a
+ * CANONICAL contact_type. motivation_type wins (qualified intent), then lead_type;
+ * the final fallback runs lead_type through the Data Steward normalizer (exact +
+ * synonym, e.g. 'fsbo'→'seller') and defaults to 'prospect' when nothing resolves —
+ * a raw lead_type of 'unknown' (a real pipeline value) becomes 'prospect', never the
+ * literal 'unknown' the CHECK constraint would reject. Without this clamp, every
+ * unknown-intent scraped lead failed to convert.
+ */
+export function resolveContactType(
+  motivationType: string | null | undefined,
+  leadType: string | null | undefined,
+): ContactType {
+  const fromMotivation = motivationToContactType(motivationType)
+  if (fromMotivation) return fromMotivation as ContactType
+  const fromLeadType = motivationToContactType(leadType)
+  if (fromLeadType) return fromLeadType as ContactType
+  return (normalizeEnumValue('contact_type', leadType).value as ContactType) ?? 'prospect'
 }
 
 export async function createContactFromLead(
@@ -87,11 +115,10 @@ export async function createContactFromLead(
       location_id: agentLocationId,
       team_id: agentTeamId,
 
-      // Contact type and persona — the ISA's qualified intent IS the contact type
-      contact_type:
-        motivationToContactType(data.lead.motivation_type) ??
-        motivationToContactType(data.lead.lead_type) ??
-        (data.lead.lead_type || 'prospect'),
+      // Contact type and persona — the ISA's qualified intent IS the contact type.
+      // resolveContactType guarantees a CANONICAL value (the CHECK constraint rejects
+      // anything else, which would silently fail the whole insert).
+      contact_type: resolveContactType(data.lead.motivation_type, data.lead.lead_type),
       contact_persona:
         (data.lead.motivation_type ?? '').toLowerCase().includes('both')
           ? 'both'

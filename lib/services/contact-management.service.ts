@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { isValidUUID, validateEmail, validatePhone, validateContact } from "@/lib/validations"
-import { LEAD_SOURCES, LEAD_TEMPERATURES } from "@/lib/constants"
+import { LEAD_SOURCES } from "@/lib/constants"
 import { handleError, ValidationError, NotFoundError, DatabaseError } from "@/lib/errors"
 import { calculateLeadScore } from "./lead-management.service"
 
@@ -93,7 +93,7 @@ export async function createContact(params: CreateContactParams) {
         phone: params.phone,
         source: params.source || "manual",
         status: params.status || "active",
-        lead_temperature: "cool",
+        lead_temperature: "cold",
         budget_min: params.budgetMin,
         budget_max: params.budgetMax,
         notes: params.notes,
