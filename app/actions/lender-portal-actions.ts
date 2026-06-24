@@ -192,14 +192,18 @@ export async function issueClearToClose(data: {
     })
     .eq("transaction_id", data.transactionId)
     .eq("brokerage_id", actor.brokerageId)
-    .in("milestone_name", ["clear_to_close", "clear_to_close_received"])
+    // Match by canonical identity — the journey now seeds clear_to_close_received with
+    // a human milestone_name ("Clear to Close"), so matching milestone_name alone
+    // silently completed zero rows. milestone_type covers journey/catalog rows; the
+    // legacy snake_case names cover older data.
+    .or("milestone_type.eq.clear_to_close_received,milestone_name.eq.clear_to_close_received,milestone_name.eq.clear_to_close")
 
   if (milestoneError) {
     await supabase.from("transaction_milestones").insert({
       transaction_id: data.transactionId,
       brokerage_id: actor.brokerageId,
       milestone_name: "clear_to_close_received",
-      milestone_type: "lender",
+      milestone_type: "clear_to_close_received",
       status: "completed",
       completed_at: new Date().toISOString(),
     })

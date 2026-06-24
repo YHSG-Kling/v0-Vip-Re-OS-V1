@@ -49,6 +49,8 @@ export async function checkAndTriggerGiftOrder(params: {
         transaction_id: params.transactionId,
         brokerage_id: params.brokerageId,
         milestone_name: 'gift_ordered',
+        milestone_type: 'gift_ordered',   // canonical identity (internal milestone)
+        is_client_visible: false,
         status: 'pending',
         target_date: null
       })

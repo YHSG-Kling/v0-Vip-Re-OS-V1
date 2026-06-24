@@ -244,6 +244,49 @@ function canonicalMilestoneNames(): Set<string> {
   }
 }
 
+// ── Milestone-type check: completions/matches now key on the canonical milestone_type identity
+// (e.g. `.or("milestone_type.eq.cda_delivered,…")` or `.eq("milestone_type","X")`). A typo'd identity
+// matches 0 rows — the milestone never completes. CANONICAL_MILESTONE_IDS (milestone-identity.ts) is the
+// canonical identity vocabulary (superset of MILESTONE_NAMES + journey ids).
+function canonicalMilestoneIds(): Set<string> {
+  const src = read("lib/transactions/milestone-identity.ts")
+  const set = new Set<string>()
+  const block = /export const CANONICAL_MILESTONE_IDS\s*=\s*\[([\s\S]*?)\]\s*as const/.exec(src)
+  if (block) {
+    const re = /["']([a-z_]+)["']/g
+    let m: RegExpExecArray | null
+    while ((m = re.exec(block[1]))) set.add(m[1])
+  }
+  return set
+}
+
+{
+  const canon = canonicalMilestoneIds()
+  const targets: Array<{ id: string; file: string }> = []
+  for (const f of walkTs(["app", "lib"])) {
+    const src = stripComments(readFileSync(f, "utf8"))
+    const rel = f.replace(/\\/g, "/").split("/v0-Vip-Re-OS-V1/").pop() ?? f
+    let m: RegExpExecArray | null
+    const reOr = /milestone_type\.eq\.([a-z_]+)/g
+    while ((m = reOr.exec(src))) targets.push({ id: m[1], file: rel })
+    const reEq = /\.eq\(\s*["']milestone_type["']\s*,\s*["']([^"']+)["']\s*\)/g
+    while ((m = reEq.exec(src))) targets.push({ id: m[1], file: rel })
+  }
+  const unknown = targets.filter((t) => !canon.has(t.id))
+  if (canon.size === 0) {
+    fail++
+    fails.push("could not parse CANONICAL_MILESTONE_IDS from milestone-identity.ts — the milestone_type check is blind")
+    console.log("  ✗ milestone_type — could not read CANONICAL_MILESTONE_IDS")
+  } else if (unknown.length === 0) {
+    pass++
+    console.log(`  ✓ milestone_type targets — all ${targets.length} milestone_type match(es) name a canonical identity`)
+  } else {
+    fail++
+    for (const u of unknown) fails.push(`${u.file}: matches milestone_type "${u.id}" — NOT a canonical identity, so it matches 0 rows`)
+    console.log(`  ✗ milestone_type targets — non-canonical: ${JSON.stringify(unknown.map((u) => u.id))}`)
+  }
+}
+
 // ── Manager-name check: every signal addressed to/from a manager must name a REAL manager. The bus
 // dispatches on `${toManager}:${signalType}` (SIGNAL_HANDLERS) — a typo'd toManager has no handler, so
 // the hand-off is silently DROPPED and the managers don't coordinate. ManagerKey (manager-registry.ts)

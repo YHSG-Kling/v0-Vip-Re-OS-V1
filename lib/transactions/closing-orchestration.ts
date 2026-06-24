@@ -26,6 +26,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { runDealAutopsy } from "@/lib/kernel/deal-autopsy"
+import { resolveMilestoneIdentity } from "./milestone-identity"
 
 type Severity = "low" | "medium" | "high" | "urgent"
 type Recipient = "buyer" | "seller" | "lender" | "inspector" | "title" | "escrow" | "co_agent" | "agent"
@@ -80,11 +81,18 @@ interface TransactionEvidence {
   } | null
   milestones: Array<{
     milestone_type:  string | null
+    milestone_name:  string | null
     status:          string | null
     completed_at:    string | null
     target_date:     string | null
   }>
 }
+
+// Match a milestone by its CANONICAL identity (milestone_type for catalog/journey
+// rows, milestone_name for legacy snake_case rows) so detections fire regardless of
+// which route created the milestone.
+const isMilestone = (m: { milestone_type: string | null; milestone_name: string | null }, id: string): boolean =>
+  resolveMilestoneIdentity(m) === id
 
 const today = () => new Date().toISOString().slice(0, 10)
 const daysBetween = (a: string, b: string) =>
@@ -112,7 +120,7 @@ function detectAppraisalNotOrdered(ctx: TransactionContext, ev: TransactionEvide
 }
 
 function detectInspectionWindow(ctx: TransactionContext, ev: TransactionEvidence): DetectedAction | null {
-  const insMile = ev.milestones.find((m) => m.milestone_type === "inspection_deadline" || m.milestone_type === "inspection")
+  const insMile = ev.milestones.find((m) => isMilestone(m, "inspection_deadline"))
   const deadline = insMile?.target_date
   if (!deadline) return null
   const daysToDeadline = daysBetween(today(), deadline)
@@ -181,7 +189,7 @@ function detectWalkthroughUnscheduled(ctx: TransactionContext, ev: TransactionEv
   if (!ctx.closeDate) return null
   const daysToClose = daysBetween(today(), ctx.closeDate)
   if (daysToClose > 5 || daysToClose < 0) return null
-  const walkthrough = ev.milestones.find((m) => m.milestone_type === "final_walkthrough_scheduled" || m.milestone_type === "final_walkthrough")
+  const walkthrough = ev.milestones.find((m) => isMilestone(m, "final_walkthrough_scheduled"))
   if (walkthrough?.status === "completed" || walkthrough?.completed_at) return null
   return {
     actionType:         "walkthrough_unscheduled",
@@ -216,7 +224,7 @@ function detectCDAMissing(ctx: TransactionContext, ev: TransactionEvidence): Det
   if (!ctx.closeDate) return null
   const daysToClose = daysBetween(today(), ctx.closeDate)
   if (daysToClose > 7 || daysToClose < 0) return null
-  const cda = ev.milestones.find((m) => m.milestone_type === "cda_delivered" || m.milestone_type === "cda")
+  const cda = ev.milestones.find((m) => isMilestone(m, "cda_delivered"))
   if (cda?.status === "completed" || cda?.completed_at) return null
   return {
     actionType:         "cda_missing",
@@ -293,7 +301,7 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
       svc.from("transaction_inspections").select("inspection_type, status, scheduled_date, completed_date").eq("transaction_id", t.id),
       svc.from("transaction_lenders").select("appraisal_ordered_date, appraisal_completed_date, clear_to_close_date, underwriting_status").eq("transaction_id", t.id).maybeSingle(),
       svc.from("transaction_title_escrow").select("earnest_money_received_date, title_commitment_date, closing_scheduled_date").eq("transaction_id", t.id).maybeSingle(),
-      svc.from("transaction_milestones").select("milestone_type, status, completed_at, target_date").eq("transaction_id", t.id),
+      svc.from("transaction_milestones").select("milestone_type, milestone_name, status, completed_at, target_date").eq("transaction_id", t.id),
     ])
     const evidence: TransactionEvidence = {
       inspections: inspectionsRes.data ?? [],
@@ -305,7 +313,7 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
     // Derive earnest-money due date from milestones; column doesn't exist on
     // transactions directly.
     const emMile = evidence.milestones.find(
-      (m) => m.milestone_type === "earnest_money_due" || m.milestone_type === "em_due"
+      (m) => isMilestone(m, "earnest_money_due")
     )
     const ctx: TransactionContext = {
       id:                t.id,

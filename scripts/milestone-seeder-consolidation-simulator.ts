@@ -74,7 +74,7 @@ async function liveLayer(): Promise<void> {
   }
   console.log("\n[Layer 2 · live — journey-seed → ensureRequiredMilestones → assert dedupe + date-fill → self-clean]")
   const { createServiceClient } = await import("../lib/supabase/service")
-  const { ensureRequiredMilestones } = await import("../lib/transactions/milestone-service")
+  const { ensureRequiredMilestones, seedJourneyMilestones } = await import("../lib/transactions/milestone-service")
   const svc = createServiceClient()
   const tag = `msc-sim-${randomUUID().slice(0, 8)}`
   const brokerageId = randomUUID()
@@ -112,6 +112,22 @@ async function liveLayer(): Promise<void> {
     check("A: closing date filled", closing?.target_date === "2026-08-05")
     const { data: aDeadlines } = await svc.from("transaction_deadlines").select("deadline_type").eq("transaction_id", txnA)
     check("A: deadlines mirrored to transaction_deadlines", (aDeadlines?.length ?? 0) >= 4)
+
+    // seedJourneyMilestones is idempotent — re-running adds nothing (dedupe by identity).
+    await seedJourneyMilestones(txnA, brokerageId, "purchase")
+    const { count: aAfterReseed } = await svc.from("transaction_milestones")
+      .select("id", { count: "exact", head: true }).eq("transaction_id", txnA)
+    check("A: re-seeding the journey is idempotent (no duplicates)", (aAfterReseed ?? 0) === beforeCount)
+
+    // Completion-by-identity: the CDA milestone has a HUMAN name on the journey
+    // ("Commission Disbursement") but is completed via its canonical milestone_type.
+    await svc.from("transaction_milestones")
+      .update({ status: "completed", completed_at: new Date("2026-07-30").toISOString() })
+      .eq("transaction_id", txnA)
+      .or("milestone_type.eq.cda_delivered,milestone_name.eq.cda_delivered")
+    const { data: cdaRow } = await svc.from("transaction_milestones")
+      .select("status").eq("transaction_id", txnA).eq("milestone_type", "cda_delivered").maybeSingle()
+    check("A: CDA completed by canonical identity despite a human milestone_name", cdaRow?.status === "completed")
 
     // ── B. empty transaction → ensure inserts the full required set ──
     await ensureRequiredMilestones(txnB, brokerageId, terms)

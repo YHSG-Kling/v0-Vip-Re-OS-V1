@@ -1,5 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
-import { ensureRequiredMilestones } from "./milestone-service"
+import { ensureRequiredMilestones, seedJourneyMilestones } from "./milestone-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { populateInitialParticipants } from "./participant-populator"
 
@@ -249,6 +249,11 @@ export async function createTransactionFromOffer(params: {
   if (financingDeadline)  normalisedTerms["financing_deadline"]  = financingDeadline
   if (earnestDueDate)     normalisedTerms["earnest_money_due"]   = earnestDueDate
 
+  // Seed the FULL buyer journey first (celebratory + deadline + compliance milestones
+  // from the canonical catalog), then ensure the deadline-critical set — which dedupes
+  // by identity, so it fills the deadline dates + mirrors them rather than duplicating.
+  // An offer transaction now carries the same rich journey a directly-created one does.
+  await seedJourneyMilestones(transaction.id, params.brokerageId, "purchase")
   await ensureRequiredMilestones(
     transaction.id,
     params.brokerageId,

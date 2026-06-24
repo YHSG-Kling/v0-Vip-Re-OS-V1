@@ -182,11 +182,14 @@ export async function approveCDA(params: {
       }
     } catch { /* best-effort — approval already recorded */ }
 
+    // Match by canonical IDENTITY — milestone_type for catalog/journey-seeded rows,
+    // milestone_name for legacy snake_case rows — so completion works regardless of
+    // which route created the transaction.
     await supabase
       .from("transaction_milestones")
       .update({ status: "completed", completed_at: new Date().toISOString() })
       .eq("transaction_id", cda.transaction_id)
-      .eq("milestone_name", "cda_delivered")
+      .or("milestone_type.eq.cda_delivered,milestone_name.eq.cda_delivered")
     
     await transitionLifecycle({
       brokerageId: cda.brokerage_id,

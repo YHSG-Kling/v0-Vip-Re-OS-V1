@@ -568,12 +568,13 @@ export async function approveCdaAction(input: { cdaId: string }) {
     actedBy: auth.userId,
   })
 
-  // Mark the cda_delivered milestone complete (existing pattern).
+  // Mark the cda_delivered milestone complete — match by canonical identity
+  // (milestone_type for journey rows, milestone_name for legacy snake_case rows).
   await supabase
     .from("transaction_milestones")
     .update({ status: "completed", completed_at: now })
     .eq("transaction_id", cda.transaction_id)
-    .eq("milestone_name", "cda_delivered")
+    .or("milestone_type.eq.cda_delivered,milestone_name.eq.cda_delivered")
 
   // Notify agent.
   const { data: agentRow } = await supabase

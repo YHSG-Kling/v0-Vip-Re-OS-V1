@@ -1,7 +1,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { CRITICAL_MILESTONES } from "./transaction-stages"
 import { resolveMilestoneIdentity } from "./milestone-identity"
-import { REQUIRED_MILESTONE_IDS, catalogEntry, deadlineBearingMilestones } from "./milestone-catalog"
+import { REQUIRED_MILESTONE_IDS, catalogEntry, deadlineBearingMilestones, milestoneJourneyFor } from "./milestone-catalog"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 export interface CreateMilestoneParams {
@@ -25,6 +25,55 @@ export interface OverrideMilestoneParams {
   milestoneName: string
   overrideBy: string
   overrideReason: string
+}
+
+/**
+ * Seed the FULL client journey for a transaction (service-client path, used by the
+ * offer→transaction bridge). Builds from the single canonical catalog so an offer
+ * transaction gets the same celebratory + deadline + compliance milestones a directly
+ * created one does (Offer Accepted, Loan Approved, Keys Received, …), not just the thin
+ * deadline-critical set. Dedupes by canonical IDENTITY so it never duplicates a
+ * milestone that already exists. Pair with ensureRequiredMilestones to fill deadline
+ * dates + mirror them.
+ */
+export async function seedJourneyMilestones(
+  transactionId: string,
+  brokerageId: string,
+  transactionType: string
+): Promise<void> {
+  const supabase = createServiceClient()
+
+  const { data: existing } = await supabase
+    .from("transaction_milestones")
+    .select("milestone_name, milestone_type")
+    .eq("transaction_id", transactionId)
+    .eq("brokerage_id", brokerageId)
+
+  const existingIds = new Set<string>()
+  for (const m of (existing ?? []) as Array<{ milestone_name: string; milestone_type: string | null }>) {
+    const id = resolveMilestoneIdentity(m)
+    if (id) existingIds.add(id)
+  }
+
+  const now = new Date().toISOString()
+  const rows = milestoneJourneyFor(transactionType)
+    .filter((m) => !existingIds.has(m.id))
+    .map((m) => ({
+      transaction_id: transactionId,
+      brokerage_id: brokerageId,
+      milestone_name: m.name,
+      milestone_type: m.id,
+      is_client_visible: m.clientVisible,
+      status: "pending" as const,
+      created_at: now,
+    }))
+
+  if (rows.length > 0) {
+    const { error } = await supabase.from("transaction_milestones").insert(rows)
+    if (error) {
+      throw new Error(`[milestone-service] Failed to seed journey milestones: ${error.message}`)
+    }
+  }
 }
 
 /**

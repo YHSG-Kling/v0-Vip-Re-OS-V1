@@ -72,14 +72,16 @@ export async function updateTransaction(params: UpdateTransactionParams) {
 
     if (error) throw error
 
-    // Log stage change if status changed
+    // Log the status change to the transaction TIMELINE (the canonical audit log) —
+    // NOT transaction_milestones. The previous code inserted a milestone row with a
+    // non-canonical milestone_type ("status_change") and no milestone_name, which
+    // violates the NOT NULL constraint and threw on every status change, AND it
+    // polluted the client milestone timeline with an internal audit event.
     if (params.updates.status) {
-      await supabase.from("transaction_milestones").insert({
+      await supabase.from("transaction_timeline").insert({
         transaction_id: params.transactionId,
-        milestone_type: "status_change",
-        target_date: new Date().toISOString(),
-        status: "completed",
-        notes: `Status changed to ${params.updates.status}`,
+        activity_type: "status_change",
+        description: `Status changed to ${params.updates.status}`,
       })
     }
 
