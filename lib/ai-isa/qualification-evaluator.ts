@@ -138,9 +138,12 @@ export async function persistQualificationSignals(
       .eq('id', qualRecord.id)
   }
 
-  // Step 7: If Engine 2 couldn't find an agent, log for manual assignment.
-  //         handleLeadAssigned (called inside Engine 2) already handles
-  //         lifecycle transition + contact creation + notification on success.
+  // Step 7: If Engine 2 couldn't find an agent, the qualified+consented lead would
+  //         otherwise sit ownerless and invisible until the stale detector noticed
+  //         days later. Record the audit event AND ESCALATE to the broker/admins (or
+  //         platform if the brokerage has none) so a human activates an agent / fixes
+  //         the rules before the hot lead goes cold. handleLeadAssigned already handles
+  //         the success path (lifecycle transition + contact creation + notification).
   if (!assignResult.assigned) {
     await supabase.from('lifecycle_events').insert({
       entity_type: 'lead',
@@ -154,6 +157,14 @@ export async function persistQualificationSignals(
         assign_reason: assignResult.reason,
       },
       created_at: new Date().toISOString(),
+    })
+
+    const { escalateUnassignedQualifiedLead } = await import('@/lib/lead-assignment/unassigned-escalation')
+    await escalateUnassignedQualifiedLead(supabase, {
+      leadId,
+      brokerageId: lead.brokerage_id,
+      reason: assignResult.reason,
+      score: qualificationScore,
     })
   }
 }

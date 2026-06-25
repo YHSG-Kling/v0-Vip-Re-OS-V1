@@ -33,6 +33,8 @@ function NotificationIcon({ type }: { type: string }) {
   switch (type) {
     case "lead_alert":
       return <AlertCircle className={`${cls} text-blue-500`} />
+    case "qualified_lead_unassigned":
+      return <AlertCircle className={`${cls} text-red-500`} />
     case "deal_update":
       return <TrendingUp className={`${cls} text-green-500`} />
     case "task_due":
@@ -72,6 +74,7 @@ function resolveNotificationUrl(entityType: string | null, entityId: string | nu
   const id = encodeURIComponent(entityId)
   switch (entityType) {
     case "contact": return `/crm?contact=${id}`
+    case "lead": return `/leads/${id}`
     case "transaction": return `/dashboard/transactions/${id}`
     case "listing": return `/dashboard/listings/${id}`
     case "open_house": return `/dashboard/open-houses?event=${id}`
