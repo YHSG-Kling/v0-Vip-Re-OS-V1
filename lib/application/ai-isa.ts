@@ -133,12 +133,16 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
     return { success: false, error: "brokerageId could not be resolved for this call" }
   }
 
-  // Build per-call context via Kernel OS: persona, brand voice, voice config, TCPA gate
+  // Build per-call context via Kernel OS: persona, brand voice, voice config, TCPA gate.
+  // IDENTITY: this is a CONTACT (not a lead), so pass contactId — and the ASSIGNED AGENT
+  // (contacts.agent_id is agents.id) so the ISA speaks in THAT agent's cloned voice/avatar.
+  // (Previously passed leadId=contactId — which mis-looked-up a non-existent lead — and
+  // agentId=loginId, a users.id the agents lookup never matches, so neither resolved.)
   const ctx = await buildCallContext({
-    leadId: contactId,
-    agentId: loginId,
+    contactId,
+    agentId: contact.agent_id ?? null,
     brokerageId,
-    callPurpose: 'isa_qualification',
+    callPurpose: 'isa_followup',
   })
 
   if (ctx.blocked) {

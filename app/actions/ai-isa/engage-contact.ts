@@ -589,11 +589,19 @@ async function tryVoiceDrop(
       stage: (contact.buyer_stage as string | null) ?? (contact.motivation_type as string | null) ?? null,
       hasFreshHook: reason === 'reactivation' || reason === 'stale' || reason === 'ghosted',
     })
+    // IDENTITY: a contact's voicemail speaks in the ASSIGNED AGENT's cloned voice. Resolve
+    // the agent's user_id (agents.id → users.id) so synthVoicemail uses the agent's voice,
+    // not the preset default. Null (unassigned) → the brokerage default ISA voice.
+    let agentUserId: string | null = null
+    if (contact.agent_id) {
+      const { data: a } = await supabase.from('agents').select('user_id').eq('id', contact.agent_id).maybeSingle()
+      agentUserId = (a as { user_id: string | null } | null)?.user_id ?? null
+    }
     const { orchestrateVoicedropSend } = await import('@/lib/voicedrop/orchestrate-voicedrop-send')
     const r = await orchestrateVoicedropSend({
       brokerageId, presetId: (preset as { id: string }).id, contactId: contact.id,
       toPhone: contact.phone, recipientFirstName: contact.first_name ?? null,
-      teamId: contact.team_id ?? null, systemSource: 'ai_isa_contact', scriptOverride,
+      teamId: contact.team_id ?? null, agentUserId, systemSource: 'ai_isa_contact', scriptOverride,
     })
     if (!r.success) return null
     await logISAOutreach({

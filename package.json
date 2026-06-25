@@ -134,6 +134,7 @@
     "test:contact-channel": "tsx scripts/contact-channel-policy-simulator.ts",
     "test:lifetime-audience": "tsx scripts/lifetime-audience-simulator.ts",
     "test:newsletter-enroll": "tsx scripts/newsletter-enrollment-simulator.ts",
+    "test:outreach-identity": "tsx scripts/outreach-identity-simulator.ts",
     "test:video-coordination": "tsx scripts/video-coordination-simulator.ts",
     "test:compliance-gate": "tsx scripts/compliance-gate-simulator.ts",
     "test:avatar-loop": "tsx scripts/avatar-loop-simulator.ts",

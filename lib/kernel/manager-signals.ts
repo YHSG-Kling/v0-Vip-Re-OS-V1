@@ -540,22 +540,14 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     if (!lead) return null
     const l = lead as Record<string, any>
 
-    // Resolve the on-screen presenter (ai_video_projects.agent_id → users.id): the lead's
-    // assigned agent when present, else a brokerage broker/owner so the reel still carries a
-    // real human's brand. No presenter on file → the reel is honestly deferred (the email
-    // first-touch already went out); we never fabricate an identity.
-    let agentUserId: string | null = null
-    if (l.agent_id) {
-      const { data: a } = await ctx.supabase.from("agents").select("user_id").eq("id", l.agent_id).maybeSingle()
-      agentUserId = (a as any)?.user_id ?? null
-    }
-    if (!agentUserId) {
-      const { data: broker } = await ctx.supabase.from("users").select("id")
-        .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker_owner", "broker", "broker_admin"])
-        .order("created_at", { ascending: true }).limit(1).maybeSingle()
-      agentUserId = (broker as any)?.id ?? null
-    }
-    if (!agentUserId) return "no presenter on file (no agent / broker) — intro reel deferred; email first-touch already sent"
+    // Resolve the on-screen presenter (ai_video_projects.agent_id → users.id) via the single
+    // IDENTITY AUTHORITY: a LEAD's reel fronts the BROKERAGE identity — the SOLO agent on a
+    // solo brokerage, else the broker/owner, else any active agent — never a specific
+    // buyers-agent's clone projected onto an unassigned lead. No human on the roster at all →
+    // the reel is honestly deferred (the email first-touch already went out).
+    const { resolveLeadPresenterUserId } = await import("@/lib/ai-isa/outreach-identity")
+    const agentUserId = await resolveLeadPresenterUserId(ctx.supabase, ctx.brokerageId, l.agent_id ?? null)
+    if (!agentUserId) return "no presenter on file (empty roster) — intro reel deferred; email first-touch already sent"
 
     const parts: string[] = []
 
