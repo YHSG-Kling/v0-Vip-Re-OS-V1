@@ -103,6 +103,16 @@ export async function handleLeadCaptured(params: {
   // capture time). The audience push happens in handleLeadAssigned (where
   // the lead has converted to a CONTACT with tcpa_consent verified before
   // staging).
+
+  // Content channel — auto-enroll the captured lead into the brokerage/team/solo newsletter
+  // (CAN-SPAM email, unlike the consent-gated FB push): the passive "stay top of mind" tool
+  // fires from lead capture, not just manual signup. Verified email + not opted out only;
+  // never re-subscribes an unsubscribed email. Best-effort, non-blocking.
+  try {
+    const { enrollLeadInNewsletter } = await import('@/lib/content/newsletter-enrollment')
+    void enrollLeadInNewsletter({ leadId, brokerageId })
+      .catch((e) => console.error('[lead-acquisition] lead newsletter enroll failed:', e))
+  } catch { /* best-effort */ }
 }
 
 // ─── HANDLER 2: handleLeadScored ─────────────────────────────────────────────
@@ -438,6 +448,14 @@ export async function handleLeadAssigned(params: {
     }).catch((e) => {
       console.error('[lead-acquisition] FB audience promote failed:', e)
     })
+  } catch { /* best-effort */ }
+
+  // Content channel — RE-KEY the newsletter subscription from brokerage/team/solo scope to
+  // the ASSIGNED AGENT now that the lead is a contact (owner's scoping rule). Best-effort.
+  try {
+    const { enrollContactInNewsletter } = await import('@/lib/content/newsletter-enrollment')
+    void enrollContactInNewsletter({ contactId: contact.id, brokerageId, tier: 'contact' })
+      .catch((e) => console.error('[lead-acquisition] newsletter enroll failed:', e))
   } catch { /* best-effort */ }
 
   // ── Post-conversion side-effects ──────────────────────────────────────

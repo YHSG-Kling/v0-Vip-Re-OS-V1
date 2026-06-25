@@ -274,6 +274,13 @@ export async function advanceStage(params: {
         }).catch((e) => console.error("[stage-progression] lifetime audience promote failed:", e))
       } catch { /* best-effort */ }
 
+      // Content channel — keep the past client on the AGENT's newsletter (source 'auto_lifetime').
+      try {
+        const { enrollContactInNewsletter } = await import("@/lib/content/newsletter-enrollment")
+        void enrollContactInNewsletter({ contactId: closedTxn.seller_contact_id, brokerageId: params.brokerageId, tier: "lifetime" })
+          .catch((e) => console.error("[stage-progression] lifetime newsletter enroll failed:", e))
+      } catch { /* best-effort */ }
+
       // 3. Grant portal access to the sold listing view if not already enabled
       await supabase
         .from("contact_portal_modules")
