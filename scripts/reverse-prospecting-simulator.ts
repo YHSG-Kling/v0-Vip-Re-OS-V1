@@ -67,6 +67,13 @@ async function main() {
     note.body.includes("4-bed") && note.body.includes("$550,000"))
   check("fallback note offers a showing, no pressure", note.body.toLowerCase().includes("private showing"))
 
+  // The call candidate hand-off to the AI ISA is now CONSUMED, not orphaned on the feed.
+  {
+    const { SIGNAL_HANDLERS } = await import("../lib/kernel/manager-signals")
+    check("AI ISA consumes the reverse-prospecting call candidate (no longer a flat feed-only signal)",
+      typeof SIGNAL_HANDLERS["ai_isa:reverse_prospecting_call_candidate"] === "function")
+  }
+
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
   if (!hasCreds) {

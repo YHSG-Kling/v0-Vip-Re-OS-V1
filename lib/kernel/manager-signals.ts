@@ -189,6 +189,8 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   "ai_isa:offer_rejection_recovery": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "post-rejection regroup call"),
   // Shopping Agent → AI ISA: a stale/expired pre-approval re-qualification call.
   "ai_isa:stale_preapproval_reengage": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "financing re-qualification call"),
+  // Shopping Agent → AI ISA: a fresh listing matches a saved buyer — a reverse-prospecting call.
+  "ai_isa:reverse_prospecting_call_candidate": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "reverse-prospecting call (a new listing fits this buyer)"),
   // AI ISA → concierge: a dial-batch call booked an appointment. The concierge proposes
   // the prep follow-up to the client through the gate.
   "shopping_agent:isa_call_appointment": async (signal, ctx) => {
