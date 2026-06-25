@@ -21,8 +21,6 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import {
   generatePersonalizedEmail,
-  logEmailActivity,
-  generateAvatarVideo,
   embedVideoInEmail,
   shouldTriggerDirectMail,
   triggerDirectMailCampaign,
@@ -252,18 +250,25 @@ async function dispatchContactChannel(
 
     const { subject, body, fromName } = await generatePersonalizedEmail(emailCtx)
 
-    const videoResult = await generateAvatarVideo({
-      leadId: contact.id,
-      firstName: contact.first_name || 'there',
-      brokerageId,
-      recipientEmail: contact.email ?? '',
-      motivation_type: contact.buyer_stage ?? undefined,
-      property_interest: undefined,
-      timeline: undefined,
-    })
-    // D-ID rendering is async — videoId is a provider job ID, not a playable URL.
-    // Pass null so the graceful placeholder is shown; a follow-up can embed the URL once rendering completes.
-    const finalBody = await embedVideoInEmail(body, null)
+    // SITUATIONAL VIDEO, never a throwaway: instead of synthesizing a generic D-ID avatar on
+    // EVERY email (wasteful + non-situational + an unplayable placeholder), surface the
+    // contact's most recent COMPLETED, broker-APPROVED situational reel — the anniversary-
+    // equity / buyer-match / market reels the dedicated situation triggers render over the
+    // relationship. As new situational reels render, the email shows the latest: videos
+    // RECUR and stay relevant, never "once" and never a per-touch generic clip.
+    const { data: latestReel } = await supabase
+      .from('ai_video_projects')
+      .select('video_url, completed_at')
+      .eq('contact_id', contact.id)
+      .eq('brokerage_id', brokerageId)
+      .eq('status', 'completed')
+      .eq('approval_status', 'approved')
+      .not('video_url', 'is', null)
+      .gte('completed_at', new Date(Date.now() - 120 * 86_400_000).toISOString())
+      .order('completed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    const finalBody = await embedVideoInEmail(body, (latestReel as { video_url?: string | null } | null)?.video_url ?? null)
 
     // Final compliance pass on generated content
     const finalCompliance = await evaluateOutbound({
@@ -573,11 +578,22 @@ async function tryVoiceDrop(
       .select('id').eq('brokerage_id', brokerageId).eq('is_active', true)
       .order('created_at', { ascending: true }).limit(1).maybeSingle()
     if (!preset?.id) return null
+    // SITUATIONAL — the voice drop speaks to where this person actually is (them-first),
+    // not a generic preset blast. Build the script from the contact's side + stage.
+    const { buildSituationalVoicemailScript } = await import('@/lib/ai-isa/situational-voicemail')
+    const side = contact.contact_type === 'seller' ? 'seller'
+      : contact.contact_type === 'lifetime' ? 'past_client' : 'buyer'
+    const scriptOverride = buildSituationalVoicemailScript({
+      firstName: contact.first_name || 'there',
+      side,
+      stage: (contact.buyer_stage as string | null) ?? (contact.motivation_type as string | null) ?? null,
+      hasFreshHook: reason === 'reactivation' || reason === 'stale' || reason === 'ghosted',
+    })
     const { orchestrateVoicedropSend } = await import('@/lib/voicedrop/orchestrate-voicedrop-send')
     const r = await orchestrateVoicedropSend({
       brokerageId, presetId: (preset as { id: string }).id, contactId: contact.id,
       toPhone: contact.phone, recipientFirstName: contact.first_name ?? null,
-      teamId: contact.team_id ?? null, systemSource: 'ai_isa_contact',
+      teamId: contact.team_id ?? null, systemSource: 'ai_isa_contact', scriptOverride,
     })
     if (!r.success) return null
     await logISAOutreach({

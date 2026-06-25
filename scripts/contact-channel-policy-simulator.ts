@@ -8,6 +8,7 @@
  * branch of resolveContactChannel + voiceReachable across preference × consent × opt-out.
  */
 import { resolveContactChannel, voiceReachable } from "../lib/ai-isa/contact-channel-policy"
+import { buildSituationalVoicemailScript } from "../lib/ai-isa/situational-voicemail"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -40,6 +41,28 @@ function main() {
   check("prefers direct_mail + addr → direct_mail", resolveContactChannel({ ...consented, preferred_channel: "direct_mail", mailing_address: "9 Oak" }) === "direct_mail")
   check("prefers direct_mail + NO addr → email", resolveContactChannel({ ...consented, preferred_channel: "direct_mail" }) === "email")
   check("unknown preference → email (safe default)", resolveContactChannel({ ...consented, preferred_channel: "carrier_pigeon" }) === "email")
+
+  console.log("\n[Situational voice drops — them-first, not a generic blast]")
+  const buyerSearch = buildSituationalVoicemailScript({ firstName: "Sam", side: "buyer", stage: "active_search", hasFreshHook: true })
+  const buyerNoHook = buildSituationalVoicemailScript({ firstName: "Sam", side: "buyer", stage: "active_search", hasFreshHook: false })
+  const sellerList = buildSituationalVoicemailScript({ firstName: "Sam", side: "seller", stage: "cma_request" })
+  const pastClient = buildSituationalVoicemailScript({ firstName: "Sam", side: "past_client" })
+  const buyerFin = buildSituationalVoicemailScript({ firstName: "Sam", side: "buyer", stage: "preapproval" })
+  check("buyer (searching, fresh hook) → leads with new homes / first look", /home|came up|first look|send them over/i.test(buyerSearch))
+  check("buyer fresh hook ≠ no-hook (situational, not one script)", buyerSearch !== buyerNoHook)
+  check("seller (CMA) → leads with value / what it's worth", /value|worth|sell for|market/i.test(sellerList))
+  check("past client → leads with equity", /equity/i.test(pastClient))
+  check("buyer (financing) → leads with financing", /financ|set up to move/i.test(buyerFin))
+  check("each side speaks differently (buyer ≠ seller ≠ past client)", buyerSearch !== sellerList && sellerList !== pastClient && buyerSearch !== pastClient)
+  check("the agent's name is interpolated by the sender ({agent_name})", [buyerSearch, sellerList, pastClient].every((s) => s.includes("{agent_name}")))
+  check("voicemail is spoken-length disciplined (≤ ~60 words)", [buyerSearch, sellerList, pastClient, buyerFin].every((s) => s.split(/\s+/).length <= 60))
+  const VM_BANNED = ["race", "religion", "christian", "jewish", "muslim", "ethnic", "disab", "handicap", "familial", "children", "kids", "married", "elderly", "senior citizen", "young couple", "your age", "retiree"]
+  let vmClean = true
+  for (const s of [buyerSearch, buyerNoHook, sellerList, pastClient, buyerFin]) {
+    const hit = VM_BANNED.find((w) => s.toLowerCase().includes(w))
+    if (hit) { vmClean = false; fails.push(`voicemail contains banned term "${hit}"`) }
+  }
+  check("no voicemail references a protected class or age (Fair Housing)", vmClean)
 
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

@@ -39,6 +39,12 @@ export interface OrchestrateVoicedropSendArgs {
   teamId?:      string | null
   agentUserId?: string | null
   systemSource?: string
+  /** SITUATIONAL override — a them-first, NLP-generated voicemail script for THIS recipient's
+   *  situation. When set (and the preset is TTS, not pre-recorded audio) it is synthesized
+   *  instead of the preset's static tts_script, so a voice drop speaks to where the person
+   *  actually is — never a generic blast. Still interpolated with {first_name/agent_name/
+   *  brokerage_name} and gated by the same TCPA + compliance checks. */
+  scriptOverride?: string | null
 }
 
 export interface OrchestrateVoicedropSendResult {
@@ -203,10 +209,12 @@ export async function orchestrateVoicedropSend(
     agentUserId: args.agentUserId ?? null,
   })
 
-  // Resolve audio: pre-uploaded URL wins; else synth from script.
+  // Resolve audio: pre-uploaded URL wins; else synth from the SITUATIONAL override (them-first,
+  // per this recipient) when supplied, else the preset's static script.
   let audioUrl = preset.audio_url
-  if (!audioUrl && preset.tts_script) {
-    const script = interpolate(preset.tts_script, {
+  const baseScript = (args.scriptOverride?.trim() || preset.tts_script) ?? null
+  if (!audioUrl && baseScript) {
+    const script = interpolate(baseScript, {
       first_name:     args.recipientFirstName ?? "",
       agent_name:     brand.agentName ?? brand.displayName,
       brokerage_name: brand.brokerageName,
