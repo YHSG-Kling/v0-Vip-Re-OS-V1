@@ -24,7 +24,7 @@ export async function detectGhostLeads(
     .eq('brokerage_id', brokerageId)
     .eq('lifecycle_state', 'isa_qualifying')
     .eq('is_active', true)
-    .not('reengagement_status', 'in', '("completed","opted_out")')
+    .not('reengagement_status', 'in', '("completed","opted_out","exhausted")')
     .or(`last_activity_at.lt.${cutoff},and(last_activity_at.is.null,created_at.lt.${cutoff})`)
 
   if (error) throw new Error(`detectGhostLeads query failed: ${error.message}`)
@@ -68,31 +68,12 @@ export async function runGhostReengagement(
         continue
       }
 
-      // ── STOP CHECKS 1-3 + 5 ──────────────────────────────────────────────
+      // ── STOP CHECKS — pure policy (reply count resolved first so the single
+      //    decision sees the real replyReceived + the attempt count) ──────────
       const contactRow = Array.isArray(lead.contacts)
         ? lead.contacts[0]
         : lead.contacts
 
-      // STOP CHECKS 1-3 + 5 — pure policy (reply-received is checked separately below,
-      // since it needs a DB count we only run when not already stopped).
-      const stopReason = ghostReengagementStopReason({
-        lifecycle_state: lead.lifecycle_state,
-        is_active: lead.is_active,
-        reengagement_status: lead.reengagement_status,
-        contactReengageAllowed: contactRow?.isa_reengage_allowed ?? null,
-        replyReceived: false,
-      })
-
-      if (stopReason) {
-        await supabase
-          .from('leads')
-          .update({ reengagement_status: 'completed' })
-          .eq('id', leadId)
-        stopped++
-        continue
-      }
-
-      // ── STOP CHECK 4: reply received ──────────────────────────────────────
       const { count: replyCount } = await supabase
         .from('lifecycle_events')
         .select('id', { count: 'exact', head: true })
@@ -100,7 +81,33 @@ export async function runGhostReengagement(
         .eq('entity_type', 'lead')
         .eq('event_type', KernelEvent.ISA_REPLY_RECEIVED)
 
-      if ((replyCount ?? 0) > 0) {
+      const stopReason = ghostReengagementStopReason({
+        lifecycle_state: lead.lifecycle_state,
+        is_active: lead.is_active,
+        reengagement_status: lead.reengagement_status,
+        contactReengageAllowed: contactRow?.isa_reengage_allowed ?? null,
+        replyReceived: (replyCount ?? 0) > 0,
+        outreachAttempts: lead.reengagement_attempt_count ?? 0,
+      })
+
+      // EXHAUSTED — the ISA gave up after MAX touches with no reply. Mark terminal so
+      // the detector never re-picks it, and ESCALATE to a human (broker/admin, else
+      // platform) instead of messaging this ghost forever. The AI-ISA manager owns the
+      // terminal state — no infinite stale loop.
+      if (stopReason === 'exhausted') {
+        await supabase.from('leads').update({ reengagement_status: 'exhausted' }).eq('id', leadId)
+        const { escalateExhaustedGhostLead } = await import('@/lib/ai-isa/ghost-escalation')
+        await escalateExhaustedGhostLead(supabase, {
+          leadId,
+          brokerageId,
+          attempts: lead.reengagement_attempt_count ?? 0,
+          firstName: lead.first_name ?? null,
+        })
+        stopped++
+        continue
+      }
+
+      if (stopReason) {
         await supabase
           .from('leads')
           .update({ reengagement_status: 'completed' })

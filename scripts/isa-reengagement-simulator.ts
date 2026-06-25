@@ -31,6 +31,7 @@ import {
   ghostReengagementStopReason,
   staleContactEligibility,
   resolveStaleThreshold,
+  DEFAULT_MAX_GHOST_ATTEMPTS,
   PHASE1_WINDOW_DAYS,
   PHASE2_SPACING_DAYS,
   DEFAULT_STALE_DAYS,
@@ -110,6 +111,15 @@ async function main() {
   check("reply received → stop", ghostReengagementStopReason({ ...base, replyReceived: true }) === "reply_received")
   check("precedence: representation outranks reply", ghostReengagementStopReason({ ...base, lifecycle_state: "representation", replyReceived: true }) === "representation")
   check("contact reengage_allowed=true (explicit) → continue", ghostReengagementStopReason({ ...base, contactReengageAllowed: true }) === null)
+
+  // ── Layer 1d: EXHAUSTED terminal (give up + escalate, never loop forever) ──
+  console.log("\n[Layer 1d · exhausted terminal]")
+  check("below max attempts → continue (null)", ghostReengagementStopReason({ ...base, outreachAttempts: DEFAULT_MAX_GHOST_ATTEMPTS - 1 }) === null)
+  check("THE GAP: at max attempts with no reply → 'exhausted'", ghostReengagementStopReason({ ...base, outreachAttempts: DEFAULT_MAX_GHOST_ATTEMPTS }) === "exhausted")
+  check("past max attempts → 'exhausted'", ghostReengagementStopReason({ ...base, outreachAttempts: DEFAULT_MAX_GHOST_ATTEMPTS + 5 }) === "exhausted")
+  check("a reply at the last attempt WINS over exhausted (success, not give-up)", ghostReengagementStopReason({ ...base, outreachAttempts: DEFAULT_MAX_GHOST_ATTEMPTS, replyReceived: true }) === "reply_received")
+  check("representation outranks exhausted", ghostReengagementStopReason({ ...base, outreachAttempts: 99, lifecycle_state: "representation" }) === "representation")
+  check("custom maxAttempts honored", ghostReengagementStopReason({ ...base, outreachAttempts: 3 }, { maxAttempts: 3 }) === "exhausted")
 
   // ── Layer 1d: STALE-CONTACT ELIGIBILITY ─────────────────────────────────────
   console.log("\n[Layer 1d · stale-contact eligibility — every exclusion]")

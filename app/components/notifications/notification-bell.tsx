@@ -35,6 +35,8 @@ function NotificationIcon({ type }: { type: string }) {
       return <AlertCircle className={`${cls} text-blue-500`} />
     case "qualified_lead_unassigned":
       return <AlertCircle className={`${cls} text-red-500`} />
+    case "ghost_lead_exhausted":
+      return <AlertCircle className={`${cls} text-amber-500`} />
     case "deal_update":
       return <TrendingUp className={`${cls} text-green-500`} />
     case "task_due":
