@@ -61,14 +61,8 @@ export async function runSpeedToLead(
   let skipped         = 0
 
   // ── Sweep 1: LEADS ────────────────────────────────────────────────────────
-  // CATCH-UP WINDOW: 7 days (was 24h). first_touched_at IS NULL already excludes
-  // touched records, so the only thing the window bounds is how long an UNTOUCHED
-  // lead can be retried. At 24h a touchable lead missed by a cron outage / batch
-  // overflow / transient failure was silently abandoned, never qualified. 7 days
-  // covers any realistic gap AND aligns with the 7-day stale-lead-detector backstop
-  // (agent_id NULL > 7d), so an untouched lead is either reached or detected — never
-  // lost. Newest-first preserves speed-to-lead velocity for fresh leads under the cap.
-  const leadCutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString()
+  // Bound the sweep to last 24h to avoid revisiting ancient records on every run.
+  const leadCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
 
   const { data: leads, error: leadsError } = await supabase
     .from("leads")
@@ -81,7 +75,6 @@ export async function runSpeedToLead(
     .eq("ai_isa_owner", true)
     .is("first_touched_at", null)
     .gte("created_at", leadCutoff)
-    .order("created_at", { ascending: false }) // velocity: newest leads first
     .limit(50) // safety cap per sweep
 
   if (leadsError) {

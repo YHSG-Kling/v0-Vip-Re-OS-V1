@@ -5,6 +5,7 @@ import { logISAOutreach } from '@/lib/ai-isa/isa-outreach-logger'
 import { initiateAIISAContactEngagement } from '@/app/actions/ai-isa/initiate-contact-engagement'
 import { ghostReengagementStopReason, shouldSendGhostOutreach } from '@/lib/ai-isa/reengagement-policy'
 import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
+import { adaptiveReengagementHook } from '@/lib/ai-isa/adaptive-reengagement'
 
 // ─── detectGhostLeads ─────────────────────────────────────────────────────────
 
@@ -243,13 +244,23 @@ export async function runGhostReengagement(
       })
       const reengageCopy = buildDeterministicCopy(reengageFacts, 'email', lead.first_name ?? undefined)
 
+      // ADAPTIVE, THEM-FIRST ANGLE — vary the opening by attempt (life-context →
+      // market → expertise → soft-close) AND tone it to the lead's generational cohort
+      // (from enrichment age), so a non-responder gets a FRESH, age-appropriate reason
+      // to reply instead of the same note repeated. Style/angle only — Fair-Housing safe.
+      const adaptive = adaptiveReengagementHook({
+        attempt: newCount,
+        enrichment: lead.enrichment_profile as { age?: number | null; age_range?: string | null } | null,
+      })
+      const reengageBody = `${adaptive.hook}\n\n${reengageCopy.body}`
+
       // Log outreach via isa-outreach-logger
       await logISAOutreach({
         brokerageId,
         entity: { entityType: 'lead', leadId },
         channel: 'email',
         subject: reengageCopy.subject ?? `Checking in, ${lead.first_name ?? 'there'}`,
-        bodySnippet: reengageCopy.body.substring(0, 200),
+        bodySnippet: reengageBody.substring(0, 200),
         compliancePassed: true,
       })
 
@@ -263,6 +274,8 @@ export async function runGhostReengagement(
           phase: inPhase1 ? 1 : 2,
           attempt: newCount,
           daysSinceStart,
+          angle: adaptive.angle,
+          cohort: adaptive.cohort,
         },
         created_at: new Date().toISOString(),
       })
