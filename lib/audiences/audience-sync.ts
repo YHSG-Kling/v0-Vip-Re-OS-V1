@@ -222,3 +222,83 @@ export async function onLeadConvertedForAudience(args: {
 
   return out
 }
+
+/**
+ * onContactBecameLifetimeForAudience — when a contact crosses into LIFETIME (a deal closed,
+ * contact_type='lifetime'), ensure the past client is in the brokerage + assigned-agent FB
+ * retargeting audiences. Past clients are the highest-ROI real-estate audience (referrals +
+ * repeat business + the lookalike seed), yet the lifetime transition had NO audience hook —
+ * a past client could be retargeted-eligible and never added (e.g. an agent-imported client
+ * who never flowed through the conversion path). Resolves the agent itself; consent-gated
+ * (a closed deal implies active representation, which satisfies Meta's opt-in requirement);
+ * idempotent (already a member → no-op). Best-effort; never throws.
+ */
+export async function onContactBecameLifetimeForAudience(args: {
+  contactId:   string
+  brokerageId: string
+}): Promise<AudienceSyncOutcome> {
+  const out: AudienceSyncOutcome = { ok: true, audiencesProcessed: 0, membersInserted: 0, skippedReasons: [] }
+  const svc = createServiceClient()
+
+  const { data: contact } = await svc.from("contacts")
+    .select("id, brokerage_id, agent_id, direct_mail_opt_out, email_opt_out, tcpa_consent, dnc_status")
+    .eq("id", args.contactId)
+    .maybeSingle()
+  const c = contact as {
+    brokerage_id: string | null; agent_id: string | null
+    direct_mail_opt_out: boolean | null; email_opt_out: boolean | null
+    tcpa_consent: boolean | null; dnc_status: boolean | null
+  } | null
+  if (!c) { out.ok = false; out.skippedReasons.push("contact_not_found"); return out }
+  if (c.brokerage_id !== args.brokerageId) { out.ok = false; out.skippedReasons.push("tenant_mismatch"); return out }
+  if (c.dnc_status) { out.skippedReasons.push("dnc_status_blocked"); return out }
+
+  // Consent gate — same as conversion: tcpa_consent OR active representation. A closed deal
+  // is representation, so a true past client clears this; an opted-out one is skipped.
+  if (c.tcpa_consent !== true) {
+    const { hasActiveRepresentation } = await import("@/lib/kernel/compliance/active-representation")
+    const repFlag = await hasActiveRepresentation(svc, args.contactId, args.brokerageId)
+    if (!repFlag) { out.skippedReasons.push("no_consent_or_representation"); return out }
+  }
+
+  const consent = {
+    tcpa_consent:        c.tcpa_consent ?? false,
+    direct_mail_opt_out: c.direct_mail_opt_out ?? false,
+    email_opt_out:       c.email_opt_out ?? false,
+    dnc_status:          c.dnc_status ?? false,
+    lifetime:            true,
+    snapshot_at:         new Date().toISOString(),
+  }
+
+  // Resolve the assigned agent's user (agents.id → users.id) so the past client also lands
+  // in the agent's personal audience (their sphere/referral ad pool).
+  let agentUserId: string | null = null
+  if (c.agent_id) {
+    const { data: a } = await svc.from("agents").select("user_id").eq("id", c.agent_id).maybeSingle()
+    agentUserId = (a as { user_id: string | null } | null)?.user_id ?? null
+  }
+
+  const brokerageAud = await findAudienceForScope({ brokerageId: args.brokerageId })
+  if (brokerageAud) {
+    out.audiencesProcessed++
+    const r = await stageMembership({ brokerageId: args.brokerageId, audienceId: brokerageAud.id, contactId: args.contactId, consent })
+    if (r.inserted) out.membersInserted++
+    if (r.skipped) out.skippedReasons.push(`brokerage:${r.skipped}`)
+  } else {
+    out.skippedReasons.push("no_brokerage_audience_configured")
+  }
+
+  if (agentUserId) {
+    const agentAud = await findAudienceForScope({ brokerageId: args.brokerageId, agentUserId })
+    if (agentAud) {
+      out.audiencesProcessed++
+      const r = await stageMembership({ brokerageId: args.brokerageId, audienceId: agentAud.id, contactId: args.contactId, consent })
+      if (r.inserted) out.membersInserted++
+      if (r.skipped) out.skippedReasons.push(`agent:${r.skipped}`)
+    } else {
+      out.skippedReasons.push("no_agent_audience_configured")
+    }
+  }
+
+  return out
+}

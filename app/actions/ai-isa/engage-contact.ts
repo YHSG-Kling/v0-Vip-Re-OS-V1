@@ -96,7 +96,9 @@ export async function engageContact(
          isa_reengage_allowed, ai_outreach_paused,
          preferred_channel, social_handles,
          brokerage_id, team_id, agent_id,
-         mailing_address, mailing_city:city, mailing_state:state, mailing_zip:zip_code,
+         mailing_address, city, mailing_state:state, mailing_zip:zip_code,
+         budget_min, budget_max, timeline, motivation_type, enrichment_profile, age_range,
+         occupation, household_income, home_owner_status, life_events, marital_status,
          last_contacted_at`
       )
       .eq('id', contactId)
@@ -223,18 +225,29 @@ async function dispatchContactChannel(
       return { success: false, reason: 'no_email_or_opted_out', channel }
     }
 
+    // THEM-FIRST, SITUATION-AWARE — address the contact by where they actually are
+    // (motivation / budget / timeline / generational cohort), not a generic template. Same
+    // enrichment the SMS path uses, so no channel speaks past the relationship.
+    const { cohortFromEnrichment } = await import('@/lib/ai-isa/adaptive-reengagement')
+    const enrichForCohort = {
+      age: (contact.enrichment_profile as any)?.age ?? null,
+      age_range: (contact.age_range as string | null) ?? (contact.enrichment_profile as any)?.age_range ?? null,
+    }
     const emailCtx = {
       leadId: contact.id,
       firstName: contact.first_name || 'there',
       lastName: contact.last_name || '',
       email: contact.email,
-      motivation_type: contact.buyer_stage ?? undefined,
+      motivation_type: (contact.motivation_type as string | null) ?? contact.buyer_stage ?? undefined,
       property_interest: undefined,
-      budget_min: undefined,
-      budget_max: undefined,
-      timeline: undefined,
-      lead_score: undefined,
+      budget_min: (contact.budget_min as number | null) ?? undefined,
+      budget_max: (contact.budget_max as number | null) ?? undefined,
+      timeline: (contact.timeline as string | null) ?? undefined,
+      lead_score: (contact.engagement_score as number | null) ?? undefined,
+      enrichment_context: (contact.enrichment_profile as Record<string, any> | null) ?? undefined,
       brandVoiceBlock: brandVoice.systemBlock,
+      brandTagline: brandVoice.tagline ?? null,
+      cohort: cohortFromEnrichment(enrichForCohort),
     }
 
     const { subject, body, fromName } = await generatePersonalizedEmail(emailCtx)

@@ -132,6 +132,7 @@
     "test:lead-nurture": "tsx scripts/lead-nurture-simulator.ts",
     "test:lead-reel": "tsx scripts/lead-reel-simulator.ts",
     "test:contact-channel": "tsx scripts/contact-channel-policy-simulator.ts",
+    "test:lifetime-audience": "tsx scripts/lifetime-audience-simulator.ts",
     "test:video-coordination": "tsx scripts/video-coordination-simulator.ts",
     "test:compliance-gate": "tsx scripts/compliance-gate-simulator.ts",
     "test:avatar-loop": "tsx scripts/avatar-loop-simulator.ts",

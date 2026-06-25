@@ -263,6 +263,17 @@ export async function advanceStage(params: {
         })
         .eq("id", closedTxn.seller_contact_id)
 
+      // Promote the past client into the FB retargeting audiences (brokerage + agent) —
+      // past clients are the highest-ROI referral/repeat + lookalike-seed audience, and the
+      // lifetime transition previously had no audience hook. Consent-gated, idempotent,
+      // non-blocking (a sync hiccup never blocks closing the deal).
+      try {
+        const { onContactBecameLifetimeForAudience } = await import("@/lib/audiences/audience-sync")
+        void onContactBecameLifetimeForAudience({
+          contactId: closedTxn.seller_contact_id, brokerageId: params.brokerageId,
+        }).catch((e) => console.error("[stage-progression] lifetime audience promote failed:", e))
+      } catch { /* best-effort */ }
+
       // 3. Grant portal access to the sold listing view if not already enabled
       await supabase
         .from("contact_portal_modules")
