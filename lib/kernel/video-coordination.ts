@@ -78,9 +78,11 @@ interface ProjectRow {
   brokerage_id: string | null
   agent_id: string | null
   listing_id: string | null
+  contact_id: string | null
   marketing_campaign_id: string | null
   status: string | null
   video_url: string | null
+  thumbnail_url: string | null
   video_type: string | null
   video_metadata: Record<string, unknown> | null
   title: string | null
@@ -118,7 +120,7 @@ export async function publishVideoCoordinationSignals(
   try {
     const { data, error } = await supabase
       .from("ai_video_projects")
-      .select("id, brokerage_id, agent_id, listing_id, marketing_campaign_id, status, video_url, video_type, video_metadata, title, error_message")
+      .select("id, brokerage_id, agent_id, listing_id, contact_id, marketing_campaign_id, status, video_url, thumbnail_url, video_type, video_metadata, title, error_message")
       .eq("id", projectId)
       .maybeSingle()
     if (error) return { ok: false, reason: error.message, published, escalated: false }
@@ -176,6 +178,34 @@ export async function publishVideoCoordinationSignals(
         payload: {
           video_url: project.video_url,
           lead_id: meta.lead_id,
+          agent_id: project.agent_id,
+          title: titleLine,
+          kind,
+        },
+      }, supabase)
+      if (res.ok) published.push("campaign_orchestrator")
+      return { ok: res.ok, reason: res.reason, published, escalated: false }
+    }
+
+    // ── Contact-addressed reel → STRICTLY 1:1, never a social broadcast ──
+    // A reel commissioned for a SPECIFIC contact (contact_id set — the ISA's situational
+    // re-engagement reel, the equity/anniversary reel, the buyer-match reel) is a personal
+    // touch for that one client; broadcasting their equity/CMA reel publicly is a privacy
+    // problem. The Asset Manager HANDS THE FINISHED REEL to the Campaign Orchestrator, which
+    // proposes the GATED 1:1 email (with thumbnail) embedding it — the manager that SENDS it.
+    if (project.contact_id) {
+      const res = await publishManagerSignal({
+        brokerageId,
+        fromManager: "asset_manager",
+        toManager: "campaign_orchestrator",
+        signalType: "contact_outreach_ready",
+        message: `Situational reel ready for a client: "${titleLine}" — propose the gated 1:1 email embedding it (personal, never broadcast).`,
+        entityType: "video_project",
+        entityId: project.id,
+        payload: {
+          video_url: project.video_url,
+          thumbnail_url: project.thumbnail_url ?? null,
+          contact_id: project.contact_id,
           agent_id: project.agent_id,
           title: titleLine,
           kind,

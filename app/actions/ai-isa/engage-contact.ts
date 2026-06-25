@@ -176,10 +176,23 @@ export async function engageContact(
           const portalPersona = contact.contact_type === 'seller' ? 'seller'
             : contact.contact_type === 'both' ? 'both'
             : contact.contact_type === 'lifetime' ? 'lifetime' : 'buyer'
-          const portalBody = buildSituationalPortalMessage({
-            firstName: contact.first_name || 'there', persona: portalPersona,
-            stage: (contact.buyer_stage as string | null) ?? (contact.motivation_type as string | null) ?? null,
+          const portalStage = (contact.buyer_stage as string | null) ?? (contact.motivation_type as string | null) ?? null
+          const portalFallback = buildSituationalPortalMessage({
+            firstName: contact.first_name || 'there', persona: portalPersona, stage: portalStage,
           })
+          // AI-GENERATED them-first portal note (the gateway writes it for this person);
+          // the deterministic builder is the FALLBACK only.
+          let portalBody = portalFallback
+          try {
+            const { generatePersonaCopy, realCopyGenerator } = await import('@/lib/kernel/ai-copy')
+            const drafted = await generatePersonaCopy(
+              { goal: `a short, warm, them-first IN-APP PORTAL note for a real-estate ${portalPersona} client — reference where they are, ~60–80 words, end with "reply here". No protected-class or age language.`,
+                facts: portalStage ? [`Stage/intent: ${portalStage}`] : [], channel: 'portal',
+                persona: { name: contact.first_name ?? undefined, audience: portalPersona, situation: portalStage }, words: 75 },
+              { body: portalFallback }, { generator: realCopyGenerator },
+            )
+            if (drafted.body?.trim()) portalBody = drafted.body.trim()
+          } catch { /* gateway down → the deterministic them-first fallback stands */ }
           await supabase.from('client_portal_messages').insert({
             brokerage_id: brokerageId, contact_id: contact.id, agent_id: contact.agent_id,
             direction: 'outbound', channel: 'portal', body: portalBody,
@@ -625,18 +638,34 @@ async function tryVoiceDrop(
       .select('id').eq('brokerage_id', brokerageId).eq('is_active', true)
       .order('created_at', { ascending: true }).limit(1).maybeSingle()
     if (!preset?.id) return null
-    // SITUATIONAL — the voice drop speaks to where this person actually is (them-first),
-    // not a generic preset blast. Build the script from the contact's side + stage.
+    // SITUATIONAL + AI-GENERATED — the voice drop is WRITTEN by the gateway for this person
+    // (them-first NLP grounded in their real facts), NOT a hardwired template. The deterministic
+    // builder is only the FALLBACK when the gateway is unavailable. Spoken in the agent's voice,
+    // so no agent-name placeholder is needed.
     const { buildSituationalVoicemailScript } = await import('@/lib/ai-isa/situational-voicemail')
     const side = contact.contact_type === 'seller' ? 'seller'
       : contact.contact_type === 'both' ? 'both'
       : contact.contact_type === 'lifetime' ? 'past_client' : 'buyer'
-    const scriptOverride = buildSituationalVoicemailScript({
-      firstName: contact.first_name || 'there',
-      side,
-      stage: (contact.buyer_stage as string | null) ?? (contact.motivation_type as string | null) ?? null,
+    const stageHint = (contact.buyer_stage as string | null) ?? (contact.motivation_type as string | null) ?? null
+    const fallbackVm = buildSituationalVoicemailScript({
+      firstName: contact.first_name || 'there', side, stage: stageHint,
       hasFreshHook: reason === 'reactivation' || reason === 'stale' || reason === 'ghosted',
     })
+    let scriptOverride = fallbackVm
+    try {
+      const { generatePersonaCopy, realCopyGenerator } = await import('@/lib/kernel/ai-copy')
+      const vmFacts: string[] = []
+      if (stageHint) vmFacts.push(`Stage/intent: ${stageHint}`)
+      if (contact.timeline) vmFacts.push(`Timeline: ${contact.timeline}`)
+      if (typeof contact.budget_min === 'number' && typeof contact.budget_max === 'number') vmFacts.push(`Budget: $${Number(contact.budget_min).toLocaleString()}–$${Number(contact.budget_max).toLocaleString()}`)
+      const drafted = await generatePersonaCopy(
+        { goal: `a warm, them-first ringless VOICEMAIL for a real-estate ${side} client — reference where they actually are, ≤25 seconds spoken (~50 words), natural and personal, end with a soft "call me back when you get a sec". No protected-class or age language.`,
+          facts: vmFacts, channel: 'voicedrop',
+          persona: { name: contact.first_name ?? undefined, audience: side, situation: stageHint }, words: 50 },
+        { body: fallbackVm }, { generator: realCopyGenerator },
+      )
+      if (drafted.body?.trim()) scriptOverride = drafted.body.trim()
+    } catch { /* gateway down → the deterministic them-first fallback stands */ }
     // IDENTITY: a contact's voicemail speaks in the ASSIGNED AGENT's cloned voice. Resolve
     // the agent's user_id (agents.id → users.id) so synthVoicemail uses the agent's voice,
     // not the preset default. Null (unassigned) → the brokerage default ISA voice.

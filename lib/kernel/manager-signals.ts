@@ -661,6 +661,47 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }, ctx.supabase)
     return res.ok ? `proposed the gated 1:1 reel email to the lead (approval ${res.id})` : null
   },
+  // Asset Manager → Campaign Orchestrator: a CONTACT's situational reel FINISHED. The
+  // Orchestrator (the manager that SENDS it) proposes ONE gated, 1:1 email embedding the reel
+  // + its thumbnail to that client — personal, never broadcast (it's their CMA/equity/buyer-
+  // match reel). Side-aware audience (buyer/seller). A human approves before send. Idempotent
+  // per (contact, reel).
+  "campaign_orchestrator:contact_outreach_ready": async (signal, ctx) => {
+    const contactId = (signal.payload?.contact_id as string | undefined) ?? null
+    const videoUrl = (signal.payload?.video_url as string | undefined) ?? null
+    if (!contactId || !videoUrl) return null
+    const { data: contact } = await ctx.supabase.from("contacts")
+      .select("id, first_name, contact_type").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!contact) return null
+    const c = contact as { first_name: string | null; contact_type: string | null }
+    const firstName = c.first_name || "there"
+    const subject = `A quick personal update for you, ${firstName}`
+    // Idempotency: one proposed/approved reel email per (contact, this subject).
+    const { data: dup } = await ctx.supabase.from("agent_client_messages").select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("recipient_contact_id", contactId)
+      .eq("subject", subject).in("status", ["proposed", "approved"]).limit(1).maybeSingle()
+    if (dup) return "contact reel email already proposed (gated, deduped)"
+
+    const audience: "seller" | "buyer" = c.contact_type === "seller" ? "seller" : "buyer"
+    const agentKind = c.contact_type === "seller" ? "listing_concierge" : "shopping_agent"
+    const body = [
+      `Hi ${firstName},`,
+      "",
+      `I put together a short, personal video just for you — a quick look at what's most relevant to where you are right now. Watch whenever it's convenient:`,
+      "",
+      videoUrl,
+      "",
+      `Anything you'd like to dig into, just reply and I'll take it from there.`,
+    ].join("\n")
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind, entityType: "contact",
+      entityId: contactId, recipientContactId: contactId, audience,
+      subject, body, channel: "email",
+      rationale: `Situational reel finished for ${firstName} — propose the gated 1:1 email embedding it (personal, never broadcast).`,
+    }, ctx.supabase)
+    return res.ok ? `proposed the gated 1:1 reel email to the contact (approval ${res.id})` : null
+  },
   // Deal Coordinator → Finance Manager: a deal worsened and the LOAN side is the risk. Finance
   // opens a drive-to-done task (assigned to the TC) and keeps the TC + agent aware — work the
   // loan, confirm the clear-to-close ETA. NOT the broker (operational). Part of the Deal-Save Huddle.
