@@ -157,6 +157,34 @@ export async function publishVideoCoordinationSignals(
       return { ok: false, reason: `not a terminal completed render (status=${project.status ?? "null"})`, published, escalated: false }
     }
 
+    // ── Lead-addressed intro reel → STRICTLY 1:1, never a social broadcast ──
+    // A reel cut for a single pre-conversion lead (Director stamped audience='lead' +
+    // lead_id) is personalized to that person — posting it publicly would be a privacy
+    // + compliance problem. It hands to the Campaign Orchestrator on a SEPARATE 1:1
+    // channel (lead_outreach_ready) that proposes a GATED email to that lead embedding
+    // the reel — email only, no social, no paid promotion.
+    const meta = (project.video_metadata ?? {}) as { audience?: string; lead_id?: string }
+    if (meta.audience === "lead" && meta.lead_id) {
+      const res = await publishManagerSignal({
+        brokerageId,
+        fromManager: "asset_manager",
+        toManager: "campaign_orchestrator",
+        signalType: "lead_outreach_ready",
+        message: `Persona-matched intro reel ready for a lead: "${titleLine}" — propose the gated 1:1 email embedding it (email only, never broadcast).`,
+        entityType: "video_project",
+        entityId: project.id,
+        payload: {
+          video_url: project.video_url,
+          lead_id: meta.lead_id,
+          agent_id: project.agent_id,
+          title: titleLine,
+          kind,
+        },
+      }, supabase)
+      if (res.ok) published.push("campaign_orchestrator")
+      return { ok: res.ok, reason: res.reason, published, escalated: false }
+    }
+
     const targets = videoReadyTargets(kind)
     const basePayload = {
       video_type: project.video_type ?? null,

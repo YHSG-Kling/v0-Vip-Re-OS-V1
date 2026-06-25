@@ -100,6 +100,7 @@ export function compositionHintFor(kind: SituationKind, channel: TargetChannel):
     case "market_update": return "MarketUpdateReel"
     case "cma":           return "CMAReel"
     case "explainer":     return "AgentExplainerReel"
+    case "lead_intro":    return "AgentExplainerReel"
     case "presentation":  return "ListingSectionReel"
     case "anniversary":   return "EquityReportReel"
     case "testimonial":   return "TestimonialReel"

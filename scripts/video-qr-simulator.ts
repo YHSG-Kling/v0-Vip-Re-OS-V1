@@ -78,6 +78,7 @@ async function main() {
     presentation_chapter: { dt: "video_avatar_tour", urlPart: "/tour/L-1" },
     anniversary:          { dt: "anniversary_video", urlPart: "/portal/equity/C-1" },
     newsletter:           { dt: "landing_page",      urlPart: "/n/K-1" },
+    lead_intro:           { dt: "book_meeting",      urlPart: "/book" },
   }
   for (const kind of Object.keys(expected) as VideoQrKind[]) {
     const d = qrDestinationForKind(kind)

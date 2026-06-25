@@ -74,6 +74,10 @@ export type SituationKind =
   | "anniversary"
   | "testimonial"
   | "neighborhood"
+  // A 1:1 intro reel addressed to a PRE-CONVERSION lead — the AI ISA delegates it to the
+  // Asset Manager (video director). Avatar-led + persona-matched; CTA is "book a consult"
+  // (book_meeting QR), NOT a listing. Never broadcast — it distributes 1:1 over email only.
+  | "lead_intro"
 
 export type CompositionTierLite =
   | "solo_agent" | "team" | "brokerage" | "multi_location" | "platform"
@@ -242,6 +246,18 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
         targetChannels: socialFeed,
       }
 
+    case "lead_intro":
+      // A pre-conversion lead's 1:1 intro reel reuses the avatar-led explainer
+      // composition, but it is cut SQUARE for an EMAIL embed (plays inline) — never
+      // a social feed. The single email channel keeps it strictly 1:1 (no broadcast).
+      return {
+        compositionId: "AgentExplainerReel",
+        needsAvatar: true,   // the agent's avatar introduces themselves to the lead
+        needsBroll: false, needsCharts: false, needsSlides: false,
+        aspect: "square",
+        targetChannels: ["email"],
+      }
+
     case "presentation":
       return {
         compositionId: "ListingSectionReel",
@@ -399,7 +415,8 @@ export function musicMoodForSituation(kind: SituationKind): MusicMood {
     case "neighborhood":  return "upbeat"
     case "market_update":
     case "anniversary":
-    case "explainer":     return "calm"
+    case "explainer":
+    case "lead_intro":    return "calm"
     case "cma":
     case "presentation":  return "none"
   }
@@ -419,6 +436,7 @@ export function qrKindForSituation(kind: SituationKind): VideoQrKind {
     case "open_house":    return "open_house"
     case "presentation":  return "presentation_chapter"
     case "anniversary":   return "anniversary"
+    case "lead_intro":    return "lead_intro"
     case "new_listing":
     case "price_drop":
     case "coming_soon":
@@ -447,6 +465,7 @@ export function defaultHookForSituation(kind: SituationKind): string {
     case "anniversary":   return "A Year In Your Home"
     case "testimonial":   return "What Clients Say"
     case "neighborhood":  return "Inside The Neighborhood"
+    case "lead_intro":    return "A Quick Hello"
   }
 }
 
@@ -602,6 +621,7 @@ function videoTypeForSituation(kind: SituationKind): string {
     case "market_update": return "market_update"
     case "cma":           return "pre_appointment"
     case "explainer":     return "education"
+    case "lead_intro":    return "education"
     case "presentation":  return "presentation_chapter"
     case "anniversary":   return "memory_video"
     case "testimonial":   return "testimonial"
@@ -626,6 +646,12 @@ export interface CommissionOpts {
   listingId?: string | null
   /** Contact the video is addressed to (anniversary) — QR + idempotency entity. */
   contactId?: string | null
+  /** Pre-conversion LEAD the intro reel is addressed to (lead_intro) — QR +
+   *  idempotency entity. A lead has no listing/contact yet, so this keeps each
+   *  lead's reel uniquely keyed (without it, lead reels collide on brokerageId).
+   *  Also stamped onto video_metadata so the completion publisher routes the
+   *  finished reel 1:1 (campaign_orchestrator:lead_outreach_ready) — never social. */
+  leadId?: string | null
   /** Campaign id for newsletter-style kinds. */
   campaignId?: string | null
   /** Title for the project row (defaults to "<Hook> — <compositionId>"). */
@@ -740,7 +766,7 @@ export async function commissionVideo(
   //    is the listing (most kinds), then the contact (anniversary), then the
   //    campaign, then the brokerage. Stamped into video_metadata.director_key so a
   //    re-run for the same situation reuses the staged row instead of duplicating.
-  const entity = opts.listingId ?? opts.contactId ?? opts.campaignId ?? opts.brokerageId
+  const entity = opts.listingId ?? opts.contactId ?? opts.leadId ?? opts.campaignId ?? opts.brokerageId
   const directorKey = `director:${situation.kind}:${entity}`
 
   const { data: existing } = await svc
@@ -770,6 +796,7 @@ export async function commissionVideo(
         kind: spec.outro.qr.kind,
         listingId: opts.listingId ?? null,
         contactId: opts.contactId ?? null,
+        leadId: opts.leadId ?? null,
         campaignId: opts.campaignId ?? null,
         origin: opts.origin,
       }, svc)
@@ -904,6 +931,11 @@ export async function commissionVideo(
     music_mood: effectiveMood,
     qr_code_id: qr?.qrCodeId ?? null,
     requested_via: "asset_manager",
+    // Lead-addressed intro reel: stamp the lead + audience so the completion publisher
+    // (lib/kernel/video-coordination) routes the finished reel 1:1 to the Campaign
+    // Orchestrator (campaign_orchestrator:lead_outreach_ready) instead of a SOCIAL
+    // broadcast — a personalized lead reel is never posted publicly.
+    ...(opts.leadId ? { lead_id: opts.leadId, audience: "lead" as const } : {}),
     // SELF-IMPROVING provenance — "default" or a gated "learned" pick + the WHY,
     // so the format choice is auditable on the row itself.
     format_source: formatSource,

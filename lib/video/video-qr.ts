@@ -45,6 +45,7 @@ export type VideoQrKind =
   | "presentation_chapter"
   | "anniversary"
   | "newsletter"
+  | "lead_intro"
 
 /** m148 destination_type values this module emits (subset of the enum). */
 export type VideoQrDestinationType =
@@ -61,6 +62,10 @@ export interface VideoQrEntityRefs {
   contactId?: string | null
   /** Marketing/newsletter campaign id — drives the newsletter landing URL. */
   campaignId?: string | null
+  /** Pre-conversion LEAD the intro reel is addressed to — drives the lead_intro
+   *  idempotency entity (a lead has no listing/contact yet). The QR itself lands on
+   *  the brokerage's general book-a-consult page (no per-lead PII in the URL). */
+  leadId?: string | null
 }
 
 export interface VideoQrDestination {
@@ -118,6 +123,14 @@ export function qrDestinationForKind(kind: VideoQrKind): VideoQrDestination {
             ? `${normalizeOrigin(origin)}/n/${refs.campaignId}`
             : `${normalizeOrigin(origin)}`,
       }
+    case "lead_intro":
+      // A lead-addressed intro reel's CTA is "book a quick consult" — the general
+      // booking page (no listing, no per-lead PII in the scannable URL). The /api/qr/scan
+      // resolver still tracks the scan + lets the target be re-pointed without reprinting.
+      return {
+        destinationType: "book_meeting",
+        buildTargetUrl: (origin) => `${normalizeOrigin(origin)}/book`,
+      }
   }
 }
 
@@ -152,6 +165,7 @@ function videoQrLabel(args: MintVideoQrArgs): string {
   const entity =
     args.listingId ??
     args.contactId ??
+    args.leadId ??
     args.campaignId ??
     args.brokerageId
   return `video:${args.kind}:${entity}`

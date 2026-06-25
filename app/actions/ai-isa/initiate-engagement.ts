@@ -24,11 +24,11 @@ import { getAgentContext } from '@/lib/identity/get-agent-context'
 import {
   generatePersonalizedEmail,
   logEmailActivity,
-  generateAvatarVideo,
   embedVideoInEmail,
   shouldTriggerDirectMail,
   triggerDirectMailCampaign,
 } from '@/lib/ai-isa'
+import { publishManagerSignal } from '@/lib/kernel/manager-signals'
 import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
 import { pickLeadOutreachChannel } from '@/lib/ai-isa/lead-channel-policy'
 import { cohortFromEnrichment } from '@/lib/ai-isa/adaptive-reengagement'
@@ -347,17 +347,26 @@ async function dispatchToChannel(
 
     const { subject, body, fromName } = await generatePersonalizedEmail(emailContext)
 
-    const videoResult = await generateAvatarVideo({
-      leadId: lead.id,
-      firstName: lead.first_name || 'there',
+    // MULTI-MANAGER PLAY — instead of the ISA rendering a solo, throwaway D-ID avatar
+    // inline, it DELEGATES the persona-matched intro reel to the Asset Manager (the team's
+    // video director) on the bus. The Asset Manager commissions it through the full Director
+    // (format → book-a-consult QR → compliance gate → a GATED ai_video_projects row); on
+    // completion the Campaign Orchestrator proposes the gated 1:1 follow-up email embedding
+    // it. Every hop shows on the "managers talking" feed — the differentiator. The reel is a
+    // coordinated FOLLOW-UP, so the first-touch email's "being prepared, sent shortly" note
+    // (embedVideoInEmail below) is accurate.
+    const reelDelegation = await publishManagerSignal({
       brokerageId: lead.brokerage_id,
-      recipientEmail: lead.email ?? '',
-      motivation_type: lead.motivation_type,
-      property_interest: lead.property_interest,
-      timeline: lead.timeline,
-    })
-    // D-ID rendering is async — videoId is a provider job ID, not a playable URL.
-    // Pass null so the graceful placeholder is shown; a follow-up can embed the URL once rendering completes.
+      fromManager: 'ai_isa',
+      toManager: 'asset_manager',
+      signalType: 'lead_creative_handoff',
+      message: `Qualified ${lead.first_name || 'a lead'} — build the persona-matched 1:1 intro reel for the email follow-up.`,
+      entityType: 'lead',
+      entityId: lead.id,
+      payload: { first_name: lead.first_name ?? null, property_interest: lead.property_interest ?? null },
+    }, supabase)
+    // The reel arrives as the coordinated follow-up — pass null so the email shows the
+    // honest "intro is being prepared and will be sent shortly" note.
     const finalEmailBody = await embedVideoInEmail(body, null)
 
     // Run compliance on final content
@@ -437,7 +446,7 @@ async function dispatchToChannel(
     return {
       success: true,
       emailSent: true,
-      videoGenerated: videoResult.success,
+      reelDelegated: reelDelegation.ok,
       directMailTriggered: shouldSendMail,
       channel: 'email',
     }

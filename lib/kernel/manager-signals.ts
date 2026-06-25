@@ -371,6 +371,103 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       ? `escalated the failed render to ${notified} responsible recipient${notified === 1 ? "" : "s"} (no silent dead reel)`
       : null
   },
+  // AI ISA → Asset Manager: the ISA QUALIFIED a lead and DELEGATES the persona-matched
+  // 1:1 intro reel to the Asset Manager (the team's video director). The Asset Manager
+  // builds the creative brief from the lead's REAL facts and commissions the reel through
+  // the Director (format → tracked book-a-consult QR → compliance gate → a GATED
+  // ai_video_projects row). Nothing auto-publishes; when the reel finishes the completion
+  // publisher hands it 1:1 to the Campaign Orchestrator (lead_outreach_ready). This is the
+  // multi-manager outreach play — every hop shows on the "managers talking" feed.
+  "asset_manager:lead_creative_handoff": async (signal, ctx) => {
+    const leadId = signal.entityId
+    if (!leadId) return null
+    const { data: lead } = await ctx.supabase.from("leads")
+      .select("id, first_name, property_interest, timeline, motivation_type, budget_min, budget_max, enrichment_profile, brokerage_id, agent_id")
+      .eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!lead) return null
+    const l = lead as Record<string, any>
+
+    // Resolve the on-screen presenter (ai_video_projects.agent_id → users.id): the lead's
+    // assigned agent when present, else a brokerage broker/owner so the reel still carries a
+    // real human's brand. No presenter on file → the reel is honestly deferred (the email
+    // first-touch already went out); we never fabricate an identity.
+    let agentUserId: string | null = null
+    if (l.agent_id) {
+      const { data: a } = await ctx.supabase.from("agents").select("user_id").eq("id", l.agent_id).maybeSingle()
+      agentUserId = (a as any)?.user_id ?? null
+    }
+    if (!agentUserId) {
+      const { data: broker } = await ctx.supabase.from("users").select("id")
+        .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker_owner", "broker", "broker_admin"])
+        .order("created_at", { ascending: true }).limit(1).maybeSingle()
+      agentUserId = (broker as any)?.id ?? null
+    }
+    if (!agentUserId) return "no presenter on file (no agent / broker) — intro reel deferred; email first-touch already sent"
+
+    const { buildLeadIntroReelBrief } = await import("@/lib/ai-isa/lead-reel-brief")
+    const { commissionVideo } = await import("@/lib/video/video-director")
+    const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+    const brief = buildLeadIntroReelBrief({
+      leadId: l.id,
+      firstName: l.first_name ?? "there",
+      propertyInterest: l.property_interest ?? null,
+      timeline: l.timeline ?? null,
+      motivationType: l.motivation_type ?? null,
+      budgetMin: l.budget_min ?? null,
+      budgetMax: l.budget_max ?? null,
+      enrichment: (l.enrichment_profile ?? null) as { age?: number | null; age_range?: string | null } | null,
+    })
+    const r = await commissionVideo(
+      brief.situation,
+      { brokerageId: ctx.brokerageId, agentUserId, leadId: l.id, title: brief.title, persona: brief.persona, extraFacts: brief.extraFacts, copyGenerator: realCopyGenerator },
+      ctx.supabase,
+    )
+    if (r.status === "already_staged") return `intro reel already commissioned for this lead (${r.compositionId}, deduped)`
+    if (!r.ok) return r.status === "blocked"
+      ? `intro reel blocked at the compliance gate — not staged (${(r.violations ?? []).join("; ").slice(0, 160)})`
+      : null
+    return `commissioned the persona-matched intro reel (${r.compositionId}, gated pending_review) — hands to the Campaign Orchestrator on completion`
+  },
+  // Asset Manager → Campaign Orchestrator: a lead's persona intro reel FINISHED. The
+  // Orchestrator proposes ONE gated, 1:1 follow-up EMAIL to that lead embedding the reel —
+  // email only (the canonical lead-channel rule: an unconsented lead is never SMS/phone/
+  // social, and a personalized lead reel is never broadcast). A human approves it in the
+  // Command Center before it sends. Idempotent per (lead, reel).
+  "campaign_orchestrator:lead_outreach_ready": async (signal, ctx) => {
+    const leadId = (signal.payload?.lead_id as string | undefined) ?? null
+    const videoUrl = (signal.payload?.video_url as string | undefined) ?? null
+    if (!leadId || !videoUrl) return null
+    const { data: lead } = await ctx.supabase.from("leads")
+      .select("id, first_name, brokerage_id").eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!lead) return null
+    const firstName = (lead as any).first_name || "there"
+    const subject = `A quick personal hello, ${firstName}`
+
+    // Idempotency: one proposed/approved reel-email per lead.
+    const { data: dup } = await ctx.supabase.from("agent_client_messages").select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("recipient_lead_id", leadId)
+      .eq("subject", subject).in("status", ["proposed", "approved"]).limit(1).maybeSingle()
+    if (dup) return "reel follow-up already proposed for this lead (gated, deduped)"
+
+    const body = [
+      `Hi ${firstName},`,
+      "",
+      `I put together a short, personal video just for you — it's a quick hello and a look at how I can help with your move. No pressure at all; watch whenever it's convenient:`,
+      "",
+      videoUrl,
+      "",
+      `If anything in it is useful, just reply to this email and I'll take it from there.`,
+    ].join("\n")
+
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "campaign_orchestrator", entityType: "lead",
+      entityId: leadId, recipientLeadId: leadId, audience: "lead",
+      subject, body, channel: "email",
+      rationale: `Persona intro reel finished for ${firstName} — propose the gated 1:1 email embedding it (email only; never broadcast).`,
+    }, ctx.supabase)
+    return res.ok ? `proposed the gated 1:1 reel email to the lead (approval ${res.id})` : null
+  },
   // Deal Coordinator → Finance Manager: a deal worsened and the LOAN side is the risk. Finance
   // opens a drive-to-done task (assigned to the TC) and keeps the TC + agent aware — work the
   // loan, confirm the clear-to-close ETA. NOT the broker (operational). Part of the Deal-Save Huddle.
