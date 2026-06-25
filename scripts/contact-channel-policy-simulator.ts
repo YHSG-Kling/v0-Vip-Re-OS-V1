@@ -9,6 +9,8 @@
  */
 import { resolveContactChannel, voiceReachable } from "../lib/ai-isa/contact-channel-policy"
 import { buildSituationalVoicemailScript } from "../lib/ai-isa/situational-voicemail"
+import { contactReelPersona, situationKindForContact } from "../lib/ai-isa/contact-reel-situation"
+import { buildSituationalPortalMessage } from "../lib/ai-isa/situational-portal-message"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -16,7 +18,7 @@ const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ $
 
 const consented = { phone: "+15125551234", email: "c@example.com", tcpa_consent: true }
 
-function main() {
+async function main() {
   console.log("\n[Voice reachability — consent + a clean line]")
   check("consented + clean line → voice reachable", voiceReachable(consented) === true)
   check("no consent → NOT voice reachable", voiceReachable({ ...consented, tcpa_consent: false }) === false)
@@ -64,6 +66,41 @@ function main() {
   }
   check("no voicemail references a protected class or age (Fair Housing)", vmClean)
 
+  console.log("\n[Truly situational — buyer/seller/both/lifetime (not 3)]")
+  const bothVm = buildSituationalVoicemailScript({ firstName: "Sam", side: "both" })
+  check("a 'both' (buyer+seller) voicemail speaks to BOTH sides + timing", /both sides|line the timing|map it out/i.test(bothVm))
+  check("'both' voicemail differs from buyer + seller + past-client", bothVm !== buyerSearch && bothVm !== sellerList && bothVm !== pastClient)
+  // The DELEGATED reel kind fits each of the 4 personas (distinct, not collapsed to 3).
+  check("contact_type 'both' → 'both' persona", contactReelPersona("both") === "both")
+  check("contact_type 'lifetime' → 'lifetime' persona", contactReelPersona("lifetime") === "lifetime")
+  check("buyer → explainer reel", situationKindForContact("buyer") === "explainer")
+  check("seller → cma reel", situationKindForContact("seller") === "cma")
+  check("both → market_update reel", situationKindForContact("both") === "market_update")
+  check("lifetime → anniversary reel", situationKindForContact("lifetime") === "anniversary")
+  check("all four personas map to DISTINCT reel kinds (truly situational)",
+    new Set((["buyer", "seller", "both", "lifetime"] as const).map(situationKindForContact)).size === 4)
+
+  console.log("\n[Portal NLP — met in-app, them-first, by persona]")
+  const portalBuyer = buildSituationalPortalMessage({ firstName: "Sam", persona: "buyer" })
+  const portalSeller = buildSituationalPortalMessage({ firstName: "Sam", persona: "seller" })
+  const portalBoth = buildSituationalPortalMessage({ firstName: "Sam", persona: "both" })
+  const portalLife = buildSituationalPortalMessage({ firstName: "Sam", persona: "lifetime" })
+  check("portal buyer note is them-first (their search, their pace)", /your search|your pace|flagged the strongest/i.test(portalBuyer))
+  check("portal seller note leads with value", /sell for|worth|number/i.test(portalSeller))
+  check("portal 'both' note speaks to both sides + timing", /both sides|timing|map it out/i.test(portalBoth))
+  check("portal lifetime note leads with equity + referral", /equity|referral|snapshot/i.test(portalLife))
+  check("all four portal personas are distinct", new Set([portalBuyer, portalSeller, portalBoth, portalLife]).size === 4)
+  const PORTAL_BANNED = ["race", "religion", "ethnic", "disab", "familial", "children", "married", "elderly", "your age", "retiree"]
+  check("no portal note references a protected class or age (Fair Housing)",
+    [portalBuyer, portalSeller, portalBoth, portalLife].every((s) => !PORTAL_BANNED.some((w) => s.toLowerCase().includes(w))))
+
+  console.log("\n[Managers delegating — the ISA hands the reel to the Asset Manager]")
+  {
+    const { SIGNAL_HANDLERS } = await import("../lib/kernel/manager-signals")
+    check("Asset Manager consumes the contact reel hand-off (managers delegating, not solo)",
+      typeof SIGNAL_HANDLERS["asset_manager:contact_reel_handoff"] === "function")
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
@@ -71,4 +108,4 @@ function main() {
   console.log(" ✅ CONTACT_CHANNEL_PASS — the ISA's full voice toolbox (call + voicedrop) is reachable on consented contacts; consent gates hold")
 }
 
-main()
+main().catch((e) => { console.error(e); process.exit(1) })

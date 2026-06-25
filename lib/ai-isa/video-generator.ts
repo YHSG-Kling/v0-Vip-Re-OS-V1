@@ -11,17 +11,31 @@
 // situational reel instead of synthesizing a throwaway clip. embedVideoInEmail stays — it is the
 // shared seam that drops a resolved reel URL (or a graceful "being prepared" note) into a body.
 
-export async function embedVideoInEmail(emailBody: string, videoUrl: string | null) {
+/**
+ * embedVideoInEmail — drop a resolved reel into the body. A THUMBNAIL (poster) always rides
+ * with the video: most email clients strip <video>, so a clickable poster image with a play
+ * overlay is the universal fallback (and the <video> poster shows the same frame before play
+ * where supported). posterUrl = ai_video_projects.thumbnail_url; null → a play-link fallback.
+ */
+export async function embedVideoInEmail(emailBody: string, videoUrl: string | null, posterUrl?: string | null) {
   if (!videoUrl) {
     return emailBody.replace('[Video will be embedded here]',
       '[Note: Personalized video intro is being prepared and will be sent shortly]')
   }
+  const poster = posterUrl ? ` poster="${posterUrl}"` : ''
+  // The universal fallback shown when a client can't render <video> — a clickable thumbnail
+  // (with a play glyph) when we have a poster, else a plain watch link.
+  const fallback = posterUrl
+    ? `<a href="${videoUrl}" style="display:inline-block;position:relative;text-decoration:none;">` +
+      `<img src="${posterUrl}" alt="Watch your video" width="480" style="max-width:100%;border-radius:8px;display:block;" />` +
+      `<span style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:52px;line-height:1;color:#ffffff;text-shadow:0 2px 10px rgba(0,0,0,.6);">&#9658;</span>` +
+      `</a>`
+    : `Your email client doesn't support video playback. <a href="${videoUrl}">Click here to watch</a>`
   const videoEmbed = `
     <div style="margin: 20px 0; text-align: center;">
-      <video controls style="max-width: 100%; border-radius: 8px;">
+      <video controls${poster} style="max-width: 100%; border-radius: 8px;">
         <source src="${videoUrl}" type="video/mp4">
-        Your email client doesn't support video playback.
-        <a href="${videoUrl}">Click here to watch</a>
+        ${fallback}
       </video>
     </div>
   `

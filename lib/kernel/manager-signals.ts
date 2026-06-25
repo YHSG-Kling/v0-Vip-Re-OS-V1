@@ -592,6 +592,35 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     if (parts.length === 0) return "no usable channel for the persona creative (email unverified, mailing unverified) — deferred"
     return parts.join("; ")
   },
+  // AI ISA → Asset Manager: re-engaging a CONTACT, the ISA DELEGATES a TRULY SITUATIONAL reel
+  // (the Asset Manager is the video director — the ISA doesn't make videos itself). The reel
+  // KIND fits the persona (buyer→explainer / seller→cma / both→market_update / lifetime→
+  // anniversary), fronted by the ASSIGNED AGENT's avatar/voice; commissioned gated through the
+  // Director, idempotent per (contact, kind). On completion the existing video_ready play
+  // distributes it.
+  "asset_manager:contact_reel_handoff": async (signal, ctx) => {
+    const contactId = signal.entityId ?? signal.contactId
+    if (!contactId) return null
+    const { data: contact } = await ctx.supabase.from("contacts")
+      .select("id, contact_type").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!contact) return null
+    const { resolveContactPresenterUserId } = await import("@/lib/ai-isa/outreach-identity")
+    const agentUserId = await resolveContactPresenterUserId(ctx.supabase, contactId, ctx.brokerageId)
+    if (!agentUserId) return "no assigned agent to front the reel — contact situational reel deferred"
+    const { contactReelPersona, buildContactReelSituation } = await import("@/lib/ai-isa/contact-reel-situation")
+    const { commissionVideo } = await import("@/lib/video/video-director")
+    const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+    const persona = contactReelPersona((contact as { contact_type: string | null }).contact_type)
+    const situation = buildContactReelSituation({ contactId, persona })
+    const r = await commissionVideo(
+      situation,
+      { brokerageId: ctx.brokerageId, agentUserId, contactId, copyGenerator: realCopyGenerator },
+      ctx.supabase,
+    )
+    if (r.status === "already_staged") return `situational ${persona} reel already commissioned (${r.compositionId}, deduped)`
+    if (r.ok) return `commissioned the situational ${persona} reel (${r.compositionId}, gated) fronted by the assigned agent`
+    return r.status === "blocked" ? `situational reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null
+  },
   // Asset Manager → Campaign Orchestrator: a lead's persona intro reel FINISHED. The
   // Orchestrator proposes ONE gated, 1:1 follow-up EMAIL to that lead embedding the reel —
   // email only (the canonical lead-channel rule: an unconsented lead is never SMS/phone/

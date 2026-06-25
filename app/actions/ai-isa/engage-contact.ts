@@ -143,6 +143,52 @@ export async function engageContact(
       return { success: false, reason: 'stop:max_touches' }
     }
 
+    // ── MANAGERS DELEGATING — the ISA hands a TRULY SITUATIONAL reel to the Asset Manager
+    //    (the video director), instead of making videos itself. The handler picks the reel
+    //    KIND for the persona (buyer/seller/both/lifetime) + fronts it with the assigned
+    //    agent's avatar/voice. Deduped per open signal (won't stack across touches); visible
+    //    on the "managers talking" feed. Re-engagement reasons only (not speed-to-lead). ──
+    if (reason === 'stale' || reason === 'ghosted' || reason === 'reactivation') {
+      try {
+        const { publishManagerSignal } = await import('@/lib/kernel/manager-signals')
+        await publishManagerSignal({
+          brokerageId, fromManager: 'ai_isa', toManager: 'asset_manager',
+          signalType: 'contact_reel_handoff',
+          message: `Re-engaging ${contact.first_name ?? 'a contact'} — build the situational reel fronted by their agent.`,
+          entityType: 'contact', entityId: contactId, contactId,
+        }, supabase)
+      } catch { /* best-effort — the touch still goes out */ }
+    }
+
+    // ── PORTAL (them-first NLP, in-app) — the highest-attention, zero-cost touch. On
+    //    re-engagement, leave a personal, SITUATIONAL note in the contact's portal (by
+    //    persona: buyer/seller/both/lifetime) so a logged-in contact is met in-app, not just
+    //    by email. Requires an assigned agent (client_portal_messages.agent_id NOT NULL);
+    //    deduped to one situational note per week; the contact's hard stops already cleared above. ──
+    if ((reason === 'stale' || reason === 'ghosted' || reason === 'reactivation') && contact.agent_id) {
+      try {
+        const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString()
+        const { data: recent } = await supabase.from('client_portal_messages')
+          .select('id').eq('contact_id', contact.id).eq('direction', 'outbound')
+          .contains('metadata', { source: 'ai_isa_situational' }).gte('created_at', weekAgo).limit(1).maybeSingle()
+        if (!recent) {
+          const { buildSituationalPortalMessage } = await import('@/lib/ai-isa/situational-portal-message')
+          const portalPersona = contact.contact_type === 'seller' ? 'seller'
+            : contact.contact_type === 'both' ? 'both'
+            : contact.contact_type === 'lifetime' ? 'lifetime' : 'buyer'
+          const portalBody = buildSituationalPortalMessage({
+            firstName: contact.first_name || 'there', persona: portalPersona,
+            stage: (contact.buyer_stage as string | null) ?? (contact.motivation_type as string | null) ?? null,
+          })
+          await supabase.from('client_portal_messages').insert({
+            brokerage_id: brokerageId, contact_id: contact.id, agent_id: contact.agent_id,
+            direction: 'outbound', channel: 'portal', body: portalBody,
+            metadata: { source: 'ai_isa_situational', persona: portalPersona, reason },
+          })
+        }
+      } catch (e) { console.error('[engageContact] portal touch failed:', e) }
+    }
+
     // ── 5. Resolve channel ────────────────────────────────────────────────
     const resolvedChannel = resolveContactChannel(contact)
     const channel = forceChannel ?? resolvedChannel
@@ -258,7 +304,7 @@ async function dispatchContactChannel(
     // RECUR and stay relevant, never "once" and never a per-touch generic clip.
     const { data: latestReel } = await supabase
       .from('ai_video_projects')
-      .select('video_url, completed_at')
+      .select('video_url, thumbnail_url, completed_at')
       .eq('contact_id', contact.id)
       .eq('brokerage_id', brokerageId)
       .eq('status', 'completed')
@@ -268,7 +314,8 @@ async function dispatchContactChannel(
       .order('completed_at', { ascending: false })
       .limit(1)
       .maybeSingle()
-    const finalBody = await embedVideoInEmail(body, (latestReel as { video_url?: string | null } | null)?.video_url ?? null)
+    const reel = latestReel as { video_url?: string | null; thumbnail_url?: string | null } | null
+    const finalBody = await embedVideoInEmail(body, reel?.video_url ?? null, reel?.thumbnail_url ?? null)
 
     // Final compliance pass on generated content
     const finalCompliance = await evaluateOutbound({
@@ -582,6 +629,7 @@ async function tryVoiceDrop(
     // not a generic preset blast. Build the script from the contact's side + stage.
     const { buildSituationalVoicemailScript } = await import('@/lib/ai-isa/situational-voicemail')
     const side = contact.contact_type === 'seller' ? 'seller'
+      : contact.contact_type === 'both' ? 'both'
       : contact.contact_type === 'lifetime' ? 'past_client' : 'buyer'
     const scriptOverride = buildSituationalVoicemailScript({
       firstName: contact.first_name || 'there',

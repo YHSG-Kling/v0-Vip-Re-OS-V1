@@ -10,7 +10,7 @@
 // references the person's STAGE + INTENT only — never race, religion, sex, national origin,
 // disability, familial status, or age itself. {agent_name} is interpolated by the sender.
 
-export type VoicemailSide = "buyer" | "seller" | "past_client"
+export type VoicemailSide = "buyer" | "seller" | "both" | "past_client"
 
 export interface SituationalVoicemailInput {
   firstName: string
@@ -37,6 +37,11 @@ export function buildSituationalVoicemailScript(i: SituationalVoicemailInput): s
       return `Hi ${first}, it's {agent_name}. Values in your neighborhood shifted this quarter, so I pulled a fresh look at what your home could sell for today. No pressure at all — I just wanted you to have the real number. Give me a call back whenever it's convenient and I'll walk you through it.`
     }
     return `Hi ${first}, it's {agent_name}. I was thinking about your place and put together a quick, no-pressure snapshot of where the market's at for a home like yours right now. Reach out anytime — happy to share it whenever you're ready.`
+  }
+
+  if (i.side === "both") {
+    // A buyer AND seller (must sell to buy) — speak to BOTH journeys + the timing between them.
+    return `Hi ${first}, it's {agent_name}. I've been watching both sides of your move — a few homes that fit just came up, and I pulled where your current place stands so we can line the timing up right. No pressure at all; call me back when you get a sec and we'll map it out together.`
   }
 
   if (i.side === "past_client") {
