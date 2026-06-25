@@ -1,12 +1,13 @@
 // lib/ai-isa/ghost-escalation.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// When the AI-ISA has EXHAUSTED its automated re-engagement on a non-responding ghost
-// lead (DEFAULT_MAX_GHOST_ATTEMPTS touches over ~3 months, no reply), it must STOP
-// looping and hand the decision to a human — the AI-ISA manager owns the lead's
-// terminal state, it doesn't message a ghost forever. This escalates to the brokerage
-// broker/admins (decide: a personal call, manual nurture, or archive), falling through
-// to platform staff if the brokerage has no admin. Fires once — the runner marks the
-// lead reengagement_status='exhausted' so the detector never re-picks it.
+// When the AI-ISA's AGGRESSIVE re-engagement cadence is spent on a non-responding lead
+// (DEFAULT_MAX_GHOST_ATTEMPTS touches over ~3 months, no reply), the ISA does NOT give up —
+// it DOWNSHIFTS to a quarterly long-horizon seasonal nurture (real-estate decisions take
+// 6–18 months). At that transition it escalates ONCE to a human as an FYI — the human may
+// add a personal touch (a call) the automation can't, OR archive — but the automated
+// seasonal nurture keeps the relationship alive either way. Escalates to the brokerage
+// broker/admins, falling through to platform staff if the brokerage has no admin. Fires
+// once — the runner flags the lead reengagement_status='long_horizon'.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { notifyBrokerageAdmins } from "@/lib/notifications/brokerage-admins"
@@ -28,11 +29,11 @@ export async function escalateExhaustedGhostLead(
   if (!leadId || !brokerageId) return { escalated: false, target: "none", notified: 0 }
 
   const who = firstName ? firstName : "A qualifying lead"
-  const body = `${who} has not responded after ${attempts} AI-ISA follow-ups — automated re-engagement is exhausted and has STOPPED. Decide the next move: a personal call, manual nurture, or archive.`
+  const body = `${who} hasn't replied after ${attempts} AI-ISA follow-ups. The ISA is NOT giving up — it's downshifting to a light quarterly nurture to stay top-of-mind for the months a move can take. A personal call from you might break through where automation can't; or archive if it's truly cold.`
 
   const adminCount = await notifyBrokerageAdmins(supabase, brokerageId, {
     type: GHOST_EXHAUSTED_NOTIFICATION_TYPE,
-    title: "AI-ISA exhausted follow-ups on a non-responding lead",
+    title: "AI-ISA moved a quiet lead to long-horizon nurture — a personal call might help",
     body,
     entityType: "lead",
     entityId: leadId,
@@ -42,7 +43,7 @@ export async function escalateExhaustedGhostLead(
 
   const platformCount = await notifyPlatformStaff(supabase, {
     type: GHOST_EXHAUSTED_NOTIFICATION_TYPE,
-    title: "AI-ISA exhausted follow-ups; brokerage has no admin",
+    title: "AI-ISA moved a quiet lead to long-horizon nurture; brokerage has no admin",
     body,
     entityType: "lead",
     entityId: leadId,

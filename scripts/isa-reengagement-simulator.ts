@@ -29,11 +29,14 @@
 import {
   shouldSendGhostOutreach,
   ghostReengagementStopReason,
+  ghostReengagementPhase,
   staleContactEligibility,
   resolveStaleThreshold,
   DEFAULT_MAX_GHOST_ATTEMPTS,
+  DEFAULT_MAX_HORIZON_ATTEMPTS,
   PHASE1_WINDOW_DAYS,
   PHASE2_SPACING_DAYS,
+  PHASE3_SPACING_DAYS,
   DEFAULT_STALE_DAYS,
 } from "../lib/ai-isa/reengagement-policy"
 
@@ -112,14 +115,32 @@ async function main() {
   check("precedence: representation outranks reply", ghostReengagementStopReason({ ...base, lifecycle_state: "representation", replyReceived: true }) === "representation")
   check("contact reengage_allowed=true (explicit) → continue", ghostReengagementStopReason({ ...base, contactReengageAllowed: true }) === null)
 
-  // ── Layer 1d: EXHAUSTED terminal (give up + escalate, never loop forever) ──
-  console.log("\n[Layer 1d · exhausted terminal]")
-  check("below max attempts → continue (null)", ghostReengagementStopReason({ ...base, outreachAttempts: DEFAULT_MAX_GHOST_ATTEMPTS - 1 }) === null)
-  check("THE GAP: at max attempts with no reply → 'exhausted'", ghostReengagementStopReason({ ...base, outreachAttempts: DEFAULT_MAX_GHOST_ATTEMPTS }) === "exhausted")
-  check("past max attempts → 'exhausted'", ghostReengagementStopReason({ ...base, outreachAttempts: DEFAULT_MAX_GHOST_ATTEMPTS + 5 }) === "exhausted")
-  check("a reply at the last attempt WINS over exhausted (success, not give-up)", ghostReengagementStopReason({ ...base, outreachAttempts: DEFAULT_MAX_GHOST_ATTEMPTS, replyReceived: true }) === "reply_received")
-  check("representation outranks exhausted", ghostReengagementStopReason({ ...base, outreachAttempts: 99, lifecycle_state: "representation" }) === "representation")
-  check("custom maxAttempts honored", ghostReengagementStopReason({ ...base, outreachAttempts: 3 }, { maxAttempts: 3 }) === "exhausted")
+  // ── Layer 1d: LONG-HORIZON PERSISTENCE (never abandon a viable lead) ──
+  // A real-estate lead can take 6–18 months. The active ceiling is NOT a give-up — it
+  // downshifts to a quarterly seasonal nurture; only the FAR horizon ceiling hands the
+  // long-tail to the Sphere manager.
+  console.log("\n[Layer 1d · long-horizon persistence — downshift, never abandon]")
+  check("below active ceiling → continue (null)", ghostReengagementStopReason({ ...base, outreachAttempts: DEFAULT_MAX_GHOST_ATTEMPTS - 1 }) === null)
+  check("AT the active ceiling → NOT a stop (downshift, keep going)", ghostReengagementStopReason({ ...base, outreachAttempts: DEFAULT_MAX_GHOST_ATTEMPTS }) === null)
+  check("between active + horizon ceilings → still continue (seasonal)", ghostReengagementStopReason({ ...base, outreachAttempts: DEFAULT_MAX_HORIZON_ATTEMPTS - 1 }) === null)
+  check("AT the horizon ceiling → 'handed_to_sphere' (to lifetime nurture, NOT abandonment)", ghostReengagementStopReason({ ...base, outreachAttempts: DEFAULT_MAX_HORIZON_ATTEMPTS }) === "handed_to_sphere")
+  check("past the horizon ceiling → 'handed_to_sphere'", ghostReengagementStopReason({ ...base, outreachAttempts: DEFAULT_MAX_HORIZON_ATTEMPTS + 9 }) === "handed_to_sphere")
+  check("a reply at the horizon WINS over handoff (success, not give-up)", ghostReengagementStopReason({ ...base, outreachAttempts: DEFAULT_MAX_HORIZON_ATTEMPTS, replyReceived: true }) === "reply_received")
+  check("representation outranks handoff", ghostReengagementStopReason({ ...base, outreachAttempts: 99, lifecycle_state: "representation" }) === "representation")
+  check("custom maxHorizonAttempts honored", ghostReengagementStopReason({ ...base, outreachAttempts: 3 }, { maxHorizonAttempts: 3 }) === "handed_to_sphere")
+
+  // ghostReengagementPhase — active vs seasonal + the one-time escalate-on-entry flag.
+  check("phase: below ceiling → 'active', no escalation", (() => { const p = ghostReengagementPhase(DEFAULT_MAX_GHOST_ATTEMPTS - 1); return p.phase === "active" && !p.escalateOnEntry })())
+  check("phase: AT ceiling → 'seasonal' + escalateOnEntry (the one-time human FYI)", (() => { const p = ghostReengagementPhase(DEFAULT_MAX_GHOST_ATTEMPTS); return p.phase === "seasonal" && p.escalateOnEntry })())
+  check("phase: past ceiling → 'seasonal' but NO re-escalation", (() => { const p = ghostReengagementPhase(DEFAULT_MAX_GHOST_ATTEMPTS + 3); return p.phase === "seasonal" && !p.escalateOnEntry })())
+
+  // Phase-3 cadence — quarterly seasonal spacing once in the long-horizon.
+  console.log("\n[Layer 1d · Phase-3 seasonal cadence (quarterly, long-horizon)]")
+  const seasonalNow = new Date("2026-06-15T12:00:00Z") // a Monday
+  check("seasonal + never sent → send (phase 3 first send)", (() => { const c = shouldSendGhostOutreach({ firstSentAt: "2026-01-01", lastSentAt: null, now: seasonalNow, attempts: DEFAULT_MAX_GHOST_ATTEMPTS }); return c.shouldSend && c.phase === 3 })())
+  check(`seasonal + ${PHASE3_SPACING_DAYS}d since last → due`, (() => { const last = new Date(seasonalNow.getTime() - (PHASE3_SPACING_DAYS + 1) * 86_400_000); const c = shouldSendGhostOutreach({ firstSentAt: "2026-01-01", lastSentAt: last, now: seasonalNow, attempts: DEFAULT_MAX_GHOST_ATTEMPTS + 2 }); return c.shouldSend && c.phase === 3 && c.reason === "phase3_due" })())
+  check("seasonal + only 30d since last → too soon (quarterly, not monthly)", (() => { const last = new Date(seasonalNow.getTime() - 30 * 86_400_000); const c = shouldSendGhostOutreach({ firstSentAt: "2026-01-01", lastSentAt: last, now: seasonalNow, attempts: DEFAULT_MAX_GHOST_ATTEMPTS + 2 }); return !c.shouldSend && c.phase === 3 && c.reason === "phase3_too_soon" })())
+  check("below ceiling stays on the aggressive cadence (phase 1/2, not seasonal)", (() => { const c = shouldSendGhostOutreach({ firstSentAt: "2026-06-01", lastSentAt: null, now: seasonalNow, attempts: 2 }); return c.phase !== 3 })())
 
   // ── Layer 1d: STALE-CONTACT ELIGIBILITY ─────────────────────────────────────
   console.log("\n[Layer 1d · stale-contact eligibility — every exclusion]")

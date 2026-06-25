@@ -22,10 +22,16 @@ const DAY_MS = 86_400_000
 export const DEFAULT_STALE_DAYS = 14
 export const DEFAULT_GHOSTED_DAYS = 21
 export const DEFAULT_MAX_BATCH = 50
-/** Max AI-ISA re-engagement touches before the ISA GIVES UP on a non-responding ghost
- *  and hands it to a human (≈ 6 Phase-1 touches + a few monthly Phase-2 touches ≈ 3+
- *  months of follow-up). Without a ceiling the loop re-messages a ghost forever. */
+/** Active-cadence ceiling: after this many touches the ISA stops the AGGRESSIVE follow-up
+ *  (Phase 1/2 ≈ 3 months) and DOWNSHIFTS to a long-horizon quarterly nurture — it does NOT
+ *  give up. Real-estate leads routinely take 6–18 months to transact; abandoning a viable,
+ *  consented lead at 3 months throws away the agent's gold mine. The transition escalates
+ *  ONCE to a human (FYI: consider a personal call) — the automated nurture keeps going. */
 export const DEFAULT_MAX_GHOST_ATTEMPTS = 9
+/** Long-horizon ceiling: after a year+ of quarterly seasonal touches with no reply, the
+ *  ISA HANDS the long-tail to the Sphere of Influence manager (the lifetime-nurture owner)
+ *  and rests its own automated loop — the relationship is preserved, not dropped. */
+export const DEFAULT_MAX_HORIZON_ATTEMPTS = 13
 
 /** Phase-1 (fresh ghost) send days: Mon/Wed/Fri only — aggressive while the lead is
  *  still warm. getDay(): 0=Sun 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat. */
@@ -34,19 +40,27 @@ export const PHASE1_SEND_DAYS = [1, 3, 5] as const
 export const PHASE1_WINDOW_DAYS = 14
 /** Phase-2 (long-haul) minimum spacing between sends, in days. */
 export const PHASE2_SPACING_DAYS = 30
+/** Phase-3 (long-horizon seasonal nurture) spacing — a light quarterly value-touch that
+ *  keeps the agent top-of-mind for the months/years a real-estate decision can take. */
+export const PHASE3_SPACING_DAYS = 90
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. GHOST-LEAD STOP CONDITIONS — when the ISA must go (or stay) dormant
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The honest, enumerated reasons the ISA stops re-engaging a ghost lead. */
+/** The honest, enumerated reasons the ISA stops its OWN re-engagement loop on a ghost lead.
+ *  Note: none of these is "gave up" — the lead is either owned by a human now, must not be
+ *  contacted, replied, or has been HANDED to the Sphere manager for lifetime nurture. */
 export type GhostStopReason =
   | "representation" // the lead has entered active representation — the human owns it now
   | "inactive" // the lead row was deactivated
   | "reengage_disallowed" // the linked contact has isa_reengage_allowed = false
   | "opted_out" // the lead explicitly opted out of re-engagement
   | "reply_received" // the lead replied — hand back to the live qualification flow
-  | "exhausted" // the ISA gave up after MAX attempts without a reply — escalate to a human
+  | "handed_to_sphere" // a year+ of seasonal nurture with no reply — the ISA hands the long-tail to the Sphere of Influence manager (NOT abandonment)
+
+/** The cadence phase the re-engagement loop is in for a given attempt count. */
+export type ReengagementPhase = "active" | "seasonal"
 
 /** The minimal lead shape the stop check reads. */
 export interface GhostStopInput {
@@ -62,24 +76,44 @@ export interface GhostStopInput {
 }
 
 /**
- * ghostReengagementStopReason — PURE. Returns the FIRST applicable stop reason, or null
- * when the ISA may continue. Order: the "human now owns it / must not contact" reasons
- * (representation / inactive / reengage-disallowed / opted-out), then a positive reply,
- * then EXHAUSTED — the ISA has sent maxAttempts touches with no reply and must give up
- * and hand the ghost to a human instead of looping forever.
+ * ghostReengagementStopReason — PURE. Returns the FIRST applicable reason the ISA stops its
+ * OWN loop, or null when it may continue. Order: the "human now owns it / must not contact"
+ * reasons (representation / inactive / reengage-disallowed / opted-out), then a positive
+ * reply, then HANDED_TO_SPHERE — after the long-horizon ceiling the ISA hands the long-tail
+ * to the Sphere of Influence manager for lifetime nurture. Crucially, reaching the
+ * active-cadence ceiling (DEFAULT_MAX_GHOST_ATTEMPTS) is NOT a stop — the loop downshifts to
+ * the quarterly seasonal cadence (see ghostReengagementPhase) and keeps going.
  */
 export function ghostReengagementStopReason(
   input: GhostStopInput,
-  opts?: { maxAttempts?: number },
+  opts?: { maxHorizonAttempts?: number },
 ): GhostStopReason | null {
   if (input.lifecycle_state === "representation") return "representation"
   if (input.is_active === false) return "inactive"
   if (input.contactReengageAllowed === false) return "reengage_disallowed"
   if (input.reengagement_status === "opted_out") return "opted_out"
   if (input.replyReceived) return "reply_received"
-  const maxAttempts = opts?.maxAttempts ?? DEFAULT_MAX_GHOST_ATTEMPTS
-  if ((input.outreachAttempts ?? 0) >= maxAttempts) return "exhausted"
+  const maxHorizon = opts?.maxHorizonAttempts ?? DEFAULT_MAX_HORIZON_ATTEMPTS
+  if ((input.outreachAttempts ?? 0) >= maxHorizon) return "handed_to_sphere"
   return null
+}
+
+/**
+ * ghostReengagementPhase — PURE. Which cadence phase the loop is in for an attempt count,
+ * and whether THIS run is the active→seasonal TRANSITION (escalate to a human exactly once).
+ *   · attempts < maxAttempts (9)              → "active"   (Phase 1/2 aggressive cadence)
+ *   · maxAttempts ≤ attempts < maxHorizon     → "seasonal" (Phase 3 quarterly nurture)
+ * escalateOnEntry is true only at the boundary (attempts === maxAttempts) so the one-time
+ * "auto-nurture continues quarterly — consider a personal call" escalation fires once.
+ */
+export function ghostReengagementPhase(
+  attempts: number,
+  opts?: { maxAttempts?: number },
+): { phase: ReengagementPhase; escalateOnEntry: boolean } {
+  const maxAttempts = opts?.maxAttempts ?? DEFAULT_MAX_GHOST_ATTEMPTS
+  const a = attempts ?? 0
+  if (a < maxAttempts) return { phase: "active", escalateOnEntry: false }
+  return { phase: "seasonal", escalateOnEntry: a === maxAttempts }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -93,12 +127,16 @@ export interface CadenceInput {
   lastSentAt: Date | string | null
   /** "Now" — injectable for deterministic tests. */
   now: Date
+  /** How many re-engagement touches have already been sent. At/above the active-cadence
+   *  ceiling (DEFAULT_MAX_GHOST_ATTEMPTS) the loop is in the long-horizon SEASONAL phase
+   *  (quarterly spacing) regardless of calendar window. Omitted/0 → active cadence. */
+  attempts?: number | null
 }
 
 export interface CadenceDecision {
   shouldSend: boolean
-  /** 1 = fresh window (≤14d, Mon/Wed/Fri), 2 = long-haul (every 30d). */
-  phase: 1 | 2
+  /** 1 = fresh window (≤14d, Mon/Wed/Fri), 2 = long-haul (every 30d), 3 = seasonal (every 90d). */
+  phase: 1 | 2 | 3
   /** Whole days since the cadence phase started (first outreach, or 0 on day one). */
   daysSinceStart: number
   /** Honest WHY for the decision (for audit + the simulator). */
@@ -108,6 +146,9 @@ export interface CadenceDecision {
     | "phase2_first_send"
     | "phase2_due"
     | "phase2_too_soon"
+    | "phase3_first_send"
+    | "phase3_due"
+    | "phase3_too_soon"
 }
 
 function toMs(d: Date | string | null): number | null {
@@ -127,8 +168,22 @@ export function shouldSendGhostOutreach(input: CadenceInput): CadenceDecision {
   const nowMs = input.now.getTime()
   const firstMs = toMs(input.firstSentAt) ?? nowMs // no prior send → phase starts now
   const daysSinceStart = Math.floor((nowMs - firstMs) / DAY_MS)
-  const inPhase1 = daysSinceStart <= PHASE1_WINDOW_DAYS
 
+  // PHASE 3 — long-horizon seasonal nurture. Once the aggressive cadence ceiling is hit the
+  // loop spaces touches a QUARTER apart (a light value-touch), so the agent stays top-of-mind
+  // for the months/years a real-estate decision can take instead of going silent.
+  const inSeasonal = (input.attempts ?? 0) >= DEFAULT_MAX_GHOST_ATTEMPTS
+  if (inSeasonal) {
+    const lastMs = toMs(input.lastSentAt)
+    if (lastMs === null) {
+      return { shouldSend: true, phase: 3, daysSinceStart, reason: "phase3_first_send" }
+    }
+    const daysSinceLast = Math.floor((nowMs - lastMs) / DAY_MS)
+    const due = daysSinceLast >= PHASE3_SPACING_DAYS
+    return { shouldSend: due, phase: 3, daysSinceStart, reason: due ? "phase3_due" : "phase3_too_soon" }
+  }
+
+  const inPhase1 = daysSinceStart <= PHASE1_WINDOW_DAYS
   if (inPhase1) {
     const isSendDay = (PHASE1_SEND_DAYS as readonly number[]).includes(input.now.getDay())
     return {

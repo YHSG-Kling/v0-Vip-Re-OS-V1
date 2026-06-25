@@ -3,7 +3,7 @@ import { KernelEvent } from '@/lib/kernel/events'
 import { processKernelEvent } from '@/lib/kernel'
 import { logISAOutreach } from '@/lib/ai-isa/isa-outreach-logger'
 import { initiateAIISAContactEngagement } from '@/app/actions/ai-isa/initiate-contact-engagement'
-import { ghostReengagementStopReason, shouldSendGhostOutreach } from '@/lib/ai-isa/reengagement-policy'
+import { ghostReengagementStopReason, ghostReengagementPhase, shouldSendGhostOutreach } from '@/lib/ai-isa/reengagement-policy'
 import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
 import { adaptiveReengagementHook } from '@/lib/ai-isa/adaptive-reengagement'
 
@@ -25,7 +25,7 @@ export async function detectGhostLeads(
     .eq('brokerage_id', brokerageId)
     .eq('lifecycle_state', 'isa_qualifying')
     .eq('is_active', true)
-    .not('reengagement_status', 'in', '("completed","opted_out","exhausted")')
+    .not('reengagement_status', 'in', '("completed","opted_out","handed_to_sphere")')
     .or(`last_activity_at.lt.${cutoff},and(last_activity_at.is.null,created_at.lt.${cutoff})`)
 
   if (error) throw new Error(`detectGhostLeads query failed: ${error.message}`)
@@ -91,19 +91,25 @@ export async function runGhostReengagement(
         outreachAttempts: lead.reengagement_attempt_count ?? 0,
       })
 
-      // EXHAUSTED — the ISA gave up after MAX touches with no reply. Mark terminal so
-      // the detector never re-picks it, and ESCALATE to a human (broker/admin, else
-      // platform) instead of messaging this ghost forever. The AI-ISA manager owns the
-      // terminal state — no infinite stale loop.
-      if (stopReason === 'exhausted') {
-        await supabase.from('leads').update({ reengagement_status: 'exhausted' }).eq('id', leadId)
-        const { escalateExhaustedGhostLead } = await import('@/lib/ai-isa/ghost-escalation')
-        await escalateExhaustedGhostLead(supabase, {
-          leadId,
+      // HANDED TO SPHERE — after a year+ of quarterly seasonal touches with no reply, the
+      // ISA does NOT abandon the relationship: it HANDS the long-tail to the Sphere of
+      // Influence manager (the lifetime-nurture owner) and rests its own automated loop.
+      // The lead stays alive as a sphere relationship — managers working together, no
+      // dead-end. Marked terminal for the ISA so the detector stops re-picking it.
+      if (stopReason === 'handed_to_sphere') {
+        await supabase.from('leads').update({ reengagement_status: 'handed_to_sphere' }).eq('id', leadId)
+        const { publishManagerSignal } = await import('@/lib/kernel/manager-signals')
+        await publishManagerSignal({
           brokerageId,
-          attempts: lead.reengagement_attempt_count ?? 0,
-          firstName: lead.first_name ?? null,
-        })
+          fromManager: 'ai_isa',
+          toManager: 'sphere_of_influence',
+          signalType: 'long_horizon_nurture_handoff',
+          message: `${lead.first_name || 'A lead'} went a year+ without replying — handing the long-tail to lifetime sphere nurture (no reply ≠ no future).`,
+          entityType: 'lead',
+          entityId: leadId,
+          contactId: lead.contact_id ?? null,
+          payload: { attempts: lead.reengagement_attempt_count ?? 0, first_name: lead.first_name ?? null },
+        }, supabase)
         stopped++
         continue
       }
@@ -115,6 +121,24 @@ export async function runGhostReengagement(
           .eq('id', leadId)
         stopped++
         continue
+      }
+
+      // ── ACTIVE → SEASONAL TRANSITION ──────────────────────────────────────
+      // At the active-cadence ceiling the loop does NOT give up — it downshifts to the
+      // quarterly seasonal nurture. We escalate ONCE to a human (FYI: "auto-nurture
+      // continues; consider a personal call") and flag the lead long_horizon so the
+      // escalation never re-fires. The seasonal cadence keeps the lead alive for a year+.
+      const attempts = lead.reengagement_attempt_count ?? 0
+      const phaseInfo = ghostReengagementPhase(attempts)
+      if (phaseInfo.escalateOnEntry && lead.reengagement_status !== 'long_horizon') {
+        await supabase.from('leads').update({ reengagement_status: 'long_horizon' }).eq('id', leadId)
+        const { escalateExhaustedGhostLead } = await import('@/lib/ai-isa/ghost-escalation')
+        await escalateExhaustedGhostLead(supabase, {
+          leadId,
+          brokerageId,
+          attempts,
+          firstName: lead.first_name ?? null,
+        })
       }
 
       // ── PAUSE CHECK: under_contract ───────────────────────────────────────
@@ -168,6 +192,7 @@ export async function runGhostReengagement(
         firstSentAt: firstLog?.sent_at ?? null,
         lastSentAt: lastLog?.sent_at ?? null,
         now: today,
+        attempts, // ≥ ceiling → Phase 3 quarterly seasonal nurture (long-horizon)
       })
       const inPhase1 = cadence.phase === 1
       const daysSinceStart = cadence.daysSinceStart
@@ -192,8 +217,9 @@ export async function runGhostReengagement(
         continue
       }
 
-      // Mark reengagement active on first send
-      if (lead.reengagement_status !== 'active') {
+      // Mark reengagement active on first send — but NEVER downgrade a long_horizon
+      // (seasonal) lead back to 'active' (it has graduated past the aggressive cadence).
+      if (lead.reengagement_status !== 'active' && lead.reengagement_status !== 'long_horizon') {
         await supabase
           .from('leads')
           .update({ reengagement_status: 'active' })
@@ -204,7 +230,7 @@ export async function runGhostReengagement(
           entity_type: 'lead',
           entity_id: leadId,
           event_type: KernelEvent.REENGAGEMENT_STARTED,
-          metadata: { phase: inPhase1 ? 1 : 2 },
+          metadata: { phase: cadence.phase },
           created_at: new Date().toISOString(),
         })
         await processKernelEvent({

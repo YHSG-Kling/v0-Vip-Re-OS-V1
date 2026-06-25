@@ -340,6 +340,54 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }
     return notified > 0 ? `routed a coaching prompt to ${notified} responsible manager${notified === 1 ? "" : "s"}` : null
   },
+  // AI ISA → Sphere of Influence: a lead went a year+ without replying. The ISA hands the
+  // long-tail to the Sphere (the lifetime-nurture owner) instead of abandoning it. The Sphere
+  // proposes ONE gated, light value-touch email (audience 'lead', channel 'email' — the only
+  // pre-consent channel) so the relationship stays warm for whenever they're ready. Idempotent
+  // per lead. A reply at any point hands it straight back to the live qualification flow.
+  "sphere_of_influence:long_horizon_nurture_handoff": async (signal, ctx) => {
+    const leadId = signal.entityId
+    if (!leadId) return null
+    const { data: lead } = await ctx.supabase.from("leads")
+      .select("id, first_name, property_interest, email, email_verified").eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!lead) return null
+    const l = lead as Record<string, any>
+    if (!(l.email && l.email_verified === true)) return "long-horizon nurture noted (no verified email for a light touch)"
+    const firstName = (l.first_name as string | null) || "there"
+    const subject = `Still here whenever you're ready, ${firstName}`
+    const { data: dup } = await ctx.supabase.from("agent_client_messages").select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("recipient_lead_id", leadId)
+      .eq("subject", subject).in("status", ["proposed", "approved"]).limit(1).maybeSingle()
+    if (dup) return "long-horizon nurture touch already proposed (gated, deduped)"
+    const interest = (l.property_interest as string | null)?.trim() || "the market"
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "sphere_of_influence", entityType: "lead",
+      entityId: leadId, recipientLeadId: leadId, audience: "lead", channel: "email",
+      subject,
+      body: `Hi ${firstName},\n\nNo rush at all — I know timing is everything with a move. I'll keep sending the occasional useful update on ${interest} so you have what you need whenever the time feels right. Just reply anytime and I'm here.`,
+      rationale: `Long-horizon sphere nurture: ${signal.message}`,
+    }, ctx.supabase)
+    return res.ok ? `proposed a gated long-horizon value-touch (approval ${res.id})` : null
+  },
+  // Recruiting (user management) → Deal Coordinator: a departing agent's in-flight deals
+  // moved to a successor on deactivation. The Deal Coordinator alerts the deal-coordination
+  // owners (broker/admins) to CONFIRM the transaction team so a live deal is never dropped
+  // mid-transaction. Idempotent per (agent) open signal (bus-level dedupe).
+  "deal_coordinator:agent_book_reassigned": async (signal, ctx) => {
+    if (!signal.entityId) return null
+    const deals = (signal.payload?.active_deals as number | undefined) ?? 0
+    const { notifyBrokerageAdmins } = await import("@/lib/notifications/brokerage-admins")
+    const n = await notifyBrokerageAdmins(ctx.supabase, ctx.brokerageId, {
+      type: "transaction_team_realign",
+      title: "Confirm the transaction team — a departing agent's deals moved",
+      body: `${deals} in-flight deal(s) were reassigned to the successor when an agent was deactivated. Confirm the transaction team (TC, lender, co-agent) so nothing slips through the handoff.`,
+      entityType: "agent",
+      entityId: signal.entityId,
+      priority: "high",
+    })
+    return n > 0 ? `alerted ${n} deal-coordination owner(s) to confirm the transaction team` : null
+  },
   // Marketing → Ads Manager: an organic content week outperformed — propose promoting it
   // as PAID. Lands in the existing ads approval queue (governed spend, human-approved).
   "ads_manager:content_winner": async (signal, ctx) => {
