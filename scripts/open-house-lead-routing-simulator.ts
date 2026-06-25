@@ -49,6 +49,13 @@ async function main() {
   check("sorted strongest-first", hot[0].score >= hot[hot.length - 1].score)
   check("none hot → empty (honest)", selectOpenHouseHandoffs([{ id: "x", ai_lead_score: 10, interest_level: "just_looking" }]).length === 0)
 
+  // The hand-off is now CONSUMED — the ISA qualifies the hot buyers (no longer a feed-only drop).
+  {
+    const { SIGNAL_HANDLERS } = await import("../lib/kernel/manager-signals")
+    check("AI ISA consumes the open-house hand-off (hot buyers qualified, not a dashboard count)",
+      typeof SIGNAL_HANDLERS["ai_isa:open_house_lead_handoff"] === "function")
+  }
+
   console.log("\n[Layer 2 · live: hand off to the ISA over the bus]")
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY && !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
   if (!hasCreds) { console.log("  ⏭  Skipped — SUPABASE creds not set (Layer 1 ran)."); return report() }

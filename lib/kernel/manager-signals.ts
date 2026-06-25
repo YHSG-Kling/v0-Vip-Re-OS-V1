@@ -191,6 +191,23 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   "ai_isa:stale_preapproval_reengage": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "financing re-qualification call"),
   // Shopping Agent → AI ISA: a fresh listing matches a saved buyer — a reverse-prospecting call.
   "ai_isa:reverse_prospecting_call_candidate": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "reverse-prospecting call (a new listing fits this buyer)"),
+  // Listing Concierge → AI ISA: hot, unrepresented buyer leads from an open house. The ISA PICKS
+  // THEM UP and qualifies each via the canonical consent-gated engagement — the seller-event →
+  // buyer-pipeline bridge, instead of the leads dying as a dashboard count.
+  "ai_isa:open_house_lead_handoff": async (signal, ctx) => {
+    const leads = (signal.payload?.leads as Array<{ contactId?: string | null; name?: string | null }> | undefined) ?? []
+    const withContact = leads.filter((l) => l.contactId)
+    if (withContact.length === 0) {
+      return leads.length > 0 ? `received ${leads.length} hot open-house buyer(s); none are contacts yet — left for conversion` : null
+    }
+    const { initiateAIISAContactEngagement } = await import("@/app/actions/ai-isa/initiate-contact-engagement")
+    let engaged = 0
+    for (const l of withContact) {
+      try { const r = (await initiateAIISAContactEngagement(l.contactId as string)) as { success?: boolean }; if (r?.success) engaged += 1 }
+      catch (e) { console.error("[manager-signals] open_house qualify failed:", e) }
+    }
+    return `AI ISA picked up ${withContact.length} hot open-house buyer(s) to qualify (${engaged} engaged now, rest consent/cadence-gated)`
+  },
   // AI ISA → concierge: a dial-batch call booked an appointment. The concierge proposes
   // the prep follow-up to the client through the gate.
   "shopping_agent:isa_call_appointment": async (signal, ctx) => {

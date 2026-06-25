@@ -68,6 +68,42 @@ function scanPublishedSignals(): Map<string, string> {
   return found
 }
 
+/** Every (toManager, signalType) STATIC pair published on the bus — pairs each
+ *  `toManager: "x"` with the next `signalType: "y"` in the same publish object (the
+ *  codebase always orders fromManager → toManager → signalType). Dynamic routes
+ *  (toManager is a variable, e.g. the video_ready fan-out) carry no string literal and
+ *  are skipped — they can't be statically verified here. */
+function scanRoutedPairs(): Array<{ to: string; type: string; file: string }> {
+  const out: Array<{ to: string; type: string; file: string }> = []
+  const files = [...walk(join(ROOT, "lib")), ...walk(join(ROOT, "app"))]
+  const fieldRe = /(toManager|signalType):\s*["']([a-z_]+)["']/g
+  for (const f of files) {
+    const src = readFileSync(f, "utf8")
+    if (!src.includes("publishManagerSignal")) continue
+    let pendingTo: string | null = null
+    let m: RegExpExecArray | null
+    while ((m = fieldRe.exec(src)) !== null) {
+      if (m[1] === "toManager") pendingTo = m[2]
+      else if (pendingTo) { out.push({ to: pendingTo, type: m[2], file: f.replace(ROOT + "/", "") }); pendingTo = null }
+    }
+  }
+  return out
+}
+
+/**
+ * INTENTIONAL feed-only HANDOFF ANNOUNCEMENTS — a signal whose coordination kind is "handoff"
+ * but that is correctly feed_only because the actual work runs ELSEWHERE (a complementary
+ * pipeline) or INLINE in the publishing runner; the bus signal only makes the hand-off VISIBLE
+ * on the feed. Every entry is a conscious decision, verified against the runner. Anything else
+ * that is a feed_only HANDOFF routed to a manager with no consumer is an unintended SILENT DROP
+ * (the receiving manager skips it) — the exact bug that killed the ISA call hand-offs.
+ */
+const HANDOFF_ANNOUNCEMENTS = new Set<string>([
+  "first_touch_claimed",     // a coordination RECORD — the bullpen race resolved (no further action)
+  "listing_marketing_ready", // the kernel-event fanout enrolls the marketing sequences; this only announces
+  "offer_docs_ready",        // the runner notifies the Deal Coordinator + agent INLINE; signal is the record
+])
+
 function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Signal integrity simulator (bus zero-orphans guard)")
@@ -116,6 +152,23 @@ function main() {
   console.log("\n[5 · every catalogued kind is valid]")
   const badKind = Object.entries(SIGNAL_REGISTRY).filter(([, s]) => !VALID_KINDS.includes(s.kind)).map(([t]) => t)
   check("every catalogued kind is one of the 5 coordination kinds", badKind.length === 0, badKind.join(", "))
+
+  // 6. NO SILENT DROP — a signal routed to a SPECIFIC manager that is feed_only with no
+  //    handler (and not a declared advisory) is a hand-off the manager silently skips
+  //    (consumeManagerSignals: `if (!handler) skipped++`). This is the exact blind spot
+  //    that killed four ISA call hand-offs — guard 6 makes the class un-reintroducible.
+  console.log("\n[6 · no manager-routed HANDOFF is a silent drop]")
+  const handlerKeys6 = new Set(Object.keys(SIGNAL_HANDLERS))
+  const silentDrops = scanRoutedPairs().filter(({ to, type }) => {
+    const spec = SIGNAL_REGISTRY[type]
+    if (!spec || spec.disposition !== "feed_only" || spec.kind !== "handoff") return false // only a feed_only HANDOFF is suspicious
+    if (handlerKeys6.has(`${to}:${type}`)) return false           // actually consumed
+    if (HANDOFF_ANNOUNCEMENTS.has(type)) return false             // a verified visible-announcement (work runs elsewhere)
+    return true                                                   // SILENT DROP — the manager skips this hand-off
+  })
+  check("no feed_only HANDOFF routed to a manager lacks a handler (or a verified announcement declaration)",
+    silentDrops.length === 0,
+    silentDrops.map((d) => `${d.to}:${d.type} (${d.file}) — add a handler or declare it in HANDOFF_ANNOUNCEMENTS`).join("; "))
 
   report()
 }
