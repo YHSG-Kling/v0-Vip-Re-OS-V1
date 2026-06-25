@@ -150,6 +150,8 @@ export interface DeactivationResult {
   reintroductionsProposed: number
   /** In-flight transaction ownership rows moved to the successor (closed deals untouched). */
   reassignedDealRoles: number
+  /** Open tasks (general + transaction) the departed agent owed, moved to the successor. */
+  reassignedOpenTasks: number
 }
 
 /**
@@ -176,6 +178,7 @@ export async function executeAgentDeactivation(
   const result: DeactivationResult = {
     ok: false, reassignedContacts: 0, archivedContacts: 0, reassignedLeads: 0,
     inFlightForcedReassign: 0, agentDeactivated: false, reintroductionsProposed: 0, reassignedDealRoles: 0,
+    reassignedOpenTasks: 0,
   }
   const reassignedContactIds: string[] = []
   if (!brokerageId || !agentId) return { ...result, reason: "brokerageId + agentId required" }
@@ -265,6 +268,25 @@ export async function executeAgentDeactivation(
         .eq("brokerage_id", brokerageId).eq(roleCol, agentId)
         .in("status", ACTIVE_DEAL_STATUSES as unknown as string[])
       result.reassignedDealRoles += count ?? 0
+    }
+  }
+
+  // ── OPEN WORK FOLLOWS THE BOOK — the departed agent's INCOMPLETE tasks (general +
+  //    transaction) move to the successor so nothing the agent owed sits unactioned. Closed/
+  //    cancelled tasks are left as history. ──
+  if (successorAgentId) {
+    const OPEN_TASK_EXCLUDE = "(completed,cancelled,done,closed)"
+    const { count: genTasks } = await svc.from("tasks")
+      .update({ assigned_to_agent_id: successorAgentId }, { count: "exact" })
+      .eq("brokerage_id", brokerageId).eq("assigned_to_agent_id", agentId)
+      .not("status", "in", OPEN_TASK_EXCLUDE)
+    result.reassignedOpenTasks += genTasks ?? 0
+    if (successorUserId && userId) {
+      const { count: txTasks } = await svc.from("transaction_tasks")
+        .update({ assigned_user_id: successorUserId }, { count: "exact" })
+        .eq("brokerage_id", brokerageId).eq("assigned_user_id", userId)
+        .not("status", "in", OPEN_TASK_EXCLUDE)
+      result.reassignedOpenTasks += txTasks ?? 0
     }
   }
 

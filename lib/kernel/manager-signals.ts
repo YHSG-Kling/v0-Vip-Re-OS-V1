@@ -157,9 +157,38 @@ async function resolveLoanAgentUser(supabase: Svc, contactId: string): Promise<s
   return (a as any)?.user_id ?? null
 }
 
+/**
+ * The AI ISA PICKS UP an acute recovery call hand-off (re-list / post-rejection regroup /
+ * stale-financing) routed from the Listing Concierge or Shopping Agent. It engages the
+ * contact through the CANONICAL consent-aware entry (initiateAIISAContactEngagement — the
+ * same gated path the ghost + no-show crons use), so TCPA/DNC/channel rules + de-confliction
+ * all apply; the gated seller/buyer message the routing manager proposed is the safety net.
+ * Returns a descriptive action (the ISA evaluated it) — never an autonomous ungated send.
+ */
+async function isaPickUpRecoveryCall(signal: ManagerSignal, _ctx: { brokerageId: string; supabase: Svc }, label: string): Promise<string | null> {
+  const contactId = signal.entityId ?? signal.contactId
+  if (!contactId) return null
+  try {
+    const { initiateAIISAContactEngagement } = await import("@/app/actions/ai-isa/initiate-contact-engagement")
+    const res = (await initiateAIISAContactEngagement(contactId)) as { success?: boolean; channel?: string; reason?: string; skipped_reason?: string }
+    return res?.success
+      ? `AI ISA picked up the ${label} — consent-gated outreach placed (${res.channel ?? "best channel"})`
+      : `AI ISA evaluated the ${label} but held off (${res?.reason ?? res?.skipped_reason ?? "consent/cadence gate"}); the gated message covers it`
+  } catch (e) {
+    console.error(`[manager-signals] isaPickUpRecoveryCall (${label}) failed:`, e)
+    return null
+  }
+}
+
 /** The registered conversations — to_manager:signal_type → handler. Handlers act by
  *  proposing GOVERNED deliverables (the gate), never autonomous sends. */
 export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
+  // Listing Concierge → AI ISA: an expired/withdrawn listing's ACUTE re-list call.
+  "ai_isa:relist_recovery": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "re-list recovery call"),
+  // Shopping Agent → AI ISA: a rejected-offer same-day regroup call.
+  "ai_isa:offer_rejection_recovery": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "post-rejection regroup call"),
+  // Shopping Agent → AI ISA: a stale/expired pre-approval re-qualification call.
+  "ai_isa:stale_preapproval_reengage": (signal, ctx) => isaPickUpRecoveryCall(signal, ctx, "financing re-qualification call"),
   // AI ISA → concierge: a dial-batch call booked an appointment. The concierge proposes
   // the prep follow-up to the client through the gate.
   "shopping_agent:isa_call_appointment": async (signal, ctx) => {

@@ -116,6 +116,21 @@ async function liveLayer() {
     const leadId = (lead as any).id as string
     cleanup.push({ table: "leads", id: leadId })
 
+    // An OPEN general task + an OPEN transaction task owed by the departing agent.
+    const { data: gTask } = await svc.from("tasks").insert({
+      brokerage_id: brokerageId, assigned_to_agent_id: agentId, title: `${TAG} follow up`, status: "pending",
+    }).select("id").single()
+    const gTaskId = gTask ? ((gTask as any).id as string) : null
+    if (gTaskId) cleanup.push({ table: "tasks", id: gTaskId })
+    let txTaskId: string | null = null
+    if (txId) {
+      const { data: tTask } = await svc.from("transaction_tasks").insert({
+        brokerage_id: brokerageId, transaction_id: txId, title: `${TAG} order title`, assigned_user_id: userA, status: "pending",
+      }).select("id").single()
+      txTaskId = tTask ? ((tTask as any).id as string) : null
+      if (txTaskId) cleanup.push({ table: "transaction_tasks", id: txTaskId })
+    }
+
     // ── PLAN (read-only preview) ──
     const plan = await planAgentDeactivation(svc, { brokerageId, agentId, userId: userA })
     check("plan: 1 system-acquired contact", plan.counts.systemAcquired === 1, `got ${plan.counts.systemAcquired}`)
@@ -175,6 +190,17 @@ async function liveLayer() {
     if (closedTxId) {
       const { data: closedRow } = await svc.from("transactions").select("agent_id").eq("id", closedTxId).single()
       check("CLOSED deal stays attributed to the original agent (commission history preserved)", (closedRow as any).agent_id === agentId)
+    }
+
+    // Open work followed the book.
+    check("open tasks reassigned to successor (general + transaction)", res.reassignedOpenTasks === 2, `got ${res.reassignedOpenTasks}`)
+    if (gTaskId) {
+      const { data: gRow } = await svc.from("tasks").select("assigned_to_agent_id").eq("id", gTaskId).single()
+      check("general task now assigned to successor agent", (gRow as any).assigned_to_agent_id === successorAgentId)
+    }
+    if (txTaskId) {
+      const { data: tRow } = await svc.from("transaction_tasks").select("assigned_user_id").eq("id", txTaskId).single()
+      check("transaction task now assigned to successor user", (tRow as any).assigned_user_id === successorUserId)
     }
 
     // Successor got a summary notification.

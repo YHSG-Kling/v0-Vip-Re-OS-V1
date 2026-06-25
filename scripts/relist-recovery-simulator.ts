@@ -46,6 +46,13 @@ async function main() {
   check("acute brief urges reposition before a competitor", acute.agentBrief.toLowerCase().includes("competitor"))
   check("seller outreach names the home + is warm", /9 Oak Ave/.test(acute.sellerOutreach))
 
+  // The acute re-list call hand-off to the AI ISA is now CONSUMED, not orphaned on the feed.
+  {
+    const { SIGNAL_HANDLERS } = await import("../lib/kernel/manager-signals")
+    check("AI ISA consumes the re-list call hand-off (no longer a flat feed-only signal)",
+      typeof SIGNAL_HANDLERS["ai_isa:relist_recovery"] === "function")
+  }
+
   check("withdrawn is a re-list status", isRelistStatus("withdrawn") && isRelistStatus("cancelled"))
   const followup = planRelistRecovery({ status: "withdrawn", transitionAt: daysAgo(ACUTE_WINDOW_DAYS + 10), now: NOW })
   check("withdrawn ~17 days ago → followup, no rush call", followup.urgency === "followup" && followup.eligible && !followup.recommendCall)
