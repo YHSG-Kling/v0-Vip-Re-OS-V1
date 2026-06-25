@@ -93,11 +93,21 @@ async function liveLayer() {
     const bookContact = await mkContact("Book", agentId)           // agent-book, no deal → archive
     const dealContact = await mkContact("Deal", agentId)           // agent-book WITH deal → force reassign
 
-    // An in-flight deal on the agent-book deal contact.
+    // An in-flight deal on the agent-book deal contact, OWNED by the departing agent.
     const { data: tx } = await svc.from("transactions").insert({
       brokerage_id: brokerageId, contact_id: dealContact, deal_name: `${TAG} deal`, status: "under_contract",
+      agent_id: agentId, buyer_agent_id: agentId,
     }).select("id").single()
-    if (tx) cleanup.push({ table: "transactions", id: (tx as any).id })
+    const txId = tx ? ((tx as any).id as string) : null
+    if (txId) cleanup.push({ table: "transactions", id: txId })
+
+    // A CLOSED deal owned by the departing agent — must STAY attributed (commission history).
+    const { data: closedTx } = await svc.from("transactions").insert({
+      brokerage_id: brokerageId, contact_id: systemContact, deal_name: `${TAG} closed`, status: "closed",
+      agent_id: agentId,
+    }).select("id").single()
+    const closedTxId = closedTx ? ((closedTx as any).id as string) : null
+    if (closedTxId) cleanup.push({ table: "transactions", id: closedTxId })
 
     // A lead owned by the agent.
     const { data: lead } = await svc.from("leads").insert({
@@ -138,6 +148,34 @@ async function liveLayer() {
     check("lead reassigned to successor", (leadRow as any).agent_id === successorAgentId)
     const { data: agentRow } = await svc.from("agents").select("is_active").eq("id", agentId).single()
     check("agent is_active=false", (agentRow as any).is_active === false)
+
+    // WARM HAND-OFF — a gated re-introduction proposed for each reassigned contact (NOT the
+    // archived one). 2 reassigned (system + in-flight book) → 2 re-intros.
+    check("re-introductions proposed for the inherited book (2 reassigned, archived excluded)",
+      res.reintroductionsProposed === 2, `got ${res.reintroductionsProposed}`)
+    const { data: reintros } = await svc.from("agent_client_messages")
+      .select("id, recipient_contact_id, audience, channel, agent_kind, status")
+      .eq("brokerage_id", brokerageId).eq("subject", "A quick introduction from your new point of contact")
+      .in("recipient_contact_id", [systemContact, dealContact, bookContact])
+    for (const m of (reintros ?? []) as any[]) {
+      cleanup.push({ table: "agent_client_messages", id: m.id })
+      const { data: ns } = await svc.from("notifications").select("id").eq("entity_id", m.id)
+      for (const n of (ns ?? []) as any[]) cleanup.push({ table: "notifications", id: n.id })
+    }
+    const reintroRows = (reintros ?? []) as any[]
+    check("re-intro is gated (status=proposed) + portal channel", reintroRows.length === 2 && reintroRows.every((r) => r.status === "proposed" && r.channel === "portal"))
+    check("NO re-intro for the archived contact (automation off)", !reintroRows.some((r) => r.recipient_contact_id === bookContact))
+
+    // In-flight deal ownership followed the client (agent_id + buyer_agent_id moved); CLOSED stays.
+    check("in-flight deal roles reassigned to successor (agent_id + buyer_agent_id)", res.reassignedDealRoles === 2, `got ${res.reassignedDealRoles}`)
+    if (txId) {
+      const { data: txRow } = await svc.from("transactions").select("agent_id, buyer_agent_id").eq("id", txId).single()
+      check("in-flight transaction now owned by the successor", (txRow as any).agent_id === successorAgentId && (txRow as any).buyer_agent_id === successorAgentId)
+    }
+    if (closedTxId) {
+      const { data: closedRow } = await svc.from("transactions").select("agent_id").eq("id", closedTxId).single()
+      check("CLOSED deal stays attributed to the original agent (commission history preserved)", (closedRow as any).agent_id === agentId)
+    }
 
     // Successor got a summary notification.
     const { data: notifs } = await svc.from("notifications").select("id, type, priority").eq("user_id", successorUserId).eq("type", "book_reassigned").eq("entity_id", agentId)

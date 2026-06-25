@@ -50,7 +50,7 @@ export function AgentOffboardingClient({ roster }: { roster: Agent[] }) {
       if (r.ok) {
         toast({
           title: `${target.name} deactivated`,
-          description: `${r.result.reassignedContacts} contact(s) + ${r.result.reassignedLeads} lead(s) reassigned · ${r.result.archivedContacts} archived${r.result.inFlightForcedReassign > 0 ? ` · ${r.result.inFlightForcedReassign} in-flight deal(s) protected` : ""}.`,
+          description: `${r.result.reassignedContacts} contact(s) + ${r.result.reassignedLeads} lead(s) reassigned · ${r.result.archivedContacts} archived${r.result.inFlightForcedReassign > 0 ? ` · ${r.result.inFlightForcedReassign} in-flight deal(s) protected` : ""}${r.result.reassignedDealRoles > 0 ? ` · ${r.result.reassignedDealRoles} deal role(s) moved` : ""}${r.result.reintroductionsProposed > 0 ? ` · ${r.result.reintroductionsProposed} client re-intro(s) queued for approval` : ""}.`,
         })
         setAgents((cur) => cur.map((a) => (a.id === target.id ? { ...a, isActive: false } : a)))
         setTarget(null); setPlan(null)

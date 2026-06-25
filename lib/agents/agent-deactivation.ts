@@ -146,6 +146,10 @@ export interface DeactivationResult {
   reassignedLeads: number
   inFlightForcedReassign: number
   agentDeactivated: boolean
+  /** Gated client re-introductions proposed for the inherited book (warm hand-off). */
+  reintroductionsProposed: number
+  /** In-flight transaction ownership rows moved to the successor (closed deals untouched). */
+  reassignedDealRoles: number
 }
 
 /**
@@ -171,8 +175,9 @@ export async function executeAgentDeactivation(
   const { brokerageId, agentId, userId, successorAgentId, agentBookDisposition, actorUserId } = params
   const result: DeactivationResult = {
     ok: false, reassignedContacts: 0, archivedContacts: 0, reassignedLeads: 0,
-    inFlightForcedReassign: 0, agentDeactivated: false,
+    inFlightForcedReassign: 0, agentDeactivated: false, reintroductionsProposed: 0, reassignedDealRoles: 0,
   }
+  const reassignedContactIds: string[] = []
   if (!brokerageId || !agentId) return { ...result, reason: "brokerageId + agentId required" }
   if (agentId === successorAgentId) return { ...result, reason: "successor must differ from the deactivated agent" }
 
@@ -220,6 +225,7 @@ export async function executeAgentDeactivation(
         .eq("id", c.id).eq("brokerage_id", brokerageId)
       if (!error) {
         result.reassignedContacts += 1
+        reassignedContactIds.push(c.id)
         if (c.hasActiveTransaction && c.ownership === "agent_book" && agentBookDisposition === "archive") {
           result.inFlightForcedReassign += 1
           await audit(c.id, "reassign_inflight_override", { ownership: c.ownership, note: "in-flight deal — never archived" })
@@ -248,11 +254,35 @@ export async function executeAgentDeactivation(
     if (!error) result.reassignedLeads = count ?? plan.leadIds.length
   }
 
+  // ── In-flight DEAL OWNERSHIP follows the client. Reassign the departed agent's role on
+  //    ACTIVE transactions (agent / buyer-agent / seller-agent) to the successor so deal
+  //    ownership is never orphaned to an inactive agent. CLOSED deals are LEFT untouched —
+  //    historical attribution + commission credit must stay with the original agent. ──
+  if (successorAgentId) {
+    for (const roleCol of ["agent_id", "buyer_agent_id", "seller_agent_id"] as const) {
+      const { count } = await svc.from("transactions")
+        .update({ [roleCol]: successorAgentId, updated_at: nowIso }, { count: "exact" })
+        .eq("brokerage_id", brokerageId).eq(roleCol, agentId)
+        .in("status", ACTIVE_DEAL_STATUSES as unknown as string[])
+      result.reassignedDealRoles += count ?? 0
+    }
+  }
+
   // ── Deactivate the agent ──
   {
     const { error } = await svc.from("agents")
       .update({ is_active: false }).eq("id", agentId).eq("brokerage_id", brokerageId)
     result.agentDeactivated = !error
+  }
+
+  // ── WARM HAND-OFF: re-INTRODUCE the successor to every inherited client. A reassigned
+  //    relationship must be RE-ESTABLISHED, not silently re-pointed — the client hears
+  //    "you have a new point of contact" from the successor, gated (a human approves before
+  //    it sends). Archived contacts are excluded (automation is off). Idempotent per contact.
+  if (successorAgentId && reassignedContactIds.length > 0) {
+    result.reintroductionsProposed = await proposeSuccessorReintroductions(
+      svc, { brokerageId, successorAgentId, contactIds: reassignedContactIds },
+    )
   }
 
   // ── Notify the successor of the inherited book (one summary notification) ──
@@ -283,4 +313,66 @@ export async function executeAgentDeactivation(
 
   result.ok = true
   return result
+}
+
+/** Subject the warm hand-off re-introduction uses (also the idempotency key per contact). */
+export const SUCCESSOR_REINTRO_SUBJECT = "A quick introduction from your new point of contact"
+
+/**
+ * proposeSuccessorReintroductions — for every CONTACT inherited by the successor, propose a
+ * GATED warm re-introduction so the relationship is RE-ESTABLISHED, not silently re-pointed.
+ * Side-aware (buyer → Shopping Agent, seller → Listing Concierge), brand-named, them-first,
+ * Fair-Housing safe; nothing sends until the successor approves it. Idempotent per contact
+ * (one open/approved re-intro). Returns how many were proposed.
+ */
+async function proposeSuccessorReintroductions(
+  svc: Svc,
+  params: { brokerageId: string; successorAgentId: string; contactIds: string[] },
+): Promise<number> {
+  const { brokerageId, successorAgentId, contactIds } = params
+  if (contactIds.length === 0) return 0
+
+  // Successor's display name + the brokerage trade name (best-effort; the message still
+  // reads cleanly without them).
+  const { data: succAgent } = await svc.from("agents").select("user_id").eq("id", successorAgentId).maybeSingle()
+  const succUserId = (succAgent as { user_id: string | null } | null)?.user_id ?? null
+  let successorName = "your new agent"
+  if (succUserId) {
+    const { data: su } = await svc.from("users").select("first_name, last_name").eq("id", succUserId).maybeSingle()
+    const nm = [(su as any)?.first_name, (su as any)?.last_name].filter(Boolean).join(" ").trim()
+    if (nm) successorName = nm
+  }
+  const { data: brk } = await svc.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
+  const brokerageName = (brk as { name: string | null } | null)?.name?.trim() || "our team"
+
+  const { data: contactRows } = await svc.from("contacts")
+    .select("id, first_name, contact_type").in("id", contactIds).eq("brokerage_id", brokerageId)
+  const contacts = (contactRows ?? []) as Array<{ id: string; first_name: string | null; contact_type: string | null }>
+
+  const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+  let proposed = 0
+  for (const c of contacts) {
+    // Idempotency — skip a contact that already has an open/approved re-intro.
+    const { data: dup } = await svc.from("agent_client_messages").select("id")
+      .eq("brokerage_id", brokerageId).eq("recipient_contact_id", c.id)
+      .eq("subject", SUCCESSOR_REINTRO_SUBJECT).in("status", ["proposed", "approved"]).limit(1).maybeSingle()
+    if (dup) continue
+
+    const isSeller = c.contact_type === "seller"
+    const audience: "seller" | "buyer" = isSeller ? "seller" : "buyer"
+    const agentKind = isSeller ? "listing_concierge" : "shopping_agent"
+    const firstName = c.first_name || "there"
+    const body =
+      `Hi ${firstName}, I'm ${successorName} with ${brokerageName} — I'll be your point of contact going forward. ` +
+      `Nothing about your plans changes; you've still got the whole team behind you, and I'm here for anything you need. ` +
+      `Reply anytime and I'll take it from there.`
+    const res = await proposeClientMessage({
+      brokerageId, agentKind, entityType: "contact", entityId: c.id,
+      recipientContactId: c.id, audience, subject: SUCCESSOR_REINTRO_SUBJECT, body,
+      rationale: "Warm hand-off — the successor re-introduces themselves to an inherited client (agent off-boarding).",
+      channel: "portal",
+    }, svc)
+    if (res.ok) proposed += 1
+  }
+  return proposed
 }

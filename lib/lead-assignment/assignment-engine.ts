@@ -38,9 +38,13 @@ interface LeadRow {
 // powers this engine, the settings UI's routing preview, and the simulator, so
 // what the broker previews is exactly what the engine does.
 import { evaluateRuleConditions, pickRoundRobinAgent } from "./rule-matcher"
+import { selectAgentByCapacity, resolveBrokerageMaxLoad } from "./capacity-pick"
 
 // ─── LOAD-BALANCE FALLBACK ────────────────────────────────────────────────────
-// Pick the agent in the brokerage with the fewest active leads.
+// CAPACITY-AWARE — shares the SAME picker as resolveAgentForContact + the Capacity
+// Guardian (working load = contacts + leads + deals against the tier ceiling), so a lead
+// is never handed to an agent who is already at/over capacity. (Consolidated: the old
+// "fewest assigned leads" heuristic was a third, divergent load metric — removed.)
 
 async function loadBalanceFallback(brokerageId: string): Promise<string | null> {
   const supabase = createServiceClient()
@@ -53,24 +57,8 @@ async function loadBalanceFallback(brokerageId: string): Promise<string | null> 
 
   if (!agents || agents.length === 0) return null
 
-  let minLeads = Infinity
-  let selectedAgentId: string | null = null
-
-  for (const agent of agents) {
-    const { count } = await supabase
-      .from("leads")
-      .select("id", { count: "exact", head: true })
-      .eq("agent_id", agent.id)
-      .eq("lifecycle_state", "assigned")
-
-    const leadCount = count ?? 0
-    if (leadCount < minLeads) {
-      minLeads = leadCount
-      selectedAgentId = agent.id
-    }
-  }
-
-  return selectedAgentId
+  const maxLoad = await resolveBrokerageMaxLoad(supabase, brokerageId)
+  return selectAgentByCapacity(supabase, brokerageId, agents.map((a) => a.id), maxLoad)
 }
 
 // ─── evaluateAndAssignLead ────────────────────────────────────────────────────

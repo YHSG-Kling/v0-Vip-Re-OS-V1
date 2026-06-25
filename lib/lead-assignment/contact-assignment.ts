@@ -31,29 +31,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { teamScopeAllows } from "./rule-matcher"
-import { pickLeastLoadedWithHeadroom, tierMaxLoadForAgentCount } from "@/lib/kernel/capacity-guardian"
-
-type AssignSvc = ReturnType<typeof createServiceClient>
-
-/** An agent's WORKING LOAD = active contacts + owned leads + active deals — the SAME
- *  definition the Capacity Guardian uses (computeAgentWorkloadIndex), so the assignment
- *  gate and the overload detector never disagree. */
-async function agentWorkingLoad(supabase: AssignSvc, brokerageId: string, agentId: string): Promise<number> {
-  const [c, l, d] = await Promise.all([
-    supabase.from("contacts").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("agent_id", agentId).is("deleted_at", null),
-    supabase.from("leads").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("agent_id", agentId),
-    supabase.from("transactions").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("agent_id", agentId).in("status", ["active", "under_contract", "closing"]),
-  ])
-  return (c.count ?? 0) + (l.count ?? 0) + (d.count ?? 0)
-}
-
-/** Capacity-aware pick over a candidate pool: prefer an agent with HEADROOM under the tier
- *  ceiling; never strand a contact when everyone is slammed (the guardian surfaces it). */
-async function selectByCapacity(supabase: AssignSvc, brokerageId: string, agentIds: string[], maxLoad: number): Promise<string | null> {
-  const candidates: Array<{ agentId: string; load: number }> = []
-  for (const id of agentIds) candidates.push({ agentId: id, load: await agentWorkingLoad(supabase, brokerageId, id) })
-  return pickLeastLoadedWithHeadroom(candidates, maxLoad)
-}
+import { selectAgentByCapacity, resolveBrokerageMaxLoad } from "./capacity-pick"
 
 export interface ResolveAgentForContactInput {
   brokerageId: string
@@ -204,10 +182,7 @@ export async function resolveAgentForContact(
   // ceiling the Capacity Guardian enforces. The load-balance steps below prefer an agent with
   // HEADROOM so a fresh contact never piles onto someone already at/over capacity (the
   // guardian becomes PREVENTIVE, not just reactive). Never strands a contact.
-  const { count: activeAgentCount } = await supabase
-    .from("agents").select("id", { count: "exact", head: true })
-    .eq("brokerage_id", brokerageId).eq("is_active", true)
-  const maxLoad = tierMaxLoadForAgentCount(activeAgentCount ?? 1)
+  const maxLoad = await resolveBrokerageMaxLoad(supabase, brokerageId)
 
   // 3b. Team fallback — the contact has a team affinity: stay within the team.
   //     Capacity-aware load-balance among team members; if the team has no routable
@@ -221,7 +196,7 @@ export async function resolveAgentForContact(
       .eq("is_active", true)
 
     if (teamAgents?.length) {
-      const bestTeamAgent = await selectByCapacity(supabase, brokerageId, teamAgents.map((a) => a.id), maxLoad)
+      const bestTeamAgent = await selectAgentByCapacity(supabase, brokerageId, teamAgents.map((a) => a.id), maxLoad)
       if (bestTeamAgent) {
         return { agentId: bestTeamAgent, method: "team_load_balance", teamId: teamHint }
       }
@@ -258,7 +233,7 @@ export async function resolveAgentForContact(
 
   if (!agents?.length) return { agentId: null, method: "none" }
 
-  const bestAgent = await selectByCapacity(supabase, brokerageId, agents.map((a) => a.id), maxLoad)
+  const bestAgent = await selectAgentByCapacity(supabase, brokerageId, agents.map((a) => a.id), maxLoad)
 
   return bestAgent
     ? { agentId: bestAgent, method: "load_balance" }
