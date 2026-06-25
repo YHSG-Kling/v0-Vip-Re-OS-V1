@@ -13,7 +13,7 @@
  *
  * Run: npx tsx scripts/capacity-guardian-simulator.ts   (npm run test:capacity-guardian)
  */
-import { computeAgentWorkloadIndex, detectOverload, DEBT_ALARM, type WorkloadSignals } from "../lib/kernel/capacity-guardian"
+import { computeAgentWorkloadIndex, detectOverload, DEBT_ALARM, pickLeastLoadedWithHeadroom, tierMaxLoadForAgentCount, type WorkloadSignals } from "../lib/kernel/capacity-guardian"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -55,6 +55,20 @@ async function main() {
   check("follow-up debt alone → high burnout (ball is already dropping)", debt.burnoutRisk === "high" && detectOverload(debt, T).overloaded === true)
   check("medium band is NOT acted on (no premature rebalance)", computeAgentWorkloadIndex({ ...base, activeContacts: 28 }, T).burnoutRisk === "medium" && detectOverload(computeAgentWorkloadIndex({ ...base, activeContacts: 28 }, T), T).overloaded === false)
   check("drivers are real (no fabrication when calm)", calm.drivers.length === 0)
+
+  // ── The ASSIGNMENT capacity gate (pickLeastLoadedWithHeadroom) — preventive routing ──
+  console.log("\n[Layer 1b · assignment capacity gate]")
+  check("tier ceiling by headcount: solo(1)=40, team(10)=75, brokerage(40)=150",
+    tierMaxLoadForAgentCount(1) === 40 && tierMaxLoadForAgentCount(10) === 75 && tierMaxLoadForAgentCount(40) === 150)
+  check("prefers the least-loaded agent with headroom",
+    pickLeastLoadedWithHeadroom([{ agentId: "a", load: 30 }, { agentId: "b", load: 10 }, { agentId: "c", load: 20 }], 40) === "b")
+  check("SKIPS an agent at/over the ceiling in favor of one with headroom",
+    pickLeastLoadedWithHeadroom([{ agentId: "slammed", load: 38 }, { agentId: "ok", load: 25 }], 40) === "ok")
+  check("when EVERYONE is over the ceiling, never strands — picks least-loaded overall",
+    pickLeastLoadedWithHeadroom([{ agentId: "x", load: 39 }, { agentId: "y", load: 36 }, { agentId: "z", load: 41 }], 40) === "y")
+  check("empty pool → null (caller falls through)", pickLeastLoadedWithHeadroom([], 40) === null)
+  check("ties keep input order (deterministic)",
+    pickLeastLoadedWithHeadroom([{ agentId: "first", load: 5 }, { agentId: "second", load: 5 }], 40) === "first")
 
   console.log("\n[Layer 2 · live (dryRun): a stale-laden agent is flagged overloaded]")
   const hasCreds =

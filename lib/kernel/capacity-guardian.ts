@@ -33,6 +33,14 @@ export interface CapacityThresholds {
 /** Default soft ceilings by tier — a solo agent saturates far sooner than a brokerage pool. */
 export const TIER_MAX_LOAD: Record<string, number> = { solo: 40, team: 75, brokerage: 150, multi_location: 250 }
 
+/** PURE. Derive the per-agent tier ceiling from the brokerage's agent headcount — the SINGLE
+ *  source of truth shared by the guardian runner AND the assignment capacity gate (no drift). */
+export function tierMaxLoadForAgentCount(agentCount: number): number {
+  if (agentCount <= 1) return TIER_MAX_LOAD.solo
+  if (agentCount <= 15) return TIER_MAX_LOAD.team
+  return TIER_MAX_LOAD.brokerage
+}
+
 export interface WorkloadIndex {
   /** Working load = contacts + leads + deals. */
   load: number
@@ -49,6 +57,27 @@ export const HIGH_LOAD = 0.85
 export const MED_LOAD = 0.7
 /** Follow-up debt that means balls are already being dropped, regardless of headcount. */
 export const DEBT_ALARM = 8
+
+/**
+ * pickLeastLoadedWithHeadroom — PURE. The CAPACITY GATE the assignment cascade uses so a fresh
+ * contact never piles onto an agent who is already at/over their ceiling (the guardian becomes
+ * PREVENTIVE, not just reactive). Prefers the least-loaded agent who still has HEADROOM (under
+ * HIGH_LOAD of the ceiling); if EVERY candidate is at/over the ceiling, falls back to the
+ * least-loaded overall so a contact is never stranded — the guardian then surfaces the overload.
+ * Deterministic: ties keep input order (callers pass a stable order, e.g. created_at asc).
+ */
+export function pickLeastLoadedWithHeadroom(
+  candidates: Array<{ agentId: string; load: number }>,
+  maxLoad: number,
+): string | null {
+  if (candidates.length === 0) return null
+  const ceiling = Math.max(1, maxLoad)
+  const withHeadroom = candidates.filter((c) => c.load / ceiling < HIGH_LOAD)
+  const pool = withHeadroom.length > 0 ? withHeadroom : candidates
+  let best = pool[0]
+  for (const c of pool) if (c.load < best.load) best = c
+  return best.agentId
+}
 
 /** Pure: compute an agent's workload index. burnoutRisk is HIGH when the agent is at/over the tier
  *  ceiling OR carrying alarming follow-up debt (the ball is already dropping). */

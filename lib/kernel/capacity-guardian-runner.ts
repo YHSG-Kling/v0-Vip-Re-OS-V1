@@ -9,7 +9,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
-  computeAgentWorkloadIndex, detectOverload, TIER_MAX_LOAD, type WorkloadSignals,
+  computeAgentWorkloadIndex, detectOverload, tierMaxLoadForAgentCount, type WorkloadSignals,
 } from "./capacity-guardian"
 import { generatePersonaCopy, type CopyGenerator } from "./ai-copy"
 import { publishManagerSignal } from "./manager-signals"
@@ -20,12 +20,8 @@ async function safeCount(p: PromiseLike<{ count: number | null }>): Promise<numb
   try { const { count } = await p; return count ?? 0 } catch { return 0 }
 }
 
-/** Derive the tier ceiling from the agent headcount — solo saturates far sooner than a brokerage. */
-function tierMaxLoad(agentCount: number): number {
-  if (agentCount <= 1) return TIER_MAX_LOAD.solo
-  if (agentCount <= 15) return TIER_MAX_LOAD.team
-  return TIER_MAX_LOAD.brokerage
-}
+/** Derive the tier ceiling from the agent headcount — the shared, single-source helper. */
+const tierMaxLoad = tierMaxLoadForAgentCount
 
 async function gatherSignals(svc: Svc, brokerageId: string, agentId: string, staleCutoffISO: string): Promise<WorkloadSignals> {
   const activeContacts = await safeCount(svc.from("contacts").select("id", { count: "exact", head: true })
