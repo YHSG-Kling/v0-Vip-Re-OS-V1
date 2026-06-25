@@ -266,6 +266,24 @@ export function staleContactEligibility(
   return { eligible: true, reason: "stale", daysSinceContact }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. RESURRECTION — a reply re-arms a wound-down lead (the round-trip back to active)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The SILENCE-driven wind-down states. A non-negative inbound reply re-arms ONLY these
+ *  (a reply = signs of life) — it must NEVER resurrect a CONSENT stop (opted_out) or a
+ *  conversion/representation ('completed'), which is why those are deliberately excluded. */
+export const REENGAGEMENT_WINDDOWN_STATES = ["long_horizon", "handed_to_sphere"] as const
+
+/**
+ * shouldResurrectReengagement — PURE. When a lead the ISA had wound down (long-horizon
+ * seasonal nurture, or handed to the Sphere) REPLIES non-negatively, the ISA reclaims it
+ * into the active cadence — the lead is warm again. Consent stops are never resurrected.
+ */
+export function shouldResurrectReengagement(prevStatus: string | null | undefined): boolean {
+  return !!prevStatus && (REENGAGEMENT_WINDDOWN_STATES as readonly string[]).includes(prevStatus)
+}
+
 /** resolveStaleThreshold — PURE. Reads a brokerage's isa_ghost_threshold_days setting,
  *  honestly falling back to the default when unset/invalid. */
 export function resolveStaleThreshold(setting: unknown, fallback = DEFAULT_STALE_DAYS): number {

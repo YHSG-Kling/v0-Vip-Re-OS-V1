@@ -37,6 +37,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { guardedGenerateText } from "@/lib/data-guard/guarded-generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
+import { shouldResurrectReengagement } from "./reengagement-policy"
 import {
   detectNegativeIntent,
   haltEngagementForNegativeReply,
@@ -338,13 +339,31 @@ export async function classifyAndRouteInbound(
   // ── Read the lead's known side + what's already known ───────────────────────
   const { data: lead } = await svc
     .from("leads")
-    .select("id, motivation_type, lead_type, contact_id, address, city, state, zip_code, property_zip_code")
+    .select("id, motivation_type, lead_type, contact_id, address, city, state, zip_code, property_zip_code, reengagement_status")
     .eq("id", params.leadId)
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
 
   if (!lead) {
     return { outcome: "skipped", reason: "lead_not_found", error: "Lead not found" }
+  }
+
+  // ── RESURRECTION: a (non-negative — negatives halted at Gate 0) reply is signs of life.
+  //    If the ISA had wound this lead down to the long-horizon seasonal nurture or HANDED it
+  //    to the Sphere, RECLAIM it into the active cadence (re-arm attempts) — the symmetric
+  //    round-trip to the ISA→Sphere handoff on silence. Consent stops are never resurrected
+  //    (shouldResurrectReengagement excludes opted_out / completed).
+  if (shouldResurrectReengagement((lead as any).reengagement_status)) {
+    const fromStatus = (lead as any).reengagement_status as string
+    await svc.from("leads")
+      .update({ reengagement_status: "active", reengagement_attempt_count: 0, updated_at: new Date().toISOString() })
+      .eq("id", params.leadId).then(() => null, () => null)
+    await svc.from("lifecycle_events").insert({
+      brokerage_id: params.brokerageId, entity_type: "lead", entity_id: params.leadId,
+      event_type: "ISA_RECLAIMED_ON_REPLY",
+      metadata: { from_status: fromStatus, note: "reply re-armed the active cadence" },
+      created_at: new Date().toISOString(),
+    }).then(() => null, () => null)
   }
 
   const knownSide = deriveSide((lead as any).motivation_type, (lead as any).lead_type)

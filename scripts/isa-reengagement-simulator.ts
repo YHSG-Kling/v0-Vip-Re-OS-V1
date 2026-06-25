@@ -30,6 +30,7 @@ import {
   shouldSendGhostOutreach,
   ghostReengagementStopReason,
   ghostReengagementPhase,
+  shouldResurrectReengagement,
   staleContactEligibility,
   resolveStaleThreshold,
   DEFAULT_MAX_GHOST_ATTEMPTS,
@@ -141,6 +142,15 @@ async function main() {
   check(`seasonal + ${PHASE3_SPACING_DAYS}d since last → due`, (() => { const last = new Date(seasonalNow.getTime() - (PHASE3_SPACING_DAYS + 1) * 86_400_000); const c = shouldSendGhostOutreach({ firstSentAt: "2026-01-01", lastSentAt: last, now: seasonalNow, attempts: DEFAULT_MAX_GHOST_ATTEMPTS + 2 }); return c.shouldSend && c.phase === 3 && c.reason === "phase3_due" })())
   check("seasonal + only 30d since last → too soon (quarterly, not monthly)", (() => { const last = new Date(seasonalNow.getTime() - 30 * 86_400_000); const c = shouldSendGhostOutreach({ firstSentAt: "2026-01-01", lastSentAt: last, now: seasonalNow, attempts: DEFAULT_MAX_GHOST_ATTEMPTS + 2 }); return !c.shouldSend && c.phase === 3 && c.reason === "phase3_too_soon" })())
   check("below ceiling stays on the aggressive cadence (phase 1/2, not seasonal)", (() => { const c = shouldSendGhostOutreach({ firstSentAt: "2026-06-01", lastSentAt: null, now: seasonalNow, attempts: 2 }); return c.phase !== 3 })())
+
+  // RESURRECTION — a reply re-arms a wound-down lead, but never a consent stop.
+  console.log("\n[Layer 1d · resurrection on reply (round-trip back to active)]")
+  check("long_horizon → resurrect on reply", shouldResurrectReengagement("long_horizon") === true)
+  check("handed_to_sphere → resurrect on reply (ISA reclaims from Sphere)", shouldResurrectReengagement("handed_to_sphere") === true)
+  check("opted_out → NEVER resurrect (consent stop)", shouldResurrectReengagement("opted_out") === false)
+  check("completed → NEVER resurrect (could hide an opt-out/representation)", shouldResurrectReengagement("completed") === false)
+  check("active → no-op (already active)", shouldResurrectReengagement("active") === false)
+  check("null → no-op", shouldResurrectReengagement(null) === false)
 
   // ── Layer 1d: STALE-CONTACT ELIGIBILITY ─────────────────────────────────────
   console.log("\n[Layer 1d · stale-contact eligibility — every exclusion]")
