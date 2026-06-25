@@ -37,6 +37,7 @@ import { dispatchEmail, dispatchSms } from '@/lib/providers/dispatch'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import { emitLifecycleEvent } from '@/lib/kernel/helpers'
 import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
+import { resolveContactChannel } from '@/lib/ai-isa/contact-channel-policy'
 import type { MessageType, Persona } from '@/lib/kernel/types'
 
 // ── Lifecycle states where AI ISA MUST NOT engage ──────────────────────────
@@ -48,8 +49,8 @@ const BLOCKED_LIFECYCLE_STATES = new Set([
   'do_not_contact',
 ])
 
-// ── Channels that require explicit TCPA consent ────────────────────────────
-const CONSENT_REQUIRED_CHANNELS = new Set(['phone', 'sms'])
+// ── Channels that require explicit TCPA consent (voicedrop is regulated as a call) ──
+const CONSENT_REQUIRED_CHANNELS = new Set(['phone', 'sms', 'voicedrop'])
 
 export type ISAEngagementReason =
   | 'stale'
@@ -167,36 +168,6 @@ export async function engageContact(
   }
 }
 
-// ── Channel authority matrix for contacts ─────────────────────────────────
-
-function resolveContactChannel(contact: Record<string, any>): string {
-  const preferred = (contact.preferred_channel ?? 'email') as string
-
-  // Opt-out checks per channel
-  if (preferred === 'phone') {
-    if (contact.phone_opt_out || contact.call_stop_flag || !contact.tcpa_consent) return 'email'
-    return contact.phone ? 'phone' : 'email'
-  }
-  if (preferred === 'sms') {
-    if (contact.sms_opt_out || !contact.tcpa_consent) return 'email'
-    return contact.phone ? 'sms' : 'email'
-  }
-  if (preferred === 'email') {
-      if (contact.email_opt_out) {
-      // Fall back to direct mail if a mailing address is available
-      const hasAddr = !!(contact.mailing_address)
-      return hasAddr ? 'direct_mail' : 'email'
-    }
-    return contact.email ? 'email' : 'direct_mail'
-  }
-  if (preferred === 'direct_mail') {
-    // contacts table has no mailing_address_verified — presence of mailing_address suffices
-    const hasAddr = !!(contact.mailing_address)
-    return hasAddr ? 'direct_mail' : 'email'
-  }
-  return 'email'
-}
-
 // ── Dispatch ───────────────────────────────────────────────────────────────
 
 async function dispatchContactChannel(
@@ -209,7 +180,8 @@ async function dispatchContactChannel(
 ): Promise<EngageContactResult> {
   const persona = (contact.contact_persona ?? 'buyer') as Persona
   const journeyType = contact.contact_type === 'seller' ? 'seller' : 'buyer'
-  const messageType = channel as MessageType
+  // A voice drop (ringless voicemail) is regulated as a phone call — gate it as 'phone'.
+  const messageType = (channel === 'voicedrop' ? 'phone' : channel) as MessageType
 
   // Build kernel contact for compliance gate
   const kernelContact = {
@@ -490,8 +462,129 @@ async function dispatchContactChannel(
     return { success: true, channel: 'direct_mail' }
   }
 
+  // ── PHONE (outbound AI call) — the ISA uses its full toolbox on a CONSENTED contact.
+  //    Situation-aware (buildCallContext reads the contact's stage/persona). Escalation
+  //    ladder on any block/failure: voice drop (ringless voicemail) → email, so the touch
+  //    still lands. VAPI's initiateCall runs its own mandatory TCPA gate and throws on block. ──
+  if (channel === 'phone') {
+    if (!contact.phone || !contact.tcpa_consent || contact.phone_opt_out || contact.call_stop_flag) {
+      return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
+        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+    }
+    const vapiAssistantId = process.env.VAPI_ISA_ASSISTANT_ID
+    if (!vapiAssistantId) {
+      return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
+        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+    }
+    const { buildCallContext } = await import('@/lib/ai-isa/build-call-context')
+    const callContext = await buildCallContext({
+      brokerageId, teamId: contact.team_id ?? null, agentId: contact.agent_id ?? null,
+      contactId: contact.id, callPurpose: reason === 'ghosted' ? 'ghost_recovery' : 'isa_followup',
+    })
+    if (callContext.blocked) {
+      return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
+        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+    }
+    const { initiateCall } = await import('@/lib/voice/vapi-client')
+    let vapiResponse: { id: string; status: string }
+    try {
+      vapiResponse = await initiateCall({
+        phoneNumber: contact.phone, assistantId: vapiAssistantId, contactId: contact.id,
+        brokerageId, initiatedBy: contact.agent_id ?? null,
+        assistantOverrides: {
+          name: callContext.assistantName, firstMessage: callContext.firstMessage,
+          ...(callContext.voiceConfig?.voiceId
+            ? { voice: { provider: (callContext.voiceConfig.provider ?? 'elevenlabs') as any, voiceId: callContext.voiceConfig.voiceId, stability: callContext.voiceConfig.stability ?? 0.7, similarityBoost: callContext.voiceConfig.similarityBoost ?? 0.8 } }
+            : {}),
+          model: { systemPrompt: callContext.systemPrompt },
+          variableValues: callContext.variables ?? {},
+        },
+      })
+    } catch {
+      // Call couldn't be placed (TCPA block / provider) — drop a voicemail, else email.
+      return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
+        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+    }
+
+    const voiceCallRow = await supabase.from('voice_calls').insert({
+      contact_id: contact.id, brokerage_id: brokerageId, agent_id: contact.agent_id ?? null,
+      vapi_call_id: vapiResponse.id, direction: 'outbound', call_type: 'ai_isa_call',
+      status: 'initiated', started_at: new Date().toISOString(),
+    }).select('id').single().then((r) => r.data, () => null)
+    await supabase.from('ai_isa_calls').insert({
+      voice_call_id: (voiceCallRow as any)?.id ?? null, brokerage_id: brokerageId, contact_id: contact.id,
+      lead_id: null, isa_campaign_id: null, script_used: 'isa_reengagement', appointment_set: false,
+    }).then(() => {}, () => {})
+    await logISAOutreach({
+      brokerageId, entity: { entityType: 'contact', contactId: contact.id },
+      channel: 'phone', subject: 'AI ISA call', bodySnippet: `AI-ISA outbound call initiated. VAPI call ID: ${vapiResponse.id}`,
+    })
+    await supabase.from('ai_isa_activities').insert({
+      contact_id: contact.id, brokerage_id: brokerageId, channel: 'phone',
+      activity_type: 'outbound_call', outcome: 'initiated', summary: `AI ISA call (trigger: ${reason})`,
+    }).then(() => {}, () => {})
+    await supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id)
+    await emitLifecycleEvent({
+      eventType: 'AI_ISA_CONTACT_CALL_INITIATED', entityType: 'contact', entityId: contact.id,
+      actorId: actorId ?? brokerageId, brokerageId, metadata: { reason, channel: 'phone', vapi_call_id: vapiResponse.id },
+    })
+    return { success: true, channel: 'phone' }
+  }
+
+  // ── VOICE DROP (ringless voicemail) — an explicit, consented soft touch that stays
+  //    top of mind without interrupting. Falls back to email when no preset / not permitted. ──
+  if (channel === 'voicedrop') {
+    return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
+      ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+  }
+
   // Fallback — unsupported channel → email
   return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+}
+
+/**
+ * tryVoiceDrop — leave a ringless voicemail on a CONSENTED contact using the brokerage's
+ * active ISA voicedrop preset. Returns null (so the caller falls back to email) when the
+ * contact isn't voice-reachable or the brokerage has no active preset. orchestrateVoicedropSend
+ * runs its own TCPA gate. NEVER throws.
+ */
+async function tryVoiceDrop(
+  contact: Record<string, any>,
+  brokerageId: string,
+  reason: ISAEngagementReason,
+  supabase: ReturnType<typeof createServiceClient>,
+): Promise<EngageContactResult | null> {
+  if (!contact.phone || !contact.tcpa_consent || contact.phone_opt_out || contact.call_stop_flag) return null
+  try {
+    const { data: preset } = await supabase.from('voicedrop_presets')
+      .select('id').eq('brokerage_id', brokerageId).eq('is_active', true)
+      .order('created_at', { ascending: true }).limit(1).maybeSingle()
+    if (!preset?.id) return null
+    const { orchestrateVoicedropSend } = await import('@/lib/voicedrop/orchestrate-voicedrop-send')
+    const r = await orchestrateVoicedropSend({
+      brokerageId, presetId: (preset as { id: string }).id, contactId: contact.id,
+      toPhone: contact.phone, recipientFirstName: contact.first_name ?? null,
+      teamId: contact.team_id ?? null, systemSource: 'ai_isa_contact',
+    })
+    if (!r.success) return null
+    await logISAOutreach({
+      brokerageId, entity: { entityType: 'contact', contactId: contact.id },
+      channel: 'phone', subject: 'AI ISA voicemail', bodySnippet: 'AI ISA ringless voicemail dropped (voicedrop)',
+    })
+    await supabase.from('ai_isa_activities').insert({
+      contact_id: contact.id, brokerage_id: brokerageId, channel: 'voicedrop',
+      activity_type: 'outbound_voicedrop', outcome: 'sent', summary: `AI ISA voice drop (trigger: ${reason})`,
+    }).then(() => {}, () => {})
+    await supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id)
+    await emitLifecycleEvent({
+      eventType: 'AI_ISA_CONTACT_VOICEDROP_SENT', entityType: 'contact', entityId: contact.id,
+      actorId: brokerageId, brokerageId, metadata: { reason, channel: 'voicedrop' },
+    })
+    return { success: true, channel: 'voicedrop' }
+  } catch (e) {
+    console.error('[engageContact] voicedrop failed:', e)
+    return null
+  }
 }
 
 /**

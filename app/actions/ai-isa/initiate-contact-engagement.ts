@@ -12,8 +12,10 @@ import { engageContact } from './engage-contact'
  * by the stale-contact cron, the stale-contacts dashboard, and ghost
  * re-engagement — all of which previously hit a separate email-only
  * implementation. That duplicate engine has been removed; this now delegates to
- * engageContact so every caller gets the full consent-aware channel matrix
- * (email / sms / direct_mail), the DNC / active-transaction / under-contract /
+ * engageContact so every caller gets the FULL consent-aware channel toolbox —
+ * an outbound AI phone CALL + ringless VOICE DROP (a consented contact, unlike an
+ * unconsented lead, may be reached by voice) / sms / email / direct_mail — the
+ * DNC / active-transaction / under-contract /
  * max-touches stops, and the kernel compliance gate from one place.
  *
  * AUTH: Permitted callers are
