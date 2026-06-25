@@ -30,6 +30,8 @@ import {
   triggerDirectMailCampaign,
 } from '@/lib/ai-isa'
 import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
+import { pickLeadOutreachChannel } from '@/lib/ai-isa/lead-channel-policy'
+import { cohortFromEnrichment } from '@/lib/ai-isa/adaptive-reengagement'
 import {
   logISAOutreach,
   checkMaxTouches,
@@ -154,9 +156,6 @@ export async function initiateAIISAEngagement(
       throw new Error('Only email and direct_mail can be force-dispatched from the ISA console. Phone/SMS require TCPA compliance checks.')
     }
 
-    // ── Channels permitted for unconsented leads (no TCPA) ─────────────────
-    const LEAD_ALLOWED_CHANNELS = new Set(['email', 'direct_mail'])
-
     /**
      * resolveKernelOutreachChannel — single channel source-of-truth for
      * all lead/contact routing decisions in Kernel OS.
@@ -198,12 +197,10 @@ export async function initiateAIISAEngagement(
       const requested = (lead.preferred_channel ?? 'email') as string
       const hasVerifiedAddr = !!(lead.mailing_address && lead.mailing_address_verified === true)
       const emailUsable = !!(lead.email && lead.email_verified === true)
-      const pick = (): string => {
-        if (!LEAD_ALLOWED_CHANNELS.has(requested)) return emailUsable ? 'email' : (hasVerifiedAddr ? 'direct_mail' : 'no_outreach')
-        if (requested === 'direct_mail')           return hasVerifiedAddr ? 'direct_mail' : (emailUsable ? 'email' : 'no_outreach')
-        return emailUsable ? 'email' : (hasVerifiedAddr ? 'direct_mail' : 'no_outreach')
-      }
-      return pick()
+      // Canonical lead-channel rule (the single source of truth — leads are STRICTLY
+      // email / direct_mail; SMS / phone / social are never permitted for an unconsented
+      // lead). pickLeadOutreachChannel is pure + guarded by the lead-channel simulator.
+      return pickLeadOutreachChannel({ requestedChannel: requested, emailUsable, mailingVerified: hasVerifiedAddr })
     }
 
     const resolvedChannel = resolveKernelOutreachChannel(lead, contactRow)
@@ -341,6 +338,11 @@ async function dispatchToChannel(
       timeline: lead.timeline,
       lead_score: lead.lead_score,
       brandVoiceBlock: brandVoice.systemBlock,
+      // Brand voice + them-first tone now actually shape the copy: the brokerage tagline
+      // carries the brand, and the lead's generational cohort (from enrichment age) tones
+      // the opener. Fair-Housing safe (style only); compliance gate still runs below.
+      brandTagline: brandVoice.tagline ?? null,
+      cohort: cohortFromEnrichment(lead.enrichment_profile as { age?: number | null; age_range?: string | null } | null),
     }
 
     const { subject, body, fromName } = await generatePersonalizedEmail(emailContext)

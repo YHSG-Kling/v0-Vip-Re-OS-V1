@@ -1,6 +1,8 @@
 'use server'
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { buildFirstTouchEmail } from '@/lib/ai-isa/first-touch-copy'
+import { generationalCohortFromAge, type GenerationalCohort } from '@/lib/kernel/education'
 
 export interface LeadEmailContext {
   leadId: string
@@ -16,39 +18,43 @@ export interface LeadEmailContext {
   enrichment_context?: Record<string, any>
   /** Brand voice system block from loadBrandVoicePrompt — injected into email tone/vocabulary */
   brandVoiceBlock?: string
+  /** Brokerage brand tagline (brand voice) — carried into the email sign-off. */
+  brandTagline?: string | null
   /** Assistant name from ai_identity_profiles — used as the email sign-off name */
   assistantName?: string
   /** Persona label from ai_identity_profiles — shown in greeting context */
   personaLabel?: string | null
+  /** The lead's generational cohort (from enrichment age) — tones the opener them-first. */
+  cohort?: GenerationalCohort
 }
 
 export async function generatePersonalizedEmail(context: LeadEmailContext) {
   const signingName = context.assistantName ?? 'Your Real Estate Team'
 
-  const emailBody = `Hi ${context.firstName},
+  // Resolve cohort from the explicit value, else from any age in the enrichment context.
+  const enrichAge = context.enrichment_context?.age
+  const cohort: GenerationalCohort =
+    context.cohort ?? (typeof enrichAge === 'number' ? generationalCohortFromAge(enrichAge) : 'unknown')
 
-I noticed you're exploring ${context.property_interest || 'properties'} in the area${context.timeline ? ` and looking to ${context.timeline}` : ''}. 
-
-${context.motivation_type ? `Understanding that you're ${context.motivation_type.replace(/_/g, ' ')}, I wanted to share some insights that might be helpful for your situation.` : 'I wanted to reach out with some information that might be valuable for you.'}
-
-${context.budget_min && context.budget_max ? `Based on your budget range of $${context.budget_min.toLocaleString()} to $${context.budget_max.toLocaleString()}, ` : ''}I've put together a personalized video introduction below that explains exactly how our platform works to help you achieve your real estate goals.
-
-[Video will be embedded here]
-
-This isn't about pushing you into anything — it's about making sure you have the right information and support whenever you're ready to take the next step.
-
-If you have any questions or just want to talk through your options, feel free to reply to this email. I'm here to help.
-
-Best regards,
-${signingName}${context.personaLabel ? `\n${context.personaLabel}` : ''}`
-
-  const subjectLine = context.motivation_type
-    ? `About Your ${context.property_interest || 'Property'} Search`
-    : `Information for ${context.firstName} - Real Estate Resources`
+  // Cohort-toned + brand-voiced body (pure, Fair-Housing safe). The compliance gate +
+  // brand prohibited-word screen still run downstream before any send.
+  const { subject, body } = buildFirstTouchEmail({
+    firstName: context.firstName,
+    cohort,
+    propertyInterest: context.property_interest ?? null,
+    timeline: context.timeline ?? null,
+    motivationType: context.motivation_type ?? null,
+    budgetMin: context.budget_min ?? null,
+    budgetMax: context.budget_max ?? null,
+    assistantName: signingName,
+    personaLabel: context.personaLabel ?? null,
+    brandTagline: context.brandTagline ?? null,
+    hasVideo: true,
+  })
 
   return {
-    subject: subjectLine,
-    body: emailBody,
+    subject,
+    body,
     fromName: signingName,
     replyTo: context.email,
   }
