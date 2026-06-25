@@ -92,6 +92,24 @@ export async function GET(request: NextRequest) {
 
       for (const contact of staleContacts ?? []) {
         try {
+          // COLD-CONTACT CHECKPOINT — before another auto-touch, if this contact has gone
+          // cold (≥ COLD_CONTACT_TOUCHES unanswered ISA follow-ups), loop in the OWNING AGENT
+          // once for a personal call (the automation still nurtures). The contact-side mirror
+          // of the ghost-lead escalation — no cold relationship auto-loops without a human.
+          const { count: noReplyTouches } = await supabase
+            .from('isa_outreach_log')
+            .select('id', { count: 'exact', head: true })
+            .eq('contact_id', contact.id)
+            .is('replied_at', null)
+          const { coldContactReengagementCheck } = await import('@/lib/ai-isa/reengagement-policy')
+          if (coldContactReengagementCheck(noReplyTouches ?? 0).isCold) {
+            const { escalateColdContact } = await import('@/lib/ai-isa/cold-contact-escalation')
+            await escalateColdContact(supabase, {
+              contactId: contact.id, brokerageId, agentId: contact.agent_id,
+              touches: noReplyTouches ?? 0, firstName: contact.first_name ?? null,
+            })
+          }
+
           const result = await initiateAIISAContactEngagement(contact.id)
           if (result.success) {
             reengaged++

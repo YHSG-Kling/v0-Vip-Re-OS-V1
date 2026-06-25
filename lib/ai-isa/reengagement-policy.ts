@@ -284,6 +284,32 @@ export function shouldResurrectReengagement(prevStatus: string | null | undefine
   return !!prevStatus && (REENGAGEMENT_WINDDOWN_STATES as readonly string[]).includes(prevStatus)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. COLD-CONTACT CHECKPOINT — the CONTACT-side analog of the lead exhausted→escalate.
+//    A converted buyer/seller the ISA auto-re-engages repeatedly with NO reply is "cold":
+//    the automation keeps nurturing (de-confliction caps the cadence) but the OWNING AGENT
+//    must be told ONCE so a human can make the personal call the AI can't. Without this the
+//    contact-side loop auto-touches a cold relationship forever with no human checkpoint.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Consecutive no-reply ISA re-engagement touches that mean a CONTACT has gone cold and the
+ *  owning agent should be looped in for a personal touch (≈ months of unanswered nurture). */
+export const COLD_CONTACT_TOUCHES = 5
+
+/**
+ * coldContactReengagementCheck — PURE. Given how many ISA re-engagement touches a contact has
+ * received with NO reply, decide whether the owning agent should be escalated (once). The
+ * automation is NOT stopped — like the lead-side long-horizon, it keeps nurturing; this only
+ * adds the human checkpoint the contact-side was missing.
+ */
+export function coldContactReengagementCheck(
+  noReplyTouches: number,
+  opts?: { coldTouches?: number },
+): { isCold: boolean } {
+  const threshold = opts?.coldTouches ?? COLD_CONTACT_TOUCHES
+  return { isCold: (noReplyTouches ?? 0) >= threshold }
+}
+
 /** resolveStaleThreshold — PURE. Reads a brokerage's isa_ghost_threshold_days setting,
  *  honestly falling back to the default when unset/invalid. */
 export function resolveStaleThreshold(setting: unknown, fallback = DEFAULT_STALE_DAYS): number {

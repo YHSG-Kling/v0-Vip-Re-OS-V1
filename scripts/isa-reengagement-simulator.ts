@@ -31,6 +31,8 @@ import {
   ghostReengagementStopReason,
   ghostReengagementPhase,
   shouldResurrectReengagement,
+  coldContactReengagementCheck,
+  COLD_CONTACT_TOUCHES,
   staleContactEligibility,
   resolveStaleThreshold,
   DEFAULT_MAX_GHOST_ATTEMPTS,
@@ -152,6 +154,14 @@ async function main() {
   check("active → no-op (already active)", shouldResurrectReengagement("active") === false)
   check("null → no-op", shouldResurrectReengagement(null) === false)
 
+  // COLD-CONTACT CHECKPOINT — the contact-side mirror of exhausted→escalate (buyer/seller).
+  console.log("\n[Layer 1d · cold-contact checkpoint (buyer/seller — loop in the human)]")
+  check(`below ${COLD_CONTACT_TOUCHES} unanswered touches → not cold (keep auto-nurturing)`, coldContactReengagementCheck(COLD_CONTACT_TOUCHES - 1).isCold === false)
+  check(`AT ${COLD_CONTACT_TOUCHES} unanswered touches → cold (loop in the owning agent)`, coldContactReengagementCheck(COLD_CONTACT_TOUCHES).isCold === true)
+  check("past the threshold → still cold", coldContactReengagementCheck(COLD_CONTACT_TOUCHES + 7).isCold === true)
+  check("custom coldTouches honored", coldContactReengagementCheck(2, { coldTouches: 2 }).isCold === true)
+  check("zero touches → not cold", coldContactReengagementCheck(0).isCold === false)
+
   // ── Layer 1d: STALE-CONTACT ELIGIBILITY ─────────────────────────────────────
   console.log("\n[Layer 1d · stale-contact eligibility — every exclusion]")
   const now = new Date("2026-06-15T12:00:00Z")
@@ -202,6 +212,7 @@ async function main() {
   const brokerageId = (brokerage as { id: string }).id
   const oldActivity = new Date(Date.now() - 40 * DAY).toISOString()
   let leadId: string | null = null
+  let coldContactId: string | null = null
 
   try {
     const { data: lead, error } = await supabase
@@ -229,12 +240,46 @@ async function main() {
     await supabase.from("leads").update({ reengagement_status: "opted_out" }).eq("id", leadId)
     const ghosts2 = await detectGhostLeads(brokerageId, 21)
     check("live: opted-out ghost lead is excluded", !ghosts2.includes(leadId))
+
+    // ── COLD-CONTACT escalation (buyer/seller side) — loop in the owning agent once ──
+    const { escalateColdContact } = await import("../lib/ai-isa/cold-contact-escalation")
+    const { data: agentRow } = await supabase.from("agents").select("id, user_id")
+      .eq("brokerage_id", brokerageId).not("user_id", "is", null).limit(1).maybeSingle()
+    if (agentRow) {
+      const agentId = (agentRow as any).id as string
+      const agentUserId = (agentRow as any).user_id as string
+      const { data: c } = await supabase.from("contacts").insert({
+        brokerage_id: brokerageId, first_name: "ZZ_COLD_TEST", last_name: "Contact",
+        contact_type: "buyer", agent_id: agentId,
+      }).select("id").single()
+      coldContactId = c ? ((c as any).id as string) : null
+      if (coldContactId) {
+        const e1 = await escalateColdContact(supabase, { contactId: coldContactId, brokerageId, agentId, touches: 5, firstName: "ZZ_COLD_TEST" })
+        check("live: cold contact escalates to the owning agent", e1.escalated && e1.reason === "notified")
+        const { data: notif } = await supabase.from("notifications").select("id, user_id, type")
+          .eq("entity_id", coldContactId).eq("type", "contact_gone_cold").maybeSingle()
+        check("live: the OWNING AGENT (not the broker) got the cold nudge",
+          !!notif && (notif as any).user_id === agentUserId)
+        const e2 = await escalateColdContact(supabase, { contactId: coldContactId, brokerageId, agentId, touches: 6, firstName: "ZZ_COLD_TEST" })
+        check("live: cold escalation is deduped (one nudge per cold period)", !e2.escalated && e2.reason === "deduped")
+      }
+    } else {
+      check("live: cold-contact test skipped (no agent with a user_id) — pure layer covered it", true)
+    }
   } finally {
     // Reverse-delete + assert cleanup.
+    if (coldContactId) {
+      await supabase.from("notifications").delete().eq("entity_id", coldContactId).eq("type", "contact_gone_cold")
+      await supabase.from("contacts").delete().eq("id", coldContactId)
+    }
     if (leadId) {
       await supabase.from("leads").delete().eq("id", leadId)
       const { count } = await supabase.from("leads").select("id", { count: "exact", head: true }).eq("id", leadId)
       check("live: cleanup count == 0", (count ?? 0) === 0)
+    }
+    if (coldContactId) {
+      const { count } = await supabase.from("contacts").select("id", { count: "exact", head: true }).eq("id", coldContactId)
+      check("live: cold-contact cleanup count == 0", (count ?? 0) === 0)
     }
   }
 
