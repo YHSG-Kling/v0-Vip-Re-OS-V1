@@ -428,10 +428,10 @@ async function dispatchToChannel(
 
     const shouldSendMail = await shouldTriggerDirectMail(leadId)
     if (shouldSendMail) {
-      // Wave 36 — welcome kit = postcard AND letter for a brand new
-      // lead with a verified address (idempotent at the trigger level:
-      // skipped if any individual_lead campaign already exists for this
-      // lead). Postcard for hand-time, letter for long-form intro.
+      // Welcome kit = the long-form intro LETTER. The POSTCARD is no longer a static
+      // Lob-template piece here — it's the BRAND-VOICED persona postcard the Asset
+      // Manager stages (gated) off the lead_creative_handoff above, so the team play
+      // owns the postcard creative and we never send two postcards for one lead.
       await triggerDirectMailCampaign({
         leadId: lead.id,
         brokerageId: lead.brokerage_id,
@@ -439,7 +439,7 @@ async function dispatchToChannel(
         lastName: lead.last_name || '',
         motivation_type: lead.motivation_type,
         property_interest: lead.property_interest,
-        pieceTypes: ['postcard', 'letter'],
+        pieceTypes: ['letter'],
       })
     }
 

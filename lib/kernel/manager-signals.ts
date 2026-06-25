@@ -88,6 +88,63 @@ export async function publishManagerSignal(
   return { ok: true, signalId: (data as { id: string }).id }
 }
 
+/**
+ * Stage the lead's persona POSTCARD as a GATED direct_mail_campaigns row — the
+ * direct-mail half of the multi-manager outreach play. Copy is BRAND-VOICED + them-first
+ * (draftPostcardCopy → the brand-voice + compliance-redraft path, falling back to a
+ * grounded line when the gateway is unavailable — never a stub), carrying a tracked
+ * book-a-consult QR. NEVER calls dispatchDirectMail — a human approves before any Lob
+ * send. Idempotent per (lead): one open pending postcard per lead. Returns an action
+ * string, or null on insert failure.
+ */
+async function proposeLeadIntroPostcard(
+  supabase: Svc, brokerageId: string, agentUserId: string, lead: Record<string, any>,
+): Promise<string | null> {
+  const leadId = lead.id as string
+  const firstName = (lead.first_name as string | null) || "there"
+  const interest = (lead.property_interest as string | null)?.trim() || "your move"
+
+  // Idempotency — one still-gated proposed lead-intro postcard per lead.
+  const { data: existing } = await supabase.from("direct_mail_campaigns").select("id")
+    .eq("brokerage_id", brokerageId).eq("lead_id", leadId)
+    .eq("target_audience", "ai_isa_lead_intro").eq("approval_status", "pending").maybeSingle()
+  if (existing?.id) return "persona postcard already proposed (gated, deduped)"
+
+  // Tracked book-a-consult QR (kind 'lead_intro' → book_meeting /book). Best-effort.
+  let qrCodeId: string | null = null
+  try {
+    const { mintVideoQr } = await import("@/lib/video/video-qr")
+    const minted = await mintVideoQr({ brokerageId, agentUserId, kind: "lead_intro", leadId }, supabase)
+    qrCodeId = minted?.qrCodeId ?? null
+  } catch { /* a postcard proposal must still land without a QR */ }
+
+  // BRAND-VOICED, them-first copy — the brand-voice + compliance-redraft generator, NOT a
+  // static Lob template. A grounded fallback keeps the piece real when the gateway is down.
+  let copyText =
+    `Hi ${firstName} — whenever you're ready to talk about ${interest}, I'm here to help, ` +
+    `no pressure at all. Scan the code to book a quick, friendly chat on your schedule.`
+  try {
+    const { draftPostcardCopy } = await import("@/lib/direct-mail/draft-copy")
+    const drafted = await draftPostcardCopy({
+      brokerageId, agentUserId, contactId: null,
+      persona: (lead.motivation_type as string | null) ?? "other",
+      qrDestinationType: "book_meeting",
+    })
+    if (drafted.ok) copyText = `${drafted.copy.headline} — ${drafted.copy.body} ${drafted.copy.cta}`.trim()
+  } catch { /* keep the grounded fallback copy */ }
+
+  const name = [lead.first_name, lead.last_name].filter(Boolean).join(" ").trim() || "there"
+  const { data: campaign, error } = await supabase.from("direct_mail_campaigns").insert({
+    brokerage_id: brokerageId, agent_id: agentUserId, lead_id: leadId,
+    campaign_name: `AI ISA intro postcard — ${name}`.slice(0, 120),
+    target_audience: "ai_isa_lead_intro", quantity: 1, piece_type: "postcard",
+    copy_text: copyText, qr_code_id: qrCodeId, is_ai_generated: true,
+    approval_status: "pending", status: "planning", created_at: new Date().toISOString(),
+  }).select("id").maybeSingle()
+  if (error || !campaign) return null
+  return `staged the brand-voiced persona postcard (gated pending approval)`
+}
+
 /** A signal handler: acts on one signal, returns the action taken (or null to leave open). */
 export type SignalHandler = (signal: ManagerSignal, ctx: { brokerageId: string; supabase: Svc }) => Promise<string | null>
 
@@ -382,7 +439,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const leadId = signal.entityId
     if (!leadId) return null
     const { data: lead } = await ctx.supabase.from("leads")
-      .select("id, first_name, property_interest, timeline, motivation_type, budget_min, budget_max, enrichment_profile, brokerage_id, agent_id")
+      .select("id, first_name, last_name, email, email_verified, property_interest, timeline, motivation_type, budget_min, budget_max, enrichment_profile, brokerage_id, agent_id, mailing_address, mailing_city, mailing_state, mailing_zip, mailing_address_verified")
       .eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     if (!lead) return null
     const l = lead as Record<string, any>
@@ -404,29 +461,48 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }
     if (!agentUserId) return "no presenter on file (no agent / broker) — intro reel deferred; email first-touch already sent"
 
-    const { buildLeadIntroReelBrief } = await import("@/lib/ai-isa/lead-reel-brief")
-    const { commissionVideo } = await import("@/lib/video/video-director")
-    const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
-    const brief = buildLeadIntroReelBrief({
-      leadId: l.id,
-      firstName: l.first_name ?? "there",
-      propertyInterest: l.property_interest ?? null,
-      timeline: l.timeline ?? null,
-      motivationType: l.motivation_type ?? null,
-      budgetMin: l.budget_min ?? null,
-      budgetMax: l.budget_max ?? null,
-      enrichment: (l.enrichment_profile ?? null) as { age?: number | null; age_range?: string | null } | null,
-    })
-    const r = await commissionVideo(
-      brief.situation,
-      { brokerageId: ctx.brokerageId, agentUserId, leadId: l.id, title: brief.title, persona: brief.persona, extraFacts: brief.extraFacts, copyGenerator: realCopyGenerator },
-      ctx.supabase,
-    )
-    if (r.status === "already_staged") return `intro reel already commissioned for this lead (${r.compositionId}, deduped)`
-    if (!r.ok) return r.status === "blocked"
-      ? `intro reel blocked at the compliance gate — not staged (${(r.violations ?? []).join("; ").slice(0, 160)})`
-      : null
-    return `commissioned the persona-matched intro reel (${r.compositionId}, gated pending_review) — hands to the Campaign Orchestrator on completion`
+    const parts: string[] = []
+
+    // ── (a) The persona INTRO REEL — only when there's a usable email to embed it in.
+    //    (A direct-mail-only lead skips the reel and gets the postcard below.)
+    const emailUsable = !!(l.email && l.email_verified === true)
+    if (emailUsable) {
+      const { buildLeadIntroReelBrief } = await import("@/lib/ai-isa/lead-reel-brief")
+      const { commissionVideo } = await import("@/lib/video/video-director")
+      const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+      const brief = buildLeadIntroReelBrief({
+        leadId: l.id,
+        firstName: l.first_name ?? "there",
+        propertyInterest: l.property_interest ?? null,
+        timeline: l.timeline ?? null,
+        motivationType: l.motivation_type ?? null,
+        budgetMin: l.budget_min ?? null,
+        budgetMax: l.budget_max ?? null,
+        enrichment: (l.enrichment_profile ?? null) as { age?: number | null; age_range?: string | null } | null,
+      })
+      const r = await commissionVideo(
+        brief.situation,
+        { brokerageId: ctx.brokerageId, agentUserId, leadId: l.id, title: brief.title, persona: brief.persona, extraFacts: brief.extraFacts, copyGenerator: realCopyGenerator },
+        ctx.supabase,
+      )
+      if (r.status === "already_staged") parts.push(`intro reel already commissioned (${r.compositionId}, deduped)`)
+      else if (r.ok) parts.push(`commissioned the persona intro reel (${r.compositionId}, gated) — hands to the Campaign Orchestrator on completion`)
+      else if (r.status === "blocked") parts.push(`intro reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})`)
+    }
+
+    // ── (b) The persona POSTCARD — when the mailing address is VERIFIED. Brand-voiced,
+    //    them-first copy (draftPostcardCopy → the brand-voice + compliance-redraft path,
+    //    NOT a static Lob template), staged GATED (direct_mail_campaigns approval_status
+    //    'pending'/status 'planning' — a human approves before any Lob send). Idempotent.
+    const mailingVerified = l.mailing_address_verified === true &&
+      !!(l.mailing_address && l.mailing_city && l.mailing_state && l.mailing_zip)
+    if (mailingVerified) {
+      const postcard = await proposeLeadIntroPostcard(ctx.supabase, ctx.brokerageId, agentUserId, l)
+      if (postcard) parts.push(postcard)
+    }
+
+    if (parts.length === 0) return "no usable channel for the persona creative (email unverified, mailing unverified) — deferred"
+    return parts.join("; ")
   },
   // Asset Manager → Campaign Orchestrator: a lead's persona intro reel FINISHED. The
   // Orchestrator proposes ONE gated, 1:1 follow-up EMAIL to that lead embedding the reel —

@@ -152,6 +152,9 @@ async function liveLayer() {
       agent_id: agentId, property_interest: "3-bed homes", timeline: "buy this spring",
       motivation_type: "relocation_buyer", budget_min: 400000, budget_max: 550000,
       enrichment_profile: { age: 38 },
+      // Verified mailing address → the play ALSO stages the gated persona postcard.
+      mailing_address: "9 Probe Ln", mailing_city: "Austin", mailing_state: "TX",
+      mailing_zip: "78701", mailing_address_verified: true,
     }).select("id").single()
     if (!lead) { console.log("  ⏭  Skipped — lead seed failed."); return }
     const leadId = (lead as any).id as string
@@ -188,6 +191,23 @@ async function liveLayer() {
       reel?.video_metadata?.audience === "lead", JSON.stringify(reel?.video_metadata?.audience))
     check("the reel minted a book-a-consult QR (qr_code_id present)",
       !!reel?.video_metadata?.qr_code_id, JSON.stringify(reel?.video_metadata?.qr_code_id))
+
+    // ── The SAME handoff also stages the GATED, brand-voiced persona postcard ──
+    const { data: cards } = await svc.from("direct_mail_campaigns")
+      .select("id, target_audience, approval_status, status, piece_type, copy_text, qr_code_id, lead_id, contact_id")
+      .eq("brokerage_id", brokerageId).eq("lead_id", leadId).eq("target_audience", "ai_isa_lead_intro")
+    for (const d of (cards ?? []) as any[]) {
+      cleanup.push({ table: "direct_mail_campaigns", id: d.id })
+      if (d.qr_code_id) cleanup.push({ table: "qr_codes", id: d.qr_code_id })
+    }
+    const card = ((cards ?? []) as any[])[0]
+    check("a persona postcard was staged for the lead (target_audience ai_isa_lead_intro)",
+      ((cards ?? []) as any[]).length === 1, `got ${((cards ?? []) as any[]).length}`)
+    check("the postcard is GATED (approval_status='pending', status='planning' — never auto-sends)",
+      card?.approval_status === "pending" && card?.status === "planning", JSON.stringify({ a: card?.approval_status, s: card?.status }))
+    check("the postcard is a real piece (postcard, non-empty brand-voiced copy)",
+      card?.piece_type === "postcard" && typeof card?.copy_text === "string" && card.copy_text.length > 20)
+    check("the postcard carries a tracked book-a-consult QR", !!card?.qr_code_id)
 
     // ── Render completes → the completion publisher routes it 1:1 ──
     const reelId = reel.id as string
@@ -233,8 +253,11 @@ async function liveLayer() {
       .eq("brokerage_id", brokerageId).filter("video_metadata->>lead_id", "eq", leadId)
     const { count: msgCount } = await svc.from("agent_client_messages").select("id", { count: "exact", head: true })
       .eq("brokerage_id", brokerageId).eq("recipient_lead_id", leadId)
+    const { count: cardCount } = await svc.from("direct_mail_campaigns").select("id", { count: "exact", head: true })
+      .eq("brokerage_id", brokerageId).eq("lead_id", leadId).eq("target_audience", "ai_isa_lead_intro")
     check("idempotent: still exactly ONE reel after rerun", (reelCount ?? 0) === 1, `got ${reelCount}`)
     check("idempotent: still exactly ONE email proposal after rerun", (msgCount ?? 0) === 1, `got ${msgCount}`)
+    check("idempotent: still exactly ONE persona postcard after rerun", (cardCount ?? 0) === 1, `got ${cardCount}`)
 
     // ── The conversation is visible in 'managers talking' ──
     const talk = await loadRecentManagerTalk(brokerageId, 40, svc)
