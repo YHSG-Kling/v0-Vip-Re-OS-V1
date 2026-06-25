@@ -639,20 +639,27 @@ async function dispatchToChannel(
       return { success: false, reason: 'no_mailing_address', channel }
     }
 
-    await triggerDirectMailCampaign({
-      leadId: lead.id,
+    // MULTI-MANAGER PLAY (direct-mail-only lead) — instead of auto-sending a static
+    // Lob-template postcard, the ISA DELEGATES the persona creative to the Asset Manager
+    // on the bus. With no usable email the Asset Manager skips the reel and stages the
+    // BRAND-VOICED, them-first persona POSTCARD (gated, approval_status='pending') — a
+    // human approves before any Lob send. Same handoff, same gated governance as email.
+    const reelDelegation = await publishManagerSignal({
       brokerageId: lead.brokerage_id,
-      firstName: lead.first_name || '',
-      lastName: lead.last_name || '',
-      motivation_type: lead.motivation_type,
-      property_interest: lead.property_interest,
-    })
+      fromManager: 'ai_isa',
+      toManager: 'asset_manager',
+      signalType: 'lead_creative_handoff',
+      message: `Qualified ${lead.first_name || 'a lead'} (direct-mail) — build the persona postcard for the verified mailing address.`,
+      entityType: 'lead',
+      entityId: lead.id,
+      payload: { first_name: lead.first_name ?? null, property_interest: lead.property_interest ?? null, channel: 'direct_mail' },
+    }, supabase)
 
     await logISAOutreach({
       brokerageId: lead.brokerage_id,
       entity: { entityType: 'lead', leadId },
       channel: 'direct_mail',
-      bodySnippet: `Direct mail campaign triggered for ${lead.first_name ?? ''} ${lead.last_name ?? ''}`.trim(),
+      bodySnippet: `Persona postcard delegated to the Asset Manager (gated) for ${lead.first_name ?? ''} ${lead.last_name ?? ''}`.trim(),
     })
 
     await supabase.from('messages').insert({
@@ -660,12 +667,12 @@ async function dispatchToChannel(
       brokerage_id: lead.brokerage_id,
       type: 'direct_mail',
       direction: 'outbound',
-      body: 'Direct mail campaign initiated',
+      body: 'Persona postcard delegated to the Asset Manager (gated, pending approval)',
       status: 'queued',
       created_at: new Date().toISOString(),
     })
 
-    return { success: true, directMailTriggered: true, channel: 'direct_mail' }
+    return { success: true, reelDelegated: reelDelegation.ok, channel: 'direct_mail' }
   }
 
   // ── SOCIAL (Facebook / Instagram / LinkedIn / Twitter) ─────────────────
