@@ -17,12 +17,10 @@ export {
 } from './email-generator'
 export type { LeadEmailContext } from './email-generator'
 
-// ─── VIDEO GENERATION ─────────────────────────────────────────────────────────
+// ─── VIDEO (email embed seam; generateAvatarVideo removed — superseded by the Director rail) ──
 export {
-  generateAvatarVideo,
   embedVideoInEmail,
 } from './video-generator'
-export type { VideoGenerationContext } from './video-generator'
 
 // ─── DIRECT MAIL ──────────────────────────────────────────────────────────────
 export {

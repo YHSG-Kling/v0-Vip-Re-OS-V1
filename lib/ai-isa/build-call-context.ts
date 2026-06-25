@@ -110,13 +110,17 @@ export async function buildCallContext(params: {
           .then((r) => r.data)
       : Promise.resolve(null),
 
+    // DEFENSIVE IDENTITY RESOLVE — agentId is an agents.id, but a caller can mistakenly pass a
+    // users.id (the exact bug that left a contact's call with no agent voice). Try agents.id
+    // first; if that misses, fall back to a user_id lookup so the agent's cloned voice/avatar
+    // still resolves instead of silently degrading to the generic brokerage voice.
     params.agentId
-      ? supabase
-          .from('agents')
-          .select('voice_id, users(first_name, last_name, email, phone)')
-          .eq('id', params.agentId)
-          .maybeSingle()
-          .then((r) => r.data)
+      ? (async () => {
+          const sel = 'voice_id, users(first_name, last_name, email, phone)'
+          const byId = await supabase.from('agents').select(sel).eq('id', params.agentId).maybeSingle().then((r) => r.data)
+          if (byId) return byId
+          return supabase.from('agents').select(sel).eq('user_id', params.agentId).maybeSingle().then((r) => r.data)
+        })()
       : Promise.resolve(null),
 
     supabase

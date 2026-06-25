@@ -1,78 +1,15 @@
 'use server'
 
-// AI-ISA personalized intro video generator.
+// AI-ISA email video embed helper.
 //
-// Routes through `dispatchVideo`, which is platform-locked to D-ID + ElevenLabs
-// (the agent's own avatar/voice cloned in Settings → Voice & Avatar). HeyGen is
-// NOT a reachable path. Provider key returned from dispatch is the source of
-// truth for the log row.
-
-import { createServiceClient } from '@/lib/supabase/service'
-import { dispatchVideo } from '@/lib/providers/dispatch'
-
-export interface VideoGenerationContext {
-  leadId: string
-  firstName: string
-  brokerageId: string
-  agentUserId?: string
-  recipientEmail: string
-  /** Rendered script template (variables filled by dispatch). */
-  templateId?: string
-  motivation_type?: string
-  property_interest?: string
-  timeline?: string
-}
-
-export async function generateAvatarVideo(context: VideoGenerationContext) {
-  try {
-    const result = await dispatchVideo({
-      brokerageId:    context.brokerageId,
-      userId:         context.agentUserId,
-      templateId:     context.templateId ?? '',
-      recipientEmail: context.recipientEmail,
-      recipientName:  context.firstName,
-      scriptVars: {
-        first_name:        context.firstName,
-        motivation_type:   context.motivation_type ?? '',
-        property_interest: context.property_interest ?? '',
-        timeline:          context.timeline ?? '',
-      },
-      systemSource: 'ai_isa',
-      leadId:       context.leadId,
-    })
-
-    // The actual provider that rendered the video comes back from dispatch.
-    const supabase = createServiceClient()
-    supabase.from('message_provider_logs').insert({
-      brokerage_id:        context.brokerageId,
-      provider_key:        result.providerKey,
-      channel:             'video',
-      direction:           'outbound',
-      provider_message_id: result.messageId ?? null,
-      provider_status:     result.success ? 'sent' : 'failed',
-      error_message:       result.error ?? null,
-    })
-
-    return {
-      success:     result.success,
-      videoId:     result.messageId,
-      providerKey: result.providerKey,
-      error:       result.error,
-    }
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error)
-    const supabase = createServiceClient()
-    await supabase.from('automation_errors').insert({
-      workflow_name: 'ai_isa_video_generation',
-      error_message: msg,
-      context_json:  JSON.stringify({ leadId: context.leadId }),
-      severity:      'low',
-      status:        'open',
-      created_at:    new Date().toISOString(),
-    })
-    return { success: false, videoId: undefined, providerKey: undefined, error: msg }
-  }
-}
+// NOTE: the old generateAvatarVideo (a basic per-recipient D-ID avatar synthesized inline on
+// every touch) has been REMOVED — it was superseded everywhere by the governed Video Director
+// rail (lib/video/video-director commissionVideo: format selection, brand bookends, tracked QR,
+// compliance gate) reached via the asset_manager:lead_creative_handoff bus play for leads and
+// the dedicated situational reel producers (anniversary-equity / buyer-match / equity-trigger)
+// for contacts. The ISA's re-engagement email now embeds the contact's most recent COMPLETED
+// situational reel instead of synthesizing a throwaway clip. embedVideoInEmail stays — it is the
+// shared seam that drops a resolved reel URL (or a graceful "being prepared" note) into a body.
 
 export async function embedVideoInEmail(emailBody: string, videoUrl: string | null) {
   if (!videoUrl) {
