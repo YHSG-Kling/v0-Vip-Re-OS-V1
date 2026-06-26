@@ -1176,7 +1176,50 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       rationale: `LISTING-STALL PREDICTOR — predicted a stall (${(p.risk as string) ?? "elevated"} risk) BEFORE expiry; gated "${play}" recommendation proposed so the team gets ahead of it (manager-orchestrated, early).`,
       channel: "portal",
     }, ctx.supabase)
-    return res.ok ? `proposed a gated early "${play}" recommendation (message ${res.id})` : null
+    // INVENTORY → DEMAND: a stalling listing is a BUYER opportunity — a stall often precedes a
+    // price move, and the buyers who SAVED this home should hear there's fresh room before
+    // others notice. Hand off to the Shopping Agent to re-prospect those savers. The seller
+    // nudge above is no longer a solo play — the two sides of the team work the stall together.
+    if (signal.entityId) {
+      await publishManagerSignal({
+        brokerageId: ctx.brokerageId, fromManager: "listing_concierge", toManager: "shopping_agent",
+        signalType: "listing_stall_reprospect",
+        message: `${addr} is stalling — re-prospecting the buyers who saved it (a stall often precedes a price move).`,
+        entityType: "listing", entityId: signal.entityId, contactId: null,
+        payload: { property_address: addr, play, reasons },
+      }, ctx.supabase)
+    }
+    return res.ok ? `proposed a gated early "${play}" recommendation + handed the stall to the Shopping Agent to re-prospect savers` : null
+  },
+  // Listing Concierge → Shopping Agent: a listing is STALLING (the early predictor, before any
+  // price cut). Inventory tells demand: the buyers who SAVED this home should hear there's fresh
+  // room now (a stall frequently precedes a price move). Re-match each saver with a GATED buyer
+  // alert — the same capped, never-autonomous pattern as price_reduced. Two sides working a stall.
+  "shopping_agent:listing_stall_reprospect": async (signal, ctx) => {
+    if (!signal.entityId) return null
+    const addr = (signal.payload?.property_address as string | undefined) ?? "a home you saved"
+    const { data: savers } = await ctx.supabase
+      .from("saved_properties")
+      .select("contact_id")
+      .eq("brokerage_id", ctx.brokerageId).eq("listing_id", signal.entityId)
+      .eq("dismissed", false).not("contact_id", "is", null)
+      .limit(5)
+    const rows = (savers ?? []) as Array<{ contact_id: string }>
+    if (rows.length === 0) return "no saved-property buyers to re-prospect on the stall"
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    let proposed = 0
+    for (const r of rows) {
+      const res = await proposeClientMessage({
+        brokerageId: ctx.brokerageId, agentKind: "shopping_agent", entityType: "listing",
+        entityId: signal.entityId, recipientContactId: r.contact_id, audience: "buyer",
+        subject: "A home you saved may be worth a fresh look",
+        body: `${addr} has been on the market a little while now — which often means there's room to talk. If you're still interested, this could be a good moment to take a closer look before any change brings out other buyers. Reply here and I'll set up a showing.`,
+        rationale: `Listing-stall re-prospect — gated buyer alert for a saver (a stall often precedes a price move); inventory→demand team play.`,
+        channel: "portal",
+      }, ctx.supabase)
+      if (res.ok) proposed += 1
+    }
+    return proposed > 0 ? `re-prospected ${proposed} saved-property buyer${proposed === 1 ? "" : "s"} on the stall (gated)` : null
   },
   // Buyer-stall predictor → Shopping Agent: a buyer has toured a lot with no offer (fatigue /
   // expectations / drifting away). The Shopping Agent resets the conversation with a GATED buyer
