@@ -318,7 +318,8 @@
     "test:sequence-persona-copy": "tsx scripts/sequence-persona-copy-simulator.ts",
     "test:offer-accelerator": "tsx scripts/offer-accelerator-simulator.ts",
     "test:offer-ready": "tsx scripts/offer-ready-simulator.ts",
-    "test:affordability": "tsx scripts/affordability-simulator.ts"
+    "test:affordability": "tsx scripts/affordability-simulator.ts",
+    "test:urgent-sla": "tsx scripts/urgent-sla-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

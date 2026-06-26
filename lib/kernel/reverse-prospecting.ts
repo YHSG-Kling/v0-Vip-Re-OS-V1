@@ -28,6 +28,7 @@ import { proposeClientMessage } from "@/lib/agents/agent-client-messages"
 import { publishManagerSignal } from "@/lib/kernel/manager-signals"
 import { generatePersonaCopy, type CopyGenerator, type CopyPersona } from "@/lib/kernel/ai-copy"
 import { pushPortalValueCard } from "@/lib/kernel/portal-value"
+import { URGENT_NUDGE_MAX_HOURS, urgentSlaBreached } from "@/lib/kernel/urgent-sla"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -92,6 +93,8 @@ export interface ReverseProspectingResult {
   isaQueued: number
   /** Portal value cards pushed to matched buyers' portals (additive, idempotent per day). */
   portalCardsPushed: number
+  /** Stale reverse-prospecting notes (unapproved past the 6h urgent SLA) escalated to the agent. */
+  urgentEscalations?: number
 }
 
 /** Build the persona for a buyer contact (best-effort) for copy generation. */
@@ -281,5 +284,65 @@ export async function runReverseProspecting(
     }
   }
 
+  // ── URGENT 6h SLA — a new-listing match is time-critical (the home can go under contract).
+  //    Any reverse-prospecting note still UNAPPROVED past 6h gets ONE urgent agent nudge: "call
+  //    them before it's gone." Rides this hourly cron (6h granularity); idempotent via a
+  //    per-note escalation notification. The ISA call candidate was already queued at match time;
+  //    this is the human checkpoint so a hot match never sits a full day in the approval queue.
+  result.urgentEscalations = await escalateStaleReverseProspectingNotes(supabase, brokerageId, now)
+
   return result
+}
+
+/**
+ * escalateStaleReverseProspectingNotes — the 6h URGENT gate. Finds reverse-prospecting buyer
+ * notes still 'proposed' (unapproved) past URGENT_NUDGE_MAX_HOURS and fires ONE urgent agent
+ * notification per note ("a hot new-listing match has been waiting — call them before it's
+ * gone"). Idempotent via a per-note escalation notification (entity = the message). Returns the
+ * count escalated this run. Best-effort — never throws to the caller.
+ */
+async function escalateStaleReverseProspectingNotes(
+  supabase: Svc, brokerageId: string, now: Date,
+): Promise<number> {
+  const cutoff = new Date(now.getTime() - URGENT_NUDGE_MAX_HOURS * 3_600_000).toISOString()
+  const { data: stale } = await supabase
+    .from("agent_client_messages")
+    .select("id, recipient_contact_id, entity_id, created_at, rationale")
+    .eq("brokerage_id", brokerageId)
+    .eq("status", "proposed")
+    .ilike("rationale", `%${REVERSE_PROSPECTING_TAG}%`)
+    .lt("created_at", cutoff)
+    .limit(50)
+  const rows = (stale ?? []) as Array<{ id: string; recipient_contact_id: string | null; entity_id: string | null; created_at: string | null; rationale: string | null }>
+  let escalated = 0
+  for (const note of rows) {
+    if (!urgentSlaBreached(note.created_at, now)) continue
+    if (!note.recipient_contact_id) continue
+    try {
+      // Idempotent: one urgent escalation per note ever.
+      const { data: prior } = await supabase.from("notifications").select("id")
+        .eq("entity_type", "agent_client_message").eq("entity_id", note.id)
+        .eq("type", "reverse_prospecting_urgent").limit(1).maybeSingle()
+      if (prior) continue
+
+      const { data: contact } = await supabase.from("contacts")
+        .select("first_name, agent_id, brokerage_id").eq("id", note.recipient_contact_id).maybeSingle()
+      const c = contact as { first_name: string | null; agent_id: string | null; brokerage_id: string | null } | null
+      if (!c?.agent_id) continue
+      const { data: agentRow } = await supabase.from("agents").select("user_id").eq("id", c.agent_id).maybeSingle()
+      const agentUserId = (agentRow as { user_id: string | null } | null)?.user_id ?? null
+      if (!agentUserId) continue
+
+      const { error } = await supabase.from("notifications").insert({
+        user_id: agentUserId, brokerage_id: brokerageId,
+        type: "reverse_prospecting_urgent",
+        title: "Hot match waiting — call before it's gone",
+        body: `A new-listing match for ${c.first_name ?? "your buyer"} has been waiting over ${URGENT_NUDGE_MAX_HOURS}h for your OK. New listings move fast — review the gated note or call them now.`,
+        entity_type: "agent_client_message", entity_id: note.id,
+        priority: "high", channel: "in_app",
+      })
+      if (!error) escalated += 1
+    } catch { /* best-effort per note */ }
+  }
+  return escalated
 }
