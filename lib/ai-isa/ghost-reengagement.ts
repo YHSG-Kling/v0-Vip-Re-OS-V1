@@ -3,9 +3,9 @@ import { KernelEvent } from '@/lib/kernel/events'
 import { processKernelEvent } from '@/lib/kernel'
 import { logISAOutreach } from '@/lib/ai-isa/isa-outreach-logger'
 import { initiateAIISAContactEngagement } from '@/app/actions/ai-isa/initiate-contact-engagement'
-import { ghostReengagementStopReason, ghostReengagementPhase, shouldSendGhostOutreach } from '@/lib/ai-isa/reengagement-policy'
+import { ghostReengagementStopReason, ghostReengagementPhase, shouldSendGhostOutreach, cadenceProfileFor } from '@/lib/ai-isa/reengagement-policy'
 import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
-import { adaptiveReengagementHook } from '@/lib/ai-isa/adaptive-reengagement'
+import { adaptiveReengagementHook, cohortFromEnrichment } from '@/lib/ai-isa/adaptive-reengagement'
 
 // ─── detectGhostLeads ─────────────────────────────────────────────────────────
 
@@ -186,13 +186,23 @@ export async function runGhostReengagement(
         .limit(1)
         .single()
 
+      // PERSONA/AGE/URGENCY-TUNED WHEN — the manager spaces the next follow-up to THIS human:
+      // tighter for a soon-to-act buyer, wider for a long-horizon relationship; younger cohorts
+      // tolerate more frequent light touches, older convert on fewer/spaced. Frequency only.
+      const cadenceProfile = cadenceProfileFor({
+        cohort: cohortFromEnrichment(lead.enrichment_profile as { age?: number | null; age_range?: string | null } | null),
+        timeline: lead.timeline ?? null,
+      })
+
       // CADENCE — pure policy: Phase 1 (≤14d from first outreach) Mon/Wed/Fri only;
-      // Phase 2 (>14d) every 30 days. Single source of truth, exhaustively tested.
+      // Phase 2 (>14d) every 30 days, Phase 3 quarterly — the long-haul spacing scaled by the
+      // persona/age/urgency profile. Single source of truth, exhaustively tested.
       const cadence = shouldSendGhostOutreach({
         firstSentAt: firstLog?.sent_at ?? null,
         lastSentAt: lastLog?.sent_at ?? null,
         now: today,
         attempts, // ≥ ceiling → Phase 3 quarterly seasonal nurture (long-horizon)
+        profile: cadenceProfile,
       })
       const inPhase1 = cadence.phase === 1
       const daysSinceStart = cadence.daysSinceStart
@@ -302,6 +312,8 @@ export async function runGhostReengagement(
           daysSinceStart,
           angle: adaptive.angle,
           cohort: adaptive.cohort,
+          cadence_multiplier: cadenceProfile.spacingMultiplier,
+          cadence_reason: cadenceProfile.reason,
         },
         created_at: new Date().toISOString(),
       })

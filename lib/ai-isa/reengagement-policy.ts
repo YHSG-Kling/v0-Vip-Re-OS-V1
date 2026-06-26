@@ -117,6 +117,79 @@ export function ghostReengagementPhase(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 2b. PERSONA / AGE / URGENCY-TUNED CADENCE — the WHEN, tailored to the human
+//
+// The base cadence (Phase 1/2/3) is uniform, but a 0–3-month buyer and a "someday"
+// boomer browser should NOT be touched on the same clock. This is the WHEN counterpart
+// to the next-best-CHANNEL decision (lib/ai-isa/next-best-touch.ts): the manager spaces
+// the next follow-up to the human in front of it — tighter when the person is acting
+// soon, wider for a long-horizon relationship — blending timeline urgency (dominant)
+// with generational pacing. Frequency only; NO content and NO protected-class treatment.
+//
+// Default (no signals) ⇒ multiplier 1.0 ⇒ the canonical cadence, exactly unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Spacing-multiplier bounds — a tuned cadence never collapses to spam nor stretches to neglect. */
+export const CADENCE_MULTIPLIER_MIN = 0.5
+export const CADENCE_MULTIPLIER_MAX = 2.0
+
+export interface CadenceProfileInput {
+  /** Generational cohort (gen_z|millennial|gen_x|boomer|silent|unknown). Loosely typed to keep
+   *  this module import-free (the cohort is resolved upstream via cohortFromEnrichment). */
+  cohort?: string | null
+  /** The contact/lead's stated timeline (free-text or enum, e.g. "0-3 months", "12+ months",
+   *  "just browsing"). Drives how SOON they plan to act → how often we touch. */
+  timeline?: string | null
+}
+
+export interface CadenceProfile {
+  /** Multiplier applied to Phase-2/Phase-3 base spacing. <1 = tighter (more urgent), >1 = wider. */
+  spacingMultiplier: number
+  /** Honest WHY (for audit + the simulator). */
+  reason: string
+}
+
+/** timelineUrgencyMultiplier — PURE. How SOON the person plans to act drives how often we touch:
+ *  a 0–3-month buyer is spaced ~40% tighter; a "someday"/"just browsing" lead ~50% wider. */
+export function timelineUrgencyMultiplier(timeline?: string | null): number {
+  const t = (timeline ?? "").toLowerCase().trim()
+  if (!t) return 1.0
+  if (/(asap|immediate|ready now|0-3|0–3|under 3|1-3|this month|within (a )?month)/.test(t)) return 0.6
+  if (/(someday|browsing|just looking|no rush|not sure|exploring|undecided|2\+ ?year)/.test(t)) return 1.5
+  if (/(12\+|1-2 ?year|1–2 ?year|over a year|next year|12 ?months|long ?term)/.test(t)) return 1.3
+  if (/(3-6|3–6|next few months|few months|this year)/.test(t)) return 0.8
+  if (/(6-12|6–12|6 ?months|end of year)/.test(t)) return 1.0
+  return 1.0
+}
+
+/** cohortCadenceMultiplier — PURE. Generational pacing psychology (frequency tolerance ONLY —
+ *  no content, no protected-class treatment): younger cohorts tolerate (and expect) more
+ *  frequent, lighter touches; older cohorts convert better on fewer, more spaced contacts. */
+export function cohortCadenceMultiplier(cohort?: string | null): number {
+  switch ((cohort ?? "").toLowerCase()) {
+    case "gen_z": return 0.85
+    case "millennial": return 0.9
+    case "gen_x": return 1.0
+    case "boomer": return 1.15
+    case "silent": return 1.25
+    default: return 1.0
+  }
+}
+
+/** cadenceProfileFor — PURE. Blend timeline-urgency (dominant) with generational pacing into a
+ *  single spacing multiplier, clamped to [0.5, 2.0]. Default (no signals) ⇒ 1.0 ⇒ unchanged. */
+export function cadenceProfileFor(input: CadenceProfileInput): CadenceProfile {
+  const urg = timelineUrgencyMultiplier(input.timeline)
+  const age = cohortCadenceMultiplier(input.cohort)
+  const raw = urg * age
+  const spacingMultiplier = Math.min(CADENCE_MULTIPLIER_MAX, Math.max(CADENCE_MULTIPLIER_MIN, raw))
+  const reason =
+    `timeline×${urg.toFixed(2)} · cohort(${input.cohort ?? "unknown"})×${age.toFixed(2)}` +
+    (raw !== spacingMultiplier ? ` · clamped→${spacingMultiplier}` : "")
+  return { spacingMultiplier, reason }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 2. GHOST CADENCE — WHEN to send the next re-engagement touch
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -131,6 +204,10 @@ export interface CadenceInput {
    *  ceiling (DEFAULT_MAX_GHOST_ATTEMPTS) the loop is in the long-horizon SEASONAL phase
    *  (quarterly spacing) regardless of calendar window. Omitted/0 → active cadence. */
   attempts?: number | null
+  /** OPTIONAL persona/age/urgency cadence profile (from cadenceProfileFor). Scales the
+   *  Phase-2/Phase-3 spacing thresholds so the WHEN fits the human. Omitted ⇒ multiplier 1.0
+   *  ⇒ the canonical spacing, unchanged. Phase-1 (warm Mon/Wed/Fri) is never tuned. */
+  profile?: CadenceProfile | null
 }
 
 export interface CadenceDecision {
@@ -169,6 +246,11 @@ export function shouldSendGhostOutreach(input: CadenceInput): CadenceDecision {
   const firstMs = toMs(input.firstSentAt) ?? nowMs // no prior send → phase starts now
   const daysSinceStart = Math.floor((nowMs - firstMs) / DAY_MS)
 
+  // Persona/age/urgency tuning — scales ONLY the long-haul spacing thresholds. Omitted ⇒ 1.0.
+  const mult = input.profile?.spacingMultiplier ?? 1
+  const phase2Spacing = Math.max(1, Math.round(PHASE2_SPACING_DAYS * mult))
+  const phase3Spacing = Math.max(1, Math.round(PHASE3_SPACING_DAYS * mult))
+
   // PHASE 3 — long-horizon seasonal nurture. Once the aggressive cadence ceiling is hit the
   // loop spaces touches a QUARTER apart (a light value-touch), so the agent stays top-of-mind
   // for the months/years a real-estate decision can take instead of going silent.
@@ -179,7 +261,7 @@ export function shouldSendGhostOutreach(input: CadenceInput): CadenceDecision {
       return { shouldSend: true, phase: 3, daysSinceStart, reason: "phase3_first_send" }
     }
     const daysSinceLast = Math.floor((nowMs - lastMs) / DAY_MS)
-    const due = daysSinceLast >= PHASE3_SPACING_DAYS
+    const due = daysSinceLast >= phase3Spacing
     return { shouldSend: due, phase: 3, daysSinceStart, reason: due ? "phase3_due" : "phase3_too_soon" }
   }
 
@@ -199,7 +281,7 @@ export function shouldSendGhostOutreach(input: CadenceInput): CadenceDecision {
     return { shouldSend: true, phase: 2, daysSinceStart, reason: "phase2_first_send" }
   }
   const daysSinceLast = Math.floor((nowMs - lastMs) / DAY_MS)
-  const due = daysSinceLast >= PHASE2_SPACING_DAYS
+  const due = daysSinceLast >= phase2Spacing
   return {
     shouldSend: due,
     phase: 2,

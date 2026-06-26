@@ -41,6 +41,11 @@ import {
   PHASE2_SPACING_DAYS,
   PHASE3_SPACING_DAYS,
   DEFAULT_STALE_DAYS,
+  cadenceProfileFor,
+  timelineUrgencyMultiplier,
+  cohortCadenceMultiplier,
+  CADENCE_MULTIPLIER_MIN,
+  CADENCE_MULTIPLIER_MAX,
 } from "../lib/ai-isa/reengagement-policy"
 
 let passed = 0, failed = 0
@@ -105,6 +110,51 @@ async function main() {
     (() => { const d = shouldSendGhostOutreach({ firstSentAt: daysAgo(60, TUE), lastSentAt: daysAgo(29, TUE), now: TUE }); return d.phase === 2 && !d.shouldSend && d.reason === "phase2_too_soon" })())
   check("Phase 2 weekday-independent (Sunday, 40d since last) → SEND",
     shouldSendGhostOutreach({ firstSentAt: daysAgo(50, SUN), lastSentAt: daysAgo(40, SUN), now: SUN }).shouldSend === true)
+
+  // ── Layer 1b-tune: PERSONA/AGE/URGENCY-TUNED WHEN (cadenceProfileFor) ───────
+  // The manager spaces the next follow-up to the human: tighter when acting soon, wider for a
+  // long-horizon relationship; younger cohorts tolerate more frequent touches, older fewer.
+  console.log("\n[Layer 1b-tune · persona/age/urgency-tuned cadence — the WHEN]")
+  // timeline urgency: dominant lever
+  check("timeline urgency — 0-3 months → tighter (<1)", timelineUrgencyMultiplier("0-3 months") < 1)
+  check("timeline urgency — 'just browsing' → wider (>1)", timelineUrgencyMultiplier("just browsing") > 1)
+  check("timeline urgency — '12+ months' → wider (>1)", timelineUrgencyMultiplier("12+ months") > 1)
+  check("timeline urgency — null → neutral 1.0", timelineUrgencyMultiplier(null) === 1.0)
+  // cohort pacing: secondary lever
+  check("cohort pacing — gen_z tolerates more frequent (<1)", cohortCadenceMultiplier("gen_z") < 1)
+  check("cohort pacing — boomer prefers fewer/spaced (>1)", cohortCadenceMultiplier("boomer") > 1)
+  check("cohort pacing — silent widest of all cohorts", cohortCadenceMultiplier("silent") >= cohortCadenceMultiplier("boomer"))
+  check("cohort pacing — gen_x / unknown neutral", cohortCadenceMultiplier("gen_x") === 1.0 && cohortCadenceMultiplier(null) === 1.0)
+  // blended profile + clamp
+  check("profile — urgent gen_z buyer is TIGHTER than a 'someday' boomer",
+    cadenceProfileFor({ cohort: "gen_z", timeline: "0-3 months" }).spacingMultiplier <
+    cadenceProfileFor({ cohort: "boomer", timeline: "someday" }).spacingMultiplier)
+  check("profile — default (no signals) → exactly 1.0 (canonical cadence unchanged)",
+    cadenceProfileFor({}).spacingMultiplier === 1.0)
+  check("profile — multiplier always clamped to [MIN, MAX]",
+    (() => { const m = cadenceProfileFor({ cohort: "silent", timeline: "someday" }).spacingMultiplier
+      return m >= CADENCE_MULTIPLIER_MIN && m <= CADENCE_MULTIPLIER_MAX })())
+  // the profile actually MOVES the Phase-2 due date
+  check("profile — urgent buyer becomes DUE sooner than the 30d default",
+    (() => {
+      const prof = cadenceProfileFor({ cohort: "gen_z", timeline: "0-3 months" }) // <1 → <30d spacing
+      const at22 = shouldSendGhostOutreach({ firstSentAt: daysAgo(60, TUE), lastSentAt: daysAgo(22, TUE), now: TUE, profile: prof })
+      const baseAt22 = shouldSendGhostOutreach({ firstSentAt: daysAgo(60, TUE), lastSentAt: daysAgo(22, TUE), now: TUE })
+      return at22.shouldSend === true && baseAt22.shouldSend === false // tuned sends at 22d, default still waits
+    })())
+  check("profile — long-horizon contact waits LONGER than the 30d default",
+    (() => {
+      const prof = cadenceProfileFor({ cohort: "boomer", timeline: "someday" }) // >1 → >30d spacing
+      const at31 = shouldSendGhostOutreach({ firstSentAt: daysAgo(60, TUE), lastSentAt: daysAgo(31, TUE), now: TUE, profile: prof })
+      const baseAt31 = shouldSendGhostOutreach({ firstSentAt: daysAgo(60, TUE), lastSentAt: daysAgo(31, TUE), now: TUE })
+      return at31.shouldSend === false && baseAt31.shouldSend === true // default sends at 31d, tuned still waits
+    })())
+  check("profile — Phase 1 (warm window) is NEVER tuned (still Mon/Wed/Fri)",
+    (() => {
+      const prof = cadenceProfileFor({ cohort: "gen_z", timeline: "0-3 months" })
+      const tue = shouldSendGhostOutreach({ firstSentAt: daysAgo(2, TUE), lastSentAt: daysAgo(2, TUE), now: TUE, profile: prof })
+      return tue.phase === 1 && tue.shouldSend === false // Tuesday still an off-day regardless of profile
+    })())
 
   // ── Layer 1c: STOP CONDITIONS ──────────────────────────────────────────────
   console.log("\n[Layer 1c · stop conditions + precedence]")
