@@ -138,6 +138,48 @@ export async function requestOfferHelp(input: {
 }
 
 /**
+ * analyzeAddressForBuyer — the buyer pastes ANY address and our tools run on it: free OSINT spec
+ * lookup + the (cache/Perplexity-first, non-paid) AVM → estimated value + specs, so the
+ * affordability tool works on the whole market, not just saved homes. Researching a specific
+ * address is a HIGH-intent signal — recorded quietly for the agent (no notification spam).
+ */
+export async function analyzeAddressForBuyer(input: {
+  contactId: string
+  address: string
+}): Promise<{ success: boolean; analysis?: import("@/lib/buyer-offers/address-analysis").AddressAnalysis; error?: string }> {
+  try {
+    const address = (input.address ?? "").trim()
+    if (address.length < 5) return { success: false, error: "Enter a full address" }
+    const supabase = await createClient()
+    const { data: contact } = await supabase.from("contacts").select("id, brokerage_id").eq("id", input.contactId).maybeSingle()
+    const brokerageId = (contact as { brokerage_id: string | null } | null)?.brokerage_id ?? null
+
+    const [{ lookupPropertyByAddress }, { getCurrentAvm }, { buildAddressAnalysis }] = await Promise.all([
+      import("@/lib/property/address-lookup"),
+      import("@/lib/avm/provider-chain"),
+      import("@/lib/buyer-offers/address-analysis"),
+    ])
+    const [lookup, avm] = await Promise.all([
+      lookupPropertyByAddress({ address, city: "", state: "" }).catch(() => null),
+      getCurrentAvm({ address, brokerageId }).catch(() => null),
+    ])
+    const analysis = buildAddressAnalysis(lookup as any, avm as any)
+
+    // Quiet high-intent signal — the buyer is researching a specific home.
+    try {
+      await supabase.from("client_portal_activity").insert({
+        contact_id: input.contactId, activity_type: "address_analyzed",
+        metadata: { address, estimated_value: analysis.estimatedValue, source: "buyer_portal" },
+      })
+    } catch { /* non-critical */ }
+
+    return { success: true, analysis }
+  } catch (e: any) {
+    return { success: false, error: e?.message ?? "failed" }
+  }
+}
+
+/**
  * requestComparisonReview — the buyer has lined up their finalists side-by-side and wants the
  * agent's take. A HIGH-intent moment (they're close to choosing) — notify the agent WHICH homes
  * they're weighing so the agent can guide the decision. Fires only on the explicit ask (never on

@@ -9,6 +9,7 @@ import { Badge } from "@/app/components/ui/badge"
 import { Switch } from "@/app/components/ui/switch"
 import { ArrowLeft, Search, Bell, Home, Heart, ThumbsDown, MessageSquare, Settings, Filter, DollarSign, Bed, Bath, MapPin } from "lucide-react"
 import { SmartSearchWidget } from "@/app/components/forms/SmartSearchWidget"
+import { AnalyzeAnyHomeCard } from "./AnalyzeAnyHomeCard"
 
 // Personas that support family/collaborative search
 const FAMILY_SEARCH_PERSONAS = [
@@ -44,7 +45,7 @@ export default async function SearchPage({
   }
 
   // Parallel data fetches
-  const [preferencesResult, alertsResult, savedResult] = await Promise.all([
+  const [preferencesResult, alertsResult, savedResult, finResult] = await Promise.all([
     // Property preferences — schema uses inferred_* (AI-derived)
     supabase
       .from("property_preferences")
@@ -66,7 +67,9 @@ export default async function SearchPage({
       .eq("contact_id", contactId)
       .order("saved_at", { ascending: false })
       .limit(40),
+    supabase.from("buyer_financial_profiles").select("pre_approval_amount, pre_approval_expires_at").eq("contact_id", contactId).maybeSingle(),
   ])
+  const fin = finResult.data as { pre_approval_amount: number | null; pre_approval_expires_at: string | null } | null
 
   const preferences = preferencesResult.data
   const alerts = alertsResult.data ?? []
@@ -263,6 +266,13 @@ export default async function SearchPage({
           )}
         </CardContent>
       </Card>
+
+      {/* Analyze ANY address — the whole market, in our app (affordability + value + agent/lender) */}
+      <AnalyzeAnyHomeCard
+        contactId={contactId}
+        preApprovalAmount={fin?.pre_approval_amount ?? null}
+        preApprovalExpiresAt={fin?.pre_approval_expires_at ?? null}
+      />
 
       {/* Smart property search — NL query against buyer preferences */}
       <SmartSearchWidget
