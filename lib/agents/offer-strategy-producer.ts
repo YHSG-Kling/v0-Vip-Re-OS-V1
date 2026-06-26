@@ -57,6 +57,50 @@ export async function produceOfferStrategyBrief(
     .in("status", ["proposed", "approved", "sent"]).maybeSingle()
   if (existing) return { proposed: 0 }
 
+  // ── OFFER ACCELERATOR — fill the formerly-empty offer-strategy moment with a REAL,
+  //    comps/market-grounded plan. Detect the buyer's hot target (most-recent active saved
+  //    listing), ground the strategy in its real list price + days-on-market + the buyer's
+  //    pre-approval, and hand the AGENT a concrete recommended offer (price + range + terms)
+  //    instead of "go pull comps yourself." Numbers are gateway-generated from real facts;
+  //    a missing target/budget degrades honestly to the generic brief. ──
+  let strategySummary: string | null = null
+  try {
+    const { data: savedRows } = await supabase
+      .from("saved_properties")
+      .select("listing_id, saved_at, dismissed, listings(list_price, status, listing_date)")
+      .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("dismissed", false)
+      .order("saved_at", { ascending: false }).limit(10)
+    const flat = ((savedRows ?? []) as any[]).map((r) => {
+      const l = Array.isArray(r.listings) ? r.listings[0] : r.listings
+      return { listing_id: r.listing_id, saved_at: r.saved_at, dismissed: r.dismissed,
+        list_price: l?.list_price ?? null, status: l?.status ?? null, listing_date: l?.listing_date ?? null }
+    })
+    const { pickBuyerTargetListing, marketConditionsFromDom, motivationFromBuyer, resolveBuyerMaxBudget } =
+      await import("@/lib/offers/offer-target")
+    const target = pickBuyerTargetListing(flat, new Date())
+    if (target) {
+      const { data: fin } = await supabase.from("buyer_financial_profiles")
+        .select("pre_approval_amount").eq("contact_id", contactId).maybeSingle()
+      const { data: cfull } = await supabase.from("contacts")
+        .select("timeline, motivation_type, buyer_stage").eq("id", contactId).maybeSingle()
+      const maxBudget = resolveBuyerMaxBudget((fin as any)?.pre_approval_amount ?? null, target.listPrice)
+      if (maxBudget) {
+        const { generateBuyerOfferStrategy, summarizeOfferStrategy } =
+          await import("@/lib/offers/offer-strategy-advisor")
+        const strategy = await generateBuyerOfferStrategy({
+          listPrice: target.listPrice,
+          daysOnMarket: target.daysOnMarket,
+          marketConditions: marketConditionsFromDom(target.daysOnMarket),
+          buyerMotivation: motivationFromBuyer((cfull as any) ?? {}),
+          buyerMaxBudget: maxBudget,
+        })
+        if (strategy) strategySummary = summarizeOfferStrategy(strategy)
+      }
+    }
+  } catch (e) {
+    console.error("[offer-strategy-producer] strategy assembly failed; generic brief:", e)
+  }
+
   // AI-generated, brand-voiced copy (THEM-FIRST, compliance-gated, NO fabricated price);
   // deterministic fallback only if the gateway is down.
   const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
@@ -68,11 +112,34 @@ export async function produceOfferStrategyBrief(
     ctas: ["Review recent comparable sales together", "Set your price and terms", "Map how we respond if it's competitive"],
     fallback: buildOfferStrategyMessage(agentName),
   })
+  // The agent sees the CONCRETE plan in the rationale (real, comps-grounded numbers); the
+  // buyer-facing copy stays warm + number-free until the agent reviews and releases it.
+  const rationale = strategySummary
+    ? `Buyer reached offer-strategy stage. AI offer plan (review before sending): ${strategySummary}`
+    : "Buyer reached offer-strategy stage — propose the offer game plan before they write."
+
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
   const r = await proposeClientMessage({
     brokerageId, agentKind: "shopping_agent", entityType: "offer_strategy_brief", entityId: contactId,
     recipientContactId: contactId, audience: "buyer", subject: msg.subject, body: msg.body,
-    rationale: "Buyer reached offer-strategy stage — propose the offer game plan before they write.", channel: "portal",
+    rationale, channel: "portal",
   }, supabase)
+
+  // TEAM PLAY — pair the analytical plan with a human push: hand off to the Asset Manager to
+  // commission a personal "offer confidence" reel (number-free, fronted by the assigned agent).
+  // The reel rides the gated 1:1 email + portal CTA on completion. Managers working together to
+  // get the buyer over the line, not a solo brief.
+  try {
+    const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+    await publishManagerSignal({
+      brokerageId, fromManager: "shopping_agent", toManager: "asset_manager",
+      signalType: "offer_confidence_reel_handoff",
+      message: "A buyer reached the offer-strategy moment — commissioning a personal offer-confidence reel to pair with the plan.",
+      entityType: "contact", entityId: contactId, contactId,
+      payload: { audience: "buyer" },
+    }, supabase)
+  } catch (e) {
+    console.error("[offer-strategy-producer] offer-confidence reel handoff failed:", e)
+  }
   return { proposed: r.ok ? 1 : 0 }
 }

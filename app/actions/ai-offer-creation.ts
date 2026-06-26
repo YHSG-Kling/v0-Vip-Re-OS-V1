@@ -94,57 +94,17 @@ export async function aiOfferStrategyAdvisor(params: {
       return { success: false, error: "Unauthorized" }
     }
 
-    const { object: strategy } = await generateObjectRouted({
-      feature: "offer_analysis",
-      schema: z.object({
-        recommendedOfferPrice: z.number(),
-        priceRangeLow: z.number(),
-        priceRangeHigh: z.number(),
-        winProbability: z.number().min(0).max(100),
-        strategy: z.enum(["aggressive", "competitive", "conservative"]),
-        reasoning: z.string(),
-        escalationRecommendation: z.object({
-          recommended: z.boolean(),
-          suggestedMax: z.number().nullable(),
-          suggestedIncrement: z.number().nullable(),
-          reasoning: z.string(),
-        }),
-        contingencyStrategy: z.object({
-          inspection: z.enum(["full", "limited", "waive"]),
-          appraisal: z.enum(["full", "gap_coverage", "waive"]),
-          financing: z.enum(["full", "shortened", "waive"]),
-          reasoning: z.string(),
-        }),
-        earnestMoneyRecommendation: z.object({
-          amount: z.number(),
-          percentage: z.number(),
-          reasoning: z.string(),
-        }),
-        closeDateStrategy: z.string(),
-        personalLetterRecommendation: z.boolean(),
-        additionalSuggestions: z.array(z.string()),
-      }),
-      prompt: `You are a buyer's agent strategist. Help craft a winning offer strategy.
-
-Listing Details:
-- List Price: $${params.listPrice.toLocaleString()}
-- Days on Market: ${params.daysOnMarket}
-- Competing Offers: ${params.competingOffers || "Unknown"}
-- Market: ${params.marketConditions}
-
-Buyer Situation:
-- Motivation: ${params.buyerMotivation}
-- Max Budget: $${params.buyerMaxBudget.toLocaleString()}
-
-Consider:
-1. Market conditions and competition
-2. Buyer's budget and motivation
-3. What will make this offer stand out
-4. Risk vs reward tradeoffs
-
-Provide a comprehensive offer strategy.`,
+    // Shared brain — the SAME core the autonomous offer-strategy producer uses (no drift).
+    const { generateBuyerOfferStrategy } = await import("@/lib/offers/offer-strategy-advisor")
+    const strategy = await generateBuyerOfferStrategy({
+      listPrice: params.listPrice,
+      daysOnMarket: params.daysOnMarket,
+      competingOffers: params.competingOffers,
+      marketConditions: params.marketConditions,
+      buyerMotivation: params.buyerMotivation,
+      buyerMaxBudget: params.buyerMaxBudget,
     })
-
+    if (!strategy) return { success: false, error: "Strategy generation failed" }
     return { success: true, strategy }
   } catch (error) {
     console.error("[AI Offer Creation] Strategy error:", error)

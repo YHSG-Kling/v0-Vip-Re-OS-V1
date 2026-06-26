@@ -69,6 +69,22 @@ export function buildContactWelcomeSituation(args: {
   }
 }
 
+/**
+ * buildOfferConfidenceSituation — the OFFER moment: a buyer reached the offer-strategy stage
+ * (they found the one). A personal, motivational avatar reel fronted by the assigned agent that
+ * builds the confidence to WRITE — "you found it, you're ready, here's how we make a strong
+ * offer together." Kept number-free for compliance (the concrete price plan goes to the AGENT
+ * in the gated brief, not the buyer video). Pairs the analytical plan with the human push.
+ */
+export function buildOfferConfidenceSituation(args: { contactId: string }): VideoSituation {
+  return {
+    kind: "explainer",
+    tier: "solo_agent",
+    targetChannel: "email",
+    facts: { contactId: args.contactId, persona: "buyer", moment: "offer_confidence" },
+  }
+}
+
 /** content_topic_bank categories that pertain to each persona's SITUATION — the follow-up
  *  reel pulls a POPULAR KEYWORD topic from these (the first touch is the welcome avatar reel;
  *  every follow-up rides a fresh, persona-relevant informational topic). */
