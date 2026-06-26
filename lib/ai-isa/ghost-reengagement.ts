@@ -227,6 +227,39 @@ export async function runGhostReengagement(
         continue
       }
 
+      // ── LEAD NEXT-BEST-CHANNEL DOWNSHIFT — leads run the SAME engine as contacts over their
+      //    permitted set (no TCPA → email/direct_mail/newsletter only). In the long-horizon
+      //    SEASONAL phase (a year+ cold), the manager STOPS pestering with 1:1 emails and HANDS
+      //    the relationship to the passive newsletter (Campaign Orchestrator owns it) so value
+      //    keeps flowing for whenever they're ready. Phase 1/2 stay on 1:1 email (still warming).
+      if (cadence.phase === 3 && lead.email && lead.email_verified === true && lead.email_opt_out !== true) {
+        const { permittedLeadChannels, decideNextChannel } = await import('@/lib/ai-isa/next-best-touch')
+        const leadCohort = cohortFromEnrichment(lead.enrichment_profile as { age?: number | null; age_range?: string | null } | null)
+        const permitted = permittedLeadChannels({ emailUsable: true, mailingVerified: false })
+        const nba = decideNextChannel({ permitted, cohort: leadCohort, lastChannel: 'email' })
+        if (nba.channel === 'newsletter') {
+          const { publishManagerSignal } = await import('@/lib/kernel/manager-signals')
+          await publishManagerSignal({
+            brokerageId,
+            fromManager: 'ai_isa',
+            toManager: 'campaign_orchestrator',
+            signalType: 'newsletter_touch_handoff',
+            message: `${lead.first_name || 'A long-horizon lead'} is a year+ cold — downshifting their next touch to the newsletter (stop pestering with 1:1s, keep value flowing).`,
+            entityType: 'lead',
+            entityId: leadId,
+            contactId: lead.contact_id ?? null,
+            payload: { audience: 'lead', lead_id: leadId, channel_reason: nba.reason },
+          }, supabase)
+          await supabase.from('leads').update({
+            reengagement_attempt_count: (lead.reengagement_attempt_count ?? 0) + 1,
+            last_activity_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }).eq('id', leadId)
+          sent++
+          continue
+        }
+      }
+
       // Mark reengagement active on first send — but NEVER downgrade a long_horizon
       // (seasonal) lead back to 'active' (it has graduated past the aggressive cadence).
       if (lead.reengagement_status !== 'active' && lead.reengagement_status !== 'long_horizon') {

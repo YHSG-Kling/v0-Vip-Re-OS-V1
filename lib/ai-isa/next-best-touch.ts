@@ -14,11 +14,25 @@
 //
 // Always within the CONSENT-permitted set (voice/SMS need TCPA). PURE — no I/O, exhaustively
 // testable; engageContact resolves the inputs and dispatches the chosen channel.
+//
+// LEADS use the SAME engine over a NARROWER permitted set (no TCPA → email/direct_mail/newsletter
+// only; never SMS/phone/voicedrop) via permittedLeadChannels — one decision brain, two policies.
+//
+// NEWSLETTER is a first-class channel for BOTH leads and contacts: a low-pressure, recurring,
+// value-first touch. It sits LATE in every cohort's affinity so the engine reaches for it as the
+// rotation/nurture move (after the 1:1 channels were recently used) — the "stop pestering, let
+// value keep flowing" downshift. Choosing it is a HANDOFF to the Campaign Orchestrator (the
+// newsletter owner), so it's a managers-working-together play, not a flat single-manager enroll.
 
 import type { GenerationalCohort } from "@/lib/kernel/education"
 
-/** The dispatchable 1:1 channels the ISA chooses between (portal always rides along separately). */
-export type TouchChannel = "email" | "sms" | "phone" | "voicedrop" | "direct_mail"
+/** The dispatchable channels the managers choose between (portal always rides along separately).
+ *  newsletter is the recurring nurture channel; the rest are 1:1. */
+export type TouchChannel = "email" | "sms" | "phone" | "voicedrop" | "direct_mail" | "newsletter"
+
+/** The channels a pre-conversion (unconsented) LEAD may be reached on — no TCPA, so email +
+ *  direct mail + the newsletter only. Never sms/phone/voicedrop. Mirrors lead-channel-policy. */
+export type LeadTouchChannel = Extract<TouchChannel, "email" | "direct_mail" | "newsletter">
 
 export interface ContactConsentState {
   email?: string | null
@@ -32,10 +46,12 @@ export interface ContactConsentState {
   mailing_address?: string | null
 }
 
-/** PURE. The channels CONSENT permits for this contact (voice/SMS require TCPA + a clean line). */
+/** PURE. The channels CONSENT permits for this contact (voice/SMS require TCPA + a clean line).
+ *  newsletter is permitted whenever the email is usable (CAN-SPAM: verified + not opted out);
+ *  enrollment itself is idempotent and re-checks the unsubscribe state at handoff time. */
 export function permittedContactChannels(c: ContactConsentState): TouchChannel[] {
   const out: TouchChannel[] = []
-  if (c.email && !c.email_opt_out) out.push("email")
+  if (c.email && !c.email_opt_out) { out.push("email"); out.push("newsletter") }
   const voiceOk = !!c.phone && c.tcpa_consent === true && !c.phone_opt_out
   if (voiceOk && !c.sms_opt_out) out.push("sms")
   if (voiceOk && !c.call_stop_flag) { out.push("phone"); out.push("voicedrop") }
@@ -43,15 +59,30 @@ export function permittedContactChannels(c: ContactConsentState): TouchChannel[]
   return out
 }
 
-/** PURE. How each generation prefers to be reached — the relationship-science channel order. */
+/** PURE. The channels a LEAD may be reached on — NO TCPA, so email + direct mail + newsletter
+ *  only (never sms/phone/voicedrop). The same compliance floor as lead-channel-policy, exposed
+ *  to the next-best-touch engine so a lead gets cohort-aware rotation across its permitted set. */
+export function permittedLeadChannels(input: {
+  emailUsable: boolean
+  mailingVerified: boolean
+}): LeadTouchChannel[] {
+  const out: LeadTouchChannel[] = []
+  if (input.emailUsable) { out.push("email"); out.push("newsletter") }
+  if (input.mailingVerified) out.push("direct_mail")
+  return out
+}
+
+/** PURE. How each generation prefers to be reached — the relationship-science channel order.
+ *  newsletter sits LATE in every order: the engine reaches for it as the nurture/rotation move,
+ *  not the first pick (a recurring value-touch, not a 1:1 ask). */
 export function ageGroupChannelAffinity(cohort: GenerationalCohort): TouchChannel[] {
   switch (cohort) {
-    case "gen_z":      return ["sms", "voicedrop", "email", "direct_mail", "phone"]   // text/video-first, screens live calls
-    case "millennial": return ["email", "sms", "voicedrop", "phone", "direct_mail"]   // email + text
-    case "gen_x":      return ["email", "phone", "sms", "direct_mail", "voicedrop"]    // email, will pick up
-    case "boomer":     return ["phone", "email", "voicedrop", "direct_mail", "sms"]    // phone + email + mail
-    case "silent":     return ["phone", "direct_mail", "email", "voicedrop", "sms"]    // phone + mail
-    case "unknown":    return ["email", "sms", "phone", "voicedrop", "direct_mail"]
+    case "gen_z":      return ["sms", "voicedrop", "email", "direct_mail", "phone", "newsletter"]   // text/video-first, screens live calls
+    case "millennial": return ["email", "sms", "voicedrop", "phone", "direct_mail", "newsletter"]   // email + text
+    case "gen_x":      return ["email", "phone", "sms", "direct_mail", "voicedrop", "newsletter"]    // email, will pick up
+    case "boomer":     return ["phone", "email", "voicedrop", "direct_mail", "newsletter", "sms"]    // phone + email + mail
+    case "silent":     return ["phone", "direct_mail", "email", "newsletter", "voicedrop", "sms"]    // phone + mail
+    case "unknown":    return ["email", "sms", "phone", "voicedrop", "direct_mail", "newsletter"]
   }
 }
 

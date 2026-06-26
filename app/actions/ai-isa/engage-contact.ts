@@ -234,6 +234,27 @@ export async function engageContact(
     } catch (e) { console.error('[engageContact] next-best-channel failed; using preference:', e) }
     const channel = forceChannel ?? resolvedChannel
 
+    // ── NEWSLETTER = the nurture downshift → HAND OFF to the Campaign Orchestrator (its owner).
+    //    The manager decided the next best touch is the passive, value-first newsletter (not
+    //    another 1:1 ask) — so the ISA hands the relationship to the newsletter channel instead
+    //    of dispatching a 1:1. Managers working together; enrollment is idempotent. ──
+    if (channel === 'newsletter') {
+      try {
+        const { publishManagerSignal } = await import('@/lib/kernel/manager-signals')
+        await publishManagerSignal({
+          brokerageId, fromManager: 'ai_isa', toManager: 'campaign_orchestrator',
+          signalType: 'newsletter_touch_handoff',
+          message: `${contact.first_name || 'A contact'}'s next-best touch is the newsletter — handing them to the content channel for low-pressure nurture.`,
+          entityType: 'contact', entityId: contact.id, contactId: contact.id,
+          payload: { audience: 'contact', reason },
+        }, supabase)
+        return { success: true, channel: 'newsletter' }
+      } catch (e) {
+        console.error('[engageContact] newsletter handoff failed; falling back to email:', e)
+        return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
+      }
+    }
+
     // Consent guard for phone/SMS
     if (CONSENT_REQUIRED_CHANNELS.has(channel) && !contact.tcpa_consent) {
       // Fall back to email rather than block entirely

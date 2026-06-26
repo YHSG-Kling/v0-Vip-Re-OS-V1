@@ -763,6 +763,31 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }, ctx.supabase)
     return res.ok ? `proposed the gated 1:1 reel email to the contact (approval ${res.id})` : null
   },
+  // AI ISA → Campaign Orchestrator: the manager decided a person's NEXT-BEST TOUCH is the
+  // passive newsletter (the nurture downshift — stop pestering with 1:1s, keep value flowing).
+  // The Orchestrator OWNS the content channel, so the ISA hands the relationship over: ensure
+  // they're enrolled (idempotent; honors unsubscribe + opt-out). Works for BOTH leads and
+  // contacts (audience in the payload). Managers working together on the newsletter channel.
+  "campaign_orchestrator:newsletter_touch_handoff": async (signal, ctx) => {
+    const audience = (signal.payload?.audience as string | undefined) ?? "contact"
+    const contactId = signal.contactId ?? (signal.payload?.contact_id as string | undefined) ?? null
+    const leadId = (signal.payload?.lead_id as string | undefined) ?? (signal.entityType === "lead" ? signal.entityId : null)
+    try {
+      if (audience === "lead" && leadId) {
+        const { enrollLeadInNewsletter } = await import("@/lib/content/newsletter-enrollment")
+        const r = await enrollLeadInNewsletter({ leadId, brokerageId: ctx.brokerageId }, ctx.supabase)
+        return `newsletter handoff for lead — ${r.reason}${r.enrolled ? " (now nurturing via content)" : ""}`
+      }
+      if (contactId) {
+        const { enrollContactInNewsletter } = await import("@/lib/content/newsletter-enrollment")
+        const r = await enrollContactInNewsletter({ contactId, brokerageId: ctx.brokerageId }, ctx.supabase)
+        return `newsletter handoff for contact — ${r.reason}${r.enrolled ? " (now nurturing via content)" : ""}`
+      }
+    } catch (e) {
+      return `newsletter handoff failed: ${e instanceof Error ? e.message : String(e)}`
+    }
+    return null
+  },
   // Deal Coordinator → Finance Manager: a deal worsened and the LOAN side is the risk. Finance
   // opens a drive-to-done task (assigned to the TC) and keeps the TC + agent aware — work the
   // loan, confirm the clear-to-close ETA. NOT the broker (operational). Part of the Deal-Save Huddle.

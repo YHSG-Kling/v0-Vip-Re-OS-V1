@@ -6,7 +6,7 @@
  * (1) what they REPLY to, (2) AGE-GROUP psychology, (3) ROTATION off the last channel — all
  * within consent. Pure: every branch, no I/O.
  */
-import { permittedContactChannels, ageGroupChannelAffinity, decideNextChannel } from "../lib/ai-isa/next-best-touch"
+import { permittedContactChannels, permittedLeadChannels, ageGroupChannelAffinity, decideNextChannel } from "../lib/ai-isa/next-best-touch"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -16,11 +16,28 @@ const consented = { email: "c@x.com", phone: "+15125551234", tcpa_consent: true,
 
 function main() {
   console.log("\n[Consent-permitted channels]")
-  check("fully consented → email/sms/phone/voicedrop/direct_mail", permittedContactChannels(consented).length === 5)
-  check("no TCPA → no voice/sms (email + mail only)", !permittedContactChannels({ ...consented, tcpa_consent: false }).some((c) => ["sms", "phone", "voicedrop"].includes(c)))
-  check("email opted out → email excluded", !permittedContactChannels({ ...consented, email_opt_out: true }).includes("email"))
+  check("fully consented → email/newsletter/sms/phone/voicedrop/direct_mail (6)", permittedContactChannels(consented).length === 6)
+  check("no TCPA → no voice/sms (email + newsletter + mail only)", !permittedContactChannels({ ...consented, tcpa_consent: false }).some((c) => ["sms", "phone", "voicedrop"].includes(c)))
+  check("email opted out → email AND newsletter excluded (CAN-SPAM)", (() => { const p = permittedContactChannels({ ...consented, email_opt_out: true }); return !p.includes("email") && !p.includes("newsletter") })())
+  check("newsletter permitted whenever email usable", permittedContactChannels(consented).includes("newsletter"))
   check("call_stop_flag → no phone/voicedrop, sms still ok", (() => { const p = permittedContactChannels({ ...consented, call_stop_flag: true }); return !p.includes("phone") && !p.includes("voicedrop") && p.includes("sms") })())
   check("no permitted channel when nothing consented/present", permittedContactChannels({}).length === 0)
+
+  console.log("\n[LEAD channels — same engine, NO TCPA (email/direct_mail/newsletter only)]")
+  const leadFull = permittedLeadChannels({ emailUsable: true, mailingVerified: true })
+  check("lead with email + mailing → email/newsletter/direct_mail (3)", leadFull.length === 3)
+  check("a LEAD never gets sms/phone/voicedrop (TCPA floor)", !leadFull.some((c) => ["sms", "phone", "voicedrop"].includes(c)))
+  check("lead with no usable email → no email/newsletter", (() => { const p = permittedLeadChannels({ emailUsable: false, mailingVerified: true }); return !p.includes("email") && !p.includes("newsletter") && p.includes("direct_mail") })())
+  check("lead with nothing verified → empty (no_outreach upstream)", permittedLeadChannels({ emailUsable: false, mailingVerified: false }).length === 0)
+  // Leads run through the SAME decideNextChannel — cohort-aware rotation across the lead set.
+  check("gen-z LEAD → email first (no sms permitted), within the lead set", decideNextChannel({ permitted: leadFull, cohort: "gen_z" }).channel === "email")
+  check("LEAD rotates email→ another lead channel when email was last", decideNextChannel({ permitted: leadFull, cohort: "gen_z", lastChannel: "email" }).channel !== "email")
+
+  console.log("\n[Newsletter — the late nurture/rotation pick (managers hand off to Campaign Orch.)]")
+  check("newsletter sits LATE in every cohort's affinity (never first)", (["gen_z","millennial","gen_x","boomer","silent","unknown"] as const).every((co) => ageGroupChannelAffinity(co)[0] !== "newsletter" && ageGroupChannelAffinity(co).includes("newsletter")))
+  // After the 1:1 channels were recently used, rotation reaches the newsletter as the downshift.
+  check("contact rotates TO newsletter when its only alternative was last used",
+    decideNextChannel({ permitted: ["email", "newsletter"], cohort: "gen_x", lastChannel: "email" }).channel === "newsletter")
 
   console.log("\n[Age-group psychology — how each generation wants to be reached]")
   check("gen-z leads with SMS (text-first, screens calls)", ageGroupChannelAffinity("gen_z")[0] === "sms")
