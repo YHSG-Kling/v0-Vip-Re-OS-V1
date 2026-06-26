@@ -436,6 +436,26 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     })
     return n > 0 ? `alerted ${n} deal-coordination owner(s) to confirm the transaction team` : null
   },
+  // Shopping Agent → Deal Coordinator: the deal-killer radar flagged HIGH/CRITICAL red flags on
+  // a buyer's TARGET property BEFORE the offer. The agent already got the gated heads-up; this
+  // loops in the TC side (deal-coordination owners) so whoever transaction-coordinates the deal is
+  // pre-warned — title/lien/insurability issues are far cheaper to surface before acceptance than
+  // after. Pre-offer buyers have no transaction/TC yet, so we alert the deal-coordination owners.
+  "deal_coordinator:buyer_target_risk": async (signal, ctx) => {
+    const address = (signal.payload?.property_address as string | undefined) ?? "a buyer's target property"
+    const riskLevel = (signal.payload?.risk_level as string | undefined) ?? "high"
+    const flags = Array.isArray(signal.payload?.red_flags) ? (signal.payload!.red_flags as string[]).slice(0, 3) : []
+    const { notifyBrokerageAdmins } = await import("@/lib/notifications/brokerage-admins")
+    const n = await notifyBrokerageAdmins(ctx.supabase, ctx.brokerageId, {
+      type: "buyer_target_risk",
+      title: `Pre-offer property risk (${riskLevel}) — ${address}`,
+      body: `The deal-killer radar flagged ${riskLevel} risk on a buyer's target before any offer${flags.length ? `: ${flags.join("; ")}` : ""}. Loop in title/lender early so it doesn't surface after acceptance.`,
+      entityType: "contact",
+      entityId: signal.entityId ?? signal.contactId ?? "",
+      priority: riskLevel === "critical" ? "high" : "medium",
+    })
+    return n > 0 ? `pre-warned ${n} deal-coordination owner(s) of ${riskLevel} pre-offer property risk` : null
+  },
   // Marketing → Ads Manager: an organic content week outperformed — propose promoting it
   // as PAID. Lands in the existing ads approval queue (governed spend, human-approved).
   "ads_manager:content_winner": async (signal, ctx) => {
@@ -651,6 +671,35 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     if (r.status === "already_staged") return `${persona} reel on ${topicLabel} already commissioned (${r.compositionId}, deduped)`
     if (r.ok) return `commissioned the ${persona} reel on ${topicLabel} (${r.compositionId}, gated) fronted by the assigned agent`
     return r.status === "blocked" ? `situational reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null
+  },
+  // Shopping Agent → Asset Manager: a buyer LEAD just became a CONTACT. The very first touch is a
+  // personal WELCOME avatar reel ("great to have you — here's how I'll help"), fronted by the
+  // ASSIGNED agent's avatar/voice. The Asset Manager (video director) commissions it; on
+  // completion the existing video-coordination routes contact_outreach_ready → the Campaign
+  // Orchestrator's gated 1:1 invite email embedding the reel + the portal CTA. So a newly
+  // converted buyer is NEVER dropped between conversion and first contact. Idempotent per contact.
+  "asset_manager:buyer_welcome_reel_handoff": async (signal, ctx) => {
+    const contactId = signal.entityId ?? signal.contactId
+    if (!contactId) return null
+    const { data: contact } = await ctx.supabase.from("contacts")
+      .select("id, contact_type").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!contact) return null
+    const { resolveContactPresenterUserId } = await import("@/lib/ai-isa/outreach-identity")
+    const agentUserId = await resolveContactPresenterUserId(ctx.supabase, contactId, ctx.brokerageId)
+    if (!agentUserId) return "no assigned agent to front the welcome reel — deferred"
+    const { contactReelPersona, buildContactWelcomeSituation } = await import("@/lib/ai-isa/contact-reel-situation")
+    const { commissionVideo } = await import("@/lib/video/video-director")
+    const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+    const persona = contactReelPersona((contact as { contact_type: string | null }).contact_type)
+    const situation = buildContactWelcomeSituation({ contactId, persona })
+    const r = await commissionVideo(
+      situation,
+      { brokerageId: ctx.brokerageId, agentUserId, contactId, persona: { audience: persona }, copyGenerator: realCopyGenerator },
+      ctx.supabase,
+    )
+    if (r.status === "already_staged") return `welcome reel already commissioned for this contact (${r.compositionId}, deduped)`
+    if (r.ok) return `commissioned the buyer WELCOME reel (${r.compositionId}, gated) fronted by the assigned agent — invite + reel will reach the new contact`
+    return r.status === "blocked" ? `welcome reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null
   },
   // Asset Manager → Campaign Orchestrator: a lead's persona intro reel FINISHED. The
   // Orchestrator proposes ONE gated, 1:1 follow-up EMAIL to that lead embedding the reel —

@@ -50,6 +50,25 @@ export function buildContactReelSituation(args: {
   }
 }
 
+/**
+ * buildContactWelcomeSituation — the FIRST touch the moment a buyer LEAD becomes a CONTACT: a
+ * personal "welcome to the team" avatar reel fronted by the assigned agent (Director kind
+ * "lead_intro" → the calm "A Quick Hello" hello). This is the warm handshake that opens the
+ * representation relationship — distinct from the persona-situational follow-up reels. Idempotent
+ * per (contact, welcome) downstream via the director key.
+ */
+export function buildContactWelcomeSituation(args: {
+  contactId: string
+  persona: ContactReelPersona
+}): VideoSituation {
+  return {
+    kind: "lead_intro", // a personal welcome hello — "great to have you, here's how I'll help"
+    tier: "solo_agent",
+    targetChannel: "email", // rides the gated 1:1 welcome/invite email + the portal
+    facts: { contactId: args.contactId, persona: args.persona, moment: "welcome" },
+  }
+}
+
 /** content_topic_bank categories that pertain to each persona's SITUATION — the follow-up
  *  reel pulls a POPULAR KEYWORD topic from these (the first touch is the welcome avatar reel;
  *  every follow-up rides a fresh, persona-relevant informational topic). */

@@ -188,6 +188,27 @@ export async function convertBuyerLeadOnIntent(
       })
       agentNotified = !notifyErr
     }
+
+    // ── WELCOME the new buyer the moment they convert — invite + a personal WELCOME avatar reel.
+    //    The Shopping Agent hands the welcome reel to the Asset Manager (video director); on
+    //    completion the Campaign Orchestrator sends the gated 1:1 invite email embedding it + the
+    //    portal CTA. A newly converted buyer is never dropped between conversion and first touch. ──
+    try {
+      const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+      await publishManagerSignal({
+        brokerageId: params.brokerageId,
+        fromManager: "shopping_agent",
+        toManager: "asset_manager",
+        signalType: "buyer_welcome_reel_handoff",
+        message: "A buyer just became a contact — commissioning their personal welcome avatar reel (invite + reel, fronted by the assigned agent).",
+        entityType: "contact",
+        entityId: contactId,
+        contactId,
+        payload: { audience: "buyer", reason: params.reason },
+      }, svc)
+    } catch (e) {
+      console.error("[convert-buyer-lead] welcome reel handoff failed:", e)
+    }
   }
 
   let buyerStage: string | null = (contactRow as any)?.buyer_stage ?? null

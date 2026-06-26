@@ -48,5 +48,27 @@ export async function runDealKillerRadar(input: DealKillerInput, client?: Svc): 
     channel: "portal",
   }, client)
 
+  // TC + agent: on HIGH/CRITICAL risk, also loop in the deal-coordination owners (the TC side) so
+  // title/lien/insurability issues are surfaced BEFORE the offer, not after acceptance. The agent
+  // got the gated heads-up above; this hands the same flag to the Deal Coordinator over the bus.
+  if (card.riskLevel === "high" || card.riskLevel === "critical") {
+    try {
+      const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+      await publishManagerSignal({
+        brokerageId: input.brokerageId,
+        fromManager: "shopping_agent",
+        toManager: "deal_coordinator",
+        signalType: "buyer_target_risk",
+        message: `Deal-killer radar: ${card.riskLevel} risk on a buyer's target (${input.propertyAddress}) before any offer — looping in the TC side early.`,
+        entityType: "contact",
+        entityId: input.contactId,
+        contactId: input.contactId,
+        payload: { property_address: input.propertyAddress, risk_level: card.riskLevel, red_flags: card.redFlags.slice(0, 5) },
+      }, client)
+    } catch (e) {
+      console.error("[deal-killer] TC handoff failed:", e)
+    }
+  }
+
   return { ok: p.ok, riskLevel: card.riskLevel, flagged: true, proposalId: p.id, card }
 }
