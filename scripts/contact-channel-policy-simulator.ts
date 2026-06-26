@@ -9,7 +9,7 @@
  */
 import { resolveContactChannel, voiceReachable } from "../lib/ai-isa/contact-channel-policy"
 import { buildSituationalVoicemailScript } from "../lib/ai-isa/situational-voicemail"
-import { contactReelPersona, situationKindForContact, personaTopicCategories, buildInformationalReelSituation } from "../lib/ai-isa/contact-reel-situation"
+import { contactReelPersona, situationKindForContact, personaTopicCategories, buildInformationalReelSituation, buildOfferCompsSituation } from "../lib/ai-isa/contact-reel-situation"
 import { buildSituationalPortalMessage } from "../lib/ai-isa/situational-portal-message"
 import { buildContactPortalUrl, portalSmsLine, portalCtaHtml } from "../lib/ai-isa/portal-link"
 
@@ -103,6 +103,12 @@ async function main() {
   const infoSit = buildInformationalReelSituation({ contactId: "c1", persona: "buyer", topicTitle: "How rate buydowns lower your payment", valueAngle: "save monthly", categories: ["finance"] })
   check("informational reel is an avatar EXPLAINER (not a fixed persona kind)", infoSit.kind === "explainer")
   check("the popular keyword/topic seeds the reel facts", infoSit.facts?.topic === "How rate buydowns lower your payment")
+
+  console.log("\n[Offer-moment comps reel — AGENT-FACING (in_house), never the client's black-and-white scope]")
+  const compsSit = buildOfferCompsSituation({ contactId: "c1", subjectAddress: "9 Birch Ln", subjectPrice: 525000 })
+  check("offer comps reel is a CMA reel (the Director marks cma in_house/agent-facing)", compsSit.kind === "cma")
+  check("the buyer's target seeds the comps reel subject", compsSit.facts?.subject_address === "9 Birch Ln" && compsSit.facts?.subject_price === 525000)
+  check("comps reel is explicitly agent-audience (not shown black-and-white to the client)", compsSit.facts?.audience === "agent")
 
   console.log("\n[Portal-back — every contact touch returns to OUR portal (beat RealScout/Lofty)]")
   const purl = buildContactPortalUrl("c-123", null, "https://app.example.com/")

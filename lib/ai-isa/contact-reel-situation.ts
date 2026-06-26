@@ -85,6 +85,33 @@ export function buildOfferConfidenceSituation(args: { contactId: string }): Vide
   }
 }
 
+/**
+ * buildOfferCompsSituation — the AGENT-FACING comps reel for a buyer's target at the offer moment.
+ * Director kind "cma" (which the Director marks audience_type 'in_house' — agent-only, so the
+ * client never gets the black-and-white scope), animating "this home vs recent sales" via the
+ * CMAReel CompsBar. The render queue sources the comps for the subject address downstream. The
+ * agent watches it to prep their recommendation — the analytical companion to the buyer's
+ * motivational offer-confidence reel.
+ */
+export function buildOfferCompsSituation(args: {
+  contactId: string
+  subjectAddress: string
+  subjectPrice?: number | null
+}): VideoSituation {
+  return {
+    kind: "cma",
+    tier: "solo_agent",
+    targetChannel: "email",
+    facts: {
+      contactId: args.contactId,
+      subject_address: args.subjectAddress,
+      ...(args.subjectPrice ? { subject_price: args.subjectPrice } : {}),
+      audience: "agent", // in_house — the agent's offer prep, never shown black-and-white to the client
+      moment: "offer_comps",
+    },
+  }
+}
+
 /** content_topic_bank categories that pertain to each persona's SITUATION — the follow-up
  *  reel pulls a POPULAR KEYWORD topic from these (the first touch is the welcome avatar reel;
  *  every follow-up rides a fresh, persona-relevant informational topic). */

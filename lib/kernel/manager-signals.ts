@@ -702,8 +702,39 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       { brokerageId: ctx.brokerageId, agentUserId, contactId, idempotencyDiscriminator: "offer_confidence", persona: { audience: "buyer" }, copyGenerator: realCopyGenerator },
       ctx.supabase,
     )
+
+    // AGENT-FACING COMPS REEL — the analytical companion: a "this home vs recent sales" CMA reel
+    // for the buyer's hot TARGET (Director kind 'cma' = in_house, so the client never gets the
+    // black-and-white scope). The render queue sources the comps for the subject downstream; best-
+    // effort, never blocks the buyer reel. Idempotent per (contact, offer-comps).
+    try {
+      const { data: savedRows } = await ctx.supabase.from("saved_properties")
+        .select("listing_id, external_property_id, source, list_price, listing_url, property_address, saved_at, dismissed, listings(list_price, status, listing_date)")
+        .eq("brokerage_id", ctx.brokerageId).eq("contact_id", contactId).eq("dismissed", false)
+        .order("saved_at", { ascending: false }).limit(10)
+      const flat = ((savedRows ?? []) as any[]).map((row) => {
+        const l = Array.isArray(row.listings) ? row.listings[0] : row.listings
+        return { listing_id: row.listing_id, external_property_id: row.external_property_id, source: row.source,
+          saved_at: row.saved_at, dismissed: row.dismissed,
+          list_price: (typeof row.list_price === "number" ? row.list_price : null) ?? l?.list_price ?? null,
+          listing_url: row.listing_url ?? null, property_address: row.property_address ?? null,
+          status: l?.status ?? (row.listing_id ? null : "active"), listing_date: l?.listing_date ?? null }
+      })
+      const { pickBuyerTargetListing } = await import("@/lib/offers/offer-target")
+      const target = pickBuyerTargetListing(flat, new Date())
+      const targetAddress = target ? (flat.find((x) => (x.listing_id ?? x.external_property_id) === target.targetId)?.property_address ?? null) : null
+      if (target && targetAddress) {
+        const { buildOfferCompsSituation } = await import("@/lib/ai-isa/contact-reel-situation")
+        await commissionVideo(
+          buildOfferCompsSituation({ contactId, subjectAddress: targetAddress, subjectPrice: target.listPrice }),
+          { brokerageId: ctx.brokerageId, agentUserId, contactId, idempotencyDiscriminator: "offer_comps", persona: { audience: "buyer" }, copyGenerator: realCopyGenerator },
+          ctx.supabase,
+        )
+      }
+    } catch (e) { console.error("[offer_confidence] agent comps reel best-effort failed:", e) }
+
     if (r.status === "already_staged") return `offer-confidence reel already commissioned for this contact (${r.compositionId}, deduped)`
-    if (r.ok) return `commissioned the buyer OFFER-CONFIDENCE reel (${r.compositionId}, gated) fronted by the assigned agent — the human push to write the offer`
+    if (r.ok) return `commissioned the buyer OFFER-CONFIDENCE reel (${r.compositionId}, gated) + the agent-facing comps reel for their target`
     return r.status === "blocked" ? `offer-confidence reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null
   },
   // Asset Manager → Campaign Orchestrator: a lead's persona intro reel FINISHED. The

@@ -320,7 +320,8 @@
     "test:offer-ready": "tsx scripts/offer-ready-simulator.ts",
     "test:affordability": "tsx scripts/affordability-simulator.ts",
     "test:urgent-sla": "tsx scripts/urgent-sla-simulator.ts",
-    "test:comps-animation": "tsx scripts/comps-animation-simulator.ts"
+    "test:comps-animation": "tsx scripts/comps-animation-simulator.ts",
+    "test:client-framing": "tsx scripts/client-framing-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

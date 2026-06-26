@@ -510,13 +510,19 @@ export async function runAnniversaryEquity(
     result.reportsProposed += 1
     handledThisPass.add(passKey)
 
-    // (a) PORTAL VALUE CARD — the same REAL equity story, always on the portal.
+    // (a) PORTAL VALUE CARD — the same REAL equity story, always on the portal. CLIENT-FRAMING
+    // DOCTRINE: the card always ends with a WARM, conversation-STARTING line that routes the
+    // seller to their agent — never a bare number. Sensitive equity (low/negative) reads as
+    // "worth a real conversation", positive as "great position — let's make the most of it".
+    const { valueNewsTone, clientSafeCtaLine } = await import("@/lib/kernel/client-framing")
+    const equityTone = valueNewsTone({ value: line.estimatedEquity ?? line.appreciation ?? null })
+    const cardSummary = `${draft.body}\n\n${clientSafeCtaLine(equityTone, "your home's equity")}`
     const card = await pushPortalValueCard({
       brokerageId,
       contactId,
       listingId: t.listing_id ?? null,
       title: draft.subject ?? fallback.subject,
-      summary: draft.body,
+      summary: cardSummary,
       updateType: "equity_report",
       metadata: {
         source: "anniversary_equity",

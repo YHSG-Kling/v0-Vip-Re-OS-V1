@@ -618,13 +618,18 @@ export async function runEquityTrigger(
     result.notesProposed += 1
     handledThisPass.add(passKey)
 
-    // (2) PORTAL VALUE CARD — the same REAL equity/refi story on the portal.
+    // (2) PORTAL VALUE CARD — the same REAL equity/refi story on the portal. CLIENT-FRAMING
+    // DOCTRINE: end with a warm, conversation-starting line that routes to the agent (a cash-out/
+    // refi is a decision to TALK THROUGH, never a stark number that pressures the homeowner).
+    const { valueNewsTone, clientSafeCtaLine } = await import("@/lib/kernel/client-framing")
+    const trigTone = valueNewsTone({ value: signal.line.estimatedEquity ?? signal.line.appreciation ?? null })
+    const trigSummary = `${draft.body}\n\n${clientSafeCtaLine(trigTone, "your equity options")}`
     const card = await pushPortalValueCard({
       brokerageId,
       contactId,
       listingId: t.listing_id ?? null,
       title: draft.subject ?? fallback.subject,
-      summary: draft.body,
+      summary: trigSummary,
       updateType: "equity_trigger",
       metadata: {
         source: "equity_trigger",
