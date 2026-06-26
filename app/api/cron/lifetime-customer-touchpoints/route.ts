@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { sendAnniversaryMessage, sendBirthdayMessage, sendReferralRequest } from "@/app/actions/lifetime-customer-touchpoints"
+import { evaluateDeconflict } from "@/lib/kernel/deconflict"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -36,14 +37,34 @@ export async function GET(request: Request) {
     anniversaries: 0,
     birthdays: 0,
     referralRequests: 0,
+    deferred: 0,
     errors: [] as string[],
+  }
+
+  // DE-CONFLICTION — lifetime clients are the brokerage's highest-value segment; stacking an
+  // anniversary + birthday + referral (or colliding with an ISA re-engagement / a campaign) the
+  // same week burns the relationship. The Sphere's calendar touch is gated by the Campaign
+  // Orchestrator's cadence policy (evaluateDeconflict — its domain) AND a same-run guard so one
+  // contact is never double-touched in a single pass. Managers working together, no over-message.
+  const touchedThisRun = new Set<string>()
+  async function lifetimeTouchAllowed(brokerageId: string | null, contactId: string, systemSource: string): Promise<boolean> {
+    if (touchedThisRun.has(contactId)) return false
+    if (brokerageId) {
+      try {
+        const d = await evaluateDeconflict({ brokerageId, contactId, channel: "email", systemSource })
+          .catch(() => ({ allowed: true }))
+        if (!(d as { allowed: boolean }).allowed) return false
+      } catch { /* fail open — never block a touch on a de-confliction hiccup */ }
+    }
+    touchedThisRun.add(contactId)
+    return true
   }
 
   try {
     // Check for home anniversaries
     const { data: anniversaries } = await supabase
       .from("transactions")
-      .select("id, contact_id, agent_id, actual_close_date:close_date, contacts(*)")
+      .select("id, contact_id, agent_id, brokerage_id, actual_close_date:close_date, contacts(*)")
       .eq("status", "closed")
       .not("close_date", "is", null)
 
@@ -55,6 +76,10 @@ export async function GET(request: Request) {
         closeDate.getFullYear() < today.getFullYear()
       ) {
         const yearsAgo = today.getFullYear() - closeDate.getFullYear()
+        if (!(await lifetimeTouchAllowed((txn as any).brokerage_id ?? null, txn.contact_id, "sphere_anniversary"))) {
+          results.deferred++
+          continue
+        }
         try {
           await sendAnniversaryMessage(txn.contact_id, yearsAgo, { agentId: txn.agent_id, client: supabase })
           results.anniversaries++
@@ -67,13 +92,17 @@ export async function GET(request: Request) {
     // Check for birthdays
     const { data: contacts } = await supabase
       .from("contacts")
-      .select("id, first_name, last_name, birthday, agent_id")
+      .select("id, first_name, last_name, birthday, agent_id, brokerage_id")
       .not("birthday", "is", null)
 
     for (const contact of contacts || []) {
       if (contact.birthday) {
         const birthday = new Date(contact.birthday)
         if (birthday.getMonth() === today.getMonth() && birthday.getDate() === today.getDate()) {
+          if (!(await lifetimeTouchAllowed((contact as any).brokerage_id ?? null, contact.id, "sphere_birthday"))) {
+            results.deferred++
+            continue
+          }
           try {
             await sendBirthdayMessage(contact.id, { agentId: contact.agent_id, client: supabase })
             results.birthdays++
@@ -92,11 +121,15 @@ export async function GET(request: Request) {
 
     const { data: recentCloses } = await supabase
       .from("transactions")
-      .select("id, contact_id, agent_id, actual_close_date:close_date")
+      .select("id, contact_id, agent_id, brokerage_id, actual_close_date:close_date")
       .eq("status", "closed")
       .in("close_date", [threeDaysAgo.toISOString().split("T")[0], thirtyDaysAgo.toISOString().split("T")[0]])
 
     for (const txn of recentCloses || []) {
+      if (!(await lifetimeTouchAllowed((txn as any).brokerage_id ?? null, txn.contact_id, "sphere_referral_request"))) {
+        results.deferred++
+        continue
+      }
       try {
         await sendReferralRequest(txn.contact_id, { agentId: txn.agent_id, client: supabase })
         results.referralRequests++

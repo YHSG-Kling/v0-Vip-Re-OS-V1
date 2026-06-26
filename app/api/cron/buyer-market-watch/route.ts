@@ -29,7 +29,7 @@ export async function GET(request: Request) {
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()
-  let buyersProcessed = 0, buyersMatched = 0, buyersWithNew = 0, reelsQueued = 0, externalMatched = 0, errors = 0
+  let buyersProcessed = 0, buyersMatched = 0, buyersWithNew = 0, reelsQueued = 0, externalMatched = 0, errors = 0, offerReadyFired = 0
 
   // Compliance: purge stale external (RentCast/IDX) references first — they must be short-lived.
   let purged = 0
@@ -68,6 +68,15 @@ export async function GET(request: Request) {
             if (reel.queued) reelsQueued++
           } catch { /* reel is best-effort */ }
         }
+
+        // AUTONOMOUS OFFER TRIGGER — a pre-approved buyer with a fresh saved target and no offer
+        // yet is at the offer moment. Fire the gated Offer Accelerator (real comps-grounded plan
+        // + the offer-confidence reel handoff) instead of waiting for an agent to move the stage.
+        try {
+          const { runOfferReadyCheck } = await import("@/lib/agents/offer-ready-detector")
+          const ready = await runOfferReadyCheck(svc, p.brokerage_id, p.contact_id)
+          if (ready.fired) offerReadyFired++
+        } catch { /* offer-ready check is best-effort */ }
       } catch (e) {
         errors++
         console.error("[buyer-market-watch] buyer failed:", p.contact_id, (e as Error).message)
@@ -77,5 +86,5 @@ export async function GET(request: Request) {
     return NextResponse.json({ ran_at: ranAt, error: (e as Error).message, buyersProcessed }, { status: 500 })
   }
 
-  return NextResponse.json({ ran_at: ranAt, buyersProcessed, buyersMatched, buyersWithNew, reelsQueued, externalMatched, purged, errors })
+  return NextResponse.json({ ran_at: ranAt, buyersProcessed, buyersMatched, buyersWithNew, reelsQueued, externalMatched, offerReadyFired, purged, errors })
 }
