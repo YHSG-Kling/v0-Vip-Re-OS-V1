@@ -339,7 +339,10 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
       .from("newsletter_subscribers")
       .select("id, contact_id, email, first_name, last_name, status, brokerage_id, agent_id, contact:contacts(contact_persona, city, state, zip_code)")
       .eq("brokerage_id", c.brokerage_id)
-      .eq("status", "active")
+      // CANONICAL subscriber status is 'subscribed' (the status CHECK constraint allows only
+      // subscribed/unsubscribed/bounced/complained — 'active' is NOT a legal value and matched
+      // ZERO rows, silently dropping EVERY recipient of EVERY newsletter). Fixed to 'subscribed'.
+      .eq("status", "subscribed")
     if (ownerAgent) q = q.eq("agent_id", ownerAgent)
     const { data, error } = await q
     if (error) {

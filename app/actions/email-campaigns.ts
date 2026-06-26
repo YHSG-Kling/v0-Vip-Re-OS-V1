@@ -398,15 +398,16 @@ export async function sendEmailCampaign(campaignId: string, _actorUserId?: strin
       fromEmail = agentUser.email
     }
 
-    // Fetch active subscribers — newsletter_subscribers.brokerage_id is NOT NULL
+    // Fetch subscribed recipients — newsletter_subscribers.brokerage_id is NOT NULL
     // and exists on every row, so a single brokerage-scoped query covers both
     // the agent-specific and brokerage-wide cases. When campaign.agent_id is
-    // set we additionally narrow to that agent's list.
+    // set we additionally narrow to that agent's list. CANONICAL status is
+    // 'subscribed' (the CHECK constraint forbids 'active' — it matched zero rows).
     let subscriberQuery = svc
       .from("newsletter_subscribers")
       .select("id, email, first_name, last_name, contact_id")
       .eq("brokerage_id", brokerageId)
-      .eq("status", "active")
+      .eq("status", "subscribed")
     if (campaign.agent_id) {
       subscriberQuery = subscriberQuery.eq("agent_id", campaign.agent_id)
     }
