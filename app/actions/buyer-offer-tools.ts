@@ -138,6 +138,45 @@ export async function requestOfferHelp(input: {
 }
 
 /**
+ * requestComparisonReview — the buyer has lined up their finalists side-by-side and wants the
+ * agent's take. A HIGH-intent moment (they're close to choosing) — notify the agent WHICH homes
+ * they're weighing so the agent can guide the decision. Fires only on the explicit ask (never on
+ * mere browsing) — signal, not noise.
+ */
+export async function requestComparisonReview(input: {
+  contactId: string
+  addresses: string[]
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const supabase = await createClient()
+    const resolved = await resolveContactAgent(supabase, input.contactId)
+    if (!resolved) return { success: false, error: "Contact not found" }
+    const { contact, agentUserId } = resolved
+    const homes = (input.addresses ?? []).filter(Boolean).slice(0, 4)
+    if (homes.length < 2) return { success: false, error: "Pick at least two homes to compare" }
+
+    try {
+      await supabase.from("client_portal_activity").insert({
+        contact_id: input.contactId,
+        activity_type: "comparison_review_requested",
+        metadata: { addresses: homes, source: "buyer_portal" },
+      })
+    } catch { /* non-critical */ }
+
+    await notifyAgent(supabase, {
+      agentUserId, brokerageId: contact.brokerage_id,
+      type: "buyer.comparison_review_requested",
+      title: "Buyer is weighing their finalists",
+      body: `${contact.first_name ?? "Your buyer"} is comparing ${homes.join(" vs ")} and wants your take — they're close to choosing.`,
+      entityId: input.contactId,
+    })
+    return { success: true }
+  } catch (e: any) {
+    return { success: false, error: e?.message ?? "failed" }
+  }
+}
+
+/**
  * requestPreApprovalRefresh — the buyer's pre-approval is expired/expiring (or missing) and they
  * want to get (back) to offer-ready. Notify the agent to connect them with a lender. The agent is
  * the right owner pre-offer (the Finance Manager owns the in-deal lender side); this keeps the

@@ -5,6 +5,7 @@ import { getPersonaConfig } from "@/lib/portal"
 import { determinePortalView } from "@/lib/kernel/portal"
 import { getRecommendedProperties } from "@/app/actions/ai-client-portal"
 import { getBuyerPortalMatches } from "@/app/actions/buyer-portal-matches"
+import { CompareHomesCard } from "./CompareHomesCard"
 import { TopMatchesPanel } from "@/app/portal/[contactId]/components/TopMatchesPanel"
 
 export default async function PropertiesPage({ params }: { params: Promise<{ contactId: string }> }) {
@@ -190,6 +191,11 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
       {topMatches.length > 0 && (
         <div className="max-w-6xl mx-auto px-4 pt-6">
           <TopMatchesPanel contactId={contactId} matches={topMatches} />
+        </div>
+      )}
+      {portalView.view === "buyer" && (savedProperties?.length ?? 0) >= 2 && (
+        <div className="max-w-6xl mx-auto px-4 pt-6">
+          <CompareHomesCard contactId={contactId} savedHomes={(savedProperties || []) as any} />
         </div>
       )}
       <PersonaPropertiesDashboard
