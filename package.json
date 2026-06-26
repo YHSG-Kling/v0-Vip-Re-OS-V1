@@ -322,7 +322,8 @@
     "test:urgent-sla": "tsx scripts/urgent-sla-simulator.ts",
     "test:comps-animation": "tsx scripts/comps-animation-simulator.ts",
     "test:client-framing": "tsx scripts/client-framing-simulator.ts",
-    "test:home-comparison": "tsx scripts/home-comparison-simulator.ts"
+    "test:home-comparison": "tsx scripts/home-comparison-simulator.ts",
+    "test:preference-learning": "tsx scripts/preference-learning-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

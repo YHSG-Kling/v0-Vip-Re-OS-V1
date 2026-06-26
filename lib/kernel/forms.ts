@@ -820,6 +820,28 @@ export async function recordBuyerPropertyAction(input: {
       })
     }
 
+    // BUYER GRAPH LOOP — the buyer's own portal action (favorite/dismiss) now TEACHES the system
+    // what they want and adjusts their criteria (the strongest signal, previously ignored here).
+    // Best-effort; never blocks the save. Logistics actions (tour/offer requests) map to null.
+    try {
+      const { interestLevelToLearningSignal } = await import("@/lib/behavior-learning/signal-mapping")
+      const learnSignal = interestLevelToLearningSignal(input.interest_level)
+      if (learnSignal) {
+        const { data: snap } = await supabase.from("saved_properties")
+          .select("list_price, bedrooms, bathrooms, sqft, city, property_type").eq("id", savedId).maybeSingle()
+        const s = snap as Record<string, any> | null
+        const { updatePreferencesFromSignal } = await import("@/lib/behavior-learning/preference-updater")
+        await updatePreferencesFromSignal({
+          contactId: input.contact_id, agentId: input.agent_id || "system", brokerageId: input.brokerage_id,
+          signal: learnSignal,
+          property: {
+            price: Number(s?.list_price ?? 0), bedrooms: Number(s?.bedrooms ?? 0), bathrooms: Number(s?.bathrooms ?? 0),
+            sqft: Number(s?.sqft ?? 0), city: s?.city ?? "", features: [], property_type: s?.property_type ?? "",
+          },
+        })
+      }
+    } catch (e) { console.error("[recordBuyerPropertyAction] preference learning best-effort failed:", e) }
+
     return { success: true, data: { interest_id: savedId } }
   } catch (error: any) {
     return { success: false, error: error.message }
