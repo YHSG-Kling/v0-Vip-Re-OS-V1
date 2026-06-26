@@ -22,6 +22,15 @@ function main() {
   check("hasUsableValue true (affordability can run)", a.hasUsableValue === true)
   check("high-confidence note is confident (not 'rough')", !/rough/.test(a.estimateNote) && /estimate/.test(a.estimateNote))
 
+  console.log("\n[RentCast value range carried (honest, not false-precision)]")
+  const ranged = buildAddressAnalysis(
+    { beds: 3, baths: 2, sqft: 2000, propertyType: "single_family", dataConfidence: "high" },
+    { value: 525000, confidence: 0.85, source: "rentcast" },
+    { low: 505000, high: 545000 },
+  )
+  check("value range carried when present", ranged.valueRangeLow === 505000 && ranged.valueRangeHigh === 545000)
+  check("range dropped when no value (no fabrication)", buildAddressAnalysis(null, null, { low: 1, high: 2 }).valueRangeLow === null)
+
   console.log("\n[Low confidence → softened estimate note]")
   const low = buildAddressAnalysis({ beds: 3, baths: 2, sqft: null, propertyType: null, dataConfidence: "low" }, { value: 400000, confidence: 0.4, source: "osint" })
   check("low confidence → 'rough estimate' framing", /rough estimate/.test(low.estimateNote))

@@ -97,8 +97,11 @@ export function AnalyzeAnyHomeCard({
           <div className="space-y-3 rounded-lg border p-3">
             <div className="flex items-end justify-between">
               <div>
-                <p className="text-xs text-muted-foreground">Estimated value</p>
+                <p className="text-xs text-muted-foreground">Estimated value{analysis.valueSource === "rentcast" ? " (RentCast)" : ""}</p>
                 <p className="text-2xl font-bold">{analysis.estimatedValue ? money(analysis.estimatedValue) : "—"}</p>
+                {analysis.valueRangeLow && analysis.valueRangeHigh && (
+                  <p className="text-[11px] text-muted-foreground">Range {money(analysis.valueRangeLow)}–{money(analysis.valueRangeHigh)}</p>
+                )}
               </div>
               {framing && <Badge className={`${toneCls}`}>{framing.label}</Badge>}
             </div>

@@ -154,16 +154,29 @@ export async function analyzeAddressForBuyer(input: {
     const { data: contact } = await supabase.from("contacts").select("id, brokerage_id").eq("id", input.contactId).maybeSingle()
     const brokerageId = (contact as { brokerage_id: string | null } | null)?.brokerage_id ?? null
 
-    const [{ lookupPropertyByAddress }, { getCurrentAvm }, { buildAddressAnalysis }] = await Promise.all([
+    const [{ lookupPropertyByAddress }, { getRentcastAVM }, { getCurrentAvm }, { buildAddressAnalysis }] = await Promise.all([
       import("@/lib/property/address-lookup"),
+      import("@/lib/property/rentcast"),
       import("@/lib/avm/provider-chain"),
       import("@/lib/buyer-offers/address-analysis"),
     ])
-    const [lookup, avm] = await Promise.all([
+    // RentCast is the brokerage's chosen property-data provider — try its AVM first (with a value
+    // RANGE, which is more honest than a single number). Fall back to the free cache/Perplexity
+    // tier only when RentCast has no key or no hit. Specs come from the free OSINT lookup.
+    const [lookup, rc] = await Promise.all([
       lookupPropertyByAddress({ address, city: "", state: "" }).catch(() => null),
-      getCurrentAvm({ address, brokerageId }).catch(() => null),
+      brokerageId ? getRentcastAVM({ brokerageId, address }).catch(() => null) : Promise.resolve(null),
     ])
-    const analysis = buildAddressAnalysis(lookup as any, avm as any)
+    let avm: { value: number; confidence: number; source: string } | null = null
+    let range: { low: number | null; high: number | null } | null = null
+    if (rc && typeof rc.value === "number" && rc.value > 0) {
+      avm = { value: rc.value, confidence: 0.85, source: "rentcast" }
+      range = { low: rc.rangeLow ?? null, high: rc.rangeHigh ?? null }
+    } else {
+      const fallback = await getCurrentAvm({ address, brokerageId }).catch(() => null)
+      if (fallback) avm = { value: fallback.value, confidence: fallback.confidence, source: fallback.source }
+    }
+    const analysis = buildAddressAnalysis(lookup as any, avm, range)
 
     // Quiet high-intent signal — the buyer is researching a specific home.
     try {

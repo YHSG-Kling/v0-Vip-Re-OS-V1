@@ -297,20 +297,21 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       .limit(5)
     const rows = (savers ?? []) as Array<{ contact_id: string; property_address: string | null }>
     if (rows.length === 0) return "no saved-property buyers to alert"
-    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    // SAVED-HOME WATCH — a price drop on a home they saved is the strongest "act now" moment, so
+    // it goes to the AI ISA for a PERSONAL, persona-aware nudge (+ a personal avatar reel from the
+    // assigned agent), not a generic blast. The ISA handler proposes the gated, portal-driving note.
     let proposed = 0
     for (const r of rows) {
-      const res = await proposeClientMessage({
-        brokerageId: ctx.brokerageId, agentKind: "shopping_agent", entityType: "listing",
-        entityId: signal.entityId, recipientContactId: r.contact_id, audience: "buyer",
-        subject: "Price improved on a home you saved",
-        body: `Good news — ${r.property_address ?? "a home you saved"} just had a price improvement. Want a fresh look before others notice? Reply here and I'll set up a showing.`,
-        rationale: `Price reduced on an in-house listing — re-match alert for a buyer who saved it (signal ${signal.signalType}).`,
-        channel: "portal",
+      const q = await publishManagerSignal({
+        brokerageId: ctx.brokerageId, fromManager: "shopping_agent", toManager: "ai_isa",
+        signalType: "saved_home_nudge",
+        message: `${r.property_address ?? "A saved home"} dropped in price — personal nudge for a buyer who saved it.`,
+        entityType: "contact", entityId: r.contact_id, contactId: r.contact_id,
+        payload: { nudge_kind: "price_drop", listing_id: signal.entityId, property_address: r.property_address ?? null },
       }, ctx.supabase)
-      if (res.ok) proposed += 1
+      if (q.ok) proposed += 1
     }
-    return proposed > 0 ? `alerted ${proposed} saved-property buyer${proposed === 1 ? "" : "s"} (gated)` : null
+    return proposed > 0 ? `routed ${proposed} saved-home price-drop nudge${proposed === 1 ? "" : "s"} to the AI ISA (personal + avatar)` : null
   },
   // Deal Coordinator → Recruiting Manager: a RECRUITED agent just closed their FIRST deal.
   // Recruiting ROI gets its first real production datapoint + the broker gets the
@@ -847,6 +848,81 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       rationale: `Situational reel finished for ${firstName} — propose the gated 1:1 email embedding it (personal, never broadcast).`,
     }, ctx.supabase)
     return res.ok ? `proposed the gated 1:1 reel email to the contact (approval ${res.id})` : null
+  },
+  // Shopping Agent / Listing Concierge → AI ISA: a home the buyer SAVED changed (price drop, back
+  // on market, under contract, a fresh match, or an open house). The ISA reaches out PERSONALLY —
+  // a warm, persona-aware, gated message that drives to the portal — and on the highest-emotion
+  // moments (price drop / back on market) hands the Asset Manager a personal AVATAR reel from the
+  // assigned agent. RealScout sends a generic alert; we send a note from the buyer's own agent.
+  // No-spam: fires on a REAL change to a home they already engaged. Idempotent per (contact,kind,day).
+  "ai_isa:saved_home_nudge": async (signal, ctx) => {
+    const contactId = signal.contactId ?? (signal.entityType === "contact" ? signal.entityId : null)
+    const nudgeKind = (signal.payload?.nudge_kind as string | undefined) ?? null
+    if (!contactId || !nudgeKind) return null
+    const { classifySavedHomeNudge } = await import("@/lib/ai-isa/saved-home-nudge")
+    const nudge = classifySavedHomeNudge(nudgeKind)
+    if (!nudge) return null
+
+    const { data: contact } = await ctx.supabase.from("contacts")
+      .select("id, first_name, contact_type").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!contact) return null
+    const c = contact as { first_name: string | null; contact_type: string | null }
+    const firstName = c.first_name || "there"
+    const subject = nudge.headline
+
+    // Idempotent: one nudge of this kind per contact per day.
+    const dayKey = (signal.payload?.day_key as string | undefined) ?? subject
+    const { data: dup } = await ctx.supabase.from("agent_client_messages").select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("recipient_contact_id", contactId)
+      .eq("subject", subject).in("status", ["proposed", "approved", "sent"]).limit(1).maybeSingle()
+    if (dup) return `saved-home ${nudge.kind} nudge already proposed for this contact (deduped)`
+
+    // Personalized, gateway-written body (persona + nudge angle), with the portal CTA.
+    const fallbackBody = `Hi ${firstName}, ${nudge.headline.toLowerCase()}. Want to take a look together? Everything's waiting in your portal.`
+    let body = fallbackBody
+    try {
+      const { generatePersonaCopy, realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+      const audience = c.contact_type === "seller" ? "seller" : "buyer"
+      const drafted = await generatePersonaCopy(
+        { goal: `a short, warm, them-first note to a real-estate ${audience} client: ${nudge.angle} ~50-70 words. No protected-class or age language, no exact price.`,
+          facts: [], channel: "email", persona: { name: firstName, audience } },
+        { body: fallbackBody }, { generator: realCopyGenerator },
+      )
+      if (drafted.body?.trim()) body = drafted.body.trim()
+    } catch { /* gateway down → deterministic fallback */ }
+    try {
+      const { portalCtaHtml } = await import("@/lib/ai-isa/portal-link")
+      body = `${body}\n${portalCtaHtml(contactId)}`
+    } catch { /* best-effort */ }
+
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: ctx.brokerageId, agentKind: "ai_isa", entityType: "contact",
+      entityId: contactId, recipientContactId: contactId, audience: c.contact_type === "seller" ? "seller" : "buyer",
+      subject, body, channel: "email",
+      rationale: `Saved-home ${nudge.kind} (${nudge.urgency} urgency) — personal ISA nudge that drives back to the portal; a human approves before send.`,
+    }, ctx.supabase)
+
+    // Highest-emotion moments get a PERSONAL avatar reel from the assigned agent.
+    let reelNote = ""
+    if (nudge.avatarWorthy) {
+      try {
+        const { resolveContactPresenterUserId } = await import("@/lib/ai-isa/outreach-identity")
+        const agentUserId = await resolveContactPresenterUserId(ctx.supabase, contactId, ctx.brokerageId)
+        if (agentUserId) {
+          const { buildSavedHomeNudgeSituation } = await import("@/lib/ai-isa/contact-reel-situation")
+          const { commissionVideo } = await import("@/lib/video/video-director")
+          const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+          const r = await commissionVideo(
+            buildSavedHomeNudgeSituation({ contactId, nudgeKind: nudge.kind }),
+            { brokerageId: ctx.brokerageId, agentUserId, contactId, idempotencyDiscriminator: `nudge:${nudge.kind}`, persona: { audience: "buyer" }, copyGenerator: realCopyGenerator },
+            ctx.supabase,
+          )
+          if (r.ok) reelNote = " + a personal avatar reel"
+        }
+      } catch { /* reel best-effort */ }
+    }
+    return res.ok ? `proposed the personal ${nudge.kind} nudge to the buyer (portal-driving)${reelNote}` : null
   },
   // AI ISA → Campaign Orchestrator: the manager decided a person's NEXT-BEST TOUCH is the
   // passive newsletter (the nurture downshift — stop pestering with 1:1s, keep value flowing).

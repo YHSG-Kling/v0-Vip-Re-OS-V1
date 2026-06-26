@@ -23,6 +23,9 @@ export interface AvmShape {
 export interface AddressAnalysis {
   /** AVM estimated value — the basis for affordability on an off-market home (null when unknown). */
   estimatedValue: number | null
+  /** Value range (RentCast low/high) — shown to the buyer instead of a single false-precision number. */
+  valueRangeLow: number | null
+  valueRangeHigh: number | null
   valueConfidence: number | null
   valueSource: string | null
   beds: number | null
@@ -43,12 +46,18 @@ export interface AddressAnalysis {
  * the UI can soften a low-confidence estimate. The note always frames it as an estimate the agent
  * confirms — never presented as gospel.
  */
-export function buildAddressAnalysis(lookup: AddressLookupShape | null, avm: AvmShape | null): AddressAnalysis {
+export function buildAddressAnalysis(
+  lookup: AddressLookupShape | null,
+  avm: AvmShape | null,
+  range?: { low: number | null; high: number | null } | null,
+): AddressAnalysis {
   const estimatedValue = avm && typeof avm.value === "number" && avm.value > 0 ? Math.round(avm.value) : null
   const valueConfidence = avm ? avm.confidence : null
   const lowConf = (avm?.confidence ?? 0) < 0.5 || (lookup?.dataConfidence ?? "low") === "low"
   return {
     estimatedValue,
+    valueRangeLow: estimatedValue != null && typeof range?.low === "number" && range.low > 0 ? Math.round(range.low) : null,
+    valueRangeHigh: estimatedValue != null && typeof range?.high === "number" && range.high > 0 ? Math.round(range.high) : null,
     valueConfidence,
     valueSource: avm?.source ?? null,
     beds: lookup?.beds ?? null,

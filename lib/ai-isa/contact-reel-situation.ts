@@ -86,6 +86,21 @@ export function buildOfferConfidenceSituation(args: { contactId: string }): Vide
 }
 
 /**
+ * buildSavedHomeNudgeSituation — a PERSONAL avatar note from the assigned agent when a home the
+ * buyer saved changes (a price drop, or it's back on the market — the highest-emotion moments). A
+ * warm 20-second "hey, that home you loved just got more interesting — let's take a look together"
+ * fronted by the agent (Director 'lead_intro'). Number-free for compliance; drives to the portal.
+ */
+export function buildSavedHomeNudgeSituation(args: { contactId: string; nudgeKind: string }): VideoSituation {
+  return {
+    kind: "lead_intro",
+    tier: "solo_agent",
+    targetChannel: "email",
+    facts: { contactId: args.contactId, persona: "buyer", moment: "saved_home_nudge", nudge: args.nudgeKind },
+  }
+}
+
+/**
  * buildOfferCompsSituation — the AGENT-FACING comps reel for a buyer's target at the offer moment.
  * Director kind "cma" (which the Director marks audience_type 'in_house' — agent-only, so the
  * client never gets the black-and-white scope), animating "this home vs recent sales" via the
