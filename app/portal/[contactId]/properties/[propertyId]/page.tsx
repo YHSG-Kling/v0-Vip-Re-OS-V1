@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { PropertyDetailsView } from "@/components/portal/PropertyDetailsView"
 import { PropertyDetailIntelligenceClient } from "./PropertyDetailIntelligenceClient"
+import { BuyerOfferToolsCard } from "./BuyerOfferToolsCard"
 import { getSmartInsights, isPropertySaved } from "@/app/actions/smart-insights"
 
 export default async function PropertyDetailsPage({
@@ -19,6 +20,7 @@ export default async function PropertyDetailsPage({
     { data: showings },
     smartInsights,
     isSaved,
+    { data: finProfile },
   ] = await Promise.all([
     supabase.from("contacts").select("*").eq("id", contactId).single(),
     supabase
@@ -34,6 +36,7 @@ export default async function PropertyDetailsPage({
       .order("created_at", { ascending: false }),
     getSmartInsights(propertyId, contactId).catch(() => null),
     isPropertySaved(contactId, propertyId).catch(() => false),
+    supabase.from("buyer_financial_profiles").select("pre_approval_amount").eq("contact_id", contactId).maybeSingle(),
   ])
 
   if (!contact) {
@@ -68,6 +71,27 @@ export default async function PropertyDetailsPage({
           contact={contact}
           savedProperty={savedProperty}
           showings={showings || []}
+        />
+
+        {/* External (RentCast/IDX) saves: stored specs power our tools here; link out for photos. */}
+        {!savedProperty?.listing_id && savedProperty?.listing_url && (
+          <a
+            href={savedProperty.listing_url as string}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center text-sm text-teal-700 underline underline-offset-2"
+          >
+            View the full listing &amp; photos{savedProperty.source ? ` on ${savedProperty.source}` : ""} →
+          </a>
+        )}
+
+        {/* Buyer self-serve: affordability + "help me make an offer" → signals the agent */}
+        <BuyerOfferToolsCard
+          contactId={contactId}
+          propertyId={propertyId}
+          propertyAddress={propertyAddress}
+          price={(propertyData.price as number | null) ?? null}
+          preApprovalAmount={(finProfile as { pre_approval_amount: number | null } | null)?.pre_approval_amount ?? null}
         />
 
         {/* AI Intelligence layer */}

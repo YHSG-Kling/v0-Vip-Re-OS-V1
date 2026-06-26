@@ -511,38 +511,31 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
             </div>
             <div className="space-y-2">
               {savedProperties.slice(0,2).map((p:any) => {
-                // IN-HOUSE saves (listing_id) open the in-portal property page; EXTERNAL
-                // (RentCast/IDX) saves have NO listing_id — we store specs + the source URL, so
-                // they open their real listing URL. Without this, every external saved home
-                // (the common case — buyers shop the whole market) was a dead /properties/null link.
+                // EVERY saved home — in-house OR external (RentCast/IDX) — opens OUR in-portal
+                // property page (keyed by saved_properties.id, p.id), where the buyer's self-serve
+                // tools live (affordability + "help me make an offer" → signals the agent). External
+                // saves carry their source URL as a "view full listing" link INSIDE that page, so
+                // the buyer self-qualifies in OUR portal instead of leaking to a competitor's.
                 const isExternal = !p.listing_id && (!!p.external_property_id || !!p.listing_url)
-                const inner = (
-                  <Card className="hover:shadow-md transition-all cursor-pointer">
-                    <CardContent className="p-3 flex items-center gap-3">
-                      {p.primary_photo_url ? (
-                        <img src={p.primary_photo_url} alt="" className="w-12 h-12 rounded object-cover shrink-0" />
-                      ) : (
-                        <div className="w-12 h-12 rounded bg-muted flex items-center justify-center shrink-0">
-                          <Home className="h-5 w-5 text-muted-foreground" />
-                        </div>
-                      )}
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">{p.property_address}</p>
-                        {p.list_price && <p className="text-xs text-muted-foreground">${(p.list_price/1000).toFixed(0)}K{p.bedrooms ? ` - ${p.bedrooms} bed` : ''}{isExternal && p.source ? ` · ${p.source}` : ''}</p>}
-                      </div>
-                      <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0 ml-auto" />
-                    </CardContent>
-                  </Card>
-                )
-                if (isExternal && p.listing_url) {
-                  return (
-                    <a key={p.id} href={p.listing_url} target="_blank" rel="noopener noreferrer">{inner}</a>
-                  )
-                }
-                // In-house with a listing_id → in-portal page; otherwise fall back to the
-                // full properties list (never a broken /properties/null link).
                 return (
-                  <Link key={p.id} href={p.listing_id ? `/portal/${contactId}/properties/${p.listing_id}` : `/portal/${contactId}/properties`}>{inner}</Link>
+                  <Link key={p.id} href={`/portal/${contactId}/properties/${p.id}`}>
+                    <Card className="hover:shadow-md transition-all cursor-pointer">
+                      <CardContent className="p-3 flex items-center gap-3">
+                        {p.primary_photo_url ? (
+                          <img src={p.primary_photo_url} alt="" className="w-12 h-12 rounded object-cover shrink-0" />
+                        ) : (
+                          <div className="w-12 h-12 rounded bg-muted flex items-center justify-center shrink-0">
+                            <Home className="h-5 w-5 text-muted-foreground" />
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate">{p.property_address}</p>
+                          {p.list_price && <p className="text-xs text-muted-foreground">${(p.list_price/1000).toFixed(0)}K{p.bedrooms ? ` - ${p.bedrooms} bed` : ''}{isExternal && p.source ? ` · ${p.source}` : ''}</p>}
+                        </div>
+                        <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0 ml-auto" />
+                      </CardContent>
+                    </Card>
+                  </Link>
                 )
               })}
             </div>
