@@ -17,12 +17,13 @@ function main() {
     const n = classifySavedHomeNudge(k)
     check(`${k} → a nudge with headline + angle`, !!n && n.kind === k && n.headline.length > 0 && n.angle.length > 0)
   }
-  check("five nudge kinds (price_drop, back_on_market, under_contract, new_match, open_house)", SAVED_HOME_NUDGE_KINDS.length === 5)
+  check("six nudge kinds incl. coming_soon", SAVED_HOME_NUDGE_KINDS.length === 6 && SAVED_HOME_NUDGE_KINDS.includes("coming_soon"))
 
-  console.log("\n[Avatar-worthy = the highest-emotion moments only]")
+  console.log("\n[Avatar-worthy = the highest-emotion moments → Asset Manager makes the video]")
   check("price_drop → avatar-worthy", classifySavedHomeNudge("price_drop")!.avatarWorthy === true)
   check("back_on_market → avatar-worthy", classifySavedHomeNudge("back_on_market")!.avatarWorthy === true)
-  check("under_contract → NOT avatar (keep it light)", classifySavedHomeNudge("under_contract")!.avatarWorthy === false)
+  check("coming_soon (exclusive first look) → avatar-worthy", classifySavedHomeNudge("coming_soon")!.avatarWorthy === true)
+  check("under_contract → NOT avatar (keep it light, text)", classifySavedHomeNudge("under_contract")!.avatarWorthy === false)
   check("new_match → not avatar", classifySavedHomeNudge("new_match")!.avatarWorthy === false)
   check("open_house → not avatar", classifySavedHomeNudge("open_house")!.avatarWorthy === false)
 

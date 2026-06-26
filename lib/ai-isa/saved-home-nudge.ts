@@ -15,6 +15,7 @@ export type SavedHomeNudgeKind =
   | "under_contract"    // a saved home is getting an offer — move on it or pivot to similar
   | "new_match"         // a fresh listing fits their (now learned) criteria
   | "open_house"        // an open house this weekend at a saved/matched home
+  | "coming_soon"       // an exclusive pre-MLS / coming-soon home matches them — first look
 
 export interface SavedHomeNudge {
   kind: SavedHomeNudgeKind
@@ -76,6 +77,14 @@ export function classifySavedHomeNudge(kind: string): SavedHomeNudge | null {
         urgency: "medium",
         avatarWorthy: false,
       }
+    case "coming_soon":
+      return {
+        kind: "coming_soon",
+        headline: "An exclusive first look — a coming-soon home that fits you",
+        angle: "a coming-soon / pre-MLS home matches what the buyer is looking for — give them an EXCLUSIVE first look before it hits the open market, and invite them to see it (and reserve a private showing) in their portal. Make them feel like an insider.",
+        urgency: "high",
+        avatarWorthy: true,
+      }
     default:
       return null
   }
@@ -83,5 +92,5 @@ export function classifySavedHomeNudge(kind: string): SavedHomeNudge | null {
 
 /** The nudge kinds, for callers that enumerate. */
 export const SAVED_HOME_NUDGE_KINDS: SavedHomeNudgeKind[] = [
-  "price_drop", "back_on_market", "under_contract", "new_match", "open_house",
+  "price_drop", "back_on_market", "under_contract", "new_match", "open_house", "coming_soon",
 ]
