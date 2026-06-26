@@ -25,6 +25,10 @@ export interface CompBarRow {
 
 export type FairValueRead = "below_market" | "at_market" | "above_market" | "unknown"
 
+/** How much weight the read deserves — a thin/scattered comp set is DIRECTIONAL, not gospel.
+ *  Guards against a black-and-white CMA "coming up short" and over-claiming. */
+export type CompsConfidence = "high" | "moderate" | "low"
+
 export interface CompsAnimationSpec {
   /** Subject highlighted + each comp, ready for the CompsBar animation. */
   rows: CompBarRow[]
@@ -33,12 +37,17 @@ export interface CompsAnimationSpec {
   /** Subject price vs the comp median, as a signed % (negative = below market). null w/o comps. */
   deltaPct: number | null
   fairValue: FairValueRead
-  /** The agent-facing one-liner for the offer plan (factual, no fabrication). */
+  /** Confidence in the read from the comp count + spread (≥4 tight → high; <3 or wide → low). */
+  confidence: CompsConfidence
+  /** The AGENT-facing one-liner for the offer plan — softened when confidence is low (directional,
+   *  never a definitive verdict that would scare a client if the agent repeated it verbatim). */
   agentRead: string
 }
 
 /** Tolerance band around the comp median that reads as "at market" (±%). */
 export const AT_MARKET_BAND_PCT = 3
+/** A comp price spread wider than this (max/min − 1) means the comps disagree → lower confidence. */
+export const WIDE_SPREAD_RATIO = 0.25
 
 function median(nums: number[]): number | null {
   const xs = nums.filter((n) => typeof n === "number" && n > 0).sort((a, b) => a - b)
@@ -67,8 +76,16 @@ export function buildCompsAnimationSpec(input: {
   const compMedian = median(comps.map((c) => c.soldPrice))
 
   if (compMedian == null || !(input.subjectPrice > 0)) {
-    return { rows, compMedian, deltaPct: null, fairValue: "unknown", agentRead: "Not enough recent comps to read fair value yet." }
+    return { rows, compMedian, deltaPct: null, fairValue: "unknown", confidence: "low", agentRead: "Not enough recent comps to read fair value yet — pull a few more before advising." }
   }
+
+  // Confidence: comp count + price spread. A thin or scattered set is DIRECTIONAL only.
+  const prices = comps.map((c) => c.soldPrice)
+  const spread = Math.max(...prices) / Math.min(...prices) - 1
+  const confidence: CompsConfidence =
+    comps.length >= 4 && spread <= WIDE_SPREAD_RATIO ? "high"
+    : comps.length >= 3 && spread <= WIDE_SPREAD_RATIO ? "moderate"
+    : "low"
 
   const deltaPct = Math.round(((input.subjectPrice - compMedian) / compMedian) * 1000) / 10 // 1 decimal
   let fairValue: FairValueRead
@@ -76,12 +93,18 @@ export function buildCompsAnimationSpec(input: {
   else if (deltaPct < 0) fairValue = "below_market"
   else fairValue = "above_market"
 
+  // Low confidence → soft, directional language (never a definitive verdict that, if repeated to a
+  // client, would scare them). High/moderate → the crisp read the agent can act on.
+  const qualifier = confidence === "low" ? "a few comps suggest roughly " : "~"
+  const tail = confidence === "low" ? " — directional only; worth a closer look before you advise." : ""
   const agentRead =
-    fairValue === "below_market"
+    confidence === "low"
+      ? `Thin comp set (${comps.length}). ${qualifier}${Math.abs(deltaPct)}% ${deltaPct < 0 ? "below" : deltaPct > 0 ? "above" : "around"} a ${money(compMedian)} median${tail}`
+      : fairValue === "below_market"
       ? `Listed ~${Math.abs(deltaPct)}% BELOW the comp median (${money(compMedian)}) — room to win at or near ask.`
       : fairValue === "above_market"
       ? `Listed ~${deltaPct}% ABOVE the comp median (${money(compMedian)}) — justify the premium or negotiate down.`
       : `Listed right around the comp median (${money(compMedian)}) — fairly priced; compete on terms.`
 
-  return { rows, compMedian, deltaPct, fairValue, agentRead }
+  return { rows, compMedian, deltaPct, fairValue, confidence, agentRead }
 }

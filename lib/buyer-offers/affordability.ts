@@ -167,3 +167,32 @@ export function affordabilityRead(input: AffordabilityReadInput): AffordabilityR
     return { withinPreApproval, headroomToPreApproval, verdict: "within_budget", reason: "within your pre-approval" }
   return { withinPreApproval, headroomToPreApproval, verdict: "unknown", reason: "no pre-approval or budget on file yet" }
 }
+
+export interface ClientAffordabilityFraming {
+  /** Warm, non-alarming chip label the CLIENT sees (never "Over budget"). */
+  label: string
+  /** UI tone — "good" | "soft" | "neutral". Never an alarm-red for a client. */
+  tone: "good" | "soft" | "neutral"
+  /** A confidence-building, conversation-STARTING line that routes to the agent. */
+  line: string
+}
+
+/**
+ * clientAffordabilityFraming — PURE. The them-first sales layer: a buyer should never hit a
+ * stark "Over budget" wall that scares them off or ends the conversation. Every verdict becomes a
+ * warm, confidence-building nudge toward THEIR AGENT (who can find financing, terms, or a better
+ * fit). The precise number/verdict stays with the agent; the client gets a reason to reach out.
+ */
+export function clientAffordabilityFraming(verdict: AffordabilityVerdict): ClientAffordabilityFraming {
+  switch (verdict) {
+    case "within_budget":
+      return { label: "Looks within reach", tone: "good", line: "A strong fit on paper — your agent can help you make it yours." }
+    case "stretch":
+      return { label: "Worth a conversation", tone: "soft", line: "It's close. Your agent knows ways to make a home like this work — let's talk it through." }
+    case "over_budget":
+      return { label: "Let's explore your options", tone: "soft", line: "A little above your current numbers — your agent can map the right path: financing, terms, or homes that fit just as well." }
+    case "unknown":
+    default:
+      return { label: "Get your real numbers", tone: "neutral", line: "Get pre-approved and your agent will show you exactly what fits — no guessing." }
+  }
+}

@@ -5,7 +5,7 @@
  * BUYER SELF-SERVE AFFORDABILITY — proves the exact mortgage math + the honest verdict the
  * portal tool shows a buyer on a property they like. Pure: no I/O, deterministic.
  */
-import { estimateMonthlyPayment, affordabilityRead, preApprovalStatus } from "../lib/buyer-offers/affordability"
+import { estimateMonthlyPayment, affordabilityRead, preApprovalStatus, clientAffordabilityFraming } from "../lib/buyer-offers/affordability"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -50,6 +50,16 @@ function main() {
   check("expires in 20d → expiring", preApprovalStatus(450000, inDays(20), NOW).state === "expiring")
   check("expired yesterday → expired", preApprovalStatus(450000, inDays(-1), NOW).state === "expired")
   check("expiring carries daysToExpiry", preApprovalStatus(450000, inDays(20), NOW).daysToExpiry === 20)
+
+  console.log("\n[Client-safe framing — warm + agent-routing, NEVER a scary 'over budget' wall]")
+  const over = clientAffordabilityFraming("over_budget")
+  check("over_budget is NOT labeled 'over budget' to the client", !/over budget/i.test(over.label))
+  check("over_budget tone is never an alarm (soft, not red)", over.tone === "soft")
+  check("over_budget routes to the agent (conversation, not a dead end)", /agent/i.test(over.line))
+  check("within_budget reads encouraging (good tone)", clientAffordabilityFraming("within_budget").tone === "good")
+  check("stretch is 'worth a conversation', soft tone", clientAffordabilityFraming("stretch").tone === "soft" && /conversation/i.test(clientAffordabilityFraming("stretch").label))
+  check("unknown nudges to get the real numbers with the agent", /agent/i.test(clientAffordabilityFraming("unknown").line))
+  check("no framing line uses a scary word (can't afford / denied / rejected)", (["within_budget","stretch","over_budget","unknown"] as const).every((v) => !/can.?t afford|denied|rejected|too expensive/i.test(clientAffordabilityFraming(v).line)))
 
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

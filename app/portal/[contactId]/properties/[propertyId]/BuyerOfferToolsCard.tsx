@@ -6,14 +6,14 @@
 // listings; ours lets the buyer self-qualify AND auto-convenes the team.
 
 import { useMemo, useState, useTransition } from "react"
-import { Calculator, HandCoins, CheckCircle2, AlertTriangle, HelpCircle } from "lucide-react"
+import { Calculator, HandCoins, CheckCircle2, HelpCircle, MessageCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
-import { estimateMonthlyPayment, affordabilityRead, preApprovalStatus, AFFORDABILITY_DEFAULTS } from "@/lib/buyer-offers/affordability"
+import { estimateMonthlyPayment, affordabilityRead, preApprovalStatus, clientAffordabilityFraming, AFFORDABILITY_DEFAULTS } from "@/lib/buyer-offers/affordability"
 import { signalAffordabilityChecked, requestOfferHelp, requestPreApprovalRefresh } from "@/app/actions/buyer-offer-tools"
 
 const money = (n: number) => `$${Math.round(n).toLocaleString()}`
@@ -63,12 +63,16 @@ export function BuyerOfferToolsCard({
     })
   }
 
-  const verdictUI = {
-    within_budget: { label: "Within reach", cls: "bg-green-100 text-green-800", Icon: CheckCircle2 },
-    stretch: { label: "A stretch", cls: "bg-amber-100 text-amber-800", Icon: AlertTriangle },
-    over_budget: { label: "Over budget", cls: "bg-red-100 text-red-800", Icon: AlertTriangle },
-    unknown: { label: "Add pre-approval to see", cls: "bg-muted text-muted-foreground", Icon: HelpCircle },
-  }[read.verdict]
+  // CLIENT-SAFE framing — never a scary red "Over budget" wall; every read is a warm nudge toward
+  // the agent (who finds the path). The precise number/verdict stays with the agent.
+  const framing = clientAffordabilityFraming(read.verdict)
+  const toneCls = framing.tone === "good"
+    ? "bg-green-100 text-green-800"
+    : framing.tone === "soft"
+    ? "bg-blue-100 text-blue-800"
+    : "bg-muted text-muted-foreground"
+  const ToneIcon = framing.tone === "good" ? CheckCircle2 : framing.tone === "neutral" ? HelpCircle : MessageCircle
+  const verdictUI = { label: framing.label, cls: toneCls, Icon: ToneIcon }
 
   function letAgentKnow() {
     startTransition(async () => {
@@ -106,6 +110,9 @@ export function BuyerOfferToolsCard({
           </div>
           <Badge className={`${verdictUI.cls} flex items-center gap-1`}><VIcon className="h-3 w-3" />{verdictUI.label}</Badge>
         </div>
+
+        {/* Warm, conversation-STARTING line — routes to the agent, never a scary verdict. */}
+        <p className="text-xs text-muted-foreground">{framing.line}</p>
 
         <div className="grid grid-cols-3 gap-3">
           <div>

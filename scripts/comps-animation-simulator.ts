@@ -32,6 +32,13 @@ function main() {
   check("below-market agent read names the median + the edge", /BELOW the comp median/.test(buildCompsAnimationSpec({ subjectLabel: "x", subjectPrice: 500000, comps }).agentRead))
   check("deltaPct signed (negative = below)", (buildCompsAnimationSpec({ subjectLabel: "x", subjectPrice: 500000, comps }).deltaPct ?? 0) < 0)
 
+  console.log("\n[Confidence — a thin/scattered set is directional, never gospel (don't scare)]")
+  check("4 tight comps → high confidence", buildCompsAnimationSpec({ subjectLabel: "x", subjectPrice: 500000, comps: [...comps, { label: "5 Ash", soldPrice: 510000 }] }).confidence === "high")
+  check("3 tight comps → moderate", buildCompsAnimationSpec({ subjectLabel: "x", subjectPrice: 500000, comps }).confidence === "moderate")
+  check("2 comps → low confidence", buildCompsAnimationSpec({ subjectLabel: "x", subjectPrice: 500000, comps: comps.slice(0, 2) }).confidence === "low")
+  check("wide spread → low even with enough comps", buildCompsAnimationSpec({ subjectLabel: "x", subjectPrice: 500000, comps: [{ label: "a", soldPrice: 400000 }, { label: "b", soldPrice: 520000 }, { label: "c", soldPrice: 700000 }, { label: "d", soldPrice: 800000 }] }).confidence === "low")
+  check("low-confidence read is softened (directional, not a hard verdict)", /directional only|Thin comp set/.test(buildCompsAnimationSpec({ subjectLabel: "x", subjectPrice: 500000, comps: comps.slice(0, 2) }).agentRead))
+
   console.log("\n[Honest — no comps, no fabrication]")
   const none = buildCompsAnimationSpec({ subjectLabel: "x", subjectPrice: 500000, comps: [] })
   check("no comps → unknown fair value", none.fairValue === "unknown")
