@@ -11,6 +11,7 @@ import { resolveContactChannel, voiceReachable } from "../lib/ai-isa/contact-cha
 import { buildSituationalVoicemailScript } from "../lib/ai-isa/situational-voicemail"
 import { contactReelPersona, situationKindForContact, personaTopicCategories, buildInformationalReelSituation } from "../lib/ai-isa/contact-reel-situation"
 import { buildSituationalPortalMessage } from "../lib/ai-isa/situational-portal-message"
+import { buildContactPortalUrl, portalSmsLine, portalCtaHtml } from "../lib/ai-isa/portal-link"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -102,6 +103,18 @@ async function main() {
   const infoSit = buildInformationalReelSituation({ contactId: "c1", persona: "buyer", topicTitle: "How rate buydowns lower your payment", valueAngle: "save monthly", categories: ["finance"] })
   check("informational reel is an avatar EXPLAINER (not a fixed persona kind)", infoSit.kind === "explainer")
   check("the popular keyword/topic seeds the reel facts", infoSit.facts?.topic === "How rate buydowns lower your payment")
+
+  console.log("\n[Portal-back — every contact touch returns to OUR portal (beat RealScout/Lofty)]")
+  const purl = buildContactPortalUrl("c-123", null, "https://app.example.com/")
+  check("portal URL is the contact's home (/portal/<id>)", purl === "https://app.example.com/portal/c-123")
+  check("trailing slash on origin is normalized (no //)", !purl.includes("//portal"))
+  const section = buildContactPortalUrl("c-123", "/matches", "https://app.example.com")
+  check("a section hangs off the portal home", section === "https://app.example.com/portal/c-123/matches")
+  const smsLine = portalSmsLine("c-123", "https://app.example.com")
+  check("SMS portal line is plain text (no HTML) + carries the link", !/[<>]/.test(smsLine) && smsLine.includes("/portal/c-123"))
+  const cta = portalCtaHtml("c-123", "https://app.example.com")
+  check("email portal CTA is an HTML button linking the portal", cta.includes("<a ") && cta.includes("/portal/c-123"))
+  check("email + SMS drive to the SAME portal home (consistent destination)", cta.includes(purl.replace("https://app.example.com/", "https://app.example.com/")) || cta.includes("/portal/c-123"))
 
   console.log("\n[Managers delegating — the ISA hands the reel to the Asset Manager]")
   {

@@ -483,7 +483,10 @@ async function dispatchContactChannel(
       marital_status:    (contact as any).marital_status ?? null,
     })
     const smsCopy = buildDeterministicCopy(smsFacts, 'sms', contact.first_name ?? undefined)
-    const smsBody = smsCopy.body
+    // PORTAL-BACK — every touch (SMS included) pulls the client into OUR portal (matches,
+    // journey, value in one place), not a competitor's. SMS is the SMS-first cohorts' channel.
+    const { portalSmsLine } = await import('@/lib/ai-isa/portal-link')
+    const smsBody = `${smsCopy.body}\n${portalSmsLine(contact.id)}`
 
     await dispatchSms({
       brokerageId,

@@ -21,6 +21,13 @@ export function buildContactPortalUrl(contactId: string, section?: string | null
   return `${base}/${String(section).replace(/^\/+/, "")}`
 }
 
+/** A short, plain-text "back to your portal" line to append to an SMS body. SMS is the
+ *  SMS-first channel for younger cohorts — the single highest-value place to pull the client
+ *  back into OUR portal. Kept terse for the 160-char segment; the URL carries the rest. */
+export function portalSmsLine(contactId: string, origin?: string | null, label = "Your portal"): string {
+  return `${label}: ${buildContactPortalUrl(contactId, null, origin)}`
+}
+
 /** An HTML "back to your portal" CTA button to append to an outbound email body. */
 export function portalCtaHtml(contactId: string, origin?: string | null, label = "Open your portal"): string {
   const url = buildContactPortalUrl(contactId, null, origin)
