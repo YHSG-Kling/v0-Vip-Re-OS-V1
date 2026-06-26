@@ -39,7 +39,7 @@ export async function generateBuyerOfferStrategy(
 
 Listing Details:
 - List Price: $${params.listPrice.toLocaleString()}
-- Days on Market: ${params.daysOnMarket}
+- Days on Market: ${params.daysOnMarket ?? "Unknown"}
 - Competing Offers: ${params.competingOffers ?? "Unknown"}
 - Market: ${params.marketConditions}
 

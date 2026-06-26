@@ -150,7 +150,7 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
     // `property_interests`, which holds search criteria not saved listings).
     supabase
       .from("saved_properties")
-      .select("id, listing_id, saved_at, notes, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state")
+      .select("id, listing_id, external_property_id, source, listing_url, saved_at, notes, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state")
       .eq("contact_id", contactId)
       .eq("dismissed", false)
       .order("saved_at", { ascending: false })
@@ -510,8 +510,13 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
               <Link href={`/portal/${contactId}/properties`} className="text-xs text-blue-600">See all</Link>
             </div>
             <div className="space-y-2">
-              {savedProperties.slice(0,2).map((p:any) => (
-                <Link key={p.id} href={`/portal/${contactId}/properties/${p.listing_id}`}>
+              {savedProperties.slice(0,2).map((p:any) => {
+                // IN-HOUSE saves (listing_id) open the in-portal property page; EXTERNAL
+                // (RentCast/IDX) saves have NO listing_id — we store specs + the source URL, so
+                // they open their real listing URL. Without this, every external saved home
+                // (the common case — buyers shop the whole market) was a dead /properties/null link.
+                const isExternal = !p.listing_id && (!!p.external_property_id || !!p.listing_url)
+                const inner = (
                   <Card className="hover:shadow-md transition-all cursor-pointer">
                     <CardContent className="p-3 flex items-center gap-3">
                       {p.primary_photo_url ? (
@@ -523,13 +528,23 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
                       )}
                       <div className="min-w-0">
                         <p className="text-sm font-medium truncate">{p.property_address}</p>
-                        {p.list_price && <p className="text-xs text-muted-foreground">${(p.list_price/1000).toFixed(0)}K{p.bedrooms ? ` - ${p.bedrooms} bed` : ''}</p>}
+                        {p.list_price && <p className="text-xs text-muted-foreground">${(p.list_price/1000).toFixed(0)}K{p.bedrooms ? ` - ${p.bedrooms} bed` : ''}{isExternal && p.source ? ` · ${p.source}` : ''}</p>}
                       </div>
                       <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0 ml-auto" />
                     </CardContent>
                   </Card>
-                </Link>
-              ))}
+                )
+                if (isExternal && p.listing_url) {
+                  return (
+                    <a key={p.id} href={p.listing_url} target="_blank" rel="noopener noreferrer">{inner}</a>
+                  )
+                }
+                // In-house with a listing_id → in-portal page; otherwise fall back to the
+                // full properties list (never a broken /properties/null link).
+                return (
+                  <Link key={p.id} href={p.listing_id ? `/portal/${contactId}/properties/${p.listing_id}` : `/portal/${contactId}/properties`}>{inner}</Link>
+                )
+              })}
             </div>
           </div>
         )}

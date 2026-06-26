@@ -39,7 +39,8 @@ export type BuyerOfferStrategy = z.infer<typeof BuyerOfferStrategySchema>
 
 export interface BuyerOfferStrategyInput {
   listPrice: number
-  daysOnMarket: number
+  /** Whole days on market, or null when unknown (external refs) — the prompt renders "Unknown". */
+  daysOnMarket: number | null
   competingOffers?: number
   marketConditions: "hot" | "balanced" | "cooling"
   buyerMotivation: "must_have" | "would_like" | "nice_to_have"

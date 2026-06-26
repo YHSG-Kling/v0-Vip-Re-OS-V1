@@ -65,15 +65,24 @@ export async function produceOfferStrategyBrief(
   //    a missing target/budget degrades honestly to the generic brief. ──
   let strategySummary: string | null = null
   try {
+    // Both IN-HOUSE (listing_id → listings) AND EXTERNAL (RentCast/IDX — list_price + url stored
+    // on the saved_properties row itself, listing_id null) targets. Most buyers shop the whole
+    // market, so the external case is the common one. Coalesce the price (row first, then the
+    // in-house listing); DOM comes only from the in-house listing (external is honestly unknown).
     const { data: savedRows } = await supabase
       .from("saved_properties")
-      .select("listing_id, saved_at, dismissed, listings(list_price, status, listing_date)")
+      .select("listing_id, external_property_id, source, list_price, listing_url, property_address, saved_at, dismissed, listings(list_price, status, listing_date)")
       .eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("dismissed", false)
       .order("saved_at", { ascending: false }).limit(10)
     const flat = ((savedRows ?? []) as any[]).map((r) => {
       const l = Array.isArray(r.listings) ? r.listings[0] : r.listings
-      return { listing_id: r.listing_id, saved_at: r.saved_at, dismissed: r.dismissed,
-        list_price: l?.list_price ?? null, status: l?.status ?? null, listing_date: l?.listing_date ?? null }
+      return {
+        listing_id: r.listing_id, external_property_id: r.external_property_id, source: r.source,
+        saved_at: r.saved_at, dismissed: r.dismissed,
+        list_price: (typeof r.list_price === "number" ? r.list_price : null) ?? l?.list_price ?? null,
+        listing_url: r.listing_url ?? null, property_address: r.property_address ?? null,
+        status: l?.status ?? (r.listing_id ? null : "active"), listing_date: l?.listing_date ?? null,
+      }
     })
     const { pickBuyerTargetListing, marketConditionsFromDom, motivationFromBuyer, resolveBuyerMaxBudget } =
       await import("@/lib/offers/offer-target")
