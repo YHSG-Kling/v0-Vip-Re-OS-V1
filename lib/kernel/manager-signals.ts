@@ -640,6 +640,14 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       { brokerageId: ctx.brokerageId, agentUserId, contactId, idempotencyDiscriminator: discriminator, persona: { audience: persona }, copyGenerator: realCopyGenerator },
       ctx.supabase,
     )
+    // CLOSE THE LEARNING LOOP — log the topic use so the per-persona performance aggregator
+    // joins it to engagement (qr scans / reply) and pickTopics compounds the winners.
+    if (discriminator && r.ok && r.videoProjectId) {
+      await ctx.supabase.from("content_topic_uses").insert({
+        topic_id: discriminator, brokerage_id: ctx.brokerageId,
+        asset_type: "situational_reel", asset_id: r.videoProjectId, used_at: new Date().toISOString(),
+      }).then(() => {}, () => {})
+    }
     if (r.status === "already_staged") return `${persona} reel on ${topicLabel} already commissioned (${r.compositionId}, deduped)`
     if (r.ok) return `commissioned the ${persona} reel on ${topicLabel} (${r.compositionId}, gated) fronted by the assigned agent`
     return r.status === "blocked" ? `situational reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null
@@ -734,13 +742,18 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     try {
       const { generatePersonaCopy, realCopyGenerator } = await import("@/lib/kernel/ai-copy")
       const drafted = await generatePersonaCopy(
-        { goal: `a short, warm, them-first email introducing a personal situational video to a real-estate ${audience} client — 2-3 sentences, reference where they are, invite them to watch and reply. Put the exact video link on its own line. No protected-class or age language.`,
+        { goal: `a short, warm, them-first email introducing a personal situational video to a real-estate ${audience} client — 2-3 sentences, reference where they are, invite them to watch and reply, and nudge them to see it (plus everything) in their portal. Put the exact video link on its own line. No protected-class or age language.`,
           facts: [`Video link: ${videoUrl}`], channel: "email", persona: { name: firstName, audience } },
         { body: fallbackBody }, { generator: realCopyGenerator },
       )
       const d = drafted.body?.trim()
       if (d) body = d.includes(videoUrl) ? d : `${d}\n\n${videoUrl}`
     } catch { /* gateway down → deterministic fallback */ }
+    // EVERY TOUCH DRIVES BACK TO THE PORTAL.
+    try {
+      const { portalCtaHtml } = await import("@/lib/ai-isa/portal-link")
+      body = `${body}\n${portalCtaHtml(contactId)}`
+    } catch { /* best-effort */ }
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
     const res = await proposeClientMessage({
       brokerageId: ctx.brokerageId, agentKind, entityType: "contact",

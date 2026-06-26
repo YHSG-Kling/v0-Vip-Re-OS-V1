@@ -135,6 +135,7 @@
     "test:lifetime-audience": "tsx scripts/lifetime-audience-simulator.ts",
     "test:newsletter-enroll": "tsx scripts/newsletter-enrollment-simulator.ts",
     "test:outreach-identity": "tsx scripts/outreach-identity-simulator.ts",
+    "test:next-best-touch": "tsx scripts/next-best-touch-simulator.ts",
     "test:video-coordination": "tsx scripts/video-coordination-simulator.ts",
     "test:compliance-gate": "tsx scripts/compliance-gate-simulator.ts",
     "test:avatar-loop": "tsx scripts/avatar-loop-simulator.ts",

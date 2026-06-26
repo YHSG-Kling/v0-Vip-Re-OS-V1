@@ -202,8 +202,36 @@ export async function engageContact(
       } catch (e) { console.error('[engageContact] portal touch failed:', e) }
     }
 
-    // ── 5. Resolve channel ────────────────────────────────────────────────
-    const resolvedChannel = resolveContactChannel(contact)
+    // ── 5. AUTONOMOUS NEXT-BEST CHANNEL — the manager DECIDES which channel this contact's
+    //    next touch uses (not just the static stored preference): the channel they actually
+    //    REPLY to, then their AGE-GROUP psychology (gen-z text/video-first, boomers answer the
+    //    phone, …), ROTATED off the last channel used — all within consent. resolveContactChannel
+    //    remains the floor when consent permits nothing the manager would choose. ──
+    let resolvedChannel = resolveContactChannel(contact)
+    try {
+      const { permittedContactChannels, decideNextChannel } = await import('@/lib/ai-isa/next-best-touch')
+      const { cohortFromEnrichment } = await import('@/lib/ai-isa/adaptive-reengagement')
+      const cohort = cohortFromEnrichment({
+        age: (contact.enrichment_profile as { age?: number | null } | null)?.age ?? null,
+        age_range: (contact.age_range as string | null) ?? null,
+      })
+      const { data: logRows } = await supabase.from('isa_outreach_log')
+        .select('channel, replied_at').eq('contact_id', contact.id).order('sent_at', { ascending: false }).limit(60)
+      const lastChannel = (logRows as Array<{ channel: string | null }> | null)?.[0]?.channel ?? null
+      const byCh = new Map<string, { sent: number; replies: number }>()
+      for (const r of (logRows ?? []) as Array<{ channel: string | null; replied_at: string | null }>) {
+        if (!r.channel) continue
+        const e = byCh.get(r.channel) ?? { sent: 0, replies: 0 }
+        e.sent++; if (r.replied_at) e.replies++; byCh.set(r.channel, e)
+      }
+      const { rankChannelsByReplyRate } = await import('@/lib/campaign-sequences/channel-order')
+      const ranked = rankChannelsByReplyRate([...byCh.entries()].map(([channel, v]) => ({ channel, sent: v.sent, replies: v.replies })))
+      const nba = decideNextChannel({
+        permitted: permittedContactChannels(contact), cohort,
+        learnedRanked: ranked.ranked.map((x) => x.channel), lastChannel,
+      })
+      if (nba.channel !== 'no_channel') resolvedChannel = nba.channel
+    } catch (e) { console.error('[engageContact] next-best-channel failed; using preference:', e) }
     const channel = forceChannel ?? resolvedChannel
 
     // Consent guard for phone/SMS
@@ -328,7 +356,11 @@ async function dispatchContactChannel(
       .limit(1)
       .maybeSingle()
     const reel = latestReel as { video_url?: string | null; thumbnail_url?: string | null } | null
-    const finalBody = await embedVideoInEmail(body, reel?.video_url ?? null, reel?.thumbnail_url ?? null)
+    const embeddedBody = await embedVideoInEmail(body, reel?.video_url ?? null, reel?.thumbnail_url ?? null)
+    // EVERY TOUCH DRIVES BACK TO THE PORTAL — append a CTA so the relationship compounds in
+    // OUR portal (matches, journey, value, videos in one place), not a competitor's.
+    const { portalCtaHtml } = await import('@/lib/ai-isa/portal-link')
+    const finalBody = `${embeddedBody}\n${portalCtaHtml(contact.id)}`
 
     // Final compliance pass on generated content
     const finalCompliance = await evaluateOutbound({
