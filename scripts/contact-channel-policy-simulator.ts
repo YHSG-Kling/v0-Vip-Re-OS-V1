@@ -9,7 +9,7 @@
  */
 import { resolveContactChannel, voiceReachable } from "../lib/ai-isa/contact-channel-policy"
 import { buildSituationalVoicemailScript } from "../lib/ai-isa/situational-voicemail"
-import { contactReelPersona, situationKindForContact } from "../lib/ai-isa/contact-reel-situation"
+import { contactReelPersona, situationKindForContact, personaTopicCategories, buildInformationalReelSituation } from "../lib/ai-isa/contact-reel-situation"
 import { buildSituationalPortalMessage } from "../lib/ai-isa/situational-portal-message"
 
 let pass = 0, fail = 0
@@ -93,6 +93,15 @@ async function main() {
   const PORTAL_BANNED = ["race", "religion", "ethnic", "disab", "familial", "children", "married", "elderly", "your age", "retiree"]
   check("no portal note references a protected class or age (Fair Housing)",
     [portalBuyer, portalSeller, portalBoth, portalLife].every((s) => !PORTAL_BANNED.some((w) => s.toLowerCase().includes(w))))
+
+  console.log("\n[Follow-up reels follow POPULAR KEYWORDS pertaining to the persona]")
+  check("buyer topic categories are buyer-relevant", personaTopicCategories("buyer").includes("buyer_advice"))
+  check("seller topic categories are seller-relevant", personaTopicCategories("seller").includes("seller_advice"))
+  check("lifetime topic categories are homeowner-relevant", personaTopicCategories("lifetime").some((c) => /home_value|home_improvement|homeownership/.test(c)))
+  check("each persona gets distinct keyword categories", new Set((["buyer", "seller", "both", "lifetime"] as const).map((p) => personaTopicCategories(p).join(","))).size === 4)
+  const infoSit = buildInformationalReelSituation({ contactId: "c1", persona: "buyer", topicTitle: "How rate buydowns lower your payment", valueAngle: "save monthly", categories: ["finance"] })
+  check("informational reel is an avatar EXPLAINER (not a fixed persona kind)", infoSit.kind === "explainer")
+  check("the popular keyword/topic seeds the reel facts", infoSit.facts?.topic === "How rate buydowns lower your payment")
 
   console.log("\n[Managers delegating — the ISA hands the reel to the Asset Manager]")
   {

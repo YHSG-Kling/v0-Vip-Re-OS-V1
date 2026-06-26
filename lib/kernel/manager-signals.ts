@@ -602,23 +602,46 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const contactId = signal.entityId ?? signal.contactId
     if (!contactId) return null
     const { data: contact } = await ctx.supabase.from("contacts")
-      .select("id, contact_type").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      .select("id, contact_type, city, state, zip_code").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     if (!contact) return null
     const { resolveContactPresenterUserId } = await import("@/lib/ai-isa/outreach-identity")
     const agentUserId = await resolveContactPresenterUserId(ctx.supabase, contactId, ctx.brokerageId)
     if (!agentUserId) return "no assigned agent to front the reel — contact situational reel deferred"
-    const { contactReelPersona, buildContactReelSituation } = await import("@/lib/ai-isa/contact-reel-situation")
+    const { contactReelPersona, buildContactReelSituation, buildInformationalReelSituation, personaTopicCategories } = await import("@/lib/ai-isa/contact-reel-situation")
     const { commissionVideo } = await import("@/lib/video/video-director")
     const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
-    const persona = contactReelPersona((contact as { contact_type: string | null }).contact_type)
-    const situation = buildContactReelSituation({ contactId, persona })
+    const cr = contact as { contact_type: string | null; city?: string | null; state?: string | null; zip_code?: string | null }
+    const persona = contactReelPersona(cr.contact_type)
+
+    // FOLLOW-UP REELS FOLLOW POPULAR KEYWORDS — pull a fresh topic from content_topic_bank that
+    // pertains to this persona's situation (rotating via markUsed, ranked by per-persona
+    // performance + geo). The first-touch welcome avatar reel is the lead play; every follow-up
+    // here rides a different informational topic. No fresh topic → the persona-moment reel.
+    let situation = buildContactReelSituation({ contactId, persona })
+    let discriminator: string | null = null
+    let topicLabel = `${persona} moment`
+    try {
+      const { pickTopics } = await import("@/lib/content-intel/topic-bank")
+      const topics = await pickTopics({
+        brokerageId: ctx.brokerageId, categoriesAny: personaTopicCategories(persona),
+        recipientPersona: persona, assetType: "situational_reel", limit: 1, markUsed: true,
+        recipientLocation: { city: cr.city ?? null, state: cr.state ?? null, zip_code: cr.zip_code ?? null },
+      })
+      const topic = topics[0]
+      if (topic) {
+        situation = buildInformationalReelSituation({ contactId, persona, topicTitle: topic.topic_title, valueAngle: topic.value_angle, categories: topic.categories })
+        discriminator = topic.id // each popular keyword is its OWN reel for this contact
+        topicLabel = `"${topic.topic_title}"`
+      }
+    } catch (e) { console.error("[manager-signals] topic pick failed; persona-moment reel:", e) }
+
     const r = await commissionVideo(
       situation,
-      { brokerageId: ctx.brokerageId, agentUserId, contactId, copyGenerator: realCopyGenerator },
+      { brokerageId: ctx.brokerageId, agentUserId, contactId, idempotencyDiscriminator: discriminator, persona: { audience: persona }, copyGenerator: realCopyGenerator },
       ctx.supabase,
     )
-    if (r.status === "already_staged") return `situational ${persona} reel already commissioned (${r.compositionId}, deduped)`
-    if (r.ok) return `commissioned the situational ${persona} reel (${r.compositionId}, gated) fronted by the assigned agent`
+    if (r.status === "already_staged") return `${persona} reel on ${topicLabel} already commissioned (${r.compositionId}, deduped)`
+    if (r.ok) return `commissioned the ${persona} reel on ${topicLabel} (${r.compositionId}, gated) fronted by the assigned agent`
     return r.status === "blocked" ? `situational reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null
   },
   // Asset Manager → Campaign Orchestrator: a lead's persona intro reel FINISHED. The
@@ -642,7 +665,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       .eq("subject", subject).in("status", ["proposed", "approved"]).limit(1).maybeSingle()
     if (dup) return "reel follow-up already proposed for this lead (gated, deduped)"
 
-    const body = [
+    const fallbackBody = [
       `Hi ${firstName},`,
       "",
       `I put together a short, personal video just for you — it's a quick hello and a look at how I can help with your move. No pressure at all; watch whenever it's convenient:`,
@@ -651,6 +674,19 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       "",
       `If anything in it is useful, just reply to this email and I'll take it from there.`,
     ].join("\n")
+    // AI-WRITTEN them-first intro (gateway), the deterministic body is the FALLBACK only; the
+    // exact video link is guaranteed present.
+    let body = fallbackBody
+    try {
+      const { generatePersonaCopy, realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+      const drafted = await generatePersonaCopy(
+        { goal: `a short, warm, them-first email introducing a personal welcome video to a real-estate lead — 2-3 sentences, no pressure, invite them to watch and reply. Put the exact video link on its own line. No protected-class or age language.`,
+          facts: [`Video link: ${videoUrl}`], channel: "email", persona: { name: firstName, audience: "lead" }, words: 75 },
+        { body: fallbackBody }, { generator: realCopyGenerator },
+      )
+      const d = drafted.body?.trim()
+      if (d) body = d.includes(videoUrl) ? d : `${d}\n\n${videoUrl}`
+    } catch { /* gateway down → deterministic fallback */ }
 
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
     const res = await proposeClientMessage({
@@ -684,7 +720,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
 
     const audience: "seller" | "buyer" = c.contact_type === "seller" ? "seller" : "buyer"
     const agentKind = c.contact_type === "seller" ? "listing_concierge" : "shopping_agent"
-    const body = [
+    const fallbackBody = [
       `Hi ${firstName},`,
       "",
       `I put together a short, personal video just for you — a quick look at what's most relevant to where you are right now. Watch whenever it's convenient:`,
@@ -693,6 +729,18 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       "",
       `Anything you'd like to dig into, just reply and I'll take it from there.`,
     ].join("\n")
+    // AI-WRITTEN them-first body (gateway); deterministic fallback only; link guaranteed.
+    let body = fallbackBody
+    try {
+      const { generatePersonaCopy, realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+      const drafted = await generatePersonaCopy(
+        { goal: `a short, warm, them-first email introducing a personal situational video to a real-estate ${audience} client — 2-3 sentences, reference where they are, invite them to watch and reply. Put the exact video link on its own line. No protected-class or age language.`,
+          facts: [`Video link: ${videoUrl}`], channel: "email", persona: { name: firstName, audience } },
+        { body: fallbackBody }, { generator: realCopyGenerator },
+      )
+      const d = drafted.body?.trim()
+      if (d) body = d.includes(videoUrl) ? d : `${d}\n\n${videoUrl}`
+    } catch { /* gateway down → deterministic fallback */ }
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
     const res = await proposeClientMessage({
       brokerageId: ctx.brokerageId, agentKind, entityType: "contact",

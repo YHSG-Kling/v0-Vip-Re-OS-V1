@@ -36,7 +36,8 @@ export function situationKindForContact(persona: ContactReelPersona): SituationK
   }
 }
 
-/** Build the Director situation the Asset Manager commissions for a contact's reel. */
+/** Build the Director situation the Asset Manager commissions for a contact's reel (the
+ *  persona-MOMENT fallback — used when no fresh popular topic is available). */
 export function buildContactReelSituation(args: {
   contactId: string
   persona: ContactReelPersona
@@ -46,5 +47,43 @@ export function buildContactReelSituation(args: {
     tier: "solo_agent",
     targetChannel: "email", // the reel rides the ISA's re-engagement email (and the portal)
     facts: { contactId: args.contactId, persona: args.persona },
+  }
+}
+
+/** content_topic_bank categories that pertain to each persona's SITUATION — the follow-up
+ *  reel pulls a POPULAR KEYWORD topic from these (the first touch is the welcome avatar reel;
+ *  every follow-up rides a fresh, persona-relevant informational topic). */
+export function personaTopicCategories(persona: ContactReelPersona): string[] {
+  switch (persona) {
+    case "buyer":    return ["buyer_advice", "home_buying", "finance", "first_time_buyer"]
+    case "seller":   return ["seller_advice", "home_selling", "pricing", "staging"]
+    case "both":     return ["buyer_advice", "seller_advice", "finance", "market_update"]
+    case "lifetime": return ["home_improvement", "home_value", "market_update", "homeownership"]
+  }
+}
+
+/**
+ * buildInformationalReelSituation — the FOLLOW-UP reel: an avatar-led EXPLAINER built around a
+ * POPULAR KEYWORD topic that pertains to the contact's persona (not a fixed kind). The topic
+ * facts seed the Director's gateway-written script; rotating topics make every follow-up fresh.
+ */
+export function buildInformationalReelSituation(args: {
+  contactId: string
+  persona: ContactReelPersona
+  topicTitle: string
+  valueAngle?: string | null
+  categories?: string[]
+}): VideoSituation {
+  return {
+    kind: "explainer",
+    tier: "solo_agent",
+    targetChannel: "email",
+    facts: {
+      contactId: args.contactId,
+      persona: args.persona,
+      topic: args.topicTitle,
+      ...(args.valueAngle ? { value_angle: args.valueAngle } : {}),
+      ...(args.categories && args.categories.length ? { categories: args.categories.join(", ") } : {}),
+    },
   }
 }

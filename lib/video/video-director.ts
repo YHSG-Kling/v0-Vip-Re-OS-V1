@@ -654,6 +654,12 @@ export interface CommissionOpts {
   leadId?: string | null
   /** Campaign id for newsletter-style kinds. */
   campaignId?: string | null
+  /** Idempotency DISCRIMINATOR appended to the director_key. By default one commission per
+   *  (entity, kind) — but ROTATING content (the ISA's informational follow-up reels, one per
+   *  popular keyword/topic) needs each topic to be its own reel for the same contact. Pass the
+   *  topic id here → director_key becomes `director:<kind>:<entity>:<discriminator>`, so a new
+   *  topic stages a new reel instead of deduping against the prior one. */
+  idempotencyDiscriminator?: string | null
   /** Title for the project row (defaults to "<Hook> — <compositionId>"). */
   title?: string | null
   /** Origin for the QR scan/target URLs. */
@@ -767,7 +773,7 @@ export async function commissionVideo(
   //    campaign, then the brokerage. Stamped into video_metadata.director_key so a
   //    re-run for the same situation reuses the staged row instead of duplicating.
   const entity = opts.listingId ?? opts.contactId ?? opts.leadId ?? opts.campaignId ?? opts.brokerageId
-  const directorKey = `director:${situation.kind}:${entity}`
+  const directorKey = `director:${situation.kind}:${entity}${opts.idempotencyDiscriminator ? `:${opts.idempotencyDiscriminator}` : ""}`
 
   const { data: existing } = await svc
     .from("ai_video_projects")
