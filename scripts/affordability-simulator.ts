@@ -5,7 +5,7 @@
  * BUYER SELF-SERVE AFFORDABILITY — proves the exact mortgage math + the honest verdict the
  * portal tool shows a buyer on a property they like. Pure: no I/O, deterministic.
  */
-import { estimateMonthlyPayment, affordabilityRead } from "../lib/buyer-offers/affordability"
+import { estimateMonthlyPayment, affordabilityRead, preApprovalStatus } from "../lib/buyer-offers/affordability"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -40,6 +40,16 @@ function main() {
   check("monthly ≤10% over budget → stretch", affordabilityRead({ price: 480000, monthlyTotal: 3200, preApprovalAmount: 500000, maxMonthlyBudget: 3000 }).verdict === "stretch")
   check("monthly far over budget → over_budget", affordabilityRead({ price: 480000, monthlyTotal: 4000, preApprovalAmount: 500000, maxMonthlyBudget: 3000 }).verdict === "over_budget")
   check("no pre-approval + no budget → unknown (honest)", affordabilityRead({ price: 480000, monthlyTotal: 3000 }).verdict === "unknown")
+
+  console.log("\n[Pre-approval status — an expired approval is not a real ceiling]")
+  const NOW = new Date("2026-06-26T12:00:00Z")
+  const inDays = (d: number) => new Date(NOW.getTime() + d * 86_400_000).toISOString()
+  check("no amount → none", preApprovalStatus(null, null, NOW).state === "none")
+  check("amount, no expiry → active (can't claim stale without a date)", preApprovalStatus(450000, null, NOW).state === "active")
+  check("expires in 90d → active", preApprovalStatus(450000, inDays(90), NOW).state === "active")
+  check("expires in 20d → expiring", preApprovalStatus(450000, inDays(20), NOW).state === "expiring")
+  check("expired yesterday → expired", preApprovalStatus(450000, inDays(-1), NOW).state === "expired")
+  check("expiring carries daysToExpiry", preApprovalStatus(450000, inDays(20), NOW).daysToExpiry === 20)
 
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

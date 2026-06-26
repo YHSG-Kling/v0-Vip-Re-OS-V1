@@ -136,3 +136,41 @@ export async function requestOfferHelp(input: {
     return { success: false, error: e?.message ?? "failed" }
   }
 }
+
+/**
+ * requestPreApprovalRefresh — the buyer's pre-approval is expired/expiring (or missing) and they
+ * want to get (back) to offer-ready. Notify the agent to connect them with a lender. The agent is
+ * the right owner pre-offer (the Finance Manager owns the in-deal lender side); this keeps the
+ * buyer's self-serve tool honest — an expired approval shouldn't masquerade as a real ceiling.
+ */
+export async function requestPreApprovalRefresh(input: {
+  contactId: string
+  propertyId: string
+  propertyAddress: string
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const supabase = await createClient()
+    const resolved = await resolveContactAgent(supabase, input.contactId)
+    if (!resolved) return { success: false, error: "Contact not found" }
+    const { contact, agentUserId } = resolved
+
+    try {
+      await supabase.from("client_portal_activity").insert({
+        contact_id: input.contactId,
+        activity_type: "preapproval_refresh_requested",
+        metadata: { property_id: input.propertyId, property_address: input.propertyAddress, source: "buyer_portal" },
+      })
+    } catch { /* non-critical */ }
+
+    await notifyAgent(supabase, {
+      agentUserId, brokerageId: contact.brokerage_id,
+      type: "buyer.preapproval_refresh_requested",
+      title: "Buyer wants to refresh their pre-approval",
+      body: `${contact.first_name ?? "Your buyer"} is evaluating ${input.propertyAddress} and asked to refresh their pre-approval — connect them with a lender to get back to offer-ready.`,
+      entityId: input.contactId,
+    })
+    return { success: true }
+  } catch (e: any) {
+    return { success: false, error: e?.message ?? "failed" }
+  }
+}

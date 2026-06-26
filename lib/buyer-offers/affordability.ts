@@ -83,6 +83,40 @@ export function estimateMonthlyPayment(input: MonthlyPaymentInput): MonthlyPayme
   }
 }
 
+export type PreApprovalState = "none" | "active" | "expiring" | "expired"
+
+/** Days before expiry within which a pre-approval reads as "expiring soon" (refresh nudge). */
+export const PREAPPROVAL_EXPIRING_DAYS = 30
+
+export interface PreApprovalStatus {
+  state: PreApprovalState
+  amount: number | null
+  /** Whole days until expiry (negative = already expired); null when no expiry on file. */
+  daysToExpiry: number | null
+}
+
+/**
+ * preApprovalStatus — PURE. An honest read of the buyer's pre-approval so the affordability tool
+ * never treats an EXPIRED approval as a real ceiling. A present amount with no expiry reads as
+ * active (we can't claim it's stale without a date); within 30 days reads expiring; past the date
+ * reads expired. `now` injectable.
+ */
+export function preApprovalStatus(
+  amount: number | null | undefined,
+  expiresAt: string | null | undefined,
+  now: Date,
+): PreApprovalStatus {
+  const amt = typeof amount === "number" && amount > 0 ? amount : null
+  if (!amt) return { state: "none", amount: null, daysToExpiry: null }
+  if (!expiresAt) return { state: "active", amount: amt, daysToExpiry: null }
+  const t = new Date(expiresAt).getTime()
+  if (Number.isNaN(t)) return { state: "active", amount: amt, daysToExpiry: null }
+  const days = Math.floor((t - now.getTime()) / 86_400_000)
+  if (days < 0) return { state: "expired", amount: amt, daysToExpiry: days }
+  if (days <= PREAPPROVAL_EXPIRING_DAYS) return { state: "expiring", amount: amt, daysToExpiry: days }
+  return { state: "active", amount: amt, daysToExpiry: days }
+}
+
 export type AffordabilityVerdict = "within_budget" | "stretch" | "over_budget" | "unknown"
 
 export interface AffordabilityReadInput {

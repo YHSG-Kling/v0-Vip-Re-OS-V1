@@ -17,7 +17,7 @@
  *
  * Run: npx tsx scripts/external-match-simulator.ts  (npm run test:external-match)
  */
-import { buildExternalReferenceRow, MARKET_WATCH_REF_MARKER } from "../lib/buyer-search/external-match"
+import { buildExternalReferenceRow, MARKET_WATCH_REF_MARKER, isDurableBuyerInterest } from "../lib/buyer-search/external-match"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -38,6 +38,16 @@ function testPure() {
   check("stores the factual snapshot only", row.property_address === "9 Elm Ave" && row.list_price === 525000 && row.bedrooms === 4)
   check("marked as a system reference (TTL-purged)", row.notes === MARKET_WATCH_REF_MARKER)
   check("carries the fit score", row.ai_match_score === 88)
+
+  console.log("\n[Layer 1b · durable buyer interest — an explicit save NEVER gets purged]")
+  check("saved → durable (survives purge)", isDurableBuyerInterest("saved", false) === true)
+  check("favorited → durable", isDurableBuyerInterest("favorited", false) === true)
+  check("tour_requested → durable", isDurableBuyerInterest("tour_requested", false) === true)
+  check("offer_requested → durable", isDurableBuyerInterest("offer_requested", false) === true)
+  check("added_to_tour flag → durable even if interest_level null", isDurableBuyerInterest(null, true) === true)
+  check("untouched system suggestion (null) → purgeable", isDurableBuyerInterest(null, false) === false)
+  check("dismissed → purgeable", isDurableBuyerInterest("dismissed", false) === false)
+  check("not_interested → purgeable", isDurableBuyerInterest("not_interested", false) === false)
 }
 
 async function testLive() {

@@ -13,28 +13,34 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
-import { estimateMonthlyPayment, affordabilityRead, AFFORDABILITY_DEFAULTS } from "@/lib/buyer-offers/affordability"
-import { signalAffordabilityChecked, requestOfferHelp } from "@/app/actions/buyer-offer-tools"
+import { estimateMonthlyPayment, affordabilityRead, preApprovalStatus, AFFORDABILITY_DEFAULTS } from "@/lib/buyer-offers/affordability"
+import { signalAffordabilityChecked, requestOfferHelp, requestPreApprovalRefresh } from "@/app/actions/buyer-offer-tools"
 
 const money = (n: number) => `$${Math.round(n).toLocaleString()}`
 
 export function BuyerOfferToolsCard({
-  contactId, propertyId, propertyAddress, price, preApprovalAmount,
+  contactId, propertyId, propertyAddress, price, preApprovalAmount, preApprovalExpiresAt,
 }: {
   contactId: string
   propertyId: string
   propertyAddress: string
   price: number | null
   preApprovalAmount: number | null
+  preApprovalExpiresAt: string | null
 }) {
   const { toast } = useToast()
   const [pending, startTransition] = useTransition()
   const [offerPending, startOffer] = useTransition()
+  const [refreshPending, startRefresh] = useTransition()
   const [downPct, setDownPct] = useState<number>(AFFORDABILITY_DEFAULTS.downPaymentPercent)
   const [ratePct, setRatePct] = useState<number>(AFFORDABILITY_DEFAULTS.annualInterestRatePct)
   const [budget, setBudget] = useState<string>("")
 
   if (!price || price <= 0) return null
+
+  // An EXPIRED pre-approval is not a real ceiling — don't let the verdict lean on it.
+  const paStatus = preApprovalStatus(preApprovalAmount, preApprovalExpiresAt, new Date())
+  const usablePreApproval = paStatus.state === "expired" ? null : paStatus.amount
 
   const breakdown = useMemo(
     () => estimateMonthlyPayment({ price, downPaymentPercent: downPct, annualInterestRatePct: ratePct }),
@@ -42,11 +48,20 @@ export function BuyerOfferToolsCard({
   )
   const read = useMemo(
     () => affordabilityRead({
-      price, monthlyTotal: breakdown.total, preApprovalAmount,
+      price, monthlyTotal: breakdown.total, preApprovalAmount: usablePreApproval,
       maxMonthlyBudget: budget ? Number(budget) : null,
     }),
-    [price, breakdown.total, preApprovalAmount, budget],
+    [price, breakdown.total, usablePreApproval, budget],
   )
+
+  function refreshPreApproval() {
+    startRefresh(async () => {
+      const r = await requestPreApprovalRefresh({ contactId, propertyId, propertyAddress })
+      toast(r.success
+        ? { title: "Your agent will help you refresh", description: "They'll connect you with a lender to get back to offer-ready." }
+        : { title: "Couldn't send the request", description: r.error ?? "Try again", variant: "destructive" })
+    })
+  }
 
   const verdictUI = {
     within_budget: { label: "Within reach", cls: "bg-green-100 text-green-800", Icon: CheckCircle2 },
@@ -124,6 +139,19 @@ export function BuyerOfferToolsCard({
           </p>
         )}
         <p className="text-[11px] text-muted-foreground">Estimates only — rate, taxes, and insurance vary. Your agent and lender confirm the real numbers.</p>
+
+        {(paStatus.state === "expired" || paStatus.state === "expiring" || paStatus.state === "none") && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 space-y-2">
+            <p className="text-xs font-medium text-amber-900">
+              {paStatus.state === "expired" && "Your pre-approval has expired — let's refresh it so these numbers (and any offer) are real."}
+              {paStatus.state === "expiring" && `Your pre-approval expires in ${paStatus.daysToExpiry} day${paStatus.daysToExpiry === 1 ? "" : "s"} — refresh it now so you stay offer-ready.`}
+              {paStatus.state === "none" && "Get pre-approved to see what you truly qualify for — it makes your offer stronger, too."}
+            </p>
+            <Button size="sm" variant="outline" className="border-amber-400 text-amber-900" onClick={refreshPreApproval} disabled={refreshPending}>
+              {refreshPending ? "Sending…" : paStatus.state === "none" ? "Help me get pre-approved" : "Refresh my pre-approval"}
+            </Button>
+          </div>
+        )}
 
         <div className="flex flex-col sm:flex-row gap-2">
           <Button variant="outline" className="flex-1" onClick={letAgentKnow} disabled={pending}>

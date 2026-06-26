@@ -36,7 +36,7 @@ export default async function PropertyDetailsPage({
       .order("created_at", { ascending: false }),
     getSmartInsights(propertyId, contactId).catch(() => null),
     isPropertySaved(contactId, propertyId).catch(() => false),
-    supabase.from("buyer_financial_profiles").select("pre_approval_amount").eq("contact_id", contactId).maybeSingle(),
+    supabase.from("buyer_financial_profiles").select("pre_approval_amount, pre_approval_expires_at").eq("contact_id", contactId).maybeSingle(),
   ])
 
   if (!contact) {
@@ -92,6 +92,7 @@ export default async function PropertyDetailsPage({
           propertyAddress={propertyAddress}
           price={(propertyData.price as number | null) ?? null}
           preApprovalAmount={(finProfile as { pre_approval_amount: number | null } | null)?.pre_approval_amount ?? null}
+          preApprovalExpiresAt={(finProfile as { pre_approval_expires_at: string | null } | null)?.pre_approval_expires_at ?? null}
         />
 
         {/* AI Intelligence layer */}

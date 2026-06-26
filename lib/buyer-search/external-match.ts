@@ -124,16 +124,34 @@ export async function runExternalMarketWatchForBuyer(
   return { external, source: result.source }
 }
 
+/** The interest levels that mean the BUYER explicitly engaged the property — a real save the
+ *  compliance purge must NEVER delete (the TTL is for untouched system suggestions only). */
+const DURABLE_INTEREST_LEVELS = new Set(["saved", "favorited", "tour_requested", "offer_requested"])
+
+/**
+ * isDurableBuyerInterest — PURE. True when the buyer has explicitly engaged this property (saved /
+ * favorited / requested a tour or offer, or it's on their tour list). Defense in depth: even if a
+ * save path failed to clear the market_watch_ref marker, an engaged property is never a "stale
+ * system suggestion" and must survive the TTL purge. A dismissed/untouched ref is purgeable.
+ */
+export function isDurableBuyerInterest(interestLevel: string | null | undefined, addedToTour: boolean | null | undefined): boolean {
+  if (addedToTour === true) return true
+  return !!interestLevel && DURABLE_INTEREST_LEVELS.has(interestLevel)
+}
+
 /**
  * Purge stale system external references (compliance: external MLS data must be short-lived).
  * Deletes market_watch_ref saved_properties older than the TTL + their property_matches.
- * NEVER touches user-saved favorites (notes != marker).
+ * NEVER touches a property the buyer explicitly engaged — saves/favorites/tours/offers survive
+ * regardless of the marker (defense in depth: the marker is mutable; buyer intent is the truth).
  */
 export async function purgeStaleExternalReferences(svc: Svc, ttlDays = EXTERNAL_REF_TTL_DAYS): Promise<{ purged: number }> {
   const cutoff = new Date(Date.now() - ttlDays * 24 * 60 * 60 * 1000).toISOString()
   const { data: stale } = await svc.from("saved_properties")
-    .select("id").eq("notes", MARKET_WATCH_REF_MARKER).lt("saved_at", cutoff).limit(500)
-  const ids = (stale ?? []).map((r: any) => r.id as string)
+    .select("id, interest_level, added_to_tour").eq("notes", MARKET_WATCH_REF_MARKER).lt("saved_at", cutoff).limit(500)
+  const rows = (stale ?? []) as Array<{ id: string; interest_level: string | null; added_to_tour: boolean | null }>
+  // Skip any row the buyer engaged with — a saved/toured home is never a "stale suggestion".
+  const ids = rows.filter((r) => !isDurableBuyerInterest(r.interest_level, r.added_to_tour)).map((r) => r.id)
   if (ids.length === 0) return { purged: 0 }
   try { await svc.from("property_matches").delete().in("property_id", ids) } catch {}
   await svc.from("saved_properties").delete().in("id", ids)
