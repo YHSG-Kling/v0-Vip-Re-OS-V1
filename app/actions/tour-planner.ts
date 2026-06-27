@@ -887,18 +887,20 @@ export async function rateTourStop(params: RateStopParams) {
       .eq('brokerage_id', brokerageId)
   }
 
-  const signalWeights: Record<string, number> = { love_it: 10, like_it: 5, maybe: 2, no: -2 }
+  // Canonical learner vocabulary (matches preference-updater SIGNAL_WEIGHTS); legacy 'no' → not_for_us.
+  const signalWeights: Record<string, number> = { love_it: 10, like_it: 3, maybe: 1, not_for_us: -5 }
+  const canonicalSignal = interestLevel === 'no' ? 'not_for_us' : interestLevel
   await supabase.from('buyer_behavior_log').insert({
     brokerage_id:     brokerageId,
     contact_id:       contactId,
     agent_id:         agentUserId,
-    signal_type:      interestLevel,
+    signal_type:      canonicalSignal,
     listing_id:       listingId ?? null,
     property_address: propertyAddress,
     list_price:       listPrice ?? null,
     city:             city ?? null,
     zip:              zip ?? null,
-    signal_value:     signalWeights[interestLevel],
+    signal_value:     signalWeights[canonicalSignal] ?? 0,
     source:           'agent_dashboard',
     metadata:         { note, tour_stop_id: tourStopId },
   })
@@ -963,20 +965,23 @@ export async function completeTour(params: CompleteTourParams) {
     .eq('id', tourId)
     .eq('brokerage_id', brokerageId)
 
-  const signalWeights: Record<string, number> = { love_it: 10, like_it: 5, maybe: 2, no: -2 }
-  const logInserts = stopRatings.map(r => ({
-    brokerage_id:     brokerageId,
-    contact_id:       contactId,
-    agent_id:         agentUserId,
-    signal_type:      r.interestLevel,
-    listing_id:       r.listingId ?? null,
-    property_address: r.propertyAddress,
-    list_price:       r.listPrice ?? null,
-    city:             r.city ?? null,
-    signal_value:     signalWeights[r.interestLevel],
-    source:           'agent_dashboard',
-    metadata:         { tour_id: tourId, note: r.note },
-  }))
+  const signalWeights: Record<string, number> = { love_it: 10, like_it: 3, maybe: 1, not_for_us: -5 }
+  const logInserts = stopRatings.map(r => {
+    const canonicalSignal = r.interestLevel === 'no' ? 'not_for_us' : r.interestLevel
+    return {
+      brokerage_id:     brokerageId,
+      contact_id:       contactId,
+      agent_id:         agentUserId,
+      signal_type:      canonicalSignal,
+      listing_id:       r.listingId ?? null,
+      property_address: r.propertyAddress,
+      list_price:       r.listPrice ?? null,
+      city:             r.city ?? null,
+      signal_value:     signalWeights[canonicalSignal] ?? 0,
+      source:           'agent_dashboard',
+      metadata:         { tour_id: tourId, note: r.note },
+    }
+  })
   await supabase.from('buyer_behavior_log').insert(logInserts)
 
   // Update preference model from new signals

@@ -30,3 +30,40 @@ export function interestLevelToLearningSignal(interestLevel: string | null | und
     default:               return null
   }
 }
+
+/**
+ * showingInterestToLearningSignal — PURE. After a buyer TOURS a home and rates it, that verdict is
+ * the STRONGEST taste signal we ever get (they stood in it). Map the showing-feedback vocabulary
+ * (very_interested/interested/neutral/not_interested) to the learning signal that re-tunes their
+ * criteria. "neutral" is a weak positive (they didn't reject it) → maybe; a tour they didn't rate
+ * carries no taste → null. This closes the post-tour half of the buyer-graph loop.
+ */
+export function showingInterestToLearningSignal(interestLevel: string | null | undefined): LearningSignal | null {
+  switch (interestLevel) {
+    case "very_interested": return "love_it"
+    case "interested":      return "like_it"
+    case "neutral":         return "maybe"
+    case "not_interested":  return "not_for_us"
+    default:                return null
+  }
+}
+
+/**
+ * portalInterestToShowingLevel — PURE. The portal's tour-feedback UI speaks human
+ * (very_interested/interested/neutral/not_interested), but showings.buyer_interest_level has a CHECK
+ * that only accepts the canonical love_it/like_it/maybe/no. Map portal → canonical BEFORE writing so
+ * the feedback actually persists (it had been silently rejected). Returns null for unknown values.
+ */
+export function portalInterestToShowingLevel(
+  interestLevel: string | null | undefined,
+): "love_it" | "like_it" | "maybe" | "no" | null {
+  switch (interestLevel) {
+    case "very_interested": return "love_it"
+    case "interested":      return "like_it"
+    case "neutral":         return "maybe"
+    case "not_interested":  return "no"
+    // already-canonical values pass through (defensive)
+    case "love_it": case "like_it": case "maybe": case "no": return interestLevel
+    default:                return null
+  }
+}

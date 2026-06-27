@@ -633,12 +633,17 @@ export async function updateShowingFeedback(
   // Feedback lives on `showings` (rating/feedback/buyer_interest_level), not
   // showing_requests (a scheduling request with no feedback columns + a status
   // CHECK that excludes "completed").
+  // The portal speaks human (very_interested/...) but the column's CHECK only accepts the canonical
+  // love_it/like_it/maybe/no — map BEFORE writing so the feedback actually persists (it had been
+  // silently rejected by the CHECK on every portal submission).
+  const { portalInterestToShowingLevel } = await import("@/lib/behavior-learning/signal-mapping")
+  const canonicalInterest = portalInterestToShowingLevel(interestedLevel) ?? "maybe"
   const { error } = await supabase
     .from("showings")
     .update({
       rating: rating,
       feedback: notes,
-      buyer_interest_level: interestedLevel,
+      buyer_interest_level: canonicalInterest,
       status: "completed",
       completed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -648,6 +653,38 @@ export async function updateShowingFeedback(
   if (error) {
     console.error("[v0] Error updating showing feedback:", error)
     return { error: error.message }
+  }
+
+  // BUYER GRAPH LOOP — the post-tour verdict is the STRONGEST taste signal we get (they stood in
+  // the home). Feed it into the learner so the buyer's criteria self-tune after every tour, with
+  // ZERO manual filter editing (exactly the "smarter alert relevance" buyers ask for). Best-effort;
+  // never blocks the feedback save. Only fires when we can resolve the toured listing's attributes.
+  try {
+    const { showingInterestToLearningSignal } = await import("@/lib/behavior-learning/signal-mapping")
+    const learnSignal = showingInterestToLearningSignal(interestedLevel)
+    if (learnSignal) {
+      const { data: sh } = await supabase
+        .from("showings").select("contact_id, listing_id, brokerage_id, agent_id").eq("id", showingId).maybeSingle()
+      const showing = sh as { contact_id: string | null; listing_id: string | null; brokerage_id: string | null; agent_id: string | null } | null
+      if (showing?.contact_id && showing?.brokerage_id && showing?.listing_id) {
+        const { data: lst } = await supabase
+          .from("listings").select("list_price, bedrooms, bathrooms, sqft, city, property_type").eq("id", showing.listing_id).maybeSingle()
+        const l = lst as Record<string, any> | null
+        if (l) {
+          const { updatePreferencesFromSignal } = await import("@/lib/behavior-learning/preference-updater")
+          await updatePreferencesFromSignal({
+            contactId: showing.contact_id, agentId: showing.agent_id ?? "system", brokerageId: showing.brokerage_id,
+            signal: learnSignal,
+            property: {
+              price: Number(l.list_price ?? 0), bedrooms: Number(l.bedrooms ?? 0), bathrooms: Number(l.bathrooms ?? 0),
+              sqft: Number(l.sqft ?? 0), city: l.city ?? "", features: [], property_type: l.property_type ?? "",
+            },
+          })
+        }
+      }
+    }
+  } catch (e) {
+    console.error("[v0] showing-feedback preference learning best-effort failed:", e)
   }
 
   return { success: true }
