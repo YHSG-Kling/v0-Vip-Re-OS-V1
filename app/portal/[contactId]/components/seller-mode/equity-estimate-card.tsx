@@ -19,12 +19,14 @@ import { setSellerMortgageBalance } from "@/app/actions/seller-equity"
 const usd = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
 
 export function EquityEstimateCard({
-  contactId, estimatedValue, initialMortgageBalance, hoaDuesMonthly,
+  contactId, estimatedValue, initialMortgageBalance, hoaDuesMonthly, valuationNote,
 }: {
   contactId: string
   estimatedValue: number
   initialMortgageBalance: number | null
   hoaDuesMonthly?: number | null
+  /** Where the estimated value came from (a comps-adjusted CMA is the gold standard) — shown for trust. */
+  valuationNote?: string | null
 }) {
   const { toast } = useToast()
   const [isPending, startTransition] = useTransition()
@@ -73,6 +75,9 @@ export function EquityEstimateCard({
             </>
           )}
         </div>
+
+        {/* Valuation provenance — sellers trust a number they understand the source of. */}
+        {valuationNote && <p className="text-[11px] text-emerald-700 -mt-2">{valuationNote}</p>}
 
         {/* Breakdown */}
         <div className="space-y-1.5 text-sm">

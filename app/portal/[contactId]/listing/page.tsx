@@ -182,19 +182,32 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
         .single()
     : { data: null }
 
-  // Seller EQUITY & NET-PROCEEDS inputs — estimated value is the marketed list price (else the AVM
-  // estimate on file); the mortgage balance is the seller's OWN figure (contacts.metadata), never
-  // fabricated. The card recomputes live and persists the balance.
-  const { data: sellerContactRow } = await supabase
-    .from("contacts").select("metadata, home_value_estimate").eq("id", contactId).maybeSingle()
+  // Seller EQUITY & NET-PROCEEDS inputs — the estimated value is sourced from the MOST ACCURATE
+  // valuation available, in order: a comps-adjusted CMA (runAiCma → cma_reports.recommended_price,
+  // built on comparable sales + STATE appraiser adjustment guidelines) → the marketed list price →
+  // the AVM estimate on file. The mortgage balance is the seller's OWN figure (contacts.metadata),
+  // never fabricated. The card recomputes live and persists the balance.
+  const [{ data: sellerContactRow }, { data: cmaRow }] = await Promise.all([
+    supabase.from("contacts").select("metadata, home_value_estimate").eq("id", contactId).maybeSingle(),
+    supabase.from("cma_reports")
+      .select("recommended_price, comparable_count, status")
+      .eq("listing_id", listing.id).not("recommended_price", "is", null)
+      .order("created_at", { ascending: false }).limit(1).maybeSingle(),
+  ])
   const sellerMeta: Record<string, any> = (() => {
     const m = (sellerContactRow as any)?.metadata
     if (!m) return {}
     if (typeof m === "string") { try { return JSON.parse(m) } catch { return {} } }
     return m
   })()
+  const cma = cmaRow as { recommended_price: number | null; comparable_count: number | null } | null
+  const cmaValue = cma?.recommended_price ?? null
   const equityEstimatedValue =
-    (listing.list_price as number | null) ?? ((sellerContactRow as any)?.home_value_estimate as number | null) ?? null
+    cmaValue ?? (listing.list_price as number | null) ?? ((sellerContactRow as any)?.home_value_estimate as number | null) ?? null
+  // Transparency: tell the seller WHERE the value came from (comps-adjusted CMA is the gold standard).
+  const equityValuationNote = cmaValue
+    ? `Based on a comps-adjusted CMA${cma?.comparable_count ? ` of ${cma.comparable_count} comparable sales` : ""} (state appraiser guidelines applied)`
+    : (listing.list_price ? "Based on your current list price" : "Based on your latest home-value estimate")
   const equityMortgageBalance = typeof sellerMeta?.mortgage_balance === "number" ? sellerMeta.mortgage_balance : null
 
   return (
@@ -306,6 +319,7 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
             contactId={contactId}
             estimatedValue={equityEstimatedValue}
             initialMortgageBalance={equityMortgageBalance}
+            valuationNote={equityValuationNote}
           />
         )}
 
