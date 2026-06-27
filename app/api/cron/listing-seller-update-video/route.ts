@@ -7,16 +7,18 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { requestSellerUpdateReel, deliverSellerUpdateReels } from "@/lib/agents/seller-update-reel-producer"
+import { publishManagerSignal } from "@/lib/kernel/manager-signals"
 
 /**
- * Weekly SELLER UPDATE VIDEO cron — the Listing Concierge's governed video deliverable.
- * Two phases per run:
- *   1) DELIVER — sweep last week's finished seller-update avatar renders and propose
- *      each to its seller through the client-message gate (audience='seller').
- *   2) REQUEST — enqueue this week's seller-update avatar render for every active
- *      listing (the D-ID poll cron renders it; next week's run delivers it).
- * Both phases are idempotent, so re-running the cron is safe.
+ * Weekly SELLER UPDATE VIDEO cron — the Listing Concierge's heartbeat for the governed seller video.
+ * It does NOT make or send the video itself; it HANDS THE WORK to the managers on the bus (mirroring
+ * the buyer reels — Listing Concierge decides → Asset Manager creates → Campaign Orchestrator sends):
+ *   1) SEND   — publish asset_manager → campaign_orchestrator `seller_update_ready` per brokerage so
+ *               the Campaign Orchestrator delivers last week's finished reels to each seller (gated).
+ *   2) CREATE — publish listing_concierge → asset_manager `seller_update_reel_handoff` per active
+ *               listing so the Asset Manager commissions this week's reel.
+ * The manager-signals dispatcher runs the handlers (which delegate to the proven producer). Idempotent
+ * (publishManagerSignal de-dupes open signals per entity; the producers de-dupe per listing/week).
  */
 export async function GET(req: NextRequest) {
   const unauth = verifyCronAuth(req)
@@ -34,8 +36,8 @@ export async function GET(req: NextRequest) {
 
   const supabase = createServiceClient()
   const errors: string[] = []
-  let proposed = 0
-  let queued = 0
+  let sendHandoffs = 0
+  let createHandoffs = 0
 
   try {
     // Distinct active brokerages first (delivery is brokerage-scoped + sweeps all).
@@ -49,32 +51,40 @@ export async function GET(req: NextRequest) {
     const listings = (activeListings ?? []) as Array<{ id: string; brokerage_id: string }>
     const brokerages = Array.from(new Set(listings.map((l) => l.brokerage_id)))
 
-    // Phase 1 — deliver finished renders into the gate.
+    // Phase 1 — SEND handoff: Asset Manager → Campaign Orchestrator delivers finished reels (gated).
     for (const brokerageId of brokerages) {
       try {
-        const r = await deliverSellerUpdateReels(brokerageId, supabase)
-        proposed += r.proposed
+        const r = await publishManagerSignal({
+          brokerageId, fromManager: "asset_manager", toManager: "campaign_orchestrator",
+          signalType: "seller_update_ready", entityType: "brokerage", entityId: brokerageId,
+          message: "Finished seller-update reels are ready — deliver each to its seller (gated).",
+        }, supabase)
+        if (r.ok) sendHandoffs += 1
       } catch (e: any) {
-        errors.push(`deliver ${brokerageId}: ${e?.message ?? String(e)}`)
+        errors.push(`send-handoff ${brokerageId}: ${e?.message ?? String(e)}`)
       }
     }
 
-    // Phase 2 — enqueue this week's renders.
+    // Phase 2 — CREATE handoff: Listing Concierge → Asset Manager commissions this week's reel.
     for (const l of listings) {
       try {
-        const r = await requestSellerUpdateReel(l.brokerage_id, l.id, supabase)
-        if (r.queued) queued += 1
+        const r = await publishManagerSignal({
+          brokerageId: l.brokerage_id, fromManager: "listing_concierge", toManager: "asset_manager",
+          signalType: "seller_update_reel_handoff", entityType: "listing", entityId: l.id,
+          message: "Weekly seller update due for an active listing — commission the avatar reel.",
+        }, supabase)
+        if (r.ok) createHandoffs += 1
       } catch (e: any) {
-        errors.push(`request ${l.id}: ${e?.message ?? String(e)}`)
+        errors.push(`create-handoff ${l.id}: ${e?.message ?? String(e)}`)
       }
     }
 
     await recordCronSuccessAction({
       context_id: contextId,
-      records_processed: proposed + queued,
-      metadata: { proposed, queued, listings: listings.length, errors },
+      records_processed: sendHandoffs + createHandoffs,
+      metadata: { sendHandoffs, createHandoffs, listings: listings.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, queued, listings: listings.length, errors })
+    return NextResponse.json({ ok: true, sendHandoffs, createHandoffs, listings: listings.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

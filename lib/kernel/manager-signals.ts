@@ -706,6 +706,29 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     if (r.ok) return `commissioned the buyer WELCOME reel (${r.compositionId}, gated) fronted by the assigned agent — invite + reel will reach the new contact`
     return r.status === "blocked" ? `welcome reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null
   },
+  // Listing Concierge → Asset Manager: CREATE this active listing's WEEKLY seller-update avatar reel.
+  // The seller video now rides the SAME manager bus as the buyer reels (Listing Concierge decides →
+  // Asset Manager creates → Campaign Orchestrator sends) instead of a monolithic cron. The Asset
+  // Manager owns the render; delivery is the Campaign Orchestrator's seller_update_ready handoff once
+  // the render finishes. Delegates to the proven producer; idempotent per listing per week.
+  "asset_manager:seller_update_reel_handoff": async (signal, ctx) => {
+    const listingId = signal.entityId
+    if (!listingId) return null
+    const { requestSellerUpdateReel } = await import("@/lib/agents/seller-update-reel-producer")
+    const r = await requestSellerUpdateReel(ctx.brokerageId, listingId, ctx.supabase)
+    return r.queued
+      ? "commissioned the weekly seller-update avatar reel (queued for render)"
+      : "seller-update reel already up to date for this listing this week (deduped)"
+  },
+  // Asset Manager → Campaign Orchestrator: SEND the finished seller-update reels. Sweeps the
+  // brokerage's completed renders and proposes each to its seller through the gate (audience='seller',
+  // listing_concierge voice); approval materializes the rich listing-dashboard video card. The
+  // DELIVERY half of the Listing Concierge → Asset Manager → Campaign Orchestrator chain.
+  "campaign_orchestrator:seller_update_ready": async (signal, ctx) => {
+    const { deliverSellerUpdateReels } = await import("@/lib/agents/seller-update-reel-producer")
+    const r = await deliverSellerUpdateReels(ctx.brokerageId, ctx.supabase)
+    return `delivered ${r.proposed} finished seller-update reel(s) to the seller gate`
+  },
   // Shopping Agent → Asset Manager: a buyer reached the OFFER-STRATEGY moment (they found the
   // one). Alongside the agent's concrete comps-grounded offer plan, the Asset Manager commissions
   // a personal "offer confidence" avatar reel — motivational, number-free for compliance ("you
