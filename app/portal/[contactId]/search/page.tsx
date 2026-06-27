@@ -11,6 +11,7 @@ import { ArrowLeft, Search, Bell, Home, Heart, ThumbsDown, MessageSquare, Settin
 import { SmartSearchWidget } from "@/app/components/forms/SmartSearchWidget"
 import { AnalyzeAnyHomeCard } from "./AnalyzeAnyHomeCard"
 import { FitBadge } from "@/app/components/portal/FitBadge"
+import { SavedSearchControls } from "./SavedSearchControls"
 
 // Personas that support family/collaborative search
 const FAMILY_SEARCH_PERSONAS = [
@@ -57,7 +58,7 @@ export default async function SearchPage({
     // criteria_json blob). select the actual columns the UI renders.
     supabase
       .from("property_alerts")
-      .select("id, alert_name, is_active, created_at, min_price, max_price, bedrooms_min, bathrooms_min, cities, zip_codes, property_types, frequency, delivery_channels")
+      .select("id, alert_name, is_active, created_at, min_price, max_price, bedrooms_min, bathrooms_min, cities, zip_codes, property_types, frequency, delivery_channels, snoozed_until")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false }),
     // Saved + dismissed properties live on `saved_properties` (NOT
@@ -258,9 +259,13 @@ export default async function SearchPage({
                       ].filter(Boolean).join(" · ") || "Custom criteria"}
                     </p>
                   </div>
-                  <Badge variant={alert.is_active ? "default" : "secondary"}>
-                    {alert.is_active ? "Active" : "Paused"}
-                  </Badge>
+                  <SavedSearchControls
+                    alertId={alert.id}
+                    contactId={contactId}
+                    frequency={alert.frequency}
+                    isActive={alert.is_active}
+                    snoozedUntil={alert.snoozed_until ?? null}
+                  />
                 </div>
               ))}
             </div>

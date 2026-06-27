@@ -356,7 +356,7 @@ export async function markResultViewed(resultId: string, contactId: string) {
 export async function buyerAdjustAlert(
   alertId: string,
   contactId: string,
-  updates: { frequency?: string; delivery_channels?: string[]; is_active?: boolean }
+  updates: { frequency?: string; delivery_channels?: string[]; is_active?: boolean; snooze_days?: number | null }
 ) {
   const gate = await requireBuyerAccess(contactId)
   if (!gate.ok) return { success: false, error: gate.error }
@@ -365,6 +365,13 @@ export async function buyerAdjustAlert(
   if (updates.frequency         != null) allowed.frequency          = updates.frequency
   if (updates.delivery_channels != null) allowed.delivery_channels  = updates.delivery_channels
   if (updates.is_active         != null) allowed.is_active          = updates.is_active
+  // SNOOZE — a temporary, auto-resuming mute (the search is never deactivated). >0 days snoozes;
+  // 0 or null clears it (resume now). The alert engine skips searches while snoozed_until is future.
+  if (updates.snooze_days !== undefined) {
+    allowed.snoozed_until = updates.snooze_days && updates.snooze_days > 0
+      ? new Date(Date.now() + Math.min(updates.snooze_days, 90) * 86_400_000).toISOString()
+      : null
+  }
 
   const svc = createServiceClient()
   const { error } = await svc

@@ -20,20 +20,9 @@ export interface AlertEngineResult {
 
 const BATCH_LIMIT = 50
 
-/** Returns true if this alert should run based on its frequency and current time. */
-function shouldRunNow(frequency: string): boolean {
-  const now  = new Date()
-  const hour = now.getUTCHours()
-  const day  = now.getUTCDay() // 0 = Sunday, 1 = Monday
-
-  switch (frequency) {
-    case "instant":     return true
-    case "twice_daily": return hour === 8 || hour === 17
-    case "daily":       return hour === 8
-    case "weekly":      return day === 1 && hour === 8
-    default:            return false
-  }
-}
+// Cadence + snooze predicates live in a PURE, server-only-free module so they're unit-testable.
+import { shouldRunNow, isSnoozed } from "./alert-cadence"
+export { shouldRunNow, isSnoozed }
 
 export async function runAlertEngine(brokerageId: string): Promise<AlertEngineResult> {
   const supabase = createServiceClient()
@@ -53,8 +42,10 @@ export async function runAlertEngine(brokerageId: string): Promise<AlertEngineRe
 
   if (alertsErr || !alerts?.length) return { alertsProcessed: 0, newMatchesFound: 0, notificationsSent: 0, errors: [] }
 
-  // 2. Frequency gate
-  const eligible = alerts.filter(a => shouldRunNow(a.frequency))
+  // 2. Frequency gate + buyer snooze (a snoozed search auto-resumes when snoozed_until passes —
+  //    we never deactivate it, so the buyer doesn't have to remember to turn it back on).
+  const nowTs = new Date()
+  const eligible = alerts.filter(a => shouldRunNow(a.frequency, nowTs) && !isSnoozed((a as any).snoozed_until, nowTs))
   if (!eligible.length) return { alertsProcessed: 0, newMatchesFound: 0, notificationsSent: 0, errors: [] }
 
   // 3. IDX client for brokerage (single instance for all alerts)
