@@ -141,5 +141,17 @@ export async function recordSellerResponse(
     priority:       responseType === "accepted" ? "high" : "medium",
   })
 
+  // FULLY EXECUTED (seller accepted) → autonomously run the compliance scan + create the transaction
+  // (under contract). No separate "submit to compliance" click — the loop completes itself. Self-
+  // gating (no transaction on a failed scan) + idempotent. Best-effort; never blocks the response.
+  if (responseType === "accepted") {
+    try {
+      const { autoExecuteFullySignedOffer } = await import("@/lib/transactions/auto-execute-offer")
+      await autoExecuteFullySignedOffer(offerId, supabase)
+    } catch (err: any) {
+      console.error("[record-seller-response] auto-execute failed (non-fatal):", err?.message ?? err)
+    }
+  }
+
   return { success: true }
 }

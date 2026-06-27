@@ -136,14 +136,26 @@ export async function finalizeVoiceCockpitPacket(
   // + deadlines get seeded.
   await finalizeMatchingOffer(supabase, envelopeId, provider)
 
-  // COMPLETENESS GATE — before the agent forwards to the listing agent, verify the packet: all
-  // required forms present + all signed. On pass, hand it to the Deal Coordinator on the bus + notify
-  // the agent the docs are ready for the listing agent; on a gap, surface what's missing. Best-effort.
+  // FULLY EXECUTED vs BUYER-FIRST branch. When both sides have signed (a counter signed back here),
+  // autonomously run the compliance scan + create the transaction (under contract) — no manual
+  // "submit to compliance" click. When only the buyer has signed, verify the packet is ready to
+  // FORWARD to the listing agent (the two-step buyer-first path). Best-effort either way.
   try {
-    const { verifyOfferDocsReady } = await import("@/lib/intelligence/offer-doc-completeness-runner")
-    await verifyOfferDocsReady(envelopeId, supabase as any)
+    const { data: envOffer } = await supabase
+      .from("offers").select("id").eq("provider_envelope_id", envelopeId).maybeSingle()
+    const offerId = (envOffer as { id: string } | null)?.id ?? null
+    let autoAttempted = false
+    if (offerId) {
+      const { autoExecuteFullySignedOffer } = await import("@/lib/transactions/auto-execute-offer")
+      const auto = await autoExecuteFullySignedOffer(offerId, supabase as any)
+      autoAttempted = auto.attempted
+    }
+    if (!autoAttempted) {
+      const { verifyOfferDocsReady } = await import("@/lib/intelligence/offer-doc-completeness-runner")
+      await verifyOfferDocsReady(envelopeId, supabase as any)
+    }
   } catch (err) {
-    console.error("[finalize-packet] offer-docs completeness scan failed:", err)
+    console.error("[finalize-packet] offer execution / completeness scan failed:", err)
   }
 
   return {

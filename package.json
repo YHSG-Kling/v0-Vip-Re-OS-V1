@@ -330,7 +330,8 @@
     "test:notification-preferences": "tsx scripts/notification-preferences-simulator.ts",
     "test:fit-badge": "tsx scripts/fit-badge-simulator.ts",
     "test:showing-feedback-learning": "tsx scripts/showing-feedback-learning-simulator.ts",
-    "test:alert-cadence-snooze": "tsx scripts/alert-cadence-snooze-simulator.ts"
+    "test:alert-cadence-snooze": "tsx scripts/alert-cadence-snooze-simulator.ts",
+    "test:offer-auto-execute": "tsx scripts/offer-auto-execute-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
