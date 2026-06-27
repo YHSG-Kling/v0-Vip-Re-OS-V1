@@ -325,7 +325,8 @@
     "test:home-comparison": "tsx scripts/home-comparison-simulator.ts",
     "test:preference-learning": "tsx scripts/preference-learning-simulator.ts",
     "test:address-analysis": "tsx scripts/address-analysis-simulator.ts",
-    "test:saved-home-nudge": "tsx scripts/saved-home-nudge-simulator.ts"
+    "test:saved-home-nudge": "tsx scripts/saved-home-nudge-simulator.ts",
+    "test:showing-cancellation": "tsx scripts/showing-cancellation-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

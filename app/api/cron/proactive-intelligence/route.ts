@@ -25,18 +25,20 @@ export async function GET(request: Request) {
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()
-  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, errors = 0
+  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, errors = 0
 
   const [
     { predictAndPublishBuyerStall },
     { detectAndPublishStuckStage },
     { predictAndPublishStall },
     { runHealthLifecyclePlays },
+    { runShowingCancellationFollowups },
   ] = await Promise.all([
     import("@/lib/intelligence/buyer-stall-predictor-runner"),
     import("@/lib/intelligence/stuck-stage-detector-runner"),
     import("@/lib/intelligence/listing-stall-predictor-runner"),
     import("@/lib/intelligence/health-lifecycle-runner"),
+    import("@/lib/ai-isa/showing-cancellation-followup"),
   ])
 
   const { data: brks } = await svc.from("brokerages").select("id")
@@ -72,7 +74,11 @@ export async function GET(request: Request) {
         } catch { errors++ }
       }
     } catch { errors++ }
+
+    // (4) Showing-cancellation follow-ups — re-engage buyers whose tour just fell through
+    //     (Shopping Agent proposes ONE gated reschedule/pivot note per cancelled showing).
+    try { const r = await runShowingCancellationFollowups(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); cancelFollowups += r.proposed } catch { errors++ }
   }
 
-  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, errors })
+  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, errors })
 }
