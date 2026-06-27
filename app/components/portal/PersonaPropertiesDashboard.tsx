@@ -322,6 +322,7 @@ export default function PersonaPropertiesDashboard({
   const [savingAlert, setSavingAlert] = useState(false)
 
   // Investor-specific: investment criteria
+  // Investor persona settings — sourced from contacts.metadata (passed in as customFields).
   const targetCapRate = customFields?.target_cap_rate || 7
   const investmentStrategy = customFields?.investment_strategy || "Buy and Hold"
   const portfolioSize = customFields?.portfolio_size || 0
@@ -593,6 +594,10 @@ export default function PersonaPropertiesDashboard({
                 <MapPin className="w-3 h-3" />
                 {property.property_address || property.address}, {property.city}
               </p>
+              {/* "Why this fits" bubble — the buyer's #1 match reason (already computed, zero new cost). */}
+              {Array.isArray(property.match_reasons) && property.match_reasons[0] && !investmentMetrics && (
+                <p className="text-xs text-teal-700 italic mt-1">✨ {property.match_reasons[0]}</p>
+              )}
             </div>
           </div>
 

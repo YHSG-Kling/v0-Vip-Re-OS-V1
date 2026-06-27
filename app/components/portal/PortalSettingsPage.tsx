@@ -55,7 +55,7 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
   const [zipCode, setZipCode] = useState(contact.zip_code || "")
   const [preferredContact, setPreferredContact] = useState(contact.preferred_contact_method || "email")
 
-  // Notification preferences — HYDRATED from the buyer's saved choices (custom_fields), so the
+  // Notification preferences — HYDRATED from the buyer's saved choices (contacts.metadata), so the
   // panel reflects reality. A missing key falls back to its sensible default (opt-in for service
   // updates, opt-out for marketing). These are enforced server-side at every buyer-facing send.
   const savedPrefs = (() => {

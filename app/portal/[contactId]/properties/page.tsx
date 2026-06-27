@@ -181,10 +181,12 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     : { success: false, matches: [] }
   const topMatches = topMatchesResult.matches ?? []
 
-  // Parse custom_fields
-  const customFields = typeof contact.custom_fields === "string" 
-    ? JSON.parse(contact.custom_fields || "{}") 
-    : contact.custom_fields || {}
+  // Persona settings (investor cap-rate/strategy/portfolio, etc.) live on contacts.metadata.
+  // NOTE: there is NO contacts.custom_fields column — reading it always yielded {}, silently
+  // defaulting every persona widget. Sourced from the real metadata jsonb column.
+  const customFields = typeof contact.metadata === "string"
+    ? (() => { try { return JSON.parse(contact.metadata || "{}") } catch { return {} } })()
+    : contact.metadata || {}
 
   return (
     <>

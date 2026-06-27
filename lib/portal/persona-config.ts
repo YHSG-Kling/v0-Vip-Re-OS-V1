@@ -15,7 +15,7 @@ export interface PersonaWidget {
   title: string
   description: string
   icon: LucideIcon
-  dataKey: string // Key in custom_fields to display
+  dataKey: string // Key in contact.metadata to display
   format?: "currency" | "percent" | "number" | "text" | "date" | "boolean"
   emptyMessage?: string
   action?: { label: string; href: string }

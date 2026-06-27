@@ -81,8 +81,8 @@ export async function smartSearch(data: {
 Query: "${data.naturalLanguageQuery}"
 
 Buyer context:
-- Persona: ${contact.persona || "not specified"}
-- Budget: ${contact.budget || "not specified"}
+- Persona: ${contact.contact_persona || "not specified"}
+- Budget: ${contact.budget_min || contact.budget_max ? `$${contact.budget_min ?? "?"}–$${contact.budget_max ?? "?"}` : "not specified"}
 - Timeline: ${contact.timeline || "not specified"}
 - Previous searches: ${searchHistory?.map((s) => JSON.stringify(s.extracted_filters)).join(", ") || "none"}
 

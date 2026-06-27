@@ -2,7 +2,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // BUYER NOTIFICATION PREFERENCES — the buyer's settings panel is only real if the OS actually
 // HONORS it. This is the single typed source of truth: a reader that resolves a contact's saved
-// choices (contacts.custom_fields.notification_preferences) and PURE matchers the send paths consult
+// choices (contacts.metadata.notification_preferences) and PURE matchers the send paths consult
 // before any buyer-facing automated touch. Service updates default opt-IN; marketing defaults opt-OUT.
 //
 // This is NOT a consent gate (TCPA/CAN-SPAM consent still lives in the egress gate) — it is the

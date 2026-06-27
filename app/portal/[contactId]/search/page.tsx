@@ -64,7 +64,7 @@ export default async function SearchPage({
     // `property_interests` which holds search criteria).
     supabase
       .from("saved_properties")
-      .select("id, listing_id, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state, ai_match_score")
+      .select("id, listing_id, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state, ai_match_score, match_reasons")
       .eq("contact_id", contactId)
       .order("saved_at", { ascending: false })
       .limit(40),
@@ -325,6 +325,9 @@ export default async function SearchPage({
                       <p className="text-xs text-muted-foreground">
                         ${item.list_price?.toLocaleString() || "N/A"}
                       </p>
+                      {Array.isArray(item.match_reasons) && item.match_reasons[0] && (
+                        <p className="text-[11px] text-teal-700 italic truncate">✨ {item.match_reasons[0]}</p>
+                      )}
                     </div>
                   </Link>
                 ))}
