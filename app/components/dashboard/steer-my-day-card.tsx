@@ -43,24 +43,20 @@ export function SteerMyDayCard() {
           <div className="space-y-2"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div>
         ) : data && data.items.length > 0 ? (
           <>
-            {data.items.map((item) => {
-              const href = item.kind === "contact" ? `/crm/contacts/${item.id}` : `/crm/leads/${item.id}`
-              return (
-                <Link key={`${item.kind}:${item.id}`} href={href}>
-                  <div className="flex items-center justify-between rounded-lg border p-3 hover:border-teal-300 transition cursor-pointer">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-medium truncate">{item.name}</p>
-                        <Badge className={`${bandCls(item.band)} text-[10px]`}>{item.band.replace("_", " ")}</Badge>
-                        <span className="text-[10px] text-muted-foreground uppercase">{item.kind}</span>
-                      </div>
-                      {item.drivers.length > 0 && <p className="text-xs text-muted-foreground truncate">{item.drivers.slice(0, 2).join(" · ")}</p>}
+            {data.items.map((item) => (
+              <Link key={item.id} href={`/crm/contacts/${item.id}`}>
+                <div className="flex items-center justify-between rounded-lg border p-3 hover:border-teal-300 transition cursor-pointer">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium truncate">{item.name}</p>
+                      <Badge className={`${bandCls(item.band)} text-[10px]`}>{item.band.replace("_", " ")}</Badge>
                     </div>
-                    <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0 ml-2" />
+                    {item.drivers.length > 0 && <p className="text-xs text-muted-foreground truncate">{item.drivers.slice(0, 2).join(" · ")}</p>}
                   </div>
-                </Link>
-              )
-            })}
+                  <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0 ml-2" />
+                </div>
+              </Link>
+            ))}
             <div className="flex items-center gap-4 text-xs text-muted-foreground pt-1">
               <span className="flex items-center gap-1"><Send className="h-3 w-3" />{data.planned.willSend} planned today</span>
               {data.planned.blocked > 0 && <span className="flex items-center gap-1"><ShieldAlert className="h-3 w-3" />{data.planned.blocked} held by the gates</span>}

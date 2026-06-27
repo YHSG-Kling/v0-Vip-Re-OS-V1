@@ -31,25 +31,32 @@ export async function loadSteerMyDay(): Promise<{ success: boolean; data?: Steer
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   try {
     const svc = createServiceClient()
-    const digest = await getSteerMyDay(svc, ctx.brokerageId, { agentId: ctx.agentId ?? undefined, topN: 5 })
+    const digest = await getSteerMyDay(svc, ctx.brokerageId, { agentId: ctx.agentId ?? undefined, topN: 8 })
 
-    // Enrich the work-first IDs with names for display (best-effort).
-    const contactIds = digest.workFirst.filter((w) => w.kind === "contact").map((w) => w.id)
-    const leadIds = digest.workFirst.filter((w) => w.kind === "lead").map((w) => w.id)
-    const [contactsRes, leadsRes] = await Promise.all([
-      contactIds.length ? svc.from("contacts").select("id, first_name, last_name").in("id", contactIds) : Promise.resolve({ data: [] as any[] }),
-      leadIds.length ? svc.from("leads").select("id, first_name, last_name").in("id", leadIds) : Promise.resolve({ data: [] as any[] }),
-    ])
+    // AGENTS WORK CONTACTS, NOT LEADS. A lead with no contact record is brokerage/ISA-owned, never
+    // the agent's book — so the agent's cockpit shows only CONTACTS (drop lead-only work items).
+    // Then take the top 5 contacts that need them first.
+    const contactWork = digest.workFirst.filter((w) => w.kind === "contact").slice(0, 5)
+    const contactIds = contactWork.map((w) => w.id)
+    const contactsRes = contactIds.length
+      ? await svc.from("contacts").select("id, first_name, last_name").in("id", contactIds)
+      : { data: [] as any[] }
     const nameOf = (rows: any[] | null, id: string) => {
       const r = (rows ?? []).find((x) => x.id === id)
       const n = [r?.first_name, r?.last_name].filter(Boolean).join(" ").trim()
       return n || "Someone in your book"
     }
-    const items: SteerMyDayItemView[] = digest.workFirst.map((w) => ({
+    const items: SteerMyDayItemView[] = contactWork.map((w) => ({
       kind: w.kind, id: w.id, band: w.band, drivers: w.drivers ?? [],
-      name: w.kind === "contact" ? nameOf(contactsRes.data, w.id) : nameOf(leadsRes.data, w.id),
+      name: nameOf(contactsRes.data, w.id),
     }))
-    return { success: true, data: { headline: digest.headline, planned: digest.planned, items } }
+    // Contacts-only headline (the digest's mentions leads, which agents don't see).
+    const n = items.length
+    const sendsPart = digest.planned.willSend > 0 || digest.planned.blocked > 0
+      ? ` · your team plans ${digest.planned.willSend} send${digest.planned.willSend === 1 ? "" : "s"} today${digest.planned.blocked > 0 ? ` (${digest.planned.blocked} held by the gates)` : ""}`
+      : ""
+    const headline = (n > 0 ? `${n} client${n === 1 ? "" : "s"} slipping — work ${n === 1 ? "it" : "them"} first` : "no one slipping — you're on top of it") + sendsPart
+    return { success: true, data: { headline, planned: digest.planned, items } }
   } catch (e: any) {
     return { success: false, error: e?.message ?? "failed" }
   }
