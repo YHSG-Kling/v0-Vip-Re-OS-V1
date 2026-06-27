@@ -165,6 +165,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/asset-manager-weekly"                , schedule: "0 7 * * 1" },
   { path: "/api/cron/campaign-orchestrator-weekly"        , schedule: "0 7 * * 1" },
   { path: "/api/cron/buyer-market-watch"                  , schedule: "0 8 * * *" },
+  { path: "/api/cron/proactive-intelligence"              , schedule: "0 7 * * *" },
   { path: "/api/cron/content-performance-aggregator"      , schedule: "0 8 * * *" },
   { path: "/api/cron/em-receipt-watcher"                  , schedule: "0 8 * * *" },
   { path: "/api/property-alerts/run?frequency=daily"      , schedule: "0 8 * * *" },

@@ -44,6 +44,7 @@ import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { createClient } from "@/lib/supabase/client"
 import Link from "next/link"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
+import { SteerMyDayCard } from "@/app/components/dashboard/steer-my-day-card"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -411,6 +412,9 @@ export default function BriefingPage() {
           </div>
         </div>
       )}
+
+      {/* STEER MY DAY — the deterministic whole-funnel "work these first" queue */}
+      <SteerMyDayCard />
 
       {/* MAIN GRID */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
