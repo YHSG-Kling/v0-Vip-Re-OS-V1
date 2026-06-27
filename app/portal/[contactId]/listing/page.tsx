@@ -13,6 +13,7 @@ import {
   OfferPostureCard,
   NextStepCard,
   AgentUpdateVideoCard,
+  EquityEstimateCard,
 } from "../components/seller-mode"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
@@ -181,6 +182,21 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
         .single()
     : { data: null }
 
+  // Seller EQUITY & NET-PROCEEDS inputs — estimated value is the marketed list price (else the AVM
+  // estimate on file); the mortgage balance is the seller's OWN figure (contacts.metadata), never
+  // fabricated. The card recomputes live and persists the balance.
+  const { data: sellerContactRow } = await supabase
+    .from("contacts").select("metadata, home_value_estimate").eq("id", contactId).maybeSingle()
+  const sellerMeta: Record<string, any> = (() => {
+    const m = (sellerContactRow as any)?.metadata
+    if (!m) return {}
+    if (typeof m === "string") { try { return JSON.parse(m) } catch { return {} } }
+    return m
+  })()
+  const equityEstimatedValue =
+    (listing.list_price as number | null) ?? ((sellerContactRow as any)?.home_value_estimate as number | null) ?? null
+  const equityMortgageBalance = typeof sellerMeta?.mortgage_balance === "number" ? sellerMeta.mortgage_balance : null
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -283,6 +299,15 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
           hasAcceptedOffer={!!offerSummary.accepted}
           needsAction={offerSummary.pending > 0}
         />
+
+        {/* Equity & Net Proceeds — what the seller actually walks away with (their #1 question) */}
+        {equityEstimatedValue && equityEstimatedValue > 0 && (
+          <EquityEstimateCard
+            contactId={contactId}
+            estimatedValue={equityEstimatedValue}
+            initialMortgageBalance={equityMortgageBalance}
+          />
+        )}
 
         {/* Showing Feedback Summary */}
         <ShowingFeedbackSummaryCard
