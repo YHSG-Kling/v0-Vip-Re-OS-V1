@@ -99,43 +99,65 @@ async function generateCommuteInsights(
   propertyData: Record<string, any>,
   destinations?: CommuteDestination[],
 ): Promise<Record<string, any>> {
-  const propertyAddress = propertyData.address || propertyData.full_address
+  const propertyAddress = propertyData.address || propertyData.full_address || ""
+  const city = propertyData.city || ""
+  const state = propertyData.state || ""
 
   if (!destinations || destinations.length === 0) {
-    // Return general commute info
+    // No places to commute to yet — invite the buyer to add one (the UI captures it).
     return {
       status: "no_destinations",
-      message: "Add commute destinations to see personalized travel times",
-      generalInfo: {
-        nearestHighway: estimateNearestHighway(propertyData),
-        publicTransit: estimatePublicTransit(propertyData),
-        walkScore: propertyData.walk_score || estimateWalkScore(propertyData),
-      },
+      message: "Add a place you go often — work, the gym, family — to see honest drive and transit times.",
     }
   }
 
-  // Calculate commute times for each destination
-  const commutes = destinations.map((dest) => ({
-    destination: dest.name,
-    type: dest.type,
-    estimates: {
-      driving: {
-        peakHours: estimateCommuteTime(propertyAddress, dest.address, "driving", true),
-        offPeak: estimateCommuteTime(propertyAddress, dest.address, "driving", false),
-      },
-      publicTransit: estimateCommuteTime(propertyAddress, dest.address, "transit", false),
-    },
-  }))
+  // AI-estimated commute times (same trusted gateway source as our school/neighborhood data).
+  // Honest: we label these as estimates and never present them as live traffic readings.
+  const destList = destinations
+    .map((d, i) => `${i + 1}. ${d.name} (${d.type}) at ${d.address}`)
+    .join("\n")
+  try {
+    const result = await gatewayChatJSON<Record<string, any>>({
+      model:     "anthropic/claude-opus-4-20250514",
+      maxTokens: 600,
+      messages: [
+        { role: "user", content: `You are a real estate data assistant. Estimate realistic commute times FROM the home TO each destination. Return ONLY valid JSON — no markdown, no explanation.
 
-  return {
-    status: "calculated",
-    destinations: commutes,
-    summary: {
-      avgDrivingPeak: Math.round(commutes.reduce((acc, c) => acc + c.estimates.driving.peakHours, 0) / commutes.length),
-      bestCommute: commutes.reduce((best, c) =>
-        c.estimates.driving.peakHours < best.estimates.driving.peakHours ? c : best,
-      ),
-    },
+Home: ${propertyAddress}, ${city}, ${state}
+Destinations:
+${destList}
+
+Return this exact JSON structure (minutes as integers):
+{
+  "destinations": [
+    { "destination": string, "type": string, "drivingPeakMin": number, "drivingOffPeakMin": number, "transitMin": number|null, "distanceMiles": number }
+  ],
+  "dataSource": "AI-estimated"
+}` },
+      ],
+    })
+    if (!result.ok || !result.data) throw new Error(result.error ?? "No JSON from AI")
+    const rows: any[] = Array.isArray(result.data.destinations) ? result.data.destinations : []
+    if (rows.length === 0) throw new Error("No commute rows")
+
+    const best = rows.reduce((b, c) => (c.drivingPeakMin < b.drivingPeakMin ? c : b), rows[0])
+    return {
+      status: "calculated",
+      destinations: rows,
+      summary: {
+        avgDrivingPeak: Math.round(rows.reduce((acc, c) => acc + (c.drivingPeakMin || 0), 0) / rows.length),
+        bestCommute: best?.destination ?? null,
+      },
+      dataSource: "AI-estimated",
+    }
+  } catch (err) {
+    console.error("[v0] generateCommuteInsights AI error:", err)
+    // Honest failure — show the destinations the buyer added, no fabricated times.
+    return {
+      status: "unavailable",
+      destinations: destinations.map((d) => ({ destination: d.name, type: d.type })),
+      message: "We couldn't estimate times right now — your agent can pull exact drive times for you.",
+    }
   }
 }
 
@@ -429,29 +451,93 @@ async function generateMatchScore(
   return { score, reasons: reasons.slice(0, 5), concerns: concerns.slice(0, 3) }
 }
 
-// Helper functions
-function estimateNearestHighway(propertyData: Record<string, any>): string {
-  return "I-95 (approx. 2.5 miles)"
-}
-
-function estimatePublicTransit(propertyData: Record<string, any>): string {
-  return "Bus stop 0.3 miles, Metro 1.2 miles"
-}
-
-function estimateWalkScore(propertyData: Record<string, any>): number {
-  return 0 // 0 = no real data available; wire WALKSCORE_API_KEY for live scores
-}
-
-function estimateCommuteTime(from: string, to: string, mode: string, isPeak: boolean): number {
-  return 0 // 0 = no real data available; wire Google Maps API for live commute times
-}
-
 function calculateMortgage(principal: number, annualRate: number, years: number): number {
   const monthlyRate = annualRate / 100 / 12
   const numPayments = years * 12
   return Math.round(
     (principal * monthlyRate * Math.pow(1 + monthlyRate, numPayments)) / (Math.pow(1 + monthlyRate, numPayments) - 1),
   )
+}
+
+// ==================== COMMUTE DESTINATIONS ====================
+// The buyer's saved places (work, gym, family) live on contacts.metadata.commute_destinations
+// so every property they view can show honest, personalized drive/transit estimates.
+
+function readMetadata(raw: any): Record<string, any> {
+  if (!raw) return {}
+  if (typeof raw === "string") { try { return JSON.parse(raw) } catch { return {} } }
+  return raw
+}
+
+export async function getCommuteDestinations(contactId: string): Promise<CommuteDestination[]> {
+  const supabase = await createClient()
+  const { data } = await supabase.from("contacts").select("metadata").eq("id", contactId).maybeSingle()
+  const cf = readMetadata(data?.metadata)
+  const list = cf.commute_destinations
+  return Array.isArray(list) ? (list as CommuteDestination[]) : []
+}
+
+/** Add (or update) a saved place, then refresh commute on the given property. Idempotent by name. */
+export async function saveCommuteDestination(
+  contactId: string,
+  dest: CommuteDestination,
+  refresh?: { propertyId: string; propertyData: Record<string, any> },
+): Promise<{ success: boolean; destinations?: CommuteDestination[]; commute?: Record<string, any> | null; error?: string }> {
+  if (!dest?.name?.trim() || !dest?.address?.trim()) return { success: false, error: "Name and address are required" }
+  const supabase = await createClient()
+  const { data } = await supabase.from("contacts").select("metadata").eq("id", contactId).maybeSingle()
+  const cf = readMetadata(data?.metadata)
+  const existing: CommuteDestination[] = Array.isArray(cf.commute_destinations) ? cf.commute_destinations : []
+  const cleaned: CommuteDestination = {
+    name: dest.name.trim().slice(0, 60),
+    address: dest.address.trim().slice(0, 200),
+    type: (["work", "school", "family", "other"].includes(dest.type) ? dest.type : "other") as CommuteDestination["type"],
+  }
+  const next = [...existing.filter((d) => d.name.toLowerCase() !== cleaned.name.toLowerCase()), cleaned].slice(0, 5)
+  const { error } = await supabase
+    .from("contacts")
+    .update({ metadata: { ...cf, commute_destinations: next } })
+    .eq("id", contactId)
+  if (error) return { success: false, error: error.message }
+  let commute: Record<string, any> | null = null
+  if (refresh) commute = await regeneratePropertyCommute(refresh.propertyId, contactId, refresh.propertyData, next).catch(() => null)
+  return { success: true, destinations: next, commute }
+}
+
+export async function removeCommuteDestination(
+  contactId: string,
+  name: string,
+  refresh?: { propertyId: string; propertyData: Record<string, any> },
+): Promise<{ success: boolean; destinations?: CommuteDestination[]; commute?: Record<string, any> | null }> {
+  const supabase = await createClient()
+  const { data } = await supabase.from("contacts").select("metadata").eq("id", contactId).maybeSingle()
+  const cf = readMetadata(data?.metadata)
+  const existing: CommuteDestination[] = Array.isArray(cf.commute_destinations) ? cf.commute_destinations : []
+  const next = existing.filter((d) => d.name.toLowerCase() !== name.toLowerCase())
+  await supabase.from("contacts").update({ metadata: { ...cf, commute_destinations: next } }).eq("id", contactId)
+  let commute: Record<string, any> | null = null
+  if (refresh) commute = await regeneratePropertyCommute(refresh.propertyId, contactId, refresh.propertyData, next).catch(() => null)
+  return { success: true, destinations: next, commute }
+}
+
+/** Recompute ONLY the commute column for one property+contact (cheap, no full-insight invalidation). */
+export async function regeneratePropertyCommute(
+  propertyId: string,
+  contactId: string,
+  propertyData: Record<string, any>,
+  destinations: CommuteDestination[],
+): Promise<Record<string, any> | null> {
+  const supabase = await createClient()
+  const commute_insights = await generateCommuteInsights(propertyData, destinations)
+  const { data, error } = await supabase
+    .from("contact_property_insights")
+    .update({ commute_insights })
+    .eq("property_id", propertyId)
+    .eq("contact_id", contactId)
+    .select("commute_insights")
+    .maybeSingle()
+  if (error) { console.error("[v0] regeneratePropertyCommute error:", error); return null }
+  return (data?.commute_insights as Record<string, any>) ?? commute_insights
 }
 
 // ==================== GET INSIGHTS ====================

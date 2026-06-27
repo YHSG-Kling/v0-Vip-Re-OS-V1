@@ -30,7 +30,7 @@ interface Contact {
   contact_persona?: string
   preferred_contact_method?: string
   notes?: string
-  custom_fields?: Record<string, any>
+  metadata?: Record<string, any>
 }
 
 interface PortalSettingsPageProps {
@@ -55,15 +55,25 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
   const [zipCode, setZipCode] = useState(contact.zip_code || "")
   const [preferredContact, setPreferredContact] = useState(contact.preferred_contact_method || "email")
 
-  // Notification preferences
-  const [emailNotifications, setEmailNotifications] = useState(true)
-  const [smsNotifications, setSmsNotifications] = useState(true)
-  const [pushNotifications, setPushNotifications] = useState(false)
-  const [marketingEmails, setMarketingEmails] = useState(false)
-  const [showingReminders, setShowingReminders] = useState(true)
-  const [offerUpdates, setOfferUpdates] = useState(true)
-  const [documentAlerts, setDocumentAlerts] = useState(true)
-  const [weeklyDigest, setWeeklyDigest] = useState(true)
+  // Notification preferences — HYDRATED from the buyer's saved choices (custom_fields), so the
+  // panel reflects reality. A missing key falls back to its sensible default (opt-in for service
+  // updates, opt-out for marketing). These are enforced server-side at every buyer-facing send.
+  const savedPrefs = (() => {
+    const md = typeof contact.metadata === "string"
+      ? (() => { try { return JSON.parse(contact.metadata as any) } catch { return {} } })()
+      : (contact.metadata ?? {})
+    return (md?.notification_preferences ?? {}) as Record<string, boolean | undefined>
+  })()
+  const pref = (key: string, dflt: boolean) => (typeof savedPrefs[key] === "boolean" ? (savedPrefs[key] as boolean) : dflt)
+
+  const [emailNotifications, setEmailNotifications] = useState(pref("email", true))
+  const [smsNotifications, setSmsNotifications] = useState(pref("sms", true))
+  const [pushNotifications, setPushNotifications] = useState(pref("push", false))
+  const [marketingEmails, setMarketingEmails] = useState(pref("marketing", false))
+  const [showingReminders, setShowingReminders] = useState(pref("showing_reminders", true))
+  const [offerUpdates, setOfferUpdates] = useState(pref("offer_updates", true))
+  const [documentAlerts, setDocumentAlerts] = useState(pref("document_alerts", true))
+  const [weeklyDigest, setWeeklyDigest] = useState(pref("weekly_digest", true))
 
   const displayName = firstName ? `${firstName} ${lastName}`.trim() : contact.name || "User"
 
@@ -113,8 +123,8 @@ export default function PortalSettingsPage({ contact, contactId }: PortalSetting
 
     try {
       const result = await updateContactProfile(contactId, {
-        custom_fields: {
-          ...contact.custom_fields,
+        metadata: {
+          ...contact.metadata,
           notification_preferences: {
             email: emailNotifications,
             sms: smsNotifications,

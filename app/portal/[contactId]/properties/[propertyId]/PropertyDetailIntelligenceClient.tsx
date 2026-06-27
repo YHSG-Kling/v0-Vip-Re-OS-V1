@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useTransition } from "react"
-import { Heart, Calendar, Sparkles, CheckCircle2, AlertTriangle, HelpCircle, Star } from "lucide-react"
+import { Heart, Calendar, Sparkles, CheckCircle2, AlertTriangle, Star } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -22,6 +22,9 @@ import {
   generateSmartInsights,
   updateShowingFeedback,
 } from "@/app/actions/smart-insights"
+import { NeighborhoodLifestyleCard } from "./NeighborhoodLifestyleCard"
+
+interface CommuteDestination { name: string; address: string; type: "work" | "school" | "family" | "other" }
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -52,6 +55,7 @@ interface PropertyDetailIntelligenceClientProps {
   initialIsSaved: boolean
   initialInsights: SmartInsights | null
   showings: ShowingRequest[]
+  initialCommuteDestinations?: CommuteDestination[]
 }
 
 // ── Buyer Fit Score Gauge ─────────────────────────────────────────────────────
@@ -108,6 +112,7 @@ export function PropertyDetailIntelligenceClient({
   initialIsSaved,
   initialInsights,
   showings,
+  initialCommuteDestinations = [],
 }: PropertyDetailIntelligenceClientProps) {
   const { toast } = useToast()
   const [isPending, startTransition] = useTransition()
@@ -147,7 +152,8 @@ export function PropertyDetailIntelligenceClient({
     let cancelled = false
     ;(async () => {
       try {
-        const result = await generateSmartInsights(propertyId, propertyData, contactId)
+        const result = await generateSmartInsights(propertyId, propertyData, contactId,
+          initialCommuteDestinations.length ? { commuteDestinations: initialCommuteDestinations } : undefined)
         if (!cancelled && result) {
           setInsights(result as SmartInsights)
         }
@@ -434,19 +440,17 @@ export function PropertyDetailIntelligenceClient({
         </Card>
       )}
 
-      {/* ── Commute Info ────────────────────────────────────────────────── */}
-      {insights?.commute_insights && (insights.commute_insights as any).status === "no_destinations" && (
-        <Card>
-          <CardContent className="pt-5 flex items-start gap-3">
-            <HelpCircle className="h-5 w-5 text-blue-500 mt-0.5 shrink-0" />
-            <div>
-              <p className="text-sm font-medium">Commute Times</p>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                {(insights.commute_insights as any).message}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
+      {/* ── Neighborhood & Lifestyle (schools, walkability, amenities, personal commute) ── */}
+      {insights && (
+        <NeighborhoodLifestyleCard
+          contactId={contactId}
+          propertyId={propertyId}
+          propertyData={propertyData}
+          schoolInsights={insights.school_insights ?? null}
+          neighborhoodInsights={insights.neighborhood_insights ?? null}
+          commuteInsights={insights.commute_insights ?? null}
+          initialDestinations={initialCommuteDestinations}
+        />
       )}
 
       {/* ── Showing Feedback Capture ─────────────────────────────────────── */}

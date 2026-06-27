@@ -13,7 +13,7 @@ interface ProfileUpdate {
   state?: string
   zip_code?: string
   preferred_contact_method?: string
-  custom_fields?: Record<string, any>
+  metadata?: Record<string, any>
 }
 
 export async function updateContactProfile(

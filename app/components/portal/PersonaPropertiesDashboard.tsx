@@ -19,6 +19,7 @@ import {
   Lightbulb, AlertCircle, User, Pencil, Save
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
+import { FitBadge } from "@/app/components/portal/FitBadge"
 import { smartSearch, saveProperty } from "@/app/actions/idx-search"
 import { requestShowing } from "@/app/actions/showings"
 import { updatePropertyAlert } from "@/app/actions/property-alerts/alert-actions"
@@ -538,14 +539,14 @@ export default function PersonaPropertiesDashboard({
             className="w-full h-full object-cover"
           />
           
-          {/* Match/Cap Rate Badge */}
-          {property.matchScore && (
-            <div className="absolute top-3 left-3 bg-white rounded-full px-3 py-1 shadow-md flex items-center gap-1">
-              <Star className="w-4 h-4 text-yellow-500 fill-yellow-500" />
-              <span className="font-bold text-sm">{property.matchScore}%</span>
+          {/* Buyer-fit badge — their personal compatibility score, warm + never scary.
+              Reads either the in-memory matchScore or the persisted saved_properties.ai_match_score. */}
+          {(property.matchScore ?? property.ai_match_score) != null && !investmentMetrics && (
+            <div className="absolute top-3 left-3 bg-white/95 rounded-full shadow-md px-1 py-0.5">
+              <FitBadge score={property.matchScore ?? property.ai_match_score} size="sm" />
             </div>
           )}
-          
+
           {investmentMetrics && (
             <div className={`absolute top-3 left-3 rounded-full px-3 py-1 shadow-md flex items-center gap-1 ${investmentMetrics.meetsTarget ? 'bg-green-500 text-white' : 'bg-amber-500 text-white'}`}>
               <TrendingUp className="w-4 h-4" />

@@ -10,6 +10,7 @@ import { Switch } from "@/app/components/ui/switch"
 import { ArrowLeft, Search, Bell, Home, Heart, ThumbsDown, MessageSquare, Settings, Filter, DollarSign, Bed, Bath, MapPin } from "lucide-react"
 import { SmartSearchWidget } from "@/app/components/forms/SmartSearchWidget"
 import { AnalyzeAnyHomeCard } from "./AnalyzeAnyHomeCard"
+import { FitBadge } from "@/app/components/portal/FitBadge"
 
 // Personas that support family/collaborative search
 const FAMILY_SEARCH_PERSONAS = [
@@ -63,7 +64,7 @@ export default async function SearchPage({
     // `property_interests` which holds search criteria).
     supabase
       .from("saved_properties")
-      .select("id, listing_id, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state")
+      .select("id, listing_id, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state, ai_match_score")
       .eq("contact_id", contactId)
       .order("saved_at", { ascending: false })
       .limit(40),
@@ -315,9 +316,12 @@ export default async function SearchPage({
                       )}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium truncate">
-                        {item.property_address || "Property"}
-                      </p>
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium truncate">
+                          {item.property_address || "Property"}
+                        </p>
+                        <FitBadge score={item.ai_match_score} size="xs" />
+                      </div>
                       <p className="text-xs text-muted-foreground">
                         ${item.list_price?.toLocaleString() || "N/A"}
                       </p>

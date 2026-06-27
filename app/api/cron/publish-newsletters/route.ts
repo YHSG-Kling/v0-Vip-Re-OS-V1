@@ -39,6 +39,7 @@ import {
   assembleNewsletterHtml,
 } from "@/lib/kernel/newsletter/assemble"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { resolveBuyerNotificationPreferences, buyerWantsNotification, type BuyerNotificationPreferences } from "@/lib/notifications/buyer-preferences"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { checkAssetReadiness, ASSET_READINESS_CONFIGS } from "@/lib/kernel/composition-gate"
@@ -385,12 +386,44 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     console.error(`[publish-newsletters] persona variant lookup failed for ${c.id}:`, (e as Error).message)
   }
 
+  // Buyer notification preferences — honor the recipient's OWN "Marketing Emails" / "Email"
+  // toggles (settings panel). A buyer who opted out of marketing must never get the newsletter,
+  // even if still a subscriber row. Batch-loaded once (no per-recipient N+1); defaults = opt-in.
+  const prefsMap = new Map<string, BuyerNotificationPreferences>()
+  try {
+    const contactIds = Array.from(new Set(subs.map((s) => s.contact_id).filter(Boolean))) as string[]
+    if (contactIds.length) {
+      const { data: cfRows } = await svc.from("contacts").select("id, metadata").in("id", contactIds)
+      for (const row of (cfRows ?? []) as Array<{ id: string; metadata: any }>) {
+        prefsMap.set(row.id, resolveBuyerNotificationPreferences(row.metadata))
+      }
+    }
+  } catch (e) {
+    console.error(`[publish-newsletters] preference batch load failed for ${c.id}:`, (e as Error).message)
+  }
+
   // For each subscriber: resolve persona → sections → assemble → dispatch → log.
   let sent = 0, suppressed = 0, errors = 0
   const fromAddress = `newsletter@${(process.env.NEWSLETTER_FROM_DOMAIN ?? "platform.com")}`
 
   for (const s of subs) {
     if (!s.email) continue
+
+    // Honor the buyer's marketing/email opt-out (their settings panel is real, not cosmetic).
+    if (s.contact_id) {
+      const prefs = prefsMap.get(s.contact_id)
+      if (prefs && !buyerWantsNotification(prefs, "marketing", "email")) {
+        suppressed++
+        try {
+          await svc.from("newsletter_sends").insert({
+            brokerage_id: c.brokerage_id, campaign_id: c.id, contact_id: s.contact_id,
+            template_id: null, subject: c.subject_line ?? null, status: "suppressed",
+            provider_message_id: null, sent_at: null,
+          })
+        } catch { /* non-blocking */ }
+        continue
+      }
+    }
 
     // Idempotency check — already dispatched this campaign to this contact?
     if (s.contact_id) {

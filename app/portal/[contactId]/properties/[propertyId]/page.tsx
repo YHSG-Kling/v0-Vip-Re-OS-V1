@@ -3,7 +3,7 @@ import { redirect } from "next/navigation"
 import { PropertyDetailsView } from "@/components/portal/PropertyDetailsView"
 import { PropertyDetailIntelligenceClient } from "./PropertyDetailIntelligenceClient"
 import { BuyerOfferToolsCard } from "./BuyerOfferToolsCard"
-import { getSmartInsights, isPropertySaved } from "@/app/actions/smart-insights"
+import { getSmartInsights, isPropertySaved, getCommuteDestinations } from "@/app/actions/smart-insights"
 
 export default async function PropertyDetailsPage({
   params,
@@ -21,6 +21,7 @@ export default async function PropertyDetailsPage({
     smartInsights,
     isSaved,
     { data: finProfile },
+    commuteDestinations,
   ] = await Promise.all([
     supabase.from("contacts").select("*").eq("id", contactId).single(),
     supabase
@@ -37,6 +38,7 @@ export default async function PropertyDetailsPage({
     getSmartInsights(propertyId, contactId).catch(() => null),
     isPropertySaved(contactId, propertyId).catch(() => false),
     supabase.from("buyer_financial_profiles").select("pre_approval_amount, pre_approval_expires_at").eq("contact_id", contactId).maybeSingle(),
+    getCommuteDestinations(contactId).catch(() => []),
   ])
 
   if (!contact) {
@@ -104,6 +106,7 @@ export default async function PropertyDetailsPage({
           initialIsSaved={isSaved as boolean}
           initialInsights={smartInsights}
           showings={(showings ?? []) as any}
+          initialCommuteDestinations={(commuteDestinations ?? []) as any}
         />
       </div>
     </div>
