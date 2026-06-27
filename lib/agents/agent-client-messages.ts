@@ -241,6 +241,19 @@ export async function approveClientMessage(
         created_at:             new Date().toISOString(),
       })
       if (cardErr) return await fail(supabase, messageId, `portal card write failed: ${cardErr.message}`)
+
+      // SELLER UPDATE VIDEO — also materialize the rich seller_updates row the listing dashboard's
+      // AgentUpdateVideoCard reads (nothing wrote that table, so the avatar update never surfaced
+      // there). Best-effort: the transparency card above already delivered the update regardless.
+      if (m.entity_type === "seller_update_video" && m.entity_id) {
+        try {
+          const { materializeSellerUpdate } = await import("@/lib/agents/seller-update-reel-producer")
+          await materializeSellerUpdate(supabase, {
+            brokerageId: m.brokerage_id, listingId: m.entity_id, sellerContactId: m.recipient_contact_id,
+            subject: m.subject, body: m.body,
+          })
+        } catch { /* non-blocking — generic portal card already delivered */ }
+      }
       }
     }
   } catch (e) {

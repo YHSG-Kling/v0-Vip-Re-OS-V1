@@ -22,6 +22,10 @@ export const SELLER_UPDATE_COMPOSITION = "AgentTalkingHeadReel"
 /** Tags the render's input_props so delivery can distinguish seller updates from
  *  other AgentTalkingHeadReel renders that share the composition. */
 export const SELLER_UPDATE_KIND = "seller_weekly_update"
+/** Distinct entity_type for the gated VIDEO seller-update message — so it (a) doesn't share an
+ *  idempotency window with the separate TEXT seller-update (both were entity_type='listing',
+ *  silently de-duping each other) and (b) lets approval materialize the rich seller_updates card. */
+export const SELLER_UPDATE_ENTITY_TYPE = "seller_update_video"
 
 export interface SellerUpdateStats {
   listingAddress: string
@@ -218,11 +222,12 @@ export async function deliverSellerUpdateReels(
     const sellerContactId = r.entity_id
     if (!listingId || !sellerContactId || !r.output_url) continue
 
-    // Idempotency — one proposal per seller per listing per week.
+    // Idempotency — one VIDEO proposal per seller per listing per week (distinct entity_type so it
+    // doesn't collide with the separate text seller-update).
     const { data: existing } = await supabase
       .from("agent_client_messages")
       .select("id")
-      .eq("brokerage_id", brokerageId).eq("entity_type", "listing").eq("entity_id", listingId)
+      .eq("brokerage_id", brokerageId).eq("entity_type", SELLER_UPDATE_ENTITY_TYPE).eq("entity_id", listingId)
       .eq("agent_kind", "listing_concierge").eq("audience", "seller")
       .gte("created_at", weekAgo).limit(1).maybeSingle()
     if (existing) continue
@@ -237,7 +242,7 @@ export async function deliverSellerUpdateReels(
     }
     const msg = buildSellerUpdateMessage(gathered.stats, agentName, r.output_url)
     const res = await proposeClientMessage({
-      brokerageId, agentKind: "listing_concierge", entityType: "listing", entityId: listingId,
+      brokerageId, agentKind: "listing_concierge", entityType: SELLER_UPDATE_ENTITY_TYPE, entityId: listingId,
       recipientContactId: sellerContactId, audience: "seller",
       subject: msg.subject, body: msg.body,
       rationale: `Weekly seller-update video for ${gathered.stats.listingAddress} — review/edit before it reaches the seller.`,
@@ -246,4 +251,41 @@ export async function deliverSellerUpdateReels(
     if (res.ok) proposed += 1
   }
   return { proposed }
+}
+
+/**
+ * materializeSellerUpdate — called when a seller_update_video message is APPROVED. Writes the rich
+ * seller_updates row (video_url + copy) that the portal's AgentUpdateVideoCard reads, so the
+ * agent's avatar update actually SURFACES in the seller's listing dashboard (it never did — nothing
+ * wrote this table). Honors the human gate: only fires on approval. Idempotent per (listing, video).
+ */
+export async function materializeSellerUpdate(
+  supabase: Svc,
+  input: { brokerageId: string; listingId: string; sellerContactId: string | null; subject: string | null; body: string },
+): Promise<{ ok: boolean; reason?: string }> {
+  if (!input.sellerContactId) return { ok: false, reason: "no seller contact" }
+  // Resolve the latest succeeded seller-update render for this listing (the video the message carries).
+  const { data: renders } = await supabase
+    .from("remotion_composition_renders")
+    .select("output_url, input_props, created_at")
+    .eq("brokerage_id", input.brokerageId)
+    .eq("composition_id", SELLER_UPDATE_COMPOSITION)
+    .eq("entity_id", input.sellerContactId)
+    .eq("render_status", "succeeded").not("output_url", "is", null)
+    .order("created_at", { ascending: false }).limit(10)
+  const render = ((renders ?? []) as Array<{ output_url: string | null; input_props: Record<string, unknown> | null }>)
+    .find((r) => (r.input_props as { kind?: string; listing_id?: string } | null)?.kind === SELLER_UPDATE_KIND
+      && (r.input_props as { listing_id?: string } | null)?.listing_id === input.listingId)
+  if (!render?.output_url) return { ok: false, reason: "no rendered video for this listing" }
+
+  // Idempotent — don't double-insert the same video for this listing.
+  const { data: dup } = await supabase.from("seller_updates")
+    .select("id").eq("listing_id", input.listingId).eq("video_url", render.output_url).limit(1).maybeSingle()
+  if (dup) return { ok: true, reason: "already materialized" }
+
+  const { error } = await supabase.from("seller_updates").insert({
+    brokerage_id: input.brokerageId, contact_id: input.sellerContactId, listing_id: input.listingId,
+    subject: input.subject, body: input.body, video_url: render.output_url, thumbnail_url: null,
+  })
+  return error ? { ok: false, reason: error.message } : { ok: true }
 }
