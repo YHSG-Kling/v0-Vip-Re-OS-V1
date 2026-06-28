@@ -25,7 +25,7 @@ export async function GET(request: Request) {
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()
-  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, errors = 0
+  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, errors = 0
 
   const [
     { predictAndPublishBuyerStall },
@@ -34,6 +34,7 @@ export async function GET(request: Request) {
     { runHealthLifecyclePlays },
     { runShowingCancellationFollowups },
     { runSellerConversionNurture },
+    { rollupListingMetrics },
   ] = await Promise.all([
     import("@/lib/intelligence/buyer-stall-predictor-runner"),
     import("@/lib/intelligence/stuck-stage-detector-runner"),
@@ -41,6 +42,7 @@ export async function GET(request: Request) {
     import("@/lib/intelligence/health-lifecycle-runner"),
     import("@/lib/ai-isa/showing-cancellation-followup"),
     import("@/lib/agents/seller-conversion-nurture"),
+    import("@/lib/listings/listing-metrics-rollup"),
   ])
 
   const { data: brks } = await svc.from("brokerages").select("id")
@@ -84,7 +86,12 @@ export async function GET(request: Request) {
     // (5) Seller-conversion nurture — don't drop the homeowner who showed seller intent but hasn't
     //     booked a listing consult (Listing Concierge proposes ONE gated touch per 30-day cooldown).
     try { const r = await runSellerConversionNurture(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); sellerNurture += r.proposed } catch { errors++ }
+
+    // (6) Listing-metrics rollup — the missing writer for listing_metrics. Aggregates the real
+    //     written sources (showings/saves/inquiries/views) into one cumulative row per active listing
+    //     so the seller portal's proof-of-work + DOM stop reading from a permanently-empty table.
+    try { const r = await rollupListingMetrics(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); metricsUpserted += r.upserted } catch { errors++ }
   }
 
-  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, errors })
+  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, errors })
 }
