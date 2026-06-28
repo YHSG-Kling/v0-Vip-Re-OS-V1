@@ -165,8 +165,23 @@ export async function POST(request: NextRequest) {
           results.push({ email_from: email.fromEmail, uploads: 0 })
           continue
         }
+        // Not an offer — but maybe another deal doc (signed contract / inspection / appraisal /
+        // lender CTC / disclosure) for an in-house listing. Classify + route to the owning manager's
+        // agent (confirm-first; we don't auto-file a transaction doc from an email).
+        const { routeInboundDealDoc } = await import("@/lib/inbound-mail/deal-doc-intake")
+        const routed = await routeInboundDealDoc({
+          brokerageId,
+          subject:     email.subject ?? null,
+          bodyText:    email.bodyText ?? null,
+          fromEmail:   email.fromEmail ?? null,
+          attachments: email.attachments.map((a) => ({ fileName: a.fileName, mime: a.mime, contentB64: a.contentB64 ?? null })),
+        }, supabase)
+        if (routed.handled) {
+          results.push({ email_from: email.fromEmail, uploads: 0 })
+          continue
+        }
       } catch (e) {
-        console.error("[inbound-mail] offer-intake failed (non-fatal):", e)
+        console.error("[inbound-mail] offer/deal-doc intake failed (non-fatal):", e)
       }
     }
 
