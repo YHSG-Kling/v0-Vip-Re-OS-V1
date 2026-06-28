@@ -334,7 +334,8 @@
     "test:offer-auto-execute": "tsx scripts/offer-auto-execute-simulator.ts",
     "test:seller-equity": "tsx scripts/seller-equity-simulator.ts",
     "test:seller-scenarios": "tsx scripts/seller-scenarios-simulator.ts",
-    "test:offer-email-intake": "tsx scripts/offer-email-intake-simulator.ts"
+    "test:offer-email-intake": "tsx scripts/offer-email-intake-simulator.ts",
+    "test:back-on-market": "tsx scripts/back-on-market-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

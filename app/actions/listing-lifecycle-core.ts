@@ -392,6 +392,25 @@ export async function executeListingTransition(params: {
     console.error("[executeListingTransition] marketing handoff announce failed", err)
   }
 
+  // BACK ON MARKET — a deal fell through (a contract stage → active transition). The normal go-live
+  // marketing is idempotent per (listing, just_listed), so a re-list silently re-markets NOTHING and
+  // the buyers who SAVED the home are never told it's available again. Hand off to the Shopping Agent
+  // to re-engage them (its highest-intent moment). Best-effort; never affects the transition result.
+  try {
+    const { isBackOnMarket } = await import("@/lib/listings/back-on-market")
+    if (isBackOnMarket(currentStage, params.targetStage as string)) {
+      const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      await publishManagerSignal({
+        brokerageId: listing.brokerage_id, fromManager: "listing_concierge", toManager: "shopping_agent",
+        signalType: "listing_back_on_market", entityType: "listing", entityId: params.listingId,
+        message: "A deal fell through — the listing is back on market. Re-engage the buyers who saved it.",
+      }, createServiceClient())
+    }
+  } catch (err) {
+    console.error("[executeListingTransition] back-on-market handoff failed", err)
+  }
+
   return {
     success: true,
     transition: {

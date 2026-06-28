@@ -313,6 +313,31 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   // Listing Concierge → Shopping Agent: a price drop on an IN-HOUSE listing — inventory
   // talking to demand. The buyer side re-matches: every buyer who SAVED this listing gets
   // a price-improved alert proposed into the gate (capped, never autonomous).
+  // Listing Concierge → Shopping Agent: a deal fell through and the listing is BACK ON MARKET. Re-
+  // engage the buyers who SAVED it (real intent, now available again — the highest-intent moment) with
+  // a PERSONAL "back on market" nudge. back_on_market is avatar-worthy → Asset Manager creates the
+  // reel → Campaign sends. Mirrors price_reduced; the normal just_listed marketing skipped this
+  // (idempotent per listing), so this is the re-engagement the re-list otherwise lost.
+  "shopping_agent:listing_back_on_market": async (signal, ctx) => {
+    if (!signal.entityId) return null
+    const { data: savers } = await ctx.supabase
+      .from("saved_properties")
+      .select("contact_id, property_address")
+      .eq("brokerage_id", ctx.brokerageId).eq("listing_id", signal.entityId)
+      .eq("dismissed", false).not("contact_id", "is", null)
+      .limit(5)
+    const rows = (savers ?? []) as Array<{ contact_id: string; property_address: string | null }>
+    if (rows.length === 0) return "back on market — no saved-property buyers to re-engage"
+    let proposed = 0
+    for (const r of rows) {
+      const q = await routeSavedHomeNudge(ctx, {
+        contactId: r.contact_id, nudgeKind: "back_on_market",
+        listingId: signal.entityId, propertyAddress: r.property_address ?? null,
+      })
+      if (q) proposed += 1
+    }
+    return proposed > 0 ? `re-engaged ${proposed} saved-home buyer${proposed === 1 ? "" : "s"} on a back-on-market listing (avatar via Asset Manager → Campaign sends)` : null
+  },
   "shopping_agent:price_reduced": async (signal, ctx) => {
     if (!signal.entityId) return null
     const { data: savers } = await ctx.supabase
