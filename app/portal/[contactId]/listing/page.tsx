@@ -188,7 +188,7 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
   // the AVM estimate on file. The mortgage balance is the seller's OWN figure (contacts.metadata),
   // never fabricated. The card recomputes live and persists the balance.
   const [{ data: sellerContactRow }, { data: cmaRow }] = await Promise.all([
-    supabase.from("contacts").select("metadata, home_value_estimate").eq("id", contactId).maybeSingle(),
+    supabase.from("contacts").select("metadata, home_value_estimate, engagement_score").eq("id", contactId).maybeSingle(),
     supabase.from("cma_reports")
       .select("recommended_price, comparable_count, status")
       .eq("listing_id", listing.id).not("recommended_price", "is", null)
@@ -209,6 +209,20 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     ? `Based on a comps-adjusted CMA${cma?.comparable_count ? ` of ${cma.comparable_count} comparable sales` : ""} (state appraiser guidelines applied)`
     : (listing.list_price ? "Based on your current list price" : "Based on your latest home-value estimate")
   const equityMortgageBalance = typeof sellerMeta?.mortgage_balance === "number" ? sellerMeta.mortgage_balance : null
+
+  // MOVE-READINESS — where the seller stands at a glance. Equity ratio from their own balance (when
+  // known); engagement from contacts.engagement_score; market timing left to the agent (null → the
+  // engine weights over the signals we actually have, never fabricating). PURE.
+  const { computeMoveReadiness } = await import("@/lib/seller-equity/move-readiness")
+  const mrEquityRatio = equityEstimatedValue && equityMortgageBalance != null && equityEstimatedValue > 0
+    ? Math.max(0, Math.min(1, (equityEstimatedValue - equityMortgageBalance) / equityEstimatedValue))
+    : null
+  const mrEngagement = typeof (sellerContactRow as any)?.engagement_score === "number"
+    ? Math.max(0, Math.min(1, (sellerContactRow as any).engagement_score / 100))
+    : null
+  const moveReadiness = (mrEquityRatio !== null || mrEngagement !== null)
+    ? computeMoveReadiness({ equityRatio: mrEquityRatio, marketTightness: null, engagement: mrEngagement })
+    : null
 
   return (
     <div className="min-h-screen bg-background">
@@ -320,6 +334,7 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
             estimatedValue={equityEstimatedValue}
             initialMortgageBalance={equityMortgageBalance}
             valuationNote={equityValuationNote}
+            moveReadiness={moveReadiness}
           />
         )}
 

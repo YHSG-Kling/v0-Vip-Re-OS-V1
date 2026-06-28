@@ -332,7 +332,8 @@
     "test:showing-feedback-learning": "tsx scripts/showing-feedback-learning-simulator.ts",
     "test:alert-cadence-snooze": "tsx scripts/alert-cadence-snooze-simulator.ts",
     "test:offer-auto-execute": "tsx scripts/offer-auto-execute-simulator.ts",
-    "test:seller-equity": "tsx scripts/seller-equity-simulator.ts"
+    "test:seller-equity": "tsx scripts/seller-equity-simulator.ts",
+    "test:seller-scenarios": "tsx scripts/seller-scenarios-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

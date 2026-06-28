@@ -14,12 +14,16 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useToast } from "@/hooks/use-toast"
 import { estimateSellerNetProceeds, clientEquityFraming } from "@/lib/seller-equity/equity-estimate"
+import { buildPricingScenarios } from "@/lib/seller-equity/scenarios"
 import { setSellerMortgageBalance } from "@/app/actions/seller-equity"
+
+interface MoveReadinessView { score: number | null; band: string; headline: string; line: string; drivers: string[] }
 
 const usd = (n: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
 
 export function EquityEstimateCard({
   contactId, estimatedValue, initialMortgageBalance, hoaDuesMonthly, valuationNote,
+  annualAppreciationPct, moveReadiness,
 }: {
   contactId: string
   estimatedValue: number
@@ -27,6 +31,10 @@ export function EquityEstimateCard({
   hoaDuesMonthly?: number | null
   /** Where the estimated value came from (a comps-adjusted CMA is the gold standard) — shown for trust. */
   valuationNote?: string | null
+  /** Zip annual appreciation (decimal) — enables the "wait ~6 months" what-if scenario. */
+  annualAppreciationPct?: number | null
+  /** Precomputed move-readiness (equity + market + engagement), resolved server-side. */
+  moveReadiness?: MoveReadinessView | null
 }) {
   const { toast } = useToast()
   const [isPending, startTransition] = useTransition()
@@ -36,6 +44,7 @@ export function EquityEstimateCard({
 
   const est = estimateSellerNetProceeds({ estimatedValue, mortgageBalance: balance, hoaDuesMonthly })
   const framing = clientEquityFraming(est)
+  const scenarios = buildPricingScenarios({ estimatedValue, mortgageBalance: balance, hoaDuesMonthly, annualAppreciationPct })
 
   function save() {
     const parsed = draft.trim() === "" ? null : Number(draft.replace(/[^0-9.]/g, ""))
@@ -104,6 +113,43 @@ export function EquityEstimateCard({
             </div>
           )}
         </div>
+
+        {/* Move-readiness — "where do I stand at a glance?" (equity + market + your interest) */}
+        {moveReadiness && moveReadiness.score !== null && (
+          <div className="rounded-lg border border-emerald-100 bg-emerald-50/50 p-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold">{moveReadiness.headline}</p>
+              <span className="text-lg font-bold text-emerald-700">{moveReadiness.score}<span className="text-xs text-muted-foreground">/100</span></span>
+            </div>
+            <p className="text-[11px] text-muted-foreground">Move-readiness · {moveReadiness.drivers.join(" · ")}</p>
+          </div>
+        )}
+
+        {/* What-if scenarios — list at X vs Y, wait, improve (each with the real net they'd keep) */}
+        {est.mortgageKnown && scenarios.some((s) => s.netProceeds !== null) && (
+          <div>
+            <p className="text-xs font-medium text-muted-foreground mb-1.5">What if you…</p>
+            <div className="space-y-1">
+              {scenarios.filter((s) => s.netProceeds !== null).map((s) => (
+                <div key={s.key} className="flex items-center justify-between text-sm rounded-md border border-border px-2.5 py-1.5">
+                  <div className="min-w-0">
+                    <span className="font-medium">{s.label}</span>
+                    {s.note && <span className="block text-[10px] text-muted-foreground truncate">{s.note}</span>}
+                  </div>
+                  <div className="text-right shrink-0 ml-2">
+                    <span className="font-semibold">{usd(s.netProceeds as number)}</span>
+                    {s.deltaVsBase !== null && s.deltaVsBase !== 0 && (
+                      <span className={`block text-[10px] ${s.deltaVsBase > 0 ? "text-emerald-700" : "text-slate-500"}`}>
+                        {s.deltaVsBase > 0 ? "+" : ""}{usd(s.deltaVsBase)} vs estimate
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-1">Estimates only — your agent models these with you for real.</p>
+          </div>
+        )}
 
         <p className="text-xs text-muted-foreground">{framing.line}</p>
         <Button asChild variant="outline" size="sm" className="w-full">
