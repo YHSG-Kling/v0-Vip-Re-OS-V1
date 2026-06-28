@@ -1,5 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
-import { STAGE_TRANSITIONS, CRITICAL_MILESTONES, TransactionStage } from "./transaction-stages"
+import { STAGE_TRANSITIONS, CRITICAL_MILESTONES, TransactionStage, STAGE_TO_STATUS_MAP } from "./transaction-stages"
 import { getMilestones } from "./milestone-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { seedStageAutoTasks } from "./stage-auto-tasks"
@@ -174,8 +174,12 @@ export async function advanceStage(params: {
   const { error: updateError } = await supabase
     .from("transactions")
     .update({
+      // stage holds the UPPERCASE state-machine value (transactions_stage_check); status holds the
+      // LOWERCASE coarse status (transactions_status_check). Writing the UPPERCASE stage straight into
+      // status violated the status CHECK, so Postgres rejected the WHOLE row and no advance past
+      // UNDER_CONTRACT ever persisted. Map stage → the valid status value instead.
       stage: params.targetStage,
-      status: params.targetStage, // status mirrors stage
+      status: STAGE_TO_STATUS_MAP[params.targetStage],
       updated_at: new Date().toISOString()
     })
     .eq("id", params.transactionId)

@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { TransactionOrchestrator } from "@/lib/transactions/transaction-orchestrator"
-import { TransactionStage, TRANSACTION_STAGES } from "@/lib/transactions/transaction-stages"
+import { TransactionStage, TRANSACTION_STAGES, STAGE_TO_STATUS_MAP } from "@/lib/transactions/transaction-stages"
 import { calculateDealHealth } from "@/lib/deal-health/health-scorer"
 import { closeNegotiationStrategyForOffer } from "@/lib/strategy-learning/close-strategy-loop"
 import { requireOverrideActor, PortalAuthError } from "@/lib/kernel/portal-auth"
@@ -105,11 +105,14 @@ export async function advanceTransactionStage(params: {
       .maybeSingle()
     if (!current) return { success: false, error: "Transaction not found in your brokerage" }
 
-    // Force the transition
+    // Force the transition. Keep status (lowercase coarse state) in lockstep with stage — the
+    // override previously wrote only stage, leaving status stale (e.g. stage CLOSING_PREP while
+    // status still under_contract), which is what the dashboards + status filters read.
     const { error: updateErr } = await svc
       .from("transactions")
       .update({
         stage: params.targetStage,
+        status: STAGE_TO_STATUS_MAP[params.targetStage],
         updated_at: new Date().toISOString(),
       })
       .eq("id", params.transactionId)

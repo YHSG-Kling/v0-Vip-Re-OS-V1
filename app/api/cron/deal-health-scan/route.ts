@@ -48,11 +48,14 @@ export async function GET(request: NextRequest) {
   const results: { transactionId: string; score: number; riskLevel: string; error?: string }[] = []
 
   try {
-    // Get all active transactions (not closed, cancelled, or on_hold)
+    // Get all non-terminal transactions. NB: `stage` holds the UPPERCASE state-machine values
+    // (transactions_stage_check) — CLOSED / LOST are the two terminal stages. The previous filter used
+    // lowercase 'closed,cancelled,on_hold' (none of which the column can ever hold), so it excluded
+    // nothing and re-scanned finished deals every 6h, producing false at-risk alerts on closed deals.
     const { data: transactions, error: fetchError } = await supabase
       .from("transactions")
       .select("id, brokerage_id")
-      .not("stage", "in", "(closed,cancelled,on_hold)")
+      .not("stage", "in", "(CLOSED,LOST)")
 
     if (fetchError) {
       throw new Error(`Failed to fetch transactions: ${fetchError.message}`)

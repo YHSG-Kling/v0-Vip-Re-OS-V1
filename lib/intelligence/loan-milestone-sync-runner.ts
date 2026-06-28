@@ -34,7 +34,11 @@ export async function syncLoanMilestone(args: LoanMilestoneArgs, client?: Svc): 
   try {
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
     const r = await publishManagerSignal({
-      brokerageId: args.brokerageId, fromManager: "deal_coordinator", toManager: "deal_coordinator",
+      // A financing milestone ORIGINATES with the Finance Manager (owns lender/financing data) and is
+      // HANDED to the Deal Coordinator (keeps buyer + agent in sync). The previous deal_coordinator →
+      // deal_coordinator self-loop was rejected by validSignalRoute (from===to), so the signal never
+      // persisted and the deal_coordinator:loan_milestone handler was structurally unreachable.
+      brokerageId: args.brokerageId, fromManager: "finance_manager", toManager: "deal_coordinator",
       signalType: "loan_milestone",
       message: `Loan milestone "${args.milestone}" (${plan.tone}): ${plan.reason}.`,
       entityType: "contact", entityId: args.contactId, contactId: args.contactId,
