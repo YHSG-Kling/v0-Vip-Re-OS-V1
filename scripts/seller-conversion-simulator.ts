@@ -7,6 +7,7 @@
  * always routes to the agent/consult. The seller mirror of the buyer welcome. Pure: no I/O.
  */
 import { buildSellerConversionMessage } from "../lib/agents/seller-conversion-copy"
+import { selectSellerNurtureChannel, isSellerConversionPreset } from "../lib/agents/seller-conversion-channel"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -35,11 +36,50 @@ function main() {
   })())
   check("never pushy ('act now'/'last chance')", !/act now|last chance|don'?t miss|limited time/i.test(m.body))
 
+  console.log("\n[Multi-channel rail selection — email-first, mail fallback, honest skip; NEVER a dead portal drop]")
+  const emailable = selectSellerNurtureChannel({
+    hasEmail: true, consent: {}, hasMailableAddress: true, directMailOptOut: false, hasSellerDirectMailPreset: true,
+  })
+  check("emailable lead → email (the rail they're reachable on)", emailable.channel === "email")
+  check("never returns 'portal' for a non-portal lead", (emailable.channel as string) !== "portal")
+
+  const optedOutEmailButMailable = selectSellerNurtureChannel({
+    hasEmail: true, consent: { email_opt_out: true }, hasMailableAddress: true, directMailOptOut: false, hasSellerDirectMailPreset: true,
+  })
+  check("email opt-out + verified address + seller preset → direct_mail fallback", optedOutEmailButMailable.channel === "direct_mail")
+
+  const noEmailNoPreset = selectSellerNurtureChannel({
+    hasEmail: false, consent: {}, hasMailableAddress: true, directMailOptOut: false, hasSellerDirectMailPreset: false,
+  })
+  check("mailable but no seller preset configured → honest skip (no off-message piece)", noEmailNoPreset.channel === null)
+
+  const noEmailHasPreset = selectSellerNurtureChannel({
+    hasEmail: false, consent: {}, hasMailableAddress: true, directMailOptOut: false, hasSellerDirectMailPreset: true,
+  })
+  check("no email + verified address + seller preset → direct_mail", noEmailHasPreset.channel === "direct_mail")
+
+  const directMailOptedOut = selectSellerNurtureChannel({
+    hasEmail: false, consent: {}, hasMailableAddress: true, directMailOptOut: true, hasSellerDirectMailPreset: true,
+  })
+  check("direct-mail opt-out honored → skip", directMailOptedOut.channel === null)
+
+  const unreachable = selectSellerNurtureChannel({
+    hasEmail: false, consent: {}, hasMailableAddress: false, directMailOptOut: false, hasSellerDirectMailPreset: true,
+  })
+  check("no email + no address → honest skip (never a dead portal card)", unreachable.channel === null)
+
+  console.log("\n[On-message preset gate — only mail a clearly seller-value piece]")
+  check("'What's Your Home Worth' postcard → seller-conversion preset", isSellerConversionPreset("What's Your Home Worth?"))
+  check("'Thinking of Selling' letter → seller-conversion preset", isSellerConversionPreset("Thinking of Selling — Free CMA"))
+  check("'Just Sold Flagship' → NOT a seller-conversion preset (off-message)", !isSellerConversionPreset("Just Sold Flagship 6x9"))
+  check("'Open House This Weekend' → NOT a seller-conversion preset", !isSellerConversionPreset("Open House This Weekend"))
+  check("empty/null name → not a match", !isSellerConversionPreset("") && !isSellerConversionPreset(null))
+
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ SELLER_CONVERSION_FAIL"); process.exit(1) }
-  console.log(" ✅ SELLER_CONVERSION_PASS — un-converted seller leads get a warm, honest, zero-pressure nudge to the consult")
+  console.log(" ✅ SELLER_CONVERSION_PASS — un-converted seller leads get a warm, honest, zero-pressure, multi-channel nudge to the consult")
 }
 
 main()
