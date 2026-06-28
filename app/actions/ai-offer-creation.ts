@@ -607,28 +607,6 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
       metadata: { priority: "high" },
     })
 
-    // EVENT-DRIVEN net-sheet: the instant an offer lands on a listing, hand off to the Listing
-    // Concierge to run the comparison (single or multi) — not waiting on the */15 cron. Manager
-    // handoff on the bus; the runner self-filters to our in-house listings + is idempotent per
-    // offer set. dedupe:false so a second offer arriving fast still fires. Best-effort.
-    try {
-      if (params.listingId) {
-        const { data: lz } = await supabase.from("listings").select("brokerage_id").eq("id", params.listingId).maybeSingle()
-        const bId = (lz as { brokerage_id: string | null } | null)?.brokerage_id
-        if (bId) {
-          const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
-          await publishManagerSignal({
-            brokerageId: bId, fromManager: "deal_coordinator", toManager: "listing_concierge",
-            signalType: "offers_compare_handoff", entityType: "listing", entityId: params.listingId,
-            message: `An offer of $${params.offerPrice.toLocaleString()} landed — run the net-sheet comparison.`,
-            dedupe: false,
-          }, supabase)
-        }
-      }
-    } catch (e) {
-      console.error("[submitCompleteOffer] offers_compare_handoff handoff failed (non-fatal):", e)
-    }
-
     revalidatePath("/offers")
     revalidatePath(`/listings/${params.listingId}`)
     revalidatePath("/dashboard/transactions")

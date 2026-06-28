@@ -155,6 +155,26 @@ Required JSON schema:
       entityId: offerId,
     }).catch(() => {})
 
+    // EVENT-DRIVEN net-sheet: the offer is now COMPARISON-READY (real price extracted). The Data
+    // Steward (which owns extraction/normalization of the incoming doc) hands the clean offer to the
+    // Listing Concierge to run the net-sheet comparison for the seller — single or multi — instead
+    // of waiting on the */15 safety-net cron. Only fires for offers ON an in-house listing (listingId
+    // present); the runner self-filters + is idempotent per offer set. dedupe:false so each newly
+    // extracted offer triggers a fresh comparison. Best-effort.
+    if (listingId) {
+      try {
+        const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+        await publishManagerSignal({
+          brokerageId, fromManager: "data_steward", toManager: "listing_concierge",
+          signalType: "offers_compare_handoff", entityType: "listing", entityId: listingId,
+          message: `An offer was received and read for an in-house listing — run the net-sheet comparison.`,
+          dedupe: false,
+        }, supabase)
+      } catch (e) {
+        console.error("[offer-extractor] offers_compare_handoff failed (non-fatal):", e)
+      }
+    }
+
     return { success: true, data: extracted }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
