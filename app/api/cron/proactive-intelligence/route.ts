@@ -25,7 +25,7 @@ export async function GET(request: Request) {
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()
-  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, errors = 0
+  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, errors = 0
 
   const [
     { predictAndPublishBuyerStall },
@@ -33,12 +33,14 @@ export async function GET(request: Request) {
     { predictAndPublishStall },
     { runHealthLifecyclePlays },
     { runShowingCancellationFollowups },
+    { runSellerConversionNurture },
   ] = await Promise.all([
     import("@/lib/intelligence/buyer-stall-predictor-runner"),
     import("@/lib/intelligence/stuck-stage-detector-runner"),
     import("@/lib/intelligence/listing-stall-predictor-runner"),
     import("@/lib/intelligence/health-lifecycle-runner"),
     import("@/lib/ai-isa/showing-cancellation-followup"),
+    import("@/lib/agents/seller-conversion-nurture"),
   ])
 
   const { data: brks } = await svc.from("brokerages").select("id")
@@ -78,7 +80,11 @@ export async function GET(request: Request) {
     // (4) Showing-cancellation follow-ups — re-engage buyers whose tour just fell through
     //     (Shopping Agent proposes ONE gated reschedule/pivot note per cancelled showing).
     try { const r = await runShowingCancellationFollowups(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); cancelFollowups += r.proposed } catch { errors++ }
+
+    // (5) Seller-conversion nurture — don't drop the homeowner who showed seller intent but hasn't
+    //     booked a listing consult (Listing Concierge proposes ONE gated touch per 30-day cooldown).
+    try { const r = await runSellerConversionNurture(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); sellerNurture += r.proposed } catch { errors++ }
   }
 
-  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, errors })
+  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, errors })
 }

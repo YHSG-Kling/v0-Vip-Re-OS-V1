@@ -337,7 +337,8 @@
     "test:offer-email-intake": "tsx scripts/offer-email-intake-simulator.ts",
     "test:back-on-market": "tsx scripts/back-on-market-simulator.ts",
     "test:signal-reaper": "tsx scripts/signal-reaper-simulator.ts",
-    "test:deal-doc-router": "tsx scripts/deal-doc-router-simulator.ts"
+    "test:deal-doc-router": "tsx scripts/deal-doc-router-simulator.ts",
+    "test:seller-conversion": "tsx scripts/seller-conversion-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
