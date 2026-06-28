@@ -84,8 +84,10 @@ export async function GET(request: Request) {
     try { const r = await runShowingCancellationFollowups(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); cancelFollowups += r.proposed } catch { errors++ }
 
     // (5) Seller-conversion nurture — don't drop the homeowner who showed seller intent but hasn't
-    //     booked a listing consult (Listing Concierge proposes ONE gated touch per 30-day cooldown).
-    try { const r = await runSellerConversionNurture(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); sellerNurture += r.proposed } catch { errors++ }
+    //     booked a listing consult. Multi-manager mirror of the buyer nurture: Listing Concierge hands
+    //     off to the Asset Manager to commission a personal value reel, delivered to the seller-mode
+    //     portal by the Campaign Orchestrator. One gated handoff per contact per 30-day cooldown.
+    try { const r = await runSellerConversionNurture(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); sellerNurture += r.handedOff } catch { errors++ }
 
     // (6) Listing-metrics rollup — the missing writer for listing_metrics. Aggregates the real
     //     written sources (showings/saves/inquiries/views) into one cumulative row per active listing

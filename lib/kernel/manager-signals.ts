@@ -731,6 +731,35 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     if (r.ok) return `commissioned the buyer WELCOME reel (${r.compositionId}, gated) fronted by the assigned agent — invite + reel will reach the new contact`
     return r.status === "blocked" ? `welcome reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null
   },
+  // Listing Concierge → Asset Manager: an un-converted SELLER (a homeowner who asked "what's my home
+  // worth?" / signaled selling and has a seller-mode portal, but hasn't booked a listing consult). The
+  // SELLER MIRROR of the buyer welcome reel: commission a personal, value-forward avatar reel
+  // ("here's what your home could really sell for — let's map your move"), CUSTOMER-FACING (Director
+  // 'lead_intro', not the in_house 'cma'), fronted by the assigned agent. On completion the existing
+  // video-coordination routes contact_outreach_ready → the Campaign Orchestrator's gated 1:1 email +
+  // the seller-mode portal CTA (audience='seller', listing_concierge voice). Idempotent per contact.
+  "asset_manager:seller_conversion_reel_handoff": async (signal, ctx) => {
+    const contactId = signal.entityId ?? signal.contactId
+    if (!contactId) return null
+    const { data: contact } = await ctx.supabase.from("contacts")
+      .select("id").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (!contact) return null
+    const { resolveContactPresenterUserId } = await import("@/lib/ai-isa/outreach-identity")
+    const agentUserId = await resolveContactPresenterUserId(ctx.supabase, contactId, ctx.brokerageId)
+    if (!agentUserId) return "no assigned agent to front the seller-conversion reel — deferred"
+    const { buildSellerConversionSituation } = await import("@/lib/ai-isa/contact-reel-situation")
+    const { commissionVideo } = await import("@/lib/video/video-director")
+    const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+    const situation = buildSellerConversionSituation({ contactId })
+    const r = await commissionVideo(
+      situation,
+      { brokerageId: ctx.brokerageId, agentUserId, contactId, persona: { audience: "seller" }, copyGenerator: realCopyGenerator },
+      ctx.supabase,
+    )
+    if (r.status === "already_staged") return `seller-conversion reel already commissioned for this homeowner (${r.compositionId}, deduped)`
+    if (r.ok) return `commissioned the SELLER-CONVERSION value reel (${r.compositionId}, gated) fronted by the assigned agent — invite + reel will reach the un-converted seller`
+    return r.status === "blocked" ? `seller-conversion reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null
+  },
   // Listing Concierge → Asset Manager: CREATE this active listing's WEEKLY seller-update avatar reel.
   // The seller video now rides the SAME manager bus as the buyer reels (Listing Concierge decides →
   // Asset Manager creates → Campaign Orchestrator sends) instead of a monolithic cron. The Asset

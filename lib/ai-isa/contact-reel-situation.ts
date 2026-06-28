@@ -70,6 +70,25 @@ export function buildContactWelcomeSituation(args: {
 }
 
 /**
+ * buildSellerConversionSituation — the un-converted SELLER moment: a homeowner became a CONTACT (they
+ * asked "what's my home worth?" / signaled selling) and has a seller-mode portal, but hasn't booked a
+ * listing consult yet. The seller mirror of the buyer welcome reel: a personal, value-forward avatar
+ * reel from the assigned agent — "here's what your home could really sell for, and what your move could
+ * look like — let's map it together." Director kind "lead_intro" (a personal avatar hello fronted by
+ * the assigned agent) — CUSTOMER-FACING (kind "cma" is marked in_house/agent-only by the Director, so
+ * it would never reach the seller). Number-discipline + compliance handled by the Director gate; the
+ * moment seeds the gateway script. Drives to the seller-mode portal + a no-pressure consult.
+ */
+export function buildSellerConversionSituation(args: { contactId: string }): VideoSituation {
+  return {
+    kind: "lead_intro",
+    tier: "solo_agent",
+    targetChannel: "email", // rides the gated 1:1 email embedding the reel + the seller-mode portal CTA
+    facts: { contactId: args.contactId, persona: "seller", moment: "seller_conversion" },
+  }
+}
+
+/**
  * buildOfferConfidenceSituation — the OFFER moment: a buyer reached the offer-strategy stage
  * (they found the one). A personal, motivational avatar reel fronted by the assigned agent that
  * builds the confidence to WRITE — "you found it, you're ready, here's how we make a strong
