@@ -36,6 +36,8 @@ export async function GET(req: NextRequest) {
   const errors: string[] = []
   let published = 0
   let consumed = 0
+  let reaped = 0
+  let escalated = 0
 
   try {
     // Brokerages with recent ISA appointments OR open signals.
@@ -72,6 +74,13 @@ export async function GET(req: NextRequest) {
         const { runManagerDissent } = await import("@/lib/kernel/manager-dissent")
         const md = await runManagerDissent(brokerageId, {}, supabase)
         consumed += md.vetoes
+        // THE REAPER — no signal falls through the cracks: any handoff stuck "open" past its window
+        // (handler kept returning null / threw / unhandled) is escalated to a human + expired, so a
+        // real task is never silently lost and the inbox can't accumulate zombie signals forever.
+        const { reapStuckManagerSignals } = await import("@/lib/kernel/signal-reaper")
+        const rp = await reapStuckManagerSignals(brokerageId, supabase)
+        reaped += rp.expired
+        escalated += rp.escalated
       } catch (e: any) {
         errors.push(`${brokerageId}: ${e?.message ?? String(e)}`)
       }
@@ -79,9 +88,9 @@ export async function GET(req: NextRequest) {
 
     await recordCronSuccessAction({
       context_id: contextId, records_processed: published + consumed,
-      metadata: { published, consumed, brokerages: brokerages.length, errors: errors.slice(0, 20) },
+      metadata: { published, consumed, reaped, escalated, brokerages: brokerages.length, errors: errors.slice(0, 20) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, published, consumed, brokerages: brokerages.length, errors: errors.length })
+    return NextResponse.json({ ok: true, published, consumed, reaped, escalated, brokerages: brokerages.length, errors: errors.length })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
