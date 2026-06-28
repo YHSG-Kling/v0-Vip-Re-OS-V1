@@ -62,6 +62,9 @@ export async function runOfferNetSheets(
       commissionRateDecimal: number
       hoaDuesMonthly: number | null
     }) => Promise<Omit<SellerCosts, "buyerClosingCredit">> | Omit<SellerCosts, "buyerClosingCredit">
+    /** EVENT-DRIVEN: scope the run to ONE listing (the one that just received an offer). The cron
+     *  omits this and sweeps the whole brokerage as the safety net. */
+    listingId?: string
   } = {},
   client?: Svc,
 ): Promise<OfferNetSheetResult> {
@@ -70,7 +73,7 @@ export async function runOfferNetSheets(
   const result: OfferNetSheetResult = { listingsScanned: 0, comparisonsProposed: 0, portalCardsPushed: 0 }
 
   // OUR in-house listings: seller is a contact (has a portal) AND we have a listing agent.
-  const { data: listings } = await supabase
+  let listingsQuery = supabase
     .from("listings")
     .select("id, address, list_price, agent_id, seller_contact_id, hoa_dues, commission_rate, brokerage_id")
     .eq("brokerage_id", brokerageId)
@@ -78,6 +81,8 @@ export async function runOfferNetSheets(
     .not("agent_id", "is", null)
     .in("status", ["active", "pending", "coming_soon"])
     .limit(200)
+  if (opts.listingId) listingsQuery = listingsQuery.eq("id", opts.listingId)
+  const { data: listings } = await listingsQuery
 
   for (const lst of (listings ?? []) as any[]) {
     // Open offers on this listing.

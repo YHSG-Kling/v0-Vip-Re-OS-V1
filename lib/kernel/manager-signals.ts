@@ -720,6 +720,19 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       ? "commissioned the weekly seller-update avatar reel (queued for render)"
       : "seller-update reel already up to date for this listing this week (deduped)"
   },
+  // Deal Coordinator → Listing Concierge: an offer just landed on one of our listings — run the
+  // net-sheet comparison NOW (event-driven, not waiting on the */15 cron) and propose the gated
+  // seller summary + portal card ranked by NET proceeds. Delegates to the proven runner, scoped to
+  // the one listing. Idempotent per (listing, offer-set) inside the runner.
+  "listing_concierge:offers_compare_handoff": async (signal, ctx) => {
+    const listingId = signal.entityId
+    if (!listingId) return null
+    const { runOfferNetSheets } = await import("@/lib/kernel/offer-net-sheet")
+    const r = await runOfferNetSheets(ctx.brokerageId, { listingId }, ctx.supabase)
+    return r.comparisonsProposed > 0
+      ? `ran the offer net-sheet for the listing — proposed ${r.comparisonsProposed} gated seller comparison(s) + ${r.portalCardsPushed} portal card(s)`
+      : "offer net-sheet ran — no new comparison needed (already proposed for this offer set, or no open offers)"
+  },
   // Asset Manager → Campaign Orchestrator: SEND the finished seller-update reels. Sweeps the
   // brokerage's completed renders and proposes each to its seller through the gate (audience='seller',
   // listing_concierge voice); approval materializes the rich listing-dashboard video card. The
