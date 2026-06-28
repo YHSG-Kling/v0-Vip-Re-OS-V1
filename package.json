@@ -339,7 +339,8 @@
     "test:signal-reaper": "tsx scripts/signal-reaper-simulator.ts",
     "test:deal-doc-router": "tsx scripts/deal-doc-router-simulator.ts",
     "test:seller-conversion": "tsx scripts/seller-conversion-simulator.ts",
-    "test:listing-metrics": "tsx scripts/listing-metrics-simulator.ts"
+    "test:listing-metrics": "tsx scripts/listing-metrics-simulator.ts",
+    "test:seller-journey-copy": "tsx scripts/seller-journey-copy-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

@@ -3,72 +3,7 @@
 import { Card, CardContent } from "@/app/components/ui/card"
 import { Badge } from "@/app/components/ui/badge"
 import { CheckCircle2, Clock, AlertCircle } from "lucide-react"
-
-// Plain-language stage meaning map for seller journey
-const SELLER_STAGE_MEANING: Record<string, {
-  headline: string
-  whatMeans: string
-  whatNext: string
-  responsible: string
-  urgency: "low" | "medium" | "high"
-}> = {
-  PRE_LISTING: {
-    headline: "Getting Your Home Ready",
-    whatMeans: "Your agent is preparing everything needed to bring your home to market — pricing, media, and marketing materials.",
-    whatNext: "Media capture, pricing review, and launch preparations are underway. Your agent will keep you posted.",
-    responsible: "Your Agent",
-    urgency: "low",
-  },
-  COMING_SOON: {
-    headline: "Getting Ready to Launch",
-    whatMeans: "Your listing is being prepared for market. Photos, pricing, and marketing materials are being finalized.",
-    whatNext: "Once everything is ready, your agent will launch the listing and begin marketing.",
-    responsible: "Your Agent",
-    urgency: "low",
-  },
-  ACTIVE: {
-    headline: "On the Market",
-    whatMeans: "Your home is actively listed and being shown to potential buyers. Marketing is live and working.",
-    whatNext: "Your agent will keep you updated on showings and any buyer interest.",
-    responsible: "Your Agent + Market",
-    urgency: "medium",
-  },
-  SHOWING_ACTIVE: {
-    headline: "Buyers Are Viewing",
-    whatMeans: "Your home is getting attention. Showings are happening and buyers are seeing the property.",
-    whatNext: "After each showing, your agent will collect feedback and share insights with you.",
-    responsible: "Your Agent",
-    urgency: "medium",
-  },
-  OFFER_RECEIVED: {
-    headline: "Offer Received",
-    whatMeans: "A buyer has submitted an offer on your home. This is an important moment in your sale.",
-    whatNext: "Review the offer with your agent. You can accept, counter, or decline.",
-    responsible: "You + Your Agent",
-    urgency: "high",
-  },
-  UNDER_CONTRACT: {
-    headline: "Under Contract",
-    whatMeans: "You have accepted an offer and are now in the due diligence period. The buyer is completing inspections and financing.",
-    whatNext: "Key milestones: inspection, appraisal, and final walkthrough before closing.",
-    responsible: "Buyer + Your Agent",
-    urgency: "medium",
-  },
-  PENDING: {
-    headline: "Sale Pending",
-    whatMeans: "All contingencies have been cleared. You are on track to close.",
-    whatNext: "Final preparations for closing day. Your agent will coordinate with title and escrow.",
-    responsible: "Your Agent + Title",
-    urgency: "low",
-  },
-  CLOSED: {
-    headline: "Sold",
-    whatMeans: "Congratulations! Your home has sold. The transaction is complete.",
-    whatNext: "Your agent remains a resource for any questions about your next chapter.",
-    responsible: "You",
-    urgency: "low",
-  },
-}
+import { deriveSellerStage, resolveSellerStageCopy } from "@/lib/portal/seller-journey-copy"
 
 interface SellerJourneyMeaningCardProps {
   listingStatus: string | null
@@ -76,6 +11,9 @@ interface SellerJourneyMeaningCardProps {
   showingCount: number
   daysOnMarket: number | null
   agentName?: string | null
+  /** When the seller is in a self-disclosed sensitive context (probate / divorce / foreclosure /
+   *  major transition), the copy shifts to an empathy-forward, lower-pressure register. */
+  sensitive?: boolean
 }
 
 export function SellerJourneyMeaningCard({
@@ -84,17 +22,10 @@ export function SellerJourneyMeaningCard({
   showingCount,
   daysOnMarket,
   agentName,
+  sensitive,
 }: SellerJourneyMeaningCardProps) {
-  // Derive stage from listing status and activity
-  let stage = "ACTIVE"
-  if (listingStatus === "pre_listing" || listingStatus === "draft") stage = "PRE_LISTING"
-  else if (listingStatus === "coming_soon") stage = "COMING_SOON"
-  else if (listingStatus === "pending" || listingStatus === "under_contract") stage = "UNDER_CONTRACT"
-  else if (listingStatus === "sold" || listingStatus === "closed") stage = "CLOSED"
-  else if (offerCount > 0) stage = "OFFER_RECEIVED"
-  else if (showingCount > 0) stage = "SHOWING_ACTIVE"
-
-  const ctx = SELLER_STAGE_MEANING[stage] || SELLER_STAGE_MEANING.ACTIVE
+  const stage = deriveSellerStage(listingStatus, offerCount, showingCount)
+  const ctx = resolveSellerStageCopy(stage, { sensitive })
 
   const UrgencyIcon = ctx.urgency === "high" ? AlertCircle : ctx.urgency === "medium" ? Clock : CheckCircle2
   const urgencyColor = ctx.urgency === "high" ? "text-amber-600" : ctx.urgency === "medium" ? "text-blue-600" : "text-green-600"

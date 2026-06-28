@@ -193,36 +193,6 @@ export async function deleteListing(listingId: string) {
 // updateListingStatus was migrated to app/actions/listings-kernel.ts
 // Import it from there: import { updateListingStatus } from "@/app/actions/listings-kernel"
 
-export async function getSellerReports(listingId: string) {
-  try {
-    if (!UUID_REGEX.test(listingId)) return { success: false, error: "Invalid listing ID" }
-
-    const auth = await requireCaller()
-    if (!auth.ok) return { success: false, error: auth.error }
-
-    const supabase = createServiceClient()
-
-    // Verify the listing is in caller's brokerage before reading reports
-    const { data: listing } = await supabase
-      .from("listings").select("brokerage_id").eq("id", listingId).maybeSingle()
-    if (!listing || listing.brokerage_id !== auth.brokerageId) {
-      return { success: false, error: "Forbidden" }
-    }
-
-    const { data: reports, error } = await supabase
-      .from("seller_weekly_reports")
-      .select("*")
-      .eq("listing_id", listingId)
-      .order("report_week_start", { ascending: false })
-
-    if (error) throw error
-
-    return { success: true, reports: reports || [] }
-  } catch (error) {
-    return handleError(error, "getSellerReports")
-  }
-}
-
 export async function getListingTimeline(listingId: string) {
   try {
     if (!UUID_REGEX.test(listingId)) return { success: false, error: "Invalid listing ID" }

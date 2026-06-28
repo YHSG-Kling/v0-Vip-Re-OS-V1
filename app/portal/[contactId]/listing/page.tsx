@@ -4,6 +4,7 @@ import Link from "next/link"
 import { resolveSellerContext, getShowingStats, getRecentFeedback, getOfferSummary } from "@/lib/portal/resolve-seller-context"
 import { getOpenHouseDashboard } from "@/app/actions/seller-open-house"
 import { getSellerDocuments } from "@/app/actions/portal-seller"
+import { resolvePersonaContext } from "@/lib/agents/persona-context"
 import { FileText, Download, ExternalLink } from "lucide-react"
 import {
   SellerJourneyMeaningCard,
@@ -48,6 +49,14 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
   if (!isVerifiedSeller) {
     redirect(`/portal/${contactId}?error=unauthorized`)
   }
+
+  // Resolve the seller's self-disclosed persona so the status copy softens to an empathy-forward
+  // register for sensitive contexts (probate / divorce / foreclosure / major transition).
+  const { data: personaRow } = await supabase
+    .from("contacts").select("contact_persona").eq("id", contactId).maybeSingle()
+  const sellerPersona = resolvePersonaContext(
+    (personaRow as { contact_persona: string | null } | null)?.contact_persona ?? null, "seller",
+  )
 
   // Parallel data fetches for listing details
   const [
@@ -263,6 +272,7 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
           showingCount={showingStats.total}
           daysOnMarket={daysOnMarket}
           agentName={agentName}
+          sensitive={sellerPersona.sensitive}
         />
 
         {/* Open House Alert if upcoming */}
