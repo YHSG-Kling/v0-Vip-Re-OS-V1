@@ -145,6 +145,31 @@ export async function POST(request: NextRequest) {
         .maybeSingle()
       if (c) contactId = c.id as string
     }
+
+    // EMAIL → OFFER lookout (runs BEFORE the known-contact requirement, since an outside agent
+    // emailing an offer is NOT a known contact). If this is an offer for an in-house listing
+    // (matched by address, not sender), the offer flow owns it: auto-ingest when the buyer is a
+    // known sender contact, else surface a one-tap confirm to the listing agent. Best-effort.
+    if (brokerageId && email.attachments.some((a) => a.mime === "application/pdf")) {
+      try {
+        const { tryIngestInboundOffer } = await import("@/lib/inbound-mail/offer-intake")
+        const intake = await tryIngestInboundOffer({
+          brokerageId,
+          subject:         email.subject ?? null,
+          bodyText:        email.bodyText ?? null,
+          fromEmail:       email.fromEmail ?? null,
+          senderContactId: contactId,
+          attachments:     email.attachments.map((a) => ({ fileName: a.fileName, mime: a.mime, contentB64: a.contentB64 ?? null })),
+        }, supabase)
+        if (intake.handled) {
+          results.push({ email_from: email.fromEmail, uploads: 0 })
+          continue
+        }
+      } catch (e) {
+        console.error("[inbound-mail] offer-intake failed (non-fatal):", e)
+      }
+    }
+
     if (!contactId || !brokerageId) {
       results.push({ email_from: email.fromEmail, uploads: 0 })
       continue
