@@ -434,7 +434,30 @@ export async function markAgreementSigned(params: {
     return { success: false, error: listingError.message }
   }
 
-  // Auto-schedule social_posts for open_house_marketing_date
+  // Auto-schedule a DRAFT open-house social post — copy is AI-generated (gateway, brand-voiced,
+  // Fair-Housing redrafted) grounded in the real address + event date, with a date-stamped floor as the
+  // deterministic fallback (no more "stay tuned" placeholder). approval_status stays 'pending' so a human
+  // still reviews before it posts.
+  const { data: ohListing } = await supabase
+    .from("listings").select("address, city, state").eq("id", listingId).maybeSingle()
+  const ohAddress = [ohListing?.address, ohListing?.city, ohListing?.state].filter(Boolean).join(", ")
+  const ohDateLabel = eventDate.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })
+  const ohFloor = ohAddress
+    ? `Open house at ${ohAddress} on ${ohDateLabel}. Come see it in person — details to follow.`
+    : `Open house on ${ohDateLabel}. Come see it in person — details to follow.`
+  const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
+  const ohCopy = await generateClientMessage({
+    brokerageId,
+    agentUserId: userId,
+    audience: "lead",
+    purpose:
+      "Write a short, inviting open-house announcement for prospective buyers to see on social media. Warm and welcoming, no pressure, no guarantees.",
+    facts: [
+      ...(ohAddress ? [{ label: "Property", value: ohAddress }] : []),
+      { label: "Open house date", value: ohDateLabel },
+    ],
+    fallback: { subject: "Open house", body: ohFloor },
+  })
   await supabase.from("social_posts").insert({
     brokerage_id:      brokerageId,
     listing_id:        listingId,
@@ -445,7 +468,7 @@ export async function markAgreementSigned(params: {
     status:            "scheduled",
     approval_status:   "pending",
     scheduled_for:     new Date(marketingDate.getTime()).toISOString(),
-    content:           `Open house event coming up! Stay tuned for details.`,
+    content:           ohCopy.body,
     created_at:        new Date().toISOString(),
     updated_at:        new Date().toISOString(),
   })

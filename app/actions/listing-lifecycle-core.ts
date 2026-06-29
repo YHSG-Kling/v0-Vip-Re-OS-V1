@@ -481,14 +481,30 @@ async function handleSellerToLifetimeTransition(
 
   await supabase.from("lifetime_customer_touchpoints").insert(touchpoints).then(() => {})
 
-  // 3. Send portal message (body column per schema)
+  // 3. Send portal message — brand-voiced via the AI gateway (them-first, Fair-Housing redrafted),
+  //    with the canned line as the deterministic FALLBACK floor (the app's rule: client-facing copy is
+  //    AI-generated in the agent's voice, never a hardcoded script; the floor only ships if the gateway
+  //    is down). generateSellerHandlerCopy resolves the seller's first name from contactId.
+  const { generateSellerHandlerCopy } = await import("@/lib/agents/seller-handler-copy")
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const closingCopy = await generateSellerHandlerCopy({
+    brokerageId,
+    contactId,
+    purpose:
+      "Warmly congratulate the seller on their successful closing, let them know their portal now reflects their new status, and that you remain their lifetime real estate resource. Short, genuine, no pressure.",
+    facts: propertyAddress ? [{ label: "Property just sold", value: propertyAddress }] : undefined,
+    fallback: {
+      subject: "Congratulations on your closing!",
+      body: `Congratulations on your successful closing! Your portal is now updated to reflect your homeowner status. We look forward to being your lifetime real estate resource.`,
+    },
+  }, createServiceClient())
   await supabase
     .from("client_portal_messages")
     .insert({
       contact_id: contactId,
       brokerage_id: brokerageId,
       agent_id: agentId,
-      body: `Congratulations on your successful closing! Your portal is now updated to reflect your homeowner status. We look forward to being your lifetime real estate resource.`,
+      body: closingCopy.body,
       direction: "outbound",
     })
     .then(() => {})
