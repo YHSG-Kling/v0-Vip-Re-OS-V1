@@ -167,7 +167,7 @@ export const COMMAND_MAP = {
   // Query Commands
   query_listing_status: {
     module_path: '@/app/actions/listing-lifecycle-core',
-    function_name: 'getListingStage',
+    function_name: 'getListingCurrentStage',
     param_mapping: {
       listing_id: 'listingId',
       brokerage_id: 'brokerageId'

@@ -6,6 +6,7 @@
  */
 
 import { COMMAND_MAP } from '../helpers/command-map'
+import { COMMAND_EXECUTORS } from '../helpers/command-executors'
 
 export interface DispatchResult {
   success: boolean
@@ -27,32 +28,19 @@ export async function dispatchCommand(request: DispatchCommandRequest): Promise<
   const { target_system, target_action, parameters, entities } = request
 
   try {
-    // Get command mapping
+    // Resolve the param-mapping (for buildActionParams) + the STATIC executor (bundled + build-validated,
+    // unlike the old runtime-string import that never resolved on Vercel).
     const mapping = COMMAND_MAP[target_action as keyof typeof COMMAND_MAP]
+    const executor = COMMAND_EXECUTORS[target_action as keyof typeof COMMAND_EXECUTORS]
 
-    if (!mapping) {
+    if (!mapping || !executor) {
       return {
         success: false,
-        error: `Command "${target_action}" not mapped to system action`
+        error: `Command "${target_action}" not mapped to a system action`
       }
     }
 
-    // Dynamically import action module. The /* webpackIgnore: true */
-    // comment tells webpack to leave this as a runtime import (since the
-    // path is data-driven) instead of trying to statically analyze it —
-    // which previously surfaced as a "Critical dependency: the request of
-    // a dependency is an expression" build warning.
-    const actionModule = await import(/* webpackIgnore: true */ mapping.module_path)
-    const actionFunction = actionModule[mapping.function_name]
-
-    if (!actionFunction) {
-      return {
-        success: false,
-        error: `Action function "${mapping.function_name}" not found`
-      }
-    }
-
-    // Build parameters for action
+    // Build parameters for the action (apply the voice → action param mapping).
     const actionParams = buildActionParams(
       target_action,
       parameters,
@@ -60,13 +48,13 @@ export async function dispatchCommand(request: DispatchCommandRequest): Promise<
       mapping.param_mapping
     )
 
-    // Execute action
-    const result = await actionFunction(actionParams)
+    // Execute the action (static import — actually runs on Vercel).
+    const result = await executor(actionParams)
 
     return {
-      success: result.success !== false,
+      success: result?.success !== false,
       result,
-      error: result.error
+      error: result?.error
     }
 
   } catch (error) {
