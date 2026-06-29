@@ -25,7 +25,7 @@ export async function GET(request: Request) {
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()
-  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, weeklyReports = 0, mlsReminders = 0, staleVideos = 0, staleRuns = 0, errors = 0
+  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, weeklyReports = 0, mlsReminders = 0, staleVideos = 0, staleRuns = 0, strandedOffers = 0, errors = 0
 
   const [
     { predictAndPublishBuyerStall },
@@ -39,6 +39,7 @@ export async function GET(request: Request) {
     { runMlsNumberReminders },
     { reapStaleVideoWorkflows },
     { reapStaleWorkflowRuns },
+    { reapStrandedAcceptedOffers },
     { ensureNationalMarketPulse },
   ] = await Promise.all([
     import("@/lib/intelligence/buyer-stall-predictor-runner"),
@@ -52,6 +53,7 @@ export async function GET(request: Request) {
     import("@/lib/listings/mls-number-reminder"),
     import("@/lib/video/video-pipeline-reaper"),
     import("@/lib/workflow-orchestrator/stale-run-reaper"),
+    import("@/lib/transactions/stranded-offer-reaper"),
     import("@/lib/listings/market-pulse-runner"),
   ])
 
@@ -129,7 +131,12 @@ export async function GET(request: Request) {
     //      Orchestrator (owns workflow_runs) reaps chains stuck mid-execution so no automation sits
     //      unfinished. Completes the reaper trio: manager_signals + video pipeline + chain runs.
     try { const r = await reapStaleWorkflowRuns(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); staleRuns += r.escalated } catch { errors++ }
+
+    // (11) Stranded-offer reaper — the offer→under-contract boundary. An offer accepted in the workspace
+    //      but never turned into a transaction (compliance gate unfinished) is escalated to the agent so
+    //      the highest-stakes handoff is never silently lost. Extends the reaper family to the deal door.
+    try { const r = await reapStrandedAcceptedOffers(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); strandedOffers += r.escalated } catch { errors++ }
   }
 
-  return NextResponse.json({ ran_at: ranAt, brokerages, marketPulse, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, staleVideos, staleRuns, errors })
+  return NextResponse.json({ ran_at: ranAt, brokerages, marketPulse, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, staleVideos, staleRuns, strandedOffers, errors })
 }
