@@ -5,6 +5,7 @@ import { resolveSellerContext, getShowingStats, getRecentFeedback, getOfferSumma
 import { getOpenHouseDashboard } from "@/app/actions/seller-open-house"
 import { getSellerDocuments } from "@/app/actions/portal-seller"
 import { resolvePersonaContext } from "@/lib/agents/persona-context"
+import { buildListingMarketingChannels } from "@/lib/listings/marketing-channels"
 import { FileText, Download, ExternalLink } from "lucide-react"
 import {
   SellerJourneyMeaningCard,
@@ -34,10 +35,12 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
 
   const listing = context.listing
 
-  // Seller access verification: ensure this contact is the seller_contact_id
+  // Seller access verification: ensure this contact is the seller_contact_id.
+  // Also pull the REAL signals the marketing card grounds its channel statuses in (the MLS number +
+  // the public slug) instead of inferring "live" from listing.status.
   const { data: listingOwnerCheck } = await supabase
     .from("listings")
-    .select("contact_id, seller_contact_id")
+    .select("contact_id, seller_contact_id, mls_number, slug")
     .eq("id", listing.id)
     .single()
 
@@ -154,18 +157,20 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     ? Math.floor((Date.now() - listingDate.getTime()) / (1000 * 60 * 60 * 24))
     : null
 
-  // Build marketing channels from real data
-  const marketingChannels = [
-    { name: "MLS", status: listing.status === "active" ? "live" as const : "scheduled" as const },
-    { name: "Zillow", status: listing.status === "active" ? "live" as const : "scheduled" as const },
-    { name: "Realtor.com", status: listing.status === "active" ? "live" as const : "scheduled" as const },
-    ...socialPosts.filter(p => p.platform === "instagram").length > 0
-      ? [{ name: "Instagram", status: "live" as const }]
-      : [],
-    ...socialPosts.filter(p => p.platform === "facebook").length > 0
-      ? [{ name: "Facebook", status: "live" as const }]
-      : [],
-  ]
+  // Marketing channels — statuses grounded ONLY in verifiable signals (a real MLS number, a hosted
+  // slug, published posts, active campaigns), never inferred from listing.status. See marketing-channels.ts.
+  const { count: activeCampaignCount } = await supabase
+    .from("marketing_campaigns")
+    .select("id", { count: "exact", head: true })
+    .eq("listing_id", listing.id)
+    .eq("status", "active")
+  const marketingChannels = buildListingMarketingChannels({
+    mlsNumber: (listingOwnerCheck?.mls_number as string | null) ?? null,
+    listingSlug: (listingOwnerCheck?.slug as string | null) ?? null,
+    instagramLive: socialPosts.some((p) => p.platform === "instagram"),
+    facebookLive: socialPosts.some((p) => p.platform === "facebook"),
+    activeCampaignCount: activeCampaignCount ?? 0,
+  })
 
   // Build feedback summary
   const feedbackSummary = {
@@ -322,7 +327,9 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
           <SellerMarketingLiveCard
             channels={marketingChannels}
             marketingTier={null}
-            totalReach={metrics.total_views > 0 ? metrics.total_views * 10 : undefined}
+            // No fabricated reach — we don't have a verified per-listing reach number, so we don't
+            // invent one (the old `views * 10` heuristic showed sellers a made-up figure).
+            totalReach={undefined}
           />
         </div>
 
