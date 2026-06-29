@@ -25,7 +25,7 @@ export async function GET(request: Request) {
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()
-  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, weeklyReports = 0, mlsReminders = 0, errors = 0
+  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, weeklyReports = 0, mlsReminders = 0, staleVideos = 0, errors = 0
 
   const [
     { predictAndPublishBuyerStall },
@@ -37,6 +37,7 @@ export async function GET(request: Request) {
     { rollupListingMetrics },
     { runSellerWeeklyReports },
     { runMlsNumberReminders },
+    { reapStaleVideoWorkflows },
   ] = await Promise.all([
     import("@/lib/intelligence/buyer-stall-predictor-runner"),
     import("@/lib/intelligence/stuck-stage-detector-runner"),
@@ -47,6 +48,7 @@ export async function GET(request: Request) {
     import("@/lib/listings/listing-metrics-rollup"),
     import("@/lib/listings/seller-weekly-report-runner"),
     import("@/lib/listings/mls-number-reminder"),
+    import("@/lib/video/video-pipeline-reaper"),
   ])
 
   const { data: brks } = await svc.from("brokerages").select("id")
@@ -108,7 +110,12 @@ export async function GET(request: Request) {
     //     once to add it so the seller portal's syndication status (MLS/Zillow/Realtor) shows live +
     //     honest (the marketing card grounds "live" in a real mls_number). Idempotent per listing.
     try { const r = await runMlsNumberReminders(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); mlsReminders += r.reminded } catch { errors++ }
+
+    // (9) Stale video-workflow reaper — no commissioned reel sits forever in a non-terminal state.
+    //     The Asset Manager owns the stalls: marks genuinely-stuck rows failed + notifies the agent
+    //     (mirrors the manager-signals reaper — stale work gets a manager, never falls through cracks).
+    try { const r = await reapStaleVideoWorkflows(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); staleVideos += r.escalated } catch { errors++ }
   }
 
-  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, errors })
+  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, staleVideos, errors })
 }
