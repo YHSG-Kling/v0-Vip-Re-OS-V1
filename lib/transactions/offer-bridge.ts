@@ -91,6 +91,12 @@ export async function createTransactionFromOffer(params: {
    *  compliance_passed_at all in one atomic call). Default false: re-verify the gate
    *  inside the bridge from the offer row's source-of-truth fields. */
   skipOfferGate?: boolean
+  /** Which side WE represent — passed by the caller, which knows it (don't assume in-house/buyer):
+   *  the seller accepting an offer ON OUR LISTING is 'seller'; the buyer-offer flows (incl. external/IDX
+   *  targets) are 'buyer' (default). deal_type drives compliance REQUIRED-DOC seeding, client persona,
+   *  and seller-close logic, so a seller deal mislabeled 'buyer' seeds the wrong docs. 'dual' (we hold
+   *  both sides of one deal) needs an explicit signal and is left to the caller. */
+  dealType?: "buyer" | "seller" | "dual"
 }) {
   const supabase = createServiceClient()
 
@@ -167,10 +173,10 @@ export async function createTransactionFromOffer(params: {
       offer_id:             params.offerId,
       deal_name:            dealName,
       property_address:     resolvedAddress,
-      // Schema CHECK: deal_type ∈ {buyer, seller, dual}. Voice-cockpit + manual
-      // offers create the BUYER side of the transaction; "purchase" was the
-      // pre-existing value here and never matched the constraint.
-      deal_type:            "buyer",
+      // Schema CHECK: deal_type ∈ {buyer, seller, dual}. The caller declares the side it represents
+      // (seller-offers → 'seller'; buyer-offer flows → 'buyer'). Default 'buyer' for back-compat; the
+      // old blanket 'buyer' mislabeled every seller-side accept (wrong compliance docs/persona).
+      deal_type:            params.dealType ?? "buyer",
       purchase_price:       (offer as any).offer_price,
       contract_date:        params.contractDate,
       compliance_passed_at: params.compliancePassedAt,

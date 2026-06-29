@@ -389,6 +389,9 @@ export async function createTransactionFromCompliantAcceptedOffer(
     const result = await createTransactionFromOffer({
       offerId,
       brokerageId,
+      // acceptOfferConditionally accepts a buyer's offer ON OUR LISTING (it carries listingId + runs the
+      // offer-acceptance gate) — the SELLER side. Don't default to 'buyer' (wrong compliance docs).
+      dealType: "seller",
       contractDate,
       compliancePassedAt,
       contractTerms: {
