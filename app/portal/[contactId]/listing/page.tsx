@@ -17,7 +17,9 @@ import {
   AgentUpdateVideoCard,
   EquityEstimateCard,
   SellerWeeklyReportCard,
+  SellerTeamActivityCard,
 } from "../components/seller-mode"
+import { buildSellerTeamActivity } from "@/lib/listings/seller-team-activity"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
@@ -183,6 +185,20 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     activeCampaignCount: activeCampaignCount ?? 0,
   })
 
+  // "Your AI Team" — the named managers working this sale, grounded in real activity (D7 differentiator).
+  const { count: videosDelivered } = await supabase
+    .from("ai_video_projects")
+    .select("id", { count: "exact", head: true })
+    .eq("contact_id", contactId)
+    .eq("status", "completed")
+  const sellerTeam = buildSellerTeamActivity({
+    listingLive: listing.status === "active" || (listing as any).lifecycle_stage === "MLS_ACTIVE",
+    marketingChannelsLive: marketingChannels.filter((c) => c.status === "live").length,
+    showingsTotal: showingStats.total,
+    videosDelivered: videosDelivered ?? 0,
+    offersCount: offerSummary.total,
+  })
+
   // Build feedback summary
   const feedbackSummary = {
     positivePatterns: extractPositivePatterns(recentFeedback),
@@ -290,6 +306,9 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
           agentName={agentName}
           sensitive={sellerPersona.sensitive}
         />
+
+        {/* Your AI Team — the named managers working this sale (the "team, not a CRM" differentiator) */}
+        <SellerTeamActivityCard team={sellerTeam} />
 
         {/* Weekly digest — this week's real activity, client-safe */}
         <SellerWeeklyReportCard report={weeklyReport as any} />
