@@ -25,7 +25,7 @@ export async function GET(request: Request) {
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()
-  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, weeklyReports = 0, mlsReminders = 0, staleVideos = 0, errors = 0
+  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, weeklyReports = 0, mlsReminders = 0, staleVideos = 0, staleRuns = 0, errors = 0
 
   const [
     { predictAndPublishBuyerStall },
@@ -38,6 +38,7 @@ export async function GET(request: Request) {
     { runSellerWeeklyReports },
     { runMlsNumberReminders },
     { reapStaleVideoWorkflows },
+    { reapStaleWorkflowRuns },
   ] = await Promise.all([
     import("@/lib/intelligence/buyer-stall-predictor-runner"),
     import("@/lib/intelligence/stuck-stage-detector-runner"),
@@ -49,6 +50,7 @@ export async function GET(request: Request) {
     import("@/lib/listings/seller-weekly-report-runner"),
     import("@/lib/listings/mls-number-reminder"),
     import("@/lib/video/video-pipeline-reaper"),
+    import("@/lib/workflow-orchestrator/stale-run-reaper"),
   ])
 
   const { data: brks } = await svc.from("brokerages").select("id")
@@ -115,7 +117,12 @@ export async function GET(request: Request) {
     //     The Asset Manager owns the stalls: marks genuinely-stuck rows failed + notifies the agent
     //     (mirrors the manager-signals reaper — stale work gets a manager, never falls through cracks).
     try { const r = await reapStaleVideoWorkflows(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); staleVideos += r.escalated } catch { errors++ }
+
+    // (10) Stale workflow-RUN reaper — the chain engine (listing-appt-prep, etc.). The Campaign
+    //      Orchestrator (owns workflow_runs) reaps chains stuck mid-execution so no automation sits
+    //      unfinished. Completes the reaper trio: manager_signals + video pipeline + chain runs.
+    try { const r = await reapStaleWorkflowRuns(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); staleRuns += r.escalated } catch { errors++ }
   }
 
-  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, staleVideos, errors })
+  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, staleVideos, staleRuns, errors })
 }
