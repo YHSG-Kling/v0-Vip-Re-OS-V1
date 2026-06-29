@@ -13,7 +13,7 @@
  *
  * Run: npx tsx scripts/loan-milestone-sync-simulator.ts   (npm run test:loan-milestone-sync)
  */
-import { planLoanMilestoneSync } from "../lib/intelligence/loan-milestone-sync"
+import { planLoanMilestoneSync, deriveLoanMilestone } from "../lib/intelligence/loan-milestone-sync"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -49,6 +49,17 @@ async function main() {
   const delaySoon = planLoanMilestoneSync({ milestone: "delay", daysToClose: 5 })
   const delayFar = planLoanMilestoneSync({ milestone: "delay", daysToClose: 40 })
   check("delay near closing → urgent; far → action", delaySoon.tone === "urgent" && delayFar.tone === "action" && !!delaySoon.buyerMessage)
+
+  console.log("\n[Layer 1b · derive the milestone from real transaction_lenders state]")
+  check("no financing started → null (honest skip, no message)", deriveLoanMilestone({}) === null)
+  check("pre-approval date only → pre_approval", deriveLoanMilestone({ pre_approval_date: "2026-01-01" }) === "pre_approval")
+  check("appraisal ordered → appraisal_ordered", deriveLoanMilestone({ pre_approval_date: "2026-01-01", appraisal_ordered_date: "2026-01-10" }) === "appraisal_ordered")
+  check("appraisal completed → appraisal_complete", deriveLoanMilestone({ appraisal_ordered_date: "2026-01-10", appraisal_completed_date: "2026-01-15" }) === "appraisal_complete")
+  check("FURTHEST wins: clear_to_close_date beats earlier dates", deriveLoanMilestone({ pre_approval_date: "2026-01-01", appraisal_completed_date: "2026-01-15", clear_to_close_date: "2026-01-20" }) === "clear_to_close")
+  check("underwriting_status 'Cleared to Close' (no date col) → clear_to_close", deriveLoanMilestone({ underwriting_status: "Cleared to Close" }) === "clear_to_close")
+  check("underwriting_status 'conditionally approved' → conditional_approval", deriveLoanMilestone({ pre_approval_date: "2026-01-01", underwriting_status: "Conditionally Approved" }) === "conditional_approval")
+  check("underwriting_status 'Funded' → funded (most advanced)", deriveLoanMilestone({ clear_to_close_date: "2026-01-20", underwriting_status: "Funded" }) === "funded")
+  check("underwriting_status 'Denied' → denied (overrides everything)", deriveLoanMilestone({ pre_approval_date: "2026-01-01", clear_to_close_date: "2026-01-20", underwriting_status: "Denied" }) === "denied")
 
   console.log("\n[Layer 2 · live: clear-to-close → gated buyer update + agent notify]")
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY && !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)

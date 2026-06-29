@@ -80,3 +80,31 @@ export function planLoanMilestoneSync(input: LoanSyncInput): LoanSyncPlan {
         agentNote: soon ? "⚠ Loan DELAY with closing near — coordinate an extension and align all parties NOW." : "Loan delay — chase the outstanding items with the lender and keep the buyer calm." }
   }
 }
+
+/** The transaction_lenders columns that signal a financing milestone (live schema). */
+export interface LenderState {
+  pre_approval_date?: string | null
+  appraisal_ordered_date?: string | null
+  appraisal_completed_date?: string | null
+  clear_to_close_date?: string | null
+  /** free-text underwriting status — the only signal for denied / funded / conditional. */
+  underwriting_status?: string | null
+}
+
+/** PURE. Derive the FURTHEST-ALONG loan milestone a lender row has reached (or null when financing has
+ *  not started — honest skip, no message). Structured date columns win; underwriting_status text is the
+ *  only source for denied / funded / conditional-approval states that have no dedicated column. Checked
+ *  most-advanced → least so a row that is clear-to-close reports clear_to_close, not appraisal. The
+ *  runner hands the result to syncLoanMilestone, which is idempotent per (contact, milestone) — so the
+ *  furthest milestone fires once and never re-notifies. */
+export function deriveLoanMilestone(l: LenderState): LoanMilestone | null {
+  const u = (l.underwriting_status ?? "").toLowerCase()
+  if (/(deni|declin|reject|turned down)/.test(u)) return "denied"
+  if (/fund/.test(u)) return "funded"
+  if (l.clear_to_close_date || /(clear[ _-]?to[ _-]?close|cleared to close|\bctc\b)/.test(u)) return "clear_to_close"
+  if (l.appraisal_completed_date) return "appraisal_complete"
+  if (l.appraisal_ordered_date) return "appraisal_ordered"
+  if (/(condition|approv)/.test(u)) return "conditional_approval"
+  if (l.pre_approval_date) return "pre_approval"
+  return null
+}

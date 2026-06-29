@@ -9,6 +9,7 @@ import {
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { runFinancingPitStop } from "@/lib/kernel/financing-pit-stop"
 import { runRateLockWatch } from "@/lib/financing/rate-lock-watch-runner"
+import { runLoanMilestoneSync } from "@/lib/intelligence/loan-milestone-sync-runner"
 
 /**
  * FINANCING PIT STOP cron (suggest "0 *​/6 * * *" — every 6h). For each brokerage,
@@ -39,7 +40,7 @@ export async function GET(req: NextRequest) {
   const errors: string[] = []
   let scanned = 0, inWindow = 0, summariesProposed = 0, raceDraftsProposed = 0,
     portalCardsPushed = 0, skippedNoSignal = 0, benchMisses = 0,
-    rateLockFlagged = 0, rateLockEscalated = 0
+    rateLockFlagged = 0, rateLockEscalated = 0, loanMilestonesSynced = 0
 
   try {
     const { data: rows, error } = await supabase.from("brokerages").select("id").limit(500)
@@ -61,13 +62,21 @@ export async function GET(req: NextRequest) {
           rateLockFlagged += rl.flagged
           rateLockEscalated += rl.escalated
         } catch (e: any) { errors.push(`${b.id} rate-lock: ${e?.message ?? String(e)}`) }
+        // LOAN-MILESTONE SYNC — keep the buyer + agent in the loop as financing milestones land
+        // (loan approved, appraisal back, CLEAR TO CLOSE). Closes the loan_milestone circuit whose
+        // publisher existed but was never invoked. Same financing window; gated, idempotent.
+        try {
+          const lm = await runLoanMilestoneSync({ brokerageId: b.id }, supabase)
+          loanMilestonesSynced += lm.synced
+          for (const e of lm.errors) errors.push(`${b.id} loan-milestone: ${e}`)
+        } catch (e: any) { errors.push(`${b.id} loan-milestone: ${e?.message ?? String(e)}`) }
       } catch (e: any) { errors.push(`${b.id}: ${e?.message ?? String(e)}`) }
     }
     await recordCronSuccessAction({
       context_id: contextId, records_processed: summariesProposed,
-      metadata: { scanned, inWindow, summariesProposed, raceDraftsProposed, portalCardsPushed, skippedNoSignal, benchMisses, rateLockFlagged, rateLockEscalated, errors: errors.slice(0, 10) },
+      metadata: { scanned, inWindow, summariesProposed, raceDraftsProposed, portalCardsPushed, skippedNoSignal, benchMisses, rateLockFlagged, rateLockEscalated, loanMilestonesSynced, errors: errors.slice(0, 10) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, scanned, inWindow, summariesProposed, raceDraftsProposed, portalCardsPushed, skippedNoSignal, benchMisses, rateLockFlagged, rateLockEscalated })
+    return NextResponse.json({ ok: true, scanned, inWindow, summariesProposed, raceDraftsProposed, portalCardsPushed, skippedNoSignal, benchMisses, rateLockFlagged, rateLockEscalated, loanMilestonesSynced })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
