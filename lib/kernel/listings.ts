@@ -16,6 +16,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
+import { resolveDealType } from "@/lib/transactions/deal-type-resolver"
 import { KernelEvent } from "./events"
 import type { ListingStage as LifecycleListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 
@@ -679,7 +680,7 @@ export async function createTransactionShellFromAcceptedOffer(input: {
     // Validate offer is accepted
     const { data: offer } = await supabase
       .from("offers")
-      .select("id, status, offer_price, contact_id")
+      .select("id, status, offer_price, contact_id, agent_id")
       .eq("id", input.offerId)
       .maybeSingle()
 
@@ -710,7 +711,9 @@ export async function createTransactionShellFromAcceptedOffer(input: {
         contact_id:        listing.seller_contact_id,
         seller_contact_id: listing.seller_contact_id,
         buyer_contact_id:  offer.contact_id ?? null,
-        deal_type:         "seller",
+        // Our listing → 'seller', UNLESS a different in-house agent represents the buyer (in-house buyer
+        // on our own listing) → 'dual'. Mirrors offer-bridge's deal-type-resolver.
+        deal_type:         resolveDealType({ ourListing: true, buyerAgentId: (offer as any).agent_id ?? null, listingAgentId: input.agentId ?? null }),
         status:            "under_contract",
         stage:             "UNDER_CONTRACT",
         purchase_price:    offer.offer_price ?? listing.list_price,

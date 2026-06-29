@@ -223,9 +223,9 @@ export async function acceptOffer(params: {
     await createTransactionFromOffer({
       offerId,
       brokerageId,
-      // We are accepting an offer ON OUR OWN LISTING — this is the SELLER side. Don't let the bridge
-      // default to 'buyer' (which would seed buyer compliance docs + a buyer persona for a seller deal).
-      dealType: "seller",
+      // deal_type is auto-resolved inside the bridge from ground truth (our listing + buyer-agent vs
+      // listing-agent) so a seller-side accept becomes 'seller' OR 'dual' (in-house buyer on our own
+      // listing) — never the old blanket 'buyer'. No need to declare it here.
       contractDate: new Date().toISOString().split("T")[0],
       // Use the already-verified compliance timestamp from the gate above
       compliancePassedAt: complianceCheck.complianceTimestamp ?? new Date().toISOString(),

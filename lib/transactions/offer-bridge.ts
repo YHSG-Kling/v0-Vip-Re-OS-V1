@@ -138,13 +138,16 @@ export async function createTransactionFromOffer(params: {
     throw new Error(`[offer-bridge] Offer not found: ${params.offerId}`)
   }
 
-  // Resolve property address + seller_contact_id from listing if available
+  // Resolve property address + seller_contact_id + listing agent from the in-house listing if any.
+  // listingAgentId is the SELLER side; offer.agent_id is the BUYER side — together they tell the bridge
+  // whether WE hold both sides (dual) without assuming in-house/buyer. See deal-type-resolver.ts.
   let resolvedAddress = (offer as any).property_address ?? null
   let sellerContactId: string | null = null
+  let listingAgentId: string | null = null
   if ((offer as any).listing_id) {
     const { data: listing } = await supabase
       .from("listings")
-      .select("address, city, state, seller_contact_id")
+      .select("address, city, state, seller_contact_id, agent_id")
       .eq("id", (offer as any).listing_id)
       .maybeSingle()
     if (listing) {
@@ -152,8 +155,19 @@ export async function createTransactionFromOffer(params: {
         resolvedAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
       }
       sellerContactId = (listing as any).seller_contact_id ?? null
+      listingAgentId = (listing as any).agent_id ?? null
     }
   }
+
+  // Who do WE represent? Observed from ground truth (our-listing + buyer-agent vs listing-agent), with
+  // the caller's dealType as an explicit override. 'dual' = our listing + a DIFFERENT in-house agent on
+  // the buyer side (the common in-house-both-sides deal). Drives compliance doc seeding + persona.
+  const { resolveDealType } = await import("./deal-type-resolver")
+  const dealType = params.dealType ?? resolveDealType({
+    ourListing: !!sellerContactId,
+    buyerAgentId: (offer as any).agent_id ?? null,
+    listingAgentId,
+  })
 
   // Create transaction — use contact_id (not buyer_id) and agent_id (not buyer_agents join)
   // deal_name is NOT NULL on transactions; default to property_address (or
@@ -173,10 +187,10 @@ export async function createTransactionFromOffer(params: {
       offer_id:             params.offerId,
       deal_name:            dealName,
       property_address:     resolvedAddress,
-      // Schema CHECK: deal_type ∈ {buyer, seller, dual}. The caller declares the side it represents
-      // (seller-offers → 'seller'; buyer-offer flows → 'buyer'). Default 'buyer' for back-compat; the
-      // old blanket 'buyer' mislabeled every seller-side accept (wrong compliance docs/persona).
-      deal_type:            params.dealType ?? "buyer",
+      // Schema CHECK: deal_type ∈ {buyer, seller, dual}. Auto-resolved from ground truth (above) so
+      // seller-side and DUAL deals are labeled correctly — the old blanket 'buyer' seeded the wrong
+      // compliance docs + persona for every non-buyer deal.
+      deal_type:            dealType,
       purchase_price:       (offer as any).offer_price,
       contract_date:        params.contractDate,
       compliance_passed_at: params.compliancePassedAt,
