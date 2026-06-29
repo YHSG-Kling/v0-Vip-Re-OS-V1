@@ -1227,12 +1227,22 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   },
     "listing_concierge:isa_call_appointment": async (signal, ctx) => {
     if (!signal.contactId) return null
+    const fallback = {
+      subject: "Looking forward to our appointment",
+      body: "Great speaking with you! Ahead of our appointment I'll prepare a current market position for your home — reply here with anything you'd like me to cover.",
+    }
+    const { generateSellerHandlerCopy } = await import("@/lib/agents/seller-handler-copy")
+    const msg = await generateSellerHandlerCopy({
+      brokerageId: ctx.brokerageId, contactId: signal.contactId,
+      purpose: "Warmly follow up after the seller booked a listing appointment on a call — let them know you'll prepare a current market position for their home and invite anything they'd like covered. No pressure.",
+      ctas: ["Reply with anything you'd like me to cover at our appointment"],
+      fallback,
+    }, ctx.supabase)
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
     const res = await proposeClientMessage({
       brokerageId: ctx.brokerageId, agentKind: "listing_concierge", entityType: "contact",
       entityId: signal.contactId, recipientContactId: signal.contactId, audience: "seller",
-      subject: "Looking forward to our appointment",
-      body: "Great speaking with you! Ahead of our appointment I'll prepare a current market position for your home — reply here with anything you'd like me to cover.",
+      subject: msg.subject, body: msg.body,
       rationale: `AI ISA booked an appointment on a dial-batch call — listing prep follow-up (signal ${signal.signalType}).`,
       channel: "portal",
     }, ctx.supabase)
@@ -1437,8 +1447,21 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
         body: `The feedback on ${addr} is close — a few small presentation tweaks could tip the next buyers over. ${points.length ? `What's coming up: ${points.join("; ")}. ` : ""}These are quick, low-cost fixes. Want me to put together a short prep list?`,
       },
     }
-    const msg = copy[play]
-    if (!msg) return null
+    const fallback = copy[play]
+    if (!fallback) return null
+
+    const { generateSellerHandlerCopy } = await import("@/lib/agents/seller-handler-copy")
+    const msg = await generateSellerHandlerCopy({
+      brokerageId: ctx.brokerageId, contactId: signal.contactId,
+      purpose: play === "price_pressure"
+        ? `This week's buyer-showing feedback on the seller's home points to a price concern. Warmly ask to walk them through the numbers and a strategic adjustment to reach the right buyers. No pressure.`
+        : play === "strong_interest"
+        ? `This week's showings drew strong buyer interest in the seller's home. Warmly suggest connecting on the best way to turn that interest into offers.`
+        : `The showing feedback is close — a few small presentation tweaks could tip the next buyers. Warmly offer to put together a short, low-cost prep list.`,
+      facts: [{ label: "Property", value: addr }, ...(points.length ? [{ label: "What buyers are saying", value: points.join("; ") }] : [])],
+      ctas: ["Find a few minutes this week to connect"],
+      fallback,
+    }, ctx.supabase)
 
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
     const res = await proposeClientMessage({
@@ -1472,8 +1495,19 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
         body: `I want to get ahead of the numbers on ${addr} before it sits too long. ${reasons.length ? `What I'm seeing: ${reasons.join("; ")}. ` : ""}Homes that linger get stale in buyers' minds, so I'd rather make a smart, proactive move now than react later. Do you have a few minutes to talk strategy this week?`,
       },
     }
-    const msg = copy[play]
-    if (!msg) return null
+    const fallback = copy[play]
+    if (!fallback) return null
+
+    const { generateSellerHandlerCopy } = await import("@/lib/agents/seller-handler-copy")
+    const msg = await generateSellerHandlerCopy({
+      brokerageId: ctx.brokerageId, contactId: signal.contactId,
+      purpose: play === "marketing_refresh"
+        ? `The seller's listing is heading toward a stall before it expires. Warmly, proactively offer to refresh the marketing (new photos in the feed, a fresh push to buyers, a new reel) to put it back in front of the right people. No alarm, no pressure.`
+        : `The seller's listing risks sitting too long. Warmly, proactively suggest a quick strategy conversation to make a smart move now rather than react later. No alarm, no pressure.`,
+      facts: [{ label: "Property", value: addr }, ...(reasons.length ? [{ label: "What I'm seeing", value: reasons.join("; ") }] : [])],
+      ctas: ["Find a few minutes this week to talk strategy"],
+      fallback,
+    }, ctx.supabase)
 
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
     const res = await proposeClientMessage({
@@ -1613,12 +1647,24 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const est = typeof p.estimated_value === "number" ? p.estimated_value : null
     const estLine = est ? ` The instant tool put it around $${Math.round(est).toLocaleString()}, but` : " The instant estimate is a starting point —"
 
+    const fallback = {
+      subject: `A precise value for ${addr}`,
+      body: `Thanks for checking your home's value!${estLine} an automated number can't see what makes ${addr} special — recent upgrades, the exact block, how it shows. I'd be glad to put together a precise, no-obligation comparative market analysis (CMA) with real local comps so you have an accurate number whether you're just curious or starting to think about a move. Want me to prepare it?`,
+    }
+    const { generateSellerHandlerCopy } = await import("@/lib/agents/seller-handler-copy")
+    const msg = await generateSellerHandlerCopy({
+      brokerageId: ctx.brokerageId, contactId: signal.contactId,
+      purpose: `A homeowner just used the instant home-value tool — the strongest inbound seller signal. Warmly thank them and offer a precise, no-obligation CMA with real local comps (an automated estimate can't see what makes their home special). Invite them whether they're curious or starting to think about a move. No pressure.`,
+      facts: [{ label: "Property", value: addr }],
+      ctas: ["Have me prepare your precise, no-obligation CMA"],
+      fallback,
+    }, ctx.supabase)
+
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
     const res = await proposeClientMessage({
       brokerageId: ctx.brokerageId, agentKind: "listing_concierge", entityType: "contact",
       entityId: signal.contactId, recipientContactId: signal.contactId, audience: "seller",
-      subject: `A precise value for ${addr}`,
-      body: `Thanks for checking your home's value!${estLine} an automated number can't see what makes ${addr} special — recent upgrades, the exact block, how it shows. I'd be glad to put together a precise, no-obligation comparative market analysis (CMA) with real local comps so you have an accurate number whether you're just curious or starting to think about a move. Want me to prepare it?`,
+      subject: msg.subject, body: msg.body,
       rationale: `INBOUND SELLER INTENT (${(p.intent_strength as string) ?? "warm"}) — homeowner requested a home value; gated CMA-offer follow-up proposed so the team responds like a listing lead (manager-orchestrated, not a lead left in the inbox).`,
       channel: "portal",
     }, ctx.supabase)
