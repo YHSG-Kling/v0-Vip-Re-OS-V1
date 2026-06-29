@@ -25,7 +25,7 @@ export async function GET(request: Request) {
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()
-  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, errors = 0
+  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, weeklyReports = 0, errors = 0
 
   const [
     { predictAndPublishBuyerStall },
@@ -35,6 +35,7 @@ export async function GET(request: Request) {
     { runShowingCancellationFollowups },
     { runSellerConversionNurture },
     { rollupListingMetrics },
+    { runSellerWeeklyReports },
   ] = await Promise.all([
     import("@/lib/intelligence/buyer-stall-predictor-runner"),
     import("@/lib/intelligence/stuck-stage-detector-runner"),
@@ -43,6 +44,7 @@ export async function GET(request: Request) {
     import("@/lib/ai-isa/showing-cancellation-followup"),
     import("@/lib/agents/seller-conversion-nurture"),
     import("@/lib/listings/listing-metrics-rollup"),
+    import("@/lib/listings/seller-weekly-report-runner"),
   ])
 
   const { data: brks } = await svc.from("brokerages").select("id")
@@ -93,7 +95,13 @@ export async function GET(request: Request) {
     //     written sources (showings/saves/inquiries/views) into one cumulative row per active listing
     //     so the seller portal's proof-of-work + DOM stop reading from a permanently-empty table.
     try { const r = await rollupListingMetrics(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); metricsUpserted += r.upserted } catch { errors++ }
+
+    // (7) Seller weekly reports — the missing writer for seller_weekly_reports. Synthesizes the week's
+    //     real evidence (showings/views/saves/inquiries/feedback/reach) into a client-safe digest the
+    //     seller-mode portal surfaces, so the seller stays engaged between agent touches. Idempotent
+    //     per (listing, week); the current week's report refreshes daily and finalizes at week end.
+    try { const r = await runSellerWeeklyReports(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); weeklyReports += r.upserted } catch { errors++ }
   }
 
-  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, errors })
+  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, errors })
 }

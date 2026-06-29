@@ -16,6 +16,7 @@ import {
   NextStepCard,
   AgentUpdateVideoCard,
   EquityEstimateCard,
+  SellerWeeklyReportCard,
 } from "../components/seller-mode"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
@@ -164,6 +165,16 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     .select("id", { count: "exact", head: true })
     .eq("listing_id", listing.id)
     .eq("status", "active")
+  // The seller's weekly digest (seller_weekly_reports, written by runSellerWeeklyReports). Latest week.
+  const { data: weeklyReportRow } = await supabase
+    .from("seller_weekly_reports")
+    .select("report_content")
+    .eq("listing_id", listing.id)
+    .order("report_week_start", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  const weeklyReport = (weeklyReportRow?.report_content as Record<string, unknown> | null) ?? null
+
   const marketingChannels = buildListingMarketingChannels({
     mlsNumber: (listingOwnerCheck?.mls_number as string | null) ?? null,
     listingSlug: (listingOwnerCheck?.slug as string | null) ?? null,
@@ -279,6 +290,9 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
           agentName={agentName}
           sensitive={sellerPersona.sensitive}
         />
+
+        {/* Weekly digest — this week's real activity, client-safe */}
+        <SellerWeeklyReportCard report={weeklyReport as any} />
 
         {/* Open House Alert if upcoming */}
         {upcomingOpenHouse && (
