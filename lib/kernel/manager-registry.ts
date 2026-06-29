@@ -680,6 +680,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   content_templates: "campaign_orchestrator",
   content_topic_bank: "campaign_orchestrator",
   content_topic_sources: "campaign_orchestrator",
+  market_pulse: "campaign_orchestrator",
   content_topic_uses: "campaign_orchestrator",
   copilot_plans: "campaign_orchestrator",
   direct_mail_campaigns: "campaign_orchestrator",

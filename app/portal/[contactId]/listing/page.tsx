@@ -18,6 +18,7 @@ import {
   EquityEstimateCard,
   SellerWeeklyReportCard,
   SellerTeamActivityCard,
+  SellerMarketPulseCard,
 } from "../components/seller-mode"
 import { buildSellerTeamActivity } from "@/lib/listings/seller-team-activity"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
@@ -177,6 +178,16 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     .maybeSingle()
   const weeklyReport = (weeklyReportRow?.report_content as Record<string, unknown> | null) ?? null
 
+  // National "Market Pulse" — what buyers are prioritizing now (market_pulse, written weekly).
+  const { data: pulseRow } = await supabase
+    .from("market_pulse")
+    .select("insights")
+    .eq("scope", "national")
+    .order("pulse_week", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  const marketPulse = (pulseRow?.insights as Record<string, unknown> | null) ?? null
+
   const marketingChannels = buildListingMarketingChannels({
     mlsNumber: (listingOwnerCheck?.mls_number as string | null) ?? null,
     listingSlug: (listingOwnerCheck?.slug as string | null) ?? null,
@@ -312,6 +323,9 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
 
         {/* Weekly digest — this week's real activity, client-safe */}
         <SellerWeeklyReportCard report={weeklyReport as any} />
+
+        {/* Market Pulse — what buyers are prioritizing now (the novel buyer-sentiment differentiator) */}
+        <SellerMarketPulseCard pulse={marketPulse as any} />
 
         {/* Open House Alert if upcoming */}
         {upcomingOpenHouse && (

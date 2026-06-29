@@ -39,6 +39,7 @@ export async function GET(request: Request) {
     { runMlsNumberReminders },
     { reapStaleVideoWorkflows },
     { reapStaleWorkflowRuns },
+    { ensureNationalMarketPulse },
   ] = await Promise.all([
     import("@/lib/intelligence/buyer-stall-predictor-runner"),
     import("@/lib/intelligence/stuck-stage-detector-runner"),
@@ -51,7 +52,13 @@ export async function GET(request: Request) {
     import("@/lib/listings/mls-number-reminder"),
     import("@/lib/video/video-pipeline-reaper"),
     import("@/lib/workflow-orchestrator/stale-run-reaper"),
+    import("@/lib/listings/market-pulse-runner"),
   ])
+
+  // National buyer "Market Pulse" — generated ONCE per week (the seller portal reads it). Outside the
+  // per-brokerage loop so the scrape + AI distill runs once, not per tenant. Idempotent per week.
+  let marketPulse = "skipped"
+  try { const r = await ensureNationalMarketPulse(svc); marketPulse = r.reused ? "reused" : r.generated ? `generated(${r.insightCount} from ${r.sourceCount} threads)` : "unavailable" } catch { errors++ }
 
   const { data: brks } = await svc.from("brokerages").select("id")
   for (const b of (brks ?? []) as Array<{ id: string }>) {
@@ -124,5 +131,5 @@ export async function GET(request: Request) {
     try { const r = await reapStaleWorkflowRuns(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); staleRuns += r.escalated } catch { errors++ }
   }
 
-  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, staleVideos, staleRuns, errors })
+  return NextResponse.json({ ran_at: ranAt, brokerages, marketPulse, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, staleVideos, staleRuns, errors })
 }
