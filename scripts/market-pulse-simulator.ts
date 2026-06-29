@@ -16,13 +16,18 @@ const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ $
 function main() {
   console.log("\n[Sanitizer keeps good insights, drops unsafe ones]")
   const good = sanitizeMarketPulse({ headline: "What buyers want now", insights: [
-    { priority: "Move-in ready", detail: "Buyers want little work.", sellerAngle: "Finish small touch-ups." },
-    { priority: "This market is a SCAM", detail: "people are getting screwed", sellerAngle: "x" }, // unsafe → dropped
-    { priority: "Energy efficiency", detail: "Lower bills draw buyers.", sellerAngle: "Highlight efficient systems." },
+    { priority: "Move-in ready", detail: "Buyers want little work.", sellerAngle: "Finish small touch-ups.", buyerAngle: "Tour move-in-ready homes fast and be ready to act." },
+    { priority: "This market is a SCAM", detail: "people are getting screwed", sellerAngle: "x", buyerAngle: "y" }, // unsafe → dropped
+    { priority: "Energy efficiency", detail: "Lower bills draw buyers.", sellerAngle: "Highlight efficient systems." }, // no buyerAngle → safe default
   ] }, "2026-06-22")
   check("returns a pulse when good insights exist", good !== null)
   check("drops the unsafe insight (scam/screwed)", good!.insights.length === 2)
   check("keeps the safe ones", good!.insights.map((i) => i.priority).join() === "Move-in ready,Energy efficiency")
+
+  console.log("\n[Buyer lens — both angles distilled from one scrape]")
+  check("keeps the provided buyerAngle", good!.insights[0].buyerAngle === "Tour move-in-ready homes fast and be ready to act.")
+  check("missing buyerAngle gets a safe default", !!good!.insights[1].buyerAngle && good!.insights[1].buyerAngle.length > 0)
+  check("buyerAngle drops with its unsafe insight (not leaked)", good!.insights.every((i) => i.buyerAngle && !/scam|screwed/i.test(i.buyerAngle)))
 
   console.log("\n[All-unsafe / malformed → null (caller uses the fallback)]")
   check("all-unsafe → null", sanitizeMarketPulse({ headline: "x", insights: [{ priority: "fraud", detail: "lawsuit hell", sellerAngle: "z" }] }, "2026-06-22") === null)
@@ -36,8 +41,9 @@ function main() {
   check("priority clamped to <=40", (longIn?.insights[0].priority.length ?? 0) <= 40)
   check("missing sellerAngle gets a safe default", !!longIn?.insights[0].sellerAngle)
   check("week key is the Monday of the week", marketPulseWeek(new Date("2026-06-24T12:00:00Z")) === "2026-06-22")
-  check("prompt instructs seller-safe + JSON + no Fair Housing", /SELLER-SAFE/.test(buildMarketPulsePrompt(["a"])) && /Fair Housing/.test(buildMarketPulsePrompt(["a"])) && /valid JSON/.test(buildMarketPulsePrompt(["a"])))
-  check("fallback floor is honest + has 3 actionable insights", FALLBACK_MARKET_PULSE.insights.length === 3 && FALLBACK_MARKET_PULSE.insights.every((i) => i.priority && i.detail && i.sellerAngle))
+  check("prompt instructs safe + JSON + no Fair Housing + buyerAngle", /SAFE/.test(buildMarketPulsePrompt(["a"])) && /Fair Housing/.test(buildMarketPulsePrompt(["a"])) && /valid JSON/.test(buildMarketPulsePrompt(["a"])) && /buyerAngle/.test(buildMarketPulsePrompt(["a"])))
+  check("prompt forbids guarantees + pressure (compliance)", /NO guarantees/i.test(buildMarketPulsePrompt(["a"])) && /pressure/i.test(buildMarketPulsePrompt(["a"])))
+  check("fallback floor is honest + has 3 dual-angle insights", FALLBACK_MARKET_PULSE.insights.length === 3 && FALLBACK_MARKET_PULSE.insights.every((i) => i.priority && i.detail && i.sellerAngle && i.buyerAngle))
   check("fallback is marked not-generated (it's the floor)", FALLBACK_MARKET_PULSE.generated === false)
 
   console.log("\n──────────────────────────────────────────────────")

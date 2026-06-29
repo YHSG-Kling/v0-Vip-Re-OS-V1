@@ -19,6 +19,7 @@ import { MilestoneEducationPanel } from "@/app/components/portal/milestone-educa
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
 import { FinancialMeaningCard } from "@/app/components/shared/FinancialMeaningCard"
 import { BuyerFinancialUploadCard } from "@/app/components/portal/BuyerFinancialUploadCard"
+import { BuyerPulseCard } from "@/app/components/portal/BuyerPulseCard"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
@@ -193,6 +194,18 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
   const agentInfo = contact.agent_id
     ? await resolveContactOwnerAgent(supabase, contact.agent_id)
     : null
+
+  // National "Buyer Pulse" — what fellow buyers are prioritizing now, distilled (buyer lens) from the
+  // SAME weekly market_pulse row the seller portal reads. Net-new buyer-engagement surface; reuses the
+  // scraper + gateway + table (no new infra). Renders nothing until the weekly pulse exists.
+  const { data: pulseRow } = await supabase
+    .from("market_pulse")
+    .select("insights")
+    .eq("scope", "national")
+    .order("pulse_week", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  const buyerPulse = (pulseRow?.insights as Record<string, unknown> | null) ?? null
 
   // Post-1043: completion is on learning_assignments (status='completed').
   // The variable name "completedLessonKeys" is kept for downstream stability
@@ -541,6 +554,10 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
             </div>
           </div>
         )}
+
+        {/* Buyer Pulse — community sentiment (buyer lens) from the weekly national market_pulse.
+             Arms the buyer with what fellow buyers prioritize so they search + compete with confidence. */}
+        <BuyerPulseCard pulse={buyerPulse as any} />
 
         {/* Agent Contact Card */}
         {agentInfo && (

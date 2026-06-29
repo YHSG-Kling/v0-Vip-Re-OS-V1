@@ -9,10 +9,13 @@
 export interface MarketPulseInsight {
   /** Short buyer-priority label, e.g. "Move-in ready". */
   priority: string
-  /** One-line plain-language detail (seller-safe — no raw quotes). */
+  /** One-line plain-language detail (audience-safe — no raw quotes). */
   detail: string
-  /** What it means for the seller — actionable, positive. */
+  /** What it means for the SELLER — actionable, positive. */
   sellerAngle: string
+  /** What it means for the BUYER — how to use it to compete / act with confidence. One scrape, both
+   *  lenses: the seller portal reads sellerAngle, the buyer portal reads buyerAngle. */
+  buyerAngle: string
 }
 
 export interface MarketPulse {
@@ -27,9 +30,9 @@ export const FALLBACK_MARKET_PULSE: Omit<MarketPulse, "week"> = {
   headline: "What buyers are focused on right now",
   generated: false,
   insights: [
-    { priority: "Move-in ready", detail: "Buyers are gravitating to homes that need little work before they can settle in.", sellerAngle: "Small touch-ups and a clean, finished presentation make your home stand out." },
-    { priority: "Monthly affordability", detail: "With rates top of mind, buyers weigh the monthly payment as much as the price.", sellerAngle: "Sharp pricing — and offering a rate-buydown — can widen the pool of buyers who can act." },
-    { priority: "Energy efficiency", detail: "Lower utility bills and efficient systems are a real draw.", sellerAngle: "Highlight efficient windows, HVAC, or solar — buyers notice." },
+    { priority: "Move-in ready", detail: "Buyers are gravitating to homes that need little work before they can settle in.", sellerAngle: "Small touch-ups and a clean, finished presentation make your home stand out.", buyerAngle: "Move-in-ready homes draw the most interest — when you find one you love, tour it quickly and be ready to act." },
+    { priority: "Monthly affordability", detail: "With rates top of mind, buyers weigh the monthly payment as much as the price.", sellerAngle: "Sharp pricing — and offering a rate-buydown — can widen the pool of buyers who can act.", buyerAngle: "Know your monthly comfort range before you shop — a fresh pre-approval lets you move the moment the right home appears." },
+    { priority: "Energy efficiency", detail: "Lower utility bills and efficient systems are a real draw.", sellerAngle: "Highlight efficient windows, HVAC, or solar — buyers notice.", buyerAngle: "Ask your agent about utility costs and efficient systems — they affect what you'll really pay each month." },
   ],
 }
 
@@ -48,13 +51,19 @@ export function sanitizeMarketPulse(raw: unknown, week: string): MarketPulse | n
   const insights: MarketPulseInsight[] = []
   for (const it of rawInsights) {
     if (!it || typeof it !== "object") continue
-    const i = it as { priority?: unknown; detail?: unknown; sellerAngle?: unknown }
+    const i = it as { priority?: unknown; detail?: unknown; sellerAngle?: unknown; buyerAngle?: unknown }
     const priority = typeof i.priority === "string" ? i.priority.trim().slice(0, 40) : ""
     const detail = typeof i.detail === "string" ? i.detail.trim().slice(0, 160) : ""
     const sellerAngle = typeof i.sellerAngle === "string" ? i.sellerAngle.trim().slice(0, 160) : ""
+    const buyerAngle = typeof i.buyerAngle === "string" ? i.buyerAngle.trim().slice(0, 160) : ""
     if (!priority || !detail) continue
-    if (UNSAFE.test(priority) || UNSAFE.test(detail) || UNSAFE.test(sellerAngle)) continue
-    insights.push({ priority, detail, sellerAngle: sellerAngle || "A point worth keeping in mind as you prepare your home." })
+    if (UNSAFE.test(priority) || UNSAFE.test(detail) || UNSAFE.test(sellerAngle) || UNSAFE.test(buyerAngle)) continue
+    insights.push({
+      priority,
+      detail,
+      sellerAngle: sellerAngle || "A point worth keeping in mind as you prepare your home.",
+      buyerAngle: buyerAngle || "A point worth keeping in mind as you plan your search with your agent.",
+    })
     if (insights.length >= 4) break
   }
   if (insights.length === 0) return null
@@ -73,14 +82,18 @@ export function marketPulseWeek(now: Date): string {
 export function buildMarketPulsePrompt(threadTitles: string[]): string {
   const titles = threadTitles.slice(0, 40).map((t) => `- ${t.replace(/\s+/g, " ").slice(0, 160)}`).join("\n")
   return `You are a real-estate market analyst. Below are recent thread titles from home-BUYER forums.
-Distill them into the top 3-4 things BUYERS are prioritizing or worried about RIGHT NOW, written for a home SELLER to read on their portal.
+Distill them into the top 3-4 things BUYERS are prioritizing or worried about RIGHT NOW. For EACH point,
+write BOTH a seller angle (for a home seller's portal) AND a buyer angle (for a home buyer's portal).
 
-Return ONLY valid JSON: {"headline":"...","insights":[{"priority":"...","detail":"...","sellerAngle":"..."}]}
+Return ONLY valid JSON: {"headline":"...","insights":[{"priority":"...","detail":"...","sellerAngle":"...","buyerAngle":"..."}]}
 
 Rules:
-- SELLER-SAFE + positive + actionable. NEVER quote raw forum text, profanity, doom, or anything that would worry or offend a seller.
+- SAFE + positive + actionable for BOTH audiences. NEVER quote raw forum text, profanity, doom, or anything that would worry or offend a reader.
 - ZERO Fair Housing references (no race, religion, family, age, "good schools", "safe neighborhood", "perfect for").
-- priority: 2-5 words. detail: one plain sentence (<160 chars). sellerAngle: what the seller can do about it (<160 chars), encouraging.
+- Make NO guarantees, NO predictions of price/rate movement, and NO pressure tactics — inform and empower, don't push.
+- priority: 2-5 words. detail: one plain sentence (<160 chars).
+- sellerAngle: what the SELLER can do about it (<160 chars), encouraging.
+- buyerAngle: how the BUYER can use it to search and compete with confidence (<160 chars), encouraging — often "talk to your agent / lender".
 - headline: 4-8 words.
 
 Forum titles:
