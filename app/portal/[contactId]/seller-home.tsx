@@ -192,7 +192,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
   // with the is_client_visible flag as the transition fallback). Single source of
   // truth: lib/kernel/portal.ts. Filtering here on milestone_name vs the canonical
   // snake_case set silently dropped every human-named live milestone.
-  const milestones = selectClientMilestones((milestonesResult.data ?? []) as TransactionMilestone[])
+  const milestones = selectClientMilestones<TransactionMilestone>((milestonesResult.data ?? []) as TransactionMilestone[])
 
   // deal_team_members has no agent_id/FK to agents — members render as external contacts.
   const dealTeamMembers = (dealTeamResult.data ?? []).map((m: any) => ({ ...m, agent: null }))

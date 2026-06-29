@@ -214,7 +214,7 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
   // with the is_client_visible flag as the transition fallback). Single source of
   // truth: lib/kernel/portal.ts. Filtering here on milestone_name vs the canonical
   // snake_case set silently dropped every human-named live milestone.
-  const milestones = selectClientMilestones((milestonesResult.data ?? []) as TransactionMilestone[])
+  const milestones = selectClientMilestones<TransactionMilestone>((milestonesResult.data ?? []) as TransactionMilestone[])
 
   const dealTeamMembers = dealTeamResult.data ?? []
   const primaryAgent = agentInfo
