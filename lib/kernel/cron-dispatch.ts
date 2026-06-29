@@ -110,6 +110,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/manager-signals"                     , schedule: "*/30 * * * *" },
   { path: "/api/cron/campaign-sequence-steps"             , schedule: "*/5 * * * *" },
   { path: "/api/cron/composition-render-queue"            , schedule: "*/5 * * * *" },
+  { path: "/api/cron/director-reel-render"                , schedule: "*/5 * * * *" },
   { path: "/api/cron/listing-promo-render"                , schedule: "*/5 * * * *" },
   { path: "/api/cron/newsletter-video-render"             , schedule: "*/5 * * * *" },
   { path: "/api/cron/portal-stream-projector"             , schedule: "*/5 * * * *" },

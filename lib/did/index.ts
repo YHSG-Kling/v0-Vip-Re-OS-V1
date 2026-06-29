@@ -81,6 +81,11 @@ export interface GenerateVideoInput {
   logoUrl?: string | null
   /** Brokerage ID — used to resolve brokerage-level D-ID config when agent has none */
   brokerageId: string
+  /** Submit the D-ID job and return immediately (status='processing' + the talk id) WITHOUT
+   *  inline-polling. For the AUTONOMOUS pipeline: the caller stamps the talk id onto an
+   *  ai_video_projects row (status='generating') and the poll-did-videos cron drives completion +
+   *  the avatar→composition handoff. Default false (keeps the synchronous submit+poll behavior). */
+  submitOnly?: boolean
 }
 
 export interface GenerateVideoResult {
@@ -355,8 +360,17 @@ export async function generateVideo(
   })
 
   // ---------------------------------------------------------------------------
-  // 3. Poll for completion
+  // 3. Poll for completion (skipped in submitOnly mode — the async pipeline drives it)
   // ---------------------------------------------------------------------------
+
+  if (input.submitOnly) {
+    return {
+      videoId: talkId,
+      videoUrl: null,
+      status: "processing",
+      note: [notes.length ? notes.join("; ") : undefined, `D-ID job ${talkId} submitted — poll-did-videos will complete it`].filter(Boolean).join("; "),
+    }
+  }
 
   let videoUrl: string | null = null
   try {

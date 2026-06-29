@@ -388,11 +388,19 @@ export async function GET(request: NextRequest) {
           // always) + Ads Manager (promote, promotable kinds only). Deduped per
           // ai_video_project so re-polling never re-signals; coexists idempotently with
           // the polling crons (listing-promo-social-publish) as a safety net.
-          try {
-            const { publishVideoCoordinationSignals } = await import("@/lib/kernel/video-coordination")
-            await publishVideoCoordinationSignals(video.id, supabase)
-          } catch (e) {
-            console.error("[poll-did-videos] video-coordination publish failed:", (e as Error).message)
+          //
+          // DEFER when a composite is pending: if this D-ID job is just the AVATAR TRACK for a
+          // Remotion composition (target_composition_id), the FINAL deliverable is the branded
+          // composite (bookends + QR) that render-composition produces — it publishes the handoff on
+          // ITS completion. Announcing the raw avatar here would deliver the un-branded cut.
+          const hasPendingComposite = !!(video.provider_metadata as any)?.target_composition_id
+          if (!hasPendingComposite) {
+            try {
+              const { publishVideoCoordinationSignals } = await import("@/lib/kernel/video-coordination")
+              await publishVideoCoordinationSignals(video.id, supabase)
+            } catch (e) {
+              console.error("[poll-did-videos] video-coordination publish failed:", (e as Error).message)
+            }
           }
 
           results.completed++

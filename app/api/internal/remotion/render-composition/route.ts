@@ -181,6 +181,24 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // ── Director reel completion → hand the finished COMPOSITE to the Campaign Orchestrator ──
+    // When this render is the final composite for a Director-commissioned reel
+    // (entity_type='video_project'), flip the linked ai_video_projects to completed with the BRANDED
+    // composite URL, then publish the coordination signal so the Asset Manager → Campaign Orchestrator
+    // 1:1 delivery (contact_outreach_ready) fires on the branded cut. This closes the autonomous loop
+    // that previously died at staging (commissionVideo staged but nothing rendered/announced it).
+    if (row.entity_type === "video_project" && row.entity_id) {
+      try {
+        await svc.from("ai_video_projects")
+          .update({ status: "completed", video_url: result.outputUrl, thumbnail_url: thumbnailUrl ?? undefined, updated_at: new Date().toISOString() })
+          .eq("id", row.entity_id)
+        const { publishVideoCoordinationSignals } = await import("@/lib/kernel/video-coordination")
+        await publishVideoCoordinationSignals(row.entity_id, svc)
+      } catch (e) {
+        console.error("[render-composition] director-reel coordination publish failed:", (e as Error).message)
+      }
+    }
+
     return NextResponse.json({
       ok: true, render_id: row.id, kind: "video", output_url: result.outputUrl,
       thumbnail_url: thumbnailUrl,
