@@ -737,27 +737,56 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   // ("here's what your home could really sell for — let's map your move"), CUSTOMER-FACING (Director
   // 'lead_intro', not the in_house 'cma'), fronted by the assigned agent. On completion the existing
   // video-coordination routes contact_outreach_ready → the Campaign Orchestrator's gated 1:1 email +
-  // the seller-mode portal CTA (audience='seller', listing_concierge voice). Idempotent per contact.
+  // the seller-mode portal CTA (audience='seller', listing_concierge voice). CONTINUOUS (mirrors the
+  // buyer): each cadence cycle pulls a FRESH rotating seller-value topic so the homeowner keeps getting
+  // a new reason to list ("what your home could sell for" → "staging that pays" → "is now the time?")
+  // instead of one repeated welcome reel — idempotent per (contact, topic).
   "asset_manager:seller_conversion_reel_handoff": async (signal, ctx) => {
     const contactId = signal.entityId ?? signal.contactId
     if (!contactId) return null
     const { data: contact } = await ctx.supabase.from("contacts")
-      .select("id").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      .select("id, city, state, zip_code").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     if (!contact) return null
     const { resolveContactPresenterUserId } = await import("@/lib/ai-isa/outreach-identity")
     const agentUserId = await resolveContactPresenterUserId(ctx.supabase, contactId, ctx.brokerageId)
     if (!agentUserId) return "no assigned agent to front the seller-conversion reel — deferred"
-    const { buildSellerConversionSituation } = await import("@/lib/ai-isa/contact-reel-situation")
+    const { buildSellerConversionSituation, personaTopicCategories } = await import("@/lib/ai-isa/contact-reel-situation")
     const { commissionVideo } = await import("@/lib/video/video-director")
     const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
-    const situation = buildSellerConversionSituation({ contactId })
+    const cr = contact as { city?: string | null; state?: string | null; zip_code?: string | null }
+
+    // Pull a FRESH seller-value topic (rotating via markUsed, ranked per persona + geo). No fresh topic
+    // → the value-forward first touch ("what your home could sell for"). Each topic is its OWN reel.
+    let topicTitle: string | null = null
+    let valueAngle: string | null = null
+    let discriminator: string | null = null
+    let label = "value reel"
+    try {
+      const { pickTopics } = await import("@/lib/content-intel/topic-bank")
+      const topics = await pickTopics({
+        brokerageId: ctx.brokerageId, categoriesAny: personaTopicCategories("seller"),
+        recipientPersona: "seller", assetType: "situational_reel", limit: 1, markUsed: true,
+        recipientLocation: { city: cr.city ?? null, state: cr.state ?? null, zip_code: cr.zip_code ?? null },
+      })
+      const topic = topics[0]
+      if (topic) { topicTitle = topic.topic_title; valueAngle = topic.value_angle ?? null; discriminator = topic.id; label = `"${topic.topic_title}"` }
+    } catch (e) { console.error("[manager-signals] seller topic pick failed; value-reel:", e) }
+
+    const situation = buildSellerConversionSituation({ contactId, topicTitle, valueAngle })
     const r = await commissionVideo(
       situation,
-      { brokerageId: ctx.brokerageId, agentUserId, contactId, persona: { audience: "seller" }, copyGenerator: realCopyGenerator },
+      { brokerageId: ctx.brokerageId, agentUserId, contactId, idempotencyDiscriminator: discriminator, persona: { audience: "seller" }, copyGenerator: realCopyGenerator },
       ctx.supabase,
     )
-    if (r.status === "already_staged") return `seller-conversion reel already commissioned for this homeowner (${r.compositionId}, deduped)`
-    if (r.ok) return `commissioned the SELLER-CONVERSION value reel (${r.compositionId}, gated) fronted by the assigned agent — invite + reel will reach the un-converted seller`
+    // Close the learning loop — log the topic use so per-persona performance compounds the winners.
+    if (discriminator && r.ok && r.videoProjectId) {
+      await ctx.supabase.from("content_topic_uses").insert({
+        topic_id: discriminator, brokerage_id: ctx.brokerageId,
+        asset_type: "situational_reel", asset_id: r.videoProjectId, used_at: new Date().toISOString(),
+      }).then(() => {}, () => {})
+    }
+    if (r.status === "already_staged") return `seller-conversion reel on ${label} already commissioned (${r.compositionId}, deduped)`
+    if (r.ok) return `commissioned the SELLER-CONVERSION reel on ${label} (${r.compositionId}, gated) fronted by the assigned agent — invite + reel will reach the un-converted seller`
     return r.status === "blocked" ? `seller-conversion reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null
   },
   // Listing Concierge → Asset Manager: CREATE this active listing's WEEKLY seller-update avatar reel.

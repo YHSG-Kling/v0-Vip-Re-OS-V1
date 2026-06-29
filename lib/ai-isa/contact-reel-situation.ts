@@ -78,13 +78,29 @@ export function buildContactWelcomeSituation(args: {
  * the assigned agent) — CUSTOMER-FACING (kind "cma" is marked in_house/agent-only by the Director, so
  * it would never reach the seller). Number-discipline + compliance handled by the Director gate; the
  * moment seeds the gateway script. Drives to the seller-mode portal + a no-pressure consult.
+ *
+ * CONTINUOUS nurture (mirrors the buyer): pass a rotating topic so each cadence cycle delivers a FRESH
+ * value reel ("what your home could sell for" → "staging that adds the most" → "is now the right time
+ * to list?") instead of repeating one welcome reel. The topic varies the director key, so the Director
+ * commissions a distinct reel each cycle until the homeowner converts. No topic → the value-forward
+ * first touch.
  */
-export function buildSellerConversionSituation(args: { contactId: string }): VideoSituation {
+export function buildSellerConversionSituation(args: {
+  contactId: string
+  topicTitle?: string | null
+  valueAngle?: string | null
+}): VideoSituation {
   return {
     kind: "lead_intro",
     tier: "solo_agent",
     targetChannel: "email", // rides the gated 1:1 email embedding the reel + the seller-mode portal CTA
-    facts: { contactId: args.contactId, persona: "seller", moment: "seller_conversion" },
+    facts: {
+      contactId: args.contactId,
+      persona: "seller",
+      moment: "seller_conversion",
+      ...(args.topicTitle ? { topic: args.topicTitle } : {}),
+      ...(args.valueAngle ? { value_angle: args.valueAngle } : {}),
+    },
   }
 }
 

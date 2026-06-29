@@ -39,6 +39,13 @@ function main() {
   check("moment seeds the gateway script as seller_conversion", (s.facts as any).moment === "seller_conversion")
   check("carries the contactId for the presenter + delivery", (s.facts as any).contactId === "c1")
 
+  console.log("\n[Continuous nurture — a rotating topic makes each cycle a FRESH reel (like the buyer)]")
+  const withTopic = buildSellerConversionSituation({ contactId: "c1", topicTitle: "Staging that pays for itself", valueAngle: "ROI" })
+  check("rotating topic flows into the situation facts", (withTopic.facts as any).topic === "Staging that pays for itself")
+  check("value angle flows through", (withTopic.facts as any).value_angle === "ROI")
+  check("topic'd reel stays customer-facing lead_intro (reaches the seller)", withTopic.kind === "lead_intro")
+  check("no topic → value-forward first touch (no topic key)", !("topic" in (s.facts as any)))
+
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
