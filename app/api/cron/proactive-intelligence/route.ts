@@ -25,7 +25,7 @@ export async function GET(request: Request) {
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()
-  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, weeklyReports = 0, errors = 0
+  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, weeklyReports = 0, mlsReminders = 0, errors = 0
 
   const [
     { predictAndPublishBuyerStall },
@@ -36,6 +36,7 @@ export async function GET(request: Request) {
     { runSellerConversionNurture },
     { rollupListingMetrics },
     { runSellerWeeklyReports },
+    { runMlsNumberReminders },
   ] = await Promise.all([
     import("@/lib/intelligence/buyer-stall-predictor-runner"),
     import("@/lib/intelligence/stuck-stage-detector-runner"),
@@ -45,6 +46,7 @@ export async function GET(request: Request) {
     import("@/lib/agents/seller-conversion-nurture"),
     import("@/lib/listings/listing-metrics-rollup"),
     import("@/lib/listings/seller-weekly-report-runner"),
+    import("@/lib/listings/mls-number-reminder"),
   ])
 
   const { data: brks } = await svc.from("brokerages").select("id")
@@ -101,7 +103,12 @@ export async function GET(request: Request) {
     //     seller-mode portal surfaces, so the seller stays engaged between agent touches. Idempotent
     //     per (listing, week); the current week's report refreshes daily and finalizes at week end.
     try { const r = await runSellerWeeklyReports(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); weeklyReports += r.upserted } catch { errors++ }
+
+    // (8) MLS-number entry reminder — when a listing is live but has no MLS number, nudge the agent
+    //     once to add it so the seller portal's syndication status (MLS/Zillow/Realtor) shows live +
+    //     honest (the marketing card grounds "live" in a real mls_number). Idempotent per listing.
+    try { const r = await runMlsNumberReminders(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); mlsReminders += r.reminded } catch { errors++ }
   }
 
-  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, errors })
+  return NextResponse.json({ ran_at: ranAt, brokerages, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, errors })
 }

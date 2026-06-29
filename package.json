@@ -340,6 +340,7 @@
     "test:deal-doc-router": "tsx scripts/deal-doc-router-simulator.ts",
     "test:seller-conversion": "tsx scripts/seller-conversion-simulator.ts",
     "test:listing-metrics": "tsx scripts/listing-metrics-simulator.ts",
+    "test:mls-number-reminder": "tsx scripts/mls-number-reminder-simulator.ts",
     "test:seller-weekly-report": "tsx scripts/seller-weekly-report-simulator.ts",
     "test:marketing-channels": "tsx scripts/marketing-channels-simulator.ts",
     "test:seller-journey-copy": "tsx scripts/seller-journey-copy-simulator.ts",
