@@ -10,6 +10,7 @@ import type { TransitionLifecycleParams } from "./types"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
 import { createTransactionMilestoneCalendarEvents } from "./milestone-calendar-bridge"
+import { statusForStage } from "@/lib/listings/listing-status-sync"
 
 // ─── LIFECYCLE → KERNEL EVENT MAP ────────────────────────────────────────────
 // Map lifecycle transitions to kernel events (explicit, not derived)
@@ -183,12 +184,21 @@ export async function transitionLifecycle(
   const supabase = injectedClient ?? await createClient()
 
   // 3. Atomically update the state column on the entity row.
+  const updatePayload: Record<string, any> = {
+    [entityDef.stateColumn]: toState,
+    updated_at: new Date().toISOString(),
+  }
+  // Keep the coarse listings.status in lockstep with the listing stage machine — same atomic write — so
+  // buyer search, public listing pages, and dashboards never read a stale status (e.g. lifecycle_stage
+  // MLS_ACTIVE but status still 'coming_soon'). Only market-state boundaries map; intermediate stages
+  // leave status untouched. See lib/listings/listing-status-sync.ts.
+  if (entityType.toLowerCase() === "listing_stage_machine") {
+    const syncedStatus = statusForStage(toState)
+    if (syncedStatus) updatePayload.status = syncedStatus
+  }
   const { error: updateError } = await (supabase as any)
     .from(entityDef.table)
-    .update({
-      [entityDef.stateColumn]: toState,
-      updated_at: new Date().toISOString(),
-    })
+    .update(updatePayload)
     .eq("id", entityId)
 
   if (updateError) {
