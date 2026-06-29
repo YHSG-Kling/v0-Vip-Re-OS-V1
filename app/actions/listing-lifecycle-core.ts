@@ -375,22 +375,12 @@ export async function executeListingTransition(params: {
     console.error("[executeListingTransition] fanOutKernelEvent failed", err)
   }
 
-  // MANAGER HANDOFF (bus) — when the listing reaches coming-soon or goes live, announce the Listing
-  // Concierge → Campaign Orchestrator marketing handoff on the bus so the marketing pickup is a
-  // VISIBLE coordinated team play (the kernel-event fanout above still enrolls the sequences — this
-  // complements it, never re-produces). Best-effort; never affects the transition result.
-  try {
-    const { announceListingMarketingHandoff } = await import("@/lib/intelligence/listing-marketing-handoff-runner")
-    const { data: l } = await supabase.from("listings").select("address, city, state").eq("id", params.listingId).maybeSingle()
-    const propertyAddress = l ? [(l as any).address, (l as any).city, (l as any).state].filter(Boolean).join(", ") : null
-    const { createServiceClient } = await import("@/lib/supabase/service")
-    await announceListingMarketingHandoff({
-      brokerageId: listing.brokerage_id, listingId: params.listingId,
-      targetStage: params.targetStage as string, propertyAddress,
-    }, createServiceClient())
-  } catch (err) {
-    console.error("[executeListingTransition] marketing handoff announce failed", err)
-  }
+  // MANAGER HANDOFF (bus) — when a listing reaches coming-soon or goes live, the Listing Concierge →
+  // Campaign Orchestrator marketing handoff is announced (visible team play in the managers-talking
+  // feed). This now fires from the KERNEL EVENT REACTOR (block F2) on COMING_SOON_SENT / LISTING_PUBLISHED
+  // so EVERY transition path gets it — the fanOutKernelEvent above routes through processKernelEvent →
+  // the reactor, and the voice/UI path (transitionLifecycle) lands there too. The previous direct call
+  // here was redundant (and skipped the voice/UI path), so it was consolidated into the reactor.
 
   // BACK ON MARKET — a deal fell through (a contract stage → active transition). The normal go-live
   // marketing is idempotent per (listing, just_listed), so a re-list silently re-markets NOTHING and

@@ -338,6 +338,38 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
   }
 
+  // (F2) MARKETING HANDOFF made visible on the bus — on COMING_SOON_SENT / LISTING_PUBLISHED, announce
+  // the Listing Concierge → Campaign Orchestrator handoff so the team coordination is LEGIBLE in the
+  // managers-talking feed on EVERY transition path (voice/UI via transitionLifecycle AND the governance
+  // layer via fanOutKernelEvent both land here). The kernel-event fanout already enrolled the marketing
+  // sequences; this is the visible handoff, not a re-production. Idempotent per (listing, stage), so the
+  // double-emit some callers do (direct processKernelEvent + transitionLifecycle) still publishes once.
+  if (
+    params.brokerageId &&
+    params.entityType === "listing" &&
+    (params.event === KernelEvent.COMING_SOON_SENT || params.event === KernelEvent.LISTING_PUBLISHED)
+  ) {
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      const { data: lst } = await svc
+        .from("listings")
+        .select("address, city, state")
+        .eq("id", params.entityId)
+        .maybeSingle()
+      const propertyAddress = [(lst as any)?.address, (lst as any)?.city, (lst as any)?.state]
+        .filter(Boolean).join(", ") || null
+      const targetStage = params.event === KernelEvent.LISTING_PUBLISHED ? "MLS_ACTIVE" : "COMING_SOON_ACTIVE"
+      const { announceListingMarketingHandoff } = await import("@/lib/intelligence/listing-marketing-handoff-runner")
+      await announceListingMarketingHandoff(
+        { brokerageId: params.brokerageId, listingId: params.entityId, targetStage, propertyAddress },
+        svc,
+      )
+    } catch (err) {
+      console.error("[event-reactor] marketing handoff announce failed:", err)
+    }
+  }
+
   // (G) Wave 27 — extended lifecycle promo dispatcher. Each event below
   // routes through the same listing-promo-reactor with a different
   // event_type. The policy resolver inside the reactor gates auto-spawn
