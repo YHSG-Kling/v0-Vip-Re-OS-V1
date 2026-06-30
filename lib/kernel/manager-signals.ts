@@ -712,6 +712,37 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     if (r.ok) return `commissioned the ${persona} reel on ${topicLabel} (${r.compositionId}, gated) fronted by the assigned agent`
     return r.status === "blocked" ? `situational reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null
   },
+  // Sphere of Influence → Asset Manager: a newly-closed / lifetime client left a VIDEO testimonial in
+  // their portal. The Asset Manager (video director) commissions a 'testimonial' social-proof reel
+  // (Director TestimonialReel) featuring the client's clip with brand framing, fronted by the assigned
+  // agent — staged GATED (nothing auto-publishes), idempotent per contact; on completion the existing
+  // video-coordination hands it to the Campaign Orchestrator to distribute. Social proof, made
+  // automatically from a real client's words — the asset no agent has time to produce.
+  "asset_manager:testimonial_reel_handoff": async (signal, ctx) => {
+    const contactId = signal.entityId ?? signal.contactId
+    if (!contactId) return null
+    const videoUrl = (signal.payload as { video_url?: string } | undefined)?.video_url ?? null
+    const reviewer = (signal.payload as { reviewer_name?: string } | undefined)?.reviewer_name ?? null
+    const { resolveContactPresenterUserId } = await import("@/lib/ai-isa/outreach-identity")
+    const agentUserId = await resolveContactPresenterUserId(ctx.supabase, contactId, ctx.brokerageId)
+    if (!agentUserId) return "no assigned agent to front the testimonial reel — deferred"
+    const { commissionVideo } = await import("@/lib/video/video-director")
+    const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+    const situation = {
+      kind: "testimonial" as const,
+      tier: "solo_agent" as const,
+      targetChannel: "instagram" as const, // social proof rides social
+      facts: { contactId, testimonialVideoUrl: videoUrl, reviewerName: reviewer },
+    }
+    const r = await commissionVideo(
+      situation,
+      { brokerageId: ctx.brokerageId, agentUserId, contactId, idempotencyDiscriminator: "testimonial", persona: { audience: "lifetime" }, copyGenerator: realCopyGenerator },
+      ctx.supabase,
+    )
+    if (r.status === "already_staged") return `client testimonial reel already commissioned (${r.compositionId}, deduped)`
+    if (r.ok) return `commissioned the client testimonial reel (${r.compositionId}, gated) fronted by the assigned agent`
+    return r.status === "blocked" ? `testimonial reel blocked at the compliance gate (${(r.violations ?? []).join("; ").slice(0, 120)})` : null
+  },
   // Shopping Agent → Asset Manager: a buyer LEAD just became a CONTACT. The very first touch is a
   // personal WELCOME avatar reel ("great to have you — here's how I'll help"), fronted by the
   // ASSIGNED agent's avatar/voice. The Asset Manager (video director) commissions it; on

@@ -94,8 +94,7 @@ export async function submitClientTestimonial(params: {
   })
   if (insErr) return { ok: false, error: insErr.message }
 
-  // Surface to the agent so they can approve + use it (a video testimonial is the seed for a marketing
-  // reel — flagged for the Asset Manager handoff as a follow-up).
+  // Surface to the agent so they can approve + use it.
   try {
     const agent = contact.agent_id ? await resolveContactOwnerAgent(svc, contact.agent_id) : null
     const agentUserId = (agent as { user_id?: string | null; id?: string | null } | null)?.user_id
@@ -104,11 +103,24 @@ export async function submitClientTestimonial(params: {
       await svc.from("notifications").insert({
         user_id: agentUserId, brokerage_id: access.brokerageId, type: "client_testimonial_received",
         title: params.kind === "video" ? "🎥 A client left you a video testimonial" : "⭐ A client left you a testimonial",
-        body: `${reviewerName} shared a ${params.kind} testimonial from their portal. Review and approve it to use in your marketing${params.kind === "video" ? " — and it can become a marketing reel." : "."}`,
+        body: `${reviewerName} shared a ${params.kind} testimonial from their portal. Review and approve it to use in your marketing${params.kind === "video" ? " — your Asset Manager is turning it into a reel." : "."}`,
         entity_type: "contact", entity_id: params.contactId, priority: "normal", is_read: false,
       }).then(() => {}, () => {})
     }
-  } catch { /* notification is best-effort — never blocks the testimonial capture */ }
+    // MULTI-MANAGER: a VIDEO testimonial is gold — the Sphere of Influence HANDS it to the Asset Manager
+    // (video director) to commission a gated social-proof reel from the clip (Sphere decides → Asset
+    // creates → on completion Campaign Orchestrator distributes). Idempotent per contact.
+    if (params.kind === "video") {
+      const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+      await publishManagerSignal({
+        brokerageId: access.brokerageId, fromManager: "sphere_of_influence", toManager: "asset_manager",
+        signalType: "testimonial_reel_handoff", entityType: "contact", entityId: params.contactId,
+        contactId: params.contactId,
+        message: `${reviewerName} left a VIDEO testimonial — commission a gated social-proof reel from it.`,
+        payload: { video_url: (params.videoUrl ?? "").trim(), reviewer_name: reviewerName },
+      }, svc).then(() => {}, () => {})
+    }
+  } catch { /* notification + handoff are best-effort — never block the testimonial capture */ }
 
   return { ok: true }
 }
