@@ -1199,13 +1199,16 @@ async function createTask(
   supabase: ReturnType<typeof createServiceClient>,
 ) {
   if (!title) return { error: "title required" }
+  // tasks.assigned_to_agent_id / created_by_agent_id FK → agents.id (NOT users.id).
+  // The session row carries the resolved agent_id; using user_id here violates the FK.
+  if (!session.agent_id) return { error: "This account isn't linked to an agent profile, so I can't file a task." }
 
   const { data, error } = await supabase
     .from("tasks")
     .insert({
       brokerage_id: session.brokerage_id,
-      assigned_to_agent_id: session.user_id,
-      created_by_agent_id: session.user_id,
+      assigned_to_agent_id: session.agent_id,
+      created_by_agent_id: session.agent_id,
       title,
       priority: "normal",
       due_date: dueDate ?? undefined,
