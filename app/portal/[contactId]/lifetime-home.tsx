@@ -8,6 +8,7 @@ import { EquityEstimateCard } from "@/app/components/portal/lifetime/EquityEstim
 import { ReferralAskCard } from "@/app/components/portal/lifetime/ReferralAskCard"
 import { TestimonialCard } from "@/app/components/portal/lifetime/TestimonialCard"
 import { NextMoveCard } from "@/app/components/portal/lifetime/NextMoveCard"
+import { AskYourHomeCard } from "@/app/components/portal/lifetime/AskYourHomeCard"
 import { NeighborhoodActivityCard } from "@/app/components/portal/lifetime/NeighborhoodActivityCard"
 import { RefinanceIndicatorCard } from "@/app/components/portal/lifetime/RefinanceIndicatorCard"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
@@ -175,6 +176,11 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           salePrice={transaction.sale_price}
         />
       )}
+
+      {/* Ask your home anything — self-serve AI scoped to this home, compliance-
+          railed (no legal/tax/lending advice, no value guarantees, defers to the
+          agent). A marquee differentiator no client portal offers. */}
+      <AskYourHomeCard contactId={contactId} agentFirstName={agentName ? agentName.split(" ")[0] : null} />
 
       {/* Main Grid */}
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">

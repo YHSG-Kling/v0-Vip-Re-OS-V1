@@ -6,6 +6,13 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 import { validateTestimonialSubmission, type TestimonialKind } from "@/lib/testimonials/testimonial-policy"
 import { isNextMoveIntent, nextStepForIntent, type NextMoveIntent } from "@/lib/portal/next-move"
+import {
+  validateHomeQuestion,
+  buildHomeAssistantSystemPrompt,
+  fallbackHomeAnswer,
+  type HomeFacts,
+} from "@/lib/portal/home-assistant"
+import { computeHomeWealthStory } from "@/lib/portal/home-wealth"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 // Previously this file was missing "use server" yet was imported from
@@ -201,6 +208,75 @@ export async function submitNextMoveIntent(params: {
   } catch { /* notification + handoff are best-effort — never block intent capture */ }
 
   return { ok: true }
+}
+
+// ─── ASK YOUR HOME ANYTHING ──────────────────────────────────────────────────
+// A home assistant scoped to THE CLIENT'S OWN home. Routes through the compliance-
+// railed AI gateway (generateTextRouted, feature 'home_assistant_qa') with a hard
+// system prompt: stay scoped, no legal/tax/lending/appraisal advice, no value
+// guarantees/forecasts, no fair-housing steering, redirect to the agent when a
+// human is the right next step. Deterministic fallback floor when the gateway is
+// down — the client never sees an error. No persistence (self-serve, no noise);
+// AI usage is metered by the gateway.
+export async function askHomeAssistant(params: {
+  contactId: string
+  question: string
+}): Promise<{ ok: boolean; answer?: string; error?: string }> {
+  const access = await requireContactAccess(params.contactId)
+  if (!access.ok || !access.isContactSelf) return { ok: false, error: "Not allowed" }
+
+  const valid = validateHomeQuestion(params.question)
+  if (!valid.ok) return { ok: false, error: valid.reason }
+  const question = valid.clean ?? ""
+
+  // Reuse the same context the portal renders from (it re-checks access).
+  const ctx = await getLifetimeContext(params.contactId)
+  if (!ctx) return { ok: false, error: "Could not load your home." }
+
+  const wealth = computeHomeWealthStory({
+    purchasePrice: ctx.transaction?.sale_price ?? null,
+    closeDate: ctx.transaction?.close_date ?? null,
+    estimatedValueMid: ctx.homeValueEstimate?.estimated_value_mid,
+    estimatedValueLow: ctx.homeValueEstimate?.estimated_value_low,
+    estimatedValueHigh: ctx.homeValueEstimate?.estimated_value_high,
+    latestGeneratedAt: ctx.homeValueEstimate?.generated_at,
+    series: ctx.homeValueSeries,
+  })
+
+  const facts: HomeFacts = {
+    firstName: ctx.contact?.first_name ?? null,
+    agentName: (ctx.agent as { full_name?: string | null } | null)?.full_name ?? null,
+    propertyAddress: ctx.transaction?.property_address ?? null,
+    purchasePrice: ctx.transaction?.sale_price ?? null,
+    closeDate: ctx.transaction?.close_date ?? null,
+    currentValue: ctx.homeValueEstimate?.estimated_value_mid ?? null,
+    estimatedEquity: wealth.hasEstimate ? wealth.estimatedEquity : null,
+    gainPercent: wealth.hasEstimate ? wealth.gainPercent : null,
+    marketTrend: ctx.homeValueEstimate?.market_trend ?? null,
+    neighborhoodActivityCount: ctx.neighborhoodListings?.length ?? 0,
+    vendorCategories: (ctx.preferredVendors ?? [])
+      .map((v: { category?: string | null }) => v.category)
+      .filter((c): c is string => !!c),
+  }
+
+  try {
+    const { generateTextRouted } = await import("@/lib/ai/models")
+    const { text } = await generateTextRouted({
+      feature: "home_assistant_qa",
+      system: buildHomeAssistantSystemPrompt(facts),
+      prompt: question,
+      maxTokens: 400,
+      temperature: 0.3,
+      brokerageId: access.brokerageId,
+      userId: access.userId,
+      agentId: ctx.contact?.agent_id ?? undefined,
+    })
+    const answer = (text ?? "").trim()
+    // Empty / gateway-unconfigured → deterministic floor, never an error to the client.
+    return { ok: true, answer: answer.length > 0 ? answer : fallbackHomeAnswer(facts) }
+  } catch {
+    return { ok: true, answer: fallbackHomeAnswer(facts) }
+  }
 }
 
 // ─── GET LIFETIME CONTEXT ────────────────────────────────────────────────────
