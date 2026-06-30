@@ -1782,6 +1782,46 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }
     return "relationship marked withdrawn (nurture_status) + agent informed — history preserved"
   },
+  // AI ISA → Sphere: a lifetime customer tapped a self-directed "Your Next Move" option in
+  // their portal (move_up / right_size / invest / refinance / improve / explore). The Sphere
+  // Manager (lifetime relationship owner) escalates a HIGH-priority delegated next step to the
+  // responsible agent — buyer consult+CMA for a move, finance review for a refi, vendor intro
+  // for improvements. Client-INITIATED, so the cleanest re-transaction signal there is.
+  // Idempotent: one open follow-up per contact (a re-tap doesn't stack duplicates).
+  "sphere_of_influence:next_move_intent": async (signal, ctx) => {
+    const contactId = signal.entityId ?? signal.contactId
+    if (!contactId) return null
+    const payload = (signal.payload ?? {}) as { intent?: string; note?: string | null; next_step?: string }
+    const intent = (payload.intent ?? "explore").toString()
+    const nextStep = payload.next_step ?? "a no-pressure equity review call"
+
+    const { resolveResponsibleAgentUserId } = await import("@/lib/intelligence/mobile-approval-queue")
+    const agentUserId = await resolveResponsibleAgentUserId(ctx.supabase, {
+      recipient_contact_id: contactId, entity_type: "contact", entity_id: contactId,
+    })
+    if (!agentUserId) return "no responsible agent to route next-move intent to"
+
+    // Idempotency: skip if an unread next-move follow-up for this contact is already open.
+    const { data: existing } = await ctx.supabase
+      .from("notifications")
+      .select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("user_id", agentUserId)
+      .eq("type", "next_move_followup").eq("entity_id", contactId).eq("is_read", false)
+      .limit(1)
+    if (existing && existing.length > 0) return `next-move follow-up already open for this client (${intent})`
+
+    const { data: c } = await ctx.supabase
+      .from("contacts").select("first_name, last_name").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const name = [(c as any)?.first_name, (c as any)?.last_name].filter(Boolean).join(" ").trim() || "A past client"
+
+    await ctx.supabase.from("notifications").insert({
+      user_id: agentUserId, brokerage_id: ctx.brokerageId, type: "next_move_followup",
+      title: `🏡 Re-transaction signal: ${name} — ${intent.replace(/_/g, " ")}`,
+      body: `${name} tapped "${intent.replace(/_/g, " ")}" in their lifetime portal. Sphere Manager's delegated next step: ${nextStep}. This is a client-initiated intent — move fast.`,
+      entity_type: "contact", entity_id: contactId, priority: "high", is_read: false,
+    })
+    return `escalated ${intent} next-move intent to responsible agent (${nextStep})`
+  },
 }
 
 /**

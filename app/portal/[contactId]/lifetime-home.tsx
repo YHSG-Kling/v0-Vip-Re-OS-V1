@@ -7,6 +7,7 @@ import { MyHomeCard } from "@/app/components/portal/lifetime/MyHomeCard"
 import { EquityEstimateCard } from "@/app/components/portal/lifetime/EquityEstimateCard"
 import { ReferralAskCard } from "@/app/components/portal/lifetime/ReferralAskCard"
 import { TestimonialCard } from "@/app/components/portal/lifetime/TestimonialCard"
+import { NextMoveCard } from "@/app/components/portal/lifetime/NextMoveCard"
 import { NeighborhoodActivityCard } from "@/app/components/portal/lifetime/NeighborhoodActivityCard"
 import { RefinanceIndicatorCard } from "@/app/components/portal/lifetime/RefinanceIndicatorCard"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
@@ -17,6 +18,7 @@ import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
 import { PortalLiveFeed } from "@/app/components/portal/PortalLiveFeed"
 import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
 import { LifetimeMilestoneLine } from "./components/LifetimeMilestoneLine"
+import { computeHomeWealthStory } from "@/lib/portal/home-wealth"
 import {
   Bell,
   BookOpen,
@@ -65,6 +67,18 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
   }
 
   const { contact, agent, transaction, homeValueEstimate, homeValueSeries, touchpoints, preferredVendors, neighborhoodListings } = context
+
+  // Wealth story drives both the equity card and the "Your Next Move" radar
+  // (equity/tenure only — the compliant, client-facing re-transaction surface).
+  const wealth = computeHomeWealthStory({
+    purchasePrice: transaction?.sale_price ?? null,
+    closeDate: transaction?.close_date ?? null,
+    estimatedValueMid: homeValueEstimate?.estimated_value_mid,
+    estimatedValueLow: homeValueEstimate?.estimated_value_low,
+    estimatedValueHigh: homeValueEstimate?.estimated_value_high,
+    latestGeneratedAt: homeValueEstimate?.generated_at,
+    series: homeValueSeries,
+  })
   const firstName = contact.first_name || "Homeowner"
   // getLifetimeContext returns `agent: agentInfo` (from resolveContactOwnerAgent).
   // Previous code read (contact as any).agents?.name which doesn't exist on the
@@ -339,24 +353,16 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
         />
       )}
 
-      {/* Re-engagement: thinking of moving */}
-      <Card className="border-blue-200 bg-blue-50">
-        <CardContent className="p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4">
-          <div className="flex-1">
-            <p className="font-semibold text-blue-900">Thinking of moving?</p>
-            <p className="text-sm text-blue-700 mt-1">
-              {agentName
-                ? `${agentName} is here whenever you're ready — whether that's next month or a few years from now.`
-                : "Your agent is here whenever you're ready to make your next move."}
-            </p>
-          </div>
-          <Button className="bg-blue-700 hover:bg-blue-800 text-white shrink-0" asChild>
-            <Link href={`/portal/${contactId}/messages`}>
-              {"Let's talk"}
-            </Link>
-          </Button>
-        </CardContent>
-      </Card>
+      {/* Re-engagement: "Your Next Move" radar — replaces the old static
+          "Thinking of moving?" CTA with a self-directed, equity-aware set of
+          options. A tap is a client-INITIATED re-transaction intent that
+          notifies the agent AND rides the manager bus (AI ISA -> Sphere ->
+          the right next step). Equity/tenure only — fair-housing-safe. */}
+      <NextMoveCard
+        contactId={contactId}
+        estimatedEquity={wealth.hasEstimate ? wealth.estimatedEquity : null}
+        yearsHeld={wealth.yearsHeld}
+      />
 
       {/* Quick Links */}
       <Card>

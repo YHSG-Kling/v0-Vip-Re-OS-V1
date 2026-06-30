@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 import { validateTestimonialSubmission, type TestimonialKind } from "@/lib/testimonials/testimonial-policy"
+import { isNextMoveIntent, nextStepForIntent, type NextMoveIntent } from "@/lib/portal/next-move"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 // Previously this file was missing "use server" yet was imported from
@@ -121,6 +122,83 @@ export async function submitClientTestimonial(params: {
       }, svc).then(() => {}, () => {})
     }
   } catch { /* notification + handoff are best-effort — never block the testimonial capture */ }
+
+  return { ok: true }
+}
+
+// ─── SUBMIT "YOUR NEXT MOVE" INTENT ──────────────────────────────────────────
+// The client TAPS a self-directed next-move option in their lifetime portal
+// (move up / right-size / invest / refinance / improve / explore). A client-
+// INITIATED re-transaction intent is the cleanest, most compliant lead signal
+// there is — it loops the human agent in AND puts it on the manager bus: the AI
+// ISA hands it to the Sphere Manager (lifetime owner), who delegates the right
+// next step (buyer consult+CMA / finance review / vendor intro). No protected-
+// class targeting — equity/tenure only, opt-in.
+export async function submitNextMoveIntent(params: {
+  contactId: string
+  intent: NextMoveIntent
+  note?: string | null
+}): Promise<{ ok: boolean; error?: string }> {
+  const access = await requireContactAccess(params.contactId)
+  if (!access.ok || !access.isContactSelf) return { ok: false, error: "Not allowed" }
+  if (!isNextMoveIntent(params.intent)) return { ok: false, error: "Unknown intent" }
+
+  const svc = createServiceClient()
+  const { data: contact } = await svc
+    .from("contacts").select("first_name, last_name, agent_id").eq("id", params.contactId).maybeSingle()
+  if (!contact) return { ok: false, error: "Contact not found" }
+
+  const clientName = [contact.first_name, contact.last_name].filter(Boolean).join(" ").trim() || "A client"
+  const note = (params.note ?? "").toString().trim().slice(0, 500) || null
+  const nextStep = nextStepForIntent(params.intent)
+
+  // Surface to the agent (portal message + notification + kernel event) so a hot
+  // re-transaction signal is never lost. agent_id can legitimately be null.
+  try {
+    if (contact.agent_id) {
+      await svc.from("client_portal_messages").insert({
+        contact_id: params.contactId,
+        agent_id: contact.agent_id,
+        brokerage_id: access.brokerageId,
+        direction: "client_to_agent",
+        channel: "portal",
+        read: false,
+        body: `Next-move intent: ${params.intent.replace(/_/g, " ")}${note ? ` — "${note}"` : ""}`,
+      }).then(() => {}, () => {})
+
+      const agent = await resolveContactOwnerAgent(svc, contact.agent_id)
+      const agentUserId = (agent as { user_id?: string | null; id?: string | null } | null)?.user_id
+        ?? (agent as { id?: string | null } | null)?.id ?? null
+      if (agentUserId) {
+        await svc.from("notifications").insert({
+          user_id: agentUserId, brokerage_id: access.brokerageId, type: "next_move_intent",
+          title: "🏡 A past client is thinking about their next move",
+          body: `${clientName} tapped "${params.intent.replace(/_/g, " ")}" in their portal. Proposed next step: ${nextStep}.`,
+          entity_type: "contact", entity_id: params.contactId, priority: "high", is_read: false,
+        }).then(() => {}, () => {})
+      }
+
+      await svc.from("lifecycle_events").insert({
+        brokerage_id: access.brokerageId,
+        event_type: KernelEvent.MESSAGE_FROM_CONTACT,
+        entity_type: "contact",
+        entity_id: params.contactId,
+        actor_user_id: contact.agent_id,
+        metadata: { contact_id: params.contactId, agent_id: contact.agent_id, type: "next_move_intent", intent: params.intent, note },
+      }).then(() => {}, () => {})
+    }
+
+    // MULTI-MANAGER: AI ISA (hears the client) hands the intent to the Sphere
+    // Manager (lifetime relationship owner), who delegates the concrete next step.
+    const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+    await publishManagerSignal({
+      brokerageId: access.brokerageId, fromManager: "ai_isa", toManager: "sphere_of_influence",
+      signalType: "next_move_intent", entityType: "contact", entityId: params.contactId,
+      contactId: params.contactId,
+      message: `${clientName} signaled a "${params.intent.replace(/_/g, " ")}" next-move intent — delegate: ${nextStep}.`,
+      payload: { intent: params.intent, note, next_step: nextStep },
+    }, svc).then(() => {}, () => {})
+  } catch { /* notification + handoff are best-effort — never block intent capture */ }
 
   return { ok: true }
 }
