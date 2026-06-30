@@ -103,7 +103,7 @@ export async function pushListingToSellerPortal(
         body: `Your agent pushed shareable copy + a link for ${l.address ?? "your listing"}. Open your portal to share with friends and family.`,
         entity_type: "listing",
         entity_id: l.id,
-        priority: "normal",
+        priority: "medium",
         is_read: false,
         created_at: new Date().toISOString(),
       })

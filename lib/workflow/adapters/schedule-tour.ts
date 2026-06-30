@@ -112,7 +112,7 @@ export const scheduleTourAdapter: ChannelAdapter = {
           type: "tour_scheduled",
           title: "Tour Scheduled",
           body: `Your property tour has been scheduled for ${tourDate.toLocaleDateString()}. ${orderedProps.length} propert${orderedProps.length === 1 ? "y" : "ies"} to visit.`,
-          priority: "normal",
+          priority: "medium",
         })
       ).catch(() => {})
     }

@@ -313,6 +313,7 @@
     "test:home-wealth": "tsx scripts/home-wealth-simulator.ts",
     "test:next-move": "tsx scripts/next-move-simulator.ts",
     "test:home-assistant": "tsx scripts/home-assistant-simulator.ts",
+    "test:home-maintenance": "tsx scripts/home-maintenance-simulator.ts",
     "test:manager-outbound-eval": "tsx scripts/manager-outbound-eval-simulator.ts",
     "test:learning-outcomes": "tsx scripts/learning-outcomes-simulator.ts",
     "test:voice-report": "tsx scripts/voice-report-format-simulator.ts",

@@ -484,7 +484,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
       body: "Agent has signed off and submitted a CDA for review.",
       entity_type: "transaction",
       entity_id: cda.transaction_id,
-      priority: "normal",
+      priority: "medium",
       channel: "in_app",
     })
   }
@@ -591,7 +591,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
       body: "Compliance approved your CDA. You're cleared for closing.",
       entity_type: "transaction",
       entity_id: cda.transaction_id,
-      priority: "normal",
+      priority: "medium",
       channel: "in_app",
     })
   }

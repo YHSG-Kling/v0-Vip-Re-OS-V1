@@ -112,7 +112,8 @@ export async function submitClientTestimonial(params: {
         user_id: agentUserId, brokerage_id: access.brokerageId, type: "client_testimonial_received",
         title: params.kind === "video" ? "🎥 A client left you a video testimonial" : "⭐ A client left you a testimonial",
         body: `${reviewerName} shared a ${params.kind} testimonial from their portal. Review and approve it to use in your marketing${params.kind === "video" ? " — your Asset Manager is turning it into a reel." : "."}`,
-        entity_type: "contact", entity_id: params.contactId, priority: "normal", is_read: false,
+        // priority CHECK: low|medium|high|critical ('normal' is rejected → silent drop)
+        entity_type: "contact", entity_id: params.contactId, priority: "medium", is_read: false,
       }).then(() => {}, () => {})
     }
     // MULTI-MANAGER: a VIDEO testimonial is gold — the Sphere of Influence HANDS it to the Asset Manager
@@ -279,6 +280,56 @@ export async function askHomeAssistant(params: {
   }
 }
 
+// ─── REQUEST A VENDOR INTRO (maintenance card → marketplace) ─────────────────
+// The homeowner taps a maintenance suggestion's "request an intro" — a concierge
+// ask routed to their agent (portal message + notification). Light-touch by
+// design (no cross-manager workflow): the agent personally connects them with a
+// trusted local pro. category is a free-text vendor category; reason is the
+// upkeep suggestion that prompted it.
+export async function requestVendorIntro(params: {
+  contactId: string
+  category: string
+  reason?: string | null
+}): Promise<{ ok: boolean; error?: string }> {
+  const access = await requireContactAccess(params.contactId)
+  if (!access.ok || !access.isContactSelf) return { ok: false, error: "Not allowed" }
+
+  const category = (params.category ?? "").toString().trim().slice(0, 60)
+  if (!category) return { ok: false, error: "Missing category" }
+  const reason = (params.reason ?? "").toString().trim().slice(0, 200) || null
+
+  const svc = createServiceClient()
+  const { data: contact } = await svc
+    .from("contacts").select("first_name, last_name, agent_id").eq("id", params.contactId).maybeSingle()
+  if (!contact) return { ok: false, error: "Contact not found" }
+  if (!contact.agent_id) return { ok: true } // no in-house agent to route to; silently succeed
+
+  const clientName = [contact.first_name, contact.last_name].filter(Boolean).join(" ").trim() || "A client"
+  const label = category.replace(/_/g, " ")
+
+  try {
+    await svc.from("client_portal_messages").insert({
+      contact_id: params.contactId, agent_id: contact.agent_id, brokerage_id: access.brokerageId,
+      direction: "client_to_agent", channel: "portal", read: false,
+      body: `Vendor intro request: ${label}${reason ? ` — ${reason}` : ""}`,
+    }).then(() => {}, () => {})
+
+    const agent = await resolveContactOwnerAgent(svc, contact.agent_id)
+    const agentUserId = (agent as { user_id?: string | null; id?: string | null } | null)?.user_id
+      ?? (agent as { id?: string | null } | null)?.id ?? null
+    if (agentUserId) {
+      await svc.from("notifications").insert({
+        user_id: agentUserId, brokerage_id: access.brokerageId, type: "vendor_intro_request",
+        title: `🔧 ${clientName} wants a ${label} pro`,
+        body: `${clientName} asked for an intro to a trusted ${label} provider${reason ? ` (${reason})` : ""}. A quick connection keeps you their go-to resource.`,
+        entity_type: "contact", entity_id: params.contactId, priority: "medium", is_read: false,
+      }).then(() => {}, () => {})
+    }
+  } catch { /* best-effort — never block the request */ }
+
+  return { ok: true }
+}
+
 // ─── GET LIFETIME CONTEXT ────────────────────────────────────────────────────
 export async function getLifetimeContext(contactId: string) {
   const access = await requireContactAccess(contactId)
@@ -377,6 +428,18 @@ export async function getLifetimeContext(contactId: string) {
     .limit(3)
   const preferredVendors = vendors || []
 
+  // All vendor categories the brokerage marketplace carries (not just preferred) —
+  // lets the maintenance card decide "request an intro" vs "browse pros".
+  const { data: allVendorCats } = await supabase
+    .from("vendor_directory")
+    .select("category")
+    .eq("brokerage_id", access.brokerageId)
+    .not("category", "is", null)
+    .limit(200)
+  const vendorCategories = Array.from(
+    new Set((allVendorCats ?? []).map((v: { category?: string | null }) => (v.category ?? "").toLowerCase().trim()).filter(Boolean)),
+  )
+
   // Get neighborhood activity (recent listings near same city/address) — scoped
   let neighborhoodListings: any[] = []
   if (transaction?.property_address) {
@@ -406,6 +469,7 @@ export async function getLifetimeContext(contactId: string) {
     touchpoints: touchpoints || [],
     referrals: referrals || [],
     preferredVendors,
+    vendorCategories,
     neighborhoodListings,
   }
 }

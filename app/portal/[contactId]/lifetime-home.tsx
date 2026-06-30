@@ -9,6 +9,7 @@ import { ReferralAskCard } from "@/app/components/portal/lifetime/ReferralAskCar
 import { TestimonialCard } from "@/app/components/portal/lifetime/TestimonialCard"
 import { NextMoveCard } from "@/app/components/portal/lifetime/NextMoveCard"
 import { AskYourHomeCard } from "@/app/components/portal/lifetime/AskYourHomeCard"
+import { HomeMaintenanceCard } from "@/app/components/portal/lifetime/HomeMaintenanceCard"
 import { NeighborhoodActivityCard } from "@/app/components/portal/lifetime/NeighborhoodActivityCard"
 import { RefinanceIndicatorCard } from "@/app/components/portal/lifetime/RefinanceIndicatorCard"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
@@ -20,6 +21,7 @@ import { PortalLiveFeed } from "@/app/components/portal/PortalLiveFeed"
 import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
 import { LifetimeMilestoneLine } from "./components/LifetimeMilestoneLine"
 import { computeHomeWealthStory } from "@/lib/portal/home-wealth"
+import { maintenanceDeck } from "@/lib/portal/home-maintenance"
 import {
   Bell,
   BookOpen,
@@ -67,7 +69,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
     )
   }
 
-  const { contact, agent, transaction, homeValueEstimate, homeValueSeries, touchpoints, preferredVendors, neighborhoodListings } = context
+  const { contact, agent, transaction, homeValueEstimate, homeValueSeries, touchpoints, preferredVendors, neighborhoodListings, vendorCategories } = context
 
   // Wealth story drives both the equity card and the "Your Next Move" radar
   // (equity/tenure only — the compliant, client-facing re-transaction surface).
@@ -79,6 +81,15 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
     estimatedValueHigh: homeValueEstimate?.estimated_value_high,
     latestGeneratedAt: homeValueEstimate?.generated_at,
     series: homeValueSeries,
+  })
+
+  // Seasonal + tenure-based home-care suggestions. Month resolved here (server
+  // render) so the pure engine stays deterministic. Each suggestion ties to a
+  // vendor category for a marketplace "request an intro".
+  const maintenance = maintenanceDeck({
+    month: new Date().getMonth() + 1,
+    yearsHeld: wealth.yearsHeld,
+    availableVendorCategories: vendorCategories,
   })
   const firstName = contact.first_name || "Homeowner"
   // getLifetimeContext returns `agent: agentInfo` (from resolveContactOwnerAgent).
@@ -358,6 +369,14 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           variant="full"
         />
       )}
+
+      {/* Seasonal home-care — upkeep suggestions wired to the vendor marketplace */}
+      <HomeMaintenanceCard
+        contactId={contactId}
+        season={maintenance.season}
+        suggestions={maintenance.suggestions}
+        availableVendorCategories={vendorCategories}
+      />
 
       {/* Re-engagement: "Your Next Move" radar — replaces the old static
           "Thinking of moving?" CTA with a self-directed, equity-aware set of

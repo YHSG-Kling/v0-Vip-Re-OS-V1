@@ -162,7 +162,7 @@ export const draftDocumentAdapter: ChannelAdapter = {
           body: contact
             ? `A ${docType.replace(/_/g, " ")} draft has been created for ${contact.first_name ?? ""} ${contact.last_name ?? ""}. Review and finalize in Documents.`
             : `A ${docType.replace(/_/g, " ")} draft requires your review.`,
-          priority: "normal",
+          priority: "medium",
         })
       ).catch(() => {})
     }

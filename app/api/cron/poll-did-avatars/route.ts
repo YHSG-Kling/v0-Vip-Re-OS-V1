@@ -130,7 +130,7 @@ export async function GET(request: NextRequest) {
               body: `Your avatar "${asset.label}" is ready. Create a video to see it in action.`,
               entity_type: "agent_avatar_asset",
               entity_id: asset.id,
-              priority: "normal",
+              priority: "medium",
               channel: "in_app",
             })
           }

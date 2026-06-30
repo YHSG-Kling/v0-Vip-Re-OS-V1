@@ -73,7 +73,8 @@ export async function reapStuckLifetimeTouchpoints(
         user_id: agentUserId, brokerage_id: brokerageId, type: "lifetime_touchpoint_missed",
         title: "A past-client touch slipped — reach out",
         body: "A scheduled post-close touchpoint for one of your past clients passed without going out. Send them a quick, genuine personal note so the relationship stays warm.",
-        entity_type: "contact", entity_id: row.contact_id, priority: "normal", is_read: false,
+        // priority CHECK: low|medium|high|critical ('normal' is rejected)
+        entity_type: "contact", entity_id: row.contact_id, priority: "medium", is_read: false,
       })
       result.escalated += 1
     } catch (e) {

@@ -108,7 +108,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       type:           "buyer_intake_submitted",
       title:          `${body.legalFirstName} ${body.legalLastName} completed buyer intake`,
       body:           `Legal name verified, DL uploaded${body.fundsMaxPurchase ? `, max purchase $${body.fundsMaxPurchase.toLocaleString()}` : ""}. Ready to draft offers.`,
-      priority:       "normal",
+      priority:       "medium",
       entity_type:    "contact",
       entity_id:      tokenRow.contact_id,
       channel:        "in_app",

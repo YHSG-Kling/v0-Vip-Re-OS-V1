@@ -689,7 +689,7 @@ export async function notifyAssignedAgentForNextAction(params: {
     body:         `${params.contactName} was added to your CRM. Review and set next action.`,
     entity_type:  "contact",
     entity_id:    params.contactId,
-    priority:     "normal",
+    priority:     "medium",
     channel:      "in_app",
     is_read:      false,
     created_at:   new Date().toISOString(),

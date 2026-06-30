@@ -168,7 +168,7 @@ async function escalateImbalance(
         user_id: args.agentUserId, brokerage_id: args.brokerageId, type: "referral_reciprocity",
         title: partner.status === "one_sided_inbound" ? "Reciprocate a top referrer" : "One-way referral relationship",
         body: `${draft.body}\n\n[${dedupeKey}]`,
-        entity_type: "referral_partner", entity_id: partner.partnerId, priority: "normal",
+        entity_type: "referral_partner", entity_id: partner.partnerId, priority: "medium",
       }).then(() => {}, () => {})
     }
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")

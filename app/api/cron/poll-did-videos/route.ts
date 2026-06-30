@@ -349,7 +349,7 @@ export async function GET(request: NextRequest) {
               body: `Your ${video.video_type ?? "video"} is ready to view and share.`,
               entity_type: "video_project",
               entity_id: video.id,
-              priority: "normal",
+              priority: "medium",
               channel: "in_app",
             })
           }
