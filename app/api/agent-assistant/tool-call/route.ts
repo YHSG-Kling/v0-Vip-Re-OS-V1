@@ -1186,6 +1186,15 @@ async function logActivity(
     .update({ last_contacted_at: new Date().toISOString() })
     .eq("id", contactId)
 
+  // Surface the spoken action on the manager bus → the Command Center's "managers talking".
+  const { surfaceVoiceActionOnBus } = await import("@/lib/voice/voice-bus")
+  await surfaceVoiceActionOnBus({
+    brokerageId: session.brokerage_id,
+    tool: "log_activity",
+    message: `Voice admin logged a ${activityType} (${notes.slice(0, 60)})`,
+    entityType: "contact", entityId: contactId, contactId,
+  }, supabase)
+
   return { success: true, activity_id: data.id }
 }
 
@@ -1219,6 +1228,15 @@ async function createTask(
     .maybeSingle()
 
   if (error || !data) return { error: error?.message ?? "Failed to create task" }
+
+  const { surfaceVoiceActionOnBus } = await import("@/lib/voice/voice-bus")
+  await surfaceVoiceActionOnBus({
+    brokerageId: session.brokerage_id,
+    tool: "create_task",
+    message: `Voice admin created the task "${data.title}"${data.due_date ? ` (due ${data.due_date})` : ""}`,
+    entityType: contactId ? "contact" : "task", entityId: data.id, contactId: contactId ?? null,
+  }, supabase)
+
   return { success: true, task_id: data.id, title: data.title, due_date: data.due_date }
 }
 
@@ -1307,6 +1325,15 @@ async function sendPortalMessage(
     .maybeSingle()
 
   if (error || !data) return { error: error?.message ?? "Failed to send message" }
+
+  const { surfaceVoiceActionOnBus } = await import("@/lib/voice/voice-bus")
+  await surfaceVoiceActionOnBus({
+    brokerageId: session.brokerage_id,
+    tool: "send_portal_message",
+    message: `Voice admin sent a portal message to ${contact.first_name ?? "a client"} (${bodyText.slice(0, 50)})`,
+    entityType: "contact", entityId: contactId, contactId,
+  }, supabase)
+
   return { success: true, message_id: data.id, preview: bodyText.slice(0, 80) }
 }
 

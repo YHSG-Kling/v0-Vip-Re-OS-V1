@@ -333,6 +333,7 @@
     "test:cda-esign": "tsx scripts/cda-esign-simulator.ts",
     "test:voice-task-command": "tsx scripts/voice-task-command-simulator.ts",
     "test:voice-campaign-command": "tsx scripts/voice-campaign-command-simulator.ts",
+    "test:voice-bus": "tsx scripts/voice-bus-simulator.ts",
     "test:lifetime-segment": "tsx scripts/lifetime-segment-simulator.ts",
     "test:manager-outbound-eval": "tsx scripts/manager-outbound-eval-simulator.ts",
     "test:learning-outcomes": "tsx scripts/learning-outcomes-simulator.ts",

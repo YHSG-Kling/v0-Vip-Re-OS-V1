@@ -84,6 +84,7 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
   second_opinion_requested:       { consumers: [], disposition: "feed_only", kind: "update",     what: "a strategic play asked a second manager for a complementary read (the huddle)" },
   source_allocation_advice:       { consumers: [], disposition: "feed_only", kind: "update",     what: "lead-source enable/disable advice from real conversion + ROI" },
   source_lifetime_health_advice:  { consumers: [], disposition: "feed_only", kind: "update",     what: "lead-source lifetime-quality advice (relationships that LAST, not just first close)" },
+  voice_action:                   { consumers: [], disposition: "feed_only", kind: "update",     what: "the VOICE ADMIN executed a spoken action (task / activity / client message) — the owning manager records it on the bus so every voice command is visible + accountable in the Command Center, exactly like the text command bar" },
   win_story:                      { consumers: [], disposition: "feed_only", kind: "update",     what: "a farm-area win worth telling the neighborhood (social proof)" },
   trid_disclosure_clock:          { consumers: [], disposition: "feed_only", kind: "update",     what: "a TRID disclosure clock is ticking on a deal — keep the timeline honest" },
   journey_conformance_violation:  { consumers: [], disposition: "feed_only", kind: "alert",      what: "a contact's journey drifted off its required path — flag for review" },
