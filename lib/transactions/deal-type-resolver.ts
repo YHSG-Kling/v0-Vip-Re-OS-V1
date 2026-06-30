@@ -4,34 +4,33 @@
 // drives compliance REQUIRED-DOC seeding, client persona, and seller-close logic — so it must reflect
 // who WE actually represent, not an in-house/buyer assumption.
 //
-// Ground truth the offer bridge can observe:
-//   • ourListing      — the offer is on one of OUR listings (a seller_contact_id resolved from it).
-//   • buyerAgentId    — offers.agent_id: the in-house agent who wrote the offer (the buyer's side).
-//   • listingAgentId  — the in-house listing's agent (the seller's side).
+// Two ground-truth signals the offer bridge can observe:
+//   • ourListing — the offer is on one of OUR listings (a seller_contact_id resolved from it) → we
+//     represent the SELLER side.
+//   • ourBuyer   — the BUYER on the offer is OUR represented client: they're in our buyer pipeline
+//     (contacts.buyer_stage is set). Our-buyer offers come through the buyer flow, which advances the
+//     buyer_stage; an OUTSIDE buyer's offer that arrives by inbound-mail / upload intake creates a bare
+//     contact with no buyer_stage. (agent_id is NOT a reliable signal — the mail intake stamps the
+//     LISTING agent on an outside buyer's offer, so "same agent" alone can't tell single-agent dual
+//     from a logged outside offer; buyer_stage can.)
 //
 // Rules:
 //   • Not our listing (external/IDX target) → 'buyer' — we represent the buyer only.
-//   • Our listing AND a DIFFERENT in-house agent represents the buyer → 'dual' — the brokerage holds
-//     BOTH sides (the common in-house buyer + in-house listing deal: two of our agents, one each side).
-//   • Our listing, same agent or no distinct buyer agent (e.g. the listing agent logged an outside
-//     buyer's offer for tracking) → 'seller'.
-//
-// NOTE: single-agent dual agency (ONE agent representing both sides) reads as 'seller' here (same
-// agent_id on both) — it's the rarer case and indistinguishable from a listing agent logging an outside
-// offer. It can be set explicitly via the bridge's dealType override. Pure + unit-tested.
+//   • Our listing AND the buyer is our client → 'dual' — the brokerage holds BOTH sides. Covers BOTH
+//     the two-agent in-house deal AND single-agent dual agency (one agent both sides) — same code path,
+//     because the distinguishing fact is "is the buyer ours", not "how many agents".
+//   • Our listing AND an OUTSIDE buyer → 'seller'.
+// Pure + unit-tested.
 
 export type DealType = "buyer" | "seller" | "dual"
 
 export interface DealTypeInput {
   ourListing: boolean
-  buyerAgentId: string | null
-  listingAgentId: string | null
+  ourBuyer: boolean
 }
 
 export function resolveDealType(input: DealTypeInput): DealType {
   if (!input.ourListing) return "buyer"
-  if (input.buyerAgentId && input.listingAgentId && input.buyerAgentId !== input.listingAgentId) {
-    return "dual"
-  }
+  if (input.ourBuyer) return "dual"
   return "seller"
 }

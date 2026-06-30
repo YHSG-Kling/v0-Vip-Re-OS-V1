@@ -3,8 +3,10 @@
  * scripts/deal-type-resolver-simulator.ts   (npm run test:deal-type-resolver)
  * ─────────────────────────────────────────────────────────────────────────────
  * Proves deal_type is resolved from GROUND TRUTH, never an in-house/buyer assumption: an external/IDX
- * target is 'buyer'; our listing with a DIFFERENT in-house agent on the buyer side is 'dual' (the common
- * in-house-both-sides deal); our listing with the same agent / an outside buyer is 'seller'. Pure: no I/O.
+ * target is 'buyer'; our listing with OUR buyer (in our pipeline) is 'dual' — covering BOTH the two-agent
+ * in-house deal AND single-agent dual agency (the distinguishing fact is "is the buyer ours", not how
+ * many agents); our listing with an OUTSIDE buyer (mail/upload intake, no buyer pipeline) is 'seller'.
+ * Pure: no I/O.
  */
 import { resolveDealType } from "../lib/transactions/deal-type-resolver"
 
@@ -15,24 +17,20 @@ const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ $
 function main() {
   console.log("\n[deal_type resolution]")
   check("external listing (not ours) → buyer (we represent the buyer only)",
-    resolveDealType({ ourListing: false, buyerAgentId: "ag_buyer", listingAgentId: null }) === "buyer")
-  check("external listing stays buyer even with agents present",
-    resolveDealType({ ourListing: false, buyerAgentId: "ag_buyer", listingAgentId: "ag_list" }) === "buyer")
+    resolveDealType({ ourListing: false, ourBuyer: true }) === "buyer")
+  check("external listing stays buyer regardless of ourBuyer flag",
+    resolveDealType({ ourListing: false, ourBuyer: false }) === "buyer")
 
-  check("our listing + DIFFERENT in-house agent on buyer side → dual",
-    resolveDealType({ ourListing: true, buyerAgentId: "ag_buyer", listingAgentId: "ag_list" }) === "dual")
-  check("our listing + SAME agent both sides → seller (single-agent or logged outside offer)",
-    resolveDealType({ ourListing: true, buyerAgentId: "ag_x", listingAgentId: "ag_x" }) === "seller")
-  check("our listing + no buyer agent → seller",
-    resolveDealType({ ourListing: true, buyerAgentId: null, listingAgentId: "ag_list" }) === "seller")
-  check("our listing + no listing agent → seller (can't confirm a distinct buyer side)",
-    resolveDealType({ ourListing: true, buyerAgentId: "ag_buyer", listingAgentId: null }) === "seller")
+  check("our listing + OUR buyer → dual (covers two-agent AND single-agent dual)",
+    resolveDealType({ ourListing: true, ourBuyer: true }) === "dual")
+  check("our listing + OUTSIDE buyer (no buyer pipeline) → seller",
+    resolveDealType({ ourListing: true, ourBuyer: false }) === "seller")
 
   console.log("\n[every output is a valid deal_type CHECK value]")
   const outputs = [
-    resolveDealType({ ourListing: false, buyerAgentId: null, listingAgentId: null }),
-    resolveDealType({ ourListing: true, buyerAgentId: "a", listingAgentId: "b" }),
-    resolveDealType({ ourListing: true, buyerAgentId: "a", listingAgentId: "a" }),
+    resolveDealType({ ourListing: false, ourBuyer: false }),
+    resolveDealType({ ourListing: true, ourBuyer: true }),
+    resolveDealType({ ourListing: true, ourBuyer: false }),
   ]
   check("outputs ⊆ {buyer, seller, dual}", outputs.every((o) => ["buyer", "seller", "dual"].includes(o)))
 
@@ -40,6 +38,6 @@ function main() {
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ DEAL_TYPE_RESOLVER_FAIL"); process.exit(1) }
-  console.log(" ✅ DEAL_TYPE_RESOLVER_PASS — buyer / seller / dual resolved from ground truth, no in-house assumption")
+  console.log(" ✅ DEAL_TYPE_RESOLVER_PASS — buyer / seller / dual from ground truth; single-agent dual covered")
 }
 main()

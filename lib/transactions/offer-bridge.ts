@@ -138,16 +138,14 @@ export async function createTransactionFromOffer(params: {
     throw new Error(`[offer-bridge] Offer not found: ${params.offerId}`)
   }
 
-  // Resolve property address + seller_contact_id + listing agent from the in-house listing if any.
-  // listingAgentId is the SELLER side; offer.agent_id is the BUYER side — together they tell the bridge
-  // whether WE hold both sides (dual) without assuming in-house/buyer. See deal-type-resolver.ts.
+  // Resolve property address + seller_contact_id from the in-house listing if any. seller_contact_id
+  // present == this offer is on OUR listing (the seller side is ours). See deal-type-resolver.ts.
   let resolvedAddress = (offer as any).property_address ?? null
   let sellerContactId: string | null = null
-  let listingAgentId: string | null = null
   if ((offer as any).listing_id) {
     const { data: listing } = await supabase
       .from("listings")
-      .select("address, city, state, seller_contact_id, agent_id")
+      .select("address, city, state, seller_contact_id")
       .eq("id", (offer as any).listing_id)
       .maybeSingle()
     if (listing) {
@@ -155,19 +153,21 @@ export async function createTransactionFromOffer(params: {
         resolvedAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
       }
       sellerContactId = (listing as any).seller_contact_id ?? null
-      listingAgentId = (listing as any).agent_id ?? null
     }
   }
 
-  // Who do WE represent? Observed from ground truth (our-listing + buyer-agent vs listing-agent), with
-  // the caller's dealType as an explicit override. 'dual' = our listing + a DIFFERENT in-house agent on
-  // the buyer side (the common in-house-both-sides deal). Drives compliance doc seeding + persona.
+  // Who do WE represent? Ground truth: our-listing (seller side) + whether the BUYER is OUR client (in
+  // our buyer pipeline → buyer_stage set; an outside buyer's mail/upload-intake offer has none). 'dual'
+  // = our listing + our buyer (covers BOTH two-agent and single-agent dual). Caller dealType overrides.
+  // Drives compliance required-doc seeding + persona. Only check the buyer when the listing is ours.
+  let ourBuyer = false
+  if (sellerContactId && (offer as any).contact_id) {
+    const { data: buyerContact } = await supabase
+      .from("contacts").select("buyer_stage").eq("id", (offer as any).contact_id).maybeSingle()
+    ourBuyer = !!(buyerContact as { buyer_stage?: string | null } | null)?.buyer_stage
+  }
   const { resolveDealType } = await import("./deal-type-resolver")
-  const dealType = params.dealType ?? resolveDealType({
-    ourListing: !!sellerContactId,
-    buyerAgentId: (offer as any).agent_id ?? null,
-    listingAgentId,
-  })
+  const dealType = params.dealType ?? resolveDealType({ ourListing: !!sellerContactId, ourBuyer })
 
   // Create transaction — use contact_id (not buyer_id) and agent_id (not buyer_agents join)
   // deal_name is NOT NULL on transactions; default to property_address (or

@@ -680,7 +680,7 @@ export async function createTransactionShellFromAcceptedOffer(input: {
     // Validate offer is accepted
     const { data: offer } = await supabase
       .from("offers")
-      .select("id, status, offer_price, contact_id, agent_id")
+      .select("id, status, offer_price, contact_id")
       .eq("id", input.offerId)
       .maybeSingle()
 
@@ -697,6 +697,14 @@ export async function createTransactionShellFromAcceptedOffer(input: {
     if (!listing)                        return { success: false, error: "Listing not found" }
     if (!listing.seller_contact_id)      return { success: false, error: "Listing has no seller contact" }
 
+    // This shell is always created from OUR listing (seller side). It's DUAL when the buyer is also our
+    // client (in our buyer pipeline → buyer_stage); else seller-only (outside buyer). Mirrors offer-bridge.
+    let ourBuyer = false
+    if (offer.contact_id) {
+      const { data: bc } = await supabase.from("contacts").select("buyer_stage").eq("id", offer.contact_id).maybeSingle()
+      ourBuyer = !!(bc as { buyer_stage?: string | null } | null)?.buyer_stage
+    }
+
     const { data: transaction, error } = await supabase
       .from("transactions")
       .insert({
@@ -711,9 +719,9 @@ export async function createTransactionShellFromAcceptedOffer(input: {
         contact_id:        listing.seller_contact_id,
         seller_contact_id: listing.seller_contact_id,
         buyer_contact_id:  offer.contact_id ?? null,
-        // Our listing → 'seller', UNLESS a different in-house agent represents the buyer (in-house buyer
-        // on our own listing) → 'dual'. Mirrors offer-bridge's deal-type-resolver.
-        deal_type:         resolveDealType({ ourListing: true, buyerAgentId: (offer as any).agent_id ?? null, listingAgentId: input.agentId ?? null }),
+        // Our listing → 'seller', UNLESS the buyer is also our client → 'dual' (covers single- AND
+        // two-agent dual). Mirrors offer-bridge's deal-type-resolver.
+        deal_type:         resolveDealType({ ourListing: true, ourBuyer }),
         status:            "under_contract",
         stage:             "UNDER_CONTRACT",
         purchase_price:    offer.offer_price ?? listing.list_price,
