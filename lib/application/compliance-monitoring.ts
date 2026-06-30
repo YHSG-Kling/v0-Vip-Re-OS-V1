@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
+import { businessDaysInclusive } from "@/lib/compliance/trid-disclosure-clock"
 
 // ============================================
 // AUDIT LOGGING
@@ -255,18 +256,12 @@ Focus on detecting:
 // TRID
 // ============================================
 
-const getBusinessDays = (startDate: string, endDate: string) => {
-  const start = new Date(startDate)
-  const end = new Date(endDate)
-  let count = 0
-  const current = new Date(start)
-  while (current <= end) {
-    const day = current.getDay()
-    if (day !== 0 && day !== 6) count++
-    current.setDate(current.getDate() + 1)
-  }
-  return count
-}
+// Single source of truth for the TRID business-day convention (weekends + federal
+// holidays excluded) — delegate to the disclosure clock so the post-hoc monitor and
+// the forward-looking clock can never drift. Dates may arrive as timestamps; the
+// clock expects yyyy-mm-dd, so slice.
+const getBusinessDays = (startDate: string, endDate: string) =>
+  businessDaysInclusive(startDate.slice(0, 10), endDate.slice(0, 10))
 
 export async function monitorTRIDComplianceService(transactionId: string, client?: SupabaseClient) {
   // Accept a caller-supplied client so the compliance cron can pass a

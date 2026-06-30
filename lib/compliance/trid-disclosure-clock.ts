@@ -18,6 +18,8 @@
 // (ok/upcoming/at_risk/violation). The runner does the I/O and the gated escalation. HONEST:
 // a deadline whose inputs aren't on file is `not_applicable`, never a fabricated countdown.
 
+import { isFederalHoliday } from "./federal-holidays"
+
 export interface TridClockInput {
   /** ISO date (yyyy-mm-dd) for "today" — injectable so the simulator is deterministic. */
   today: string
@@ -62,9 +64,15 @@ function parse(d: string): Date {
 function iso(d: Date): string {
   return d.toISOString().slice(0, 10)
 }
-function isWeekday(d: Date): boolean {
+// A TRID business day excludes weekends AND federal holidays. Omitting the
+// holidays under-counted the window across a holiday and could call a too-late
+// Closing Disclosure "compliant" — a federal TRID violation. This conservative
+// weekday+holiday convention never under-counts (it only ever requires the CD
+// earlier), and the post-hoc monitor (compliance-monitoring) uses the same rule.
+function isBusinessDay(d: Date): boolean {
   const day = d.getUTCDay()
-  return day !== 0 && day !== 6
+  if (day === 0 || day === 6) return false
+  return !isFederalHoliday(iso(d))
 }
 
 /** Inclusive business-day count between two dates — IDENTICAL convention to the existing
@@ -76,7 +84,7 @@ export function businessDaysInclusive(startIso: string, endIso: string): number 
   let count = 0
   const cur = new Date(start)
   while (cur <= end) {
-    if (isWeekday(cur)) count++
+    if (isBusinessDay(cur)) count++
     cur.setUTCDate(cur.getUTCDate() + 1)
   }
   return count
@@ -94,7 +102,7 @@ export function businessDaysUntil(fromIso: string, toIso: string): number {
   const stop = forward ? to : from
   cur.setUTCDate(cur.getUTCDate() + 1)
   while (cur <= stop) {
-    if (isWeekday(cur)) count++
+    if (isBusinessDay(cur)) count++
     cur.setUTCDate(cur.getUTCDate() + 1)
   }
   return forward ? count : -count

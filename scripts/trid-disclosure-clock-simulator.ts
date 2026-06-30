@@ -46,14 +46,21 @@ async function main() {
   console.log("\n[Layer 1 · business-day math + forward verdict]")
   // Mon 2026-06-15 .. Wed 2026-06-17 inclusive = 3 business days (matches the post-hoc monitor).
   check("inclusive business days Mon→Wed = 3", businessDaysInclusive("2026-06-15", "2026-06-17") === 3)
-  // Friday → Monday skips the weekend.
-  check("Fri→Mon = 2 business days (weekend skipped)", businessDaysInclusive("2026-06-19", "2026-06-22") === 2)
-  // CD must land ≥3 business days before a Fri close → due by the Wed.
-  check("CD due-by for a Fri close is the prior Wed", closingDisclosureDueBy("2026-06-19") === "2026-06-17", closingDisclosureDueBy("2026-06-19"))
+  // Friday → Monday skips the weekend (holiday-free week, June 12–15 2026).
+  check("Fri→Mon = 2 business days (weekend skipped)", businessDaysInclusive("2026-06-12", "2026-06-15") === 2)
+  // CD must land ≥3 business days before a Fri close → due by the prior Wed.
+  check("CD due-by for a Fri close is the prior Wed", closingDisclosureDueBy("2026-06-12") === "2026-06-10", closingDisclosureDueBy("2026-06-12"))
   check("businessDaysUntil future is positive, past is negative", businessDaysUntil("2026-06-15", "2026-06-18") === 3 && businessDaysUntil("2026-06-18", "2026-06-15") === -3)
 
-  // AT_RISK: close Fri 6/19, CD due Wed 6/17, today Tue 6/16 (1 business day left), undelivered.
-  const atRisk = computeTridClock({ today: "2026-06-16", scheduledCloseDate: "2026-06-19" })
+  // FEDERAL-HOLIDAY awareness — the safety-critical fix. A business-day count
+  // spanning a holiday must SKIP it (the old code miscounted holidays as days and
+  // could call a too-late CD "compliant"). Juneteenth is 2026-06-19; MLK is 2026-01-19.
+  check("Juneteenth excluded: Fri 6/19→Mon 6/22 = 1 business day (Mon only)", businessDaysInclusive("2026-06-19", "2026-06-22") === 1)
+  check("CD due-by for a Fri 6/19 (Juneteenth) close is 6/16, not 6/17", closingDisclosureDueBy("2026-06-19") === "2026-06-16", closingDisclosureDueBy("2026-06-19"))
+  check("MLK Day excluded: Fri 1/16→Tue 1/20 = 2 business days (Fri+Tue)", businessDaysInclusive("2026-01-16", "2026-01-20") === 2)
+
+  // AT_RISK: close Fri 6/12, CD due Wed 6/10, today Tue 6/9 (1 business day left), undelivered.
+  const atRisk = computeTridClock({ today: "2026-06-09", scheduledCloseDate: "2026-06-12" })
   const cd = atRisk.deadlines.find((d) => d.kind === "closing_disclosure")!
   check("undelivered CD with deadline near → at_risk", cd.status === "at_risk", JSON.stringify(cd))
   check("overall flagged for escalation", atRisk.flagged === true && atRisk.overall === "at_risk")
@@ -64,7 +71,7 @@ async function main() {
   check("CD deadline far out → upcoming, not flagged", upcoming.deadlines.find((d) => d.kind === "closing_disclosure")!.status === "upcoming" && !upcoming.flagged)
 
   // VIOLATION (missed): deadline already passed, CD still undelivered.
-  const missed = computeTridClock({ today: "2026-06-18", scheduledCloseDate: "2026-06-19" })
+  const missed = computeTridClock({ today: "2026-06-11", scheduledCloseDate: "2026-06-12" })
   check("deadline passed + CD undelivered → violation", missed.overall === "violation" && missed.flagged)
 
   // OK (delivered with the full window): CD delivered Mon 6/15 for a Wed 6/17 close = 3 bd.

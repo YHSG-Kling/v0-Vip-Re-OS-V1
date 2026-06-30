@@ -122,6 +122,37 @@ export async function canAdvanceStage(
     }
   }
 
+  // 10. TRID GATE — a financed deal may not be CONSUMMATED (CLOSED) unless the buyer
+  //     RECEIVED the Closing Disclosure at least 3 business days before closing (federal
+  //     TILA-RESPA rule, 12 CFR 1026.19(f)). This turns the forward-looking TRID clock
+  //     (now federal-holiday-aware) into a HARD GATE instead of a post-hoc alert. Only
+  //     applies when a trid_timeline row exists (a financed deal with TRID tracking);
+  //     cash deals have no row and are not gated.
+  if (targetStage === "CLOSED") {
+    const { data: trid } = await supabase
+      .from("trid_timeline")
+      .select("closing_disclosure_delivered_date")
+      .eq("transaction_id", transactionId)
+      .maybeSingle()
+    if (trid) {
+      if (!trid.closing_disclosure_delivered_date) {
+        blockers.push("TRID: the Closing Disclosure must be delivered to the buyer at least 3 business days before closing — no delivery date is on file.")
+      } else {
+        const { computeTridClock } = await import("@/lib/compliance/trid-disclosure-clock")
+        const today = new Date().toISOString().slice(0, 10)
+        const clock = computeTridClock({
+          today,
+          closingDisclosureDeliveredDate: trid.closing_disclosure_delivered_date,
+          scheduledCloseDate: today, // consummation is happening now
+        })
+        const cd = clock.deadlines.find((d) => d.kind === "closing_disclosure")
+        if (cd && cd.status !== "ok") {
+          blockers.push(`TRID: ${cd.message}`)
+        }
+      }
+    }
+  }
+
   return {
     allowed: blockers.length === 0,
     blockers
