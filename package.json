@@ -325,6 +325,7 @@
     "test:stuck-ad-action-reaper": "tsx scripts/stuck-ad-action-reaper-simulator.ts",
     "test:stale-recruit-reaper": "tsx scripts/stale-recruit-reaper-simulator.ts",
     "test:cda-delivery-reaper": "tsx scripts/cda-delivery-reaper-simulator.ts",
+    "test:final-compliance-check": "tsx scripts/final-compliance-check-simulator.ts",
     "test:lifetime-segment": "tsx scripts/lifetime-segment-simulator.ts",
     "test:manager-outbound-eval": "tsx scripts/manager-outbound-eval-simulator.ts",
     "test:learning-outcomes": "tsx scripts/learning-outcomes-simulator.ts",

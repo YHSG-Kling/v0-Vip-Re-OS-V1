@@ -152,6 +152,8 @@ export function CDAWorkflowClient({
   const [showSubmitDialog, setShowSubmitDialog] = useState(false)
   const [showApproveDialog, setShowApproveDialog] = useState(false)
   const [notes, setNotes] = useState("")
+  // Blockers from the final-compliance gate (submit) or the authority gate (approve).
+  const [gateError, setGateError] = useState<string[] | null>(null)
 
   const isAgent = userType === "agent" || transaction.agent_id === userId
   const isCompliance = ["broker", "admin", "compliance_officer"].includes(userType)
@@ -190,30 +192,43 @@ export function CDAWorkflowClient({
 
   function handleSubmitCDA() {
     if (!cda) return
+    setGateError(null)
     startTransition(async () => {
       try {
-        await submitCDA(cda.id, userId)
+        const res = await submitCDA(cda.id, userId)
+        if (!res?.success) {
+          // Final compliance gate failed — keep the dialog open and show why.
+          setGateError(res?.blockers ?? ["Submission was blocked by the final compliance check."])
+          return
+        }
         setShowSubmitDialog(false)
         router.refresh()
       } catch (error) {
         console.error("[CDA] Submit failed:", error)
+        setGateError(["Submission failed — please try again."])
       }
     })
   }
 
   function handleApproveCDA() {
     if (!cda) return
+    setGateError(null)
     startTransition(async () => {
       try {
-        await approveCDA({
+        const res = await approveCDA({
           cdaId: cda.id,
           approverId: userId,
           approverRole: userType,
         })
+        if (!res?.success) {
+          setGateError([res?.error ?? "Approval was not allowed."])
+          return
+        }
         setShowApproveDialog(false)
         router.refresh()
       } catch (error) {
         console.error("[CDA] Approve failed:", error)
+        setGateError(["Approval failed — please try again."])
       }
     })
   }
@@ -700,6 +715,14 @@ export function CDAWorkflowClient({
             </DialogDescription>
           </DialogHeader>
           <div className="py-4 space-y-4">
+            {gateError && gateError.length > 0 && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+                <p className="text-sm font-medium text-destructive">Can&apos;t submit yet — final compliance check:</p>
+                <ul className="mt-1 list-disc pl-5 text-sm text-destructive/90">
+                  {gateError.map((b, i) => <li key={i}>{b}</li>)}
+                </ul>
+              </div>
+            )}
             <div className="space-y-2">
               <Label>Agent Net Amount</Label>
               <p className="text-2xl font-bold text-green-600">
@@ -738,6 +761,13 @@ export function CDAWorkflowClient({
             </DialogDescription>
           </DialogHeader>
           <div className="py-4 space-y-4">
+            {gateError && gateError.length > 0 && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+                <ul className="list-disc pl-5 text-sm text-destructive/90">
+                  {gateError.map((b, i) => <li key={i}>{b}</li>)}
+                </ul>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div className="p-3 bg-muted/50 rounded-lg text-center">
                 <p className="text-sm text-muted-foreground">Agent Net</p>

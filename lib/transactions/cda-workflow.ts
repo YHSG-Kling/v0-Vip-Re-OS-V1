@@ -84,9 +84,27 @@ export async function generateCDAPreview(params: {
 /**
  * Agent submits CDA for approval
  */
-export async function submitCDA(cdaId: string, agentId: string) {
+export async function submitCDA(cdaId: string, agentId: string): Promise<{ success: boolean; blockers?: string[] }> {
   const supabase = createServiceClient()
-  
+
+  // Resolve the CDA's transaction first so we can run the FINAL compliance re-check.
+  const { data: cda } = await supabase
+    .from("closing_disclosure_agreement")
+    .select("transaction_id, brokerage_id")
+    .eq("id", cdaId)
+    .single()
+  if (!cda) return { success: false, blockers: ["CDA not found"] }
+
+  // FINAL COMPLIANCE GATE — after the preliminary CD, the agent may submit the CDA
+  // only when every disclosure + brokerage doc + the executed contract is on file,
+  // nothing is rejected, ALL signatures/initials are complete, and no blocking
+  // compliance check is open. Block submission otherwise.
+  const { runFinalComplianceCheck } = await import("./final-compliance-check")
+  const finalCheck = await runFinalComplianceCheck(cda.transaction_id, cda.brokerage_id, supabase)
+  if (!finalCheck.passed) {
+    return { success: false, blockers: finalCheck.blockers }
+  }
+
   await supabase
     .from("closing_disclosure_agreement")
     .update({
@@ -95,15 +113,8 @@ export async function submitCDA(cdaId: string, agentId: string) {
       agent_submitted_by: agentId
     })
     .eq("id", cdaId)
-  
-  // Log event
-  const { data: cda } = await supabase
-    .from("closing_disclosure_agreement")
-    .select("transaction_id, brokerage_id")
-    .eq("id", cdaId)
-    .single()
-  
-  if (cda) {
+
+  {
     await transitionLifecycle({
       brokerageId: cda.brokerage_id,
       entityType:  "transaction",
@@ -123,13 +134,22 @@ export async function submitCDA(cdaId: string, agentId: string) {
 /**
  * Compliance/Broker approves CDA
  */
+// Only BROKERAGE-LEVEL compliance/broker roles may approve a CDA (the agent who
+// submitted it cannot approve their own disbursement — separation of duties).
+const CDA_APPROVER_ROLES = new Set(["compliance_officer", "compliance", "broker", "broker_admin", "admin"])
+
 export async function approveCDA(params: {
   cdaId: string
   approverId: string
   approverRole: string
-}) {
+}): Promise<{ success: boolean; error?: string }> {
   const supabase = createServiceClient()
-  
+
+  // AUTHORITY GATE — brokerage compliance approves the CDA, not the agent.
+  if (!CDA_APPROVER_ROLES.has((params.approverRole ?? "").toLowerCase().trim())) {
+    return { success: false, error: "Only brokerage compliance or a broker/admin may approve a CDA." }
+  }
+
   await supabase
     .from("closing_disclosure_agreement")
     .update({
