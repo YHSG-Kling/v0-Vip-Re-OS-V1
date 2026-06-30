@@ -90,11 +90,9 @@ export function CdaReviewPanel() {
         const mode = "signMode" in res ? res.signMode : "in_app"
         const provider = "provider" in res ? res.provider : null
         toast.success(
-          mode === "esign_auto"
+          mode === "esign" && provider
             ? `CDA sent to ${provider} for your signature — ready to send to the closing agent`
-            : mode === "esign_manual"
-              ? `CDA authorized — send it via ${provider} for signature, then to the closing agent`
-              : "CDA signed — ready to send to the closing agent",
+            : "CDA signed — ready to send to the closing agent",
         )
         void reload()
       } else {

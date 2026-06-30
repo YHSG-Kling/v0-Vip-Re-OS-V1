@@ -428,7 +428,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
 
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
-    .select("id, transaction_id, brokerage_id, agent_id, status, revision_number")
+    .select("id, transaction_id, brokerage_id, agent_id, status, revision_number, generated_pdf_url, field_values")
     .eq("id", input.cdaId)
     .maybeSingle()
   if (!cda || cda.brokerage_id !== auth.brokerageId) {
@@ -442,6 +442,26 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
   }
 
   const now = new Date().toISOString()
+
+  // The AGENT signs the CDA via their configured e-sign provider BEFORE it goes to
+  // compliance (per spec). Provider-agnostic + best-effort; the in-app sign-off below
+  // is the authoritative gate and is never blocked by an e-sign transport failure.
+  const { data: subTxn } = await supabase
+    .from("transactions")
+    .select("property_address")
+    .eq("id", cda.transaction_id)
+    .maybeSingle()
+  const { dispatchCdaSignerEsign } = await import("@/lib/transactions/cda-esign")
+  const agentEsign = await dispatchCdaSignerEsign(supabase, {
+    brokerageId: cda.brokerage_id,
+    signerUserId: auth.userId,
+    signerRole: "agent",
+    transactionId: cda.transaction_id,
+    filledPdfUrl: (cda as { generated_pdf_url?: string | null }).generated_pdf_url ?? null,
+    propertyAddress: (subTxn as { property_address?: string | null } | null)?.property_address ?? null,
+  })
+
+  const submitPriorFieldValues = ((cda as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
   await supabase
     .from("closing_disclosure_agreement")
     .update({
@@ -450,6 +470,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
       agent_signed_off_by: auth.userId,
       agent_submitted_at: now,
       agent_submitted_by: auth.userId,
+      field_values: { ...submitPriorFieldValues, agent_esign: { mode: agentEsign.mode, provider: agentEsign.provider, loop_id: agentEsign.loopId ?? null, dispatched: agentEsign.dispatched, reason: agentEsign.reason, at: now } },
       updated_at: now,
     })
     .eq("id", cda.id)
@@ -644,10 +665,11 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
     .select("property_address")
     .eq("id", cda.transaction_id)
     .maybeSingle()
-  const { dispatchCdaBrokerEsign } = await import("@/lib/transactions/cda-esign")
-  const esign = await dispatchCdaBrokerEsign(supabase, {
+  const { dispatchCdaSignerEsign } = await import("@/lib/transactions/cda-esign")
+  const esign = await dispatchCdaSignerEsign(supabase, {
     brokerageId: cda.brokerage_id,
-    brokerUserId: auth.userId,
+    signerUserId: auth.userId,
+    signerRole: "broker",
     transactionId: cda.transaction_id,
     filledPdfUrl: (cda as { generated_pdf_url?: string | null }).generated_pdf_url ?? null,
     propertyAddress: (txnRow as { property_address?: string | null } | null)?.property_address ?? null,
@@ -670,11 +692,9 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
     status: "approved",
     action: "approved",
     notes:
-      esign.mode === "esign_auto"
-        ? `Broker signed the CDA via ${esign.provider} e-sign — authorized for delivery to the closing agent.`
-        : esign.mode === "esign_manual"
-          ? `Broker authorized the CDA (sign via ${esign.provider}) — authorized for delivery to the closing agent.`
-          : "Broker signed the CDA in-app — authorized for delivery to the closing agent.",
+      esign.mode === "esign"
+        ? `Broker signed the CDA via ${esign.provider} — authorized for delivery to the closing agent.`
+        : "Broker signed the CDA in-app — authorized for delivery to the closing agent.",
     actedBy: auth.userId,
   })
 

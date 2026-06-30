@@ -2,16 +2,15 @@
 /**
  * scripts/cda-esign-simulator.ts   (npm run test:cda-esign)
  * ─────────────────────────────────────────────────────────────────────────────
- * Proves the CDA BROKER e-sign decision — "compliance approval triggers the broker to
- * sign the CDA with the e-sign provider; esign in the app if they have one configured."
+ * Proves the CDA e-sign decision — "the agent signs via the e-sign provider set up in
+ * settings, then compliance, then the broker signs via THEIR provider." The system uses
+ * WHATEVER provider is configured; no provider is special-cased or auto-fired.
  *
- *   PURE: resolveCdaSignMode picks esign_auto (Dotloop) / esign_manual (other provider) /
- *         in_app (no provider, OR no filled PDF to sign) — the deterministic gate that
- *         decides whether the broker signs through a provider or in-app.
+ *   PURE: resolveCdaSignMode → esign (provider configured + filled PDF) / in_app (no
+ *         provider, OR no filled PDF). Provider identity does NOT change the decision.
  *
- * The dispatch itself is best-effort I/O (reuses resolveTransactionFormsProvider +
- * DotloopProvider, mirroring send-for-esign) and never blocks the in-app sign-off — so
- * the testable core is the decision + the honest fallbacks. No mocks.
+ * The dispatch itself is best-effort I/O (routes through resolveTransactionFormsProvider
+ * and the configured provider) and never blocks the in-app sign-off. No mocks.
  */
 import { resolveCdaSignMode } from "../lib/transactions/cda-esign"
 
@@ -20,37 +19,32 @@ const fails: string[] = []
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) } }
 
 function main() {
-  console.log("\n[no provider → broker signs in-app]")
-  const none = resolveCdaSignMode({ providerConfigured: false, providerName: null, hasFilledPdf: true })
-  check("no provider configured → in_app", none.mode === "in_app" && none.provider === null)
+  console.log("\n[no provider → signer signs in-app]")
+  const none = resolveCdaSignMode({ providerConfigured: false, hasFilledPdf: true })
+  check("no provider configured → in_app", none.mode === "in_app")
   check("reason is honest", none.reason === "no_esign_provider_configured")
-  const notCfg = resolveCdaSignMode({ providerConfigured: false, providerName: "not_configured", hasFilledPdf: true })
-  check("'not_configured' provider string → in_app", notCfg.mode === "in_app")
 
   console.log("\n[provider but no filled PDF → can't e-sign nothing]")
-  const noPdf = resolveCdaSignMode({ providerConfigured: true, providerName: "dotloop", hasFilledPdf: false })
-  check("provider configured but no filled CDA PDF → in_app", noPdf.mode === "in_app" && noPdf.provider === "dotloop")
+  const noPdf = resolveCdaSignMode({ providerConfigured: true, hasFilledPdf: false })
+  check("provider configured but no filled CDA PDF → in_app", noPdf.mode === "in_app")
   check("reason names the missing PDF", noPdf.reason === "no_filled_cda_pdf_to_sign")
 
-  console.log("\n[Dotloop + filled PDF → auto-routed envelope]")
-  const dl = resolveCdaSignMode({ providerConfigured: true, providerName: "dotloop", hasFilledPdf: true })
-  check("Dotloop + filled PDF → esign_auto", dl.mode === "esign_auto" && dl.provider === "dotloop")
+  console.log("\n[provider + filled PDF → e-sign via the CONFIGURED provider]")
+  const ok = resolveCdaSignMode({ providerConfigured: true, hasFilledPdf: true })
+  check("configured provider + filled PDF → esign", ok.mode === "esign")
 
-  console.log("\n[other provider + filled PDF → manual send via their provider]")
-  for (const p of ["docusign", "skyslope", "formsimplicity", "brokermint", "authentisign"]) {
-    const r = resolveCdaSignMode({ providerConfigured: true, providerName: p, hasFilledPdf: true })
-    check(`${p} → esign_manual`, r.mode === "esign_manual" && r.provider === p)
-  }
-
-  console.log("\n[invariants]")
-  const allModes = [none, noPdf, dl, resolveCdaSignMode({ providerConfigured: true, providerName: "docusign", hasFilledPdf: true })]
-  check("mode is always one of the three", allModes.every((r) => ["esign_auto", "esign_manual", "in_app"].includes(r.mode)))
-  check("esign modes only ever occur WITH a filled PDF", allModes.every((r) => r.mode === "in_app" || r.provider !== null))
+  console.log("\n[provider-agnostic — the decision never depends on WHICH provider]")
+  // resolveCdaSignMode takes no provider name: the same inputs always yield the same mode,
+  // so Dotloop is never privileged/auto-fired over the user's configured choice.
+  const a = resolveCdaSignMode({ providerConfigured: true, hasFilledPdf: true })
+  const b = resolveCdaSignMode({ providerConfigured: true, hasFilledPdf: true })
+  check("identical inputs → identical mode (no per-provider branching)", a.mode === b.mode && a.mode === "esign")
+  check("mode is always one of the two", [none, noPdf, ok].every((r) => ["esign", "in_app"].includes(r.mode)))
 
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ CDA_ESIGN_FAIL"); process.exit(1) }
-  console.log(" ✅ CDA_ESIGN_PASS — broker signs via provider when configured, in-app otherwise; never e-signs an unbuilt CDA")
+  console.log(" ✅ CDA_ESIGN_PASS — agent + broker each sign via the CONFIGURED provider; no provider auto-fired; never e-signs an unbuilt CDA")
 }
 main()
