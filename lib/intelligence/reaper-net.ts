@@ -134,6 +134,26 @@ export const REAPER_NET: ReaperEntry[] = [
     },
   },
   {
+    domain: "ad_action_unlaunched",
+    manager: "ads_manager",
+    lane: "proactive",
+    protects: "approved ad spend that never launched",
+    run: async (b, svc) => {
+      const { reapStuckAdActions } = await import("@/lib/ads/stuck-ad-action-reaper")
+      return norm(await reapStuckAdActions(b, svc))
+    },
+  },
+  {
+    domain: "recruit_gone_cold",
+    manager: "recruiting_manager",
+    lane: "proactive",
+    protects: "active recruits that stalled in the pipeline past their stage SLA",
+    run: async (b, svc) => {
+      const { reapStaleRecruits } = await import("@/lib/recruiting/stale-recruit-reaper")
+      return norm(await reapStaleRecruits(b, svc))
+    },
+  },
+  {
     domain: "manager_handoffs",
     manager: "data_steward",
     lane: "signals",
