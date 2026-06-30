@@ -42,6 +42,7 @@ import {
   History,
 } from "lucide-react"
 import { generateCDAPreview, submitCDA, approveCDA } from "@/lib/transactions/cda-workflow"
+import { CdaTemplateFieldsCard } from "./cda-template-fields-card"
 
 interface CDAWorkflowClientProps {
   transaction: {
@@ -384,6 +385,10 @@ export function CDAWorkflowClient({
                 )}
               </CardContent>
             </Card>
+
+            {/* The brokerage's OWN CDA form — auto-filled from the waterfall. Renders
+                only when the brokerage configured template-field bindings. */}
+            {cda?.id && <CdaTemplateFieldsCard cdaId={cda.id} />}
 
             {/* Commission Breakdown */}
             {distributions.length > 0 && (

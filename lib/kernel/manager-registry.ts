@@ -372,6 +372,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   billing_invoices: "finance_manager",
   billing_usage: "finance_manager",
   brokerage_cda_templates: "finance_manager",
+  brokerage_cda_template_fields: "finance_manager",
   brokerage_earnings: "finance_manager",
   brokerage_fee_types: "finance_manager",
   brokerage_form_library: "data_steward",
