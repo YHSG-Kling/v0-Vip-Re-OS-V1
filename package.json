@@ -320,6 +320,7 @@
     "test:standup-narrative": "tsx scripts/standup-narrative-simulator.ts",
     "test:commission-leak-reaper": "tsx scripts/commission-leak-reaper-simulator.ts",
     "test:compliance-flag-reaper": "tsx scripts/compliance-flag-reaper-simulator.ts",
+    "test:stuck-social-post-reaper": "tsx scripts/stuck-social-post-reaper-simulator.ts",
     "test:lifetime-segment": "tsx scripts/lifetime-segment-simulator.ts",
     "test:manager-outbound-eval": "tsx scripts/manager-outbound-eval-simulator.ts",
     "test:learning-outcomes": "tsx scripts/learning-outcomes-simulator.ts",

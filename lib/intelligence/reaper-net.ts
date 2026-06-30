@@ -124,6 +124,16 @@ export const REAPER_NET: ReaperEntry[] = [
     },
   },
   {
+    domain: "stuck_social_posts",
+    manager: "marketing_agent",
+    lane: "proactive",
+    protects: "scheduled posts that hung publishing or missed their slot",
+    run: async (b, svc) => {
+      const { reapStuckSocialPosts } = await import("@/lib/marketing/stuck-social-post-reaper")
+      return norm(await reapStuckSocialPosts(b, svc))
+    },
+  },
+  {
     domain: "manager_handoffs",
     manager: "data_steward",
     lane: "signals",
