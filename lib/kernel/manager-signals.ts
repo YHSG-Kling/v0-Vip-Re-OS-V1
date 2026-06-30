@@ -257,10 +257,10 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
     const welcome = await generateClientMessage({
       brokerageId: ctx.brokerageId, audience: "buyer",
-      purpose: "Warmly welcome a client into lifetime / past-client status right after their closing — you're now their ongoing home resource (annual value updates, trusted vendors whenever something needs fixing, a real person to call before any move). Genuine, celebratory, no pressure.",
+      purpose: "Warmly congratulate a client on their closing and welcome them into lifetime / past-client status — you're now their ongoing home resource (annual value updates, trusted vendors whenever something needs fixing, a real person to call before any move). Then GENTLY invite them, if they'd like, to share a quick testimonial in their portal — a few words or a short video — about their experience. Genuine, celebratory, absolutely no pressure.",
       fallback: {
         subject: "Congratulations — and welcome to the family",
-        body: "Congratulations on your closing! From here on I'm your home's ongoing resource — annual value updates, trusted vendors whenever something needs fixing, and a real person to call before any move. Welcome to the family.",
+        body: "Congratulations on your closing! From here on I'm your home's ongoing resource — annual value updates, trusted vendors whenever something needs fixing, and a real person to call before any move. And if you ever feel like it, you can share a few words or a short video about your experience right in your portal — it would mean the world. Welcome to the family.",
       },
     })
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")

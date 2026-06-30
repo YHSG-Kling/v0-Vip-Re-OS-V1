@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
+import { validateTestimonialSubmission, type TestimonialKind } from "@/lib/testimonials/testimonial-policy"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 // Previously this file was missing "use server" yet was imported from
@@ -47,6 +48,69 @@ async function requireContactAccess(contactId: string): Promise<
   }
 
   return { ok: false }
+}
+
+// ─── SUBMIT CLIENT TESTIMONIAL (text or video) ───────────────────────────────
+// The newly-closed / lifetime client leaves a testimonial IN THE PORTAL — a few words OR a short video —
+// that the agent can use in marketing. Captured to agent_reviews with is_published=false (the agent
+// approves before using). The agent is notified; a VIDEO testimonial is also handed to the Asset Manager
+// to become a Director marketing reel (Sphere → Asset Manager). Scoped to the contact themselves.
+export async function submitClientTestimonial(params: {
+  contactId: string
+  kind: TestimonialKind
+  body?: string | null
+  videoUrl?: string | null
+}): Promise<{ ok: boolean; error?: string }> {
+  const access = await requireContactAccess(params.contactId)
+  if (!access.ok || !access.isContactSelf) return { ok: false, error: "Not allowed" }
+
+  const valid = validateTestimonialSubmission({ kind: params.kind, body: params.body, videoUrl: params.videoUrl })
+  if (!valid.ok) return { ok: false, error: valid.reason }
+
+  const svc = createServiceClient()
+  const { data: contact } = await svc
+    .from("contacts").select("first_name, last_name, agent_id").eq("id", params.contactId).maybeSingle()
+  if (!contact) return { ok: false, error: "Contact not found" }
+
+  const reviewerName = [contact.first_name, contact.last_name].filter(Boolean).join(" ").trim() || "A client"
+  // Most-recent closed transaction (attribution; best-effort).
+  const { data: txn } = await svc
+    .from("transactions").select("id")
+    .eq("contact_id", params.contactId).eq("brokerage_id", access.brokerageId).eq("status", "closed")
+    .order("close_date", { ascending: false }).limit(1).maybeSingle()
+
+  const { error: insErr } = await svc.from("agent_reviews").insert({
+    brokerage_id:   access.brokerageId,
+    agent_id:       contact.agent_id ?? null,
+    contact_id:     params.contactId,
+    transaction_id: (txn as { id?: string } | null)?.id ?? null,
+    reviewer_name:  reviewerName,
+    kind:           params.kind,
+    review_text:    params.kind === "text" ? (valid.cleanBody ?? null) : null,
+    video_url:      params.kind === "video" ? ((params.videoUrl ?? "").trim() || null) : null,
+    // 'internal' = captured in-app (not a public Google/Zillow review); kind distinguishes text vs video.
+    platform:       "internal",
+    is_published:   false, // the agent approves before using it in marketing
+  })
+  if (insErr) return { ok: false, error: insErr.message }
+
+  // Surface to the agent so they can approve + use it (a video testimonial is the seed for a marketing
+  // reel — flagged for the Asset Manager handoff as a follow-up).
+  try {
+    const agent = contact.agent_id ? await resolveContactOwnerAgent(svc, contact.agent_id) : null
+    const agentUserId = (agent as { user_id?: string | null; id?: string | null } | null)?.user_id
+      ?? (agent as { id?: string | null } | null)?.id ?? null
+    if (agentUserId) {
+      await svc.from("notifications").insert({
+        user_id: agentUserId, brokerage_id: access.brokerageId, type: "client_testimonial_received",
+        title: params.kind === "video" ? "🎥 A client left you a video testimonial" : "⭐ A client left you a testimonial",
+        body: `${reviewerName} shared a ${params.kind} testimonial from their portal. Review and approve it to use in your marketing${params.kind === "video" ? " — and it can become a marketing reel." : "."}`,
+        entity_type: "contact", entity_id: params.contactId, priority: "normal", is_read: false,
+      }).then(() => {}, () => {})
+    }
+  } catch { /* notification is best-effort — never blocks the testimonial capture */ }
+
+  return { ok: true }
 }
 
 // ─── GET LIFETIME CONTEXT ────────────────────────────────────────────────────

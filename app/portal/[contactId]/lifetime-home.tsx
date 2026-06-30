@@ -6,6 +6,7 @@ import { CongratsCard } from "@/app/components/portal/lifetime/CongratsCard"
 import { MyHomeCard } from "@/app/components/portal/lifetime/MyHomeCard"
 import { EquityEstimateCard } from "@/app/components/portal/lifetime/EquityEstimateCard"
 import { ReferralAskCard } from "@/app/components/portal/lifetime/ReferralAskCard"
+import { TestimonialCard } from "@/app/components/portal/lifetime/TestimonialCard"
 import { NeighborhoodActivityCard } from "@/app/components/portal/lifetime/NeighborhoodActivityCard"
 import { RefinanceIndicatorCard } from "@/app/components/portal/lifetime/RefinanceIndicatorCard"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
@@ -237,6 +238,9 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
 
         {/* 5. Referral Ask Card */}
         <ReferralAskCard contactId={contactId} />
+
+        {/* 5b. Testimonial — a few words or a short video the agent can use in marketing */}
+        <TestimonialCard contactId={contactId} agentFirstName={agentName ? agentName.split(" ")[0] : null} />
 
         {/* 5b. Homeowner Toolkit — persona-filtered vendor marketplace
                 preview. Surfaces top curated forever-stage vendors with

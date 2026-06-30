@@ -308,6 +308,7 @@
     "test:stranded-offer-reaper": "tsx scripts/stranded-offer-reaper-simulator.ts",
     "test:lifetime-touchpoint-reaper": "tsx scripts/lifetime-touchpoint-reaper-simulator.ts",
     "test:lifetime-persona": "tsx scripts/lifetime-persona-resolution-simulator.ts",
+    "test:client-testimonial": "tsx scripts/client-testimonial-simulator.ts",
     "test:deal-type-resolver": "tsx scripts/deal-type-resolver-simulator.ts",
     "test:manager-outbound-eval": "tsx scripts/manager-outbound-eval-simulator.ts",
     "test:learning-outcomes": "tsx scripts/learning-outcomes-simulator.ts",
