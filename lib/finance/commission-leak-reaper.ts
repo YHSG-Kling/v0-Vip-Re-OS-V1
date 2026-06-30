@@ -1,9 +1,11 @@
 // ─── COMMISSION-LEAK REAPER (Finance Manager) ────────────────────────────────
-// Nothing-falls-through guard for brokerage MONEY: a deal that closed but never
-// got a commission recorded (the on-close calc failed silently — stage-progression
-// doesn't block the close on commission failure). Scans recently-closed
-// transactions, checks the canonical `commissions` table, and escalates ONCE per
-// deal so real revenue is never silently lost. Pure policy in commission-leak-policy.ts.
+// Nothing-falls-through guard for brokerage MONEY: a deal that closed but whose
+// commission the agent/broker can't SEE — no row in `agent_commissions`, the table
+// the earnings P&L dashboard actually reads. This catches both failure modes: the
+// on-close calc failing (stage-progression doesn't block the close on commission
+// failure) AND the engine's dashboard-bridge write failing — either way the agent's
+// commission would silently show $0. Scans recently-closed transactions and
+// escalates ONCE per deal. Pure policy in commission-leak-policy.ts.
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { classifyCommissionLeak, COMMISSION_LEAK_GRACE_DAYS } from "./commission-leak-policy"
@@ -42,9 +44,10 @@ export async function reapCommissionLeaks(
   for (const row of (rows ?? []) as Array<{ id: string; status: string | null; close_date: string | null; contact_id: string | null }>) {
     result.scanned++
 
-    // Canonical commission record present? (the engine writes `commissions` on close)
+    // Dashboard-visible commission record present? (agent_commissions is what the
+    // earnings P&L reads — its absence is the leak the agent actually feels.)
     const { data: comm } = await svc
-      .from("commissions")
+      .from("agent_commissions")
       .select("id")
       .eq("brokerage_id", brokerageId)
       .eq("transaction_id", row.id)

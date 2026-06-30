@@ -165,6 +165,42 @@ export async function validateAndPersist(
     throw new Error(`[commission-engine] Failed to insert distributions: ${distributionsError.message}`)
   }
 
+  // 2b. BRIDGE TO THE DASHBOARD/LIFECYCLE TABLE. The agent's earnings P&L dashboard
+  // (app/dashboard/financials/reports) reads `agent_commissions`, NOT the engine's
+  // `commissions` summary — so without this write a CLOSED deal's computed commission
+  // is invisible to the agent (shows $0) until someone manually re-enters it. Mirror
+  // the engine's numbers into agent_commissions (status 'pending', the start of the
+  // pending→approved→paid lifecycle). Idempotent per transaction so a manual entry or
+  // a calc re-run never double-counts; best-effort so a bridge failure never breaks the
+  // primary calc — the commission-leak reaper is the safety net that catches any miss.
+  try {
+    const { data: existingDash } = await supabase
+      .from('agent_commissions')
+      .select('id')
+      .eq('transaction_id', context.transactionId)
+      .limit(1)
+    if (!existingDash || existingDash.length === 0) {
+      // agent_commission & brokerage_commission are GENERATED columns
+      // (gross_commission × agent_split_percent). We can only set the inputs —
+      // so derive the split that reproduces the engine's exact agent net:
+      // gross × (agentNet/gross) = agentNet. Cap at [0,100] for safety.
+      const splitPercent = context.grossCommissionCents > 0
+        ? Math.min(100, Math.max(0, (context.agentFinalNetCents / context.grossCommissionCents) * 100))
+        : 0
+      await supabase.from('agent_commissions').insert({
+        transaction_id: context.transactionId,
+        brokerage_id: context.brokerageId,
+        agent_id: context.agentId,
+        gross_commission: centsToDollars(context.grossCommissionCents),
+        agent_split_percent: splitPercent,
+        status: 'pending',
+        close_date: new Date().toISOString(),
+      })
+    }
+  } catch (e) {
+    console.error('[commission-engine] agent_commissions dashboard-bridge insert failed:', e)
+  }
+
   // 3. Update cap tracking (fetch → add → update)
   if (context.capApplied || context.amountTowardsCap > 0) {
     // agent_cap_tracking has no is_active/updated_at — the active row is the one whose
