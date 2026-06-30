@@ -448,28 +448,12 @@ async function handleSellerToLifetimeTransition(
     })
     .eq("id", contactId)
 
-  // 2. Trigger post-close touchpoint sequence (3-day, 30-day, 6-month)
-  const closingDate = new Date()
-  const touchpoints = [
-    { type: "post_close_3_day",   daysAfter: 3,   channel: "video" },
-    { type: "post_close_30_day",  daysAfter: 30,  channel: "sms"   },
-    { type: "post_close_6_month", daysAfter: 180, channel: "email" },
-  ].map(({ type, daysAfter, channel }) => {
-    const d = new Date(closingDate)
-    d.setDate(d.getDate() + daysAfter)
-    return {
-      contact_id: contactId,
-      agent_id: agentId,
-      brokerage_id: brokerageId,
-      touchpoint_type: type,
-      channel,
-      scheduled_date: d.toISOString().split("T")[0],
-      related_transaction_id: null,
-      status: "scheduled",
-    }
-  })
-
-  await supabase.from("lifetime_customer_touchpoints").insert(touchpoints).then(() => {})
+  // 2. (CONSOLIDATED) The old fixed-calendar post-close sequence (3-day/30-day/6-month 'scheduled' rows)
+  //    is retired. Nothing delivered those rows — they sat orphaned (the 6-month never fired). Lifetime
+  //    nurture is now the canonical SITUATIONAL model: the newsletter (auto_lifetime) baseline + the
+  //    situational reel rail (stale-contact re-engagement → Asset Manager reel → Campaign Orchestrator →
+  //    portal CTA, on a LONG-HORIZON cadence) + the equity/anniversary/life-event triggers. The
+  //    lifetime-touchpoint reaper remains a safety net for any legacy 'scheduled' rows.
 
   // 3. Send portal message — brand-voiced via the AI gateway (them-first, Fair-Housing redrafted),
   //    with the canned line as the deterministic FALLBACK floor (the app's rule: client-facing copy is

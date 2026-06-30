@@ -230,6 +230,12 @@ async function main() {
   check("active transaction → ineligible", staleContactEligibility({ ...eligibleBase, hasActiveTransaction: true }, { now }).reason === "active_transaction")
   check("contacted 5 days ago (< 14) → not yet stale", staleContactEligibility({ ...eligibleBase, last_contacted_at: daysAgo(5, now).toISOString() }, { now }).reason === "not_yet_stale")
   check("custom staleDays=30: 20-days-ago → not yet stale", staleContactEligibility(eligibleBase, { now, staleDays: 30 }).reason === "not_yet_stale")
+  // LIFETIME / past clients are long-horizon — quiet for 20 days is NOT yet stale (60d threshold), so the
+  // generic re-engagement stays a light quarterly-ish touch; the same 20-day contact is stale for an
+  // active (14d) contact. Past the 60d threshold the lifetime client becomes eligible.
+  check("lifetime + 20 days ago → not yet stale (long-horizon 60d)", staleContactEligibility({ ...eligibleBase, is_lifetime: true }, { now }).reason === "not_yet_stale")
+  check("active + 20 days ago → stale/eligible (14d)", staleContactEligibility({ ...eligibleBase, is_lifetime: false }, { now }).eligible === true)
+  check("lifetime + 70 days ago → eligible (past 60d)", staleContactEligibility({ ...eligibleBase, last_contacted_at: daysAgo(70, now).toISOString(), is_lifetime: true }, { now }).eligible === true)
   // Precedence: a DNC contact that is also not-yet-stale reports dnc (hard exclusion first).
   check("precedence: dnc outranks not-yet-stale", staleContactEligibility({ ...eligibleBase, dnc_status: true, last_contacted_at: daysAgo(1, now).toISOString() }, { now }).reason === "dnc")
 

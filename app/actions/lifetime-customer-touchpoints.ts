@@ -30,47 +30,9 @@ async function resolveTouchpointActor(opts: TouchpointActorOpts | undefined) {
   return { supabase, agentId, brokerageId: agentRow?.brokerage_id ?? null }
 }
 
-// Schedule automatic touchpoints after transaction closes (sphere-of-influence retention sequence)
-export async function scheduleLifetimeCustomerTouchpoints(contactId: string, transactionId: string, closeDate: Date) {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  const agentId = await resolveAgentId(supabase, user.id)
-  if (!agentId) throw new Error("Agent profile not found")
-
-  const touchpointSchedule = [
-    { type: "post_close_3_day", daysAfter: 3, channel: "video" },
-    { type: "post_close_30_day", daysAfter: 30, channel: "sms" },
-    { type: "post_close_6_month", daysAfter: 180, channel: "email" },
-    { type: "home_anniversary", daysAfter: 365, channel: "video" },
-    { type: "referral_request", daysAfter: 18 * 30, channel: "sms" }, // 18 months
-  ]
-
-  const touchpoints = touchpointSchedule.map((schedule) => {
-    const scheduledDate = new Date(closeDate)
-    scheduledDate.setDate(scheduledDate.getDate() + schedule.daysAfter)
-
-    return {
-      contact_id: contactId,
-      agent_id: agentId,
-      touchpoint_type: schedule.type,
-      channel: schedule.channel,
-      scheduled_date: scheduledDate.toISOString().split("T")[0],
-      related_transaction_id: transactionId,
-      status: "scheduled",
-    }
-  })
-
-  const { error } = await supabase.from("lifetime_customer_touchpoints").insert(touchpoints)
-
-  if (error) throw error
-
-  revalidatePath("/lifetime-customers")
-  return { success: true }
-}
+// (REMOVED) scheduleLifetimeCustomerTouchpoints — the dead fixed-calendar scheduler. It had no callers
+// and created the orphaned 'scheduled' rows nothing delivered. Lifetime nurture is now the situational
+// model (newsletter baseline + the situational reel rail + equity/anniversary/life-event triggers).
 
 // Send anniversary message
 export async function sendAnniversaryMessage(contactId: string, yearsAgo: number, opts?: TouchpointActorOpts) {

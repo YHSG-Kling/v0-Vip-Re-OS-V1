@@ -20,6 +20,11 @@ const DAY_MS = 86_400_000
 
 // ── Defaults (overridable per brokerage via ai_isa_settings) ──────────────────
 export const DEFAULT_STALE_DAYS = 14
+// Lifetime / past clients are a LONG-HORIZON relationship — their primary nurture is the newsletter
+// baseline + the situational equity/anniversary/life-event triggers, so the generic re-engagement should
+// be a light QUARTERLY-ish touch, not the bi-weekly active-contact cadence. So a lifetime customer is
+// only "stale" after this many quiet days (the detector passes is_lifetime; default applies otherwise).
+export const LIFETIME_STALE_DAYS = 60
 export const DEFAULT_GHOSTED_DAYS = 21
 export const DEFAULT_MAX_BATCH = 50
 /** Active-cadence ceiling: after this many touches the ISA stops the AGGRESSIVE follow-up
@@ -304,6 +309,9 @@ export interface StaleEligibilityInput {
   deleted_at: string | null
   /** True when the contact has an open transaction (active/under_contract/closing/pending). */
   hasActiveTransaction: boolean
+  /** True for a lifetime / past client (the detector resolves it via contact_type). When set, the
+   *  long-horizon LIFETIME_STALE_DAYS threshold applies instead of the active-contact staleDays. */
+  is_lifetime?: boolean
 }
 
 export type StaleIneligibleReason =
@@ -333,7 +341,9 @@ export function staleContactEligibility(
   c: StaleEligibilityInput,
   opts: { now: Date; staleDays?: number },
 ): StaleEligibilityResult {
-  const staleDays = opts.staleDays ?? DEFAULT_STALE_DAYS
+  // Lifetime/past clients are long-horizon — only stale after the longer LIFETIME_STALE_DAYS, so the
+  // generic re-engagement stays a light quarterly-ish touch (newsletter + situational triggers lead).
+  const staleDays = c.is_lifetime ? LIFETIME_STALE_DAYS : (opts.staleDays ?? DEFAULT_STALE_DAYS)
   const lastMs = toMs(c.last_contacted_at)
   const daysSinceContact = lastMs === null ? 999 : Math.floor((opts.now.getTime() - lastMs) / DAY_MS)
 

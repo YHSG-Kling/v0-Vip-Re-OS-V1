@@ -19,6 +19,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { isLifetimeCustomerType } from '@/lib/contact-types'
 import {
   staleContactEligibility,
   DEFAULT_STALE_DAYS,
@@ -120,6 +121,8 @@ export async function detectStaleContacts(
         status:               c.status,
         deleted_at:           c.deleted_at,
         hasActiveTransaction: blockedIds.has(c.id),
+        // Past clients get the long-horizon threshold (quarterly-ish), not the bi-weekly active cadence.
+        is_lifetime:          isLifetimeCustomerType((c as { contact_type?: string | null }).contact_type),
       },
       { now: nowDate, staleDays },
     )
