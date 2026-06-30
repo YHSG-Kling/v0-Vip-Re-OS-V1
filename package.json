@@ -317,6 +317,7 @@
     "test:climate": "tsx scripts/climate-simulator.ts",
     "test:reaper-net": "tsx scripts/reaper-net-simulator.ts",
     "test:closing-overdue-reaper": "tsx scripts/closing-overdue-reaper-simulator.ts",
+    "test:standup-narrative": "tsx scripts/standup-narrative-simulator.ts",
     "test:lifetime-segment": "tsx scripts/lifetime-segment-simulator.ts",
     "test:manager-outbound-eval": "tsx scripts/manager-outbound-eval-simulator.ts",
     "test:learning-outcomes": "tsx scripts/learning-outcomes-simulator.ts",

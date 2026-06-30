@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { approveAgentAction, rejectAgentAction } from "@/app/actions/command-center"
+import { generateStandupAudio } from "@/app/actions/standup-audio"
 import type { CommandCenterData, CommandCenterAction, CommandCenterSession } from "@/lib/kernel/command-center"
 import { MANAGERS } from "@/lib/kernel/manager-registry"
 import { ManagerTalkFeed } from "./manager-talk-feed"
@@ -128,11 +129,14 @@ export function CommandCenterClient({
           the last 24h and what is waiting on a human. The governed-autonomy report. */}
       {data.standup.length > 0 && (
         <section className="space-y-2">
-          <div className="flex items-baseline justify-between">
+          <div className="flex items-baseline justify-between gap-3">
             <h2 className="text-lg font-semibold">Manager standup — last 24 hours</h2>
-            <span className="text-xs text-muted-foreground">
-              {data.standup.reduce((s, l) => s + l.needs_human, 0)} item{data.standup.reduce((s, l) => s + l.needs_human, 0) === 1 ? "" : "s"} need you
-            </span>
+            <div className="flex items-center gap-3">
+              <StandupAudioButton />
+              <span className="text-xs text-muted-foreground">
+                {data.standup.reduce((s, l) => s + l.needs_human, 0)} item{data.standup.reduce((s, l) => s + l.needs_human, 0) === 1 ? "" : "s"} need you
+              </span>
+            </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {data.standup.map((line) => (
@@ -699,5 +703,42 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
         </div>
       </div>
     </Card>
+  )
+}
+
+// "Hear the standup" — the broker plays their AI team's daily standup, read aloud in
+// their cloned/chosen voice (ElevenLabs). Falls back to showing the text brief when
+// TTS is unavailable. The "talk to your brokerage" differentiator, audio half.
+function StandupAudioButton() {
+  const [loading, setLoading] = useState(false)
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const [text, setText] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function play() {
+    setErr(null)
+    setLoading(true)
+    try {
+      const res = await generateStandupAudio()
+      if (!res.success) { setErr(res.error ?? "Could not generate the standup."); return }
+      setText(res.text ?? null)
+      if (res.audioDataUrl) setAudioUrl(res.audioDataUrl)
+      else setErr(res.error ?? "Audio unavailable — showing the brief.")
+    } catch {
+      setErr("Could not generate the standup.")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <Button size="sm" variant="outline" disabled={loading} onClick={play} title="Hear your AI team's standup read aloud">
+        {loading ? "…" : "▶ Hear the standup"}
+      </Button>
+      {audioUrl && <audio src={audioUrl} controls autoPlay className="h-8" />}
+      {text && <p className="max-w-md text-right text-[11px] text-muted-foreground">{text}</p>}
+      {err && <p className="text-[11px] text-destructive">{err}</p>}
+    </div>
   )
 }
