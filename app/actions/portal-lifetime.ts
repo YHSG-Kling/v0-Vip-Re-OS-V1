@@ -353,6 +353,40 @@ export async function setLifetimeSegment(params: {
     .eq("id", params.contactId)
     .eq("brokerage_id", access.brokerageId)
   if (error) return { ok: false, error: error.message }
+
+  // When a client becomes 'relocated', generate their portal welcome ONCE through
+  // the brand-voice gateway (NOT hardcoded) with a deterministic floor — and the
+  // gateway's Fair-Housing redraft keeps it neutral (never references age/health/
+  // why they moved). Stored on the contact so the portal reads it without an LLM
+  // call per render. Best-effort: a failure just leaves the card's built-in floor.
+  if (segment === "relocated") {
+    try {
+      const { data: c } = await svc.from("contacts")
+        .select("first_name, agent_id, metadata").eq("id", params.contactId).maybeSingle()
+      const agent = (c as { agent_id?: string | null } | null)?.agent_id
+        ? await resolveContactOwnerAgent(svc, (c as { agent_id?: string | null }).agent_id!)
+        : null
+      const agentFirst = (agent as { full_name?: string | null } | null)?.full_name?.split(" ")[0] ?? null
+      const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
+      const welcome = await generateClientMessage({
+        brokerageId: access.brokerageId,
+        audience: "seller",
+        purpose:
+          "Warmly reassure a PAST CLIENT who has moved out of our market that we're still their resource from afar. Make two offers, gently and with no pressure: (1) we'll personally connect them with a trusted, hand-picked agent in their NEW area, and (2) we'd be honored to help anyone they refer who's still local. Keep it short and human. NEVER mention or imply age, health, family status, retirement, or the reason they moved.",
+        recipientFirstName: (c as { first_name?: string | null } | null)?.first_name ?? null,
+        allowNumbers: false,
+        fallback: {
+          subject: "Wherever you are, you're still family",
+          body: `${agentFirst ? `${agentFirst} is` : "We're"} still here for you, even from a distance. If you're moving somewhere new, we'll connect you with a top agent in your new area — hand-picked, no cold searching. And if you know someone buying or selling back here, we'd be honored to take great care of them.`,
+        },
+      })
+      const meta = ((c as { metadata?: Record<string, unknown> } | null)?.metadata ?? {}) as Record<string, unknown>
+      await svc.from("contacts").update({
+        metadata: { ...meta, relocated_welcome: { subject: welcome.subject, body: welcome.body, generated: welcome.generated } },
+      }).eq("id", params.contactId).eq("brokerage_id", access.brokerageId)
+    } catch { /* floor lives in the card — never block the segment change */ }
+  }
+
   return { ok: true }
 }
 
@@ -428,13 +462,17 @@ export async function getLifetimeContext(contactId: string) {
       last_name,
       buyer_stage,
       agent_id,
-      lifetime_segment
+      lifetime_segment,
+      metadata
     `)
     .eq("id", contactId)
     .eq("brokerage_id", access.brokerageId)
     .maybeSingle()
 
   if (!contact) return null
+
+  // Brand-voiced relocated welcome (generated at segment-set, floor in the card).
+  const relocatedWelcome = ((contact as { metadata?: { relocated_welcome?: { subject?: string; body?: string } } | null }).metadata?.relocated_welcome) ?? null
 
   // Resolve agent via kernel identity function
   const agentInfo = contact.agent_id
@@ -547,6 +585,7 @@ export async function getLifetimeContext(contactId: string) {
     contact,
     agent: agentInfo,
     transaction,
+    relocatedWelcome,
     homeValueEstimate,
     homeValueSeries,
     touchpoints: touchpoints || [],

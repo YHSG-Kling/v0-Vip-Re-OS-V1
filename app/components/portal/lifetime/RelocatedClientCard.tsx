@@ -19,10 +19,17 @@ import { requestRelocationReferral } from "@/app/actions/portal-lifetime"
 export function RelocatedClientCard({
   contactId,
   agentFirstName,
+  welcome,
 }: {
   contactId: string
   agentFirstName?: string | null
+  /** Brand-voiced welcome generated through the gateway (with Fair-Housing redraft).
+   *  When absent, the hardcoded copy below is the deterministic floor. */
+  welcome?: { subject?: string | null; body?: string | null } | null
 }) {
+  const heading = welcome?.subject?.trim() || "Wherever you are, you're still family"
+  const subhead = welcome?.body?.trim()
+    || `${agentFirstName ? `${agentFirstName} is` : "Your agent is"} still here for you — even from a distance. Two ways we can keep helping:`
   const [area, setArea] = useState("")
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState(false)
@@ -42,11 +49,9 @@ export function RelocatedClientCard({
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center gap-2">
           <Heart className="h-4 w-4 text-rose-600" />
-          Wherever you are, you're still family
+          {heading}
         </CardTitle>
-        <p className="text-xs text-muted-foreground">
-          {agentFirstName ? `${agentFirstName} is` : "Your agent is"} still here for you — even from a distance. Two ways we can keep helping:
-        </p>
+        <p className="text-xs text-muted-foreground">{subhead}</p>
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Referral-out: an agent in their new area */}

@@ -206,7 +206,11 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
       {/* Relocated past clients (left our market): referral-out + stay-in-touch
           lane instead of equity/maintenance/next-move they can't use. */}
       {plan.showRelocationReferral && (
-        <RelocatedClientCard contactId={contactId} agentFirstName={agentName ? agentName.split(" ")[0] : null} />
+        <RelocatedClientCard
+          contactId={contactId}
+          agentFirstName={agentName ? agentName.split(" ")[0] : null}
+          welcome={context.relocatedWelcome}
+        />
       )}
 
       {/* Ask your home anything — self-serve AI scoped to this home, compliance-
