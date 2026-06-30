@@ -13,17 +13,19 @@
 // PURE — no I/O. The handler resolves the assigned-agent presenter + commissions the reel.
 
 import type { SituationKind, VideoSituation } from "@/lib/video/video-director"
+import { isLifetimeCustomerType } from "@/lib/contact-types"
 
 export type ContactReelPersona = "buyer" | "seller" | "both" | "lifetime"
 
 /** Map a contacts.contact_type to the reel persona (default buyer). */
 export function contactReelPersona(contactType: string | null | undefined): ContactReelPersona {
-  switch ((contactType ?? "").toLowerCase()) {
-    case "seller":   return "seller"
-    case "both":     return "both"
-    case "lifetime": return "lifetime"
-    default:         return "buyer"
-  }
+  const t = (contactType ?? "").toLowerCase()
+  if (t === "seller") return "seller"
+  if (t === "both") return "both"
+  // 'lifetime_customer' is the canonical past-client type (migration 433). isLifetimeCustomerType matches
+  // it (+ legacy) so a past client gets the lifetime/anniversary reel — not the default buyer 'explainer'.
+  if (isLifetimeCustomerType(t)) return "lifetime"
+  return "buyer"
 }
 
 /** The Director SituationKind that fits each contact persona. */

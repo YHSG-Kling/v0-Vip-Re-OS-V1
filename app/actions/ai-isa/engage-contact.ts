@@ -35,6 +35,7 @@ import { dispatchEmail, dispatchSms } from '@/lib/providers/dispatch'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import { emitLifecycleEvent } from '@/lib/kernel/helpers'
 import { buildPersonalizationFacts, buildDeterministicCopy } from '@/lib/ai-isa/personalize-outreach'
+import { isLifetimeCustomerType } from '@/lib/contact-types'
 import { resolveContactChannel } from '@/lib/ai-isa/contact-channel-policy'
 import type { MessageType, Persona } from '@/lib/kernel/types'
 
@@ -175,7 +176,7 @@ export async function engageContact(
           const { buildSituationalPortalMessage } = await import('@/lib/ai-isa/situational-portal-message')
           const portalPersona = contact.contact_type === 'seller' ? 'seller'
             : contact.contact_type === 'both' ? 'both'
-            : contact.contact_type === 'lifetime' ? 'lifetime' : 'buyer'
+            : isLifetimeCustomerType(contact.contact_type) ? 'lifetime' : 'buyer'
           const portalStage = (contact.buyer_stage as string | null) ?? (contact.motivation_type as string | null) ?? null
           const portalFallback = buildSituationalPortalMessage({
             firstName: contact.first_name || 'there', persona: portalPersona, stage: portalStage,
@@ -701,7 +702,7 @@ async function tryVoiceDrop(
     const { buildSituationalVoicemailScript } = await import('@/lib/ai-isa/situational-voicemail')
     const side = contact.contact_type === 'seller' ? 'seller'
       : contact.contact_type === 'both' ? 'both'
-      : contact.contact_type === 'lifetime' ? 'past_client' : 'buyer'
+      : isLifetimeCustomerType(contact.contact_type) ? 'past_client' : 'buyer'
     const stageHint = (contact.buyer_stage as string | null) ?? (contact.motivation_type as string | null) ?? null
     const fallbackVm = buildSituationalVoicemailScript({
       firstName: contact.first_name || 'there', side, stage: stageHint,

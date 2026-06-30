@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import { STAGE_TRANSITIONS, CRITICAL_MILESTONES, TransactionStage, STAGE_TO_STATUS_MAP } from "./transaction-stages"
 import { getMilestones } from "./milestone-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
@@ -257,12 +258,14 @@ export async function advanceStage(params: {
       .eq("brokerage_id", params.brokerageId)
       .maybeSingle()
 
-    // 2. Update seller contact_type to 'lifetime' so they enter the past-client journey
+    // 2. Update seller contact_type to the CANONICAL lifetime_customer (migration 433) so they enter the
+    //    past-client journey AND every contact_type reader (reel persona, referral radar, portal role)
+    //    recognizes them. Writing the legacy 'lifetime' here drifted from the listing close path.
     if (closedTxn?.seller_contact_id) {
       await supabase
         .from("contacts")
         .update({
-          contact_type: "lifetime",
+          contact_type: LIFETIME_CUSTOMER_TYPE,
           updated_at: new Date().toISOString(),
         })
         .eq("id", closedTxn.seller_contact_id)
