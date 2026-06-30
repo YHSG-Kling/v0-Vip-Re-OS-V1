@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Loader2, Lock, FileText, FileDown } from "lucide-react"
+import { Loader2, FileText, FileDown } from "lucide-react"
 import { getCdaFormFieldsAction, saveCdaFieldInputsAction, generateFilledCdaPdfAction } from "@/app/actions/cda-template-field-actions"
 
 interface ResolvedField {
@@ -29,6 +29,9 @@ export function CdaTemplateFieldsCard({ cdaId }: { cdaId: string }) {
   const [fields, setFields] = useState<ResolvedField[]>([])
   const [missing, setMissing] = useState<string[]>([])
   const [inputs, setInputs] = useState<Record<string, string>>({})
+  // The calculated defaults as loaded — we only persist fields the agent actually CHANGED,
+  // so unchanged fields keep auto-filling from the live transaction money terms.
+  const [initial, setInitial] = useState<Record<string, string>>({})
   const [pending, startTransition] = useTransition()
   const [saved, setSaved] = useState(false)
   const [generating, setGenerating] = useState(false)
@@ -44,8 +47,9 @@ export function CdaTemplateFieldsCard({ cdaId }: { cdaId: string }) {
         setFields(res.resolution.fields as ResolvedField[])
         setMissing(res.resolution.missingRequired)
         const seed: Record<string, string> = {}
-        for (const f of res.resolution.fields) if (f.editable && f.value != null) seed[f.field_key] = String(f.value)
+        for (const f of res.resolution.fields) if (f.value != null) seed[f.field_key] = String(f.value)
         setInputs(seed)
+        setInitial(seed)
       }
       setLoading(false)
     })
@@ -54,11 +58,18 @@ export function CdaTemplateFieldsCard({ cdaId }: { cdaId: string }) {
 
   function save() {
     setSaved(false)
+    // Persist only the fields the agent actually changed from the calculated default.
+    const changed: Record<string, string> = {}
+    for (const [k, v] of Object.entries(inputs)) if ((v ?? "") !== (initial[k] ?? "")) changed[k] = v
     startTransition(async () => {
-      const res = await saveCdaFieldInputsAction({ cdaId, agentInputs: inputs })
+      const res = await saveCdaFieldInputsAction({ cdaId, agentInputs: changed })
       if (res.success) {
         setFields(res.resolution.fields as ResolvedField[])
         setMissing(res.resolution.missingRequired)
+        const seed: Record<string, string> = {}
+        for (const f of res.resolution.fields) if (f.value != null) seed[f.field_key] = String(f.value)
+        setInputs(seed)
+        setInitial(seed)
         setSaved(true)
       }
     })
@@ -85,8 +96,6 @@ export function CdaTemplateFieldsCard({ cdaId }: { cdaId: string }) {
   // No template-field bindings configured → nothing to render (the tally view still shows).
   if (!hasTemplate) return null
 
-  const editable = fields.filter((f) => f.editable)
-
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -95,33 +104,34 @@ export function CdaTemplateFieldsCard({ cdaId }: { cdaId: string }) {
           Your brokerage&apos;s CDA form
         </CardTitle>
         <p className="text-xs text-muted-foreground">
-          Auto-filled from the commission waterfall and the transaction. Fill in any remaining fields, then save.
+          Pre-filled from your contracted terms and the final transaction money. Edit any field if needed, then save.
         </p>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="grid gap-3 sm:grid-cols-2">
-          {fields.map((f) => (
-            <div key={f.field_key} className="space-y-1">
-              <Label className="text-xs flex items-center gap-1">
-                {f.label}
-                {!f.editable && <Lock className="h-3 w-3 text-muted-foreground" />}
-                {missing.includes(f.field_key) && <span className="text-destructive">*</span>}
-              </Label>
-              {f.editable ? (
+          {fields.map((f) => {
+            const edited = (inputs[f.field_key] ?? "") !== (initial[f.field_key] ?? "")
+            const autoFilled = f.source !== "agent_input"
+            return (
+              <div key={f.field_key} className="space-y-1">
+                <Label className="text-xs flex items-center gap-1">
+                  {f.label}
+                  {autoFilled && !edited && <span className="text-[10px] text-muted-foreground">auto</span>}
+                  {edited && <span className="text-[10px] text-amber-600">edited</span>}
+                  {missing.includes(f.field_key) && <span className="text-destructive">*</span>}
+                </Label>
                 <Input
                   value={inputs[f.field_key] ?? ""}
                   onChange={(e) => setInputs((p) => ({ ...p, [f.field_key]: e.target.value }))}
-                  placeholder={f.field_type === "currency" ? "$" : ""}
+                  placeholder={f.field_type === "currency" ? "$" : f.field_type === "percent" ? "%" : ""}
                   disabled={pending}
                   className={missing.includes(f.field_key) ? "border-destructive" : ""}
                 />
-              ) : (
-                <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm">{f.formatted || "—"}</p>
-              )}
-            </div>
-          ))}
+              </div>
+            )
+          })}
         </div>
-        {editable.length > 0 && (
+        {fields.length > 0 && (
           <div className="flex items-center gap-3">
             <Button size="sm" onClick={save} disabled={pending}>
               {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save form fields"}

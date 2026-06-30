@@ -48,9 +48,16 @@ function main() {
   check("property filled from transaction", get("property").value === "123 Oak St, Austin, TX")
   check("close date formatted", get("close").formatted.includes("2026"))
   check("static value resolved", get("brokerage_name").value === "Acme Realty")
-  check("waterfall/transaction/static fields are LOCKED (not editable)", !get("agent_comm").editable && !get("property").editable && !get("brokerage_name").editable)
-  check("agent_input field IS editable", get("notes").editable)
+  check("EVERY field is editable (agent can change any before save + e-sign)", r.fields.every((f) => f.editable))
   check("fields sorted by display_order", r.fields[0].field_key === "property" && r.fields[r.fields.length - 1].field_key === "notes")
+
+  console.log("\n[agent override wins over the calculated default]")
+  const overridden = resolveCdaTemplateFields(defs, { ...ctx, agentInputs: { agent_comm: "$13,500", split: "67.5%", property: "456 Elm St" } })
+  const og = (k: string) => overridden.fields.find((f) => f.field_key === k)!
+  check("currency override parsed ($13,500 → 13500) + reformatted", og("agent_comm").value === 13500 && og("agent_comm").formatted === "$13,500.00")
+  check("percent override parsed (67.5% → 67.5)", og("split").value === 67.5 && og("split").formatted === "67.5%")
+  check("text override replaces the transaction value", og("property").value === "456 Elm St")
+  check("un-overridden fields still auto-fill from the source", og("brokerage_name").value === "Acme Realty")
 
   console.log("\n[required agent input gating]")
   check("empty required agent input → flagged missing", r.missingRequired.includes("notes"))

@@ -71,6 +71,17 @@ function fmtDate(v: string | number | null | undefined): string {
   return new Date(t).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })
 }
 
+// Coerce an agent-typed override back to the field's underlying value. Currency/percent
+// inputs may carry "$", ",", "%" or spaces ("$14,500" / "70%") — strip to a clean number so
+// the override formats identically to a calculated value. Text/date pass through verbatim.
+function coerceTyped(raw: string, type: CdaFieldType): string | number | null {
+  if (type === "currency" || type === "percent") {
+    const n = Number(raw.replace(/[^0-9.\-]/g, ""))
+    return Number.isFinite(n) && raw.replace(/[^0-9.\-]/g, "") !== "" ? n : null
+  }
+  return raw
+}
+
 function format(value: string | number | null, type: CdaFieldType): string {
   if (type === "currency") return fmtCurrency(typeof value === "number" ? value : value == null ? null : Number(value))
   if (type === "percent") return fmtPercent(typeof value === "number" ? value : value == null ? null : Number(value))
@@ -89,33 +100,38 @@ export function resolveCdaTemplateFields(
   const ordered = [...defs].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0))
 
   for (const def of ordered) {
-    let value: string | number | null = null
-    let editable = false
-
+    // 1. The calculated/auto-fill default from the field's source (final transaction money
+    //    terms for waterfall/transaction; the static value; nothing for a pure agent input).
+    let sourceValue: string | number | null = null
     switch (def.source) {
       case "waterfall": {
         const raw = def.source_key ? ctx.waterfall[def.source_key] : undefined
-        value = typeof raw === "number" && Number.isFinite(raw) ? raw : null
+        sourceValue = typeof raw === "number" && Number.isFinite(raw) ? raw : null
         break
       }
       case "transaction": {
         const raw = def.source_key ? ctx.transaction[def.source_key] : undefined
-        value = raw == null ? null : raw
+        sourceValue = raw == null ? null : raw
         break
       }
       case "static": {
-        value = def.static_value ?? null
+        sourceValue = def.static_value ?? null
         break
       }
-      case "agent_input": {
-        editable = true
-        const raw = ctx.agentInputs[def.field_key]
-        value = raw == null || raw === "" ? null : raw
-        if (def.required && (value == null || String(value).trim() === "")) {
-          missingRequired.push(def.field_key)
-        }
+      case "agent_input":
+        sourceValue = null
         break
-      }
+    }
+
+    // 2. The agent can change ANY field before saving the PDF + e-signing — so EVERY field
+    //    is editable, and an agent override (when present) wins over the calculated default.
+    const override = ctx.agentInputs[def.field_key]
+    const hasOverride = override != null && String(override).trim() !== ""
+    const value = hasOverride ? coerceTyped(String(override), def.field_type) : sourceValue
+
+    // 3. Required fields that end up empty block submission.
+    if (def.required && (value == null || String(value).trim() === "")) {
+      missingRequired.push(def.field_key)
     }
 
     fields.push({
@@ -124,7 +140,7 @@ export function resolveCdaTemplateFields(
       source: def.source,
       value,
       formatted: format(value, def.field_type),
-      editable,
+      editable: true,
       field_type: def.field_type,
       pdf_field: def.pdf_field ?? null,
     })
