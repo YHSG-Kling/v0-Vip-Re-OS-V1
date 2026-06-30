@@ -18,9 +18,9 @@ const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ $
 
 async function main() {
   console.log("\n[registry shape]")
-  check("net has 11 registered reapers", REAPER_NET.length === 11)
+  check("net has 12 registered reapers", REAPER_NET.length === 12)
   const domains = REAPER_NET.map((e) => e.domain)
-  for (const d of ["stale_video_workflows", "stale_workflow_runs", "stranded_offers", "closing_overdue", "lifetime_touchpoints", "commission_unrecorded", "compliance_flags_stuck", "stuck_social_posts", "ad_action_unlaunched", "recruit_gone_cold", "manager_handoffs"]) {
+  for (const d of ["stale_video_workflows", "stale_workflow_runs", "stranded_offers", "closing_overdue", "lifetime_touchpoints", "commission_unrecorded", "compliance_flags_stuck", "stuck_social_posts", "ad_action_unlaunched", "recruit_gone_cold", "cda_undelivered", "manager_handoffs"]) {
     check(`domain present: ${d}`, domains.includes(d))
   }
   check("every entry has a run thunk + protects copy", REAPER_NET.every((e) => typeof e.run === "function" && e.protects.length > 0))
@@ -29,7 +29,7 @@ async function main() {
   console.log("\n[lanes partition cleanly — no double-firing]")
   const proactive = REAPER_NET.filter((e) => e.lane === "proactive")
   const signals = REAPER_NET.filter((e) => e.lane === "signals")
-  check("10 proactive-lane reapers", proactive.length === 10)
+  check("11 proactive-lane reapers", proactive.length === 11)
   check("1 signals-lane reaper (the bus handoff reaper)", signals.length === 1)
   check("signals lane is exactly manager_handoffs", signals[0]?.domain === "manager_handoffs")
   check("lanes are disjoint (every entry in exactly one lane)", proactive.length + signals.length === REAPER_NET.length)
@@ -46,7 +46,7 @@ async function main() {
   check("effective coverage is now FULL 13/13", cov.effectiveCoveredManagers.length === 13)
   check("ZERO uncovered managers — full reaper coverage", cov.uncoveredManagers.length === 0)
   check("uncovered managers are genuinely unregistered", cov.uncoveredManagers.every((m) => !managersUnderReaperCoverage().includes(m)))
-  check("coverage domains list = 11", cov.domains.length === 11)
+  check("coverage domains list = 12", cov.domains.length === 12)
 
   // ── LIVE LAYER (creds-gated): ledger round-trip ──
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL

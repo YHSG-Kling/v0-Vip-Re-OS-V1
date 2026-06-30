@@ -94,6 +94,16 @@ export const REAPER_NET: ReaperEntry[] = [
     },
   },
   {
+    domain: "cda_undelivered",
+    manager: "deal_coordinator",
+    lane: "proactive",
+    protects: "approved CDAs that never reached title (funds can't disburse)",
+    run: async (b, svc) => {
+      const { reapUndeliveredCdas } = await import("@/lib/transactions/cda-delivery-reaper")
+      return norm(await reapUndeliveredCdas(b, svc))
+    },
+  },
+  {
     domain: "lifetime_touchpoints",
     manager: "sphere_of_influence",
     lane: "proactive",
