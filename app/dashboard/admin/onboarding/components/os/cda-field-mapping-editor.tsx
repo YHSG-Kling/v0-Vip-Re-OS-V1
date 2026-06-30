@@ -94,6 +94,7 @@ export function CdaFieldMappingEditor({
             static_value: f.static_value ?? null,
             required: !!f.required,
             display_order: f.display_order ?? i,
+            pdf_field: f.pdf_field ?? undefined,
           })),
         )
       }
@@ -161,6 +162,7 @@ export function CdaFieldMappingEditor({
           static_value: r.source === "static" ? r.static_value ?? null : null,
           required: r.required,
           display_order: i,
+          pdf_field: r.pdf_field ?? null,
         })),
       })
       if (res.success) {

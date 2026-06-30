@@ -46,7 +46,7 @@ async function loadDefs(supabase: Awaited<ReturnType<typeof createClient>>, temp
   if (!templateId) return []
   const { data } = await supabase
     .from("brokerage_cda_template_fields")
-    .select("field_key, label, source, source_key, field_type, static_value, required, display_order")
+    .select("field_key, label, source, source_key, field_type, static_value, required, display_order, pdf_field")
     .eq("template_id", templateId)
     .order("display_order", { ascending: true })
   return (data ?? []) as CdaFieldDef[]
@@ -197,10 +197,96 @@ export async function saveCdaTemplateFieldDefsAction(input: {
     static_value: f.static_value ?? null,
     required: !!f.required,
     display_order: f.display_order ?? i,
+    pdf_field: f.pdf_field ?? null,
   }))
   if (rows.length > 0) {
     const { error } = await supabase.from("brokerage_cda_template_fields").insert(rows)
     if (error) return { success: false, error: error.message }
   }
   return { success: true, count: rows.length }
+}
+
+/**
+ * GENERATE the filled CDA PDF — the real artifact. Resolve the brokerage form fields
+ * against the live waterfall + transaction, then write those values onto the brokerage's
+ * actual CDA PDF (its AcroForm fields, targeted by name) and store the filled PDF on the
+ * CDA so it can be e-signed and delivered to title. Grounded: only fields with a real
+ * AcroForm target + a non-empty resolved value are written (buildCdaFillValues); a
+ * requested field the PDF lacks comes back in `skipped`, never invented.
+ */
+export async function generateFilledCdaPdfAction(input: { cdaId: string }): Promise<
+  | { success: true; url: string; filled: number; skipped: string[]; unmapped: string[] }
+  | { success: false; error: string }
+> {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false, error: "unauthenticated" }
+
+  const { data: cda } = await supabase
+    .from("closing_disclosure_agreement")
+    .select("id, transaction_id, brokerage_id, cda_template_id, gross_commission, agent_net, brokerage_net, field_values")
+    .eq("id", input.cdaId)
+    .maybeSingle()
+  if (!cda || cda.brokerage_id !== auth.brokerageId) return { success: false, error: "not_found" }
+
+  const templateId = (cda as { cda_template_id?: string | null }).cda_template_id ?? null
+  if (!templateId) return { success: false, error: "no_template" }
+
+  const { data: template } = await supabase
+    .from("brokerage_cda_templates")
+    .select("id, brokerage_id, pdf_url")
+    .eq("id", templateId)
+    .maybeSingle()
+  if (!template || template.brokerage_id !== auth.brokerageId) return { success: false, error: "template_not_found" }
+  if (!template.pdf_url) return { success: false, error: "no_pdf" }
+
+  // Resolve the form against the live waterfall + transaction.
+  const defs = await loadDefs(supabase, templateId)
+  if (defs.length === 0) return { success: false, error: "no_field_bindings" }
+  const ctx = await buildContext(supabase, cda as any)
+  const resolution = resolveCdaTemplateFields(defs, ctx)
+
+  const { buildCdaFillValues } = await import("@/lib/transactions/cda-pdf-fill")
+  const { fillPdfForm } = await import("@/lib/forms/pdf-form-fill")
+  const { put } = await import("@vercel/blob")
+
+  const plan = buildCdaFillValues(resolution.fields)
+  if (plan.values.length === 0) return { success: false, error: "nothing_to_fill" }
+
+  // Fetch the brokerage template PDF + write the resolved values onto its AcroForm fields.
+  let filledBytes: Uint8Array
+  let filled: number
+  let skipped: string[]
+  try {
+    const res = await fetch(template.pdf_url)
+    if (!res.ok) return { success: false, error: `pdf_fetch_failed_${res.status}` }
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    const result = await fillPdfForm(bytes, plan.values, { flatten: false })
+    filledBytes = result.bytes
+    filled = result.filled.length
+    skipped = result.skipped
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? `pdf_fill_failed: ${e.message}` : "pdf_fill_failed" }
+  }
+
+  // Store the filled PDF + record it on the CDA.
+  let url: string
+  try {
+    const blob = await put(`cda-filled/${cda.id}-${cda.transaction_id}.pdf`, Buffer.from(filledBytes), {
+      access: "public",
+      contentType: "application/pdf",
+      addRandomSuffix: true,
+    })
+    url = blob.url
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? `pdf_store_failed: ${e.message}` : "pdf_store_failed" }
+  }
+
+  await supabase
+    .from("closing_disclosure_agreement")
+    .update({ generated_pdf_url: url, generated_pdf_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq("id", cda.id)
+
+  revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
+  return { success: true, url, filled, skipped, unmapped: plan.unmapped }
 }

@@ -22,6 +22,8 @@ export interface CdaFieldDef {
   static_value?: string | null
   required?: boolean | null
   display_order?: number | null
+  /** the exact AcroForm field name on the brokerage PDF this binding fills (null = no PDF target). */
+  pdf_field?: string | null
 }
 
 export interface CdaResolveContext {
@@ -44,6 +46,8 @@ export interface ResolvedCdaField {
   /** Only agent_input fields are editable; waterfall/transaction/static are locked. */
   editable: boolean
   field_type: CdaFieldType
+  /** the AcroForm field name this resolves into on the brokerage PDF (for fill). */
+  pdf_field: string | null
 }
 
 export interface CdaFieldResolution {
@@ -122,6 +126,7 @@ export function resolveCdaTemplateFields(
       formatted: format(value, def.field_type),
       editable,
       field_type: def.field_type,
+      pdf_field: def.pdf_field ?? null,
     })
   }
 

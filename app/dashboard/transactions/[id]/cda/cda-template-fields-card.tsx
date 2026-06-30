@@ -10,8 +10,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Loader2, Lock, FileText } from "lucide-react"
-import { getCdaFormFieldsAction, saveCdaFieldInputsAction } from "@/app/actions/cda-template-field-actions"
+import { Loader2, Lock, FileText, FileDown } from "lucide-react"
+import { getCdaFormFieldsAction, saveCdaFieldInputsAction, generateFilledCdaPdfAction } from "@/app/actions/cda-template-field-actions"
 
 interface ResolvedField {
   field_key: string
@@ -31,6 +31,9 @@ export function CdaTemplateFieldsCard({ cdaId }: { cdaId: string }) {
   const [inputs, setInputs] = useState<Record<string, string>>({})
   const [pending, startTransition] = useTransition()
   const [saved, setSaved] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null)
+  const [genError, setGenError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -59,6 +62,21 @@ export function CdaTemplateFieldsCard({ cdaId }: { cdaId: string }) {
         setSaved(true)
       }
     })
+  }
+
+  async function generatePdf() {
+    setGenError(null)
+    setGenerating(true)
+    try {
+      const res = await generateFilledCdaPdfAction({ cdaId })
+      if (res.success) {
+        setPdfUrl(res.url)
+      } else {
+        setGenError(res.error)
+      }
+    } finally {
+      setGenerating(false)
+    }
   }
 
   if (loading) {
@@ -112,6 +130,21 @@ export function CdaTemplateFieldsCard({ cdaId }: { cdaId: string }) {
             {saved && missing.length === 0 && <span className="text-xs text-emerald-600">Saved</span>}
           </div>
         )}
+
+        {/* Generate the brokerage's actual CDA PDF, filled from these values. */}
+        <div className="flex items-center gap-3 border-t pt-3">
+          <Button size="sm" variant="outline" onClick={generatePdf} disabled={generating || missing.length > 0}>
+            {generating ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <FileDown className="h-4 w-4 mr-2" />}
+            Generate filled CDA PDF
+          </Button>
+          {missing.length > 0 && <span className="text-xs text-muted-foreground">Fill required fields first</span>}
+          {pdfUrl && (
+            <a href={pdfUrl} target="_blank" rel="noreferrer" className="text-xs text-indigo-600 underline">
+              Open filled CDA
+            </a>
+          )}
+          {genError && <span className="text-xs text-destructive">{genError === "no_field_bindings" ? "No field mapping configured" : genError === "nothing_to_fill" ? "No mapped values to write" : genError}</span>}
+        </div>
       </CardContent>
     </Card>
   )
