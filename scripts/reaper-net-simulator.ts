@@ -39,7 +39,12 @@ async function main() {
   check("totalManagers = 13", cov.totalManagers === 13)
   check("covered managers include deal_coordinator (2 domains)", cov.coveredManagers.includes("deal_coordinator"))
   check("covered incl finance + compliance", ["asset_manager", "campaign_orchestrator", "sphere_of_influence", "data_steward", "finance_manager", "compliance_officer"].every((m) => cov.coveredManagers.includes(m as any)))
-  check("uncovered + covered = all 13 (honest, no overlap)", cov.coveredManagers.length + cov.uncoveredManagers.length === 13)
+  check("predictor-backed incl shopping + listing", ["shopping_agent", "listing_concierge"].every((m) => cov.predictorBackedManagers.includes(m as any)))
+  check("predictor-backed are NOT double-counted as dedicated", cov.predictorBackedManagers.every((m) => !cov.coveredManagers.includes(m)))
+  check("effective coverage = dedicated ∪ predictor-backed", cov.effectiveCoveredManagers.length === new Set([...cov.coveredManagers, ...cov.predictorBackedManagers]).size)
+  check("effective + uncovered = all 13 (honest, no overlap)", cov.effectiveCoveredManagers.length + cov.uncoveredManagers.length === 13)
+  check("effective coverage is now 10/13", cov.effectiveCoveredManagers.length === 10)
+  check("real remaining gaps = marketing/ads/recruiting", ["marketing_agent", "ads_manager", "recruiting_manager"].every((m) => cov.uncoveredManagers.includes(m as any)))
   check("uncovered managers are genuinely unregistered", cov.uncoveredManagers.every((m) => !managersUnderReaperCoverage().includes(m)))
   check("coverage domains list = 8", cov.domains.length === 8)
 

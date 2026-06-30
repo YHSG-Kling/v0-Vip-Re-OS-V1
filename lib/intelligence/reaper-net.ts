@@ -211,20 +211,42 @@ export function managersUnderReaperCoverage(): ManagerKey[] {
   return Array.from(new Set(REAPER_NET.map((e) => e.manager)))
 }
 
+// Managers whose "stuck work" is caught NOT by a dedicated net reaper but by an
+// existing PREDICTOR → handler chain, with the signals-lane reaper (manager_handoffs)
+// as the safety net for anything the handler leaves unhandled. Documented here so the
+// coverage map tells the truth: these domains ARE covered, just by a different
+// mechanism — and we don't bolt on a duplicate reaper (that would be drift).
+export const PREDICTOR_BACKED_COVERAGE: { manager: ManagerKey; via: string }[] = [
+  { manager: "shopping_agent", via: "buyer_stall_predicted → gated reset handler (safety net: manager_handoffs reaper)" },
+  { manager: "listing_concierge", via: "listing_stall_predicted → marketing-refresh + re-prospect handlers (safety net: manager_handoffs reaper)" },
+  { manager: "ai_isa", via: "escalateUnassignedQualifiedLead → broker/admin escalation when no agent can be assigned" },
+]
+
 export interface ReaperCoverage {
   totalManagers: number
+  /** Managers with a DEDICATED reaper in the net. */
   coveredManagers: ManagerKey[]
+  /** Managers covered via a predictor+handler chain (not a dedicated reaper). */
+  predictorBackedManagers: ManagerKey[]
+  /** Union of dedicated + predictor-backed — the honest "effective coverage". */
+  effectiveCoveredManagers: ManagerKey[]
+  /** Managers with NO coverage of any kind — the real remaining gaps. */
   uncoveredManagers: ManagerKey[]
   domains: { domain: string; manager: ManagerKey; protects: string }[]
 }
 
 export function reaperCoverage(): ReaperCoverage {
   const all = Object.keys(MANAGERS) as ManagerKey[]
-  const covered = managersUnderReaperCoverage()
+  const dedicated = managersUnderReaperCoverage()
+  const predictorBacked = Array.from(new Set(PREDICTOR_BACKED_COVERAGE.map((p) => p.manager)))
+    .filter((m) => !dedicated.includes(m))
+  const effective = Array.from(new Set([...dedicated, ...predictorBacked]))
   return {
     totalManagers: all.length,
-    coveredManagers: covered,
-    uncoveredManagers: all.filter((m) => !covered.includes(m)),
+    coveredManagers: dedicated,
+    predictorBackedManagers: predictorBacked,
+    effectiveCoveredManagers: effective,
+    uncoveredManagers: all.filter((m) => !effective.includes(m)),
     domains: REAPER_NET.map((e) => ({ domain: e.domain, manager: e.manager, protects: e.protects })),
   }
 }
