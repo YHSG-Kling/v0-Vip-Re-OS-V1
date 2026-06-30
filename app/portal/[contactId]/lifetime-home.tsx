@@ -10,6 +10,7 @@ import { TestimonialCard } from "@/app/components/portal/lifetime/TestimonialCar
 import { NextMoveCard } from "@/app/components/portal/lifetime/NextMoveCard"
 import { AskYourHomeCard } from "@/app/components/portal/lifetime/AskYourHomeCard"
 import { HomeMaintenanceCard } from "@/app/components/portal/lifetime/HomeMaintenanceCard"
+import { RelocatedClientCard } from "@/app/components/portal/lifetime/RelocatedClientCard"
 import { NeighborhoodActivityCard } from "@/app/components/portal/lifetime/NeighborhoodActivityCard"
 import { RefinanceIndicatorCard } from "@/app/components/portal/lifetime/RefinanceIndicatorCard"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
@@ -22,6 +23,7 @@ import { MilestoneEducationPanel } from "@/app/components/portal/milestone-educa
 import { LifetimeMilestoneLine } from "./components/LifetimeMilestoneLine"
 import { computeHomeWealthStory } from "@/lib/portal/home-wealth"
 import { maintenanceDeck } from "@/lib/portal/home-maintenance"
+import { normalizeLifetimeSegment, lifetimeCardPlan } from "@/lib/portal/lifetime-segment"
 import {
   Bell,
   BookOpen,
@@ -91,6 +93,14 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
     yearsHeld: wealth.yearsHeld,
     availableVendorCategories: vendorCategories,
   })
+
+  // Lifetime segment decides the nurture lane. A 'relocated' past client (left
+  // our market — moved away, downsized out of area, senior living, etc.) does NOT
+  // see equity/maintenance/next-move they can't use; they get a referral-out +
+  // stay-in-touch lane instead. Fair housing: only the neutral segment is used.
+  const segment = normalizeLifetimeSegment((contact as { lifetime_segment?: string | null }).lifetime_segment)
+  const plan = lifetimeCardPlan(segment)
+  const isRelocated = segment === "relocated"
   const firstName = contact.first_name || "Homeowner"
   // getLifetimeContext returns `agent: agentInfo` (from resolveContactOwnerAgent).
   // Previous code read (contact as any).agents?.name which doesn't exist on the
@@ -143,9 +153,13 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Welcome Home, {firstName}</h1>
+          <h1 className="text-3xl font-bold tracking-tight">
+            {isRelocated ? `Good to see you, ${firstName}` : `Welcome Home, ${firstName}`}
+          </h1>
           <p className="text-muted-foreground mt-1">
-            {"Your home is your greatest investment. Here's everything in one place."}
+            {isRelocated
+              ? "Wherever life takes you, we're still in your corner."
+              : "Your home is your greatest investment. Here's everything in one place."}
           </p>
         </div>
         {agentName && (
@@ -168,7 +182,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
             I" signal that buyer/seller portals have. Driven by close-date
             deltas (settling-in / anniversary / multi-year). Surfaces a
             refinance lane when an opportunity is flagged on the equity card. */}
-      {transaction?.close_date && (
+      {plan.showWealthStory && transaction?.close_date && (
         <LifetimeMilestoneLine
           contactId={contactId}
           closeDate={transaction.close_date}
@@ -188,15 +202,23 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
         />
       )}
 
+      {/* Relocated past clients (left our market): referral-out + stay-in-touch
+          lane instead of equity/maintenance/next-move they can't use. */}
+      {plan.showRelocationReferral && (
+        <RelocatedClientCard contactId={contactId} agentFirstName={agentName ? agentName.split(" ")[0] : null} />
+      )}
+
       {/* Ask your home anything — self-serve AI scoped to this home, compliance-
           railed (no legal/tax/lending advice, no value guarantees, defers to the
           agent). A marquee differentiator no client portal offers. */}
-      <AskYourHomeCard contactId={contactId} agentFirstName={agentName ? agentName.split(" ")[0] : null} />
+      {plan.showAskYourHome && (
+        <AskYourHomeCard contactId={contactId} agentFirstName={agentName ? agentName.split(" ")[0] : null} />
+      )}
 
       {/* Main Grid */}
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
         {/* 2. My Home Card */}
-        {transaction && (
+        {plan.showWealthStory && transaction && (
           <MyHomeCard
             contactId={contactId}
             propertyAddress={transaction.property_address}
@@ -208,6 +230,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
         )}
 
         {/* 3. Equity Estimate Card */}
+        {plan.showWealthStory && (
         <EquityEstimateCard
           estimatedValueMid={homeValueEstimate?.estimated_value_mid}
           estimatedValueLow={homeValueEstimate?.estimated_value_low}
@@ -218,6 +241,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           closeDate={transaction?.close_date}
           valueSeries={homeValueSeries}
         />
+        )}
 
         {/* 4. Neighborhood Activity */}
         <NeighborhoodActivityCard
@@ -225,8 +249,8 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           propertyAddress={transaction?.property_address}
         />
 
-        {/* 5. Refinance Opportunity */}
-        {transaction?.sale_price && transaction.sale_price > 0 && (
+        {/* 5. Refinance Opportunity (owner-only) */}
+        {plan.showWealthStory && transaction?.sale_price && transaction.sale_price > 0 && (
           <RefinanceIndicatorCard
             purchasePrice={transaction.sale_price}
             closeDate={transaction.close_date}
@@ -371,23 +395,27 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
       )}
 
       {/* Seasonal home-care — upkeep suggestions wired to the vendor marketplace */}
-      <HomeMaintenanceCard
-        contactId={contactId}
-        season={maintenance.season}
-        suggestions={maintenance.suggestions}
-        availableVendorCategories={vendorCategories}
-      />
+      {plan.showMaintenance && (
+        <HomeMaintenanceCard
+          contactId={contactId}
+          season={maintenance.season}
+          suggestions={maintenance.suggestions}
+          availableVendorCategories={vendorCategories}
+        />
+      )}
 
       {/* Re-engagement: "Your Next Move" radar — replaces the old static
           "Thinking of moving?" CTA with a self-directed, equity-aware set of
           options. A tap is a client-INITIATED re-transaction intent that
           notifies the agent AND rides the manager bus (AI ISA -> Sphere ->
           the right next step). Equity/tenure only — fair-housing-safe. */}
-      <NextMoveCard
-        contactId={contactId}
-        estimatedEquity={wealth.hasEstimate ? wealth.estimatedEquity : null}
-        yearsHeld={wealth.yearsHeld}
-      />
+      {plan.showNextMove && (
+        <NextMoveCard
+          contactId={contactId}
+          estimatedEquity={wealth.hasEstimate ? wealth.estimatedEquity : null}
+          yearsHeld={wealth.yearsHeld}
+        />
+      )}
 
       {/* Quick Links */}
       <Card>

@@ -1822,6 +1822,43 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     })
     return `escalated ${intent} next-move intent to responsible agent (${nextStep})`
   },
+  // AI ISA → Sphere: a RELOCATED past client asked for a referral to an agent in their new
+  // area. The Sphere Manager (referral-out owner) escalates a HIGH-priority follow-up to place
+  // the outbound referral — goodwill + a referral fee. Fair housing: only the neutral new-area
+  // string is used; the reason for relocating is never recorded or surfaced. Idempotent per
+  // open request (a re-tap doesn't stack duplicates).
+  "sphere_of_influence:relocation_referral_request": async (signal, ctx) => {
+    const contactId = signal.entityId ?? signal.contactId
+    if (!contactId) return null
+    const payload = (signal.payload ?? {}) as { new_area?: string | null }
+    const newArea = (payload.new_area ?? "").toString().trim() || null
+
+    const { resolveResponsibleAgentUserId } = await import("@/lib/intelligence/mobile-approval-queue")
+    const agentUserId = await resolveResponsibleAgentUserId(ctx.supabase, {
+      recipient_contact_id: contactId, entity_type: "contact", entity_id: contactId,
+    })
+    if (!agentUserId) return "no responsible agent to place the relocation referral"
+
+    const { data: existing } = await ctx.supabase
+      .from("notifications")
+      .select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("user_id", agentUserId)
+      .eq("type", "relocation_referral_followup").eq("entity_id", contactId).eq("is_read", false)
+      .limit(1)
+    if (existing && existing.length > 0) return "relocation referral already open for this client"
+
+    const { data: c } = await ctx.supabase
+      .from("contacts").select("first_name, last_name").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    const name = [(c as any)?.first_name, (c as any)?.last_name].filter(Boolean).join(" ").trim() || "A past client"
+
+    await ctx.supabase.from("notifications").insert({
+      user_id: agentUserId, brokerage_id: ctx.brokerageId, type: "relocation_referral_followup",
+      title: `📦 Place a referral: ${name}${newArea ? ` → ${newArea}` : ""}`,
+      body: `${name} is relocating${newArea ? ` to ${newArea}` : ""} and asked for a trusted agent there. Place an outbound referral — keep the relationship warm and earn a referral fee at close.`,
+      entity_type: "contact", entity_id: contactId, priority: "high", is_read: false,
+    })
+    return `escalated relocation referral to responsible agent${newArea ? ` (${newArea})` : ""}`
+  },
 }
 
 /**

@@ -13,6 +13,7 @@ import {
   type HomeFacts,
 } from "@/lib/portal/home-assistant"
 import { computeHomeWealthStory } from "@/lib/portal/home-wealth"
+import { normalizeLifetimeSegment, type LifetimeSegment } from "@/lib/portal/lifetime-segment"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 // Previously this file was missing "use server" yet was imported from
@@ -330,6 +331,87 @@ export async function requestVendorIntro(params: {
   return { ok: true }
 }
 
+// ─── SET LIFETIME SEGMENT (staff only) ───────────────────────────────────────
+// The agent/staff flags a past client as 'relocated' (left our market) or back to
+// 'local_owner'. Neutral market fact only — the REASON (age/health/family) is
+// never collected. Switching to 'relocated' moves them to the referral-out +
+// stay-in-touch nurture lane (their portal stops showing equity/maintenance/
+// next-move they can't use).
+export async function setLifetimeSegment(params: {
+  contactId: string
+  segment: LifetimeSegment
+}): Promise<{ ok: boolean; error?: string }> {
+  const access = await requireContactAccess(params.contactId)
+  // Staff only — a client cannot reclassify their own market segment.
+  if (!access.ok || access.isContactSelf) return { ok: false, error: "Not allowed" }
+
+  const segment = normalizeLifetimeSegment(params.segment)
+  const svc = createServiceClient()
+  const { error } = await svc
+    .from("contacts")
+    .update({ lifetime_segment: segment })
+    .eq("id", params.contactId)
+    .eq("brokerage_id", access.brokerageId)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+// ─── REQUEST A RELOCATION REFERRAL (relocated client → agent in new area) ─────
+// A relocated past client taps "help me find a great agent where I'm moving."
+// We don't serve their new market — but our agent can place a referral to a
+// trusted agent there (goodwill + a referral fee, and the relationship stays
+// warm). Routes to the agent AND onto the manager bus (Sphere owns referral-out).
+export async function requestRelocationReferral(params: {
+  contactId: string
+  newArea?: string | null
+}): Promise<{ ok: boolean; error?: string }> {
+  const access = await requireContactAccess(params.contactId)
+  if (!access.ok || !access.isContactSelf) return { ok: false, error: "Not allowed" }
+
+  const newArea = (params.newArea ?? "").toString().trim().slice(0, 120) || null
+
+  const svc = createServiceClient()
+  const { data: contact } = await svc
+    .from("contacts").select("first_name, last_name, agent_id").eq("id", params.contactId).maybeSingle()
+  if (!contact) return { ok: false, error: "Contact not found" }
+
+  const clientName = [contact.first_name, contact.last_name].filter(Boolean).join(" ").trim() || "A past client"
+
+  try {
+    if (contact.agent_id) {
+      await svc.from("client_portal_messages").insert({
+        contact_id: params.contactId, agent_id: contact.agent_id, brokerage_id: access.brokerageId,
+        direction: "client_to_agent", channel: "portal", read: false,
+        body: `Relocation referral request${newArea ? ` — moving to ${newArea}` : ""}.`,
+      }).then(() => {}, () => {})
+
+      const agent = await resolveContactOwnerAgent(svc, contact.agent_id)
+      const agentUserId = (agent as { user_id?: string | null; id?: string | null } | null)?.user_id
+        ?? (agent as { id?: string | null } | null)?.id ?? null
+      if (agentUserId) {
+        await svc.from("notifications").insert({
+          user_id: agentUserId, brokerage_id: access.brokerageId, type: "relocation_referral_request",
+          title: `📦 ${clientName} needs an agent in their new area`,
+          body: `${clientName} asked for a referral to a trusted agent${newArea ? ` in ${newArea}` : " where they're moving"}. Place the referral — goodwill now, a referral fee at close.`,
+          entity_type: "contact", entity_id: params.contactId, priority: "high", is_read: false,
+        }).then(() => {}, () => {})
+      }
+    }
+
+    // MULTI-MANAGER: the Sphere Manager owns referral-out — hand it the request.
+    const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+    await publishManagerSignal({
+      brokerageId: access.brokerageId, fromManager: "ai_isa", toManager: "sphere_of_influence",
+      signalType: "relocation_referral_request", entityType: "contact", entityId: params.contactId,
+      contactId: params.contactId,
+      message: `${clientName} is relocating${newArea ? ` to ${newArea}` : ""} — place an outbound agent referral.`,
+      payload: { new_area: newArea },
+    }, svc).then(() => {}, () => {})
+  } catch { /* best-effort — never block the request */ }
+
+  return { ok: true }
+}
+
 // ─── GET LIFETIME CONTEXT ────────────────────────────────────────────────────
 export async function getLifetimeContext(contactId: string) {
   const access = await requireContactAccess(contactId)
@@ -345,7 +427,8 @@ export async function getLifetimeContext(contactId: string) {
       first_name,
       last_name,
       buyer_stage,
-      agent_id
+      agent_id,
+      lifetime_segment
     `)
     .eq("id", contactId)
     .eq("brokerage_id", access.brokerageId)
