@@ -26,6 +26,7 @@ type VoiceIntent =
   | "optimize_tour"
   | "closings_at_risk"
   | "send_equity_report"
+  | "launch_campaign"
   | "general_query"
 
 interface CallQueueItem {
@@ -93,6 +94,7 @@ export async function POST(req: NextRequest) {
 - optimize_tour: asking to optimize/fix/re-route a buyer's TOUR by named person ("optimize the Henderson tour", "fix the route and times for Jordan's tour", "sort the Garcia showings by drive time")
 - closings_at_risk: asking which closings/deals are AT RISK or tight this week ("what closings are at risk this week", "any deals about to slip", "which closings are tight")
 - send_equity_report: asking to send/run a named person's ANNIVERSARY EQUITY report ("send the Garcias their anniversary equity report", "run Jordan's equity update")
+- launch_campaign: asking to LAUNCH / push / kick off / go live with the MARKETING CAMPAIGN for a LISTING ADDRESS ("launch the campaign for 123 Oak Street", "push the just-listed campaign on Maple", "take the Birch Lane campaign live")
 - general_query: anything else
 
 Respond with ONLY the intent string, nothing else.`,
@@ -458,6 +460,54 @@ Respond with ONLY the intent string, nothing else.`,
           spokenResponse = r.spoken
           data = { contactId: tq.contactId, proposed: r.proposed ?? false, skipReason: r.skipReason ?? null }
           action = r.proposed ? "equity_report_queued" : null
+        }
+      }
+    } else if (intent === "launch_campaign") {
+      // "Launch the campaign for 123 Oak Street" — resolve the listing by address → pick the
+      // most launch-ready campaign for it → launch via the existing admin-gated executor
+      // (it enforces role + tenant + compliance; a non-admin speaker is refused honestly).
+      const extract = await generateText({
+        model: resolveModel("openai/gpt-4o-mini"),
+        system: `Extract the LISTING street address whose marketing campaign to launch. Respond with ONLY the address or street (e.g. "123 Oak Street" or "Maple"). If none, respond NONE.`,
+        messages: [{ role: "user", content: transcript }],
+        maxOutputTokens: 16,
+      })
+      const addr = extract.text.trim()
+      if (!addr || addr.toUpperCase() === "NONE" || !brokerageId) {
+        spokenResponse = "Which listing's campaign should I launch? Tell me the address."
+      } else {
+        const { data: listing } = await service
+          .from("listings")
+          .select("id, address")
+          .eq("brokerage_id", brokerageId)
+          .ilike("address", `%${addr}%`)
+          .limit(1)
+          .maybeSingle()
+        if (!listing) {
+          spokenResponse = `I couldn't find a listing matching "${addr}".`
+        } else {
+          const { data: campaigns } = await service
+            .from("marketing_campaigns")
+            .select("id, status, campaign_name, campaign_type, created_at")
+            .eq("brokerage_id", brokerageId)
+            .eq("listing_id", listing.id)
+          const { pickLaunchableCampaign } = await import("@/lib/voice/campaign-command")
+          const pick = pickLaunchableCampaign((campaigns ?? []) as Array<{ id: string; status: string; created_at?: string | null }>)
+          if (!pick) {
+            spokenResponse = `There's no campaign ready to launch for ${listing.address}. Set one up first.`
+          } else {
+            const { launchMarketingCampaignAction } = await import("@/app/actions/marketing-campaigns-admin")
+            const r = await launchMarketingCampaignAction(pick.id)
+            if (r.ok) {
+              spokenResponse = `Launched the ${pick.campaign_name ?? "campaign"} for ${listing.address} to ${r.audienceSize} contact${r.audienceSize === 1 ? "" : "s"}. Compliance: ${r.complianceStatus}.`
+              data = { campaignId: pick.id, listingId: listing.id, audienceSize: r.audienceSize, complianceStatus: r.complianceStatus }
+              action = "campaign_launched"
+            } else {
+              spokenResponse = r.error?.toLowerCase().includes("forbidden") || r.error?.toLowerCase().includes("admin")
+                ? "You don't have permission to launch campaigns — ask a broker or admin."
+                : `I couldn't launch that campaign: ${r.error}`
+            }
+          }
         }
       }
     } else if (intent === "create_task" || intent === "schedule_followup") {
