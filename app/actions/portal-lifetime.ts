@@ -182,6 +182,20 @@ export async function getLifetimeContext(contactId: string) {
     .limit(1)
     .maybeSingle()
 
+  // Get the value series over time (oldest → newest) so the portal can render
+  // the "home wealth story" — purchase price → today's value as a living curve.
+  // Realized history only; no forward forecast (compliance-safe).
+  const { data: valueSeriesRaw } = await supabase
+    .from("home_value_estimates")
+    .select("estimated_value_mid, estimated_value_low, estimated_value_high, generated_at")
+    .eq("contact_id", contactId)
+    .eq("brokerage_id", access.brokerageId)
+    .order("generated_at", { ascending: true })
+    .limit(24)
+  const homeValueSeries = (valueSeriesRaw ?? []).filter(
+    (p: any) => typeof p.estimated_value_mid === "number" && p.estimated_value_mid > 0,
+  )
+
   // Get recent touchpoints — scoped
   const { data: touchpoints } = await supabase
     .from("lifetime_customer_touchpoints")
@@ -234,6 +248,7 @@ export async function getLifetimeContext(contactId: string) {
     agent: agentInfo,
     transaction,
     homeValueEstimate,
+    homeValueSeries,
     touchpoints: touchpoints || [],
     referrals: referrals || [],
     preferredVendors,

@@ -64,7 +64,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
     )
   }
 
-  const { contact, agent, transaction, homeValueEstimate, touchpoints, preferredVendors, neighborhoodListings } = context
+  const { contact, agent, transaction, homeValueEstimate, homeValueSeries, touchpoints, preferredVendors, neighborhoodListings } = context
   const firstName = contact.first_name || "Homeowner"
   // getLifetimeContext returns `agent: agentInfo` (from resolveContactOwnerAgent).
   // Previous code read (contact as any).agents?.name which doesn't exist on the
@@ -184,6 +184,8 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           purchasePrice={transaction?.sale_price || 0}
           marketTrend={homeValueEstimate?.market_trend}
           generatedAt={homeValueEstimate?.generated_at}
+          closeDate={transaction?.close_date}
+          valueSeries={homeValueSeries}
         />
 
         {/* 4. Neighborhood Activity */}
