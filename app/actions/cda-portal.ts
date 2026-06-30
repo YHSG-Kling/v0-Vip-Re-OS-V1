@@ -622,7 +622,7 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
 
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
-    .select("id, transaction_id, brokerage_id, status, broker_approved_at, revision_number")
+    .select("id, transaction_id, brokerage_id, status, broker_approved_at, revision_number, generated_pdf_url, field_values")
     .eq("id", input.cdaId)
     .maybeSingle()
   if (!cda || cda.brokerage_id !== auth.brokerageId) {
@@ -634,9 +634,34 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
   if (!verdict.ok) return { success: false as const, error: verdict.error }
 
   const now = new Date().toISOString()
+
+  // Dispatch the formal e-signature on the filled CDA, per the brokerage's provider
+  // (Dotloop auto / other providers manual / in-app when none or no filled PDF). The
+  // in-app sign-off below is the authoritative state gate; e-sign is the transport on
+  // top and never blocks it (dispatch is best-effort).
+  const { data: txnRow } = await supabase
+    .from("transactions")
+    .select("property_address")
+    .eq("id", cda.transaction_id)
+    .maybeSingle()
+  const { dispatchCdaBrokerEsign } = await import("@/lib/transactions/cda-esign")
+  const esign = await dispatchCdaBrokerEsign(supabase, {
+    brokerageId: cda.brokerage_id,
+    brokerUserId: auth.userId,
+    transactionId: cda.transaction_id,
+    filledPdfUrl: (cda as { generated_pdf_url?: string | null }).generated_pdf_url ?? null,
+    propertyAddress: (txnRow as { property_address?: string | null } | null)?.property_address ?? null,
+  })
+
+  const priorFieldValues = ((cda as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
   await supabase
     .from("closing_disclosure_agreement")
-    .update({ broker_approved_at: now, broker_id: auth.userId, updated_at: now })
+    .update({
+      broker_approved_at: now,
+      broker_id: auth.userId,
+      field_values: { ...priorFieldValues, broker_esign: { mode: esign.mode, provider: esign.provider, loop_id: esign.loopId ?? null, dispatched: esign.dispatched, reason: esign.reason, at: now } },
+      updated_at: now,
+    })
     .eq("id", cda.id)
 
   await recordRevision({
@@ -644,13 +669,18 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
     revisionNumber: cda.revision_number,
     status: "approved",
     action: "approved",
-    notes: "Broker signed the CDA — authorized for delivery to the closing agent.",
+    notes:
+      esign.mode === "esign_auto"
+        ? `Broker signed the CDA via ${esign.provider} e-sign — authorized for delivery to the closing agent.`
+        : esign.mode === "esign_manual"
+          ? `Broker authorized the CDA (sign via ${esign.provider}) — authorized for delivery to the closing agent.`
+          : "Broker signed the CDA in-app — authorized for delivery to the closing agent.",
     actedBy: auth.userId,
   })
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   revalidatePath(`/dashboard/compliance`)
-  return { success: true as const }
+  return { success: true as const, signMode: esign.mode, provider: esign.provider }
 }
 
 // ─── 4b. Compliance sends back with changes ──────────────────────────────────

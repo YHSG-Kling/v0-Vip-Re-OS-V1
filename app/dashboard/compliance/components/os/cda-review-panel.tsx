@@ -87,7 +87,15 @@ export function CdaReviewPanel() {
     startTransition(async () => {
       const res = await brokerSignCdaAction({ cdaId })
       if (res.success) {
-        toast.success("CDA signed — ready to send to the closing agent")
+        const mode = "signMode" in res ? res.signMode : "in_app"
+        const provider = "provider" in res ? res.provider : null
+        toast.success(
+          mode === "esign_auto"
+            ? `CDA sent to ${provider} for your signature — ready to send to the closing agent`
+            : mode === "esign_manual"
+              ? `CDA authorized — send it via ${provider} for signature, then to the closing agent`
+              : "CDA signed — ready to send to the closing agent",
+        )
         void reload()
       } else {
         toast.error("error" in res && res.error === "forbidden_broker_only"
