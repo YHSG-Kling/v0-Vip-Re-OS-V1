@@ -331,6 +331,7 @@
     "test:cda-field-classifier": "tsx scripts/cda-field-classifier-simulator.ts",
     "test:cda-pdf-fill": "tsx scripts/cda-pdf-fill-simulator.ts",
     "test:cda-esign": "tsx scripts/cda-esign-simulator.ts",
+    "test:voice-task-command": "tsx scripts/voice-task-command-simulator.ts",
     "test:lifetime-segment": "tsx scripts/lifetime-segment-simulator.ts",
     "test:manager-outbound-eval": "tsx scripts/manager-outbound-eval-simulator.ts",
     "test:learning-outcomes": "tsx scripts/learning-outcomes-simulator.ts",

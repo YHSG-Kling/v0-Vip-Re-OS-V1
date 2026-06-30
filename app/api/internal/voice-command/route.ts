@@ -460,6 +460,58 @@ Respond with ONLY the intent string, nothing else.`,
           action = r.proposed ? "equity_report_queued" : null
         }
       }
+    } else if (intent === "create_task" || intent === "schedule_followup") {
+      // "Create a task to call the lender Friday" / "remind me to follow up with the
+      // Hendersons tomorrow" — previously these classified but had NO handler and fell
+      // through to the chat deflection (no task created). Now: extract title + due phrase
+      // + optional person, resolve the date deterministically, create the real task.
+      const isFollowUp = intent === "schedule_followup"
+      const extract = await generateText({
+        model: resolveModel("openai/gpt-4o-mini"),
+        system: `Extract a task from a real-estate agent's spoken command. Respond with ONLY compact JSON: {"title":"<short imperative task, no date>","due":"<relative date phrase like today/tomorrow/friday/in 3 days/next week, or NONE>","person":"<client/family name if one is named, or NONE>"}. Keep the title under 8 words. Do not invent a person or date that wasn't said.`,
+        messages: [{ role: "user", content: transcript }],
+        maxOutputTokens: 60,
+      })
+      let title = "", duePhrase: string | null = null, personQuery = ""
+      try {
+        const raw = extract.text.trim().replace(/^```json\s*/i, "").replace(/^```\s*/, "").replace(/```$/, "")
+        const parsed = JSON.parse(raw) as { title?: string; due?: string; person?: string }
+        title = (parsed.title ?? "").trim()
+        duePhrase = parsed.due && parsed.due.toUpperCase() !== "NONE" ? parsed.due : null
+        personQuery = parsed.person && parsed.person.toUpperCase() !== "NONE" ? parsed.person.trim() : ""
+      } catch { /* deterministic fallbacks below */ }
+
+      const { parseRelativeDueDate, buildVoiceTaskRow, spokenTaskConfirmation } = await import("@/lib/voice/task-command")
+      const dueDate = parseRelativeDueDate(duePhrase, today)
+
+      // Resolve a named contact (best-effort; an undated, unlinked task is still valid).
+      let contactId: string | null = null
+      let contactName: string | null = null
+      if (personQuery && brokerageId) {
+        const { runTeamQuery } = await import("@/lib/kernel/team-query")
+        const tq = await runTeamQuery(brokerageId, personQuery, {}, service)
+        if (tq.found && tq.contactId) { contactId = tq.contactId; contactName = personQuery }
+      }
+
+      // tasks.assigned_to_agent_id FK → agents.id (NOT users.id) — resolve the agent profile.
+      const { data: agentRow } = await service.from("agents").select("id").eq("user_id", user.id).maybeSingle()
+      const agentId = (agentRow as { id?: string } | null)?.id ?? null
+
+      if (!brokerageId) {
+        spokenResponse = "I couldn't find your brokerage to file that task under."
+      } else if (!agentId) {
+        spokenResponse = "I can only file tasks for agent accounts — yours isn't linked to an agent profile."
+      } else {
+        const row = buildVoiceTaskRow({ title, dueDate, contactId, brokerageId, agentId, isFollowUp })
+        const { data: created, error: taskErr } = await service.from("tasks").insert(row).select("id, title, due_date").maybeSingle()
+        if (taskErr || !created) {
+          spokenResponse = "I couldn't save that task — please try again."
+        } else {
+          spokenResponse = spokenTaskConfirmation(created.title, created.due_date ?? null, contactName)
+          data = { taskId: created.id, title: created.title, dueDate: created.due_date ?? null, contactId }
+          action = "task_created"
+        }
+      }
     } else {
       // General query — pass to the main AI chat endpoint context
       spokenResponse = "Got it. I'm sending that to the assistant for you."
