@@ -74,13 +74,14 @@ export async function GET(req: NextRequest) {
         const { runManagerDissent } = await import("@/lib/kernel/manager-dissent")
         const md = await runManagerDissent(brokerageId, {}, supabase)
         consumed += md.vetoes
-        // THE REAPER — no signal falls through the cracks: any handoff stuck "open" past its window
-        // (handler kept returning null / threw / unhandled) is escalated to a human + expired, so a
-        // real task is never silently lost and the inbox can't accumulate zombie signals forever.
-        const { reapStuckManagerSignals } = await import("@/lib/kernel/signal-reaper")
-        const rp = await reapStuckManagerSignals(brokerageId, supabase)
-        reaped += rp.expired
-        escalated += rp.escalated
+        // THE REAPER NET (signals lane) — no signal falls through the cracks: any handoff stuck
+        // "open" past its window (handler kept returning null / threw / unhandled) is escalated to a
+        // human + expired. Routed through the net so it records to the reaper_runs ledger alongside
+        // the proactive-lane reapers (one accountability trail), without double-firing (disjoint lane).
+        const { runReaperNet } = await import("@/lib/intelligence/reaper-net")
+        const net = await runReaperNet(brokerageId, supabase, { lane: "signals" })
+        reaped += net.totals.reaped
+        escalated += net.totals.escalated
       } catch (e: any) {
         errors.push(`${brokerageId}: ${e?.message ?? String(e)}`)
       }

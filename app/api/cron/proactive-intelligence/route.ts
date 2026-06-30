@@ -25,7 +25,7 @@ export async function GET(request: Request) {
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()
-  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, weeklyReports = 0, mlsReminders = 0, staleVideos = 0, staleRuns = 0, strandedOffers = 0, staleTouchpoints = 0, errors = 0
+  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, weeklyReports = 0, mlsReminders = 0, staleVideos = 0, staleRuns = 0, strandedOffers = 0, staleTouchpoints = 0, closingOverdue = 0, reaperEscalated = 0, reaperReaped = 0, errors = 0
 
   const [
     { predictAndPublishBuyerStall },
@@ -37,10 +37,7 @@ export async function GET(request: Request) {
     { rollupListingMetrics },
     { runSellerWeeklyReports },
     { runMlsNumberReminders },
-    { reapStaleVideoWorkflows },
-    { reapStaleWorkflowRuns },
-    { reapStrandedAcceptedOffers },
-    { reapStuckLifetimeTouchpoints },
+    { runReaperNet },
     { ensureNationalMarketPulse },
   ] = await Promise.all([
     import("@/lib/intelligence/buyer-stall-predictor-runner"),
@@ -52,10 +49,7 @@ export async function GET(request: Request) {
     import("@/lib/listings/listing-metrics-rollup"),
     import("@/lib/listings/seller-weekly-report-runner"),
     import("@/lib/listings/mls-number-reminder"),
-    import("@/lib/video/video-pipeline-reaper"),
-    import("@/lib/workflow-orchestrator/stale-run-reaper"),
-    import("@/lib/transactions/stranded-offer-reaper"),
-    import("@/lib/sphere/lifetime-touchpoint-reaper"),
+    import("@/lib/intelligence/reaper-net"),
     import("@/lib/listings/market-pulse-runner"),
   ])
 
@@ -124,26 +118,25 @@ export async function GET(request: Request) {
     //     honest (the marketing card grounds "live" in a real mls_number). Idempotent per listing.
     try { const r = await runMlsNumberReminders(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); mlsReminders += r.reminded } catch { errors++ }
 
-    // (9) Stale video-workflow reaper — no commissioned reel sits forever in a non-terminal state.
-    //     The Asset Manager owns the stalls: marks genuinely-stuck rows failed + notifies the agent
-    //     (mirrors the manager-signals reaper — stale work gets a manager, never falls through cracks).
-    try { const r = await reapStaleVideoWorkflows(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); staleVideos += r.escalated } catch { errors++ }
-
-    // (10) Stale workflow-RUN reaper — the chain engine (listing-appt-prep, etc.). The Campaign
-    //      Orchestrator (owns workflow_runs) reaps chains stuck mid-execution so no automation sits
-    //      unfinished. Completes the reaper trio: manager_signals + video pipeline + chain runs.
-    try { const r = await reapStaleWorkflowRuns(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); staleRuns += r.escalated } catch { errors++ }
-
-    // (11) Stranded-offer reaper — the offer→under-contract boundary. An offer accepted in the workspace
-    //      but never turned into a transaction (compliance gate unfinished) is escalated to the agent so
-    //      the highest-stakes handoff is never silently lost. Extends the reaper family to the deal door.
-    try { const r = await reapStrandedAcceptedOffers(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); strandedOffers += r.escalated } catch { errors++ }
-
-    // (12) Lifetime-touchpoint reaper — a scheduled post-close touch that passed its date without going
-    //      out is reconciled (marked skipped) + the miss surfaced to the agent, so a past client's
-    //      retention sequence never stalls silently. Extends the reaper family to the Sphere/lifetime door.
-    try { const r = await reapStuckLifetimeTouchpoints(brokerageId, svc, { limit: PER_BROKERAGE_CAP }); staleTouchpoints += r.reaped } catch { errors++ }
+    // (9) THE REAPER NET (proactive lane) — one governed sweep of every "nothing falls through"
+    //     reaper for this brokerage: stale video workflows (Asset Mgr), stalled automation chains
+    //     (Campaign Orchestrator), stranded accepted offers + deals overdue past their close date
+    //     (Deal Coordinator), and missed past-client touches (Sphere). Each is idempotent and records
+    //     to the reaper_runs ledger (the autonomy receipt the standup reads). The bus-handoff reaper
+    //     runs in the manager-signals cron (signals lane) so cadences stay disjoint — no double-firing.
+    try {
+      const net = await runReaperNet(brokerageId, svc, { lane: "proactive" })
+      reaperEscalated += net.totals.escalated
+      reaperReaped += net.totals.reaped
+      for (const r of net.results) {
+        if (r.domain === "stale_video_workflows") staleVideos += r.escalated
+        else if (r.domain === "stale_workflow_runs") staleRuns += r.escalated
+        else if (r.domain === "stranded_offers") strandedOffers += r.escalated
+        else if (r.domain === "lifetime_touchpoints") staleTouchpoints += r.reaped
+        else if (r.domain === "closing_overdue") closingOverdue += r.escalated
+      }
+    } catch { errors++ }
   }
 
-  return NextResponse.json({ ran_at: ranAt, brokerages, marketPulse, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, staleVideos, staleRuns, strandedOffers, staleTouchpoints, errors })
+  return NextResponse.json({ ran_at: ranAt, brokerages, marketPulse, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, staleVideos, staleRuns, strandedOffers, staleTouchpoints, closingOverdue, reaperEscalated, reaperReaped, errors })
 }

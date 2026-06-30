@@ -11,6 +11,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { MANAGERS, type ManagerKey } from '@/lib/kernel/manager-registry'
+import { loadRecentReaperActivity } from '@/lib/intelligence/reaper-net'
 
 export interface ManagerStandupLine {
   manager: ManagerKey
@@ -19,6 +20,8 @@ export interface ManagerStandupLine {
   activity_24h: number
   /** Items waiting on a HUMAN decision right now. */
   needs_human: number
+  /** Stuck items the manager's REAPER caught & escalated in 24h (autonomy receipt). */
+  reaped_24h: number
   /** One broker-readable line. */
   headline: string
 }
@@ -28,7 +31,8 @@ export async function generateManagerStandup(brokerageId: string, client?: Retur
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
 
   const [handoffs, hotIsa, proposedMsgs, enrichQueue, activeListings, rendersDone, matches24h,
-         dealTasks, adsProposed, mktProposed, sphereProposed, recruitProposed] =
+         dealTasks, adsProposed, mktProposed, sphereProposed, recruitProposed,
+         closedDeals24h, complianceOpenSignals] =
     await Promise.all([
       supabase.from('assignment_log').select('id', { count: 'exact', head: true })
         .eq('brokerage_id', brokerageId).gte('created_at', since),
@@ -59,10 +63,16 @@ export async function generateManagerStandup(brokerageId: string, client?: Retur
       // Recruiting Manager — candidate outreach drafts proposed.
       supabase.from('agent_client_messages').select('id', { count: 'exact', head: true })
         .eq('brokerage_id', brokerageId).eq('agent_kind', 'recruiting_manager').eq('status', 'proposed'),
+      // Finance Manager — deals that CLOSED in 24h (commission-bearing events to reconcile).
+      supabase.from('transactions').select('id', { count: 'exact', head: true })
+        .eq('brokerage_id', brokerageId).eq('status', 'closed').gte('close_date', since.slice(0, 10)),
+      // Compliance Officer — open compliance items routed on the bus awaiting handling.
+      supabase.from('manager_signals').select('id', { count: 'exact', head: true })
+        .eq('brokerage_id', brokerageId).eq('to_manager', 'compliance_officer').eq('status', 'open'),
     ])
 
   const n = (r: { count: number | null }) => r.count ?? 0
-  const lines: ManagerStandupLine[] = [
+  const baseLines: Omit<ManagerStandupLine, 'reaped_24h'>[] = [
     {
       manager: 'ai_isa', label: MANAGERS.ai_isa.label,
       activity_24h: n(handoffs), needs_human: 0,
@@ -130,7 +140,35 @@ export async function generateManagerStandup(brokerageId: string, client?: Retur
         ? `${n(recruitProposed)} recruiting draft${n(recruitProposed) === 1 ? '' : 's'} ready to send`
         : 'No recruiting drafts pending',
     },
+    {
+      manager: 'finance_manager', label: MANAGERS.finance_manager.label,
+      activity_24h: n(closedDeals24h), needs_human: 0,
+      headline: n(closedDeals24h) > 0
+        ? `${n(closedDeals24h)} deal${n(closedDeals24h) === 1 ? '' : 's'} closed in 24h — commissions to reconcile`
+        : 'No closings in 24h',
+    },
+    {
+      manager: 'compliance_officer', label: MANAGERS.compliance_officer.label,
+      activity_24h: n(complianceOpenSignals), needs_human: n(complianceOpenSignals),
+      headline: n(complianceOpenSignals) > 0
+        ? `${n(complianceOpenSignals)} compliance item${n(complianceOpenSignals) === 1 ? '' : 's'} awaiting review`
+        : 'No open compliance items',
+    },
   ]
+
+  // Overlay the REAPER NET's 24h activity from the ledger: each manager's line gains
+  // a "your AI team caught N stuck item(s)" receipt, and escalations count as needs_human.
+  const reaperActivity = await loadRecentReaperActivity(brokerageId, 24, supabase)
+  const lines: ManagerStandupLine[] = baseLines.map((l) => {
+    const ra = reaperActivity[l.manager]
+    const reaped_24h = ra ? ra.escalated + ra.reaped : 0
+    let headline = l.headline
+    if (ra && (ra.escalated > 0 || ra.reaped > 0)) {
+      headline += ` · AI caught ${ra.escalated + ra.reaped} stuck item${ra.escalated + ra.reaped === 1 ? '' : 's'}`
+    }
+    return { ...l, reaped_24h, needs_human: l.needs_human + (ra?.escalated ?? 0), headline }
+  })
+
   // Only report managers with something to say (quiet managers don't add noise).
-  return lines.filter((l) => l.activity_24h > 0 || l.needs_human > 0)
+  return lines.filter((l) => l.activity_24h > 0 || l.needs_human > 0 || l.reaped_24h > 0)
 }

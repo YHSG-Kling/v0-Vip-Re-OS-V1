@@ -145,6 +145,11 @@ export function CommandCenterClient({
                   <Badge className="bg-slate-900 text-white">{line.label}</Badge>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-muted-foreground">{line.activity_24h} action{line.activity_24h === 1 ? "" : "s"}/24h</span>
+                    {line.reaped_24h > 0 && (
+                      <Badge className="bg-amber-600 text-white" title="Stuck items the manager's reaper caught & escalated">
+                        🪤 {line.reaped_24h} caught
+                      </Badge>
+                    )}
                     {line.needs_human > 0 && (
                       <Badge className="bg-blue-600 text-white">{line.needs_human} need you</Badge>
                     )}

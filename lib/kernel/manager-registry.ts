@@ -318,6 +318,9 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   ai_daily_briefings:           "ai_isa",
   ai_isa_call_batches:          "ai_isa",
   manager_signals:              "campaign_orchestrator",
+  // The reaper-net accountability ledger (every autonomous sweep's scanned/caught/escalated) is
+  // cross-manager oversight telemetry — the Data Steward owns its integrity, same as the data spine.
+  reaper_runs:                  "data_steward",
   transactions:                 "deal_coordinator",
   // Buyer side: the buyer WRITES offers (pre-acceptance) and goes on tours.
   offers:                       "shopping_agent",
