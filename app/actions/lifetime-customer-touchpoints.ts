@@ -88,7 +88,19 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
     return { success: false, error: "Contact has no email address for anniversary message" }
   }
 
-  const message = `Hi ${contact.first_name}! Can you believe it's been ${yearsAgo} year${yearsAgo > 1 ? "s" : ""} since you closed on your home? Time flies! Hope you're still loving it. Here's a quick market update for your neighborhood...`
+  // Brand-voiced via the AI gateway (them-first, Fair-Housing redrafted), with the canned line as the
+  // deterministic FALLBACK floor — the app's rule: client-facing copy is AI-generated in the agent's
+  // voice, never a hardcoded script; the floor only ships if the gateway is down.
+  const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
+  const anniversaryCopy = await generateClientMessage({
+    brokerageId, audience: "buyer", recipientFirstName: contact.first_name,
+    purpose: `Warm ${yearsAgo}-year home-anniversary check-in to a past client — celebrate the milestone, stay genuinely in touch, and offer a quick neighborhood market update. No sales pressure.`,
+    fallback: {
+      subject: "Happy home anniversary!",
+      body: `Hi ${contact.first_name}! Can you believe it's been ${yearsAgo} year${yearsAgo > 1 ? "s" : ""} since you closed on your home? Time flies! Hope you're still loving it. Here's a quick market update for your neighborhood...`,
+    },
+  })
+  const message = anniversaryCopy.body
 
   // Create touchpoint record only after confirming email exists — status "sent" must be truthful
   const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
@@ -146,7 +158,13 @@ export async function sendBirthdayMessage(contactId: string, opts?: TouchpointAc
 
   if (!contact) throw new Error("Contact not found")
 
-  const message = `Happy Birthday ${contact.first_name}! Wishing you an amazing year ahead!`
+  const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
+  const birthdayCopy = await generateClientMessage({
+    brokerageId, audience: "buyer", recipientFirstName: contact.first_name,
+    purpose: "Short, warm birthday wish to a past client — genuine and personal, absolutely no sales pitch.",
+    fallback: { subject: "Happy Birthday!", body: `Happy Birthday ${contact.first_name}! Wishing you an amazing year ahead!` },
+  })
+  const message = birthdayCopy.body
 
   const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
     brokerage_id: brokerageId,
@@ -182,7 +200,16 @@ export async function sendReferralRequest(contactId: string, opts?: TouchpointAc
 
   const agentFullName = [(agent?.users as any)?.first_name, (agent?.users as any)?.last_name].filter(Boolean).join(" ")
 
-  const message = `Hi ${contact.first_name}! I've been thinking about you - hope everything's going great with your home! Quick question: I'm trying to help more families find their perfect home. If you know anyone thinking about buying or selling, I'd love to give them the same experience you had. No pressure at all - just wanted to put it on your radar. ${agentFullName || "Your Agent"}`
+  const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
+  const referralCopy = await generateClientMessage({
+    brokerageId, audience: "buyer", recipientFirstName: contact.first_name,
+    purpose: "Gentle referral ask to a happy past client — appreciative and warm, invite them to refer friends or family thinking of buying or selling, with zero pressure.",
+    fallback: {
+      subject: "A quick favor",
+      body: `Hi ${contact.first_name}! I've been thinking about you - hope everything's going great with your home! Quick question: I'm trying to help more families find their perfect home. If you know anyone thinking about buying or selling, I'd love to give them the same experience you had. No pressure at all - just wanted to put it on your radar. ${agentFullName || "Your Agent"}`,
+    },
+  })
+  const message = referralCopy.body
 
   const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
     brokerage_id: brokerageId,

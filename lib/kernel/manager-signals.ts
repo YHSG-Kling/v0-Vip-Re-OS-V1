@@ -253,12 +253,22 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   // The Sphere proposes the lifetime welcome to the client through the gate.
   "sphere_of_influence:deal_closed": async (signal, ctx) => {
     if (!signal.contactId) return null
+    // Brand-voiced via the gateway (them-first, Fair-Housing redrafted), canned line as the floor.
+    const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
+    const welcome = await generateClientMessage({
+      brokerageId: ctx.brokerageId, audience: "buyer",
+      purpose: "Warmly welcome a client into lifetime / past-client status right after their closing — you're now their ongoing home resource (annual value updates, trusted vendors whenever something needs fixing, a real person to call before any move). Genuine, celebratory, no pressure.",
+      fallback: {
+        subject: "Congratulations — and welcome to the family",
+        body: "Congratulations on your closing! From here on I'm your home's ongoing resource — annual value updates, trusted vendors whenever something needs fixing, and a real person to call before any move. Welcome to the family.",
+      },
+    })
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
     const res = await proposeClientMessage({
       brokerageId: ctx.brokerageId, agentKind: "sphere_of_influence", entityType: "contact",
       entityId: signal.contactId, recipientContactId: signal.contactId, audience: "buyer",
-      subject: "Congratulations — and welcome to the family",
-      body: "Congratulations on your closing! From here on I'm your home's ongoing resource — annual value updates, trusted vendors whenever something needs fixing, and a real person to call before any move. Welcome to the family.",
+      subject: welcome.subject,
+      body: welcome.body,
       rationale: `Deal closed (${signal.message}) — Sphere lifetime welcome (signal ${signal.signalType}).`,
       channel: "portal",
     }, ctx.supabase)
