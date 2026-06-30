@@ -104,6 +104,26 @@ export const REAPER_NET: ReaperEntry[] = [
     },
   },
   {
+    domain: "commission_unrecorded",
+    manager: "finance_manager",
+    lane: "proactive",
+    protects: "closed deals with no commission recorded (revenue leak)",
+    run: async (b, svc) => {
+      const { reapCommissionLeaks } = await import("@/lib/finance/commission-leak-reaper")
+      return norm(await reapCommissionLeaks(b, svc))
+    },
+  },
+  {
+    domain: "compliance_flags_stuck",
+    manager: "compliance_officer",
+    lane: "proactive",
+    protects: "raised Fair-Housing/consent flags that sat unreviewed past SLA",
+    run: async (b, svc) => {
+      const { reapStuckComplianceFlags } = await import("@/lib/compliance/compliance-flag-reaper")
+      return norm(await reapStuckComplianceFlags(b, svc))
+    },
+  },
+  {
     domain: "manager_handoffs",
     manager: "data_steward",
     lane: "signals",
