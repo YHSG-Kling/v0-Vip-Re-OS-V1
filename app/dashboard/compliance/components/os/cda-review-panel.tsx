@@ -30,6 +30,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { ShieldCheck, AlertTriangle, CheckCircle, XCircle, Loader2, FileWarning } from "lucide-react"
 import {
   approveCdaAction,
+  brokerSignCdaAction,
   requestCdaChangesAction,
   manualOverrideCdaAction,
 } from "@/app/actions/cda-portal"
@@ -82,6 +83,20 @@ export function CdaReviewPanel() {
     })
   }
 
+  function handleBrokerSign(cdaId: string) {
+    startTransition(async () => {
+      const res = await brokerSignCdaAction({ cdaId })
+      if (res.success) {
+        toast.success("CDA signed — ready to send to the closing agent")
+        void reload()
+      } else {
+        toast.error("error" in res && res.error === "forbidden_broker_only"
+          ? "Only the broker (or a broker/admin) can sign the CDA"
+          : ("error" in res ? res.error : "Signing failed"))
+      }
+    })
+  }
+
   function handleSubmitDialog() {
     if (!activeId) return
     if (mode === "request_changes") {
@@ -109,6 +124,9 @@ export function CdaReviewPanel() {
 
   const submitted = items.filter(i => i.status === "submitted")
   const changesRequested = items.filter(i => i.status === "changes_requested")
+  // Compliance-approved CDAs awaiting the BROKER's signature (the 2nd signature
+  // before the CDA can go to title).
+  const awaitingBrokerSignature = items.filter(i => i.status === "approved" && !i.brokerApprovedAt)
 
   return (
     <Card>
@@ -143,6 +161,12 @@ export function CdaReviewPanel() {
               <div className="pt-3 border-t">
                 <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Awaiting agent revision</p>
                 {changesRequested.map(c => <CdaRow key={c.id} item={c} pending={pending} compact />)}
+              </div>
+            )}
+            {awaitingBrokerSignature.length > 0 && (
+              <div className="pt-3 border-t">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Approved — awaiting broker signature</p>
+                {awaitingBrokerSignature.map(c => <CdaRow key={c.id} item={c} pending={pending} onBrokerSign={handleBrokerSign} compact />)}
               </div>
             )}
           </>
@@ -206,9 +230,10 @@ interface RowProps {
   compact?: boolean
   onApprove?: (id: string) => void
   onOpenDialog?: (id: string, mode: Exclude<Mode, null>) => void
+  onBrokerSign?: (id: string) => void
 }
 
-function CdaRow({ item, pending, compact, onApprove, onOpenDialog }: RowProps) {
+function CdaRow({ item, pending, compact, onApprove, onOpenDialog, onBrokerSign }: RowProps) {
   const sigPassed = item.signatureCheckPassed === true
   const sigFailed = item.signatureCheckPassed === false
   const contractPassed = item.contractCheckPassed === true
@@ -280,6 +305,13 @@ function CdaRow({ item, pending, compact, onApprove, onOpenDialog }: RowProps) {
               <AlertTriangle className="h-3 w-3" /> Override
             </Button>
           )}
+        </div>
+      )}
+      {onBrokerSign && (
+        <div className="shrink-0">
+          <Button size="sm" disabled={pending} onClick={() => onBrokerSign(item.id)} className="gap-1">
+            ✍️ Sign as Broker
+          </Button>
         </div>
       )}
     </div>

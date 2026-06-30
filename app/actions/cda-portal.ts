@@ -50,6 +50,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { revalidatePath } from "next/cache"
+import { canApproveCda, canBrokerSignCda, canSendCdaToTitle } from "@/lib/transactions/cda-signing-policy"
 import { buildCdaContractVerdict, expectedGrossFromTerms, type CdaDiscrepancy } from "@/lib/commission/cda-discrepancy"
 
 const COMPLIANCE_ROLES = new Set([
@@ -506,9 +507,6 @@ export async function approveCdaAction(input: { cdaId: string }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
-  if (!COMPLIANCE_ROLES.has(auth.userType)) {
-    return { success: false as const, error: "forbidden" }
-  }
 
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
@@ -520,12 +518,9 @@ export async function approveCdaAction(input: { cdaId: string }) {
   if (!cda || cda.brokerage_id !== auth.brokerageId) {
     return { success: false as const, error: "not_found" }
   }
-  if (cda.status !== "submitted") {
-    return { success: false as const, error: `cannot_approve_from_status:${cda.status}` }
-  }
-  if (!cda.agent_signed_off_at) {
-    return { success: false as const, error: "agent_signoff_required" }
-  }
+  // Shared state-machine gate (compliance role + submitted status + agent e-signed).
+  const approveVerdict = canApproveCda({ status: cda.status, agentSignedOff: !!cda.agent_signed_off_at, role: auth.userType })
+  if (!approveVerdict.ok) return { success: false as const, error: approveVerdict.error }
   // Approval gate — required signatures/initials must be present on every
   // transaction document, OR a compliance manager must have invoked manual
   // override (with a logged reason). signature_check_passed === null is
@@ -548,14 +543,15 @@ export async function approveCdaAction(input: { cdaId: string }) {
   }
 
   const now = new Date().toISOString()
+  // Compliance APPROVES — it does NOT apply the broker's signature. broker_approved_at
+  // / broker_id are set later by brokerSignCdaAction (a separate, explicit step), and
+  // the cda_delivered milestone completes only when the signed CDA is sent to title.
   await supabase
     .from("closing_disclosure_agreement")
     .update({
       status: "approved",
       compliance_approved_at: now,
       compliance_approved_by: auth.userId,
-      broker_approved_at: now,
-      broker_id: auth.userId,
       updated_at: now,
     })
     .eq("id", cda.id)
@@ -568,15 +564,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
     actedBy: auth.userId,
   })
 
-  // Mark the cda_delivered milestone complete — match by canonical identity
-  // (milestone_type for journey rows, milestone_name for legacy snake_case rows).
-  await supabase
-    .from("transaction_milestones")
-    .update({ status: "completed", completed_at: now })
-    .eq("transaction_id", cda.transaction_id)
-    .or("milestone_type.eq.cda_delivered,milestone_name.eq.cda_delivered")
-
-  // Notify agent.
+  // Notify the agent that compliance cleared it — now awaiting the broker's signature.
   const { data: agentRow } = await supabase
     .from("agents")
     .select("user_id")
@@ -587,14 +575,78 @@ export async function approveCdaAction(input: { cdaId: string }) {
       user_id: agentRow.user_id,
       brokerage_id: cda.brokerage_id,
       type: "cda_approved",
-      title: "CDA approved",
-      body: "Compliance approved your CDA. You're cleared for closing.",
+      title: "CDA approved by compliance",
+      body: "Compliance approved your CDA. The broker will sign it next, then it's sent to the closing agent.",
       entity_type: "transaction",
       entity_id: cda.transaction_id,
       priority: "medium",
       channel: "in_app",
     })
   }
+
+  // Trigger the BROKER signature step — notify the brokerage's broker(s)/admin(s).
+  const { data: brokers } = await supabase
+    .from("users")
+    .select("id")
+    .eq("brokerage_id", cda.brokerage_id)
+    .in("user_type", ["broker", "broker_admin", "admin"])
+    .limit(10)
+  for (const b of (brokers ?? []) as Array<{ id: string }>) {
+    await supabase.from("notifications").insert({
+      user_id: b.id,
+      brokerage_id: cda.brokerage_id,
+      type: "cda_awaiting_broker_signature",
+      title: "✍️ A CDA needs your signature",
+      body: "Compliance approved a Commission Disbursement Authorization. Sign it to authorize the disbursement, then it goes to the closing agent.",
+      entity_type: "transaction",
+      entity_id: cda.transaction_id,
+      priority: "high",
+      channel: "in_app",
+    }).then(() => {}, () => {})
+  }
+
+  revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
+  revalidatePath(`/dashboard/compliance`)
+  return { success: true as const }
+}
+
+// ─── 4c. Broker signs the approved CDA (the final authorization) ─────────────
+// After compliance approval, the BROKER signs the CDA — the second signature (the
+// agent already signed before submitting). Only then can it be sent to title. If an
+// e-sign provider is configured in the brokerage's integration settings, the broker's
+// signature is captured through it; this records the broker sign-off either way.
+export async function brokerSignCdaAction(input: { cdaId: string }) {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+
+  const { data: cda } = await supabase
+    .from("closing_disclosure_agreement")
+    .select("id, transaction_id, brokerage_id, status, broker_approved_at, revision_number")
+    .eq("id", input.cdaId)
+    .maybeSingle()
+  if (!cda || cda.brokerage_id !== auth.brokerageId) {
+    return { success: false as const, error: "not_found" }
+  }
+  // Shared state-machine gate (role + approved status + not-already-signed).
+  const verdict = canBrokerSignCda({ status: cda.status, brokerSigned: !!cda.broker_approved_at, role: auth.userType })
+  if (cda.broker_approved_at) return { success: true as const } // idempotent
+  if (!verdict.ok) return { success: false as const, error: verdict.error }
+
+  const now = new Date().toISOString()
+  await supabase
+    .from("closing_disclosure_agreement")
+    .update({ broker_approved_at: now, broker_id: auth.userId, updated_at: now })
+    .eq("id", cda.id)
+
+  await recordRevision({
+    cdaId: cda.id,
+    revisionNumber: cda.revision_number,
+    status: "approved",
+    action: "approved",
+    notes: "Broker signed the CDA — authorized for delivery to the closing agent.",
+    actedBy: auth.userId,
+  })
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   revalidatePath(`/dashboard/compliance`)
@@ -903,15 +955,16 @@ export async function sendCdaToTitleAction(input: {
 
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
-    .select("id, transaction_id, brokerage_id, status")
+    .select("id, transaction_id, brokerage_id, status, broker_approved_at")
     .eq("id", input.cdaId)
     .maybeSingle()
   if (!cda || cda.brokerage_id !== auth.brokerageId) {
     return { success: false as const, error: "not_found" }
   }
-  if (cda.status !== "approved") {
-    return { success: false as const, error: `cannot_send_from_status:${cda.status}` }
-  }
+  // The signed CDA may only go to title AFTER the broker has signed it (agent
+  // signed before submit → compliance approved → broker signed → then sent).
+  const sendVerdict = canSendCdaToTitle({ status: cda.status, brokerSigned: !!cda.broker_approved_at })
+  if (!sendVerdict.ok) return { success: false as const, error: sendVerdict.error }
 
   const method = input.method ?? "email"
   if (method === "email") {
@@ -929,18 +982,29 @@ export async function sendCdaToTitleAction(input: {
     } catch { /* best-effort — record the send anyway so the agent can fall back */ }
   }
 
+  const sentNow = new Date().toISOString()
   await supabase
     .from("closing_disclosure_agreement")
     .update({
-      sent_to_title_at:        new Date().toISOString(),
+      status:                  "delivered",
+      sent_to_title_at:        sentNow,
       sent_to_title_recipient: input.recipientName
         ? `${input.recipientName} <${input.recipientEmail}>`
         : input.recipientEmail,
       sent_to_title_method:    method,
-      updated_at:              new Date().toISOString(),
+      updated_at:              sentNow,
     })
     .eq("id", cda.id)
 
+  // The cda_delivered milestone completes on actual DELIVERY to title — not at
+  // compliance approval (it used to complete too early, before broker sign + send).
+  await supabase
+    .from("transaction_milestones")
+    .update({ status: "completed", completed_at: sentNow })
+    .eq("transaction_id", cda.transaction_id)
+    .or("milestone_type.eq.cda_delivered,milestone_name.eq.cda_delivered")
+
+  revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   return { success: true as const }
 }
 

@@ -27,6 +27,8 @@ export interface CdaReviewItem {
   propertyAddress:          string | null
   agentName:                string | null
   status:                   string
+  /** Set once the broker has applied their signature (the 2nd signature). */
+  brokerApprovedAt:         string | null
   revisionNumber:           number
   grossCommission:          number | null
   agentNet:                 number | null
@@ -71,10 +73,12 @@ export async function listCdasForComplianceReviewAction(): Promise<{
       gross_commission, agent_net, brokerage_net,
       signature_check_passed, missing_docs, manual_override_by,
       agent_submitted_at, changes_requested_at, changes_requested_notes,
-      preliminary_cd_uploaded_at
+      preliminary_cd_uploaded_at, broker_approved_at
     `)
     .eq("brokerage_id", auth.brokerageId)
-    .or(`status.eq.submitted,and(status.eq.changes_requested,changes_requested_at.gte.${sevenDaysAgo})`)
+    // submitted (compliance review) + recent changes_requested + approved-awaiting-
+    // broker-signature (broker_approved_at null) so the broker can sign in the panel.
+    .or(`status.eq.submitted,and(status.eq.changes_requested,changes_requested_at.gte.${sevenDaysAgo}),and(status.eq.approved,broker_approved_at.is.null)`)
     .order("agent_submitted_at", { ascending: true, nullsFirst: false })
     .limit(50)
 
@@ -156,6 +160,7 @@ export async function listCdasForComplianceReviewAction(): Promise<{
       propertyAddress:          propertyByTxn.get(c.transaction_id) ?? null,
       agentName:                userId ? (nameByUserId.get(userId) ?? null) : null,
       status:                   c.status,
+      brokerApprovedAt:         c.broker_approved_at ?? null,
       revisionNumber:           c.revision_number ?? 1,
       grossCommission:          c.gross_commission,
       agentNet:                 c.agent_net,
