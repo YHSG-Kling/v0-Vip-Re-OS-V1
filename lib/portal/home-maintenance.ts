@@ -1,12 +1,19 @@
 // ─── HOMEOWNERSHIP MAINTENANCE SUGGESTIONS ───────────────────────────────────
-// Pure, import-free engine behind the lifetime portal's maintenance card: given
-// the current month, how long they've owned, and which vendor categories their
-// agent actually has in the marketplace, it returns a prioritized, SEASONAL set
-// of upkeep suggestions — each tagged with the vendor category that does the job,
-// so the card can surface a real "request an intro" to a trusted local pro.
+// Pure engine behind the lifetime portal's maintenance card: given the current
+// month, the home's LOCATION (→ hemisphere + climate zone), how long they've
+// owned, and which vendor categories their agent has in the marketplace, it
+// returns a prioritized, season-AND-climate-aware set of upkeep suggestions —
+// each tagged with the vendor category that does the job.
 //
-// Generic homeowner guidance only (no protected-class signal). The month is an
-// INPUT (resolved by the server component) so this stays deterministic/testable.
+// Location matters: a Phoenix "winter" gets no pipe-freeze warning (it gets a
+// pre-summer A/C push + year-round pest); a coastal home gets storm readiness;
+// the Southern hemisphere's seasons are inverted. Climate is derived by the pure
+// deriveClimate() helper (lib/portal/climate.ts) with a documented seam for a
+// live weather/climate-normals API. Month is an INPUT → deterministic/testable.
+//
+// Generic homeowner guidance only (no protected-class signal).
+
+import { deriveClimate, type ClimateZone, type Hemisphere } from "./climate"
 
 export type Season = "spring" | "summer" | "fall" | "winter"
 
@@ -39,13 +46,17 @@ export interface MaintenanceInput {
   yearsHeld?: number | null
   /** Lowercased vendor-category strings present in the brokerage marketplace. */
   availableVendorCategories?: string[] | null
+  /** The home's location string (address) — derives hemisphere + climate zone. */
+  location?: string | null
 }
 
-export function seasonForMonth(month: number): Season {
+export function seasonForMonth(month: number, hemisphere: Hemisphere = "north"): Season {
   const m = ((Math.trunc(month) - 1) % 12 + 12) % 12 + 1 // clamp to 1..12
-  if (m >= 3 && m <= 5) return "spring"
-  if (m >= 6 && m <= 8) return "summer"
-  if (m >= 9 && m <= 11) return "fall"
+  // Northern-hemisphere mapping; the Southern hemisphere is offset by 6 months.
+  const effective = hemisphere === "south" ? ((m + 6 - 1) % 12) + 1 : m
+  if (effective >= 3 && effective <= 5) return "spring"
+  if (effective >= 6 && effective <= 8) return "summer"
+  if (effective >= 9 && effective <= 11) return "fall"
   return "winter"
 }
 
@@ -70,6 +81,33 @@ const SEASONAL: Record<Season, MaintenanceSuggestion[]> = {
     { key: "winter_electrical", title: "Check detectors & winter electrical load", why: "Test smoke/CO detectors and make sure heaters aren't overloading circuits.", vendorCategory: "electrical", season: "winter", priority: 2 },
     { key: "winter_handyman", title: "Seal drafts around doors & windows", why: "Sealing gaps cuts heating bills and keeps the home comfortable.", vendorCategory: "general_handyman", season: "winter", priority: 3 },
   ],
+}
+
+// Climate-specific suggestions layered onto the seasonal base. Warm/tropical
+// homes don't freeze (drop pipe-insulation) but bake (A/C first) and host pests
+// year-round; coastal homes need storm readiness; cold homes lean into heating.
+function climateSuggestions(season: Season, zone: ClimateZone, stormExposed: boolean): MaintenanceSuggestion[] {
+  const out: MaintenanceSuggestion[] = []
+  const warmish = zone === "warm" || zone === "tropical"
+
+  if (warmish) {
+    // A/C is the priority system in hot climates — surface it most of the year.
+    if (season === "spring" || season === "summer") {
+      out.push({ key: "warm_ac_priority", title: "Service your A/C now — beat the heat", why: "In a hot climate your cooling system works hardest; a tune-up before peak heat prevents a mid-summer failure.", vendorCategory: "hvac", season, priority: 1 })
+    }
+    // Pests stay active year-round in warm/tropical zones.
+    out.push({ key: "warm_pest_yearround", title: "Stay ahead of year-round pests", why: "Warm climates keep insects and rodents active all year — a regular pest plan beats a seasonal one.", vendorCategory: "pest_control", season, priority: 2 })
+  }
+
+  if (stormExposed && (season === "summer" || season === "fall")) {
+    out.push({ key: "storm_readiness", title: "Prep the home for storm season", why: "In a coastal/hurricane-exposed area, secure the roof, clear drains, and check seals before peak storm months.", vendorCategory: "roofing", season, priority: 1 })
+  }
+
+  if (zone === "cold" && season === "winter") {
+    out.push({ key: "cold_roof_snow", title: "Watch for ice dams & roof load", why: "In a cold climate, ice dams and heavy snow can damage the roof — keep gutters clear and watch buildup.", vendorCategory: "roofing", season, priority: 1 })
+  }
+
+  return out
 }
 
 /** Tenure-based, lifespan-driven suggestions (appended when ownership crosses typical service windows). */
@@ -100,19 +138,30 @@ export function hasVendorFor(category: VendorCategory, available?: string[] | nu
 
 export interface MaintenanceDeck {
   season: Season
+  /** Climate zone the deck was tailored to ('temperate' when location unknown). */
+  zone: ClimateZone
+  /** Region resolved from the location (e.g. a US state), for "tailored to {region}" copy. */
+  region: string | null
   suggestions: MaintenanceSuggestion[]
 }
 
 export function maintenanceDeck(input: MaintenanceInput): MaintenanceDeck {
-  const season = seasonForMonth(input.month)
-  const seasonal = SEASONAL[season]
+  const climate = deriveClimate(input.location)
+  const season = seasonForMonth(input.month, climate.hemisphere)
+  const warmish = climate.zone === "warm" || climate.zone === "tropical"
+
+  // Seasonal base — but drop pipe-freeze guidance where it never freezes.
+  const seasonal = SEASONAL[season].filter(
+    (s) => !(warmish && s.key === "winter_plumbing"),
+  )
+  const climateExtra = climateSuggestions(season, climate.zone, climate.stormExposed)
   const tenure = input.yearsHeld && input.yearsHeld > 0 ? tenureSuggestions(Math.floor(input.yearsHeld)) : []
 
-  // Merge, dedupe by vendorCategory+key, sort by priority then keep it short.
-  const merged: MaintenanceSuggestion[] = [...seasonal, ...tenure]
+  // Climate-specific items first (most location-relevant), then seasonal, then tenure.
+  const merged: MaintenanceSuggestion[] = [...climateExtra, ...seasonal, ...tenure]
   const seen = new Set<string>()
   const deduped = merged.filter((s) => (seen.has(s.key) ? false : (seen.add(s.key), true)))
   deduped.sort((a, b) => a.priority - b.priority)
 
-  return { season, suggestions: deduped.slice(0, 5) }
+  return { season, zone: climate.zone, region: climate.region, suggestions: deduped.slice(0, 5) }
 }

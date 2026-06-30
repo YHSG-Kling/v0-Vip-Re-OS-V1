@@ -21,11 +21,13 @@ const SEASON_LABEL: Record<string, string> = {
 export function HomeMaintenanceCard({
   contactId,
   season,
+  region,
   suggestions,
   availableVendorCategories,
 }: {
   contactId: string
   season: string
+  region?: string | null
   suggestions: MaintenanceSuggestion[]
   availableVendorCategories: string[]
 }) {
@@ -49,7 +51,7 @@ export function HomeMaintenanceCard({
           {SEASON_LABEL[season] ?? "Seasonal"} home care
         </CardTitle>
         <p className="text-xs text-muted-foreground">
-          A few things worth doing this season — your agent can connect you with a trusted local pro for any of them.
+          A few things worth doing this season{region ? `, tailored to ${region}` : ""} — your agent can connect you with a trusted local pro for any of them.
         </p>
       </CardHeader>
       <CardContent>

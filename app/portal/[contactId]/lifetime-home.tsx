@@ -92,6 +92,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
     month: new Date().getMonth() + 1,
     yearsHeld: wealth.yearsHeld,
     availableVendorCategories: vendorCategories,
+    location: transaction?.property_address ?? null,
   })
 
   // Lifetime segment decides the nurture lane. A 'relocated' past client (left
@@ -399,6 +400,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
         <HomeMaintenanceCard
           contactId={contactId}
           season={maintenance.season}
+          region={maintenance.region}
           suggestions={maintenance.suggestions}
           availableVendorCategories={vendorCategories}
         />
