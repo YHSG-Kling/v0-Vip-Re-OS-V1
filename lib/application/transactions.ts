@@ -1064,26 +1064,12 @@ export async function calculateCommissions(transactionId: string) {
       )
     }
 
-    writes.push(
-      Promise.resolve(
-        supabase
-          .from("agent_earnings")
-          .upsert(
-            {
-              agent_id: transaction.agent_id,
-              brokerage_id: transaction.brokerage_id,
-              period_type: "ytd",
-              period_label: `${new Date().getFullYear()}`,
-              gross_commission: grossCommission,
-              agent_net: agentNet,
-              brokerage_net: brokerageFee,
-              total_fees: transactionFee,
-              transaction_count: 1,
-            },
-            { onConflict: "agent_id,period_type,period_label" },
-          )
-      )
-    )
+    // NOTE: agent_earnings (the period mtd/ytd dashboard aggregate) is owned and
+    // populated by the earnings-rollup cron, which SUMS agent_commissions across the
+    // period. This manual per-transaction path must NOT upsert agent_earnings — doing
+    // so would overwrite the YTD total with a single deal's values (transaction_count
+    // 1). (Previously this upsert silently failed on a missing unique constraint; now
+    // that the constraint exists it would corrupt the aggregate, so it's removed.)
 
     await Promise.all(writes)
   }

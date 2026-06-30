@@ -16,8 +16,8 @@ export const maxDuration = 300
  * Brokerage P&L Rollup Cron — nightly
  *
  * For each active agent in every brokerage, computes:
- *   gci_gross          = sum(commission_records.gross_commission) for current month
- *   agent_payout       = sum(commission_records.agent_net)
+ *   gci_gross          = sum(agent_commissions.gross_commission) closed this month
+ *   agent_payout       = sum(agent_commissions.agent_commission)
  *   brokerage_gross    = gci_gross - agent_payout
  *   ai_cost_cents      = sum(ai_tool_usage.cost_cents) for this agent this month
  *   fee_income_cents   = sum(agent_fee_charges.amount * 100) where status='paid'
@@ -63,16 +63,18 @@ export async function GET(req: NextRequest) {
 
     for (const agent of agents ?? []) {
       try {
-        // ── GCI from commission_records ──────────────────────────────────────
+        // ── GCI from agent_commissions (the canonical, populated table) ──────
+        // commission_records was never written (dead table) → this P&L showed $0.
+        // GCI is recognized at CLOSE (close_date), not payout.
         const { data: commissions } = await supabase
-          .from("commission_records")
-          .select("gross_commission, agent_net, paid_date")
+          .from("agent_commissions")
+          .select("gross_commission, agent_commission, close_date")
           .eq("agent_id", agent.id)
-          .gte("paid_date", monthStart)
-          .lte("paid_date", monthEnd)
+          .gte("close_date", `${monthStart}T00:00:00Z`)
+          .lte("close_date", `${monthEnd}T23:59:59Z`)
 
         const gciGross    = commissions?.reduce((s, r) => s + (r.gross_commission ?? 0), 0) ?? 0
-        const agentPayout = commissions?.reduce((s, r) => s + (r.agent_net ?? 0), 0) ?? 0
+        const agentPayout = commissions?.reduce((s, r) => s + (r.agent_commission ?? 0), 0) ?? 0
         const brokerageGross = gciGross - agentPayout
         const txCount = commissions?.length ?? 0
 

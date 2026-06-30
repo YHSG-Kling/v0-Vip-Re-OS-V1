@@ -33,9 +33,11 @@ export async function GET(req: NextRequest) {
   let processed = 0
 
   try {
-    const startOfMonth = new Date()
-    startOfMonth.setDate(1)
-    startOfMonth.setHours(0, 0, 0, 0)
+    const now = new Date()
+    const startOfYear = new Date(now.getFullYear(), 0, 1)
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
+    const yearLabel = `${now.getFullYear()}`
+    const monthLabel = startOfMonth.toISOString().slice(0, 7) // YYYY-MM
 
     const { data: agents, error: agentsError } = await supabase
       .from("agents")
@@ -45,36 +47,69 @@ export async function GET(req: NextRequest) {
     if (agentsError) {
       errors.push(`Failed to load agents: ${agentsError.message}`)
     } else {
+      const agg = (rows: Array<{ gross_commission?: number | null; agent_commission?: number | null; brokerage_commission?: number | null }>) => ({
+        gross: rows.reduce((s, r) => s + (r.gross_commission ?? 0), 0),
+        net: rows.reduce((s, r) => s + (r.agent_commission ?? 0), 0),
+        brok: rows.reduce((s, r) => s + (r.brokerage_commission ?? 0), 0),
+        count: rows.length,
+      })
+
       for (const agent of agents ?? []) {
         try {
-          const { data: commissions } = await supabase
-            .from("commission_records")
-            .select("gross_commission, agent_net, paid_date")
+          // Read agent_commissions — the canonical, populated commission table (the
+          // commission engine writes it on close). commission_records was a dead table
+          // (never written), so the old rollup produced $0. Recognize GCI at CLOSE
+          // (close_date is always set; payout via paid_at can lag).
+          const { data: ytdRows } = await supabase
+            .from("agent_commissions")
+            .select("gross_commission, agent_commission, brokerage_commission, close_date")
             .eq("agent_id", agent.id)
-            .gte("paid_date", startOfMonth.toISOString().split("T")[0])
+            .gte("close_date", startOfYear.toISOString())
 
-          if (commissions && commissions.length > 0) {
-            const grossTotal = commissions.reduce((sum, r) => sum + (r.gross_commission ?? 0), 0)
-            const netTotal = commissions.reduce((sum, r) => sum + (r.agent_net ?? 0), 0)
+          if (!ytdRows || ytdRows.length === 0) continue
+          const mtdRows = ytdRows.filter((r) => r.close_date && new Date(r.close_date) >= startOfMonth)
+          const y = agg(ytdRows)
+          const m = agg(mtdRows)
+          const computedAt = new Date().toISOString()
 
-            await supabase
-              .from("agent_monthly_earnings")
-              .upsert(
-                {
-                  agent_id: agent.id,
-                  brokerage_id: agent.brokerage_id,
-                  month_year: startOfMonth.toISOString().split("T")[0].slice(0, 7),
-                  gross_total: grossTotal,
-                  net_total: netTotal,
-                  transaction_count: commissions.length,
-                  updated_at: new Date().toISOString(),
-                },
-                { onConflict: "agent_id,month_year" }
-              )
-              .then(() => {}, () => {})
+          // Populate agent_earnings — THE table the earnings P&L dashboard reads
+          // (period_type mtd/ytd). Without this the dashboard showed $0 on closed
+          // deals because the close path never aggregated agent_commissions here.
+          const upsertEarnings = (period_type: "mtd" | "ytd", period_label: string, a: ReturnType<typeof agg>) =>
+            supabase.from("agent_earnings").upsert(
+              {
+                agent_id: agent.id,
+                brokerage_id: agent.brokerage_id,
+                period_type,
+                period_label,
+                gross_commission: a.gross,
+                agent_net: a.net,
+                brokerage_net: a.brok,
+                total_fees: 0,
+                transaction_count: a.count,
+                computed_at: computedAt,
+              },
+              { onConflict: "agent_id,period_type,period_label" }
+            )
 
-            processed++
-          }
+          await Promise.all([
+            upsertEarnings("ytd", yearLabel, y),
+            upsertEarnings("mtd", monthLabel, m),
+            // Keep agent_monthly_earnings (separate monthly history table) populated too.
+            supabase.from("agent_monthly_earnings").upsert(
+              {
+                agent_id: agent.id,
+                brokerage_id: agent.brokerage_id,
+                month_year: monthLabel,
+                gross_total: m.gross,
+                net_total: m.net,
+                transaction_count: m.count,
+                updated_at: computedAt,
+              },
+              { onConflict: "agent_id,month_year" }
+            ),
+          ])
+          processed++
         } catch (err: any) {
           errors.push(`Agent ${agent.id}: ${err.message}`)
         }
