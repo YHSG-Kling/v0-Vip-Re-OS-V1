@@ -328,6 +328,7 @@
     "test:final-compliance-check": "tsx scripts/final-compliance-check-simulator.ts",
     "test:cda-signing-flow": "tsx scripts/cda-signing-flow-simulator.ts",
     "test:cda-template-fields": "tsx scripts/cda-template-fields-simulator.ts",
+    "test:cda-field-classifier": "tsx scripts/cda-field-classifier-simulator.ts",
     "test:lifetime-segment": "tsx scripts/lifetime-segment-simulator.ts",
     "test:manager-outbound-eval": "tsx scripts/manager-outbound-eval-simulator.ts",
     "test:learning-outcomes": "tsx scripts/learning-outcomes-simulator.ts",

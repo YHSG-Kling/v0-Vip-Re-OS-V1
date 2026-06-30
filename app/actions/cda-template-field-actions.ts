@@ -13,6 +13,8 @@ import {
   type CdaFieldDef,
   type CdaFieldResolution,
 } from "@/lib/transactions/cda-template-fields"
+import { aiClassifyCdaFields, type SuggestedBinding } from "@/lib/transactions/cda-field-classifier"
+import { listPdfFields } from "@/lib/forms/pdf-form-fill"
 
 const FIELD_ADMIN_ROLES = new Set(["compliance_officer", "broker", "broker_admin", "admin", "superadmin"])
 
@@ -101,6 +103,68 @@ export async function saveCdaFieldInputsAction(input: { cdaId: string; agentInpu
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   return { success: true, resolution }
+}
+
+/**
+ * AUTO-BIND (the autonomous-AI step): extract a CDA template PDF's AcroForm fields
+ * and classify each into a SUGGESTED binding (waterfall / transaction / agent_input /
+ * static) for the broker to confirm. Suggestions are NOT persisted here — the broker
+ * reviews + edits, then saves via saveCdaTemplateFieldDefsAction. Honest: if the PDF
+ * has no fillable fields, returns hasAcroForm:false (nothing invented).
+ */
+export async function autoBindCdaTemplateAction(input: { templateId: string }): Promise<
+  | { success: true; suggestions: SuggestedBinding[]; hasAcroForm: boolean; pdfFieldCount: number }
+  | { success: false; error: string }
+> {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false, error: "unauthenticated" }
+  if (!FIELD_ADMIN_ROLES.has(auth.userType)) return { success: false, error: "forbidden" }
+
+  const { data: template } = await supabase
+    .from("brokerage_cda_templates")
+    .select("id, brokerage_id, pdf_url")
+    .eq("id", input.templateId)
+    .maybeSingle()
+  if (!template || template.brokerage_id !== auth.brokerageId) return { success: false, error: "not_found" }
+  if (!template.pdf_url) return { success: false, error: "no_pdf" }
+
+  // Fetch the uploaded PDF bytes (Vercel Blob public URL) and read its AcroForm fields.
+  let fieldNames: string[]
+  try {
+    const res = await fetch(template.pdf_url)
+    if (!res.ok) return { success: false, error: `pdf_fetch_failed_${res.status}` }
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    fieldNames = await listPdfFields(bytes)
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? `pdf_read_failed: ${e.message}` : "pdf_read_failed" }
+  }
+
+  if (fieldNames.length === 0) {
+    return { success: true, suggestions: [], hasAcroForm: false, pdfFieldCount: 0 }
+  }
+
+  const suggestions = await aiClassifyCdaFields(fieldNames)
+  return { success: true, suggestions, hasAcroForm: true, pdfFieldCount: fieldNames.length }
+}
+
+/** Load a template's current field bindings (for the mapping editor). */
+export async function getCdaTemplateFieldDefsAction(input: { templateId: string }): Promise<
+  { success: true; fields: CdaFieldDef[] } | { success: false; error: string }
+> {
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return { success: false, error: "unauthenticated" }
+
+  const { data: template } = await supabase
+    .from("brokerage_cda_templates")
+    .select("id, brokerage_id")
+    .eq("id", input.templateId)
+    .maybeSingle()
+  if (!template || template.brokerage_id !== auth.brokerageId) return { success: false, error: "not_found" }
+
+  const fields = await loadDefs(supabase, input.templateId)
+  return { success: true, fields }
 }
 
 /** Brokerage admin defines (replaces) a template's field bindings. */

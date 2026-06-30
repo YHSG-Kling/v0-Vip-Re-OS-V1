@@ -32,6 +32,7 @@ import {
 import { ALL_US_STATES } from "@/lib/state-forms/registry"
 import { upload } from "@vercel/blob/client"
 import { toast } from "sonner"
+import { CdaFieldMappingEditor } from "./cda-field-mapping-editor"
 
 type Template = {
   id: string
@@ -64,6 +65,7 @@ export function CdaSetupPanel() {
   const [tplState, setTplState] = useState<string>("")
   const [tplType, setTplType] = useState<string>("")
   const [uploading, setUploading] = useState(false)
+  const [mappingTemplate, setMappingTemplate] = useState<Template | null>(null)
 
   useEffect(() => { void reload() }, [])
 
@@ -217,22 +219,38 @@ export function CdaSetupPanel() {
             ) : (
               <div className="space-y-2">
                 {templates.map(t => (
-                  <div key={t.id} className="flex items-center gap-3 rounded-lg border p-3">
-                    <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-medium text-sm">{t.name}</span>
-                        {t.state && <Badge variant="outline" className="text-[10px]">{t.state}</Badge>}
-                        {t.transaction_type && <Badge variant="outline" className="text-[10px]">{t.transaction_type}</Badge>}
+                  <div key={t.id} className="space-y-2">
+                    <div className="flex items-center gap-3 rounded-lg border p-3">
+                      <FileText className="h-5 w-5 text-muted-foreground shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-medium text-sm">{t.name}</span>
+                          {t.state && <Badge variant="outline" className="text-[10px]">{t.state}</Badge>}
+                          {t.transaction_type && <Badge variant="outline" className="text-[10px]">{t.transaction_type}</Badge>}
+                        </div>
+                        {t.description && <p className="text-xs text-muted-foreground truncate">{t.description}</p>}
                       </div>
-                      {t.description && <p className="text-xs text-muted-foreground truncate">{t.description}</p>}
+                      {t.pdf_url && (
+                        <a href={t.pdf_url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground">
+                          <ExternalLink className="h-4 w-4" />
+                        </a>
+                      )}
+                      <Button
+                        variant={mappingTemplate?.id === t.id ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setMappingTemplate(mappingTemplate?.id === t.id ? null : t)}
+                      >
+                        Map fields
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => void handleDeactivate(t.id)}>Deactivate</Button>
                     </div>
-                    {t.pdf_url && (
-                      <a href={t.pdf_url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground">
-                        <ExternalLink className="h-4 w-4" />
-                      </a>
+                    {mappingTemplate?.id === t.id && (
+                      <CdaFieldMappingEditor
+                        templateId={t.id}
+                        templateName={t.name}
+                        onClose={() => setMappingTemplate(null)}
+                      />
                     )}
-                    <Button variant="ghost" size="sm" onClick={() => void handleDeactivate(t.id)}>Deactivate</Button>
                   </div>
                 ))}
               </div>
