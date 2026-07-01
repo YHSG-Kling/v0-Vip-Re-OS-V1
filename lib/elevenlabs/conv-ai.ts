@@ -673,5 +673,18 @@ function buildToolsConfig() {
       },
       required: ["campaign_name", "platform", "objective"],
     },
+    {
+      type: "webhook",
+      name: "run_team_command",
+      description:
+        "Run a TEAM command — the manager team coordinates and acts. Use this for the agent's higher-level spoken requests that aren't a simple CRM lookup: the morning stand-up / what to do today / priorities; knocking out or rejecting a stand-up item by rank (\"do number two\"); what's happening near an area or with a named client; cutting a promo reel for a listing address; sending a follow-up to a named person; starting marketing for someone; or finding a buyer properties. Pass the agent's request VERBATIM as `command`. Read back the spoken result.",
+      url: webhookUrl,
+      method: "POST",
+      auth,
+      parameters: {
+        command: { type: "string", description: "The agent's request, verbatim (e.g. \"what should I do today\", \"cut a reel for 12 Oak Street\", \"follow up with the Hendersons\", \"what do you know about the Garcias\")" },
+      },
+      required: ["command"],
+    },
   ]
 }

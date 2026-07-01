@@ -157,6 +157,48 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ result })
 }
 
+// ─── run_team_command — bridge the voice overlay to the shared team-command router ──
+// Gives the floating ElevenLabs voice admin the SAME team-coordination commands the text
+// command bar has (stand-up, cut a promo, follow up, start marketing, find properties,
+// area/team query), via the one shared parser + dispatcher. The spoken request is parsed
+// deterministically; an unrecognized request falls back to the assistant chat path.
+async function runTeamCommandTool(
+  command: string,
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  if (!command) return { error: "command required", spoken_summary: "What would you like the team to do?" }
+  if (!session.brokerage_id) return { error: "no brokerage on session" }
+
+  const { parseTeamCommandText } = await import("@/lib/voice/parse-team-command")
+  const parsed = parseTeamCommandText(command)
+  if (!parsed) {
+    return { handled: false, spoken_summary: "I didn't catch a team command in that — try \"what should I do today\", \"cut a reel for 12 Oak Street\", or \"follow up with the Hendersons\"." }
+  }
+
+  const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
+  const result = await dispatchTeamCommand(
+    parsed.name,
+    parsed.params,
+    { brokerageId: session.brokerage_id, agentUserId: session.user_id },
+    supabase,
+  )
+
+  // Surface the spoken action on the manager bus, like every other voice action.
+  try {
+    const { surfaceVoiceActionOnBus } = await import("@/lib/voice/voice-bus")
+    await surfaceVoiceActionOnBus({
+      brokerageId: session.brokerage_id,
+      tool: "create_task", // generic owner (deal_coordinator) for a spoken team command
+      message: `Voice admin ran team command "${parsed.name}": ${result.spoken.slice(0, 80)}`,
+      entityType: "voice_command", entityId: null,
+      payload: { command_name: parsed.name },
+    }, supabase)
+  } catch { /* visibility best-effort */ }
+
+  return { handled: true, success: result.ok, command: parsed.name, spoken_summary: result.spoken, data: result.data ?? null }
+}
+
 // ─── Tool implementations ────────────────────────────────────────────────────
 
 async function runTool(
@@ -200,6 +242,9 @@ async function runTool(
         session,
         supabase,
       )
+
+    case "run_team_command":
+      return runTeamCommandTool(String(params.command ?? "").trim(), session, supabase)
 
     case "get_active_listings":
       return getActiveListings(session, supabase)
