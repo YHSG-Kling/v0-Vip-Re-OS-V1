@@ -212,7 +212,7 @@
     "test:ai-copy": "tsx scripts/ai-copy-simulator.ts",
     "test:campaign-center": "tsx scripts/campaign-center-simulator.ts",
     "test:reverse-prospecting": "tsx scripts/reverse-prospecting-simulator.ts",
-    "test:cash-buyer-match": "tsx scripts/cash-buyer-match-simulator.ts",
+    "test:investor-offmarket": "tsx scripts/investor-offmarket-simulator.ts",
     "test:vendor-orchestration": "tsx scripts/vendor-orchestration-simulator.ts",
     "test:objection-library": "tsx scripts/objection-library-simulator.ts",
     "test:referral-radar": "tsx scripts/referral-radar-simulator.ts",

@@ -24,8 +24,6 @@ export interface RelistRecoveryRunResult {
   scanned: number
   recovered: number
   callsRouted: number
-  /** Listings for which a cash-buyer disposition option was auto-prepared (non-sending). */
-  cashBuyersPrepared: number
 }
 
 const RELIST_STATUSES = ["expired", "withdrawn", "cancelled", "canceled"]
@@ -33,15 +31,14 @@ const RELIST_STATUSES = ["expired", "withdrawn", "cancelled", "canceled"]
 export async function runRelistRecovery(input: RelistRecoveryRunInput, client?: Svc): Promise<RelistRecoveryRunResult> {
   const svc = client ?? createServiceClient()
   const now = input.now ?? new Date().toISOString()
-  const out: RelistRecoveryRunResult = { scanned: 0, recovered: 0, callsRouted: 0, cashBuyersPrepared: 0 }
+  const out: RelistRecoveryRunResult = { scanned: 0, recovered: 0, callsRouted: 0 }
 
   const windowStart = new Date(new Date(now).getTime() - FOLLOWUP_WINDOW_DAYS * 86_400_000).toISOString()
 
   // OUR off-market listings: a seller contact (has a portal) AND a listing agent to recover.
-  // The property facts (city/beds/sqft/year) feed the cash-buyer disposition prep below.
   const { data: listings } = await svc
     .from("listings")
-    .select("id, address, city, state, zip, bedrooms, bathrooms, sqft, year_built, property_type, status, seller_contact_id, agent_id, stage_updated_at, updated_at")
+    .select("id, address, status, seller_contact_id, agent_id, stage_updated_at, updated_at")
     .eq("brokerage_id", input.brokerageId)
     .in("status", RELIST_STATUSES)
     .not("seller_contact_id", "is", null)
@@ -63,32 +60,8 @@ export async function runRelistRecovery(input: RelistRecoveryRunInput, client?: 
       plan,
       copyGenerator: input.copyGenerator,
     })
+    if (r.proposed) out.recovered++
     if (r.callRouted) out.callsRouted++
-    if (r.proposed) {
-      out.recovered++
-      // AUTONOMOUS, WITHIN-DOMAIN: the seller couldn't move this listing retail. The moment recovery is
-      // first proposed, the Listing Concierge ALSO prepares a fast-sale option — a ranked list of nearby
-      // CASH INVESTORS — so the agent can offer "or I have cash buyers who'd take it as-is" in the same
-      // re-launch conversation. Fires ONCE per listing (gated on the first proposal, so the cron doesn't
-      // re-spend), NON-SENDING (just intelligence), PROVIDER-GATED (BatchData unset/error → honest skip),
-      // idempotent (cash_buyer_matches is unique per listing). No cross-manager trigger — this is the
-      // Concierge working its own listing.
-      try {
-        const { runCashBuyerMatch } = await import("@/lib/disposition/cash-buyer-match-runner")
-        const m = await runCashBuyerMatch(svc as any, {
-          brokerageId: input.brokerageId,
-          listingId: l.id,
-          subject: {
-            street: l.address ?? "",
-            city: l.city ?? null, state: l.state ?? null, zip: l.zip ?? null,
-            bedrooms: l.bedrooms ?? null, bathrooms: l.bathrooms ?? null,
-            livingAreaSqft: l.sqft ?? null, yearBuilt: l.year_built ?? null,
-            propertyTypeDetail: l.property_type ?? null,
-          },
-        })
-        if (m.ok) out.cashBuyersPrepared++
-      } catch { /* best-effort — the relist recovery still went out */ }
-    }
   }
 
   return out

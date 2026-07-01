@@ -4,6 +4,7 @@ import { BuyerOverviewClient }      from "./buyer-overview-client"
 import { SellerLifetimeOverview }   from "./seller-lifetime-overview"
 import { getBuyerEnabledGates }     from "@/app/actions/buyer-lifecycle-core"
 import { ContactQuickActions }      from "@/components/contact/ContactQuickActions"
+import { InvestorDealsPanel }        from "@/components/contact/investor-deals-panel"
 import { assertCanActOnContact }    from "@/lib/auth/contact-access"
 
 /**
@@ -84,6 +85,14 @@ export default async function ContactDetailPage({ params }: PageProps) {
           buyerStage={contact.buyer_stage ?? null}
         />
       </div>
+
+      {/* Investor off-market deal finder — buyer-side match against our scraped off-market inventory.
+          Regular buyers get MLS matches; investors get off-market. Shown only for investor contacts. */}
+      {contact.contact_type === "investor" && (
+        <div className="px-4 pt-3">
+          <InvestorDealsPanel contactId={contactId} />
+        </div>
+      )}
 
       {contact.buyer_stage ? (
         <BuyerOverviewClient
