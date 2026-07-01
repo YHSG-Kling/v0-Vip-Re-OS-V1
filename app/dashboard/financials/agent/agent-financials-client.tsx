@@ -60,6 +60,7 @@ import {
   PlanningAiSummaryPanel,
 } from "../components/planning"
 import { MyProfitLossPanel } from "../components/my-profit-loss-panel"
+import { MyCommissionsDisputePanel } from "../components/my-commissions-dispute-panel"
 import { BillingSummaryCard } from "./components/billing-summary-card"
 import { CommissionCalculatorCard } from "./components/commission-calculator-card"
 import { BudgetPlannerCard } from "./components/budget-planner-card"
@@ -450,6 +451,9 @@ export function AgentFinancialsClient({
 
         {/* My monthly P&L snapshot + AI-tool ROI (agent-facing; was broker-only) */}
         <MyProfitLossPanel />
+
+        {/* Review my commissions + dispute one that looks wrong */}
+        <MyCommissionsDisputePanel />
 
         {/* P&L Summary */}
         <Card>

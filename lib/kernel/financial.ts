@@ -38,8 +38,8 @@ import { processKernelEvent } from "./notification-engine"
 const COMMISSION_STATUS_TRANSITIONS: Record<string, string[]> = {
   pending:    ["approved", "disputed"],
   approved:   ["paid", "disputed"],
-  paid:       [],                      // terminal
-  disputed:   [],                      // terminal
+  paid:       [],                              // terminal (disburse via payment tracking)
+  disputed:   ["approved", "pending"],         // resolve: uphold/correct → approved, or reopen → pending
 }
 
 const VALID_EXPENSE_CATEGORIES = [
@@ -831,6 +831,115 @@ export async function markCommissionPaid(
       success: true,
       data: { commissionId, paidAt, status: newStatus },
     }
+  } catch (error) {
+    return { success: false, error: String(error) }
+  }
+}
+
+/**
+ * markCommissionDisputed — the AGENT (or a broker on their behalf) disputes a commission they believe
+ * is wrong (bad split, wrong amount, missing adjustment). Transition pending|approved → disputed with
+ * a required reason. Gated: the OWNING agent, or a broker/admin. A paid commission can't be disputed
+ * here (money already moved — that's a clawback, out of scope). Emits COMMISSION_DISPUTED.
+ */
+export async function markCommissionDisputed(input: {
+  ctx: FinancialActorContext
+  commissionId: string
+  brokerageId: string
+  reason: string
+}): Promise<KernelFinancialResult<{ commissionId: string; status: string }>> {
+  const { ctx, commissionId, brokerageId, reason } = input
+  const supabase = createServiceClient()
+  try {
+    const trimmed = (reason ?? "").trim()
+    if (trimmed.length < 5) return { success: false, error: "A dispute reason is required" }
+
+    const { data: commission } = await supabase
+      .from("agent_commissions")
+      .select("id, agent_id, status")
+      .eq("id", commissionId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (!commission) return { success: false, error: "Commission not found" }
+
+    // Gate: the owning agent, or a broker/admin.
+    const isOwner = ctx.agentId != null && ctx.agentId === commission.agent_id
+    const isBroker = ["broker", "admin", "superadmin"].includes(ctx.userType)
+    if (!isOwner && !isBroker) return { success: false, error: "Only the owning agent or a broker can dispute this commission" }
+
+    if (!COMMISSION_STATUS_TRANSITIONS[commission.status]?.includes("disputed")) {
+      return { success: false, error: `Cannot dispute a ${commission.status} commission` }
+    }
+
+    const now = new Date().toISOString()
+    await supabase
+      .from("agent_commissions")
+      .update({ status: "disputed", dispute_reason: trimmed, disputed_at: now, disputed_by: ctx.userId, dispute_resolution: null, dispute_resolved_at: null, updated_at: now })
+      .eq("id", commissionId)
+
+    await supabase.from("lifecycle_events").insert({
+      entity_type: "agent_commission", entity_id: commissionId,
+      event_type: KernelEvent.COMMISSION_DISPUTED, metadata: { reason: trimmed, disputedBy: ctx.userId }, created_at: now,
+    }).then(() => {}, () => {})
+
+    return { success: true, data: { commissionId, status: "disputed" } }
+  } catch (error) {
+    return { success: false, error: String(error) }
+  }
+}
+
+/**
+ * resolveCommissionDispute — a broker resolves a disputed commission: UPHELD/CORRECTED → approved
+ * (the amount stands or was fixed and is now authorized), or REOPENED → pending (send it back through
+ * calc/approval). Broker/admin only. Transition disputed → approved|pending.
+ */
+export async function resolveCommissionDispute(input: {
+  ctx: FinancialActorContext
+  commissionId: string
+  brokerageId: string
+  resolution: "upheld" | "corrected" | "reopened"
+  notes?: string
+}): Promise<KernelFinancialResult<{ commissionId: string; status: string }>> {
+  const { ctx, commissionId, brokerageId, resolution, notes } = input
+  const supabase = createServiceClient()
+  try {
+    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+      return { success: false, error: "Only a broker can resolve a dispute" }
+    }
+    const { data: commission } = await supabase
+      .from("agent_commissions")
+      .select("id, status")
+      .eq("id", commissionId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (!commission) return { success: false, error: "Commission not found" }
+    if (commission.status !== "disputed") return { success: false, error: "Only a disputed commission can be resolved" }
+
+    const nextStatus = resolution === "reopened" ? "pending" : "approved"
+    if (!COMMISSION_STATUS_TRANSITIONS["disputed"].includes(nextStatus)) {
+      return { success: false, error: `Invalid resolution transition disputed → ${nextStatus}` }
+    }
+
+    const now = new Date().toISOString()
+    await supabase
+      .from("agent_commissions")
+      .update({
+        status: nextStatus,
+        dispute_resolution: resolution,
+        dispute_resolved_at: now,
+        dispute_resolved_by: ctx.userId,
+        ...(nextStatus === "approved" ? { approved_at: now, approved_by: ctx.userId } : {}),
+        updated_at: now,
+      })
+      .eq("id", commissionId)
+
+    await supabase.from("lifecycle_events").insert({
+      entity_type: "agent_commission", entity_id: commissionId,
+      event_type: nextStatus === "approved" ? KernelEvent.COMMISSION_APPROVED : KernelEvent.COMMISSION_CALCULATED,
+      metadata: { dispute_resolution: resolution, notes: notes ?? null, resolvedBy: ctx.userId }, created_at: now,
+    }).then(() => {}, () => {})
+
+    return { success: true, data: { commissionId, status: nextStatus } }
   } catch (error) {
     return { success: false, error: String(error) }
   }

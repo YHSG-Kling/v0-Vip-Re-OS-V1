@@ -18,13 +18,18 @@ const fails: string[] = []
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) } }
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
-// The REAL production tier feature objects (subscription_tiers.features).
+// The REAL production tier feature objects (subscription_tiers.features), AFTER the "all tools to
+// every tier" packaging (m251): every tier carries the full TOOL capability set; tiers differ only by
+// SCALE (max_agents/max_brokerages) and the multi-location-only scale flags.
+const TOOLS = { portal: true, basic_ai: true, core_crm: true, team_features: true, accounting_sync: true, compliance: true }
 const TIERS: Record<string, Record<string, boolean>> = {
-  solo_agent:    { portal: true, basic_ai: true, core_crm: true, team_features: false, accounting_sync: false },
-  team:          { portal: true, basic_ai: true, core_crm: true, team_features: true, accounting_sync: false },
-  brokerage:     { portal: true, basic_ai: true, core_crm: true, compliance: true, team_features: true, accounting_sync: true },
-  multi_location:{ portal: true, basic_ai: true, core_crm: true, compliance: true, team_features: true, usage_metering: true, accounting_sync: true, multi_brokerage: true },
+  solo_agent:    { ...TOOLS },
+  team:          { ...TOOLS },
+  brokerage:     { ...TOOLS },
+  multi_location:{ ...TOOLS, usage_metering: true, multi_brokerage: true },
 }
+// Max seats per tier — the REAL differentiator now (max_agents).
+const MAX_AGENTS: Record<string, number | null> = { solo_agent: 1, team: 10, brokerage: null, multi_location: null }
 
 function main() {
   console.log("\n[isTierFeatureIncluded · pure — object shape]")
@@ -41,14 +46,15 @@ function main() {
   check("null ⇒ not included", isTierFeatureIncluded(null, "x") === false)
   check("string ⇒ not included", isTierFeatureIncluded("accounting_sync", "accounting_sync") === false)
 
-  console.log("\n[the REAL per-tier entitlement matrix resolves correctly]")
-  check("solo_agent is DENIED accounting_sync (base plan)", isTierFeatureIncluded(TIERS.solo_agent, "accounting_sync") === false)
-  check("solo_agent is DENIED team_features", isTierFeatureIncluded(TIERS.solo_agent, "team_features") === false)
-  check("team GETS team_features", isTierFeatureIncluded(TIERS.team, "team_features") === true)
-  check("team is DENIED accounting_sync", isTierFeatureIncluded(TIERS.team, "accounting_sync") === false)
-  check("brokerage GETS accounting_sync + compliance", isTierFeatureIncluded(TIERS.brokerage, "accounting_sync") === true && isTierFeatureIncluded(TIERS.brokerage, "compliance") === true)
-  check("multi_location GETS usage_metering + multi_brokerage", isTierFeatureIncluded(TIERS.multi_location, "usage_metering") === true && isTierFeatureIncluded(TIERS.multi_location, "multi_brokerage") === true)
-  check("EVERY tier gets core_crm (universal)", Object.values(TIERS).every((t) => isTierFeatureIncluded(t, "core_crm") === true))
+  console.log("\n[ALL TOOLS to EVERY tier — differentiation is SCALE, not feature locks (m251 packaging)]")
+  const ALL_TOOLS = ["portal", "basic_ai", "core_crm", "team_features", "accounting_sync", "compliance"]
+  check("solo_agent NOW GETS accounting_sync (all tools)", isTierFeatureIncluded(TIERS.solo_agent, "accounting_sync") === true)
+  check("solo_agent NOW GETS team_features + compliance", isTierFeatureIncluded(TIERS.solo_agent, "team_features") === true && isTierFeatureIncluded(TIERS.solo_agent, "compliance") === true)
+  check("team GETS accounting_sync (previously locked)", isTierFeatureIncluded(TIERS.team, "accounting_sync") === true)
+  check("EVERY tier gets EVERY tool capability", Object.values(TIERS).every((t) => ALL_TOOLS.every((k) => isTierFeatureIncluded(t, k) === true)))
+  check("multi_location still owns the SCALE flags (usage_metering + multi_brokerage)", isTierFeatureIncluded(TIERS.multi_location, "usage_metering") === true && isTierFeatureIncluded(TIERS.multi_location, "multi_brokerage") === true)
+  check("non-multi tiers do NOT get multi_brokerage (scale-gated)", !isTierFeatureIncluded(TIERS.solo_agent, "multi_brokerage") && !isTierFeatureIncluded(TIERS.team, "multi_brokerage") && !isTierFeatureIncluded(TIERS.brokerage, "multi_brokerage"))
+  check("SCALE is the differentiator — seats step 1 → 10 → unlimited", MAX_AGENTS.solo_agent === 1 && MAX_AGENTS.team === 10 && MAX_AGENTS.brokerage === null)
 
   console.log("\n[the resolver no longer calls .includes() on the object (the bug)]")
   const billing = src("lib/kernel/billing.ts")

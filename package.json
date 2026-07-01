@@ -24,6 +24,7 @@
     "test:cda-commission-approval": "tsx scripts/cda-commission-approval-simulator.ts",
     "test:commission-set-in-stone": "tsx scripts/commission-set-in-stone-simulator.ts",
     "test:commission-tracking": "tsx scripts/commission-tracking-reconcile-simulator.ts",
+    "test:commission-dispute": "tsx scripts/commission-dispute-simulator.ts",
     "test:manager-governance": "tsx scripts/manager-governance-scorecard-simulator.ts",
     "test:tier-entitlement": "tsx scripts/tier-entitlement-simulator.ts",
     "test:tax-planning": "tsx scripts/tax-planning-simulator.ts",

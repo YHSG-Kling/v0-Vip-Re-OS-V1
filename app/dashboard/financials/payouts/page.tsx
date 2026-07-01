@@ -11,6 +11,7 @@ import {
   type FinancialAction,
 } from '../components/os'
 import { loadCommissionQueueAction } from '@/app/actions/financial-kernel'
+import { CommissionDisputeQueue } from '../components/commission-dispute-queue'
 
 export const dynamic = 'force-dynamic'
 
@@ -153,6 +154,9 @@ export default async function PayoutsPage() {
           totalBlocked: 0,
         }}
       />
+
+      {/* Disputed commissions awaiting broker resolution (uphold / correct / reopen). */}
+      <CommissionDisputeQueue brokerageId={profile.brokerage_id} />
 
       {/* Commission Records */}
       <Card>

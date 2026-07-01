@@ -22,6 +22,8 @@ import {
   recalculateCommissionState,
   markCommissionApproved,
   markCommissionPaid,
+  markCommissionDisputed,
+  resolveCommissionDispute,
   createExpenseRecord,
   exportFinancialReport,
   emailFinancialReport,
@@ -215,6 +217,71 @@ export async function markCommissionPaidAction(
     return await markCommissionPaid({ ...input, ctx })
   } catch (error) {
     return { success: false, error: String(error) }
+  }
+}
+
+/** The agent (or a broker on their behalf) disputes a commission they believe is wrong. */
+export async function fileCommissionDisputeAction(input: { commissionId: string; brokerageId: string; reason: string }) {
+  try {
+    const ctx = await getFinancialActorContext()
+    return await markCommissionDisputed({ ctx, commissionId: input.commissionId, brokerageId: input.brokerageId, reason: input.reason })
+  } catch (error) {
+    return { success: false, error: String(error) }
+  }
+}
+
+/** A broker resolves a disputed commission: uphold/correct → approved, or reopen → pending. */
+export async function resolveCommissionDisputeAction(input: { commissionId: string; brokerageId: string; resolution: "upheld" | "corrected" | "reopened"; notes?: string }) {
+  try {
+    const ctx = await getFinancialActorContext()
+    return await resolveCommissionDispute({ ctx, commissionId: input.commissionId, brokerageId: input.brokerageId, resolution: input.resolution, notes: input.notes })
+  } catch (error) {
+    return { success: false, error: String(error) }
+  }
+}
+
+/** The agent's own commissions they can dispute (pending/approved) or that are already disputed. */
+export async function loadMyDisputableCommissionsAction() {
+  try {
+    const ctx = await getFinancialActorContext()
+    if (!ctx.agentId) return { success: false as const, error: "no_agent_context" }
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+    const { data, error } = await svc
+      .from("agent_commissions")
+      .select("id, transaction_id, gross_commission, agent_commission, agent_split_percent, status, close_date, dispute_reason, dispute_resolution, dispute_resolved_at")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("agent_id", ctx.agentId)
+      .in("status", ["pending", "approved", "disputed"])
+      .order("close_date", { ascending: false, nullsFirst: false })
+      .limit(50)
+    if (error) return { success: false as const, error: error.message }
+    return { success: true as const, brokerageId: ctx.brokerageId, commissions: data ?? [] }
+  } catch (error) {
+    return { success: false as const, error: String(error) }
+  }
+}
+
+/** Broker dispute queue — the disputed agent_commissions awaiting resolution. */
+export async function loadCommissionDisputesAction() {
+  try {
+    const ctx = await getFinancialActorContext()
+    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+      return { success: false as const, error: "forbidden" }
+    }
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+    const { data, error } = await svc
+      .from("agent_commissions")
+      .select("id, agent_id, transaction_id, gross_commission, agent_commission, agent_split_percent, status, dispute_reason, disputed_at, disputed_by")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("status", "disputed")
+      .order("disputed_at", { ascending: true })
+      .limit(100)
+    if (error) return { success: false as const, error: error.message }
+    return { success: true as const, disputes: data ?? [] }
+  } catch (error) {
+    return { success: false as const, error: String(error) }
   }
 }
 
