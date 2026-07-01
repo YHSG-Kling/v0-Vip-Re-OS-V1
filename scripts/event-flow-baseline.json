@@ -1,5 +1,6 @@
 [
   "agent.delegated_to_ai",
+  "commission.paid",
   "image.generated",
   "listing.stage_overridden",
   "offer.created",
