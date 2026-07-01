@@ -310,6 +310,18 @@ export async function advanceStage(params: {
           }).then(() => {}, () => {})
         }
       }
+
+      // ONE LOCK — the bridge (agent_commissions) is now finalized; lock the LEDGER (commissions +
+      // commission_distributions) in the SAME step so the two trackings can never disagree on a
+      // closed deal. Reuses the canonical payment-tracker per ledger row (correct distributions +
+      // commission.paid event). Idempotent + best-effort; a reaper heals any historical drift.
+      const { reconcileCommissionTrackingAtClose } = await import("@/lib/commission/reconcile-tracking")
+      await reconcileCommissionTrackingAtClose(supabase, {
+        transactionId: params.transactionId,
+        brokerageId:   params.brokerageId,
+        actorUserId:   params.userId,
+        paidAt,
+      })
     } catch (e) {
       console.error("[stage-progression] commission finalize-on-close failed:", e)
     }

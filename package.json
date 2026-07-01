@@ -23,6 +23,7 @@
     "test:social-cadence": "tsx scripts/social-cadence-simulator.ts",
     "test:cda-commission-approval": "tsx scripts/cda-commission-approval-simulator.ts",
     "test:commission-set-in-stone": "tsx scripts/commission-set-in-stone-simulator.ts",
+    "test:commission-tracking": "tsx scripts/commission-tracking-reconcile-simulator.ts",
     "test:lead-flow": "tsx scripts/lead-flow-e2e.ts",
     "test:render": "tsx scripts/composition-render-simulator.ts",
     "test:geo": "tsx scripts/geo-landing-simulator.ts",

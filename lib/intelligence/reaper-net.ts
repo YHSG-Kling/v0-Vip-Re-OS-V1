@@ -124,6 +124,16 @@ export const REAPER_NET: ReaperEntry[] = [
     },
   },
   {
+    domain: "commission_tracking_drift",
+    manager: "finance_manager",
+    lane: "proactive",
+    protects: "closed deals where the earnings record + the disbursement ledger disagree on paid",
+    run: async (b, svc) => {
+      const { reapCommissionTrackingDrift } = await import("@/lib/finance/commission-tracking-reaper")
+      return norm(await reapCommissionTrackingDrift(b, svc))
+    },
+  },
+  {
     domain: "compliance_flags_stuck",
     manager: "compliance_officer",
     lane: "proactive",
