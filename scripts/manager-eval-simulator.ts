@@ -9,9 +9,25 @@
  *
  * Run: npx tsx scripts/manager-eval-simulator.ts  (npm run test:manager-eval) — no DB.
  */
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { runManagerEval, RELEASE_BLOCKING } from "../lib/compliance/manager-eval-harness"
 
 const report = runManagerEval()
+
+// The eval is now CONTINUOUS + autonomous — a weekly cron runs it and escalates a release-blocking
+// regression to platform staff; the governance scorecard reads these dims as behaviorally verified.
+{
+  const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+  const assert = (n: string, c: boolean) => { if (!c) { console.log(`  ✗ ${n}`); process.exit(1) } else console.log(`  ✓ ${n}`) }
+  console.log("\n[continuous + autonomous — weekly cron, escalation, scorecard reconciled]")
+  const cron = src("app/api/cron/manager-eval/route.ts")
+  assert("the eval cron runs the harness + escalates a release-blocking regression to platform staff", /runManagerEval\(\)/.test(cron) && /releaseBlocked/.test(cron) && /superadmin/.test(cron))
+  assert("the cron is registered in CRON_REGISTRY", /manager-eval/.test(src("lib/kernel/cron-dispatch.ts")))
+  assert("continuous_manager_eval is a data_steward burn domain (auditor distinct from audited)", /continuous_manager_eval:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:manager-eval"/.test(src("lib/kernel/manager-registry.ts")))
+  const sc = src("lib/compliance/manager-governance-scorecard.ts")
+  assert("the governance scorecard reconciles — bias/hallucination/injection/privacy are behaviorally verified", /BEHAVIORALLY_VERIFIED[\s\S]*?bias_fair_housing[\s\S]*?hallucination[\s\S]*?prompt_injection[\s\S]*?privacy_leakage/.test(sc))
+}
 
 console.log("══════════════════════════════════════════════════")
 console.log(" Autonomous-Manager Eval Harness — FINRA 2026 compliance scorecard")

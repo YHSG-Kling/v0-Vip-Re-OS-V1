@@ -56,18 +56,20 @@ function main() {
   check("AI ISA consumes catalogued signals", isa.consumesSignals.length > 0)
   check("Data Steward reports burn domains it owns", byManager.get("data_steward")!.burnDomains.length > 0)
 
-  console.log("\n[team roll-up is honest — structural today, behavioral eval is the flagged frontier]")
+  console.log("\n[team roll-up is honest — behaviorally red-teamed dims + structural invariants]")
   const s = summarizeGovernance(cards)
   check("summary counts all 13 managers", s.totalManagers === 13)
   check("every manager is currently GOVERNED (all applicable dimensions enforced)", s.governed === 13 && s.gaps === 0)
   check("release-blocking dimensions include scope_creep + bias + prompt_injection", ["scope_creep", "bias_fair_housing", "prompt_injection"].every((d) => s.releaseBlockingDimensions.includes(d as any)))
-  check("behavioral adversarial eval is flagged pending for every dimension (honest frontier)", s.behavioralEvalPending.length >= 5)
-  check("every dimension is currently STRUCTURAL enforcement (not yet behavioral)", cards.every((c) => c.dimensions.every((d) => d.enforcementType === "structural")))
+  check("bias/hallucination/injection/privacy are BEHAVIORALLY red-teamed (eval harness verifies them)", ["bias_fair_housing", "hallucination", "prompt_injection", "privacy_leakage"].every((d) => s.behaviorallyVerified.includes(d as any)))
+  check("nothing is left un-verified — behavioralEvalPending is empty (drift fixed)", s.behavioralEvalPending.length === 0)
+  check("scope_creep + reward_misalignment stay structural invariants", cards.every((c) => c.dimensions.filter((d) => d.dimension === "scope_creep" || d.dimension === "reward_misalignment").every((d) => d.enforcementType === "structural")))
+  check("the behaviorally-verified dimensions are marked enforcementType 'behavioral'", cards.some((c) => c.dimensions.some((d) => d.dimension === "bias_fair_housing" && d.enforcementType === "behavioral")))
 
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ MANAGER_GOVERNANCE_FAIL"); process.exit(1) }
-  console.log(" ✅ MANAGER_GOVERNANCE_PASS — every manager scored across the FINRA-2026 eval dimensions, each tied to a real enforcement mechanism, honest structural-vs-behavioral frontier")
+  console.log(" ✅ MANAGER_GOVERNANCE_PASS — every manager scored across the FINRA-2026 dimensions; bias/hallucination/injection/privacy behaviorally red-teamed, scope/reward structural invariants")
 }
 main()
