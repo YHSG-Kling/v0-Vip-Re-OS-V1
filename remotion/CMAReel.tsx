@@ -18,6 +18,7 @@ import { PriceTrendLine } from "./charts/PriceTrendLine"
 import { CompsBar, type CompRow } from "./charts/CompsBar"
 import { DaysOnMarketBars } from "./charts/DaysOnMarketBars"
 import { AffordabilityDonut, type DonutSegmentInput } from "./charts/AffordabilityDonut"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 
 interface Brand {
   primaryColor:  string
@@ -37,6 +38,10 @@ export interface CMAReelProps {
   ctaLabel:       string
   brand:          Brand
   voiceoverUrl?:  string | null
+  /** Tracked outro QR (lib/video/video-qr → mintVideoQr). Default-off: absent → no badge. */
+  qrCodeDataUrl?: string | null
+  qrCaption?:     string
+  mlsClean?:      boolean
 }
 
 const Slide: React.FC<{ from: number; durationInFrames: number; title: string; accent: string; children: React.ReactNode }> = ({
@@ -98,6 +103,8 @@ export const CMAReel: React.FC<CMAReelProps> = (props) => {
         <AbsoluteFill style={{ justifyContent: "center", alignItems: "center", padding: 80 }}>
           <div style={{ color: "#fff", fontSize: 48, fontWeight: 800, fontFamily: "system-ui", textAlign: "center" }}>{props.ctaLabel}</div>
           {brand.agentName && <div style={{ color: brand.accentColor, fontSize: 28, fontFamily: "system-ui", marginTop: 12 }}>{brand.agentName}</div>}
+          <QrOutroBadge qrCodeDataUrl={props.qrCodeDataUrl} caption={props.qrCaption ?? "Scan for your home value"}
+            primaryColor={brand.primaryColor} accentColor={brand.accentColor} mlsClean={props.mlsClean} />
         </AbsoluteFill>
       </Sequence>
 

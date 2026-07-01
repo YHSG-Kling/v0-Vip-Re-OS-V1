@@ -35,6 +35,7 @@ import {
   useCurrentFrame,
 } from "remotion"
 import { ContextCueRow } from "./_BrollLayer"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface TestimonialReelProps {
   /** The testimonial quote — 12-40 words. The composition truncates
@@ -61,6 +62,10 @@ export interface TestimonialReelProps {
   /** Optional voiceover — when the agent reads the testimonial in
    *  their cloned voice. Costs a small ElevenLabs job. */
   voiceoverUrl?:   string
+  /** Tracked outro QR (lib/video/video-qr → mintVideoQr). Default-off: absent → no badge. */
+  qrCodeDataUrl?:  string | null
+  qrCaption?:      string
+  mlsClean?:       boolean
   /** Optional context cues from the content bank. */
   contextCues?:    string[]
   brand: {
@@ -102,6 +107,7 @@ const StarRow: React.FC<{ stars: number; accentColor: string }> = ({ stars, acce
 export const TestimonialReel: React.FC<TestimonialReelProps> = ({
   quote, clientName, clientRole, closingLabel, stars, ctaLabel,
   agentName, avatarVideoUrl, agentPhotoUrl, voiceoverUrl, contextCues, brand,
+  qrCodeDataUrl, qrCaption, mlsClean,
 }) => {
   const frame    = useCurrentFrame()
   const showEho  = brand.showEhoMark ?? true
@@ -235,6 +241,8 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
               </>
             )}
           </div>
+          <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl} caption={qrCaption ?? "Scan to work with me"}
+            primaryColor={brand.primaryColor} accentColor={brand.accentColor} mlsClean={mlsClean} />
         </AbsoluteFill>
       </Sequence>
 

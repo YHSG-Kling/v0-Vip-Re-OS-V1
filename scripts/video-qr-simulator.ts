@@ -79,6 +79,12 @@ async function main() {
     anniversary:          { dt: "anniversary_video", urlPart: "/portal/equity/C-1" },
     newsletter:           { dt: "landing_page",      urlPart: "/n/K-1" },
     lead_intro:           { dt: "book_meeting",      urlPart: "/book" },
+    coming_soon:          { dt: "listing_detail",    urlPart: "/listings/L-1" },
+    market_update:        { dt: "landing_page",      urlPart: "" },
+    cma:                  { dt: "book_meeting",      urlPart: "/home-value" },
+    explainer:            { dt: "book_meeting",      urlPart: "/book" },
+    testimonial:          { dt: "book_meeting",      urlPart: "/book" },
+    neighborhood:         { dt: "landing_page",      urlPart: "" },
   }
   for (const kind of Object.keys(expected) as VideoQrKind[]) {
     const d = qrDestinationForKind(kind)
@@ -97,6 +103,25 @@ async function main() {
   const allInEnum = (Object.keys(expected) as VideoQrKind[]).every(
     (k) => M148_ENUM.has(qrDestinationForKind(k).destinationType))
   check("every emitted destination_type is a valid m148 enum value", allInEnum)
+
+  // ── Layer 1b · the Director threads the QR FLAT + maps every situation + the compositions render it ─
+  console.log("\n[Layer 1b · flat threading + situation coverage + composition wiring]")
+  const { readFileSync } = await import("node:fs")
+  const { join } = await import("node:path")
+  const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+  const director = src("lib/video/video-director.ts")
+  // THE BUG FIX: commissionVideo must stage qrCodeDataUrl FLAT in input_props (the compositions read it
+  // flat, not under `outro`) — otherwise a Director-commissioned reel never shows its tracked QR.
+  check("Director stages qrCodeDataUrl FLAT in input_props (both paths)",
+    (director.match(/input_props:\s*\{[\s\S]*?qrCodeDataUrl:/g) ?? []).length >= 2)
+  check("Director stages a per-situation qrCaption", /qrCaption:\s*qrCaptionForSituation\(situation\.kind\)/.test(director))
+  check("qrKindForSituation maps the non-listing kinds to their OWN destination (not the just_listed fallback)",
+    /case "market_update": return "market_update"/.test(director) && /case "cma":\s*return "cma"/.test(director) && /case "neighborhood":\s*return "neighborhood"/.test(director))
+  for (const comp of ["MarketUpdateReel", "CMAReel", "AgentExplainerReel", "TestimonialReel", "NeighborhoodSpotlightReel", "ComingSoonReel"]) {
+    const c = src(`remotion/${comp}.tsx`)
+    check(`${comp} renders <QrOutroBadge> reading the flat qrCodeDataUrl prop`,
+      /import \{ QrOutroBadge \}/.test(c) && /<QrOutroBadge[\s\S]*?qrCodeDataUrl=\{/.test(c))
+  }
 
   // Builders degrade gracefully when the entity ref is missing (no crash, still a URL).
   const noRefs = {}

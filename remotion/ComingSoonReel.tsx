@@ -38,6 +38,7 @@ import {
   useCurrentFrame,
 } from "remotion"
 import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface ComingSoonReelProps {
   /** Property address line. NULL when the brokerage wants a
@@ -73,6 +74,10 @@ export interface ComingSoonReelProps {
   agentName:       string
   /** Optional voiceover (TTS) — same opt-in posture as avatar. */
   voiceoverUrl?:   string
+  /** Tracked outro QR (lib/video/video-qr → mintVideoQr). Default-off: absent → no badge. */
+  qrCodeDataUrl?:  string | null
+  qrCaption?:      string
+  mlsClean?:       boolean
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -92,7 +97,7 @@ const TOTAL  = COVER + BODY + CTA  // 360 frames = 12s
 export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
   address, cityState, teaser, heroImageUrl, whenString, ctaLabel,
   brollClips, contextCues, avatarVideoUrl, agentPhotoUrl, agentName,
-  voiceoverUrl, brand,
+  voiceoverUrl, brand, qrCodeDataUrl, qrCaption, mlsClean,
 }) => {
   const frame    = useCurrentFrame()
   const showEho  = brand.showEhoMark ?? true
@@ -233,6 +238,8 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
               </>
             )}
           </div>
+          <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl} caption={qrCaption ?? "Scan to see the listing"}
+            primaryColor={brand.primaryColor} accentColor={brand.accentColor} mlsClean={mlsClean} />
         </AbsoluteFill>
       </Sequence>
 

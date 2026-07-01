@@ -46,6 +46,12 @@ export type VideoQrKind =
   | "anniversary"
   | "newsletter"
   | "lead_intro"
+  | "coming_soon"
+  | "market_update"
+  | "cma"
+  | "explainer"
+  | "testimonial"
+  | "neighborhood"
 
 /** m148 destination_type values this module emits (subset of the enum). */
 export type VideoQrDestinationType =
@@ -124,12 +130,37 @@ export function qrDestinationForKind(kind: VideoQrKind): VideoQrDestination {
             : `${normalizeOrigin(origin)}`,
       }
     case "lead_intro":
-      // A lead-addressed intro reel's CTA is "book a quick consult" — the general
-      // booking page (no listing, no per-lead PII in the scannable URL). The /api/qr/scan
-      // resolver still tracks the scan + lets the target be re-pointed without reprinting.
+    case "explainer":
+    case "testimonial":
+      // A consult-CTA reel (lead intro / explainer / testimonial): the general booking page (no
+      // per-recipient PII in the scannable URL). The /api/qr/scan resolver tracks the scan and lets
+      // the target be re-pointed in the UI without reprinting.
       return {
         destinationType: "book_meeting",
         buildTargetUrl: (origin) => `${normalizeOrigin(origin)}/book`,
+      }
+    case "coming_soon":
+      // A pre-MLS teaser drives to the listing page once it goes live (or the listings index).
+      return {
+        destinationType: "listing_detail",
+        buildTargetUrl: (origin, refs) =>
+          refs.listingId
+            ? `${normalizeOrigin(origin)}/listings/${refs.listingId}`
+            : `${normalizeOrigin(origin)}/listings`,
+      }
+    case "cma":
+      // A CMA / market-analysis reel invites "what's your home worth" → the home-value capture page.
+      return {
+        destinationType: "book_meeting",
+        buildTargetUrl: (origin) => `${normalizeOrigin(origin)}/home-value`,
+      }
+    case "market_update":
+    case "neighborhood":
+      // Market / neighborhood content lands on a value landing page the agent points wherever they
+      // like (a market report, a neighborhood guide) — editable target_url, tracked scan.
+      return {
+        destinationType: "landing_page",
+        buildTargetUrl: (origin) => `${normalizeOrigin(origin)}`,
       }
   }
 }

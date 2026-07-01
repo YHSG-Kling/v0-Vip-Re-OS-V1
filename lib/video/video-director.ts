@@ -437,15 +437,36 @@ export function qrKindForSituation(kind: SituationKind): VideoQrKind {
     case "presentation":  return "presentation_chapter"
     case "anniversary":   return "anniversary"
     case "lead_intro":    return "lead_intro"
+    case "coming_soon":   return "coming_soon"
+    case "market_update": return "market_update"
+    case "cma":           return "cma"
+    case "explainer":     return "explainer"
+    case "testimonial":   return "testimonial"
+    case "neighborhood":  return "neighborhood"
     case "new_listing":
     case "price_drop":
-    case "coming_soon":
-    case "market_update":
-    case "cma":
-    case "explainer":
-    case "testimonial":
-    case "neighborhood":
     default:              return "just_listed"
+  }
+}
+
+/** PURE: the outro-QR caption per situation — a short, on-brand scan prompt that matches where the
+ *  QR lands (the agent can re-point the target_url in the UI; the caption stays a generic invite). */
+export function qrCaptionForSituation(kind: SituationKind): string {
+  switch (kind) {
+    case "just_sold":      return "Scan to list with me"
+    case "open_house":     return "Scan to RSVP"
+    case "market_update":  return "Scan for the full market report"
+    case "cma":            return "Scan for your home value"
+    case "explainer":      return "Scan to book a consult"
+    case "lead_intro":     return "Scan to book a consult"
+    case "presentation":   return "Scan for the full tour"
+    case "anniversary":    return "Scan for your equity report"
+    case "testimonial":    return "Scan to work with me"
+    case "neighborhood":   return "Scan for the neighborhood guide"
+    case "coming_soon":    return "Scan to see the listing"
+    case "new_listing":
+    case "price_drop":
+    default:               return "Scan to see the listing"
   }
 }
 
@@ -964,6 +985,12 @@ export async function commissionVideo(
     input_props: {
       intro: introProps,
       outro: outroProps,
+      // FLAT outro-QR props — the compositions read qrCodeDataUrl/qrCaption/mlsClean at the TOP level
+      // (QrOutroBadge), not under `outro`. Staging them flat is what makes the tracked QR actually
+      // render on a Director-commissioned reel (the nested outro alone never reached the badge).
+      qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
+      qrCaption: qrCaptionForSituation(situation.kind),
+      mlsClean: opts.mlsClean ?? false,
       music_mood: effectiveMood,
       ...(format.needsBroll ? { brollClips } : {}),
     },
@@ -1299,7 +1326,14 @@ export async function commissionVideoExperiment(
 
     const providerMetadata = {
       composition_id: format.compositionId,
-      input_props: { intro: introProps, outro: outroProps, music_mood: spec.music.mood },
+      input_props: {
+        intro: introProps, outro: outroProps,
+        // Flat outro-QR props (see the main path) — each A/B variant carries its OWN tracked QR.
+        qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
+        qrCaption: qrCaptionForSituation(situation.kind),
+        mlsClean: opts.mlsClean ?? false,
+        music_mood: spec.music.mood,
+      },
     }
 
     const { data: inserted, error } = await svc

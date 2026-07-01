@@ -45,6 +45,7 @@ import {
   useCurrentFrame,
 } from "remotion"
 import { CaptionLayer } from "./components/CaptionLayer"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface AgentExplainerReelProps {
@@ -65,6 +66,10 @@ export interface AgentExplainerReelProps {
   avatarVideoUrl: string | null
   /** Static photo fallback when no avatar video is available. */
   agentPhotoUrl:  string | null
+  /** Tracked outro QR (lib/video/video-qr → mintVideoQr). Default-off: absent → no badge. */
+  qrCodeDataUrl?: string | null
+  qrCaption?:     string
+  mlsClean?:      boolean
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -171,7 +176,7 @@ const BulletPanel: React.FC<{
 
 export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
   eyebrow, title, bullets, ctaLabel, agentName, avatarVideoUrl, agentPhotoUrl, brand,
-  captionsCues, captionScript,
+  captionsCues, captionScript, qrCodeDataUrl, qrCaption, mlsClean,
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
@@ -255,6 +260,8 @@ export const AgentExplainerReel: React.FC<AgentExplainerReelProps> = ({
           }}>
             {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
           </div>
+          <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl} caption={qrCaption ?? "Scan to book a consult"}
+            primaryColor={brand.primaryColor} accentColor={brand.accentColor} mlsClean={mlsClean} />
         </AbsoluteFill>
       </Sequence>
 

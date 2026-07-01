@@ -37,6 +37,7 @@ import {
 } from "remotion"
 import { BrollLayer, ContextCueRow, type BrollClip } from "./_BrollLayer"
 import { CaptionLayer } from "./components/CaptionLayer"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface NeighborhoodHighlight {
@@ -65,6 +66,10 @@ export interface NeighborhoodSpotlightReelProps {
   /** Optional voiceover — the agent narrating the spotlight in
    *  their cloned voice. The pre-W38 TTS path supplies the mp3. */
   voiceoverUrl?: string
+  /** Tracked outro QR (lib/video/video-qr → mintVideoQr). Default-off: absent → no badge. */
+  qrCodeDataUrl?: string | null
+  qrCaption?:     string
+  mlsClean?:      boolean
   /** Optional agent avatar — small PIP in the body section. Most
    *  neighborhood reels skip this and lean on the voice. */
   avatarVideoUrl?: string | null
@@ -96,7 +101,7 @@ const TOTAL  = COVER + BODY + CTA  // 480 frames = 16s
 export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps> = ({
   neighborhood, tagline, highlights, brollClips, ctaLabel,
   agentName, agentPhone, voiceoverUrl, avatarVideoUrl, agentPhotoUrl,
-  contextCues, brand, captionsCues, captionScript,
+  contextCues, brand, captionsCues, captionScript, qrCodeDataUrl, qrCaption, mlsClean,
 }) => {
   const frame    = useCurrentFrame()
   const showEho  = brand.showEhoMark ?? true
@@ -232,6 +237,8 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
               </>
             )}
           </div>
+          <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl} caption={qrCaption ?? "Scan for the neighborhood guide"}
+            primaryColor={brand.primaryColor} accentColor={brand.accentColor} mlsClean={mlsClean} />
         </AbsoluteFill>
       </Sequence>
 

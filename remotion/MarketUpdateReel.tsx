@@ -43,6 +43,7 @@ import {
   useCurrentFrame,
 } from "remotion"
 import { CaptionLayer } from "./components/CaptionLayer"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export type StatDirection = "up_good" | "up_bad" | "down_good" | "down_bad" | "flat"
@@ -86,6 +87,10 @@ export interface MarketUpdateReelProps {
     brokerageName:  string
     showEhoMark?:   boolean
   }
+  /** Tracked outro QR (lib/video/video-qr → mintVideoQr). Default-off: absent → no badge. */
+  qrCodeDataUrl?: string | null
+  qrCaption?:     string
+  mlsClean?:      boolean
   /** SOUND-OFF CAPTIONS (additive + default-off). Word-accurate cues from real
    *  ElevenLabs alignment — preferred over captionScript. */
   captionsCues?: CaptionCue[] | null
@@ -234,6 +239,7 @@ const AvatarPIP: React.FC<{
 export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
   areaName, period, stats, ctaLabel, agentName, agentPhone,
   avatarVideoUrl, agentPhotoUrl, brand, captionsCues, captionScript,
+  qrCodeDataUrl, qrCaption, mlsClean,
 }) => {
   const frame     = useCurrentFrame()
   const upColor   = brand.upColor   ?? "#22C55E"
@@ -336,6 +342,8 @@ export const MarketUpdateReel: React.FC<MarketUpdateReelProps> = ({
           }}>
             {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
           </div>
+          <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl} caption={qrCaption ?? "Scan for the full market report"}
+            primaryColor={brand.primaryColor} accentColor={brand.accentColor} mlsClean={mlsClean} />
         </AbsoluteFill>
       </Sequence>
 
