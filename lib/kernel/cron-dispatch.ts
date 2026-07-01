@@ -160,6 +160,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/deal-health/cron"                         , schedule: "0 6 * * *" },
   { path: "/api/cron/annual-home-value-reports"           , schedule: "0 7 * * *" },
   { path: "/api/cron/blog-cadence-tick"                   , schedule: "0 7 * * *" },
+  { path: "/api/cron/newsletter-cadence-tick"             , schedule: "0 7 * * *" },
   { path: "/api/cron/content-intel-rss"                   , schedule: "0 7 * * *" },
   { path: "/api/cron/wealth-opportunity-scan"             , schedule: "0 7 * * *" },
   { path: "/api/fatigue/calculate"                        , schedule: "0 7 * * *" },
