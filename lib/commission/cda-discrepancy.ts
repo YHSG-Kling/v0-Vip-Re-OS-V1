@@ -93,10 +93,11 @@ export function checkSplitAgainstContract(input: {
 }
 
 /**
- * PURE: sum an agent's OUTSTANDING (unpaid, collectible) fee charges — the amount that must be
- * DEDUCTED in the CDA so the brokerage collects what the agent owes it at disbursement. Only
- * open/overdue, never-paid charges count; paid/waived/disputed are excluded (a disputed charge
- * isn't collectible until resolved). Honest zero when nothing is owed.
+ * PURE: sum an agent's OUTSTANDING (unpaid, collectible) fee charges — brokerage tech/desk/E&O/other
+ * fees the agent owes, which are DEDUCTED in the CDA as their own line (NOT a commission discrepancy —
+ * the split can be perfectly correct and the agent still owes a monthly tech fee). Only open/overdue,
+ * never-paid charges count; paid/waived/disputed are excluded (a disputed charge isn't collectible
+ * until resolved). Honest zero when nothing is owed.
  */
 export function sumOutstandingAgentFees(
   charges: Array<{ amount?: number | string | null; status?: string | null; paid_at?: string | null }>,
@@ -112,83 +113,54 @@ export function sumOutstandingAgentFees(
   return Math.round(total * 100) / 100
 }
 
-/**
- * PURE: verify the CDA DEDUCTS the agent's outstanding fees. In the real CDA the agent's take-home
- * = (gross × contract split, cap-adjusted) − outstanding fees owed to the brokerage. So the expected
- * agent_net is POST-fee. Two failure modes are characterized distinctly:
- *   • agent_net ≈ the PRE-fee split share  → the fees were NOT deducted (a BLOCKER — the brokerage
- *     would disburse the agent's full share and never collect the fees it's owed).
- *   • agent_net is otherwise off from post-fee expected → a net mismatch (warning/blocker by size).
- * Fires only when there ARE outstanding fees; otherwise the plain split check governs.
- */
-export function checkFeeDeductionAgainstContract(input: {
-  computedGross: number
-  computedAgentNet: number
-  contractSplitPct: number | null | undefined
-  outstandingFees: number
-  tolerancePct?: number
-  minDollar?: number
-  blockerPct?: number
-}): CdaDiscrepancy[] {
-  const tolerancePct = input.tolerancePct ?? 1.5
-  const minDollar = input.minDollar ?? 50
-  const blockerPct = input.blockerPct ?? 5
-  const split = input.contractSplitPct
-  const fees = Math.max(0, input.outstandingFees ?? 0)
-  if (split == null || !Number.isFinite(split) || split <= 0) return []
-  if (!Number.isFinite(input.computedGross) || input.computedGross <= 0) return []
-  if (fees <= 0) return []
-
-  const preFeeShare = input.computedGross * (split / 100)
-  const expectedNet = preFeeShare - fees
-  const diff = Math.abs(input.computedAgentNet - expectedNet)
-  const pct = (diff / input.computedGross) * 100
-  if (diff < minDollar || pct < tolerancePct) return []
-
-  const feeTolerance = Math.max(minDollar, (input.computedGross * tolerancePct) / 100)
-  const notDeducted = Math.abs(input.computedAgentNet - preFeeShare) <= feeTolerance
-  return [{
-    field: notDeducted ? "outstanding_fee_deduction" : "agent_net",
-    expected: Math.round(expectedNet),
-    actual: Math.round(input.computedAgentNet),
-    deltaPct: Math.round(pct * 10) / 10,
-    severity: notDeducted ? "blocker" : (pct >= blockerPct ? "blocker" : "warning"),
-  }]
+export interface CdaFeeDeduction {
+  /** Total outstanding tech/desk/other fees owed — the deduction line the CDA must carry. */
+  amount: number
+  /** True when there is a non-zero fee to deduct (compliance must confirm it appears on the CDA). */
+  required: boolean
+  /** The agent's commission share minus the fee deduction, when the share is known (else null). */
+  netAfterFees: number | null
 }
 
 /**
- * PURE: the full Compliance contract verdict — combines the gross compare and the split-vs-contract
- * compare into one go/no-go the compliance officer sees before approving the CDA. `contractSplitPct`
- * is the agent's CONTRACT split already adjusted for cap status (a capped agent keeps 100%, so the
- * caller passes 100 when the cap is met). When the agent has OUTSTANDING FEES, the split check is
- * replaced by the fee-aware net check (expected agent_net is post-fee), so a CDA that fails to deduct
- * the fees is flagged distinctly. `passed` is false iff any discrepancy is a BLOCKER — warnings
- * surface but don't block (compliance can still approve on a small, explainable delta).
+ * PURE: model the outstanding fees as a SEPARATE deduction line on the CDA — distinct from the
+ * commission split. The tech fee reduces the agent's take-home AFTER the split is applied; it is not
+ * a sign the split is wrong. Compliance confirms this deduction is present in the CDA; the agent's
+ * disbursement = commission share − fees.
+ */
+export function buildCdaFeeDeduction(input: {
+  outstandingFees: number
+  /** The agent's commission share (post-split, pre-fee), if known — to show the net after the fee. */
+  agentCommissionShare?: number | null
+}): CdaFeeDeduction {
+  const amount = Math.max(0, Math.round((input.outstandingFees ?? 0) * 100) / 100)
+  const share = input.agentCommissionShare
+  const netAfterFees = share != null && Number.isFinite(share) ? Math.round((share - amount) * 100) / 100 : null
+  return { amount, required: amount > 0, netAfterFees }
+}
+
+/**
+ * PURE: the full Compliance contract verdict — the gross compare + the split-vs-contract compare, one
+ * go/no-go the compliance officer sees before approving the CDA. `contractSplitPct` is the agent's
+ * CONTRACT split already adjusted for cap status (a capped agent keeps 100%, so the caller passes 100
+ * when the cap is met). This is COMMISSION only — outstanding tech/desk fees are a SEPARATE deduction
+ * line (see buildCdaFeeDeduction), never conflated with a split discrepancy. `passed` is false iff any
+ * discrepancy is a BLOCKER — warnings surface but don't block (compliance can still approve on a
+ * small, explainable delta).
  */
 export function buildCdaContractVerdict(input: {
   computedGross: number
   computedAgentNet: number
   expectedGross: number | null | undefined
   contractSplitPct: number | null | undefined
-  /** Outstanding (unpaid) fees the agent owes the brokerage — must be deducted in the CDA. */
-  outstandingFees?: number | null
 }): { passed: boolean; discrepancies: CdaDiscrepancy[] } {
-  const fees = Math.max(0, input.outstandingFees ?? 0)
-  const netCheck = fees > 0
-    ? checkFeeDeductionAgainstContract({
-        computedGross: input.computedGross,
-        computedAgentNet: input.computedAgentNet,
-        contractSplitPct: input.contractSplitPct,
-        outstandingFees: fees,
-      })
-    : checkSplitAgainstContract({
-        computedGross: input.computedGross,
-        computedAgentNet: input.computedAgentNet,
-        contractSplitPct: input.contractSplitPct,
-      })
   const discrepancies = [
     ...computeCdaDiscrepancies({ computedGross: input.computedGross, expectedGross: input.expectedGross }),
-    ...netCheck,
+    ...checkSplitAgainstContract({
+      computedGross: input.computedGross,
+      computedAgentNet: input.computedAgentNet,
+      contractSplitPct: input.contractSplitPct,
+    }),
   ]
   return { passed: !discrepancies.some(d => d.severity === "blocker"), discrepancies }
 }

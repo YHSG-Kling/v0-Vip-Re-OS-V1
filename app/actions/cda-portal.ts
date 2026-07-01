@@ -152,12 +152,13 @@ async function loadCdaContractVerdict(
   const capReached = capAmount > 0 && capPaid >= capAmount
   const effectiveSplit = capReached ? 100 : contractSplit
 
+  // Commission verdict is split-only. Outstanding tech/desk fees are a SEPARATE deduction line
+  // (returned alongside), never folded into the split discrepancy.
   const verdict = buildCdaContractVerdict({
     computedGross: Number(cda.gross_commission ?? 0),
     computedAgentNet: Number(cda.agent_net ?? 0),
     expectedGross: expectedGrossFromTerms((txn ?? {}) as Record<string, number | null>),
     contractSplitPct: effectiveSplit,
-    outstandingFees,
   })
   return { ...verdict, contractSplitPct: contractSplit, capReached, outstandingFees }
 }

@@ -287,10 +287,7 @@ function CdaRow({ item, pending, compact, onApprove, onOpenDialog, onBrokerSign 
           <div className="mt-2 text-xs text-red-700 space-y-0.5">
             {item.contractDiscrepancies.slice(0, 3).map((d, i) => {
               const pct = d.field === "agent_split"
-              const label = d.field === "agent_split" ? "Agent split"
-                : d.field === "gross_commission" ? "Gross commission"
-                : d.field === "outstanding_fee_deduction" ? "Outstanding fees not deducted"
-                : "Agent net"
+              const label = d.field === "agent_split" ? "Agent split" : "Gross commission"
               const fmt = (n: number) => pct ? `${n}%` : `$${n.toLocaleString()}`
               return (
                 <div key={i}>

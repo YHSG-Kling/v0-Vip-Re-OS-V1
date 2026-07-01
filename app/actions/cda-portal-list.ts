@@ -161,12 +161,12 @@ export async function listCdasForComplianceReviewAction(): Promise<{
       const capPaid = Number(cap?.cap_paid_to_date ?? 0)
       const capReached = capAmount > 0 && capPaid >= capAmount
       const terms = termsByTxn.get(c.transaction_id) ?? {}
+      // Split-only verdict; outstanding tech fees are surfaced separately as their own deduction line.
       const v = buildCdaContractVerdict({
         computedGross: Number(c.gross_commission ?? 0),
         computedAgentNet: Number(c.agent_net ?? 0),
         expectedGross: expectedGrossFromTerms(terms as Record<string, number | null>),
         contractSplitPct: capReached ? 100 : contractSplit,
-        outstandingFees,
       })
       contractCheckPassed = v.passed
       contractDiscrepancies = v.discrepancies.length ? v.discrepancies : null
