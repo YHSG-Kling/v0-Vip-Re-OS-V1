@@ -35,6 +35,7 @@ import {
   interpolate,
   useCurrentFrame,
 } from "remotion"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export type BuyerSlideKind =
   | "title"
@@ -84,6 +85,10 @@ export interface BuyerConsultationSlideProps {
     licenseLine?:    string
     showEhoMark?:    boolean
   }
+  /** Tracked outro QR (lib/video/video-qr → mintVideoQr) — shown only on the CLOSING slide. */
+  qrCodeDataUrl?: string | null
+  qrCaption?:     string
+  mlsClean?:      boolean
 }
 
 const SURFACE_DEFAULT = "#FFFFFF"
@@ -92,6 +97,7 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
   kind, slideNumber, totalSlides, title, body, searchExamples,
   timelineLabels, heroImageUrl, bodyContent, avatarVideoUrl,
   avatarStartFrame, avatarEndFrame, agentPhotoUrl, agentName, brand,
+  qrCodeDataUrl, qrCaption, mlsClean,
 }) => {
   const surface = brand.surfaceColor ?? SURFACE_DEFAULT
   const showEho = brand.showEhoMark ?? true
@@ -179,6 +185,10 @@ export const BuyerConsultationSlide: React.FC<BuyerConsultationSlideProps> = ({
         {showEho && " · Equal Housing Opportunity"}
         {brand.licenseLine && ` · ${brand.licenseLine}`}
       </div>
+      {kind === "closing" && (
+        <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl} caption={qrCaption ?? "Scan to get started"}
+          primaryColor={brand.primaryColor} accentColor={brand.accentColor} mlsClean={mlsClean} />
+      )}
     </AbsoluteFill>
   )
 }

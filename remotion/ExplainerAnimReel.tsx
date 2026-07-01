@@ -54,6 +54,7 @@ import type {
   WhatMonthlyBuysData,
 } from "../lib/charts/explainer-diagram"
 import { CaptionLayer } from "./components/CaptionLayer"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 import type { CaptionCue } from "../lib/video/caption-plan"
 
 export interface ExplainerAnimReelProps {
@@ -80,6 +81,10 @@ export interface ExplainerAnimReelProps {
     brokerageName: string
     showEhoMark?:  boolean
   }
+  /** Tracked outro QR (lib/video/video-qr → mintVideoQr). Default-off: absent → no badge. */
+  qrCodeDataUrl?: string | null
+  qrCaption?:     string
+  mlsClean?:      boolean
   /** SOUND-OFF CAPTIONS (additive + default-off). Word-accurate cues from real
    *  ElevenLabs alignment — preferred over captionScript. */
   captionsCues?: CaptionCue[] | null
@@ -316,7 +321,7 @@ const Diagram: React.FC<{ data: DiagramData; accent: string }> = ({ data, accent
 export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
   eyebrow, title, caption, ctaLabel, hasData, diagram,
   agentName, avatarVideoUrl, agentPhotoUrl, brand,
-  captionsCues, captionScript,
+  captionsCues, captionScript, qrCodeDataUrl, qrCaption, mlsClean,
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
@@ -406,6 +411,8 @@ export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
           }}>
             {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
           </div>
+          <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl} caption={qrCaption ?? "Scan to book a consult"}
+            primaryColor={brand.primaryColor} accentColor={brand.accentColor} mlsClean={mlsClean} />
         </AbsoluteFill>
       </Sequence>
 

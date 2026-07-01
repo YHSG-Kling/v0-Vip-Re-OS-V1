@@ -117,7 +117,7 @@ async function main() {
   check("Director stages a per-situation qrCaption", /qrCaption:\s*qrCaptionForSituation\(situation\.kind\)/.test(director))
   check("qrKindForSituation maps the non-listing kinds to their OWN destination (not the just_listed fallback)",
     /case "market_update": return "market_update"/.test(director) && /case "cma":\s*return "cma"/.test(director) && /case "neighborhood":\s*return "neighborhood"/.test(director))
-  for (const comp of ["MarketUpdateReel", "CMAReel", "AgentExplainerReel", "TestimonialReel", "NeighborhoodSpotlightReel", "ComingSoonReel"]) {
+  for (const comp of ["MarketUpdateReel", "CMAReel", "AgentExplainerReel", "TestimonialReel", "NeighborhoodSpotlightReel", "ComingSoonReel", "ExplainerAnimReel", "AffordabilitySnapshotReel", "BuyerConsultationSlide"]) {
     const c = src(`remotion/${comp}.tsx`)
     check(`${comp} renders <QrOutroBadge> reading the flat qrCodeDataUrl prop`,
       /import \{ QrOutroBadge \}/.test(c) && /<QrOutroBadge[\s\S]*?qrCodeDataUrl=\{/.test(c))

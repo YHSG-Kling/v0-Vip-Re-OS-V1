@@ -41,6 +41,7 @@ import {
   useCurrentFrame,
 } from "remotion"
 import { ContextCueRow } from "./_BrollLayer"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface AffordabilityExample {
   /** Property address line — terse. */
@@ -74,6 +75,10 @@ export interface AffordabilitySnapshotReelProps {
   agentName:    string
   agentPhone?:  string
   voiceoverUrl?: string
+  /** Tracked outro QR (lib/video/video-qr → mintVideoQr). Default-off: absent → no badge. */
+  qrCodeDataUrl?: string | null
+  qrCaption?:     string
+  mlsClean?:      boolean
   contextCues?: string[]
   brand: {
     primaryColor:    string
@@ -158,6 +163,7 @@ const ExampleCard: React.FC<{
 export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps> = ({
   monthlyHeadline, areaName, period, examples, ratesAssumption,
   ctaLabel, agentName, agentPhone, voiceoverUrl, contextCues, brand,
+  qrCodeDataUrl, qrCaption, mlsClean,
 }) => {
   const frame     = useCurrentFrame()
   const showEho   = brand.showEhoMark ?? true
@@ -250,6 +256,8 @@ export const AffordabilitySnapshotReel: React.FC<AffordabilitySnapshotReelProps>
               </>
             )}
           </div>
+          <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl} caption={qrCaption ?? "Scan for your home value"}
+            primaryColor={brand.primaryColor} accentColor={brand.accentColor} mlsClean={mlsClean} />
         </AbsoluteFill>
       </Sequence>
 
