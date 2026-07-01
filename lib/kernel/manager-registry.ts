@@ -776,6 +776,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   agent_social_shares: "recruiting_manager",
   agent_state_machine: "recruiting_manager",
   agent_step_completions: "recruiting_manager",
+  agent_tax_profile: "finance_manager",
   agentic_invocation_log: "recruiting_manager",
   agents: "recruiting_manager",
   deal_team_members: "recruiting_manager",

@@ -26,6 +26,7 @@
     "test:commission-tracking": "tsx scripts/commission-tracking-reconcile-simulator.ts",
     "test:manager-governance": "tsx scripts/manager-governance-scorecard-simulator.ts",
     "test:tier-entitlement": "tsx scripts/tier-entitlement-simulator.ts",
+    "test:tax-planning": "tsx scripts/tax-planning-simulator.ts",
     "test:lead-flow": "tsx scripts/lead-flow-e2e.ts",
     "test:render": "tsx scripts/composition-render-simulator.ts",
     "test:geo": "tsx scripts/geo-landing-simulator.ts",
