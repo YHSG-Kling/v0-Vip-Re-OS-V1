@@ -51,6 +51,7 @@
     "test:deal-coordination-extras": "tsx scripts/deal-coordination-extras-simulator.ts",
     "test:team-membership": "tsx scripts/team-membership-simulator.ts",
     "test:cda-flow": "tsx scripts/cda-flow-simulator.ts",
+    "test:cda-fee-deduction": "tsx scripts/cda-fee-deduction-simulator.ts",
     "test:portal-milestone-visibility": "tsx scripts/portal-milestone-visibility-simulator.ts",
     "test:milestone-education-tie": "tsx scripts/milestone-education-tie-simulator.ts",
     "test:milestone-seeder-consolidation": "tsx scripts/milestone-seeder-consolidation-simulator.ts",

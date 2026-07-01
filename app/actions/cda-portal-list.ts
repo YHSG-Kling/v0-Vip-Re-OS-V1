@@ -11,7 +11,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
-import { buildCdaContractVerdict, expectedGrossFromTerms, type CdaDiscrepancy } from "@/lib/commission/cda-discrepancy"
+import { buildCdaContractVerdict, expectedGrossFromTerms, sumOutstandingAgentFees, type CdaDiscrepancy } from "@/lib/commission/cda-discrepancy"
 
 const COMPLIANCE_ROLES = new Set([
   "compliance_officer",
@@ -44,6 +44,8 @@ export interface CdaReviewItem {
   contractCheckPassed:      boolean | null
   contractDiscrepancies:    CdaDiscrepancy[] | null
   contractSplitPct:         number | null
+  /** Unpaid fees the agent owes the brokerage — must be deducted in the CDA (0 = none). */
+  outstandingFees:          number
 }
 
 /**
@@ -105,6 +107,19 @@ export async function listCdasForComplianceReviewAction(): Promise<{
       : Promise.resolve({ data: [] as Array<{ agent_id: string; cap_amount: number | null; cap_paid_to_date: number | null }> }),
   ])
 
+  // Outstanding (unpaid) fees per agent — the amount that must be deducted in the CDA.
+  const { data: feeChargeRows } = agentIds.length
+    ? await supabase.from("agent_fee_charges")
+        .select("agent_id, amount, status, paid_at")
+        .eq("brokerage_id", auth.brokerageId).in("agent_id", agentIds).in("status", ["open", "overdue"])
+    : { data: [] as Array<{ agent_id: string; amount: number | null; status: string | null; paid_at: string | null }> }
+  const feeChargesByAgent = new Map<string, Array<{ amount?: number | null; status?: string | null; paid_at?: string | null }>>()
+  for (const f of feeChargeRows ?? []) {
+    const arr = feeChargesByAgent.get(f.agent_id) ?? []
+    arr.push({ amount: f.amount, status: f.status, paid_at: f.paid_at })
+    feeChargesByAgent.set(f.agent_id, arr)
+  }
+
   const propertyByTxn = new Map<string, string | null>(
     (txnsRes.data ?? []).map(t => [t.id, t.property_address])
   )
@@ -137,6 +152,7 @@ export async function listCdasForComplianceReviewAction(): Promise<{
     // Live split-vs-contract verdict (the compliance officer's "does the contract agree" check).
     const profile = profileByAgent.get(c.agent_id)
     const contractSplit = profile?.split_percent ?? null
+    const outstandingFees = sumOutstandingAgentFees(feeChargesByAgent.get(c.agent_id) ?? [])
     let contractCheckPassed: boolean | null = null
     let contractDiscrepancies: CdaDiscrepancy[] | null = null
     if (contractSplit != null && Number.isFinite(contractSplit)) {
@@ -150,6 +166,7 @@ export async function listCdasForComplianceReviewAction(): Promise<{
         computedAgentNet: Number(c.agent_net ?? 0),
         expectedGross: expectedGrossFromTerms(terms as Record<string, number | null>),
         contractSplitPct: capReached ? 100 : contractSplit,
+        outstandingFees,
       })
       contractCheckPassed = v.passed
       contractDiscrepancies = v.discrepancies.length ? v.discrepancies : null
@@ -175,6 +192,7 @@ export async function listCdasForComplianceReviewAction(): Promise<{
       contractCheckPassed,
       contractDiscrepancies,
       contractSplitPct:         contractSplit,
+      outstandingFees,
     }
   })
 

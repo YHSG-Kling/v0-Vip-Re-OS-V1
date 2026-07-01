@@ -264,12 +264,14 @@ function CdaRow({ item, pending, compact, onApprove, onOpenDialog, onBrokerSign 
           {sigFailed && !overridden && <Badge variant="destructive" className="text-[10px]"><FileWarning className="h-3 w-3 mr-1" /> Missing sigs</Badge>}
           {contractPassed && <Badge className="bg-green-100 text-green-800 text-[10px]"><CheckCircle className="h-3 w-3 mr-1" /> Split OK</Badge>}
           {contractFailed && contractBlocker && !overridden && <Badge variant="destructive" className="text-[10px]"><AlertTriangle className="h-3 w-3 mr-1" /> Split ≠ contract</Badge>}
+          {item.outstandingFees > 0 && <Badge variant="outline" className="text-[10px] border-amber-500 text-amber-700">Owes ${item.outstandingFees.toLocaleString()} fees</Badge>}
           {overridden && <Badge variant="outline" className="text-[10px] border-amber-500 text-amber-700">Override on file</Badge>}
         </div>
         <p className="text-xs text-muted-foreground mt-1">
           {item.agentName ? `${item.agentName} · ` : ""}
           {item.grossCommission != null && <>Gross ${item.grossCommission.toLocaleString()}</>}
           {item.agentNet != null && <> · Agent ${item.agentNet.toLocaleString()}</>}
+          {item.outstandingFees > 0 && <> · must deduct ${item.outstandingFees.toLocaleString()} in fees</>}
         </p>
         {sigFailed && item.missingDocs && item.missingDocs.length > 0 && !compact && (
           <div className="mt-2 text-xs text-amber-700 space-y-0.5">
@@ -283,11 +285,19 @@ function CdaRow({ item, pending, compact, onApprove, onOpenDialog, onBrokerSign 
         )}
         {contractFailed && item.contractDiscrepancies && item.contractDiscrepancies.length > 0 && !compact && (
           <div className="mt-2 text-xs text-red-700 space-y-0.5">
-            {item.contractDiscrepancies.slice(0, 3).map((d, i) => (
-              <div key={i}>
-                • {d.field === "agent_split" ? "Agent split" : "Gross commission"}: CDA shows {d.actual}{d.field === "agent_split" ? "%" : ""} vs contract {d.expected}{d.field === "agent_split" ? "%" : ""} ({d.severity})
-              </div>
-            ))}
+            {item.contractDiscrepancies.slice(0, 3).map((d, i) => {
+              const pct = d.field === "agent_split"
+              const label = d.field === "agent_split" ? "Agent split"
+                : d.field === "gross_commission" ? "Gross commission"
+                : d.field === "outstanding_fee_deduction" ? "Outstanding fees not deducted"
+                : "Agent net"
+              const fmt = (n: number) => pct ? `${n}%` : `$${n.toLocaleString()}`
+              return (
+                <div key={i}>
+                  • {label}: CDA shows {fmt(d.actual)} vs expected {fmt(d.expected)} ({d.severity})
+                </div>
+              )
+            })}
           </div>
         )}
         {item.status === "changes_requested" && item.changesRequestedNotes && (

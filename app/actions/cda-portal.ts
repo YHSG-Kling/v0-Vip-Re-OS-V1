@@ -51,7 +51,7 @@ import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { revalidatePath } from "next/cache"
 import { canApproveCda, canBrokerSignCda, canSendCdaToTitle } from "@/lib/transactions/cda-signing-policy"
-import { buildCdaContractVerdict, expectedGrossFromTerms, type CdaDiscrepancy } from "@/lib/commission/cda-discrepancy"
+import { buildCdaContractVerdict, expectedGrossFromTerms, sumOutstandingAgentFees, type CdaDiscrepancy } from "@/lib/commission/cda-discrepancy"
 
 const COMPLIANCE_ROLES = new Set([
   "compliance_officer",
@@ -108,6 +108,8 @@ export interface CdaContractVerdict {
   discrepancies: CdaDiscrepancy[]
   contractSplitPct: number | null
   capReached: boolean
+  /** Unpaid fees the agent owes the brokerage — must be deducted in the CDA. */
+  outstandingFees: number
 }
 
 type SupabaseClient = Awaited<ReturnType<typeof createClient>>
@@ -116,7 +118,7 @@ async function loadCdaContractVerdict(
   supabase: SupabaseClient,
   cda: { transaction_id: string; brokerage_id: string; agent_id: string; gross_commission: number | null; agent_net: number | null },
 ): Promise<CdaContractVerdict | null> {
-  const [{ data: txn }, { data: profile }, { data: cap }] = await Promise.all([
+  const [{ data: txn }, { data: profile }, { data: cap }, { data: feeCharges }] = await Promise.all([
     supabase.from("transactions")
       .select("estimated_commission, purchase_price, commission_percentage")
       .eq("id", cda.transaction_id).maybeSingle(),
@@ -128,10 +130,21 @@ async function loadCdaContractVerdict(
       .select("cap_amount, cap_paid_to_date")
       .eq("agent_id", cda.agent_id).eq("brokerage_id", cda.brokerage_id)
       .order("cap_paid_to_date", { ascending: false }).limit(1).maybeSingle(),
+    // OUTSTANDING FEES — unpaid charges the agent owes the brokerage, to be deducted in the CDA.
+    supabase.from("agent_fee_charges")
+      .select("amount, status, paid_at")
+      .eq("agent_id", cda.agent_id).eq("brokerage_id", cda.brokerage_id)
+      .in("status", ["open", "overdue"]),
   ])
+
+  const outstandingFees = sumOutstandingAgentFees(
+    (feeCharges ?? []) as Array<{ amount?: number | null; status?: string | null; paid_at?: string | null }>,
+  )
 
   const contractSplit = (profile as { split_percent?: number | null } | null)?.split_percent ?? null
   // No contract on file ⇒ nothing to check against (grandfathered, like signature_check null).
+  // An agent can still owe fees with no split on file — but with no split we can't compute the
+  // expected post-fee net, so there's nothing to gate on here.
   if (contractSplit == null || !Number.isFinite(contractSplit)) return null
 
   const capAmount = Number((cap as { cap_amount?: number } | null)?.cap_amount ?? (profile as { cap_amount?: number } | null)?.cap_amount ?? 0)
@@ -144,8 +157,9 @@ async function loadCdaContractVerdict(
     computedAgentNet: Number(cda.agent_net ?? 0),
     expectedGross: expectedGrossFromTerms((txn ?? {}) as Record<string, number | null>),
     contractSplitPct: effectiveSplit,
+    outstandingFees,
   })
-  return { ...verdict, contractSplitPct: contractSplit, capReached }
+  return { ...verdict, contractSplitPct: contractSplit, capReached, outstandingFees }
 }
 
 // The compliance review panel surfaces this verdict for every CDA in its queue via the batched
@@ -428,7 +442,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
 
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
-    .select("id, transaction_id, brokerage_id, agent_id, status, revision_number, generated_pdf_url, field_values")
+    .select("id, transaction_id, brokerage_id, agent_id, status, revision_number, generated_pdf_url, field_values, gross_commission, agent_net")
     .eq("id", input.cdaId)
     .maybeSingle()
   if (!cda || cda.brokerage_id !== auth.brokerageId) {
@@ -442,6 +456,26 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
   }
 
   const now = new Date().toISOString()
+
+  // CONTRACT/FEE AUDIT at submit — the AI matches the agent's brokerage CONTRACT (split + cap)
+  // and OUTSTANDING FEES against the CDA the agent filled in, and stamps the verdict onto the CDA
+  // so the compliance packet is complete the moment it lands: the signature last-scan (below) PLUS
+  // the contract/CDA discrepancies + fee deduction check, on record at submit. Best-effort — the
+  // live queue re-computes it and approveCdaAction re-checks it as the hard gate.
+  let submitAudit: Record<string, unknown> | null = null
+  try {
+    const verdict = await loadCdaContractVerdict(supabase, cda as Parameters<typeof loadCdaContractVerdict>[1])
+    if (verdict) {
+      submitAudit = {
+        at: now,
+        passed: verdict.passed,
+        contract_split_pct: verdict.contractSplitPct,
+        cap_reached: verdict.capReached,
+        outstanding_fees: verdict.outstandingFees,
+        discrepancies: verdict.discrepancies,
+      }
+    }
+  } catch { /* audit is informational at submit; approval gate still enforces */ }
 
   // The AGENT signs the CDA via their configured e-sign provider BEFORE it goes to
   // compliance (per spec). Provider-agnostic + best-effort; the in-app sign-off below
@@ -470,7 +504,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
       agent_signed_off_by: auth.userId,
       agent_submitted_at: now,
       agent_submitted_by: auth.userId,
-      field_values: { ...submitPriorFieldValues, agent_esign: { mode: agentEsign.mode, provider: agentEsign.provider, loop_id: agentEsign.loopId ?? null, dispatched: agentEsign.dispatched, reason: agentEsign.reason, at: now } },
+      field_values: { ...submitPriorFieldValues, agent_esign: { mode: agentEsign.mode, provider: agentEsign.provider, loop_id: agentEsign.loopId ?? null, dispatched: agentEsign.dispatched, reason: agentEsign.reason, at: now }, ...(submitAudit ? { submit_audit: submitAudit } : {}) },
       updated_at: now,
     })
     .eq("id", cda.id)
