@@ -286,6 +286,15 @@ export async function createTransactionFromOffer(params: {
     .update({ transaction_id: transaction.id, updated_at: new Date().toISOString() })
     .eq("id", params.offerId)
 
+  // CONTINGENCY DEADLINES — the offer's NON-STANDARD contingencies (home-sale, HOA, title, insurance,
+  // survey, attorney review) become watched deadlines in transaction_deadlines so none passes silently
+  // (the standard inspection/financing/appraisal ones are already milestone-tracked above). Reuses the
+  // existing deadline table + watcher; idempotent + best-effort — never blocks the offer→deal bridge.
+  try {
+    const { ensureContingencyDeadlines } = await import("./contingency-deadlines")
+    await ensureContingencyDeadlines(supabase, { transactionId: transaction.id, brokerageId: params.brokerageId })
+  } catch { /* best-effort — the deadline-watcher + reapers are the safety net */ }
+
   // Create first activity — Agent task (correct location, no changes) — activity_type: transaction_started
   await supabase.from("activities").insert({
     transaction_id: transaction.id,
