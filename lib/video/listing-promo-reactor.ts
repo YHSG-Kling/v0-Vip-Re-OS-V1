@@ -401,6 +401,16 @@ const TEMPLATES: Record<ListingPromoEventType, EventTemplate> = {
     wordCount:       "25-40",
     extraConstraints: "Do NOT disclose sale price, contingencies, or any deal terms",
   },
+  back_on_market: {
+    hook:            "Available again",
+    intent:          "Announce that a previously-pending listing is back on market and available to see.",
+    tone:            "positive, matter-of-fact — a fresh opportunity",
+    bodyGuidance:    "One line that it's available again + 2 quick property facts",
+    closingCta:      `"It's available again — DM me to see it before it's gone"`,
+    durationSeconds: "15-20",
+    wordCount:       "35-50",
+    extraConstraints: "Do NOT speculate on WHY the prior deal fell through, imply seller distress, or use 'motivated seller' / 'priced to sell' / any urgency-or-distress phrasing",
+  },
   just_sold: {
     hook:            "Just sold",
     intent:          "Announce a closed sale as a social-proof signal.",

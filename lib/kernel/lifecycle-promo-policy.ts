@@ -37,6 +37,7 @@ export type LifecycleEventType =
   | "price_reduction"
   | "under_contract"
   | "just_sold"
+  | "back_on_market"
 
 interface PlatformDefault {
   autoSpawn:     boolean
@@ -55,6 +56,7 @@ const PLATFORM_DEFAULTS: Record<LifecycleEventType, PlatformDefault> = {
   price_reduction:     { autoSpawn: false, cooldownHours: 24 },   // sensitive AND debounced
   under_contract:      { autoSpawn: true,  cooldownHours: null },
   just_sold:           { autoSpawn: true,  cooldownHours: null },
+  back_on_market:      { autoSpawn: true,  cooldownHours: 24 },   // highest-intent re-marketing moment; debounced so a rapid pending↔active bounce fires once
 }
 
 export interface ResolveScope {

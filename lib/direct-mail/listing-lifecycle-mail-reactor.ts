@@ -83,6 +83,7 @@ const EVENT_DEFAULTS: Record<LifecycleEventType, EventDefaults> = {
   price_reduction:     { size: "4x6", statusBadge: "PRICE REDUCED", persona: "first_time", withPhoto: true  },
   under_contract:      { size: "4x6", statusBadge: "UNDER CONTRACT", persona: "upsize",   withPhoto: false },
   just_sold:           { size: "6x9", statusBadge: "JUST SOLD",   persona: "upsize",     withPhoto: true  },
+  back_on_market:      { size: "6x9", statusBadge: "AVAILABLE AGAIN", persona: "first_time", withPhoto: true  },
 }
 
 const PER_BROKERAGE_HARD_CAP_PER_EVENT = 500

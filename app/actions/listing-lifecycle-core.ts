@@ -389,13 +389,27 @@ export async function executeListingTransition(params: {
   try {
     const { isBackOnMarket } = await import("@/lib/listings/back-on-market")
     if (isBackOnMarket(currentStage, params.targetStage as string)) {
-      const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
       const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      // (a) DEMAND side — re-engage the buyers who SAVED it (Shopping Agent's highest-intent moment).
+      const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
       await publishManagerSignal({
         brokerageId: listing.brokerage_id, fromManager: "listing_concierge", toManager: "shopping_agent",
         signalType: "listing_back_on_market", entityType: "listing", entityId: params.listingId,
         message: "A deal fell through — the listing is back on market. Re-engage the buyers who saved it.",
-      }, createServiceClient())
+      }, svc)
+      // (b) SUPPLY side — RE-MARKET the listing itself across channels (video + social + mail), the same
+      // way just_listed does. The normal just_listed promo is idempotent per (listing, just_listed) so a
+      // re-list silently re-markets NOTHING; back_on_market is its own lifecycle promo event. Policy-gated
+      // (auto_spawn default ON, debounced) + compliance-gated inside the reactors. agentUserId = the
+      // listing's agent_id (already a users.id on the live schema). Best-effort — never blocks the transition.
+      const agentUserId = (listing as { agent_id?: string | null }).agent_id ?? null
+      if (agentUserId) {
+        const { dispatchListingPromoVideo } = await import("@/lib/video/listing-promo-reactor")
+        void dispatchListingPromoVideo({ brokerageId: listing.brokerage_id, listingId: params.listingId, agentUserId, eventType: "back_on_market" })
+        const { dispatchLifecycleMail } = await import("@/lib/direct-mail/listing-lifecycle-mail-reactor")
+        void dispatchLifecycleMail({ brokerageId: listing.brokerage_id, listingId: params.listingId, agentUserId, eventType: "back_on_market" })
+      }
     }
   } catch (err) {
     console.error("[executeListingTransition] back-on-market handoff failed", err)
