@@ -226,6 +226,25 @@ export async function validateAndPersist(
           is_capped: isCapped
         })
         .eq('id', capTracking.id)
+
+      // AUTONOMOUS CAP-CRUSH MOMENT — if this calc is the one that CROSSED the cap, the Finance Manager
+      // celebrates the agent (they keep 100% now) and hands the live proof to Recruiting on the bus.
+      // Best-effort, deduped per anniversary — never blocks the calc.
+      try {
+        const { detectCapCrush, celebrateCapCrush } = await import('@/lib/finance/cap-crush')
+        const { justCrossed } = detectCapCrush({ capAmount: capTracking.cap_amount, paidBefore: capTracking.cap_paid_to_date, paidAfter: newPaidToDate })
+        if (justCrossed) {
+          await celebrateCapCrush(supabase, {
+            agentId: context.agentId,
+            brokerageId: context.brokerageId,
+            capAmount: capTracking.cap_amount,
+            capPaidToDate: newPaidToDate,
+            anniversaryStart: (capTracking as { anniversary_start?: string | null }).anniversary_start ?? null,
+          })
+        }
+      } catch (e) {
+        console.error('[commission-engine] cap-crush celebration failed:', e)
+      }
     }
   }
 
