@@ -20,6 +20,7 @@
     "test:stuck-campaign-reaper": "tsx scripts/stuck-campaign-reaper-simulator.ts",
     "test:newsletter-cadence": "tsx scripts/newsletter-cadence-simulator.ts",
     "test:back-on-market-promo": "tsx scripts/back-on-market-promo-simulator.ts",
+    "test:social-cadence": "tsx scripts/social-cadence-simulator.ts",
     "test:lead-flow": "tsx scripts/lead-flow-e2e.ts",
     "test:render": "tsx scripts/composition-render-simulator.ts",
     "test:geo": "tsx scripts/geo-landing-simulator.ts",

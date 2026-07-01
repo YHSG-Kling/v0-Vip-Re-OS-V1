@@ -665,6 +665,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   approved_content_library: "campaign_orchestrator",
   blog_cadence_policy: "campaign_orchestrator",
   newsletter_cadence_policy: "campaign_orchestrator",
+  social_cadence_policy: "marketing_agent",
   blog_post_keywords: "campaign_orchestrator",
   blog_post_share_clicks: "campaign_orchestrator",
   blog_post_views: "campaign_orchestrator",

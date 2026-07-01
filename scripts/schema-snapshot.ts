@@ -122,6 +122,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   billing_usage: ["active_agents", "ai_calls_count", "brokerage_id", "id", "period_label", "recorded_at", "scraper_calls", "storage_bytes", "subscription_id", "video_minutes"],
   blog_cadence_policy: ["cadence", "fire_day", "id", "preferred_categories", "preferred_persona", "scope_id", "scope_type", "skipped_until", "updated_at", "updated_by"],
   newsletter_cadence_policy: ["brokerage_id", "cadence", "fire_day", "id", "preferred_categories", "preferred_persona", "scope_id", "scope_type", "skipped_until", "updated_at", "updated_by"],
+  social_cadence_policy: ["brokerage_id", "cadence", "fire_day", "id", "preferred_categories", "preferred_persona", "preferred_post_types", "scope_id", "scope_type", "skipped_until", "updated_at", "updated_by"],
   blog_post_keywords: ["blog_post_id", "brokerage_id", "created_at", "id", "is_primary", "seo_keyword_id"],
   blog_post_share_clicks: ["blog_post_id", "brokerage_id", "clicked_at", "id", "share_channel", "viewer_contact_id", "viewer_persona_snapshot"],
   blog_post_views: ["blog_post_id", "brokerage_id", "id", "referrer", "source", "viewed_at", "viewer_contact_id", "viewer_ip_hash", "viewer_persona_snapshot"],
