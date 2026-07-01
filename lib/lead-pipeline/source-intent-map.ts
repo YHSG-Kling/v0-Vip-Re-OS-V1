@@ -448,7 +448,7 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   google_phrase_intent: 'apify',
   rental_listing:       'apify',   // Craigslist apartments section
   linkedin_relocation:  'apify',
-  expired_listing:      'zenrows', // real-estate listing pages (off-market detection)
+  expired_listing:      'batchdata', // BatchData 'expired' motivation trigger (quickList 'expired-listing')
   exa_buyer_intent:     'exa',     // AI-native neural search (buyer intent)
   tavily_intent:        'tavily',  // AI-native agentic search (buyer/seller/investor)
   batchdata_motivated:  'batchdata',

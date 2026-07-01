@@ -10,7 +10,6 @@ import {
   buildPropertySearchUrl,
   parsePropertySearchResults,
   parseBuyerSavedSearches,
-  parseExpiredListings,
   normalizeBatchDataRecord,
 } from "@/lib/lead-pipeline/scraper-parsers"
 import {
@@ -218,11 +217,9 @@ export async function GET(request: Request) {
                 // (parseBuyerSavedSearches). Both are filtered by the viability gate.
                 const sellerRecords = parsePropertySearchResults(scraped.html, site, market)
                 const buyerRecords = parseBuyerSavedSearches(scraped.html, site, market)
-                // Expired/withdrawn listings = top motivated sellers (off-market detection).
-                const expiredRecords = enabledSources.has("expired_listing")
-                  ? parseExpiredListings(scraped.html, site, market)
-                  : []
-                const siteRecords = [...sellerRecords, ...buyerRecords, ...expiredRecords]
+                // Expired listings are sourced from BatchData (the 'expired' motivation trigger),
+                // not scraped from portal HTML — see the BatchData block below.
+                const siteRecords = [...sellerRecords, ...buyerRecords]
                 sourceItemsFound += siteRecords.length
 
                 // Rich page-level normalization (buyer + seller + investor intent, FSBO marker,
@@ -313,7 +310,7 @@ export async function GET(request: Request) {
       // 2. SCRAPE MOTIVATED SELLERS (BatchData)
       // ============================================
       // STEP 4 gate
-      if (enabledSources.has("batchdata_motivated") && market.lead_scraping_motivated_params?.length > 0) {
+      if ((enabledSources.has("batchdata_motivated") || enabledSources.has("expired_listing")) && market.lead_scraping_motivated_params?.length > 0) {
         const motivatedParams = market.lead_scraping_motivated_params[0]
         if (motivatedParams.is_active) {
           // STEP 5 — open scraper_executions record
@@ -346,7 +343,12 @@ export async function GET(request: Request) {
 
             // STEP 7 — geography comes entirely from market record, never hardcoded
             const location = `${market.city}, ${market.state}`
-            const rawSellers = await batchdata.getMotivatedSellerData(location)
+            // Pull the motivated-seller trio and expired listings as SEPARATE trigger calls (BatchData
+            // labels every record in a search with the first trigger, so expired must be its own call).
+            const rawSellers = [
+              ...(enabledSources.has("batchdata_motivated") ? await batchdata.getMotivatedSellerData(location) : []),
+              ...(enabledSources.has("expired_listing") ? await batchdata.getMotivatedSellerData(location, ["expired"]) : []),
+            ]
             // Normalize to canonical shape and filter by viability gate
             const sellers = rawSellers
               .map((r) => normalizeBatchDataRecord(r as Record<string, unknown>, market))
@@ -354,7 +356,9 @@ export async function GET(request: Request) {
             sourceItemsFound = rawSellers.length
 
             for (const seller of sellers) {
-              const matchesType = motivatedParams.signal_types?.some((type: string) =>
+              // Expired-listing records always pass (they were pulled by an explicit expired trigger);
+              // the configured signal_types filter only applies to the motivated-seller trio.
+              const matchesType = seller.source === "expired_listing" || motivatedParams.signal_types?.some((type: string) =>
                 seller.intentSignals?.includes(type),
               )
 

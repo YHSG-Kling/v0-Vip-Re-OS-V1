@@ -22,7 +22,6 @@
 import {
   parsePropertySearchResults,
   parseBuyerSavedSearches,
-  parseExpiredListings,
   parseCraigslistHtml,
   normalizeBatchDataRecord,
   buildPropertySearchUrl,
@@ -967,25 +966,18 @@ function testVendorRouting() {
   // New sources (recs 1-5).
   check("rental → apify", SOURCE_VENDOR.rental_listing === "apify")
   check("linkedin → apify", SOURCE_VENDOR.linkedin_relocation === "apify")
-  check("expired → zenrows", SOURCE_VENDOR.expired_listing === "zenrows")
+  check("expired → batchdata", SOURCE_VENDOR.expired_listing === "batchdata")
 }
 
 // ── 17. New sources: rental / expired / linkedin / OSINT permits-violations ──
 function testNewSources() {
   console.log("\n[New sources — rental / expired / linkedin / OSINT records]")
-  // Expired/withdrawn listing → seller
-  const expiredHtml = `
-    <div class="listing-card" data-id="e1">
-      <span class="status-badge">Off market</span>
-      <div class="card-address">55 Failed Sale Dr, Tampa FL</div>
-      <a href="/home/e1"></a>
-    </div>
-    <div class="listing-card" data-id="e2"><span>Active</span><div class="card-address">99 Active Rd</div></div>`
-  const expired = parseExpiredListings(expiredHtml, "zillow", { city: "Tampa", state: "FL" })
-  check("expired: parses 1 off-market (active skipped)", expired.length === 1, `got ${expired.length}`)
-  check("expired → seller + expired_listing", expired[0]?.intentType === "seller" && expired[0]?.source === "expired_listing")
-  check("expired motivationScore high (>=70)", (expired[0]?.motivationScore ?? 0) >= 70)
-  check("expired anchored on address", expired[0]?.propertyAddress === "55 Failed Sale Dr, Tampa FL")
+  // Expired listing → seller, sourced from BatchData (the 'expired' motivation trigger), NOT
+  // scraped from portal HTML (that zenrows path was consolidated away — see the batchdata scraper).
+  const expired = normalizeBatchDataRecord({ motivationType: "expired", firstName: "Dana", lastName: "Poe", propertyAddress: "55 Failed Sale Dr, Tampa FL", phone: "8135550001" }, MARKET)
+  check("expired → seller + expired_listing", expired.intentType === "seller" && expired.source === "expired_listing")
+  check("expired behaviorType = expired_listing", expired.behaviorType === "expired_listing")
+  check("expired anchored on address", expired.propertyAddress === "55 Failed Sale Dr, Tampa FL")
 
   // Rental → landlord/investor seller
   const rental = normalizeRentalListing({ id: "r1", title: "3BR house for rent by owner", email: "landlord@example.com" }, { city: "Tampa", state: "FL" })

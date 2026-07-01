@@ -249,12 +249,22 @@ export function normalizeBatchDataRecord(
     .replace(/\s+/g, '-')
     .replace(/[^a-z0-9-]/g, '')
 
+  // Expired listings come from BatchData (the 'expired' motivation trigger → quickList
+  // 'expired-listing'). A BatchData record labeled 'expired' (or carrying an expired/canceled/
+  // failed listing quickList) is an EXPIRED-LISTING lead, not a generic motivated seller — tag it
+  // so it flows under the expired_listing source with the right intent.
+  const motivation = (record.motivationType ?? record.motivation_type ?? 'motivated_seller') as string
+  const quickLists = (Array.isArray(record.quickLists) ? record.quickLists : []) as string[]
+  const isExpired =
+    motivation === 'expired' ||
+    quickLists.some((q) => /(expired|canceled|cancelled|failed)-listing/i.test(String(q)))
+
   return {
     sourceRecordId: `batchdata-${idSlug || Date.now()}`,
-    source: "batchdata_motivated",
-    behaviorType: "motivated_seller",
+    source: isExpired ? "expired_listing" : "batchdata_motivated",
+    behaviorType: isExpired ? "expired_listing" : "motivated_seller",
     intentType: "seller",
-    intentSignals: [(record.motivationType ?? record.motivation_type ?? 'motivated_seller') as string],
+    intentSignals: isExpired ? ["expired_listing"] : [motivation],
     firstName:       firstName || null,
     lastName:        lastName  || null,
     email:           (record.email  as string | null | undefined) ?? null,
@@ -325,46 +335,6 @@ export function parseBuyerSavedSearches(
   return records.filter(isViableRecord)
 }
 
-const EXPIRED_MARKERS = /\b(off[\s-]?market|no longer available|listing (removed|expired|withdrawn)|was listed|delisted|taken off)\b/i
-
-/**
- * Parse EXPIRED / WITHDRAWN listing signals from a real-estate site — listings
- * that failed to sell are the highest-intent motivated sellers. We detect the
- * off-market/removed status on a card and anchor the lead on the property
- * address; PeopleData skip-trace resolves the owner from the address.
- */
-export function parseExpiredListings(
-  html: string,
-  site: string,
-  market: MarketGeo,
-): NormalizedScrapedRecord[] {
-  const $ = cheerio.load(html)
-  const records: NormalizedScrapedRecord[] = []
-
-  $('[class*="card"], [class*="listing"], [class*="result"], article').each((i, el) => {
-    const block = $(el)
-    const statusText = block.find('[class*="status"], [class*="label"], [class*="badge"]').text() + " " + block.text().slice(0, 200)
-    if (!EXPIRED_MARKERS.test(statusText)) return
-
-    const address =
-      block.find('[class*="address"], [data-testid="card-address"], [class*="home-address"]').first().text().trim() ||
-      null
-    if (!address || address.length < 5) return
-
-    records.push({
-      sourceRecordId: `${site}-expired-${block.attr("data-id") ?? block.attr("id") ?? `${i}-${Date.now()}`}`,
-      source: "expired_listing",
-      behaviorType: "expired_listing",
-      intentType: "seller",
-      intentSignals: ["expired", "off_market", "listing_removed"],
-      propertyAddress: address,
-      city: market.city,
-      state: market.state,
-      motivationScore: 75,
-      sourceUrl: block.find("a").first().attr("href") ?? null,
-      rawPayload: { status: statusText.trim().slice(0, 160), address },
-    })
-  })
-
-  return records.filter(isViableRecord)
-}
+// NOTE: expired/withdrawn listings are now sourced from BatchData (the 'expired' motivation
+// trigger → quickList 'expired-listing'), tagged by normalizeBatchDataRecord above. The old
+// portal-HTML expired parser was consolidated away so expired has a single, structured source.

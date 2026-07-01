@@ -14,6 +14,7 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:scrapers": "tsx scripts/scraper-simulator.ts",
+    "test:expired-listing-source": "tsx scripts/expired-listing-source-simulator.ts",
     "test:lead-flow": "tsx scripts/lead-flow-e2e.ts",
     "test:render": "tsx scripts/composition-render-simulator.ts",
     "test:geo": "tsx scripts/geo-landing-simulator.ts",

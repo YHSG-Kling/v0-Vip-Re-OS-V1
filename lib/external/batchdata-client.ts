@@ -20,11 +20,14 @@ export class BatchDataClient {
    * BOTH city and state so the BatchData `query` scopes to the city, not just the state.
    * Returns the records array directly so callers can iterate without unwrapping.
    */
-  async getMotivatedSellerData(location: string): Promise<BatchDataRecord[]> {
+  async getMotivatedSellerData(location: string, motivationTypes?: string[]): Promise<BatchDataRecord[]> {
     const [city, state] = location.includes(',')
       ? location.split(',').map(s => s.trim())
       : ['', location]
-    return fetchMotivatedSellers({ state: state || location, city: city || undefined }).then(r => r.records)
+    // motivationTypes lets a caller target a SPECIFIC trigger as its own search (e.g. ['expired'] for
+    // expired listings) — fetchMotivatedSellers labels every returned record with types[0], so each
+    // trigger must be pulled trigger-by-trigger. Omitted → the default motivated-seller trio.
+    return fetchMotivatedSellers({ state: state || location, city: city || undefined, motivationTypes }).then(r => r.records)
   }
 }
 
