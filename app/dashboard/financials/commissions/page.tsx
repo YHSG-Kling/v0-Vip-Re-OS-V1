@@ -4,9 +4,10 @@ import { getAgentContext } from '@/lib/identity/get-agent-context'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { DollarSign, ArrowLeft, TrendingUp, Clock, CheckCircle2, AlertCircle } from 'lucide-react'
+import { DollarSign, ArrowLeft, TrendingUp, Clock, CheckCircle2, AlertCircle, Landmark } from 'lucide-react'
 import Link from 'next/link'
 import { PayoutButton } from '@/app/components/features/financial/PayoutButton'
+import { DepositReceivedButton } from '@/app/components/features/financial/DepositReceivedButton'
 import { ExportCSVButton } from '@/app/components/features/financial/ExportCSVButton'
 import {
   CommissionIntelligencePanel,
@@ -31,7 +32,7 @@ export default async function CommissionsPage() {
   const [commissions, transactions] = await Promise.all([
     supabase
       .from('commissions')
-      .select('id, gross_commission, agent_commission, status, created_at, transaction_id')
+      .select('id, gross_commission, agent_commission, status, created_at, transaction_id, deposit_received_at')
       .eq('agent_id', agentId)
       .gte('created_at', `${currentYear}-01-01`)
       .order('created_at', { ascending: false })
@@ -178,17 +179,26 @@ export default async function CommissionsPage() {
                               <CheckCircle2 className="w-3 h-3 mr-1" />
                               Paid
                             </>
+                          ) : c.deposit_received_at ? (
+                            <>
+                              <Landmark className="w-3 h-3 mr-1" />
+                              Deposit received
+                            </>
                           ) : (
                             <>
                               <Clock className="w-3 h-3 mr-1" />
-                              Pending
+                              Awaiting deposit
                             </>
                           )}
                         </Badge>
                       </td>
                       {isBrokerAdmin && (
                         <td className="py-3 px-2 text-center">
-                          {c.status === 'pending' && (
+                          {/* Close froze the amount → record the deposit → disburse (Mark as Paid). */}
+                          {c.status === 'pending' && !c.deposit_received_at && c.transaction_id && (
+                            <DepositReceivedButton transactionId={c.transaction_id} />
+                          )}
+                          {c.status === 'pending' && c.deposit_received_at && (
                             <PayoutButton
                               commissionId={c.id}
                               brokerageId={brokerageId ?? ''}
