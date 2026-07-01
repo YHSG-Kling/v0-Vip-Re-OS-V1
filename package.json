@@ -67,6 +67,7 @@
     "test:milestone-seeder-consolidation": "tsx scripts/milestone-seeder-consolidation-simulator.ts",
     "test:lead-contact-type": "tsx scripts/lead-contact-type-simulator.ts",
     "test:scraper-health": "tsx scripts/scraper-health-simulator.ts",
+    "test:mailing-cass": "tsx scripts/mailing-cass-gate-simulator.ts",
     "test:promotion-gate-health": "tsx scripts/promotion-gate-health-simulator.ts",
     "test:scraper-territory-gate": "tsx scripts/scraper-territory-gate-simulator.ts",
     "test:enrichment-retry": "tsx scripts/enrichment-retry-simulator.ts",

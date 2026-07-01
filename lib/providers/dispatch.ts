@@ -28,6 +28,7 @@ import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 import { evaluateDeconflict, type DeconflictChannel } from "@/lib/kernel/deconflict"
 import { DECONFLICT_GATE_KEY } from "@/lib/campaign-sequences/deferral-policy"
 import { createServiceClient } from "@/lib/supabase/service"
+import { needsCassCheck, interpretLobForGate, type MailingGateLead } from "@/lib/providers/mailing-cass-gate"
 import { resolveManagerAutonomy, autonomyDecision, managerForDispatch, HUMAN_APPROVED_SYSTEM_SOURCE } from "@/lib/managers/autonomy-gate"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 
@@ -579,10 +580,10 @@ export async function dispatchDirectMail(
     const svc = createServiceClient()
     const { data: lead } = await svc
       .from("leads")
-      .select("brokerage_id, mailing_address_verified")
+      .select("brokerage_id, mailing_address_verified, mailing_address_source, mailing_address, mailing_city, mailing_state, mailing_zip")
       .eq("id", params.leadId)
       .maybeSingle()
-    const l = lead as { brokerage_id: string | null; mailing_address_verified: boolean | null } | null
+    const l = lead as (MailingGateLead & { brokerage_id: string | null }) | null
     if (!l) {
       return { success: false, providerKey: "lead_gate", error: "Lead not found" }
     }
@@ -594,6 +595,39 @@ export async function dispatchDirectMail(
         success:     false,
         providerKey: "lead_gate",
         error:       "Lead mailing address not verified — Lob send blocked. Run lob-address-verify first.",
+      }
+    }
+
+    // ── CASS deliverability gate ────────────────────────────────────────────
+    // mailing_address_verified=true only means "an address string exists" (set naively at promotion).
+    // Before we pay Lob for a physical piece, CASS-verify ONCE via Lob so the flag the gate above
+    // trusts is HONEST. Deliverable → standardize + mark lob_cass (idempotent). Undeliverable → block
+    // this send AND correct the flag to false so speed-to-lead stops choosing direct_mail for this cold
+    // lead. Provider-gated (no LOB_API_KEY / transient → defer to the existing flag, never block).
+    if (needsCassCheck(l)) {
+      const { verifyAddressViaLob } = await import("@/lib/external/lob-address-verify")
+      const { data: lob, cost } = await verifyAddressViaLob({
+        primary_line: l.mailing_address ?? "",
+        city:         l.mailing_city ?? undefined,
+        state:        l.mailing_state ?? undefined,
+        zip_code:     l.mailing_zip ?? undefined,
+      })
+      const decision = interpretLobForGate(lob)
+      if (decision.action !== "defer") {
+        await svc.from("leads").update({ ...decision.patch, updated_at: new Date().toISOString() }).eq("id", params.leadId)
+        if (cost > 0) {
+          try {
+            const { meterVendorSpend } = await import("@/lib/vendor-governance/meter-vendor")
+            await meterVendorSpend({ vendorName: "lob", usageType: "address_verify", cost, brokerageId: params.brokerageId, systemSource: "direct_mail_gate", metadata: { leadId: params.leadId, result: decision.reason } })
+          } catch { /* metering never breaks the send */ }
+        }
+      }
+      if (decision.action === "block") {
+        return {
+          success:     false,
+          providerKey: "lead_gate",
+          error:       "Lead mailing address failed Lob CASS verification (undeliverable) — Lob send blocked; flag corrected so it won't retry on mail.",
+        }
       }
     }
   }
