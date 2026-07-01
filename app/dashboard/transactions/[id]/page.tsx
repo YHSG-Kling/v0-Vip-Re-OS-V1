@@ -4,6 +4,9 @@ import { TransactionDetailClient } from "./transaction-detail-client"
 import { ClosingWatchtowerSection } from "./closing-watchtower-section"
 import { ClosingWarRoomSection } from "./closing-war-room-section"
 import { FinancingPitStopSection } from "./financing-pit-stop-section"
+import { BuyerMoveSection } from "./buyer-move-section"
+import { getBuyerMoveCase } from "@/lib/transactions/buyer-move"
+import { FEATURES } from "@/lib/constants"
 import { TRANSACTION_STAGES, TransactionStage } from "@/lib/transactions/transaction-stages"
 
 export const dynamic = "force-dynamic"
@@ -328,6 +331,14 @@ export default async function TransactionDetailPage({ params }: PageProps) {
         .maybeSingle()
     : { data: null }
 
+  // Buyer Move Services — the post-contract move-in concierge (Deal Coordinator). The case is
+  // auto-created when a buyer-side deal enters CLOSING_PREP; a buyer-side deal already at/after
+  // CLOSING_PREP with no case yet can bootstrap one from the panel.
+  const buyerMoveCase = await getBuyerMoveCase(supabase as any, { transactionId: id, brokerageId })
+  const moveEligibleStage = ["CLOSING_PREP", "CLOSED"].includes((transaction as any).stage)
+  const isBuyerSideDeal = (transaction as any).deal_type !== "listing" && !!(transaction as any).buyer_contact_id
+  const canBootstrapMove = !buyerMoveCase && moveEligibleStage && isBuyerSideDeal
+
   // Closing-Day War Room — open orchestration actions (transaction_pending_actions)
   // feed the drive-to-done list alongside the deal's tasks + unmet conditions.
   const { data: warRoomPendingActions } = await supabase
@@ -414,6 +425,15 @@ export default async function TransactionDetailPage({ params }: PageProps) {
               }]
             : []
         }
+      />
+      {/* Buyer Move Services — post-contract move-in concierge (utilities, address, movers) with
+          guided-DIY vs Utility Connect handoff (handoff execution feature-flagged until creds exist). */}
+      <BuyerMoveSection
+        transactionId={id}
+        brokerageId={brokerageId}
+        initialCase={buyerMoveCase}
+        canBootstrap={canBootstrapMove}
+        utilityConnectEnabled={FEATURES.BUYER_MOVE_UTILITY_CONNECT}
       />
       <TransactionDetailClient
       transaction={transaction}

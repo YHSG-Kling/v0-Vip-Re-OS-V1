@@ -32,6 +32,10 @@ export const FEATURES = {
   OPEN_HOUSE_AUTOMATION: process.env.NEXT_PUBLIC_FEATURE_OPEN_HOUSE !== "false", // Enabled by default
   SOCIAL_MEDIA: process.env.NEXT_PUBLIC_FEATURE_SOCIAL !== "false", // Enabled by default
   EMAIL_CAMPAIGNS: process.env.NEXT_PUBLIC_FEATURE_EMAIL !== "false", // Enabled by default
+  // Buyer move-in: the guided-DIY concierge is always on. The Utility Connect EXTERNAL handoff (mode
+  // 'handoff') stays OFF until the partner code + API creds exist — the recommendation still computes,
+  // but no lead is ever pushed out while this is false. Flip on once the partner integration is live.
+  BUYER_MOVE_UTILITY_CONNECT: process.env.NEXT_PUBLIC_FEATURE_UTILITY_CONNECT === "true",
 } as const
 
 // ============================================

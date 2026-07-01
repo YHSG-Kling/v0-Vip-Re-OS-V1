@@ -268,6 +268,21 @@ export async function advanceStage(params: {
       console.error("[v0] Commission preview calculation failed:", error)
       // Don't block stage advancement on commission calculation failure
     })
+
+    // ── Buyer move-in concierge (Deal Coordinator) ────────────────────────────
+    // Entering CLOSING_PREP is when the buyer's second job begins — turn on utilities, change address,
+    // book movers. Stand up the dated move-in checklist now so the guided-DIY concierge (and the
+    // handoff recommendation) is ready before move-in. Buyer-side only; best-effort — never blocks the
+    // stage advance. The Utility Connect EXTERNAL handoff stays gated behind a feature flag.
+    try {
+      const { ensureBuyerMoveCase } = await import("@/lib/transactions/buyer-move")
+      await ensureBuyerMoveCase(supabase, {
+        transactionId: params.transactionId,
+        brokerageId: params.brokerageId,
+      })
+    } catch (e) {
+      console.error("[stage-progression] buyer move-case ensure failed:", e)
+    }
   } else if (params.targetStage === "CLOSED") {
     // Trigger final commission calculation
     const { calculateCommission } = await import("@/lib/commission/engine")
