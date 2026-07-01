@@ -2,11 +2,13 @@
 /**
  * scripts/commission-tracking-reconcile-simulator.ts   (npm run test:commission-tracking)
  * ─────────────────────────────────────────────────────────────────────────────
- * Proves the two commission status trackings are reconciled into ONE lock at close and can't drift:
- *   • THE BRIDGE  — agent_commissions.status (the agent-earnings dashboard record).
+ * Proves the two commission status trackings are two STAGES of the money (not redundant) and can't
+ * drift on paid:
+ *   • THE BRIDGE  — agent_commissions.status (the agent-earnings record).
  *   • THE LEDGER  — commissions.status + commission_distributions.status (the disbursement ledger).
- * CLOSE now finalizes BOTH; a reaper heals historical drift (bridge paid, ledger lagging) and
- * escalates the anomaly (ledger paid, bridge lagging).
+ * CLOSE freezes the amount (close ≠ paid); the ledger tracks the deposit; DISBURSEMENT locks BOTH to
+ * paid together. A reaper heals historical drift (bridge paid, ledger lagging) and escalates the
+ * anomaly (ledger paid, bridge lagging).
  *
  * PURE layer: detectCommissionTrackingDrift (both directions + consistent + absent) and
  * aggregateLedgerStatus (paid only when every non-cancelled row is paid).
@@ -23,6 +25,8 @@ import {
   detectCommissionTrackingDrift,
   aggregateLedgerStatus,
 } from "../lib/commission/reconcile-tracking"
+// (finalizeCommissionAtClose / reconcileCommissionDisbursement / recordCommissionDepositReceived do
+//  I/O — asserted via source scan below, not imported into the pure layer.)
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -50,21 +54,28 @@ function pureLayer() {
 }
 
 function sourceLayer() {
-  console.log("\n[wiring — one lock at close + the reaper safety net]")
+  console.log("\n[wiring — close FREEZES; disbursement is the ONE LOCK; the reaper is the safety net]")
   const stage = src("lib/transactions/stage-progression.ts")
-  check("CLOSE calls reconcileCommissionTrackingAtClose after finalizing the bridge",
-    /reconcileCommissionTrackingAtClose/.test(stage) && /params\.targetStage === "CLOSED"/.test(stage))
+  check("CLOSE calls finalizeCommissionAtClose (freeze the amount, not pay)",
+    /finalizeCommissionAtClose/.test(stage) && /params\.targetStage === "CLOSED"/.test(stage))
+  check("CLOSE does NOT lock the ledger to paid (paid moved to disbursement)",
+    !/reconcileCommissionDisbursement/.test(stage.slice(stage.indexOf('params.targetStage === "CLOSED"'), stage.indexOf('params.targetStage === "CLOSED"') + 3200)))
+
+  const fin = src("lib/kernel/financial.ts")
+  check("DISBURSEMENT (kernel markCommissionPaid) calls reconcileCommissionDisbursement",
+    /markCommissionPaid[\s\S]*?reconcileCommissionDisbursement/.test(fin))
 
   const reconcile = src("lib/commission/reconcile-tracking.ts")
   check("reconcile reuses the canonical payment path (markCommissionPaid)", /markCommissionPaid/.test(reconcile))
-  check("reconcile skips already-paid/cancelled ledger rows (idempotent)", /paid.*cancelled|cancelled/.test(reconcile))
+  check("reconcile skips already-paid/cancelled/voided ledger rows (idempotent)", /cancelled/.test(reconcile) && /voided/.test(reconcile))
+  check("the ledger tracks the DEPOSIT (recordCommissionDepositReceived → deposit_received_at)", /recordCommissionDepositReceived[\s\S]*?deposit_received_at/.test(reconcile))
 
   const net = src("lib/intelligence/reaper-net.ts")
   check("the reaper is registered under commission_tracking_drift / finance_manager",
     /commission_tracking_drift[\s\S]*?finance_manager/.test(net) && /reapCommissionTrackingDrift/.test(net))
 
   const reaper = src("lib/finance/commission-tracking-reaper.ts")
-  check("reaper HEALS bridge_ahead (locks the ledger)", /bridge_ahead[\s\S]*?reconcileCommissionTrackingAtClose/.test(reaper) || /reconcileCommissionTrackingAtClose/.test(reaper))
+  check("reaper HEALS bridge_ahead (locks the ledger)", /reconcileCommissionDisbursement/.test(reaper))
   check("reaper ESCALATES ledger_ahead (never force-finalizes the earnings record)", /ledger_ahead/.test(reaper) && /notifications/.test(reaper))
   check("escalation is deduped (one alert per transaction / 7d)", /commission_tracking_drift[\s\S]*?entity_id/.test(reaper) && /gte\("created_at"/.test(reaper))
 }
@@ -135,6 +146,6 @@ async function main() {
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ COMMISSION_TRACKING_FAIL"); process.exit(1) }
-  console.log(" ✅ COMMISSION_TRACKING_PASS — bridge + ledger are one lock at close; the reaper heals drift + escalates anomalies")
+  console.log(" ✅ COMMISSION_TRACKING_PASS — close freezes the amount; bridge + ledger are one lock at DISBURSEMENT; the reaper heals drift + escalates anomalies")
 }
 main()

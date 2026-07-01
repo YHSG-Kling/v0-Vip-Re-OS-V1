@@ -14,7 +14,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import {
   detectCommissionTrackingDrift,
   aggregateLedgerStatus,
-  reconcileCommissionTrackingAtClose,
+  reconcileCommissionDisbursement,
 } from "@/lib/commission/reconcile-tracking"
 
 type Svc = SupabaseClient<any, any, any>
@@ -62,7 +62,7 @@ export async function reapCommissionTrackingDrift(
     const ledgerStatus = await ledgerStatusFor(txnId)
     const { direction } = detectCommissionTrackingDrift({ bridgeStatus: "paid", ledgerStatus })
     if (direction === "bridge_ahead") {
-      const r = await reconcileCommissionTrackingAtClose(svc, { transactionId: txnId, brokerageId, actorUserId })
+      const r = await reconcileCommissionDisbursement(svc, { transactionId: txnId, brokerageId, actorUserId })
       if (r.ledgerRowsLocked > 0) reaped++
     }
   }

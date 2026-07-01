@@ -810,6 +810,23 @@ export async function markCommissionPaid(
       }
     }
 
+    // THE ONE LOCK AT DISBURSEMENT — the earnings record is now paid; lock the LEDGER (commissions +
+    // commission_distributions) for the same transaction in the same step, so the two trackings
+    // converge on 'paid' at the real disbursement event, never at close. Best-effort — never fails the
+    // payout; the tracking-drift reaper heals any single-sided miss.
+    try {
+      const transactionId = (commission as { transaction_id?: string | null }).transaction_id ?? null
+      if (transactionId) {
+        const { reconcileCommissionDisbursement } = await import("@/lib/commission/reconcile-tracking")
+        await reconcileCommissionDisbursement(supabase, {
+          transactionId,
+          brokerageId,
+          actorUserId: ctx.userId,
+          paidAt,
+        })
+      }
+    } catch { /* ledger lock is best-effort; the reaper reconciles any miss */ }
+
     return {
       success: true,
       data: { commissionId, paidAt, status: newStatus },

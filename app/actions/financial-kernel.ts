@@ -218,6 +218,33 @@ export async function markCommissionPaidAction(
   }
 }
 
+/**
+ * Record that the brokerage RECEIVED the commission deposit at closing — the ledger's money-tracking
+ * step between close and disbursement (close freezes the amount; the deposit is the money arriving;
+ * disbursement pays the agent). Broker-gated; stamps deposit_received_at on the transaction's ledger.
+ */
+export async function recordCommissionDepositReceivedAction(
+  input: { transactionId: string }
+) {
+  try {
+    const ctx = await getFinancialActorContext()
+    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+      return { success: false as const, error: "Insufficient permissions to record a deposit" }
+    }
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { recordCommissionDepositReceived } = await import("@/lib/commission/reconcile-tracking")
+    const svc = createServiceClient()
+    const res = await recordCommissionDepositReceived(svc, {
+      transactionId: input.transactionId,
+      brokerageId: ctx.brokerageId,
+      actorUserId: ctx.userId,
+    })
+    return { success: true as const, stamped: res.stamped }
+  } catch (error) {
+    return { success: false as const, error: String(error) }
+  }
+}
+
 export async function createExpenseRecordAction(
   input: Omit<CreateExpenseRecordInput, "ctx">
 ) {

@@ -280,47 +280,19 @@ export async function advanceStage(params: {
       console.error("[stage-progression] Final commission calculation failed:", error)
     })
 
-    // ── COMMISSIONS SET IN STONE ──────────────────────────────────────────────
-    // The deal is CLOSED (final CD provided + the brokerage received its deposit), so the
-    // approved commission is FINALIZED: approved → paid (locked). Only finalizes a commission the
-    // broker already APPROVED via the CDA broker-sign — a still-pending commission (CDA not fully
-    // signed) is left for that authorization, never force-paid. Idempotent (an already-paid row is
-    // skipped by the status filter). Best-effort — never blocks closing the deal.
+    // ── AMOUNT SET IN STONE AT CLOSE (close ≠ paid) ───────────────────────────
+    // The deal is CLOSED (final CD, both signed). The final calc above FROZE the commission amount —
+    // it can't change now. Close does NOT pay: the ledger tracks the money AFTER close (the brokerage
+    // receives the deposit at the closing table, then disburses the agent's split; 'paid' is stamped
+    // at DISBURSEMENT, not here). For a NON-CDA brokerage there is no CDA broker-sign, so closing the
+    // deal auto-APPROVES the earnings record (pending → approved) to keep the later disbursement path
+    // uniform; a CDA brokerage was already approved by the broker's CDA signature. Best-effort.
     try {
-      const paidAt = new Date().toISOString()
-      const { data: acRows } = await supabase
-        .from("agent_commissions")
-        .select("id")
-        .eq("transaction_id", params.transactionId)
-        .eq("brokerage_id", params.brokerageId)
-        .eq("status", "approved")
-      for (const ac of (acRows ?? []) as Array<{ id: string }>) {
-        const { error: upErr } = await supabase
-          .from("agent_commissions")
-          .update({ status: "paid", paid_at: paidAt, updated_at: paidAt })
-          .eq("id", ac.id)
-          .eq("status", "approved")
-        if (!upErr) {
-          await supabase.from("lifecycle_events").insert({
-            entity_type: "agent_commission",
-            entity_id:   ac.id,
-            event_type:  "commission.paid",
-            metadata:    { transaction_id: params.transactionId, finalized_on: "transaction_closed" },
-            created_at:  paidAt,
-          }).then(() => {}, () => {})
-        }
-      }
-
-      // ONE LOCK — the bridge (agent_commissions) is now finalized; lock the LEDGER (commissions +
-      // commission_distributions) in the SAME step so the two trackings can never disagree on a
-      // closed deal. Reuses the canonical payment-tracker per ledger row (correct distributions +
-      // commission.paid event). Idempotent + best-effort; a reaper heals any historical drift.
-      const { reconcileCommissionTrackingAtClose } = await import("@/lib/commission/reconcile-tracking")
-      await reconcileCommissionTrackingAtClose(supabase, {
+      const { finalizeCommissionAtClose } = await import("@/lib/commission/reconcile-tracking")
+      await finalizeCommissionAtClose(supabase, {
         transactionId: params.transactionId,
         brokerageId:   params.brokerageId,
         actorUserId:   params.userId,
-        paidAt,
       })
     } catch (e) {
       console.error("[stage-progression] commission finalize-on-close failed:", e)

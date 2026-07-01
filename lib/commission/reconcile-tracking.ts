@@ -1,20 +1,24 @@
 // lib/commission/reconcile-tracking.ts
 //
-// ONE LOCK AT CLOSE — reconcile the two commission status trackings so they can never drift.
+// THE MONEY LIFECYCLE — close FREEZES the amount; the ledger TRACKS the money after close.
 //
-// The platform tracks a commission's paid state in TWO table systems, historically advanced by
-// separate code with no cross-update:
-//   • THE BRIDGE  — agent_commissions.status (pending → approved → paid): the agent-earnings
-//                   dashboard/lifecycle record. Locked approved → paid at CLOSE (set-in-stone).
-//   • THE LEDGER  — commissions.status + commission_distributions.status (pending → paid): the
-//                   engine's disbursement ledger. Locked by markCommissionPaid (payment-tracker).
-// Because CLOSE only locked the BRIDGE, a closed deal's ledger sat 'pending' forever while the
-// dashboard said 'paid' — the two trackings disagreed. This module makes them ONE lock: when the
-// bridge is finalized at close, the ledger is locked in the same step (reusing the canonical
-// payment-tracker so the ledger's own event + distribution rows stay correct), and a reaper heals
-// any historical/edge drift both ways.
+// The platform tracks a commission across two systems that represent two REAL stages of the money —
+// they are NOT redundant:
+//   • THE BRIDGE  — agent_commissions.status (pending → approved → paid): the agent-EARNINGS record
+//                   (what the agent will receive). 'approved' = authorized to disburse (the CDA
+//                   broker-sign for CDA brokerages; auto at close for non-CDA). 'paid' = the agent
+//                   actually received their disbursement.
+//   • THE LEDGER  — commissions + commission_distributions (pending → paid, + deposit_received_at):
+//                   the MONEY MOVEMENT. A brokerage RECEIVES the commission deposit at closing, then
+//                   DISBURSES the agent's split.
 //
-// The pure detector is unit-tested; the reconcile+reaper do the I/O.
+// CLOSE (final CD, both signed) freezes the AMOUNT — it does NOT pay. After close the ledger tracks
+// the deposit, then the disbursement. DISBURSEMENT is the ONE LOCK: both trackings go 'paid' together
+// (a reaper heals any single-sided drift). This mirrors how real brokerages settle: for a CDA-enforced
+// brokerage the commission flows commission → broker → brokerage → agent; for a non-CDA brokerage it
+// disburses per the agent's payout preference.
+//
+// The pure detector/aggregator are unit-tested; the reconcile/deposit helpers do the I/O.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 
@@ -23,9 +27,9 @@ type Svc = SupabaseClient<any, any, any>
 export type TrackingDriftDirection = "bridge_ahead" | "ledger_ahead" | null
 
 /**
- * PURE: given the two trackings' status for ONE transaction, are they out of sync?
- *   • bridge_ahead — the bridge (agent_commissions) is paid but the ledger isn't → heal the ledger.
- *   • ledger_ahead — the ledger is paid but the bridge isn't → an anomaly a human should see.
+ * PURE: given the two trackings' status for ONE transaction, are they out of sync on PAID?
+ *   • bridge_ahead — the earnings record is paid but the ledger isn't → heal the ledger.
+ *   • ledger_ahead — the ledger is paid but the earnings record isn't → an anomaly a human resolves.
  *   • null         — consistent, or one side is absent (nothing to compare).
  * `ledgerStatus` is the AGGREGATE ledger state (paid only when every commissions row for the txn is
  * paid); anything else is treated as not-yet-paid.
@@ -49,18 +53,79 @@ export function detectCommissionTrackingDrift(input: {
  * when there is no ledger row at all (bridge-only — not drift, a separate leak concern).
  */
 export function aggregateLedgerStatus(rows: Array<{ status?: string | null }>): string | null {
-  const live = (rows ?? []).filter((r) => (r.status ?? "").toLowerCase() !== "cancelled")
+  const live = (rows ?? []).filter((r) => (r.status ?? "").toLowerCase() !== "cancelled" && (r.status ?? "").toLowerCase() !== "voided")
   if (live.length === 0) return null
   return live.every((r) => (r.status ?? "").toLowerCase() === "paid") ? "paid" : "pending"
 }
 
 /**
- * Lock the LEDGER (commissions + commission_distributions) to paid for a transaction, in the SAME
- * step the bridge is finalized at close. Reuses the canonical payment-tracker markCommissionPaid per
- * ledger row so the distribution rows + the commission.paid lifecycle event stay correct. Idempotent
- * (already-paid/cancelled rows skipped). Best-effort — never blocks the close.
+ * FREEZE THE AMOUNT AT CLOSE — the deal is done (final CD both-signed). This does NOT pay. For a
+ * NON-CDA brokerage there is no CDA broker-sign to authorize disbursement, so the earnings record is
+ * auto-APPROVED here (pending → approved) to keep the later disbursement path uniform. For a CDA
+ * brokerage the broker-sign already approved it (or it stays pending until signed — the CDA authorizes).
+ * Idempotent, best-effort — never blocks the close. Returns how many rows were authorized.
  */
-export async function reconcileCommissionTrackingAtClose(
+export async function finalizeCommissionAtClose(
+  svc: Svc,
+  params: { transactionId: string; brokerageId: string; actorUserId: string },
+): Promise<{ autoApproved: number; offersCda: boolean }> {
+  const { data: brk } = await svc
+    .from("brokerages")
+    .select("offers_cda")
+    .eq("id", params.brokerageId)
+    .maybeSingle()
+  const offersCda = (brk as { offers_cda?: boolean } | null)?.offers_cda ?? false
+
+  // Non-CDA: no CDA authorization step exists, so closing the deal authorizes the amount.
+  if (offersCda) return { autoApproved: 0, offersCda }
+
+  const nowIso = new Date().toISOString()
+  const { data: pending } = await svc
+    .from("agent_commissions")
+    .select("id")
+    .eq("transaction_id", params.transactionId)
+    .eq("brokerage_id", params.brokerageId)
+    .eq("status", "pending")
+  let autoApproved = 0
+  for (const row of (pending ?? []) as Array<{ id: string }>) {
+    const { error } = await svc
+      .from("agent_commissions")
+      .update({ status: "approved", approved_at: nowIso, approved_by: params.actorUserId, updated_at: nowIso })
+      .eq("id", row.id)
+      .eq("status", "pending")
+    if (!error) autoApproved++
+  }
+  return { autoApproved, offersCda }
+}
+
+/**
+ * POST-CLOSE: the brokerage RECEIVED the commission deposit at closing. Stamps deposit_received_at on
+ * the ledger for the transaction (idempotent — only stamps rows not already marked). This is the
+ * ledger's money-tracking step BETWEEN close and disbursement. Best-effort.
+ */
+export async function recordCommissionDepositReceived(
+  svc: Svc,
+  params: { transactionId: string; brokerageId: string; actorUserId: string; at?: string },
+): Promise<{ stamped: number }> {
+  const at = params.at ?? new Date().toISOString()
+  const { data, error } = await svc
+    .from("commissions")
+    .update({ deposit_received_at: at, deposit_received_by: params.actorUserId })
+    .eq("transaction_id", params.transactionId)
+    .eq("brokerage_id", params.brokerageId)
+    .is("deposit_received_at", null)
+    .select("id")
+  if (error) return { stamped: 0 }
+  return { stamped: (data ?? []).length }
+}
+
+/**
+ * THE ONE LOCK AT DISBURSEMENT — the agent was paid, so lock the LEDGER (commissions +
+ * commission_distributions) to paid alongside the earnings record, so the two trackings converge on
+ * 'paid' at the SAME real event (disbursement), never at close. Reuses the canonical payment-tracker
+ * per ledger row (correct distribution rows + commission.paid event). Idempotent; best-effort.
+ */
+export async function reconcileCommissionDisbursement(
   svc: Svc,
   params: { transactionId: string; brokerageId: string; actorUserId: string; paidAt?: string },
 ): Promise<{ ledgerRowsFound: number; ledgerRowsLocked: number }> {
@@ -77,7 +142,7 @@ export async function reconcileCommissionTrackingAtClose(
     const { markCommissionPaid } = await import("./payment-tracker")
     for (const row of rows) {
       const status = (row.status ?? "").toLowerCase()
-      if (status === "paid" || status === "cancelled") continue
+      if (status === "paid" || status === "cancelled" || status === "voided") continue
       const res = await markCommissionPaid({
         commissionId: row.id,
         brokerageId: params.brokerageId,
