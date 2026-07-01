@@ -144,6 +144,16 @@ export const REAPER_NET: ReaperEntry[] = [
     },
   },
   {
+    domain: "stuck_marketing_campaigns",
+    manager: "campaign_orchestrator",
+    lane: "proactive",
+    protects: "campaigns that stalled (scheduled-never-launched / live-distributed-nothing / draft-forever)",
+    run: async (b, svc) => {
+      const { reapStuckCampaigns } = await import("@/lib/marketing/stuck-campaign-reaper")
+      return norm(await reapStuckCampaigns(b, svc))
+    },
+  },
+  {
     domain: "ad_action_unlaunched",
     manager: "ads_manager",
     lane: "proactive",
