@@ -206,6 +206,30 @@ export async function routeSavedHomeNudge(
   return res.ok
 }
 
+/** AUTONOMOUS REPURPOSE trigger: when a BROADCAST reel is being distributed, hand it to the
+ *  Asset Manager to cut platform shorts (managed, on the bus). Idempotent per source video via
+ *  the bus dedupe. Only fires for broadcast, non-1:1, non-variant reels. */
+async function maybePublishRepurposeHandoff(videoProjectId: string, ctx: { brokerageId: string; supabase: Svc }): Promise<void> {
+  const { data: v } = await ctx.supabase
+    .from("ai_video_projects")
+    .select("id, video_metadata")
+    .eq("id", videoProjectId)
+    .maybeSingle()
+  if (!v) return
+  const meta = ((v as { video_metadata?: Record<string, unknown> }).video_metadata ?? {}) as Record<string, any>
+  const { isRepurposableVideo } = await import("@/lib/video/repurpose-planner")
+  if (!isRepurposableVideo({ directorKey: meta.director_key ?? null, targetChannels: (meta.target_channels ?? []) as string[], audience: meta.audience ?? null })) return
+  await publishManagerSignal({
+    brokerageId: ctx.brokerageId,
+    fromManager: "campaign_orchestrator",
+    toManager: "asset_manager",
+    signalType: "repurpose_shorts_handoff",
+    message: "A broadcast reel is live — cut platform shorts from it",
+    entityType: "video_project",
+    entityId: videoProjectId,
+  }, ctx.supabase)
+}
+
 /** The registered conversations — to_manager:signal_type → handler. Handlers act by
  *  proposing GOVERNED deliverables (the gate), never autonomous sends. */
 export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
@@ -519,6 +543,10 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     if (!signal.entityId) return null
     const title = (signal.payload?.title as string | undefined) ?? "Your finished video"
     const kind = (signal.payload?.kind as string | undefined) ?? null
+    // AUTONOMOUS REPURPOSE: this broadcast reel is being distributed — hand off to the Asset
+    // Manager to cut platform shorts from it (managed, on the bus; replaces the manual UI). Only
+    // fires for broadcast, non-1:1, non-variant videos. Best-effort; never blocks distribution.
+    await maybePublishRepurposeHandoff(signal.entityId, ctx).catch(() => {})
     const { proposeGatedVideoDistribution } = await import("@/lib/kernel/video")
     const res = await proposeGatedVideoDistribution({
       brokerageId: ctx.brokerageId,
@@ -533,6 +561,50 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     return res.created
       ? "proposed a gated multi-channel distribution draft (pending approval)"
       : "coordinated distribution already proposed (gated, deduped)"
+  },
+  // Campaign Orchestrator → Asset Manager: AUTONOMOUS REPURPOSE. A broadcast reel is done +
+  // being distributed — cut platform SHORTS from it. The Asset Manager re-commissions the SAME
+  // content (kind/tier/entity replayed from video_metadata.situation) as vertical reels for the
+  // short channels the primary didn't cover, through the Director/commissionVideo pipeline (real
+  // render + bookends + QR + gating). Replaces the manual snippets/repurpose UI with a managed,
+  // on-the-bus decision. Each variant is a DISTINCT commission (idempotencyDiscriminator).
+  "asset_manager:repurpose_shorts_handoff": async (signal, ctx) => {
+    if (!signal.entityId) return null
+    const { data: v } = await ctx.supabase
+      .from("ai_video_projects")
+      .select("id, agent_id, brokerage_id, listing_id, contact_id, marketing_campaign_id, video_metadata")
+      .eq("id", signal.entityId)
+      .maybeSingle()
+    if (!v) return null
+    const meta = ((v as { video_metadata?: Record<string, unknown> }).video_metadata ?? {}) as Record<string, any>
+    const { isRepurposableVideo, planRepurposeChannels, repurposeDiscriminator } = await import("@/lib/video/repurpose-planner")
+    const src = { directorKey: meta.director_key ?? null, targetChannels: (meta.target_channels ?? []) as string[], audience: meta.audience ?? null }
+    if (!isRepurposableVideo(src)) return "not repurposable (1:1 / already a variant / not broadcast)"
+    const channels = planRepurposeChannels(src)
+    if (channels.length === 0) return "primary already covers the short channels — nothing to cut"
+    const situation = (meta.situation ?? {}) as { kind?: string; tier?: string; target_channel?: string }
+    if (!situation.kind || !situation.tier) return "no stamped situation on the primary — can't replay for shorts"
+    const row = v as { brokerage_id: string; agent_id: string; listing_id: string | null; contact_id: string | null; marketing_campaign_id: string | null }
+    const { commissionVideo } = await import("@/lib/video/video-director")
+    const made: string[] = []
+    for (const channel of channels) {
+      const res = await commissionVideo(
+        { kind: situation.kind as any, tier: situation.tier as any, targetChannel: channel, facts: {} },
+        {
+          brokerageId: row.brokerage_id,
+          agentUserId: row.agent_id,
+          listingId: row.listing_id ?? null,
+          contactId: row.contact_id ?? null,
+          campaignId: row.marketing_campaign_id ?? null,
+          idempotencyDiscriminator: repurposeDiscriminator(channel),
+        },
+        ctx.supabase,
+      )
+      if (res.ok && res.status !== "already_staged") made.push(channel)
+    }
+    return made.length > 0
+      ? `cut ${made.length} platform short${made.length === 1 ? "" : "s"} (${made.join(", ")}) — gated for approval`
+      : "platform shorts already staged (deduped)"
   },
   // Asset Manager → Ads Manager: a PROMOTABLE render (just_listed / just_sold /
   // open_house) finished. Mirrors content_winner — propose paid promotion into the

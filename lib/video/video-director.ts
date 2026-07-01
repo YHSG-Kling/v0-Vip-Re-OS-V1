@@ -924,6 +924,9 @@ export async function commissionVideo(
 
   const videoMetadata = {
     director_key: directorKey,
+    // The situation that produced this reel — stamped so the autonomous repurpose loop can
+    // replay it for platform-short VARIANTS (same kind/tier/entity, a different target channel).
+    situation: { kind: situation.kind, tier: situation.tier, target_channel: situation.targetChannel },
     composition_id: format.compositionId,
     supports_bookends: supportsBookends,
     needs_avatar: requiresAvatar,
