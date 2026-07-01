@@ -89,6 +89,22 @@ export async function createContactFromLead(
       agentTeamId = agentRow?.team_id ?? null
     }
 
+    // PHONE SCRUB at promotion — the scraped raw→lead enrichment (pipeline-processor) skip-traces
+    // but never scrubs the number against DNC / TCPA-litigators, so a promoted contact would land
+    // with dnc_status hard-coded false and its outreach gate vacuous. Scrub here with the SAME
+    // primitive the enrichment orchestrator uses (one path, no drift): elect the clean line as
+    // primary and populate the real gate columns (dnc_status / phone_status / phone_verified). Honest:
+    // when the provider defers (unconfigured / out of balance) we keep the lead's values — no
+    // fabricated "clean" flag — and a known DNC/litigator line is suppressed exactly like an opt-out.
+    let scrubPatch: Record<string, unknown> | null = null
+    if (data.lead.phone || data.lead.phone_secondary) {
+      try {
+        const { scrubPhonesForPatch } = await import("@/lib/compliance/phone-scrub-runner")
+        const scrub = await scrubPhonesForPatch([data.lead.phone, data.lead.phone_secondary])
+        if (!scrub.deferred && Object.keys(scrub.patch).length > 0) scrubPatch = scrub.patch
+      } catch { /* provider hiccup → keep the lead's values, never block promotion */ }
+    }
+
     // Map lead data to contact schema
     // Only copy relationship-safe fields
     const contactData = {
@@ -196,6 +212,11 @@ export async function createContactFromLead(
       status: 'active',
       isa_reengage_allowed: true,
       dnc_status: false,
+
+      // Real DNC / TCPA-litigator gate columns from the scrub OVERRIDE the optimistic defaults +
+      // the raw phone ordering above (elected clean-first). Spread last so it wins; empty when the
+      // provider deferred (then the lead's values stand).
+      ...(scrubPatch ?? {}),
 
       // Metadata
       notes: `Promoted from lead ${data.leadId}`,
