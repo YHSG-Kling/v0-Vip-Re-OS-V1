@@ -59,6 +59,7 @@ import {
   BusinessPlanningPanel,
   PlanningAiSummaryPanel,
 } from "../components/planning"
+import { MyProfitLossPanel } from "../components/my-profit-loss-panel"
 import { BillingSummaryCard } from "./components/billing-summary-card"
 import { CommissionCalculatorCard } from "./components/commission-calculator-card"
 import { BudgetPlannerCard } from "./components/budget-planner-card"
@@ -446,6 +447,9 @@ export function AgentFinancialsClient({
 
       {/* ── P&L & Commissions Tab ──────────────────────────────────────────── */}
       <TabsContent value="pl-commissions" className="space-y-6">
+
+        {/* My monthly P&L snapshot + AI-tool ROI (agent-facing; was broker-only) */}
+        <MyProfitLossPanel />
 
         {/* P&L Summary */}
         <Card>
