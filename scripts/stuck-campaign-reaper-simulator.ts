@@ -10,7 +10,7 @@
  * and keeps everything healthy (active, terminal, recent, in-window). Escalate-only — never
  * auto-fails a human-owned campaign. Pure: no I/O.
  */
-import { classifyStuckCampaign, stuckCampaignMessage } from "../lib/marketing/stuck-campaign-policy"
+import { classifyStuckCampaign, stuckCampaignMessage, recoveryStrategyFor } from "../lib/marketing/stuck-campaign-policy"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -42,6 +42,11 @@ function main() {
   for (const s of ["approved", "paused", "ended", "archived", "failed", "completed"]) {
     check(`status '${s}' → keep`, classifyStuckCampaign({ ...base, status: s, launchedAt: daysAgo(90), scheduledStartAt: daysAgo(90), createdAt: daysAgo(90) }) === "keep")
   }
+
+  console.log("\n[autonomous recovery strategy — respects the propose→approve→send gate]")
+  check("overdue_scheduled → RELAUNCH (already-approved launch that never fired; agent doesn't redo it)", recoveryStrategyFor("overdue_scheduled") === "relaunch")
+  check("stale_draft → ESCALATE (unapproved; auto-launching would send unapproved content)", recoveryStrategyFor("stale_draft") === "escalate")
+  check("live_no_traction → ESCALATE (can't re-launch from live)", recoveryStrategyFor("live_no_traction") === "escalate")
 
   console.log("\n[escalation copy exists for every stuck verdict]")
   for (const v of ["overdue_scheduled", "live_no_traction", "stale_draft"] as const) {

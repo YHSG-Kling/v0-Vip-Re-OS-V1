@@ -9,7 +9,7 @@
 // or auto-pause one. Idempotent per campaign via the notifications dedup.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { classifyStuckCampaign, stuckCampaignMessage } from "./stuck-campaign-policy"
+import { classifyStuckCampaign, stuckCampaignMessage, recoveryStrategyFor } from "./stuck-campaign-policy"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -63,6 +63,39 @@ export async function reapStuckCampaigns(
     if (verdict === "keep") continue
     result.scanned++
 
+    // ── AUTONOMOUS RECOVERY (multi-manager, on the bus) ──────────────────────
+    // A 'scheduled' campaign was already approved; its launch just never fired. RE-RUN the
+    // compliance-gated publisher to COMPLETE the approved action — the agent never redoes it.
+    // Only escalates to a human if the relaunch itself can't proceed (compliance/audience).
+    if (recoveryStrategyFor(verdict) === "relaunch") {
+      try {
+        const { publishMarketingCampaignSafe } = await import("./campaign-publisher")
+        const r = await publishMarketingCampaignSafe(c.id)
+        if (r.ok) {
+          result.reaped++
+          // Announce the autonomous recovery on the manager bus — the AI team caught + relaunched
+          // it, visible in the Command Center's "managers talking" feed (feed_only).
+          try {
+            const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+            await publishManagerSignal({
+              brokerageId,
+              fromManager: "campaign_orchestrator",
+              toManager: "marketing_agent",
+              signalType: "campaign_recovered",
+              message: `Auto-relaunched a stalled campaign${c.campaign_name ? ` "${c.campaign_name}"` : ""} — reached ${r.audienceSize ?? 0} contacts (${r.complianceStatus ?? "ok"})`,
+              entityType: "marketing_campaign",
+              entityId: c.id,
+              payload: { audience_size: r.audienceSize ?? 0, compliance_status: r.complianceStatus ?? null },
+            }, svc)
+          } catch { /* visibility is best-effort — the campaign already relaunched */ }
+          continue
+        }
+        // Relaunch couldn't proceed (compliance held / audience empty) → fall through to escalate,
+        // carrying the SPECIFIC reason so the human knows exactly what to fix.
+        if (r.error) (c as { _recoverError?: string })._recoverError = r.error
+      } catch { /* fall through to escalate */ }
+    }
+
     // Idempotent per campaign: skip if an unread stuck-campaign alert already exists for it.
     const { data: prior } = await svc
       .from("notifications")
@@ -74,6 +107,7 @@ export async function reapStuckCampaigns(
       .limit(1)
     if (prior && prior.length > 0) continue
 
+    const recoverError = (c as { _recoverError?: string })._recoverError
     const msg = stuckCampaignMessage(verdict)
     const name = c.campaign_name ? `"${c.campaign_name}"` : "A campaign"
     let escalatedThis = false
@@ -83,7 +117,9 @@ export async function reapStuckCampaigns(
         brokerage_id: brokerageId,
         type: "campaign_stuck",
         title: msg.title,
-        body: `${name}: ${msg.body}`,
+        body: recoverError
+          ? `${name}: your AI team tried to relaunch it but couldn't — ${recoverError} Fix that and it'll go out.`
+          : `${name}: ${msg.body}`,
         entity_type: "marketing_campaign",
         entity_id: c.id,
         priority: "medium",

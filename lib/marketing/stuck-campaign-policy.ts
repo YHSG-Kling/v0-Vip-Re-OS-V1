@@ -51,6 +51,22 @@ export function classifyStuckCampaign(input: StuckCampaignInput): StuckCampaignV
   return "keep"
 }
 
+export type CampaignRecoveryStrategy = "relaunch" | "escalate"
+
+/**
+ * How the Campaign Orchestrator AUTONOMOUSLY recovers a stuck campaign — respecting the
+ * propose→approve→send gate:
+ *   • overdue_scheduled → RELAUNCH. A 'scheduled' campaign was already human-approved; its launch
+ *     simply never fired (cron skip / transient), so re-running the compliance-gated publisher
+ *     COMPLETES the approved action — not a new unapproved send. The agent never redoes it.
+ *   • stale_draft → ESCALATE. A draft was NOT approved; auto-launching it would send unapproved
+ *     content, so a human must finish/approve it.
+ *   • live_no_traction → ESCALATE. Can't re-launch from 'live'; needs a human/channel-manager look.
+ */
+export function recoveryStrategyFor(verdict: Exclude<StuckCampaignVerdict, "keep">): CampaignRecoveryStrategy {
+  return verdict === "overdue_scheduled" ? "relaunch" : "escalate"
+}
+
 /** Human-readable escalation copy per verdict (broker-facing). */
 export function stuckCampaignMessage(verdict: Exclude<StuckCampaignVerdict, "keep">): { title: string; body: string } {
   switch (verdict) {
