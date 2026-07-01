@@ -32,6 +32,9 @@ export interface SignupBrokerageInput {
   tier:            CanonicalTier
   brokerageState?: string
   brokerageCity?:  string
+  /** Solo-agent only: is the agent's managing brokerage / team also on the platform? */
+  brokerageOnPlatform?: boolean
+  teamOnPlatform?:      boolean
 }
 
 export interface SignupBrokerageResult {
@@ -100,6 +103,11 @@ export async function signupBrokerageAction(
       city:               input.brokerageCity ?? null,
       state:              input.brokerageState ?? null,
       plan_tier:          input.tier,
+      // Platform membership — for a SOLO agent the broker-side steps (CDA signature, compliance) route
+      // to their external form platform unless their brokerage/team is also on the platform. For any
+      // org tier the org IS the customer (its own broker/admin users handle those) → always true.
+      brokerage_on_platform: input.tier === "solo_agent" ? (input.brokerageOnPlatform ?? false) : true,
+      team_on_platform:      input.tier === "solo_agent" ? (input.teamOnPlatform ?? false) : true,
       trial_ends_at:      trialEndsAt.toISOString(),
       signup_source:      "self_serve",
       onboarding_status:  "pending",

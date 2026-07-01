@@ -59,6 +59,11 @@ export function SignupForm() {
   const [firstName, setFirstName]         = useState("")
   const [lastName, setLastName]           = useState("")
   const [email, setEmail]                 = useState("")
+  // Solo-agent only: is the agent's managing brokerage / team also on the platform? This decides
+  // whether broker-side steps (CDA signature, compliance) run in-app or route to their external
+  // form platform.
+  const [brokerageOnPlatform, setBrokerageOnPlatform] = useState(false)
+  const [teamOnPlatform, setTeamOnPlatform]           = useState(false)
 
   const [feedback, setFeedback] = useState<{ kind: "error" | "success"; message: string; trialEndsAt?: string } | null>(null)
   const [isPending, startTransition] = useTransition()
@@ -70,6 +75,8 @@ export function SignupForm() {
       const r = await signupBrokerageAction({
         brokerageName, adminFirstName: firstName, adminLastName: lastName, adminEmail: email,
         tier, brokerageCity: city || undefined, brokerageState: state || undefined,
+        brokerageOnPlatform: tier === "solo_agent" ? brokerageOnPlatform : undefined,
+        teamOnPlatform:      tier === "solo_agent" ? teamOnPlatform : undefined,
       })
       if (!r.ok) {
         setFeedback({ kind: "error", message: r.error ?? "Sign-up failed." })
@@ -169,6 +176,25 @@ export function SignupForm() {
               We&apos;ll email a magic link to finish setup. No password needed yet.
             </p>
           </div>
+
+          {tier === "solo_agent" && (
+            <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+              <p className="text-xs font-medium">Is your brokerage already on the platform?</p>
+              <p className="text-[11px] text-muted-foreground">
+                This tells us where your contracts &amp; CDAs go for broker signature + compliance. If your
+                brokerage/team isn&apos;t on the platform, we&apos;ll route them to your external form platform (set
+                that up later in Settings → Integrations).
+              </p>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={brokerageOnPlatform} onChange={e => setBrokerageOnPlatform(e.target.checked)} className="h-4 w-4" />
+                My brokerage is on the platform
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={teamOnPlatform} onChange={e => setTeamOnPlatform(e.target.checked)} className="h-4 w-4" />
+                My team is on the platform
+              </label>
+            </div>
+          )}
         </CardContent>
       </Card>
 

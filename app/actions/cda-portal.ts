@@ -167,6 +167,25 @@ async function loadCdaContractVerdict(
 // listCdasForComplianceReviewAction (one set of lookups for the whole queue); approveCdaAction
 // re-checks it live as the hard gate below. No per-CDA read action needed.
 
+// Platform-membership disposition for a brokerage — do the in-app broker-side steps apply, or must the
+// CDA be handled through the agent's external form platform (a solo agent whose brokerage isn't on the
+// platform)? Loaded from the explicit membership flag set at account creation.
+async function loadCdaDispositionRoute(
+  supabase: SupabaseClient,
+  brokerageId: string,
+): Promise<"in_app" | "external_form_platform"> {
+  const { data: brokerage } = await supabase
+    .from("brokerages")
+    .select("plan_tier, brokerage_on_platform")
+    .eq("id", brokerageId)
+    .maybeSingle()
+  const { resolveDispositionRoute } = await import("@/lib/platform/disposition-route")
+  return resolveDispositionRoute({
+    planTier: (brokerage as { plan_tier?: string | null } | null)?.plan_tier ?? null,
+    brokerageOnPlatform: (brokerage as { brokerage_on_platform?: boolean | null } | null)?.brokerage_on_platform ?? null,
+  }).route
+}
+
 // ─── 1. Preliminary CD upload trigger ────────────────────────────────────────
 
 /**
@@ -464,19 +483,48 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
   // the contract/CDA discrepancies + fee deduction check, on record at submit. Best-effort — the
   // live queue re-computes it and approveCdaAction re-checks it as the hard gate.
   let submitAudit: Record<string, unknown> | null = null
+  let submitVerdict: Awaited<ReturnType<typeof loadCdaContractVerdict>> | null = null
   try {
-    const verdict = await loadCdaContractVerdict(supabase, cda as Parameters<typeof loadCdaContractVerdict>[1])
-    if (verdict) {
+    submitVerdict = await loadCdaContractVerdict(supabase, cda as Parameters<typeof loadCdaContractVerdict>[1])
+    if (submitVerdict) {
       submitAudit = {
         at: now,
-        passed: verdict.passed,
-        contract_split_pct: verdict.contractSplitPct,
-        cap_reached: verdict.capReached,
-        outstanding_fees: verdict.outstandingFees,
-        discrepancies: verdict.discrepancies,
+        passed: submitVerdict.passed,
+        contract_split_pct: submitVerdict.contractSplitPct,
+        cap_reached: submitVerdict.capReached,
+        outstanding_fees: submitVerdict.outstandingFees,
+        discrepancies: submitVerdict.discrepancies,
       }
     }
   } catch { /* audit is informational at submit; approval gate still enforces */ }
+
+  // PLATFORM-MEMBERSHIP DISPOSITION — where do the broker-side steps run? If the brokerage is not on
+  // the platform (a solo agent whose managing brokerage isn't a customer), there's no in-app broker /
+  // compliance user, so the CDA is handled through the agent's EXTERNAL form platform, not the in-app
+  // compliance→broker-sign queue.
+  const { data: subBrokerage } = await supabase
+    .from("brokerages")
+    .select("plan_tier, brokerage_on_platform")
+    .eq("id", cda.brokerage_id)
+    .maybeSingle()
+  const { resolveDispositionRoute } = await import("@/lib/platform/disposition-route")
+  const disposition = resolveDispositionRoute({
+    planTier: (subBrokerage as { plan_tier?: string | null } | null)?.plan_tier ?? null,
+    brokerageOnPlatform: (subBrokerage as { brokerage_on_platform?: boolean | null } | null)?.brokerage_on_platform ?? null,
+  })
+
+  // AUTONOMOUS DISPUTE DETECTION — a BLOCKER contract mismatch means the CDA's split/gross doesn't
+  // agree with the agent's contract. The Finance Manager acts: auto-file the dispute for the on-platform
+  // broker, or flag the agent to raise it with their external brokerage. Best-effort.
+  try {
+    const { autoDetectCommissionDispute } = await import("@/lib/finance/auto-dispute")
+    await autoDetectCommissionDispute(supabase, {
+      transactionId: cda.transaction_id,
+      brokerageId: cda.brokerage_id,
+      discrepancies: submitVerdict?.discrepancies ?? null,
+      dispositionRoute: disposition.route,
+    })
+  } catch { /* auto-dispute is best-effort — the approval gate still blocks a mismatch */ }
 
   // The AGENT signs the CDA via their configured e-sign provider BEFORE it goes to
   // compliance (per spec). Provider-agnostic + best-effort; the in-app sign-off below
@@ -505,7 +553,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
       agent_signed_off_by: auth.userId,
       agent_submitted_at: now,
       agent_submitted_by: auth.userId,
-      field_values: { ...submitPriorFieldValues, agent_esign: { mode: agentEsign.mode, provider: agentEsign.provider, loop_id: agentEsign.loopId ?? null, dispatched: agentEsign.dispatched, reason: agentEsign.reason, at: now }, ...(submitAudit ? { submit_audit: submitAudit } : {}) },
+      field_values: { ...submitPriorFieldValues, agent_esign: { mode: agentEsign.mode, provider: agentEsign.provider, loop_id: agentEsign.loopId ?? null, dispatched: agentEsign.dispatched, reason: agentEsign.reason, at: now }, disposition: disposition.route, ...(submitAudit ? { submit_audit: submitAudit } : {}) },
       updated_at: now,
     })
     .eq("id", cda.id)
@@ -525,25 +573,41 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
     await runSignatureCheckForCdaAction({ cdaId: cda.id })
   } catch { /* informational pre-scan; approval gate still enforces */ }
 
-  // Notify compliance for the brokerage.
-  const { data: complianceUsers } = await supabase
-    .from("users")
-    .select("id")
-    .eq("brokerage_id", cda.brokerage_id)
-    .in("user_type", ["compliance_officer", "admin", "broker", "broker_admin"])
-
-  for (const u of complianceUsers ?? []) {
+  if (disposition.route === "external_form_platform") {
+    // No in-app broker/compliance — the broker-side steps happen through the agent's external form
+    // platform. Tell the AGENT the CDA is theirs to route to their brokerage; skip the in-app queue.
     await supabase.from("notifications").insert({
-      user_id: u.id,
+      user_id: auth.userId,
       brokerage_id: cda.brokerage_id,
-      type: "cda_submitted",
-      title: "CDA submitted for approval",
-      body: "Agent has signed off and submitted a CDA for review.",
+      type: "cda_route_external",
+      title: "Send your signed CDA to your brokerage",
+      body: "Your brokerage isn't on the platform, so your signed CDA is ready to send through your configured form platform for their broker signature and compliance.",
       entity_type: "transaction",
       entity_id: cda.transaction_id,
-      priority: "medium",
+      priority: "high",
       channel: "in_app",
-    })
+    }).then(() => {}, () => {})
+  } else {
+    // Notify in-app compliance for the brokerage.
+    const { data: complianceUsers } = await supabase
+      .from("users")
+      .select("id")
+      .eq("brokerage_id", cda.brokerage_id)
+      .in("user_type", ["compliance_officer", "admin", "broker", "broker_admin"])
+
+    for (const u of complianceUsers ?? []) {
+      await supabase.from("notifications").insert({
+        user_id: u.id,
+        brokerage_id: cda.brokerage_id,
+        type: "cda_submitted",
+        title: "CDA submitted for approval",
+        body: "Agent has signed off and submitted a CDA for review.",
+        entity_type: "transaction",
+        entity_id: cda.transaction_id,
+        priority: "medium",
+        channel: "in_app",
+      })
+    }
   }
 
   await supabase.from("closing_notifications").insert({
@@ -573,6 +637,12 @@ export async function approveCdaAction(input: { cdaId: string }) {
     .maybeSingle()
   if (!cda || cda.brokerage_id !== auth.brokerageId) {
     return { success: false as const, error: "not_found" }
+  }
+  // Platform-membership guard — in-app compliance approval only applies when the brokerage is on the
+  // platform. For a solo agent whose brokerage is external, there's no in-app compliance officer; the
+  // CDA is approved/signed through their external form platform.
+  if ((await loadCdaDispositionRoute(supabase, cda.brokerage_id)) === "external_form_platform") {
+    return { success: false as const, error: "handled_via_external_form_platform" }
   }
   // Shared state-machine gate (compliance role + submitted status + agent e-signed).
   const approveVerdict = canApproveCda({ status: cda.status, agentSignedOff: !!cda.agent_signed_off_at, role: auth.userType })
@@ -683,6 +753,12 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
     .maybeSingle()
   if (!cda || cda.brokerage_id !== auth.brokerageId) {
     return { success: false as const, error: "not_found" }
+  }
+  // Platform-membership guard — in-app broker signature only applies when the brokerage is on the
+  // platform. For a solo agent whose brokerage is external, the broker signs through their external
+  // form platform, not here.
+  if (!cda.broker_approved_at && (await loadCdaDispositionRoute(supabase, cda.brokerage_id)) === "external_form_platform") {
+    return { success: false as const, error: "handled_via_external_form_platform" }
   }
   // Shared state-machine gate (role + approved status + not-already-signed).
   const verdict = canBrokerSignCda({ status: cda.status, brokerSigned: !!cda.broker_approved_at, role: auth.userType })

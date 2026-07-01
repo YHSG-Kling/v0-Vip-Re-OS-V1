@@ -30,6 +30,7 @@
     "test:tax-planning": "tsx scripts/tax-planning-simulator.ts",
     "test:quarterly-tax-concierge": "tsx scripts/quarterly-tax-concierge-simulator.ts",
     "test:cap-crush": "tsx scripts/cap-crush-simulator.ts",
+    "test:disposition-route": "tsx scripts/disposition-route-simulator.ts",
     "test:lead-flow": "tsx scripts/lead-flow-e2e.ts",
     "test:render": "tsx scripts/composition-render-simulator.ts",
     "test:geo": "tsx scripts/geo-landing-simulator.ts",
