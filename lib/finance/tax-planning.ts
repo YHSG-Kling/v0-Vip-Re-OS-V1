@@ -84,7 +84,7 @@ export interface QuarterlyEstimate {
 
 // IRS quarterly estimated-tax due dates (standard; Q4 falls in January of the following year).
 // Weekend/holiday shifting is a refinement — the standard dates are used here.
-function quarterlyDueDates(taxYear: number): string[] {
+export function quarterlyDueDates(taxYear: number): string[] {
   return [
     `${taxYear}-04-15`,
     `${taxYear}-06-15`,
