@@ -16,6 +16,7 @@
     "test:scrapers": "tsx scripts/scraper-simulator.ts",
     "test:expired-listing-source": "tsx scripts/expired-listing-source-simulator.ts",
     "test:repurpose-shorts": "tsx scripts/repurpose-shorts-simulator.ts",
+    "test:motivated-triggers": "tsx scripts/motivated-triggers-simulator.ts",
     "test:lead-flow": "tsx scripts/lead-flow-e2e.ts",
     "test:render": "tsx scripts/composition-render-simulator.ts",
     "test:geo": "tsx scripts/geo-landing-simulator.ts",

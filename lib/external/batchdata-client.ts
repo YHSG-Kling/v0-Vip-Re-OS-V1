@@ -109,6 +109,34 @@ export const BATCHDATA_MOTIVATION_TYPES = [
 /** The default high-intent seller trio used when no explicit triggers are given (API caps at 3). */
 const DEFAULT_MOTIVATION_TRIO = ['high_equity', 'pre_foreclosure', 'absentee'] as const
 
+/** Config/DB aliases → our canonical BatchData motivation trigger. */
+const TRIGGER_ALIASES: Record<string, string> = {
+  preforeclosure: 'pre_foreclosure', 'pre-foreclosure': 'pre_foreclosure',
+  'tax-lien': 'tax_lien', taxlien: 'tax_lien', 'tax-default': 'tax_lien', taxdefault: 'tax_lien',
+  inherited: 'probate', 'notice-of-sale': 'foreclosure',
+  'absentee-owner': 'absentee', 'expired-listing': 'expired', 'tired-landlord': 'tired_landlord',
+  'high-equity': 'high_equity', highequity: 'high_equity',
+}
+function canonicalTrigger(t: string): string {
+  const k = String(t).trim().toLowerCase().replace(/\s+/g, '_')
+  return TRIGGER_ALIASES[k] ?? TRIGGER_ALIASES[k.replace(/_/g, '-')] ?? k
+}
+
+/**
+ * Resolve which BatchData motivation triggers to pull for a market's CONFIGURED signal types.
+ * Motivated-seller scrapes (probate, foreclosure, pre_foreclosure, tax_lien, vacant, tired_landlord,
+ * high_equity, absentee) come from BatchData FIRST — each mapped to a real quickList and pulled
+ * trigger-by-trigger. 'expired' is pulled on its own gated path (excluded here). Types BatchData
+ * can't serve (divorce / bankruptcy / eviction — no quickList) are DROPPED (they come from OSINT).
+ * Empty / none configured → the high-intent trio (cost-safe default). Pure.
+ */
+export function batchDataTriggersFor(signalTypes: readonly string[] | null | undefined): string[] {
+  const supported = new Set<string>(BATCHDATA_MOTIVATION_TYPES.filter((t) => t !== 'expired'))
+  if (!signalTypes || signalTypes.length === 0) return [...DEFAULT_MOTIVATION_TRIO]
+  const picked = Array.from(new Set(signalTypes.map(canonicalTrigger).filter((t) => supported.has(t))))
+  return picked.length > 0 ? picked : [...DEFAULT_MOTIVATION_TRIO]
+}
+
 /** Authoritative BatchData v1 Property Search quickList vocabulary (the named business-rule
  *  queries). Used to validate every slug before it hits the API so an invalid name can't be sent.
  *  Source: BatchData v1 "Create a Property Search" docs. */

@@ -4,7 +4,7 @@ export { ZenrowsClient, scrapeWithZenRows, retryWithApifyFallback, extractContac
 
 // ─── BATCHDATA (motivated seller / property data) ─────────────────────────────
 export type { BatchDataRecord } from "./batchdata-client"
-export { BatchDataClient, fetchMotivatedSellers, searchProperties, enrichPropertyWithBatchData } from "./batchdata-client"
+export { BatchDataClient, fetchMotivatedSellers, searchProperties, enrichPropertyWithBatchData, batchDataTriggersFor, BATCHDATA_MOTIVATION_TYPES } from "./batchdata-client"
 
 // ─── PEOPLEDATA (skip trace / enrichment) ─────────────────────────────────────
 export type { PeopleDataEnrichment } from "./peopledata-client"

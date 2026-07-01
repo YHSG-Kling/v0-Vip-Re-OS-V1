@@ -2,7 +2,7 @@ import {
 NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { ZenrowsClient, BatchDataClient } from "@/lib/external"
+import { ZenrowsClient, BatchDataClient, batchDataTriggersFor } from "@/lib/external"
 import { processRawRecord } from "@/lib/lead-pipeline"
 import { escalateScraperFailureIfNeeded } from "@/lib/lead-pipeline/scraper-health"
 import { MAX_PROMOTION_ATTEMPTS, STRANDED_STATUSES, reportStuckRawLeads } from "@/lib/lead-pipeline/promotion-gate-health"
@@ -343,10 +343,16 @@ export async function GET(request: Request) {
 
             // STEP 7 — geography comes entirely from market record, never hardcoded
             const location = `${market.city}, ${market.state}`
-            // Pull the motivated-seller trio and expired listings as SEPARATE trigger calls (BatchData
-            // labels every record in a search with the first trigger, so expired must be its own call).
+            // Motivated-seller scrapes (probate, foreclosure, pre_foreclosure, tax_lien, vacant,
+            // tired_landlord, high_equity, absentee) come from BatchData FIRST — the market's CONFIGURED
+            // signal types map to real BatchData quickLists, pulled TRIGGER-BY-TRIGGER (BatchData labels
+            // every record in a search with the first trigger, so each must be its own call). Types
+            // BatchData can't serve (divorce/bankruptcy/eviction) fall to OSINT. Expired is its own call.
+            const motivatedTriggers = enabledSources.has("batchdata_motivated")
+              ? batchDataTriggersFor(motivatedParams.signal_types)
+              : []
             const rawSellers = [
-              ...(enabledSources.has("batchdata_motivated") ? await batchdata.getMotivatedSellerData(location) : []),
+              ...(await Promise.all(motivatedTriggers.map((t) => batchdata.getMotivatedSellerData(location, [t])))).flat(),
               ...(enabledSources.has("expired_listing") ? await batchdata.getMotivatedSellerData(location, ["expired"]) : []),
             ]
             // Normalize to canonical shape and filter by viability gate
@@ -356,9 +362,11 @@ export async function GET(request: Request) {
             sourceItemsFound = rawSellers.length
 
             for (const seller of sellers) {
-              // Expired-listing records always pass (they were pulled by an explicit expired trigger);
-              // the configured signal_types filter only applies to the motivated-seller trio.
-              const matchesType = seller.source === "expired_listing" || motivatedParams.signal_types?.some((type: string) =>
+              // All BatchData records were pulled by an EXPLICIT configured trigger (expired or a
+              // mapped motivated-seller type), so they're all wanted — the signal_types filter is
+              // obsolete for them (and alias-safe, since we pulled canonical triggers).
+              const isBatchData = seller.source === "expired_listing" || seller.source === "batchdata_motivated"
+              const matchesType = isBatchData || motivatedParams.signal_types?.some((type: string) =>
                 seller.intentSignals?.includes(type),
               )
 
