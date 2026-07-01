@@ -686,6 +686,32 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
     })
     .eq("id", cda.id)
 
+  // AUTONOMOUS COMMISSION APPROVAL — the broker signing the CDA IS the broker approving the
+  // commission (in the manual flow the broker calls markCommissionApproved). Advance the related
+  // pending agent_commissions row pending → approved so it stops stalling in 'pending' after the CDA
+  // is authorized and can reach payout. Broker-gated inside markCommissionApproved; idempotent (an
+  // already-approved commission fails the transition guard and is ignored). Best-effort — never
+  // blocks the broker sign-off.
+  try {
+    const { data: comm } = await supabase
+      .from("agent_commissions")
+      .select("id")
+      .eq("transaction_id", cda.transaction_id)
+      .eq("brokerage_id", cda.brokerage_id)
+      .eq("status", "pending")
+      .limit(1)
+      .maybeSingle()
+    if ((comm as { id?: string } | null)?.id) {
+      const { markCommissionApproved } = await import("@/lib/kernel/financial")
+      await markCommissionApproved({
+        ctx: { userId: auth.userId, agentId: auth.agentId ?? null, brokerageId: cda.brokerage_id, userType: auth.userType as "broker" | "admin" | "superadmin" },
+        commissionId: (comm as { id: string }).id,
+        brokerageId: cda.brokerage_id,
+        approvedBy: auth.userId,
+      })
+    }
+  } catch { /* commission auto-approval is best-effort — the broker sign-off is the authoritative gate */ }
+
   await recordRevision({
     cdaId: cda.id,
     revisionNumber: cda.revision_number,
