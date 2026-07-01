@@ -1,8 +1,10 @@
 "use server"
 
 // CDA TEMPLATE FIELD actions — wire the pure resolver (lib/transactions/cda-template-fields)
-// to real data so each brokerage's OWN CDA form auto-fills from the live commission
-// waterfall + the transaction, with the agent filling only the agent-input fields.
+// to real data so the agent FILLS IN each brokerage's OWN CDA form. No autofill of the money:
+// the commission/split/net fields start blank (the agent types them; the computed waterfall value
+// is kept as the AI's `expected` audit baseline). Objective transaction facts + static template
+// constants still pre-fill. The generated PDF carries what the agent entered — never auto-authored money.
 
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
@@ -207,12 +209,12 @@ export async function saveCdaTemplateFieldDefsAction(input: {
 }
 
 /**
- * GENERATE the filled CDA PDF — the real artifact. Resolve the brokerage form fields
- * against the live waterfall + transaction, then write those values onto the brokerage's
- * actual CDA PDF (its AcroForm fields, targeted by name) and store the filled PDF on the
- * CDA so it can be e-signed and delivered to title. Grounded: only fields with a real
- * AcroForm target + a non-empty resolved value are written (buildCdaFillValues); a
- * requested field the PDF lacks comes back in `skipped`, never invented.
+ * GENERATE the filled CDA PDF — the real artifact. Resolve the brokerage form fields (money
+ * fields carry the AGENT'S entered values, never an auto-filled waterfall number; facts/static
+ * pre-fill), then write those values onto the brokerage's actual CDA PDF (its AcroForm fields,
+ * targeted by name) and store the filled PDF on the CDA so it can be e-signed and delivered to
+ * title. Grounded: only fields with a real AcroForm target + a non-empty resolved value are
+ * written (buildCdaFillValues) — a money field the agent left blank is skipped, never invented.
  */
 export async function generateFilledCdaPdfAction(input: { cdaId: string }): Promise<
   | { success: true; url: string; filled: number; skipped: string[]; unmapped: string[] }

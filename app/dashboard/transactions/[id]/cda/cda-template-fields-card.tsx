@@ -1,9 +1,10 @@
 "use client"
 
-// CdaTemplateFieldsCard — renders the brokerage's OWN CDA form fields, auto-filled
-// from the live commission waterfall + the transaction (locked), with the agent
-// filling only the agent-input fields. The differentiator: the brokerage's actual
-// CDA form, populated by the waterfall — not a generic tally.
+// CdaTemplateFieldsCard — renders the brokerage's OWN CDA form fields for the agent to FILL IN.
+// No autofill of the money: the commission/split/net fields start blank and the agent types them
+// in (the computed value shows as an "expected" hint — the baseline the AI audits the entry
+// against at submit). Objective transaction facts + static template text pre-fill as a convenience.
+// The differentiator: the brokerage's actual CDA form, agent-completed and AI-audited.
 
 import { useEffect, useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -19,6 +20,8 @@ interface ResolvedField {
   source: string
   value: string | number | null
   formatted: string
+  expected: string | number | null
+  expectedFormatted: string
   editable: boolean
   field_type: string
 }
@@ -104,29 +107,38 @@ export function CdaTemplateFieldsCard({ cdaId }: { cdaId: string }) {
           Your brokerage&apos;s CDA form
         </CardTitle>
         <p className="text-xs text-muted-foreground">
-          Pre-filled from your contracted terms and the final transaction money. Edit any field if needed, then save.
+          Fill in the commission figures yourself and e-sign. Each money field shows the system&apos;s
+          expected value as a hint — compliance&apos;s AI checks your entries against your contract and any
+          outstanding fees at submit. Property and date fields are pre-filled for convenience.
         </p>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="grid gap-3 sm:grid-cols-2">
           {fields.map((f) => {
             const edited = (inputs[f.field_key] ?? "") !== (initial[f.field_key] ?? "")
-            const autoFilled = f.source !== "agent_input"
+            const prefilled = f.source === "transaction" || f.source === "static"
+            const agentFilledMoney = !prefilled // waterfall/agent_input — the agent types it in
+            const hasExpected = f.expectedFormatted && f.expectedFormatted.trim() !== ""
+            const isEmpty = (inputs[f.field_key] ?? "") === ""
             return (
               <div key={f.field_key} className="space-y-1">
                 <Label className="text-xs flex items-center gap-1">
                   {f.label}
-                  {autoFilled && !edited && <span className="text-[10px] text-muted-foreground">auto</span>}
+                  {prefilled && !edited && <span className="text-[10px] text-muted-foreground">pre-filled</span>}
+                  {agentFilledMoney && <span className="text-[10px] text-indigo-600">you fill in</span>}
                   {edited && <span className="text-[10px] text-amber-600">edited</span>}
                   {missing.includes(f.field_key) && <span className="text-destructive">*</span>}
                 </Label>
                 <Input
                   value={inputs[f.field_key] ?? ""}
                   onChange={(e) => setInputs((p) => ({ ...p, [f.field_key]: e.target.value }))}
-                  placeholder={f.field_type === "currency" ? "$" : f.field_type === "percent" ? "%" : ""}
+                  placeholder={hasExpected && agentFilledMoney ? `expected ${f.expectedFormatted}` : f.field_type === "currency" ? "$" : f.field_type === "percent" ? "%" : ""}
                   disabled={pending}
                   className={missing.includes(f.field_key) ? "border-destructive" : ""}
                 />
+                {agentFilledMoney && hasExpected && isEmpty && (
+                  <p className="text-[10px] text-muted-foreground">Expected {f.expectedFormatted} — enter the amount from your CDA</p>
+                )}
               </div>
             )
           })}
