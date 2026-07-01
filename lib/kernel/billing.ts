@@ -5,6 +5,23 @@
 import { SupabaseClient } from "@supabase/supabase-js"
 import { createServiceClient } from "@/lib/supabase/service"
 
+/**
+ * PURE: is a feature included in a subscription tier's feature set? subscription_tiers.features is a
+ * JSONB OBJECT ({ accounting_sync: true, team_features: false, ... }) — the key's value must be
+ * strictly true. A legacy ARRAY shape (["accounting_sync", ...]) is also honored so an older tier row
+ * can't silently deny an entitlement. Anything else (null/garbage) → not included. Unit-tested.
+ */
+export function isTierFeatureIncluded(
+  features: unknown,
+  featureKey: string,
+): boolean {
+  if (Array.isArray(features)) return features.includes(featureKey)
+  if (features && typeof features === "object") {
+    return (features as Record<string, unknown>)[featureKey] === true
+  }
+  return false
+}
+
 // ============================================================================
 // INPUT/OUTPUT CONTRACTS
 // ============================================================================
@@ -425,7 +442,7 @@ export async function resolveFeatureEntitlement(
       }
     }
 
-    const isIncluded = tier.features?.includes(input.featureKey) || false
+    const isIncluded = isTierFeatureIncluded(tier.features, input.featureKey)
 
     return {
       success: true,
