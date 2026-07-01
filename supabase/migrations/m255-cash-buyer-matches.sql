@@ -1,6 +1,6 @@
 -- m255-cash-buyer-matches.sql
 --
--- CASH-BUYER DISPOSITION MATCH — the disposition bookend of the wholesale funnel (shopping_agent).
+-- CASH-BUYER DISPOSITION MATCH — the disposition tool the Listing Concierge owns for its hard listings.
 -- The app scrapes MOTIVATED SELLERS (probate, pre-foreclosure, tired-landlord, tax-lien) which become
 -- distressed / as-is / hard-to-finance listings. Retail-buyer matching (reverse-prospecting) can't move
 -- those — a financed retail buyer won't touch a teardown, and reverse-prospecting explicitly excludes
@@ -43,4 +43,4 @@ create unique index if not exists idx_cash_buyer_matches_listing on cash_buyer_m
 create index if not exists idx_cash_buyer_matches_brokerage on cash_buyer_matches (brokerage_id);
 
 comment on table cash_buyer_matches is
-  'Cash-buyer disposition match (shopping_agent): a distressed/hard-to-finance property matched to nearby CASH INVESTORS via BatchData investor-buybox. candidates jsonb = ranked investors; nothing auto-sends — the agent stages a gated outreach.';
+  'Cash-buyer disposition match (listing_concierge): a distressed/hard-to-finance listing matched to nearby CASH INVESTORS via BatchData investor-buybox. candidates jsonb = ranked investors; nothing auto-sends — the agent reviews before reaching out.';

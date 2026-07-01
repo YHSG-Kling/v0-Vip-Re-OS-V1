@@ -11,7 +11,7 @@
  * PURE:   buildBuyBoxQuery (subject → API args, honest about missing filters) + normalizeInvestorCandidate
  *         (defensive field reads, never fabricated) + rankInvestorCandidates (recency + capacity +
  *         classification, trust-gated floor) + qualifiedInvestors.
- * SOURCE: runner is provider-gated (unconfigured → honest skip) + metered; owned by shopping_agent;
+ * SOURCE: runner is provider-gated (unconfigured → honest skip) + metered; owned by listing_concierge;
  *         reverse-prospecting still excludes investors (this fills that gap); table in the snapshot.
  * LIVE (creds-gated): seed a listing → persist a ranked match → assert idempotent per listing → clean up.
  */
@@ -71,7 +71,7 @@ function pureLayer() {
 }
 
 function sourceLayer() {
-  console.log("\n[wiring — provider-gated + metered; owned by shopping_agent; fills the reverse-prospecting gap]")
+  console.log("\n[wiring — provider-gated + metered; owned by listing_concierge; fills the reverse-prospecting gap]")
   const runner = src("lib/disposition/cash-buyer-match-runner.ts")
   check("runner sources from BatchData investor-buybox", /callBatchDataMcp<any>\(INVESTOR_BUYBOX_TOOL/.test(runner))
   check("PROVIDER-GATED — unconfigured ⇒ honest skip, no fabricated investors", /res\.unconfigured\)\s*return\s*\{\s*ok:\s*false,\s*reason:\s*"provider_unconfigured"/.test(runner))
@@ -80,8 +80,8 @@ function sourceLayer() {
   const rp = src("lib/kernel/reverse-prospecting.ts")
   check("reverse-prospecting STILL excludes investors (this is the fill, not a dup)", /contact_type/.test(rp) && !/cash_buyer_matches/.test(rp))
   const reg = src("lib/kernel/manager-registry.ts")
-  check("burn domain owned by shopping_agent with a runnable proof", /cash_buyer_match:\s*\{\s*manager:\s*"shopping_agent",\s*proof:\s*"test:cash-buyer-match"/.test(reg))
-  check("cash_buyer_matches table owned by shopping_agent", /cash_buyer_matches:\s*"shopping_agent"/.test(reg))
+  check("burn domain owned by listing_concierge (disposition is a listing concern, not buyer-side)", /cash_buyer_match:\s*\{\s*manager:\s*"listing_concierge",\s*proof:\s*"test:cash-buyer-match"/.test(reg))
+  check("cash_buyer_matches table owned by listing_concierge", /cash_buyer_matches:\s*"listing_concierge"/.test(reg))
   check("table is in the schema snapshot (drift-guarded)", /cash_buyer_matches:\s*\[/.test(src("scripts/schema-snapshot.ts")))
   const act = src("app/actions/cash-buyer-match.ts")
   check("action returns an honest 'not connected' when BatchData is unconfigured", /provider_unconfigured:[\s\S]*?BatchData/.test(act))
