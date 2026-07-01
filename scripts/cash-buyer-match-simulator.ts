@@ -85,6 +85,10 @@ function sourceLayer() {
   check("table is in the schema snapshot (drift-guarded)", /cash_buyer_matches:\s*\[/.test(src("scripts/schema-snapshot.ts")))
   const act = src("app/actions/cash-buyer-match.ts")
   check("action returns an honest 'not connected' when BatchData is unconfigured", /provider_unconfigured:[\s\S]*?BatchData/.test(act))
+  // Autonomous, within-domain: the Listing Concierge's relist-recovery auto-preps the cash-sale option.
+  const relist = src("lib/listings/relist-recovery-runner.ts")
+  check("relist-recovery (listing_concierge) auto-runs the cash-buyer match on first recovery proposal", /if \(r\.proposed\)[\s\S]*?runCashBuyerMatch/.test(relist))
+  check("the autonomous trigger is best-effort (never breaks the relist recovery)", /runCashBuyerMatch[\s\S]*?catch \{[\s\S]*?best-effort/.test(relist))
 }
 
 async function liveLayer() {
