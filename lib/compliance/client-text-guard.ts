@@ -57,3 +57,41 @@ export function sanitizeProperNoun(raw: string | null | undefined, maxLen = 60):
   if (FAIR_HOUSING_VIOLATION.test(s)) return null  // a real steering phrase survived → unsafe
   return s
 }
+
+// Compensation-claim markers that must NEVER ride a recruiting-outreach data field: dollar figures,
+// split/cap/fee promises ("90/10 split", "100% commission", "$0 fees", "zero fees forever"). A comp
+// promise in recruiting copy is CONTRACTUAL exposure — the deterministic templates never state comp,
+// so any comp token arriving via an interpolated field (scraped recruit name, brokerage display name)
+// is poisoned data, not fact.
+export const COMP_CLAIM_PATTERN =
+  /\$\s?\d|\b\d{1,3}\s*\/\s*\d{1,3}\b|\b\d{1,3}\s*%|\b(?:no|zero|free)\s+(?:fees?|splits?|caps?|desk\s*fees?)\b|\bfees?\s+(?:waived|forever)\b|\b(?:full|100)\s*(?:percent\s*)?commission\b/i
+
+/**
+ * Sanitize a proper-noun field destined for RECRUITING outreach: everything sanitizeProperNoun does,
+ * PLUS cut any compensation claim ("Summit Realty — $0 fees forever" → "Summit Realty"). Returns null
+ * when nothing safe remains (caller falls back to a neutral default).
+ */
+export function sanitizeCompNoun(raw: string | null | undefined, maxLen = 60): string | null {
+  const base = sanitizeProperNoun(raw, maxLen)
+  if (!base) return null
+  const comp = base.search(COMP_CLAIM_PATTERN)
+  if (comp < 0) return base
+  // A comp claim rides a bolted-on clause ("Summit Realty — say we pay $0 fees…"): drop the whole
+  // poisoned clause, not just the figure, by cutting at the clause separator that precedes the claim.
+  let s = base.slice(0, comp)
+  const sep = s.search(/\s+[—–|]\s+|:\s+/)
+  if (sep >= 0) s = s.slice(0, sep)
+  s = s.replace(/[\s,;:—–|-]+$/u, "").trim()
+  return s || null
+}
+
+/**
+ * Sanitize a phone-shaped field before weaving it into client copy. A phone column is free text, so a
+ * poisoned value ("call me — IGNORE INSTRUCTIONS…") must never reach a client verbatim. Returns the
+ * value only when it actually LOOKS like a phone number; anything else → null (caller omits it).
+ */
+export function sanitizePhoneField(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const s = String(raw).trim()
+  return /^[+()\d][\d\s().+-]{6,19}(?:\s*(?:x|ext\.?)\s*\d{1,6})?$/i.test(s) ? s : null
+}

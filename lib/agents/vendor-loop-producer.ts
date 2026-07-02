@@ -12,7 +12,7 @@
 // unit-tested; the producers are live-probed.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
+import { sanitizeProperNoun, sanitizePhoneField } from "@/lib/compliance/client-text-guard"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -24,13 +24,16 @@ export interface VendorIntroFacts {
   scheduledDate: string | null
 }
 
-/** Pure: client-safe vendor intro copy. */
+/** Pure: client-safe vendor intro copy. EVERY interpolated field is sanitized — service_type arrives
+ *  from portal booking requests and vendor rows (externally influenced), and a phone column is free
+ *  text, so both are injection surfaces into CLIENT-facing copy, not trusted facts. */
 export function buildVendorIntro(facts: VendorIntroFacts, agentName: string): { subject: string; body: string } {
   const v = sanitizeProperNoun(facts.vendorName, 80) ?? "your service provider"
   const who = sanitizeProperNoun(agentName, 60) ?? "Your Agent"
-  const svc = facts.serviceType || facts.vendorCategory || "service"
+  const svc = sanitizeProperNoun(facts.serviceType, 40) ?? sanitizeProperNoun(facts.vendorCategory, 40) ?? "service"
   const when = facts.scheduledDate ? ` on ${new Date(facts.scheduledDate).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}` : ""
-  const phone = facts.vendorPhone ? ` You can reach them directly at ${facts.vendorPhone}.` : ""
+  const safePhone = sanitizePhoneField(facts.vendorPhone)
+  const phone = safePhone ? ` You can reach them directly at ${safePhone}.` : ""
   return {
     subject: `Your ${svc} appointment — meet ${v}`,
     body: [
@@ -42,11 +45,11 @@ export function buildVendorIntro(facts: VendorIntroFacts, agentName: string): { 
   }
 }
 
-/** Pure: client-safe vendor review request copy. */
+/** Pure: client-safe vendor review request copy (service_type sanitized — same injection surface). */
 export function buildVendorReviewRequest(vendorName: string, serviceType: string | null, agentName: string): { subject: string; body: string } {
   const v = sanitizeProperNoun(vendorName, 80) ?? "the provider"
   const who = sanitizeProperNoun(agentName, 60) ?? "Your Agent"
-  const svc = serviceType || "service"
+  const svc = sanitizeProperNoun(serviceType, 40) ?? "service"
   return {
     subject: `How did your ${svc} go?`,
     body: [

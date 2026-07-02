@@ -15,6 +15,7 @@ const CATEGORY_LABEL: Record<EvalCategory, string> = {
   privacy_leak:      "Privacy Leak",
   prompt_injection:  "Prompt Injection",
   legitimate_use:    "Real-Estate Legitimacy",
+  comp_claim:        "Recruiting Comp-Claim",
 }
 
 /**

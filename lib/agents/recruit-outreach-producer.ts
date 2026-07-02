@@ -12,7 +12,7 @@
 // before any send). Pure builders are unit-tested; the producers are live-probed.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
+import { sanitizeProperNoun, sanitizeCompNoun } from "@/lib/compliance/client-text-guard"
 
 export type RecruitStatus = "prospect" | "contacted" | "interviewing" | "offer_extended" | "joined" | "declined"
 /** The non-terminal stages the Recruiting Manager reaches out on. */
@@ -31,14 +31,17 @@ export function recruitStageNeedsOutreach(status: string): status is "prospect" 
   return status === "prospect" || status === "contacted" || status === "interviewing" || status === "offer_extended"
 }
 
-/** Pure: the stage-appropriate recruiting outreach copy. No fabricated specifics —
- *  only the recruit's own recorded fields are referenced. */
+/** Pure: the stage-appropriate recruiting outreach copy. No fabricated specifics — only the
+ *  recruit's own recorded fields are referenced, and EVERY interpolated field goes through the
+ *  COMP-CLAIM guard: recruit names arrive from SCRAPED sources and display names are free text, so a
+ *  poisoned "$0 fees forever / 100% split" tail must never become a written comp promise (contractual
+ *  exposure). The templates themselves never state comp figures. */
 export function buildRecruitOutreach(
   recruit: RecruitLite, status: RecruitOutreachStage, brokerageName: string, recruiterName: string,
 ): { subject: string; body: string } {
-  const name = sanitizeProperNoun(recruit.first_name ?? "", 40) ?? "there"
-  const brand = sanitizeProperNoun(brokerageName, 80) ?? "our brokerage"
-  const recruiter = sanitizeProperNoun(recruiterName, 60) ?? "Our team"
+  const name = sanitizeCompNoun(recruit.first_name ?? "", 40) ?? "there"
+  const brand = sanitizeCompNoun(brokerageName, 80) ?? "our brokerage"
+  const recruiter = sanitizeCompNoun(recruiterName, 60) ?? "Our team"
   const volNote = recruit.annual_volume != null && recruit.annual_volume > 0
     ? ` Your production speaks for itself, and we think you'd do even more here.`
     : ""
