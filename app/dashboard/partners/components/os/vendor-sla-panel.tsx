@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { CheckCircle, AlertTriangle, Clock, TrendingUp } from "lucide-react"
+import { computeVendorSla } from "@/lib/kernel/vendor-sla"
 import { createClient } from "@/lib/supabase/client"
 
 interface VendorSlaPanelProps {
@@ -68,20 +69,11 @@ export function VendorSlaPanel({ brokerageId, userRole }: VendorSlaPanelProps) {
         .gte("completed_at", since.toISOString())
         .not("completed_at", "is", null)
 
-      // Per-vendor SLA calculation
-      const byVendor: Record<string, { total: number; onTime: number }> = {}
-      for (const b of (bookings ?? []) as any[]) {
-        if (!b.completed_at || !b.scheduled_date) continue
-        const vid = b.vendor_id
-        if (!byVendor[vid]) byVendor[vid] = { total: 0, onTime: 0 }
-        byVendor[vid].total++
-        const due = new Date(b.scheduled_date)
-        due.setDate(due.getDate() + (turnaroundMap[vid] ?? 1))
-        if (new Date(b.completed_at) <= due) byVendor[vid].onTime++
-      }
+      // Per-vendor SLA via the SHARED pure computeVendorSla (same math the no-show autopilot uses).
+      const byVendor = computeVendorSla((bookings ?? []) as any[], turnaroundMap)
 
       const rows: VendorSlaRow[] = (vendors as any[]).map((v) => {
-        const stats = byVendor[v.id] ?? { total: 0, onTime: 0 }
+        const stats = byVendor[v.id] ?? { total: 0, onTime: 0, slaPct: 100 }
         return {
           id: v.id,
           name: v.name,
@@ -89,7 +81,7 @@ export function VendorSlaPanel({ brokerageId, userRole }: VendorSlaPanelProps) {
           turnaroundDays: turnaroundMap[v.id] ?? 1,
           totalCompleted: stats.total,
           onTime: stats.onTime,
-          slaPct: stats.total > 0 ? Math.round((stats.onTime / stats.total) * 100) : 100,
+          slaPct: stats.slaPct,
         }
       }).sort((a, b) => b.slaPct - a.slaPct)
 

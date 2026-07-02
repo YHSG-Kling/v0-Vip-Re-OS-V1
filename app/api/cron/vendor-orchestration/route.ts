@@ -35,6 +35,7 @@ export async function GET(req: NextRequest) {
   const supabase = createServiceClient()
   const errors: string[] = []
   let scanned = 0, proposed = 0, benchMisses = 0, stagingSkipped = 0
+  let noShowsMarked = 0, backupsProposed = 0
 
   try {
     const { data: rows, error } = await supabase.from("brokerages").select("id").limit(500)
@@ -47,11 +48,19 @@ export async function GET(req: NextRequest) {
         if (r.errors.length) errors.push(...r.errors.map((e) => `${b.id}: ${e}`))
       } catch (e: any) { errors.push(`${b.id}: ${e?.message ?? String(e)}`) }
     }
+
+    // NO-SHOW AUTOPILOT — the self-healing bench: mark ghosted bookings no_show + propose a gated backup.
+    try {
+      const { runVendorNoShowAutopilotAll } = await import("@/lib/kernel/vendor-no-show-autopilot")
+      const ns = await runVendorNoShowAutopilotAll(supabase)
+      noShowsMarked = ns.markedNoShow; backupsProposed = ns.backupsProposed
+    } catch (e: any) { errors.push(`no-show: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId, records_processed: proposed,
-      metadata: { scanned, proposed, benchMisses, stagingSkipped, errors: errors.slice(0, 10) },
+      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, errors: errors.slice(0, 10) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped })
+    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
