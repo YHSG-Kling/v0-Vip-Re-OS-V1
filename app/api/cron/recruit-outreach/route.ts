@@ -78,12 +78,22 @@ export async function GET(req: NextRequest) {
       priorityBriefs = scout.briefs
     } catch (e: any) { errors.push(`scout: ${e?.message ?? String(e)}`) }
 
+    // VENDOR RECRUITMENT SCOUT — the marketplace-growth mirror: a weekly gated "invite these vendors"
+    // brief for the off-platform vendors the brokerage already relies on (grow the marketplace toward
+    // the vendors it already depends on).
+    let vendorBriefs = 0
+    try {
+      const { runVendorRecruitmentScoutAll } = await import("@/lib/recruiting/vendor-recruitment-scout")
+      const vscout = await runVendorRecruitmentScoutAll(supabase)
+      vendorBriefs = vscout.briefs
+    } catch (e: any) { errors.push(`vendor-scout: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, roiWritten, priorityBriefs, brokerages: brokerages.length, errors },
+      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, brokerages: brokerages.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, brokerages: brokerages.length, errors })
+    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, brokerages: brokerages.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
