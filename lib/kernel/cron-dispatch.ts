@@ -63,6 +63,8 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/lookalike-audience",             schedule: "0 11 * * 1" },
   // Parallel multi-manager plays (reverse prospecting, vendor orchestration, objections, referrals).
   { path: "/api/cron/reverse-prospecting",            schedule: "0 * * * *" },
+  // Investor off-market refresh — Shopping Agent keeps each investor's off-market deal list + portal card current.
+  { path: "/api/cron/investor-offmarket-refresh",     schedule: "0 6 * * *" },
   { path: "/api/cron/vendor-orchestration",           schedule: "0 14 * * *" },
   { path: "/api/cron/objection-library",              schedule: "0 13 * * 1" },
   { path: "/api/cron/referral-radar",                 schedule: "0 12 * * 1" },

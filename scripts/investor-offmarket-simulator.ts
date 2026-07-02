@@ -41,7 +41,7 @@ const box: InvestorBox = {
 } as any
 
 const prop = (over: Partial<OffMarketProperty>): OffMarketProperty => ({
-  leadId: "l1", address: "1 St", city: "Phoenix", state: "AZ", zip: "85001",
+  recordId: "l1", stage: "lead", address: "1 St", city: "Phoenix", state: "AZ", zip: "85001",
   motivationType: "probate", motivationConfidence: 0.9, equityEstimate: 150000, ...over,
 })
 
@@ -62,16 +62,23 @@ function pureLayer() {
   check("missing equity is HONEST (neutral-low, not inflated)", scoreOffMarketFit(box, prop({ zip: "85053", equityEstimate: null }))!.matchScore < scoreOffMarketFit(box, prop({ zip: "85053", equityEstimate: 300000 }))!.matchScore)
   check("every match carries human reasons", zipProbate.reasons.length > 0)
 
-  console.log("\n[rankOffMarketMatches · pure — geo-gated, deduped, sorted]")
+  console.log("\n[rankOffMarketMatches · pure — geo-gated, lineage-deduped, sorted]")
   const ranked = rankOffMarketMatches(box, [
-    prop({ leadId: "a", zip: "85053", motivationType: "probate", equityEstimate: 300000 }),
-    prop({ leadId: "b", zip: "99999", city: "Denver" }),           // out of box → dropped
-    prop({ leadId: "c", zip: "99999", city: "Mesa", motivationType: "expired", equityEstimate: null }),
-    prop({ leadId: "a", zip: "85053", motivationType: "probate" }), // dup id → dropped
+    prop({ recordId: "a", address: "10 Deal Rd", zip: "85053", motivationType: "probate", equityEstimate: 300000 }),
+    prop({ recordId: "b", address: "20 Skip Rd", zip: "99999", city: "Denver" }),           // out of box → dropped
+    prop({ recordId: "c", address: "30 Fair Rd", zip: "99999", city: "Mesa", motivationType: "expired", equityEstimate: null }),
   ])
-  check("out-of-box + duplicate dropped (2 of 4 survive)", ranked.length === 2)
-  check("highest-fit first", ranked[0].leadId === "a")
+  check("out-of-box dropped (2 of 3 survive)", ranked.length === 2)
+  check("highest-fit first", ranked[0].recordId === "a")
   check(`qualifiedOffMarketDeals keeps only ≥ ${OFFMARKET_THRESHOLD}`, qualifiedOffMarketDeals(ranked).every((m) => m.matchScore >= OFFMARKET_THRESHOLD))
+
+  console.log("\n[rankOffMarketMatches · pure — same address at BOTH stages → prefer the canonical contact]")
+  const lineage = rankOffMarketMatches(box, [
+    prop({ recordId: "lead-1", stage: "lead", address: "42 Lineage Ln", zip: "85053" }),
+    prop({ recordId: "contact-1", stage: "contact", address: "42 Lineage Ln", zip: "85053" }),
+  ])
+  check("the promoted record is deduped to ONE (raw→lead→contact)", lineage.length === 1)
+  check("the surviving record is the CONTACT (single source of truth)", lineage[0].stage === "contact" && lineage[0].recordId === "contact-1")
 
   console.log("\n[boxHasGeography · pure]")
   check("box with cities/zips → true", boxHasGeography(box) === true)
@@ -84,12 +91,17 @@ function sourceLayer() {
   const runner = src("lib/buyer-search/investor-offmarket-runner.ts")
   check("runner gates to contact_type='investor' (regular buyers use the MLS path)", /contact_type !== "investor"[\s\S]*?not_investor/.test(runner))
   check("reads the buy-box via the canonical loadBuyerCriteria (no parallel reader)", /loadBuyerCriteria\(svc, params\.contactId\)/.test(runner))
-  check("matches against motivated-seller leads (our off-market inventory)", /from\("leads"\)[\s\S]*?not\("motivation_type", "is", null\)/.test(runner))
+  check("LINEAGE: matches ACTIVE motivated-seller leads (not-yet-promoted)", /from\("leads"\)[\s\S]*?not\("motivation_type", "is", null\)[\s\S]*?not\("is_active", "is", false\)/.test(runner))
+  check("LINEAGE: ALSO matches motivated-seller CONTACTS (the promoted single source of truth)", /from\("contacts"\)[\s\S]*?not\("motivation_type", "is", null\)/.test(runner))
+  check("BUYER PORTAL: pushes an aggregate value card to the investor's portal (no seller PII)", /pushPortalValueCard\(\{[\s\S]*?updateType:\s*"investor_offmarket_deals"/.test(runner))
+  check("AUTONOMOUS: a brokerage-wide refresh sweeps every investor-with-a-box", /export async function refreshInvestorOffMarketMatches/.test(runner))
   check("idempotent per investor contact (updates the same row)", /eq\("contact_id", m\.contactId\)[\s\S]*?update\(row\)/.test(runner))
   const reg = src("lib/kernel/manager-registry.ts")
   check("burn domain owned by shopping_agent (buyer-side) with a runnable proof", /investor_offmarket_match:\s*\{\s*manager:\s*"shopping_agent",\s*proof:\s*"test:investor-offmarket"/.test(reg))
   check("investor_deal_matches table owned by shopping_agent", /investor_deal_matches:\s*"shopping_agent"/.test(reg))
   check("table in the schema snapshot (drift-guarded)", /investor_deal_matches:\s*\[/.test(src("scripts/schema-snapshot.ts")))
+  check("autonomous cron registered in CRON_REGISTRY", /investor-offmarket-refresh/.test(src("lib/kernel/cron-dispatch.ts")))
+  check("the cron route drives the brokerage-wide refresh", /refreshInvestorOffMarketMatches/.test(src("app/api/cron/investor-offmarket-refresh/route.ts")))
   const act = src("app/actions/investor-deals.ts")
   check("action returns an honest reason when the contact isn't an investor", /not_investor:[\s\S]*?investor buyers/.test(act))
 }
@@ -113,12 +125,21 @@ async function liveLayer() {
     const { data: lead } = await svc.from("leads").insert({ brokerage_id: brokerageId, first_name: "Moti", last_name: "Seller", address: "9 Distress Rd", city: "Testville", state: "AZ", zip_code: "09999", motivation_type: "probate", equity_estimate: 200000, lifecycle_state: "unconsented" }).select("id").single()
     cleanup.push({ table: "leads", id: (lead as any).id })
 
+    // Also seed a CONTACT-stage off-market record (a PROMOTED motivated seller) in the same box.
+    const { data: mseller } = await svc.from("contacts").insert({ brokerage_id: brokerageId, first_name: "Moe", last_name: "Seller", contact_type: "seller", motivation_type: "pre_foreclosure", city: "Testville", zip_code: "09999", equity_estimate: 120000 }).select("id").single()
+    cleanup.push({ table: "contacts", id: (mseller as any).id })
+
     const { runInvestorOffMarketMatch, getInvestorDealMatch } = await import("../lib/buyer-search/investor-offmarket-runner")
     const r1 = await runInvestorOffMarketMatch(svc as any, { brokerageId, contactId })
-    check("live: matched the in-box motivated-seller lead", r1.ok && (r1.matchCount ?? 0) >= 1)
+    check("live: matched off-market inventory across BOTH stages (lead + contact)", r1.ok && (r1.matchCount ?? 0) >= 2)
     const m1 = await getInvestorDealMatch(svc as any, { contactId, brokerageId })
     if (m1) cleanup.push({ table: "investor_deal_matches", id: (m1 as any).id })
-    check("live: persisted the off-market deal with a score + reasons", (m1 as any)?.candidates?.[0]?.leadId === (lead as any).id && typeof (m1 as any)?.candidates?.[0]?.matchScore === "number")
+    check("live: persisted the off-market deals with score + reasons + stage", (m1 as any)?.candidates?.[0]?.recordId != null && typeof (m1 as any)?.candidates?.[0]?.matchScore === "number" && ["lead", "contact"].includes((m1 as any)?.candidates?.[0]?.stage))
+
+    // BUYER PORTAL — a value card landed in the investor's portal.
+    const { data: card } = await svc.from("transparency_updates").select("id").eq("contact_id", contactId).eq("update_type", "investor_offmarket_deals").maybeSingle()
+    if (card) cleanup.push({ table: "transparency_updates", id: (card as any).id })
+    check("live: an off-market value card was pushed to the investor's portal", !!card)
 
     const r2 = await runInvestorOffMarketMatch(svc as any, { brokerageId, contactId })
     check("live: idempotent per contact (still one row)", r2.ok)

@@ -18,7 +18,10 @@ import type { BuyerCriteria } from "@/lib/buyer-search/buyer-criteria"
 export type InvestorBox = BuyerCriteria
 
 export interface OffMarketProperty {
-  leadId: string
+  /** The source record id (a lead OR a promoted contact — see `stage`). */
+  recordId: string
+  /** Where this off-market record lives in the raw→lead→contact lineage. */
+  stage: "lead" | "contact"
   address: string | null
   city: string | null
   state: string | null
@@ -87,15 +90,23 @@ export function scoreOffMarketFit(box: InvestorBox, prop: OffMarketProperty): Of
 export const OFFMARKET_THRESHOLD = 0.55
 
 /**
- * PURE: rank the off-market properties for this investor's box, highest fit first, deduped by leadId,
- * geography-gated (out-of-box properties are dropped entirely — never surfaced as weak matches).
+ * PURE: rank the off-market properties for this investor's box, highest fit first, geography-gated
+ * (out-of-box properties are dropped entirely — never surfaced as weak matches). Deduped across the
+ * lineage: the SAME property can arrive as both a lead and its promoted contact, so we key by
+ * normalized address (falling back to stage:recordId) and PREFER the contact stage — the canonical
+ * single source of truth after promotion (raw → lead → contact).
  */
 export function rankOffMarketMatches(box: InvestorBox, props: OffMarketProperty[]): OffMarketMatch[] {
-  const seen = new Set<string>()
-  const out: OffMarketMatch[] = []
+  const byKey = new Map<string, OffMarketProperty>()
   for (const p of props) {
-    if (seen.has(p.leadId)) continue
-    seen.add(p.leadId)
+    const addr = norm(p.address)
+    const key = addr || `${p.stage}:${p.recordId}`
+    const prior = byKey.get(key)
+    // Keep the canonical (contact) record when the same address appears at both stages.
+    if (!prior || (prior.stage === "lead" && p.stage === "contact")) byKey.set(key, p)
+  }
+  const out: OffMarketMatch[] = []
+  for (const p of byKey.values()) {
     const m = scoreOffMarketFit(box, p)
     if (m) out.push(m)
   }

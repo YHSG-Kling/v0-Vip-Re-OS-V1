@@ -25,18 +25,20 @@ export interface InvestorOffMarketResult {
   qualifiedCount?: number
 }
 
-const LEAD_COLS = "id, address, city, state, zip_code, motivation_type, motivation_confidence, equity_estimate"
+const LEAD_COLS = "id, address, city, state, zip_code, motivation_type, motivation_confidence, equity_estimate, is_active"
+const CONTACT_COLS = "id, address, city, zip_code, motivation_type, motivation_confidence, equity_estimate"
 
-function toProperty(l: any): OffMarketProperty {
+function toProperty(r: any, stage: "lead" | "contact"): OffMarketProperty {
   return {
-    leadId: l.id,
-    address: l.address ?? null,
-    city: l.city ?? null,
-    state: l.state ?? null,
-    zip: l.zip_code ?? null,
-    motivationType: l.motivation_type ?? null,
-    motivationConfidence: l.motivation_confidence != null ? Number(l.motivation_confidence) : null,
-    equityEstimate: l.equity_estimate != null ? Number(l.equity_estimate) : null,
+    recordId: r.id,
+    stage,
+    address: r.address ?? null,
+    city: r.city ?? null,
+    state: r.state ?? null,   // contacts have no state column; leads do (null-safe)
+    zip: r.zip_code ?? null,
+    motivationType: r.motivation_type ?? null,
+    motivationConfidence: r.motivation_confidence != null ? Number(r.motivation_confidence) : null,
+    equityEstimate: r.equity_estimate != null ? Number(r.equity_estimate) : null,
   }
 }
 
@@ -61,26 +63,34 @@ export async function runInvestorOffMarketMatch(
   if (!box) return { ok: false, reason: "no_box" }
   if (!boxHasGeography(box)) return { ok: false, reason: "no_geography" }
 
-  // OUR off-market inventory = motivated-seller leads in the box geography. Two targeted queries
-  // (by city, by zip) merged — avoids brittle .or()/.in() string escaping and keeps each bounded.
+  // OUR off-market inventory spans the lineage (raw → lead → contact). A motivated seller is an ACTIVE
+  // lead until the AI ISA qualifies it, then it's PROMOTED to a contact (the lead is deactivated —
+  // is_active=false — and the CONTACT becomes the single source of truth). So match BOTH: active
+  // motivated-seller leads (not yet promoted) AND motivated-seller contacts (promoted, canonical). Two
+  // targeted queries per source (by city, by zip) — avoids brittle .or()/.in() escaping; the pure
+  // ranker dedupes across stages by address (preferring the contact). NON-promoted leads only, so a
+  // promoted record isn't double-counted.
   const cities = (box.cities ?? []).filter(Boolean)
   const zips = (box.zipCodes ?? []).filter(Boolean)
-  const rows: any[] = []
-  if (cities.length) {
-    const { data } = await svc.from("leads").select(LEAD_COLS)
-      .eq("brokerage_id", params.brokerageId).not("motivation_type", "is", null).in("city", cities).limit(150)
-    rows.push(...(data ?? []))
-  }
-  if (zips.length) {
-    const { data } = await svc.from("leads").select(LEAD_COLS)
-      .eq("brokerage_id", params.brokerageId).not("motivation_type", "is", null).in("zip_code", zips).limit(150)
-    rows.push(...(data ?? []))
-  }
-  // Dedupe merged rows by lead id before scoring.
-  const byId = new Map<string, any>()
-  for (const r of rows) byId.set(r.id, r)
+  const props: OffMarketProperty[] = []
 
-  const ranked = rankOffMarketMatches(box, [...byId.values()].map(toProperty))
+  const collectLeads = async (col: "city" | "zip_code", vals: string[]) => {
+    const { data } = await svc.from("leads").select(LEAD_COLS)
+      .eq("brokerage_id", params.brokerageId).not("motivation_type", "is", null)
+      .not("is_active", "is", false)   // promoted leads (is_active=false) live on as contacts — exclude
+      .in(col, vals).limit(150)
+    for (const r of (data ?? [])) props.push(toProperty(r, "lead"))
+  }
+  const collectContacts = async (col: "city" | "zip_code", vals: string[]) => {
+    const { data } = await svc.from("contacts").select(CONTACT_COLS)
+      .eq("brokerage_id", params.brokerageId).not("motivation_type", "is", null)
+      .in(col, vals).limit(150)
+    for (const r of (data ?? [])) props.push(toProperty(r, "contact"))
+  }
+  if (cities.length) { await collectLeads("city", cities); await collectContacts("city", cities) }
+  if (zips.length) { await collectLeads("zip_code", zips); await collectContacts("zip_code", zips) }
+
+  const ranked = rankOffMarketMatches(box, props)   // dedupes across lead/contact stages by address
   const qualified = qualifiedOffMarketDeals(ranked)
 
   const matchId = await upsert(svc, {
@@ -90,6 +100,24 @@ export async function runInvestorOffMarketMatch(
     candidates: ranked,
   })
   if (!matchId) return { ok: false, reason: "no_inventory" }
+
+  // BUYER PORTAL — the investor sees their matches in their own portal (like reverse-prospecting does
+  // for retail buyers). Aggregate only (count + markets), never individual seller PII — the agent shares
+  // specifics. Idempotent (24h dedupe in pushPortalValueCard); only when there's something real to show.
+  if (qualified.length > 0) {
+    try {
+      const { pushPortalValueCard } = await import("@/lib/kernel/portal-value")
+      const markets = [...new Set(qualified.map((q) => q.city).filter(Boolean))].slice(0, 3).join(", ")
+      await pushPortalValueCard({
+        brokerageId: params.brokerageId,
+        contactId: params.contactId,
+        title: `${qualified.length} off-market ${qualified.length === 1 ? "opportunity" : "opportunities"} match your criteria`,
+        summary: `We found ${qualified.length} off-market propert${qualified.length === 1 ? "y" : "ies"}${markets ? ` in ${markets}` : ""} that fit your investment box. Your agent will share the details and next steps.`,
+        updateType: "investor_offmarket_deals",
+        metadata: { audience: "buyer", qualified: qualified.length, markets, source: "investor_offmarket_match" },
+      }, svc)
+    } catch { /* portal push must never break the match */ }
+  }
   return {
     ok: true,
     reason: ranked.length === 0 ? "no_inventory" : "matched",
@@ -123,6 +151,39 @@ async function upsert(
   }
   const { data: created } = await svc.from("investor_deal_matches").insert(row).select("id").maybeSingle()
   return created ? (created as any).id : null
+}
+
+export interface InvestorRefreshResult { investors: number; matched: number; portalCards: number }
+
+/**
+ * AUTONOMOUS (Shopping Agent) — refresh off-market matches for EVERY qualified investor buyer in a
+ * brokerage that has a buy-box. Rides a daily cron: as the platform scrapes more off-market inventory,
+ * each investor's deal list stays current and their portal card refreshes, with zero agent action.
+ * Idempotent per investor (upsert + 24h portal dedupe). Best-effort per investor — one failure never
+ * stops the sweep.
+ */
+export async function refreshInvestorOffMarketMatches(
+  svc: Svc,
+  params: { brokerageId: string },
+): Promise<InvestorRefreshResult> {
+  const out: InvestorRefreshResult = { investors: 0, matched: 0, portalCards: 0 }
+  // Only investor contacts that actually carry a buy-box (an investor without saved criteria can't be
+  // matched — honest skip, no wasted scan).
+  const { data: investors } = await svc
+    .from("contacts")
+    .select("id, property_preferences!inner(contact_id)")
+    .eq("brokerage_id", params.brokerageId)
+    .eq("contact_type", "investor")
+    .limit(500)
+  for (const inv of (investors ?? []) as any[]) {
+    out.investors++
+    try {
+      const r = await runInvestorOffMarketMatch(svc, { brokerageId: params.brokerageId, contactId: inv.id })
+      if (r.ok && (r.matchCount ?? 0) > 0) out.matched++
+      if (r.ok && (r.qualifiedCount ?? 0) > 0) out.portalCards++
+    } catch { /* best-effort — keep sweeping */ }
+  }
+  return out
 }
 
 /** Load an investor's off-market deal match (or null). */

@@ -14,7 +14,8 @@ import { Building2, Loader2, TrendingUp } from "lucide-react"
 import { findInvestorDealsAction, getInvestorDealMatchAction } from "@/app/actions/investor-deals"
 
 interface OffMarketMatch {
-  leadId: string
+  recordId: string
+  stage: "lead" | "contact"
   address: string | null
   city: string | null
   zip: string | null
@@ -93,7 +94,7 @@ export function InvestorDealsPanel({ contactId }: { contactId: string }) {
             <>
               <p className="text-xs text-muted-foreground">{match!.candidate_count} off-market propert{match!.candidate_count === 1 ? "y" : "ies"} in this investor's markets — ranked by fit.</p>
               {deals.map((d) => (
-                <div key={d.leadId} className="p-3 rounded-lg border">
+                <div key={`${d.stage}:${d.recordId}`} className="p-3 rounded-lg border">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium">{d.address ?? "Off-market property"}{d.city ? `, ${d.city}` : ""}{d.zip ? ` ${d.zip}` : ""}</span>
                     <Badge className={scoreStyle(d.matchScore)}>{Math.round(d.matchScore * 100)}% fit</Badge>
