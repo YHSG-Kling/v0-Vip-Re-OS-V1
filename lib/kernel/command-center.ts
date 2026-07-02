@@ -97,6 +97,9 @@ export interface CommandCenterData {
   /** Unified governed-deliverables rail — every loop's gate proposals rolled up
    *  (how many AI deliverables this week, how many human-approved, by manager + loop). */
   deliverables:    import("@/lib/intelligence/deliverables-summary").DeliverablesSummary | null
+  /** Recruiting Manager's retention board — the daily flight-risk scores made visible
+   *  (who's trending down, how many at-risk, why). Brokerage-wide; null when unavailable. */
+  retentionBoard:  import("@/lib/intelligence/retention-board").RetentionBoard | null
   /** Proposed AI ISA voice dial batches awaiting approval (AI ISA — "call my hottest N"). */
   dialBatches:     Array<{ id: string; proposedCount: number; proposedAt: string | null }>
   /** Managers talking — recent inter-manager signals (who told whom what, and what the
@@ -390,11 +393,13 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   let standup: import("@/lib/intelligence/manager-standup").ManagerStandupLine[] = []
   let weeklyPnl: import("@/lib/intelligence/manager-weekly-pnl").ManagerWeeklyScorecard[] = []
   let deliverables: import("@/lib/intelligence/deliverables-summary").DeliverablesSummary | null = null
+  let retentionBoard: import("@/lib/intelligence/retention-board").RetentionBoard | null = null
   if (brokerageWide && brokerageId) {
-    const [standupRes, pnlRes, delivRes] = await Promise.allSettled([
+    const [standupRes, pnlRes, delivRes, retentionRes] = await Promise.allSettled([
       import("@/lib/intelligence/manager-standup").then((m) => m.generateManagerStandup(brokerageId)),
       import("@/lib/intelligence/manager-weekly-pnl").then((m) => m.generateManagerWeeklyPnl(brokerageId)),
       import("@/lib/intelligence/deliverables-summary").then((m) => m.generateDeliverablesSummary({ brokerageId })),
+      import("@/lib/intelligence/retention-board").then((m) => m.generateRetentionBoard(brokerageId)),
     ])
     if (standupRes.status === "fulfilled") standup = standupRes.value
     else console.error("[command-center] manager standup failed:", standupRes.reason)
@@ -402,6 +407,8 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     else console.error("[command-center] manager weekly P&L failed:", pnlRes.reason)
     if (delivRes.status === "fulfilled") deliverables = delivRes.value
     else console.error("[command-center] deliverables summary failed:", delivRes.reason)
+    if (retentionRes.status === "fulfilled") retentionBoard = retentionRes.value
+    else console.error("[command-center] retention board failed:", retentionRes.reason)
   }
 
   // Proposed AI ISA dial batches awaiting approval — surfaced as a one-tap callout.
@@ -430,6 +437,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     standup,
     weeklyPnl,
     deliverables,
+    retentionBoard,
     dialBatches,
     managerTalk,
     summary: {

@@ -236,6 +236,51 @@ export function CommandCenterClient({
         </section>
       )}
 
+      {/* Retention board — the Recruiting Manager's daily flight-risk scores made visible.
+          People health beside production: who's trending down and why, before they leave. */}
+      {data.retentionBoard && data.retentionBoard.scored > 0 && (
+        <section className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold">Agent retention board — flight risk</h2>
+            <span className="text-xs text-muted-foreground">
+              {data.retentionBoard.scored} scored{data.retentionBoard.asOf ? ` · as of ${data.retentionBoard.asOf}` : ""}
+            </span>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <Card className={"p-4 " + (data.retentionBoard.atRisk > 0 ? "border-red-300 bg-red-50/40" : "")}>
+              <div className="text-xs text-muted-foreground">At risk</div>
+              <div className="text-2xl font-semibold text-red-700">{data.retentionBoard.atRisk}</div>
+            </Card>
+            <Card className="p-4"><div className="text-xs text-muted-foreground">Watch</div><div className="text-2xl font-semibold text-amber-700">{data.retentionBoard.watch}</div></Card>
+            <Card className="p-4"><div className="text-xs text-muted-foreground">Healthy</div><div className="text-2xl font-semibold text-green-700">{data.retentionBoard.healthy}</div></Card>
+          </div>
+          {data.retentionBoard.agents.length > 0 && (
+            <div className="space-y-1.5">
+              {data.retentionBoard.agents.map((a) => {
+                const risky = a.tier === "at_risk" || a.tier === "critical"
+                return (
+                  <Card key={a.agentId} className={"p-3 flex items-start justify-between gap-3 " + (risky ? "border-red-200" : "")}>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium truncate">{a.name}</span>
+                        <Badge className={risky ? "bg-red-600 text-white" : a.tier === "watch" ? "bg-amber-500 text-white" : "bg-slate-900 text-white"}>{a.tier.replace(/_/g, " ")}</Badge>
+                        {a.trend && a.trend !== "stable" && (
+                          <span className={"text-[11px] font-medium " + (a.trend === "declining" ? "text-red-700" : "text-green-700")}>
+                            {a.trend === "declining" ? "▼ declining" : "▲ improving"}
+                          </span>
+                        )}
+                      </div>
+                      {a.drivers.length > 0 && <p className="text-xs text-muted-foreground truncate">{a.drivers.join(" · ")}</p>}
+                    </div>
+                    <span className="text-lg font-semibold shrink-0">{a.score}<span className="text-xs text-muted-foreground">/100</span></span>
+                  </Card>
+                )
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Manager Weekly P&L — the outcome layer: what each manager PRODUCED this week
           vs the prior week. Proves the AI workforce moves the business, not just acts. */}
       {data.weeklyPnl.length > 0 && (
