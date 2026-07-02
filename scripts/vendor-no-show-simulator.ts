@@ -19,7 +19,7 @@ import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { isNoShow, pickBackupVendor, NO_SHOW_GRACE_HOURS, type NoShowBooking } from "../lib/kernel/vendor-no-show-autopilot"
 import { computeVendorSla, slaTier, SLA_BREACH_PCT } from "../lib/kernel/vendor-sla"
-import type { BenchVendor } from "../lib/kernel/vendor-orchestration"
+import { rankVendors, type BenchVendor } from "../lib/kernel/vendor-orchestration"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -62,6 +62,24 @@ function pureLayer() {
   check("on-time math: v1 is 1/2 = 50%", sla.v1.slaPct === 50 && sla.v1.total === 2 && sla.v1.onTime === 1)
   check("unproven vendor (no completed history) → 100% (not 'bad')", (sla.v2?.slaPct ?? 100) === 100)
   check(`slaTier: 50% is a breach (< ${SLA_BREACH_PCT})`, slaTier(50) === "breach" && slaTier(95) === "compliant" && slaTier(80) === "warning")
+  // A NO_SHOW counts as a reliability failure (the autopilot marks these → the score drops).
+  const slaWithNoShow = computeVendorSla([
+    { vendor_id: "v9", scheduled_date: "2026-01-01", completed_at: "2026-01-01" }, // on time
+    { vendor_id: "v9", scheduled_date: "2026-02-01", completed_at: null, status: "no_show" }, // ghosted
+  ], { v9: 1 })
+  check("a no_show dents SLA: v9 is 1/2 = 50% (ghosting costs the vendor)", slaWithNoShow.v9.slaPct === 50 && slaWithNoShow.v9.total === 2)
+
+  console.log("\n[rankVendors · pure — a PROVEN breacher is auto-demoted, unproven is not]")
+  const rankBench: BenchVendor[] = [
+    { id: "good", name: "Reliable", category: "Inspector", email: null, rating: 4 },
+    { id: "bad", name: "Flaky", category: "Inspector", email: null, rating: 5 },   // higher rating but breaching
+    { id: "new", name: "Unproven", category: "Inspector", email: null, rating: 3 },
+  ]
+  const slaMap = { bad: { slaPct: 40, total: 6 }, good: { slaPct: 95, total: 5 }, new: { slaPct: 50, total: 1 } }
+  const ranked2 = rankVendors(rankBench, { slaByVendor: slaMap })
+  check("a proven breacher (40% over 6) is demoted BELOW a reliable vendor despite higher rating", ranked2[ranked2.length - 1].id === "bad")
+  check("a thin-sample low score (50% over 1) is NOT demoted (unproven ≠ bad)", ranked2.findIndex((v) => v.id === "new") < ranked2.findIndex((v) => v.id === "bad"))
+  check("preferred still wins among non-breachers", rankVendors(rankBench, { preferredVendorIds: new Set(["good"]), slaByVendor: slaMap })[0].id === "good")
 }
 
 function sourceLayer() {

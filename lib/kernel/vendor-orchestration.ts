@@ -150,30 +150,49 @@ function stagerGap(coverage: DealCoverage): VendorGap | null {
   return null
 }
 
+/** Below this many outcomes (completed + no-show), SLA is too thin to demote a vendor on — honest. */
+export const SLA_MIN_SAMPLE = 3
+/** On-time % below which a vendor with enough sample is an SLA breach (mirrors lib/kernel/vendor-sla). */
+export const SLA_BREACH_PCT = 75
+
 /** Ranking preference inputs (forward-compatible; the bench may grow a preference table). */
 export interface VendorPrefs {
   /** vendor ids explicitly preferred for this agent/team/brokerage (highest priority). */
   preferredVendorIds?: ReadonlySet<string> | string[]
+  /** Per-vendor SLA (on-time % + sample) from computeVendorSla — a proven breacher is auto-demoted. */
+  slaByVendor?: Record<string, { slaPct: number; total: number }>
 }
 
 /**
- * Pure: rank bench vendors PREFERENCE-FIRST. A vendor marked preferred (via the prefs set
- * OR a row-level `preferred` flag) is picked before any non-preferred vendor regardless of
- * rating; within the same preference tier, higher rating wins; ties break by name for
- * determinism. Returns a new sorted array (does not mutate the input).
+ * Pure: rank bench vendors — OUTCOME-AWARE, PREFERENCE-FIRST. A vendor that is a PROVEN SLA breacher
+ * (on-time < SLA_BREACH_PCT with at least SLA_MIN_SAMPLE outcomes, including no-shows) is demoted to the
+ * bottom regardless of preference — the marketplace stops auto-picking someone who keeps failing.
+ * Among non-breachers, the broker's preferred wins over rating; within a tier higher rating then higher
+ * SLA then name break ties. A thin-sample or unknown-SLA vendor is NOT demoted (unproven ≠ bad).
  */
 export function rankVendors(vendors: BenchVendor[], prefs: VendorPrefs = {}): BenchVendor[] {
   const preferredSet = prefs.preferredVendorIds
     ? (prefs.preferredVendorIds instanceof Set ? prefs.preferredVendorIds : new Set(prefs.preferredVendorIds))
     : new Set<string>()
+  const sla = prefs.slaByVendor ?? {}
   const isPreferred = (v: BenchVendor) => preferredSet.has(v.id) || v.preferred === true
+  const isBreacher = (v: BenchVendor) => {
+    const s = sla[v.id]
+    return !!s && s.total >= SLA_MIN_SAMPLE && s.slaPct < SLA_BREACH_PCT
+  }
+  const slaPct = (v: BenchVendor) => sla[v.id]?.slaPct ?? -1
   return [...vendors].sort((a, b) => {
+    const ba = isBreacher(a) ? 1 : 0
+    const bb = isBreacher(b) ? 1 : 0
+    if (ba !== bb) return ba - bb                        // proven breachers LAST
     const pa = isPreferred(a) ? 1 : 0
     const pb = isPreferred(b) ? 1 : 0
     if (pa !== pb) return pb - pa                        // preferred first
     const ra = a.rating ?? -1
     const rb = b.rating ?? -1
     if (ra !== rb) return rb - ra                        // higher rating first
+    const sa = slaPct(a), sbv = slaPct(b)
+    if (sa !== sbv) return sbv - sa                      // higher on-time first
     return (a.name ?? "").localeCompare(b.name ?? "")    // deterministic tie-break
   })
 }
@@ -244,7 +263,7 @@ export async function runVendorOrchestration(
   // The bench for this brokerage (vendors table — the canonical bench per the FK
   // vendor_bookings.vendor_id → vendors.id).
   const { data: benchRows } = await supabase.from("vendors")
-    .select("id, name, category, email, rating")
+    .select("id, name, category, email, rating, estimated_turnaround_days")
     .eq("brokerage_id", brokerageId).limit(500)
   const bench: BenchVendor[] = (benchRows ?? []) as BenchVendor[]
 
@@ -255,6 +274,20 @@ export async function runVendorOrchestration(
     .select("name, category, preferred")
     .eq("brokerage_id", brokerageId).eq("preferred", true).limit(500)
   const preferredVendorIds = resolvePreferredVendorIds(bench, (dirRows ?? []) as DirectoryPref[])
+
+  // OUTCOME AWARENESS — a proven SLA breacher (repeatedly late or a no-show) is auto-demoted so the
+  // orchestrator stops auto-picking someone who keeps failing. Reliability = on-time completions +
+  // no-shows over the last 180 days, via the shared computeVendorSla (same math as the SLA panel).
+  const slaSince = new Date((opts.now ?? new Date()).getTime() - 180 * 86_400_000).toISOString()
+  const { data: slaBookings } = await supabase.from("vendor_bookings")
+    .select("vendor_id, scheduled_date, completed_at, status")
+    .eq("brokerage_id", brokerageId)
+    .or("completed_at.not.is.null,status.eq.no_show")
+    .gte("created_at", slaSince).limit(2000)
+  const turnaround: Record<string, number> = {}
+  for (const v of (benchRows ?? []) as Array<{ id: string; estimated_turnaround_days?: number | null }>) turnaround[v.id] = v.estimated_turnaround_days ?? 1
+  const { computeVendorSla } = await import("@/lib/kernel/vendor-sla")
+  const slaByVendor = computeVendorSla((slaBookings ?? []) as any[], turnaround)
 
   const { data: txns } = await supabase.from("transactions")
     .select("id, deal_name, property_address, stage, agent_id, buyer_contact_id, contact_id")
@@ -281,9 +314,9 @@ export async function runVendorOrchestration(
         .ilike("rationale", `${ratPrefix}%`).limit(1).maybeSingle()
       if (existing) continue
 
-      // PREFERENCE-FIRST pick — the broker's preferred vendors (resolved from vendor_directory, the
-      // source of truth) win over a higher-rated non-preferred vendor; ties fall back to rating.
-      const vendor = pickVendorForGap(bench, gap, { preferredVendorIds })
+      // OUTCOME-AWARE, PREFERENCE-FIRST pick — the broker's preferred vendors win over a higher-rated
+      // non-preferred one, but a PROVEN SLA breacher is demoted below reliable vendors regardless.
+      const vendor = pickVendorForGap(bench, gap, { preferredVendorIds, slaByVendor })
       if (!vendor) { result.benchMisses += 1; continue }
 
       // PERSONA-AWARE COPY — the quote-request body is generated to the vendor persona,

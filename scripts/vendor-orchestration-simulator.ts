@@ -110,7 +110,8 @@ function layer1() {
   const orchSrc = readFileSync(join(process.cwd(), "lib/kernel/vendor-orchestration.ts"), "utf8")
   check("runVendorOrchestration loads vendor_directory preferred rows + resolves them",
     /from\("vendor_directory"\)[\s\S]*?resolvePreferredVendorIds\(bench/.test(orchSrc))
-  check("the resolved preferred set is passed into the pick", /pickVendorForGap\(bench, gap, \{ preferredVendorIds \}\)/.test(orchSrc))
+  check("the resolved preferred set is passed into the pick", /pickVendorForGap\(bench, gap, \{ preferredVendorIds, slaByVendor \}\)/.test(orchSrc))
+  check("runVendorOrchestration computes SLA (incl. no-shows) + passes it so proven breachers demote", /computeVendorSla\(\(slaBookings/.test(orchSrc) && /status\.eq\.no_show/.test(orchSrc))
 }
 
 async function layer2() {

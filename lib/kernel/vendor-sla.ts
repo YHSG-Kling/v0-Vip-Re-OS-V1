@@ -9,6 +9,8 @@ export interface SlaBooking {
   vendor_id: string
   scheduled_date: string | null
   completed_at: string | null
+  /** Optional — when 'no_show', the booking counts as a reliability failure (the autopilot marks these). */
+  status?: string | null
 }
 
 export interface VendorSlaStat {
@@ -24,9 +26,10 @@ export const SLA_BREACH_PCT = 75
 export const SLA_COMPLIANT_PCT = 90
 
 /**
- * PURE: per-vendor SLA from completed bookings. A booking counts when it has both a scheduled_date and a
- * completed_at; it's on-time when completed by scheduled_date + the vendor's committed turnaround days
- * (default 1). Vendors with no completed history get slaPct 100 (unproven ≠ bad — honest).
+ * PURE: per-vendor SLA. A COMPLETED booking (has scheduled_date + completed_at) counts, on-time when
+ * completed by scheduled_date + the vendor's committed turnaround days (default 1). A NO_SHOW booking
+ * ALSO counts — as a failure (total++ but never on-time) — so a vendor who ghosts appointments has their
+ * reliability drop, not just their completions. Vendors with no history get slaPct 100 (unproven ≠ bad).
  */
 export function computeVendorSla(
   bookings: SlaBooking[],
@@ -34,8 +37,13 @@ export function computeVendorSla(
 ): Record<string, VendorSlaStat> {
   const by: Record<string, { total: number; onTime: number }> = {}
   for (const b of bookings) {
-    if (!b.completed_at || !b.scheduled_date) continue
     const vid = b.vendor_id
+    if (b.status === "no_show") {
+      if (!by[vid]) by[vid] = { total: 0, onTime: 0 }
+      by[vid].total++              // a no-show is a reliability failure (counts against, never on-time)
+      continue
+    }
+    if (!b.completed_at || !b.scheduled_date) continue
     if (!by[vid]) by[vid] = { total: 0, onTime: 0 }
     by[vid].total++
     const due = new Date(b.scheduled_date)

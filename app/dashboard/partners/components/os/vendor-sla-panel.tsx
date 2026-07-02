@@ -58,7 +58,8 @@ export function VendorSlaPanel({ brokerageId, userRole }: VendorSlaPanelProps) {
         turnaroundMap[v.id] = v.estimated_turnaround_days ?? 1
       }
 
-      // Fetch completed bookings in last 90 days
+      // Fetch reliability-bearing bookings in the last 90 days: completions AND no-shows (a no-show
+      // dents reliability too — same rule the shared computeVendorSla + orchestration use).
       const since = new Date()
       since.setDate(since.getDate() - 90)
 
@@ -66,8 +67,8 @@ export function VendorSlaPanel({ brokerageId, userRole }: VendorSlaPanelProps) {
         .from("vendor_bookings")
         .select("vendor_id, scheduled_date, completed_at, status")
         .in("vendor_id", vendorIds)
-        .gte("completed_at", since.toISOString())
-        .not("completed_at", "is", null)
+        .gte("created_at", since.toISOString())
+        .or("completed_at.not.is.null,status.eq.no_show")
 
       // Per-vendor SLA via the SHARED pure computeVendorSla (same math the no-show autopilot uses).
       const byVendor = computeVendorSla((bookings ?? []) as any[], turnaroundMap)
