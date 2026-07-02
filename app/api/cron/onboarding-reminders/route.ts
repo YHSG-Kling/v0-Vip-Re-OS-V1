@@ -31,8 +31,21 @@ export async function GET(request: Request) {
 
   try {
     await findStuckAgentsAndNotify()
-    await recordCronSuccessAction({ context_id: contextId, records_processed: 0 })
-    return NextResponse.json({ ok: true }, { status: 200 })
+
+    // MENTORSHIP LIFECYCLE — check-in nudges for active pairings + graduate the ones whose mentee
+    // finished onboarding (agent_mentor_relationships was previously a static, never-touched record).
+    let mentorship = { graduated: 0, nudged: 0 }
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { runMentorshipLifecycleAll } = await import("@/lib/recruiting/mentorship-lifecycle")
+      const r = await runMentorshipLifecycleAll(createServiceClient())
+      mentorship = { graduated: r.graduated, nudged: r.nudged }
+    } catch (e) {
+      console.error("[OnboardingReminders] mentorship lifecycle:", e)
+    }
+
+    await recordCronSuccessAction({ context_id: contextId, records_processed: mentorship.graduated + mentorship.nudged, metadata: { mentorship } })
+    return NextResponse.json({ ok: true, mentorship }, { status: 200 })
   } catch (err) {
     console.error("[cron/onboarding-reminders] Failed:", err)
     await recordCronFailureAction({ context_id: contextId, error: err as Error | string, stage: "main-processing" })
