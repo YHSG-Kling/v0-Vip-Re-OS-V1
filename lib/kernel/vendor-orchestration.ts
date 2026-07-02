@@ -15,9 +15,11 @@
 //    enabled in its settings (brokerage_settings.settings ->> 'staging_enabled'). Default
 //    OFF when the flag is absent.
 //  · PREFERENCE-FIRST RANKING — the bench is `vendors` (category CHECK Lender|Inspector|
-//    Title Company|Contractor|Stager|Other). That table has NO preferred flag (only
-//    rating). rankVendors honors a `preferred` boolean IF the row carries one (forward-
-//    compatible) THEN falls back to rating; preferred always wins over a higher rating.
+//    Title Company|Contractor|Stager|Other), which has NO preferred flag (only rating). The
+//    broker's `preferred` choices live in the SEPARATE `vendor_directory` table. These two
+//    tables have no FK, so resolvePreferredVendorIds bridges them by (brokerage, name,
+//    category); the resolved set feeds rankVendors so preference-first is REAL (previously the
+//    orchestrator read only `vendors` and the promise was inert — a real drift, now closed).
 //
 // NOT server-only — the simulator drives the pure layer directly; runVendorOrchestration
 // takes an injectable Supabase client + copyGenerator seam so tests spend no tokens.
@@ -53,6 +55,42 @@ export interface BenchVendor {
   rating: number | null
   /** Forward-compatible: present only if the bench schema gains a preferred flag. */
   preferred?: boolean | null
+}
+
+/** A brokerage's vendor_directory row — the SINGLE SOURCE OF TRUTH for the `preferred` signal. The
+ *  operational bench (`vendors`, FK target of vendor_bookings) has no preferred flag; the broker marks
+ *  preference in the directory. These two tables have no FK, so we bridge by (brokerage, name, category). */
+export interface DirectoryPref {
+  name: string | null
+  category: string | null
+  preferred: boolean | null
+}
+
+const normVendorKey = (name: string | null | undefined, category: string | null | undefined) =>
+  `${(name ?? "").trim().toLowerCase()}|${(category ?? "").trim().toLowerCase()}`
+
+/**
+ * PURE: resolve which BENCH vendor ids are PREFERRED, using vendor_directory as the source of truth.
+ * A directory row with preferred=true is matched to a bench vendor by normalized (name, category);
+ * name-only is a fallback when categories differ in spelling. Returns the set of bench vendor ids to
+ * feed rankVendors — so the orchestrator's documented "preference-first" promise is finally REAL,
+ * without duplicating the flag onto `vendors`.
+ */
+export function resolvePreferredVendorIds(bench: BenchVendor[], directory: DirectoryPref[]): Set<string> {
+  const preferredKeys = new Set<string>()
+  const preferredNames = new Set<string>()
+  for (const d of directory) {
+    if (d.preferred !== true) continue
+    preferredKeys.add(normVendorKey(d.name, d.category))
+    if (d.name) preferredNames.add(d.name.trim().toLowerCase())
+  }
+  const ids = new Set<string>()
+  for (const v of bench) {
+    if (preferredKeys.has(normVendorKey(v.name, v.category)) || (v.name && preferredNames.has(v.name.trim().toLowerCase()))) {
+      ids.add(v.id)
+    }
+  }
+  return ids
 }
 
 /** A stage gap: the vendor category the stage needs + the service_type + a human label. */
@@ -210,6 +248,14 @@ export async function runVendorOrchestration(
     .eq("brokerage_id", brokerageId).limit(500)
   const bench: BenchVendor[] = (benchRows ?? []) as BenchVendor[]
 
+  // PREFERENCE SOURCE OF TRUTH — the broker's `preferred` choices live in vendor_directory, not on the
+  // `vendors` bench. Resolve them to bench ids so ranking is genuinely preference-first (closes the
+  // drift where the orchestrator's documented promise was inert because it read the wrong table).
+  const { data: dirRows } = await supabase.from("vendor_directory")
+    .select("name, category, preferred")
+    .eq("brokerage_id", brokerageId).eq("preferred", true).limit(500)
+  const preferredVendorIds = resolvePreferredVendorIds(bench, (dirRows ?? []) as DirectoryPref[])
+
   const { data: txns } = await supabase.from("transactions")
     .select("id, deal_name, property_address, stage, agent_id, buyer_contact_id, contact_id")
     .eq("brokerage_id", brokerageId).in("stage", ACTIVE_STAGES).limit(200)
@@ -235,10 +281,9 @@ export async function runVendorOrchestration(
         .ilike("rationale", `${ratPrefix}%`).limit(1).maybeSingle()
       if (existing) continue
 
-      // PREFERENCE-FIRST pick. The bench (vendors) has no preferred flag today, so the
-      // prefs set is empty and ranking falls back to rating; a row-level `preferred` flag
-      // (if the schema gains one) is honored automatically by rankVendors.
-      const vendor = pickVendorForGap(bench, gap, {})
+      // PREFERENCE-FIRST pick — the broker's preferred vendors (resolved from vendor_directory, the
+      // source of truth) win over a higher-rated non-preferred vendor; ties fall back to rating.
+      const vendor = pickVendorForGap(bench, gap, { preferredVendorIds })
       if (!vendor) { result.benchMisses += 1; continue }
 
       // PERSONA-AWARE COPY — the quote-request body is generated to the vendor persona,

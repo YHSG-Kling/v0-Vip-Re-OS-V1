@@ -13,9 +13,11 @@
  * audience 'agent', status 'proposed') exists, staging is skipped while the setting is off,
  * and a second pass is idempotent. SELF-CLEANS by a unique TAG.
  */
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import {
   vendorGapForStage, rankVendors, pickVendorForGap, composeQuoteRequestFallback,
-  runVendorOrchestration, type BenchVendor, type DealCoverage,
+  runVendorOrchestration, resolvePreferredVendorIds, type BenchVendor, type DealCoverage,
 } from "../lib/kernel/vendor-orchestration"
 
 let passed = 0, failed = 0; const fails: string[] = []
@@ -83,6 +85,32 @@ function layer1() {
   // fallback copy is real (never a stub).
   const fb = composeQuoteRequestFallback({ vendorName: "Acme", gap, propertyAddress: "1 St", dealName: "Deal X" })
   check("fallback quote copy mentions vendor + service", fb.body.includes("Acme") && fb.body.includes(gap.label))
+
+  // ── PREFERENCE SOURCE-OF-TRUTH — resolvePreferredVendorIds bridges vendor_directory → the bench. ──
+  console.log("\n── Layer 1b: preference resolved from vendor_directory (drift fix) ──")
+  const bench: BenchVendor[] = [
+    { id: "v1", name: "Ace Inspections", category: "Inspector", email: null, rating: 3 },
+    { id: "v2", name: "Budget Home Inspect", category: "Inspector", email: null, rating: 5 },
+    { id: "v3", name: "Summit Title", category: "Title Company", email: null, rating: 4 },
+  ]
+  const directory = [
+    { name: "Ace Inspections", category: "Inspector", preferred: true },   // broker's preferred pick
+    { name: "Summit Title", category: "Title Company", preferred: false },
+  ]
+  const prefIds = resolvePreferredVendorIds(bench, directory)
+  check("directory preferred=true resolves to the matching bench id", prefIds.has("v1") && prefIds.size === 1)
+  check("a NON-preferred directory row does not mark its bench vendor", !prefIds.has("v3"))
+  check("case/space-insensitive name+category match", resolvePreferredVendorIds(bench, [{ name: " ace inspections ", category: "inspector", preferred: true }]).has("v1"))
+  check("no directory rows → empty set (honest, no false preference)", resolvePreferredVendorIds(bench, []).size === 0)
+  // The resolved set makes ranking preference-first even though the LOWER-rated vendor is preferred.
+  const pickInspector: any = { category: "Inspector", serviceType: "home_inspection", label: "home inspection" }
+  check("preferred (lower-rated) beats the higher-rated non-preferred when sourced from the directory",
+    pickVendorForGap(bench, pickInspector, { preferredVendorIds: prefIds })?.id === "v1")
+
+  const orchSrc = readFileSync(join(process.cwd(), "lib/kernel/vendor-orchestration.ts"), "utf8")
+  check("runVendorOrchestration loads vendor_directory preferred rows + resolves them",
+    /from\("vendor_directory"\)[\s\S]*?resolvePreferredVendorIds\(bench/.test(orchSrc))
+  check("the resolved preferred set is passed into the pick", /pickVendorForGap\(bench, gap, \{ preferredVendorIds \}\)/.test(orchSrc))
 }
 
 async function layer2() {
