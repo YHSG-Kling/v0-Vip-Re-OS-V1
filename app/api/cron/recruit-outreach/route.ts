@@ -9,6 +9,7 @@ import {
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { sweepStaleRecruits } from "@/lib/agents/recruit-outreach-producer"
 import { refreshAllRecruitingRoi } from "@/lib/recruiting/recruiting-roi-writer"
+import { runSwitchPropensityScoutAll } from "@/lib/recruiting/switch-propensity-scout"
 
 /**
  * Weekly RECRUITING MANAGER sweep — keeps the talent pipeline warm. For every
@@ -69,12 +70,20 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // SWITCH-PROPENSITY SCOUT — weekly gated "prioritize these agents" brief per brokerage (the
+    // highest-value, most-switchable talent first).
+    let priorityBriefs = 0
+    try {
+      const scout = await runSwitchPropensityScoutAll(supabase)
+      priorityBriefs = scout.briefs
+    } catch (e: any) { errors.push(`scout: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, roiWritten, brokerages: brokerages.length, errors },
+      metadata: { proposed, scanned, roiWritten, priorityBriefs, brokerages: brokerages.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, brokerages: brokerages.length, errors })
+    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, brokerages: brokerages.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
