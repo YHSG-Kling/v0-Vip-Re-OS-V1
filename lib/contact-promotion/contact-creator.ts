@@ -192,6 +192,14 @@ export async function createContactFromLead(
       equity_estimate:       data.lead.equity_estimate ?? null,
       email_verified:        data.lead.email_verified ?? null,
 
+      // LOSSLESS SPECS — carry the property facts forward (raw → lead → contact); the scraped value
+      // lands in the contact's canonical home_value_estimate column. Additive, never fabricated.
+      beds:                data.lead.beds ?? null,
+      baths:               data.lead.baths ?? null,
+      sqft:                data.lead.sqft ?? null,
+      property_type:       data.lead.property_type ?? null,
+      home_value_estimate: data.lead.estimated_value ?? null,
+
       // Status
       status: 'active',
       isa_reengage_allowed: true,

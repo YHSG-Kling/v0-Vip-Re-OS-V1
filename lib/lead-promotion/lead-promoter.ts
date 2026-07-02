@@ -1,6 +1,7 @@
 'use server'
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { extractPropertySpecs, leadSpecPatch } from '@/lib/data-steward/property-spec-extractor'
 
 interface PromotionResult {
   success: boolean
@@ -69,10 +70,13 @@ export async function promoteRawRecordToLead(
     // Brokerage-origin leads keep the brokerage that initiated the scrape.
     const initialBrokerageId = sourceOrigin === 'platform' ? null : brokerageId
 
-    // Insert into leads table
+    // Insert into leads table (LOSSLESS SPECS — promote beds/baths/sqft/type/value from the raw jsonb;
+    // additive, only what was scraped, parity with pipeline-processor).
+    const leadSpecs = leadSpecPatch(extractPropertySpecs([rawData, (rawRecord as any)?.normalized_preview]))
     const { data: newLead, error: insertError } = await supabase
       .from('leads')
       .insert({
+        ...leadSpecs,
         brokerage_id: initialBrokerageId,
         first_name: firstName,
         last_name: lastName,

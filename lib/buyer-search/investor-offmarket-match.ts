@@ -29,6 +29,11 @@ export interface OffMarketProperty {
   motivationType: string | null
   motivationConfidence: number | null
   equityEstimate: number | null
+  /** Lossless-promoted property specs (m256) — null when the source didn't scrape them. */
+  beds?: number | null
+  propertyType?: string | null
+  /** Scraped AVM/estimated value (leads.estimated_value / contacts.home_value_estimate). */
+  estimatedValue?: number | null
 }
 
 // Distress strength — the more motivated the seller, the better the investor deal (more discount room).
@@ -59,15 +64,32 @@ export interface OffMarketMatch extends OffMarketProperty {
   reasons: string[]
 }
 
+/** AVMs are approximate — allow this much headroom over the box max before calling a price out-of-box. */
+export const PRICE_TOLERANCE = 1.1
+
+/**
+ * PRICE GATE — is this property within the investor's price box? Unknown value or an unbounded box
+ * passes (never exclude on data we don't have); a KNOWN value clearly over the box max (with AVM
+ * tolerance) is a hard out — the investor genuinely doesn't buy at that number.
+ */
+export function inBoxPrice(box: InvestorBox, prop: OffMarketProperty): boolean {
+  const v = prop.estimatedValue
+  if (v == null || !Number.isFinite(v) || v <= 0) return true
+  if (box.maxPrice != null && v > box.maxPrice * PRICE_TOLERANCE) return false
+  return true
+}
+
 /**
  * PURE: score one off-market property against the investor's box, 0..1 — or null when it's outside the
- * box geography (a hard gate; an investor doesn't want deals in markets they don't work). Location
- * specificity + distress strength + equity room. Honest on missing equity (unknown → neutral-low, never
- * inflated).
+ * box GEOGRAPHY or clearly over the box PRICE (hard gates; an investor doesn't want deals in markets
+ * they don't work or at numbers they don't buy). Location specificity + distress strength + equity room,
+ * with soft nudges from the lossless-promoted specs (property type match, beds fit). Honest on missing
+ * data (unknown → neutral, never inflated; a missing spec never excludes).
  */
 export function scoreOffMarketFit(box: InvestorBox, prop: OffMarketProperty): OffMarketMatch | null {
   const geo = inBoxGeography(box, prop)
   if (!geo) return null
+  if (!inBoxPrice(box, prop)) return null
 
   const reasons: string[] = []
   const location = geo === "zip" ? 1.0 : 0.75
@@ -82,7 +104,22 @@ export function scoreOffMarketFit(box: InvestorBox, prop: OffMarketProperty): Of
     if (prop.equityEstimate > 0) reasons.push(`~$${Math.round(prop.equityEstimate).toLocaleString()} estimated equity (room to negotiate).`)
   }
 
-  const score = 0.45 * location + 0.35 * motivation + 0.20 * equityNorm
+  let score = 0.45 * location + 0.35 * motivation + 0.20 * equityNorm
+
+  // Spec nudges (lossless-promoted m256 columns) — soft, additive, only when the data exists.
+  const wantTypes = (box.propertyTypes ?? []).map(norm).filter(Boolean)
+  if (prop.propertyType && wantTypes.length && wantTypes.some((t) => norm(prop.propertyType).includes(t) || t.includes(norm(prop.propertyType)))) {
+    score = Math.min(1, score + 0.05)
+    reasons.push(`${prop.propertyType} — matches the box's property type.`)
+  }
+  if (prop.beds != null && box.minBeds != null && prop.beds >= box.minBeds) {
+    score = Math.min(1, score + 0.03)
+    reasons.push(`${prop.beds} beds — meets the box minimum.`)
+  }
+  if (prop.estimatedValue != null && box.maxPrice != null && prop.estimatedValue <= box.maxPrice) {
+    reasons.push(`~$${Math.round(prop.estimatedValue).toLocaleString()} est. value — inside the price box.`)
+  }
+
   return { ...prop, matchScore: Math.round(Math.min(1, Math.max(0, score)) * 100) / 100, reasons }
 }
 

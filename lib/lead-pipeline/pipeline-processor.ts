@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { calculateFuzzyMatch, isConfidentMatch } from './fuzzy-matcher'
+import { extractPropertySpecs, leadSpecPatch } from '@/lib/data-steward/property-spec-extractor'
 import { skipTraceWithPeopleData } from '@/lib/external'
 import { mergeEnrichment, shouldGapFill, enrichViaPerplexity, type BaseEnrichment } from './perplexity-enrichment'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -417,9 +418,13 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     : ((rec.raw_data?.motivation_confidence as number | null) ?? (computedScore / 100))
 
   // ── STEP 5: Promote to leads with Kernel OS ownership fields ────────────────
+  // LOSSLESS SPECS — pull beds/baths/sqft/type/value out of the raw jsonb so they're first-class on the
+  // lead (additive: only sets what was actually scraped, never fabricated).
+  const leadSpecs = leadSpecPatch(extractPropertySpecs([rec.raw_data as any, rec.normalized_preview as any]))
   const { data: newLead, error: createError } = await supabase
     .from('leads')
     .insert({
+      ...leadSpecs,
       brokerage_id:          effectiveBrokerageId,
       first_name:            enriched.first_name  ?? firstName,
       last_name:             enriched.last_name   ?? lastName,

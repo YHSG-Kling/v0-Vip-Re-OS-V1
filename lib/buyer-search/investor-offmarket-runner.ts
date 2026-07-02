@@ -25,10 +25,12 @@ export interface InvestorOffMarketResult {
   qualifiedCount?: number
 }
 
-const LEAD_COLS = "id, address, city, state, zip_code, motivation_type, motivation_confidence, equity_estimate, is_active"
-const CONTACT_COLS = "id, address, city, zip_code, motivation_type, motivation_confidence, equity_estimate"
+// Lossless-promoted specs (m256): leads carry estimated_value; contacts carry home_value_estimate.
+const LEAD_COLS = "id, address, city, state, zip_code, motivation_type, motivation_confidence, equity_estimate, is_active, beds, property_type, estimated_value"
+const CONTACT_COLS = "id, address, city, zip_code, motivation_type, motivation_confidence, equity_estimate, beds, property_type, home_value_estimate"
 
 function toProperty(r: any, stage: "lead" | "contact"): OffMarketProperty {
+  const value = stage === "lead" ? r.estimated_value : r.home_value_estimate
   return {
     recordId: r.id,
     stage,
@@ -39,6 +41,9 @@ function toProperty(r: any, stage: "lead" | "contact"): OffMarketProperty {
     motivationType: r.motivation_type ?? null,
     motivationConfidence: r.motivation_confidence != null ? Number(r.motivation_confidence) : null,
     equityEstimate: r.equity_estimate != null ? Number(r.equity_estimate) : null,
+    beds: r.beds != null ? Number(r.beds) : null,
+    propertyType: r.property_type ?? null,
+    estimatedValue: value != null ? Number(value) : null,
   }
 }
 

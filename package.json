@@ -213,6 +213,7 @@
     "test:campaign-center": "tsx scripts/campaign-center-simulator.ts",
     "test:reverse-prospecting": "tsx scripts/reverse-prospecting-simulator.ts",
     "test:investor-offmarket": "tsx scripts/investor-offmarket-simulator.ts",
+    "test:property-specs": "tsx scripts/property-specs-simulator.ts",
     "test:vendor-orchestration": "tsx scripts/vendor-orchestration-simulator.ts",
     "test:objection-library": "tsx scripts/objection-library-simulator.ts",
     "test:referral-radar": "tsx scripts/referral-radar-simulator.ts",
