@@ -127,6 +127,7 @@
     "test:recruit-outreach": "tsx scripts/recruit-outreach-simulator.ts",
     "test:recruiting-roi": "tsx scripts/recruiting-roi-simulator.ts",
     "test:license-readiness": "tsx scripts/license-readiness-simulator.ts",
+    "test:readiness-gate": "tsx scripts/readiness-gate-simulator.ts",
     "test:recruiter-agent-mgmt": "tsx scripts/recruiter-agent-management-simulator.ts",
     "test:agent-coaching": "tsx scripts/agent-coaching-simulator.ts",
     "test:portal-value": "tsx scripts/portal-value-simulator.ts",

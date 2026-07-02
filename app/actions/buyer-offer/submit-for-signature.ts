@@ -46,6 +46,14 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
 
   const supabase = createServiceClient()
 
+  // ── AGENT READINESS HARD GATE — a license/CE/ethics-blocked agent can't send an offer for signature
+  // (regulatory exposure). Canonical evaluator, same verdict as the offer-time gate + autonomous sweep.
+  const { checkAgentTransactable } = await import("@/lib/compliance/agent-readiness-gate")
+  const readiness = await checkAgentTransactable(supabase, userId)
+  if (!readiness.transactable) {
+    return { success: false, error: readiness.message ?? "Agent not clear to transact" }
+  }
+
   // Get offer. Note esign_provider is the PLATFORM NAME (dotloop/docusign/…),
   // and provider_envelope_id is the actual envelope reference returned by the
   // provider — the webhook matches on that column.

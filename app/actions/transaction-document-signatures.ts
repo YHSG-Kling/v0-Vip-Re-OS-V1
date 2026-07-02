@@ -62,6 +62,15 @@ export async function sendDocumentForSignature(params: {
 
   const supabase = createServiceClient()
 
+  // ── AGENT READINESS HARD GATE ───────────────────────────────────────────────
+  // A license/CE/ethics-blocked agent cannot put a legal document out for signature (regulatory
+  // exposure). Canonical evaluator — same verdict as the offer-time gate + the autonomous sweep.
+  const { checkAgentTransactable } = await import("@/lib/compliance/agent-readiness-gate")
+  const readiness = await checkAgentTransactable(supabase, userId)
+  if (!readiness.transactable) {
+    return { success: false, error: readiness.message ?? "Agent not clear to transact", blockedReason: readiness.blockers.join("; ") }
+  }
+
   // ── Verify the transaction document exists and belongs to this transaction ─
   const { data: doc, error: docErr } = await supabase
     .from("transaction_documents")
