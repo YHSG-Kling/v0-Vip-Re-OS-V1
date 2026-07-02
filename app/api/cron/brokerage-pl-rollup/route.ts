@@ -133,13 +133,25 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // TEAM P&L ROLLUP — the team-level mirror of the per-agent snapshot above. team_earnings /
+    // team_performance were READ by the reporting layer but never written (drift); this rolls up the
+    // SAME canonical agent_commissions source over each team's members so team + agent numbers reconcile.
+    let teamsWritten = 0
+    try {
+      const { runTeamPnlAll } = await import("@/lib/finance/team-pl-writer")
+      const team = await runTeamPnlAll(supabase, now)
+      teamsWritten = team.written
+    } catch (err: any) {
+      errors.push(`team-pl: ${err.message}`)
+    }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: processed,
-      metadata: { month_year: monthYear, errors: errors.slice(0, 10) },
+      metadata: { month_year: monthYear, teamsWritten, errors: errors.slice(0, 10) },
     })
 
-    return NextResponse.json({ ok: true, monthYear, processed, errors })
+    return NextResponse.json({ ok: true, monthYear, processed, teamsWritten, errors })
   } catch (err: any) {
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 })

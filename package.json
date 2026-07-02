@@ -130,6 +130,7 @@
     "test:switch-propensity": "tsx scripts/switch-propensity-simulator.ts",
     "test:retention-radar": "tsx scripts/retention-radar-simulator.ts",
     "test:vendor-recruitment": "tsx scripts/vendor-recruitment-simulator.ts",
+    "test:team-pl": "tsx scripts/team-pl-simulator.ts",
     "test:license-readiness": "tsx scripts/license-readiness-simulator.ts",
     "test:readiness-gate": "tsx scripts/readiness-gate-simulator.ts",
     "test:certification-issued": "tsx scripts/certification-issued-simulator.ts",
