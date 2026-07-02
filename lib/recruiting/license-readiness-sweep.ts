@@ -97,6 +97,19 @@ export async function sweepLicenseReadiness(
     // A hard blocker exposes the brokerage — escalate to broker/admins (deduped by the same issue tag).
     if (readiness.blockers.length > 0) {
       out.blocked++
+      // MULTI-MANAGER HANDOFF — the Recruiting Manager (owns agents) hands the regulatory exposure to
+      // the Compliance Officer (owns the ledger), who records it in compliance_flags for audit. Deduped
+      // per open (agent, exposure) by publishManagerSignal; visible on the "managers talking" feed.
+      try {
+        const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+        await publishManagerSignal({
+          brokerageId: params.brokerageId, fromManager: "recruiting_manager", toManager: "compliance_officer",
+          signalType: "license_lapsing",
+          message: `${agentName} has a license/CE/ethics blocker — regulatory exposure if they transact.`,
+          entityType: "agent", entityId: a.id,
+          payload: { codes: readiness.blockers.map((b) => b.code), agentName },
+        }, svc)
+      } catch { /* best-effort — the broker notification below still fires */ }
       try {
         const { data: mgrs } = await svc.from("users").select("id")
           .eq("brokerage_id", params.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)

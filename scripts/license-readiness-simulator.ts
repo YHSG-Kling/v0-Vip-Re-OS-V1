@@ -65,6 +65,10 @@ function sourceLayer() {
   check("the daily compliance-monitoring cron runs the sweep (autonomous)", /sweepAllLicenseReadiness/.test(cron))
   const reg = src("lib/kernel/manager-registry.ts")
   check("burn domain owned by recruiting_manager with a runnable proof", /license_readiness:\s*\{\s*manager:\s*"recruiting_manager",\s*proof:\s*"test:license-readiness"/.test(reg))
+  // MULTI-MANAGER HANDOFF — recruiting_manager → compliance_officer on a blocker.
+  check("sweep publishes the recruiting_manager → compliance_officer license_lapsing signal on a blocker", /fromManager: "recruiting_manager", toManager: "compliance_officer",\s*\n?\s*signalType: "license_lapsing"/.test(sweep))
+  check("license_lapsing is catalogued in SIGNAL_REGISTRY (consumer compliance_officer)", /license_lapsing:\s*\{ consumers: \["compliance_officer"\]/.test(src("lib/kernel/signal-registry.ts")))
+  check("the compliance_officer:license_lapsing handler records a compliance_flag", /"compliance_officer:license_lapsing":[\s\S]*?from\("compliance_flags"\)[\s\S]*?violation_type: "license_readiness_blocker"/.test(src("lib/kernel/manager-signals.ts")))
 }
 
 async function liveLayer() {

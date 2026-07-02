@@ -1308,6 +1308,27 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   // Deal Coordinator → Compliance Officer: a deal worsened and the DEADLINE/CONTINGENCY clock is
   // the risk. Compliance flags the exposure to the TC + agent (the people who work the deal — NOT
   // the broker) so a slipping contingency never lapses unseen. Part of the Deal-Save Huddle.
+  // Recruiting Manager → Compliance Officer: an agent's license/CE/ethics readiness sweep found a
+  // BLOCKER. The Compliance Officer (regulatory owner) records the exposure in the compliance ledger
+  // (compliance_flags) so it's tracked + auditable, not just a transient reminder. Idempotent — one open
+  // flag per (agent, license_readiness_blocker); resolves when the agent clears.
+  "compliance_officer:license_lapsing": async (signal, ctx) => {
+    const agentId = signal.entityId
+    if (!agentId) return null
+    const codes = Array.isArray(signal.payload?.codes) ? (signal.payload!.codes as string[]) : []
+    const agentName = (signal.payload?.agentName as string | undefined) ?? "An agent"
+    const { data: existing } = await ctx.supabase.from("compliance_flags")
+      .select("id").eq("brokerage_id", ctx.brokerageId).eq("agent_id", agentId)
+      .eq("violation_type", "license_readiness_blocker").eq("status", "flagged").limit(1).maybeSingle()
+    if (existing) return "license exposure already on the compliance ledger (open)"
+    const { error } = await ctx.supabase.from("compliance_flags").insert({
+      brokerage_id: ctx.brokerageId, agent_id: agentId,
+      violation_type: "license_readiness_blocker", content_type: "agent_license",
+      flagged_content: `${agentName}: ${codes.join(", ") || "license/CE/ethics blocker"} — agent is not legally clear to transact.`,
+      severity: "critical", status: "flagged", detected_at: new Date().toISOString(),
+    })
+    return error ? null : `recorded the license exposure on the compliance ledger (${codes.join(", ") || "blocker"})`
+  },
   "compliance_officer:deal_save_huddle": async (signal, ctx) => {
     if (!signal.entityId) return null
     const play = (signal.payload?.play as string | undefined) ?? "Verify the contingency clock; flag any slipping deadline."
