@@ -44,8 +44,20 @@ export async function GET(request: Request) {
       console.error("[OnboardingReminders] mentorship lifecycle:", e)
     }
 
-    await recordCronSuccessAction({ context_id: contextId, records_processed: mentorship.graduated + mentorship.nudged, metadata: { mentorship } })
-    return NextResponse.json({ ok: true, mentorship }, { status: 200 })
+    // SKILL-FRESHNESS RADAR — continuing-competency loop: nudge agents to refresh a decayed skill
+    // (objection drill / knowledge check / course review) BEFORE it goes stale, so their edge stays sharp.
+    let skillRefreshers = 0
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { runSkillFreshnessRadarAll } = await import("@/lib/education/skill-freshness-radar")
+      const r = await runSkillFreshnessRadarAll(createServiceClient())
+      skillRefreshers = r.nudged
+    } catch (e) {
+      console.error("[OnboardingReminders] skill freshness radar:", e)
+    }
+
+    await recordCronSuccessAction({ context_id: contextId, records_processed: mentorship.graduated + mentorship.nudged + skillRefreshers, metadata: { mentorship, skillRefreshers } })
+    return NextResponse.json({ ok: true, mentorship, skillRefreshers }, { status: 200 })
   } catch (err) {
     console.error("[cron/onboarding-reminders] Failed:", err)
     await recordCronFailureAction({ context_id: contextId, error: err as Error | string, stage: "main-processing" })

@@ -100,6 +100,9 @@ export interface CommandCenterData {
   /** Recruiting Manager's retention board — the daily flight-risk scores made visible
    *  (who's trending down, how many at-risk, why). Brokerage-wide; null when unavailable. */
   retentionBoard:  import("@/lib/intelligence/retention-board").RetentionBoard | null
+  /** Education loop — per-agent skill freshness rolled up (how many agents have a stale
+   *  skill, who's rustiest, in what). Brokerage-wide; null when unavailable. */
+  skillBoard:      import("@/lib/intelligence/skill-freshness-board").SkillFreshnessBoard | null
   /** Proposed AI ISA voice dial batches awaiting approval (AI ISA — "call my hottest N"). */
   dialBatches:     Array<{ id: string; proposedCount: number; proposedAt: string | null }>
   /** Managers talking — recent inter-manager signals (who told whom what, and what the
@@ -394,12 +397,14 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   let weeklyPnl: import("@/lib/intelligence/manager-weekly-pnl").ManagerWeeklyScorecard[] = []
   let deliverables: import("@/lib/intelligence/deliverables-summary").DeliverablesSummary | null = null
   let retentionBoard: import("@/lib/intelligence/retention-board").RetentionBoard | null = null
+  let skillBoard: import("@/lib/intelligence/skill-freshness-board").SkillFreshnessBoard | null = null
   if (brokerageWide && brokerageId) {
-    const [standupRes, pnlRes, delivRes, retentionRes] = await Promise.allSettled([
+    const [standupRes, pnlRes, delivRes, retentionRes, skillRes] = await Promise.allSettled([
       import("@/lib/intelligence/manager-standup").then((m) => m.generateManagerStandup(brokerageId)),
       import("@/lib/intelligence/manager-weekly-pnl").then((m) => m.generateManagerWeeklyPnl(brokerageId)),
       import("@/lib/intelligence/deliverables-summary").then((m) => m.generateDeliverablesSummary({ brokerageId })),
       import("@/lib/intelligence/retention-board").then((m) => m.generateRetentionBoard(brokerageId)),
+      import("@/lib/intelligence/skill-freshness-board").then((m) => m.generateSkillFreshnessBoard(brokerageId)),
     ])
     if (standupRes.status === "fulfilled") standup = standupRes.value
     else console.error("[command-center] manager standup failed:", standupRes.reason)
@@ -409,6 +414,8 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     else console.error("[command-center] deliverables summary failed:", delivRes.reason)
     if (retentionRes.status === "fulfilled") retentionBoard = retentionRes.value
     else console.error("[command-center] retention board failed:", retentionRes.reason)
+    if (skillRes.status === "fulfilled") skillBoard = skillRes.value
+    else console.error("[command-center] skill board failed:", skillRes.reason)
   }
 
   // Proposed AI ISA dial batches awaiting approval — surfaced as a one-tap callout.
@@ -438,6 +445,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     weeklyPnl,
     deliverables,
     retentionBoard,
+    skillBoard,
     dialBatches,
     managerTalk,
     summary: {

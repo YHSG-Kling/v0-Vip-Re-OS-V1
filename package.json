@@ -132,6 +132,7 @@
     "test:vendor-recruitment": "tsx scripts/vendor-recruitment-simulator.ts",
     "test:team-pl": "tsx scripts/team-pl-simulator.ts",
     "test:retention-board": "tsx scripts/retention-board-simulator.ts",
+    "test:skill-freshness": "tsx scripts/skill-freshness-simulator.ts",
     "test:license-readiness": "tsx scripts/license-readiness-simulator.ts",
     "test:readiness-gate": "tsx scripts/readiness-gate-simulator.ts",
     "test:certification-issued": "tsx scripts/certification-issued-simulator.ts",

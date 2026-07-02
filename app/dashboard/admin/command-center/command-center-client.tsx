@@ -281,6 +281,38 @@ export function CommandCenterClient({
         </section>
       )}
 
+      {/* Skill-freshness board — the education loop made visible. Team competency at a glance:
+          who has a stale skill and in what, so the manager keeps everyone sharp (not just onboarded once). */}
+      {data.skillBoard && data.skillBoard.scored > 0 && (
+        <section className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold">Skill freshness — keep the team sharp</h2>
+            <span className="text-xs text-muted-foreground">{data.skillBoard.scored} agents</span>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <Card className={"p-4 " + (data.skillBoard.needRefresh > 0 ? "border-amber-300 bg-amber-50/40" : "")}>
+              <div className="text-xs text-muted-foreground">Need a refresher</div>
+              <div className="text-2xl font-semibold text-amber-700">{data.skillBoard.needRefresh}</div>
+            </Card>
+            <Card className="p-4"><div className="text-xs text-muted-foreground">Unproven</div><div className="text-2xl font-semibold text-slate-700">{data.skillBoard.unproven}</div></Card>
+            <Card className="p-4"><div className="text-xs text-muted-foreground">Sharp</div><div className="text-2xl font-semibold text-green-700">{data.skillBoard.sharp}</div></Card>
+          </div>
+          {data.skillBoard.agents.length > 0 && (
+            <div className="space-y-1.5">
+              {data.skillBoard.agents.map((a) => (
+                <Card key={a.agentId} className={"p-3 flex items-center justify-between gap-3 " + (a.worst === "stale" ? "border-amber-200" : "")}>
+                  <span className="text-sm font-medium truncate">{a.name}</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs text-muted-foreground truncate max-w-[16rem]">{a.areas.join(" · ")}</span>
+                    <Badge className={a.worst === "stale" ? "bg-amber-600 text-white" : a.worst === "untested" ? "bg-slate-500 text-white" : "bg-slate-900 text-white"}>{a.worst === "untested" ? "unproven" : a.worst}</Badge>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Manager Weekly P&L — the outcome layer: what each manager PRODUCED this week
           vs the prior week. Proves the AI workforce moves the business, not just acts. */}
       {data.weeklyPnl.length > 0 && (
