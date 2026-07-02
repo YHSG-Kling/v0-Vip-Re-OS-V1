@@ -301,6 +301,40 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   // Asset Manager → Campaign Orchestrator: a published landing page AI search persistently never cites.
   // The Orchestrator proposes a ONE-TAP gated regenerate_faq action (rebuild the FAQ + schema.org block
   // from fresh demand topics). Deduped so a re-fired gap signal never stacks duplicate proposals.
+  // Recruiting Manager → Campaign Orchestrator: an agent EARNED a certification. Propose a GATED
+  // social-proof post celebrating it (nothing auto-publishes). Idempotent per cert award (post_brief
+  // carries the certId). The agent name is sanitized before it enters client-facing copy.
+  "campaign_orchestrator:certification_issued": async (signal, ctx) => {
+    const certId = signal.entityId
+    const agentRowId = (signal.payload?.agentId as string | undefined) ?? null
+    const certName = (signal.payload?.certName as string | undefined) ?? null
+    if (!certId || !agentRowId || !certName) return null
+
+    const brief = `CERTIFICATION SOCIAL PROOF — cert:${certId}`
+    const { data: prior } = await ctx.supabase.from("social_posts").select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("agent_id", agentRowId).ilike("post_brief", `${brief}%`).limit(1).maybeSingle()
+    if (prior) return "cert social-proof post already proposed"
+
+    // Agent display name via agents.user_id → users, sanitized for client-facing copy.
+    const { sanitizeProperNoun } = await import("@/lib/compliance/client-text-guard")
+    let name = "our agent"
+    const { data: ag } = await ctx.supabase.from("agents").select("user_id").eq("id", agentRowId).maybeSingle()
+    const uid = (ag as { user_id?: string | null } | null)?.user_id ?? null
+    if (uid) {
+      const { data: u } = await ctx.supabase.from("users").select("first_name, last_name").eq("id", uid).maybeSingle()
+      const full = [(u as any)?.first_name, (u as any)?.last_name].filter(Boolean).join(" ").trim()
+      name = sanitizeProperNoun(full, 60) ?? "our agent"
+    }
+    const cert = sanitizeProperNoun(certName, 80) ?? "a new certification"
+
+    const { error } = await ctx.supabase.from("social_posts").insert({
+      brokerage_id: ctx.brokerageId, agent_id: agentRowId, platform: "all", post_type: "custom",
+      content: `Congratulations to ${name} on earning the ${cert} certification! Continuing to invest in the training and expertise that keeps our clients in the best hands. 🎓`,
+      status: "draft", approval_status: "pending", ai_generated: true,
+      post_brief: `${brief} — gated social proof for ${name}'s ${cert}; review before it posts.`,
+    })
+    return error ? null : `proposed a gated social-proof post for the ${cert} certification`
+  },
   "campaign_orchestrator:geo_visibility_gap": async (signal, ctx) => {
     if (!signal.entityId) return null  // the lead_capture_form id
     const { data: existing } = await ctx.supabase

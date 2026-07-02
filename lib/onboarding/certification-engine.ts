@@ -305,6 +305,23 @@ export async function awardCertification(
     console.error('[CertificationEngine] Notification processing failed (non-blocking):', err)
   })
 
+  // 3b. MULTI-MANAGER HANDOFF — a newly-earned credential is marketable social proof. The Recruiting
+  // Manager (owns certifications) hands it to the Campaign Orchestrator (content/social owner), who
+  // proposes a GATED "congrats on your certification" social post. entityId = certId so each award is a
+  // distinct signal; nothing auto-publishes. Best-effort — the cert award never fails on the handoff.
+  try {
+    const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+    await publishManagerSignal({
+      brokerageId, fromManager: "recruiting_manager", toManager: "campaign_orchestrator",
+      signalType: "certification_issued",
+      message: `An agent earned the ${certName} certification — marketable social proof.`,
+      entityType: "agent_certification", entityId: cert.id,
+      payload: { certId: cert.id, agentId, certName },
+    }, supabase)
+  } catch (err) {
+    console.error("[CertificationEngine] certification_issued handoff failed (non-blocking):", err)
+  }
+
   // 4. Check if all required onboarding certs are now awarded
   const { data: allCerts } = await supabase
     .from('agent_certifications')
