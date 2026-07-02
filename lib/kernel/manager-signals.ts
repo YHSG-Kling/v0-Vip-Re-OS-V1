@@ -403,11 +403,25 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const agentId = (signal.payload?.agent_id as string | undefined) ?? null
     if (!agentId) return null
     const commission = Number(signal.payload?.commission_amount ?? 0)
-    // First production datapoint (year 1) — recruiting_analytics.
+    // The brokerage's NET from this agent = gross × (1 − the agent's split). Read the agent's real
+    // split profile so recruiting ROI reflects the true return, not gross. Honest null when unknown.
+    const { brokerageNetFromSplit } = await import("@/lib/recruiting/recruiting-roi-compute")
+    const { data: prof } = await ctx.supabase.from("agent_commission_profiles")
+      .select("split_percent").eq("agent_id", agentId).eq("is_active", true)
+      .order("effective_date", { ascending: false }).limit(1).maybeSingle()
+    const brokerageNet = brokerageNetFromSplit(commission, (prof as any)?.split_percent ?? null)
+    // First production datapoint (year 1) — recruiting_analytics, now carrying the REAL brokerage net.
     await ctx.supabase.from("recruiting_analytics").insert({
       brokerage_id: ctx.brokerageId, recruited_agent_id: agentId, year_number: 1,
-      gross_commission_generated: commission, transaction_count: 1, computed_at: new Date().toISOString(),
+      gross_commission_generated: commission, brokerage_net_from_agent: brokerageNet,
+      transaction_count: 1, computed_at: new Date().toISOString(),
     })
+    // Recompute the recruited agent's ROI now that a real production datapoint exists (writes the
+    // recruiting_roi row the dashboard reads — previously it had NO production writer).
+    try {
+      const { upsertRecruitingRoi } = await import("@/lib/recruiting/recruiting-roi-writer")
+      await upsertRecruitingRoi(ctx.supabase, { brokerageId: ctx.brokerageId, recruitedAgentId: agentId })
+    } catch { /* best-effort — the milestone still lands */ }
     // Celebrate to the brokerage managers.
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
       .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)

@@ -8,6 +8,7 @@ import {
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { sweepStaleRecruits } from "@/lib/agents/recruit-outreach-producer"
+import { refreshAllRecruitingRoi } from "@/lib/recruiting/recruiting-roi-writer"
 
 /**
  * Weekly RECRUITING MANAGER sweep — keeps the talent pipeline warm. For every
@@ -33,6 +34,7 @@ export async function GET(req: NextRequest) {
   const errors: string[] = []
   let proposed = 0
   let scanned = 0
+  let roiWritten = 0
 
   try {
     const { data: rows, error } = await supabase
@@ -53,12 +55,26 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // AUTONOMOUS ROI refresh — safety net beyond the event-driven recompute (first-close + cost entry).
+    // Covers EVERY brokerage with recruited-agent production/cost, not just those with active recruits,
+    // so the recruiting_roi dashboard stays current with no agent action.
+    const { data: roiRows } = await supabase.from("recruiting_analytics").select("brokerage_id").not("recruited_agent_id", "is", null).limit(2000)
+    const roiBrokerages = Array.from(new Set([...brokerages, ...((roiRows ?? []) as Array<{ brokerage_id: string }>).map((r) => r.brokerage_id)]))
+    for (const brokerageId of roiBrokerages) {
+      try {
+        const r = await refreshAllRecruitingRoi(supabase, { brokerageId })
+        roiWritten += r.written
+      } catch (e: any) {
+        errors.push(`roi ${brokerageId}: ${e?.message ?? String(e)}`)
+      }
+    }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, brokerages: brokerages.length, errors },
+      metadata: { proposed, scanned, roiWritten, brokerages: brokerages.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, brokerages: brokerages.length, errors })
+    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, brokerages: brokerages.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

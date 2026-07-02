@@ -157,6 +157,16 @@ export async function addRecruitingCost(
       },
       created_at: new Date().toISOString(),
     })
-  
+
+  // Recompute the recruited agent's ROI now that spend changed — keeps the recruiting_roi row (and the
+  // dashboard's headline KPIs) live. Best-effort; a recompute hiccup never blocks the cost entry.
+  try {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { upsertRecruitingRoi } = await import("@/lib/recruiting/recruiting-roi-writer")
+    await upsertRecruitingRoi(createServiceClient(), { brokerageId, recruitedAgentId })
+  } catch (e) {
+    console.error("[recruiting-roi] recompute after cost entry failed:", e)
+  }
+
   return data?.[0]
 }
