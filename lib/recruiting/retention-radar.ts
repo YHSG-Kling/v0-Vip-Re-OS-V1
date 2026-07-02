@@ -1,0 +1,125 @@
+// lib/recruiting/retention-radar.ts
+//
+// Live side of the AGENT RETENTION RADAR (recruiting_manager). Daily, per active agent, it gathers the
+// REAL engagement signals the app already tracks, computes the pure retention score, upserts the day's
+// agent_retention_scores row, and — the moment an agent FRESHLY crosses into at-risk — proposes a gated
+// broker "save play" (targeted to the driving signals) so a slipping agent is caught before they leave.
+// Nothing auto-sends. Best-effort; never throws into a caller.
+
+import { createServiceClient } from "@/lib/supabase/service"
+import { computeRetentionScore, isAtRisk, scoreTrendOf, type RetentionSignals } from "@/lib/recruiting/retention-score"
+
+type Svc = ReturnType<typeof createServiceClient>
+
+const daysSince = (iso: string | null | undefined, now: Date): number | null => {
+  if (!iso) return null
+  const t = Date.parse(iso)
+  if (Number.isNaN(t)) return null
+  return Math.max(0, Math.floor((now.getTime() - t) / 86_400_000))
+}
+
+/** Gather the real signals for one agent (best-effort; missing → null → neutral in the scorer). */
+async function gatherSignals(svc: Svc, agent: { id: string; created_at?: string | null }, now: Date): Promise<RetentionSignals> {
+  const [act, lastClose, pipeline, onboarding] = await Promise.all([
+    svc.from("agent_assistant_sessions").select("started_at").eq("agent_id", agent.id).order("started_at", { ascending: false }).limit(1).maybeSingle(),
+    svc.from("transactions").select("close_date").eq("agent_id", agent.id).eq("status", "closed").not("close_date", "is", null).order("close_date", { ascending: false }).limit(1).maybeSingle(),
+    svc.from("transactions").select("id", { count: "exact", head: true }).eq("agent_id", agent.id).in("stage", ["UNDER_CONTRACT", "INSPECTION", "APPRAISAL", "FINANCING_PENDING", "CLOSING_PREP"]),
+    svc.from("agent_onboarding").select("completion_percentage").eq("agent_id", agent.id).maybeSingle(),
+  ])
+  return {
+    daysSinceActivity: daysSince((act.data as any)?.started_at ?? null, now),
+    daysSinceClosing: daysSince((lastClose.data as any)?.close_date ?? null, now),
+    activePipeline: (pipeline as any)?.count ?? null,
+    onboardingPct: (onboarding.data as any)?.completion_percentage ?? null,
+    tenureDays: daysSince(agent.created_at ?? null, now),
+  }
+}
+
+export interface RetentionRadarResult { scanned: number; scored: number; atRisk: number; savePlaysProposed: number }
+
+/** Score a brokerage's active agents, persist today's scores, and propose a save-play on a fresh breach. */
+export async function runRetentionRadar(
+  svc: Svc, params: { brokerageId: string; now?: Date },
+): Promise<RetentionRadarResult> {
+  const out: RetentionRadarResult = { scanned: 0, scored: 0, atRisk: 0, savePlaysProposed: 0 }
+  const now = params.now ?? new Date()
+  const today = now.toISOString().slice(0, 10)
+
+  const { data: agents } = await svc
+    .from("agents")
+    .select("id, user_id, created_at, users(first_name, last_name)")
+    .eq("brokerage_id", params.brokerageId).not("user_id", "is", null).limit(500)
+
+  for (const a of (agents ?? []) as any[]) {
+    out.scanned++
+    const sig = await gatherSignals(svc, a, now)
+    const rs = computeRetentionScore(sig)
+
+    // Previous score (yesterday-or-earlier) for trend + fresh-breach detection.
+    const { data: prev } = await svc.from("agent_retention_scores")
+      .select("composite_score").eq("agent_id", a.id).lt("score_date", today)
+      .order("score_date", { ascending: false }).limit(1).maybeSingle()
+    const previousScore = (prev as any)?.composite_score ?? null
+
+    await svc.from("agent_retention_scores").upsert({
+      brokerage_id: params.brokerageId, agent_id: a.id, score_date: today,
+      composite_score: rs.score, previous_score: previousScore, tier: rs.tier,
+      score_trend: scoreTrendOf(rs.score, previousScore), driving_signals: rs.drivingSignals, signal_breakdown: rs.breakdown as any,
+    }, { onConflict: "agent_id,score_date" })
+    out.scored++
+    if (!isAtRisk(rs.score)) continue
+    out.atRisk++
+
+    // FRESH breach only — crossed into at-risk (no prior score, or prior was healthy). A persistent
+    // low doesn't re-spam; the score keeps updating silently until they recover or the broker acts.
+    const freshBreach = previousScore == null || previousScore >= 40
+    if (!freshBreach) continue
+
+    const u = Array.isArray(a.users) ? a.users[0] : a.users
+    const agentName = [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim() || "An agent"
+    const dedupeTag = `RETENTION SAVE-PLAY — agent:${a.id}`
+    const { data: prior } = await svc.from("agent_client_messages").select("id")
+      .eq("brokerage_id", params.brokerageId).eq("entity_type", "agent").eq("entity_id", a.id)
+      .eq("agent_kind", "recruiting_manager").ilike("rationale", `${dedupeTag}%`).in("status", ["proposed", "approved"]).limit(1).maybeSingle()
+    if (prior) continue
+
+    const drivers = rs.drivingSignals.length ? rs.drivingSignals.join("; ") : "engagement is slipping across the board"
+    try {
+      const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+      const res = await proposeClientMessage({
+        brokerageId: params.brokerageId, agentKind: "recruiting_manager", entityType: "agent", entityId: a.id,
+        recipientContactId: null, audience: "agent",
+        subject: `Retention watch: ${agentName} needs a check-in`,
+        body: [
+          `${agentName}'s engagement just dropped into the at-risk range (${rs.score}/100). What's driving it: ${drivers}.`,
+          `A genuine check-in now — not pressure — is the highest-leverage move. Ask what's in their way and unblock one thing (a lead, a deal review, a mentor session). Retention is far cheaper than backfilling this seat.`,
+        ].join("\n\n"),
+        rationale: `${dedupeTag} — score ${rs.score}, drivers: ${drivers}; review before it reaches the agent/broker.`,
+        channel: "portal",
+      }, svc)
+      if (res.ok) out.savePlaysProposed++
+    } catch { /* best-effort */ }
+
+    // Also surface to the broker/admins directly (deduped per open, like the license sweep).
+    try {
+      const { data: mgrs } = await svc.from("users").select("id").eq("brokerage_id", params.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+      for (const m of (mgrs ?? []) as Array<{ id: string }>) {
+        const { data: seen } = await svc.from("notifications").select("id").eq("user_id", m.id).eq("entity_type", "agent").eq("entity_id", a.id).eq("type", "agent_retention_risk").gte("created_at", new Date(now.getTime() - 7 * 86_400_000).toISOString()).limit(1).maybeSingle()
+        if (seen) continue
+        await svc.from("notifications").insert({ user_id: m.id, brokerage_id: params.brokerageId, type: "agent_retention_risk", title: `${agentName} is at retention risk (${rs.score}/100)`, body: drivers, entity_type: "agent", entity_id: a.id, priority: "high", is_read: false })
+      }
+    } catch { /* best-effort */ }
+  }
+  return out
+}
+
+/** Autonomous: score every brokerage's agents (rides the daily compliance-monitoring cron). */
+export async function runRetentionRadarAll(svc: Svc, now?: Date): Promise<{ brokerages: number; atRisk: number; savePlays: number }> {
+  const out = { brokerages: 0, atRisk: 0, savePlays: 0 }
+  const { data: rows } = await svc.from("brokerages").select("id").limit(1000)
+  for (const b of (rows ?? []) as Array<{ id: string }>) {
+    out.brokerages++
+    try { const r = await runRetentionRadar(svc, { brokerageId: b.id, now }); out.atRisk += r.atRisk; out.savePlays += r.savePlaysProposed } catch { /* keep going */ }
+  }
+  return out
+}

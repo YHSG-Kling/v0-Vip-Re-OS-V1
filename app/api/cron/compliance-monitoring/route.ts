@@ -58,6 +58,17 @@ export async function GET(request: NextRequest) {
       console.error("[ComplianceMonitoring] license readiness sweep:", e)
     }
 
+    // AGENT RETENTION RADAR — daily flight-risk score per agent; a fresh at-risk breach proposes a gated
+    // broker save-play (the defensive mirror of the switch-propensity scout). recruiting_manager.
+    try {
+      const { runRetentionRadarAll } = await import("@/lib/recruiting/retention-radar")
+      const ret = await runRetentionRadarAll(supabase)
+      ;(results as any).retention_at_risk = ret.atRisk
+      ;(results as any).retention_save_plays = ret.savePlays
+    } catch (e) {
+      console.error("[ComplianceMonitoring] retention radar:", e)
+    }
+
     // Check all agent certifications
     const { data: agents } = await supabase.from("users").select("id").eq("role", "agent")
 
