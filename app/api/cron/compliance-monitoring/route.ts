@@ -43,6 +43,19 @@ export async function GET(request: NextRequest) {
       trid_deadlines_escalated: 0,
       expired_content_deactivated: 0,
       cold_lead_violations_detected: 0,
+      license_readiness_reminded: 0,
+      license_readiness_blocked: 0,
+    }
+
+    // AGENT LICENSE / CE / ETHICS READINESS — autonomously warn agents BEFORE a lapse and escalate a
+    // hard blocker to the broker (the offer-time gate only catches it mid-transaction). recruiting_manager.
+    try {
+      const { sweepAllLicenseReadiness } = await import("@/lib/recruiting/license-readiness-sweep")
+      const readiness = await sweepAllLicenseReadiness(supabase)
+      results.license_readiness_reminded = readiness.reminded
+      results.license_readiness_blocked = readiness.blocked
+    } catch (e) {
+      console.error("[ComplianceMonitoring] license readiness sweep:", e)
     }
 
     // Check all agent certifications

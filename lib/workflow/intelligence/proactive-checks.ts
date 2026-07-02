@@ -442,24 +442,32 @@ export async function completenessGate(input: {
   const findings: Finding[] = []
   const blockers: Finding[] = []
 
-  // Agent license currency check
+  // Agent readiness — license currency + CE hours + ethics, via the CANONICAL evaluator (previously
+  // this read ce_hours/ethics but only ever blocked an already-expired license, silently ignoring CE
+  // and ethics — the "tracked but not enforced" gap). Now a CE-short-past-cycle or ethics-overdue agent
+  // is blocked at offer time too, and an approaching lapse surfaces as a warning.
   if (input.agentUserId) {
     try {
       const svc = createServiceClient()
       const { data: agent } = await svc
         .from("agents")
-        .select("license_expiry, ce_hours_required, ce_hours_completed, ethics_due_date")
+        .select("license_expiry, ce_hours_required, ce_hours_completed, ce_cycle_end_date, ethics_due_date")
         .eq("user_id", input.agentUserId)
         .maybeSingle()
       if (agent) {
-        if (agent.license_expiry && new Date(agent.license_expiry) < new Date()) {
-          blockers.push({
-            severity: "blocker",
-            category: "compliance",
-            title: "Agent license has expired",
-            detail: `Your real estate license expired on ${agent.license_expiry}. You cannot legally execute contracts.`,
-            action: { label: "Update license", href: "/dashboard/settings/profile" },
-          })
+        const { evaluateLicenseReadiness } = await import("@/lib/compliance/license-readiness")
+        const readiness = evaluateLicenseReadiness({
+          licenseExpiry: (agent as any).license_expiry ?? null,
+          ceHoursRequired: (agent as any).ce_hours_required ?? null,
+          ceHoursCompleted: (agent as any).ce_hours_completed ?? null,
+          ceCycleEndDate: (agent as any).ce_cycle_end_date ?? null,
+          ethicsDueDate: (agent as any).ethics_due_date ?? null,
+        })
+        for (const b of readiness.blockers) {
+          blockers.push({ severity: "blocker", category: "compliance", title: b.title, detail: b.detail, action: { label: "Update license & CE", href: "/dashboard/settings/profile" } })
+        }
+        for (const w of readiness.warnings) {
+          findings.push({ severity: "warning", category: "compliance", title: w.title, detail: w.detail, recommendation: "Handle before it blocks a transaction.", action: { label: "Update license & CE", href: "/dashboard/settings/profile" } })
         }
       }
     } catch { /* best-effort */ }
