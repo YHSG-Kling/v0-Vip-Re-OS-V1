@@ -43,11 +43,11 @@ function pureLayer() {
   check("worse + more-frequent gap ranks first (priority)", ranked[0].topicKey === "objection:b")
   check("quiet signal → no gaps (honest)", detectKnowledgeGaps([]).length === 0)
 
-  console.log("\n[summarizeCurriculumBoard · pure]")
+  console.log("\n[summarizeCurriculumBoard · pure — canonical learning_modules rows]")
   const board = summarizeCurriculumBoard([
-    { id: "c1", course_name: "Beating the price objection", category: "sales_skills", topic_key: "objection:price", curriculum: { lessons: [1, 2, 3], quiz: [1, 2] }, source_evidence: { rationale: "6/10 weak" } },
+    { id: "c1", title: "Beating the price objection", gap_tags: ["objection:price"], quiz_questions: [1, 2], body: "# T\n\nsummary\n\n## What you'll be able to do\n- x\n\n## Lesson A\n- a\n\n## Lesson B\n- b\n" },
   ])
-  check("board counts pending drafts + lesson/quiz sizes + rationale", board.pending === 1 && board.drafts[0].lessonCount === 3 && board.drafts[0].quizCount === 2 && board.drafts[0].rationale === "6/10 weak")
+  check("board counts pending + lesson/quiz sizes + gap rationale", board.pending === 1 && board.drafts[0].lessonCount === 2 && board.drafts[0].quizCount === 2 && /objection:price/.test(board.drafts[0].rationale ?? ""))
 }
 
 function sourceLayer() {
@@ -55,7 +55,8 @@ function sourceLayer() {
   const author = src("lib/education/curriculum-author.ts")
   check("mines REAL signal (objection drills + compliance flags)", /objection_training_sessions[\s\S]*?compliance_flags/.test(author))
   check("authors via the model, grounded in real evidence (no generic filler)", /generateObjectRouted[\s\S]*?CurriculumSchema/.test(author) && /evidence/i.test(author))
-  check("persists a GATED DRAFT on training_courses, idempotent per topic", /is_ai_generated: true[\s\S]*?status: "draft"[\s\S]*?topic_key: gap\.topicKey/.test(author) && /eq\("topic_key", gap\.topicKey\)/.test(author))
+  check("persists a GATED DRAFT on the CANONICAL learning_modules (not a parallel table)", /from\("learning_modules"\)\.insert\([\s\S]*?status: "pending_review"[\s\S]*?gap_tags: \[gap\.topicKey\]/.test(author))
+  check("idempotent per gap tag (no duplicate module for a topic)", /contains\("gap_tags", \[gap\.topicKey\]\)/.test(author))
   const cron = src("app/api/cron/recruit-outreach/route.ts")
   check("the weekly recruit-outreach cron runs the author", /runCurriculumAuthorAll/.test(cron))
   const cc = src("lib/kernel/command-center.ts")
@@ -90,7 +91,7 @@ async function liveLayer() {
       cleanup.push({ table: "objection_training_sessions", id: (data as any).id })
     }
 
-    const { gatherGapSignals, persistCurriculumDraft } = await import("../lib/education/curriculum-author")
+    const { gatherGapSignals, persistCurriculumDraft, runCurriculumAuthor } = await import("../lib/education/curriculum-author")
     const signals = await gatherGapSignals(svc as any, brokerageId, new Date())
     const gap = detectKnowledgeGaps(signals).find((g) => g.topicKey === "objection:zz_test_lowball")
     check("live: gathered signal + detected the seeded gap", !!gap && gap!.weakCount >= 4)
@@ -107,19 +108,20 @@ async function liveLayer() {
       quiz: [{ question: "First move on a lowball?", options: ["Reject it", "Counter with comps", "Ignore it"], correctIndex: 1 }],
     }
     const ok = gap ? await persistCurriculumDraft(svc as any, brokerageId, gap, curriculum) : false
-    check("live: persisted a gated DRAFT course for the gap", ok === true)
+    check("live: persisted a gated DRAFT module for the gap", ok === true)
 
-    const { data: course } = await svc.from("training_courses").select("id, status, is_ai_generated, curriculum").eq("brokerage_id", brokerageId).eq("topic_key", "objection:zz_test_lowball").maybeSingle()
-    if (course) cleanup.push({ table: "training_courses", id: (course as any).id })
-    check("live: the draft is AI-generated, status draft, with rich curriculum", !!course && (course as any).status === "draft" && (course as any).is_ai_generated === true && Array.isArray((course as any).curriculum?.lessons))
+    const { data: mod } = await svc.from("learning_modules").select("id, status, is_ai_generated, gap_tags, body, quiz_questions").eq("brokerage_id", brokerageId).contains("gap_tags", ["objection:zz_test_lowball"]).maybeSingle()
+    if (mod) cleanup.push({ table: "learning_modules", id: (mod as any).id })
+    check("live: the draft is on learning_modules, pending_review, rich body + quiz", !!mod && (mod as any).status === "pending_review" && (mod as any).is_ai_generated === true && typeof (mod as any).body === "string" && (mod as any).body.length > 50 && Array.isArray((mod as any).quiz_questions))
 
     const { generateCurriculumBoard } = await import("../lib/intelligence/curriculum-board")
     const board = await generateCurriculumBoard(brokerageId, svc as any)
     check("live: the command-center board surfaces the pending draft", !!board && board.pending >= 1 && board.drafts.some((d) => d.topicKey === "objection:zz_test_lowball"))
 
-    const dup = gap ? await persistCurriculumDraft(svc as any, brokerageId, gap, curriculum) : true
-    const { count } = await svc.from("training_courses").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("topic_key", "objection:zz_test_lowball")
-    check("live: idempotent — one course per topic (dup insert blocked)", count === 1 && dup === false)
+    // Idempotent: a second run detects the existing gap tag and does not re-author.
+    const r2 = await runCurriculumAuthor(svc as any, { brokerageId })
+    const { count } = await svc.from("learning_modules").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).contains("gap_tags", ["objection:zz_test_lowball"])
+    check("live: idempotent — one module per gap topic", count === 1 && r2.authored === 0)
   } finally {
     for (const c of cleanup.reverse()) await svc.from(c.table).delete().eq("id", c.id)
     let left = 0

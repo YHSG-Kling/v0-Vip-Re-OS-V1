@@ -106,8 +106,9 @@ export async function runCurriculumAuthor(svc: Svc, params: { brokerageId: strin
   if (gaps.length === 0) return out
 
   for (const gap of gaps.slice(0, cap)) {
-    // Idempotent: skip a topic we've already authored (any status).
-    const { data: existing } = await svc.from("training_courses").select("id").eq("brokerage_id", params.brokerageId).eq("topic_key", gap.topicKey).limit(1).maybeSingle()
+    // Idempotent: skip a topic we've already authored (an AI module already carries this gap tag).
+    const { data: existing } = await svc.from("learning_modules")
+      .select("id").eq("brokerage_id", params.brokerageId).eq("is_ai_generated", true).contains("gap_tags", [gap.topicKey]).limit(1).maybeSingle()
     if (existing) continue
 
     let curriculum: Curriculum
@@ -119,22 +120,42 @@ export async function runCurriculumAuthor(svc: Svc, params: { brokerageId: strin
   return out
 }
 
-/** Persist an authored curriculum as a GATED DRAFT course (status 'draft', is_ai_generated). Idempotent. */
+/** PURE: render an authored curriculum into a rich learning_modules body (markdown) — real content. */
+export function renderCurriculumBody(gap: KnowledgeGap, c: Curriculum): string {
+  return [
+    `# ${c.title}`,
+    "",
+    c.summary,
+    "",
+    "## What you'll be able to do",
+    ...c.objectives.map((o) => `- ${o}`),
+    "",
+    ...c.lessons.flatMap((l) => [`## ${l.title}`, ...l.keyPoints.map((k) => `- ${k}`), ""]),
+    `_Authored by the Recruiting Manager from a real, recurring gap: ${gap.rationale}_`,
+  ].join("\n")
+}
+
+/**
+ * Persist an authored curriculum as a GATED DRAFT on the CANONICAL learning_modules catalog
+ * (status 'pending_review', is_ai_generated, gap_tags carry the detected topic so the learning-router
+ * can target it). The existing approve/publish action + learning-router delivery to agents AND client
+ * portals then take over — no parallel system. Best-effort.
+ */
 export async function persistCurriculumDraft(svc: Svc, brokerageId: string, gap: KnowledgeGap, curriculum: Curriculum): Promise<boolean> {
-  const { error } = await svc.from("training_courses").insert({
+  const { error } = await svc.from("learning_modules").insert({
     brokerage_id: brokerageId,
-    course_name: curriculum.title,
-    description: curriculum.summary,
-    // training_courses.category is CHECK-constrained; skill gaps → 'advanced', compliance → 'compliance'.
-    category: gap.source === "compliance" ? "compliance" : "advanced",
+    title: curriculum.title,
+    summary: curriculum.summary,
+    body: renderCurriculumBody(gap, curriculum),
+    quiz_questions: curriculum.quiz as any,
     is_ai_generated: true,
-    status: "draft",
-    topic_key: gap.topicKey,
-    curriculum: curriculum as any,
-    source_evidence: { rationale: gap.rationale, weakCount: gap.weakCount, avgScore: gap.avgScore, evidence: gap.evidence } as any,
-    passing_score: 80,
-    is_required: false,
-    is_platform_default: false,
+    status: "pending_review",
+    gap_tags: [gap.topicKey],
+    // Skill gaps train agents; compliance gaps train the whole roster incl. brokers.
+    audience_roles: gap.source === "compliance" ? ["agent", "broker"] : ["agent"],
+    channels: ["article"],
+    estimated_minutes: 5,
+    required: gap.source === "compliance",
   })
   return !error
 }
