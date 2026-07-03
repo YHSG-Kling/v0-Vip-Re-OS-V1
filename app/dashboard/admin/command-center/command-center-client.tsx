@@ -343,6 +343,31 @@ export function CommandCenterClient({
         </section>
       )}
 
+      {/* Curriculum board — the OS teaching itself to teach. Courses the AI authored from real,
+          recurring knowledge gaps, awaiting a human publish (grounded in evidence, not generic material). */}
+      {data.curriculumBoard && data.curriculumBoard.pending > 0 && (
+        <section className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold">AI-authored curriculum — pending review</h2>
+            <span className="text-xs text-muted-foreground">{data.curriculumBoard.pending} draft{data.curriculumBoard.pending === 1 ? "" : "s"} from real knowledge gaps</span>
+          </div>
+          <div className="space-y-1.5">
+            {data.curriculumBoard.drafts.map((d) => (
+              <Card key={d.id} className="p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-medium truncate">{d.title}</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {d.category && <Badge className="bg-slate-900 text-white">{d.category.replace(/_/g, " ")}</Badge>}
+                    <span className="text-xs text-muted-foreground">{d.lessonCount} lesson{d.lessonCount === 1 ? "" : "s"} · {d.quizCount} quiz</span>
+                  </div>
+                </div>
+                {d.rationale && <p className="text-xs text-muted-foreground mt-1 truncate">{d.rationale}</p>}
+              </Card>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Manager Weekly P&L — the outcome layer: what each manager PRODUCED this week
           vs the prior week. Proves the AI workforce moves the business, not just acts. */}
       {data.weeklyPnl.length > 0 && (

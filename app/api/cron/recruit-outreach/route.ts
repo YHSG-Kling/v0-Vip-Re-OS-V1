@@ -88,12 +88,21 @@ export async function GET(req: NextRequest) {
       vendorBriefs = vscout.briefs
     } catch (e: any) { errors.push(`vendor-scout: ${e?.message ?? String(e)}`) }
 
+    // CURRICULUM AUTHOR — the OS teaches itself to teach: detect recurring knowledge gaps from real
+    // signal (objection drills + compliance flags) and author gated draft micro-courses for the new ones.
+    let curriculaAuthored = 0
+    try {
+      const { runCurriculumAuthorAll } = await import("@/lib/education/curriculum-author")
+      const authored = await runCurriculumAuthorAll(supabase)
+      curriculaAuthored = authored.authored
+    } catch (e: any) { errors.push(`curriculum-author: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, brokerages: brokerages.length, errors },
+      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, brokerages: brokerages.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, brokerages: brokerages.length, errors })
+    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, brokerages: brokerages.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
