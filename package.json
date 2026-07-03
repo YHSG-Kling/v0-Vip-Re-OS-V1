@@ -132,6 +132,7 @@
     "test:career-tier": "tsx scripts/career-tier-simulator.ts",
     "test:leaderboard": "tsx scripts/leaderboard-simulator.ts",
     "test:mentor-match": "tsx scripts/mentor-match-simulator.ts",
+    "test:mentor-sessions": "tsx scripts/mentor-sessions-simulator.ts",
     "test:onboarding-journey": "tsx scripts/onboarding-journey-simulator.ts",
     "test:vendor-recruitment": "tsx scripts/vendor-recruitment-simulator.ts",
     "test:team-pl": "tsx scripts/team-pl-simulator.ts",

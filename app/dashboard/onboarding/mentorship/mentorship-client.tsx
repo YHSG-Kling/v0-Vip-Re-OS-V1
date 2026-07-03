@@ -8,6 +8,7 @@ import { Loader2, Users, Sparkles, Calendar, CheckCircle2, ArrowLeft, Mail, Phon
 import { toast } from "sonner"
 import Link from "next/link"
 import { matchMentor } from "@/app/actions/onboarding/mentorship"
+import { logMentorSession } from "@/app/actions/onboarding/mentor-session"
 
 interface MentorData {
   mentorId: string
@@ -148,6 +149,8 @@ export function MentorshipClient({ agentId, brokerageId, initialMentor }: Props)
               </Button>
             </CardContent>
           </Card>
+
+          <LogSessionCard mentorId={mentor.mentorId} agentId={agentId} />
         </div>
       ) : (
         /* No mentor yet */
@@ -211,5 +214,44 @@ export function MentorshipClient({ agentId, brokerageId, initialMentor }: Props)
         </Link>
       </div>
     </div>
+  )
+}
+
+/** Compact "log a session" form — records a mentor session (canonical mentor_sessions + ledger points). */
+function LogSessionCard({ mentorId, agentId }: { mentorId: string; agentId: string }) {
+  const [type, setType] = useState("check_in")
+  const [rating, setRating] = useState(5)
+  const [saving, setSaving] = useState(false)
+  const [done, setDone] = useState(false)
+
+  async function log() {
+    setSaving(true)
+    try {
+      const res = await logMentorSession({ mentorAgentId: mentorId, menteeAgentId: agentId, sessionType: type, menteeRating: rating })
+      if (res.ok) { setDone(true); toast.success("Session logged — points awarded to you and your mentor.") }
+      else toast.error(res.error ?? "Could not log the session.")
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">Log a session you had</CardTitle>
+        <CardDescription>Track your mentorship — both of you earn points.</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-wrap items-center gap-2">
+        <select value={type} onChange={(e) => setType(e.target.value)} disabled={saving || done} className="border rounded px-2 py-1 text-sm">
+          <option value="check_in">Check-in</option>
+          <option value="deal_review">Deal review</option>
+          <option value="skill_building">Skill building</option>
+          <option value="crisis_support">Crisis support</option>
+        </select>
+        <label className="text-sm text-muted-foreground">Rating</label>
+        <select value={rating} onChange={(e) => setRating(Number(e.target.value))} disabled={saving || done} className="border rounded px-2 py-1 text-sm">
+          {[5, 4, 3, 2, 1].map((r) => <option key={r} value={r}>{r}★</option>)}
+        </select>
+        <Button size="sm" disabled={saving || done} onClick={log}>{done ? "Logged ✓" : saving ? "Saving…" : "Log session"}</Button>
+      </CardContent>
+    </Card>
   )
 }
