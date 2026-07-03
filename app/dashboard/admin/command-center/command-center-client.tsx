@@ -313,6 +313,36 @@ export function CommandCenterClient({
         </section>
       )}
 
+      {/* Revenue-share board — the agent-to-agent recruiting growth engine. The passive income the
+          network pays out + who earns it + how deep their downline runs (the eXp/REAL flywheel). */}
+      {data.revenueShareBoard && (data.revenueShareBoard.totalShared > 0 || data.revenueShareBoard.activeRelationships > 0) && (
+        <section className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold">Revenue share — the recruiting growth engine</h2>
+            <span className="text-xs text-muted-foreground">trailing 12 months</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Card className="p-4"><div className="text-xs text-muted-foreground">Shared to sponsors</div><div className="text-2xl font-semibold text-green-700">${Math.round(data.revenueShareBoard.totalShared).toLocaleString()}</div></Card>
+            <Card className="p-4"><div className="text-xs text-muted-foreground">Paid</div><div className="text-2xl font-semibold">${Math.round(data.revenueShareBoard.paidShared).toLocaleString()}</div></Card>
+            <Card className="p-4"><div className="text-xs text-muted-foreground">Pending</div><div className="text-2xl font-semibold text-amber-700">${Math.round(data.revenueShareBoard.pendingShared).toLocaleString()}</div></Card>
+            <Card className="p-4"><div className="text-xs text-muted-foreground">Active sponsorships</div><div className="text-2xl font-semibold">{data.revenueShareBoard.activeRelationships}</div></Card>
+          </div>
+          {data.revenueShareBoard.earners.length > 0 && (
+            <div className="space-y-1.5">
+              {data.revenueShareBoard.earners.map((e) => (
+                <Card key={e.agentId} className="p-3 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm font-medium truncate">{e.name}</span>
+                    {e.downlineSize > 0 && <Badge className="bg-slate-900 text-white">{e.downlineSize} in downline</Badge>}
+                  </div>
+                  <span className="text-lg font-semibold shrink-0 text-green-700">${Math.round(e.earned).toLocaleString()}</span>
+                </Card>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Manager Weekly P&L — the outcome layer: what each manager PRODUCED this week
           vs the prior week. Proves the AI workforce moves the business, not just acts. */}
       {data.weeklyPnl.length > 0 && (
