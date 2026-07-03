@@ -70,7 +70,7 @@ export async function closeReferralOnDealClose(
   // Find an OPEN referral for any of the transaction's contacts.
   const { data: ref } = await supabase
     .from("referrals")
-    .select("id, partner_id, status, commission_amount, commission_potential, value_estimate, referred_contact_id, referral_name, thank_you_sent")
+    .select("id, partner_id, status, commission_amount, commission_potential, value_estimate, referred_contact_id, referral_name, thank_you_sent, referring_agent_id, referral_fee_pct")
     .eq("brokerage_id", brokerageId)
     .in("referred_contact_id", contactIds)
     .not("status", "in", "(closed,lost)")
@@ -81,6 +81,7 @@ export async function closeReferralOnDealClose(
     id: string; partner_id: string | null; status: string
     commission_amount: number | null; commission_potential: number | null; value_estimate: number | null
     referred_contact_id: string | null; referral_name: string | null; thank_you_sent: boolean | null
+    referring_agent_id: string | null; referral_fee_pct: number | null
   } | null
   if (!r) return { closed: false, thankYouProposed: false, reason: "no open referral for this deal" }
 
@@ -113,6 +114,27 @@ export async function closeReferralOnDealClose(
         updated_at: new Date().toISOString(),
       }).eq("id", r.partner_id)
     }
+  }
+
+  // AGENT-TO-AGENT REFERRAL FEE — if the referring party is an internal AGENT (not an external partner),
+  // book their referral fee on the canonical commission_distributions rail (distribution_type 'referral'),
+  // exactly like revenue share. Idempotent per (referral, transaction). Best-effort.
+  if (r.referring_agent_id) {
+    try {
+      const { computeReferralFee } = await import("@/lib/referrals/agent-referral")
+      const fee = computeReferralFee(t.commission_amount, r.referral_fee_pct)
+      if (fee > 0) {
+        const { data: already } = await supabase.from("commission_distributions").select("id")
+          .eq("transaction_id", transactionId).eq("agent_id", r.referring_agent_id).eq("distribution_type", "referral").limit(1).maybeSingle()
+        if (!already) {
+          await supabase.from("commission_distributions").insert({
+            brokerage_id: brokerageId, transaction_id: transactionId, agent_id: r.referring_agent_id,
+            distribution_type: "referral", calculation_type: "percent", calculation_value: r.referral_fee_pct,
+            calculated_amount: fee, source_of_funds: "agent", status: "pending",
+          })
+        }
+      }
+    } catch (e) { console.error("[referral-closer] agent referral fee booking failed:", e) }
   }
 
   // Propose a partner thank-you into the gate — unless one was already sent.
