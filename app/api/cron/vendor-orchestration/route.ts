@@ -56,11 +56,20 @@ export async function GET(req: NextRequest) {
       noShowsMarked = ns.markedNoShow; backupsProposed = ns.backupsProposed
     } catch (e: any) { errors.push(`no-show: ${e?.message ?? String(e)}`) }
 
+    // COVERAGE FORECAST — the forward-looking bench: forecast upcoming vendor demand from the pipeline and
+    // propose a gated brief on any category with demand but no reliable vendor (a gap), before deals stall.
+    let coverageGaps = 0
+    try {
+      const { runVendorCoverageForecastAll } = await import("@/lib/kernel/vendor-coverage-forecast")
+      const cf = await runVendorCoverageForecastAll(supabase)
+      coverageGaps = cf.gaps
+    } catch (e: any) { errors.push(`coverage-forecast: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId, records_processed: proposed,
-      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, errors: errors.slice(0, 10) },
+      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, errors: errors.slice(0, 10) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed })
+    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

@@ -10,10 +10,6 @@ import { createServiceClient } from "@/lib/supabase/service"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-/** Default referral fee (% of the receiving agent's commission) when the referrer doesn't set one — the
- *  real-estate industry standard is 25%. */
-export const DEFAULT_REFERRAL_FEE_PCT = 25
-
 /** PURE: the referral fee owed to the referring agent = the deal commission × the agreed fee %. */
 export function computeReferralFee(dealCommission: number | null, feePct: number | null): number {
   const gross = Math.max(0, Number(dealCommission ?? 0))
@@ -67,14 +63,17 @@ export interface CreateAgentReferralInput {
   referringAgentId: string
   receivingAgentId: string
   contactId: string
-  feePct?: number
+  /** The agreed referral fee % — negotiated between the agents, never assumed by the platform. */
+  feePct: number
   notes?: string
 }
 
-/** Create an agent-to-agent referral (status open). The fee is booked when the deal closes. */
+/** Create an agent-to-agent referral. The fee % is whatever the two agents agree — the platform never
+ *  assumes one. The fee is booked when the deal closes. */
 export async function createAgentReferral(svc: Svc, input: CreateAgentReferralInput): Promise<{ ok: boolean; referralId?: string; error?: string }> {
   if (input.referringAgentId === input.receivingAgentId) return { ok: false, error: "An agent can't refer to themselves." }
-  const feePct = input.feePct ?? DEFAULT_REFERRAL_FEE_PCT
+  const feePct = input.feePct
+  if (!(feePct > 0) || feePct > 100) return { ok: false, error: "Enter the agreed referral fee (1-100%)." }
   // One open referral per (contact, referring→receiving) — don't double-book the same hand-off.
   const { data: existing } = await svc.from("referrals").select("id")
     .eq("brokerage_id", input.brokerageId).eq("referred_contact_id", input.contactId)

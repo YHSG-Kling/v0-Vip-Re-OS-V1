@@ -51,7 +51,7 @@ export async function getReferralNetwork(): Promise<{
   return { ok: true, agents, outbound, earnedTotal: Math.round(earnedTotal * 100) / 100 }
 }
 
-export async function createAgentReferralAction(input: { receivingAgentId: string; contactId: string; feePct?: number; notes?: string }): Promise<{ ok: boolean; error?: string; referralId?: string }> {
+export async function createAgentReferralAction(input: { receivingAgentId: string; contactId: string; feePct: number; notes?: string }): Promise<{ ok: boolean; error?: string; referralId?: string }> {
   const ctx = await resolveAgent()
   if (!ctx.ok) return { ok: false, error: ctx.error }
   const svc = createServiceClient()

@@ -5,7 +5,7 @@ import { getReferralNetwork } from "@/app/actions/referrals/agent-referral-actio
 import { ReferralNetworkClient } from "./referral-network-client"
 
 export const metadata = {
-  title: "Referral Network · VIP Real Estate OS",
+  title: "Referral Network",
   description: "Refer a client to an agent elsewhere in your brokerage and earn a referral fee when it closes.",
 }
 

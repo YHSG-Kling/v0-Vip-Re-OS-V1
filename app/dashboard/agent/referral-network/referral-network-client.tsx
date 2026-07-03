@@ -17,7 +17,7 @@ export function ReferralNetworkClient({
   const [pending, startTransition] = useTransition()
   const [receivingAgentId, setReceivingAgentId] = useState("")
   const [contactId, setContactId] = useState("")
-  const [feePct, setFeePct] = useState(25)
+  const [feePct, setFeePct] = useState<number | "">("")
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   // Group the directory by state → city for the map/directory view.
@@ -32,6 +32,7 @@ export function ReferralNetworkClient({
 
   function submit() {
     if (!receivingAgentId || !contactId) { setMsg({ ok: false, text: "Pick a client and an agent to refer to." }); return }
+    if (typeof feePct !== "number" || !(feePct > 0) || feePct > 100) { setMsg({ ok: false, text: "Enter the agreed referral fee (1-100%)." }); return }
     setMsg(null)
     startTransition(async () => {
       const r = await createAgentReferralAction({ receivingAgentId, contactId, feePct })
@@ -65,8 +66,9 @@ export function ReferralNetworkClient({
             {agents.map((a) => <option key={a.agentId} value={a.agentId}>{a.name}{a.city ? ` — ${a.city}, ${a.state ?? ""}` : ""}</option>)}
           </select>
           <div className="flex items-center gap-2">
-            <input type="number" min={0} max={100} className="border rounded-md p-2 text-sm w-20" value={feePct} onChange={(e) => setFeePct(Number(e.target.value))} />
-            <span className="text-sm text-muted-foreground">% fee</span>
+            <input type="number" min={1} max={100} placeholder="fee" className="border rounded-md p-2 text-sm w-20" value={feePct}
+              onChange={(e) => setFeePct(e.target.value === "" ? "" : Number(e.target.value))} />
+            <span className="text-sm text-muted-foreground">% (agreed)</span>
           </div>
         </div>
         <button onClick={submit} disabled={pending} className="rounded-md bg-slate-900 text-white px-4 py-2 text-sm disabled:opacity-50">
@@ -94,7 +96,7 @@ export function ReferralNetworkClient({
             </div>
           </div>
         ))}
-        {agents.length === 0 && <p className="text-sm text-muted-foreground">No other agents in your brokerage yet.</p>}
+        {agents.length === 0 && <p className="text-sm text-muted-foreground">No other agents in your brokerage to refer to yet — this network fills in as your team or brokerage adds agents across locations.</p>}
       </div>
 
       {/* My outbound referrals */}

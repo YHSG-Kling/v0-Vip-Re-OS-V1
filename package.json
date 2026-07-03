@@ -140,6 +140,7 @@
     "test:retention-outcomes": "tsx scripts/retention-outcomes-simulator.ts",
     "test:regulatory-curriculum": "tsx scripts/regulatory-curriculum-simulator.ts",
     "test:agent-referral": "tsx scripts/agent-referral-simulator.ts",
+    "test:vendor-coverage": "tsx scripts/vendor-coverage-simulator.ts",
     "test:client-education": "tsx scripts/client-education-simulator.ts",
     "test:license-readiness": "tsx scripts/license-readiness-simulator.ts",
     "test:readiness-gate": "tsx scripts/readiness-gate-simulator.ts",
