@@ -106,12 +106,21 @@ export async function GET(req: NextRequest) {
       onboardingAuthored = ob.authored
     } catch (e: any) { errors.push(`onboarding-curriculum: ${e?.message ?? String(e)}`) }
 
+    // CONTENT FRESHNESS — flag AI-authored lessons that have aged out (>180d) for a gated refresh so
+    // stale law/market facts never mislead; the human re-authors through the existing review queue.
+    let staleModules = 0
+    try {
+      const { runContentFreshnessAll } = await import("@/lib/education/content-freshness")
+      const fr = await runContentFreshnessAll(supabase)
+      staleModules = fr.stale
+    } catch (e: any) { errors.push(`content-freshness: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, brokerages: brokerages.length, errors },
+      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, brokerages: brokerages.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, brokerages: brokerages.length, errors })
+    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, brokerages: brokerages.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
