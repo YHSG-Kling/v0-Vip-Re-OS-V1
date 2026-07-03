@@ -66,12 +66,21 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // CLIENT EDUCATION AUTHOR — ensure the persona/stage client modules the delivery above pushes
+    // actually EXIST: author any missing "what happens now / what to do" module as a gated draft.
+    let clientModulesAuthored = 0
+    try {
+      const { runClientEducationCurriculumAll } = await import("@/lib/education/client-education-curriculum")
+      const ce = await runClientEducationCurriculumAll(supabase)
+      clientModulesAuthored = ce.authored
+    } catch (e: any) { errors.push(`client-education-author: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, errors: errors.slice(0, 20) },
+      metadata: { proposed, scanned, clientModulesAuthored, errors: errors.slice(0, 20) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, errors: errors.length })
+    return NextResponse.json({ ok: true, proposed, scanned, clientModulesAuthored, errors: errors.length })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
