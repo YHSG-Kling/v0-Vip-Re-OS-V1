@@ -37,6 +37,23 @@ export const VENDOR_TIERS: Record<VendorTier, TierCapabilities> = {
 
 const TIER_ORDER: VendorTier[] = ["basic", "standard", "premium", "preferred_network"]
 
+/** Per-brokerage price overrides (USD/month) — a brokerage can set its own vendor tier pricing. */
+export type TierPriceOverrides = Partial<Record<VendorTier, number>>
+
+/** PURE: the effective monthly price for a tier — a brokerage override wins over the catalog default. */
+export function resolveTierPrice(tier: string | null | undefined, overrides?: TierPriceOverrides | null): number {
+  const t = normalizeTier(tier)
+  const o = overrides?.[t]
+  return typeof o === "number" && o >= 0 ? o : VENDOR_TIERS[t].monthlyPriceUsd
+}
+
+/** PURE: the tier catalog with prices resolved against a brokerage's overrides (capabilities unchanged). */
+export function resolveVendorTiers(overrides?: TierPriceOverrides | null): Record<VendorTier, TierCapabilities> {
+  const out = {} as Record<VendorTier, TierCapabilities>
+  for (const t of TIER_ORDER) out[t] = { ...VENDOR_TIERS[t], monthlyPriceUsd: resolveTierPrice(t, overrides) }
+  return out
+}
+
 /** PURE: normalize an arbitrary tier string to a known tier (defaults to basic). */
 export function normalizeTier(tier: string | null | undefined): VendorTier {
   const t = (tier ?? "").toLowerCase()

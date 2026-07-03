@@ -85,6 +85,29 @@ export async function setVendorComplianceCredential(
   return { ok: true }
 }
 
+/**
+ * Admin sets a custom monthly price (USD) for a vendor subscription tier, stored on the brokerage's
+ * settings (brokerage_settings.settings.vendor_tier_pricing). A brokerage that wants different pricing than
+ * the platform defaults overrides it here; the billing resolver (resolveTierPrice) honors it. Pass a
+ * negative/NaN amount to clear an override back to the platform default.
+ */
+export async function setVendorTierPricing(
+  tier: "basic" | "standard" | "premium" | "preferred_network",
+  monthlyPriceUsd: number,
+): Promise<{ ok: true; pricing: Record<string, number> }> {
+  const { brokerageId } = await requireAdmin()
+  const svc = createServiceClient()
+  const { data: row } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
+  const settings = (row as { settings?: Record<string, unknown> } | null)?.settings ?? {}
+  const pricing: Record<string, number> = { ...((settings as any).vendor_tier_pricing ?? {}) }
+  if (Number.isFinite(monthlyPriceUsd) && monthlyPriceUsd >= 0) pricing[tier] = Math.round(monthlyPriceUsd)
+  else delete pricing[tier]
+  const nextSettings = { ...settings, vendor_tier_pricing: pricing }
+  const { error } = await svc.from("brokerage_settings").upsert({ brokerage_id: brokerageId, settings: nextSettings, updated_at: new Date().toISOString() }, { onConflict: "brokerage_id" })
+  if (error) throw new Error(`Failed to save pricing: ${error.message}`)
+  return { ok: true, pricing }
+}
+
 /** Admin asks the vendor for more info — keeps them pending, records the requested items on the flags. */
 export async function requestVendorInfo(vendorId: string, items: string[]): Promise<{ ok: true }> {
   const { brokerageId } = await requireAdmin()

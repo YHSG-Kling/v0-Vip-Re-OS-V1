@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { ShieldCheck } from "lucide-react"
 import { VendorApprovalClient, type PendingVendor } from "./approval-client"
+import { resolveVendorTiers, type VendorTier } from "@/lib/kernel/vendor-subscription"
 
 export const dynamic = "force-dynamic"
 
@@ -27,15 +28,21 @@ export default async function VendorApprovalsPage() {
     ["broker", "admin", "owner"].includes(String((profile as { role?: string }).role))
   if (!isAdmin) redirect("/dashboard")
 
-  const { data: pending } = await supabase
-    .from("vendors")
-    .select("id, name, category, email, phone, website, ai_verification_score, verification_flags")
-    .eq("brokerage_id", profile.brokerage_id)
-    .eq("status", "pending")
-    .order("ai_verification_score", { ascending: false, nullsFirst: false })
-    .limit(200)
+  const [{ data: pending }, { data: settingsRow }] = await Promise.all([
+    supabase
+      .from("vendors")
+      .select("id, name, category, email, phone, website, ai_verification_score, verification_flags")
+      .eq("brokerage_id", profile.brokerage_id)
+      .eq("status", "pending")
+      .order("ai_verification_score", { ascending: false, nullsFirst: false })
+      .limit(200),
+    supabase.from("brokerage_settings").select("settings").eq("brokerage_id", profile.brokerage_id).maybeSingle(),
+  ])
 
   const vendors = (pending ?? []) as PendingVendor[]
+  const overrides = ((settingsRow as { settings?: Record<string, unknown> } | null)?.settings as any)?.vendor_tier_pricing ?? {}
+  const resolved = resolveVendorTiers(overrides)
+  const pricing = (Object.keys(resolved) as VendorTier[]).map((t) => ({ tier: t, price: resolved[t].monthlyPriceUsd }))
 
   return (
     <div className="space-y-6">
@@ -48,7 +55,7 @@ export default async function VendorApprovalsPage() {
           your agents or clients until you approve it — no vendor self-activates.
         </p>
       </div>
-      <VendorApprovalClient vendors={vendors} />
+      <VendorApprovalClient vendors={vendors} pricing={pricing} />
     </div>
   )
 }

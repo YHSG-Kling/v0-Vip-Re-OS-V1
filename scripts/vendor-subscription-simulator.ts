@@ -21,6 +21,8 @@ import {
   effectiveCapabilities,
   mapStripeEventToStatus,
   normalizeTier,
+  resolveTierPrice,
+  resolveVendorTiers,
 } from "../lib/kernel/vendor-subscription"
 
 let pass = 0, fail = 0
@@ -43,6 +45,12 @@ function pureLayer() {
   check("canceled preferred_network collapses to basic (no featured)", !tierAllows("preferred_network", "canceled", "featured"))
   check("trialing standard is surfacing-eligible", tierAllows("standard", "trialing", "surfacing"))
 
+  console.log("\n[editable pricing · pure — brokerage overrides win, else default]")
+  check("no override → catalog default", resolveTierPrice("standard") === VENDOR_TIERS.standard.monthlyPriceUsd)
+  check("a brokerage override wins", resolveTierPrice("standard", { standard: 129 }) === 129)
+  check("a zero override is honored (free tier)", resolveTierPrice("basic", { basic: 0 }) === 0)
+  check("resolveVendorTiers applies overrides but keeps capabilities", resolveVendorTiers({ premium: 249 }).premium.monthlyPriceUsd === 249 && resolveVendorTiers({ premium: 249 }).premium.preferredEligible === true)
+
   console.log("\n[Stripe event → status · pure]")
   check("invoice.payment_failed → past_due (no suspend)", mapStripeEventToStatus("invoice.payment_failed").status === "past_due" && mapStripeEventToStatus("invoice.payment_failed").suspendAccount === false)
   check("customer.subscription.deleted → canceled + suspend", mapStripeEventToStatus("customer.subscription.deleted").status === "canceled" && mapStripeEventToStatus("customer.subscription.deleted").suspendAccount === true)
@@ -59,6 +67,7 @@ function sourceLayer() {
   check("the webhook verifies the signature + calls the applier", /constructEvent\(body, sig, secret\)/.test(wh) && /applyVendorSubscriptionEvent\(/.test(wh))
   const ui = src("app/vendor/billing/billing-client.tsx")
   check("the billing UI wires checkout + portal actions", /createVendorSubscriptionCheckout/.test(ui) && /createVendorBillingPortalSession/.test(ui))
+  check("editable pricing: an admin setter writes brokerage_settings + the approval UI edits prices", /setVendorTierPricing/.test(src("app/actions/vendor-verification.ts")) && /vendor_tier_pricing/.test(src("app/actions/vendor-verification.ts")) && /setVendorTierPricing\(p\.tier/.test(src("app/dashboard/admin/vendor-approvals/approval-client.tsx")))
   const reg = src("lib/kernel/manager-registry.ts")
   check("burn domain owned by finance_manager with a runnable proof", /vendor_subscription_billing:\s*\{\s*manager:\s*"finance_manager",\s*proof:\s*"test:vendor-subscription"/.test(reg))
   check("new billing columns are in the schema snapshot", /vendor_marketplace_profiles:\s*\[[^\]]*"stripe_customer_id"[^\]]*"subscription_tier"/.test(src("scripts/schema-snapshot.ts")))

@@ -6,7 +6,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { CheckCircle2, XCircle, HelpCircle, ShieldCheck } from "lucide-react"
-import { approveVendor, rejectVendor, requestVendorInfo, setVendorComplianceCredential } from "@/app/actions/vendor-verification"
+import { approveVendor, rejectVendor, requestVendorInfo, setVendorComplianceCredential, setVendorTierPricing } from "@/app/actions/vendor-verification"
+
+type TierPrice = { tier: "basic" | "standard" | "premium" | "preferred_network"; price: number }
 
 export interface PendingVendor {
   id: string
@@ -24,7 +26,7 @@ export interface PendingVendor {
  * (→ active/surfaceable), Reject (→ inactive), or Request Info. Each button calls the admin-gated
  * server action; a vendor can never self-activate.
  */
-export function VendorApprovalClient({ vendors }: { vendors: PendingVendor[] }) {
+export function VendorApprovalClient({ vendors, pricing }: { vendors: PendingVendor[]; pricing?: TierPrice[] }) {
   const router = useRouter()
   const [busy, setBusy] = useState<string | null>(null)
 
@@ -39,17 +41,48 @@ export function VendorApprovalClient({ vendors }: { vendors: PendingVendor[] }) 
       : s >= 40 ? "bg-amber-100 text-amber-800 border-amber-200"
       : "bg-red-100 text-red-800 border-red-200"
 
+  const pricingEditor = pricing && pricing.length > 0 ? (
+    <Card>
+      <CardHeader className="pb-2"><CardTitle className="text-base">Vendor subscription pricing (your brokerage)</CardTitle></CardHeader>
+      <CardContent>
+        <p className="text-xs text-muted-foreground mb-3">Set custom monthly prices for vendor tiers. Blank/0 falls back to the platform default.</p>
+        <div className="grid gap-3 sm:grid-cols-4">
+          {pricing.map((p) => (
+            <div key={p.tier} className="space-y-1">
+              <label className="text-xs font-medium capitalize">{p.tier.replace("_", " ")}</label>
+              <div className="flex items-center gap-1">
+                <span className="text-sm text-muted-foreground">$</span>
+                <input
+                  type="number" min={0} defaultValue={p.price}
+                  className="border rounded px-2 py-1 text-sm w-24"
+                  disabled={busy === `price-${p.tier}`}
+                  onBlur={(e) => { const val = Number(e.target.value); if (val !== p.price) run(`price-${p.tier}`, () => setVendorTierPricing(p.tier, val)) }}
+                />
+                <span className="text-xs text-muted-foreground">/mo</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  ) : null
+
   if (vendors.length === 0) {
     return (
-      <Card className="bg-green-50 border-green-200">
-        <CardContent className="pt-6 flex items-center gap-2 text-green-900">
-          <ShieldCheck className="h-5 w-5" /> No vendors awaiting approval — the bench is fully vetted.
-        </CardContent>
-      </Card>
+      <div className="space-y-4">
+        {pricingEditor}
+        <Card className="bg-green-50 border-green-200">
+          <CardContent className="pt-6 flex items-center gap-2 text-green-900">
+            <ShieldCheck className="h-5 w-5" /> No vendors awaiting approval — the bench is fully vetted.
+          </CardContent>
+        </Card>
+      </div>
     )
   }
 
   return (
+    <div className="space-y-4">
+    {pricingEditor}
     <div className="grid gap-3 md:grid-cols-2">
       {vendors.map((v) => (
         <Card key={v.id}>
@@ -106,6 +139,7 @@ export function VendorApprovalClient({ vendors }: { vendors: PendingVendor[] }) 
           </CardContent>
         </Card>
       ))}
+    </div>
     </div>
   )
 }
