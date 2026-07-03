@@ -91,11 +91,20 @@ export async function GET(req: NextRequest) {
       pendingVendors = aq.pending
     } catch (e: any) { errors.push(`approval-queue: ${e?.message ?? String(e)}`) }
 
+    // DOCUMENT-EXPIRY COMPLIANCE — license/insurance expiry reminders + insurance-lapse suspend
+    // (VendorComplianceManager). Reuses vendors.compliance_credentials.
+    let docSuspended = 0, docReminders = 0
+    try {
+      const { runVendorDocComplianceAll } = await import("@/lib/kernel/vendor-doc-compliance")
+      const dc = await runVendorDocComplianceAll(supabase)
+      docSuspended = dc.suspended; docReminders = dc.reminders
+    } catch (e: any) { errors.push(`doc-compliance: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId, records_processed: proposed,
-      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors, suppressedVendors, flaggedVendors, pendingVendors, errors: errors.slice(0, 10) },
+      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors, suppressedVendors, flaggedVendors, pendingVendors, docSuspended, docReminders, errors: errors.slice(0, 10) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors, suppressedVendors, flaggedVendors, pendingVendors })
+    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors, suppressedVendors, flaggedVendors, pendingVendors, docSuspended, docReminders })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

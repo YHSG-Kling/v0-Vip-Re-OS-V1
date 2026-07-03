@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { CheckCircle2, XCircle, HelpCircle, ShieldCheck } from "lucide-react"
-import { approveVendor, rejectVendor, requestVendorInfo } from "@/app/actions/vendor-verification"
+import { approveVendor, rejectVendor, requestVendorInfo, setVendorComplianceCredential } from "@/app/actions/vendor-verification"
 
 export interface PendingVendor {
   id: string
@@ -85,6 +85,23 @@ export function VendorApprovalClient({ vendors }: { vendors: PendingVendor[] }) 
               <Button size="sm" variant="ghost" disabled={busy === v.id} onClick={() => run(v.id, () => requestVendorInfo(v.id, ["license", "insurance"]))}>
                 <HelpCircle className="h-4 w-4 mr-1" /> Request info
               </Button>
+            </div>
+            {/* Record insurance / license expiry — the document-expiry monitor acts on these dates. */}
+            <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
+              <span className="text-muted-foreground">Insurance expiry:</span>
+              <input
+                type="date"
+                className="border rounded px-1.5 py-0.5 text-xs"
+                disabled={busy === v.id}
+                onChange={(e) => e.target.value && run(v.id, () => setVendorComplianceCredential(v.id, "insurance", e.target.value))}
+              />
+              <span className="text-muted-foreground">License expiry:</span>
+              <input
+                type="date"
+                className="border rounded px-1.5 py-0.5 text-xs"
+                disabled={busy === v.id}
+                onChange={(e) => e.target.value && run(v.id, () => setVendorComplianceCredential(v.id, "license", e.target.value))}
+              />
             </div>
           </CardContent>
         </Card>

@@ -64,6 +64,27 @@ export async function rejectVendor(vendorId: string, reason: string): Promise<{ 
   return { ok: true }
 }
 
+/**
+ * Admin records/updates a vendor's compliance credential (license / insurance / …) with its expiry date,
+ * stored on the vendor's compliance_credentials jsonb. The document-expiry monitor acts on these dates
+ * (insurance lapse → suspend; license lapse → soft flag + grace).
+ */
+export async function setVendorComplianceCredential(
+  vendorId: string,
+  credentialType: "license" | "insurance" | "certification" | "bond",
+  expiry: string,
+  url?: string,
+): Promise<{ ok: true }> {
+  const { brokerageId } = await requireAdmin()
+  const svc = createServiceClient()
+  const { data: v } = await svc.from("vendors").select("compliance_credentials").eq("id", vendorId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (!v) throw new Error("Vendor not found in your brokerage")
+  const bag = ((v as any).compliance_credentials && typeof (v as any).compliance_credentials === "object") ? (v as any).compliance_credentials : {}
+  bag[credentialType] = { expiry, ...(url ? { url } : {}) }
+  await svc.from("vendors").update({ compliance_credentials: bag, updated_at: new Date().toISOString() }).eq("id", vendorId)
+  return { ok: true }
+}
+
 /** Admin asks the vendor for more info — keeps them pending, records the requested items on the flags. */
 export async function requestVendorInfo(vendorId: string, items: string[]): Promise<{ ok: true }> {
   const { brokerageId } = await requireAdmin()
