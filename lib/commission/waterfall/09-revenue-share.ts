@@ -13,6 +13,17 @@ export async function applyRevenueShare(
 ): Promise<WaterfallContext> {
   const supabase = createServiceClient()
 
+  // GATE — revenue share is a broker opt-in (not every brokerage offers a downline). If this brokerage
+  // hasn't turned it on, the agent keeps their full net regardless of any legacy relationship rows.
+  const { data: brk } = await supabase
+    .from('brokerages')
+    .select('revenue_share_enabled')
+    .eq('id', context.brokerageId)
+    .maybeSingle()
+  if (!brk?.revenue_share_enabled) {
+    return { ...context, revenueShareDistributions: [] }
+  }
+
   // Query revenue share relationships for this agent
   const { data: relationships, error } = await supabase
     .from('agent_relationships')

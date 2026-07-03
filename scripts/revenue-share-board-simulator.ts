@@ -61,6 +61,9 @@ function sourceLayer() {
   const board = src("lib/intelligence/revenue-share-board.ts")
   check("reads the residual distributions the waterfall writes", /distribution_type", "residual"/.test(board))
   check("reads the downline from agent_relationships", /agent_relationships[\s\S]*?sponsor_agent_id/.test(board))
+  check("GATED — board returns null unless the brokerage enabled revenue share", /revenue_share_enabled[\s\S]*?return null/.test(board))
+  const wf = src("lib/commission/waterfall/09-revenue-share.ts")
+  check("GATED — waterfall skips revenue share unless the brokerage enabled it", /revenue_share_enabled[\s\S]*?revenueShareDistributions: \[\]/.test(wf))
 }
 
 async function liveLayer() {
@@ -79,6 +82,9 @@ async function liveLayer() {
   const { data: txn } = await svc.from("transactions").select("id").eq("brokerage_id", brokerageId).limit(1).maybeSingle()
   if (!txn) { console.log("  ⊘ no transaction — skipping"); return }
   const txnId = (txn as any).id
+  // Preserve + control the opt-in flag around the test.
+  const { data: prevFlag } = await svc.from("brokerages").select("revenue_share_enabled").eq("id", brokerageId).maybeSingle()
+  const originalEnabled = !!(prevFlag as any)?.revenue_share_enabled
   const cleanup: Array<{ table: string; id: string }> = []
   try {
     const { data: dist } = await svc.from("commission_distributions").insert({
@@ -93,12 +99,21 @@ async function liveLayer() {
     cleanup.push({ table: "agent_relationships", id: (rel as any).id })
 
     const { loadCommandCenter } = await import("../lib/kernel/command-center")
+
+    // DISABLED — the board must be hidden even with real revenue-share data present.
+    await svc.from("brokerages").update({ revenue_share_enabled: false }).eq("id", brokerageId)
+    const ccOff = await loadCommandCenter({ brokerageId, limit: 100 })
+    check("live: GATED OFF — no revenue-share board when the brokerage doesn't offer it", ccOff.revenueShareBoard === null)
+
+    // ENABLED — the broker turns it on; the board appears with the earner.
+    await svc.from("brokerages").update({ revenue_share_enabled: true }).eq("id", brokerageId)
     const cc = await loadCommandCenter({ brokerageId, limit: 100 })
-    check("live: command center carries a revenue-share board", !!cc.revenueShareBoard)
+    check("live: ENABLED — command center carries a revenue-share board", !!cc.revenueShareBoard)
     check("live: the seeded $750 residual shows in the total", (cc.revenueShareBoard?.totalShared ?? 0) >= 750)
     const earner = cc.revenueShareBoard?.earners.find((e) => e.agentId === sponsorId)
     check("live: the sponsor appears as an earner with their downline size ≥ 1", !!earner && earner!.downlineSize >= 1)
   } finally {
+    await svc.from("brokerages").update({ revenue_share_enabled: originalEnabled }).eq("id", brokerageId)
     for (const c of cleanup.reverse()) await svc.from(c.table).delete().eq("id", c.id)
     let left = 0
     for (const c of cleanup) { const { count } = await svc.from(c.table).select("id", { count: "exact", head: true }).eq("id", c.id); left += count ?? 0 }

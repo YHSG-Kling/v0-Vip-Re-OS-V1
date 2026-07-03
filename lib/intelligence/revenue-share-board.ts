@@ -86,6 +86,10 @@ export async function generateRevenueShareBoard(
 ): Promise<RevenueShareBoard | null> {
   const supabase = client ?? createServiceClient()
   try {
+    // Revenue share is a broker opt-in — hide the board entirely for brokerages that don't offer it.
+    const { data: brk } = await supabase.from("brokerages").select("revenue_share_enabled").eq("id", brokerageId).maybeSingle()
+    if (!(brk as any)?.revenue_share_enabled) return null
+
     const since = new Date(Date.now() - 365 * 86_400_000).toISOString()
     const [distRes, relRes] = await Promise.all([
       supabase.from("commission_distributions")

@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { listCommissionStructures } from '@/app/actions/settings/list-commission-structures';
 import { CommissionStructureForm } from '@/app/components/settings/CommissionStructureForm';
 import { CommissionStructureTable } from '@/app/components/settings/CommissionStructureTable';
+import { RevenueShareToggle } from '@/app/components/settings/RevenueShareToggle';
 
 export default function CommissionPage() {
   const [structures, setStructures] = useState<any[]>([]);
@@ -36,6 +37,8 @@ export default function CommissionPage() {
         <h1 className="text-3xl font-bold text-gray-900">Commission Structures</h1>
         <p className="text-gray-600 mt-2">Define how commissions are calculated</p>
       </div>
+
+      <RevenueShareToggle />
 
       <CommissionStructureForm onSuccess={loadStructures} />
 
