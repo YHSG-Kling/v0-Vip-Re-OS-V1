@@ -411,13 +411,11 @@ export interface RegulatoryWatcherResult {
   status: string
 }
 
-/** The compliance/broker recipients for the escalation (real users only). */
+/** The compliance/broker recipients for the escalation. TIER-SAFE — a solo agent (no separate broker)
+ *  receives the reg change themselves, so a one-person shop is never left uninformed of a new rule. */
 async function loadComplianceRecipients(supabase: Svc, brokerageId: string): Promise<string[]> {
-  const { data } = await supabase.from("users").select("id")
-    .eq("brokerage_id", brokerageId)
-    .in("user_type", ["broker", "admin", "compliance_officer"])
-    .limit(10)
-  return ((data ?? []) as Array<{ id: string }>).map((u) => u.id)
+  const { resolveOrgRecipients } = await import("@/lib/kernel/org-recipients")
+  return resolveOrgRecipients(supabase, brokerageId, { roles: ["broker", "admin", "compliance_officer"] })
 }
 
 /**

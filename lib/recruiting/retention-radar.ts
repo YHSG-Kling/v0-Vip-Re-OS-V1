@@ -100,13 +100,16 @@ export async function runRetentionRadar(
       if (res.ok) out.savePlaysProposed++
     } catch { /* best-effort */ }
 
-    // Also surface to the broker/admins directly (deduped per open, like the license sweep).
+    // Also surface directly (deduped per open, like the license sweep). TIER-SAFE — a broker/admin gets
+    // the flag in a team/brokerage org; a SOLO agent (no separate broker) gets it themselves, so a
+    // one-person shop's red-flag is never dropped for lack of a broker recipient.
     try {
-      const { data: mgrs } = await svc.from("users").select("id").eq("brokerage_id", params.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
-      for (const m of (mgrs ?? []) as Array<{ id: string }>) {
-        const { data: seen } = await svc.from("notifications").select("id").eq("user_id", m.id).eq("entity_type", "agent").eq("entity_id", a.id).eq("type", "agent_retention_risk").gte("created_at", new Date(now.getTime() - 7 * 86_400_000).toISOString()).limit(1).maybeSingle()
+      const { resolveOrgRecipients } = await import("@/lib/kernel/org-recipients")
+      const recipientIds = await resolveOrgRecipients(svc, params.brokerageId)
+      for (const mId of recipientIds) {
+        const { data: seen } = await svc.from("notifications").select("id").eq("user_id", mId).eq("entity_type", "agent").eq("entity_id", a.id).eq("type", "agent_retention_risk").gte("created_at", new Date(now.getTime() - 7 * 86_400_000).toISOString()).limit(1).maybeSingle()
         if (seen) continue
-        await svc.from("notifications").insert({ user_id: m.id, brokerage_id: params.brokerageId, type: "agent_retention_risk", title: `${agentName} is at retention risk (${rs.score}/100)`, body: drivers, entity_type: "agent", entity_id: a.id, priority: "high", is_read: false })
+        await svc.from("notifications").insert({ user_id: mId, brokerage_id: params.brokerageId, type: "agent_retention_risk", title: `${agentName} is at retention risk (${rs.score}/100)`, body: drivers, entity_type: "agent", entity_id: a.id, priority: "high", is_read: false })
       }
     } catch { /* best-effort */ }
   }
