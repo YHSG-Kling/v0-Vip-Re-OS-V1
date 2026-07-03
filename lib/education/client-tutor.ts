@@ -17,17 +17,34 @@ type Svc = ReturnType<typeof createServiceClient>
 export interface TutorContext {
   firstName: string | null
   role: "buyer" | "seller" | "homeowner" | "client"
+  /** The contact's PERSONA (first_time_buyer, investor, senior_downsizing, past_client, …) — customer-facing
+   *  coaching/education speaks FROM the persona, not the role. */
+  persona: string | null
   stageLabel: string | null
   agentName: string | null
 }
 
-/** PURE: the client-safe education tutor system prompt — role/stage aware, Fair Housing, no advice-giving. */
+/** A persona → how to speak to them. Customer-facing education is persona-first, not role-first. */
+const PERSONA_VOICE: Record<string, string> = {
+  first_time_buyer: "a first-time buyer — they're new to all of this, so define every term, reassure often, and never assume prior knowledge",
+  investor: "a real-estate investor — they think in numbers, ROI, cap rate, and timelines; be efficient and data-forward, skip the hand-holding",
+  senior_downsizing: "a senior who is downsizing — be patient, respectful, unrushed, and sensitive to the emotional weight of leaving a long-time home",
+  luxury_buyer: "a luxury buyer — be polished, discreet, and concierge-level; assume sophistication",
+  relocation: "a relocating buyer — they're often remote and time-pressured; be logistics-forward and proactive about the out-of-area unknowns",
+  move_up_seller: "a move-up seller juggling a sale and a purchase — focus on timing, contingencies, and coordinating both sides",
+  past_client: "a past client and homeowner — warm, low-pressure, long-term relationship tone; think equity, maintenance, and 'when the time is right'",
+}
+
+/** PURE: the client-safe education tutor system prompt — PERSONA-first (then role/stage), Fair Housing, no advice-giving. */
 export function buildTutorSystemPrompt(ctx: TutorContext): string {
   const who = ctx.firstName ? `The client's first name is ${ctx.firstName}.` : ""
   const stage = ctx.stageLabel ? `They are currently at this point in their journey: ${ctx.stageLabel}.` : ""
   const agent = ctx.agentName ? `Their agent is ${ctx.agentName} — encourage them to reach out to ${ctx.agentName} for anything specific to their deal.` : "Encourage them to reach out to their agent for anything specific to their deal."
+  // Persona-first framing (falls back to the role only when no persona is known).
+  const personaVoice = (ctx.persona && PERSONA_VOICE[ctx.persona]) || `a ${ctx.role}`
   return [
-    `You are a warm, plain-spoken real-estate education tutor for a ${ctx.role}. ${who} ${stage}`,
+    `You are a warm, plain-spoken real-estate education tutor. You are speaking to ${personaVoice}. ${who} ${stage}`,
+    `Tailor your tone and depth to THIS persona — the way you'd coach a first-time buyer is different from how you'd talk to a seasoned investor. Speak from who they are, not just their transaction role.`,
     `Your job is to explain what things mean and what generally happens next — clearly, calmly, at a 10th-grade reading level. ${agent}`,
     `HARD RULES:`,
     `- You are NOT a lawyer, lender, or the client's agent. Never give legal, tax, or specific financial advice — explain generally and defer specifics to the appropriate professional.`,
@@ -64,7 +81,7 @@ export interface TutorAnswer {
 
 /** Resolve the client's tutor context (role, stage, agent) — best-effort. */
 export async function resolveTutorContext(svc: Svc, contactId: string): Promise<{ ctx: TutorContext; brokerageId: string | null }> {
-  const { data: c } = await svc.from("contacts").select("first_name, contact_type, buyer_stage, brokerage_id, agent_id").eq("id", contactId).maybeSingle()
+  const { data: c } = await svc.from("contacts").select("first_name, contact_type, contact_persona, buyer_stage, brokerage_id, agent_id").eq("id", contactId).maybeSingle()
   const cc = c as any
   const role: TutorContext["role"] = cc?.contact_type === "seller" ? "seller" : cc?.contact_type === "past_client" ? "homeowner" : cc?.contact_type === "buyer" ? "buyer" : "client"
   let agentName: string | null = null
@@ -78,7 +95,7 @@ export async function resolveTutorContext(svc: Svc, contactId: string): Promise<
     }
   }
   return {
-    ctx: { firstName: cc?.first_name ?? null, role, stageLabel: cc?.buyer_stage ? String(cc.buyer_stage).replace(/_/g, " ") : null, agentName },
+    ctx: { firstName: cc?.first_name ?? null, role, persona: cc?.contact_persona ?? null, stageLabel: cc?.buyer_stage ? String(cc.buyer_stage).replace(/_/g, " ") : null, agentName },
     brokerageId: cc?.brokerage_id ?? null,
   }
 }

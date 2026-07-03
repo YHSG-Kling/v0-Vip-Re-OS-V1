@@ -28,13 +28,15 @@ const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ $
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
 function pureLayer() {
-  console.log("\n[system prompt · pure — client-safe, role/stage aware]")
-  const sp = buildTutorSystemPrompt({ firstName: "Sam", role: "buyer", stageLabel: "under contract", agentName: "Dana Kling" })
-  check("names the role + stage + agent", /buyer/.test(sp) && /under contract/.test(sp) && /Dana Kling/.test(sp))
+  console.log("\n[system prompt · pure — client-safe, PERSONA-first, stage aware]")
+  const sp = buildTutorSystemPrompt({ firstName: "Sam", role: "buyer", persona: "first_time_buyer", stageLabel: "under contract", agentName: "Dana Kling" })
+  check("speaks FROM the persona (first-time buyer), not just the role", /first-time buyer/.test(sp) && /Speak from who they are, not just their transaction role/.test(sp))
+  check("names the stage + agent", /under contract/.test(sp) && /Dana Kling/.test(sp))
+  check("a different persona changes the voice (investor = data-forward)", /ROI|data-forward|numbers/.test(buildTutorSystemPrompt({ firstName: null, role: "buyer", persona: "investor", stageLabel: null, agentName: null })))
   check("forbids legal/financial advice + inventing deal specifics", /Never give legal, tax, or specific financial advice/.test(sp) && /Never invent details about THIS client/.test(sp))
   check("enforces Fair Housing (no steering / protected classes)", /FAIR HOUSING/.test(sp) && /Never steer/.test(sp))
-  const spNoAgent = buildTutorSystemPrompt({ firstName: null, role: "homeowner", stageLabel: null, agentName: null })
-  check("degrades gracefully with no agent/stage", /reach out to their agent/.test(spNoAgent) && /homeowner/.test(spNoAgent))
+  const spNoPersona = buildTutorSystemPrompt({ firstName: null, role: "homeowner", persona: null, stageLabel: null, agentName: null })
+  check("degrades gracefully to the role when no persona/agent", /reach out to their agent/.test(spNoPersona) && /homeowner/.test(spNoPersona))
 
   console.log("\n[Fair-Housing / advice guard · pure]")
   check("a steering answer is flagged risky", tutorAnswerRisky("This is a good neighborhood for people like you") === true)
