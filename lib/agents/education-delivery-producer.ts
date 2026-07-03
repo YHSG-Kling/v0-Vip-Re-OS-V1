@@ -104,6 +104,14 @@ export async function produceEducationDelivery(
   }
   if (!chosen) return { proposed: false, reason: "all top modules already delivered" }
 
+  return deliverChosenModule(supabase, brokerageId, contactId, chosen)
+}
+
+/** Extracted so both the poll path and the event path share one delivery body. */
+async function deliverChosenModule(
+  supabase: Svc, brokerageId: string, contactId: string,
+  chosen: { id: string; title: string; summary: string | null; estimatedMinutes: number | null; signalSource: string; signalMetadata: unknown; priorityScore: number | null },
+): Promise<{ proposed: boolean; moduleId?: string; reason?: string }> {
   const { side, agentName } = await resolveClientContext(supabase, brokerageId, contactId)
   const manager = conciergeForSide(side)
 
@@ -125,4 +133,47 @@ export async function produceEducationDelivery(
     channel: "portal",
   }, supabase)
   return res.ok ? { proposed: true, moduleId: chosen.id } : { proposed: false, reason: res.error }
+}
+
+/**
+ * EVENT-FIRED just-in-time education — the spec's core thesis (education delivered at the moment of need,
+ * not on a weekly poll). Resolves the client contact(s) touched by a kernel event and delivers the
+ * stage-matched lesson IMMEDIATELY. Reuses produceEducationDelivery (idempotent per contact+module), so
+ * the weekly education-delivery cron stays as a pure safety net that never double-delivers. Best-effort:
+ * never throws into the reactor. Returns how many contacts got a fresh proposal.
+ */
+export async function produceEducationForEvent(
+  input: { brokerageId: string; entityType: string; entityId: string },
+  client?: Svc,
+): Promise<{ delivered: number; contacts: string[] }> {
+  const supabase = client ?? createServiceClient()
+  const out = { delivered: 0, contacts: [] as string[] }
+  if (!input.brokerageId || !input.entityId) return out
+
+  // Resolve the client contact(s) the event touches.
+  const contactIds = new Set<string>()
+  try {
+    if (input.entityType === "contact") {
+      contactIds.add(input.entityId)
+    } else if (input.entityType === "transaction") {
+      const { data: t } = await supabase.from("transactions")
+        .select("contact_id, buyer_contact_id, seller_contact_id").eq("id", input.entityId).maybeSingle()
+      for (const k of ["contact_id", "buyer_contact_id", "seller_contact_id"] as const) {
+        const v = (t as Record<string, string | null> | null)?.[k]
+        if (v) contactIds.add(v)
+      }
+    } else if (input.entityType === "listing") {
+      const { data: l } = await supabase.from("listings").select("seller_contact_id").eq("id", input.entityId).maybeSingle()
+      const v = (l as { seller_contact_id?: string | null } | null)?.seller_contact_id
+      if (v) contactIds.add(v)
+    }
+  } catch { /* best-effort */ }
+
+  for (const cid of contactIds) {
+    try {
+      const r = await produceEducationDelivery(input.brokerageId, cid, supabase)
+      if (r.proposed) { out.delivered += 1; out.contacts.push(cid) }
+    } catch { /* keep going */ }
+  }
+  return out
 }

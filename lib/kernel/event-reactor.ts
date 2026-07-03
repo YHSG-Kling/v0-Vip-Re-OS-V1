@@ -240,6 +240,26 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     } catch { /* auto-producer is best-effort */ }
   }
 
+  // (D-quater) EVENT-FIRED JUST-IN-TIME EDUCATION — the spec's core thesis: deliver the stage-matched
+  // lesson AT the milestone moment, not on the weekly poll. On any client-facing milestone event, fire the
+  // education producer for the touched contact(s) (idempotent per contact+module; the weekly cron remains a
+  // safety net). Reuses produceEducationForEvent → produceEducationDelivery; best-effort, never blocks.
+  const EDUCATION_FIRING_EVENTS: KernelEvent[] = [
+    KernelEvent.OFFER_ACCEPTED,
+    KernelEvent.TRANSACTION_STAGE_CHANGED,
+    KernelEvent.BUYER_STATE_CHANGED,
+    KernelEvent.BUYER_FINANCIALLY_VERIFIED,
+    KernelEvent.LISTING_PUBLISHED,
+    KernelEvent.LISTING_STAGE_CHANGED,
+    KernelEvent.LISTING_UNDER_CONTRACT,
+  ]
+  if (params.brokerageId && EDUCATION_FIRING_EVENTS.includes(params.event as KernelEvent)) {
+    try {
+      const { produceEducationForEvent } = await import("@/lib/agents/education-delivery-producer")
+      void produceEducationForEvent({ brokerageId: params.brokerageId, entityType: params.entityType, entityId: params.entityId }, svc)
+    } catch { /* just-in-time education is best-effort */ }
+  }
+
   // (E) Contact-agent-assignment intro video — when contacts.agent_id is set
   // (the canonical assignment moment per the app rule: raw_leads → platform,
   // leads → AI ISA + brokerage, contacts → agents), fire a personalized D-ID
