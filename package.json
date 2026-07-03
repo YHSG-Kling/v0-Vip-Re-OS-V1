@@ -144,6 +144,7 @@
     "test:org-recipients": "tsx scripts/org-recipients-simulator.ts",
     "test:vendor-price": "tsx scripts/vendor-price-simulator.ts",
     "test:voice-execute": "tsx scripts/voice-execute-simulator.ts",
+    "test:broker-brief-intel": "tsx scripts/broker-brief-intel-simulator.ts",
     "test:client-education": "tsx scripts/client-education-simulator.ts",
     "test:license-readiness": "tsx scripts/license-readiness-simulator.ts",
     "test:readiness-gate": "tsx scripts/readiness-gate-simulator.ts",

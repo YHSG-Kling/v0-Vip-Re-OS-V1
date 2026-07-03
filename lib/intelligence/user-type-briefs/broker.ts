@@ -174,6 +174,32 @@ export async function generateBrokerBrief(params: {
     })
   }
 
+  // Agent flight risk — the Recruiting Manager's retention board, folded into the broker's daily read.
+  let retentionAtRisk = 0
+  let curriculumPending = 0
+  try {
+    const { generateRetentionBoard } = await import("@/lib/intelligence/retention-board")
+    const board = await generateRetentionBoard(params.brokerageId)
+    retentionAtRisk = board?.atRisk ?? 0
+    if (priorities.length < 3 && retentionAtRisk > 0) {
+      const worst = board?.agents.find((a) => a.tier === "at_risk" || a.tier === "critical")
+      priorities.push({
+        id: "retention-flight-risk",
+        title: `${retentionAtRisk} agent${retentionAtRisk === 1 ? "" : "s"} at flight risk`,
+        body: worst ? `Most at-risk: ${worst.name} (${worst.score}/100). Review their save-plays before they slip.` : "Review save-plays in your approval queue.",
+        severity: retentionAtRisk > 2 ? "critical" : "high",
+        manager: "recruiting_manager",
+        ctas: [{ label: "Open Command Center", href: "/dashboard/command-center" }],
+      })
+    }
+  } catch (err) {
+    console.error("[BrokerBrief] retention board failed:", err)
+  }
+  try {
+    const { generateCurriculumBoard } = await import("@/lib/intelligence/curriculum-board")
+    curriculumPending = (await generateCurriculumBoard(params.brokerageId))?.pending ?? 0
+  } catch { /* best-effort */ }
+
   // 3b. MANAGER DAILY STANDUP — what the ten Claude managers did in 24h and what
   // needs a human. Items needing approval become priorities (manager-attributed);
   // the report itself rides the brief, so the broker reads governed autonomy's
@@ -204,6 +230,8 @@ export async function generateBrokerBrief(params: {
     { label: "Critical deals", value: criticalDeals.length, href: "/dashboard/brokerage/deal-health" },
     { label: "Unassigned leads", value: unassignedLeadsCount, href: "/dashboard/admin/lead-lineage" },
     { label: "Compliance flags 7d", value: complianceEvents.length, href: "/dashboard/compliance" },
+    { label: "Agents at flight risk", value: retentionAtRisk, href: "/dashboard/command-center" },
+    ...(curriculumPending > 0 ? [{ label: "AI curriculum pending", value: curriculumPending, href: "/dashboard/command-center" }] : []),
     // Standup digest — one metric per reporting manager (label = manager, value = 24h activity)
     ...standupLines.slice(0, 4).map((l) => ({
       label: l.label,
