@@ -7,6 +7,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { CurriculumSchema, renderModuleBody, type Curriculum } from "@/lib/education/curriculum-author"
+import { resolveMaterialFormat, channelsForFormat } from "@/lib/education/delivery-format"
 import type { OnboardingTopic, Tier } from "@/lib/education/onboarding-curriculum"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -43,7 +44,7 @@ export async function persistOnboardingModule(svc: Svc, brokerageId: string, tag
     gap_tags: [tag],
     audience_roles: topic.audienceRoles,
     milestone_key: "platform_onboarding",
-    channels: ["article"],
+    channels: channelsForFormat(resolveMaterialFormat({ topicKey: topic.key })),
     estimated_minutes: 6,
     required: true,
     display_priority: 100,

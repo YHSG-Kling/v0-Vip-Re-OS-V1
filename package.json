@@ -136,6 +136,7 @@
     "test:revenue-share-board": "tsx scripts/revenue-share-board-simulator.ts",
     "test:curriculum-author": "tsx scripts/curriculum-author-simulator.ts",
     "test:onboarding-curriculum": "tsx scripts/onboarding-curriculum-simulator.ts",
+    "test:delivery-format": "tsx scripts/delivery-format-simulator.ts",
     "test:client-education": "tsx scripts/client-education-simulator.ts",
     "test:license-readiness": "tsx scripts/license-readiness-simulator.ts",
     "test:readiness-gate": "tsx scripts/readiness-gate-simulator.ts",

@@ -13,7 +13,12 @@ async function resolveBrokerAdmin(): Promise<{ ok: true; brokerageId: string } |
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data: profile } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   if (!profile?.brokerage_id) return { ok: false, error: "No brokerage" }
-  if (!["broker", "broker_admin", "admin", "superadmin"].includes(profile.user_type ?? "")) {
+  // A solo agent runs their own one-person shop, so they control their own revenue-share offering too —
+  // allow the solo-tier owner in addition to broker/admin roles.
+  const svc = createServiceClient()
+  const { data: brk } = await svc.from("brokerages").select("plan_tier").eq("id", profile.brokerage_id).maybeSingle()
+  const isSolo = (brk as any)?.plan_tier === "solo_agent"
+  if (!isSolo && !["broker", "broker_admin", "admin", "superadmin"].includes(profile.user_type ?? "")) {
     return { ok: false, error: "Only a broker or admin can change this setting" }
   }
   return { ok: true, brokerageId: profile.brokerage_id }

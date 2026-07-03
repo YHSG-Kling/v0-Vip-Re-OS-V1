@@ -10,6 +10,7 @@
 import { z } from "zod"
 import { createServiceClient } from "@/lib/supabase/service"
 import { detectKnowledgeGaps, type GapSignal, type KnowledgeGap } from "@/lib/education/knowledge-gap-detector"
+import { resolveMaterialFormat, channelsForFormat } from "@/lib/education/delivery-format"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -158,7 +159,8 @@ export async function persistCurriculumDraft(svc: Svc, brokerageId: string, gap:
     gap_tags: [gap.topicKey],
     // Skill gaps train agents; compliance gaps train the whole roster incl. brokers.
     audience_roles: gap.source === "compliance" ? ["agent", "broker"] : ["agent"],
-    channels: ["article"],
+    // Format follows the material — only video-worthy topics render on the video channel.
+    channels: channelsForFormat(resolveMaterialFormat({ topicKey: gap.topicKey })),
     estimated_minutes: 5,
     required: gap.source === "compliance",
   })

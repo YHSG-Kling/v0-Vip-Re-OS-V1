@@ -7,6 +7,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { CurriculumSchema, renderModuleBody, type Curriculum } from "@/lib/education/curriculum-author"
+import { resolveMaterialFormat, channelsForFormat } from "@/lib/education/delivery-format"
 import type { ClientTopic } from "@/lib/education/client-education-curriculum"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -39,7 +40,7 @@ export async function persistClientModule(svc: Svc, brokerageId: string, tag: st
     audience_personas: isPersona && topic.persona ? [topic.persona] : [],
     stage_tags: !isPersona && topic.milestone ? [topic.milestone] : [],
     milestone_key: !isPersona ? (topic.milestone ?? null) : null,
-    channels: ["article"],
+    channels: channelsForFormat(resolveMaterialFormat({ topicKey: topic.key })),
     estimated_minutes: 4,
     required: false,
     display_priority: 50,
