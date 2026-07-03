@@ -2,7 +2,9 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { listCeCompletions } from "@/app/actions/admin/license-tracking"
+import { getCeCenter } from "@/app/actions/ce-provider"
 import { LicenseCEClient } from "./license-ce-client"
+import { CeCenterPanel } from "./ce-center-panel"
 
 export const dynamic = "force-dynamic"
 export const metadata = { title: "License & CE" }
@@ -30,8 +32,11 @@ export default async function LicenseCEPage() {
   }
 
   const completions = await listCeCompletions(agent.id)
+  const ceCenter = await getCeCenter().catch(() => null)
 
   return (
+    <div className="space-y-6">
+    {ceCenter && <CeCenterPanel center={ceCenter} />}
     <LicenseCEClient
       agentId={agent.id}
       profile={{
@@ -46,5 +51,6 @@ export default async function LicenseCEPage() {
       }}
       initialCompletions={completions}
     />
+    </div>
   )
 }
