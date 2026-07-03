@@ -289,6 +289,12 @@ export async function runVendorOrchestration(
   const { computeVendorSla } = await import("@/lib/kernel/vendor-sla")
   const slaByVendor = computeVendorSla((slaBookings ?? []) as any[], turnaround)
 
+  // QUALITY GATE — a vendor whose ratings have dropped below the floor is SUPPRESSED: never auto-proposed
+  // to an agent (who would put them in front of a client). Fail-open (an empty set) if ratings can't load.
+  const { loadSuppressedVendorIds } = await import("@/lib/kernel/vendor-rating-governance")
+  const suppressedVendorIds = await loadSuppressedVendorIds(supabase, brokerageId)
+  const eligibleBench = suppressedVendorIds.size > 0 ? bench.filter((v) => !suppressedVendorIds.has(v.id)) : bench
+
   const { data: txns } = await supabase.from("transactions")
     .select("id, deal_name, property_address, stage, agent_id, buyer_contact_id, contact_id")
     .eq("brokerage_id", brokerageId).in("stage", ACTIVE_STAGES).limit(200)
@@ -316,7 +322,7 @@ export async function runVendorOrchestration(
 
       // OUTCOME-AWARE, PREFERENCE-FIRST pick — the broker's preferred vendors win over a higher-rated
       // non-preferred one, but a PROVEN SLA breacher is demoted below reliable vendors regardless.
-      const vendor = pickVendorForGap(bench, gap, { preferredVendorIds, slaByVendor })
+      const vendor = pickVendorForGap(eligibleBench, gap, { preferredVendorIds, slaByVendor })
       if (!vendor) { result.benchMisses += 1; continue }
 
       // PERSONA-AWARE COPY — the quote-request body is generated to the vendor persona,

@@ -73,11 +73,20 @@ export async function GET(req: NextRequest) {
       overpricedVendors = pi.overpriced
     } catch (e: any) { errors.push(`price-intel: ${e?.message ?? String(e)}`) }
 
+    // RATING GOVERNANCE — the quality gate: suppress poorly-rated vendors from auto-surfacing + a gated
+    // admin brief on the suppressed/flagged/badged (VendorInsightManager). Reuses vendor_ratings.
+    let suppressedVendors = 0, flaggedVendors = 0
+    try {
+      const { runVendorRatingGovernanceAll } = await import("@/lib/kernel/vendor-rating-governance")
+      const rg = await runVendorRatingGovernanceAll(supabase)
+      suppressedVendors = rg.suppressed; flaggedVendors = rg.flagged
+    } catch (e: any) { errors.push(`rating-governance: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId, records_processed: proposed,
-      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors, errors: errors.slice(0, 10) },
+      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors, suppressedVendors, flaggedVendors, errors: errors.slice(0, 10) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors })
+    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors, suppressedVendors, flaggedVendors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
