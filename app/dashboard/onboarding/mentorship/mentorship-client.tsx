@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Loader2, Users, Sparkles, Calendar, CheckCircle2, ArrowLeft, Mail, Phone } from "lucide-react"
 import { toast } from "sonner"
 import Link from "next/link"
-import { matchMentor } from "@/app/actions/ai-agent-onboarding"
+import { matchMentor } from "@/app/actions/onboarding/mentorship"
 
 interface MentorData {
   mentorId: string

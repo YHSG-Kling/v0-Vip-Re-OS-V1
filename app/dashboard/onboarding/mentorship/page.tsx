@@ -17,22 +17,25 @@ export default async function MentorshipPage() {
 
   if (!agent) redirect("/dashboard/onboarding")
 
-  // Check existing mentor assignment
-  const [{ data: session }, { data: relationship }] = await Promise.all([
-    supabase
-      .from("agent_onboarding_sessions")
-      .select("assigned_mentor_id, mentor_match_score, mentor_match_reason")
-      .eq("agent_id", agent.id)
-      .maybeSingle(),
-    supabase
-      .from("agent_mentor_relationships")
-      // live columns: mentee_agent_id/mentor_agent_id (not mentee_id/mentor_id);
-      // suggested topics are stored in the notes text column by the onboarding writer.
-      .select("mentor_agent_id, status, notes, agents:mentor_agent_id(id, user:users(full_name, email, phone))")
-      .eq("mentee_agent_id", agent.id)
-      .eq("status", "active")
-      .maybeSingle(),
-  ])
+  // Existing mentor assignment — the CANONICAL agent_mentor_relationships is the single source of truth
+  // (the deprecated agent_onboarding_sessions mentor columns are retired). The matcher stores the match
+  // reason/score/topics as JSON in the notes column.
+  const { data: relationship } = await supabase
+    .from("agent_mentor_relationships")
+    .select("mentor_agent_id, status, notes, agents:mentor_agent_id(id, user:users(full_name, email, phone))")
+    .eq("mentee_agent_id", agent.id)
+    .eq("status", "active")
+    .maybeSingle()
+
+  const parsedNotes = (() => {
+    const n = relationship?.notes
+    if (!n) return { topics: [] as string[], reason: null as string | null, score: null as number | null }
+    try {
+      const p = JSON.parse(n)
+      if (Array.isArray(p)) return { topics: p as string[], reason: null, score: null }
+      return { topics: Array.isArray(p.topics) ? p.topics : [], reason: p.reason ?? null, score: typeof p.score === "number" ? p.score : null }
+    } catch { return { topics: [n], reason: null, score: null } }
+  })()
 
   const mentorData = relationship
     ? {
@@ -40,13 +43,9 @@ export default async function MentorshipPage() {
         mentorName: (relationship.agents as any)?.user?.full_name ?? "Your Mentor",
         mentorEmail: (relationship.agents as any)?.user?.email ?? null,
         mentorPhone: (relationship.agents as any)?.user?.phone ?? null,
-        suggestedTopics: (() => {
-          const n = relationship.notes
-          if (!n) return [] as string[]
-          try { const p = JSON.parse(n); return Array.isArray(p) ? p : [n] } catch { return [n] }
-        })(),
-        matchScore: session?.mentor_match_score ?? null,
-        matchReason: session?.mentor_match_reason ?? null,
+        suggestedTopics: parsedNotes.topics,
+        matchScore: parsedNotes.score,
+        matchReason: parsedNotes.reason,
       }
     : null
 

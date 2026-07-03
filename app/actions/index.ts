@@ -89,7 +89,7 @@ export {
   startAgentOnboarding,
   getOnboardingStatus,
   completeAISessionStep,
-  matchMentor,
+  // matchMentor retired → canonical deterministic matcher at app/actions/onboarding/mentorship.ts
   verifyAgentLicense,
   generateWelcomeMessage,
   getOnboardingAnalytics,
