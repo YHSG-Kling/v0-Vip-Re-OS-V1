@@ -1,0 +1,373 @@
+// lib/onboarding/setup-readiness.ts
+//
+// ROLE-AWARE SETUP READINESS — the single, unifying answer to "what do I still need to fill out to do my
+// job here, and how does this platform work for me?" The app collects setup across ~24 tables and many
+// forms, "onboarded?" was answered four different ways, and no role had a plain-English overview. This is
+// the consolidating READ layer: ONE pure spec of what each role must (required) and may (optional) configure,
+// each item DETECTED against the REAL settings/identity tables (never a new 5th status column), plus a
+// per-role platform overview. Surfaced as a dashboard card + the /dashboard/getting-started page, wired for
+// every human role.
+//
+// Pure spec + resolver here (unit-testable); loadSetupReadiness does the I/O.
+
+import { createServiceClient } from "@/lib/supabase/service"
+
+export type SetupRole =
+  | "agent" | "team_lead" | "isa" | "tc" | "compliance_officer"
+  | "broker" | "admin" | "superadmin" | "vendor" | "lender"
+
+/** Map the app's many role/user_type strings (+ legacy aliases) onto the 10 canonical setup roles. */
+export function normalizeSetupRole(userType: string | null | undefined): SetupRole {
+  switch ((userType ?? "").toLowerCase()) {
+    case "broker": case "broker_owner": return "broker"
+    case "admin": case "broker_admin": return "admin"
+    case "superadmin": case "super_admin": case "support": return "superadmin"
+    case "tc": case "transaction_coordinator": return "tc"
+    case "compliance_officer": case "compliance_manager": return "compliance_officer"
+    case "team_lead": case "team_leader": case "teamlead": return "team_lead"
+    case "isa": return "isa"
+    case "vendor": return "vendor"
+    case "lender": case "title_agent": return "lender"
+    default: return "agent"
+  }
+}
+
+export type SetupCategory = "identity" | "compliance" | "ai" | "integrations" | "brokerage" | "team" | "growth"
+
+/** A snapshot of the user's REAL configured state, read from the existing tables. Every field is honest. */
+export interface SetupSnapshot {
+  // agent / personal
+  hasLicense: boolean
+  hasEoInsurance: boolean
+  hasVoiceClone: boolean
+  hasAvatar: boolean
+  hasOutreachChannel: boolean   // an active email/calendar OR phone connection
+  hasMobilePhone: boolean
+  hasProfilePhoto: boolean
+  hasPersonalWebsite: boolean
+  hasEmailSignature: boolean
+  hasSocialAccount: boolean
+  hasPayoutAccount: boolean
+  hasEmailOrCalendar: boolean   // staff self-connect surface
+  // brokerage
+  hasBrokerageLicense: boolean
+  hasBranding: boolean
+  hasCommissionStructure: boolean
+  hasEmailProvider: boolean
+  hasSmsProvider: boolean
+  hasTeamMembers: boolean
+  hasIsaPhone: boolean
+  hasAccountingSync: boolean
+  hasRecruitingPitch: boolean
+  // team
+  hasTeamConfig: boolean
+}
+
+const EMPTY_SNAPSHOT: SetupSnapshot = {
+  hasLicense: false, hasEoInsurance: false, hasVoiceClone: false, hasAvatar: false, hasOutreachChannel: false,
+  hasMobilePhone: false, hasProfilePhoto: false, hasPersonalWebsite: false, hasEmailSignature: false,
+  hasSocialAccount: false, hasPayoutAccount: false, hasEmailOrCalendar: false,
+  hasBrokerageLicense: false, hasBranding: false, hasCommissionStructure: false, hasEmailProvider: false,
+  hasSmsProvider: false, hasTeamMembers: false, hasIsaPhone: false, hasAccountingSync: false, hasRecruitingPitch: false,
+  hasTeamConfig: false,
+}
+
+export interface SetupItem {
+  key: string
+  label: string
+  roles: SetupRole[]
+  required: boolean
+  category: SetupCategory
+  /** Plain-English "why this matters" for the role. */
+  why: string
+  /** Deep-link to the EXISTING settings surface that fills it. */
+  href: string
+  detect: (s: SetupSnapshot) => boolean
+}
+
+const AGENTISH: SetupRole[] = ["agent", "team_lead"]
+
+/**
+ * THE CATALOG — every user-fillable setup item, mapped to role + required/optional + the real detector.
+ * Order matters: `nextAction` returns the first unfinished REQUIRED item in this order.
+ */
+export const SETUP_ITEMS: SetupItem[] = [
+  // ── Agent / team lead: the things that gate actually transacting + the AI team working for them ──
+  { key: "license", label: "Add your real-estate license", roles: AGENTISH, required: true, category: "compliance",
+    why: "You can't put a document out for signature until your license is on file — the compliance gate blocks it.",
+    href: "/dashboard/onboarding/license", detect: (s) => s.hasLicense },
+  { key: "eo_insurance", label: "Add your E&O insurance", roles: AGENTISH, required: true, category: "compliance",
+    why: "Errors & Omissions coverage is required to transact and protects you on every deal.",
+    href: "/dashboard/onboarding/license", detect: (s) => s.hasEoInsurance },
+  { key: "mobile_phone", label: "Add your mobile number", roles: AGENTISH, required: true, category: "identity",
+    why: "Your AI ISA and clients reach you here — and it stamps your outreach as really from you.",
+    href: "/dashboard/profile", detect: (s) => s.hasMobilePhone },
+  { key: "outreach_channel", label: "Connect email or phone", roles: AGENTISH, required: true, category: "integrations",
+    why: "Connect at least one channel so your managers can actually send the drafts they prepare for you.",
+    href: "/settings/connections", detect: (s) => s.hasOutreachChannel },
+  { key: "voice_clone", label: "Create your voice twin", roles: AGENTISH, required: true, category: "ai",
+    why: "Your ElevenLabs voice clone lets the AI ISA call and your videos speak in YOUR voice — the core differentiator.",
+    href: "/dashboard/settings/twin-studio", detect: (s) => s.hasVoiceClone },
+  { key: "avatar", label: "Set up your video avatar", roles: AGENTISH, required: false, category: "ai",
+    why: "A D-ID avatar turns listing + market updates into personal on-camera videos without you filming.",
+    href: "/dashboard/settings/twin-studio", detect: (s) => s.hasAvatar },
+  { key: "profile_photo", label: "Add a profile photo", roles: AGENTISH, required: false, category: "identity",
+    why: "Your headshot brands every video outro, portal, and public page.",
+    href: "/dashboard/profile", detect: (s) => s.hasProfilePhoto },
+  { key: "personal_website", label: "Add your personal website", roles: AGENTISH, required: false, category: "growth",
+    why: "Links from your marketing and QR codes back to your own site.",
+    href: "/settings/profile", detect: (s) => s.hasPersonalWebsite },
+  { key: "email_signature", label: "Set your email signature", roles: AGENTISH, required: false, category: "identity",
+    why: "Signs the emails your managers send on your behalf.",
+    href: "/dashboard/profile", detect: (s) => s.hasEmailSignature },
+  { key: "social_accounts", label: "Connect social accounts", roles: AGENTISH, required: false, category: "growth",
+    why: "Lets the Campaign Orchestrator publish approved posts to your channels.",
+    href: "/dashboard/profile", detect: (s) => s.hasSocialAccount },
+  { key: "payout", label: "Connect a payout account", roles: AGENTISH, required: false, category: "integrations",
+    why: "Stripe Connect routes referral and revenue-share payouts to you.",
+    href: "/settings/connections", detect: (s) => s.hasPayoutAccount },
+  { key: "team_config", label: "Configure your team split", roles: ["team_lead"], required: true, category: "team",
+    why: "Set your team's split so production and P&L roll up correctly for your agents.",
+    href: "/dashboard/settings/teams", detect: (s) => s.hasTeamConfig },
+
+  // ── Broker / admin: the brokerage foundations ──
+  { key: "brokerage_license", label: "Add brokerage license & address", roles: ["broker", "admin"], required: true, category: "brokerage",
+    why: "Your brokerage license and details appear on compliance docs and every agent's disclosures.",
+    href: "/dashboard/settings", detect: (s) => s.hasBrokerageLicense },
+  { key: "branding", label: "Set your brand (logo & colors)", roles: ["broker", "admin"], required: true, category: "brokerage",
+    why: "Your logo and colors brand every video, page, postcard, and portal across all agents.",
+    href: "/settings/branding", detect: (s) => s.hasBranding },
+  { key: "commission_structure", label: "Create a commission structure", roles: ["broker", "admin"], required: true, category: "brokerage",
+    why: "At least one commission plan is needed before deals can compute payouts and your P&L.",
+    href: "/settings/commission", detect: (s) => s.hasCommissionStructure },
+  { key: "email_provider", label: "Configure an email sender", roles: ["broker", "admin"], required: true, category: "integrations",
+    why: "A brokerage email sender lets managers deliver approved client messages for agents who haven't self-connected.",
+    href: "/settings/providers", detect: (s) => s.hasEmailProvider },
+  { key: "sms_provider", label: "Configure SMS / voice", roles: ["broker", "admin"], required: true, category: "integrations",
+    why: "Twilio/Telnyx powers texting and the AI ISA's calls for the whole brokerage.",
+    href: "/settings/providers", detect: (s) => s.hasSmsProvider },
+  { key: "invite_team", label: "Invite your team", roles: ["broker", "admin"], required: true, category: "team",
+    why: "Invite agents and staff so the AI team can start working their pipelines.",
+    href: "/dashboard/admin/users", detect: (s) => s.hasTeamMembers },
+  { key: "isa_phone", label: "Provision an AI ISA phone number", roles: ["broker", "admin"], required: false, category: "ai",
+    why: "A dedicated number lets the AI ISA call and qualify leads around the clock.",
+    href: "/dashboard/settings/isa-calling", detect: (s) => s.hasIsaPhone },
+  { key: "recruiting_pitch", label: "Set your recruiting pitch", roles: ["broker", "admin"], required: false, category: "growth",
+    why: "Powers the Recruiting Manager's outreach to the agents you want to attract.",
+    href: "/dashboard/recruiting", detect: (s) => s.hasRecruitingPitch },
+  { key: "accounting", label: "Connect accounting (QuickBooks/Xero)", roles: ["broker", "admin"], required: false, category: "integrations",
+    why: "Syncs commissions and expenses so your brokerage P&L is always current.",
+    href: "/settings/accounting", detect: (s) => s.hasAccountingSync },
+
+  // ── Staff (ISA / TC / Compliance) & external portals: self-connect essentials ──
+  { key: "staff_email", label: "Connect your email & calendar", roles: ["isa", "tc", "compliance_officer"], required: true, category: "integrations",
+    why: "Connect your inbox and calendar so your handoffs, tasks, and closings stay in sync.",
+    href: "/settings/connections", detect: (s) => s.hasEmailOrCalendar },
+  { key: "lender_connect", label: "Connect your calendar", roles: ["lender"], required: false, category: "integrations",
+    why: "Sync closings and milestones so files never stall on a scheduling gap.",
+    href: "/settings/connections", detect: (s) => s.hasEmailOrCalendar },
+  { key: "vendor_connect", label: "Connect your calendar", roles: ["vendor"], required: false, category: "integrations",
+    why: "Sync your availability so bookings land on your real calendar.",
+    href: "/settings/connections", detect: (s) => s.hasEmailOrCalendar },
+]
+
+export interface ResolvedSetupItem extends Omit<SetupItem, "detect"> { done: boolean }
+
+export interface RoleOverview {
+  /** One line: what this role is here to accomplish. */
+  mission: string
+  /** The AI managers working alongside this role. */
+  aiTeam: string[]
+  /** What they can do the moment setup is done. */
+  youCanNow: string[]
+}
+
+export interface SetupReadiness {
+  role: SetupRole
+  items: ResolvedSetupItem[]
+  requiredTotal: number
+  requiredDone: number
+  optionalTotal: number
+  optionalDone: number
+  /** % of REQUIRED items complete (0..100). Optional items never block. */
+  pct: number
+  /** First unfinished required item (the "do this next"), or null when required setup is complete. */
+  nextAction: ResolvedSetupItem | null
+  isComplete: boolean
+  overview: RoleOverview
+}
+
+/** PURE: resolve the role's items against a snapshot → completion, next action, and the platform overview. */
+export function resolveSetupReadiness(role: SetupRole, snapshot: SetupSnapshot): SetupReadiness {
+  const items: ResolvedSetupItem[] = SETUP_ITEMS
+    .filter((i) => i.roles.includes(role))
+    .map(({ detect, ...rest }) => ({ ...rest, done: detect(snapshot) }))
+
+  const required = items.filter((i) => i.required)
+  const optional = items.filter((i) => !i.required)
+  const requiredDone = required.filter((i) => i.done).length
+  const optionalDone = optional.filter((i) => i.done).length
+  const pct = required.length === 0 ? 100 : Math.round((requiredDone / required.length) * 100)
+  const nextAction = required.find((i) => !i.done) ?? optional.find((i) => !i.done) ?? null
+
+  return {
+    role, items,
+    requiredTotal: required.length, requiredDone,
+    optionalTotal: optional.length, optionalDone,
+    pct, nextAction, isComplete: requiredDone === required.length,
+    overview: ROLE_OVERVIEW[role],
+  }
+}
+
+/** Per-role plain-English platform overview — the "what is this and how do I work here" every role was missing. */
+export const ROLE_OVERVIEW: Record<SetupRole, RoleOverview> = {
+  agent: {
+    mission: "Turn leads into clients into closed deals — with an AI team doing the busywork so you sell.",
+    aiTeam: ["AI ISA qualifies & calls your leads", "Shopping Agent runs the buyer journey", "Listing Concierge runs your sellers", "Deal Coordinator drives deals to close", "Sphere Manager keeps past clients for life"],
+    youCanNow: ["Approve AI-drafted texts, emails & videos in one place", "Send listing & market videos in your own voice", "See your ranked next-best actions every morning"],
+  },
+  team_lead: {
+    mission: "Everything an agent does, plus lead a team — balance capacity, mentor, and grow team production.",
+    aiTeam: ["Your agents' AI managers roll up to you", "Recruiting Manager helps you add & keep talent", "Finance Manager gives you team P&L"],
+    youCanNow: ["See team pipeline, fatigue & coaching signals", "Set team splits so P&L rolls up right", "Get the weekly ranked team plan"],
+  },
+  isa: {
+    mission: "Qualify inbound leads fast and hand warm ones to agents — with the AI ISA multiplying your reach.",
+    aiTeam: ["AI ISA auto-calls & texts new leads", "Data Steward keeps lead identity clean", "Shopping Agent picks up your handoffs"],
+    youCanNow: ["Watch the AI qualify leads 24/7", "Approve dial batches for your hottest leads", "Hand off qualified leads with full context"],
+  },
+  tc: {
+    mission: "Drive every deal to close — catch missing docs, at-risk deals, and stalled closings before they slip.",
+    aiTeam: ["Deal Coordinator flags at-risk deals & missing docs", "Compliance Officer pre-flights every document", "Finance Manager tracks the closing financials"],
+    youCanNow: ["See closings due this week & what's blocking them", "Clear interventions from one queue", "Keep every file audit-ready"],
+  },
+  compliance_officer: {
+    mission: "Keep the brokerage clean — triage the compliance queue, clear violations, and approve CDAs.",
+    aiTeam: ["Compliance Officer AI pre-screens all outbound", "Data Steward enforces consent & DNC", "Deal Coordinator routes CDAs to you"],
+    youCanNow: ["Work a prioritized compliance queue", "Approve/deny CDAs & released-over-objection items", "See license & TRID readiness at a glance"],
+  },
+  broker: {
+    mission: "Run the brokerage — recruit & retain agents, oversee compliance & finances, and grow the business.",
+    aiTeam: ["All 13 managers report to your Command Center", "Recruiting Manager works your talent pipeline", "Finance Manager runs brokerage P&L", "The AI Executive Standup ranks your week"],
+    youCanNow: ["Approve the whole team's AI work in one place", "See the weekly ROI-ranked org plan + one ask", "Watch retention, recruiting & P&L boards live"],
+  },
+  admin: {
+    mission: "Stand up and run the brokerage's configuration — users, branding, providers, billing, and setup.",
+    aiTeam: ["Managers you configure work every pipeline", "Data Steward guards data integrity", "Finance Manager needs your commission setup"],
+    youCanNow: ["Invite the team & assign roles", "Configure branding, providers & commissions", "Open the Command Center once setup is done"],
+  },
+  superadmin: {
+    mission: "Operate the platform above every brokerage — providers, channels, and tenant health.",
+    aiTeam: ["Every brokerage's managers run on your platform config", "Locked to D-ID + ElevenLabs by design"],
+    youCanNow: ["Set platform video/voice providers", "Enable direct-mail & video channels", "Oversee all tenants"],
+  },
+  vendor: {
+    mission: "Deliver your assigned jobs on time — inspections, staging, photography, lending, and more.",
+    aiTeam: ["Vendor coordination routes jobs to you", "Compliance keeps RESPA-safe referrals clean"],
+    youCanNow: ["See open, due-soon & overdue jobs", "Sync your calendar for real availability", "Build your portfolio to win more work"],
+  },
+  lender: {
+    mission: "Move loan files to clear-to-close — track active loans, closings, and stalled files.",
+    aiTeam: ["Deal Coordinator shares transaction milestones", "Finance Manager tracks closing financials"],
+    youCanNow: ["See active loans & closings this week", "Catch stalled files early", "Stay in sync on every shared deal"],
+  },
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// I/O — gather the REAL snapshot from the existing tables (role-gated so we never over-query), then resolve.
+
+export async function loadSetupReadiness(params: {
+  userId: string
+  role: SetupRole
+  brokerageId: string | null
+  agentId: string | null
+  client?: ReturnType<typeof createServiceClient>
+}): Promise<SetupReadiness> {
+  const svc = params.client ?? createServiceClient()
+  const { role, userId, brokerageId, agentId } = params
+  const snap: SetupSnapshot = { ...EMPTY_SNAPSHOT }
+  const isAgentish = role === "agent" || role === "team_lead"
+  const isBrokerAdmin = role === "broker" || role === "admin"
+  const isStaff = role === "isa" || role === "tc" || role === "compliance_officer" || role === "lender" || role === "vendor"
+
+  const has = (r: { data: unknown } | { count: number | null }) => {
+    if ("count" in r) return (r.count ?? 0) > 0
+    return Array.isArray((r as any).data) ? (r as any).data.length > 0 : !!(r as any).data
+  }
+
+  try {
+    // Personal (agent/team_lead) reads.
+    if (isAgentish && agentId) {
+      const [lic, voice, apiCred, phoneCred, social, stripe, agentRow] = await Promise.all([
+        svc.from("agent_licenses").select("license_number, eo_policy_number").eq("agent_id", agentId).limit(1),
+        svc.from("agent_voice_profiles").select("elevenlabs_voice_id, did_avatar_id").eq("agent_id", agentId).limit(5),
+        svc.from("agent_api_credentials").select("id").eq("agent_id", agentId).eq("is_active", true).in("service_type", ["email", "calendar"]).limit(1),
+        svc.from("platform_credentials").select("id").eq("owner_type", "agent").eq("owner_id", agentId).eq("is_active", true).limit(3),
+        svc.from("social_media_accounts").select("id").eq("agent_id", agentId).eq("is_active", true).limit(1),
+        svc.from("platform_credentials").select("id").eq("owner_type", "agent").eq("owner_id", agentId).eq("platform", "stripe").limit(1),
+        svc.from("agents").select("phone_mobile, profile_image_url, voice_id, assistant_voice_id, avatar_id, assistant_avatar_id").eq("id", agentId).maybeSingle(),
+      ])
+      const licRow = (lic.data ?? [])[0] as any
+      snap.hasLicense = !!licRow?.license_number
+      snap.hasEoInsurance = !!licRow?.eo_policy_number
+      const vps = (voice.data ?? []) as any[]
+      const a = (agentRow.data ?? {}) as any
+      snap.hasVoiceClone = vps.some((v) => v.elevenlabs_voice_id) || !!a.voice_id || !!a.assistant_voice_id
+      snap.hasAvatar = vps.some((v) => v.did_avatar_id) || !!a.avatar_id || !!a.assistant_avatar_id
+      snap.hasMobilePhone = !!a.phone_mobile
+      snap.hasProfilePhoto = !!a.profile_image_url
+      snap.hasSocialAccount = has(social)
+      snap.hasPayoutAccount = has(stripe)
+      const emailConn = has(apiCred), phoneConn = has(phoneCred)
+      snap.hasEmailOrCalendar = emailConn
+      snap.hasOutreachChannel = emailConn || phoneConn
+    }
+    // User-row personal fields (all roles).
+    const { data: u } = await svc.from("users").select("personal_website_url, email_signature, phone").eq("id", userId).maybeSingle()
+    const ur = (u ?? {}) as any
+    snap.hasPersonalWebsite = !!ur.personal_website_url
+    snap.hasEmailSignature = !!ur.email_signature
+    if (!snap.hasMobilePhone) snap.hasMobilePhone = !!ur.phone
+
+    // Staff / external self-connect (email or calendar).
+    if (isStaff) {
+      const { data } = await svc.from("agent_api_credentials").select("id").eq("brokerage_id", brokerageId ?? "").eq("is_active", true).limit(50)
+      // agent_api_credentials is keyed by agent_id; for non-agent staff we accept a user-scoped platform cred instead.
+      const pc = await svc.from("platform_credentials").select("id").eq("agent_user_id", userId).eq("is_active", true).in("scope", ["email", "calendar"]).limit(1)
+      snap.hasEmailOrCalendar = ((data ?? []).length > 0 && !!agentId) || has(pc)
+    }
+
+    // Brokerage foundations (broker/admin).
+    if (isBrokerAdmin && brokerageId) {
+      const [brk, gs, comm, sms, vapi, acct, team] = await Promise.all([
+        svc.from("brokerages").select("license_number, recruiting_pitch").eq("id", brokerageId).maybeSingle(),
+        svc.from("global_settings").select("app_logo_url, primary_color, from_email, smtp_host").eq("brokerage_id", brokerageId).maybeSingle(),
+        svc.from("commission_structures").select("id").eq("brokerage_id", brokerageId).limit(1),
+        svc.from("platform_credentials").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).in("platform", ["twilio", "telnyx", "bandwidth", "vapi"]).limit(1),
+        svc.from("vapi_phone_numbers").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(1),
+        svc.from("brokerage_integrations").select("id").eq("brokerage_id", brokerageId).eq("provider_type", "accounting").limit(1),
+        svc.from("users").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).not("user_type", "in", "(contact,vendor,system,admin)"),
+      ])
+      const b = (brk.data ?? {}) as any, g = (gs.data ?? {}) as any
+      snap.hasBrokerageLicense = !!b.license_number
+      snap.hasRecruitingPitch = !!b.recruiting_pitch
+      snap.hasBranding = !!(g.app_logo_url || g.primary_color)
+      snap.hasEmailProvider = !!(g.from_email || g.smtp_host)
+      snap.hasCommissionStructure = has(comm)
+      snap.hasSmsProvider = has(sms)
+      snap.hasIsaPhone = has(vapi)
+      snap.hasAccountingSync = has(acct)
+      snap.hasTeamMembers = (team.count ?? 0) > 0
+    }
+
+    // Team-lead team config.
+    if (role === "team_lead") {
+      const { data } = await svc.from("teams").select("id").eq("team_lead_id", userId).not("team_split_type", "is", null).limit(1)
+      snap.hasTeamConfig = (data ?? []).length > 0
+    }
+  } catch (err) {
+    console.error("[setup-readiness] snapshot read failed:", err)
+  }
+
+  return resolveSetupReadiness(role, snap)
+}

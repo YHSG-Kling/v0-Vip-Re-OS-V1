@@ -31,6 +31,7 @@ import { WeeklyPlanWidget } from "./components/weekly-plan-widget"
 import { LicenseComplianceWidget } from "./components/license-compliance-widget"
 import { AgentCareerTierCard } from "@/app/components/agent/career-tier-card"
 import { OnboardingJourneyCard } from "@/app/components/agent/onboarding-journey-card"
+import { SetupReadinessCardClient } from "@/app/components/onboarding/setup-readiness-card-client"
 import { AgentFinancialIntelligence } from "./components/agent-financial-intelligence"
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
 import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
@@ -378,6 +379,9 @@ export default function AgentDashboard() {
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
         <ApprovalsBanner />
+
+        {/* Role-aware setup readiness — what the agent still needs to configure to sell */}
+        <SetupReadinessCardClient />
 
         {/* Usage warning — generic, superadmin-gated (no vendor names / amounts) */}
         <BudgetWarningBanner />

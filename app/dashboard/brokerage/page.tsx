@@ -45,6 +45,7 @@ import {
 import { BrokerRecruitingActionBar } from "./components/broker-recruiting-action-bar"
 import { BrokerProviderHealthActions } from "./components/broker-provider-health-actions"
 import { BrokerTeamAssignmentBar } from "./components/broker-team-assignment-bar"
+import { SetupReadinessCard } from "@/app/components/onboarding/setup-readiness-card"
 
 export default async function BrokerageDashboard({
   searchParams,
@@ -454,6 +455,9 @@ export default async function BrokerageDashboard({
 
       {/* Usage warning — generic, superadmin-gated (no vendor names / amounts) */}
       <BudgetWarningBanner />
+
+      {/* Role-aware setup readiness — what the broker still needs to configure to run the brokerage */}
+      <SetupReadinessCard />
 
       {/* Today's Focus — AI Brief synthesizing what matters today */}
       <TodaysFocusCard brief={brokerBrief} />
