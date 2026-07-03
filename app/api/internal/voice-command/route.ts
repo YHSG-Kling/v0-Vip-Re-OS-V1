@@ -30,6 +30,7 @@ type VoiceIntent =
   | "query_flight_risk"
   | "query_vendor_coverage"
   | "query_referral_income"
+  | "draft_save_plays"
   | "general_query"
 
 interface CallQueueItem {
@@ -101,6 +102,7 @@ export async function POST(req: NextRequest) {
 - query_flight_risk: asking which AGENTS are at RETENTION / FLIGHT risk, who's slipping, who might leave ("who's at flight risk", "any agents about to leave", "who's slipping on my team", "retention risks")
 - query_vendor_coverage: asking about VENDOR COVERAGE gaps in the bench — categories with upcoming demand but no reliable vendor ("any vendor coverage gaps", "is my bench covered", "do I have enough inspectors", "vendor gaps coming up")
 - query_referral_income: asking about the agent's own AGENT-TO-AGENT referral income / earnings / how much they've earned referring clients ("how much have I earned in referrals", "my referral income", "what have my agent referrals paid me")
+- draft_save_plays: COMMANDING the assistant to DRAFT / write / prepare retention SAVE-PLAYS for the at-risk / flight-risk agents ("draft save-plays for everyone at flight risk", "write save-plays for my at-risk agents", "prepare retention outreach for the agents who are slipping")
 - general_query: anything else
 
 Respond with ONLY the intent string, nothing else.`,
@@ -619,6 +621,32 @@ Respond with ONLY the intent string, nothing else.`,
             ? `You've earned $${Math.round(total).toLocaleString()} from agent-to-agent referrals so far.`
             : "You haven't earned any agent-to-agent referral income yet — refer a relocating client to another agent in your brokerage and you'll earn a fee when it closes."
           data = { referralIncome: Math.round(total * 100) / 100 }
+        }
+      }
+    } else if (intent === "draft_save_plays") {
+      // COMMAND — draft gated retention save-plays for the at-risk agents. Authority-gated: a broker/admin
+      // manages the team; a solo agent runs their own shop; a plain team agent is refused honestly.
+      if (!brokerageId) {
+        spokenResponse = "I can't draft save-plays without a brokerage on your profile."
+      } else {
+        const isStaff = ["broker", "broker_admin", "admin", "superadmin"].includes(profile.user_type ?? "")
+        let allowed = isStaff
+        if (!allowed) {
+          const { data: b } = await service.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()
+          allowed = (b as { plan_tier?: string } | null)?.plan_tier === "solo_agent"
+        }
+        if (!allowed) {
+          spokenResponse = "Only a broker or admin can draft team save-plays — ask yours to run this."
+        } else {
+          const { draftSavePlaysForAtRiskAgents } = await import("@/lib/recruiting/retention-radar")
+          const r = await draftSavePlaysForAtRiskAgents(service, { brokerageId })
+          spokenResponse = r.atRisk === 0
+            ? "No agents are at flight risk right now, so there's nothing to draft."
+            : r.drafted === 0
+              ? `Your ${r.atRisk} at-risk agent${r.atRisk === 1 ? " already has" : "s already have"} a save-play waiting in your approval queue.`
+              : `Done — I've drafted ${r.drafted} save-play${r.drafted === 1 ? "" : "s"} for your at-risk agents. Review and release them from your approval queue.`
+          data = { atRisk: r.atRisk, drafted: r.drafted }
+          action = "save_plays_drafted"
         }
       }
     } else {

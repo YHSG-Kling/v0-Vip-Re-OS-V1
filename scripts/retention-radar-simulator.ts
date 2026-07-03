@@ -51,7 +51,7 @@ function sourceLayer() {
   const radar = src("lib/recruiting/retention-radar.ts")
   check("gathers REAL signals (activity, closings, pipeline, onboarding)", /agent_assistant_sessions[\s\S]*?transactions[\s\S]*?agent_onboarding/.test(radar))
   check("upserts the daily score per (agent, date)", /from\("agent_retention_scores"\)\.upsert\([\s\S]*?onConflict: "agent_id,score_date"/.test(radar))
-  check("proposes a GATED save-play ONLY on a FRESH breach (no re-spam)", /freshBreach = previousScore == null \|\| previousScore >= 40[\s\S]*?proposeClientMessage/.test(radar))
+  check("proposes a GATED save-play ONLY on a FRESH breach (no re-spam)", /freshBreach = previousScore == null \|\| previousScore >= 40[\s\S]*?proposeRetentionSavePlay/.test(radar) && /export async function proposeRetentionSavePlay/.test(radar))
   check("also notifies the broker (deduped)", /type: "agent_retention_risk"/.test(radar))
   const cron = src("app/api/cron/compliance-monitoring/route.ts")
   check("the daily compliance-monitoring cron runs the radar", /runRetentionRadarAll/.test(cron))

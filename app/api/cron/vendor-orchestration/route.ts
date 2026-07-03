@@ -65,11 +65,19 @@ export async function GET(req: NextRequest) {
       coverageGaps = cf.gaps
     } catch (e: any) { errors.push(`coverage-forecast: ${e?.message ?? String(e)}`) }
 
+    // PRICE INTELLIGENCE — benchmark vendor costs vs category peers; flag the ones charging above peers.
+    let overpricedVendors = 0
+    try {
+      const { runVendorPriceIntelligenceAll } = await import("@/lib/kernel/vendor-price-intelligence")
+      const pi = await runVendorPriceIntelligenceAll(supabase)
+      overpricedVendors = pi.overpriced
+    } catch (e: any) { errors.push(`price-intel: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId, records_processed: proposed,
-      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, errors: errors.slice(0, 10) },
+      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors, errors: errors.slice(0, 10) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps })
+    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

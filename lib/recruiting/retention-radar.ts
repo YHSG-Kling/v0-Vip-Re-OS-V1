@@ -35,6 +35,36 @@ async function gatherSignals(svc: Svc, agent: { id: string; created_at?: string 
   }
 }
 
+/**
+ * Propose ONE gated retention save-play for an at-risk agent (idempotent per agent — an open save-play
+ * isn't re-proposed). Shared by the daily radar (on a fresh breach) and the on-demand voice/broker
+ * "draft save-plays" command, so both use the same dedupe tag + copy. Returns true when a NEW one lands.
+ */
+export async function proposeRetentionSavePlay(
+  svc: Svc, p: { brokerageId: string; agentId: string; agentName: string; score: number; drivers: string },
+): Promise<boolean> {
+  const dedupeTag = `RETENTION SAVE-PLAY — agent:${p.agentId}`
+  const { data: prior } = await svc.from("agent_client_messages").select("id")
+    .eq("brokerage_id", p.brokerageId).eq("entity_type", "agent").eq("entity_id", p.agentId)
+    .eq("agent_kind", "recruiting_manager").ilike("rationale", `${dedupeTag}%`).in("status", ["proposed", "approved"]).limit(1).maybeSingle()
+  if (prior) return false
+  try {
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const res = await proposeClientMessage({
+      brokerageId: p.brokerageId, agentKind: "recruiting_manager", entityType: "agent", entityId: p.agentId,
+      recipientContactId: null, audience: "agent",
+      subject: `Retention watch: ${p.agentName} needs a check-in`,
+      body: [
+        `${p.agentName}'s engagement is in the at-risk range (${p.score}/100). What's driving it: ${p.drivers}.`,
+        `A genuine check-in now — not pressure — is the highest-leverage move. Ask what's in their way and unblock one thing (a lead, a deal review, a mentor session). Retention is far cheaper than backfilling this seat.`,
+      ].join("\n\n"),
+      rationale: `${dedupeTag} — score ${p.score}, drivers: ${p.drivers}; review before it reaches the agent/broker.`,
+      channel: "portal",
+    }, svc)
+    return res.ok
+  } catch { return false }
+}
+
 export interface RetentionRadarResult { scanned: number; scored: number; atRisk: number; savePlaysProposed: number }
 
 /** Score a brokerage's active agents, persist today's scores, and propose a save-play on a fresh breach. */
@@ -77,28 +107,8 @@ export async function runRetentionRadar(
 
     const u = Array.isArray(a.users) ? a.users[0] : a.users
     const agentName = [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim() || "An agent"
-    const dedupeTag = `RETENTION SAVE-PLAY — agent:${a.id}`
-    const { data: prior } = await svc.from("agent_client_messages").select("id")
-      .eq("brokerage_id", params.brokerageId).eq("entity_type", "agent").eq("entity_id", a.id)
-      .eq("agent_kind", "recruiting_manager").ilike("rationale", `${dedupeTag}%`).in("status", ["proposed", "approved"]).limit(1).maybeSingle()
-    if (prior) continue
-
     const drivers = rs.drivingSignals.length ? rs.drivingSignals.join("; ") : "engagement is slipping across the board"
-    try {
-      const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
-      const res = await proposeClientMessage({
-        brokerageId: params.brokerageId, agentKind: "recruiting_manager", entityType: "agent", entityId: a.id,
-        recipientContactId: null, audience: "agent",
-        subject: `Retention watch: ${agentName} needs a check-in`,
-        body: [
-          `${agentName}'s engagement just dropped into the at-risk range (${rs.score}/100). What's driving it: ${drivers}.`,
-          `A genuine check-in now — not pressure — is the highest-leverage move. Ask what's in their way and unblock one thing (a lead, a deal review, a mentor session). Retention is far cheaper than backfilling this seat.`,
-        ].join("\n\n"),
-        rationale: `${dedupeTag} — score ${rs.score}, drivers: ${drivers}; review before it reaches the agent/broker.`,
-        channel: "portal",
-      }, svc)
-      if (res.ok) out.savePlaysProposed++
-    } catch { /* best-effort */ }
+    if (await proposeRetentionSavePlay(svc, { brokerageId: params.brokerageId, agentId: a.id, agentName, score: rs.score, drivers })) out.savePlaysProposed++
 
     // Also surface directly (deduped per open, like the license sweep). TIER-SAFE — a broker/admin gets
     // the flag in a team/brokerage org; a SOLO agent (no separate broker) gets it themselves, so a
@@ -112,6 +122,26 @@ export async function runRetentionRadar(
         await svc.from("notifications").insert({ user_id: mId, brokerage_id: params.brokerageId, type: "agent_retention_risk", title: `${agentName} is at retention risk (${rs.score}/100)`, body: drivers, entity_type: "agent", entity_id: a.id, priority: "high", is_read: false })
       }
     } catch { /* best-effort */ }
+  }
+  return out
+}
+
+/**
+ * ON-DEMAND — draft gated save-plays for every CURRENTLY at-risk agent that doesn't already have one
+ * open (invoked by the voice command "draft save-plays for my at-risk agents" or a broker button). Reads
+ * the retention board (latest scores) and reuses proposeRetentionSavePlay, so it shares the radar's
+ * dedupe + copy. Returns how many were drafted. Best-effort.
+ */
+export async function draftSavePlaysForAtRiskAgents(svc: Svc, params: { brokerageId: string }): Promise<{ atRisk: number; drafted: number }> {
+  const out = { atRisk: 0, drafted: 0 }
+  const { generateRetentionBoard } = await import("@/lib/intelligence/retention-board")
+  const board = await generateRetentionBoard(params.brokerageId, svc)
+  if (!board) return out
+  for (const a of board.agents) {
+    if (a.tier !== "at_risk" && a.tier !== "critical") continue
+    out.atRisk++
+    const drivers = a.drivers.length ? a.drivers.join("; ") : "engagement is slipping across the board"
+    if (await proposeRetentionSavePlay(svc, { brokerageId: params.brokerageId, agentId: a.agentId, agentName: a.name, score: a.score, drivers })) out.drafted++
   }
   return out
 }
