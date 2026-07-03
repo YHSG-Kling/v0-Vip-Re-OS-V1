@@ -333,6 +333,8 @@ export async function rateVendorBooking(data: {
   bookingId: string
   rating: number
   review?: string
+  headline?: string
+  subRatings?: { communication?: number; timeliness?: number; quality?: number; value?: number }
 }) {
   const supabase = await createClient()
 
@@ -350,7 +352,7 @@ export async function rateVendorBooking(data: {
   // attacker can't 1-star vendors in another tenant's marketplace.
   const { data: booking } = await supabase
     .from("vendor_bookings")
-    .select("vendor_id, transaction_id, brokerage_id")
+    .select("vendor_id, transaction_id, brokerage_id, booked_by, contact_id")
     .eq("id", data.bookingId)
     .eq("brokerage_id", profile.brokerage_id)
     .maybeSingle()
@@ -368,21 +370,36 @@ export async function rateVendorBooking(data: {
 
   if (updateError) throw updateError
 
-  // Insert vendor review
+  // Verification is SERVER-computed: the rater is the booking's requester → a verified booking party.
+  const { verificationMethod } = await import("@/lib/kernel/vendor-review-moderation")
+  const verdict = verificationMethod({
+    reviewerUserId: user.id,
+    booking: { requestedBy: (booking as any).booked_by, contactId: (booking as any).contact_id },
+  })
+
+  // Insert vendor review (agent booking rating — a verified, in-house review; auto-approved).
   const { error: reviewError } = await supabase
     .from("vendor_reviews")
     .insert({
       vendor_id: booking.vendor_id,
       user_id: user.id,
       brokerage_id: booking.brokerage_id,
+      booking_id: data.bookingId,
+      transaction_id: (booking as any).transaction_id ?? null,
       rating: data.rating,
       review: data.review,
+      headline: data.headline ?? null,
+      sub_ratings: data.subRatings ?? null,
+      is_verified: verdict.isVerified,
+      verification_method: verdict.method,
+      moderation_status: "approved",
     })
 
   if (reviewError) throw reviewError
 
-  // Recalculate vendor_ratings aggregate
+  // Recalculate vendor_ratings aggregate (booking rollup) + the weighted review rollup.
   await recalculateVendorRatings(booking.vendor_id, booking.brokerage_id)
+  await recomputeVendorReviewStats(booking.vendor_id, booking.brokerage_id)
 
   // Revalidate inside function to avoid module-level server dependency
   const { revalidatePath } = await import("next/cache")
@@ -475,6 +492,11 @@ export async function getVendorReviews(vendorId: string) {
       id,
       rating,
       review,
+      headline,
+      sub_ratings,
+      is_verified,
+      moderation_status,
+      vendor_response,
       created_at,
       users:user_id(first_name, last_name)
     `)
@@ -484,6 +506,194 @@ export async function getVendorReviews(vendorId: string) {
     .limit(20)
 
   return reviews || []
+}
+
+/**
+ * Recompute the WEIGHTED review rollup for a vendor (verified reviews at 1.5×) over its APPROVED reviews,
+ * and write review_avg / review_count / verified_review_count onto vendor_ratings. Runs after any review
+ * insert / moderation decision. Uses the service client so it isn't blocked by the reviewer's RLS scope.
+ */
+export async function recomputeVendorReviewStats(vendorId: string, brokerageId: string) {
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { weightedReviewAverage } = await import("@/lib/kernel/vendor-review-moderation")
+
+  const { data: rows } = await svc
+    .from("vendor_reviews")
+    .select("rating, is_verified")
+    .eq("vendor_id", vendorId)
+    .eq("brokerage_id", brokerageId)
+    .eq("moderation_status", "approved")
+    .limit(5000)
+
+  const stats = weightedReviewAverage(((rows ?? []) as Array<{ rating: number | null; is_verified: boolean }>).map((r) => ({ rating: r.rating, isVerified: !!r.is_verified })))
+
+  // vendor_ratings is unique on vendor_id — upsert the review columns without disturbing the booking rollup.
+  const { data: existing } = await svc.from("vendor_ratings").select("id").eq("vendor_id", vendorId).maybeSingle()
+  if (existing) {
+    await svc.from("vendor_ratings").update({
+      review_avg: stats.avg, review_count: stats.count, verified_review_count: stats.verifiedCount, last_updated: new Date().toISOString(),
+    }).eq("id", (existing as any).id)
+  } else {
+    await svc.from("vendor_ratings").insert({
+      vendor_id: vendorId, brokerage_id: brokerageId,
+      review_avg: stats.avg, review_count: stats.count, verified_review_count: stats.verifiedCount, total_bookings: 0, last_updated: new Date().toISOString(),
+    })
+  }
+  return stats
+}
+
+/**
+ * Submit a vendor review from a CLIENT (transaction-linked or organic homeowner). Verification is
+ * SERVER-enforced — the client cannot self-assert it: the reviewer must be a party to the referenced
+ * transaction/booking. The review is screened (screenReview) and either auto-approved or queued for a
+ * human. Scoped to the caller's brokerage.
+ */
+export async function submitVendorReview(data: {
+  vendorId: string
+  rating: number
+  body: string
+  headline?: string
+  subRatings?: { communication?: number; timeliness?: number; quality?: number; value?: number }
+  transactionId?: string
+  bookingId?: string
+}): Promise<{ id: string; moderationStatus: string; isVerified: boolean }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Not authenticated")
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  const { data: profile } = await svc.from("users").select("brokerage_id, created_at").eq("id", user.id).maybeSingle()
+  const brokerageId = (profile as any)?.brokerage_id
+  if (!brokerageId) throw new Error("Not authenticated")
+
+  const { verificationMethod, screenReview } = await import("@/lib/kernel/vendor-review-moderation")
+
+  // Load the referenced transaction / booking parties (brokerage-scoped) for server-side verification.
+  let transaction: any = null, booking: any = null
+  if (data.transactionId) {
+    const { data: t } = await svc.from("transactions").select("id, agent_id, buyer_contact_id, contact_id, brokerage_id").eq("id", data.transactionId).eq("brokerage_id", brokerageId).maybeSingle()
+    transaction = t ? { agentId: t.agent_id, buyerContactId: t.buyer_contact_id, contactId: t.contact_id } : null
+  }
+  if (data.bookingId) {
+    const { data: b } = await svc.from("vendor_bookings").select("id, booked_by, contact_id, brokerage_id").eq("id", data.bookingId).eq("brokerage_id", brokerageId).maybeSingle()
+    booking = b ? { requestedBy: b.booked_by, contactId: b.contact_id } : null
+  }
+
+  // The reviewer may be a staff user OR a contact — resolve their contact id if any (portal reviewers).
+  const { data: asContact } = await svc.from("contacts").select("id").eq("user_id", user.id).eq("brokerage_id", brokerageId).maybeSingle()
+  const verdict = verificationMethod({
+    reviewerUserId: user.id, reviewerContactId: (asContact as any)?.id ?? null, transaction, booking,
+  })
+
+  const accountAgeDays = (profile as any)?.created_at ? Math.floor((Date.now() - new Date((profile as any).created_at).getTime()) / 86_400_000) : null
+  const screen = screenReview({ rating: data.rating, body: data.body, accountAgeDays })
+
+  const { data: inserted, error } = await svc.from("vendor_reviews").insert({
+    vendor_id: data.vendorId, user_id: user.id, brokerage_id: brokerageId,
+    transaction_id: data.transactionId ?? null, booking_id: data.bookingId ?? null,
+    rating: data.rating, review: data.body, headline: data.headline ?? null, sub_ratings: data.subRatings ?? null,
+    is_verified: verdict.isVerified, verification_method: verdict.method,
+    moderation_status: screen.moderationStatus,
+  }).select("id").single()
+  if (error || !inserted) throw new Error(`Failed to submit review: ${error?.message ?? "no row"}`)
+
+  // Only approved reviews affect the vendor's public average.
+  if (screen.moderationStatus === "approved") await recomputeVendorReviewStats(data.vendorId, brokerageId)
+  return { id: (inserted as any).id, moderationStatus: screen.moderationStatus, isVerified: verdict.isVerified }
+}
+
+/**
+ * A vendor posts its ONE public response to a review. Immutable — a response can be set once and never
+ * edited or deleted by the vendor (only auto-screened for profanity/PII). Vendor-scoped by ownership.
+ */
+export async function respondToVendorReview(reviewId: string, response: string): Promise<{ ok: true }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Not authenticated")
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  // The caller must own the reviewed vendor (vendor_marketplace_profiles.user_id) — a vendor can only
+  // respond to reviews of itself.
+  const { data: review } = await svc.from("vendor_reviews").select("id, vendor_id, vendor_response").eq("id", reviewId).maybeSingle()
+  if (!review) throw new Error("Review not found")
+  if ((review as any).vendor_response) throw new Error("A response has already been submitted (responses are immutable).")
+
+  const { data: profileVendor } = await svc.from("vendor_marketplace_profiles").select("id").eq("user_id", user.id).maybeSingle()
+  const { data: ownsVendor } = await svc.from("vendors").select("id").eq("id", (review as any).vendor_id).maybeSingle()
+  if (!profileVendor && !ownsVendor) throw new Error("Not authorized to respond to this review")
+
+  const { screenReview } = await import("@/lib/kernel/vendor-review-moderation")
+  const screen = screenReview({ rating: 5, body: response.length < 50 ? response.padEnd(50, " ") : response, accountAgeDays: 999 })
+  if (screen.reasons.includes("profanity") || screen.reasons.includes("pii")) {
+    throw new Error("Response contains profanity or personal information and was not posted.")
+  }
+
+  const { error } = await svc.from("vendor_reviews").update({ vendor_response: response, vendor_response_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", reviewId)
+  if (error) throw error
+  return { ok: true }
+}
+
+/**
+ * Any authenticated user (except the vendor) can flag a review. Flags dedupe per (review, user); at
+ * FLAG_UNDER_REVIEW the review moves to `under_review` for a human. Returns the new flag count.
+ */
+export async function flagVendorReview(reviewId: string, reason: string): Promise<{ flagCount: number; status: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Not authenticated")
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  const { data: review } = await svc.from("vendor_reviews").select("id, brokerage_id, moderation_status, flag_count").eq("id", reviewId).maybeSingle()
+  if (!review) throw new Error("Review not found")
+
+  const allowed = ["inappropriate", "fake", "competitor", "pii", "irrelevant"]
+  const reasonCode = allowed.includes(reason) ? reason : "inappropriate"
+
+  // Dedupe per (review, user) via the unique constraint — a repeat flag is a no-op.
+  const { error: flagErr } = await svc.from("vendor_review_flags").insert({
+    review_id: reviewId, flagged_by: user.id, brokerage_id: (review as any).brokerage_id, reason: reasonCode,
+  })
+  // Unique-violation (already flagged) is not an error for the caller.
+  if (flagErr && !/duplicate key|unique/i.test(flagErr.message)) throw flagErr
+
+  const { count } = await svc.from("vendor_review_flags").select("id", { count: "exact", head: true }).eq("review_id", reviewId)
+  const flagCount = count ?? 0
+
+  const { moderationAfterFlag } = await import("@/lib/kernel/vendor-review-moderation")
+  const newStatus = moderationAfterFlag((review as any).moderation_status, flagCount)
+  await svc.from("vendor_reviews").update({ flag_count: flagCount, moderation_status: newStatus, updated_at: new Date().toISOString() }).eq("id", reviewId)
+  return { flagCount, status: newStatus }
+}
+
+/**
+ * Admin moderation decision on a review (approve / reject). Only brokerage admins/brokers. On a status
+ * change the vendor's weighted review rollup is recomputed so a rejected review stops counting.
+ */
+export async function moderateVendorReview(reviewId: string, decision: "approve" | "reject"): Promise<{ ok: true }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Not authenticated")
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { data: profile } = await svc.from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
+  const brokerageId = (profile as any)?.brokerage_id
+  const isAdmin = ["broker", "admin", "broker_admin", "superadmin"].includes(String((profile as any)?.user_type)) || ["broker", "admin", "owner"].includes(String((profile as any)?.role))
+  if (!brokerageId || !isAdmin) throw new Error("Not authorized")
+
+  const { data: review } = await svc.from("vendor_reviews").select("id, vendor_id, brokerage_id").eq("id", reviewId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (!review) throw new Error("Review not found in your brokerage")
+
+  await svc.from("vendor_reviews").update({ moderation_status: decision === "approve" ? "approved" : "rejected", updated_at: new Date().toISOString() }).eq("id", reviewId)
+  await recomputeVendorReviewStats((review as any).vendor_id, brokerageId)
+  return { ok: true }
 }
 
 // ============================================
