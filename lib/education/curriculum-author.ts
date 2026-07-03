@@ -121,7 +121,7 @@ export async function runCurriculumAuthor(svc: Svc, params: { brokerageId: strin
 }
 
 /** PURE: render an authored curriculum into a rich learning_modules body (markdown) — real content. */
-export function renderCurriculumBody(gap: KnowledgeGap, c: Curriculum): string {
+export function renderModuleBody(c: Curriculum, footer: string): string {
   return [
     `# ${c.title}`,
     "",
@@ -131,8 +131,13 @@ export function renderCurriculumBody(gap: KnowledgeGap, c: Curriculum): string {
     ...c.objectives.map((o) => `- ${o}`),
     "",
     ...c.lessons.flatMap((l) => [`## ${l.title}`, ...l.keyPoints.map((k) => `- ${k}`), ""]),
-    `_Authored by the Recruiting Manager from a real, recurring gap: ${gap.rationale}_`,
-  ].join("\n")
+    footer ? `_${footer}_` : "",
+  ].filter(Boolean).join("\n")
+}
+
+/** PURE: render a knowledge-gap curriculum (footer names the gap that triggered it). */
+export function renderCurriculumBody(gap: KnowledgeGap, c: Curriculum): string {
+  return renderModuleBody(c, `Authored by the Recruiting Manager from a real, recurring gap: ${gap.rationale}`)
 }
 
 /**

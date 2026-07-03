@@ -169,6 +169,18 @@ export async function signupBrokerageAction(
     updated_at:          new Date().toISOString(),
   })
 
+  // SUBSCRIPTION_CREATED — emit the lifecycle event (best-effort, never blocks signup) so downstream
+  // reactors have a real-time hook; the weekly cron is the idempotent safety net that authors the tier
+  // onboarding curriculum if this misses.
+  try {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    await emitKernelEvent({
+      event: KernelEvent.SUBSCRIPTION_CREATED, brokerageId: brokerage.id,
+      entityType: "brokerage", entityId: brokerage.id, metadata: { tier: input.tier },
+    })
+  } catch (err) { console.warn("[signupBrokerage] SUBSCRIPTION_CREATED emit failed:", (err as any)?.message) }
+
   // Step 5 — audit log entry (non-fatal)
   try {
     await service.from("activities").insert({

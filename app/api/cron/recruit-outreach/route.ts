@@ -97,12 +97,21 @@ export async function GET(req: NextRequest) {
       curriculaAuthored = authored.authored
     } catch (e: any) { errors.push(`curriculum-author: ${e?.message ?? String(e)}`) }
 
+    // TIER ONBOARDING CURRICULUM — the OS trains new subscribers out of the gate: author the tier- and
+    // role-appropriate onboarding path (idempotent safety net for the SUBSCRIPTION_CREATED emit).
+    let onboardingAuthored = 0
+    try {
+      const { runOnboardingCurriculumAll } = await import("@/lib/education/onboarding-curriculum")
+      const ob = await runOnboardingCurriculumAll(supabase)
+      onboardingAuthored = ob.authored
+    } catch (e: any) { errors.push(`onboarding-curriculum: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, brokerages: brokerages.length, errors },
+      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, brokerages: brokerages.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, brokerages: brokerages.length, errors })
+    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, brokerages: brokerages.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
