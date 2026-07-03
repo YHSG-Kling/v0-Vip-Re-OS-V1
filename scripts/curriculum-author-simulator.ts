@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { detectKnowledgeGaps, MIN_RECURRENCE, type GapSignal } from "../lib/education/knowledge-gap-detector"
+import { classifyQuestion, buildQuestionSignals, QUESTION_MIN_ASKERS } from "../lib/education/question-gap"
 import { summarizeCurriculumBoard } from "../lib/intelligence/curriculum-board"
 
 let pass = 0, fail = 0
@@ -42,6 +43,18 @@ function pureLayer() {
   ])
   check("worse + more-frequent gap ranks first (priority)", ranked[0].topicKey === "objection:b")
   check("quiet signal → no gaps (honest)", detectKnowledgeGaps([]).length === 0)
+
+  console.log("\n[question → curriculum · pure — the OS learns from what people ask]")
+  check("classifies a real-estate question to its topic", classifyQuestion("what does clear to close mean?")?.topic === "clear_to_close" && classifyQuestion("how does escrow work")?.topic === "escrow")
+  check("an off-topic / too-short question is not force-fit (null)", classifyQuestion("hello") === null && classifyQuestion("what's the weather") === null)
+  const qs = Array.from({ length: QUESTION_MIN_ASKERS }, () => ({ text: "can you explain how the appraisal process works" }))
+  const qSignals = buildQuestionSignals(qs)
+  check(`a topic asked ≥${QUESTION_MIN_ASKERS}× becomes a question signal`, qSignals.length === 1 && qSignals[0].topicKey === "question:appraisal" && qSignals[0].source === "question")
+  check("under the recurrence floor → no signal (noise)", buildQuestionSignals([{ text: "how does escrow work" }]).length === 0)
+  const qGap = detectKnowledgeGaps(qSignals)
+  check("a recurring question is a gap (recurrence-only, like compliance)", qGap.length === 1 && qGap[0].topicKey === "question:appraisal")
+  const gs = readFileSync(join(process.cwd(), "lib/education/curriculum-author.ts"), "utf8")
+  check("gatherGapSignals mines chat questions (brokerage-scoped user turns)", /from\("chat_messages"\)[\s\S]*?chat_sessions!inner\(brokerage_id\)[\s\S]*?buildQuestionSignals/.test(gs))
 
   console.log("\n[summarizeCurriculumBoard · pure — canonical learning_modules rows]")
   const board = summarizeCurriculumBoard([

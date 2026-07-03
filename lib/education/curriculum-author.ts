@@ -36,9 +36,12 @@ export type Curriculum = z.infer<typeof CurriculumSchema>
 /** Gather the real knowledge-gap signals for a brokerage (objection drills + compliance violations). */
 export async function gatherGapSignals(svc: Svc, brokerageId: string, now: Date): Promise<GapSignal[]> {
   const since = new Date(now.getTime() - 180 * 86_400_000).toISOString()
-  const [drills, flags] = await Promise.all([
+  const questionSince = new Date(now.getTime() - 30 * 86_400_000).toISOString()
+  const [drills, flags, questions] = await Promise.all([
     svc.from("objection_training_sessions").select("scenario_key, scenario_label, total_score, improvements").eq("brokerage_id", brokerageId).not("completed_at", "is", null).gte("started_at", since).limit(5000),
     svc.from("compliance_flags").select("violation_type, flagged_content").eq("brokerage_id", brokerageId).gte("created_at", since).limit(5000),
+    // QUESTION SIGNAL — recurring questions in the assistant/tutor logs (user turns only, brokerage-scoped).
+    svc.from("chat_messages").select("content, chat_sessions!inner(brokerage_id)").eq("role", "user").eq("chat_sessions.brokerage_id", brokerageId).gte("created_at", questionSince).limit(5000),
   ])
 
   const signals: GapSignal[] = []
@@ -75,6 +78,13 @@ export async function gatherGapSignals(svc: Svc, brokerageId: string, now: Date)
   for (const [type, e] of byViolation) {
     signals.push({ topicKey: `compliance:${type}`, topicLabel: type.replace(/_/g, " "), source: "compliance", weakCount: e.count, totalCount: e.count, avgScore: null, evidence: e.evidence })
   }
+
+  // Recurring assistant/tutor questions → question gaps (classified against the fixed topic lexicon).
+  try {
+    const { buildQuestionSignals } = await import("@/lib/education/question-gap")
+    const rawQs = ((questions.data ?? []) as Array<{ content?: string | null }>).map((q) => ({ text: q.content ?? "" }))
+    signals.push(...buildQuestionSignals(rawQs))
+  } catch { /* question mining is best-effort */ }
 
   return signals
 }

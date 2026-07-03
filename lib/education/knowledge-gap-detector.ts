@@ -8,7 +8,7 @@
 // author never manufactures a course nobody needs, and a topic the team already handles well never
 // surfaces.
 
-export type GapSource = "objection_drill" | "compliance"
+export type GapSource = "objection_drill" | "compliance" | "question"
 
 export interface GapSignal {
   /** Stable slug, e.g. "objection:price_too_high" or "compliance:fair_housing_language". */
@@ -59,9 +59,11 @@ export function detectKnowledgeGaps(signals: GapSignal[], opts: { minRecurrence?
 
   for (const s of signals) {
     if (s.weakCount < minRec) continue // not recurring enough — noise, not a gap
-    const weaknessRatio = s.source === "compliance" ? 1 : (s.totalCount > 0 ? s.weakCount / s.totalCount : 0)
+    // Scored topics (drills) carry an avgScore; recurrence-only sources (compliance, questions) do not.
+    const scored = s.avgScore != null
+    const weaknessRatio = scored ? (s.totalCount > 0 ? s.weakCount / s.totalCount : 0) : 1
     // Scored topics must also show the weakness is prevalent (a mostly-strong scenario isn't a gap).
-    if (s.source !== "compliance" && weaknessRatio < minRatio) continue
+    if (scored && weaknessRatio < minRatio) continue
 
     // Priority: weak volume scaled by how weak (a 40-avg gap outranks a 68-avg gap of equal volume).
     const weaknessDepth = s.avgScore != null ? (100 - s.avgScore) / 100 : 0.7
@@ -69,6 +71,8 @@ export function detectKnowledgeGaps(signals: GapSignal[], opts: { minRecurrence?
 
     const rationale = s.source === "compliance"
       ? `${s.weakCount} recurring ${s.topicLabel} compliance flags — the roster keeps getting this wrong.`
+      : s.source === "question"
+      ? `${s.weakCount} people asked about ${s.topicLabel} recently — a recurring question worth a proper lesson.`
       : `${s.weakCount}/${s.totalCount} drills on ${s.topicLabel} scored weak (avg ${Math.round(s.avgScore ?? 0)}/100) — a real, repeated gap.`
 
     gaps.push({
