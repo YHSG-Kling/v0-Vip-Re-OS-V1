@@ -18,6 +18,9 @@ export interface RetentionSignals {
   onboardingPct: number | null
   /** Days since the agent joined (young agents in a production drought aren't as alarming). */
   tenureDays: number | null
+  /** Gamification points earned in the last 30 days (null = unknown → neutral). Engaged, competing agents
+   *  are near-zero flight risk — the spec's gamification→retention feed. */
+  gamificationPoints30d?: number | null
 }
 
 export type RetentionTier = "engaged" | "healthy" | "watch" | "at_risk" | "critical"
@@ -66,6 +69,12 @@ export function computeRetentionScore(sig: RetentionSignals): RetentionScore {
   // 4. Onboarding ramp — a stalled ramp is an early flight signal.
   const rampSub = sig.onboardingPct == null ? null : clamp01(sig.onboardingPct / 100)
   parts.push({ key: "onboarding", label: "Stalled onboarding", weight: 0.15, sub: rampSub })
+
+  // 5. Gamification engagement — points in the last 30d; 500+ = fully engaged. Competing agents rarely
+  //    leave. Absent (null) → dropped + renormalized (identical to the prior 4-signal behavior).
+  const gamePts = sig.gamificationPoints30d
+  const gameSub = gamePts == null ? null : clamp01(Math.min(1, gamePts / 500))
+  parts.push({ key: "gamification", label: "Low activity/engagement momentum", weight: 0.10, sub: gameSub })
 
   const present = parts.filter((p) => p.sub != null)
   const totalWeight = present.reduce((s, p) => s + p.weight, 0) || 1

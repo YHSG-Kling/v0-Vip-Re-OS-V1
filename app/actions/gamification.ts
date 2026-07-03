@@ -208,7 +208,7 @@ export async function addPoints(agentId: string, pointType: keyof typeof POINT_V
   // Get current points
   const { data: agent, error: getError } = await supabase
     .from("agents")
-    .select("gamification_points")
+    .select("gamification_points, brokerage_id")
     .eq("id", agentId)
     .single()
 
@@ -224,6 +224,16 @@ export async function addPoints(agentId: string, pointType: keyof typeof POINT_V
     .eq("id", agentId)
 
   if (updateError) throw updateError
+
+  // CONSOLIDATION — write the canonical ledger (agent_points_log) so ALL point awards (both this path and
+  // app/actions/agents.awardPoints) land in one auditable, windowable stream that the leaderboard + the
+  // retention gamification signal read. Best-effort; the total is already updated above.
+  if (agent?.brokerage_id) {
+    await supabase.from("agent_points_log").insert({
+      agent_id: agentId, brokerage_id: agent.brokerage_id, points: pointsToAdd,
+      reason: pointType, reference_type: "gamification_event",
+    }).then(undefined, () => {})
+  }
 
   // Check and award any new badges
   const newBadges = await checkAndAwardBadges(agentId, newPoints)

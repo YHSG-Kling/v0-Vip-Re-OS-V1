@@ -20,18 +20,22 @@ const daysSince = (iso: string | null | undefined, now: Date): number | null => 
 
 /** Gather the real signals for one agent (best-effort; missing → null → neutral in the scorer). */
 async function gatherSignals(svc: Svc, agent: { id: string; created_at?: string | null }, now: Date): Promise<RetentionSignals> {
-  const [act, lastClose, pipeline, onboarding] = await Promise.all([
+  const since30 = new Date(now.getTime() - 30 * 86_400_000).toISOString()
+  const [act, lastClose, pipeline, onboarding, points] = await Promise.all([
     svc.from("agent_assistant_sessions").select("started_at").eq("agent_id", agent.id).order("started_at", { ascending: false }).limit(1).maybeSingle(),
     svc.from("transactions").select("close_date").eq("agent_id", agent.id).eq("status", "closed").not("close_date", "is", null).order("close_date", { ascending: false }).limit(1).maybeSingle(),
     svc.from("transactions").select("id", { count: "exact", head: true }).eq("agent_id", agent.id).in("stage", ["UNDER_CONTRACT", "INSPECTION", "APPRAISAL", "FINANCING_PENDING", "CLOSING_PREP"]),
     svc.from("agent_onboarding").select("completion_percentage").eq("agent_id", agent.id).maybeSingle(),
+    svc.from("agent_points_log").select("points").eq("agent_id", agent.id).gte("created_at", since30).limit(2000),
   ])
+  const points30d = Array.isArray(points.data) ? (points.data as Array<{ points: number | null }>).reduce((s, r) => s + (Number(r.points) || 0), 0) : null
   return {
     daysSinceActivity: daysSince((act.data as any)?.started_at ?? null, now),
     daysSinceClosing: daysSince((lastClose.data as any)?.close_date ?? null, now),
     activePipeline: (pipeline as any)?.count ?? null,
     onboardingPct: (onboarding.data as any)?.completion_percentage ?? null,
     tenureDays: daysSince(agent.created_at ?? null, now),
+    gamificationPoints30d: points30d,
   }
 }
 

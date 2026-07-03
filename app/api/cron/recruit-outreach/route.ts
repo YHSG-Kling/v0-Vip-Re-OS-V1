@@ -124,12 +124,21 @@ export async function GET(req: NextRequest) {
       tierUpgrades = ct.upgraded; tierNudges = ct.nudges
     } catch (e: any) { errors.push(`career-tier: ${e?.message ?? String(e)}`) }
 
+    // LEADERBOARD — snapshot weekly/monthly/all-time point rankings from the single ledger (fixes the
+    // never-populated leaderboard drift).
+    let leaderboardRows = 0
+    try {
+      const { runLeaderboardSnapshotAll } = await import("@/lib/recruiting/leaderboard")
+      const lb = await runLeaderboardSnapshotAll(supabase)
+      leaderboardRows = lb.rows
+    } catch (e: any) { errors.push(`leaderboard: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, tierUpgrades, tierNudges, brokerages: brokerages.length, errors },
+      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, brokerages: brokerages.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, tierUpgrades, tierNudges, brokerages: brokerages.length, errors })
+    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, brokerages: brokerages.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
