@@ -105,7 +105,9 @@ export function buildDailyActionPlan(input: {
   dayInProgram: number
   phase: number
   pendingSteps: JourneyStep[]
-  openLeads: number
+  /** CONTACTS the agent manages that are due for a touch. (Unqualified leads stay AI-ISA-owned — an agent
+   *  works their contacts, not the raw lead queue.) */
+  contactsToFollow: number
   activePipeline: number
 }): DailyActionPlan {
   const name = input.agentName?.trim()
@@ -113,8 +115,8 @@ export function buildDailyActionPlan(input: {
   for (const s of [...input.pendingSteps].sort((a, b) => a.dayNumber - b.dayNumber).slice(0, 3)) {
     tasks.push({ title: s.name, detail: (s.instructions?.trim() || `Complete this onboarding step — it's on your plan for day ${s.dayNumber}.`), estimatedMinutes: s.estimatedMinutes ?? null, stepId: s.id })
   }
-  if (tasks.length < 3 && input.openLeads > 0) tasks.push({ title: `Follow up with your ${input.openLeads} open lead${input.openLeads === 1 ? "" : "s"}`, detail: "Go to CRM → Leads and send the next touch to your warmest lead before 10 AM.", estimatedMinutes: 10 })
-  if (tasks.length < 3 && input.activePipeline === 0) tasks.push({ title: "Start your pipeline", detail: "Add contacts to your CRM and log your first buyer or seller consultation.", estimatedMinutes: 15 })
+  if (tasks.length < 3 && input.contactsToFollow > 0) tasks.push({ title: `Follow up with your ${input.contactsToFollow} contact${input.contactsToFollow === 1 ? "" : "s"}`, detail: "Go to CRM → Contacts and send the next touch to a contact who's due before 10 AM.", estimatedMinutes: 10 })
+  if (tasks.length < 3 && input.activePipeline === 0) tasks.push({ title: "Start your pipeline", detail: "Reach out to contacts in your CRM and log your first buyer or seller consultation.", estimatedMinutes: 15 })
   if (tasks.length < 3) tasks.push({ title: "Sharpen one skill", detail: "Spend 10 minutes on a lesson relevant to your current stage in the learning center.", estimatedMinutes: 10 })
 
   return {

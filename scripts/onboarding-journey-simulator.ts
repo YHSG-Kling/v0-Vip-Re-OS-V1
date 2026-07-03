@@ -46,12 +46,12 @@ function pureLayer() {
   check("fall-behind: on track → none; new agent (<3d) never flagged; finished never flagged", fallBehindRisk(20, 25) === "none" && fallBehindRisk(2, 0) === "none" && fallBehindRisk(90, 100) === "none")
 
   console.log("\n[daily action plan · pure — deterministic 3 tasks + tip]")
-  const plan = buildDailyActionPlan({ agentName: "Sam", dayInProgram: 17, phase: 2, pendingSteps: [step("s1", 15), step("s2", 18), step("s3", 22), step("s4", 25)], openLeads: 3, activePipeline: 0 })
+  const plan = buildDailyActionPlan({ agentName: "Sam", dayInProgram: 17, phase: 2, pendingSteps: [step("s1", 15), step("s2", 18), step("s3", 22), step("s4", 25)], contactsToFollow: 3, activePipeline: 0 })
   check("greeting names the agent + day", /Sam/.test(plan.greeting) && /day 17/.test(plan.greeting))
   check("exactly 3 priority tasks, nearest-day pending first", plan.priorityTasks.length === 3 && plan.priorityTasks[0].stepId === "s1")
   check("has a phase-specific learning tip + motivation", plan.learningTip.length > 0 && plan.motivation.length > 0)
-  const thin = buildDailyActionPlan({ agentName: null, dayInProgram: 5, phase: 1, pendingSteps: [step("only", 3)], openLeads: 2, activePipeline: 0 })
-  check("fills to 3 tasks from pipeline/leads when few steps pending", thin.priorityTasks.length === 3 && thin.priorityTasks.some((t) => /open lead/.test(t.title)))
+  const thin = buildDailyActionPlan({ agentName: null, dayInProgram: 5, phase: 1, pendingSteps: [step("only", 3)], contactsToFollow: 2, activePipeline: 0 })
+  check("fills from CONTACTS (agent-managed) not the ISA lead queue", thin.priorityTasks.length === 3 && thin.priorityTasks.some((t) => /contact/.test(t.title)))
 }
 
 function sourceLayer() {

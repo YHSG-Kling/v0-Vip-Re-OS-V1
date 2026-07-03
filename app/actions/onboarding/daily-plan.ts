@@ -28,11 +28,12 @@ export async function getAgentDailyActionPlan(agentId: string): Promise<AgentJou
   // Program day: prefer current_day, else derive from start_date.
   const day = o.current_day ?? (o.start_date ? Math.max(1, Math.floor((Date.now() - Date.parse(o.start_date)) / 86_400_000) + 1) : 1)
 
-  const [stepsRes, doneRes, pipelineRes, leadsRes, agentRes] = await Promise.all([
+  const [stepsRes, doneRes, pipelineRes, contactsRes, agentRes] = await Promise.all([
     svc.from("onboarding_steps").select("id, step_name, day_number, required, estimated_minutes, instructions, target_role").or(`brokerage_id.eq.${o.brokerage_id},brokerage_id.is.null`).limit(200),
     svc.from("agent_step_completions").select("step_id").eq("agent_id", agentId).limit(500),
     svc.from("transactions").select("id", { count: "exact", head: true }).eq("agent_id", agentId).in("stage", ["UNDER_CONTRACT", "INSPECTION", "APPRAISAL", "FINANCING_PENDING", "CLOSING_PREP"]),
-    svc.from("leads").select("id", { count: "exact", head: true }).eq("agent_id", agentId).eq("is_active", true),
+    // CONTACTS the agent manages — NOT the raw lead queue (unqualified leads stay AI-ISA-owned).
+    svc.from("contacts").select("id", { count: "exact", head: true }).eq("agent_id", agentId),
     svc.from("agents").select("users(first_name)").eq("id", agentId).maybeSingle(),
   ])
 
@@ -46,7 +47,7 @@ export async function getAgentDailyActionPlan(agentId: string): Promise<AgentJou
 
   const plan = buildDailyActionPlan({
     agentName, dayInProgram: day, phase: progress.phase, pendingSteps,
-    openLeads: (leadsRes as any)?.count ?? 0, activePipeline: (pipelineRes as any)?.count ?? 0,
+    contactsToFollow: (contactsRes as any)?.count ?? 0, activePipeline: (pipelineRes as any)?.count ?? 0,
   })
 
   return { active: true, progress, plan, risk: fallBehindRisk(day, progress.overallPct), phaseFocus: phaseForDay(day).focus }

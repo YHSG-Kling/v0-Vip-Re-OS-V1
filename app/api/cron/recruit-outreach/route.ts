@@ -133,12 +133,21 @@ export async function GET(req: NextRequest) {
       leaderboardRows = lb.rows
     } catch (e: any) { errors.push(`leaderboard: ${e?.message ?? String(e)}`) }
 
+    // CHALLENGES — score every active challenge's live standings and finalize any that just ended,
+    // awarding prize points into the SAME ledger + proposing a gated winner announcement.
+    let challengesFinalized = 0
+    try {
+      const { runChallengeScoringAll } = await import("@/lib/recruiting/challenge-runner")
+      const ch = await runChallengeScoringAll(supabase)
+      challengesFinalized = ch.finalized
+    } catch (e: any) { errors.push(`challenges: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, brokerages: brokerages.length, errors },
+      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, brokerages: brokerages.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, brokerages: brokerages.length, errors })
+    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, brokerages: brokerages.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
