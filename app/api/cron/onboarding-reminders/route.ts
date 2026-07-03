@@ -56,8 +56,20 @@ export async function GET(request: Request) {
       console.error("[OnboardingReminders] skill freshness radar:", e)
     }
 
-    await recordCronSuccessAction({ context_id: contextId, records_processed: mentorship.graduated + mentorship.nudged + skillRefreshers, metadata: { mentorship, skillRefreshers } })
-    return NextResponse.json({ ok: true, mentorship, skillRefreshers }, { status: 200 })
+    // ONBOARDING FALL-BEHIND — a new agent materially behind their 90-day ramp (red) → ONE gated broker
+    // intervention with a check-in script (the agent-facing reminder handles the gentler cases).
+    let fallBehindInterventions = 0
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { runOnboardingFallBehindAll } = await import("@/lib/kernel/onboarding-fallbehind")
+      const r = await runOnboardingFallBehindAll(createServiceClient())
+      fallBehindInterventions = r.interventions
+    } catch (e) {
+      console.error("[OnboardingReminders] fall-behind:", e)
+    }
+
+    await recordCronSuccessAction({ context_id: contextId, records_processed: mentorship.graduated + mentorship.nudged + skillRefreshers + fallBehindInterventions, metadata: { mentorship, skillRefreshers, fallBehindInterventions } })
+    return NextResponse.json({ ok: true, mentorship, skillRefreshers, fallBehindInterventions }, { status: 200 })
   } catch (err) {
     console.error("[cron/onboarding-reminders] Failed:", err)
     await recordCronFailureAction({ context_id: contextId, error: err as Error | string, stage: "main-processing" })
