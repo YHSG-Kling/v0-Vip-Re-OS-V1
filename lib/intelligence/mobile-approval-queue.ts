@@ -164,10 +164,9 @@ export async function enqueueApprovalNotifications(
   }>
   if (messages.length === 0) return { agentAlerts: 0, managerEscalations: 0 }
 
-  // Brokerage managers (escalation targets) resolved once.
-  const { data: mgrs } = await supabase.from("users").select("id")
-    .eq("brokerage_id", brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(20)
-  const managerIds = ((mgrs ?? []) as Array<{ id: string }>).map((m) => m.id)
+  // Brokerage managers (escalation targets) resolved once — tier-safe (a solo agent is their own).
+  const { resolveOrgRecipients } = await import("@/lib/kernel/org-recipients")
+  const managerIds = await resolveOrgRecipients(supabase, brokerageId, { limit: 20 })
 
   let agentAlerts = 0, managerEscalations = 0
   for (const m of messages) {

@@ -456,10 +456,11 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       const { upsertRecruitingRoi } = await import("@/lib/recruiting/recruiting-roi-writer")
       await upsertRecruitingRoi(ctx.supabase, { brokerageId: ctx.brokerageId, recruitedAgentId: agentId })
     } catch { /* best-effort — the milestone still lands */ }
-    // Celebrate to the brokerage managers.
-    const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
-    for (const m of (mgrs ?? []) as Array<{ id: string }>) {
+    // Celebrate to the brokerage managers — or the solo agent when there's no separate broker (tier-safe).
+    const { resolveOrgRecipients } = await import("@/lib/kernel/org-recipients")
+    const mgrIds = await resolveOrgRecipients(ctx.supabase, ctx.brokerageId)
+    for (const mId of mgrIds) {
+      const m = { id: mId }
       await ctx.supabase.from("notifications").insert({
         user_id: m.id, brokerage_id: ctx.brokerageId, type: "recruiting_milestone",
         title: "A recruited agent just closed their first deal 🎉",

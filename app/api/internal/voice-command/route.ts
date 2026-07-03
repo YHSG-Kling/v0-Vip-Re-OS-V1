@@ -27,6 +27,9 @@ type VoiceIntent =
   | "closings_at_risk"
   | "send_equity_report"
   | "launch_campaign"
+  | "query_flight_risk"
+  | "query_vendor_coverage"
+  | "query_referral_income"
   | "general_query"
 
 interface CallQueueItem {
@@ -95,6 +98,9 @@ export async function POST(req: NextRequest) {
 - closings_at_risk: asking which closings/deals are AT RISK or tight this week ("what closings are at risk this week", "any deals about to slip", "which closings are tight")
 - send_equity_report: asking to send/run a named person's ANNIVERSARY EQUITY report ("send the Garcias their anniversary equity report", "run Jordan's equity update")
 - launch_campaign: asking to LAUNCH / push / kick off / go live with the MARKETING CAMPAIGN for a LISTING ADDRESS ("launch the campaign for 123 Oak Street", "push the just-listed campaign on Maple", "take the Birch Lane campaign live")
+- query_flight_risk: asking which AGENTS are at RETENTION / FLIGHT risk, who's slipping, who might leave ("who's at flight risk", "any agents about to leave", "who's slipping on my team", "retention risks")
+- query_vendor_coverage: asking about VENDOR COVERAGE gaps in the bench — categories with upcoming demand but no reliable vendor ("any vendor coverage gaps", "is my bench covered", "do I have enough inspectors", "vendor gaps coming up")
+- query_referral_income: asking about the agent's own AGENT-TO-AGENT referral income / earnings / how much they've earned referring clients ("how much have I earned in referrals", "my referral income", "what have my agent referrals paid me")
 - general_query: anything else
 
 Respond with ONLY the intent string, nothing else.`,
@@ -560,6 +566,59 @@ Respond with ONLY the intent string, nothing else.`,
           spokenResponse = spokenTaskConfirmation(created.title, created.due_date ?? null, contactName)
           data = { taskId: created.id, title: created.title, dueDate: created.due_date ?? null, contactId }
           action = "task_created"
+        }
+      }
+    } else if (intent === "query_flight_risk") {
+      // "Who's at flight risk?" — the Recruiting Manager's retention board, spoken.
+      if (!brokerageId) {
+        spokenResponse = "I can't check retention without a brokerage on your profile."
+      } else {
+        const { generateRetentionBoard } = await import("@/lib/intelligence/retention-board")
+        const board = await generateRetentionBoard(brokerageId, service)
+        if (!board || board.scored === 0) {
+          spokenResponse = "No retention scores yet — your team's flight risk will show once the radar has run."
+        } else if (board.atRisk === 0) {
+          spokenResponse = `Good news — none of your ${board.scored} agents are at flight risk right now.`
+        } else {
+          const worst = board.agents.slice(0, 3).map((a) => `${a.name} at ${a.score}`).join(", ")
+          spokenResponse = `${board.atRisk} agent${board.atRisk === 1 ? " is" : "s are"} at flight risk. The most at-risk: ${worst}. Want me to draft their save-plays?`
+          data = { atRisk: board.atRisk, agents: board.agents.slice(0, 5) }
+        }
+      }
+    } else if (intent === "query_vendor_coverage") {
+      // "Any vendor coverage gaps?" — the forward-looking bench forecast, spoken.
+      if (!brokerageId) {
+        spokenResponse = "I can't check your bench without a brokerage on your profile."
+      } else {
+        const { runVendorCoverageForecast } = await import("@/lib/kernel/vendor-coverage-forecast")
+        const r = await runVendorCoverageForecast(service, { brokerageId })
+        if (r.gaps === 0) {
+          spokenResponse = r.deals === 0
+            ? "No deals in the pipeline need a vendor right now, so your bench is fine."
+            : `Your vendor bench covers what's coming — no gaps across ${r.deals} active deal${r.deals === 1 ? "" : "s"}.`
+        } else {
+          spokenResponse = `Heads up — you have ${r.gaps} vendor coverage gap${r.gaps === 1 ? "" : "s"} on the way. I've put the details in your approval queue so you can recruit or assign before a deal stalls.`
+          data = { coverageGaps: r.gaps, thin: r.thin }
+          action = "vendor_coverage_flagged"
+        }
+      }
+    } else if (intent === "query_referral_income") {
+      // "How much have I earned in referrals?" — the agent's agent-to-agent referral fees, spoken.
+      if (!brokerageId) {
+        spokenResponse = "I can't total your referrals without a brokerage on your profile."
+      } else {
+        const { data: agentRow } = await service.from("agents").select("id").eq("user_id", user.id).eq("brokerage_id", brokerageId).maybeSingle()
+        const agentRecordId = (agentRow as { id?: string } | null)?.id ?? null
+        if (!agentRecordId) {
+          spokenResponse = "I couldn't find your agent profile to total your referrals."
+        } else {
+          const { data: dists } = await service.from("commission_distributions")
+            .select("calculated_amount").eq("brokerage_id", brokerageId).eq("agent_id", agentRecordId).eq("distribution_type", "referral")
+          const total = ((dists ?? []) as Array<{ calculated_amount: number | null }>).reduce((s, d) => s + Number(d.calculated_amount ?? 0), 0)
+          spokenResponse = total > 0
+            ? `You've earned $${Math.round(total).toLocaleString()} from agent-to-agent referrals so far.`
+            : "You haven't earned any agent-to-agent referral income yet — refer a relocating client to another agent in your brokerage and you'll earn a fee when it closes."
+          data = { referralIncome: Math.round(total * 100) / 100 }
         }
       }
     } else {

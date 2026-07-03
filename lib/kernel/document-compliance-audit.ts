@@ -813,13 +813,9 @@ async function escalateToBroker(
     .maybeSingle()
   if (already) return 0
 
-  const { data: recipients } = await supabase
-    .from("users")
-    .select("id")
-    .eq("brokerage_id", args.brokerageId)
-    .in("user_type", ["broker", "admin", "compliance_officer"])
-    .limit(20)
-  const recipientRows = (recipients ?? []) as Array<{ id: string }>
+  // TIER-SAFE — broker/admin/compliance staff, or the solo agent when there's no separate oversight.
+  const { resolveOrgRecipients } = await import("@/lib/kernel/org-recipients")
+  const recipientRows = (await resolveOrgRecipients(supabase, args.brokerageId, { roles: ["broker", "admin", "compliance_officer"], limit: 20 })).map((id) => ({ id }))
 
   const critical = args.classified.severity === "critical"
   const lines = args.classified.findings

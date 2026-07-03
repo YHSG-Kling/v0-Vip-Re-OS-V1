@@ -279,14 +279,9 @@ export async function runSentinelOnInbound(
   // Broker / admin / compliance officer are the license-risk owners (the manager-signals
   // pattern routes to broker/admin; compliance_officer is the natural co-owner of a
   // license/Fair-Housing risk). priority by tier.
-  const { data: recipients } = await supabase
-    .from("users")
-    .select("id")
-    .eq("brokerage_id", brokerageId)
-    .in("user_type", ["broker", "admin", "compliance_officer"])
-    .limit(20)
-
-  const recipientRows = (recipients ?? []) as Array<{ id: string }>
+  // TIER-SAFE — broker/admin/compliance staff, or the solo agent when there's no separate oversight.
+  const { resolveOrgRecipients } = await import("@/lib/kernel/org-recipients")
+  const recipientRows = (await resolveOrgRecipients(supabase, brokerageId, { roles: ["broker", "admin", "compliance_officer"], limit: 20 })).map((id) => ({ id }))
   const priority = priorityForTier(tier)
   const signalLine = signals.join("; ")
   const excerpt = text.trim().slice(0, 280)

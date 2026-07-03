@@ -18,13 +18,9 @@ export interface ComplianceFlagReapResult {
 // Who owns compliance oversight for a brokerage — the human compliance officer
 // first, then broker/admins. Returns user ids (may be several).
 async function resolveComplianceOwners(svc: Svc, brokerageId: string): Promise<string[]> {
-  const { data } = await svc
-    .from("users")
-    .select("id, user_type")
-    .eq("brokerage_id", brokerageId)
-    .in("user_type", ["compliance_officer", "broker", "broker_admin", "admin"])
-    .limit(20)
-  return ((data ?? []) as Array<{ id: string }>).map((u) => u.id)
+  // TIER-SAFE — compliance/broker staff when present; the solo agent otherwise (their own oversight).
+  const { resolveOrgRecipients } = await import("@/lib/kernel/org-recipients")
+  return resolveOrgRecipients(svc, brokerageId, { roles: ["compliance_officer", "broker", "broker_admin", "admin"], limit: 20 })
 }
 
 export async function reapStuckComplianceFlags(

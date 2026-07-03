@@ -52,6 +52,15 @@ function sourceLayer() {
   check("retention radar resolves recipients tier-safely (solo included)", /resolveOrgRecipients\(svc, params\.brokerageId\)/.test(radar) && !/in\("user_type", \["broker", "broker_admin", "admin"\]\)/.test(radar))
   const watcher = src("lib/kernel/regulatory-watcher.ts")
   check("regulatory watcher resolves compliance recipients tier-safely", /resolveOrgRecipients\(supabase, brokerageId, \{ roles:/.test(watcher))
+
+  console.log("\n[sweep — the remaining red-flag loops are tier-safe]")
+  for (const f of [
+    "lib/compliance/compliance-flag-reaper.ts", "lib/finance/commission-tracking-reaper.ts",
+    "lib/kernel/ai-sentinel.ts", "lib/kernel/document-compliance-audit.ts",
+    "lib/kernel/manager-signals.ts", "lib/intelligence/mobile-approval-queue.ts",
+  ]) {
+    check(`${f.split("/").pop()} uses resolveOrgRecipients (no raw broker/admin-only loop)`, /resolveOrgRecipients\(/.test(src(f)))
+  }
 }
 
 async function liveLayer() {

@@ -27,15 +27,10 @@ export async function reapCommissionTrackingDrift(
 ): Promise<{ scanned: number; escalated: number; reaped: number }> {
   let scanned = 0, escalated = 0, reaped = 0
 
-  // A broker/admin to attribute the healing payment to (falls back to system-empty).
-  const { data: brokerUser } = await svc
-    .from("users")
-    .select("id")
-    .eq("brokerage_id", brokerageId)
-    .in("user_type", ["broker", "broker_admin", "admin"])
-    .limit(1)
-    .maybeSingle()
-  const actorUserId = (brokerUser as { id?: string } | null)?.id ?? ""
+  // A broker/admin to attribute the healing payment to — or, for a solo shop, the agent themselves
+  // (tier-safe; falls back to system-empty only when the brokerage has no users at all).
+  const { resolveOrgRecipients } = await import("@/lib/kernel/org-recipients")
+  const actorUserId = (await resolveOrgRecipients(svc, brokerageId, { limit: 1 }))[0] ?? ""
 
   const ledgerStatusFor = async (transactionId: string): Promise<string | null> => {
     const { data } = await svc
