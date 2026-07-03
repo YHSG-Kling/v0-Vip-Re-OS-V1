@@ -47,6 +47,8 @@ function sourceLayer() {
   }
   const setting = src("app/actions/settings/revenue-share-setting.ts")
   check("solo agent can toggle revenue share (not just broker/admin)", /plan_tier === "solo_agent"/.test(setting) && /isSolo/.test(setting))
+  const lm = src("app/actions/learning-modules.ts")
+  check("module→video publish records the voice by audience (agent-own vs assistant)", /voiceForAudience\(mod\.audience_roles/.test(lm) && /voice: voiceKind/.test(lm))
 }
 
 function main() {

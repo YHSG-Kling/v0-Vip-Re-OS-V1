@@ -351,6 +351,11 @@ async function fanOutToChannel(
         ? "customer_facing"
         : "in_house"
 
+      // VOICE — a contact-facing explainer speaks in the AGENT's own cloned voice (it's their
+      // relationship); an agent-facing one in the ASSISTANT voice. The render worker reads this.
+      const { voiceForAudience } = await import("@/lib/education/delivery-format")
+      const voiceKind = voiceForAudience(mod.audience_roles ?? [])
+
       const { data: avp, error: avpErr } = await supabase
         .from("ai_video_projects")
         .insert({
@@ -366,7 +371,7 @@ async function fanOutToChannel(
           is_ai_generated:    true,
           audience_type:      audienceType,
           learning_module_id: mod.id,
-          video_metadata:     { description: mod.summary ?? null, source: "learning_module" },
+          video_metadata:     { description: mod.summary ?? null, source: "learning_module", voice: voiceKind },
         })
         .select("id")
         .single()

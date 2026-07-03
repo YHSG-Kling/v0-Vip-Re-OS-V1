@@ -254,6 +254,20 @@ export function CommandCenterClient({
             <Card className="p-4"><div className="text-xs text-muted-foreground">Watch</div><div className="text-2xl font-semibold text-amber-700">{data.retentionBoard.watch}</div></Card>
             <Card className="p-4"><div className="text-xs text-muted-foreground">Healthy</div><div className="text-2xl font-semibold text-green-700">{data.retentionBoard.healthy}</div></Card>
           </div>
+          {/* Save-play effectiveness — did the AI team's retention interventions actually work? */}
+          {data.retentionOutcomes && data.retentionOutcomes.total > 0 && (
+            <Card className="p-3 flex items-center justify-between gap-3">
+              <span className="text-xs text-muted-foreground">Save-play effectiveness ({data.retentionOutcomes.total} intervention{data.retentionOutcomes.total === 1 ? "" : "s"})</span>
+              <div className="flex items-center gap-3 text-sm">
+                <span className="text-green-700 font-medium">{data.retentionOutcomes.retained} retained</span>
+                <span className="text-red-700 font-medium">{data.retentionOutcomes.lost} lost</span>
+                <span className="text-muted-foreground">{data.retentionOutcomes.pending} pending</span>
+                {data.retentionOutcomes.winRate !== null && (
+                  <Badge className="bg-green-700 text-white">{Math.round(data.retentionOutcomes.winRate * 100)}% win rate</Badge>
+                )}
+              </div>
+            </Card>
+          )}
           {data.retentionBoard.agents.length > 0 && (
             <div className="space-y-1.5">
               {data.retentionBoard.agents.map((a) => {
