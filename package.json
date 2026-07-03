@@ -155,6 +155,7 @@
     "test:brokerage-pnl": "tsx scripts/brokerage-pnl-simulator.ts",
     "test:vendor-loop": "tsx scripts/vendor-loop-simulator.ts",
     "test:vendor-no-show": "tsx scripts/vendor-no-show-simulator.ts",
+    "test:vendor-respa": "tsx scripts/vendor-respa-simulator.ts",
     "test:education-delivery": "tsx scripts/education-delivery-simulator.ts",
     "test:seller-update-video": "tsx scripts/seller-update-video-simulator.ts",
     "test:video-qr": "tsx scripts/video-qr-simulator.ts",

@@ -12,6 +12,13 @@ import {
   buildVendorAudienceTags,
   type VendorDirectoryEntry,
 } from "@/lib/vendor-marketplace/resolve-contact-vendors"
+import {
+  resolveVendorDisclosure,
+  loadRespaDisclosureOverrides,
+  loadAfbaConfig,
+  type VendorRespaDisclosure,
+} from "@/lib/compliance/vendor-respa"
+import { RespaAckGate } from "./respa-ack-gate"
 
 /**
  * Contact-facing vendor marketplace.
@@ -113,6 +120,31 @@ export default async function ClientVendorsPage({
     vendor_jobs: Array<{ id: string; status: string | null; cost_estimate: number | null; cost_actual: number | null }> | null
   }>
   const agent = (agentRes as { data?: { users?: { first_name?: string | null; last_name?: string | null } | null } | null }).data ?? null
+
+  // RESPA disclosure resolution — a preferred / settlement-service vendor shown to a client must carry
+  // the required disclosure (and AfBA vendors must be acknowledged before contact info is revealed).
+  // Text is brokerage-customizable (required_disclosures) with a legally-complete pure fallback.
+  const [brokerageRes, respaOverrides, afba] = await Promise.all([
+    contact.brokerage_id
+      ? supabase.from("brokerages").select("name").eq("id", contact.brokerage_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+    loadRespaDisclosureOverrides(supabase as never),
+    loadAfbaConfig(supabase as never, contact.brokerage_id ?? ""),
+  ])
+  const brokerageName = (brokerageRes.data as { name?: string } | null)?.name ?? null
+  const disclosureByVendor = new Map<string, VendorRespaDisclosure>()
+  for (const v of curatedVendors) {
+    const afbaCfg = afba.isConfigured({ id: v.id, name: v.name })
+    const disclosure = resolveVendorDisclosure({
+      category: v.category,
+      preferred: !!v.preferred,
+      afbaConfigured: afbaCfg.configured,
+      brokerageName,
+      vendorName: v.name,
+      overrides: respaOverrides,
+    })
+    if (disclosure) disclosureByVendor.set(v.id, disclosure)
+  }
 
   // Group curated vendors by category for clean rendering
   const byCategory = new Map<string, VendorDirectoryEntry[]>()
@@ -233,7 +265,10 @@ export default async function ClientVendorsPage({
                   {category}
                 </h3>
                 <div className="grid gap-3 md:grid-cols-2">
-                  {vendors.map((v) => (
+                  {vendors.map((v) => {
+                    const disclosure = disclosureByVendor.get(v.id)
+                    const gated = disclosure?.acknowledgmentRequired === true
+                    return (
                     <div key={v.id} className="p-4 border rounded-lg hover:bg-muted/30 transition-colors">
                       <div className="flex items-start justify-between gap-2 mb-2">
                         <div className="min-w-0 flex-1">
@@ -251,20 +286,38 @@ export default async function ClientVendorsPage({
                           )}
                         </div>
                       </div>
-                      <div className="space-y-1 text-sm mb-3">
-                        {v.phone && (
-                          <a href={`tel:${v.phone}`} className="flex items-center gap-2 text-blue-600 hover:underline">
-                            <Phone className="h-4 w-4" />{v.phone}
-                          </a>
-                        )}
-                        {v.website && (
-                          <a href={v.website} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-blue-600 hover:underline">
-                            <Building2 className="h-4 w-4" /> Visit Website
-                          </a>
-                        )}
-                      </div>
+                      {/* AfBA vendors: contact is gated behind acknowledgment. All others: contact shows. */}
+                      {gated ? (
+                        <RespaAckGate
+                          contactId={contactId}
+                          vendorId={v.id}
+                          disclosureText={disclosure!.text}
+                          disclosureType={disclosure!.type}
+                          phone={v.phone}
+                          website={v.website}
+                        />
+                      ) : (
+                        <div className="space-y-1 text-sm mb-3">
+                          {v.phone && (
+                            <a href={`tel:${v.phone}`} className="flex items-center gap-2 text-blue-600 hover:underline">
+                              <Phone className="h-4 w-4" />{v.phone}
+                            </a>
+                          )}
+                          {v.website && (
+                            <a href={v.website} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-blue-600 hover:underline">
+                              <Building2 className="h-4 w-4" /> Visit Website
+                            </a>
+                          )}
+                        </div>
+                      )}
                       {v.notes && (
                         <p className="text-xs text-muted-foreground italic mb-3">&ldquo;{v.notes}&rdquo;</p>
+                      )}
+                      {/* Standard RESPA preferred-vendor disclosure (settlement services / preferred), inline. */}
+                      {disclosure && !gated && (
+                        <p className="text-[10px] leading-relaxed text-muted-foreground border-l-2 border-amber-300 pl-2 mb-3">
+                          {disclosure.text}
+                        </p>
                       )}
                       <RequestBookingButton
                         contactId={contactId}
@@ -273,7 +326,8 @@ export default async function ClientVendorsPage({
                         defaultServiceType={v.category ?? "consultation"}
                       />
                     </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
             ))}

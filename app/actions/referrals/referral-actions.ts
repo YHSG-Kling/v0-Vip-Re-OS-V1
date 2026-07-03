@@ -227,6 +227,26 @@ export async function createPartner(params: CreatePartnerParams): Promise<{ id: 
   const { agentId, brokerageId } = await getAgentContext()
   const db = createServiceClient()
 
+  // RESPA GATE — the platform structurally blocks a referral/kickback fee against a settlement-service
+  // partner (lender, title, attorney, appraiser, inspector, surveyor). The refusal is recorded on the
+  // immutable compliance ledger; the agent sees the RESPA kickback notice, not a generic error.
+  const hasFee = (params.referralFeeFlat ?? 0) > 0 || (params.commissionSplitPercentage ?? 0) > 0
+  if (hasFee) {
+    const { guardVendorReferralFee, respaKickbackNotice } = await import("@/lib/compliance/vendor-respa")
+    const verdict = await guardVendorReferralFee(db, {
+      brokerageId,
+      actorUserId: user.id,
+      actorRole: "agent",
+      category: params.partnerType,
+      partnerName: params.partnerName,
+      hasFee,
+      feeType: (params.referralFeeFlat ?? 0) > 0 ? "flat_referral_fee" : "commission_split",
+    })
+    if (!verdict.allowed) {
+      throw new Error(`${verdict.reason ?? "Referral fee not permitted."}\n\n${respaKickbackNotice()}`)
+    }
+  }
+
   const { data, error } = await db
     .from("referral_partners")
     .insert({
