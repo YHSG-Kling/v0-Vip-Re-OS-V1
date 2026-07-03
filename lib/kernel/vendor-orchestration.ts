@@ -262,9 +262,13 @@ export async function runVendorOrchestration(
 
   // The bench for this brokerage (vendors table — the canonical bench per the FK
   // vendor_bookings.vendor_id → vendors.id).
+  // APPROVAL GATE — only approved (active) vendors are auto-proposed. A pending/inactive/archived vendor
+  // (awaiting or denied verification) is never put in front of an agent. Legacy null-status rows are
+  // treated as active for backward-compatibility (they predate the verification gate).
   const { data: benchRows } = await supabase.from("vendors")
     .select("id, name, category, email, rating, estimated_turnaround_days")
-    .eq("brokerage_id", brokerageId).limit(500)
+    .eq("brokerage_id", brokerageId)
+    .not("status", "in", "(pending,inactive,archived)").limit(500)
   const bench: BenchVendor[] = (benchRows ?? []) as BenchVendor[]
 
   // PREFERENCE SOURCE OF TRUTH — the broker's `preferred` choices live in vendor_directory, not on the

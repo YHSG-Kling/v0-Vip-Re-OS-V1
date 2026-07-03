@@ -82,11 +82,20 @@ export async function GET(req: NextRequest) {
       suppressedVendors = rg.suppressed; flaggedVendors = rg.flagged
     } catch (e: any) { errors.push(`rating-governance: ${e?.message ?? String(e)}`) }
 
+    // APPROVAL QUEUE — score pending vendors + a gated admin brief so nothing surfaces unvetted
+    // (VendorVerificationManager). No vendor self-activates.
+    let pendingVendors = 0
+    try {
+      const { runVendorApprovalQueueAll } = await import("@/lib/kernel/vendor-verification")
+      const aq = await runVendorApprovalQueueAll(supabase)
+      pendingVendors = aq.pending
+    } catch (e: any) { errors.push(`approval-queue: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId, records_processed: proposed,
-      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors, suppressedVendors, flaggedVendors, errors: errors.slice(0, 10) },
+      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors, suppressedVendors, flaggedVendors, pendingVendors, errors: errors.slice(0, 10) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors, suppressedVendors, flaggedVendors })
+    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors, suppressedVendors, flaggedVendors, pendingVendors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

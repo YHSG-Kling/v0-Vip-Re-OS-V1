@@ -156,6 +156,7 @@
     "test:vendor-loop": "tsx scripts/vendor-loop-simulator.ts",
     "test:vendor-no-show": "tsx scripts/vendor-no-show-simulator.ts",
     "test:vendor-rating": "tsx scripts/vendor-rating-simulator.ts",
+    "test:vendor-verification": "tsx scripts/vendor-verification-simulator.ts",
     "test:vendor-review": "tsx scripts/vendor-review-simulator.ts",
     "test:vendor-respa": "tsx scripts/vendor-respa-simulator.ts",
     "test:education-delivery": "tsx scripts/education-delivery-simulator.ts",
