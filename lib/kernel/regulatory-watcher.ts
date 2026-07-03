@@ -537,6 +537,21 @@ export async function runRegulatoryWatcher(
         await supabase.from("reg_change_observations")
           .update({ escalated_at: now.toISOString() })
           .eq("brokerage_id", brokerageId).eq("change_signature", sig).eq("period", period)
+
+        // REGULATORY → CURRICULUM AUTOPILOT — don't just warn, TRAIN: author a gated training module on
+        // the change (idempotent per signature) so the learning-router pushes it to agents + brokers.
+        // Best-effort; the model may be unavailable — never blocks the watcher.
+        try {
+          const { authorRegulatoryTraining } = await import("@/lib/education/regulatory-curriculum")
+          await authorRegulatoryTraining(supabase, {
+            brokerageId,
+            change: {
+              signature: sig, title: ch.title, source: ch.source, url: ch.url,
+              severityTier: severity.tier, effectiveDate: severity.effectiveDate,
+              surfaceLabels: surfaces.map((s) => s.label),
+            },
+          })
+        } catch { /* best-effort */ }
       }
     }
 

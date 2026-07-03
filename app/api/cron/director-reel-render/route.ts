@@ -90,7 +90,13 @@ export async function GET(request: Request) {
       }
 
       const { resolveAgentPresenterMedia } = await import("@/lib/video/presenter-media")
+      const { resolveVideoVoiceId } = await import("@/lib/video/module-voice")
       const presenter = await resolveAgentPresenterMedia({ agentUserId, brokerageId }, svc)
+      // VOICE BY AUDIENCE — an agent-facing module (video_metadata.voice === 'assistant') renders in the
+      // brokerage's assistant voice; a contact-facing one keeps the agent's own cloned voice.
+      const renderVoiceId = await resolveVideoVoiceId(
+        { voiceKind: (vmeta.voice as "agent_own" | "assistant" | undefined) ?? null, presenterVoiceId: presenter.voiceId, brokerageId }, svc,
+      )
       if (!presenter.canRender) {
         // GRACEFUL DEGRADE — the agent hasn't finished their avatar setup. Park + notify them.
         await svc.from("ai_video_projects")
@@ -108,7 +114,7 @@ export async function GET(request: Request) {
       const { generateVideo } = await import("@/lib/did")
       const r = await generateVideo({
         script,
-        voiceId: presenter.voiceId ?? undefined,
+        voiceId: renderVoiceId ?? undefined,
         actorId: presenter.actorId,
         avatarImageUrl: presenter.avatarImageUrl,
         agentUserId, brokerageId,
