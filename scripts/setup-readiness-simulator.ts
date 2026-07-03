@@ -32,9 +32,10 @@ const EMPTY: SetupSnapshot = {
   hasSocialAccount: false, hasPayoutAccount: false, hasEmailOrCalendar: false,
   hasBrokerageLicense: false, hasBranding: false, hasCommissionStructure: false, hasEmailProvider: false,
   hasSmsProvider: false, hasTeamMembers: false, hasIsaPhone: false, hasAccountingSync: false, hasRecruitingPitch: false,
-  hasTeamConfig: false,
+  hasOfficeLocations: false, hasTeamConfig: false,
 }
 const ALL_ROLES: SetupRole[] = ["agent", "team_lead", "isa", "tc", "compliance_officer", "broker", "admin", "superadmin", "vendor", "lender"]
+const ONBOARDING_ROLES: SetupRole[] = ["agent", "team_lead", "isa", "tc", "compliance_officer", "broker", "admin"]
 
 function pureLayer() {
   console.log("\n[normalizeSetupRole · pure — folds the many aliases onto 10 roles]")
@@ -43,25 +44,40 @@ function pureLayer() {
   check("unknown / empty → agent (safe default)", normalizeSetupRole("something") === "agent" && normalizeSetupRole(null) === "agent")
 
   console.log("\n[resolveSetupReadiness · pure — role-filtered, required-first, honest]")
-  const agentEmpty = resolveSetupReadiness("agent", EMPTY)
+  const agentEmpty = resolveSetupReadiness("agent", EMPTY, "solo_agent")
   check("an unconfigured agent has required items and 0%", agentEmpty.requiredTotal > 0 && agentEmpty.pct === 0 && !agentEmpty.isComplete)
   check("the next action is the FIRST unfinished REQUIRED item (license)", agentEmpty.nextAction?.key === "license")
   check("agent items never leak broker-only items", !agentEmpty.items.some((i) => i.key === "commission_structure"))
 
-  const brokerEmpty = resolveSetupReadiness("broker", EMPTY)
+  const brokerEmpty = resolveSetupReadiness("broker", EMPTY, "brokerage")
   check("a broker sees brokerage items (commission, branding, providers), not license/voice", brokerEmpty.items.some((i) => i.key === "commission_structure") && !brokerEmpty.items.some((i) => i.key === "voice_clone"))
 
-  // A fully-configured agent → complete, next action null.
-  const fullAgent: SetupSnapshot = { ...EMPTY, hasLicense: true, hasEoInsurance: true, hasMobilePhone: true, hasOutreachChannel: true, hasVoiceClone: true }
-  const done = resolveSetupReadiness("agent", fullAgent)
+  // A fully-configured agent → complete. Every substantive step is REQUIRED now (mandatory rule).
+  const fullAgent: SetupSnapshot = { ...EMPTY, hasLicense: true, hasEoInsurance: true, hasMobilePhone: true, hasOutreachChannel: true, hasVoiceClone: true, hasAvatar: true, hasProfilePhoto: true, hasEmailSignature: true }
+  const done = resolveSetupReadiness("agent", fullAgent, "solo_agent")
   check("an agent with all required done is complete (100%, no next required)", done.isComplete && done.pct === 100 && (done.nextAction === null || !done.nextAction.required))
-  check("optional items never block completion", done.optionalTotal > 0 && done.isComplete)
+  check("optional items (social/payout) never block completion", done.optionalTotal > 0 && done.isComplete)
+
+  console.log("\n[business rules · pure — mandatory except tc/isa/compliance; vendors/lenders excluded]")
+  check("agent + broker onboarding is MANDATORY (required steps > 0)", resolveSetupReadiness("agent", EMPTY, "brokerage").requiredTotal > 0 && resolveSetupReadiness("broker", EMPTY, "brokerage").requiredTotal > 0)
+  check("tc / isa / compliance onboarding is OPTIONAL (zero required steps)", (["tc", "isa", "compliance_officer"] as SetupRole[]).every((r) => resolveSetupReadiness(r, EMPTY, "brokerage").requiredTotal === 0 && resolveSetupReadiness(r, EMPTY, "brokerage").items.length > 0))
+  check("vendors + lenders are NOT part of onboarding (no checklist at all)", resolveSetupReadiness("vendor", EMPTY, "brokerage").items.length === 0 && resolveSetupReadiness("lender", EMPTY, "brokerage").items.length === 0)
+
+  console.log("\n[tier awareness · pure — steps depend on the subscription tier]")
+  const soloBroker = resolveSetupReadiness("admin", EMPTY, "solo_agent")
+  check("SOLO: no 'invite team' and no 'office locations' (a solo has no team/offices)", !soloBroker.items.some((i) => i.key === "invite_team") && !soloBroker.items.some((i) => i.key === "office_locations"))
+  check("SOLO admin still sets branding + each agent's commission", soloBroker.items.some((i) => i.key === "commission_structure") && soloBroker.items.some((i) => i.key === "branding"))
+  const brokerageAdmin = resolveSetupReadiness("admin", EMPTY, "brokerage")
+  check("BROKERAGE: 'invite team' required, but 'office locations' still hidden", brokerageAdmin.items.some((i) => i.key === "invite_team" && i.required) && !brokerageAdmin.items.some((i) => i.key === "office_locations"))
+  const multiAdmin = resolveSetupReadiness("admin", EMPTY, "multi_location")
+  check("MULTI-LOCATION: 'office locations' required", multiAdmin.items.some((i) => i.key === "office_locations" && i.required))
+  const teamLead = resolveSetupReadiness("team_lead", EMPTY, "team")
+  check("TEAM: team lead configures the team split (team+ tiers only)", teamLead.items.some((i) => i.key === "team_config") && !resolveSetupReadiness("team_lead", EMPTY, "solo_agent").items.some((i) => i.key === "team_config"))
 
   console.log("\n[coverage · pure — every role is covered]")
   check("every one of the 10 roles has a platform overview (mission + AI team + can-do)", ALL_ROLES.every((r) => !!ROLE_OVERVIEW[r]?.mission && ROLE_OVERVIEW[r].aiTeam.length > 0 && ROLE_OVERVIEW[r].youCanNow.length > 0))
-  check("every role except superadmin has a setup checklist", ALL_ROLES.filter((r) => r !== "superadmin").every((r) => resolveSetupReadiness(r, EMPTY).items.length > 0))
-  check("superadmin is intentionally overview-only (no per-tenant checklist → shows complete)", resolveSetupReadiness("superadmin", EMPTY).items.length === 0 && resolveSetupReadiness("superadmin", EMPTY).isComplete)
-  check("staff (isa/tc/compliance) get a required connect step", (["isa", "tc", "compliance_officer"] as SetupRole[]).every((r) => resolveSetupReadiness(r, EMPTY).items.some((i) => i.required && i.key === "staff_email")))
+  check("every onboarding role has a setup checklist", ONBOARDING_ROLES.every((r) => resolveSetupReadiness(r, EMPTY, "brokerage").items.length > 0))
+  check("non-onboarding roles (superadmin/vendor/lender) are overview-only + complete", (["superadmin", "vendor", "lender"] as SetupRole[]).every((r) => resolveSetupReadiness(r, EMPTY, "brokerage").items.length === 0 && resolveSetupReadiness(r, EMPTY, "brokerage").isComplete))
   check("every item deep-links to a real settings surface", SETUP_ITEMS.every((i) => i.href.startsWith("/")))
 }
 

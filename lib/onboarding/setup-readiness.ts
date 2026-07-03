@@ -11,10 +11,22 @@
 // Pure spec + resolver here (unit-testable); loadSetupReadiness does the I/O.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import type { Tier } from "@/lib/education/onboarding-curriculum"
 
 export type SetupRole =
   | "agent" | "team_lead" | "isa" | "tc" | "compliance_officer"
   | "broker" | "admin" | "superadmin" | "vendor" | "lender"
+
+/** Subscription tier drives WHICH setup steps apply (reuses the canonical Tier). */
+export type SetupTier = Tier // "solo_agent" | "team" | "brokerage" | "multi_location"
+
+/**
+ * Roles whose onboarding is OPTIONAL — they can use the app immediately without completing setup.
+ * Every other onboarding role must finish its required steps. (Business rule.)
+ */
+const OPTIONAL_ONBOARDING_ROLES = new Set<SetupRole>(["tc", "isa", "compliance_officer"])
+/** Roles that are NOT part of onboarding at all — no setup checklist (overview only). (Business rule.) */
+const NON_ONBOARDING_ROLES = new Set<SetupRole>(["vendor", "lender", "superadmin"])
 
 /** Map the app's many role/user_type strings (+ legacy aliases) onto the 10 canonical setup roles. */
 export function normalizeSetupRole(userType: string | null | undefined): SetupRole {
@@ -59,6 +71,7 @@ export interface SetupSnapshot {
   hasIsaPhone: boolean
   hasAccountingSync: boolean
   hasRecruitingPitch: boolean
+  hasOfficeLocations: boolean   // multi-location: ≥1 office set up
   // team
   hasTeamConfig: boolean
 }
@@ -69,7 +82,7 @@ const EMPTY_SNAPSHOT: SetupSnapshot = {
   hasSocialAccount: false, hasPayoutAccount: false, hasEmailOrCalendar: false,
   hasBrokerageLicense: false, hasBranding: false, hasCommissionStructure: false, hasEmailProvider: false,
   hasSmsProvider: false, hasTeamMembers: false, hasIsaPhone: false, hasAccountingSync: false, hasRecruitingPitch: false,
-  hasTeamConfig: false,
+  hasOfficeLocations: false, hasTeamConfig: false,
 }
 
 export interface SetupItem {
@@ -82,17 +95,24 @@ export interface SetupItem {
   why: string
   /** Deep-link to the EXISTING settings surface that fills it. */
   href: string
+  /** Subscription tiers this item applies to. Omit = all tiers. */
+  tiers?: SetupTier[]
   detect: (s: SetupSnapshot) => boolean
 }
 
 const AGENTISH: SetupRole[] = ["agent", "team_lead"]
+const TEAMISH: SetupTier[] = ["team", "brokerage", "multi_location"]
+const ORG: SetupTier[] = ["brokerage", "multi_location"]
 
 /**
- * THE CATALOG — every user-fillable setup item, mapped to role + required/optional + the real detector.
- * Order matters: `nextAction` returns the first unfinished REQUIRED item in this order.
+ * THE CATALOG — every user-fillable setup item, mapped to role + tier + required/optional + the real
+ * detector. Business rules baked in: for agent / team_lead / broker / admin the substantive steps are
+ * REQUIRED; a short elective tail (social, payout) stays optional by nature; tc / isa / compliance are
+ * forced optional at resolve time; vendors / lenders are not part of onboarding at all. Order matters:
+ * `nextAction` returns the first unfinished REQUIRED item in this order.
  */
 export const SETUP_ITEMS: SetupItem[] = [
-  // ── Agent / team lead: the things that gate actually transacting + the AI team working for them ──
+  // ── Agent / team lead: everything needed to transact + have the AI team work for them (all required) ──
   { key: "license", label: "Add your real-estate license", roles: AGENTISH, required: true, category: "compliance",
     why: "You can't put a document out for signature until your license is on file — the compliance gate blocks it.",
     href: "/dashboard/onboarding/license", detect: (s) => s.hasLicense },
@@ -108,66 +128,64 @@ export const SETUP_ITEMS: SetupItem[] = [
   { key: "voice_clone", label: "Create your voice twin", roles: AGENTISH, required: true, category: "ai",
     why: "Your ElevenLabs voice clone lets the AI ISA call and your videos speak in YOUR voice — the core differentiator.",
     href: "/dashboard/settings/twin-studio", detect: (s) => s.hasVoiceClone },
-  { key: "avatar", label: "Set up your video avatar", roles: AGENTISH, required: false, category: "ai",
+  { key: "avatar", label: "Set up your video avatar", roles: AGENTISH, required: true, category: "ai",
     why: "A D-ID avatar turns listing + market updates into personal on-camera videos without you filming.",
     href: "/dashboard/settings/twin-studio", detect: (s) => s.hasAvatar },
-  { key: "profile_photo", label: "Add a profile photo", roles: AGENTISH, required: false, category: "identity",
+  { key: "profile_photo", label: "Add a profile photo", roles: AGENTISH, required: true, category: "identity",
     why: "Your headshot brands every video outro, portal, and public page.",
     href: "/dashboard/profile", detect: (s) => s.hasProfilePhoto },
+  { key: "email_signature", label: "Set your email signature", roles: AGENTISH, required: true, category: "identity",
+    why: "Signs the emails your managers send on your behalf.",
+    href: "/dashboard/profile", detect: (s) => s.hasEmailSignature },
   { key: "personal_website", label: "Add your personal website", roles: AGENTISH, required: false, category: "growth",
     why: "Links from your marketing and QR codes back to your own site.",
     href: "/settings/profile", detect: (s) => s.hasPersonalWebsite },
-  { key: "email_signature", label: "Set your email signature", roles: AGENTISH, required: false, category: "identity",
-    why: "Signs the emails your managers send on your behalf.",
-    href: "/dashboard/profile", detect: (s) => s.hasEmailSignature },
   { key: "social_accounts", label: "Connect social accounts", roles: AGENTISH, required: false, category: "growth",
     why: "Lets the Campaign Orchestrator publish approved posts to your channels.",
     href: "/dashboard/profile", detect: (s) => s.hasSocialAccount },
   { key: "payout", label: "Connect a payout account", roles: AGENTISH, required: false, category: "integrations",
     why: "Stripe Connect routes referral and revenue-share payouts to you.",
     href: "/settings/connections", detect: (s) => s.hasPayoutAccount },
-  { key: "team_config", label: "Configure your team split", roles: ["team_lead"], required: true, category: "team",
+  { key: "team_config", label: "Configure your team split", roles: ["team_lead"], required: true, category: "team", tiers: TEAMISH,
     why: "Set your team's split so production and P&L roll up correctly for your agents.",
     href: "/dashboard/settings/teams", detect: (s) => s.hasTeamConfig },
 
-  // ── Broker / admin: the brokerage foundations ──
-  { key: "brokerage_license", label: "Add brokerage license & address", roles: ["broker", "admin"], required: true, category: "brokerage",
-    why: "Your brokerage license and details appear on compliance docs and every agent's disclosures.",
+  // ── Broker / admin: the org foundations. Also the admin who runs a SOLO agent's setup (all tiers). ──
+  { key: "brokerage_license", label: "Add license & address", roles: ["broker", "admin"], required: true, category: "brokerage",
+    why: "Your license and details appear on compliance docs and every agent's disclosures.",
     href: "/dashboard/settings", detect: (s) => s.hasBrokerageLicense },
-  { key: "branding", label: "Set your brand (logo & colors)", roles: ["broker", "admin"], required: true, category: "brokerage",
-    why: "Your logo and colors brand every video, page, postcard, and portal across all agents.",
+  { key: "branding", label: "Set the brand (logo & colors)", roles: ["broker", "admin"], required: true, category: "brokerage",
+    why: "The logo and colors brand every video, page, postcard, and portal.",
     href: "/settings/branding", detect: (s) => s.hasBranding },
-  { key: "commission_structure", label: "Create a commission structure", roles: ["broker", "admin"], required: true, category: "brokerage",
-    why: "At least one commission plan is needed before deals can compute payouts and your P&L.",
+  { key: "commission_structure", label: "Set up each agent's commission", roles: ["broker", "admin"], required: true, category: "brokerage",
+    why: "Admins set the commission plan for each agent per their subscription tier — required before deals compute payouts and P&L.",
     href: "/settings/commission", detect: (s) => s.hasCommissionStructure },
   { key: "email_provider", label: "Configure an email sender", roles: ["broker", "admin"], required: true, category: "integrations",
-    why: "A brokerage email sender lets managers deliver approved client messages for agents who haven't self-connected.",
+    why: "An email sender lets managers deliver approved client messages for agents who haven't self-connected.",
     href: "/settings/providers", detect: (s) => s.hasEmailProvider },
   { key: "sms_provider", label: "Configure SMS / voice", roles: ["broker", "admin"], required: true, category: "integrations",
-    why: "Twilio/Telnyx powers texting and the AI ISA's calls for the whole brokerage.",
+    why: "Twilio/Telnyx powers texting and the AI ISA's calls.",
     href: "/settings/providers", detect: (s) => s.hasSmsProvider },
-  { key: "invite_team", label: "Invite your team", roles: ["broker", "admin"], required: true, category: "team",
+  // Inviting a team + offices only apply to org tiers (a solo agent has no team to invite).
+  { key: "invite_team", label: "Invite agents & staff", roles: ["broker", "admin"], required: true, category: "team", tiers: ORG,
     why: "Invite agents and staff so the AI team can start working their pipelines.",
     href: "/dashboard/admin/users", detect: (s) => s.hasTeamMembers },
+  { key: "office_locations", label: "Set up your office locations", roles: ["broker", "admin"], required: true, category: "brokerage", tiers: ["multi_location"],
+    why: "Multi-location brokerages scope agents, teams, and roll-ups per office — set them up so per-office reporting works.",
+    href: "/dashboard/admin/users", detect: (s) => s.hasOfficeLocations },
   { key: "isa_phone", label: "Provision an AI ISA phone number", roles: ["broker", "admin"], required: false, category: "ai",
     why: "A dedicated number lets the AI ISA call and qualify leads around the clock.",
     href: "/dashboard/settings/isa-calling", detect: (s) => s.hasIsaPhone },
-  { key: "recruiting_pitch", label: "Set your recruiting pitch", roles: ["broker", "admin"], required: false, category: "growth",
+  { key: "recruiting_pitch", label: "Set your recruiting pitch", roles: ["broker", "admin"], required: false, category: "growth", tiers: ORG,
     why: "Powers the Recruiting Manager's outreach to the agents you want to attract.",
     href: "/dashboard/recruiting", detect: (s) => s.hasRecruitingPitch },
   { key: "accounting", label: "Connect accounting (QuickBooks/Xero)", roles: ["broker", "admin"], required: false, category: "integrations",
-    why: "Syncs commissions and expenses so your brokerage P&L is always current.",
+    why: "Syncs commissions and expenses so your P&L is always current.",
     href: "/settings/accounting", detect: (s) => s.hasAccountingSync },
 
-  // ── Staff (ISA / TC / Compliance) & external portals: self-connect essentials ──
-  { key: "staff_email", label: "Connect your email & calendar", roles: ["isa", "tc", "compliance_officer"], required: true, category: "integrations",
+  // ── Staff (ISA / TC / Compliance): self-connect essentials — OPTIONAL onboarding (forced at resolve). ──
+  { key: "staff_email", label: "Connect your email & calendar", roles: ["isa", "tc", "compliance_officer"], required: false, category: "integrations",
     why: "Connect your inbox and calendar so your handoffs, tasks, and closings stay in sync.",
-    href: "/settings/connections", detect: (s) => s.hasEmailOrCalendar },
-  { key: "lender_connect", label: "Connect your calendar", roles: ["lender"], required: false, category: "integrations",
-    why: "Sync closings and milestones so files never stall on a scheduling gap.",
-    href: "/settings/connections", detect: (s) => s.hasEmailOrCalendar },
-  { key: "vendor_connect", label: "Connect your calendar", roles: ["vendor"], required: false, category: "integrations",
-    why: "Sync your availability so bookings land on your real calendar.",
     href: "/settings/connections", detect: (s) => s.hasEmailOrCalendar },
 ]
 
@@ -184,6 +202,7 @@ export interface RoleOverview {
 
 export interface SetupReadiness {
   role: SetupRole
+  tier: SetupTier
   items: ResolvedSetupItem[]
   requiredTotal: number
   requiredDone: number
@@ -197,11 +216,19 @@ export interface SetupReadiness {
   overview: RoleOverview
 }
 
-/** PURE: resolve the role's items against a snapshot → completion, next action, and the platform overview. */
-export function resolveSetupReadiness(role: SetupRole, snapshot: SetupSnapshot): SetupReadiness {
-  const items: ResolvedSetupItem[] = SETUP_ITEMS
-    .filter((i) => i.roles.includes(role))
-    .map(({ detect, ...rest }) => ({ ...rest, done: detect(snapshot) }))
+/**
+ * PURE: resolve the role's items for its subscription tier against a snapshot → completion, next action,
+ * and the platform overview. Applies the business rules: tc/isa/compliance items are forced OPTIONAL; roles
+ * not part of onboarding (vendor/lender/superadmin) get NO checklist; items are filtered by tier.
+ */
+export function resolveSetupReadiness(role: SetupRole, snapshot: SetupSnapshot, tier: SetupTier = "brokerage"): SetupReadiness {
+  const optionalRole = OPTIONAL_ONBOARDING_ROLES.has(role)
+  const items: ResolvedSetupItem[] = NON_ONBOARDING_ROLES.has(role)
+    ? []
+    : SETUP_ITEMS
+        .filter((i) => i.roles.includes(role) && (!i.tiers || i.tiers.includes(tier)))
+        // Business rule: for tc/isa/compliance every step is optional (they can work without finishing setup).
+        .map(({ detect, required, ...rest }) => ({ ...rest, required: optionalRole ? false : required, done: detect(snapshot) }))
 
   const required = items.filter((i) => i.required)
   const optional = items.filter((i) => !i.required)
@@ -211,7 +238,7 @@ export function resolveSetupReadiness(role: SetupRole, snapshot: SetupSnapshot):
   const nextAction = required.find((i) => !i.done) ?? optional.find((i) => !i.done) ?? null
 
   return {
-    role, items,
+    role, tier, items,
     requiredTotal: required.length, requiredDone,
     optionalTotal: optional.length, optionalDone,
     pct, nextAction, isComplete: requiredDone === required.length,
@@ -286,9 +313,10 @@ export async function loadSetupReadiness(params: {
   const svc = params.client ?? createServiceClient()
   const { role, userId, brokerageId, agentId } = params
   const snap: SetupSnapshot = { ...EMPTY_SNAPSHOT }
+  let tier: SetupTier = "brokerage"
   const isAgentish = role === "agent" || role === "team_lead"
   const isBrokerAdmin = role === "broker" || role === "admin"
-  const isStaff = role === "isa" || role === "tc" || role === "compliance_officer" || role === "lender" || role === "vendor"
+  const isStaff = role === "isa" || role === "tc" || role === "compliance_officer"
 
   const has = (r: { data: unknown } | { count: number | null }) => {
     if ("count" in r) return (r.count ?? 0) > 0
@@ -296,6 +324,13 @@ export async function loadSetupReadiness(params: {
   }
 
   try {
+    // Subscription tier drives which steps apply (canonical: brokerages.plan_tier).
+    if (brokerageId) {
+      const { data: planRow } = await svc.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()
+      const pt = (planRow as any)?.plan_tier as string | null
+      if (pt === "solo_agent" || pt === "team" || pt === "brokerage" || pt === "multi_location") tier = pt
+    }
+
     // Personal (agent/team_lead) reads.
     if (isAgentish && agentId) {
       const [lic, voice, apiCred, phoneCred, social, stripe, agentRow] = await Promise.all([
@@ -339,7 +374,7 @@ export async function loadSetupReadiness(params: {
 
     // Brokerage foundations (broker/admin).
     if (isBrokerAdmin && brokerageId) {
-      const [brk, gs, comm, sms, vapi, acct, team] = await Promise.all([
+      const [brk, gs, comm, sms, vapi, acct, team, locs] = await Promise.all([
         svc.from("brokerages").select("license_number, recruiting_pitch").eq("id", brokerageId).maybeSingle(),
         svc.from("global_settings").select("app_logo_url, primary_color, from_email, smtp_host").eq("brokerage_id", brokerageId).maybeSingle(),
         svc.from("commission_structures").select("id").eq("brokerage_id", brokerageId).limit(1),
@@ -347,6 +382,7 @@ export async function loadSetupReadiness(params: {
         svc.from("vapi_phone_numbers").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).limit(1),
         svc.from("brokerage_integrations").select("id").eq("brokerage_id", brokerageId).eq("provider_type", "accounting").limit(1),
         svc.from("users").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).not("user_type", "in", "(contact,vendor,system,admin)"),
+        svc.from("locations").select("id").eq("brokerage_id", brokerageId).limit(1),
       ])
       const b = (brk.data ?? {}) as any, g = (gs.data ?? {}) as any
       snap.hasBrokerageLicense = !!b.license_number
@@ -358,6 +394,7 @@ export async function loadSetupReadiness(params: {
       snap.hasIsaPhone = has(vapi)
       snap.hasAccountingSync = has(acct)
       snap.hasTeamMembers = (team.count ?? 0) > 0
+      snap.hasOfficeLocations = has(locs)
     }
 
     // Team-lead team config.
@@ -369,5 +406,5 @@ export async function loadSetupReadiness(params: {
     console.error("[setup-readiness] snapshot read failed:", err)
   }
 
-  return resolveSetupReadiness(role, snap)
+  return resolveSetupReadiness(role, snap, tier)
 }

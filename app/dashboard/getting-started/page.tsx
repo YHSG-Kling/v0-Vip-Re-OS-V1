@@ -11,6 +11,10 @@ const ROLE_LABEL: Record<string, string> = {
   vendor: "Vendor", lender: "Lender",
 }
 
+const TIER_LABEL: Record<string, string> = {
+  solo_agent: "Solo", team: "Team", brokerage: "Brokerage", multi_location: "Multi-location",
+}
+
 function ItemRow({ item }: { item: ResolvedSetupItem }) {
   return (
     <Link href={item.href} className="flex items-start gap-3 rounded-lg border px-3 py-2.5 hover:bg-muted/50">
@@ -43,7 +47,7 @@ export default async function GettingStartedPage() {
   return (
     <div className="container mx-auto max-w-3xl space-y-8 p-6">
       <div>
-        <p className="text-sm font-medium text-indigo-600">{ROLE_LABEL[role] ?? role} · Getting started</p>
+        <p className="text-sm font-medium text-indigo-600">{ROLE_LABEL[role] ?? role} · {TIER_LABEL[r.tier] ?? r.tier} plan · Getting started</p>
         <h1 className="mt-1 text-3xl font-bold tracking-tight">Welcome — let's get you set up</h1>
         <p className="mt-2 text-muted-foreground">{r.overview.mission}</p>
       </div>
