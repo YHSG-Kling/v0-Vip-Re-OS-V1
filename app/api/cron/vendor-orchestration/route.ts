@@ -56,11 +56,20 @@ export async function GET(req: NextRequest) {
       noShowsMarked = ns.markedNoShow; backupsProposed = ns.backupsProposed
     } catch (e: any) { errors.push(`no-show: ${e?.message ?? String(e)}`) }
 
+    // MARKETPLACE TAKE-RATE CAPTURE — the income stream: every completed booking earns the platform its
+    // fee (idempotent per booking). Previously only a manual invoice did, and even that computed $0.
+    let earningsCaptured = 0, platformRevenue = 0
+    try {
+      const { captureCompletedBookingEarningsAll } = await import("@/lib/vendors/marketplace-earnings-capture")
+      const cap = await captureCompletedBookingEarningsAll(supabase)
+      earningsCaptured = cap.captured; platformRevenue = cap.platformRevenue
+    } catch (e: any) { errors.push(`earnings-capture: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId, records_processed: proposed,
-      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, errors: errors.slice(0, 10) },
+      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, earningsCaptured, platformRevenue, errors: errors.slice(0, 10) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed })
+    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, earningsCaptured, platformRevenue })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

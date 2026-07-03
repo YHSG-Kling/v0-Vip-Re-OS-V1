@@ -69,6 +69,7 @@ export default async function BrokeragePLPage() {
     agents,
     last12MonthsEarnings,
     forecasts,
+    marketplaceEarnings,
   ] = await Promise.all([
     // MTD brokerage earnings
     supabase
@@ -147,7 +148,21 @@ export default async function BrokeragePLPage() {
       .order("period_label", { ascending: false })
       .limit(6)
       .then(r => r.data || []),
+
+    // Marketplace take-rate income — platform fee + vendor net captured on completed vendor bookings.
+    supabase
+      .from("vendor_earnings")
+      .select("platform_fee, net_amount")
+      .eq("brokerage_id", profile.brokerage_id)
+      .then(r => r.data || []),
   ])
+
+  // ─── MARKETPLACE REVENUE (the vendor-marketplace income stream) ─────────────
+  const marketplaceRevenue = {
+    platformFees: (marketplaceEarnings as Array<{ platform_fee: number | null }>).reduce((s, e) => s + Number(e.platform_fee ?? 0), 0),
+    vendorNet: (marketplaceEarnings as Array<{ net_amount: number | null }>).reduce((s, e) => s + Number(e.net_amount ?? 0), 0),
+    count: marketplaceEarnings.length,
+  }
 
   // ─── COMPUTE CAP SUMMARY ───────────────────────────────────────────────────
   const capSummary = {
@@ -331,6 +346,23 @@ export default async function BrokeragePLPage() {
               {formatCurrency(ytdEarnings?.brokerage_net)}
             </div>
             <p className="text-xs text-muted-foreground">Year to Date</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+              <TrendingUp className="h-4 w-4" />
+              Marketplace Revenue
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-green-600">
+              {formatCurrency(marketplaceRevenue.platformFees)}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Platform take-rate on {marketplaceRevenue.count} vendor booking{marketplaceRevenue.count === 1 ? "" : "s"}
+            </p>
           </CardContent>
         </Card>
 

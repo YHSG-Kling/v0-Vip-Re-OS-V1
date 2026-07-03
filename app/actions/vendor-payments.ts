@@ -263,27 +263,23 @@ export async function markInvoicePaid(params: {
 
   if (updateErr) return { success: false, error: updateErr.message }
 
-  // Create earnings record so vendor sees the payment.
-  // vendor_marketplace_profiles is a GLOBAL catalog (no brokerage_id) so
-  // tenant scope here is enforced by verifyInvoiceInCallerBrokerage above.
-  const { data: profile } = await svc
-    .from("vendor_marketplace_profiles")
-    .select("revenue_share_percent")
-    .eq("id", verify.vendor_id)
-    .maybeSingle()
-
-  const revenueSharePct = (profile?.revenue_share_percent ?? 0) / 100
-  const gross = verify.total_amount ?? 0
-  const platformFee = parseFloat((gross * revenueSharePct).toFixed(2))
-  const net = parseFloat((gross - platformFee).toFixed(2))
+  // Create earnings record so vendor sees the payment. The take-rate is resolved through the SHARED
+  // resolver (lib/vendors/marketplace-fee) — the vendor's negotiated share via the correct
+  // vendors.id → user_role_assignments → marketplace-profile bridge, else the platform default. The
+  // previous inline lookup matched a vendors.id against vendor_marketplace_profiles.id (different id
+  // spaces), so the platform fee was silently always $0 — this both fixes that and consolidates the
+  // capture math onto the same source of truth the completed-booking sweep uses.
+  const { resolveVendorRevenueShare, computeMarketplaceFee } = await import("@/lib/vendors/marketplace-fee")
+  const rate = await resolveVendorRevenueShare(svc, verify.vendor_id)
+  const fee = computeMarketplaceFee({ grossAmount: verify.total_amount ?? 0, takeRatePct: rate.pct })
 
   await svc.from("vendor_earnings").insert({
     vendor_id: verify.vendor_id,
     brokerage_id: ctx.brokerageId,
     invoice_id: params.invoiceId,
-    gross_amount: gross,
-    platform_fee: platformFee,
-    net_amount: net,
+    gross_amount: fee.gross,
+    platform_fee: fee.platformFee,
+    net_amount: fee.net,
     status: "available",
   })
 
