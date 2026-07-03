@@ -112,6 +112,11 @@ export interface CommandCenterData {
   /** AI-authored curriculum awaiting a human publish — the OS teaching itself to teach.
    *  Brokerage-wide; null when unavailable. */
   curriculumBoard: import("@/lib/intelligence/curriculum-board").CurriculumBoard | null
+  /** THE AI EXECUTIVE STANDUP — the weekly ROI-ranked org plan synthesized ACROSS every manager's output
+   *  (retention flight-risk, WoW GCI swings, SLA-breached approval backlog, recruiting flywheel, enablement)
+   *  and the single human ask. The executive layer above the per-manager P&L. Brokerage-wide; null when
+   *  unavailable. */
+  weeklyExecPlan: import("@/lib/intelligence/manager-weekly-exec-plan").WeeklyExecPlan | null
   /** Proposed AI ISA voice dial batches awaiting approval (AI ISA — "call my hottest N"). */
   dialBatches:     Array<{ id: string; proposedCount: number; proposedAt: string | null }>
   /** Managers talking — recent inter-manager signals (who told whom what, and what the
@@ -458,6 +463,22 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
       .map((b) => ({ id: b.id, proposedCount: b.proposed_count ?? 0, proposedAt: b.proposed_at }))
   }
 
+  // THE AI EXECUTIVE STANDUP — synthesize the weekly ROI-ranked plan over the already-computed boards +
+  // the live approval backlog (managerBreakdown carries the real SLA-breached counts). Best-effort; reuses
+  // the boards above so there are no double queries.
+  let weeklyExecPlan: import("@/lib/intelligence/manager-weekly-exec-plan").WeeklyExecPlan | null = null
+  if (brokerageWide && brokerageId) {
+    try {
+      const { loadWeeklyExecPlan } = await import("@/lib/intelligence/manager-weekly-exec-plan")
+      weeklyExecPlan = await loadWeeklyExecPlan(brokerageId, {
+        supabase, weeklyPnl, retentionBoard, curriculumBoard,
+        managerBacklog: managerBreakdown.map((m) => ({ manager: m.key, breached: m.breached, pending: m.count })),
+      })
+    } catch (err) {
+      console.error("[command-center] weekly exec plan failed:", err)
+    }
+  }
+
   return {
     sessions,
     pendingActions,
@@ -470,6 +491,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     skillBoard,
     revenueShareBoard,
     curriculumBoard,
+    weeklyExecPlan,
     dialBatches,
     managerTalk,
     summary: {

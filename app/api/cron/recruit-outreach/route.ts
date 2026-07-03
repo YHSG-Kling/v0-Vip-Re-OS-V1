@@ -142,12 +142,22 @@ export async function GET(req: NextRequest) {
       challengesFinalized = ch.finalized
     } catch (e: any) { errors.push(`challenges: ${e?.message ?? String(e)}`) }
 
+    // AI EXECUTIVE STANDUP — the capstone weekly synthesis: rank every manager's output by dollar impact
+    // into one org plan + the single human ask, and nudge each brokerage's leaders (tier-safe) to their
+    // Command Center. Idempotent per brokerage per week.
+    let execStandups = 0
+    try {
+      const { runWeeklyExecStandupAll } = await import("@/lib/intelligence/manager-weekly-exec-plan")
+      const es = await runWeeklyExecStandupAll(supabase)
+      execStandups = es.briefed
+    } catch (e: any) { errors.push(`exec-standup: ${e?.message ?? String(e)}`) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, brokerages: brokerages.length, errors },
+      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, brokerages: brokerages.length, errors })
+    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

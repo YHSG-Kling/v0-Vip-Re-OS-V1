@@ -382,6 +382,56 @@ export function CommandCenterClient({
         </section>
       )}
 
+      {/* THE AI EXECUTIVE STANDUP — the weekly ROI-ranked org plan synthesized across every manager,
+          with the single human ask up top. The executive layer above the per-manager P&L. */}
+      {data.weeklyExecPlan && data.weeklyExecPlan.moves.length > 0 && (
+        <section className="space-y-3">
+          <div className="flex items-baseline justify-between gap-3 flex-wrap">
+            <h2 className="text-lg font-semibold">🎯 AI Executive Standup — your week, ranked by impact</h2>
+            {data.weeklyExecPlan.totalKnownImpactCents > 0 && (
+              <span className="text-sm font-semibold text-green-700">
+                ~${Math.round(data.weeklyExecPlan.totalKnownImpactCents / 100).toLocaleString()} in play
+              </span>
+            )}
+          </div>
+          <p className="text-sm text-muted-foreground">{data.weeklyExecPlan.headline}</p>
+
+          {data.weeklyExecPlan.oneAsk && (
+            <Card className="p-4 border-l-4 border-l-indigo-500 bg-indigo-50/50">
+              <div className="flex items-center gap-2 mb-1">
+                <Badge className="bg-indigo-600 text-white">The one ask</Badge>
+                <Badge className="bg-slate-900 text-white">{data.weeklyExecPlan.oneAsk.managerLabel}</Badge>
+              </div>
+              <p className="text-sm font-semibold text-foreground">{data.weeklyExecPlan.oneAsk.title}</p>
+              <p className="text-xs text-muted-foreground mt-1">{data.weeklyExecPlan.oneAsk.why}</p>
+            </Card>
+          )}
+
+          <div className="space-y-2">
+            {data.weeklyExecPlan.moves.map((mv) => {
+              const band = mv.impactBand === "high" ? "text-red-700 bg-red-50" : mv.impactBand === "medium" ? "text-amber-700 bg-amber-50" : "text-slate-600 bg-slate-50"
+              const dollars = mv.estimatedImpactCents ? `$${Math.round(mv.estimatedImpactCents / 100).toLocaleString()}` : mv.impactBand
+              return (
+                <Card key={`${mv.kind}-${mv.rank}-${mv.entityId ?? mv.manager}`} className="p-3">
+                  <div className="flex items-start gap-3">
+                    <span className="w-7 h-7 shrink-0 rounded-full bg-slate-900 text-white text-sm font-bold flex items-center justify-center">{mv.rank}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-semibold">{mv.title}</span>
+                        <Badge className="bg-slate-100 text-slate-700">{mv.managerLabel}</Badge>
+                        {mv.needsHuman && <Badge className="bg-indigo-100 text-indigo-800">needs you</Badge>}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">{mv.why}</p>
+                    </div>
+                    <span className={"shrink-0 text-xs font-semibold px-2 py-1 rounded " + band} title={`Impact band: ${mv.impactBand}`}>{dollars}</span>
+                  </div>
+                </Card>
+              )
+            })}
+          </div>
+        </section>
+      )}
+
       {/* Manager Weekly P&L — the outcome layer: what each manager PRODUCED this week
           vs the prior week. Proves the AI workforce moves the business, not just acts. */}
       {data.weeklyPnl.length > 0 && (
