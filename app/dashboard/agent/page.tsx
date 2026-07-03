@@ -29,6 +29,7 @@ import { AgentLifetimeCustomersPanel } from "./components/agent-lifetime-custome
 import { AgentSuperpowersPanel } from "./components/agent-superpowers-panel"
 import { WeeklyPlanWidget } from "./components/weekly-plan-widget"
 import { LicenseComplianceWidget } from "./components/license-compliance-widget"
+import { AgentCareerTierCard } from "@/app/components/agent/career-tier-card"
 import { AgentFinancialIntelligence } from "./components/agent-financial-intelligence"
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
 import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
@@ -405,6 +406,7 @@ export default function AgentDashboard() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <WeeklyPlanWidget agentId={agentId} />
             <LicenseComplianceWidget agentId={agentId} />
+            <AgentCareerTierCard agentId={agentId} />
           </div>
         )}
 
