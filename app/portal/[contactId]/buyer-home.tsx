@@ -16,6 +16,7 @@ import { MilestoneProgressBar, type TransactionMilestone } from "@/app/component
 import { PortalLiveFeed } from "@/app/components/portal/PortalLiveFeed"
 import { NegotiationMirrorPanel } from "@/app/components/negotiation/negotiation-mirror-panel"
 import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
+import { EducationTutorCard } from "@/app/components/portal/education-tutor-card"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
 import { FinancialMeaningCard } from "@/app/components/shared/FinancialMeaningCard"
 import { BuyerFinancialUploadCard } from "@/app/components/portal/BuyerFinancialUploadCard"
@@ -402,6 +403,7 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
             the contact's current milestone (or any earlier one). Locked
             previews show what unlocks next. Hides on empty. */}
         <MilestoneEducationPanel contactId={contactId} />
+        <EducationTutorCard contactId={contactId} />
 
         {/* What This Means — persona-aware */}
         <Card className="shadow-lg border-0">

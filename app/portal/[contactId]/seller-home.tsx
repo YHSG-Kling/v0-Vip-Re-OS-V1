@@ -28,6 +28,7 @@ import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { ContactVendorToolkitCard } from "@/app/components/portal/ContactVendorToolkitCard"
 import { NegotiationMirrorPanel } from "@/app/components/negotiation/negotiation-mirror-panel"
 import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
+import { EducationTutorCard } from "@/app/components/portal/education-tutor-card"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
@@ -249,6 +250,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
           listing moves through stages (listing_live → first_showing →
           offer_received → under_contract → closing_prep). Hides on empty. */}
       <MilestoneEducationPanel contactId={contactId} />
+        <EducationTutorCard contactId={contactId} />
 
       {/* 0. WHAT'S NEW — kernel fan-out feeds milestones from listing
            transitions (LISTING_PUBLISHED, OFFER_ACCEPTED, OPEN_HOUSE_SCHEDULED).

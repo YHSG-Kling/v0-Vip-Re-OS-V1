@@ -20,6 +20,7 @@ import { createClient } from "@/lib/supabase/server"
 import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
 import { PortalLiveFeed } from "@/app/components/portal/PortalLiveFeed"
 import { MilestoneEducationPanel } from "@/app/components/portal/milestone-education-panel"
+import { EducationTutorCard } from "@/app/components/portal/education-tutor-card"
 import { LifetimeMilestoneLine } from "./components/LifetimeMilestoneLine"
 import { computeHomeWealthStory } from "@/lib/portal/home-wealth"
 import { maintenanceDeck } from "@/lib/portal/home-maintenance"
@@ -150,6 +151,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           customers see wealth + home-care lessons (set_refi_alerts,
           home_value_tracking, annual_market_update, etc.). Hides on empty. */}
       <MilestoneEducationPanel contactId={contactId} />
+        <EducationTutorCard contactId={contactId} />
 
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
