@@ -17,6 +17,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { computeRetentionScore, scoreTier, isAtRisk, scoreTrendOf, AT_RISK_THRESHOLD, type RetentionSignals } from "../lib/recruiting/retention-score"
+import { selectRetentionIntervention, buildSavePlayCopy, interventionKeyForDriver } from "../lib/recruiting/retention-intervention"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -46,9 +47,22 @@ function pureLayer() {
   check("trend: big drop → declining, big rise → improving, small → stable", scoreTrendOf(30, 70) === "declining" && scoreTrendOf(70, 30) === "improving" && scoreTrendOf(50, 51) === "stable")
 }
 
+function interventionLayer() {
+  console.log("\n[intervention library · pure — signal-specific, not generic]")
+  check("a QUIET agent → re-engagement intervention", interventionKeyForDriver("Low platform activity") === "re_engagement" && selectRetentionIntervention(["Low platform activity"]).key === "re_engagement")
+  check("a DROUGHT agent → empathy-first drought support", selectRetentionIntervention(["In a production drought"]).key === "drought_support" && /slow stretch|slow for everyone/i.test(selectRetentionIntervention(["In a production drought"]).brokerAction))
+  check("an EMPTY pipeline → pipeline unstick", selectRetentionIntervention(["Empty pipeline"]).key === "pipeline_unstick")
+  check("STALLED onboarding → onboarding ramp", selectRetentionIntervention(["Stalled onboarding"]).key === "onboarding_ramp")
+  check("the DOMINANT (first) driver wins the intervention", selectRetentionIntervention(["In a production drought", "Empty pipeline"]).key === "drought_support")
+  check("no drivers → a genuine holistic check-in (never a fabricated cause)", selectRetentionIntervention([]).key === "holistic_check_in")
+  const copy = buildSavePlayCopy({ agentName: "Sam", score: 31, drivers: ["Low platform activity"] })
+  check("save-play copy names the agent/score + carries the broker call script", /Sam/.test(copy.body) && /31\/100/.test(copy.body) && copy.brokerScript.length > 0 && copy.interventionKey === "re_engagement")
+}
+
 function sourceLayer() {
   console.log("\n[wiring — daily score, gated save-play on fresh breach, owned]")
   const radar = src("lib/recruiting/retention-radar.ts")
+  check("the save-play is signal-specific (buildSavePlayCopy on the driving signals)", /buildSavePlayCopy\(\{ agentName: p\.agentName, score: p\.score, drivers: p\.drivers \}\)/.test(radar))
   check("gathers REAL signals (activity, closings, pipeline, onboarding)", /agent_assistant_sessions[\s\S]*?transactions[\s\S]*?agent_onboarding/.test(radar))
   check("upserts the daily score per (agent, date)", /from\("agent_retention_scores"\)\.upsert\([\s\S]*?onConflict: "agent_id,score_date"/.test(radar))
   check("proposes a GATED save-play ONLY on a FRESH breach (no re-spam)", /freshBreach = previousScore == null \|\| previousScore >= 40[\s\S]*?proposeRetentionSavePlay/.test(radar) && /export async function proposeRetentionSavePlay/.test(radar))
@@ -107,6 +121,7 @@ async function liveLayer() {
 
 async function main() {
   pureLayer()
+  interventionLayer()
   sourceLayer()
   await liveLayer()
   console.log("\n──────────────────────────────────────────────────")
