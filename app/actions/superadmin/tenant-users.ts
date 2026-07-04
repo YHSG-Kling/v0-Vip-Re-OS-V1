@@ -10,6 +10,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { inviteTenantMember, type UserDomainRole } from "@/lib/kernel/users"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 
@@ -53,6 +54,54 @@ export async function listTenantUsersAction(brokerageId: string): Promise<
     users: ((users ?? []) as any[]).map((u) => ({ id: u.id, email: u.email, name: [u.first_name, u.last_name].filter(Boolean).join(" ") || "—", role: u.user_type, status: u.status })),
     invites: ((invites ?? []) as any[]).map((i) => ({ id: i.id, email: i.email, role: i.user_type, status: i.status, expiresAt: i.expires_at, createdAt: i.created_at })),
   }
+}
+
+// Roles a superadmin can create INTO a tenant from the god console. (superadmin is
+// deliberately excluded — platform staff are provisioned through their own path.)
+const TENANT_CREATABLE_ROLES = new Set<string>([
+  "admin", "broker", "agent", "team_lead", "tc", "isa", "compliance_officer", "lender", "vendor",
+])
+
+/**
+ * Create (invite) a user INTO any tenant — superadmin-down manual provisioning. Uses the
+ * canonical inviteTenantMember path, so the new user is auth-linked (users.id === auth.id)
+ * and gets their role-specific domain records (agents/onboarding/role) exactly like a
+ * tenant-initiated invite. A team_lead can be dropped onto an existing team via teamId.
+ */
+export async function createTenantUserAction(params: {
+  brokerageId: string
+  email: string
+  firstName?: string
+  lastName?: string
+  userType: string
+  teamId?: string | null
+}): Promise<{ ok: boolean; userId?: string; error?: string }> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  const email = params.email?.trim().toLowerCase()
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false, error: "Valid email required" }
+  if (!params.brokerageId) return { ok: false, error: "Target brokerage required" }
+  if (!TENANT_CREATABLE_ROLES.has(params.userType)) return { ok: false, error: `Role not allowed: ${params.userType}` }
+
+  const svc = createServiceClient()
+  const { data: brk } = await svc.from("brokerages").select("id").eq("id", params.brokerageId).maybeSingle()
+  if (!brk) return { ok: false, error: "Brokerage not found" }
+
+  const res = await inviteTenantMember({
+    brokerageId:  params.brokerageId,
+    teamId:       params.teamId ?? null,
+    email,
+    firstName:    params.firstName ?? "",
+    lastName:     params.lastName ?? "",
+    userType:     params.userType as UserDomainRole,
+    callerUserId: auth.userId,
+    redirectTo:   `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
+  })
+  if (!res.success || !res.userId) return { ok: false, error: res.error ?? "Failed to create user" }
+
+  await audit(auth.userId, auth.email, "user.created", res.userId, { brokerage_id: params.brokerageId, role: params.userType, email })
+  revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
+  return { ok: true, userId: res.userId }
 }
 
 /** Activate / suspend any tenant's user (cross-tenant). */

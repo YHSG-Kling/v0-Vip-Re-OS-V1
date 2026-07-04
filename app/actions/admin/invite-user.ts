@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { createOrRepairUserDomainRecords } from "@/lib/kernel/users"
+import { inviteTenantMember } from "@/lib/kernel/users"
 import { emitUserProvisionedEvent } from "@/lib/kernel/users"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { UserDomainRole } from "@/lib/kernel/users"
@@ -76,112 +76,28 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
       ? (caller?.team_id ?? params.teamId ?? null)
       : (params.teamId ?? null)
 
-  // ── 5. Send Supabase invitation email ─────────────────────────────────────
+  // ── 5. Provision through the canonical, identity-correct tenant-member path ─
+  // inviteTenantMember creates the auth user FIRST (so public.users.id ===
+  // auth.users.id — the invariant every read path + RLS policy depends on), pins the
+  // users row, tracks the invitation, frees any stale orphan email, and provisions the
+  // role-specific domain records (agents / TC / onboarding / user_role_assignments).
+  if (!resolvedBrokerageId) {
+    return { success: false, error: "A brokerage is required to invite a user." }
+  }
   const service = createServiceClient()
-
-  let newUserId: string | null = null
-
-  try {
-    const { data: inviteData, error: inviteErr } = await service.auth.admin.inviteUserByEmail(
-      params.email,
-      {
-        data: {
-          first_name:   params.firstName,
-          last_name:    params.lastName,
-          user_type:    requestedRole,
-          brokerage_id: resolvedBrokerageId,
-          team_id:      resolvedTeamId,
-        },
-        redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/onboarding`,
-      }
-    )
-
-    if (inviteErr) {
-      // If user already exists in auth, we can still provision domain records
-      if (!inviteErr.message.toLowerCase().includes("already registered")) {
-        return { success: false, error: inviteErr.message }
-      }
-    }
-
-    newUserId = inviteData?.user?.id ?? null
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Invite failed"
-    if (!msg.toLowerCase().includes("already registered")) {
-      return { success: false, error: msg }
-    }
+  const provisioned = await inviteTenantMember({
+    brokerageId:  resolvedBrokerageId,
+    teamId:       resolvedTeamId,
+    email:        params.email,
+    firstName:    params.firstName,
+    lastName:     params.lastName,
+    userType:     requestedRole,
+    callerUserId: user.id,
+  })
+  if (!provisioned.success || !provisioned.userId) {
+    return { success: false, error: provisioned.error ?? "Failed to provision the invited user." }
   }
-
-  // ── 6. Upsert users table row so user appears in admin panel immediately ──
-  let upsertedUser: any = null
-  try {
-    const result = await service
-      .from("users")
-      .upsert(
-        {
-          email:        params.email,
-          first_name:   params.firstName || null,
-          last_name:    params.lastName || null,
-          user_type:    requestedRole,
-          role:         requestedRole, // keep legacy role field in sync
-          brokerage_id: resolvedBrokerageId,
-          team_id:      resolvedTeamId,
-          is_contact:   false,
-          created_by:   user.id,
-          created_at:   new Date().toISOString(),
-          updated_at:   new Date().toISOString(),
-        },
-        { onConflict: "email" }
-      )
-      .select("id")
-      .maybeSingle()
-    
-    upsertedUser = result.data
-  } catch (err: unknown) {
-    console.error("[v0] Upsert users error:", err)
-  }
-
-  const resolvedUserId = newUserId ?? upsertedUser?.id ?? null
-
-  // ── 6b. Track this invitation in user_invitations (state machine source) ─
-  // Idempotent: ON CONFLICT (brokerage_id, lower(email)) WHERE status='pending'
-  // means clicking "Invite" twice updates the timestamp rather than failing.
-  if (resolvedBrokerageId) {
-    try {
-      await service
-        .from("user_invitations")
-        .upsert(
-          {
-            brokerage_id: resolvedBrokerageId,
-            team_id:      resolvedTeamId,
-            invited_by:   user.id,
-            email:        params.email.toLowerCase(),
-            user_type:    requestedRole,
-            first_name:   params.firstName,
-            last_name:    params.lastName,
-            status:       "pending",
-          },
-          { onConflict: "brokerage_id,email", ignoreDuplicates: false }
-        )
-    } catch (err: unknown) {
-      console.error("[v0] user_invitations upsert error:", err)
-    }
-  }
-
-  // ── 7. Provision all role-specific domain records via kernel ──────────────
-  // This is the canonical path — handles agents row, TC row, onboarding row,
-  // user_role_assignments, and emits KernelEvent.USER_DOMAIN_RECORDS_CREATED
-  if (resolvedUserId && resolvedBrokerageId) {
-    await createOrRepairUserDomainRecords({
-      userId:       resolvedUserId,
-      email:        params.email,
-      firstName:    params.firstName,
-      lastName:     params.lastName,
-      userType:     requestedRole,
-      brokerageId:  resolvedBrokerageId,
-      teamId:       resolvedTeamId,
-      callerUserId: user.id,
-    })
-  }
+  const resolvedUserId = provisioned.userId
 
   // ── 8. Emit USER_INVITED event ────────────────────────────────────────────
   if (resolvedUserId) {

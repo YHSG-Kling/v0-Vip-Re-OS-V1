@@ -615,6 +615,140 @@ export async function repairIncompleteAccountSetup(
   return { success: true, repaired: result.domainRecordsCreated }
 }
 
+// ─── identity guards (shared) ────────────────────────────────────────────────
+
+/** Does this public.users id correspond to a real auth.users row (vs. a stale orphan
+ *  that merely holds the email)? */
+async function isAuthUser(service: ReturnType<typeof createServiceClient>, id: string): Promise<boolean> {
+  try {
+    const { data, error } = await service.auth.admin.getUserById(id)
+    return !!data?.user && !error
+  } catch {
+    return false
+  }
+}
+
+/** Before an invite, resolve whether the email is already held: by a REAL auth-linked
+ *  user (reuse it — idempotent) or by a stale ORPHAN (a users row with no auth identity,
+ *  e.g. a failed pre-invite / seed row). An orphan's unique email is sentineled so the
+ *  invite's on_auth_user_created trigger can create the canonical row; its id is returned
+ *  so children can be merged onto the new auth id afterwards. Keeps a stale email from
+ *  silently breaking a fresh, correct signup/invite. */
+async function resolveEmailHolder(
+  service: ReturnType<typeof createServiceClient>,
+  email: string,
+): Promise<{ authUserId: string | null; orphanToMerge: string | null }> {
+  const { data: existing } = await service.from("users").select("id").eq("email", email).maybeSingle()
+  if (!existing?.id) return { authUserId: null, orphanToMerge: null }
+  if (await isAuthUser(service, existing.id)) return { authUserId: existing.id, orphanToMerge: null }
+  // Orphan — free the unique email so the trigger can insert the canonical row.
+  await service.from("users").update({ email: `__orphan__:${existing.id}` }).eq("id", existing.id)
+  return { authUserId: null, orphanToMerge: existing.id }
+}
+
+/** Merge a freed orphan's children onto the canonical auth-id row, then drop the orphan. */
+async function mergeOrphan(service: ReturnType<typeof createServiceClient>, orphanId: string | null, authUserId: string): Promise<void> {
+  if (!orphanId || orphanId === authUserId) return
+  try { await service.rpc("repoint_user_identity", { p_from: orphanId, p_to: authUserId }) } catch (err) {
+    console.warn("[users] orphan merge failed:", (err as any)?.message)
+  }
+}
+
+// ─── inviteTenantMember ───────────────────────────────────────────────────────
+
+export interface TenantMemberParams {
+  brokerageId: string
+  teamId?: string | null
+  email: string
+  firstName?: string
+  lastName?: string
+  userType: UserDomainRole
+  /** The admin/broker/team_lead/superadmin who triggered this. */
+  callerUserId: string
+  redirectTo?: string
+}
+
+export interface TenantMemberResult {
+  success: boolean
+  userId: string | null
+  agentId: string | null
+  error?: string
+}
+
+/**
+ * Canonical path to provision a NON-owner member into a tenant — the single core both
+ * the tenant-scoped invite (app/actions/admin/invite-user.ts) and superadmin-down
+ * cross-tenant creation (app/actions/superadmin/tenant-users.ts) converge on. Callers
+ * own authorization + brokerage/team resolution; this owns the identity-correct writes:
+ * invite (auth user first, trigger seeds users with the auth id) → pin/enrich the users
+ * row → track the invitation → merge any stale orphan email → role-aware domain records
+ * (agents/onboarding/role). Same invariant as provisionTenantOwner: users.id === auth.id.
+ */
+export async function inviteTenantMember(params: TenantMemberParams): Promise<TenantMemberResult> {
+  const service = createServiceClient()
+  const email = params.email.trim().toLowerCase()
+  const { brokerageId, callerUserId, userType } = params
+  const teamId = params.teamId ?? null
+  const firstName = params.firstName ?? ""
+  const lastName = params.lastName ?? ""
+  const redirectTo = params.redirectTo ?? `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/onboarding`
+
+  const { authUserId: linked, orphanToMerge } = await resolveEmailHolder(service, email)
+  let authUserId = linked
+
+  if (!authUserId) {
+    try {
+      const { data, error } = await service.auth.admin.inviteUserByEmail(email, {
+        data: { first_name: firstName, last_name: lastName, user_type: userType, brokerage_id: brokerageId, team_id: teamId },
+        redirectTo,
+      })
+      authUserId = data?.user?.id ?? null
+      if (!authUserId && error && !error.message?.toLowerCase().includes("already registered")) {
+        return { success: false, userId: null, agentId: null, error: error.message }
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "invite failed"
+      if (!msg.toLowerCase().includes("already registered")) return { success: false, userId: null, agentId: null, error: msg }
+    }
+    if (!authUserId) {
+      try { const { data } = await service.auth.admin.listUsers(); authUserId = data?.users?.find((u) => u.email?.toLowerCase() === email)?.id ?? null } catch { /* best-effort */ }
+    }
+  }
+  if (!authUserId) return { success: false, userId: null, agentId: null, error: "Could not resolve auth user id after invite" }
+
+  await service.from("users").upsert(
+    {
+      id:           authUserId,
+      email,
+      first_name:   firstName || null,
+      last_name:    lastName || null,
+      user_type:    userType,
+      role:         userType,
+      brokerage_id: brokerageId,
+      team_id:      teamId,
+      is_contact:   false,
+      created_by:   callerUserId,
+      updated_at:   new Date().toISOString(),
+    },
+    { onConflict: "id" }
+  )
+
+  try {
+    await service.from("user_invitations").upsert(
+      { brokerage_id: brokerageId, team_id: teamId, invited_by: callerUserId, email, user_type: userType, first_name: firstName, last_name: lastName, status: "pending" },
+      { onConflict: "brokerage_id,email", ignoreDuplicates: false }
+    )
+  } catch (err) { console.warn("[inviteTenantMember] invitation upsert failed:", (err as any)?.message) }
+
+  await mergeOrphan(service, orphanToMerge, authUserId)
+
+  const domain = await createOrRepairUserDomainRecords({
+    userId: authUserId, email, firstName, lastName, userType, brokerageId, teamId, callerUserId,
+  })
+
+  return { success: true, userId: authUserId, agentId: domain.agentId }
+}
+
 // ─── provisionTenantOwner ─────────────────────────────────────────────────────
 
 export type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
@@ -667,10 +801,11 @@ export async function provisionTenantOwner(params: TenantOwnerParams): Promise<T
   const callerUserId = params.callerUserId ?? null
   const email = params.email.trim().toLowerCase()
 
-  // 1. Already provisioned for this email? (idempotent re-run)
-  const { data: existing } = await service
-    .from("users").select("id").eq("email", email).maybeSingle()
-  let authUserId: string | null = existing?.id ?? null
+  // 1. Resolve the email holder: reuse a REAL auth-linked user (idempotent re-run) or
+  //    free a stale ORPHAN email (failed pre-invite / seed) so the trigger can create
+  //    the canonical row; the orphan's children are merged onto the auth id afterwards.
+  const { authUserId: linkedId, orphanToMerge } = await resolveEmailHolder(service, email)
+  let authUserId: string | null = linkedId
   let inviteSent = false
   let inviteError: string | undefined
 
@@ -723,6 +858,9 @@ export async function provisionTenantOwner(params: TenantOwnerParams): Promise<T
     },
     { onConflict: "id" }
   )
+
+  // 3b. Merge any freed orphan email's children onto the canonical auth-id row.
+  await mergeOrphan(service, orphanToMerge, authUserId)
 
   // 4. Team tier → the team must exist (team = team_lead + teams row) so invited
   //    agents can be attached. Idempotent: reuse the brokerage's first live team.

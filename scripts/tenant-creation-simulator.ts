@@ -95,6 +95,28 @@ function sourceLayer() {
   check("the kernel imports the predicates from the spec (not a private copy)",
     /from "\.\/tenant-provisioning-spec"/.test(kernel))
 
+  console.log("\n[identity reconciliation — the durable safety net]")
+  const mig = src("supabase/migrations/m266-reconcile-user-identity.sql")
+  check("migration ships the repoint primitive + batch reconciler",
+    /function public\.repoint_user_identity/.test(mig) && /function public\.reconcile_orphaned_users/.test(mig))
+  check("repoint is generic (dynamic FK discovery) + re-keys via a full-row copy that frees the unique cols (no superuser)",
+    /information_schema\.table_constraints/.test(mig) && /__recon__/.test(mig) && /create temp table _recon_u/.test(mig) && !/set_config\('session_replication_role/.test(mig))
+  check("provisionTenantOwner + inviteTenantMember guard a stale ORPHAN email (no silent break)",
+    /resolveEmailHolder/.test(kernel) && /mergeOrphan/.test(kernel) && /repoint_user_identity/.test(kernel))
+
+  console.log("\n[tenant self-service + superadmin-down user creation — one shared core]")
+  check("inviteTenantMember is the shared, identity-correct member path (invite-first, pin id)",
+    /export async function inviteTenantMember/.test(kernel) &&
+    kernel.indexOf("inviteUserByEmail", kernel.indexOf("inviteTenantMember")) < kernel.indexOf('.from("users").upsert', kernel.indexOf("export async function inviteTenantMember")))
+  const inv = src("app/actions/admin/invite-user.ts")
+  check("tenant admins/broker/team_lead invite THEIR OWN users via the shared core",
+    /inviteTenantMember\(\{/.test(inv) && /\["admin", "broker", "superadmin", "team_lead"\]\.includes\(callerType\)/.test(inv))
+  const tu = src("app/actions/superadmin/tenant-users.ts")
+  check("superadmin can CREATE users down into ANY tenant (gated + audited + shared core)",
+    /export async function createTenantUserAction/.test(tu) && /requireSuperadmin/.test(tu) && /inviteTenantMember\(\{/.test(tu) && /"user\.created"/.test(tu))
+  check("the god-console panel wires the create form",
+    /createTenantUserAction/.test(src("app/dashboard/superadmin/brokerages/[id]/tenant-users-panel.tsx")))
+
   console.log("\n[governance — burn domain owned + runnable proof]")
   const reg = src("lib/kernel/manager-registry.ts")
   check("tenant_creation burn domain owned by data_steward with proof test:tenant-creation",
