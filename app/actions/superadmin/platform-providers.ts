@@ -34,7 +34,7 @@ export async function getPlatformProvidersAction(): Promise<
   return { ok: true, spec: PLATFORM_PROVIDER_SPEC, state: await getPlatformProviderConfig() }
 }
 
-export async function setPlatformProviderAction(params: { providerType: string; providerKey: string; enabled: boolean }): Promise<{ ok: boolean; error?: string }> {
+export async function setPlatformProviderAction(params: { providerType: string; providerKey?: string; enabled: boolean }): Promise<{ ok: boolean; error?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   const svc = createServiceClient()

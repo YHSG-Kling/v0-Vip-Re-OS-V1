@@ -8,11 +8,12 @@
 // only be seeded by hand-run SQL. This is that write surface: one audited superadmin action lights up the
 // whole already-live read path.
 //
-// Two axes are configurable at the platform tier:
-//   • CHANNEL ENABLEMENT (direct_mail, video) — turn a platform channel on/off for every tenant.
-//   • PLATFORM DEFAULT VENDOR (email, sms, phone) — the vendor a brokerage INHERITS when it hasn't set its
-//     own (the BYO-cascade fallback). System-only vendors (video=D-ID, voice_clone=ElevenLabs) stay locked
-//     by design and are NOT vendor-swappable here.
+// SCOPE (corrected): the ONLY things that are genuinely platform-level here are the PLATFORM-FUNDED CHANNELS
+// whose enablement the read side actually gates — direct_mail (Lob) and video (D-ID). Everything a TENANT
+// brings itself — email, calendar, SMS, phone — is per-tenant (connected via the tenant's own OAuth/keys in
+// the connection center), NOT a platform default, so it is intentionally absent here. Provider API KEYS
+// (D-ID, ElevenLabs, Lob, Stripe, Twilio, …) are set as Vercel environment variables, never entered in the
+// app — this surface only toggles ENABLEMENT, never captures a secret.
 
 import { createServiceClient } from "@/lib/supabase/service"
 
@@ -20,33 +21,32 @@ import { createServiceClient } from "@/lib/supabase/service"
  *  dedupes to exactly one row per provider_type — which resolveProvider's .maybeSingle() requires. */
 export const PLATFORM_SCOPE_ID = "00000000-0000-0000-0000-000000000000"
 
-export type PlatformProviderKind = "channel" | "default"
-
 export interface PlatformProviderSpec {
   providerType: string
   label: string
-  kind: PlatformProviderKind
-  /** For 'default' vendors: the selectable vendor keys. For 'channel': the fixed vendor (informational). */
-  options: string[]
+  /** The fixed platform-funded vendor for this channel (informational — the key lives in Vercel env). */
+  vendor: string
+  /** Plain-English what enabling/disabling this channel does platform-wide. */
+  note: string
 }
 
-/** The catalog of what a superadmin can configure at the platform tier. */
+/**
+ * The catalog of platform-funded CHANNELS a superadmin can enable/disable for every tenant. Only these two
+ * are (a) platform-level (platform-funded vendor) and (b) actually gated by the runtime read side
+ * (getSystemProviderStatus). Tenant-connected providers (email/calendar/SMS/phone) are NOT here.
+ */
 export const PLATFORM_PROVIDER_SPEC: PlatformProviderSpec[] = [
-  { providerType: "direct_mail", label: "Direct mail (Lob)", kind: "channel", options: ["lob"] },
-  { providerType: "video", label: "Video / avatar (D-ID)", kind: "channel", options: ["did"] },
-  { providerType: "email", label: "Default email sender", kind: "default", options: ["sendgrid", "mailgun", "resend", "ses", "postmark"] },
-  { providerType: "sms", label: "Default SMS", kind: "default", options: ["twilio", "telnyx", "bandwidth"] },
-  { providerType: "phone", label: "Default voice / phone", kind: "default", options: ["twilio", "telnyx", "bandwidth"] },
+  { providerType: "direct_mail", label: "Direct mail", vendor: "lob", note: "Lets tenants send AI-generated postcards/letters (Lob). Off = no direct-mail channel anywhere." },
+  { providerType: "video", label: "Video / avatar", vendor: "did", note: "Lets tenants render D-ID avatar + explainer videos. Off = no platform video channel anywhere." },
 ]
 
 const SPEC_BY_TYPE = new Map(PLATFORM_PROVIDER_SPEC.map((s) => [s.providerType, s]))
 
-/** PURE: is this provider_type configurable at the platform tier, and (for defaults) is the vendor valid? */
+/** PURE: is this provider_type a platform-configurable channel? (Vendor is fixed + funded via Vercel env.) */
 export function validatePlatformProvider(providerType: string, providerKey: string): { ok: boolean; error?: string } {
   const spec = SPEC_BY_TYPE.get(providerType)
-  if (!spec) return { ok: false, error: `"${providerType}" is not a platform-configurable provider` }
-  if (!providerKey?.trim()) return { ok: false, error: "A provider key is required" }
-  if (spec.kind === "default" && !spec.options.includes(providerKey)) return { ok: false, error: `"${providerKey}" is not a valid ${spec.label} vendor` }
+  if (!spec) return { ok: false, error: `"${providerType}" is not a platform-configurable channel (tenant providers like email/calendar are connected per-tenant)` }
+  if (providerKey && providerKey !== spec.vendor) return { ok: false, error: `${spec.label} is platform-funded to ${spec.vendor}; the key is set in Vercel, not here` }
   return { ok: true }
 }
 
@@ -60,17 +60,19 @@ export async function getPlatformProviderConfig(client?: Svc): Promise<PlatformP
     .select("provider_type, provider_key, enabled").eq("scope_type", "superadmin")
   const byType = new Map<string, PlatformProviderState>()
   for (const r of (data ?? []) as any[]) byType.set(r.provider_type, { providerType: r.provider_type, providerKey: r.provider_key, enabled: r.enabled })
-  // Return the full spec, defaulting to the system fallback when unset.
-  return PLATFORM_PROVIDER_SPEC.map((s) => byType.get(s.providerType) ?? { providerType: s.providerType, providerKey: s.options[0], enabled: s.kind === "default" })
+  // Return the full spec; a channel with no row is OFF by default (opt-in enablement).
+  return PLATFORM_PROVIDER_SPEC.map((s) => byType.get(s.providerType) ?? { providerType: s.providerType, providerKey: s.vendor, enabled: false })
 }
 
-/** Write a platform provider override (superadmin-scope, sentinel scope_id). Upsert → one row per type. */
-export async function setPlatformProviderOverride(svc: Svc, params: { providerType: string; providerKey: string; enabled: boolean }): Promise<{ ok: boolean; error?: string }> {
-  const v = validatePlatformProvider(params.providerType, params.providerKey)
-  if (!v.ok) return { ok: false, error: v.error }
+/** Enable/disable a platform channel (superadmin-scope, sentinel scope_id). Upsert → one row per type.
+ *  The vendor is fixed (funded via Vercel env) — callers only toggle `enabled`. */
+export async function setPlatformProviderOverride(svc: Svc, params: { providerType: string; providerKey?: string; enabled: boolean }): Promise<{ ok: boolean; error?: string }> {
+  const spec = SPEC_BY_TYPE.get(params.providerType)
+  if (!spec) return { ok: false, error: `"${params.providerType}" is not a platform-configurable channel` }
+  const vendor = spec.vendor // the key stays the platform-funded vendor; never a user-entered secret
   const { error } = await svc.from("provider_overrides").upsert({
     scope_type: "superadmin", scope_id: PLATFORM_SCOPE_ID,
-    provider_type: params.providerType, provider_key: params.providerKey.trim(),
+    provider_type: params.providerType, provider_key: vendor,
     enabled: params.enabled, updated_at: new Date().toISOString(),
   }, { onConflict: "scope_type,scope_id,provider_type" })
   if (error) return { ok: false, error: error.message }

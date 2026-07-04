@@ -23,16 +23,16 @@ const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ $
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
 function pureLayer() {
-  console.log("\n[validatePlatformProvider · pure]")
-  check("a configurable default (email=sendgrid) is valid", validatePlatformProvider("email", "sendgrid").ok)
-  check("an invalid vendor for a default is rejected", !validatePlatformProvider("email", "notavendor").ok)
-  check("a non-configurable type (voice_clone) is rejected (locked by design)", !validatePlatformProvider("voice_clone", "elevenlabs").ok)
-  check("empty provider key is rejected", !validatePlatformProvider("sms", "").ok)
-  check("a channel (direct_mail=lob) is valid", validatePlatformProvider("direct_mail", "lob").ok)
+  console.log("\n[validatePlatformProvider · pure — platform-funded CHANNELS only]")
+  check("direct_mail (Lob) is a platform channel", validatePlatformProvider("direct_mail", "lob").ok)
+  check("video (D-ID) is a platform channel", validatePlatformProvider("video", "did").ok)
+  check("TENANT-specific email is NOT a platform provider (connected per-tenant)", !validatePlatformProvider("email", "sendgrid").ok)
+  check("TENANT-specific calendar / sms / phone are NOT platform providers", !validatePlatformProvider("calendar", "google").ok && !validatePlatformProvider("sms", "twilio").ok && !validatePlatformProvider("phone", "twilio").ok)
+  check("a wrong vendor for a channel is rejected (vendor is fixed + funded in Vercel)", !validatePlatformProvider("video", "heygen").ok)
 
-  console.log("\n[catalog · pure — both axes covered]")
-  check("channels cover direct_mail + video (enablement)", PLATFORM_PROVIDER_SPEC.some((s) => s.providerType === "direct_mail" && s.kind === "channel") && PLATFORM_PROVIDER_SPEC.some((s) => s.providerType === "video" && s.kind === "channel"))
-  check("default vendors cover email/sms/phone (BYO inheritance)", ["email", "sms", "phone"].every((t) => PLATFORM_PROVIDER_SPEC.some((s) => s.providerType === t && s.kind === "default")))
+  console.log("\n[catalog · pure]")
+  check("the catalog is exactly the two platform-funded channels", PLATFORM_PROVIDER_SPEC.length === 2 && PLATFORM_PROVIDER_SPEC.every((s) => ["direct_mail", "video"].includes(s.providerType)))
+  check("no tenant-connected providers leak into the platform catalog", !PLATFORM_PROVIDER_SPEC.some((s) => ["email", "calendar", "sms", "phone"].includes(s.providerType)))
   check("the sentinel platform scope id is the NIL uuid", PLATFORM_SCOPE_ID === "00000000-0000-0000-0000-000000000000")
 }
 
