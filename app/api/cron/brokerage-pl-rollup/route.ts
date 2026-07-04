@@ -145,13 +145,24 @@ export async function GET(req: NextRequest) {
       errors.push(`team-pl: ${err.message}`)
     }
 
+    // SUBSCRIPTION WATCH — the platform's dunning/renewal engine: alert platform staff on every tenant
+    // whose subscription needs a human (payment past due / trial expiring), deduped per tenant per day.
+    let subscriptionAlerts = 0
+    try {
+      const { runSubscriptionWatch } = await import("@/lib/platform/subscription-oversight")
+      const watch = await runSubscriptionWatch(supabase, now)
+      subscriptionAlerts = watch.notified
+    } catch (err: any) {
+      errors.push(`subscription-watch: ${err.message}`)
+    }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: processed,
-      metadata: { month_year: monthYear, teamsWritten, errors: errors.slice(0, 10) },
+      metadata: { month_year: monthYear, teamsWritten, subscriptionAlerts, errors: errors.slice(0, 10) },
     })
 
-    return NextResponse.json({ ok: true, monthYear, processed, teamsWritten, errors })
+    return NextResponse.json({ ok: true, monthYear, processed, teamsWritten, subscriptionAlerts, errors })
   } catch (err: any) {
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 })
