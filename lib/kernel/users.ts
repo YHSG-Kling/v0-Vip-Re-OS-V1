@@ -26,7 +26,7 @@
 //   agents.team_id         → teams.id
 //   transaction_coordinators.user_id   → users.id
 //   agent_onboarding.user_id           → users.id
-//   agent_onboarding.agent_id          → agents.id (nullable for non-agent TC)
+//   agent_onboarding.agent_id          → agents.id (NOT NULL — onboarding is agent-scoped)
 //   user_role_assignments.user_id      → users.id
 //   user_role_assignments.brokerage_id → brokerages.id
 //   user_role_assignments.agent_id     → agents.id (nullable)
@@ -35,6 +35,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
+import { requiresAgentRow } from "./tenant-provisioning-spec"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -61,6 +62,9 @@ export interface UserProvisioningParams {
   userType: UserDomainRole
   brokerageId: string | null
   teamId?: string | null
+  /** Canonical plan tier of the brokerage — decides whether an admin/broker OWNER
+   *  also needs an agents row (solo_agent IS the agent; a team's owner is its lead). */
+  tier?: string | null
   /** ID of the admin/broker who triggered this provisioning */
   callerUserId: string
 }
@@ -130,14 +134,12 @@ const ROLE_DASHBOARD_ROUTES: Record<string, string> = {
   system:              "/dashboard/admin",
 }
 
-// Roles that require an agents table row
-const AGENT_ROLES = new Set<UserDomainRole>(["agent", "isa", "team_lead"])
-
 // Roles that require a transaction_coordinators table row
 const TC_ROLES = new Set<UserDomainRole>(["tc"])
 
-// Roles that require an agent_onboarding row
-const ONBOARDING_ROLES = new Set<UserDomainRole>(["agent", "isa", "team_lead", "tc"])
+// The tier→required-rows predicates (requiresAgentRow / requiresOnboardingRow)
+// live in a plain, server-safe module so the SAME logic drives this provisioner,
+// the login-time repair, and the simulator's pure layer — no drift.
 
 // ─── createOrRepairUserDomainRecords ─────────────────────────────────────────
 
@@ -170,7 +172,7 @@ export async function createOrRepairUserDomainRecords(
   let coordinatorId: string | null = null
 
   try {
-    const { userId, userType, brokerageId, teamId, callerUserId } = params
+    const { userId, userType, brokerageId, teamId, tier, callerUserId } = params
 
     // ── 1. user_role_assignments ──────────────────────────────────────────
     // Write canonical RBAC join row for ALL roles
@@ -180,8 +182,8 @@ export async function createOrRepairUserDomainRecords(
       .eq("user_id", userId)
       .maybeSingle()
 
-    // ── 2. agents row — only for AGENT_ROLES ─────────────────────────────
-    if (AGENT_ROLES.has(userType) && brokerageId) {
+    // ── 2. agents row — AGENT_ROLES + solo/team tenant OWNER ─────────────
+    if (requiresAgentRow(userType, tier) && brokerageId) {
       const { data: existingAgent } = await service
         .from("agents")
         .select("id")
@@ -204,7 +206,8 @@ export async function createOrRepairUserDomainRecords(
             brokerage_id:   brokerageId,
             team_id:        teamId ?? null,
             is_active:      true,
-            onboarding_status: "pending",
+            // agents.onboarding_status CHECK: not_started|in_progress|completed|pending_review
+            onboarding_status: "not_started",
             created_at:     new Date().toISOString(),
             updated_at:     new Date().toISOString(),
           })
@@ -215,17 +218,20 @@ export async function createOrRepairUserDomainRecords(
           agentId = newAgent.id
           created.push("agents")
 
-          // ── 2a. agent_commission_profiles (default 70/30) ──────────────
-          // Schema: split_percent (not split_percentage), no updated_at
+          // ── 2a. agent_commission_profiles ──────────────────────────────
+          // Schema: split_percent (not split_percentage), no updated_at.
+          // A solo_agent owner keeps 100% (no brokerage split to take a cut);
+          // everyone else defaults to the standard 70/30 until configured.
           await service
             .from("agent_commission_profiles")
             .insert({
               agent_id:     agentId,
               brokerage_id: brokerageId,
-              split_percent: 70,
+              split_percent: tier === "solo_agent" ? 100 : 70,
               is_active:    true,
               effective_date: new Date().toISOString().slice(0, 10),
-              structure_type: "standard",
+              // structure_type CHECK: flat_cap|tiered|team|multi_layer|split
+              structure_type: "split",
               created_at:   new Date().toISOString(),
             })
 
@@ -266,14 +272,17 @@ export async function createOrRepairUserDomainRecords(
       }
     }
 
-    // ── 4. agent_onboarding row — for all agent/TC roles ─────────────────
-    // Schema: user_id, agent_id (nullable), brokerage_id, status, completion_percentage
-    // NO updated_at column in this table
-    if (ONBOARDING_ROLES.has(userType) && brokerageId) {
+    // ── 4. agent_onboarding row — AGENT-SCOPED ───────────────────────────
+    // agent_onboarding.agent_id is NOT NULL and FKs → agents.id, so this row can
+    // only exist alongside an agents row. It is therefore created for a solo/team
+    // OWNER and every invited agent role, but NOT for a pure-admin owner
+    // (brokerage / multi_location), whose onboarding is tracked at
+    // brokerages.onboarding_status. Idempotency key = the UNIQUE(agent_id).
+    if (agentId && brokerageId) {
       const { data: existingOnboarding } = await service
         .from("agent_onboarding")
         .select("id")
-        .eq("user_id", userId)
+        .eq("agent_id", agentId)
         .maybeSingle()
 
       if (!existingOnboarding) {
@@ -283,7 +292,8 @@ export async function createOrRepairUserDomainRecords(
             user_id:              userId,
             agent_id:             agentId,
             brokerage_id:         brokerageId,
-            status:               "pending",
+            // agent_onboarding.status CHECK: in_progress|completed|paused
+            status:               "in_progress",
             completion_percentage: 0,
             current_day:          1,
             certification_achieved: false,
@@ -309,7 +319,9 @@ export async function createOrRepairUserDomainRecords(
             created_at:   new Date().toISOString(),
             updated_at:   new Date().toISOString(),
           },
-          { onConflict: "user_id" }
+          // The real unique constraint is (user_id, role) — onConflict:"user_id"
+          // alone matches no unique index and throws 42P10 at runtime.
+          { onConflict: "user_id,role" }
         )
 
       if (!existingRole) created.push("user_role_assignments")
@@ -369,16 +381,26 @@ export async function resolveUserWorkspaceContext(userId: string): Promise<Works
   const agentId    = agentData?.id ?? roleData?.agent_id ?? null
   const coordinatorId = tcData?.id ?? null
 
+  // Load the tenant tier so a solo/team OWNER (admin/broker) is correctly held
+  // to the agent-row requirement (they carry the book of business).
+  let tier: string | null = null
+  if (brokerageId) {
+    const { data: brk } = await service.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()
+    tier = brk?.plan_tier ?? null
+  }
+
   const missing: string[] = []
 
   // Check required domain records
-  if (AGENT_ROLES.has(userType as UserDomainRole) && !agentId) {
+  if (requiresAgentRow(userType as UserDomainRole, tier) && !agentId) {
     missing.push("agents")
   }
   if (TC_ROLES.has(userType as UserDomainRole) && !coordinatorId) {
     missing.push("transaction_coordinators")
   }
-  if (ONBOARDING_ROLES.has(userType as UserDomainRole) && !onboardingData) {
+  // Onboarding is agent-scoped (agent_id NOT NULL) — expected exactly when an
+  // agents row is expected.
+  if (requiresAgentRow(userType as UserDomainRole, tier) && !onboardingData) {
     missing.push("agent_onboarding")
   }
 
@@ -440,7 +462,7 @@ export async function assignUserRoleAndEntitlements(
             agent_id:     params.agentId ?? null,
             updated_at:   new Date().toISOString(),
           },
-          { onConflict: "user_id" }
+          { onConflict: "user_id,role" }
         )
     }
 
@@ -555,6 +577,14 @@ export async function repairIncompleteAccountSetup(
     return { success: false, repaired: [], error: "User record not found" }
   }
 
+  // Resolve the tenant tier so an under-provisioned solo/team OWNER (admin who
+  // never got an agents row) is healed on their next login.
+  let tier: string | null = null
+  if (userData.brokerage_id) {
+    const { data: brk } = await service.from("brokerages").select("plan_tier").eq("id", userData.brokerage_id).maybeSingle()
+    tier = brk?.plan_tier ?? null
+  }
+
   const result = await createOrRepairUserDomainRecords({
     userId,
     email:       userData.email ?? "",
@@ -563,6 +593,7 @@ export async function repairIncompleteAccountSetup(
     userType:    (userData.user_type ?? "agent") as UserDomainRole,
     brokerageId: userData.brokerage_id ?? null,
     teamId:      userData.team_id ?? null,
+    tier,
     callerUserId: userId, // self-repair
   })
 
@@ -582,6 +613,150 @@ export async function repairIncompleteAccountSetup(
   }
 
   return { success: true, repaired: result.domainRecordsCreated }
+}
+
+// ─── provisionTenantOwner ─────────────────────────────────────────────────────
+
+export type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
+
+export interface TenantOwnerParams {
+  email: string
+  firstName: string
+  lastName: string
+  brokerageId: string
+  brokerageName: string
+  tier: CanonicalTier
+  /** Post-invite landing (e.g. /auth/callback?next=/dashboard/onboarding). */
+  redirectTo: string
+  /** The staff/superadmin who triggered provisioning; null for self-serve signup. */
+  callerUserId?: string | null
+}
+
+export interface TenantOwnerResult {
+  success: boolean
+  userId: string | null
+  agentId: string | null
+  teamId: string | null
+  inviteSent: boolean
+  inviteError?: string
+  error?: string
+}
+
+/**
+ * Canonical tenant-OWNER provisioning — the single path both self-serve signup
+ * (app/actions/auth/signup-brokerage.ts) and superadmin provisioning
+ * (app/actions/admin/create-subscriber.ts) converge on, so they can never drift.
+ *
+ * THE INVARIANT the whole app depends on: public.users.id === auth.users.id
+ * (get-agent-context, every RLS auth.uid() policy, the agents.user_id → users.id FK).
+ * The only way to satisfy it is to let the AUTH user exist FIRST — the
+ * on_auth_user_created trigger then seeds public.users with the auth id — and pin
+ * that id on every subsequent write. Pre-inserting a public.users row (random id)
+ * BEFORE the invite both orphans the profile AND collides with the trigger on the
+ * email-unique constraint, silently rolling back auth-user creation so the owner
+ * can never log in. This helper does it in the proven order and is tier-aware:
+ *   • invite → auth user + trigger-seeded users row (correct id)
+ *   • pin/enrich the users row (id, name, admin role, brokerage)
+ *   • team tier → create the teams row + link the owner as its lead
+ *   • tier-aware domain records — a solo/team owner gets an agents row (+ commission
+ *     + onboarding + role assignment); a brokerage/multi owner is a pure admin.
+ */
+export async function provisionTenantOwner(params: TenantOwnerParams): Promise<TenantOwnerResult> {
+  const service = createServiceClient()
+  const { firstName, lastName, brokerageId, brokerageName, tier, redirectTo } = params
+  const callerUserId = params.callerUserId ?? null
+  const email = params.email.trim().toLowerCase()
+
+  // 1. Already provisioned for this email? (idempotent re-run)
+  const { data: existing } = await service
+    .from("users").select("id").eq("email", email).maybeSingle()
+  let authUserId: string | null = existing?.id ?? null
+  let inviteSent = false
+  let inviteError: string | undefined
+
+  // 2. Create the auth user FIRST. The trigger seeds public.users with the auth
+  //    id from this metadata; we never pre-insert (that is the collision bug).
+  if (!authUserId) {
+    try {
+      const { data: inviteData, error: inviteErr } = await service.auth.admin.inviteUserByEmail(email, {
+        data: { first_name: firstName, last_name: lastName, brokerage_id: brokerageId, user_type: "admin" },
+        redirectTo,
+      })
+      authUserId = inviteData?.user?.id ?? null
+      if (authUserId) {
+        inviteSent = true
+      } else if (inviteErr && !inviteErr.message?.toLowerCase().includes("already registered")) {
+        return { success: false, userId: null, agentId: null, teamId: null, inviteSent: false, inviteError: inviteErr.message, error: `Invite failed: ${inviteErr.message}` }
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "invite failed"
+      if (!msg.toLowerCase().includes("already registered")) {
+        return { success: false, userId: null, agentId: null, teamId: null, inviteSent: false, inviteError: msg, error: `Invite failed: ${msg}` }
+      }
+      inviteError = msg
+    }
+  }
+
+  // 2b. "Already registered" in auth but no users row yet → recover the auth id.
+  if (!authUserId) {
+    try {
+      const { data: list } = await service.auth.admin.listUsers()
+      authUserId = list?.users?.find((u) => u.email?.toLowerCase() === email)?.id ?? null
+    } catch { /* best-effort */ }
+  }
+  if (!authUserId) {
+    return { success: false, userId: null, agentId: null, teamId: null, inviteSent, inviteError, error: "Could not resolve auth user id after invite" }
+  }
+
+  // 3. Pin/enrich the public.users row (trigger created it; guarantee id + fields).
+  await service.from("users").upsert(
+    {
+      id:           authUserId,
+      email,
+      first_name:   firstName,
+      last_name:    lastName,
+      user_type:    "admin",
+      role:         "admin",
+      brokerage_id: brokerageId,
+      is_contact:   false,
+      updated_at:   new Date().toISOString(),
+    },
+    { onConflict: "id" }
+  )
+
+  // 4. Team tier → the team must exist (team = team_lead + teams row) so invited
+  //    agents can be attached. Idempotent: reuse the brokerage's first live team.
+  let teamId: string | null = null
+  if (tier === "team") {
+    const { data: existingTeam } = await service
+      .from("teams").select("id").eq("brokerage_id", brokerageId).is("deleted_at", null)
+      .order("created_at", { ascending: true }).limit(1).maybeSingle()
+    if (existingTeam) {
+      teamId = existingTeam.id
+    } else {
+      const { data: newTeam } = await service.from("teams")
+        .insert({ name: brokerageName, brokerage_id: brokerageId, team_lead_id: authUserId })
+        .select("id").maybeSingle()
+      teamId = newTeam?.id ?? null
+    }
+    if (teamId) await service.from("users").update({ team_id: teamId }).eq("id", authUserId)
+  }
+
+  // 5. Tier-aware domain records — agents row for a solo/team owner, onboarding,
+  //    role assignment. Reuses the ONE provisioning brain (also used by invite).
+  const domain = await createOrRepairUserDomainRecords({
+    userId:       authUserId,
+    email,
+    firstName,
+    lastName,
+    userType:     "admin",
+    brokerageId,
+    teamId,
+    tier,
+    callerUserId: callerUserId ?? authUserId,
+  })
+
+  return { success: true, userId: authUserId, agentId: domain.agentId, teamId, inviteSent, inviteError }
 }
 
 // ─── emitUserProvisionedEvent (internal) ─────────────────────────────────────

@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { provisionTenantOwner } from "@/lib/kernel/users"
 import { stripe } from "@/lib/stripe"
 
 export interface CreateSubscriberParams {
@@ -50,10 +51,6 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
 
   const service = createServiceClient()
 
-  // The provisioned user is always the billing admin for the new brokerage.
-  // Tier-specific roles (agent, team_lead) are assigned after onboarding.
-  const adminUserType = "admin"
-
   try {
     // Step 1: Create brokerage — set plan_tier so fair-use enforcement
     // (lib/ai/fair-use.ts via brokerages.plan_tier → plan_limits) immediately
@@ -83,48 +80,28 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
 
     const brokerageId = brokerage.id
 
-    // Step 2: Create admin user record
-    const { data: newUser, error: uErr } = await service
-      .from("users")
-      .insert({
-        email: params.adminEmail,
-        first_name: params.adminFirstName,
-        last_name: params.adminLastName,
-        user_type: adminUserType,
-        role: adminUserType,
-        brokerage_id: brokerageId,
-        is_contact: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .select("id")
-      .single()
-
-    if (uErr || !newUser) {
+    // Step 2: Provision the tenant OWNER through the canonical identity path —
+    // creates the auth user FIRST (so public.users.id === auth.users.id, the
+    // invariant every read path + RLS policy depends on), pins/enriches the users
+    // row, creates the teams row for a team tenant, and — tier-aware — gives a
+    // solo/team owner their agents row (+ commission + onboarding + role
+    // assignment). Sends the magic-link invite. Replaces the old pre-insert that
+    // collided with the on_auth_user_created trigger and orphaned the profile.
+    const owner = await provisionTenantOwner({
+      email:         params.adminEmail,
+      firstName:     params.adminFirstName,
+      lastName:      params.adminLastName,
+      brokerageId,
+      brokerageName: params.brokerageName,
+      tier:          params.tierName,
+      redirectTo:    `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
+      callerUserId:  callerUser.id,
+    })
+    if (!owner.success || !owner.userId) {
       await service.from("brokerages").delete().eq("id", brokerageId)
-      return { success: false, error: `User creation failed: ${uErr?.message}` }
+      return { success: false, error: `Owner provisioning failed: ${owner.error}` }
     }
-
-    const userId = newUser.id
-
-    // Step 2b: Seed agent_onboarding row so first-login lands in onboarding flow
-    try {
-      await service
-        .from("agent_onboarding")
-        .insert({
-          agent_id: userId,
-          user_id: userId,
-          brokerage_id: brokerageId,
-          status: "not_started",
-          current_day: 1,
-          start_date: new Date().toISOString().split("T")[0],
-          completion_percentage: 0,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-    } catch {
-      // Non-fatal: onboarding record will be created on first login if missing
-    }
+    const userId = owner.userId
 
     // Step 3: Create Stripe customer
     let stripeCustomerId = params.stripeCustomerId || null
@@ -195,34 +172,14 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
       // Non-fatal: audit log failures don't block subscriber creation
     }
 
-    // Step 6: Send invite email via Supabase auth — non-fatal, but result is surfaced
-    let inviteSucceeded = false
-    let inviteErrorMessage: string | null = null
-
-    try {
-      await service.auth.admin.inviteUserByEmail(params.adminEmail, {
-        data: {
-          first_name: params.adminFirstName,
-          last_name: params.adminLastName,
-          brokerage_id: brokerageId,
-          user_type: adminUserType,
-        },
-        // /auth/callback handles PKCE exchange; `next` tells it where to land
-        redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
-      })
-      inviteSucceeded = true
-    } catch (inviteErr: any) {
-      console.warn("[createSubscriber] Invite email failed:", inviteErr.message)
-      inviteErrorMessage = inviteErr.message ?? "Unknown invite error"
-    }
-
+    // (The magic-link invite was sent by provisionTenantOwner in Step 2.)
     return {
       success: true,
       brokerageId,
       userId,
       subscriptionId: subscription.id,
-      inviteSent: inviteSucceeded,
-      inviteError: inviteErrorMessage ?? undefined,
+      inviteSent: owner.inviteSent,
+      inviteError: owner.inviteError,
     }
   } catch (err: any) {
     console.error("[createSubscriber] Error:", err)

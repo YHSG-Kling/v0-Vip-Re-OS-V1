@@ -20,6 +20,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { provisionTenantOwner } from "@/lib/kernel/users"
 import { headers } from "next/headers"
 
 export type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
@@ -120,41 +121,29 @@ export async function signupBrokerageAction(
     return { ok: false, error: `Brokerage creation failed: ${bErr?.message ?? "unknown"}` }
   }
 
-  // Step 2 — create admin user record
-  const { data: newUser, error: uErr } = await service
-    .from("users")
-    .insert({
-      email:        input.adminEmail.trim().toLowerCase(),
-      first_name:   input.adminFirstName.trim(),
-      last_name:    input.adminLastName.trim(),
-      user_type:    "admin",
-      role:         "admin",
-      brokerage_id: brokerage.id,
-      is_contact:   false,
-      created_at:   new Date().toISOString(),
-      updated_at:   new Date().toISOString(),
-    })
-    .select("id")
-    .single()
-  if (uErr || !newUser) {
+  // Step 2 — provision the tenant OWNER through the canonical identity path.
+  // This creates the auth user FIRST (so public.users.id === auth.users.id — the
+  // invariant every read path + RLS policy depends on), pins/enriches the users
+  // row, creates the teams row for a team tenant, and — tier-aware — gives a
+  // solo/team owner their agents row (+ commission + onboarding + role assignment)
+  // so they can own a book of business on day one. The magic-link invite is sent
+  // as part of this step. Replaces the old pre-insert (which collided with the
+  // on_auth_user_created trigger's email-unique insert and orphaned the profile).
+  const owner = await provisionTenantOwner({
+    email:        input.adminEmail,
+    firstName:    input.adminFirstName.trim(),
+    lastName:     input.adminLastName.trim(),
+    brokerageId:  brokerage.id,
+    brokerageName: input.brokerageName.trim(),
+    tier:         input.tier,
+    redirectTo:   `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
+    callerUserId: null,
+  })
+  if (!owner.success || !owner.userId) {
     await service.from("brokerages").delete().eq("id", brokerage.id)
-    return { ok: false, error: `User creation failed: ${uErr?.message ?? "unknown"}` }
+    return { ok: false, error: `Owner provisioning failed: ${owner.error ?? "unknown"}` }
   }
-
-  // Step 3 — seed agent_onboarding so first-login lands in the wizard
-  try {
-    await service.from("agent_onboarding").insert({
-      agent_id:              newUser.id,
-      user_id:               newUser.id,
-      brokerage_id:          brokerage.id,
-      status:                "not_started",
-      current_day:           1,
-      start_date:            new Date().toISOString().split("T")[0],
-      completion_percentage: 0,
-      created_at:            new Date().toISOString(),
-      updated_at:            new Date().toISOString(),
-    })
-  } catch { /* non-fatal */ }
+  const newUser = { id: owner.userId }
 
   // Step 4 — create trial subscription. No Stripe customer at signup —
   // the billing webhook + /dashboard/admin/billing path will collect card
@@ -199,21 +188,7 @@ export async function signupBrokerageAction(
     })
   } catch { /* non-fatal */ }
 
-  // Step 6 — magic-link invite email so admin can set a password
-  try {
-    await service.auth.admin.inviteUserByEmail(input.adminEmail.trim().toLowerCase(), {
-      data: {
-        first_name:   input.adminFirstName.trim(),
-        last_name:    input.adminLastName.trim(),
-        brokerage_id: brokerage.id,
-        user_type:    "admin",
-      },
-      redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
-    })
-  } catch (err: any) {
-    // Non-fatal — admin can request a fresh invite from the login page.
-    console.warn("[signupBrokerage] Invite email failed:", err?.message)
-  }
+  // (The magic-link invite was sent by provisionTenantOwner in Step 2.)
 
   // SUBSCRIBER ONBOARDING EDUCATION — day-one learning path. Assign the platform's
   // published onboarding modules (brokerage_id IS NULL = platform library; audience

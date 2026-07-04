@@ -143,6 +143,7 @@
     "test:platform-providers": "tsx scripts/platform-providers-simulator.ts",
     "test:staff-onboarding": "tsx scripts/staff-onboarding-simulator.ts",
     "test:ai-ops": "tsx scripts/ai-ops-simulator.ts",
+    "test:tenant-creation": "tsx scripts/tenant-creation-simulator.ts",
     "test:mentor-match": "tsx scripts/mentor-match-simulator.ts",
     "test:mentor-sessions": "tsx scripts/mentor-sessions-simulator.ts",
     "test:onboarding-journey": "tsx scripts/onboarding-journey-simulator.ts",
