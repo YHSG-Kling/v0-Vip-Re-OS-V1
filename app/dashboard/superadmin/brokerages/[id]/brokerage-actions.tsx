@@ -10,6 +10,8 @@ import {
   suspendBrokerageAction,
   reactivateBrokerageAction,
   cancelBrokerageAction,
+  extendTrialAction,
+  pauseSubscriptionAction,
 } from "@/app/actions/superadmin/brokerage-management"
 
 type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
@@ -18,8 +20,27 @@ export function BrokerageActions({ brokerage }: { brokerage: any }) {
   const [tier, setTier] = useState<CanonicalTier>(brokerage.plan_tier ?? "solo_agent")
   const [reason, setReason] = useState("")
   const [mode, setMode] = useState<"idle" | "suspend" | "cancel">("idle")
+  const [trialDays, setTrialDays] = useState("14")
   const [feedback, setFeedback] = useState<{ kind: "error" | "success"; message: string } | null>(null)
   const [isPending, startTransition] = useTransition()
+
+  function applyExtendTrial() {
+    setFeedback(null)
+    startTransition(async () => {
+      const r = await extendTrialAction({ brokerageId: brokerage.id, days: Number(trialDays), reason: reason.trim() || undefined })
+      if (!r.ok) { setFeedback({ kind: "error", message: r.error ?? "Failed" }); return }
+      setFeedback({ kind: "success", message: `Trial extended to ${r.newTrialEnd ? new Date(r.newTrialEnd).toLocaleDateString() : "—"}${r.stripeApplied ? " (pushed to Stripe)" : " (local — Stripe not configured)"}` })
+    })
+  }
+
+  function applyPause(pause: boolean) {
+    setFeedback(null)
+    startTransition(async () => {
+      const r = await pauseSubscriptionAction({ brokerageId: brokerage.id, pause, reason: reason.trim() || undefined })
+      if (!r.ok) { setFeedback({ kind: "error", message: r.error ?? "Failed" }); return }
+      setFeedback({ kind: "success", message: `${pause ? "Paused" : "Resumed"}${r.stripeApplied ? " (pushed to Stripe)" : " (local — Stripe not configured)"}` })
+    })
+  }
 
   function applyTierChange() {
     setFeedback(null)
@@ -91,6 +112,18 @@ export function BrokerageActions({ brokerage }: { brokerage: any }) {
           <p className="text-xs text-muted-foreground mt-2">
             Tier changes apply immediately — fair-use quota recomputes on next AI call. Existing transactions are NOT locked out.
           </p>
+        </div>
+
+        {/* Subscription — comp trial + pause (write through to Stripe when configured) */}
+        <div className="border rounded p-3">
+          <div className="text-xs text-muted-foreground mb-2">Subscription</div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <input type="number" min={1} max={365} value={trialDays} onChange={(e) => setTrialDays(e.target.value)} className="h-8 w-20 rounded-md border px-2 text-sm" aria-label="Trial days" />
+            <Button size="sm" variant="outline" onClick={applyExtendTrial} disabled={isPending || !(Number(trialDays) > 0)}>Extend trial / comp</Button>
+            <Button size="sm" variant="outline" onClick={() => applyPause(true)} disabled={isPending}>Pause billing</Button>
+            <Button size="sm" variant="outline" onClick={() => applyPause(false)} disabled={isPending}>Resume</Button>
+          </div>
+          <p className="text-xs text-muted-foreground mt-2">Comp free time or pause a break. Writes through to Stripe when configured, else applies locally.</p>
         </div>
 
         {/* Status actions */}

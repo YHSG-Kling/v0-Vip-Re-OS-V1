@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { getBrokerageDetailAction } from "@/app/actions/superadmin/brokerage-management"
 import { BrokerageActions } from "./brokerage-actions"
+import { TenantUsersPanel } from "./tenant-users-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -65,43 +66,8 @@ export default async function SuperadminBrokerageDetailPage(
       {/* Admin actions card */}
       <BrokerageActions brokerage={brokerage} />
 
-      {/* Team members */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <Users className="h-4 w-4 text-primary" />
-            Team ({users.length})
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          {users.length === 0 ? (
-            <p className="p-4 text-sm text-muted-foreground">No users yet.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b bg-muted/10">
-                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Name</th>
-                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Email</th>
-                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Role</th>
-                    <th className="text-right px-4 py-2 font-medium text-muted-foreground">Joined</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {users.map((u: any) => (
-                    <tr key={u.id} className="border-b last:border-0">
-                      <td className="px-4 py-2.5 font-medium">{[u.first_name, u.last_name].filter(Boolean).join(" ") || "—"}</td>
-                      <td className="px-4 py-2.5 text-xs">{u.email}</td>
-                      <td className="px-4 py-2.5"><Badge variant="outline" className="text-xs">{u.user_type}</Badge></td>
-                      <td className="px-4 py-2.5 text-right text-xs text-muted-foreground">{new Date(u.created_at).toLocaleDateString()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      {/* Team members — actionable cross-tenant user management */}
+      <TenantUsersPanel brokerageId={brokerage.id} />
 
       {/* Subscriptions history */}
       {subscriptions.length > 0 && (

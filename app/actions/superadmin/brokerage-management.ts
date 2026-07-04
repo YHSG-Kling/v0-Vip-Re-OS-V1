@@ -28,6 +28,10 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
+import {
+  stripeCancelAtPeriodEnd, stripeResume, stripeSwapPrice, stripeExtendTrial, stripePauseCollection,
+  computeTrialExtension, isStripeConfigured,
+} from "@/lib/billing/stripe-subscription-ops"
 
 type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
 
@@ -224,13 +228,24 @@ export async function changeBrokerageTierAction(params: {
     .eq("id", params.brokerageId)
   if (error) return { ok: false, error: error.message }
 
+  // Keep subscriptions.tier_id in lockstep with plan_tier (fixes the drift where tier change wrote only
+  // brokerages.plan_tier), and reprice the Stripe subscription to the new tier's price when configured.
+  let stripeApplied = false
+  const { data: tierRow } = await svc.from("subscription_tiers").select("id, stripe_price_id").eq("tier_name", params.newTier).maybeSingle()
+  const { data: sub } = await svc.from("subscriptions").select("id, stripe_subscription_id").eq("brokerage_id", params.brokerageId).in("status", ["active", "trialing", "past_due", "paused"]).maybeSingle()
+  if (tierRow && sub) {
+    await svc.from("subscriptions").update({ tier_id: (tierRow as any).id, updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+    const r = await stripeSwapPrice((sub as any).stripe_subscription_id, (tierRow as any).stripe_price_id)
+    stripeApplied = r.applied
+  }
+
   await writeAuditLog({
     actorUserId: auth.userId,
     actorEmail:  auth.email,
     action:      "brokerage.tier_changed",
     targetType:  "brokerage",
     targetId:    params.brokerageId,
-    details:     { previous_tier: previousTier, new_tier: params.newTier, reason: params.reason ?? null },
+    details:     { previous_tier: previousTier, new_tier: params.newTier, reason: params.reason ?? null, stripe_applied: stripeApplied },
   })
 
   revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
@@ -290,13 +305,21 @@ export async function reactivateBrokerageAction(brokerageId: string): Promise<{ 
     .eq("status", "suspended")
   if (error) return { ok: false, error: error.message }
 
+  // Resume Stripe billing (undo any pending cancel / pause) + un-cancel the local subscription.
+  const { data: sub } = await svc.from("subscriptions").select("id, stripe_subscription_id, status").eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(1).maybeSingle()
+  let stripeApplied = false
+  if (sub) {
+    await svc.from("subscriptions").update({ status: "active", cancel_at: null, cancelled_at: null, updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+    stripeApplied = (await stripeResume((sub as any).stripe_subscription_id)).applied
+  }
+
   await writeAuditLog({
     actorUserId: auth.userId,
     actorEmail:  auth.email,
     action:      "brokerage.reactivated",
     targetType:  "brokerage",
     targetId:    brokerageId,
-    details:     {},
+    details:     { stripe_applied: stripeApplied },
   })
 
   revalidatePath(`/dashboard/superadmin/brokerages/${brokerageId}`)
@@ -324,11 +347,17 @@ export async function cancelBrokerageAction(params: {
     .eq("id", params.brokerageId)
   if (error) return { ok: false, error: error.message }
 
-  // Also cancel any active subscriptions so billing webhook doesn't keep charging
+  // Cancel through to Stripe (at period end) so billing actually stops — not just the local row.
+  const { data: subs } = await svc.from("subscriptions").select("id, stripe_subscription_id").eq("brokerage_id", params.brokerageId).in("status", ["active", "trialing", "past_due", "paused"])
+  let stripeApplied = false
+  for (const s of (subs ?? []) as any[]) {
+    const r = await stripeCancelAtPeriodEnd(s.stripe_subscription_id)
+    if (r.applied) stripeApplied = true
+  }
   await svc.from("subscriptions")
-    .update({ status: "cancelled", updated_at: new Date().toISOString() })
+    .update({ status: "cancelled", cancelled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("brokerage_id", params.brokerageId)
-    .in("status", ["active", "trialing"])
+    .in("status", ["active", "trialing", "past_due", "paused"])
 
   await writeAuditLog({
     actorUserId: auth.userId,
@@ -336,12 +365,57 @@ export async function cancelBrokerageAction(params: {
     action:      "brokerage.cancelled",
     targetType:  "brokerage",
     targetId:    params.brokerageId,
-    details:     { reason: params.reason.trim() },
+    details:     { reason: params.reason.trim(), stripe_applied: stripeApplied },
   })
 
   revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
   revalidatePath("/dashboard/superadmin/brokerages")
   return { ok: true }
+}
+
+// ── SUBSCRIPTION PRIMITIVES: EXTEND TRIAL (COMP) / PAUSE ─────────────────────
+
+/** Extend a tenant's trial by N days (a comp / free time). Writes local trial_end + brokerages.trial_ends_at
+ *  and pushes trial_end to Stripe when configured. */
+export async function extendTrialAction(params: { brokerageId: string; days: number; reason?: string }): Promise<{ ok: boolean; error?: string; newTrialEnd?: string; stripeApplied?: boolean }> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  const days = Math.floor(params.days)
+  if (!(days > 0) || days > 365) return { ok: false, error: "Days must be 1–365" }
+  const svc = createServiceClient()
+  const now = new Date()
+
+  const { data: sub } = await svc.from("subscriptions").select("id, stripe_subscription_id, trial_end").eq("brokerage_id", params.brokerageId).order("created_at", { ascending: false }).limit(1).maybeSingle()
+  const { data: brk } = await svc.from("brokerages").select("trial_ends_at").eq("id", params.brokerageId).maybeSingle()
+  const currentEnd = (sub as any)?.trial_end ?? (brk as any)?.trial_ends_at ?? null
+  const ext = computeTrialExtension(currentEnd, days, now)
+
+  if (sub) await svc.from("subscriptions").update({ trial_end: ext.iso, status: "trialing", updated_at: now.toISOString() }).eq("id", (sub as any).id)
+  await svc.from("brokerages").update({ trial_ends_at: ext.iso, updated_at: now.toISOString() }).eq("id", params.brokerageId)
+  const stripeApplied = (await stripeExtendTrial((sub as any)?.stripe_subscription_id, ext.unix)).applied
+
+  await writeAuditLog({ actorUserId: auth.userId, actorEmail: auth.email, action: "subscription.trial_extended", targetType: "brokerage", targetId: params.brokerageId, details: { days, new_trial_end: ext.iso, reason: params.reason ?? null, stripe_applied: stripeApplied } })
+  revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
+  revalidatePath("/dashboard/superadmin/subscriptions")
+  return { ok: true, newTrialEnd: ext.iso, stripeApplied }
+}
+
+/** Pause (or resume) a tenant's billing without cancelling — comp a break. Local status paused/active +
+ *  Stripe pause_collection when configured. */
+export async function pauseSubscriptionAction(params: { brokerageId: string; pause: boolean; reason?: string }): Promise<{ ok: boolean; error?: string; stripeApplied?: boolean }> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+  const { data: sub } = await svc.from("subscriptions").select("id, stripe_subscription_id, status").eq("brokerage_id", params.brokerageId).order("created_at", { ascending: false }).limit(1).maybeSingle()
+  if (!sub) return { ok: false, error: "No subscription to pause" }
+
+  await svc.from("subscriptions").update({ status: params.pause ? "paused" : "active", updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+  const stripeApplied = (await stripePauseCollection((sub as any).stripe_subscription_id, params.pause)).applied
+
+  await writeAuditLog({ actorUserId: auth.userId, actorEmail: auth.email, action: params.pause ? "subscription.paused" : "subscription.resumed", targetType: "brokerage", targetId: params.brokerageId, details: { reason: params.reason ?? null, stripe_applied: stripeApplied } })
+  revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
+  revalidatePath("/dashboard/superadmin/subscriptions")
+  return { ok: true, stripeApplied }
 }
 
 // ── AUDIT LOG ────────────────────────────────────────────────────────────────

@@ -593,7 +593,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   strategy_recommendations: ["agent_user_id", "ai_analysis", "ai_narrative", "brokerage_id", "comparable_context", "contact_id", "created_at", "id", "listing_id", "offer_id", "recommended_contingencies", "recommended_earnest", "recommended_price", "risk_factors", "status", "success_probability", "template_id"],
   studio_sessions: ["agent_id", "brokerage_id", "commissioned_count", "created_at", "duration_label", "id", "plan", "session_key", "skipped_count", "spoken_command", "status", "updated_at"],
   subscriber_service_areas: ["active", "agent_user_id", "brokerage_id", "city", "created_at", "id", "is_primary", "joined_at", "state", "team_id", "zip_code"],
-  subscription_tiers: ["annual_price_cents", "created_at", "display_name", "features", "id", "is_active", "max_agents", "max_brokerages", "monthly_price_cents", "tier_name"],
+  subscription_tiers: ["annual_price_cents", "created_at", "display_name", "features", "id", "is_active", "max_agents", "max_brokerages", "monthly_price_cents", "stripe_price_id", "tier_name"],
   subscriptions: ["brokerage_id", "cancel_at", "cancelled_at", "created_at", "current_period_end", "current_period_start", "id", "status", "stripe_customer_id", "stripe_subscription_id", "tier_id", "trial_end", "updated_at"],
   superadmin_audit_log: ["action", "actor_email", "actor_user_id", "created_at", "details", "id", "ip_address", "target_id", "target_type", "user_agent"],
   support_tickets: ["agent_id", "brokerage_id", "category", "contact_id", "created_at", "description", "id", "priority", "status", "subject", "updated_at"],

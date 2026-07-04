@@ -137,6 +137,8 @@
     "test:brand-cascade": "tsx scripts/brand-cascade-simulator.ts",
     "test:platform-controls": "tsx scripts/platform-controls-simulator.ts",
     "test:subscription-oversight": "tsx scripts/subscription-oversight-simulator.ts",
+    "test:stripe-writethrough": "tsx scripts/stripe-writethrough-simulator.ts",
+    "test:tenant-user-mgmt": "tsx scripts/tenant-user-mgmt-simulator.ts",
     "test:mentor-match": "tsx scripts/mentor-match-simulator.ts",
     "test:mentor-sessions": "tsx scripts/mentor-sessions-simulator.ts",
     "test:onboarding-journey": "tsx scripts/onboarding-journey-simulator.ts",

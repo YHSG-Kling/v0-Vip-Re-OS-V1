@@ -6,6 +6,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import type { UserTier, FeatureAccessCheck } from "./types"
+import { isTrialOverride, isDisableOverride } from "@/lib/kernel/override-vocab"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -172,7 +173,8 @@ export async function canAccessFeature(
   const override = userOverride ?? overrides?.[0] ?? null
 
   // ── 5a. Trial override ─────────────────────────────────────────────────────
-  if (override?.override_type === "trial") {
+  // Canonical vocabulary is 'grant_trial' (DB CHECK); tolerate the legacy 'trial' spelling on read.
+  if (isTrialOverride(override?.override_type)) {
     const expired = override.trial_ends_at && new Date(override.trial_ends_at) <= new Date()
     if (!expired) {
       return {
@@ -185,7 +187,7 @@ export async function canAccessFeature(
   }
 
   // ── 5b. Disabled override ──────────────────────────────────────────────────
-  if (override?.override_type === "disabled") {
+  if (isDisableOverride(override?.override_type)) {
     return {
       allowed: false,
       disabled: true,
@@ -340,12 +342,12 @@ export async function grantFeatureTrial(
     .delete()
     .eq("feature_key", featureKey)
     .eq("user_id", userId)
-    .eq("override_type", "disabled")
+    .eq("override_type", "disable")
 
   const { error } = await supabase.from("feature_access_overrides").insert({
     user_id: userId,
     feature_key: featureKey,
-    override_type: "trial",
+    override_type: "grant_trial",
     trial_ends_at: trialEndsAt.toISOString(),
     created_by: createdByUserId,
     notes: notes ?? null,
@@ -381,7 +383,7 @@ export async function disableFeatureFor(
     .from("feature_access_overrides")
     .delete()
     .eq("feature_key", featureKey)
-    .eq("override_type", "trial")
+    .eq("override_type", "grant_trial")
 
   if (userId) deleteQuery.eq("user_id", userId)
   else if (teamId) deleteQuery.eq("team_id", teamId)
@@ -394,7 +396,7 @@ export async function disableFeatureFor(
     user_id: userId ?? null,
     brokerage_id: brokerageId ?? null,
     team_id: teamId ?? null,
-    override_type: "disabled",
+    override_type: "disable",
     disabled_reason: disabledReason ?? null,
     created_by: createdByUserId ?? null,
   })
