@@ -29,10 +29,14 @@ const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 const EMPTY: SetupSnapshot = {
   hasLicense: false, hasEoInsurance: false, hasVoiceClone: false, hasAvatar: false, hasOutreachChannel: false,
   hasMobilePhone: false, hasProfilePhoto: false, hasPersonalWebsite: false, hasEmailSignature: false,
-  hasSocialAccount: false, hasPayoutAccount: false, hasMotto: false, hasEmailOrCalendar: false,
-  hasBrokerageLicense: false, hasBranding: false, hasCommissionStructure: false, hasEmailProvider: false,
-  hasSmsProvider: false, hasTeamMembers: false, hasIsaPhone: false, hasAccountingSync: false, hasRecruitingPitch: false,
-  hasOfficeLocations: false, hasTeamConfig: false,
+  hasSocialAccount: false, hasPayoutAccount: false, hasMotto: false, hasAdditionalBrand: false,
+  hasAssistantVoice: false, hasCommissionContract: false, hasEmailOrCalendar: false,
+  hasCalendar: false, hasMls: false, hasCrm: false, hasTransactionEsign: false, hasPodcast: false,
+  hasFinance: false, hasAdManager: false, hasGoogleBusiness: false,
+  hasBrokerageLicense: false, hasBrokerageContact: false, hasBranding: false, hasCommissionStructure: false,
+  hasEmailProvider: false, hasSmsProvider: false, hasTeamMembers: false, hasIsaPhone: false,
+  hasAccountingSync: false, hasRecruitingPitch: false, hasOfficeLocations: false,
+  hasTeamConfig: false, hasTeamBrand: false,
 }
 const ALL_ROLES: SetupRole[] = ["agent", "team_lead", "isa", "tc", "compliance_officer", "broker", "admin", "superadmin", "vendor", "lender"]
 const ONBOARDING_ROLES: SetupRole[] = ["agent", "team_lead", "isa", "tc", "compliance_officer", "broker", "admin"]
@@ -53,7 +57,7 @@ function pureLayer() {
   check("a broker sees brokerage items (commission, branding, providers), not license/voice", brokerEmpty.items.some((i) => i.key === "commission_structure") && !brokerEmpty.items.some((i) => i.key === "voice_clone"))
 
   // A fully-configured agent → complete. Every substantive step is REQUIRED now (mandatory rule).
-  const fullAgent: SetupSnapshot = { ...EMPTY, hasLicense: true, hasEoInsurance: true, hasMobilePhone: true, hasOutreachChannel: true, hasVoiceClone: true, hasAvatar: true, hasProfilePhoto: true, hasEmailSignature: true }
+  const fullAgent: SetupSnapshot = { ...EMPTY, hasLicense: true, hasEoInsurance: true, hasMobilePhone: true, hasOutreachChannel: true, hasVoiceClone: true, hasAvatar: true, hasProfilePhoto: true, hasEmailSignature: true, hasAssistantVoice: true, hasCommissionContract: true }
   const done = resolveSetupReadiness("agent", fullAgent, "solo_agent")
   check("an agent with all required done is complete (100%, no next required)", done.isComplete && done.pct === 100 && (done.nextAction === null || !done.nextAction.required))
   check("optional items (social/payout) never block completion", done.optionalTotal > 0 && done.isComplete)

@@ -61,9 +61,22 @@ export interface SetupSnapshot {
   hasSocialAccount: boolean
   hasPayoutAccount: boolean
   hasMotto: boolean             // personal motto/tagline (brand_voice_profile.tagline)
+  hasAdditionalBrand: boolean   // brand voice mission / key messages the AI can learn from
+  hasAssistantVoice: boolean    // how the agent HEARS the AI (agents.assistant_voice_id / voice_preference)
+  hasCommissionContract: boolean // the agent's own commission split (agents.commission_split) — solo tier sets it
   hasEmailOrCalendar: boolean   // staff self-connect surface
+  // agent integrations (Connection Center)
+  hasCalendar: boolean
+  hasMls: boolean               // platform_credentials scope='listing'
+  hasCrm: boolean
+  hasTransactionEsign: boolean
+  hasPodcast: boolean
+  hasFinance: boolean           // financial / expense provider
+  hasAdManager: boolean         // marketing / ad manager
+  hasGoogleBusiness: boolean
   // brokerage
   hasBrokerageLicense: boolean
+  hasBrokerageContact: boolean  // brokerage phone/email/website
   hasBranding: boolean
   hasCommissionStructure: boolean
   hasEmailProvider: boolean
@@ -75,15 +88,20 @@ export interface SetupSnapshot {
   hasOfficeLocations: boolean   // multi-location: ≥1 office set up
   // team
   hasTeamConfig: boolean
+  hasTeamBrand: boolean         // team logo/colors (teams.logo_url / primary_color)
 }
 
 const EMPTY_SNAPSHOT: SetupSnapshot = {
   hasLicense: false, hasEoInsurance: false, hasVoiceClone: false, hasAvatar: false, hasOutreachChannel: false,
   hasMobilePhone: false, hasProfilePhoto: false, hasPersonalWebsite: false, hasEmailSignature: false,
-  hasSocialAccount: false, hasPayoutAccount: false, hasMotto: false, hasEmailOrCalendar: false,
-  hasBrokerageLicense: false, hasBranding: false, hasCommissionStructure: false, hasEmailProvider: false,
-  hasSmsProvider: false, hasTeamMembers: false, hasIsaPhone: false, hasAccountingSync: false, hasRecruitingPitch: false,
-  hasOfficeLocations: false, hasTeamConfig: false,
+  hasSocialAccount: false, hasPayoutAccount: false, hasMotto: false, hasAdditionalBrand: false,
+  hasAssistantVoice: false, hasCommissionContract: false, hasEmailOrCalendar: false,
+  hasCalendar: false, hasMls: false, hasCrm: false, hasTransactionEsign: false, hasPodcast: false,
+  hasFinance: false, hasAdManager: false, hasGoogleBusiness: false,
+  hasBrokerageLicense: false, hasBrokerageContact: false, hasBranding: false, hasCommissionStructure: false,
+  hasEmailProvider: false, hasSmsProvider: false, hasTeamMembers: false, hasIsaPhone: false,
+  hasAccountingSync: false, hasRecruitingPitch: false, hasOfficeLocations: false,
+  hasTeamConfig: false, hasTeamBrand: false,
 }
 
 export interface SetupItem {
@@ -132,6 +150,12 @@ export const SETUP_ITEMS: SetupItem[] = [
   { key: "avatar", label: "Set up your video avatar", roles: AGENTISH, required: true, category: "ai",
     why: "A D-ID avatar turns listing + market updates into personal on-camera videos without you filming.",
     href: "/dashboard/settings/twin-studio", detect: (s) => s.hasAvatar },
+  { key: "assistant_voice", label: "Choose your assistant voice", roles: AGENTISH, required: true, category: "ai",
+    why: "Pick how you HEAR your AI assistant — your own cloned voice or a chosen one.",
+    href: "/dashboard/settings/assistant", detect: (s) => s.hasAssistantVoice },
+  { key: "commission_contract", label: "Set your commission contract", roles: ["agent"], required: true, category: "brokerage", tiers: ["solo_agent"],
+    why: "As a solo agent you set your own commission split so deals compute your payout and P&L. (On a team/brokerage, your admin sets this for you.)",
+    href: "/settings/commission", detect: (s) => s.hasCommissionContract },
   { key: "profile_photo", label: "Add a profile photo", roles: AGENTISH, required: true, category: "identity",
     why: "Your headshot brands every video outro, portal, and public page.",
     href: "/dashboard/profile", detect: (s) => s.hasProfilePhoto },
@@ -141,6 +165,9 @@ export const SETUP_ITEMS: SetupItem[] = [
   { key: "agent_motto", label: "Set your personal motto / tagline", roles: AGENTISH, required: false, category: "growth",
     why: "Your own motto rides on your postcards, videos, and pages — a solo agent's line wins over the team/brokerage tagline.",
     href: "/settings/brand-voice", detect: (s) => s.hasMotto },
+  { key: "additional_brand", label: "Add brand details for the AI to learn from", roles: AGENTISH, required: false, category: "growth",
+    why: "Your mission + key messages teach the AI to write and speak in your voice across everything it drafts.",
+    href: "/settings/brand-voice", detect: (s) => s.hasAdditionalBrand },
   { key: "personal_website", label: "Add your personal website", roles: AGENTISH, required: false, category: "growth",
     why: "Links from your marketing and QR codes back to your own site.",
     href: "/settings/profile", detect: (s) => s.hasPersonalWebsite },
@@ -150,14 +177,45 @@ export const SETUP_ITEMS: SetupItem[] = [
   { key: "payout", label: "Connect a payout account", roles: AGENTISH, required: false, category: "integrations",
     why: "Stripe Connect routes referral and revenue-share payouts to you.",
     href: "/settings/connections", detect: (s) => s.hasPayoutAccount },
+  // ── Agent integrations (Connection Center) — bring your own tools in. All optional add-ons. ──
+  { key: "calendar", label: "Connect your calendar", roles: AGENTISH, required: false, category: "integrations",
+    why: "Syncs showings, appointments, and closings so nothing double-books.",
+    href: "/settings/connections", detect: (s) => s.hasCalendar },
+  { key: "mls", label: "Connect your MLS / IDX", roles: AGENTISH, required: false, category: "integrations",
+    why: "Pulls live listings + comps so your CMAs, videos, and buyer matches use real inventory.",
+    href: "/settings/connections", detect: (s) => s.hasMls },
+  { key: "crm", label: "Connect your CRM", roles: AGENTISH, required: false, category: "integrations",
+    why: "Two-way sync with your existing CRM so contacts and activity stay in one place.",
+    href: "/settings/connections", detect: (s) => s.hasCrm },
+  { key: "transaction_esign", label: "Connect transaction & e-sign", roles: AGENTISH, required: false, category: "integrations",
+    why: "Lets the Deal Coordinator send documents for signature and track them to close.",
+    href: "/settings/connections", detect: (s) => s.hasTransactionEsign },
+  { key: "ad_manager", label: "Connect your ad manager", roles: AGENTISH, required: false, category: "growth",
+    why: "Lets the Ads Manager run + optimize paid campaigns on your accounts.",
+    href: "/settings/connections", detect: (s) => s.hasAdManager },
+  { key: "google_business", label: "Connect Google Business Profile", roles: AGENTISH, required: false, category: "growth",
+    why: "Posts updates + reviews to your GBP so your local presence stays fresh.",
+    href: "/dashboard/profile", detect: (s) => s.hasGoogleBusiness },
+  { key: "podcast", label: "Connect podcast syndication", roles: AGENTISH, required: false, category: "growth",
+    why: "Publishes your AI-produced episodes to your podcast host automatically.",
+    href: "/settings/connections", detect: (s) => s.hasPodcast },
+  { key: "finance", label: "Connect finance / expense software", roles: AGENTISH, required: false, category: "integrations",
+    why: "Syncs commissions + expenses so your income truth and P&L stay accurate.",
+    href: "/settings/connections", detect: (s) => s.hasFinance },
   { key: "team_config", label: "Configure your team split", roles: ["team_lead"], required: true, category: "team", tiers: TEAMISH,
     why: "Set your team's split so production and P&L roll up correctly for your agents.",
     href: "/dashboard/settings/teams", detect: (s) => s.hasTeamConfig },
+  { key: "team_brand", label: "Set your team logo & colors", roles: ["team_lead"], required: true, category: "team", tiers: TEAMISH,
+    why: "Your team brand overrides the brokerage's on your team's videos, postcards, and pages — agents inherit it.",
+    href: "/dashboard/settings/teams", detect: (s) => s.hasTeamBrand },
 
   // ── Broker / admin: the org foundations. Also the admin who runs a SOLO agent's setup (all tiers). ──
   { key: "brokerage_license", label: "Add license & address", roles: ["broker", "admin"], required: true, category: "brokerage",
     why: "Your license and details appear on compliance docs and every agent's disclosures.",
     href: "/dashboard/settings", detect: (s) => s.hasBrokerageLicense },
+  { key: "brokerage_contact", label: "Add brokerage phone, email & website", roles: ["broker", "admin"], required: false, category: "brokerage",
+    why: "Optional contact details that appear on your brand footer, portal, and outreach.",
+    href: "/dashboard/settings", detect: (s) => s.hasBrokerageContact },
   { key: "branding", label: "Set the brand (logo & colors)", roles: ["broker", "admin"], required: true, category: "brokerage",
     why: "The logo and colors brand every video, page, postcard, and portal.",
     href: "/settings/branding", detect: (s) => s.hasBranding },
@@ -337,31 +395,48 @@ export async function loadSetupReadiness(params: {
 
     // Personal (agent/team_lead) reads.
     if (isAgentish && agentId) {
-      const [lic, voice, apiCred, phoneCred, social, stripe, agentRow, motto] = await Promise.all([
+      const [lic, voice, apiCred, agentCreds, social, agentRow, brand] = await Promise.all([
         svc.from("agent_licenses").select("license_number, eo_policy_number").eq("agent_id", agentId).limit(1),
         svc.from("agent_voice_profiles").select("elevenlabs_voice_id, did_avatar_id").eq("agent_id", agentId).limit(5),
-        svc.from("agent_api_credentials").select("id").eq("agent_id", agentId).eq("is_active", true).in("service_type", ["email", "calendar"]).limit(1),
-        svc.from("platform_credentials").select("id").eq("owner_type", "agent").eq("owner_id", agentId).eq("is_active", true).limit(3),
-        svc.from("social_media_accounts").select("id").eq("agent_id", agentId).eq("is_active", true).limit(1),
-        svc.from("platform_credentials").select("id").eq("owner_type", "agent").eq("owner_id", agentId).eq("platform", "stripe").limit(1),
-        svc.from("agents").select("phone_mobile, profile_image_url, voice_id, assistant_voice_id, avatar_id, assistant_avatar_id").eq("id", agentId).maybeSingle(),
-        svc.from("brand_voice_profile").select("tagline").eq("agent_id", agentId).maybeSingle(),
+        svc.from("agent_api_credentials").select("service_type").eq("agent_id", agentId).eq("is_active", true).in("service_type", ["email", "calendar"]).limit(10),
+        // ALL of the agent's Connection Center creds in one pull — scope tells us which domain each is.
+        svc.from("platform_credentials").select("scope, platform").eq("owner_type", "agent").eq("owner_id", agentId).eq("is_active", true).limit(50),
+        svc.from("social_media_accounts").select("platform").eq("agent_id", agentId).eq("is_active", true).limit(50),
+        svc.from("agents").select("phone_mobile, profile_image_url, voice_id, assistant_voice_id, avatar_id, assistant_avatar_id, voice_preference, commission_split").eq("id", agentId).maybeSingle(),
+        svc.from("brand_voice_profile").select("tagline, mission_statement, key_brand_messages").eq("agent_id", agentId).maybeSingle(),
       ])
       const licRow = (lic.data ?? [])[0] as any
       snap.hasLicense = !!licRow?.license_number
       snap.hasEoInsurance = !!licRow?.eo_policy_number
       const vps = (voice.data ?? []) as any[]
       const a = (agentRow.data ?? {}) as any
-      snap.hasVoiceClone = vps.some((v) => v.elevenlabs_voice_id) || !!a.voice_id || !!a.assistant_voice_id
-      snap.hasAvatar = vps.some((v) => v.did_avatar_id) || !!a.avatar_id || !!a.assistant_avatar_id
+      const bv = (brand.data ?? {}) as any
+      snap.hasVoiceClone = vps.some((v) => v.elevenlabs_voice_id) || !!a.voice_id
+      snap.hasAvatar = vps.some((v) => v.did_avatar_id) || !!a.avatar_id
+      snap.hasAssistantVoice = !!a.assistant_voice_id || (!!a.voice_preference && a.voice_preference !== "default")
       snap.hasMobilePhone = !!a.phone_mobile
       snap.hasProfilePhoto = !!a.profile_image_url
-      snap.hasSocialAccount = has(social)
-      snap.hasPayoutAccount = has(stripe)
-      snap.hasMotto = !!((motto.data as any)?.tagline ?? "").trim()
-      const emailConn = has(apiCred), phoneConn = has(phoneCred)
-      snap.hasEmailOrCalendar = emailConn
-      snap.hasOutreachChannel = emailConn || phoneConn
+      snap.hasCommissionContract = a.commission_split !== null && a.commission_split !== undefined
+      snap.hasMotto = !!(bv.tagline ?? "").trim()
+      snap.hasAdditionalBrand = !!(bv.mission_statement ?? "").trim() || (Array.isArray(bv.key_brand_messages) ? bv.key_brand_messages.length > 0 : !!bv.key_brand_messages)
+
+      // Connection Center domains, from platform_credentials.scope + agent_api_credentials.service_type.
+      const scopes = new Set(((agentCreds.data ?? []) as any[]).map((c) => c.scope))
+      const svcTypes = new Set(((apiCred.data ?? []) as any[]).map((c) => c.service_type))
+      const socialPlatforms = ((social.data ?? []) as any[]).map((s) => String(s.platform ?? "").toLowerCase())
+      const emailConn = svcTypes.has("email") || scopes.has("email")
+      snap.hasCalendar = svcTypes.has("calendar") || scopes.has("calendar")
+      snap.hasEmailOrCalendar = emailConn || snap.hasCalendar
+      snap.hasOutreachChannel = emailConn || scopes.has("phone")
+      snap.hasMls = scopes.has("listing")
+      snap.hasCrm = scopes.has("crm")
+      snap.hasTransactionEsign = scopes.has("transaction") || scopes.has("esign")
+      snap.hasPodcast = scopes.has("podcast")
+      snap.hasFinance = scopes.has("financial")
+      snap.hasAdManager = scopes.has("marketing")
+      snap.hasPayoutAccount = ((agentCreds.data ?? []) as any[]).some((c) => c.platform === "stripe" || c.scope === "financial")
+      snap.hasSocialAccount = socialPlatforms.some((p) => !p.includes("google") || (!p.includes("business") && !p.includes("gmb")))
+      snap.hasGoogleBusiness = socialPlatforms.some((p) => p.includes("google") && (p.includes("business") || p.includes("gmb")))
     }
     // User-row personal fields (all roles).
     const { data: u } = await svc.from("users").select("personal_website_url, email_signature, phone").eq("id", userId).maybeSingle()
@@ -381,7 +456,7 @@ export async function loadSetupReadiness(params: {
     // Brokerage foundations (broker/admin).
     if (isBrokerAdmin && brokerageId) {
       const [brk, gs, comm, sms, vapi, acct, team, locs] = await Promise.all([
-        svc.from("brokerages").select("license_number, recruiting_pitch, logo_url, primary_color").eq("id", brokerageId).maybeSingle(),
+        svc.from("brokerages").select("license_number, recruiting_pitch, logo_url, primary_color, phone, email, website").eq("id", brokerageId).maybeSingle(),
         svc.from("global_settings").select("app_logo_url, primary_color, from_email, smtp_host").eq("brokerage_id", brokerageId).maybeSingle(),
         svc.from("commission_structures").select("id").eq("brokerage_id", brokerageId).limit(1),
         svc.from("platform_credentials").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).in("platform", ["twilio", "telnyx", "bandwidth", "vapi"]).limit(1),
@@ -392,6 +467,7 @@ export async function loadSetupReadiness(params: {
       ])
       const b = (brk.data ?? {}) as any, g = (gs.data ?? {}) as any
       snap.hasBrokerageLicense = !!b.license_number
+      snap.hasBrokerageContact = !!(b.phone || b.email || b.website)
       snap.hasRecruitingPitch = !!b.recruiting_pitch
       // Branding is set if EITHER the wizard (global_settings) OR the brokerage row carries a logo/color.
       snap.hasBranding = !!(g.app_logo_url || g.primary_color || b.logo_url || b.primary_color)
@@ -404,10 +480,12 @@ export async function loadSetupReadiness(params: {
       snap.hasOfficeLocations = has(locs)
     }
 
-    // Team-lead team config.
+    // Team-lead team config + brand.
     if (role === "team_lead") {
-      const { data } = await svc.from("teams").select("id").eq("team_lead_id", userId).not("team_split_type", "is", null).limit(1)
-      snap.hasTeamConfig = (data ?? []).length > 0
+      const { data } = await svc.from("teams").select("team_split_type, logo_url, primary_color").eq("team_lead_id", userId).limit(1).maybeSingle()
+      const t = (data ?? {}) as any
+      snap.hasTeamConfig = t.team_split_type !== null && t.team_split_type !== undefined
+      snap.hasTeamBrand = !!(t.logo_url || t.primary_color)
     }
   } catch (err) {
     console.error("[setup-readiness] snapshot read failed:", err)
