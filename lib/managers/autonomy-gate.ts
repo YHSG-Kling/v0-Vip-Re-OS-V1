@@ -53,6 +53,9 @@ export interface AutonomyDecisionInput {
   effective: AutonomyPosture | null
   /** A human approved this send (approval queue). Never gated. */
   humanApproved?: boolean
+  /** PLATFORM CIRCUIT-BREAKER — when the superadmin's god switch is halted (emergency mode / AI engine off),
+   *  every autonomous manager action is held platform-wide, overriding per-tenant posture. */
+  platformHalt?: { halted: boolean; reason: string | null }
 }
 
 export interface AutonomyDecision {
@@ -71,6 +74,17 @@ export function autonomyDecision(input: AutonomyDecisionInput): AutonomyDecision
   if (!input.managerKey) return { allow: true, held: false, posture: null, reason: null }
   // Human exercised judgment via the approval queue → never block.
   if (input.humanApproved) return { allow: true, held: false, posture: input.effective ?? null, reason: null }
+
+  // PLATFORM CIRCUIT-BREAKER — the god switch overrides per-tenant posture: hold every autonomous manager
+  // action across all tenants while the platform is halted (emergency mode / AI engine off).
+  if (input.platformHalt?.halted) {
+    return {
+      allow: false,
+      held: true,
+      posture: "approval_required",
+      reason: input.platformHalt.reason ?? `${input.managerKey} held — platform is halted (emergency mode).`,
+    }
+  }
 
   if (input.effective === "approval_required") {
     return {
@@ -97,6 +111,15 @@ export async function resolveManagerAutonomy(
   managerKey: ManagerKey,
   client?: Svc,
 ): Promise<AutonomyPosture | null> {
+  // PLATFORM CIRCUIT-BREAKER first — the god switch. When the platform is halted (emergency mode / AI
+  // engine off), every manager reads as approval_required so autonomyDecision holds all autonomous sends
+  // across every tenant, with ZERO changes at the ~20 existing call sites. Own short-TTL cache; fails open.
+  try {
+    const { loadPlatformHalt } = await import("@/lib/platform/platform-controls")
+    const halt = await loadPlatformHalt(client)
+    if (halt.halted) return "approval_required"
+  } catch { /* fail open — never freeze the platform on an infra hiccup */ }
+
   const cacheKey = `${brokerageId}:${managerKey}`
   const hit = cache.get(cacheKey)
   if (hit && hit.expiresAt > Date.now()) return hit.posture

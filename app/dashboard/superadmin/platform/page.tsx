@@ -16,6 +16,8 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { getBrokerageBudgetWarningEnabled } from "@/lib/vendor-governance/budget-gate"
 import { BudgetWarningToggle } from "./budget-warning-toggle"
+import { getPlatformControls } from "@/lib/platform/platform-controls"
+import { PlatformControlsPanel } from "./platform-controls-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -82,11 +84,12 @@ export default async function SuperadminPlatformPage() {
     return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
   }
 
-  const [overviewRes, cronRes, safetyRes, budgetWarningEnabled] = await Promise.all([
+  const [overviewRes, cronRes, safetyRes, budgetWarningEnabled, platformControls] = await Promise.all([
     getPlatformOverviewAction(),
     getCronHealthAction(),
     getTenantSafetyFeedAction(15),
     getBrokerageBudgetWarningEnabled(),
+    getPlatformControls(),
   ])
 
   if (!overviewRes.ok) return <div className="p-6 text-red-600">Failed: {overviewRes.error}</div>
@@ -120,6 +123,9 @@ export default async function SuperadminPlatformPage() {
           </Button>
         </div>
       </div>
+
+      {/* THE GOD SWITCH — platform-wide emergency mode / AI engine / rate limit (enforced at the autonomy gate) */}
+      <PlatformControlsPanel initial={platformControls} />
 
       {/* Vendor-spend governance — brokerage warning visibility control */}
       <BudgetWarningToggle initialEnabled={budgetWarningEnabled} />
