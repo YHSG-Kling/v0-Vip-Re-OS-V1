@@ -8,6 +8,7 @@ import { redirect } from "next/navigation"
 import { getBrokerageDetailAction } from "@/app/actions/superadmin/brokerage-management"
 import { BrokerageActions } from "./brokerage-actions"
 import { TenantUsersPanel } from "./tenant-users-panel"
+import { TenantSetupPanel } from "./tenant-setup-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -62,6 +63,9 @@ export default async function SuperadminBrokerageDetailPage(
           </div>
         </div>
       </div>
+
+      {/* Staff-assisted onboarding — the tenant's setup readiness, worked on their behalf */}
+      <TenantSetupPanel brokerageId={brokerage.id} />
 
       {/* Admin actions card */}
       <BrokerageActions brokerage={brokerage} />
