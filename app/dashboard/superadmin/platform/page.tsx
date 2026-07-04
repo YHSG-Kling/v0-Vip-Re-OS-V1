@@ -18,6 +18,8 @@ import { getBrokerageBudgetWarningEnabled } from "@/lib/vendor-governance/budget
 import { BudgetWarningToggle } from "./budget-warning-toggle"
 import { getPlatformControls } from "@/lib/platform/platform-controls"
 import { PlatformControlsPanel } from "./platform-controls-panel"
+import { getPlatformProviderConfig, PLATFORM_PROVIDER_SPEC } from "@/lib/platform/platform-providers"
+import { PlatformProvidersPanel } from "./platform-providers-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -91,6 +93,7 @@ export default async function SuperadminPlatformPage() {
     getBrokerageBudgetWarningEnabled(),
     getPlatformControls(),
   ])
+  const platformProviders = await getPlatformProviderConfig()
 
   if (!overviewRes.ok) return <div className="p-6 text-red-600">Failed: {overviewRes.error}</div>
 
@@ -132,6 +135,9 @@ export default async function SuperadminPlatformPage() {
 
       {/* THE GOD SWITCH — platform-wide emergency mode / AI engine / rate limit (enforced at the autonomy gate) */}
       <PlatformControlsPanel initial={platformControls} />
+
+      {/* PLATFORM PROVIDERS — channel enablement + default vendors (read by resolveProvider at runtime) */}
+      <PlatformProvidersPanel spec={PLATFORM_PROVIDER_SPEC} initial={platformProviders} />
 
       {/* Vendor-spend governance — brokerage warning visibility control */}
       <BudgetWarningToggle initialEnabled={budgetWarningEnabled} />
