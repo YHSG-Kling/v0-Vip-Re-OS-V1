@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import Link from "next/link"
+import { TicketThread } from "./ticket-thread"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -213,6 +214,7 @@ export function HelpCenterClient({
                           <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
                             <Clock className="h-3 w-3" />{new Date(t.createdAt).toLocaleDateString()}
                           </p>
+                          <TicketThread ticketId={t.id} />
                         </div>
                         <Badge className={badge.className}>{badge.label}</Badge>
                       </CardContent>

@@ -79,8 +79,42 @@ export async function createSupportTicket(input: {
     .single()
   if (error || !data) return { ok: false, error: error?.message ?? "Could not create ticket" }
 
+  // Alert platform support that a new ticket landed (previously nobody was notified).
+  try {
+    const { notifyPlatformStaff } = await import("@/lib/notifications/platform-staff")
+    await notifyPlatformStaff(svc as any, {
+      type: "support_ticket_new", title: `New support ticket: ${subject}`,
+      body: (input.description?.trim() || subject).slice(0, 400), entityType: "support_ticket", entityId: data.id as string,
+      priority: priority === "urgent" || priority === "high" ? "high" : "medium",
+    })
+  } catch { /* best-effort */ }
+
   revalidatePath("/dashboard/help")
   return { ok: true, id: data.id as string }
+}
+
+// ─── Agent: reply to my own ticket + read its thread (two-way conversation) ──────
+export async function replyToMyTicket(input: { ticketId: string; body: string }): Promise<{ ok: boolean; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+  const svc = createServiceClient()
+  const { data: t } = await svc.from("support_tickets").select("agent_id").eq("id", input.ticketId).maybeSingle()
+  if (!t || (t as any).agent_id !== ctx.agentId) return { ok: false, error: "Ticket not found" }
+  const { postTicketReply } = await import("@/lib/support/support-thread")
+  const r = await postTicketReply(svc, { ticketId: input.ticketId, authorUserId: ctx.userId, authorKind: "tenant", body: input.body })
+  if (!r.ok) return { ok: false, error: r.error }
+  revalidatePath("/dashboard/help")
+  return { ok: true }
+}
+
+export async function getMyTicketThread(ticketId: string): Promise<import("@/lib/support/support-thread").TicketThread | null> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.agentId) return null
+  const svc = createServiceClient()
+  const { data: t } = await svc.from("support_tickets").select("agent_id").eq("id", ticketId).maybeSingle()
+  if (!t || (t as any).agent_id !== ctx.agentId) return null
+  const { loadTicketThread } = await import("@/lib/support/support-thread")
+  return loadTicketThread(svc, ticketId)
 }
 
 // ─── Agent: my tickets ───────────────────────────────────────────────────────
