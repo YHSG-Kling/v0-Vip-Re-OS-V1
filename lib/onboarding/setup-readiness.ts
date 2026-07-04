@@ -60,6 +60,7 @@ export interface SetupSnapshot {
   hasEmailSignature: boolean
   hasSocialAccount: boolean
   hasPayoutAccount: boolean
+  hasMotto: boolean             // personal motto/tagline (brand_voice_profile.tagline)
   hasEmailOrCalendar: boolean   // staff self-connect surface
   // brokerage
   hasBrokerageLicense: boolean
@@ -79,7 +80,7 @@ export interface SetupSnapshot {
 const EMPTY_SNAPSHOT: SetupSnapshot = {
   hasLicense: false, hasEoInsurance: false, hasVoiceClone: false, hasAvatar: false, hasOutreachChannel: false,
   hasMobilePhone: false, hasProfilePhoto: false, hasPersonalWebsite: false, hasEmailSignature: false,
-  hasSocialAccount: false, hasPayoutAccount: false, hasEmailOrCalendar: false,
+  hasSocialAccount: false, hasPayoutAccount: false, hasMotto: false, hasEmailOrCalendar: false,
   hasBrokerageLicense: false, hasBranding: false, hasCommissionStructure: false, hasEmailProvider: false,
   hasSmsProvider: false, hasTeamMembers: false, hasIsaPhone: false, hasAccountingSync: false, hasRecruitingPitch: false,
   hasOfficeLocations: false, hasTeamConfig: false,
@@ -137,6 +138,9 @@ export const SETUP_ITEMS: SetupItem[] = [
   { key: "email_signature", label: "Set your email signature", roles: AGENTISH, required: true, category: "identity",
     why: "Signs the emails your managers send on your behalf.",
     href: "/dashboard/profile", detect: (s) => s.hasEmailSignature },
+  { key: "agent_motto", label: "Set your personal motto / tagline", roles: AGENTISH, required: false, category: "growth",
+    why: "Your own motto rides on your postcards, videos, and pages — a solo agent's line wins over the team/brokerage tagline.",
+    href: "/settings/brand-voice", detect: (s) => s.hasMotto },
   { key: "personal_website", label: "Add your personal website", roles: AGENTISH, required: false, category: "growth",
     why: "Links from your marketing and QR codes back to your own site.",
     href: "/settings/profile", detect: (s) => s.hasPersonalWebsite },
@@ -333,7 +337,7 @@ export async function loadSetupReadiness(params: {
 
     // Personal (agent/team_lead) reads.
     if (isAgentish && agentId) {
-      const [lic, voice, apiCred, phoneCred, social, stripe, agentRow] = await Promise.all([
+      const [lic, voice, apiCred, phoneCred, social, stripe, agentRow, motto] = await Promise.all([
         svc.from("agent_licenses").select("license_number, eo_policy_number").eq("agent_id", agentId).limit(1),
         svc.from("agent_voice_profiles").select("elevenlabs_voice_id, did_avatar_id").eq("agent_id", agentId).limit(5),
         svc.from("agent_api_credentials").select("id").eq("agent_id", agentId).eq("is_active", true).in("service_type", ["email", "calendar"]).limit(1),
@@ -341,6 +345,7 @@ export async function loadSetupReadiness(params: {
         svc.from("social_media_accounts").select("id").eq("agent_id", agentId).eq("is_active", true).limit(1),
         svc.from("platform_credentials").select("id").eq("owner_type", "agent").eq("owner_id", agentId).eq("platform", "stripe").limit(1),
         svc.from("agents").select("phone_mobile, profile_image_url, voice_id, assistant_voice_id, avatar_id, assistant_avatar_id").eq("id", agentId).maybeSingle(),
+        svc.from("brand_voice_profile").select("tagline").eq("agent_id", agentId).maybeSingle(),
       ])
       const licRow = (lic.data ?? [])[0] as any
       snap.hasLicense = !!licRow?.license_number
@@ -353,6 +358,7 @@ export async function loadSetupReadiness(params: {
       snap.hasProfilePhoto = !!a.profile_image_url
       snap.hasSocialAccount = has(social)
       snap.hasPayoutAccount = has(stripe)
+      snap.hasMotto = !!((motto.data as any)?.tagline ?? "").trim()
       const emailConn = has(apiCred), phoneConn = has(phoneCred)
       snap.hasEmailOrCalendar = emailConn
       snap.hasOutreachChannel = emailConn || phoneConn
@@ -375,7 +381,7 @@ export async function loadSetupReadiness(params: {
     // Brokerage foundations (broker/admin).
     if (isBrokerAdmin && brokerageId) {
       const [brk, gs, comm, sms, vapi, acct, team, locs] = await Promise.all([
-        svc.from("brokerages").select("license_number, recruiting_pitch").eq("id", brokerageId).maybeSingle(),
+        svc.from("brokerages").select("license_number, recruiting_pitch, logo_url, primary_color").eq("id", brokerageId).maybeSingle(),
         svc.from("global_settings").select("app_logo_url, primary_color, from_email, smtp_host").eq("brokerage_id", brokerageId).maybeSingle(),
         svc.from("commission_structures").select("id").eq("brokerage_id", brokerageId).limit(1),
         svc.from("platform_credentials").select("id").eq("brokerage_id", brokerageId).eq("is_active", true).in("platform", ["twilio", "telnyx", "bandwidth", "vapi"]).limit(1),
@@ -387,7 +393,8 @@ export async function loadSetupReadiness(params: {
       const b = (brk.data ?? {}) as any, g = (gs.data ?? {}) as any
       snap.hasBrokerageLicense = !!b.license_number
       snap.hasRecruitingPitch = !!b.recruiting_pitch
-      snap.hasBranding = !!(g.app_logo_url || g.primary_color)
+      // Branding is set if EITHER the wizard (global_settings) OR the brokerage row carries a logo/color.
+      snap.hasBranding = !!(g.app_logo_url || g.primary_color || b.logo_url || b.primary_color)
       snap.hasEmailProvider = !!(g.from_email || g.smtp_host)
       snap.hasCommissionStructure = has(comm)
       snap.hasSmsProvider = has(sms)

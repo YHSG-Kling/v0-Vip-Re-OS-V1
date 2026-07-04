@@ -29,7 +29,7 @@ const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 const EMPTY: SetupSnapshot = {
   hasLicense: false, hasEoInsurance: false, hasVoiceClone: false, hasAvatar: false, hasOutreachChannel: false,
   hasMobilePhone: false, hasProfilePhoto: false, hasPersonalWebsite: false, hasEmailSignature: false,
-  hasSocialAccount: false, hasPayoutAccount: false, hasEmailOrCalendar: false,
+  hasSocialAccount: false, hasPayoutAccount: false, hasMotto: false, hasEmailOrCalendar: false,
   hasBrokerageLicense: false, hasBranding: false, hasCommissionStructure: false, hasEmailProvider: false,
   hasSmsProvider: false, hasTeamMembers: false, hasIsaPhone: false, hasAccountingSync: false, hasRecruitingPitch: false,
   hasOfficeLocations: false, hasTeamConfig: false,

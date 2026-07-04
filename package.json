@@ -134,6 +134,7 @@
     "test:challenges": "tsx scripts/challenges-simulator.ts",
     "test:exec-standup": "tsx scripts/exec-standup-simulator.ts",
     "test:setup-readiness": "tsx scripts/setup-readiness-simulator.ts",
+    "test:brand-cascade": "tsx scripts/brand-cascade-simulator.ts",
     "test:mentor-match": "tsx scripts/mentor-match-simulator.ts",
     "test:mentor-sessions": "tsx scripts/mentor-sessions-simulator.ts",
     "test:onboarding-journey": "tsx scripts/onboarding-journey-simulator.ts",

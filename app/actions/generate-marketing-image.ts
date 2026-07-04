@@ -115,11 +115,11 @@ export async function generateMarketingImage(
       .select("name, primary_color, logo_url, license_number, license_state, dba")
       .eq("id", ctx.brokerageId)
       .maybeSingle(),
-    // Fallback for brokerages that captured the logo via the onboarding brand
-    // flow before logo_url was back-filled.
+    // Fallback for brokerages that captured brand via the onboarding wizard,
+    // which writes logo + primary color to global_settings (not brokerages.*).
     svc
       .from("global_settings")
-      .select("app_logo_url")
+      .select("app_logo_url, primary_color")
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle(),
     input.listingId
@@ -196,7 +196,7 @@ export async function generateMarketingImage(
       teamName,
       agentName,
       agentLicense,
-      primaryColor: brokerage?.primary_color ?? null,
+      primaryColor: brokerage?.primary_color ?? globalSettings?.primary_color ?? null,
       brandVoiceTone,
       logoUrl: input.noLogo ? null : logoUrl,
       noLogo: input.noLogo ?? false,

@@ -11,9 +11,11 @@
  *
  * Cascade rules (per-attribute, not per-row):
  *
- *   logoUrl          team.logo_url           > brokerages.logo_url
- *   primaryColor     teams.primary_color     > brokerages.primary_color  > default
- *   accentColor      teams.accent_color      > brokerage_brand_settings.accent_color > default
+ *   logoUrl          team.logo_url        > brokerages.logo_url    > global_settings.app_logo_url
+ *   primaryColor     teams.primary_color  > brokerages.primary_color > global_settings.primary_color > default
+ *   secondaryColor   global_settings.secondary_color > default
+ *   accentColor      teams.accent_color   > brokerage_brand_settings.accent_color > default
+ *   fontFamily       global_settings.font_family (when present)
  *   brokerageName    brokerages.name (always — the brokerage of record)
  *   teamName         teams.name (when teamId is set)
  *   displayName      The name to render PROMINENTLY on the piece:
@@ -28,7 +30,18 @@
  *                    Falls back to brokerage's license only when the
  *                    sender is brokerage-anonymous (e.g. broker-wide
  *                    farm mail without an agent attribution).
- *   tagline          teams.tagline > brokerage_brand_settings.tagline (when present)
+ *   tagline/motto    AGENT's personal motto (brand_voice_profile.tagline) >
+ *                    teams.tagline > brokerage_brand_settings.tagline.
+ *                    A SOLO agent's own motto is what appears on their piece;
+ *                    a team member falls through to the team/brokerage line.
+ *
+ * DRIFT FIX (Wave — this change): the onboarding brand WIZARD writes the logo
+ * + colors to global_settings (app_logo_url / primary_color / secondary_color /
+ * font_family), but this resolver previously read only brokerages.* — so a brand
+ * a user configured in onboarding never reached postcards / portal / email. The
+ * brokerage tier now folds in global_settings so the configured brand actually
+ * ships. resolveBrandContext is THE single brand source of truth every consumer
+ * should call (logo/colors/name/tagline).
  *
  * Fair Housing disclosure uses the resolved brokerageName so the
  * tenant of record carries the legal commitment regardless of which
@@ -64,9 +77,11 @@ export interface BrandContext {
   }
   /** Visual brand inputs. */
   visual: {
-    primaryColor: string
-    accentColor:  string
-    logoUrl:      string | null
+    primaryColor:   string
+    secondaryColor: string
+    accentColor:    string
+    logoUrl:        string | null
+    fontFamily:     string | null
   }
   /** Equal Housing Opportunity — short form for postcards/business
    *  cards, long form for letters. */
@@ -79,12 +94,14 @@ export interface BrandContext {
   source: {
     logo:    "agent" | "team" | "brokerage" | "default"
     color:   "team" | "brokerage" | "default"
+    tagline: "agent" | "team" | "brokerage" | "none"
     license: "agent" | "brokerage" | "none"
   }
 }
 
-const DEFAULT_PRIMARY_COLOR = "#0F172A"
-const DEFAULT_ACCENT_COLOR  = "#F59E0B"
+const DEFAULT_PRIMARY_COLOR   = "#0F172A"
+const DEFAULT_SECONDARY_COLOR = "#64748B"
+const DEFAULT_ACCENT_COLOR    = "#F59E0B"
 
 function stripScheme(url: string | null | undefined): string | null {
   if (!url) return null
@@ -107,10 +124,15 @@ export async function resolveBrandContext(args: ResolveBrandArgs): Promise<Brand
   // Parallel-fetch everything the cascade might need. Each query is
   // independently optional — a missing team row falls through to the
   // brokerage row, etc.
-  const [brokerageR, brandSettingsR, teamR, agentR] = await Promise.all([
+  const [brokerageR, globalR, brandSettingsR, teamR, agentR] = await Promise.all([
     svc.from("brokerages")
       .select("name, logo_url, primary_color, website, phone, license_number, license_state")
       .eq("id", args.brokerageId)
+      .maybeSingle(),
+    // global_settings is where the onboarding brand WIZARD actually writes logo + colors.
+    svc.from("global_settings")
+      .select("app_logo_url, primary_color, secondary_color, font_family")
+      .eq("brokerage_id", args.brokerageId)
       .maybeSingle(),
     svc.from("brokerage_brand_settings")
       .select("accent_color, tagline, website_url")
@@ -124,11 +146,20 @@ export async function resolveBrandContext(args: ResolveBrandArgs): Promise<Brand
       : Promise.resolve({ data: null }),
     args.agentUserId
       ? svc.from("agents")
-          .select("phone_office, phone_mobile, photo_url, license_number, license_state, users(first_name, last_name)")
+          .select("id, phone_office, phone_mobile, photo_url, license_number, license_state, users(first_name, last_name)")
           .eq("user_id", args.agentUserId)
           .maybeSingle()
       : Promise.resolve({ data: null }),
   ])
+
+  // A SOLO/personal agent MOTTO lives on brand_voice_profile.tagline (agent-scoped, agent-writable).
+  // It is the top of the tagline cascade so a solo agent's own motto ships on their pieces.
+  let agentMotto: string | null = null
+  const agentId = (agentR.data as { id?: string } | null)?.id ?? null
+  if (agentId) {
+    const { data: vp } = await svc.from("brand_voice_profile").select("tagline").eq("agent_id", agentId).maybeSingle()
+    agentMotto = ((vp as { tagline?: string | null } | null)?.tagline ?? "").trim() || null
+  }
 
   const b = (brokerageR.data ?? {}) as {
     name?: string | null
@@ -138,6 +169,12 @@ export async function resolveBrandContext(args: ResolveBrandArgs): Promise<Brand
     phone?: string | null
     license_number?: string | null
     license_state?: string | null
+  }
+  const gs = (globalR.data ?? {}) as {
+    app_logo_url?: string | null
+    primary_color?: string | null
+    secondary_color?: string | null
+    font_family?: string | null
   }
   const bs = (brandSettingsR.data ?? {}) as {
     accent_color?: string | null
@@ -167,16 +204,24 @@ export async function resolveBrandContext(args: ResolveBrandArgs): Promise<Brand
   const agentName     = agent?.users ? [agent.users.first_name, agent.users.last_name].filter(Boolean).join(" ") || null : null
 
   // ── Cascade resolution per field ────────────────────────────────────────
-  const logoUrl   = team?.logo_url?.trim() || b.logo_url?.trim() || null
-  const logoSrc   = (team?.logo_url ? "team" : (b.logo_url ? "brokerage" : "default")) as BrandContext["source"]["logo"]
+  // Brokerage tier folds in global_settings (where the onboarding wizard writes).
+  const brokerageLogo    = b.logo_url?.trim() || gs.app_logo_url?.trim() || null
+  const brokeragePrimary = b.primary_color?.trim() || gs.primary_color?.trim() || null
 
-  const primaryColor = team?.primary_color?.trim() || b.primary_color?.trim() || DEFAULT_PRIMARY_COLOR
-  const accentColor  = team?.accent_color?.trim()  || bs.accent_color?.trim()  || DEFAULT_ACCENT_COLOR
-  const colorSrc     = (team?.primary_color ? "team" : (b.primary_color ? "brokerage" : "default")) as BrandContext["source"]["color"]
+  const logoUrl   = team?.logo_url?.trim() || brokerageLogo || null
+  const logoSrc   = (team?.logo_url ? "team" : (brokerageLogo ? "brokerage" : "default")) as BrandContext["source"]["logo"]
+
+  const primaryColor   = team?.primary_color?.trim() || brokeragePrimary || DEFAULT_PRIMARY_COLOR
+  const secondaryColor = gs.secondary_color?.trim() || DEFAULT_SECONDARY_COLOR
+  const accentColor    = team?.accent_color?.trim()  || bs.accent_color?.trim()  || DEFAULT_ACCENT_COLOR
+  const fontFamily     = gs.font_family?.trim() || null
+  const colorSrc       = (team?.primary_color ? "team" : (brokeragePrimary ? "brokerage" : "default")) as BrandContext["source"]["color"]
 
   const websiteWordmark = stripScheme(team?.website ?? bs.website_url ?? b.website ?? null)
   const phone           = (agent?.phone_office ?? team?.phone ?? b.phone ?? "").trim() || null
-  const tagline         = (team?.tagline ?? bs.tagline ?? null) || null
+  // Tagline/motto: the agent's personal motto wins (solo), then team, then brokerage.
+  const tagline         = agentMotto ?? team?.tagline?.trim() ?? bs.tagline?.trim() ?? null
+  const taglineSrc      = (agentMotto ? "agent" : (team?.tagline ? "team" : (bs.tagline ? "brokerage" : "none"))) as BrandContext["source"]["tagline"]
 
   // License: AGENT's license is what state law requires on direct
   // mail (the agent is the responsible licensee). Falls back to the
@@ -211,8 +256,10 @@ export async function resolveBrandContext(args: ResolveBrandArgs): Promise<Brand
     },
     visual: {
       primaryColor,
+      secondaryColor,
       accentColor,
       logoUrl,
+      fontFamily,
     },
     fairHousing: {
       shortDisclosure: "Equal Housing Opportunity. All information deemed reliable but not guaranteed.",
@@ -226,6 +273,7 @@ export async function resolveBrandContext(args: ResolveBrandArgs): Promise<Brand
     source: {
       logo:    logoSrc,
       color:   colorSrc,
+      tagline: taglineSrc,
       license: licenseSrc,
     },
   }
