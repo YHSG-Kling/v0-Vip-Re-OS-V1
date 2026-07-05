@@ -151,6 +151,7 @@
     "test:signal-retry": "tsx scripts/signal-retry-simulator.ts",
     "test:tenant-isolation": "tsx scripts/tenant-isolation-simulator.ts",
     "test:manager-ops": "tsx scripts/manager-ops-simulator.ts",
+    "test:voice-admin": "tsx scripts/voice-admin-simulator.ts",
     "test:mentor-match": "tsx scripts/mentor-match-simulator.ts",
     "test:mentor-sessions": "tsx scripts/mentor-sessions-simulator.ts",
     "test:onboarding-journey": "tsx scripts/onboarding-journey-simulator.ts",

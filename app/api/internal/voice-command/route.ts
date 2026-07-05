@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
+import { createTenantUserAction } from "@/app/actions/superadmin/tenant-users"
 import { NextRequest, NextResponse } from "next/server"
 
 // ─── Intent types the voice assistant understands ────────────────────────────
@@ -31,6 +32,7 @@ type VoiceIntent =
   | "query_vendor_coverage"
   | "query_referral_income"
   | "draft_save_plays"
+  | "create_tenant_user"
   | "general_query"
 
 interface CallQueueItem {
@@ -64,7 +66,7 @@ export async function POST(req: NextRequest) {
   // Get user profile for brokerage_id and agent record
   const { data: profile } = await service
     .from("users")
-    .select("id, user_type, brokerage_id, first_name")
+    .select("id, user_type, brokerage_id, first_name, platform_role")
     .eq("id", user.id)
     .maybeSingle()
 
@@ -103,6 +105,7 @@ export async function POST(req: NextRequest) {
 - query_vendor_coverage: asking about VENDOR COVERAGE gaps in the bench — categories with upcoming demand but no reliable vendor ("any vendor coverage gaps", "is my bench covered", "do I have enough inspectors", "vendor gaps coming up")
 - query_referral_income: asking about the agent's own AGENT-TO-AGENT referral income / earnings / how much they've earned referring clients ("how much have I earned in referrals", "my referral income", "what have my agent referrals paid me")
 - draft_save_plays: COMMANDING the assistant to DRAFT / write / prepare retention SAVE-PLAYS for the at-risk / flight-risk agents ("draft save-plays for everyone at flight risk", "write save-plays for my at-risk agents", "prepare retention outreach for the agents who are slipping")
+- create_tenant_user: a PLATFORM-ADMIN command to CREATE / add / invite a new USER / agent / admin / TC into a brokerage ("create a new agent named Jane Doe at jane@x.com", "add an admin to the Denver brokerage", "invite a TC to Coastal Realty")
 - general_query: anything else
 
 Respond with ONLY the intent string, nothing else.`,
@@ -647,6 +650,50 @@ Respond with ONLY the intent string, nothing else.`,
               : `Done — I've drafted ${r.drafted} save-play${r.drafted === 1 ? "" : "s"} for your at-risk agents. Review and release them from your approval queue.`
           data = { atRisk: r.atRisk, drafted: r.drafted }
           action = "save_plays_drafted"
+        }
+      }
+    } else if (intent === "create_tenant_user") {
+      // PLATFORM-ADMIN command — "make a new agent in the Denver brokerage." Superadmin ONLY
+      // (this authenticated route proves the caller's identity; the underlying action also
+      // re-checks requireSuperadmin, so this is defence in depth). Routes to the SAME tested,
+      // audited createTenantUserAction the god console uses — the "voice admin does it" story.
+      const isPlatformStaff = profile.user_type === "superadmin" || (profile as any).platform_role === "superadmin"
+      if (!isPlatformStaff) {
+        spokenResponse = "Creating platform users is a superadmin-only command — I can't run that for your role."
+      } else {
+        const extract = await generateText({
+          model: resolveModel("openai/gpt-4o-mini"),
+          system: `Extract from the command a JSON object: {"email": string, "firstName": string, "lastName": string, "role": one of ["agent","admin","broker","team_lead","tc","isa","compliance_officer","lender","vendor"] (default "agent"), "brokerageName": string or null (the brokerage/company named, else null)}. Respond with ONLY the JSON.`,
+          messages: [{ role: "user", content: transcript }],
+          maxOutputTokens: 200,
+        })
+        let ex: { email?: string; firstName?: string; lastName?: string; role?: string; brokerageName?: string | null } = {}
+        try { ex = JSON.parse(extract.text.trim().replace(/^```json\s*|\s*```$/g, "")) } catch { /* leave empty */ }
+
+        if (!ex.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ex.email)) {
+          spokenResponse = "I need a valid email to create the user — try 'create an agent named Jane Doe at jane@example.com'."
+        } else {
+          // Resolve the target brokerage: a named one (by name), else the superadmin's own.
+          let targetBrokerageId: string | null = brokerageId
+          if (ex.brokerageName) {
+            const { data: brk } = await service.from("brokerages").select("id, name").ilike("name", `%${ex.brokerageName}%`).is("deleted_at", null).limit(1).maybeSingle()
+            targetBrokerageId = (brk as any)?.id ?? null
+          }
+          if (!targetBrokerageId) {
+            spokenResponse = ex.brokerageName ? `I couldn't find a brokerage matching "${ex.brokerageName}".` : "Which brokerage should I add them to?"
+          } else {
+            const res = await createTenantUserAction({
+              brokerageId: targetBrokerageId, email: ex.email,
+              firstName: ex.firstName ?? "", lastName: ex.lastName ?? "", userType: ex.role ?? "agent",
+            })
+            if (res.ok) {
+              spokenResponse = `Done — I've created ${ex.firstName ?? "the new user"} as a ${ex.role ?? "agent"} and sent their invite. They'll finish setup from the email.`
+              action = "tenant_user_created"
+              data = { userId: res.userId, brokerageId: targetBrokerageId, role: ex.role ?? "agent" }
+            } else {
+              spokenResponse = `I couldn't create that user: ${res.error}`
+            }
+          }
         }
       }
     } else {
