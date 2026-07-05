@@ -10,6 +10,7 @@ import { BrokerageActions } from "./brokerage-actions"
 import { TenantUsersPanel } from "./tenant-users-panel"
 import { TenantSetupPanel } from "./tenant-setup-panel"
 import { EnterTenantButton } from "./enter-tenant-button"
+import { TenantEntitlementsPanel } from "./tenant-entitlements-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -77,6 +78,9 @@ export default async function SuperadminBrokerageDetailPage(
 
       {/* Team members — actionable cross-tenant user management */}
       <TenantUsersPanel brokerageId={brokerage.id} />
+
+      {/* Per-tenant entitlements — feature flags + AI-token quota overrides */}
+      <TenantEntitlementsPanel brokerageId={brokerage.id} />
 
       {/* Subscriptions history */}
       {subscriptions.length > 0 && (
