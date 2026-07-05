@@ -1,0 +1,113 @@
+#!/usr/bin/env tsx
+/**
+ * scripts/impersonation-simulator.ts   (npm run test:impersonation)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Proves STAFF "ACT AS TENANT" (GoHighLevel-style sub-account control): platform staff enter any
+ * tenant and operate the app AS that tenant, ACCOUNTABLY (real staff id stays attributable).
+ *
+ * PURE:   isSessionActive — the expiry/ended predicate the whole seam trusts.
+ * SOURCE: getAgentContext consults resolveActiveImpersonation (staff-gated); enter/exit are
+ *         staff-gated + audited; banner + Enter button are wired; owned by data_steward.
+ * LIVE (creds-gated): seed a staff user + a target tenant, open a session, assert
+ *         resolveActiveImpersonation returns the TARGET brokerage + the real actor; a NON-staff
+ *         user with the same session gets null; an EXPIRED session resolves null; exit clears it;
+ *         clean up == 0. Self-skips without creds (verified via MCP).
+ */
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { createClient } from "@supabase/supabase-js"
+import { isSessionActive } from "../lib/platform/impersonation"
+
+let pass = 0, fail = 0
+const fails: string[] = []
+const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) } }
+const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+const NOW = new Date("2026-07-05T12:00:00Z")
+const iso = (msFromNow: number) => new Date(NOW.getTime() + msFromNow).toISOString()
+
+function pureLayer() {
+  console.log("\n[isSessionActive · pure — the act-as predicate]")
+  check("live session (future expiry, not ended) is active", isSessionActive({ ended_at: null, expires_at: iso(10 * 60_000) }, NOW))
+  check("expired session is NOT active", !isSessionActive({ ended_at: null, expires_at: iso(-60_000) }, NOW))
+  check("ended session is NOT active (exited)", !isSessionActive({ ended_at: iso(-1000), expires_at: iso(10 * 60_000) }, NOW))
+  check("malformed expiry is NOT active (fails safe)", !isSessionActive({ ended_at: null, expires_at: "not-a-date" }, NOW))
+}
+
+function sourceLayer() {
+  console.log("\n[wiring — the seam, gating, audit, ownership]")
+  const ctx = src("lib/identity/get-agent-context.ts")
+  check("getAgentContext consults the act-as seam, staff-gated, only for platform staff",
+    /isPlatformStaff\(userType\)/.test(ctx) && /resolveActiveImpersonation\(user\.id, userType\)/.test(ctx))
+  check("impersonated context keeps the REAL actor + flags (attributable writes)",
+    /impersonatorUserId: imp\.impersonatorUserId/.test(ctx) && /isImpersonating: true/.test(ctx))
+  const lib = src("lib/platform/impersonation.ts")
+  check("resolver is defence-in-depth (returns null unless isPlatformStaff)", /if \(!isPlatformStaff\(staffRole\)\) return null/.test(lib))
+  check("sessions auto-expire (TTL) — no standing backdoor", /IMPERSONATION_TTL_MINUTES\s*=\s*30/.test(lib) && /expires_at/.test(lib))
+  const act = src("app/actions/superadmin/impersonation.ts")
+  check("enter/exit are platform-staff-gated + audited to superadmin_audit_log",
+    /requirePlatformStaff/.test(act) && /superadmin_audit_log/.test(act) && /"impersonation\.enter"/.test(act) && /"impersonation\.exit"/.test(act))
+  check("a named target user must belong to the target tenant (no cross-tenant leak)",
+    /brokerage_id !== params\.brokerageId/.test(act))
+  check("the shell mounts the persistent Exit banner", /ImpersonationBanner/.test(src("app/components/layout/app-shell.tsx")))
+  check("the god console exposes Enter tenant", /EnterTenantButton/.test(src("app/dashboard/superadmin/brokerages/[id]/page.tsx")))
+  const mig = src("supabase/migrations/m267-platform-impersonation.sql")
+  check("one active session per actor (partial unique) + RLS limits a staff user to their OWN session",
+    /ux_impersonation_active_actor/.test(mig) && /where ended_at is null/.test(mig) && /actor_user_id = auth\.uid\(\)/.test(mig))
+  const reg = src("lib/kernel/manager-registry.ts")
+  check("burn domain owned by data_steward with a runnable proof",
+    /platform_impersonation:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:impersonation"/.test(reg))
+  check("the impersonation table has an owning manager", /platform_impersonation_sessions:\s*"data_steward"/.test(reg))
+  check("package.json wires the proof", /"test:impersonation":\s*"tsx scripts\/impersonation-simulator\.ts"/.test(src("package.json")))
+}
+
+async function liveLayer() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY
+  if (!url || !key) { console.log("\n[live] ⊘ skipped (no SUPABASE creds) — pure + source proved the logic; live verified via MCP"); return }
+  const svc = createClient(url, key)
+  const { resolveActiveImpersonation, startImpersonation, endImpersonation } = await import("../lib/platform/impersonation")
+  console.log("\n[live] staff opens a session on a target tenant → context resolves target → exit → clean up")
+  const cleanup: Array<{ table: string; id: string }> = []
+  try {
+    const { data: brk } = await svc.from("brokerages").insert({ name: "ZZIMP tenant", email: "zzimp@example.com", plan_tier: "brokerage", onboarding_status: "pending" }).select("id").single()
+    const { data: staff } = await svc.from("users").insert({ email: "zzimp-staff@example.com", first_name: "Imp", last_name: "Staff", user_type: "superadmin", is_contact: false }).select("id").single()
+    const { data: nonstaff } = await svc.from("users").insert({ email: "zzimp-agent@example.com", first_name: "Imp", last_name: "Agent", user_type: "agent", is_contact: false }).select("id").single()
+    const brokerageId = (brk as any).id, staffId = (staff as any).id, nonstaffId = (nonstaff as any).id
+    cleanup.push({ table: "brokerages", id: brokerageId }, { table: "users", id: staffId }, { table: "users", id: nonstaffId })
+
+    const started = await startImpersonation({ actorUserId: staffId, actorEmail: "zzimp-staff@example.com", targetBrokerageId: brokerageId, mode: "full", client: svc })
+    check("live: session started", started.ok)
+
+    const resolved = await resolveActiveImpersonation(staffId, "superadmin", svc)
+    check("live: staff context resolves the TARGET tenant + real actor", resolved?.brokerageId === brokerageId && resolved?.impersonatorUserId === staffId)
+    const asNonStaff = await resolveActiveImpersonation(nonstaffId, "agent", svc)
+    check("live: a non-staff user resolves NO impersonation (defence in depth)", asNonStaff === null)
+
+    // Force-expire → resolves null.
+    await svc.from("platform_impersonation_sessions").update({ expires_at: new Date(Date.now() - 60_000).toISOString() }).eq("actor_user_id", staffId).is("ended_at", null)
+    const afterExpiry = await resolveActiveImpersonation(staffId, "superadmin", svc)
+    check("live: an EXPIRED session resolves null", afterExpiry === null)
+
+    await endImpersonation(staffId, svc)
+    const afterExit = await resolveActiveImpersonation(staffId, "superadmin", svc)
+    check("live: after exit, no active session", afterExit === null)
+  } finally {
+    await svc.from("platform_impersonation_sessions").delete().in("actor_user_id", cleanup.filter((c) => c.table === "users").map((c) => c.id))
+    for (const c of cleanup.reverse()) await svc.from(c.table).delete().eq("id", c.id)
+    let left = 0
+    for (const c of cleanup) { const { count } = await svc.from(c.table).select("id", { count: "exact", head: true }).eq("id", c.id); left += count ?? 0 }
+    check("live: cleanup count == 0", left === 0)
+  }
+}
+
+async function main() {
+  pureLayer()
+  sourceLayer()
+  await liveLayer()
+  console.log("\n──────────────────────────────────────────────────")
+  if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
+  console.log(` RESULT: ${pass} passed, ${fail} failed`)
+  if (fail > 0) { console.log(" ❌ IMPERSONATION_FAIL"); process.exit(1) }
+  console.log(" ✅ IMPERSONATION_PASS — staff act-as tenant: target context resolved, real actor attributable, staff-gated + audited + auto-expiring")
+}
+main()

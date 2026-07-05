@@ -1,6 +1,8 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { resolveActiveImpersonation } from "@/lib/platform/impersonation"
 
 export interface AgentContext {
   userId: string
@@ -16,6 +18,12 @@ export interface AgentContext {
   /** Alias for userType — backward compat for all callers that reference .role */
   role: string
   isAuthenticated: boolean
+  /** True when a platform-staff member is acting AS this tenant (GHL "act as"). */
+  isImpersonating?: boolean
+  /** The REAL staff actor behind an impersonated context — always set when impersonating. */
+  impersonatorUserId?: string | null
+  /** 'read_only' | 'full' — the impersonation grant, for write-gating. */
+  impersonationMode?: string | null
 }
 
 /** Safe default returned when the user is not authenticated. Never throws. */
@@ -88,6 +96,28 @@ export async function getAgentContext(): Promise<AgentContext> {
       agentId = agentRow?.id ?? null
     }
 
+    // ── ACT-AS seam ──────────────────────────────────────────────────────────
+    // If this authenticated user is platform staff AND holds an active impersonation
+    // session, resolve the TARGET tenant's workspace context instead — while keeping
+    // the real staff id as impersonatorUserId so every downstream write stays
+    // attributable. Non-staff / expired sessions are ignored (defence in depth).
+    if (isPlatformStaff(userType)) {
+      const imp = await resolveActiveImpersonation(user.id, userType)
+      if (imp) {
+        return {
+          userId: imp.userId,
+          agentId: imp.agentId,
+          brokerageId: imp.brokerageId,
+          userType: imp.userType,
+          role: imp.userType,
+          isAuthenticated: true,
+          isImpersonating: true,
+          impersonatorUserId: imp.impersonatorUserId,
+          impersonationMode: imp.mode,
+        }
+      }
+    }
+
     return {
       userId: user.id,
       agentId,
@@ -95,6 +125,9 @@ export async function getAgentContext(): Promise<AgentContext> {
       userType,
       role: userType, // alias — same value, different key name
       isAuthenticated: true,
+      isImpersonating: false,
+      impersonatorUserId: null,
+      impersonationMode: null,
     }
   } catch {
     // Never propagate — return safe defaults so callers don't need try/catch

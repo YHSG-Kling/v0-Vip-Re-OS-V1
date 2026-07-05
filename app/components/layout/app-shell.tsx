@@ -14,6 +14,7 @@ import { PageContextAssistant } from '@/app/components/shared/page-context-assis
 import { CommandPalette } from '@/app/components/command-palette'
 import { ShellProvider, useShell } from './shell-context'
 import { UnifiedInboxSlideOut } from './unified-inbox-slideout'
+import { ImpersonationBanner } from './impersonation-banner'
 import { FloatingVoiceFAB } from './floating-voice-fab'
 import { FloatingChatFAB } from './floating-chat-fab'
 import { VoiceAssistantOverlay } from '@/app/components/features/agent-assistant/voice-assistant-overlay'
@@ -157,6 +158,9 @@ export function AppShell({ children }: AppShellProps) {
 
         <div className="flex-1 flex flex-col overflow-hidden">
           <Header navigation={navigation} userContext={safeUserContext} />
+
+          {/* Staff "act as tenant" banner — visible only during an active impersonation. */}
+          <ImpersonationBanner />
 
           <main className="flex-1 overflow-auto pb-20 lg:pb-0 bg-white">
             <div className="h-full">{children}</div>

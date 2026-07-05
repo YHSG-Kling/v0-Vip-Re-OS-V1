@@ -9,6 +9,7 @@ import { getBrokerageDetailAction } from "@/app/actions/superadmin/brokerage-man
 import { BrokerageActions } from "./brokerage-actions"
 import { TenantUsersPanel } from "./tenant-users-panel"
 import { TenantSetupPanel } from "./tenant-setup-panel"
+import { EnterTenantButton } from "./enter-tenant-button"
 
 export const dynamic = "force-dynamic"
 
@@ -57,9 +58,13 @@ export default async function SuperadminBrokerageDetailPage(
               source <span className="font-medium">{brokerage.signup_source}</span>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            {statusBadge(brokerage.status)}
-            <Badge variant="outline">{brokerage.plan_tier}</Badge>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              {statusBadge(brokerage.status)}
+              <Badge variant="outline">{brokerage.plan_tier}</Badge>
+            </div>
+            {/* GoHighLevel-style "act as tenant" — operate the app as this brokerage. */}
+            <EnterTenantButton brokerageId={brokerage.id} />
           </div>
         </div>
       </div>
