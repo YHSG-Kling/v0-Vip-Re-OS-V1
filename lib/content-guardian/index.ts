@@ -12,6 +12,7 @@
 
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { createServiceClient } from "@/lib/supabase/service"
+import { detectFairHousingViolations as detectCanonicalFairHousing } from "@/lib/compliance-rules/fair-housing-patterns"
 
 export type ContentType =
   | "listing_description"
@@ -37,23 +38,12 @@ export interface GuardContentResult {
   persistenceError?: boolean
 }
 
-// Fair housing trigger phrases
-const FAIR_HOUSING_PATTERNS: RegExp[] = [
-  /\b(no children|adults only|no kids)\b/i,
-  /\b(perfect for (singles|couples|families with no kids))\b/i,
-  /\b(exclusive|restricted|select)\s+(neighborhood|community|area)\b/i,
-  /\b(walking distance to (church|mosque|temple|synagogue))\b/i,
-  /\b(handicap|handicapped)\b/i,
-  /\b(good schools|great schools)\b/i,
-]
-
+// Fair-Housing detection is single-sourced from the canonical pattern set
+// (lib/compliance-rules/fair-housing-patterns.ts) so this content pipeline and the
+// messaging/dispatch gates can never drift. content-guardian's former private list has
+// been folded INTO the canonical set (familial-status, good-schools, exclusive, handicap).
 function detectFairHousingViolations(text: string): string[] {
-  const found: string[] = []
-  for (const pattern of FAIR_HOUSING_PATTERNS) {
-    const match = text.match(pattern)
-    if (match) found.push(`Fair housing risk: "${match[0]}"`)
-  }
-  return found
+  return detectCanonicalFairHousing(text).map((r) => `Fair housing risk: "${r.phrase}" (${r.reference})`)
 }
 
 // Map content type to brand voice params

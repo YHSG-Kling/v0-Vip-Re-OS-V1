@@ -30,7 +30,16 @@ import { DECONFLICT_GATE_KEY } from "@/lib/campaign-sequences/deferral-policy"
 import { createServiceClient } from "@/lib/supabase/service"
 import { needsCassCheck, interpretLobForGate, type MailingGateLead } from "@/lib/providers/mailing-cass-gate"
 import { resolveManagerAutonomy, autonomyDecision, managerForDispatch, HUMAN_APPROVED_SYSTEM_SOURCE } from "@/lib/managers/autonomy-gate"
+import { contentSafetyBackstop } from "@/lib/providers/content-safety"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
+
+/** True when a governed manager is sending unattended (arms the Fair-Housing content backstop's
+ *  hard-block; human-approved sends are flagged-but-allowed). */
+function isAutonomousSend(args: { managerKey?: ManagerKey | null; systemSource?: string; humanApproved?: boolean }): boolean {
+  const managerKey = managerForDispatch(args.managerKey, args.systemSource)
+  if (!managerKey) return false
+  return !(args.humanApproved === true || args.systemSource === HUMAN_APPROVED_SYSTEM_SOURCE)
+}
 
 // ─── SHARED TYPES ─────────────────────────────────────────────────────────────
 
@@ -242,6 +251,15 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     disclosuresIncluded:  false,
   }))
 
+  // ── FAIR-HOUSING CONTENT BACKSTOP — re-scan the FINAL assembled content at the chokepoint.
+  const fhEmail = await contentSafetyBackstop({
+    brokerageId: params.brokerageId, channel: "email",
+    parts: [params.subject, assembled.text, params.text, assembled.html],
+    isAutonomous: isAutonomousSend(params), contactId: params.contactId ?? null,
+    actorUserId: params.userId ?? null, systemSource: params.systemSource,
+  })
+  if (fhEmail.blocked) return { success: false, providerKey: "content_safety_gate", error: `Outbound blocked: ${fhEmail.reason}` }
+
   let result: DispatchResult
 
   if (providerKey === "sendgrid") {
@@ -374,6 +392,14 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
     })
     if (deferred) return deferred
   }
+
+  // ── FAIR-HOUSING CONTENT BACKSTOP ─────────────────────────────────────────────
+  const fhSms = await contentSafetyBackstop({
+    brokerageId: params.brokerageId, channel: "sms", parts: [params.message],
+    isAutonomous: isAutonomousSend(params), contactId: params.contactId ?? null,
+    actorUserId: params.userId ?? null, systemSource: params.systemSource,
+  })
+  if (fhSms.blocked) return { success: false, providerKey: "content_safety_gate", error: `Outbound blocked: ${fhSms.reason}` }
 
   const { providerKey } = await resolveProvider({
     providerType: "sms",
@@ -646,6 +672,15 @@ export async function dispatchDirectMail(
     })
     if (deferred) return deferred
   }
+
+  // ── FAIR-HOUSING CONTENT BACKSTOP — scan the personalized mail copy (mergeVars) ──
+  const fhMail = await contentSafetyBackstop({
+    brokerageId: params.brokerageId, channel: "direct_mail",
+    parts: Object.values(params.mergeVars ?? {}),
+    isAutonomous: isAutonomousSend(params), contactId: params.contactId ?? null,
+    actorUserId: params.userId ?? null, systemSource: params.systemSource,
+  })
+  if (fhMail.blocked) return { success: false, providerKey: "content_safety_gate", error: `Outbound blocked: ${fhMail.reason}` }
 
   const { providerKey } = await resolveProvider({
     providerType: "direct_mail",

@@ -93,6 +93,54 @@ export const FAIR_HOUSING_PATTERNS: FairHousingPattern[] = [
     fix: "Accessible features throughout",
     reference: "Fair Housing Amendments Act of 1988",
   },
+
+  // ── Familial-status exclusion (consolidated from content-guardian — these were a real
+  //    coverage GAP in the canonical set; "no kids" / "adults only" are direct §3604 violations) ──
+  {
+    pattern: /\b(no\s+children|no\s+kids|adults?\s+only|couples?\s+only|singles?\s+only)\b/gi,
+    phrase: "no children / adults only",
+    severity: "high",
+    fix: "Describe the home's features, not who may live there",
+    reference: "Fair Housing Act § 3604(c) — familial status",
+  },
+  {
+    pattern: /perfect\s+for\s+(singles|couples|families\s+with\s+no\s+kids)/gi,
+    phrase: "perfect for singles/couples/no-kids",
+    severity: "high",
+    fix: "Describe the home, not the ideal occupant",
+    reference: "Fair Housing Act § 3604(c) — familial status",
+  },
+  // Steering proxies — school quality is the classic redlining/steering signal
+  {
+    pattern: /\b(good|great|top|excellent)\s+schools?\b/gi,
+    phrase: "good/great schools",
+    severity: "medium",
+    fix: "Reference the specific school district by name without a quality judgment",
+    reference: "Fair Housing Act § 3604(c) — steering",
+  },
+  {
+    pattern: /\b(exclusive|restricted|select)\s+(neighborhood|community|area)\b/gi,
+    phrase: "exclusive/restricted neighborhood",
+    severity: "high",
+    fix: "Describe the location's amenities, not its exclusivity",
+    reference: "Fair Housing Act § 3604(c) — steering",
+  },
+  // Religious-institution proximity — broaden to catch the "walking distance to church" phrasing
+  {
+    pattern: /(walk|walking\s+distance)\s+(to|from)\s+(church|mosque|synagogue|temple)/gi,
+    phrase: "walking distance to a place of worship",
+    severity: "medium",
+    fix: "Close to community amenities",
+    reference: "Fair Housing Act § 3604(c) — religion",
+  },
+  // Disability language
+  {
+    pattern: /\bhandicap(ped)?\b/gi,
+    phrase: "handicap/handicapped",
+    severity: "low",
+    fix: "Use 'accessible' and describe the specific accessible feature",
+    reference: "Fair Housing Amendments Act of 1988 — disability",
+  },
 ]
 
 /**
