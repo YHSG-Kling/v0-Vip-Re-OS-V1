@@ -11,6 +11,7 @@ import { TenantUsersPanel } from "./tenant-users-panel"
 import { TenantSetupPanel } from "./tenant-setup-panel"
 import { EnterTenantButton } from "./enter-tenant-button"
 import { TenantEntitlementsPanel } from "./tenant-entitlements-panel"
+import { TenantSnapshotsPanel } from "./tenant-snapshots-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -81,6 +82,9 @@ export default async function SuperadminBrokerageDetailPage(
 
       {/* Per-tenant entitlements — feature flags + AI-token quota overrides */}
       <TenantEntitlementsPanel brokerageId={brokerage.id} />
+
+      {/* Config snapshots — capture this tenant as a template / apply a template here */}
+      <TenantSnapshotsPanel brokerageId={brokerage.id} />
 
       {/* Subscriptions history */}
       {subscriptions.length > 0 && (

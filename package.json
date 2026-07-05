@@ -146,6 +146,7 @@
     "test:tenant-creation": "tsx scripts/tenant-creation-simulator.ts",
     "test:impersonation": "tsx scripts/impersonation-simulator.ts",
     "test:tenant-entitlements": "tsx scripts/tenant-entitlements-simulator.ts",
+    "test:config-snapshots": "tsx scripts/config-snapshots-simulator.ts",
     "test:mentor-match": "tsx scripts/mentor-match-simulator.ts",
     "test:mentor-sessions": "tsx scripts/mentor-sessions-simulator.ts",
     "test:onboarding-journey": "tsx scripts/onboarding-journey-simulator.ts",
