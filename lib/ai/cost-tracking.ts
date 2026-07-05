@@ -128,13 +128,20 @@ export async function logAIUsage(params: {
   outputTokens: number
   feature: string
   requestId?: string
+  /** The governed AI manager (agent_kind) responsible for this call — powers per-manager
+   *  cost/latency/SLO (lib/platform/manager-ops.ts). Additive; unset rolls up under 'unassigned'. */
+  manager?: string | null
+  /** Wall-clock latency of the model call, for per-manager p95. */
+  executionTimeMs?: number | null
+  /** false if the call errored — feeds per-manager error-rate. Defaults to true. */
+  success?: boolean
 }): Promise<void> {
   try {
     const supabase = await createClient()
     const totalTokens = params.inputTokens + params.outputTokens
     const costCents = calculateCost(params.model, params.inputTokens, params.outputTokens)
     const pricing = getModelPricing()[params.model]
-    
+
     // Insert into ai_tool_usage table
     const { error: insertError } = await supabase
       .from("ai_tool_usage")
@@ -148,6 +155,9 @@ export async function logAIUsage(params: {
         team_id: params.teamId,
         agent_id: params.agentId,
         feature: params.feature,
+        manager: params.manager ?? null,
+        execution_time_ms: params.executionTimeMs ?? null,
+        success: params.success ?? true,
         context_json: {
           input_tokens: params.inputTokens,
           output_tokens: params.outputTokens,

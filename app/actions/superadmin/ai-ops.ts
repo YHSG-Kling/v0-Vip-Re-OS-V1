@@ -11,6 +11,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import { loadAiOps, type AiOps } from "@/lib/platform/ai-ops"
+import { loadManagerOps, type ManagerOps } from "@/lib/platform/manager-ops"
 
 async function requireStaff(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
   const supabase = await createClient()
@@ -37,6 +38,13 @@ export async function getAiOpsAction(windowHours = 24): Promise<{ ok: true; data
   const auth = await requireStaff()
   if (!auth.ok) return auth
   return { ok: true, data: await loadAiOps(createServiceClient(), new Date(), windowHours) }
+}
+
+/** Per-manager cost / latency (p95) / error-rate + SLO status, cross-tenant. */
+export async function getManagerOpsAction(windowHours = 24): Promise<{ ok: true; data: ManagerOps } | { ok: false; error: string }> {
+  const auth = await requireStaff()
+  if (!auth.ok) return auth
+  return { ok: true, data: await loadManagerOps(createServiceClient(), windowHours) }
 }
 
 /** REPLAY a dead-letter signal — expire the stuck one + re-publish (re-invokes the manager handler). */

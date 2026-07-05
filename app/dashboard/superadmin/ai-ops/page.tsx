@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getAiOpsAction } from "@/app/actions/superadmin/ai-ops"
 import { AiOpsConsole } from "./ai-ops-console"
+import { ManagerOpsPanel } from "./manager-ops-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -15,5 +16,10 @@ export default async function SuperadminAiOpsPage() {
 
   const res = await getAiOpsAction(24)
   if (!res.ok) return <div className="p-6 text-red-600">Failed: {res.error}</div>
-  return <AiOpsConsole data={res.data} />
+  return (
+    <div className="space-y-6">
+      <AiOpsConsole data={res.data} />
+      <div className="p-6 pt-0"><ManagerOpsPanel /></div>
+    </div>
+  )
 }
