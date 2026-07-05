@@ -17,6 +17,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 export type PersonalProvider = "gmail" | "outlook"
 
@@ -134,7 +135,10 @@ async function loadActivePersonalCred(agentUserId: string): Promise<PersonalCred
     if (creds?.length) {
       const ordered = creds.sort((a: any, b: any) => (a.service_name === "gmail" ? -1 : 1))
       const c: any = ordered[0]
-      return { id: c.id, service_name: c.service_name, access_token: c.access_token, refresh_token: c.refresh_token, token_expires_at: c.token_expires_at, email: c.config?.email ?? null, source: "agent_api_credentials" }
+      // decryptSecret is backward-compatible: a plaintext token passes through unchanged, an
+      // at-rest-encrypted token is transparently decrypted — so this read is safe before/after
+      // the credential-encryption rollout (lib/security/secret-crypto.ts).
+      return { id: c.id, service_name: c.service_name, access_token: decryptSecret(c.access_token), refresh_token: decryptSecret(c.refresh_token), token_expires_at: c.token_expires_at, email: c.config?.email ?? null, source: "agent_api_credentials" }
     }
   }
 

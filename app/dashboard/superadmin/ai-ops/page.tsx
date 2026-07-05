@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getAiOpsAction } from "@/app/actions/superadmin/ai-ops"
 import { AiOpsConsole } from "./ai-ops-console"
 import { ManagerOpsPanel } from "./manager-ops-panel"
+import { RotationRisksPanel } from "./rotation-risks-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -19,7 +20,7 @@ export default async function SuperadminAiOpsPage() {
   return (
     <div className="space-y-6">
       <AiOpsConsole data={res.data} />
-      <div className="p-6 pt-0"><ManagerOpsPanel /></div>
+      <div className="p-6 pt-0 space-y-6"><ManagerOpsPanel /><RotationRisksPanel /></div>
     </div>
   )
 }

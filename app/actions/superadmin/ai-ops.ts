@@ -12,6 +12,7 @@ import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import { loadAiOps, type AiOps } from "@/lib/platform/ai-ops"
 import { loadManagerOps, type ManagerOps } from "@/lib/platform/manager-ops"
+import { loadRotationRisks, type RotationRisk } from "@/lib/security/credential-rotation"
 
 async function requireStaff(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
   const supabase = await createClient()
@@ -45,6 +46,13 @@ export async function getManagerOpsAction(windowHours = 24): Promise<{ ok: true;
   const auth = await requireStaff()
   if (!auth.ok) return auth
   return { ok: true, data: await loadManagerOps(createServiceClient(), windowHours) }
+}
+
+/** Expired / expiring-soon integration credentials that need rotation, cross-tenant. */
+export async function getCredentialRotationAction(): Promise<{ ok: true; data: RotationRisk[] } | { ok: false; error: string }> {
+  const auth = await requireStaff()
+  if (!auth.ok) return auth
+  return { ok: true, data: await loadRotationRisks(createServiceClient()) }
 }
 
 /** REPLAY a dead-letter signal — expire the stuck one + re-publish (re-invokes the manager handler). */
