@@ -8,21 +8,11 @@
 // invitations in-context: list with status + last-login, activate/suspend a user, and resend/revoke an
 // invitation across tenants. Every mutation is superadmin-gated and audited (IP/UA).
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { inviteTenantMember, type UserDomainRole } from "@/lib/kernel/users"
+import { requireSuperadmin } from "@/lib/auth/platform-guard"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
-
-async function requireSuperadmin(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Unauthenticated" }
-  const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const isSuper = (data as any)?.user_type === "superadmin" || (data as any)?.platform_role === "superadmin"
-  if (!isSuper) return { ok: false, error: "Forbidden — superadmin only" }
-  return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
-}
 
 async function audit(actorUserId: string, actorEmail: string, action: string, targetId: string, details: Record<string, unknown>) {
   try {

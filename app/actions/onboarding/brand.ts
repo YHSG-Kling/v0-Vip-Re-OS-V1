@@ -10,28 +10,32 @@
 // publish brand changes for the entire brokerage. All save* + publish
 // + uploadLogo paths now require admin / broker / broker_owner role.
 
-import { createClient } from "@/lib/supabase/server"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { resolveActingContext, READ_ONLY_ACTING_ERROR } from "@/lib/platform/acting-context"
 
 const BROKERAGE_ADMIN_ROLES = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
 
+/**
+ * Brand config is brokerage-wide + admin-gated. Now IMPERSONATION-AWARE: when a platform
+ * staff member is acting-as a tenant, resolveActingContext yields the TARGET brokerage +
+ * a service client (so the write isn't blocked by the target's RLS) + a read-only flag.
+ * A normal tenant admin keeps their own RLS-scoped client — nothing about that path changes.
+ * Writers must call assertWritable() and write THROUGH the returned `db`, keyed to `brokerageId`.
+ */
 async function requireBrandAdmin(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
+  | { ok: true; userId: string; brokerageId: string; db: any; readOnly: boolean; isImpersonating: boolean }
   | { ok: false; error: string }
 > {
-  const supabase = await createClient()
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
-  if (authError || !user) return { ok: false, error: "Unauthorized" }
-  const { data: profile } = await supabase
-    .from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
-  if (!profile?.brokerage_id) return { ok: false, error: "Brokerage not found" }
-  if (!BROKERAGE_ADMIN_ROLES.includes(profile.user_type ?? "")) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.userId) return { ok: false, error: "Unauthorized" }
+  if (!ctx.brokerageId) return { ok: false, error: "Brokerage not found" }
+  if (!BROKERAGE_ADMIN_ROLES.includes(ctx.userType)) {
     return { ok: false, error: "Forbidden: brokerage admin only" }
   }
-  return { ok: true, userId: user.id, brokerageId: profile.brokerage_id }
+  return { ok: true, userId: ctx.userId, brokerageId: ctx.brokerageId, db: ctx.db, readOnly: ctx.readOnly, isImpersonating: ctx.isImpersonating }
 }
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -111,24 +115,13 @@ export async function getBrandSetupStatus(
   brokerageId: string
 ): Promise<{ data: BrandSetupStatus | null; error: string | null }> {
   try {
-    const supabase = await createClient()
-
-    // Verify session
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { data: null, error: "Unauthorized" }
-    }
-
-    // Verify user belongs to brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData || userData.brokerage_id !== brokerageId) {
-      return { data: null, error: "Unauthorized: Brokerage mismatch" }
-    }
+    // Acting-aware: a normal user reads their OWN brokerage; a platform-staff member
+    // acting-as reads the TARGET brokerage (resolveActingContext yields it + a service
+    // client that isn't blocked by the target's RLS).
+    const ctx = await resolveActingContext()
+    if (!ctx.ok || !ctx.userId) return { data: null, error: "Unauthorized" }
+    if (ctx.brokerageId !== brokerageId) return { data: null, error: "Unauthorized: Brokerage mismatch" }
+    const supabase = ctx.db
 
     // Get global settings
     const { data: globalSettings } = await supabase
@@ -203,9 +196,10 @@ export async function saveBrandColors(
   try {
     const auth = await requireBrandAdmin()
     if (!auth.ok) return { success: false, error: auth.error }
+    if (auth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
     const brokerageId = auth.brokerageId
 
-    const supabase = await createClient()
+    const supabase = auth.db
 
     // Upsert global_settings
     const { error: settingsError } = await supabase
@@ -258,25 +252,9 @@ export async function saveBrandTypography(
   try {
     const adminAuth = await requireBrandAdmin()
     if (!adminAuth.ok) return { success: false, error: adminAuth.error }
-    const supabase = await createClient()
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    // Get user's brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData?.brokerage_id) {
-      return { success: false, error: "Brokerage not found" }
-    }
-
-    const brokerageId = userData.brokerage_id
+    if (adminAuth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
+    const supabase = adminAuth.db
+    const brokerageId = adminAuth.brokerageId
 
     // Update global_settings font
     const { error: settingsError } = await supabase
@@ -327,26 +305,9 @@ export async function saveBrandVoice(
   try {
     const adminAuth = await requireBrandAdmin()
     if (!adminAuth.ok) return { success: false, error: adminAuth.error }
-    const supabase = await createClient()
-
-    // Verify session
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    // Get user's brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData?.brokerage_id) {
-      return { success: false, error: "Brokerage not found" }
-    }
-
-    const brokerageId = userData.brokerage_id
+    if (adminAuth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
+    const supabase = adminAuth.db
+    const brokerageId = adminAuth.brokerageId
 
     // Check for existing brand voice profile
     const { data: existing } = await supabase
@@ -419,25 +380,9 @@ export async function saveTemplate(
   try {
     const adminAuth = await requireBrandAdmin()
     if (!adminAuth.ok) return { success: false, error: adminAuth.error }
-    const supabase = await createClient()
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    // Get user's brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData?.brokerage_id) {
-      return { success: false, error: "Brokerage not found" }
-    }
-
-    const brokerageId = userData.brokerage_id
+    if (adminAuth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
+    const supabase = adminAuth.db
+    const brokerageId = adminAuth.brokerageId
 
     // Deactivate existing templates of the same type
     await supabase
@@ -504,13 +449,9 @@ export async function publishBrand(
   try {
     const adminAuth = await requireBrandAdmin()
     if (!adminAuth.ok) return { success: false, error: adminAuth.error }
+    if (adminAuth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
     const brokerageId = adminAuth.brokerageId
-    const supabase = await createClient()
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
+    const supabase = adminAuth.db
 
     // Verify requirements are met
     const { data: globalSettings } = await supabase
@@ -556,7 +497,7 @@ export async function publishBrand(
     }
 
     // Get agent's onboarding record
-    const agentId = await resolveAgentId(supabase, user.id)
+    const agentId = await resolveAgentId(supabase, adminAuth.userId)
     const { data: onboarding } = await supabase
       .from("agent_onboarding")
       .select("id, status")
@@ -580,7 +521,7 @@ export async function publishBrand(
         entityId: onboarding.id,
         fromState: onboarding.status || "contract_signed",
         toState: "brand_configured",
-        actorUserId: user.id,
+        actorUserId: adminAuth.userId,
         eventType: "brand_configured",
         metadata: {},
       })
@@ -601,24 +542,9 @@ export async function uploadLogo(
   try {
     const adminAuth = await requireBrandAdmin()
     if (!adminAuth.ok) return { success: false, error: adminAuth.error }
-    const supabase = await createClient()
-
-    // Verify session (legacy — already verified by requireBrandAdmin)
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    // Get user's brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData?.brokerage_id) {
-      return { success: false, error: "Brokerage not found" }
-    }
+    if (adminAuth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
+    const supabase = adminAuth.db
+    const brokerageId = adminAuth.brokerageId
 
     const file = formData.get("file") as File
     if (!file) {
@@ -636,7 +562,6 @@ export async function uploadLogo(
       return { success: false, error: "File size must be less than 5MB" }
     }
 
-    const brokerageId = userData.brokerage_id
     const fileExt = file.name.split(".").pop()
     const fileName = `${brokerageId}/logo.${fileExt}`
 

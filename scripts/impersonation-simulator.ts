@@ -53,6 +53,25 @@ function sourceLayer() {
   const mig = src("supabase/migrations/m267-platform-impersonation.sql")
   check("one active session per actor (partial unique) + RLS limits a staff user to their OWN session",
     /ux_impersonation_active_actor/.test(mig) && /where ended_at is null/.test(mig) && /actor_user_id = auth\.uid\(\)/.test(mig))
+  console.log("\n[act-as WRITES — operate tenant screens as-tenant]")
+  const acting = src("lib/platform/acting-context.ts")
+  check("acting context hands writers a service client when acting-as (bypasses target RLS) + a read-only flag",
+    /isImpersonating \? createServiceClient\(\) : await createClient\(\)/.test(acting) && /readOnly:\s*ctx\.impersonationMode === "read_only"/.test(acting))
+  const brand = src("app/actions/onboarding/brand.ts")
+  check("tenant brand writers are impersonation-aware: acting context + read-only refusal + write THROUGH db",
+    /resolveActingContext/.test(brand) && /READ_ONLY_ACTING_ERROR/.test(brand) && /const supabase = auth\.db|const supabase = adminAuth\.db/.test(brand))
+  check("brand read (getBrandSetupStatus) lets staff see the TARGET tenant's brand",
+    /const ctx = await resolveActingContext\(\)[\s\S]*ctx\.brokerageId !== brokerageId/.test(brand))
+
+  console.log("\n[centralized platform-staff gate — no more drift]")
+  const guard = src("lib/auth/platform-guard.ts")
+  check("ONE gate module: requireSuperadmin (destructive) + requirePlatformStaff (assist), both read user_type+platform_role",
+    /export async function requireSuperadmin/.test(guard) && /export async function requirePlatformStaff/.test(guard) && /platform_role/.test(guard))
+  check("god-console actions adopt the shared guard (dropped their copy-pasted local gate)",
+    /from "@\/lib\/auth\/platform-guard"/.test(act) && /from "@\/lib\/auth\/platform-guard"/.test(src("app/actions/superadmin/tenant-users.ts")))
+  check("the superadmin subtree has a single layout gate",
+    /requirePlatformStaff/.test(src("app/dashboard/superadmin/layout.tsx")))
+
   const reg = src("lib/kernel/manager-registry.ts")
   check("burn domain owned by data_steward with a runnable proof",
     /platform_impersonation:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:impersonation"/.test(reg))
