@@ -10,15 +10,17 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { SIGNAL_REGISTRY } from "./signal-registry"
-import { shouldReapSignal, MAX_HANDLED_OPEN_HOURS, FEED_ONLY_TTL_HOURS } from "./signal-reaper-policy"
+import { shouldReapSignal, shouldAutoReplaySignal, MAX_HANDLED_OPEN_HOURS, FEED_ONLY_TTL_HOURS } from "./signal-reaper-policy"
+import { publishManagerSignal } from "./manager-signals"
+import type { ManagerKey } from "./manager-registry"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-export interface ReapResult { scanned: number; expired: number; escalated: number }
+export interface ReapResult { scanned: number; expired: number; escalated: number; replayed: number }
 
 export async function reapStuckManagerSignals(brokerageId: string, client?: Svc): Promise<ReapResult> {
   const svc = client ?? createServiceClient()
-  const result: ReapResult = { scanned: 0, expired: 0, escalated: 0 }
+  const result: ReapResult = { scanned: 0, expired: 0, escalated: 0, replayed: 0 }
   if (!brokerageId) return result
 
   const now = Date.now()
@@ -28,20 +30,49 @@ export async function reapStuckManagerSignals(brokerageId: string, client?: Svc)
 
   const { data } = await svc
     .from("manager_signals")
-    .select("id, signal_type, from_manager, to_manager, message, entity_type, entity_id, contact_id, created_at")
+    .select("id, signal_type, from_manager, to_manager, message, entity_type, entity_id, contact_id, payload, created_at")
     .eq("brokerage_id", brokerageId).eq("status", "open")
     .lt("created_at", sinceIso)
     .order("created_at", { ascending: true }).limit(500)
 
   for (const row of (data ?? []) as Array<{
     id: string; signal_type: string; from_manager: string; to_manager: string; message: string | null
-    entity_type: string | null; entity_id: string | null; contact_id: string | null; created_at: string
+    entity_type: string | null; entity_id: string | null; contact_id: string | null
+    payload: Record<string, unknown> | null; created_at: string
   }>) {
     result.scanned += 1
     const ageHours = (now - new Date(row.created_at).getTime()) / 3_600_000
     const disposition = SIGNAL_REGISTRY[row.signal_type]?.disposition ?? "handled"
     const action = shouldReapSignal({ ageHours, disposition })
     if (action === "keep") continue
+
+    // ── AUTOMATIC DEAD-LETTER RETRY ──────────────────────────────────────────
+    // A stalled handoff first gets a bounded number of automatic RE-HANDS to the addressed
+    // manager (most stalls are a transient handler failure, not a genuinely stuck task).
+    // Only after the retries are exhausted does it escalate to a human (below).
+    const replays = Number((row.payload as Record<string, unknown> | null)?._replays ?? 0)
+    if (shouldAutoReplaySignal({ action, replays })) {
+      const republished = await publishManagerSignal({
+        brokerageId,
+        fromManager: row.from_manager as ManagerKey,
+        toManager:   row.to_manager as ManagerKey,
+        signalType:  row.signal_type,
+        message:     row.message ?? "",
+        entityType:  row.entity_type,
+        entityId:    row.entity_id,
+        contactId:   row.contact_id,
+        payload:     { ...((row.payload as Record<string, unknown>) ?? {}), _replays: replays + 1, _replayedFrom: row.id },
+        dedupe:      false,
+      }, svc)
+      if (republished.ok && republished.signalId !== row.id) {
+        await svc.from("manager_signals")
+          .update({ status: "expired", consumed_at: new Date().toISOString(), consumed_action: `auto-replayed (attempt ${replays + 1}/${2}) — re-handed to ${row.to_manager}` })
+          .eq("id", row.id).eq("status", "open")
+        result.replayed += 1
+        continue
+      }
+      // republish failed → fall through to escalate + expire so the stall is never lost.
+    }
 
     if (action === "expire_escalate") {
       // A real manager handoff didn't complete in time — alert the responsible human BEFORE expiring

@@ -29,3 +29,19 @@ export function shouldReapSignal(input: { ageHours: number; disposition: SignalD
   // handled (or unknown → treated as handled)
   return input.ageHours >= MAX_HANDLED_OPEN_HOURS ? "expire_escalate" : "keep"
 }
+
+// ── AUTOMATIC DEAD-LETTER RETRY (bus self-heal) ───────────────────────────────
+// A stalled HANDLED handoff used to only ever escalate to a human. But most stalls are a
+// transient handler failure (a gateway blip, a race), not a genuinely stuck task — so the
+// bus should first RE-HAND the signal to the addressed manager a bounded number of times,
+// and escalate to a human ONLY after the retries are exhausted. Feed-only signals carry no
+// task and are never replayed.
+export const SIGNAL_AUTO_REPLAY_CAP = 2
+
+/**
+ * PURE. Should a stuck signal be auto-replayed (re-handed to its manager) rather than
+ * escalated? Only handled handoffs that are due to escalate AND still under the replay cap.
+ */
+export function shouldAutoReplaySignal(input: { action: ReapAction; replays: number }, cap: number = SIGNAL_AUTO_REPLAY_CAP): boolean {
+  return input.action === "expire_escalate" && input.replays < cap
+}
