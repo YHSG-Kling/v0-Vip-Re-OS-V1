@@ -113,16 +113,21 @@ export async function generateLenderBrief(params: {
 
   const sevenDaysOut = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
+  // transactions.lender_id → lender_portal_users.id (per-transaction grant), NOT
+  // the lender's users.id. Resolve this user's grant ids and filter by them.
+  const { lenderPortalRowIdsForUser, lenderFilterIds } = await import("@/lib/kernel/lender-linkage")
+  const lenderRowIds = lenderFilterIds(await lenderPortalRowIdsForUser(supabase, params.userId, params.brokerageId))
+
   const [activeLoansRes, closingsThisWeekRes, stuckLoansRes] = await Promise.all([
     supabase
       .from("transactions")
       .select("id", { count: "exact", head: true })
-      .eq("lender_id", params.userId)
+      .in("lender_id", lenderRowIds)
       .not("stage", "in", "(closed,cancelled)"),
     supabase
       .from("transactions")
       .select("id, property_address, close_date, stage")
-      .eq("lender_id", params.userId)
+      .in("lender_id", lenderRowIds)
       .gte("close_date", today)
       .lte("close_date", sevenDaysOut)
       .order("close_date", { ascending: true })
@@ -130,7 +135,7 @@ export async function generateLenderBrief(params: {
     supabase
       .from("transactions")
       .select("id, property_address, stage, updated_at")
-      .eq("lender_id", params.userId)
+      .in("lender_id", lenderRowIds)
       .lt("updated_at", new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString())
       .not("stage", "in", "(closed,cancelled)")
       .limit(5),

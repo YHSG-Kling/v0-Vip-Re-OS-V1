@@ -22,20 +22,23 @@ export default async function LenderDashboardPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  // Get this lender's portal record (lenders are users with user_type='lender')
-  const { data: lenderPortal } = await supabase
+  // A lender has ONE lender_portal_users row PER transaction (grant), so collect
+  // all of them for this user; transactions.lender_id points at those grant ids.
+  const { data: lenderPortals } = await supabase
     .from('lender_portal_users')
     .select('id, lender_company, brokerage_id')
     .eq('user_id', user.id)
-    .maybeSingle()
+    .order('invited_at', { ascending: false })
 
+  const portalRowIds = (lenderPortals ?? []).map((p: any) => p.id)
+  const lenderPortal = (lenderPortals ?? [])[0] ?? null
   const lenderId = lenderPortal?.id ?? user.id
 
-  // Fetch transactions assigned to this lender via transactions.lender_id
+  // Fetch transactions assigned to this lender via transactions.lender_id.
   const { data: transactions } = await supabase
     .from('transactions')
     .select('id, property_address, status, contract_price:purchase_price, client_name, close_date, transaction_type:deal_type')
-    .eq('lender_id', lenderId)
+    .in('lender_id', portalRowIds.length > 0 ? portalRowIds : ['00000000-0000-0000-0000-000000000000'])
     .order('created_at', { ascending: false })
     .limit(20)
 

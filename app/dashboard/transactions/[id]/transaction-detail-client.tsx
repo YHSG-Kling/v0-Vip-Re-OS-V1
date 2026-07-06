@@ -385,10 +385,10 @@ interface TransactionDetailClientProps {
     active_transactions_count?: number | null
   }>
   // Lender assignment
-  currentLenderId?: string | null
-  availableLenders?: Array<{
-    id: string
-    lender_company: string | null
+  currentLenderUserId?: string | null
+  availableLenderUsers?: Array<{
+    userId: string
+    label: string
   }>
   // Vendor bookings
   vendorBookings?: Array<{
@@ -464,8 +464,8 @@ export function TransactionDetailClient({
   contractSignatures = {},
   currentCoordinatorId = null,
   availableTCs = [],
-  currentLenderId = null,
-  availableLenders = [],
+  currentLenderUserId = null,
+  availableLenderUsers = [],
   vendorBookings = [],
 }: TransactionDetailClientProps) {
   const router = useRouter()
@@ -1812,8 +1812,8 @@ export function TransactionDetailClient({
             {/* Assign Lender Panel */}
             <AssignLenderPanel
               transactionId={transaction.id}
-              currentLenderId={currentLenderId}
-              availableLenders={availableLenders}
+              currentLenderUserId={currentLenderUserId}
+              availableLenderUsers={availableLenderUsers}
               userType={userType}
             />
 

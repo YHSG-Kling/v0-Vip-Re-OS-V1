@@ -26,14 +26,14 @@ import { useToast } from "@/hooks/use-toast"
 import { useRouter } from "next/navigation"
 
 interface LenderUser {
-  id: string
-  lender_company: string | null
+  userId: string
+  label: string
 }
 
 interface AssignLenderPanelProps {
   transactionId: string
-  currentLenderId: string | null
-  availableLenders: LenderUser[]
+  currentLenderUserId: string | null
+  availableLenderUsers: LenderUser[]
   userType: string
 }
 
@@ -41,8 +41,8 @@ import { LenderStatusRequestButton } from "./lender-status-request-button"
 
 export function AssignLenderPanel({
   transactionId,
-  currentLenderId,
-  availableLenders,
+  currentLenderUserId,
+  availableLenderUsers,
   userType,
 }: AssignLenderPanelProps) {
   const [open, setOpen] = useState(false)
@@ -51,21 +51,21 @@ export function AssignLenderPanel({
   const { toast } = useToast()
   const router = useRouter()
 
-  const canAssign = ["broker", "admin", "tc", "agent"].includes(userType)
+  const canAssign = ["broker", "broker_admin", "admin", "superadmin", "tc", "agent", "team_lead"].includes(userType)
   if (!canAssign) return null
 
-  const currentLender = availableLenders.find((l) => l.id === currentLenderId)
+  const currentLender = availableLenderUsers.find((l) => l.userId === currentLenderUserId)
 
   const handleAssign = () => {
     if (!selectedLender) return
     startTransition(async () => {
-      try {
-        await assignLenderToTransaction({ transactionId, lenderId: selectedLender })
+      const res = await assignLenderToTransaction({ transactionId, lenderUserId: selectedLender })
+      if (res?.success) {
         toast({ title: "Lender assigned", description: "Lender has been assigned to this transaction." })
         setOpen(false)
         router.refresh()
-      } catch (err: any) {
-        toast({ title: "Error", description: err.message || "Failed to assign lender.", variant: "destructive" })
+      } else {
+        toast({ title: "Error", description: res?.error || "Failed to assign lender.", variant: "destructive" })
       }
     })
   }
@@ -82,7 +82,7 @@ export function AssignLenderPanel({
         {currentLender ? (
           <div className="flex items-center gap-2">
             <CheckCircle2 className="h-4 w-4 text-green-600" />
-            <p className="text-sm font-medium">{currentLender.lender_company ?? "Lender assigned"}</p>
+            <p className="text-sm font-medium">{currentLender.label}</p>
           </div>
         ) : (
           <Badge variant="outline" className="text-amber-700 border-amber-300 bg-amber-50">
@@ -111,12 +111,12 @@ export function AssignLenderPanel({
                   <SelectValue placeholder="Select a lender..." />
                 </SelectTrigger>
                 <SelectContent>
-                  {availableLenders.map((lender) => (
-                    <SelectItem key={lender.id} value={lender.id}>
-                      {lender.lender_company ?? lender.id}
+                  {availableLenderUsers.map((lender) => (
+                    <SelectItem key={lender.userId} value={lender.userId}>
+                      {lender.label}
                     </SelectItem>
                   ))}
-                  {availableLenders.length === 0 && (
+                  {availableLenderUsers.length === 0 && (
                     <SelectItem value="__none" disabled>
                       No lenders available
                     </SelectItem>

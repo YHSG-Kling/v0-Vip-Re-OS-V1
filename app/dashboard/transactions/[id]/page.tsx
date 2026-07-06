@@ -143,13 +143,30 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .select("lender_id")
       .eq("id", id)
       .maybeSingle(),
+    // Candidate lenders = lender USERS in this brokerage (who can be assigned).
     supabase
-      .from("lender_portal_users")
-      .select("id, lender_company")
-      .order("lender_company"),
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .eq("brokerage_id", brokerageId)
+      .eq("user_type", "lender")
+      .order("first_name"),
   ])
   const currentCoordinatorId = txnCoordinatorRow?.coordinator_id ?? null
-  const currentLenderId = txnLenderRow?.lender_id ?? null
+  // transactions.lender_id is a lender_portal_users.id — resolve it back to the
+  // lender's USER id so the picker can highlight the currently-assigned lender.
+  let currentLenderUserId: string | null = null
+  if (txnLenderRow?.lender_id) {
+    const { data: lpu } = await supabase
+      .from("lender_portal_users")
+      .select("user_id")
+      .eq("id", txnLenderRow.lender_id)
+      .maybeSingle()
+    currentLenderUserId = lpu?.user_id ?? null
+  }
+  const availableLenderUsers = (availableLenders ?? []).map((u: any) => ({
+    userId: u.id as string,
+    label: [u.first_name, u.last_name].filter(Boolean).join(" ") || (u.email as string) || "Lender",
+  }))
 
   // Fetch contract_signatures for this brokerage — used to show send/resend per transaction doc
   const { data: contractSigsRows } = await supabase
@@ -471,8 +488,8 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       contractSignatures={contractSignatures}
       currentCoordinatorId={currentCoordinatorId}
       availableTCs={availableTCs ?? []}
-      currentLenderId={currentLenderId}
-      availableLenders={availableLenders ?? []}
+      currentLenderUserId={currentLenderUserId}
+      availableLenderUsers={availableLenderUsers}
       vendorBookings={(vendorBookings ?? []) as any}
       />
     </>

@@ -367,33 +367,75 @@ export async function getLenderDashboard_v2(lenderId: string) {
   return { lender: lenderUser, loans }
 }
 
+/**
+ * Assign a lender (a users row, user_type='lender') to a transaction.
+ *
+ * `lenderUserId` is the lender's USERS id. This creates/updates the per-
+ * transaction lender_portal_users grant (setting the NOT-NULL brokerage_id from
+ * the transaction) and stamps transactions.lender_id with that grant's id — the
+ * value requireLenderActor + every lender read key off. The old version wrote
+ * the user id straight into transactions.lender_id and omitted brokerage_id, so
+ * the grant insert failed and the lender could never be authorized.
+ */
 export async function assignLenderToTransaction(data: {
   transactionId: string
-  lenderId: string
-}) {
-  const supabase = await createClient()
+  /** users.id of the lender (accepts the legacy `lenderId` name too). */
+  lenderUserId?: string
+  lenderId?: string
+}): Promise<{ success: boolean; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  if (!["broker", "broker_admin", "admin", "superadmin", "tc", "agent", "team_lead"].includes(auth.userType)) {
+    return { success: false, error: "Your role cannot assign a lender" }
+  }
+  const lenderUserId = data.lenderUserId ?? data.lenderId
+  if (!lenderUserId) return { success: false, error: "lenderUserId required" }
 
-  // assigned_transactions column does not exist on lender_portal_users.
-  // The correct pattern is to upsert a lender_portal_users row for each transaction.
-  const { error } = await supabase.from("lender_portal_users").upsert(
-    {
-      user_id: data.lenderId,
-      transaction_id: data.transactionId,
-      access_level: "read",
-      invited_at: new Date().toISOString(),
-    },
-    { onConflict: "user_id,transaction_id" }
-  )
+  const svc = createServiceClient()
 
-  if (error) throw error
-
-  // Also link lender on the transaction row
-  await supabase
+  // The transaction (scoped to the caller's brokerage) is the source of truth
+  // for the NOT-NULL brokerage_id on the grant.
+  const { data: txn } = await svc
     .from("transactions")
-    .update({ lender_id: data.lenderId })
+    .select("id, brokerage_id")
     .eq("id", data.transactionId)
+    .eq("brokerage_id", auth.brokerageId)
+    .maybeSingle()
+  if (!txn) return { success: false, error: "Transaction not found in your brokerage" }
+
+  // The lender must be a lender user in the same brokerage.
+  const { data: lenderUser } = await svc
+    .from("users")
+    .select("id, user_type, brokerage_id, first_name, last_name")
+    .eq("id", lenderUserId)
+    .maybeSingle()
+  if (!lenderUser || lenderUser.user_type !== "lender") {
+    return { success: false, error: "Selected user is not a lender" }
+  }
+  if (lenderUser.brokerage_id && lenderUser.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Lender belongs to another brokerage" }
+  }
+
+  const company = [lenderUser.first_name, lenderUser.last_name].filter(Boolean).join(" ") || null
+  const { linkLenderToTransaction } = await import("@/lib/kernel/lender-linkage")
+  const link = await linkLenderToTransaction(svc, {
+    lenderUserId,
+    transactionId: data.transactionId,
+    brokerageId: txn.brokerage_id,
+    lenderCompany: company,
+  })
+  if (!link.ok || !link.lenderPortalId) {
+    return { success: false, error: link.error ?? "Failed to link lender" }
+  }
+
+  const { error: txnErr } = await svc
+    .from("transactions")
+    .update({ lender_id: link.lenderPortalId })
+    .eq("id", data.transactionId)
+  if (txnErr) return { success: false, error: txnErr.message }
 
   revalidatePath("/dashboard/transactions")
+  revalidatePath(`/dashboard/transactions/${data.transactionId}`)
   return { success: true }
 }
 
