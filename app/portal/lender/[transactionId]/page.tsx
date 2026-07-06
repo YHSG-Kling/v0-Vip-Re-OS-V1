@@ -71,12 +71,16 @@ export default async function LenderTransactionDetailPage({
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  // Get lender profile
-  const { data: lender } = await supabase
-    .from("lender_portal_users")
-    .select("id, user_id, lender_company")
+  // Lenders are vendors — resolve the caller's LENDER VENDOR identity for the header.
+  // Authorization itself is enforced inside getLenderTransactionDetail (vendor rail).
+  const { data: roleRows } = await supabase
+    .from("user_role_assignments")
+    .select("vendor_id, vendors!inner(id, name, category)")
     .eq("user_id", user.id)
-    .single()
+    .not("vendor_id", "is", null)
+  const { isLenderVendorCategory } = await import("@/lib/kernel/lender-linkage")
+  const lenderVendor = ((roleRows ?? []) as any[]).map((r) => r.vendors).find((v) => v && isLenderVendorCategory(v.category))
+  const lender = lenderVendor ? { id: lenderVendor.id as string, lender_company: (lenderVendor.name as string) ?? null } : null
 
   if (!lender) {
     return (

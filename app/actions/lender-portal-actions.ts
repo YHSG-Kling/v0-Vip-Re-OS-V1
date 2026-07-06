@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { revalidatePath } from "next/cache"
-import { requireLenderActor, PortalAuthError } from "@/lib/kernel/portal-auth"
+import { requireLenderVendorActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 
 const LENDER_VISIBLE_MILESTONES = [
   "appraisal_ordered",
@@ -14,36 +14,20 @@ const LENDER_VISIBLE_MILESTONES = [
 ] as const
 
 // ─── GET LENDER TRANSACTION DETAIL ───────────────────────────────────────────
-export async function getLenderTransactionDetail(transactionId: string, lenderId: string) {
-  // Auth gate — requireLenderActor verifies the session user is mapped
-  // to this lender_portal_users row. Without this, any caller could
-  // enumerate transaction detail for any lender (loan amount, buyer
-  // contact info, agent contact info, milestones, documents).
+export async function getLenderTransactionDetail(transactionId: string, _lenderId?: string) {
+  // Auth gate — requireLenderVendorActor verifies the session user is a lender
+  // vendor ASSIGNED to this transaction (vendor rail). Folds the assignment check
+  // in, so any caller could not enumerate transaction detail for a deal they're
+  // not the lender on (loan amount, buyer/agent contact, milestones, documents).
   let actor
   try {
-    actor = await requireLenderActor(lenderId)
+    actor = await requireLenderVendorActor(transactionId)
   } catch (err) {
     if (err instanceof PortalAuthError) throw err
     throw err
   }
 
   const supabase = await createClient()
-
-  // Verify this lender is actually assigned to this transaction AND the
-  // transaction is in the actor's brokerage scope.
-  const { data: txnLenderCheck } = await supabase
-    .from("transactions")
-    .select("lender_id, brokerage_id")
-    .eq("id", transactionId)
-    .maybeSingle()
-
-  if (!txnLenderCheck) throw new Error("Transaction not found")
-  if (txnLenderCheck.lender_id !== actor.lenderId) {
-    throw new Error("Unauthorized: Lender not assigned to this transaction")
-  }
-  if (txnLenderCheck.brokerage_id !== actor.brokerageId) {
-    throw new Error("Forbidden: transaction not in your brokerage scope")
-  }
 
   // Get lender details from transaction_lenders for loan specifics
   const { data: lenderAssignment } = await supabase
@@ -105,34 +89,23 @@ export async function getLenderTransactionDetail(transactionId: string, lenderId
 // ─── UPLOAD LENDER DOCUMENT ──────────────────────────────────────────────────
 export async function uploadLenderDocument(data: {
   transactionId: string
-  lenderId: string
+  lenderId?: string
   documentType: "loan_commitment" | "appraisal" | "closing_disclosure" | "loan_conditions"
   fileName: string
   fileUrl: string
 }) {
   // Auth gate — closing_disclosure docs are CD-3-day-rule sensitive
-  // (wire-fraud / TRID compliance vector). Previously any caller could
-  // upload to any transaction by passing the right ids.
+  // (wire-fraud / TRID compliance vector). requireLenderVendorActor confirms the
+  // caller is the lender vendor assigned to THIS transaction.
   let actor
   try {
-    actor = await requireLenderActor(data.lenderId)
+    actor = await requireLenderVendorActor(data.transactionId)
   } catch (err) {
     if (err instanceof PortalAuthError) throw err
     throw err
   }
 
   const supabase = await createClient()
-
-  // Verify the lender is assigned to this transaction + brokerage scope
-  const { data: tx } = await supabase
-    .from("transactions")
-    .select("lender_id, brokerage_id")
-    .eq("id", data.transactionId)
-    .maybeSingle()
-  if (!tx) throw new Error("Transaction not found")
-  if (tx.lender_id !== actor.lenderId || tx.brokerage_id !== actor.brokerageId) {
-    throw new Error("Forbidden: lender not assigned to this transaction")
-  }
 
   const { data: document, error } = await supabase
     .from("transaction_documents")
@@ -157,15 +130,15 @@ export async function uploadLenderDocument(data: {
 // ─── ISSUE CLEAR TO CLOSE ────────────────────────────────────────────────────
 export async function issueClearToClose(data: {
   transactionId: string
-  lenderId: string
+  lenderId?: string
 }) {
-  // CRITICAL auth gate — Clear to Close is a legally binding lending
-  // milestone that triggers closing scheduling, buyer notifications,
-  // and downstream funding workflows. Previously any caller could
-  // issue CTC on any transaction by passing the right ids.
+  // CRITICAL auth gate — Clear to Close is a legally binding lending milestone
+  // that triggers closing scheduling, buyer notifications, and downstream funding.
+  // requireLenderVendorActor confirms the caller is the lender vendor assigned to
+  // this transaction.
   let actor
   try {
-    actor = await requireLenderActor(data.lenderId)
+    actor = await requireLenderVendorActor(data.transactionId)
   } catch (err) {
     if (err instanceof PortalAuthError) throw err
     throw err
@@ -175,14 +148,12 @@ export async function issueClearToClose(data: {
 
   const { data: transaction } = await supabase
     .from("transactions")
-    .select("id, property_address, buyer_contact_id, agent_id, brokerage_id, lender_id")
+    .select("id, property_address, buyer_contact_id, agent_id, brokerage_id")
     .eq("id", data.transactionId)
+    .eq("brokerage_id", actor.brokerageId)
     .single()
 
   if (!transaction) throw new Error("Transaction not found")
-  if (transaction.lender_id !== actor.lenderId || transaction.brokerage_id !== actor.brokerageId) {
-    throw new Error("Forbidden: lender not assigned to this transaction")
-  }
 
   const { error: milestoneError } = await supabase
     .from("transaction_milestones")
@@ -237,7 +208,7 @@ export async function issueClearToClose(data: {
       metadata: {
         milestone_name:      "clear_to_close_received",
         financing_event:     "clear_to_close",
-        issued_by_lender_id: actor.lenderId,
+        issued_by_vendor_id: actor.vendorId,
         issued_by_type:      "lender",
         lender_company:      actor.lenderCompany ?? null,
       },
@@ -253,12 +224,12 @@ export async function issueClearToClose(data: {
 // ─── FLAG LENDER ISSUE ───────────────────────────────────────────────────────
 export async function flagLenderIssue(data: {
   transactionId: string
-  lenderId: string
+  lenderId?: string
   issueDescription: string
 }): Promise<{ success: boolean; error?: string }> {
   let actor
   try {
-    actor = await requireLenderActor(data.lenderId)
+    actor = await requireLenderVendorActor(data.transactionId)
   } catch (err) {
     if (err instanceof PortalAuthError) return { success: false, error: err.message }
     throw err
@@ -281,7 +252,7 @@ export async function flagLenderIssue(data: {
     body: `[LENDER ISSUE] ${actor.lenderCompany ?? "Lender"} has flagged an issue for ${transaction.property_address ?? "transaction"}:\n\n${data.issueDescription}`,
     metadata: {
       type:           "lender_issue",
-      lender_id:      actor.lenderId,
+      vendor_id:      actor.vendorId,
       transaction_id: data.transactionId,
     },
     created_at: new Date().toISOString(),
@@ -300,7 +271,7 @@ export async function flagLenderIssue(data: {
         actor_role:           "lender",
         update_type:          "issue_flagged",
         lender_company:       actor.lenderCompany,
-        issued_by_lender_id:  actor.lenderId,
+        issued_by_vendor_id:  actor.vendorId,
         issue_description:    data.issueDescription,
         severity:             "high",
       },
@@ -316,12 +287,12 @@ export async function flagLenderIssue(data: {
 // ─── UPDATE LOAN STATUS ──────────────────────────────────────────────────────
 export async function updateLenderLoanStatus(data: {
   transactionId: string
-  lenderId: string
+  lenderId?: string
   newStatus: string
 }): Promise<{ success: boolean; error?: string }> {
   let actor
   try {
-    actor = await requireLenderActor(data.lenderId)
+    actor = await requireLenderVendorActor(data.transactionId)
   } catch (err) {
     if (err instanceof PortalAuthError) return { success: false, error: err.message }
     throw err

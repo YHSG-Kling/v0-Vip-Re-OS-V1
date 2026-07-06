@@ -22,23 +22,24 @@ export default async function LenderDashboardPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  // A lender has ONE lender_portal_users row PER transaction (grant), so collect
-  // all of them for this user; transactions.lender_id points at those grant ids.
-  const { data: lenderPortals } = await supabase
-    .from('lender_portal_users')
-    .select('id, lender_company, brokerage_id')
+  // Lenders are vendors — resolve the caller's lender VENDOR, then the deals it's
+  // assigned to (vendor_assignments).
+  const { data: roleRows } = await supabase
+    .from('user_role_assignments')
+    .select('vendor_id, vendors!inner(id, name, brokerage_id, category)')
     .eq('user_id', user.id)
-    .order('invited_at', { ascending: false })
-
-  const portalRowIds = (lenderPortals ?? []).map((p: any) => p.id)
-  const lenderPortal = (lenderPortals ?? [])[0] ?? null
+    .not('vendor_id', 'is', null)
+  const { isLenderVendorCategory, lenderVendorTransactionIds, lenderFilterIds } =
+    await import('@/lib/kernel/lender-linkage')
+  const lenderVendor = ((roleRows ?? []) as any[]).map((r) => r.vendors).find((v) => v && isLenderVendorCategory(v.category))
+  const lenderPortal = lenderVendor ? { id: lenderVendor.id, lender_company: lenderVendor.name, brokerage_id: lenderVendor.brokerage_id } : null
   const lenderId = lenderPortal?.id ?? user.id
 
-  // Fetch transactions assigned to this lender via transactions.lender_id.
+  const txnIds = lenderFilterIds(lenderVendor ? await lenderVendorTransactionIds(supabase, lenderVendor.id, lenderVendor.brokerage_id) : [])
   const { data: transactions } = await supabase
     .from('transactions')
     .select('id, property_address, status, contract_price:purchase_price, client_name, close_date, transaction_type:deal_type')
-    .in('lender_id', portalRowIds.length > 0 ? portalRowIds : ['00000000-0000-0000-0000-000000000000'])
+    .in('id', txnIds)
     .order('created_at', { ascending: false })
     .limit(20)
 

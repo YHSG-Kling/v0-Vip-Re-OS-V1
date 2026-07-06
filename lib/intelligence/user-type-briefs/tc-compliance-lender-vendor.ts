@@ -113,21 +113,28 @@ export async function generateLenderBrief(params: {
 
   const sevenDaysOut = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
-  // transactions.lender_id → lender_portal_users.id (per-transaction grant), NOT
-  // the lender's users.id. Resolve this user's grant ids and filter by them.
-  const { lenderPortalRowIdsForUser, lenderFilterIds } = await import("@/lib/kernel/lender-linkage")
-  const lenderRowIds = lenderFilterIds(await lenderPortalRowIdsForUser(supabase, params.userId, params.brokerageId))
+  // Lenders are vendors — resolve this user's lender vendor, then scope by the
+  // transactions it's assigned to (vendor_assignments), not a lender user id.
+  const { isLenderVendorCategory, lenderVendorTransactionIds, lenderFilterIds } =
+    await import("@/lib/kernel/lender-linkage")
+  const { data: roleRows } = await supabase
+    .from("user_role_assignments")
+    .select("vendor_id, vendors!inner(id, category)")
+    .eq("user_id", params.userId)
+    .not("vendor_id", "is", null)
+  const lenderVendor = ((roleRows ?? []) as any[]).map((r) => r.vendors).find((v) => v && isLenderVendorCategory(v.category))
+  const txnIds = lenderFilterIds(lenderVendor ? await lenderVendorTransactionIds(supabase, lenderVendor.id, params.brokerageId) : [])
 
   const [activeLoansRes, closingsThisWeekRes, stuckLoansRes] = await Promise.all([
     supabase
       .from("transactions")
       .select("id", { count: "exact", head: true })
-      .in("lender_id", lenderRowIds)
+      .in("id", txnIds)
       .not("stage", "in", "(closed,cancelled)"),
     supabase
       .from("transactions")
       .select("id, property_address, close_date, stage")
-      .in("lender_id", lenderRowIds)
+      .in("id", txnIds)
       .gte("close_date", today)
       .lte("close_date", sevenDaysOut)
       .order("close_date", { ascending: true })
@@ -135,7 +142,7 @@ export async function generateLenderBrief(params: {
     supabase
       .from("transactions")
       .select("id, property_address, stage, updated_at")
-      .in("lender_id", lenderRowIds)
+      .in("id", txnIds)
       .lt("updated_at", new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString())
       .not("stage", "in", "(closed,cancelled)")
       .limit(5),

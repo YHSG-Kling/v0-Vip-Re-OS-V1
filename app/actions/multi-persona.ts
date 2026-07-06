@@ -368,18 +368,18 @@ export async function getLenderDashboard_v2(lenderId: string) {
 }
 
 /**
- * Assign a lender (a users row, user_type='lender') to a transaction.
+ * Assign a LENDER VENDOR (vendors.category 'Lender') to a transaction.
  *
- * `lenderUserId` is the lender's USERS id. This creates/updates the per-
- * transaction lender_portal_users grant (setting the NOT-NULL brokerage_id from
- * the transaction) and stamps transactions.lender_id with that grant's id — the
- * value requireLenderActor + every lender read key off. The old version wrote
- * the user id straight into transactions.lender_id and omitted brokerage_id, so
- * the grant insert failed and the lender could never be authorized.
+ * Lenders are vendors — a lender in a deal is a vendor assigned through the vendor
+ * rail (vendor_assignments, assignment_type 'lending') plus a transaction_lenders
+ * financing row. This replaced the retired lender_portal_users identity rail. The
+ * lender vendor then inherits the RESPA settlement-service disclosure/kickback
+ * gates automatically. Accepts the legacy `lenderId` param name (now a vendorId).
  */
 export async function assignLenderToTransaction(data: {
   transactionId: string
-  /** users.id of the lender (accepts the legacy `lenderId` name too). */
+  /** vendors.id of the lender vendor (accepts legacy `lenderUserId`/`lenderId`). */
+  vendorId?: string
   lenderUserId?: string
   lenderId?: string
 }): Promise<{ success: boolean; error?: string }> {
@@ -388,13 +388,12 @@ export async function assignLenderToTransaction(data: {
   if (!["broker", "broker_admin", "admin", "superadmin", "tc", "agent", "team_lead"].includes(auth.userType)) {
     return { success: false, error: "Your role cannot assign a lender" }
   }
-  const lenderUserId = data.lenderUserId ?? data.lenderId
-  if (!lenderUserId) return { success: false, error: "lenderUserId required" }
+  const vendorId = data.vendorId ?? data.lenderUserId ?? data.lenderId
+  if (!vendorId) return { success: false, error: "vendorId required" }
 
   const svc = createServiceClient()
 
-  // The transaction (scoped to the caller's brokerage) is the source of truth
-  // for the NOT-NULL brokerage_id on the grant.
+  // The transaction (scoped to the caller's brokerage) is the source of truth for brokerage_id.
   const { data: txn } = await svc
     .from("transactions")
     .select("id, brokerage_id")
@@ -403,36 +402,27 @@ export async function assignLenderToTransaction(data: {
     .maybeSingle()
   if (!txn) return { success: false, error: "Transaction not found in your brokerage" }
 
-  // The lender must be a lender user in the same brokerage.
-  const { data: lenderUser } = await svc
-    .from("users")
-    .select("id, user_type, brokerage_id, first_name, last_name")
-    .eq("id", lenderUserId)
+  // The lender must be a LENDER-category vendor in the same brokerage.
+  const { data: vendor } = await svc
+    .from("vendors")
+    .select("id, name, category, brokerage_id")
+    .eq("id", vendorId)
     .maybeSingle()
-  if (!lenderUser || lenderUser.user_type !== "lender") {
-    return { success: false, error: "Selected user is not a lender" }
+  const { isLenderVendorCategory, linkLenderVendorToTransaction } = await import("@/lib/kernel/lender-linkage")
+  if (!vendor || !isLenderVendorCategory(vendor.category)) {
+    return { success: false, error: "Selected vendor is not a lender" }
   }
-  if (lenderUser.brokerage_id && lenderUser.brokerage_id !== auth.brokerageId) {
-    return { success: false, error: "Lender belongs to another brokerage" }
+  if (vendor.brokerage_id && vendor.brokerage_id !== auth.brokerageId) {
+    return { success: false, error: "Lender vendor belongs to another brokerage" }
   }
 
-  const company = [lenderUser.first_name, lenderUser.last_name].filter(Boolean).join(" ") || null
-  const { linkLenderToTransaction } = await import("@/lib/kernel/lender-linkage")
-  const link = await linkLenderToTransaction(svc, {
-    lenderUserId,
+  const link = await linkLenderVendorToTransaction(svc, {
+    vendorId,
     transactionId: data.transactionId,
     brokerageId: txn.brokerage_id,
-    lenderCompany: company,
+    lenderName: vendor.name ?? null,
   })
-  if (!link.ok || !link.lenderPortalId) {
-    return { success: false, error: link.error ?? "Failed to link lender" }
-  }
-
-  const { error: txnErr } = await svc
-    .from("transactions")
-    .update({ lender_id: link.lenderPortalId })
-    .eq("id", data.transactionId)
-  if (txnErr) return { success: false, error: txnErr.message }
+  if (!link.ok) return { success: false, error: link.error ?? "Failed to assign lender vendor" }
 
   revalidatePath("/dashboard/transactions")
   revalidatePath(`/dashboard/transactions/${data.transactionId}`)
@@ -1581,32 +1571,34 @@ export async function getCoordinatorDashboard(coordinatorId: string) {
   return { coordinator, transactions, deadlines, incompleteMilestones }
 }
 
-export async function getLenderDashboard(lenderId: string) {
+/** Lenders are vendors — the loan pipeline for a lender VENDOR (vendors.id).
+ *  Scopes by the transactions the vendor is assigned to (vendor_assignments). */
+export async function getLenderDashboard(vendorId: string) {
   const auth = await requireCaller()
   if (!auth.ok) return { lender: null, loans: [] }
 
   const supabase = await createClient()
 
-  const { data: lenderUser } = await supabase
-    .from("lender_portal_users")
-    .select("*")
-    .eq("id", lenderId)
+  const { data: vendor } = await supabase
+    .from("vendors")
+    .select("id, name, category, brokerage_id")
+    .eq("id", vendorId)
     .eq("brokerage_id", auth.brokerageId)
     .single()
 
-  if (!lenderUser) return { lender: null, loans: [] }
+  const { isLenderVendorCategory, lenderVendorTransactionIds, lenderFilterIds } =
+    await import("@/lib/kernel/lender-linkage")
+  if (!vendor || !isLenderVendorCategory(vendor.category)) return { lender: null, loans: [] }
 
+  const txnIds = lenderFilterIds(await lenderVendorTransactionIds(supabase, vendorId, auth.brokerageId))
   const { data: loans } = await supabase
     .from("transaction_lenders")
-    .select(`
-      *,
-      transactions!inner(*)
-    `)
-    .eq("loan_officer_email", lenderUser.email ?? "")
+    .select(`*, transactions!inner(*)`)
+    .in("transaction_id", txnIds)
     .eq("transactions.brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
 
-  return { lender: lenderUser, loans }
+  return { lender: { ...vendor, company_name: vendor.name }, loans }
 }
 
 /**

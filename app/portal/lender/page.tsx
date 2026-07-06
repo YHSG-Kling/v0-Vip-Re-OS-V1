@@ -16,10 +16,17 @@ export default async function LenderPortalDashboard({ searchParams }: { searchPa
 
   if (!user) redirect("/login")
 
+  // Lenders are vendors — resolve the caller's lender VENDOR id.
   let lenderId = params.lenderId
   if (!lenderId) {
-    const { data: lender } = await supabase.from("lender_portal_users").select("id").eq("user_id", user.id).single()
-    lenderId = lender?.id
+    const { data: roleRows } = await supabase
+      .from("user_role_assignments")
+      .select("vendor_id, vendors!inner(id, category)")
+      .eq("user_id", user.id)
+      .not("vendor_id", "is", null)
+    const { isLenderVendorCategory } = await import("@/lib/kernel/lender-linkage")
+    const lv = ((roleRows ?? []) as any[]).map((r) => r.vendors).find((v) => v && isLenderVendorCategory(v.category))
+    lenderId = lv?.id
   }
 
   if (!lenderId) {

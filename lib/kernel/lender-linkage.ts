@@ -1,109 +1,137 @@
 // lib/kernel/lender-linkage.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// The ONE canonical linkage between a lender (a users row, user_type='lender')
-// and a transaction. It closes a chain that never actually worked (0 rows live):
+// LENDERS ARE VENDORS. A lender in a transaction is a vendor (vendors.category
+// 'Lender') assigned to the deal through the vendor rail (vendor_assignments) —
+// NOT a separate user_type/portal identity. This is the single source of truth
+// for resolving "which lender vendor is on this transaction" and for linking one.
 //
-//   • lender_portal_users is a PER-(user, transaction) access grant — user_id +
-//     transaction_id + brokerage_id are all NOT NULL. It is NOT a per-user
-//     identity row, so it can only be created at ASSIGNMENT time (a transaction
-//     exists), never at invite time.
-//   • transactions.lender_id  →  lender_portal_users.id  (FK). The auth gate
-//     (requireLenderActor) + the lender's transaction detail read both key off
-//     this FK, so a lender that isn't linked THROUGH lender_portal_users.id can
-//     neither be authorized nor see the deal.
-//
-// The old assignLenderToTransaction wrote the lender's USER id straight into
-// transactions.lender_id and omitted the NOT-NULL brokerage_id — so the insert
-// failed and, even if it hadn't, requireLenderActor could never match. Every
-// lender-facing read (dashboard, TC/lender brief) also filtered
-// transactions.lender_id by a USER id, which points at a lender_portal_users.id.
-// This module is the single source of truth so those can't drift again.
+// Why this replaced the old lender_portal_users identity rail: that table was a
+// per-(user, transaction) grant that never ran (0 rows live) and duplicated the
+// vendor identity/provisioning/assignment path. The vendor system already:
+//   • models a lender as a settlement-service category (lib/compliance/vendor-respa
+//     treats 'Lender' as RESPA-regulated — so a lender-vendor INHERITS the AfBA /
+//     kickback / disclosure gates the standalone lender portal never had),
+//   • provisions via vendor-invite (invite → accept → user_role_assignments.vendor_id),
+//   • assigns to a transaction via vendor_assignments.
+// The lender's financing SPECIFICS (rate, underwriting_status, clear_to_close_date,
+// appraisal, rate-lock, conditions) live on transaction_lenders — the alive
+// capability layer, keyed by transaction_id and preserved untouched.
 
-/** A safe .in() list — never empty (an empty PostgREST .in() matches nothing but
- *  a bad empty-array can error), so callers pass this sentinel for "no rows". */
-const NO_MATCH = "00000000-0000-0000-0000-000000000000"
-export function lenderFilterIds(rowIds: string[]): string[] {
-  return rowIds.length > 0 ? rowIds : [NO_MATCH]
+/** The vendor category that IS a lender. vendors.category is free-text; this is
+ *  the canonical spelling the bench (financing-pit-stop, vendor-orchestration) uses. */
+export const LENDER_VENDOR_CATEGORY = "Lender"
+
+export function isLenderVendorCategory(category: string | null | undefined): boolean {
+  const c = (category ?? "").trim().toLowerCase()
+  return c === "lender" || c.includes("lender") || c.includes("mortgage") || c.includes("loan officer")
 }
 
-/** All lender_portal_users.id values that belong to a given lender USER — these
- *  are exactly the values that can appear in transactions.lender_id for them. */
-export async function lenderPortalRowIdsForUser(
+/** A safe .in() list — never empty (an empty PostgREST .in() can error), so
+ *  callers pass this sentinel for "no rows". */
+const NO_MATCH = "00000000-0000-0000-0000-000000000000"
+export function lenderFilterIds(ids: string[]): string[] {
+  return ids.length > 0 ? ids : [NO_MATCH]
+}
+
+export interface LenderVendorRef {
+  vendorId: string
+  name: string | null
+  brokerageId: string
+}
+
+/** The Lender vendor assigned to a transaction (via vendor_assignments), if any. */
+export async function resolveLenderVendorForTransaction(
   client: any,
-  userId: string,
+  transactionId: string,
+): Promise<LenderVendorRef | null> {
+  const { data: assigns } = await client
+    .from("vendor_assignments")
+    .select("vendor_id, brokerage_id, vendors!inner(id, name, category, brokerage_id)")
+    .eq("transaction_id", transactionId)
+  for (const a of (assigns ?? []) as any[]) {
+    const v = a.vendors
+    if (v && isLenderVendorCategory(v.category)) {
+      return { vendorId: v.id, name: v.name ?? null, brokerageId: v.brokerage_id ?? a.brokerage_id }
+    }
+  }
+  return null
+}
+
+/** All transaction ids a given lender vendor is assigned to (dashboard/brief scoping). */
+export async function lenderVendorTransactionIds(
+  client: any,
+  vendorId: string,
   brokerageId?: string | null,
 ): Promise<string[]> {
-  let q = client.from("lender_portal_users").select("id").eq("user_id", userId)
+  let q = client.from("vendor_assignments").select("transaction_id").eq("vendor_id", vendorId)
   if (brokerageId) q = q.eq("brokerage_id", brokerageId)
   const { data } = await q
-  return ((data ?? []) as Array<{ id: string }>).map((r) => r.id)
+  return ((data ?? []) as Array<{ transaction_id: string | null }>)
+    .map((r) => r.transaction_id).filter((x): x is string => !!x)
 }
 
-export interface LinkLenderResult {
+export interface LinkLenderVendorResult {
   ok: boolean
   error?: string
-  /** lender_portal_users.id — the value written to transactions.lender_id */
-  lenderPortalId?: string
+  assignmentId?: string
 }
 
 /**
- * Idempotently link a lender USER to a specific transaction and return the
- * lender_portal_users.id to stamp on transactions.lender_id.
- *
- * Constraint-safe: resolves an existing (user_id, transaction_id) grant and
- * updates it, else inserts — never relies on an ON CONFLICT target. All three
- * NOT-NULL columns (user_id, transaction_id, brokerage_id) are always set.
+ * Idempotently assign a Lender vendor to a transaction and ensure a
+ * transaction_lenders financing row exists. Constraint-safe (check-then-insert,
+ * no ON CONFLICT dependency). This is the vendor-rail replacement for the old
+ * assignLenderToTransaction/lender_portal_users write.
  */
-export async function linkLenderToTransaction(
+export async function linkLenderVendorToTransaction(
   svc: any,
-  params: {
-    lenderUserId: string
-    transactionId: string
-    brokerageId: string
-    lenderCompany?: string | null
-    accessLevel?: string
-  },
-): Promise<LinkLenderResult> {
-  const { lenderUserId, transactionId, brokerageId } = params
-  if (!lenderUserId || !transactionId || !brokerageId) {
-    return { ok: false, error: "lenderUserId, transactionId and brokerageId are all required" }
+  params: { vendorId: string; transactionId: string; brokerageId: string; lenderName?: string | null },
+): Promise<LinkLenderVendorResult> {
+  const { vendorId, transactionId, brokerageId } = params
+  if (!vendorId || !transactionId || !brokerageId) {
+    return { ok: false, error: "vendorId, transactionId and brokerageId are all required" }
   }
-  const accessLevel = params.accessLevel ?? "read"
 
+  // 1) vendor_assignments (assignment_type 'lender') — one per (vendor, transaction).
   const { data: existing } = await svc
-    .from("lender_portal_users")
+    .from("vendor_assignments")
     .select("id")
-    .eq("user_id", lenderUserId)
+    .eq("vendor_id", vendorId)
     .eq("transaction_id", transactionId)
     .maybeSingle()
 
+  let assignmentId: string
   if (existing?.id) {
-    await svc
-      .from("lender_portal_users")
-      .update({
-        brokerage_id: brokerageId,
-        ...(params.lenderCompany !== undefined ? { lender_company: params.lenderCompany } : {}),
-        access_level: accessLevel,
+    assignmentId = existing.id as string
+    await svc.from("vendor_assignments")
+      .update({ assignment_type: "lender", status: "confirmed", brokerage_id: brokerageId })
+      .eq("id", assignmentId)
+  } else {
+    const { data: inserted, error } = await svc
+      .from("vendor_assignments")
+      .insert({
+        vendor_id: vendorId, transaction_id: transactionId, brokerage_id: brokerageId,
+        assignment_type: "lender", status: "confirmed",
       })
-      .eq("id", existing.id)
-    return { ok: true, lenderPortalId: existing.id as string }
+      .select("id")
+      .maybeSingle()
+    if (error || !inserted?.id) return { ok: false, error: error?.message ?? "Failed to assign lender vendor" }
+    assignmentId = inserted.id as string
   }
 
-  const { data: inserted, error } = await svc
-    .from("lender_portal_users")
-    .insert({
-      user_id: lenderUserId,
-      transaction_id: transactionId,
-      brokerage_id: brokerageId,
-      lender_company: params.lenderCompany ?? null,
-      access_level: accessLevel,
-      invited_at: new Date().toISOString(),
-    })
+  // 2) Ensure a transaction_lenders financing row (the capability layer).
+  const { data: tl } = await svc
+    .from("transaction_lenders")
     .select("id")
+    .eq("transaction_id", transactionId)
     .maybeSingle()
-
-  if (error || !inserted?.id) {
-    return { ok: false, error: error?.message ?? "Failed to create lender portal grant" }
+  if (!tl?.id) {
+    await svc.from("transaction_lenders").insert({
+      transaction_id: transactionId, brokerage_id: brokerageId,
+      lender_name: params.lenderName ?? null,
+    })
+  } else if (params.lenderName) {
+    await svc.from("transaction_lenders").update({ lender_name: params.lenderName }).eq("id", tl.id)
   }
-  return { ok: true, lenderPortalId: inserted.id as string }
+
+  return { ok: true, assignmentId }
 }

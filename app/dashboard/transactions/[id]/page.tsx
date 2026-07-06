@@ -138,34 +138,24 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .eq("brokerage_id", brokerageId)
       .eq("is_active", true)
       .order("display_name"),
+    // Placeholder to keep the destructure arity — lender is resolved below.
+    supabase.from("transactions").select("id").eq("id", id).maybeSingle(),
+    // Candidate lenders = LENDER VENDORS in this brokerage (lenders are vendors).
     supabase
-      .from("transactions")
-      .select("lender_id")
-      .eq("id", id)
-      .maybeSingle(),
-    // Candidate lenders = lender USERS in this brokerage (who can be assigned).
-    supabase
-      .from("users")
-      .select("id, first_name, last_name, email")
+      .from("vendors")
+      .select("id, name, category")
       .eq("brokerage_id", brokerageId)
-      .eq("user_type", "lender")
-      .order("first_name"),
+      .ilike("category", "%lender%")
+      .order("name"),
   ])
   const currentCoordinatorId = txnCoordinatorRow?.coordinator_id ?? null
-  // transactions.lender_id is a lender_portal_users.id — resolve it back to the
-  // lender's USER id so the picker can highlight the currently-assigned lender.
-  let currentLenderUserId: string | null = null
-  if (txnLenderRow?.lender_id) {
-    const { data: lpu } = await supabase
-      .from("lender_portal_users")
-      .select("user_id")
-      .eq("id", txnLenderRow.lender_id)
-      .maybeSingle()
-    currentLenderUserId = lpu?.user_id ?? null
-  }
-  const availableLenderUsers = (availableLenders ?? []).map((u: any) => ({
-    userId: u.id as string,
-    label: [u.first_name, u.last_name].filter(Boolean).join(" ") || (u.email as string) || "Lender",
+  // The lender vendor currently assigned to this transaction (vendor_assignments).
+  const { resolveLenderVendorForTransaction } = await import("@/lib/kernel/lender-linkage")
+  const currentLenderVendor = await resolveLenderVendorForTransaction(supabase, id)
+  const currentLenderUserId = currentLenderVendor?.vendorId ?? null
+  const availableLenderUsers = (availableLenders ?? []).map((v: any) => ({
+    userId: v.id as string,
+    label: (v.name as string) || "Lender",
   }))
 
   // Fetch contract_signatures for this brokerage — used to show send/resend per transaction doc

@@ -32,9 +32,9 @@ export class PortalAuthError extends Error {
 
 export interface LenderActorContext {
   userId:        string  // auth.users.id
-  lenderId:      string  // lender_portal_users.id (FK)
+  vendorId:      string  // vendors.id — a lender IS a vendor (category 'Lender')
   brokerageId:   string
-  lenderCompany: string | null
+  lenderCompany: string | null  // vendors.name
 }
 
 export interface TitleActorContext {
@@ -51,39 +51,53 @@ export interface VendorActorContext {
 }
 
 /**
- * Lender portal authorization gate.
- * Verifies the authenticated user owns the lender_portal_users row that
- * matches the claimed lenderId. Throws on any mismatch.
+ * Lender authorization gate — LENDERS ARE VENDORS.
+ * Verifies the authenticated user is a vendor (user_role_assignments.vendor_id)
+ * whose vendor is a LENDER category AND is assigned to THIS transaction
+ * (vendor_assignments). Replaces the retired lender_portal_users identity rail.
+ * Passing the transactionId folds "is this my deal?" into the gate itself, so no
+ * caller-supplied lender id can be spoofed.
  */
-export async function requireLenderActor(claimedLenderId: string): Promise<LenderActorContext> {
-  if (!claimedLenderId) throw new PortalAuthError("lenderId required")
+export async function requireLenderVendorActor(transactionId: string): Promise<LenderActorContext> {
+  if (!transactionId) throw new PortalAuthError("transactionId required")
 
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new PortalAuthError("Not authenticated")
 
-  const { data: row } = await supabase
-    .from("lender_portal_users")
-    .select("id, user_id, brokerage_id, lender_company")
+  // The caller's vendor identity (a lender is a vendor).
+  const { data: roleRows } = await supabase
+    .from("user_role_assignments")
+    .select("vendor_id, brokerage_id, vendors!inner(id, name, category, brokerage_id)")
     .eq("user_id", user.id)
-    .eq("id", claimedLenderId)
-    .maybeSingle()
+    .not("vendor_id", "is", null)
 
-  if (!row) {
-    throw new PortalAuthError(
-      "Not authorized for this lender profile — your account does not match the claimed lender",
-    )
+  const { isLenderVendorCategory } = await import("@/lib/kernel/lender-linkage")
+  const lenderVendor = ((roleRows ?? []) as any[])
+    .map((r) => r.vendors)
+    .find((v) => v && isLenderVendorCategory(v.category))
+  if (!lenderVendor) {
+    throw new PortalAuthError("Not authorized — your account is not a lender vendor")
   }
+  const brokerageId = lenderVendor.brokerage_id
+  if (!brokerageId) throw new PortalAuthError("Lender vendor is missing a brokerage scope")
 
-  if (!row.brokerage_id) {
-    throw new PortalAuthError("Lender profile is missing a brokerage scope")
+  // Must be assigned to THIS transaction.
+  const { data: assigned } = await supabase
+    .from("vendor_assignments")
+    .select("id")
+    .eq("vendor_id", lenderVendor.id)
+    .eq("transaction_id", transactionId)
+    .maybeSingle()
+  if (!assigned) {
+    throw new PortalAuthError("Unauthorized: lender not assigned to this transaction")
   }
 
   return {
     userId:        user.id,
-    lenderId:      row.id,
-    brokerageId:   row.brokerage_id,
-    lenderCompany: row.lender_company ?? null,
+    vendorId:      lenderVendor.id,
+    brokerageId,
+    lenderCompany: lenderVendor.name ?? null,
   }
 }
 
