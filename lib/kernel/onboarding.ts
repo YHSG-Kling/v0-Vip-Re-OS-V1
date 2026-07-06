@@ -71,7 +71,7 @@ export interface MarkStepCompleteResult {
 
 export interface FirstLoginDestination {
   route: string
-  reason: "setup_incomplete" | "onboarding_pending" | "onboarding_complete" | "role_dashboard"
+  reason: "setup_incomplete" | "onboarding_pending" | "onboarding_complete" | "role_dashboard" | "billing_required"
 }
 
 // ─── Role-to-onboarding-route map ────────────────────────────────────────────
@@ -385,6 +385,20 @@ export async function determineFirstLoginDestination(
   // Onboarding in progress
   if (ONBOARDING_ROLES.has(userType) && onboardingData && onboardingData.status !== "completed") {
     return { route: "/dashboard/onboarding", reason: "onboarding_pending" }
+  }
+
+  // ── BILLING PAYWALL GATE ────────────────────────────────────────────────────
+  // A lapsed-trial / past-due / cancelled tenant is routed to billing so the money
+  // loop closes itself. Platform staff (superadmin/support) are exempt; a brokerage
+  // with no subscription row is NOT blocked (fail-open — never lock out by accident).
+  if (!["superadmin", "support"].includes(userType)) {
+    try {
+      const { loadBillingAccess } = await import("@/lib/billing/billing-access")
+      const access = await loadBillingAccess(service, userData.brokerage_id)
+      if (access.blocked) {
+        return { route: "/dashboard/admin/billing", reason: "billing_required" }
+      }
+    } catch { /* fail-open — a billing-read error must never block login */ }
   }
 
   // Onboarding complete or exempt from onboarding (broker, admin, etc.)

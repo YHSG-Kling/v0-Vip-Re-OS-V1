@@ -9,10 +9,11 @@ import { Badge } from "@/components/ui/badge"
 import { CheckCircle2, Loader2, User, Briefcase, Building2, MapPin } from "lucide-react"
 import { signupBrokerageAction, type CanonicalTier } from "@/app/actions/auth/signup-brokerage"
 
+// Shape/blurb/features describe each tier; PRICE is never hardcoded here — it comes
+// from subscription_tiers via the priceByTier prop (production price changes = DB only).
 const TIERS: Array<{
   id:        CanonicalTier
   name:      string
-  price:     string
   blurb:     string
   features:  string[]
   highlight: boolean
@@ -20,7 +21,6 @@ const TIERS: Array<{
   {
     id:    "solo_agent",
     name:  "Solo Agent",
-    price: "$99",
     blurb: "Single agent operating independently",
     features: ["2M AI tokens / month", "Full kernel + marketing OS", "Up to 500 contacts", "1 active transaction"],
     highlight: false,
@@ -28,7 +28,6 @@ const TIERS: Array<{
   {
     id:    "team",
     name:  "Team",
-    price: "$299",
     blurb: "Lead agent + 2–5 team members (TC, ISA, marketing)",
     features: ["10M AI tokens / month", "Team P&L + per-agent ROI", "Shared brand voice", "Multi-channel campaigns"],
     highlight: true,
@@ -36,7 +35,6 @@ const TIERS: Array<{
   {
     id:    "brokerage",
     name:  "Brokerage",
-    price: "$799",
     blurb: "Full brokerage with broker-of-record + multiple teams",
     features: ["30M AI tokens / month", "Compliance + audit", "Custom brand voice", "Unlimited agents"],
     highlight: false,
@@ -44,14 +42,21 @@ const TIERS: Array<{
   {
     id:    "multi_location",
     name:  "Multi-Location",
-    price: "$1,999",
     blurb: "Franchise / multi-office network",
     features: ["100M AI tokens / month", "Cross-location reporting", "Dedicated success manager", "SLA + priority support"],
     highlight: false,
   },
 ]
 
-export function SignupForm() {
+export interface TierPrice { monthlyCents: number; annualCents: number; setupCents: number }
+
+/** Format cents → "$X" / "$X,XXX" (whole dollars); "—" when the tier has no price yet. */
+function fmtPrice(cents: number | undefined): string {
+  if (!cents || cents <= 0) return "—"
+  return "$" + Math.round(cents / 100).toLocaleString("en-US")
+}
+
+export function SignupForm({ priceByTier = {} }: { priceByTier?: Record<string, TierPrice> }) {
   const [tier, setTier] = useState<CanonicalTier>("team")
   const [brokerageName, setBrokerageName] = useState("")
   const [city, setCity]                   = useState("")
@@ -113,9 +118,12 @@ export function SignupForm() {
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">{t.name}</CardTitle>
                 <div className="flex items-baseline gap-1">
-                  <span className="text-2xl font-bold">{t.price}</span>
+                  <span className="text-2xl font-bold">{fmtPrice(priceByTier[t.id]?.monthlyCents)}</span>
                   <span className="text-xs text-muted-foreground">/ month</span>
                 </div>
+                {priceByTier[t.id]?.setupCents ? (
+                  <p className="text-[11px] text-muted-foreground">+ {fmtPrice(priceByTier[t.id]?.setupCents)} one-time setup</p>
+                ) : null}
                 <CardDescription className="text-xs mt-1">{t.blurb}</CardDescription>
               </CardHeader>
               <CardContent>
