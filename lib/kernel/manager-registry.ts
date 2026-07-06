@@ -693,7 +693,6 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   documents: "deal_coordinator",
   generated_documents: "deal_coordinator",
   lender_applications: "deal_coordinator",
-  lender_portal_users: "deal_coordinator",
   milestone_template_items: "deal_coordinator",
   negotiation_strategies: "deal_coordinator",
   net_sheet_calculations: "deal_coordinator",

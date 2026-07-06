@@ -404,7 +404,8 @@ export const permissionsService = {
     if (ctx.role === 'tc') return { team_id: ctx.teamIds }
     if (ctx.role === 'contact') return { contact_id: ctx.contactId }
     if (ctx.role === 'vendor') return { vendor_id: ctx.vendorId }
-    if (ctx.role === 'lender') return { lender_id: ctx.userId }
+    // Lenders are vendors — scope by the vendor identity, not a lender_id column.
+    if (ctx.role === 'lender') return { vendor_id: ctx.vendorId }
     return {}
   },
 

@@ -57,6 +57,26 @@ export async function resolveLenderVendorForTransaction(
   return null
 }
 
+/** The caller's LENDER vendor identity (user_role_assignments.vendor_id → a
+ *  Lender-category vendor), if the user is a lender vendor. */
+export async function lenderVendorForUser(
+  client: any,
+  userId: string,
+): Promise<LenderVendorRef | null> {
+  const { data: roleRows } = await client
+    .from("user_role_assignments")
+    .select("vendor_id, vendors!inner(id, name, category, brokerage_id)")
+    .eq("user_id", userId)
+    .not("vendor_id", "is", null)
+  for (const r of (roleRows ?? []) as any[]) {
+    const v = r.vendors
+    if (v && isLenderVendorCategory(v.category)) {
+      return { vendorId: v.id, name: v.name ?? null, brokerageId: v.brokerage_id }
+    }
+  }
+  return null
+}
+
 /** All transaction ids a given lender vendor is assigned to (dashboard/brief scoping). */
 export async function lenderVendorTransactionIds(
   client: any,

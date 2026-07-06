@@ -337,35 +337,6 @@ export async function rateVendor(data: {
 // LENDER PORTAL FUNCTIONS
 // ============================================
 
-export async function getLenderDashboard_v2(lenderId: string) {
-  const auth = await requireCaller()
-  if (!auth.ok) return { lender: null, loans: [] }
-
-  const supabase = await createClient()
-
-  // lender_portal_users: id, user_id, transaction_id, brokerage_id, lender_company,
-  // access_level, invited_at, last_accessed
-  const { data: lenderUser } = await supabase
-    .from("lender_portal_users")
-    .select("*")
-    .eq("id", lenderId)
-    .eq("brokerage_id", auth.brokerageId)
-    .single()
-
-  if (!lenderUser) return { lender: null, loans: [] }
-
-  const { data: loans } = await supabase
-    .from("transaction_lenders")
-    .select(`
-      *,
-      transactions!inner(*)
-    `)
-    .eq("loan_officer_email", lenderUser.email ?? "")
-    .eq("transactions.brokerage_id", auth.brokerageId)
-    .order("created_at", { ascending: false })
-
-  return { lender: lenderUser, loans }
-}
 
 /**
  * Assign a LENDER VENDOR (vendors.category 'Lender') to a transaction.

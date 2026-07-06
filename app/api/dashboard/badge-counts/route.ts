@@ -94,14 +94,8 @@ export async function GET() {
             .eq("status", "pending")
         : Promise.resolve({ count: 0 }),
 
-      // Lender pipeline (lender role only)
-      userType === "lender"
-        ? supabase
-            .from("lender_portal_users")
-            .select("id", { count: "exact", head: true })
-            .eq("user_id", user.id)
-            .eq("brokerage_id", brokerageId)
-        : Promise.resolve({ count: 0 }),
+      // Lenders are vendors — a lender's pipeline counts under the vendor branch.
+      Promise.resolve({ count: 0 }),
 
       // Title open orders (title_agent role only)
       userType === "title_agent"

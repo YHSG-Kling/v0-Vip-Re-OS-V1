@@ -34,15 +34,12 @@ export async function requestLenderStatusUpdateAction(input: {
 
   if (!input.items?.length) return { success: false as const, error: "no_items" }
 
-  // Schema layout (verified against live DB):
-  //   transactions.lender_id  → lender_portal_users.id  (gives company name)
-  //   transaction_lenders.transaction_id  → lender contact + loan officer info
-  //
-  // Email/phone for the lender LIVE on transaction_lenders.loan_officer_*,
-  // not on lender_portal_users.
+  // Lenders are vendors. The lender company is the assigned Lender vendor's name
+  // (resolveLenderVendorForTransaction) with transaction_lenders.lender_name as a
+  // fallback; loan-officer contact lives on transaction_lenders.loan_officer_*.
   const { data: txn } = await supabase
     .from("transactions")
-    .select("id, brokerage_id, property_address, lender_id")
+    .select("id, brokerage_id, property_address")
     .eq("id", input.transactionId)
     .maybeSingle()
 
@@ -50,14 +47,9 @@ export async function requestLenderStatusUpdateAction(input: {
     return { success: false as const, error: "transaction_not_found" }
   }
 
-  const [{ data: portalLender }, { data: txnLender }] = await Promise.all([
-    txn.lender_id
-      ? supabase
-          .from("lender_portal_users")
-          .select("id, user_id, lender_company")
-          .eq("id", txn.lender_id)
-          .maybeSingle()
-      : Promise.resolve({ data: null as any }),
+  const { resolveLenderVendorForTransaction } = await import("@/lib/kernel/lender-linkage")
+  const [lenderVendor, { data: txnLender }] = await Promise.all([
+    resolveLenderVendorForTransaction(supabase, input.transactionId),
     supabase
       .from("transaction_lenders")
       .select("lender_name, loan_officer_name, loan_officer_email, loan_officer_phone")
@@ -65,7 +57,7 @@ export async function requestLenderStatusUpdateAction(input: {
       .maybeSingle(),
   ])
 
-  const companyName = portalLender?.lender_company ?? txnLender?.lender_name ?? null
+  const companyName = lenderVendor?.name ?? txnLender?.lender_name ?? null
   const recipientEmail = txnLender?.loan_officer_email ?? null
   const recipientPhone = txnLender?.loan_officer_phone ?? null
 

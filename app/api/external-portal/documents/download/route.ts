@@ -47,22 +47,36 @@ export async function GET(request: NextRequest) {
     }
 
     // Partner scoping: confirm this partner is attached to the document's transaction.
-    const partnerTable =
-      partnerType === "lender" ? "lender_portal_users" :
-      partnerType === "title"  ? "title_company_users" : null
-    if (!document.transaction_id || !partnerTable) {
+    if (!document.transaction_id) {
       // vendor downloads are not modeled via documents.transaction_id — deny by default.
       return NextResponse.json(
         { success: false, error: "Document not found or access denied" },
         { status: 404 }
       )
     }
-    const { data: access } = await supabase
-      .from(partnerTable)
-      .select("id")
-      .eq("user_id", partnerId)
-      .eq("transaction_id", document.transaction_id)
-      .maybeSingle()
+    let access: { id: string } | null = null
+    if (partnerType === "lender") {
+      // Lenders are vendors — the lender vendor must be assigned to this transaction.
+      const { lenderVendorForUser } = await import("@/lib/kernel/lender-linkage")
+      const lenderVendor = await lenderVendorForUser(supabase, partnerId)
+      if (lenderVendor) {
+        const { data } = await supabase
+          .from("vendor_assignments")
+          .select("id")
+          .eq("vendor_id", lenderVendor.vendorId)
+          .eq("transaction_id", document.transaction_id)
+          .maybeSingle()
+        access = (data as any) ?? null
+      }
+    } else if (partnerType === "title") {
+      const { data } = await supabase
+        .from("title_company_users")
+        .select("id")
+        .eq("user_id", partnerId)
+        .eq("transaction_id", document.transaction_id)
+        .maybeSingle()
+      access = (data as any) ?? null
+    }
     if (!access) {
       return NextResponse.json(
         { success: false, error: "Document not found or access denied" },

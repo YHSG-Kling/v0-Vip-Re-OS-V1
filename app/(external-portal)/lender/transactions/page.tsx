@@ -17,11 +17,12 @@ export default async function LenderTransactionsPage() {
 
   const supabase = await createClient()
 
-  // ── lender_portal_users: user_id, transaction_id, brokerage_id ──────────
-  const { data: lenderAssignments } = await supabase
-    .from("lender_portal_users")
-    .select("transaction_id")
-    .eq("user_id", ctx.userId)
+  // Lenders are vendors — the deals are the lender vendor's assignments.
+  const { lenderVendorForUser, lenderVendorTransactionIds } = await import("@/lib/kernel/lender-linkage")
+  const lenderVendor = await lenderVendorForUser(supabase, ctx.userId)
+  const lenderAssignments = lenderVendor
+    ? (await lenderVendorTransactionIds(supabase, lenderVendor.vendorId)).map((id) => ({ transaction_id: id }))
+    : []
 
   if (!lenderAssignments || lenderAssignments.length === 0) {
     return (

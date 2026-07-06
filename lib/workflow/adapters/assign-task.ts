@@ -52,15 +52,9 @@ export const assignTaskAdapter: ChannelAdapter = {
         }
 
         case "lender": {
-          const { data: tx } = await supabase
-            .from("transactions")
-            .select("lender_id")
-            .eq("brokerage_id", brokerageId)
-            .not("lender_id", "is", null)
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .maybeSingle()
-          assigneeUserId = tx?.lender_id ?? null
+          // Lenders are vendors (external participants) — internal task assignment
+          // does not target an external lender; leave unassigned for escalation.
+          assigneeUserId = null
           break
         }
 

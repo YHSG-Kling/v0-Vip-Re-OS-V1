@@ -60,15 +60,19 @@ async function loadBrokerContext(service: ReturnType<typeof createServiceClient>
 }
 
 async function loadLenderContext(service: ReturnType<typeof createServiceClient>, userId: string) {
+  // Lenders are vendors — resolve the lender vendor, then its assigned deals.
+  const { lenderVendorForUser, lenderVendorTransactionIds, lenderFilterIds } =
+    await import("@/lib/kernel/lender-linkage")
+  const lenderVendor = await lenderVendorForUser(service, userId)
+  const txnIds = lenderFilterIds(lenderVendor ? await lenderVendorTransactionIds(service, lenderVendor.vendorId) : [])
   const { data: lenderTxns } = await service
-    .from("lender_portal_users")
+    .from("transaction_lenders")
     .select(`
-      transaction_id, lender_company,
-      transactions (id, deal_name, property_address, status, close_date, buyer_contact_id,
-        contacts!buyer_contact_id(first_name, last_name)),
-      transaction_lenders!inner (lender_name, underwriting_status, clear_to_close_date)
+      transaction_id, lender_name, underwriting_status, clear_to_close_date,
+      transactions!inner (id, deal_name, property_address, status, close_date, buyer_contact_id,
+        contacts!buyer_contact_id(first_name, last_name))
     `)
-    .eq("user_id", userId)
+    .in("transaction_id", txnIds)
     .limit(20)
 
   return { lenderTxns }
