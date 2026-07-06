@@ -9,46 +9,22 @@ import { Badge } from "@/components/ui/badge"
 import { CheckCircle2, Loader2, User, Briefcase, Building2, MapPin } from "lucide-react"
 import { signupBrokerageAction, type CanonicalTier } from "@/app/actions/auth/signup-brokerage"
 
-// Shape/blurb/features describe each tier; PRICE is never hardcoded here — it comes
-// from subscription_tiers via the priceByTier prop (production price changes = DB only).
-const TIERS: Array<{
-  id:        CanonicalTier
-  name:      string
-  blurb:     string
-  features:  string[]
-  highlight: boolean
-}> = [
-  {
-    id:    "solo_agent",
-    name:  "Solo Agent",
-    blurb: "Single agent operating independently",
-    features: ["2M AI tokens / month", "Full kernel + marketing OS", "Up to 500 contacts", "1 active transaction"],
-    highlight: false,
-  },
-  {
-    id:    "team",
-    name:  "Team",
-    blurb: "Lead agent + 2–5 team members (TC, ISA, marketing)",
-    features: ["10M AI tokens / month", "Team P&L + per-agent ROI", "Shared brand voice", "Multi-channel campaigns"],
-    highlight: true,
-  },
-  {
-    id:    "brokerage",
-    name:  "Brokerage",
-    blurb: "Full brokerage with broker-of-record + multiple teams",
-    features: ["30M AI tokens / month", "Compliance + audit", "Custom brand voice", "Unlimited agents"],
-    highlight: false,
-  },
-  {
-    id:    "multi_location",
-    name:  "Multi-Location",
-    blurb: "Franchise / multi-office network",
-    features: ["100M AI tokens / month", "Cross-location reporting", "Dedicated success manager", "SLA + priority support"],
-    highlight: false,
-  },
-]
+// EVERY tier field (name, blurb, bullets, highlight, price) is DB-driven from
+// subscription_tiers — nothing is hardcoded here except the per-tier icon (UI only).
+const TIER_ICON: Record<string, typeof User> = {
+  solo_agent: User, team: Briefcase, brokerage: Building2, multi_location: MapPin,
+}
 
-export interface TierPrice { monthlyCents: number; annualCents: number; setupCents: number }
+export interface SignupTier {
+  tierName: string
+  displayName: string
+  description: string
+  bullets: string[]
+  featured: boolean
+  monthlyCents: number
+  annualCents: number
+  setupCents: number
+}
 
 /** Format cents → "$X" / "$X,XXX" (whole dollars); "—" when the tier has no price yet. */
 function fmtPrice(cents: number | undefined): string {
@@ -56,8 +32,9 @@ function fmtPrice(cents: number | undefined): string {
   return "$" + Math.round(cents / 100).toLocaleString("en-US")
 }
 
-export function SignupForm({ priceByTier = {} }: { priceByTier?: Record<string, TierPrice> }) {
-  const [tier, setTier] = useState<CanonicalTier>("team")
+export function SignupForm({ tiers = [] }: { tiers?: SignupTier[] }) {
+  const defaultTier = (tiers.find((t) => t.featured)?.tierName ?? tiers[0]?.tierName ?? "team") as CanonicalTier
+  const [tier, setTier] = useState<CanonicalTier>(defaultTier)
   const [brokerageName, setBrokerageName] = useState("")
   const [city, setCity]                   = useState("")
   const [state, setState]                 = useState("")
@@ -101,34 +78,34 @@ export function SignupForm({ priceByTier = {} }: { priceByTier?: Record<string, 
       <div>
         <div className="text-xs uppercase tracking-wider text-muted-foreground mb-3">1. Pick your tier</div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-          {TIERS.map(t => (
+          {tiers.map(t => (
             <Card
-              key={t.id}
-              onClick={() => setTier(t.id)}
+              key={t.tierName}
+              onClick={() => setTier(t.tierName as CanonicalTier)}
               className={`cursor-pointer transition relative ${
-                tier === t.id ? "ring-2 ring-primary border-primary" : "hover:border-muted-foreground/40"
+                tier === t.tierName ? "ring-2 ring-primary border-primary" : "hover:border-muted-foreground/40"
               }`}
             >
-              {t.highlight && tier !== t.id && (
+              {t.featured && tier !== t.tierName && (
                 <Badge className="absolute -top-2 right-3 bg-amber-100 text-amber-800">Most popular</Badge>
               )}
-              {tier === t.id && (
+              {tier === t.tierName && (
                 <CheckCircle2 className="absolute top-3 right-3 h-5 w-5 text-primary" />
               )}
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">{t.name}</CardTitle>
+                <CardTitle className="text-base">{t.displayName}</CardTitle>
                 <div className="flex items-baseline gap-1">
-                  <span className="text-2xl font-bold">{fmtPrice(priceByTier[t.id]?.monthlyCents)}</span>
+                  <span className="text-2xl font-bold">{fmtPrice(t.monthlyCents)}</span>
                   <span className="text-xs text-muted-foreground">/ month</span>
                 </div>
-                {priceByTier[t.id]?.setupCents ? (
-                  <p className="text-[11px] text-muted-foreground">+ {fmtPrice(priceByTier[t.id]?.setupCents)} one-time setup</p>
+                {t.setupCents > 0 ? (
+                  <p className="text-[11px] text-muted-foreground">+ {fmtPrice(t.setupCents)} one-time setup</p>
                 ) : null}
-                <CardDescription className="text-xs mt-1">{t.blurb}</CardDescription>
+                {t.description ? <CardDescription className="text-xs mt-1">{t.description}</CardDescription> : null}
               </CardHeader>
               <CardContent>
                 <ul className="text-xs space-y-1.5">
-                  {t.features.map(f => (
+                  {t.bullets.map(f => (
                     <li key={f} className="flex items-start gap-1.5">
                       <CheckCircle2 className="h-3 w-3 text-primary mt-0.5 shrink-0" />
                       <span>{f}</span>
