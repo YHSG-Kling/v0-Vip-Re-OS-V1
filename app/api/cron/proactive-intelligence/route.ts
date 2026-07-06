@@ -25,7 +25,7 @@ export async function GET(request: Request) {
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()
-  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, weeklyReports = 0, mlsReminders = 0, staleVideos = 0, staleRuns = 0, strandedOffers = 0, staleTouchpoints = 0, closingOverdue = 0, reaperEscalated = 0, reaperReaped = 0, errors = 0
+  let brokerages = 0, healthPlays = 0, buyerStall = 0, stuckStage = 0, listingStall = 0, cancelFollowups = 0, sellerNurture = 0, metricsUpserted = 0, weeklyReports = 0, mlsReminders = 0, staleVideos = 0, staleRuns = 0, strandedOffers = 0, staleTouchpoints = 0, closingOverdue = 0, reaperEscalated = 0, reaperReaped = 0, referralUpdates = 0, referralAppreciations = 0, errors = 0
 
   const [
     { predictAndPublishBuyerStall },
@@ -136,7 +136,17 @@ export async function GET(request: Request) {
         else if (r.domain === "closing_overdue") closingOverdue += r.escalated
       }
     } catch { errors++ }
+
+    // (10) REFERRER LOVE LOOP (Sphere) — contacts who referred a friend get gated,
+    //      privacy-tasteful milestone updates + the configured close-time appreciation.
+    //      Idempotent per (referral, stage); nothing auto-sends.
+    try {
+      const { runReferralAppreciation } = await import("@/lib/kernel/referral-appreciation")
+      const ra = await runReferralAppreciation(brokerageId, svc)
+      referralUpdates += ra.updatesProposed
+      referralAppreciations += ra.appreciationsProposed
+    } catch { errors++ }
   }
 
-  return NextResponse.json({ ran_at: ranAt, brokerages, marketPulse, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, staleVideos, staleRuns, strandedOffers, staleTouchpoints, closingOverdue, reaperEscalated, reaperReaped, errors })
+  return NextResponse.json({ ran_at: ranAt, brokerages, marketPulse, healthPlays, buyerStall, stuckStage, listingStall, cancelFollowups, sellerNurture, metricsUpserted, weeklyReports, mlsReminders, staleVideos, staleRuns, strandedOffers, staleTouchpoints, closingOverdue, reaperEscalated, reaperReaped, referralUpdates, referralAppreciations, errors })
 }

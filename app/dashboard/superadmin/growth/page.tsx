@@ -1,8 +1,10 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { listPlatformProspectsAction } from "@/app/actions/superadmin/platform-growth"
+import { listProductDraftsAction } from "@/app/actions/superadmin/platform-content"
 import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
 import { PlatformGrowthBoard } from "./platform-growth-board"
+import { ProductContentBoard } from "./product-content-board"
 
 export const dynamic = "force-dynamic"
 
@@ -16,7 +18,7 @@ export default async function PlatformGrowthPage() {
   const role = (data as any)?.platform_role ?? ((data as any)?.user_type === "superadmin" ? "superadmin" : null)
   if (!platformStaffCan(role, "marketing")) return <div className="p-6 text-red-600">Forbidden: platform marketing access required</div>
 
-  const res = await listPlatformProspectsAction()
+  const [res, draftsRes] = await Promise.all([listPlatformProspectsAction(), listProductDraftsAction()])
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -32,6 +34,8 @@ export default async function PlatformGrowthPage() {
       ) : (
         <PlatformGrowthBoard initialProspects={res.prospects} initialFunnel={res.funnel} />
       )}
+      {/* The platform's own social calendar — market the OS on the company channels */}
+      <ProductContentBoard initialDrafts={draftsRes.ok ? draftsRes.drafts : []} />
     </div>
   )
 }

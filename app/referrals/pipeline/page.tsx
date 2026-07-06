@@ -6,11 +6,12 @@ import { Phone, CheckCircle, XCircle, Clock } from "lucide-react"
 import Link from "next/link"
 import { getAgentContext } from "@/lib/identity"
 import { PipelineOsClient } from "./pipeline-os-client"
+import { ReferralAppreciationPanel } from "./appreciation-panel"
 
 export const dynamic = "force-dynamic"
 
 export default async function ReferralPipelinePage() {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userType } = await getAgentContext()
   const supabase = await createClient()
 
   const { data: referrals } = await supabase
@@ -58,6 +59,9 @@ export default async function ReferralPipelinePage() {
           value_estimate: r.value_estimate,
         }))}
       />
+
+      {/* Referrer love loop — configure appreciation, link referrers, record gifts */}
+      <ReferralAppreciationPanel canSetBrokerage={["broker", "broker_admin", "admin", "superadmin"].includes(userType ?? "")} />
 
       <div className="flex items-center justify-between">
         <div>
