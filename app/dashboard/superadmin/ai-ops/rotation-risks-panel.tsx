@@ -3,21 +3,35 @@
 // Integration credentials that need rotation — expired / expiring-soon OAuth tokens across all
 // tenants. The schema carried token_expires_at + refresh_token but nothing watched them; a silently
 // expired Google/social/CRM token breaks the AI team's outbound. Staff-gated server-side.
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useTransition } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { KeyRound, Loader2 } from 'lucide-react'
-import { getCredentialRotationAction } from '@/app/actions/superadmin/ai-ops'
+import { KeyRound, Loader2, RefreshCw } from 'lucide-react'
+import { getCredentialRotationAction, runCredentialRefreshAction } from '@/app/actions/superadmin/ai-ops'
 import type { RotationRisk } from '@/lib/security/credential-rotation'
 
 export function RotationRisksPanel() {
   const [risks, setRisks] = useState<RotationRisk[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [pending, startTransition] = useTransition()
 
-  useEffect(() => {
+  function refresh() {
     getCredentialRotationAction().then((r) => { if (r.ok) setRisks(r.data); else setErr(r.error); setLoading(false) })
-  }, [])
+  }
+  useEffect(refresh, [])
+
+  function autoRefresh() {
+    setErr(null); setMsg(null)
+    startTransition(async () => {
+      const r = await runCredentialRefreshAction()
+      if (!r.ok) setErr(r.error ?? 'Refresh failed')
+      else setMsg(`Refresh sweep: ${r.refreshed} refreshed, ${r.skipped} skipped (provider not configured), ${r.failed} failed of ${r.attempted} attempted.`)
+      refresh()
+    })
+  }
 
   const expired = risks.filter((r) => r.status === 'expired').length
 
@@ -25,15 +39,21 @@ export function RotationRisksPanel() {
     <Card>
       <CardHeader className="pb-3 flex-row items-center justify-between">
         <CardTitle className="text-sm flex items-center gap-2"><KeyRound className="h-4 w-4 text-primary" />Credential rotation</CardTitle>
-        {risks.length > 0 && (
-          <span className="text-xs">
-            {expired > 0 && <Badge className="text-[10px] bg-red-100 text-red-800">{expired} expired</Badge>}
-            {risks.length - expired > 0 && <Badge className="ml-1 text-[10px] bg-amber-100 text-amber-800">{risks.length - expired} expiring</Badge>}
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {risks.length > 0 && (
+            <span className="text-xs">
+              {expired > 0 && <Badge className="text-[10px] bg-red-100 text-red-800">{expired} expired</Badge>}
+              {risks.length - expired > 0 && <Badge className="ml-1 text-[10px] bg-amber-100 text-amber-800">{risks.length - expired} expiring</Badge>}
+            </span>
+          )}
+          <Button size="sm" variant="outline" disabled={pending} onClick={autoRefresh} className="gap-1.5">
+            <RefreshCw className={'h-3.5 w-3.5' + (pending ? ' animate-spin' : '')} /> Refresh now
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="p-0">
         {err && <p className="p-4 text-xs text-red-600">{err}</p>}
+        {msg && <p className="p-4 pb-0 text-xs text-emerald-600">{msg}</p>}
         {loading ? (
           <p className="p-4 text-sm text-muted-foreground flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />Loading…</p>
         ) : risks.length === 0 ? (

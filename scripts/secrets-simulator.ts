@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { credentialRotationStatus, ROTATION_WARN_DAYS } from "../lib/security/credential-rotation"
+import { shouldAttemptRefresh, resolveProviderOAuth } from "../lib/security/oauth-refresh"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -44,6 +45,13 @@ async function pureLayer() {
   check("past → expired", credentialRotationStatus({ tokenExpiresAt: "2026-07-01T00:00:00Z" }, now) === "expired")
   check(`within ${ROTATION_WARN_DAYS}d → expiring_soon`, credentialRotationStatus({ tokenExpiresAt: "2026-07-08T00:00:00Z" }, now) === "expiring_soon")
   check("far future → ok", credentialRotationStatus({ tokenExpiresAt: "2026-12-01T00:00:00Z" }, now) === "ok")
+
+  console.log("\n[oauth-refresh · pure — automation gating + endpoint resolution]")
+  check("refresh is attempted for an expiring cred WITH a refresh_token", shouldAttemptRefresh({ tokenExpiresAt: "2026-07-06T00:00:00Z", hasRefreshToken: true }, now))
+  check("NOT attempted without a refresh_token", !shouldAttemptRefresh({ tokenExpiresAt: "2026-07-06T00:00:00Z", hasRefreshToken: false }, now))
+  check("NOT attempted for a healthy cred (no point)", !shouldAttemptRefresh({ tokenExpiresAt: "2026-12-01T00:00:00Z", hasRefreshToken: true }, now))
+  check("google/microsoft endpoints resolve; unknown provider → null (skip)",
+    resolveProviderOAuth("gmail")?.tokenUrl.includes("googleapis") === true && resolveProviderOAuth("outlook")?.tokenUrl.includes("microsoftonline") === true && resolveProviderOAuth("zillow") === null)
 }
 
 function sourceLayer() {
@@ -53,6 +61,10 @@ function sourceLayer() {
   const rot = src("lib/security/credential-rotation.ts")
   check("the monitor scans all four OAuth credential tables cross-tenant", /platform_credentials/.test(rot) && /agent_api_credentials/.test(rot) && /social_media_accounts/.test(rot) && /calendar_provider_accounts/.test(rot))
   check("escalation nudges platform staff, deduped per day", /notifyPlatformStaff/.test(rot) && /credential_rotation_risk/.test(rot))
+  const refresh = src("lib/security/oauth-refresh.ts")
+  check("the OAuth refresh runner is provider-gated + ENCRYPTS the refreshed token on write",
+    /resolveProviderOAuth/.test(refresh) && /skipped_unconfigured/.test(refresh) && /access_token: encryptSecret\(json\.access_token\)/.test(refresh))
+  check("a staff action can trigger a refresh sweep", /runCredentialRefreshAction/.test(src("app/actions/superadmin/ai-ops.ts")))
   check("staff-gated action + console panel", /getCredentialRotationAction/.test(src("app/actions/superadmin/ai-ops.ts")) && /RotationRisksPanel/.test(src("app/dashboard/superadmin/ai-ops/page.tsx")))
   const reg = src("lib/kernel/manager-registry.ts")
   check("burn domain owned by data_steward with a runnable proof", /secrets_hardening:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:secrets"/.test(reg))

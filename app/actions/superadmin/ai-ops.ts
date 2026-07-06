@@ -13,6 +13,7 @@ import { revalidatePath } from "next/cache"
 import { loadAiOps, type AiOps } from "@/lib/platform/ai-ops"
 import { loadManagerOps, type ManagerOps } from "@/lib/platform/manager-ops"
 import { loadRotationRisks, type RotationRisk } from "@/lib/security/credential-rotation"
+import { runCredentialRefresh } from "@/lib/security/oauth-refresh"
 
 async function requireStaff(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
   const supabase = await createClient()
@@ -53,6 +54,17 @@ export async function getCredentialRotationAction(): Promise<{ ok: true; data: R
   const auth = await requireStaff()
   if (!auth.ok) return auth
   return { ok: true, data: await loadRotationRisks(createServiceClient()) }
+}
+
+/** Attempt an automatic OAuth refresh of expiring credentials (provider-gated) — the rotation
+ *  monitor becoming rotation automation. Audited. */
+export async function runCredentialRefreshAction(): Promise<{ ok: boolean; attempted?: number; refreshed?: number; skipped?: number; failed?: number; error?: string }> {
+  const auth = await requireStaff()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+  const r = await runCredentialRefresh(svc)
+  await audit(auth.userId, auth.email, "credential.refresh_sweep", "platform", "credentials", { attempted: r.attempted, refreshed: r.refreshed, skipped: r.skipped, failed: r.failed })
+  return { ok: true, attempted: r.attempted, refreshed: r.refreshed, skipped: r.skipped, failed: r.failed }
 }
 
 /** REPLAY a dead-letter signal — expire the stuck one + re-publish (re-invokes the manager handler). */
