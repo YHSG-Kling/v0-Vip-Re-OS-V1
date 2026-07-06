@@ -21,6 +21,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
+import { ROLE_DASHBOARD_ROUTES } from "./role-routes"
 import { emitUserProvisionedEvent } from "./users"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -76,19 +77,7 @@ export interface FirstLoginDestination {
 
 // ─── Role-to-onboarding-route map ────────────────────────────────────────────
 
-const ROLE_DASHBOARD_ROUTES: Record<string, string> = {
-  superadmin:         "/dashboard/admin",
-  admin:              "/dashboard/admin",
-  broker:             "/dashboard/brokerage",
-  tc:                 "/dashboard/coordinator",
-  compliance_officer: "/dashboard/compliance",
-  isa:                "/dashboard/isa",
-  team_lead:          "/dashboard/agent",
-  agent:              "/dashboard/agent",
-  contact:            "/portal",
-  vendor:             "/vendor/dashboard",
-  lender:             "/lender/dashboard",
-}
+// Canonical role → dashboard route map lives in lib/kernel/role-routes.ts (imported at top).
 
 // Roles that go through the onboarding flow
 const ONBOARDING_ROLES = new Set(["agent", "tc", "isa", "team_lead"])

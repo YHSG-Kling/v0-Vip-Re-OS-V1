@@ -36,6 +36,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { requiresAgentRow } from "./tenant-provisioning-spec"
+import { ROLE_DASHBOARD_ROUTES } from "./role-routes"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -118,21 +119,7 @@ export interface RepairResult {
 }
 
 // ─── ROLE → DASHBOARD ROUTE MAP ──────────────────────────────────────────────
-
-const ROLE_DASHBOARD_ROUTES: Record<string, string> = {
-  superadmin:          "/dashboard/admin",
-  admin:               "/dashboard/admin",
-  broker:              "/dashboard/brokerage",
-  tc:                  "/dashboard/coordinator",
-  compliance_officer:  "/dashboard/compliance",
-  isa:                 "/dashboard/isa",
-  team_lead:           "/dashboard/agent",
-  agent:               "/dashboard/agent",
-  contact:             "/portal",
-  vendor:              "/vendor/dashboard",
-  lender:              "/lender/dashboard",
-  system:              "/dashboard/admin",
-}
+// Canonical map (consolidated, no drift) — imported from lib/kernel/role-routes.ts at top.
 
 // Roles that require a transaction_coordinators table row
 const TC_ROLES = new Set<UserDomainRole>(["tc"])

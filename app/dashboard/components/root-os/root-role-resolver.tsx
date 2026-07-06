@@ -6,25 +6,21 @@ import { useAuth } from '@/lib/auth/client'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Loader2, User, Building2, Shield, Phone, ClipboardCheck, UserCircle } from 'lucide-react'
+import { Loader2, User, Building2, Shield, Phone, ClipboardCheck, UserCircle, LifeBuoy } from 'lucide-react'
 import Link from 'next/link'
+import { ROLE_DASHBOARD_ROUTES as CANON_ROUTES, ROLE_LABELS } from '@/lib/kernel/role-routes'
 
-// Role-based dashboard routing - matches actual existing pages
-const ROLE_DASHBOARD_ROUTES: Record<string, { route: string; label: string; icon: typeof User }> = {
-  admin: { route: '/dashboard/admin', label: 'Brokerage Admin', icon: Shield },
-  superadmin: { route: '/dashboard/admin', label: 'Super Admin', icon: Shield },
-  broker: { route: '/dashboard/brokerage', label: 'Broker Command', icon: Building2 },
-  tc: { route: '/dashboard/coordinator', label: 'Coordinator OS', icon: ClipboardCheck },
-  compliance_officer: { route: '/dashboard/compliance', label: 'Compliance', icon: Shield },
-  isa: { route: '/dashboard/isa', label: 'ISA Qualification', icon: Phone },
-  team_lead: { route: '/dashboard/agent', label: 'Agent Command', icon: User },
-  agent: { route: '/dashboard/agent', label: 'Agent Command', icon: User },
-  contact: { route: '/portal', label: 'Client Portal', icon: UserCircle },
-  vendor: { route: '/vendor/dashboard', label: 'Vendor Portal', icon: Building2 },
-  lender: { route: '/lender/dashboard', label: 'Lender Portal', icon: Building2 },
-  title: { route: '/title/dashboard', label: 'Title Portal', icon: Building2 },
-  title_agent: { route: '/title/dashboard', label: 'Title Portal', icon: Building2 },
+// Routes + labels are the canonical, consolidated map (lib/kernel/role-routes.ts);
+// only the per-role ICON is UI-local. Composed here so this view can't drift.
+const ROLE_ICON: Record<string, typeof User> = {
+  admin: Shield, superadmin: Shield, support: LifeBuoy, broker: Building2, tc: ClipboardCheck,
+  compliance_officer: Shield, isa: Phone, team_lead: User, agent: User, contact: UserCircle,
+  vendor: Building2, lender: Building2, title: Building2, title_agent: Building2, system: Shield,
 }
+const ROLE_DASHBOARD_ROUTES: Record<string, { route: string; label: string; icon: typeof User }> =
+  Object.fromEntries(Object.keys(CANON_ROUTES).map((r) => [r, {
+    route: CANON_ROUTES[r], label: ROLE_LABELS[r] ?? r, icon: ROLE_ICON[r] ?? User,
+  }]))
 
 interface RootRoleResolverProps {
   autoRedirect?: boolean
