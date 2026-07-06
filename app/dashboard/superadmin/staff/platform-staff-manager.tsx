@@ -10,7 +10,7 @@ import { Loader2, UserPlus, ShieldOff, Shield, LifeBuoy } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { createPlatformStaffAction, updatePlatformStaffRoleAction, revokePlatformStaffAction, listPlatformStaffAction } from '@/app/actions/superadmin/platform-staff'
 
-const ROLES = ['support', 'superadmin']
+const ROLES = ['support', 'marketing', 'admin', 'superadmin']
 
 interface Staff {
   id: string

@@ -6,7 +6,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import type { UserTier, FeatureAccessCheck } from "./types"
-import { isTrialOverride, isDisableOverride } from "@/lib/kernel/override-vocab"
+import { resolveEntitlement } from "@/lib/entitlements/resolve"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -114,136 +114,70 @@ export async function canAccessFeature(
   if (flagError) throw new Error(`[FeatureAccess] Failed to load feature_flag: ${flagError.message}`)
   const flag = flagRaw as FeatureFlagRow | null
 
-  if (!flag) {
-    return { allowed: false, reason: "Feature does not exist" }
-  }
-
-  if (!flag.enabled) {
-    return { allowed: false, reason: "Feature is not enabled" }
-  }
-
-  // ── 2. Deprecated / sunset check ──────────────────────────────────────────
-  if (flag.deprecated) {
-    return { allowed: false, reason: "Feature is deprecated" }
-  }
-
-  if (flag.sunset_date && new Date(flag.sunset_date) <= new Date()) {
-    return { allowed: false, reason: `Feature was sunset on ${flag.sunset_date}` }
-  }
-
-  // ── 3. Resolve user tier if not provided ──────────────────────────────────
+  // ── Resolve user tier (+ superadmin proxy) ─────────────────────────────────
   let resolvedTier = userTier
-
+  let isSuperadmin = resolvedTier === "multi_location"
   if (!resolvedTier) {
     const { data: user, error: userError } = await supabase
-      .from("users")
-      .select("user_type, team_id, brokerage_id")
-      .eq("id", userId)
-      .maybeSingle()
-
+      .from("users").select("user_type, team_id, brokerage_id, platform_role").eq("id", userId).maybeSingle()
     if (userError) throw new Error(`[FeatureAccess] Failed to load user: ${userError.message}`)
     if (!user) return { allowed: false, reason: "User not found" }
-
     resolvedTier = mapUserTypeToTier(user.user_type, user.brokerage_id, user.team_id)
+    isSuperadmin = user.user_type === "superadmin" || (user as any).platform_role === "superadmin"
   }
 
-  // ── 4. superadmin_only gate ────────────────────────────────────────────────
-  if (flag.superadmin_only && resolvedTier !== "multi_location") {
-    // multi_location is the closest system tier — actual superadmin check is
-    // done by the caller via platform_role; here we block non-multi_location tiers
-    return {
-      allowed: false,
-      reason: "This feature requires superadmin access",
+  // ── Platform hard rule (god-switch) — the highest-precedence gate. Superadmins
+  //    are exempt; a read error fails OPEN so a monitoring blip can't lock features. ──
+  let platformHalt: { blocked: boolean; reason?: string } | null = null
+  try {
+    if (!isSuperadmin) {
+      const { loadPlatformHalt } = await import("@/lib/platform/platform-controls")
+      const halt = await loadPlatformHalt()
+      if (halt.halted) platformHalt = { blocked: true, reason: halt.reason ?? "Platform is temporarily paused" }
     }
+  } catch { /* fail-open */ }
+
+  // ── Most-specific override (user → team → brokerage) ──────────────────────
+  let override: { type: string | null; trialEndsAt: string | null; disabledReason: string | null } | null = null
+  if (flag) {
+    const { data: overrides, error: overrideError } = await supabase
+      .from("feature_access_overrides")
+      .select("override_type, trial_ends_at, disabled_reason, user_id, team_id, brokerage_id")
+      .eq("feature_key", featureKey)
+      .or(`user_id.eq.${userId},team_id.not.is.null,brokerage_id.not.is.null`)
+      .order("created_at", { ascending: false })
+    if (overrideError) throw new Error(`[FeatureAccess] Failed to load overrides: ${overrideError.message}`)
+    const o = overrides?.find((x) => x.user_id === userId) ?? overrides?.[0] ?? null
+    if (o) override = { type: o.override_type, trialEndsAt: o.trial_ends_at, disabledReason: o.disabled_reason }
   }
 
-  // ── 5. Load override for this user (most-specific scope wins) ─────────────
-  // Priority: user-level → team-level → brokerage-level
-  const { data: overrides, error: overrideError } = await supabase
-    .from("feature_access_overrides")
-    .select("override_type, trial_ends_at, disabled_reason, user_id, team_id, brokerage_id")
-    .eq("feature_key", featureKey)
-    .or(`user_id.eq.${userId},team_id.not.is.null,brokerage_id.not.is.null`)
-    .order("created_at", { ascending: false })
-
-  if (overrideError) throw new Error(`[FeatureAccess] Failed to load overrides: ${overrideError.message}`)
-
-  // Find most-specific matching override
-  const userOverride = overrides?.find((o) => o.user_id === userId)
-  const override = userOverride ?? overrides?.[0] ?? null
-
-  // ── 5a. Trial override ─────────────────────────────────────────────────────
-  // Canonical vocabulary is 'grant_trial' (DB CHECK); tolerate the legacy 'trial' spelling on read.
-  if (isTrialOverride(override?.override_type)) {
-    const expired = override.trial_ends_at && new Date(override.trial_ends_at) <= new Date()
-    if (!expired) {
-      return {
-        allowed: true,
-        trial: true,
-        trial_expires_at: override.trial_ends_at ?? undefined,
-      }
-    }
-    // Trial expired — fall through to normal tier check
-  }
-
-  // ── 5b. Disabled override ──────────────────────────────────────────────────
-  if (isDisableOverride(override?.override_type)) {
-    return {
-      allowed: false,
-      disabled: true,
-      disabled_reason: override.disabled_reason ?? "Access has been disabled for your account",
-    }
-  }
-
-  // ── 6. Tier access check ───────────────────────────────────────────────────
-  const accessCol = TIER_ACCESS_COLUMN[resolvedTier]
-  const tierHasAccess = (flag as unknown as Record<string, unknown>)[accessCol] as boolean
-
-  if (!tierHasAccess) {
-    return {
-      allowed: false,
-      reason: `Your plan (${resolvedTier}) does not include access to this feature`,
-    }
-  }
-
-  // ── 7. Usage limit check ──────────────────────────────────────────────────
-  const limitCol = TIER_LIMIT_COLUMN[resolvedTier]
-  const limit = (flag as unknown as Record<string, unknown>)[limitCol] as number | null
-
-  if (limit !== null) {
-    // Current billing period: start of this calendar month
-    const periodStart = new Date()
-    periodStart.setDate(1)
-    periodStart.setHours(0, 0, 0, 0)
-
+  // ── Tier access + limit columns → usage (only when a limit applies) ────────
+  const tierHasAccess = flag ? ((flag as unknown as Record<string, unknown>)[TIER_ACCESS_COLUMN[resolvedTier]] as boolean) : false
+  const tierLimit = flag ? ((flag as unknown as Record<string, unknown>)[TIER_LIMIT_COLUMN[resolvedTier]] as number | null) : null
+  let usageCurrent = 0
+  if (flag && tierLimit !== null) {
+    const periodStart = new Date(); periodStart.setDate(1); periodStart.setHours(0, 0, 0, 0)
     const { data: usage, error: usageError } = await supabase
       .from("feature_usage_tracking")
-      .select("usage_count, limit_amount, exceeded, period_start, period_end")
-      .eq("feature_key", featureKey)
-      .eq("user_id", userId)
-      .gte("period_start", periodStart.toISOString().slice(0, 10))
-      .maybeSingle()
-
+      .select("usage_count, period_start")
+      .eq("feature_key", featureKey).eq("user_id", userId)
+      .gte("period_start", periodStart.toISOString().slice(0, 10)).maybeSingle()
     if (usageError) throw new Error(`[FeatureAccess] Failed to load usage: ${usageError.message}`)
-
-    const currentUsage = usage?.usage_count ?? 0
-    const remaining = Math.max(0, limit - currentUsage)
-
-    if (currentUsage >= limit) {
-      return {
-        allowed: false,
-        reason: `Usage limit reached (${currentUsage}/${limit} this billing period)`,
-        usage: { current: currentUsage, limit, remaining: 0 },
-      }
-    }
-
-    return {
-      allowed: true,
-      usage: { current: currentUsage, limit, remaining },
-    }
+    usageCurrent = usage?.usage_count ?? 0
   }
 
-  return { allowed: true }
+  // ── ONE resolution order (lib/entitlements/resolve.ts) ─────────────────────
+  return resolveEntitlement({
+    platformHalt,
+    flag: flag ? {
+      enabled: flag.enabled, deprecated: flag.deprecated, sunsetDate: flag.sunset_date,
+      superadminOnly: flag.superadmin_only, tierHasAccess, tierLimit,
+    } : null,
+    isSuperadmin,
+    override,
+    usageCurrent,
+    tier: resolvedTier,
+  })
 }
 
 // ─── incrementFeatureUsage ────────────────────────────────────────────────────

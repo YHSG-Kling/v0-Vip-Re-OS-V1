@@ -13,10 +13,16 @@ import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import { validateStaffInput, isPlatformStaffRole, PLATFORM_STAFF_ROLES } from "@/lib/platform/platform-staff-roster"
 
-// platform_role only accepts 'superadmin' (CHECK); 'support' is a user_type. So a
-// staff member's role maps to BOTH columns coherently.
-function roleColumns(role: string): { user_type: string; platform_role: string | null } {
-  return role === "superadmin" ? { user_type: "superadmin", platform_role: "superadmin" } : { user_type: "support", platform_role: null }
+// Map a platform role → the (user_type, platform_role) columns coherently. platform_role
+// carries the platform role for all staff; user_type is the CHECK-valid base type
+// ('marketing' isn't a user_type, so marketing staff are user_type 'system').
+function roleColumns(role: string): { user_type: string; platform_role: string } {
+  switch (role) {
+    case "superadmin": return { user_type: "superadmin", platform_role: "superadmin" }
+    case "admin":      return { user_type: "admin", platform_role: "admin" }
+    case "support":    return { user_type: "support", platform_role: "support" }
+    default:           return { user_type: "system", platform_role: "marketing" } // marketing
+  }
 }
 
 async function requireSuperadmin(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
@@ -47,7 +53,7 @@ export async function listPlatformStaffAction(): Promise<{ ok: true; staff: any[
   const { data, error } = await svc
     .from("users")
     .select("id, email, first_name, last_name, user_type, platform_role, status, created_at")
-    .or("user_type.in.(superadmin,support),platform_role.eq.superadmin")
+    .or(`user_type.in.(superadmin,support),platform_role.in.(${PLATFORM_STAFF_ROLES.join(",")})`)
     .order("created_at", { ascending: false })
   if (error) return { ok: false, error: error.message }
   return { ok: true, staff: data ?? [] }

@@ -19,7 +19,7 @@
  *
  * Run: npx tsx scripts/platform-staff-simulator.ts   (npm run test:platform-staff)
  */
-import { validateStaffInput, isPlatformStaffRole, PLATFORM_STAFF_ROLES } from "../lib/platform/platform-staff-roster"
+import { validateStaffInput, isPlatformStaffRole, PLATFORM_STAFF_ROLES, platformStaffCan } from "../lib/platform/platform-staff-roster"
 import { roleDashboardRoute, ROLE_DASHBOARD_ROUTES } from "../lib/kernel/role-routes"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -55,8 +55,14 @@ async function main() {
   check("bad email → error", !validateStaffInput({ email: "nope", firstName: "A", role: "support" }).ok)
   check("empty first name → error", !validateStaffInput({ email: "a@b.co", firstName: "", role: "support" }).ok)
   check("non-staff role → error", !validateStaffInput({ email: "a@b.co", firstName: "A", role: "agent" }).ok)
-  check("isPlatformStaffRole: support + superadmin only", isPlatformStaffRole("support") && isPlatformStaffRole("superadmin") && !isPlatformStaffRole("admin"))
-  check("PLATFORM_STAFF_ROLES = [support, superadmin]", PLATFORM_STAFF_ROLES.length === 2)
+  check("isPlatformStaffRole: the 4 platform roles, not a tenant role", isPlatformStaffRole("support") && isPlatformStaffRole("superadmin") && isPlatformStaffRole("marketing") && isPlatformStaffRole("admin") && !isPlatformStaffRole("agent"))
+  check("PLATFORM_STAFF_ROLES = [superadmin, admin, marketing, support]", PLATFORM_STAFF_ROLES.length === 4)
+  check("capability map: superadmin all; admin most; marketing→marketing only; support→support only",
+    platformStaffCan("superadmin", "staff") && platformStaffCan("admin", "billing") && !platformStaffCan("admin", "staff") &&
+    platformStaffCan("marketing", "marketing") && !platformStaffCan("marketing", "billing") &&
+    platformStaffCan("support", "support") && !platformStaffCan("support", "plans"))
+  check("staff validator accepts the 4 roles, rejects a tenant role",
+    validateStaffInput({ email: "a@b.co", firstName: "A", role: "marketing" }).ok && !validateStaffInput({ email: "a@b.co", firstName: "A", role: "agent" }).ok)
   check("canonical route map routes 'support' → /dashboard/support",
     ROLE_DASHBOARD_ROUTES.support === "/dashboard/support" && roleDashboardRoute("support") === "/dashboard/support")
   check("unknown role → default agent route", roleDashboardRoute("who") === "/dashboard/agent")
@@ -67,8 +73,9 @@ async function main() {
     /requireSuperadmin/.test(actionSrc) && /superadmin_audit_log/.test(actionSrc))
   check("cannot self-demote or self-revoke (platform lockout guard)",
     /cannot remove your own superadmin role/.test(actionSrc) && /cannot revoke your own access/.test(actionSrc))
-  check("create maps role→columns (support=user_type, superadmin=platform_role) + NO brokerage",
-    /roleColumns\(/.test(actionSrc) && /platform_role only accepts 'superadmin'/.test(actionSrc) && /brokerage_id: null/.test(actionSrc))
+  check("create maps role→(user_type, platform_role) coherently for all 4 roles + NO brokerage",
+    /roleColumns\(/.test(actionSrc) && /case "admin":\s*return \{ user_type: "admin", platform_role: "admin" \}/.test(actionSrc) &&
+    /platform_role: "marketing"/.test(actionSrc) && /brokerage_id: null/.test(actionSrc))
   check("revoke breaks every gate condition (user_type contact + platform_role null + inactive)",
     /user_type: "contact", platform_role: null, status: "inactive"/.test(actionSrc))
 

@@ -8,11 +8,33 @@
 // every tenant. Pure validation so the superadmin CRUD can't create a malformed
 // or wrongly-scoped staff account.
 
-export const PLATFORM_STAFF_ROLES = ["superadmin", "support"] as const
+export const PLATFORM_STAFF_ROLES = ["superadmin", "admin", "marketing", "support"] as const
 export type PlatformStaffRole = (typeof PLATFORM_STAFF_ROLES)[number]
 
 export function isPlatformStaffRole(role: string | null | undefined): role is PlatformStaffRole {
   return !!role && (PLATFORM_STAFF_ROLES as readonly string[]).includes(role)
+}
+
+// ── Platform capability map (pure) ────────────────────────────────────────────
+// What each platform role may do. superadmin = everything; admin = operate the
+// platform but NOT manage other staff's roles; marketing = marketing surfaces +
+// read-only dashboards; support = tenant support + read. The surface gates consult
+// platformStaffCan(role, capability) so access is provable in one place.
+export type PlatformCapability =
+  | "plans" | "billing" | "staff" | "providers" | "marketing"
+  | "support" | "tenants" | "ai_ops" | "sentinel" | "impersonate"
+
+const CAPS: Record<PlatformStaffRole, PlatformCapability[] | "*"> = {
+  superadmin: "*",
+  admin: ["plans", "billing", "providers", "marketing", "support", "tenants", "ai_ops", "sentinel", "impersonate"],
+  marketing: ["marketing", "tenants"],
+  support: ["support", "tenants", "impersonate"],
+}
+
+export function platformStaffCan(role: string | null | undefined, capability: PlatformCapability): boolean {
+  if (!isPlatformStaffRole(role)) return false
+  const caps = CAPS[role]
+  return caps === "*" || caps.includes(capability)
 }
 
 export interface StaffInput {
