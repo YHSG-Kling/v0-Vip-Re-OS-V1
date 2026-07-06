@@ -42,15 +42,26 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: error.message, context_id: contextId }, { status: 500 })
     }
 
+    // OS Sentinel reflex — escalate an overall-breach state + fold in the
+    // credential-rotation escalation. Best-effort; never fails the monitor.
+    let sentinel: Awaited<ReturnType<typeof import("@/lib/platform/os-sentinel").runOsSentinelSweep>> | null = null
+    try {
+      const { runOsSentinelSweep } = await import("@/lib/platform/os-sentinel")
+      sentinel = await runOsSentinelSweep(supabase)
+    } catch (err) {
+      console.warn("[automation-error-monitor] os-sentinel sweep failed:", (err as any)?.message)
+    }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: count || 0,
-      metadata: { unresolved_count: count || 0 },
+      metadata: { unresolved_count: count || 0, os_sentinel: sentinel },
     })
 
     return NextResponse.json({
       message: "Automation error monitor completed",
       unresolved_count: count || 0,
+      os_sentinel: sentinel,
     })
   } catch (error) {
     console.error("[automation-error-monitor] error:", error)

@@ -100,6 +100,12 @@ async function main() {
   const pageSrc = readFileSync(join(process.cwd(), "app/dashboard/superadmin/sentinel/page.tsx"), "utf8")
   check("the board page redirects non-staff", /isStaff/.test(pageSrc) && /redirect\("\/dashboard"\)/.test(pageSrc))
 
+  // The REFLEX — sweep escalates on breach (deduped) + folds in rotation escalation, wired to a cron.
+  check("runOsSentinelSweep escalates an overall breach via notifyPlatformStaff, deduped per day + folds in rotation escalation",
+    /os_health_breach/.test(loaderSrc) && /notifyPlatformStaff/.test(loaderSrc) && /escalateRotationRisks/.test(loaderSrc))
+  const cronSrc = readFileSync(join(process.cwd(), "app/api/cron/automation-error-monitor/route.ts"), "utf8")
+  check("the platform cron runs the Sentinel sweep (best-effort)", /runOsSentinelSweep\(/.test(cronSrc))
+
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)
   if (!hasCreds) {
@@ -144,6 +150,19 @@ async function main() {
       health.selfHeal.replayed >= 2 && health.selfHeal.escalated >= 1, JSON.stringify(health.selfHeal))
     check("live: OsHealth is well-formed (9 subsystems, generatedAt set)",
       health.subsystems.length === 9 && !!health.generatedAt)
+
+    // The REFLEX — the sweep escalates the breach (deduped) via a platform notification.
+    const { runOsSentinelSweep } = await import("../lib/platform/os-sentinel")
+    const startIso = new Date(Date.now() - 2000).toISOString()
+    const sweep1 = await runOsSentinelSweep(svc)
+    check("live: sweep detects overall breach + escalates", sweep1.overall === "breach" && sweep1.escalated === true, JSON.stringify(sweep1))
+    const { count: notif1 } = await svc.from("notifications").select("id", { count: "exact", head: true })
+      .eq("type", "os_health_breach").gte("created_at", startIso)
+    check("live: an os_health_breach platform notification was written", (notif1 ?? 0) >= 1)
+    const sweep2 = await runOsSentinelSweep(svc)
+    check("live: rerun is DEDUPED (same day → no second escalation)", sweep2.escalated === false)
+    // Clean up the escalation notifications we created this run.
+    await svc.from("notifications").delete().eq("type", "os_health_breach").gte("created_at", startIso)
   } finally {
     for (const c of [...cleanup].reverse()) {
       try { await svc.from(c.table).delete().eq("id", c.id) } catch { /* noop */ }

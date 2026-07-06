@@ -166,6 +166,63 @@ export async function loadOsHealth(client?: any, now: Date = new Date()): Promis
   })
 }
 
+export interface OsSentinelSweepResult {
+  overall: SubsystemStatus
+  breachingSubsystems: string[]
+  escalated: boolean
+  rotationEscalated: boolean
+}
+
+/**
+ * The Sentinel's REFLEX — turns observe into observe→escalate. On an overall
+ * breach it escalates a deduped brief (once per ISO day) to platform staff naming
+ * the breaching subsystems + top incidents, and folds in the previously-orphaned
+ * credential-rotation escalation so one platform heartbeat covers both. Best-effort;
+ * never throws (a monitoring sweep must not take down its host cron).
+ */
+export async function runOsSentinelSweep(client?: any, now: Date = new Date()): Promise<OsSentinelSweepResult> {
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = client ?? createServiceClient()
+
+  let rotationEscalated = false
+  try {
+    const { escalateRotationRisks } = await import("@/lib/security/credential-rotation")
+    rotationEscalated = (await escalateRotationRisks(svc, now)).escalated
+  } catch { /* best-effort */ }
+
+  let health: OsHealth
+  try { health = await loadOsHealth(svc, now) }
+  catch { return { overall: "ok", breachingSubsystems: [], escalated: false, rotationEscalated } }
+
+  const breaching = health.subsystems.filter((s) => s.status === "breach")
+  if (health.overall !== "breach" || breaching.length === 0) {
+    return { overall: health.overall, breachingSubsystems: [], escalated: false, rotationEscalated }
+  }
+
+  let escalated = false
+  try {
+    // Deduped to once per ISO day — a breach alert should nudge, not spam.
+    const dayStart = new Date(now.toISOString().slice(0, 10) + "T00:00:00.000Z").toISOString()
+    const { count } = await svc.from("notifications").select("id", { count: "exact", head: true })
+      .eq("type", "os_health_breach").gte("created_at", dayStart)
+    if ((count ?? 0) === 0) {
+      const incidentLines = health.topIncidents.slice(0, 5).map((i) => `• [${i.subsystem}] ${i.summary}`).join("\n")
+      const { notifyPlatformStaff } = await import("@/lib/notifications/platform-staff")
+      await notifyPlatformStaff(svc, {
+        type: "os_health_breach",
+        title: `🔴 OS health BREACH — ${breaching.map((b) => b.label).join(", ")}`,
+        body: `The agentic OS is in a breach state across ${breaching.length} subsystem(s):\n${breaching.map((b) => `• ${b.label}: ${b.detail}`).join("\n")}\n\nTop open incidents:\n${incidentLines || "—"}\n\nOpen the OS Sentinel board to triage.`,
+        priority: "high",
+      })
+      escalated = true
+    }
+  } catch (err) {
+    console.warn("[os-sentinel] escalation failed:", (err as any)?.message)
+  }
+
+  return { overall: "breach", breachingSubsystems: breaching.map((b) => b.key), escalated, rotationEscalated }
+}
+
 async function countUnresolvedTenantFindings(svc: any): Promise<number> {
   const { count } = await svc.from("tenant_safety_findings").select("id", { count: "exact", head: true }).eq("resolved", false)
   return count ?? 0
