@@ -477,6 +477,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   plan_tasks: ["active", "brokerage_id", "completed", "completed_at", "created_at", "due_date", "id", "last_used", "plan_id", "playbook_name", "steps", "target_persona_ids", "task_description", "trigger_type", "usage_count"],
   platform_credentials: ["access_token", "account_id", "account_name", "agent_user_id", "api_key", "api_url", "brokerage_id", "config", "created_at", "id", "is_active", "last_synced_at", "last_tested_at", "owner_id", "owner_type", "platform", "refresh_token", "scope", "sync_error", "test_status", "token_expires_at", "updated_at"],
   platform_lead_distributions: ["brokerage_id", "distributed_at", "id", "lead_id", "motivation_type", "raw_lead_id", "rotation_position", "source_family", "urgency_level", "zip_code"],
+  platform_prospects: ["company", "contacted_at", "converted_brokerage_id", "created_at", "email", "id", "interest_note", "name", "role_interest", "source", "status", "updated_at"],
   platform_config_snapshots: ["captured_by", "created_at", "description", "id", "name", "payload", "source_brokerage_id"],
   platform_impersonation_sessions: ["actor_email", "actor_user_id", "ended_at", "expires_at", "id", "ip_address", "mode", "reason", "started_at", "target_brokerage_id", "target_user_id", "user_agent"],
   platform_settings: ["ai_enabled", "created_at", "emergency_mode", "global_rate_limit_per_minute", "id", "show_brokerage_budget_warning", "updated_at"],
