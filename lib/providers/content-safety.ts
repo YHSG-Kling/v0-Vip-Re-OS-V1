@@ -14,7 +14,7 @@
 //   • Human-approved send + a violation → FLAG (record) but allow (a human took responsibility).
 // Either way it records a compliance_events row so the catch is auditable.
 
-import { detectFairHousingViolations } from "@/lib/compliance-rules/fair-housing-patterns"
+import { evaluateContentSafety } from "@/lib/compliance/content-safety-checks"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export interface ContentSafetyInput {
@@ -44,13 +44,16 @@ export async function contentSafetyBackstop(input: ContentSafetyInput): Promise<
   const text = input.parts.map(stripHtml).join("\n").trim()
   if (!text) return { blocked: false, violations: [] }
 
-  const hits = detectFairHousingViolations(text)
+  // SYNCHRONOUS PRE-ACTION EVAL — every release-blocking category (fair housing, unsubstantiated
+  // guarantee, PII leak, prompt-injection echo), not just Fair Housing.
+  const hits = evaluateContentSafety(text)
   if (hits.length === 0) return { blocked: false, violations: [] }
 
   const phrases = hits.map((h) => h.phrase)
+  const categories = Array.from(new Set(hits.map((h) => h.category)))
   const severity = hits.some((h) => h.severity === "high") ? "high" : hits.some((h) => h.severity === "medium") ? "medium" : "low"
   const blocked = input.isAutonomous
-  const reason = `Fair Housing violation in ${input.channel} content: ${phrases.join(", ")}`
+  const reason = `content-safety violation [${categories.join(", ")}] in ${input.channel}: ${phrases.join(", ")}`
 
   // Auditable record of the catch (best-effort — never let logging break the gate decision).
   try {
@@ -61,12 +64,12 @@ export async function contentSafetyBackstop(input: ContentSafetyInput): Promise<
       actor_role: input.isAutonomous ? "ai_manager" : "system",
       entity_type: `outbound_${input.channel}`,
       entity_id: input.contactId ?? null,
-      gate_name: "fair_housing_dispatch_backstop",
+      gate_name: "content_safety_dispatch_backstop",
       allowed: !blocked,
-      violations: hits.map((h) => ({ phrase: h.phrase, severity: h.severity, reference: h.reference })),
+      violations: hits.map((h) => ({ category: h.category, phrase: h.phrase, severity: h.severity, reference: h.reference })),
       blocked_reason: blocked ? reason : null,
       severity,
-      details: { system_source: input.systemSource ?? null, autonomous: input.isAutonomous, disposition: blocked ? "blocked" : "flagged" },
+      details: { system_source: input.systemSource ?? null, autonomous: input.isAutonomous, disposition: blocked ? "blocked" : "flagged", categories },
     })
   } catch (err) {
     console.warn("[content-safety] compliance_events insert failed:", (err as any)?.message)
