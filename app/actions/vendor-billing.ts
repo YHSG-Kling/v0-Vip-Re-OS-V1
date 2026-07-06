@@ -71,10 +71,9 @@ export async function createVendorSubscriptionCheckout(tier: VendorTier, opts?: 
 /** Open the Stripe billing portal so the vendor can manage card / invoices / cancellation. */
 export async function createVendorBillingPortalSession(returnUrl?: string): Promise<{ url: string }> {
   const { profile } = await requireVendorProfile()
-  if (!profile.stripe_customer_id) throw new Error("No billing account yet — subscribe to a tier first")
   const base = returnUrl ?? process.env.NEXT_PUBLIC_APP_URL ?? "https://app.example.com"
-  const portal = await stripe.billingPortal.sessions.create({ customer: profile.stripe_customer_id, return_url: `${base}/vendor/billing` })
-  return { url: portal.url }
+  const { createBillingPortalUrl } = await import("@/lib/billing/stripe-portal")
+  return { url: await createBillingPortalUrl(profile.stripe_customer_id, `${base}/vendor/billing`) }
 }
 
 /**

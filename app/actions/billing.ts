@@ -6,6 +6,28 @@ import { KernelEvent } from "@/lib/kernel/events"
 
 const BILLING_ADMIN_ROLES = new Set(["admin", "broker", "broker_owner", "superadmin", "super_admin"])
 
+/**
+ * Open the Stripe billing portal for the caller's brokerage — self-serve card /
+ * invoices / cancellation, parity with the vendor flow (one shared implementation).
+ */
+export async function createBrokerageBillingPortalAction(returnUrl?: string): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthenticated" }
+  const { data: u } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
+  if (!BILLING_ADMIN_ROLES.has((u as any).user_type ?? "")) return { ok: false, error: "Only an admin/broker can manage billing" }
+
+  const { data: sub } = await supabase.from("subscriptions").select("stripe_customer_id").eq("brokerage_id", u.brokerage_id).not("stripe_customer_id", "is", null).order("created_at", { ascending: false }).limit(1).maybeSingle()
+  const base = returnUrl ?? process.env.NEXT_PUBLIC_APP_URL ?? ""
+  try {
+    const { createBillingPortalUrl } = await import("@/lib/billing/stripe-portal")
+    return { ok: true, url: await createBillingPortalUrl((sub as any)?.stripe_customer_id, `${base}/dashboard/admin/billing`) }
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? "Could not open the billing portal" }
+  }
+}
+
 // ─── GET SUBSCRIPTION TIERS ──────────────────────────────────────────────────
 export async function getSubscriptionTiers() {
   const supabase = await createClient()

@@ -10,6 +10,8 @@
 // (env / marketplace_settings), so the catalog carries display prices only — the source of truth for a
 // charge is always Stripe.
 
+import { normalizeStripeStatus } from "@/lib/billing/stripe-status"
+
 export type VendorTier = "basic" | "standard" | "premium" | "preferred_network"
 export type SubscriptionStatus = "active" | "past_due" | "canceled" | "trialing"
 
@@ -88,22 +90,20 @@ export function tierAllows(tier: string | null | undefined, status: string | nul
  * canceled + suspend the account. The webhook applies this; nothing else interprets Stripe events.
  */
 export function mapStripeEventToStatus(eventType: string, stripeStatus?: string | null): { status: SubscriptionStatus; suspendAccount: boolean } {
+  // Event-shaped short-circuits, then the SHARED canonical status normalizer so the
+  // vendor path can't drift from the tenant path's Stripe-status vocabulary.
   switch (eventType) {
-    case "invoice.payment_failed":
-      return { status: "past_due", suspendAccount: false }
-    case "customer.subscription.deleted":
-      return { status: "canceled", suspendAccount: true }
+    case "invoice.payment_failed": return { status: "past_due", suspendAccount: false }
+    case "customer.subscription.deleted": return { status: "canceled", suspendAccount: true }
     case "invoice.payment_succeeded":
+    case "checkout.session.completed":
     case "customer.subscription.created":
-      return { status: "active", suspendAccount: false }
-    case "customer.subscription.updated": {
-      const s = (stripeStatus ?? "").toLowerCase()
-      if (s === "past_due" || s === "unpaid") return { status: "past_due", suspendAccount: false }
-      if (s === "canceled") return { status: "canceled", suspendAccount: true }
-      if (s === "trialing") return { status: "trialing", suspendAccount: false }
-      return { status: "active", suspendAccount: false }
-    }
-    default:
-      return { status: "active", suspendAccount: false }
+      if (!stripeStatus) return { status: "active", suspendAccount: false }
+      break
   }
+  const c = normalizeStripeStatus(stripeStatus)
+  if (c === "past_due") return { status: "past_due", suspendAccount: false }
+  if (c === "canceled" || c === "incomplete") return { status: "canceled", suspendAccount: c === "canceled" }
+  if (c === "trialing") return { status: "trialing", suspendAccount: false }
+  return { status: "active", suspendAccount: false }
 }

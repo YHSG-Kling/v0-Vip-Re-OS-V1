@@ -195,6 +195,7 @@
     "test:billing-access": "tsx scripts/billing-access-simulator.ts",
     "test:plan-catalog": "tsx scripts/plan-catalog-simulator.ts",
     "test:platform-staff": "tsx scripts/platform-staff-simulator.ts",
+    "test:billing-convergence": "tsx scripts/billing-convergence-simulator.ts",
     "test:education-delivery": "tsx scripts/education-delivery-simulator.ts",
     "test:client-tutor": "tsx scripts/client-tutor-simulator.ts",
     "test:ce-provider": "tsx scripts/ce-provider-simulator.ts",

@@ -7,6 +7,7 @@ import { BillingDashboard } from "@/app/components/features/admin/billing-dashbo
 import { SubscriptionTierCard } from "@/app/components/features/admin/subscription-tier-card"
 import { OverageCalculator } from "@/app/components/features/admin/overage-calculator"
 import { FeatureEntitlementList } from "@/app/components/features/admin/feature-entitlement-list"
+import { ManageBillingButton } from "./manage-billing-button"
 
 /**
  * Billing & Tiering Admin Workspace
@@ -55,11 +56,14 @@ export default async function BillingAdminPage({
     <div className="min-h-screen bg-background">
       <div className="max-w-7xl mx-auto px-4 py-8">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-4xl font-bold mb-2">Billing & Tiering</h1>
-          <p className="text-gray-600">
-            Manage subscriptions, feature entitlements, and usage for brokerages
-          </p>
+        <div className="mb-8 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-4xl font-bold mb-2">Billing & Tiering</h1>
+            <p className="text-gray-600">
+              Manage subscriptions, feature entitlements, and usage for brokerages
+            </p>
+          </div>
+          <ManageBillingButton />
         </div>
 
         {/* Brokerage Selector */}
