@@ -161,43 +161,29 @@ export async function startSubscriptionCheckout(
     customerId = customer.id
   }
 
-  const priceInCents = billingCycle === "annual" 
-    ? tier.annual_price_cents 
-    : tier.monthly_price_cents
-
   const { stripe } = await import("@/lib/stripe")
-  const { headers } = await import("next/headers")
-  const headersList = await headers()
-  const origin = headersList.get("origin") || "http://localhost:3000"
+
+  // Collect the recurring plan + a one-time SETUP FEE on the first invoice.
+  const { buildCheckoutConfig } = await import("@/lib/billing/subscription-activation")
+  const { lineItems, addInvoiceItems } = buildCheckoutConfig(tier as any, billingCycle)
 
   // Create checkout session for subscription
   const session = await stripe.checkout.sessions.create({
     customer: customerId,
     ui_mode: "embedded",
     mode: "subscription",
-    line_items: [
-      {
-        price_data: {
-          currency: "usd",
-          product_data: {
-            name: tier.display_name,
-            description: `${tier.tier_name} plan - ${billingCycle} billing`,
-          },
-          unit_amount: priceInCents,
-          recurring: {
-            interval: billingCycle === "annual" ? "year" : "month",
-          },
-        },
-        quantity: 1,
-      },
-    ],
+    line_items: lineItems as any,
     subscription_data: {
+      // add_invoice_items charges the one-time setup fee on the first invoice only.
+      ...(addInvoiceItems.length > 0 ? { add_invoice_items: addInvoiceItems as any } : {}),
       metadata: {
         brokerage_id: brokerageId,
         tier_id: tierId,
         tier_name: tier.tier_name,
       },
     },
+    // Also stamp the session so checkout.session.completed can resolve the tenant.
+    metadata: { brokerage_id: brokerageId, tier_id: tierId, tier_name: tier.tier_name },
     redirect_on_completion: "never",
   })
 

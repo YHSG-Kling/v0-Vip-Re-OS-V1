@@ -3,10 +3,27 @@ import { stripe } from "@/lib/stripe"
 import { createServiceClient } from "@/lib/supabase/service"
 import { syncBrokeragePlanTier } from "@/lib/billing/sync-plan-tier"
 import { setStripeOnboardingByAccount } from "@/lib/connections/vendor-stripe"
+import { buildSubscriptionPatch, upsertBrokerageSubscription, type NormalizedStripeSub } from "@/lib/billing/subscription-activation"
 import Stripe from "stripe"
 
+/** Normalize a Stripe subscription into the shape buildSubscriptionPatch wants. */
+function normalizeSub(s: Stripe.Subscription): NormalizedStripeSub {
+  const a = s as any
+  return {
+    stripeSubscriptionId: s.id,
+    stripeCustomerId: (s.customer as string) ?? null,
+    tierId: s.metadata?.tier_id ?? null,
+    status: s.status,
+    currentPeriodStart: a.current_period_start ?? null,
+    currentPeriodEnd: a.current_period_end ?? null,
+    trialEnd: s.trial_end ?? null,
+    cancelAt: s.cancel_at ?? null,
+  }
+}
+
 // Stripe webhook handler
-// Handles: invoice.paid, invoice.payment_failed, customer.subscription.updated, customer.subscription.deleted
+// Handles: checkout.session.completed, invoice.paid, invoice.payment_failed,
+//          customer.subscription.updated, customer.subscription.deleted, account.updated
 export async function POST(request: NextRequest) {
   const body = await request.text()
   const signature = request.headers.get("stripe-signature")
@@ -39,6 +56,33 @@ export async function POST(request: NextRequest) {
 
   try {
     switch (event.type) {
+      // ─── CHECKOUT COMPLETED → ACTIVATE + LINK (no duplicate row) ──────────────
+      case "checkout.session.completed": {
+        const session = event.data.object as Stripe.Checkout.Session
+        const brokerageId = session.metadata?.brokerage_id
+          || (session.subscription ? (await stripe.subscriptions.retrieve(session.subscription as string)).metadata?.brokerage_id : null)
+        if (!brokerageId) { console.error("[Billing Webhook] checkout.session.completed: no brokerage_id"); break }
+
+        // Link the Stripe subscription to the brokerage's EXISTING (trialing) row —
+        // never insert a duplicate. This is the activation that flips the account live.
+        if (session.subscription) {
+          const sub = await stripe.subscriptions.retrieve(session.subscription as string)
+          const patch = buildSubscriptionPatch(normalizeSub(sub))
+          await upsertBrokerageSubscription(supabase, brokerageId, patch)
+          await syncBrokeragePlanTier(brokerageId)
+          // Safety: ensure the paid account is fully provisioned (idempotent no-op
+          // when signup already provisioned it).
+          try {
+            const { data: owner } = await supabase.from("users").select("id").eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin", "agent"]).limit(1).maybeSingle()
+            if (owner?.id) {
+              const { repairIncompleteAccountSetup } = await import("@/lib/kernel/users")
+              await repairIncompleteAccountSetup(owner.id)
+            }
+          } catch (err) { console.warn("[Billing Webhook] provisioning safety-repair failed:", (err as any)?.message) }
+        }
+        break
+      }
+
       // ─── INVOICE PAID ────────────────────────────────────────────────────────
       case "invoice.paid": {
         const invoice = event.data.object as Stripe.Invoice
@@ -139,32 +183,11 @@ export async function POST(request: NextRequest) {
           break
         }
 
-        // Update subscription record
-        const subscriptionAny = subscription as any
-        const { error } = await supabase
-          .from("subscriptions")
-          .upsert({
-            stripe_subscription_id: subscription.id,
-            stripe_customer_id: subscription.customer as string,
-            brokerage_id: brokerageId,
-            tier_id: tierId || null,
-            status: subscription.status,
-            current_period_start: new Date(subscriptionAny.current_period_start * 1000).toISOString(),
-            current_period_end: new Date(subscriptionAny.current_period_end * 1000).toISOString(),
-            trial_end: subscription.trial_end 
-              ? new Date(subscription.trial_end * 1000).toISOString() 
-              : null,
-            cancel_at: subscription.cancel_at 
-              ? new Date(subscription.cancel_at * 1000).toISOString() 
-              : null,
-            updated_at: new Date().toISOString(),
-          }, {
-            onConflict: "stripe_subscription_id",
-          })
-
-        if (error) {
-          console.error("[Billing Webhook] Failed to update subscription:", error)
-        }
+        // Link/update the brokerage's ONE subscription row (never a duplicate) —
+        // the signup row has no stripe_subscription_id, so a raw upsert-by-that-id
+        // used to insert a second row here.
+        const patch = buildSubscriptionPatch(normalizeSub(subscription))
+        await upsertBrokerageSubscription(supabase, brokerageId, patch)
 
         // Keep brokerages.plan_tier in sync with the active subscription so
         // cap-enforcement reflects upgrades/downgrades immediately. Failure
