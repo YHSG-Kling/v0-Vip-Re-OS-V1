@@ -25,6 +25,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { headers } from "next/headers"
 import { createHash } from "node:crypto"
+import { contactRedactionPatch } from "@/lib/privacy/contact-pii-redaction"
 
 const ALLOWED_FULFILLMENT_ROLES = new Set([
   "broker","broker_admin","admin","superadmin","compliance_officer",
@@ -308,8 +309,11 @@ function hashForAudit(v: string): string {
  * records for NAR + state RE commission retention (3–7 years post-close)
  * while removing PII per CCPA §1798.105 / GDPR Art. 17.
  *
- * Replaces: first_name, last_name, email, phone, address, notes, dob
- * Preserves: id, brokerage_id, transactions linkage, created_at
+ * Redacts the COMPLETE PII column set (see contactRedactionPatch): names +
+ * legal names, email, phones, DL image, full/mailing address, demographics,
+ * financial bands, court/public records, social handles, enrichment blobs,
+ * external identifiers. Preserves: id, brokerage_id, transaction linkage,
+ * created_at, de-identified state, privacy_anonymized_*.
  */
 export async function fulfillDeleteRequestAction(requestId: string): Promise<
   { ok: boolean; error?: string; contactsAnonymized?: number }
@@ -332,15 +336,7 @@ export async function fulfillDeleteRequestAction(requestId: string): Promise<
 
   const { data: anonymized, error: anonErr } = await svc
     .from("contacts")
-    .update({
-      first_name:                audit_hash,
-      last_name:                 "[deleted]",
-      email:                     `${audit_hash}@deleted.local`,
-      phone:                     null,
-      notes:                     null,
-      privacy_anonymized_at:     new Date().toISOString(),
-      privacy_anonymized_reason: "DSAR " + requestId,
-    })
+    .update(contactRedactionPatch(audit_hash, requestId))
     .eq("email", email)
     .eq("brokerage_id", req.brokerage_id)
     .select("id")
