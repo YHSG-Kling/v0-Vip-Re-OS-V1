@@ -141,7 +141,7 @@ export async function getParentAIIdentityProfile(
 
 export async function saveAIIdentityProfile(
   input: SaveAIIdentityInput
-): Promise<{ success: boolean; id?: string; error?: string }> {
+): Promise<{ success: boolean; id?: string; error?: string; bindingNote?: string }> {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
   if (!SAVE_ROLES.includes(auth.userType)) {
@@ -204,12 +204,30 @@ export async function saveAIIdentityProfile(
 
     if (error) return { success: false, error: error.message }
 
+    // THE TOGGLE MADE REAL: saving ai_answer_calls=ON now actually wires the
+    // AI receptionist — assistant created/updated from this profile + the
+    // scope's numbers imported into Vapi bound to the authoritative webhook.
+    // Best-effort + honest: without VAPI creds the save succeeds and the
+    // binding status says exactly why nothing was wired.
+    let bindingNote: string | undefined
+    if (input.aiAnswerCalls === true && data?.id) {
+      try {
+        const { applyInboundCallBinding } = await import("@/lib/voice/vapi-numbers")
+        const b = await applyInboundCallBinding(svc, data.id)
+        bindingNote = b.ok
+          ? (b.applied ? `AI receptionist live — ${b.numbersBound ?? 0} number(s) bound to the assistant.` : undefined)
+          : b.error
+      } catch (e) {
+        bindingNote = e instanceof Error ? e.message : "Inbound binding failed"
+      }
+    }
+
     // Revalidate relevant pages
     revalidatePath("/settings/admin/ai-identity")
     revalidatePath("/dashboard/team/ai-identity")
     revalidatePath("/dashboard/agent/ai-identity")
 
-    return { success: true, id: data?.id }
+    return { success: true, id: data?.id, bindingNote }
   } catch (err) {
     return { success: false, error: "Failed to save AI identity profile" }
   }

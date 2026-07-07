@@ -103,6 +103,28 @@ export async function initiateVoiceCall(
       }
     }
 
+    // CALLER ID: dial FROM the agent's own Vapi-bound number when one exists
+    // (the contact recognizes it; answer rates follow) — else the platform
+    // fallback inside initiateCall. Best-effort resolution, never blocks.
+    let fromPhoneNumberId: string | null = null
+    if (metadata.agentId) {
+      try {
+        const { data: agentRow } = await supabase.from('agents').select('user_id').eq('id', metadata.agentId).maybeSingle()
+        const agentUserId = (agentRow as any)?.user_id
+        if (agentUserId) {
+          const { data: num } = await supabase
+            .from('vapi_phone_numbers')
+            .select('vapi_phone_number_id')
+            .eq('agent_user_id', agentUserId)
+            .eq('is_active', true)
+            .not('vapi_phone_number_id', 'is', null)
+            .limit(1)
+            .maybeSingle()
+          fromPhoneNumberId = (num as any)?.vapi_phone_number_id ?? null
+        }
+      } catch { /* fall back to the platform number */ }
+    }
+
     // Initiate the real VAPI call via REST API
     let vapiResponse: { id: string; status: string; createdAt: string }
     try {
@@ -111,6 +133,7 @@ export async function initiateVoiceCall(
         assistantId: process.env.VAPI_ISA_ASSISTANT_ID,
         contactId:   metadata.contactId,
         brokerageId: contact.brokerage_id,
+        phoneNumberId: fromPhoneNumberId,
       })
     } catch (err: any) {
       console.error('[v0] [VOICE ENGINE] VAPI initiateCall failed:', err.message)

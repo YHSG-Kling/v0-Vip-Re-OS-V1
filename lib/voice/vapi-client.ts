@@ -65,6 +65,9 @@ export interface VapiCallParams {
   initiatedBy?: string | null
   /** Transactional notices skip EWC but still enforce DNC + quiet-hours + RND. */
   transactional?: boolean
+  /** Vapi phone-number id to dial FROM — the agent's own bound number (caller
+   *  ID the contact recognizes). Falls back to the platform VAPI_PHONE_NUMBER_ID. */
+  phoneNumberId?: string | null
 }
 
 export interface VapiCallResponse {
@@ -122,7 +125,9 @@ export async function initiateCall(params: VapiCallParams): Promise<VapiCallResp
     }
   }
 
-  const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID
+  // Caller ID: the agent's own Vapi-bound number when provided (contacts
+  // recognize it + answer rates follow), else the shared platform number.
+  const phoneNumberId = params.phoneNumberId || process.env.VAPI_PHONE_NUMBER_ID
   if (!phoneNumberId) throw new Error("VAPI_PHONE_NUMBER_ID is not set")
 
   const body: Record<string, unknown> = {

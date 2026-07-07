@@ -175,8 +175,12 @@ export async function autoProvisionAgentPhone(params: {
     return { success: false, error: `Twilio purchase error: ${err?.message ?? String(err)}` }
   }
 
-  // Save assignment (vapi_phone_numbers schema: agent_user_id + byoc_credential_id)
-  await svc.from("vapi_phone_numbers").insert({
+  // Save assignment (vapi_phone_numbers schema: agent_user_id + byoc_credential_id).
+  // BUG FIX: this insert used to fail SILENTLY (vapi_phone_number_id was NOT NULL
+  // and omitted -- the number was purchased but never saved). The column is now
+  // nullable (l27-s01: the Vapi id is unknown until inbound binding registers
+  // the number) and a failed save is surfaced instead of swallowed.
+  const { error: saveErr } = await svc.from("vapi_phone_numbers").insert({
     agent_user_id: agentUserId,
     brokerage_id: ctx.brokerageId,
     scope_type: "agent",
@@ -186,6 +190,17 @@ export async function autoProvisionAgentPhone(params: {
     number_source: "byoc_twilio",
     is_active: true,
   })
+  if (saveErr) {
+    await logProvisionEvent(svc, {
+      brokerageId: ctx.brokerageId,
+      agentId: params.agentId,
+      phoneNumber: availableNumber,
+      eventType: "failed",
+      twilioSid: purchasedSid,
+      notes: `Number PURCHASED on Twilio but the assignment save failed: ${saveErr.message} -- reconcile manually`,
+    })
+    return { success: false, error: `Number purchased but not saved (${saveErr.message}) -- support has been notified via the audit log` }
+  }
 
   await logProvisionEvent(svc, {
     brokerageId: ctx.brokerageId,

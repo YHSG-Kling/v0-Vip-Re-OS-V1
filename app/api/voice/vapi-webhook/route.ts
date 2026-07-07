@@ -25,6 +25,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getIsaSystemUserIdCached } from "@/lib/auth/isa-actor"
 import { dispatchSms } from "@/lib/providers/dispatch"
 import { dispatchEmail } from "@/lib/providers/dispatch"
+import { dispatchVapiFunctionCall } from "@/lib/voice/vapi-function-tools"
 
 export const runtime = "nodejs"
 
@@ -88,6 +89,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const eventType: string = payload?.message?.type ?? payload?.type ?? ""
   const call: Record<string, any> = payload?.message?.call ?? payload?.call ?? {}
   const callId: string | null = call?.id ?? null
+
+  // ── EVENT: function-call (in-call function tools) ─────────────────────────
+  // Shared with the deprecated-compatible /api/webhooks/vapi endpoint — the
+  // ONE home for these handlers is lib/voice/vapi-function-tools.ts. Handled
+  // before the brokerage_id query-param gate: function tools resolve their
+  // brokerage from the tool parameters / call metadata themselves.
+  const functionCall = payload?.message?.functionCall ?? payload?.functionCall
+  if ((eventType === "function-call" || eventType === "tool-calls") && functionCall) {
+    const r = await dispatchVapiFunctionCall(functionCall, call)
+    if (r) return r
+  }
 
   const { searchParams } = new URL(req.url)
   const brokerageId: string | null = searchParams.get("brokerage_id") ?? null
