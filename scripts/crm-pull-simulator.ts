@@ -11,7 +11,6 @@ import { join } from "node:path"
 import { fubToRow, hubspotToRow, loftyToRow, ghlToRow, CRM_IMPORT_PROVIDERS } from "../lib/crm/import-pull"
 import { planTokenAction, RENEWAL_WINDOW_DAYS } from "../lib/social/token-refresh"
 import { detectPortal, parsePortalLeadEmail } from "../lib/lead-pipeline/portal-lead-intake"
-import { getSourceSemantics } from "../lib/lead-pipeline/source-intent-map"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 
 let passed = 0
@@ -88,20 +87,21 @@ console.log("\n── PURE: portal lead intake (Zillow / realtor.com / Opcity) �
     parsePortalLeadEmail({ fromEmail: "digest@zillow.com", subject: "Your weekly market report", bodyText: "Homes in your area..." }) === null)
   check("non-portal sender → null regardless of content",
     parsePortalLeadEmail({ fromEmail: "friend@gmail.com", subject: "Dana Kling is requesting information", bodyText: "Phone: 512-555-1111" }) === null)
-  const sem = getSourceSemantics("portal_lead")
-  check("intent map: portal_lead = buyer, base 82, immediate identity, promotes before enrichment",
-    sem.intentType === "buyer" && sem.baseScore === 82 && sem.identityPolicy === "immediate" && sem.canPromoteBeforeEnrichment === true)
 }
 
 console.log("\n── SOURCE: tenant connections hub ──")
 {
   const intake = src("lib/lead-pipeline/portal-lead-intake.ts")
-  check("intake feeds the ONE gated pipeline (raw_scraped_leads → processRawRecord), never a direct contact write",
-    intake.includes('"raw_scraped_leads"') && intake.includes("processRawRecord") && !intake.includes('from("contacts")'))
-  check("immediate-processing failure keeps the raw row (never lose a lead)", intake.includes("raw row kept"))
+  check("portal lead = a CONTACT for the RECEIVING AGENT via the gated captureContact (owner's rule — never a raw lead)",
+    intake.includes("captureContact") && intake.includes("receivingAgentUserId") && !intake.includes("raw_scraped_leads"))
+  check("TCPA provenance recorded, never silent (portal + property in consent source/text)",
+    intake.includes("portal_inquiry:") && intake.includes("tcpa_consent_text"))
+  check("the receiving agent gets a high-priority heads-up", intake.includes("portal_lead_received"))
   const webhook = src("app/api/webhooks/inbound-mail/route.ts")
-  check("hooked into inbound-mail BEFORE the known-contact gate", webhook.includes("parsePortalLeadEmail") &&
-    webhook.indexOf("parsePortalLeadEmail") < webhook.indexOf("if (!contactId || !brokerageId)"))
+  check("hooked into inbound-mail BEFORE the known-contact gate + assigns the MAILBOX OWNER as the agent",
+    webhook.includes("parsePortalLeadEmail") &&
+    webhook.indexOf("parsePortalLeadEmail") < webhook.indexOf("if (!contactId || !brokerageId)") &&
+    webhook.includes("resolvedCredential?.agent_user_id"))
   const slots = src("lib/settings/tenant-connection-slots.ts")
   check("tenant slots: listhub + mls_direct + showingtime + honest ShowingTime note",
     slots.includes('"listhub"') && slots.includes('"mls_direct"') && slots.includes('"showingtime"') && slots.includes("verifies partner access"))

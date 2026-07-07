@@ -2,12 +2,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // PORTAL LEAD INTAKE — receiving contacts FROM Zillow / realtor.com / Opcity
 // (ReadyConnect) etc. The standard delivery is a LEAD-NOTIFICATION EMAIL; the
-// tenant auto-forwards them to their connected inbound address and this parser
-// turns each into a raw_scraped_leads row (source 'portal_lead' — the highest-
-// intent buyer class) so the ONE gated pipeline (dedupe → suppression →
-// promotion) and speed-to-lead take it from there. No new pipeline; a new
-// front door. Detection is conservative: only recognized portal senders parse;
-// everything else returns null and the email flows to the existing intakes.
+// tenant auto-forwards them to their connected inbound address. OWNER'S RULE:
+// the portal already routed this lead to a specific agent — it arrives as that
+// agent's NEW CONTACT (the mailbox owner) via the gated contact-capture
+// pipeline, never as a cold raw lead. Detection is conservative: only
+// recognized portal senders parse; everything else returns null and the email
+// flows to the existing intakes.
 
 export interface ParsedPortalLead {
   portal: "zillow" | "realtor_com" | "opcity"
@@ -83,42 +83,62 @@ export function parsePortalLeadEmail(input: {
   }
 }
 
-/** Ingest one parsed portal lead into the gated pipeline: raw_scraped_leads
- *  (source 'portal_lead') → processRawRecord (dedupe/suppression/promotion) —
- *  and speed-to-lead does the rest. Returns the raw record id. */
+/**
+ * Ingest one parsed portal lead as a CONTACT assigned to the RECEIVING AGENT
+ * (owner's rule: the portal already routed this lead to a specific agent — it
+ * arrives as that agent's new contact, never a cold raw lead). Rides the SAME
+ * gated captureContact pipeline as every other front door (dedupe-by-identity,
+ * canonical fields only, notes for the rest). TCPA basis: the consumer
+ * submitted their contact info to the portal ASKING to be contacted about a
+ * property — provenance recorded (portal + property), not assumed silently.
+ * The agent gets a high-priority heads-up; the consented contact is then in
+ * speed-to-lead's contacts sweep automatically.
+ */
 export async function ingestPortalLead(
   svc: any,
   brokerageId: string,
   lead: ParsedPortalLead,
-): Promise<{ ok: boolean; rawId?: string; error?: string }> {
-  const { data: raw, error } = await svc.from("raw_scraped_leads").insert({
-    brokerage_id: brokerageId,
-    source: "portal_lead",
-    source_channel: "email",
-    // source_origin is OWNERSHIP (platform|brokerage) — a portal lead arrives on
-    // the TENANT's own lead source; the portal name lives in raw_data.portal.
-    source_origin: "brokerage",
-    first_name: lead.firstName || null,
-    last_name: lead.lastName || null,
-    email: lead.email,
-    phone: lead.phone,
-    address: lead.propertyAddress,
-    processing_status: "pending",
-    raw_data: {
-      portal: lead.portal,
-      message: lead.message,
-      property_address: lead.propertyAddress,
-      intake: "inbound-mail",
-    },
-  }).select("id").single()
-  if (error || !raw) return { ok: false, error: error?.message ?? "raw insert failed" }
+  /** users.id of the mailbox owner the forwarded email arrived on — the agent
+   *  the portal routed this lead to. Omitted → normal assignment rules. */
+  receivingAgentUserId?: string | null,
+): Promise<{ ok: boolean; contactId?: string; action?: string; error?: string }> {
+  const noteBits = [
+    `Portal lead via ${lead.portal}`,
+    lead.propertyAddress ? `Property: ${lead.propertyAddress}` : null,
+    lead.message ? `Message: "${lead.message}"` : null,
+  ].filter(Boolean)
 
   try {
-    const { processRawRecord } = await import("@/lib/lead-pipeline/pipeline-processor")
-    await processRawRecord((raw as any).id, brokerageId)
+    const { captureContact } = await import("@/lib/contact-pipeline/contact-capture")
+    const r = await captureContact({
+      brokerageId,
+      agentUserId: receivingAgentUserId ?? null, // converted to agents.id internally
+      source: "portal_lead",
+      first_name: lead.firstName || null,
+      last_name: lead.lastName || null,
+      email: lead.email,
+      phone: lead.phone,
+      notes: noteBits.join(" · "),
+      contact_type: "buyer",
+      lead_temperature: "hot", // an active property inquiry IS hot — the portal's whole product
+      tcpa_consent: true,
+      tcpa_consent_date: new Date().toISOString(),
+      tcpa_consent_source: `portal_inquiry:${lead.portal}`,
+      tcpa_consent_text: `Consumer submitted contact info to ${lead.portal} requesting information${lead.propertyAddress ? ` about ${lead.propertyAddress}` : ""}.`,
+      rawPayload: { portal: lead.portal, property_address: lead.propertyAddress, message: lead.message, intake: "inbound-mail" },
+    })
+
+    // The agent's heads-up — speed-to-lead engages, but the human should KNOW now.
+    if (receivingAgentUserId) {
+      await svc.from("notifications").insert({
+        user_id: receivingAgentUserId, brokerage_id: brokerageId, type: "portal_lead_received",
+        title: `New ${lead.portal} lead: ${[lead.firstName, lead.lastName].filter(Boolean).join(" ") || "unnamed"}`,
+        body: `${lead.propertyAddress ? `Asking about ${lead.propertyAddress}. ` : ""}${lead.message ? `"${lead.message.slice(0, 160)}" ` : ""}They're in your contacts — the AI team is engaging.`,
+        entity_type: "contact", entity_id: r.contactId, priority: "high", channel: "in_app", is_read: false,
+      }).then(undefined, () => {})
+    }
+    return { ok: true, contactId: r.contactId, action: r.action }
   } catch (e) {
-    // The raw row stands — the pipeline crons will pick it up; never lose a lead.
-    console.error("[portal-lead-intake] immediate processing failed (raw row kept):", e)
+    return { ok: false, error: e instanceof Error ? e.message : "capture failed" }
   }
-  return { ok: true, rawId: (raw as any).id }
 }

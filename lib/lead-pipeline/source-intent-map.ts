@@ -33,7 +33,6 @@ export type SourceKey =
   | 'exa_buyer_intent'
   | 'tavily_intent'
   | 'osint_signal'
-  | 'portal_lead'
 
 export type IntentType = 'buyer' | 'seller' | 'unknown'
 
@@ -338,22 +337,6 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: false,
   },
 
-  // ── Portal lead (Zillow Tech Connect / realtor.com / Opcity referral emails) ──
-  // The HIGHEST-intent inbound class: a consumer actively asked about a property
-  // and the portal forwarded them BY NAME with contact info. Identity is already
-  // present, so promotion doesn't wait on enrichment — speed-to-lead is the game.
-  portal_lead: {
-    intentType:                'buyer',
-    leadType:                  'buyer',
-    motivationType:            'portal_inquiry',
-    behaviorType:              'property_inquiry',
-    scoreRange:                [70, 95],
-    baseScore:                 82,
-    boostSignals:              ['pre_approved', 'wants_showing', 'asked_question', 'cash_buyer'],
-    dampSignals:               ['unsubscribed', 'wrong_number'],
-    identityPolicy:            'immediate',
-    canPromoteBeforeEnrichment: true,
-  },
 }
 
 // ─── Fallback for unknown sources ─────────────────────────────────────────────
@@ -451,7 +434,7 @@ const SOURCE_ALIASES: Record<string, SourceKey> = {
  *   • osint    — public + court records (divorce / probate / foreclosure / tax-lien / eviction).
  *   • peopledata is enrichment-only and never sources raw leads, so it is not here.
  */
-export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint' | 'exa' | 'tavily' | 'inbound'
+export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint' | 'exa' | 'tavily'
 
 export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   zenrows_zillow:       'zenrows',
@@ -471,7 +454,6 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   tavily_intent:        'tavily',  // AI-native agentic search (buyer/seller/investor)
   batchdata_motivated:  'batchdata',
   osint_signal:         'osint',
-  portal_lead:          'inbound', // not a scrape — arrives via the inbound-mail intake
 }
 
 export function resolveSourceKey(source: string): SourceKey {
@@ -508,7 +490,6 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   tavily_intent:        'tavily',
   batchdata_motivated:  'batchdata_motivated',
   osint_signal:         'osint_signal',
-  portal_lead:          'portal_lead', // never cron-gated — arrives via inbound mail, not the scraper
 }
 
 /**

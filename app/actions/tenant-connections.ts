@@ -74,12 +74,15 @@ export async function getTenantConnectionsAction(): Promise<{
     .in("platform", TENANT_CONNECTION_SLOTS.map((s) => s.key)).eq("is_active", true)
   const connectedSet = new Set(((creds ?? []) as any[]).map((c) => c.platform))
 
+  // Portal leads land as CONTACTS assigned to the receiving agent (owner's
+  // rule) — count by consent provenance (portal_inquiry:<portal>).
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
-  const { data: raws } = await svc.from("raw_scraped_leads").select("raw_data")
-    .eq("brokerage_id", ctx.brokerageId).eq("source", "portal_lead").gte("created_at", since).limit(1000)
+  const { data: portalContacts } = await svc.from("contacts").select("tcpa_consent_source")
+    .eq("brokerage_id", ctx.brokerageId).like("tcpa_consent_source", "portal_inquiry:%")
+    .gte("created_at", since).limit(1000)
   const counts = new Map<string, number>()
-  for (const r of (raws ?? []) as any[]) {
-    const p = r.raw_data?.portal ?? "unknown"
+  for (const r of (portalContacts ?? []) as any[]) {
+    const p = String(r.tcpa_consent_source ?? "").split(":")[1] || "unknown"
     counts.set(p, (counts.get(p) ?? 0) + 1)
   }
 

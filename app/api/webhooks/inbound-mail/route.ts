@@ -199,7 +199,10 @@ export async function POST(request: NextRequest) {
           bodyText: email.bodyText ?? null,
         })
         if (portalLead) {
-          await ingestPortalLead(supabase, brokerageId, portalLead)
+          // The mailbox OWNER is the agent the portal routed this lead to — the
+          // contact is created assigned to them (owner's rule: portal leads are
+          // agent-assigned contacts, never cold raw leads).
+          await ingestPortalLead(supabase, brokerageId, portalLead, resolvedCredential?.agent_user_id ?? null)
           results.push({ email_from: email.fromEmail, uploads: 0 })
           continue
         }
