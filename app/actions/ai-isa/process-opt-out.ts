@@ -10,7 +10,7 @@ export interface OptOutParams {
   entityType: "contact" | "lead"
   entityId: string
   channel: OptOutChannel
-  source: "inbound_sms" | "inbound_email" | "portal" | "agent" | "admin" | "voice"
+  source: "inbound_sms" | "inbound_email" | "inbound_call" | "portal" | "agent" | "admin" | "voice"
   rawMessage?: string
   brokerageId: string
 }
@@ -42,7 +42,9 @@ export async function processOptOut(params: OptOutParams): Promise<{
   const { entityType, entityId, channel, source, rawMessage } = params
 
   // ── AUTH GATE ──────────────────────────────────────────────────────────
-  const WEBHOOK_SOURCES = new Set(["inbound_sms", "inbound_email"])
+  // inbound_call = the Twilio voice turn webhook ("stop calling" said on a
+  // live AI call) — same signature-verified ingress class as inbound_sms.
+  const WEBHOOK_SOURCES = new Set(["inbound_sms", "inbound_email", "inbound_call"])
   const isWebhookSource = WEBHOOK_SOURCES.has(source)
 
   let effectiveBrokerageId: string

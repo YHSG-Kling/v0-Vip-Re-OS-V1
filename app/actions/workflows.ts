@@ -259,25 +259,10 @@ export async function sendMessage(
     const own = await assertOwnership("contacts", contactId, brokerageId)
     if (!own.ok) return { success: false, error: own.error }
 
-    // messages.conversation_id is NOT NULL — resolve or create the conversation first.
-    let conversationId: string | null = null
-    {
-      const { data: conv } = await supabase
-        .from("conversations")
-        .select("id")
-        .eq("contact_id", contactId)
-        .maybeSingle()
-      if (conv?.id) {
-        conversationId = conv.id
-      } else {
-        const { data: newConv } = await supabase
-          .from("conversations")
-          .insert({ contact_id: contactId, agent_id: agentId, brokerage_id: brokerageId })
-          .select("id")
-          .single()
-        conversationId = newConv?.id ?? null
-      }
-    }
+    // messages.conversation_id is NOT NULL — resolve or create the thread via
+    // the ONE canonical helper (keep-one; this file had the original inline copy).
+    const { ensureConversationForContact } = await import("@/lib/kernel/conversation-thread")
+    const conversationId = await ensureConversationForContact(supabase, { contactId, brokerageId, agentId })
     if (!conversationId) return { success: false, error: "Could not resolve conversation" }
 
     const { data: msg } = await supabase

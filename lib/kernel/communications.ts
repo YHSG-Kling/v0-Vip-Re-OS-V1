@@ -505,9 +505,17 @@ export async function sendInboxReply(
       if (error) throw error
       return { success: true, messageId: msg.id }
     } else {
+      // messages.conversation_id is NOT NULL (live schema) — this insert
+      // silently failed for months without the thread resolved first.
+      const { ensureConversationForContact, touchConversation } = await import("@/lib/kernel/conversation-thread")
+      const conversationId = await ensureConversationForContact(supabase, {
+        contactId, brokerageId: actorContext.brokerageId, agentId,
+      })
+      if (!conversationId) return { success: false, error: "Could not resolve the conversation thread" }
       const { data: msg, error } = await supabase
         .from("messages")
         .insert({
+          conversation_id: conversationId,
           contact_id: contactId,
           agent_id: agentId,
           brokerage_id: actorContext.brokerageId,
@@ -520,6 +528,7 @@ export async function sendInboxReply(
         .select("id")
         .single()
       if (error) throw error
+      await touchConversation(supabase, conversationId, { inbound: false })
       return { success: true, messageId: msg.id }
     }
   } catch (err) {

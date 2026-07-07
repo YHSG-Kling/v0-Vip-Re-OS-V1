@@ -28,6 +28,12 @@ export type InboundMessage = {
   messageId: string | null
   fromEmail: string | null
   fromPhone: string | null
+  /** The number the message was SENT TO (ours) — resolves the tenant for
+   *  per-number Twilio webhooks with no brokerage_id query param. */
+  toPhone: string | null
+  /** Messaging surface: Twilio delivers WhatsApp with a "whatsapp:" prefix on
+   *  From/To — one webhook, multiple surfaces (the unified inbox). */
+  channel: "sms" | "whatsapp" | "email" | null
   subject: string | null
   text: string | null
   raw: unknown
@@ -82,11 +88,16 @@ function verifyMailgun(body: Record<string, unknown>): boolean {
 }
 
 /**
- * Twilio — HMAC-SHA1 of full URL + sorted params.
+ * Twilio — HMAC-SHA1 of full URL + sorted params. Multi-token: a tenant
+ * SUBACCOUNT signs with ITS auth token, not the master's — the route passes
+ * the candidate tokens (tenant-resolved by the To number + the master env)
+ * and any one validating accepts the request.
  */
-function verifyTwilio(rawUrl: string, params: Record<string, string>, headers: Headers): boolean {
-  const secret = process.env.TWILIO_AUTH_TOKEN
-  if (!secret) return false
+function verifyTwilio(rawUrl: string, params: Record<string, string>, headers: Headers, candidateTokens?: string[]): boolean {
+  const tokens = (candidateTokens && candidateTokens.length > 0
+    ? candidateTokens
+    : [process.env.TWILIO_AUTH_TOKEN]).filter((t): t is string => !!t)
+  if (tokens.length === 0) return false
   const twilioSig = headers.get("x-twilio-signature") ?? ""
   if (!twilioSig) return false
   const sortedKeys = Object.keys(params).sort()
@@ -94,11 +105,14 @@ function verifyTwilio(rawUrl: string, params: Record<string, string>, headers: H
   for (const key of sortedKeys) {
     str += key + (params[key] ?? "")
   }
-  const expected = crypto
-    .createHmac("sha1", secret)
-    .update(Buffer.from(str, "utf-8"))
-    .digest("base64")
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(twilioSig))
+  const sigBuf = Buffer.from(twilioSig)
+  for (const secret of tokens) {
+    const expected = Buffer.from(
+      crypto.createHmac("sha1", secret).update(Buffer.from(str, "utf-8")).digest("base64"),
+    )
+    if (expected.length === sigBuf.length && crypto.timingSafeEqual(expected, sigBuf)) return true
+  }
+  return false
 }
 
 // ─── PROVIDER DETECTION ───────────────────────────────────────────────────────
@@ -144,6 +158,8 @@ function normalizeSendGrid(
     messageId: (event["sg_message_id"] as string | null) ?? null,
     fromEmail: (event["from"] as string | null) ?? null,
     fromPhone: null,
+    toPhone: null,
+    channel: "email",
     subject: (event["subject"] as string | null) ?? null,
     text: (event["text"] as string | null) ?? null,
     raw: payload,
@@ -160,6 +176,8 @@ function normalizePostmark(
     messageId: (body["MessageID"] as string | null) ?? null,
     fromEmail: (body["From"] as string | null) ?? null,
     fromPhone: null,
+    toPhone: null,
+    channel: "email",
     subject: (body["Subject"] as string | null) ?? null,
     text: (body["TextBody"] as string | null) ?? null,
     raw: body,
@@ -177,6 +195,8 @@ function normalizeMailgun(
     messageId: (eventData["id"] as string | null) ?? null,
     fromEmail: (eventData["sender"] as string | null) ?? null,
     fromPhone: null,
+    toPhone: null,
+    channel: "email",
     subject: ((eventData["message"] as Record<string, unknown>)?.["headers"] as Record<string, unknown>)?.["subject"] as string | null ?? null,
     text: (eventData["stripped-text"] as string | null) ?? null,
     raw: body,
@@ -187,12 +207,20 @@ function normalizeTwilio(
   body: Record<string, unknown>,
   brokerageId: string
 ): InboundMessage {
+  // WhatsApp arrives on the SAME webhook with a "whatsapp:" prefix on the
+  // addresses — strip it for matching, keep the surface as the channel.
+  const rawFrom = (body["From"] as string | null) ?? null
+  const rawTo = (body["To"] as string | null) ?? null
+  const isWhatsApp = !!rawFrom?.startsWith("whatsapp:") || !!rawTo?.startsWith("whatsapp:")
+  const strip = (v: string | null) => (v ? v.replace(/^whatsapp:/, "") : null)
   return {
     brokerageId,
     providerType: "twilio",
     messageId: (body["MessageSid"] as string | null) ?? null,
     fromEmail: null,
-    fromPhone: (body["From"] as string | null) ?? null,
+    fromPhone: strip(rawFrom),
+    toPhone: strip(rawTo),
+    channel: isWhatsApp ? "whatsapp" : "sms",
     subject: null,
     text: (body["Body"] as string | null) ?? null,
     raw: body,
@@ -205,7 +233,15 @@ export type NormalizeResult =
   | { ok: true; message: InboundMessage }
   | { ok: false; status: 400 | 401; reason: string }
 
-export async function normalizeInbound(req: Request): Promise<NormalizeResult> {
+export interface NormalizeOptions {
+  /** Twilio per-tenant signature tokens: given the raw POST params (To/From…),
+   *  return every auth token that could legitimately sign this request —
+   *  tenant subaccount token(s) first, master last. The route supplies this
+   *  (it can read the DB); this module stays side-effect-free. */
+  twilioTokenResolver?: (params: Record<string, string>) => Promise<string[]>
+}
+
+export async function normalizeInbound(req: Request, options?: NormalizeOptions): Promise<NormalizeResult> {
   const url = new URL(req.url)
   const contentType = req.headers.get("content-type") ?? ""
 
@@ -256,12 +292,18 @@ export async function normalizeInbound(req: Request): Promise<NormalizeResult> {
   } else if (provider === "mailgun") {
     sigValid = verifyMailgun(parsedBody)
   } else if (provider === "twilio") {
-    // Twilio needs sorted POST params
+    // Twilio needs sorted POST params. Subaccount-provisioned tenant numbers
+    // sign with the SUBACCOUNT token — resolve candidates when the route
+    // provides a resolver, else fall back to the master env token.
     const formParams: Record<string, string> = {}
     Object.entries(parsedBody).forEach(([k, v]) => {
       if (typeof v === "string") formParams[k] = v
     })
-    sigValid = verifyTwilio(req.url, formParams, req.headers)
+    let candidates: string[] | undefined
+    if (options?.twilioTokenResolver) {
+      try { candidates = await options.twilioTokenResolver(formParams) } catch { candidates = undefined }
+    }
+    sigValid = verifyTwilio(req.url, formParams, req.headers, candidates)
   }
 
   // Allow dev bypass via env flag — never in production
@@ -279,8 +321,11 @@ export async function normalizeInbound(req: Request): Promise<NormalizeResult> {
       ? ((parsedArray[0] as Record<string, unknown>) ?? {})
       : parsedBody
 
-  const brokerageId = resolveBrokerageId(url, effectiveBody)
-  if (!brokerageId) {
+  // Twilio may omit brokerage_id: per-number webhooks identify the tenant by
+  // the CALLED number (To) — the route resolves it after normalization. Every
+  // other provider still requires the explicit scope.
+  const brokerageId = resolveBrokerageId(url, effectiveBody) ?? (provider === "twilio" ? "" : null)
+  if (brokerageId === null) {
     return {
       ok: false,
       status: 400,
@@ -307,6 +352,8 @@ export async function normalizeInbound(req: Request): Promise<NormalizeResult> {
       messageId: null,
       fromEmail: null,
       fromPhone: null,
+      toPhone: null,
+      channel: null,
       subject: null,
       text: null,
       raw: parsedBody,

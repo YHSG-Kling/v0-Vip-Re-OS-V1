@@ -124,7 +124,7 @@ export async function bindNumberToTwilioLane(
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL
   if (!appUrl) return { ok: false, error: "NEXT_PUBLIC_APP_URL not set — can't register the webhook URL" }
-  const voiceUrl = `${appUrl.replace(/\/$/, "")}/api/voice/twilio/inbound`
+  const base = appUrl.replace(/\/$/, "")
 
   const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
   const res = await callConnector({
@@ -133,7 +133,14 @@ export async function bindNumberToTwilioLane(
     path: `/2010-04-01/Accounts/${creds.accountSid}/IncomingPhoneNumbers/${n.byoc_credential_id}.json`,
     method: "POST",
     bodyType: "form",
-    body: { VoiceUrl: voiceUrl, VoiceMethod: "POST" },
+    body: {
+      VoiceUrl: `${base}/api/voice/twilio/inbound`, VoiceMethod: "POST",
+      // Texts to the tenant's line ride the EXISTING provider-inbound ingress
+      // (opt-out detection + unified inbox); the status callback closes any
+      // ledger row a mid-call hangup left open.
+      SmsUrl: `${base}/api/providers/inbound`, SmsMethod: "POST",
+      StatusCallback: `${base}/api/voice/twilio/status`, StatusCallbackMethod: "POST",
+    },
     auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
   })
   if (!res.ok) return { ok: false, error: `Twilio VoiceUrl update failed (${res.status ?? "—"}): ${res.error ?? "unknown"}` }
@@ -141,18 +148,18 @@ export async function bindNumberToTwilioLane(
   await svc.from("phone_number_events").insert({
     brokerage_id: n.brokerage_id, phone_number: n.phone_number,
     event_type: "vapi_registered", source: "inbound_binding",
-    notes: "Number bound to the Twilio-native AI reception lane (VoiceUrl → /api/voice/twilio/inbound)",
+    notes: "Number bound to the Twilio-native AI lane (VoiceUrl → /api/voice/twilio/inbound; SmsUrl → /api/providers/inbound; StatusCallback → /api/voice/twilio/status)",
   }).then(undefined, () => {})
   return { ok: true }
 }
 
-/** One reception turn: transcript + new utterance → the brain → plan. */
-export async function planReceptionTurn(
-  ctx: InboundCallContext,
+/** One turn against ANY system prompt (reception or outbound brief) — the
+ *  shared engine both directions ride. */
+export async function planTurnWithPrompt(
+  systemPrompt: string,
   transcript: string | null,
   callerUtterance: string,
 ): Promise<VoiceTurnPlan> {
-  const { systemPrompt } = buildReceptionPrompt(ctx.identity)
   const history = transcriptToMessages(transcript)
   const convo = history.map((m) => `${m.role === "assistant" ? "AI" : "Caller"}: ${m.content}`).join("\n")
   const { generateTextRouted } = await import("@/lib/ai/models")
@@ -163,4 +170,14 @@ export async function planReceptionTurn(
     maxTokens: 300,
   })
   return parseTurnPlan(text)
+}
+
+/** One reception turn: transcript + new utterance → the brain → plan. */
+export async function planReceptionTurn(
+  ctx: InboundCallContext,
+  transcript: string | null,
+  callerUtterance: string,
+): Promise<VoiceTurnPlan> {
+  const { systemPrompt } = buildReceptionPrompt(ctx.identity)
+  return planTurnWithPrompt(systemPrompt, transcript, callerUtterance)
 }

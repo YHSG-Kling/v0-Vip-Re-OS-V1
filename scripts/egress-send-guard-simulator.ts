@@ -124,6 +124,7 @@ const CONNECTOR_ALLOWLIST: Record<string, string> = {
   "lib/voice/twilio-tenancy.ts":           "Twilio SUBACCOUNT administration (creates per-tenant subaccounts; admin API, not a message)",
   "lib/voice/twilio-voice.ts":              "Twilio number VoiceUrl binding for the AI reception lane (admin API config write, not a message)",
   "app/actions/superadmin/platform-reception.ts": "PLATFORM line VoiceUrl binding (master-account admin API config write, not a message)",
+  "lib/voice/twilio-outbound.ts":           "outbound AI voice dial — the TCPA chokepoint (enforceTCPACompliance) + vendor budget gate run INSIDE this module BEFORE the Twilio request (same governance as the Vapi lane it replaces)",
 }
 const connectorSenders = files
   .map((abs) => ({ abs, src: readFileSync(abs, "utf8") }))

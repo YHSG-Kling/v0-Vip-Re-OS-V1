@@ -71,7 +71,11 @@ export async function bindPlatformReceptionAction(): Promise<{ ok: true; phoneNu
     path: `/2010-04-01/Accounts/${accountSid}/IncomingPhoneNumbers/${sid}.json`,
     method: "POST",
     bodyType: "form",
-    body: { VoiceUrl: voiceUrl, VoiceMethod: "POST" },
+    body: {
+      VoiceUrl: voiceUrl, VoiceMethod: "POST",
+      // Closes any platform_reception_calls row a mid-call hangup left open.
+      StatusCallback: `${appUrl.replace(/\/$/, "")}/api/voice/twilio/status`, StatusCallbackMethod: "POST",
+    },
     auth: { style: "basic", username: accountSid, password: authToken },
   })
   if (!bind.ok) return { ok: false, error: `Twilio VoiceUrl update failed (${bind.status ?? "—"}): ${bind.error ?? "unknown"}` }

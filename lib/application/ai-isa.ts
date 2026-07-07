@@ -178,44 +178,73 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
     }
   }
 
-  const callData = await initiateCall({
-    phoneNumber:      contact.phone,
-    assistantId:      process.env.VAPI_ISA_ASSISTANT_ID!,
-    assistantOverrides,
-    contactId,
-    brokerageId,
-    initiatedBy:      loginId,
-  })
-
-  // Write voice_calls row first — ai_isa_calls.voice_call_id is an FK to it
-  const voiceCallResult = await supabase
-    .from("voice_calls")
-    .insert({
-      contact_id:  contactId,
-      brokerage_id: brokerageId,
-      agent_id:    loginId,
-      vapi_call_id: callData.id,
-      direction:   "outbound",
-      call_type:   "ai_isa_call",
-      status:      "initiated",
-      started_at:  new Date().toISOString(),
+  // ── ENGINE: Twilio-native by default (owner: "no longer vapi"). The SAME
+  // per-call ISA persona (buildCallContext systemPrompt/firstMessage) rides the
+  // serverless turn engine; TCPA + budget gates run inside placeOutboundAiCall.
+  // VOICE_ENGINE=vapi selects the legacy lane only during migration.
+  let callData: { id: string; status: string; createdAt: string }
+  let placedVoiceCallId: string | null = null // Twilio lane writes its own ledger row
+  if (process.env.VOICE_ENGINE !== "vapi") {
+    const { placeOutboundAiCall } = await import("@/lib/voice/twilio-outbound")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const placed = await placeOutboundAiCall(createServiceClient(), {
+      toNumber: contact.phone,
+      contactId,
+      brokerageId,
+      agentUserId: loginId,
+      initiatedBy: loginId,
+      objective: `ISA follow-up for the "${campaign.campaign_type}" campaign: reconnect, learn where they are in their journey, and offer to book time with ${agent.first_name}.`,
+      contactName: contact.first_name,
+      firstMessage: ctx.firstMessage ?? null,
+      systemPrompt: ctx.systemPrompt ?? null,
     })
-    .select("id")
-    .single()
-  
-  const voiceCallRow = voiceCallResult.data
-
-  // Write vapi_voice_calls billing row
-  void supabase
-    .from("vapi_voice_calls")
-    .insert({
-      voice_call_id: voiceCallRow?.id ?? null,
-      brokerage_id:  brokerageId,
-      vapi_call_id:  callData.id,
-      assistant_id:  process.env.VAPI_ISA_ASSISTANT_ID ?? null,
-      agent_id:      loginId,
-      contact_id:    contactId,
+    if (!placed.ok) return { success: false, error: placed.error }
+    callData = { id: placed.callSid, status: "initiated", createdAt: new Date().toISOString() }
+    placedVoiceCallId = placed.voiceCallId
+  } else {
+    callData = await initiateCall({
+      phoneNumber:      contact.phone,
+      assistantId:      process.env.VAPI_ISA_ASSISTANT_ID!,
+      assistantOverrides,
+      contactId,
+      brokerageId,
+      initiatedBy:      loginId,
     })
+  }
+
+  // Ledger row — the Twilio lane already wrote its own (the row IS the turn
+  // session); only the legacy Vapi lane inserts here. ai_isa_calls FKs it.
+  let voiceCallRow: { id: string } | null = placedVoiceCallId ? { id: placedVoiceCallId } : null
+  if (!voiceCallRow) {
+    const voiceCallResult = await supabase
+      .from("voice_calls")
+      .insert({
+        contact_id:  contactId,
+        brokerage_id: brokerageId,
+        agent_id:    loginId,
+        vapi_call_id: callData.id,
+        direction:   "outbound",
+        call_type:   "ai_isa_call",
+        status:      "initiated",
+        started_at:  new Date().toISOString(),
+      })
+      .select("id")
+      .single()
+    voiceCallRow = voiceCallResult.data
+
+    // Write vapi_voice_calls billing row (Vapi lane only — Twilio usage is
+    // metered by the phone-tenancy rollup, not the Vapi ledger)
+    void supabase
+      .from("vapi_voice_calls")
+      .insert({
+        voice_call_id: voiceCallRow?.id ?? null,
+        brokerage_id:  brokerageId,
+        vapi_call_id:  callData.id,
+        assistant_id:  process.env.VAPI_ISA_ASSISTANT_ID ?? null,
+        agent_id:      loginId,
+        contact_id:    contactId,
+      })
+  }
 
   // Write ai_isa_calls with correct build34 columns — no campaign_id/login_id/vapi_call_id/call_status/attempt_number
   const { data: isaCall, error: isaCallError } = await supabase

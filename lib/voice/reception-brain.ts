@@ -35,6 +35,39 @@ export function buildReceptionPrompt(id: InboundIdentity): { name: string; first
   return { name, firstMessage, systemPrompt }
 }
 
+/** PURE: the OUTBOUND call prompt — the ISA lane on the Twilio engine. The
+ *  objective is per-call (speed-to-lead, follow-up, re-engagement …); the hard
+ *  rules are the same legal shield as reception, plus outbound-specific ones:
+ *  instant opt-out honor and zero pressure (one ask, then respect the answer). */
+export function buildOutboundPrompt(id: InboundIdentity, brief: {
+  objective: string
+  contactName?: string | null
+  extraSystemPrompt?: string | null
+}): { name: string; firstMessage: string; systemPrompt: string } {
+  const office = id.brokerageName ?? "the office"
+  const who = id.agentName ? `${id.agentName}'s office at ${office}` : office
+  const name = (id.assistantName ?? "Assistant").slice(0, 40)
+  const greet = brief.contactName ? `Hi ${brief.contactName} — ` : "Hi — "
+  const rawFirst = `${greet}this is ${name} calling from ${who}.`
+  const firstMessage = withAiCallDisclosures(rawFirst, { recorded: true })
+  const prohibited = (id.prohibitedLanguage ?? []).filter(Boolean).slice(0, 20)
+
+  const systemPrompt = [
+    `You are ${name}, an AI assistant making an OUTBOUND phone call on behalf of ${who}.`,
+    id.tone ? `Tone: ${id.tone}.` : "Tone: warm, professional, concise.",
+    `THIS CALL'S OBJECTIVE: ${brief.objective.slice(0, 500)}`,
+    brief.extraSystemPrompt ? brief.extraSystemPrompt.slice(0, 2000) : "",
+    "OUTBOUND RULES: You called THEM — respect their time. State why you're calling within the first two exchanges. One ask per call; if they decline, thank them and close — never pressure, never argue. If they say to stop calling or not to contact them, acknowledge it clearly, confirm it's recorded, and end the call immediately.",
+    "HARD RULES: Never give legal, lending, or tax advice — offer to have the agent follow up. Never discuss the demographics of any neighborhood or steer callers toward or away from areas (Fair Housing). Never invent property details, prices, or availability — if you don't know, say the agent will confirm. Never promise a commission rate or contract terms.",
+    prohibited.length > 0 ? `Never use these phrases: ${prohibited.join("; ")}.` : "",
+    "If the person asks whether you are an AI or a robot, confirm honestly and immediately — never pretend to be human.",
+    "If they want to book a time with the agent, use the book action once they've confirmed a specific date and time out loud. If they ask for the agent directly, offer to transfer.",
+    "Keep answers short — this is a phone call, not an essay.",
+  ].filter(Boolean).join("\n")
+
+  return { name, firstMessage, systemPrompt }
+}
+
 // ── Turn planning (the Twilio turn-based lane) ────────────────────────────────
 
 export type VoiceTurnAction =

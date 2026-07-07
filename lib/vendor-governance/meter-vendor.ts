@@ -69,7 +69,8 @@ export const PLATFORM_VENDOR_RATES = {
   did:        { perUnit: 0.10,    unit: "video"     }, // ~$0.10 / talk render
   heygen:     { perUnit: 0.50,    unit: "video"     }, // ~$0.50 / avatar video
   elevenlabs: { perUnit: 0.00018, unit: "character" }, // ~$0.18 / 1k chars (creator tier)
-  vapi:       { perUnit: 0.07,    unit: "minute"    }, // ~$0.07 / call minute
+  vapi:       { perUnit: 0.07,    unit: "minute"    }, // ~$0.07 / call minute (LEGACY lane)
+  twilio_voice: { perUnit: 0.02,  unit: "minute"    }, // ~$0.014 carrier + STT/AI overhead — the Twilio-native AI lane
   lob:        { perUnit: 0.84,    unit: "piece"     }, // ~$0.84 / printed+mailed postcard
 } as const
 

@@ -71,6 +71,10 @@ export const SENTINEL_THRESHOLDS = {
   heldProposals:    { warn: 25, breach: 100 },
   expiredCreds:     { warn: 1,  breach: 5 },
   tenantIsolation:  { warn: 1,  breach: 1 },  // any RLS-isolation finding is a breach
+  // Stalled = in_progress >24h. The status callback closes rows on hangup, so
+  // a pile-up means the platform line's webhooks are broken (the front door
+  // is down and nobody would otherwise notice).
+  receptionStalled: { warn: 5,  breach: 25 },
 } as const
 
 export interface OsHealthInputs {
@@ -82,6 +86,8 @@ export interface OsHealthInputs {
   tenantIsolationFindings: number
   selfHeal: { runs: number; replayed: number; escalated: number }
   redTeam: { lastRegressionAt: string | null }
+  /** The platform's own AI reception line (7-day window). */
+  platformReception: { calls7d: number; prospects7d: number; stalled: number }
   topIncidents: OsIncident[]
 }
 
@@ -102,6 +108,7 @@ export function rollupOsHealth(i: OsHealthInputs): OsHealth {
     { key: "credentials", label: "Integration credentials", status: classifyCount(i.expiredCredentials, T.expiredCreds.warn, T.expiredCreds.breach) === "ok" && i.expiringCredentials > 0 ? "warn" : classifyCount(i.expiredCredentials, T.expiredCreds.warn, T.expiredCreds.breach), count: i.expiredCredentials + i.expiringCredentials, detail: `${i.expiredCredentials} expired, ${i.expiringCredentials} expiring`, link: "/dashboard/superadmin/ai-ops" },
     { key: "tenant_isolation", label: "Tenant isolation (RLS)", status: classifyCount(i.tenantIsolationFindings, T.tenantIsolation.warn, T.tenantIsolation.breach), count: i.tenantIsolationFindings, detail: `${i.tenantIsolationFindings} unresolved finding(s)`, link: "/dashboard/superadmin/platform" },
     { key: "red_team", label: "Red-team eval (weekly)", status: redTeamStatus, count: i.redTeam.lastRegressionAt ? 1 : 0, detail: i.redTeam.lastRegressionAt ? `Regression flagged ${i.redTeam.lastRegressionAt.slice(0, 10)}` : "No recent regression", link: "/dashboard/superadmin/ai-ops" },
+    { key: "platform_reception", label: "Platform reception line (7d)", status: classifyCount(i.platformReception.stalled, T.receptionStalled.warn, T.receptionStalled.breach), count: i.platformReception.calls7d, detail: `${i.platformReception.calls7d} call(s), ${i.platformReception.prospects7d} prospect(s) captured, ${i.platformReception.stalled} stalled`, link: "/dashboard/superadmin/connectors" },
   ]
 
   const overall = worstStatus(subsystems.map((s) => s.status))
@@ -126,13 +133,14 @@ export async function loadOsHealth(client?: any, now: Date = new Date()): Promis
     try { return await p } catch { return fallback }
   }
 
-  const [aiOps, managerOps, rotationRisks, tenantFindings, reaperAgg, redTeam] = await Promise.all([
+  const [aiOps, managerOps, rotationRisks, tenantFindings, reaperAgg, redTeam, reception] = await Promise.all([
     safe((async () => (await import("@/lib/platform/ai-ops")).loadAiOps(svc, now))(), null as any),
     safe((async () => (await import("@/lib/platform/manager-ops")).loadManagerOps(svc))(), null as any),
     safe((async () => (await import("@/lib/security/credential-rotation")).loadRotationRisks(svc))(), [] as any[]),
     safe(countUnresolvedTenantFindings(svc), 0),
     safe(loadSelfHeal(svc, now), { runs: 0, replayed: 0, escalated: 0 }),
     safe(loadRedTeam(svc, now), { lastRegressionAt: null as string | null }),
+    safe(loadPlatformReception(svc, now), { calls7d: 0, prospects7d: 0, stalled: 0 }),
   ])
 
   const aiSummary = aiOps?.summary ?? { consumed: 0, stuck: 0, held: 0, failed: 0, errors: 0, cronsFailing: 0 }
@@ -162,8 +170,22 @@ export async function loadOsHealth(client?: any, now: Date = new Date()): Promis
     tenantIsolationFindings: tenantFindings,
     selfHeal: reaperAgg,
     redTeam,
+    platformReception: reception,
     topIncidents,
   })
+}
+
+/** The platform's own AI reception line — calls, prospect conversions, and
+ *  stalled sessions (in_progress >24h = the webhooks stopped closing rows). */
+async function loadPlatformReception(svc: any, now: Date): Promise<{ calls7d: number; prospects7d: number; stalled: number }> {
+  const weekAgo = new Date(now.getTime() - 7 * 86400_000).toISOString()
+  const dayAgo = new Date(now.getTime() - 86400_000).toISOString()
+  const [{ count: calls7d }, { count: prospects7d }, { count: stalled }] = await Promise.all([
+    svc.from("platform_reception_calls").select("id", { count: "exact", head: true }).gte("started_at", weekAgo),
+    svc.from("platform_reception_calls").select("id", { count: "exact", head: true }).gte("started_at", weekAgo).not("prospect_id", "is", null),
+    svc.from("platform_reception_calls").select("id", { count: "exact", head: true }).eq("status", "in_progress").lt("started_at", dayAgo),
+  ])
+  return { calls7d: calls7d ?? 0, prospects7d: prospects7d ?? 0, stalled: stalled ?? 0 }
 }
 
 export interface OsSentinelSweepResult {

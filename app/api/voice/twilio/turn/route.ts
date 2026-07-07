@@ -72,15 +72,22 @@ export async function POST(request: NextRequest) {
     return xml(twimlGatherTurn(plan.say, url))
   }
 
-  // ── TENANT SCOPES: brokerage/agent lines ────────────────────────────────────
-  const ctx = await resolveInboundContext(svc, to)
+  // ── TENANT SCOPES: brokerage/agent lines. INBOUND legs resolve the tenant by
+  // the CALLED number (To = ours); OUTBOUND legs by the CALLING number (From =
+  // ours) — one turn loop serves both directions. ─────────────────────────────
+  let ctx = await resolveInboundContext(svc, to)
+  let outboundLeg = false
+  if (!ctx) {
+    ctx = await resolveInboundContext(svc, params.From ?? "")
+    outboundLeg = !!ctx
+  }
   if (!ctx) return xml(twimlHangup("Sorry, something went wrong. Goodbye."))
 
   if (!validateTwilioSignature(ctx.authToken, url, params, request.headers.get("x-twilio-signature"))) {
     return new NextResponse("invalid signature", { status: 403 })
   }
 
-  const { data: call } = await svc.from("voice_calls").select("id, contact_id, agent_id, transcription")
+  const { data: call } = await svc.from("voice_calls").select("id, contact_id, agent_id, transcription, ai_notes, direction")
     .eq("vapi_call_id", callSid).maybeSingle()
   const transcript = (call as any)?.transcription ?? null
 
@@ -91,7 +98,40 @@ export async function POST(request: NextRequest) {
     return new NextResponse(twimlHangup(closer), { headers: { "Content-Type": "text/xml" } })
   }
 
-  const plan = await planReceptionTurn(ctx, transcript, speech)
+  // OUTBOUND: deterministic opt-out honor BEFORE any model turn — "stop
+  // calling" suppresses the channel via the canonical opt-out writer and ends
+  // the call. Not left to the prompt: the law isn't a suggestion.
+  const brief = outboundLeg || (call as any)?.direction === "outbound"
+    ? (await import("@/lib/voice/twilio-outbound")).decodeOutboundBrief((call as any)?.ai_notes)
+    : null
+  if (brief && call) {
+    const { detectOptOutIntent } = await import("@/lib/ai-isa/opt-out-utils")
+    const opt = detectOptOutIntent(speech)
+    if (opt.isOptOut && opt.confidence === "high" && (call as any).contact_id) {
+      const ack = "Understood — I've recorded that, and we won't call again. Sorry to have bothered you. Goodbye."
+      try {
+        const { processOptOut } = await import("@/app/actions/ai-isa/process-opt-out")
+        await processOptOut({
+          entityType: "contact", entityId: (call as any).contact_id,
+          channel: opt.channel === "all" ? "all" : "phone",
+          source: "inbound_call", rawMessage: speech.slice(0, 300), brokerageId: ctx.brokerageId,
+        })
+      } catch { /* the hangup still honors the request; the flag write is retried by the sweep */ }
+      await finishCall(svc, (call as any).id, appendTranscript(appendTranscript(transcript, speech, ack), null, ""), "opt_out")
+      return xml(twimlHangup(ack))
+    }
+  }
+
+  const plan = brief
+    ? await (async () => {
+        const { buildOutboundPrompt } = await import("@/lib/voice/reception-brain")
+        const { planTurnWithPrompt } = await import("@/lib/voice/twilio-voice")
+        const { systemPrompt } = buildOutboundPrompt(ctx!.identity, {
+          objective: brief.objective, contactName: brief.contactName, extraSystemPrompt: brief.systemPrompt,
+        })
+        return planTurnWithPrompt(systemPrompt, transcript, speech)
+      })()
+    : await planReceptionTurn(ctx, transcript, speech)
   const newTranscript = appendTranscript(transcript, speech, plan.say)
   if (call) {
     await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})

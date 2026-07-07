@@ -117,12 +117,25 @@ export async function sendInstantOpenHouseGreeting(
 
   const now = new Date().toISOString()
 
+  // messages.conversation_id is NOT NULL (live schema) — without resolving the
+  // thread first this insert ALWAYS failed and the greeting silently never
+  // queued. The ONE canonical helper fixes it (same as every other writer).
+  const { ensureConversationForContact } = await import("@/lib/kernel/conversation-thread")
+  const conversationId = await ensureConversationForContact(svc, {
+    contactId: input.contactId, brokerageId: input.brokerageId, agentId: agentRowId,
+  })
+  if (!conversationId) {
+    return { success: false, error: "Could not resolve the conversation thread" }
+  }
+
   // Insert into messages — the outbound dispatcher cron picks up direction=
   // outbound + status=queued rows and sends via Twilio (sms) or SendGrid
   // (email). Status starts queued so failures are retryable.
   const { data: msg, error } = await svc
     .from("messages")
     .insert({
+      conversation_id: conversationId,
+      brokerage_id: input.brokerageId,
       contact_id: input.contactId,
       agent_id:   agentRowId,
       type:       channel,

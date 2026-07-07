@@ -8,9 +8,10 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import {
-  buildReceptionPrompt, parseTurnPlan, transcriptToMessages, appendTranscript,
+  buildReceptionPrompt, buildOutboundPrompt, parseTurnPlan, transcriptToMessages, appendTranscript,
   twimlGatherTurn, twimlTransfer, twimlHangup, TURN_INSTRUCTIONS,
 } from "../lib/voice/reception-brain"
+import { encodeOutboundBrief, decodeOutboundBrief, composeVoicemailMessage } from "../lib/voice/twilio-outbound"
 import { computeTwilioSignature, validateTwilioSignature } from "../lib/voice/twilio-voice"
 import {
   isPlatformNumber, composeTierLines, buildPlatformReceptionPrompt, parsePlatformTurnPlan, PLATFORM_TURN_INSTRUCTIONS,
@@ -81,6 +82,33 @@ console.log("\n── PURE: Twilio signature ──")
   check("missing signature rejected", !validateTwilioSignature(token, url, params, null))
 }
 
+console.log("\n── PURE: the OUTBOUND lane (ISA calls off Vapi) ──")
+{
+  const identity = {
+    assistantName: "Ava", welcomeMessage: null, tone: "warm",
+    brokerageName: "VIP Premier", agentName: "Dana Kling",
+    prohibitedLanguage: ["guaranteed sale"], elevenlabsVoiceId: null, forwardNumber: null,
+    answerMode: null, businessHours: null,
+  }
+  const p = buildOutboundPrompt(identity, { objective: "Follow up on their showing request for 12 Oak St.", contactName: "Jordan" })
+  check("outbound opener: personalized + SAME legal preamble (AI disclosure + recording)",
+    p.firstMessage.includes("Jordan") && /\bAI\b/i.test(p.firstMessage) && /recorded/i.test(p.firstMessage))
+  check("objective threaded; outbound-specific rules: instant opt-out honor + zero pressure",
+    p.systemPrompt.includes("12 Oak St") && p.systemPrompt.includes("stop calling") && p.systemPrompt.includes("never pressure"))
+  check("SAME hard rules on outbound: Fair Housing + no invented prices + prohibited phrases + honest-AI confession",
+    p.systemPrompt.includes("Fair Housing") && p.systemPrompt.includes("Never invent property details") && p.systemPrompt.includes("guaranteed sale") && p.systemPrompt.includes("confirm honestly and immediately"))
+
+  const brief = { engine: "twilio" as const, objective: "Re-engage a cold buyer lead.", contactName: "Sam", firstMessage: null, systemPrompt: "PERSONA: speak like Dana." }
+  const decoded = decodeOutboundBrief(encodeOutboundBrief(brief))
+  check("call brief round-trips through ai_notes (the row IS the session)",
+    decoded !== null && decoded.objective === brief.objective && decoded.systemPrompt === "PERSONA: speak like Dana.")
+  check("legacy/foreign ai_notes decode to null (reception fallback, never a crash)",
+    decodeOutboundBrief("engine:twilio") === null && decodeOutboundBrief(null) === null && decodeOutboundBrief('{"engine":"vapi"}') === null)
+  const vm = composeVoicemailMessage(brief, "VIP Premier")
+  check("machine answer → HONEST voicemail: identifies the AI + office, capped",
+    /\bAI\b/i.test(vm) && vm.includes("VIP Premier") && vm.length <= 450)
+}
+
 console.log("\n── PURE: the PLATFORM scope (the app's own line) ──")
 {
   check("platform number matched by digits, any formatting", isPlatformNumber("+1 (555) 000-1111", "+15550001111") && !isPlatformNumber("+15559998888", "+15550001111") && !isPlatformNumber("", "+15550001111") && !isPlatformNumber("+15550001111", ""))
@@ -144,6 +172,44 @@ console.log("\n── SOURCE: wiring ──")
     (() => { const a = src("app/actions/superadmin/platform-reception.ts"); return a.includes('platformStaffCan(role, "providers")') && a.includes("VoiceUrl") && a.includes("superadmin_audit_log") })())
   check("registry burn domain platform_reception (data_steward)",
     "platform_reception" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.platform_reception.manager === "data_steward")
+
+  // ── OUTBOUND lane wiring ──
+  const outboundLib = src("lib/voice/twilio-outbound.ts")
+  check("OUTBOUND: TCPA chokepoint + budget gate run BEFORE the Twilio dial (fails closed)",
+    outboundLib.indexOf("enforceTCPACompliance") < outboundLib.indexOf("callConnector")
+    && outboundLib.includes("checkVendorBudget") && outboundLib.includes('estimatePlatformVendorCost("twilio_voice"'))
+  check("OUTBOUND: machine detection + status callback registered at dial time",
+    outboundLib.includes('MachineDetection: "Enable"') && outboundLib.includes("/api/voice/twilio/status"))
+  const outboundRoute = src("app/api/voice/twilio/outbound/route.ts")
+  check("OUTBOUND answer webhook: signature-validated; machine → HONEST voicemail + ledger closed; human → the shared turn loop",
+    outboundRoute.includes("validateTwilioSignature") && outboundRoute.includes("composeVoicemailMessage") && outboundRoute.includes("twimlGatherTurn"))
+  check("turn route serves BOTH directions (outbound resolves the tenant by OUR From number) + deterministic opt-out honor via the canonical writer",
+    turn.includes("outboundLeg") && turn.includes("detectOptOutIntent") && turn.includes("processOptOut") && turn.includes('"inbound_call"'))
+  const statusRoute = src("app/api/voice/twilio/status/route.ts")
+  check("status callback closes BOTH ledgers (voice_calls + platform_reception_calls) — no in_progress-forever rows",
+    statusRoute.includes('from("voice_calls")') && statusRoute.includes('from("platform_reception_calls")') && statusRoute.includes("validateTwilioSignature"))
+  check("callers default to the Twilio lane (VOICE_ENGINE=vapi legacy-only): call-executor + AI-ISA",
+    src("lib/voice-engine/call-executor.ts").includes("placeOutboundAiCall") && src("lib/application/ai-isa.ts").includes("placeOutboundAiCall"))
+
+  // ── INBOUND SMS → unified inbox wiring ──
+  const smsLib = src("lib/voice/sms-inbound.ts")
+  check("SMS: lands in the UNIFIED INBOX messages row (unread) + agent heads-up; idempotent by MessageSid",
+    smsLib.includes('from("messages")') && smsLib.includes('status: "unread"') && smsLib.includes("message_sid"))
+  check("SMS: unknown texter → consented contact assigned to the number's agent (texting in IS consent)",
+    smsLib.includes("captureContact") && smsLib.includes('"inbound_sms"'))
+  const routerLib = src("lib/providers/inbound-router.ts")
+  check("SMS: per-tenant signature tokens (subaccounts sign with their OWN token) + WhatsApp surface on the same webhook",
+    routerLib.includes("twilioTokenResolver") && routerLib.includes("whatsapp:"))
+  const inboundProviders = src("app/api/providers/inbound/route.ts")
+  check("SMS: ONE ingress consolidated — tenant by the CALLED number, inbox record + capture folded into the EXISTING opt-out/kernel route",
+    inboundProviders.includes("resolveTenantByOwnNumber") && inboundProviders.includes("recordInboundMessage") && inboundProviders.includes("captureTextingContact"))
+  check("binding registers SmsUrl → the existing provider ingress + StatusCallback", bind.includes("/api/providers/inbound") && bind.includes("/api/voice/twilio/status"))
+  check("KEEP-ONE: every messages writer resolves the NOT-NULL conversation thread via the canonical helper (latent silent-fail fixed in inbox reply, compliance override, open-house greeting)",
+    ["lib/kernel/communications.ts", "app/actions/inbox.ts", "app/actions/workflows.ts", "lib/open-house/instant-greeting.ts", "lib/voice/sms-inbound.ts"]
+      .every((f) => src(f).includes("ensureConversationForContact")))
+  check("registry burn domains: twilio_outbound_lane + sms_unified_inbox (ai_isa)",
+    "twilio_outbound_lane" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.twilio_outbound_lane.manager === "ai_isa"
+    && "sms_unified_inbox" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.sms_unified_inbox.manager === "ai_isa")
   check("rentcast MCP fixes: rental long-term path + range params", src("lib/property/rentcast.ts").includes("/listings/rental/long-term") && src("lib/property/rentcast.ts").includes("MCP-verified contract"))
   check("package.json wires the proof", /"test:voice-lane":/.test(src("package.json")))
 }

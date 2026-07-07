@@ -51,6 +51,7 @@ function baseInputs(): OsHealthInputs {
     tenantIsolationFindings: 0,
     selfHeal: { runs: 0, replayed: 0, escalated: 0 },
     redTeam: { lastRegressionAt: null },
+    platformReception: { calls7d: 0, prospects7d: 0, stalled: 0 },
     topIncidents: [],
   }
 }
@@ -86,6 +87,14 @@ async function main() {
   check("stuck-signal count between thresholds → autonomy_bus warn (not breach)",
     (() => { const h = rollupOsHealth({ ...baseInputs(), aiOps: { ...baseInputs().aiOps, stuck: 2 } }); return h.subsystems.find((s) => s.key === "autonomy_bus")?.status === "warn" })())
 
+  check("platform reception: healthy line → ok with call/prospect counts; stalled pile-up → warn/breach (webhooks broke)",
+    (() => {
+      const ok = rollupOsHealth({ ...baseInputs(), platformReception: { calls7d: 12, prospects7d: 3, stalled: 0 } }).subsystems.find((s) => s.key === "platform_reception")
+      const warn = rollupOsHealth({ ...baseInputs(), platformReception: { calls7d: 12, prospects7d: 3, stalled: SENTINEL_THRESHOLDS.receptionStalled.warn } }).subsystems.find((s) => s.key === "platform_reception")
+      const breach = rollupOsHealth({ ...baseInputs(), platformReception: { calls7d: 0, prospects7d: 0, stalled: SENTINEL_THRESHOLDS.receptionStalled.breach } }).subsystems.find((s) => s.key === "platform_reception")
+      return ok?.status === "ok" && ok.detail.includes("3 prospect(s)") && warn?.status === "warn" && breach?.status === "breach"
+    })())
+
   check("topIncidents are carried + capped at 20",
     (() => { const many = Array.from({ length: 30 }, (_, i) => ({ subsystem: "crons", severity: "warn" as const, summary: `c${i}` })); return rollupOsHealth({ ...baseInputs(), topIncidents: many }).topIncidents.length === 20 })())
 
@@ -98,7 +107,9 @@ async function main() {
   check("loadOsHealth surfaces the previously-invisible reaper_runs + red-team signals",
     /reaper_runs/.test(loaderSrc) && /manager_eval_regression/.test(loaderSrc))
   const pageSrc = readFileSync(join(process.cwd(), "app/dashboard/superadmin/sentinel/page.tsx"), "utf8")
-  check("the board page redirects non-staff", /isStaff/.test(pageSrc) && /redirect\("\/dashboard"\)/.test(pageSrc))
+  // Gate migrated to the ONE capability map (platform_capability_gates) —
+  // the board admits by requirePlatformCapability("sentinel"), not a hand-rolled isStaff.
+  check("the board page redirects non-staff", /requirePlatformCapability\("sentinel"\)/.test(pageSrc) && /redirect\("\/dashboard"\)/.test(pageSrc))
 
   // The REFLEX — sweep escalates on breach (deduped) + folds in rotation escalation, wired to a cron.
   check("runOsSentinelSweep escalates an overall breach via notifyPlatformStaff, deduped per day + folds in rotation escalation",

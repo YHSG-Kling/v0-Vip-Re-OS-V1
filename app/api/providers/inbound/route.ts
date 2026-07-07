@@ -14,8 +14,17 @@ import { detectOptOutIntent } from "@/lib/ai-isa/opt-out-utils"
 export const dynamic = "force-dynamic"
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  const supabase = createServiceClient()
+
   // ── Step 1: Normalize + verify provider signature ──────────────────────────
-  const result = await normalizeInbound(req)
+  // Twilio: tenant numbers live on SUBACCOUNTS that sign with their own token —
+  // the resolver hands the router the owning tenant's token + the master.
+  const result = await normalizeInbound(req, {
+    twilioTokenResolver: async (params) => {
+      const { twilioTokenCandidates } = await import("@/lib/voice/sms-inbound")
+      return twilioTokenCandidates(supabase, params)
+    },
+  })
 
   if (!result.ok) {
     return NextResponse.json(
@@ -25,7 +34,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   const inbound = result.message
-  const supabase = createServiceClient()
+
+  // ── Step 1b: Twilio per-number tenancy — the CALLED number IS the tenant ────
+  // (no brokerage_id query param needed on per-number webhooks; the same
+  // registry the voice lane binds). Also remembers the number's agent so an
+  // unknown texter can be captured ASSIGNED, not orphaned.
+  let numberCtx: Awaited<ReturnType<typeof import("@/lib/voice/sms-inbound").resolveTenantByOwnNumber>> = null
+  if (inbound.providerType === "twilio") {
+    const { resolveTenantByOwnNumber } = await import("@/lib/voice/sms-inbound")
+    numberCtx = await resolveTenantByOwnNumber(supabase, inbound.toPhone)
+    if (!inbound.brokerageId) {
+      if (!numberCtx) {
+        return NextResponse.json({ error: "This number isn't registered to a tenant" }, { status: 404 })
+      }
+      inbound.brokerageId = numberCtx.brokerageId
+    }
+  }
 
   // ── Step 2: Normalize identifiers for matching ─────────────────────────────
   const emailNorm = inbound.fromEmail?.toLowerCase().trim() ?? null
@@ -85,9 +109,40 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
-  // ── Step 5: No match — return 200 with linked:false (no-op) ────────────────
+  // ── Step 5: No match. An email no-ops, but an UNKNOWN NUMBER texting the
+  // tenant's own line is a hand-raise — capture a consented contact assigned
+  // to the number's agent (texting in IS consent for the thread — the same
+  // provenance rule as the inbound-call lane). ───────────────────────────────
   if (!entityType || !entityId) {
-    return NextResponse.json({ linked: false })
+    if (inbound.providerType === "twilio" && numberCtx && inbound.fromPhone && (inbound.text ?? "").trim()) {
+      const { captureTextingContact } = await import("@/lib/voice/sms-inbound")
+      const captured = await captureTextingContact(
+        supabase, numberCtx, inbound.fromPhone,
+        inbound.channel === "whatsapp" ? "whatsapp" : "sms",
+      )
+      if (captured) {
+        entityType = "contact"
+        entityId = captured
+      }
+    }
+    if (!entityType || !entityId) return NextResponse.json({ linked: false })
+  }
+
+  // ── Step 5b: Land the text in the UNIFIED INBOX (the messages row the
+  // universal inbox reads — previously inbound texts were invisible there).
+  // Idempotent by MessageSid; the owning agent gets a high-priority heads-up. ──
+  if (inbound.providerType === "twilio" && entityType === "contact" && (inbound.text ?? "").trim()) {
+    const { recordInboundMessage } = await import("@/lib/voice/sms-inbound")
+    await recordInboundMessage(supabase, {
+      brokerageId: inbound.brokerageId,
+      contactId: entityId,
+      agentUserId: numberCtx?.agentUserId ?? null,
+      channel: inbound.channel === "whatsapp" ? "whatsapp" : "sms",
+      body: inbound.text ?? "",
+      messageSid: inbound.messageId,
+      fromPhone: inbound.fromPhone,
+      toPhone: inbound.toPhone,
+    }).catch((err) => console.error("[InboundRouter] inbox record failed (non-blocking):", err))
   }
 
   // ── Step 6: Write lifecycle_events ─────────────────────────────────────────

@@ -289,12 +289,20 @@ export async function forceComplianceOverrideAndSend(
     return { success: true, messageId: msg.id }
   }
 
-  // sms / email path — messages table
+  // sms / email path — messages table. conversation_id is NOT NULL (live
+  // schema): resolve the thread first via the ONE canonical helper.
+  const { ensureConversationForContact } = await import("@/lib/kernel/conversation-thread")
+  const conversationId = await ensureConversationForContact(supabase, {
+    contactId: params.contactId, brokerageId: overrideCtx.brokerageId, agentId,
+  })
+  if (!conversationId) return { success: false, error: "Could not resolve the conversation thread" }
   const { data: msg, error } = await supabase
     .from("messages")
     .insert({
+      conversation_id: conversationId,
       contact_id:      params.contactId,
       agent_id:        agentId,
+      brokerage_id:    overrideCtx.brokerageId,
       type:            params.channel,
       direction:       "outbound",
       body:            params.body,
