@@ -46,11 +46,24 @@ export function normalizePexelsPhoto(p: {
   }
 }
 
-/** PURE: validate a save-to-library request. Platform scope carries no brokerage. */
+/** PURE: may this SOURCE be shared platform-wide (redistributed to every tenant)?
+ *  LICENSE LINE: Pexels lets each USER use photos commercially, but forbids
+ *  redistributing them as your own stock collection — so a tenant picking a
+ *  Pexels photo for THEIR OWN use is fine (tenant scope), while the PLATFORM
+ *  pushing Pexels photos to all tenants is not. Platform-shared rows must be
+ *  platform-OWNED content: AI-generated, own uploads/renders, or assets
+ *  explicitly licensed for redistribution. */
+export function canShareToTenants(source: string | null | undefined): boolean {
+  return source === "ai_image" || source === "upload" || source === "owned" || source === "licensed_redistribution"
+}
+
+/** PURE: validate a save-to-library request. Platform scope carries no brokerage
+ *  and only accepts redistributable sources (see canShareToTenants). */
 export function validateLibrarySave(input: {
   name?: string | null
   url?: string | null
   scope?: string | null
+  source?: string | null
 }): { ok: true; name: string; url: string; scope: "platform" | "brokerage" } | { ok: false; error: string } {
   const name = (input.name ?? "").trim()
   const url = (input.url ?? "").trim()
@@ -58,6 +71,9 @@ export function validateLibrarySave(input: {
   if (!name) return { ok: false, error: "A name is required" }
   if (!/^https?:\/\/.+/.test(url)) return { ok: false, error: "A valid image URL is required" }
   if (!scope) return { ok: false, error: "scope must be 'platform' or 'brokerage'" }
+  if (scope === "platform" && !canShareToTenants(input.source)) {
+    return { ok: false, error: "Stock photos can't be shared platform-wide — the stock license covers each user's own use, not redistribution. Each tenant can search stock themselves; share only AI-generated or platform-owned images." }
+  }
   return { ok: true, name: name.slice(0, 160), url, scope }
 }
 

@@ -51,7 +51,7 @@ export async function saveLibraryImageAction(input: {
 }): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const p = await callerProfile()
   if (!p) return { ok: false, error: "Unauthorized" }
-  const v = validateLibrarySave(input)
+  const v = validateLibrarySave(input) // enforces the redistribution license line for platform scope
   if (!v.ok) return v
 
   const svc = createServiceClient()

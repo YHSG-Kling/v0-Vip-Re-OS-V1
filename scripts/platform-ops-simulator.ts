@@ -19,7 +19,7 @@ import {
 } from "../lib/billing/dunning"
 import { buildCheckoutTaxConfig } from "../lib/billing/subscription-activation"
 import { evaluateTicketSla, canRateTicket, rollupCsat, SLA_TARGETS_HOURS } from "../lib/support/support-sla"
-import { normalizePexelsPhoto, validateLibrarySave } from "../lib/marketing/image-library"
+import { normalizePexelsPhoto, validateLibrarySave, canShareToTenants } from "../lib/marketing/image-library"
 import { MAINTENANCE_DOMAINS, TABLE_MANAGER } from "../lib/kernel/manager-registry"
 
 let passed = 0
@@ -86,8 +86,12 @@ console.log("\n── PURE: image library ──")
   check("pexels normalize: no src → null (never a broken row)", normalizePexelsPhoto({ alt: "x" }) === null)
   check("save validation: bad url rejected", !(validateLibrarySave({ name: "a", url: "not-a-url", scope: "platform" }) as any).ok)
   check("save validation: bogus scope rejected", !(validateLibrarySave({ name: "a", url: "https://x.com/a.jpg", scope: "global" }) as any).ok)
-  const okSave = validateLibrarySave({ name: " Kitchen ", url: "https://x.com/a.jpg", scope: "platform" })
-  check("save validation: trims + accepts platform scope", okSave.ok && (okSave as any).name === "Kitchen")
+  const okSave = validateLibrarySave({ name: " Kitchen ", url: "https://x.com/a.jpg", scope: "platform", source: "owned" })
+  check("save validation: trims + accepts platform scope for OWNED content", okSave.ok && (okSave as any).name === "Kitchen")
+  // LICENSE LINE: stock licenses cover each user's own use, NOT redistribution.
+  check("stock CANNOT be shared platform-wide (redistribution blocked)", !(validateLibrarySave({ name: "a", url: "https://x.com/a.jpg", scope: "platform", source: "stock:pexels" }) as any).ok)
+  check("stock CAN be saved tenant-scoped (the tenant's own pick)", (validateLibrarySave({ name: "a", url: "https://x.com/a.jpg", scope: "brokerage", source: "stock:pexels" }) as any).ok)
+  check("canShareToTenants: ai/owned yes, stock/unknown no", canShareToTenants("ai_image") && canShareToTenants("owned") && !canShareToTenants("stock:pexels") && !canShareToTenants(null))
 }
 
 console.log("\n── SOURCE: wiring ──")
