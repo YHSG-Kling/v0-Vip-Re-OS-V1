@@ -1,22 +1,16 @@
 import { fetchAutomationErrors, fetchCalendarSyncLogs, fetchObservabilityDashboard } from "@/app/actions/observability/observability-actions"
 import { createClient } from "@/lib/supabase/server"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import type { AutomationErrorRow, CalendarSyncLogRow } from "@/lib/kernel"
 
 export default async function ObservabilityPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (!user) return <div className="text-red-600">Not authenticated</div>
-
-  const { data: userData } = await supabase
-    .from("users")
-    .select("user_type")
-    .eq("id", user.id)
-    .single()
-
-  if (userData?.user_type !== "superadmin") {
+  const gate = await requirePlatformCapability("sentinel")
+  if (!gate.userId) return <div className="text-red-600">Not authenticated</div>
+  if (!gate.ok) {
     return <div className="text-red-600 p-6">Forbidden: superadmin access only</div>
   }
+
+  const supabase = await createClient()
 
   // Get brokerages for filter
   const { data: brokerages } = await supabase.from("brokerages").select("id, name")

@@ -3,7 +3,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Building2, ArrowLeft, Users, Clock } from "lucide-react"
 import Link from "next/link"
-import { createClient } from "@/lib/supabase/server"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { redirect } from "next/navigation"
 import { getBrokerageDetailAction } from "@/app/actions/superadmin/brokerage-management"
 import { BrokerageActions } from "./brokerage-actions"
@@ -28,11 +28,9 @@ function statusBadge(s: string | null | undefined) {
 export default async function SuperadminBrokerageDetailPage(
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-  const { data: profile } = await supabase.from("users").select("user_type").eq("id", user.id).maybeSingle()
-  if (profile?.user_type !== "superadmin") {
+  const gate = await requirePlatformCapability("tenants")
+  if (!gate.userId) redirect("/login")
+  if (!gate.ok) {
     return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
   }
 

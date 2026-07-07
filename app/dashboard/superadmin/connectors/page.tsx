@@ -1,8 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { createClient } from "@/lib/supabase/server"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { redirect } from "next/navigation"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
 import {
   getConnectorAttentionFeedAction,
   getConnectorHealthSummaryAction,
@@ -34,17 +33,9 @@ const STATUS_STYLE: Record<string, { label: string; variant: "default" | "second
 }
 
 export default async function SuperadminConnectorsPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("user_type, platform_role")
-    .eq("id", user.id)
-    .maybeSingle()
-  const allowed = profile?.user_type === "superadmin" || isPlatformStaff(profile?.platform_role)
-  if (!allowed) {
+  const gate = await requirePlatformCapability("providers")
+  if (!gate.userId) redirect("/login")
+  if (!gate.ok) {
     return <div className="p-6 text-red-600">Forbidden: platform staff access only</div>
   }
 

@@ -1,6 +1,6 @@
 import Link from "next/link"
 import { redirect } from "next/navigation"
-import { createClient } from "@/lib/supabase/server"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getSubscriptionOversightAction } from "@/app/actions/superadmin/subscription-oversight"
 import type { SubscriptionState } from "@/lib/platform/subscription-oversight"
@@ -23,12 +23,9 @@ const STATE_LABEL: Record<SubscriptionState, string> = {
 const ORDER: SubscriptionState[] = ["past_due", "trial_expiring", "renewal_due", "trialing", "active", "no_subscription", "cancelled"]
 
 export default async function SuperadminSubscriptionsPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-  const { data: profile } = await supabase.from("users").select("user_type, platform_role").eq("id", user.id).maybeSingle()
-  const isSuper = (profile as any)?.user_type === "superadmin" || (profile as any)?.platform_role === "superadmin"
-  if (!isSuper) return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
+  const gate = await requirePlatformCapability("billing")
+  if (!gate.userId) redirect("/login")
+  if (!gate.ok) return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
 
   const [res, revenue] = await Promise.all([
     getSubscriptionOversightAction(),

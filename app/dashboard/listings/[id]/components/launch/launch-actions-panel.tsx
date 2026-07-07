@@ -18,6 +18,7 @@ import {
   QrCode,
 } from "lucide-react"
 import { generateListingVideo } from "@/app/actions/listing-video"
+import { runDealPlayAction } from "@/app/actions/deal-play"
 
 interface LaunchActionsPanelProps {
   listingId: string
@@ -40,6 +41,33 @@ export function LaunchActionsPanel({
 }: LaunchActionsPanelProps) {
   const [isPending, startTransition] = useTransition()
   const [videoStatus, setVideoStatus] = useState<"idle" | "generating" | "success" | "error">("idle")
+  const [playStatus, setPlayStatus] = useState<"idle" | "running" | "done" | "already" | "error">("idle")
+  const [playSummary, setPlaySummary] = useState<string | null>(null)
+
+  // THE DEAL PLAY — the whole AI team works this listing in one narrated pass:
+  // Listing Concierge stages the launch → Asset Manager cuts the reel →
+  // Campaign Orchestrator drafts the channels → Ads Manager stages the ad.
+  // Everything lands gated; the command center narrates the handoffs.
+  const handleDealPlay = () => {
+    setPlayStatus("running")
+    setPlaySummary(null)
+    startTransition(async () => {
+      try {
+        const r = await runDealPlayAction(listingId)
+        if (!r.ok) { setPlayStatus("error"); setPlaySummary(r.reason ?? "The play could not run."); return }
+        if (r.alreadyRan) { setPlayStatus("already"); setPlaySummary("The play already ran for this listing — see the command center for its handoffs."); return }
+        setPlayStatus("done")
+        setPlaySummary(
+          `Staged, all awaiting your approval: ${r.reels} reel, ${r.channelsStaged} channel drafts, ` +
+          `${r.openHousesProposed} open-house draft, ${r.adsStaged} ad draft(s). ` +
+          `${r.handoffs} manager handoffs narrated in the command center.`,
+        )
+      } catch {
+        setPlayStatus("error")
+        setPlaySummary("The play could not run.")
+      }
+    })
+  }
 
   const handleGenerateVideo = () => {
     setVideoStatus("generating")
@@ -102,6 +130,27 @@ export function LaunchActionsPanel({
               Open Marketing Studio
             </Button>
           </Link>
+        )}
+
+        {/* THE DEAL PLAY — one click, the whole AI team, every artifact gated */}
+        <Button
+          size="sm"
+          className="w-full text-xs bg-indigo-600 hover:bg-indigo-700"
+          onClick={handleDealPlay}
+          disabled={isPending || playStatus === "running" || playStatus === "done" || playStatus === "already"}
+        >
+          {playStatus === "running" ? (
+            <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+          ) : (
+            <Share2 className="h-3.5 w-3.5 mr-1.5" />
+          )}
+          {playStatus === "done" ? "Deal Play staged ✓"
+            : playStatus === "already" ? "Deal Play already ran"
+            : playStatus === "running" ? "AI team working…"
+            : "Run the Deal Play (AI team)"}
+        </Button>
+        {playSummary && (
+          <p className={`text-[11px] ${playStatus === "error" ? "text-red-600" : "text-muted-foreground"}`}>{playSummary}</p>
         )}
 
         {/* Generate Video */}

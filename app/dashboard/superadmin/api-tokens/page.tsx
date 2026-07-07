@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { redirect } from "next/navigation"
 import { listAgenticTokens } from "@/app/actions/agentic-tokens"
 import { ApiTokensClient } from "./api-tokens-client"
@@ -15,11 +15,9 @@ export const metadata = {
  * /api/agentic-os/* via resolveAgenticCaller. Minting shows the raw token exactly once.
  */
 export default async function ApiTokensPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/auth/login")
-  const { data: u } = await supabase.from("users").select("user_type").eq("id", user.id).maybeSingle()
-  if (u?.user_type !== "superadmin") redirect("/dashboard")
+  const gate = await requirePlatformCapability("providers")
+  if (!gate.userId) redirect("/auth/login")
+  if (!gate.ok) redirect("/dashboard")
 
   const res = await listAgenticTokens()
   const rows = res.ok ? res.rows : []

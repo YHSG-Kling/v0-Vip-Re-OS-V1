@@ -38,19 +38,27 @@ export default async function BillingAdminPage({
     redirect("/login")
   }
 
-  // Check if user is superadmin
-  const { data: userProfile, error: userError } = await supabase
+  // PAYWALL FIX: this page is where a blocked (past-due/expired) tenant is
+  // routed at login — it must admit the TENANT'S OWN billing admins, not just
+  // superadmin (the old superadmin-only gate bounced blocked tenants straight
+  // back to /dashboard, defeating the paywall). Superadmin may inspect any
+  // brokerage via ?brokerageId=; a tenant admin is pinned to their own.
+  const { data: userProfile } = await supabase
     .from("users")
-    .select("user_type")
+    .select("user_type, platform_role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
-  if (!userProfile || userProfile.user_type !== "superadmin") {
+  const isSuper = userProfile?.user_type === "superadmin" || (userProfile as any)?.platform_role === "superadmin"
+  const isTenantBillingAdmin = ["broker", "broker_admin", "admin"].includes(userProfile?.user_type ?? "")
+  if (!userProfile || (!isSuper && !isTenantBillingAdmin)) {
     redirect("/dashboard")
   }
 
   const params = await searchParams
-  const brokerageId = params.brokerageId || user.id
+  const brokerageId = isSuper
+    ? (params.brokerageId || (userProfile as any).brokerage_id || user.id)
+    : (userProfile as any).brokerage_id
 
   return (
     <div className="min-h-screen bg-background">

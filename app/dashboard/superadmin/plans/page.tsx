@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation"
-import { createClient } from "@/lib/supabase/server"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { listPlanTiersAction } from "@/app/actions/superadmin/plan-catalog"
 import { PlanCatalogManager } from "./plan-catalog-manager"
 
@@ -8,12 +8,9 @@ export const dynamic = "force-dynamic"
 // Superadmin plan-catalog management — create / update / remove tiers, sync price
 // from Stripe. The single source of truth for all tier pricing + copy.
 export default async function SuperadminPlansPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-  const { data } = await supabase.from("users").select("user_type, platform_role").eq("id", user.id).maybeSingle()
-  const isSuper = (data as any)?.user_type === "superadmin" || (data as any)?.platform_role === "superadmin"
-  if (!isSuper) return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
+  const gate = await requirePlatformCapability("plans")
+  if (!gate.userId) redirect("/login")
+  if (!gate.ok) return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
 
   const res = await listPlanTiersAction()
   const tiers = res.ok ? res.tiers : []

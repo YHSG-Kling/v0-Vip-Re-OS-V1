@@ -6,7 +6,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import type { UserTier, FeatureAccessCheck } from "./types"
-import { resolveEntitlement } from "@/lib/entitlements/resolve"
+import { resolveEntitlement, rolloutBucket } from "@/lib/entitlements/resolve"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -78,6 +78,7 @@ interface FeatureFlagRow {
   beta: boolean
   deprecated: boolean
   sunset_date: string | null
+  rollout_percentage: number | null
 }
 
 // ─── canAccessFeature ─────────────────────────────────────────────────────────
@@ -88,10 +89,12 @@ interface FeatureFlagRow {
  *   1. Feature exists + is enabled
  *   2. Not deprecated / sunsetted
  *   3. superadmin_only gate
- *   4. Trial override (granted early access, may have expiry)
- *   5. Disabled override (explicit disable for scope)
- *   6. Tier access check
- *   7. Usage limit check (current billing period)
+ *   4. Rollout cohort (percentage rollout, deterministic per-tenant bucket)
+ *   5. Trial override (granted early access, may have expiry — can pull a
+ *      tenant into a partial rollout)
+ *   6. Disabled override (explicit disable for scope)
+ *   7. Tier access check
+ *   8. Usage limit check (current billing period)
  */
 export async function canAccessFeature(
   userId: string,
@@ -106,7 +109,7 @@ export async function canAccessFeature(
     .select(
       "feature_key, enabled, superadmin_only, solo_agent_access, team_access, " +
       "brokerage_access, multi_location_access, solo_agent_limit, team_limit, " +
-      "brokerage_limit, multi_location_limit, beta, deprecated, sunset_date"
+      "brokerage_limit, multi_location_limit, beta, deprecated, sunset_date, rollout_percentage"
     )
     .eq("feature_key", featureKey)
     .maybeSingle()
@@ -166,14 +169,25 @@ export async function canAccessFeature(
     usageCurrent = usage?.usage_count ?? 0
   }
 
+  // ── Rollout cohort bucket (only computed when the flag is partially rolled out).
+  //    The bucket keys on the TENANT (brokerage) so a whole office flips together;
+  //    a user with no brokerage buckets on their own id. ──
+  let bucket: number | null = null
+  if (flag && flag.rollout_percentage != null && flag.rollout_percentage < 100 && !isSuperadmin) {
+    const { data: u2 } = await supabase.from("users").select("brokerage_id").eq("id", userId).maybeSingle()
+    bucket = rolloutBucket(featureKey, (u2 as any)?.brokerage_id ?? userId)
+  }
+
   // ── ONE resolution order (lib/entitlements/resolve.ts) ─────────────────────
   return resolveEntitlement({
     platformHalt,
     flag: flag ? {
       enabled: flag.enabled, deprecated: flag.deprecated, sunsetDate: flag.sunset_date,
       superadminOnly: flag.superadmin_only, tierHasAccess, tierLimit,
+      rolloutPercentage: flag.rollout_percentage,
     } : null,
     isSuperadmin,
+    rolloutBucket: bucket,
     override,
     usageCurrent,
     tier: resolvedTier,

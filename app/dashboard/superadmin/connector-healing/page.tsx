@@ -8,9 +8,8 @@
 // healthy.
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { getConnectorSpec } from "@/lib/agentic-os/connector-registry"
 import { ProposalActions } from "./proposal-actions"
 import { redirect } from "next/navigation"
@@ -59,14 +58,10 @@ const KIND_BADGE: Record<string, { label: string; variant: "default" | "secondar
 
 export default async function ConnectorHealingPage() {
   // Auth gate — same pattern as the existing superadmin/connectors page.
-  const authClient = await createClient()
-  const { data: { user } } = await authClient.auth.getUser()
-  if (!user) redirect("/login")
+  const gate = await requirePlatformCapability("providers")
+  if (!gate.userId) redirect("/login")
+  if (!gate.ok) redirect("/dashboard")
   const svc = createServiceClient()
-  const { data: profile } = await svc
-    .from("users").select("user_type, platform_role").eq("id", user.id).maybeSingle()
-  const allowed = profile?.user_type === "superadmin" || isPlatformStaff(profile?.platform_role)
-  if (!allowed) redirect("/dashboard")
 
   // Pending queue (the actionable list) + the recent-history strip for context.
   const [{ data: pending }, { data: recent }] = await Promise.all([

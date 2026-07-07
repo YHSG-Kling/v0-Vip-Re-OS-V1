@@ -1,17 +1,15 @@
 import { ArrowLeft } from "lucide-react"
 import Link from "next/link"
-import { createClient } from "@/lib/supabase/server"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { redirect } from "next/navigation"
 import { ManualSubscriberForm } from "./manual-subscriber-form"
 
 export const dynamic = "force-dynamic"
 
 export default async function NewSubscriberPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-  const { data: profile } = await supabase.from("users").select("user_type").eq("id", user.id).maybeSingle()
-  if (profile?.user_type !== "superadmin") {
+  const gate = await requirePlatformCapability("tenants")
+  if (!gate.userId) redirect("/login")
+  if (!gate.ok) {
     return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
   }
 

@@ -18,6 +18,8 @@ import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { resolvePlatformHalt } from "../lib/platform/platform-controls"
 import { autonomyDecision } from "../lib/managers/autonomy-gate"
+import { resolveEntitlement, rolloutBucket } from "../lib/entitlements/resolve"
+import { platformStaffCan } from "../lib/platform/platform-staff-roster"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -41,6 +43,36 @@ function pureLayer() {
   check("with no halt, normal autonomy rules apply (autonomous → allow, approval_required → hold)",
     autonomyDecision({ managerKey: "ai_isa", effective: "autonomous", platformHalt: { halted: false, reason: null } }).allow &&
     !autonomyDecision({ managerKey: "ai_isa", effective: "approval_required" }).allow)
+
+  console.log("\n[rolloutBucket + resolveEntitlement step 4 · pure — percentage rollouts]")
+  const b1 = rolloutBucket("voice_admin", "tenant-a")
+  check("bucket is deterministic (same inputs → same bucket)", b1 === rolloutBucket("voice_admin", "tenant-a"))
+  check("bucket is 0–99", b1 >= 0 && b1 < 100)
+  check("buckets differ across features for the same tenant (no permanently-unlucky tenant)",
+    ["a", "b", "c", "d", "e"].map((f) => rolloutBucket(f, "tenant-a")).some((v, _, arr) => v !== arr[0]))
+  const flagBase = { enabled: true, deprecated: false, sunsetDate: null, superadminOnly: false, tierHasAccess: true, tierLimit: null }
+  check("pct 100 / null → fully rolled out (allowed)",
+    resolveEntitlement({ flag: { ...flagBase, rolloutPercentage: 100 }, tier: "team", rolloutBucket: 99 }).allowed &&
+    resolveEntitlement({ flag: { ...flagBase, rolloutPercentage: null }, tier: "team", rolloutBucket: 99 }).allowed)
+  check("bucket outside a 25% rollout → denied with an honest reason",
+    !resolveEntitlement({ flag: { ...flagBase, rolloutPercentage: 25 }, tier: "team", rolloutBucket: 80 }).allowed)
+  check("bucket inside the rollout → allowed", resolveEntitlement({ flag: { ...flagBase, rolloutPercentage: 25 }, tier: "team", rolloutBucket: 10 }).allowed)
+  check("grant_trial override PULLS a tenant into a partial rollout (explicit beats bucketing)",
+    resolveEntitlement({ flag: { ...flagBase, rolloutPercentage: 25 }, tier: "team", rolloutBucket: 80, override: { type: "grant_trial", trialEndsAt: null, disabledReason: null } }).allowed)
+  check("superadmin always sees a partially-rolled-out feature",
+    resolveEntitlement({ flag: { ...flagBase, rolloutPercentage: 1 }, tier: "multi_location", isSuperadmin: true, rolloutBucket: 99 }).allowed)
+  check("disable override still denies inside the rollout",
+    !resolveEntitlement({ flag: { ...flagBase, rolloutPercentage: 100 }, tier: "team", rolloutBucket: 0, override: { type: "disable", trialEndsAt: null, disabledReason: "x" } }).allowed)
+
+  console.log("\n[platformStaffCan · pure — the ONE capability map behind every staff gate]")
+  check("marketing staff can reach marketing + tenants but NOT billing/plans/staff",
+    platformStaffCan("marketing", "marketing") && platformStaffCan("marketing", "tenants") &&
+    !platformStaffCan("marketing", "billing") && !platformStaffCan("marketing", "plans") && !platformStaffCan("marketing", "staff"))
+  check("support staff can reach support + tenants + impersonate but NOT sentinel",
+    platformStaffCan("support", "support") && platformStaffCan("support", "impersonate") && !platformStaffCan("support", "sentinel"))
+  check("admin can operate everything EXCEPT staff management", platformStaffCan("admin", "billing") && !platformStaffCan("admin", "staff"))
+  check("superadmin has every capability incl. staff", platformStaffCan("superadmin", "staff"))
+  check("a tenant role is never platform staff", !platformStaffCan("broker", "support") && !platformStaffCan(null, "support"))
 }
 
 function sourceLayer() {
@@ -60,6 +92,32 @@ function sourceLayer() {
   const reg = src("lib/kernel/manager-registry.ts")
   check("burn domain owned by data_steward with a runnable proof", /platform_controls:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:platform-controls"/.test(reg))
   check("package.json wires the proof", /"test:platform-controls":\s*"tsx scripts\/platform-controls-simulator\.ts"/.test(src("package.json")))
+
+  console.log("\n[wiring — rollout cohorts + capability gates]")
+  const fa = src("lib/kernel/0.1-feature-access.ts")
+  check("canAccessFeature selects rollout_percentage + computes the tenant bucket", fa.includes("rollout_percentage") && fa.includes("rolloutBucket("))
+  const gov = src("app/dashboard/admin/feature-governance/feature-governance-client.tsx")
+  check("governance board writes rollout_percentage (superadmin-gated)", gov.includes("rollout_percentage") && gov.includes("handleRolloutChange"))
+  const rc = src("lib/platform/require-capability.ts")
+  check("ONE server gate resolves role canonically + answers via platformStaffCan", rc.includes("resolvePlatformRole") && rc.includes("platformStaffCan(role, capability)"))
+  for (const [page, cap] of [
+    ["app/dashboard/superadmin/ai-ops/page.tsx", "ai_ops"],
+    ["app/dashboard/superadmin/brokerages/page.tsx", "tenants"],
+    ["app/dashboard/superadmin/plans/page.tsx", "plans"],
+    ["app/dashboard/superadmin/subscriptions/page.tsx", "billing"],
+    ["app/dashboard/superadmin/staff/page.tsx", "staff"],
+    ["app/dashboard/superadmin/support/page.tsx", "support"],
+    ["app/dashboard/superadmin/sentinel/page.tsx", "sentinel"],
+    ["app/dashboard/superadmin/connectors/page.tsx", "providers"],
+    ["app/dashboard/support/page.tsx", "support"],
+  ] as const) {
+    check(`${page.split("/").slice(-2).join("/")} gates on '${cap}'`, src(page).includes(`requirePlatformCapability("${cap}")`))
+  }
+  check("god-switch page stays raw superadmin BY DESIGN (not capability-widened)",
+    !src("app/dashboard/superadmin/platform/page.tsx").includes("requirePlatformCapability"))
+  const paywall = src("app/dashboard/admin/billing/page.tsx")
+  check("PAYWALL BUG FIXED: billing page admits the tenant's own billing admins (pinned to their brokerage)",
+    paywall.includes("isTenantBillingAdmin") && paywall.includes("broker_admin"))
 }
 
 async function liveLayer() {

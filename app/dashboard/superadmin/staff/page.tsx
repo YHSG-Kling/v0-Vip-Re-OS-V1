@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation"
-import { createClient } from "@/lib/supabase/server"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { listPlatformStaffAction } from "@/app/actions/superadmin/platform-staff"
 import { PlatformStaffManager } from "./platform-staff-manager"
 
@@ -8,12 +8,9 @@ export const dynamic = "force-dynamic"
 // Superadmin: create/manage platform employees (support / superadmin) — the people
 // who run the platform itself, above every tenant.
 export default async function SuperadminStaffPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-  const { data } = await supabase.from("users").select("user_type, platform_role").eq("id", user.id).maybeSingle()
-  const isSuper = (data as any)?.user_type === "superadmin" || (data as any)?.platform_role === "superadmin"
-  if (!isSuper) return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
+  const gate = await requirePlatformCapability("staff")
+  if (!gate.userId) redirect("/login")
+  if (!gate.ok) return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
 
   const res = await listPlatformStaffAction()
   const staff = res.ok ? res.staff : []
@@ -28,7 +25,7 @@ export default async function SuperadminStaffPage() {
         </p>
       </div>
       {!res.ok && <div className="rounded border p-4 text-sm text-red-600">Failed to load staff: {res.error}</div>}
-      <PlatformStaffManager initialStaff={staff} currentUserId={user.id} />
+      <PlatformStaffManager initialStaff={staff} currentUserId={gate.userId} />
     </div>
   )
 }

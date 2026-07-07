@@ -2,9 +2,8 @@
 // support). Surfaces cross-brokerage vendor-spend health for triaging platform
 // issues. Support staff get visibility but NOT platform configuration (the
 // brokerage-warning toggle lives on the superadmin page).
-import { createClient } from "@/lib/supabase/server"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { redirect } from "next/navigation"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
 import { getPlatformVendorSpendOverview } from "@/app/actions/vendor-budget"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -18,12 +17,9 @@ const LEVEL_BADGE: Record<string, { label: string; variant: "default" | "seconda
 }
 
 export default async function SupportConsolePage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-
-  const { data: profile } = await supabase.from("users").select("user_type").eq("id", user.id).maybeSingle()
-  if (!isPlatformStaff(profile?.user_type)) {
+  const gate = await requirePlatformCapability("support")
+  if (!gate.userId) redirect("/login")
+  if (!gate.ok) {
     return <div className="p-6 text-red-600">Forbidden: platform staff access only</div>
   }
 
@@ -36,7 +32,7 @@ export default async function SupportConsolePage() {
       <div>
         <h1 className="text-2xl font-bold">Support — Platform Console</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Read-only cross-brokerage vendor-spend health for {profile?.user_type === "superadmin" ? "superadmin" : "support"} staff.
+          Read-only cross-brokerage vendor-spend health for {gate.role === "superadmin" ? "superadmin" : "support"} staff.
           {atRisk > 0 ? ` ${atRisk} brokerage(s) at or near their limit.` : " All brokerages within budget."}
         </p>
       </div>

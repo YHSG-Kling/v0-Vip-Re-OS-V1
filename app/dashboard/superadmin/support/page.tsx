@@ -1,6 +1,6 @@
 import Link from "next/link"
 import { redirect } from "next/navigation"
-import { createClient } from "@/lib/supabase/server"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { listAllTicketsAction } from "@/app/actions/superadmin/support-console"
 
 export const dynamic = "force-dynamic"
@@ -14,12 +14,9 @@ const PRIORITY_BADGE: Record<string, string> = {
 }
 
 export default async function SuperadminSupportPage({ searchParams }: { searchParams: Promise<{ status?: string }> }) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-  const { data: profile } = await supabase.from("users").select("user_type, platform_role").eq("id", user.id).maybeSingle()
-  const isStaff = ["superadmin", "support"].includes((profile as any)?.user_type) || ["superadmin", "support"].includes((profile as any)?.platform_role)
-  if (!isStaff) return <div className="p-6 text-red-600">Forbidden: platform support only</div>
+  const gate = await requirePlatformCapability("support")
+  if (!gate.userId) redirect("/login")
+  if (!gate.ok) return <div className="p-6 text-red-600">Forbidden: platform support only</div>
 
   const { status } = await searchParams
   const res = await listAllTicketsAction(status ? { status } : undefined)

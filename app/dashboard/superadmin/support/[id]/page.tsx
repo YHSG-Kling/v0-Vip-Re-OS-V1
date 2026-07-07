@@ -1,18 +1,15 @@
 import Link from "next/link"
 import { redirect } from "next/navigation"
-import { createClient } from "@/lib/supabase/server"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { getTicketThreadAction } from "@/app/actions/superadmin/support-console"
 import { SupportReplyBox } from "./reply-box"
 
 export const dynamic = "force-dynamic"
 
 export default async function SuperadminTicketPage({ params }: { params: Promise<{ id: string }> }) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-  const { data: profile } = await supabase.from("users").select("user_type, platform_role").eq("id", user.id).maybeSingle()
-  const isStaff = ["superadmin", "support"].includes((profile as any)?.user_type) || ["superadmin", "support"].includes((profile as any)?.platform_role)
-  if (!isStaff) return <div className="p-6 text-red-600">Forbidden: platform support only</div>
+  const gate = await requirePlatformCapability("support")
+  if (!gate.userId) redirect("/login")
+  if (!gate.ok) return <div className="p-6 text-red-600">Forbidden: platform support only</div>
 
   const { id } = await params
   const res = await getTicketThreadAction(id)

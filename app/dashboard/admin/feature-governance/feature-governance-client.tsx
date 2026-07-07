@@ -163,6 +163,23 @@ export function FeatureGovernanceClient({
     }
   }
 
+  // Percentage rollout: deterministic per-tenant cohort (resolveEntitlement step 4).
+  // 100 = fully rolled out; an explicit grant_trial override can still pull one
+  // tenant into a partial rollout.
+  async function handleRolloutChange(flagId: string, flagKey: string, pct: number) {
+    if (!isSuperadmin) {
+      toast.error("Only superadmins can change rollout percentage")
+      return
+    }
+    const clamped = Math.max(0, Math.min(100, Math.round(pct)))
+    const { error } = await supabase
+      .from("feature_flags")
+      .update({ rollout_percentage: clamped })
+      .eq("id", flagId)
+    if (error) toast.error("Failed to update rollout")
+    else toast.success(`${flagKey} rolling out to ${clamped}% of tenants`)
+  }
+
   async function handleRevoke(overrideId: string) {
     const { error } = await supabase
       .from("feature_access_overrides")
@@ -313,6 +330,23 @@ export function FeatureGovernanceClient({
                         <TierIcon label="brokerage" active={flag.brokerage_access} />
                         <TierIcon label="multi" active={flag.multi_location_access} />
                       </div>
+
+                      {/* Percentage rollout — deterministic tenant cohorts; 100 = everyone */}
+                      <label className="flex items-center gap-1 text-xs text-muted-foreground" title="Gradual rollout: % of tenants (deterministic cohort). A grant-trial override can pull a tenant in early.">
+                        <input
+                          type="number" min={0} max={100}
+                          defaultValue={(flag as any).rollout_percentage ?? 100}
+                          disabled={!isSuperadmin}
+                          onBlur={(e) => {
+                            const v = Number(e.target.value)
+                            if (!Number.isNaN(v) && v !== ((flag as any).rollout_percentage ?? 100)) {
+                              handleRolloutChange(flag.id, flag.feature_key, v)
+                            }
+                          }}
+                          className="w-14 rounded border px-1 py-0.5 text-right text-xs"
+                        />
+                        %
+                      </label>
 
                       <Switch
                         checked={flagStates[flag.id] ?? false}

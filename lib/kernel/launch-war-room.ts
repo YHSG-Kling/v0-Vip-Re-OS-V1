@@ -55,7 +55,7 @@ export interface LaunchResult {
  */
 export async function runLaunchWarRoom(
   brokerageId: string,
-  opts: { now?: Date; scraper?: NeighborScraper; promoDispatcher?: PromoDispatcher; copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator } = {},
+  opts: { now?: Date; scraper?: NeighborScraper; promoDispatcher?: PromoDispatcher; copyGenerator?: import("@/lib/kernel/ai-copy").CopyGenerator; onlyListingId?: string } = {},
   client?: Svc,
 ): Promise<LaunchResult> {
   const supabase = client ?? createServiceClient()
@@ -64,9 +64,13 @@ export async function runLaunchWarRoom(
     launches: 0, reels: 0, channelsStaged: 0, openHousesProposed: 0, neighborFarms: 0, adsStaged: 0, summariesProposed: 0,
   }
 
-  const { data: listings } = await supabase.from("listings")
+  // onlyListingId → the ON-DEMAND path (the Deal Play convenes the room for ONE
+  // listing from its detail page); default remains the brokerage-wide sweep.
+  let q = supabase.from("listings")
     .select("id, address, city, status, agent_id, created_at").eq("brokerage_id", brokerageId)
     .in("status", ["coming_soon", "active"]).order("created_at", { ascending: false }).limit(50)
+  if (opts.onlyListingId) q = q.eq("id", opts.onlyListingId)
+  const { data: listings } = await q
 
   for (const l of (listings ?? []) as any[]) {
     if (!l.address) continue
