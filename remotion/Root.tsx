@@ -28,6 +28,7 @@ import { AffordabilitySnapshotReel } from "./AffordabilitySnapshotReel"
 import { CMAReel } from "./CMAReel"
 import { EquityReportReel } from "./EquityReportReel"
 import { ListingSectionReel } from "./ListingSectionReel"
+import { ProductPromoReel } from "./ProductPromoReel"
 import { VideoCoverThumb } from "./VideoCoverThumb"
 import { LeadMagnetCard } from "./LeadMagnetCard"
 import { NewsletterDigestVideo } from "./NewsletterDigestVideo"
@@ -930,6 +931,27 @@ export const RemotionRoot: React.FC = () => {
             showEhoMark: true,
             logoUrl: null,
           },
+        }}
+      />
+      {/* PLATFORM SELF-MARKETING — VIP Agents' own promo (text-motion, no photo/
+          D-ID cost). 15s @30fps vertical; props come from the product content
+          engine's PRODUCT_ANGLES so text posts + video tell ONE honest story. */}
+      <Composition
+        id="ProductPromoReel"
+        component={ProductPromoReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={450}
+        fps={30}
+        width={1080}
+        height={1920}
+        defaultProps={{
+          hook: "Most real-estate software is another dashboard. VIP Agents is an AI TEAM.",
+          proofs: [
+            "13 accountable AI managers hand real work to each other — lead to deal to lifetime client.",
+            "One command center. Every action owned, gated, and auditable.",
+            "A voice admin that takes a command and executes it end to end.",
+          ],
+          cta: "See the AI team hand a real deal between managers — live.",
+          brand: { primaryColor: "#0F172A", accentColor: "#F59E0B" },
         }}
       />
     </>

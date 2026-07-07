@@ -101,3 +101,64 @@ export function canTransitionDraft(from: string, to: string, permalink?: string 
   if (to === "posted" && !(permalink ?? "").trim()) return { ok: false, reason: "permalink required to mark posted" }
   return { ok: true }
 }
+
+// ── PRODUCT VIDEO (the same story, video-shaped) ──────────────────────────────
+// The platform's promo videos reuse PRODUCT_ANGLES so text posts and reels tell
+// ONE honest story. The spec targets the real ProductPromoReel Remotion
+// composition (registered in remotion/Root.tsx): hook → three proof beats → CTA,
+// 15s @30fps. Render via the existing Remotion tooling
+// (`npx remotion render ProductPromoReel out.mp4 --props=...`), then attach the
+// file URL to the draft; the gated lifecycle (approve → posted w/ permalink) is
+// unchanged — a video draft additionally requires video_url before posting.
+
+export const VIDEO_FORMATS = {
+  vertical: { width: 1080, height: 1920, channel: "instagram" as ProductChannel },
+  square:   { width: 1080, height: 1080, channel: "linkedin" as ProductChannel },
+} as const
+export type ProductVideoFormat = keyof typeof VIDEO_FORMATS
+
+export interface ProductVideoSpec {
+  compositionId: "ProductPromoReel"
+  format: ProductVideoFormat
+  width: number
+  height: number
+  fps: 30
+  durationInFrames: 450
+  inputProps: { hook: string; proofs: string[]; cta: string; brand: { primaryColor: string; accentColor: string } }
+  /** The voiceover/caption script — hook + beats + CTA, honest, no invented stats. */
+  script: string
+  /** The social caption that ships WITH the video (same composer as text posts). */
+  caption: string
+  channel: ProductChannel
+  angle: string
+}
+
+/** PURE + deterministic: three proof beats = the chosen angle's proof + the next
+ *  two angles' proofs in catalog order (wrapping) — variety without randomness. */
+export function videoProofBeats(angle: string): string[] {
+  const keys = Object.keys(PRODUCT_ANGLES)
+  const start = Math.max(0, keys.indexOf(angle))
+  return [0, 1, 2].map((i) => PRODUCT_ANGLES[keys[(start + i) % keys.length]].proof)
+}
+
+export function composeProductVideoSpec(angle: string, format: ProductVideoFormat = "vertical"): ProductVideoSpec {
+  const a = PRODUCT_ANGLES[angle] ?? PRODUCT_ANGLES.ai_team
+  const resolvedAngle = PRODUCT_ANGLES[angle] ? angle : "ai_team"
+  const f = VIDEO_FORMATS[format] ?? VIDEO_FORMATS.vertical
+  const beats = videoProofBeats(resolvedAngle)
+  const cta = "See the AI team hand a real deal between managers — live."
+  const post = composeProductPost(f.channel, resolvedAngle)
+  return {
+    compositionId: "ProductPromoReel",
+    format: VIDEO_FORMATS[format] ? format : "vertical",
+    width: f.width,
+    height: f.height,
+    fps: 30,
+    durationInFrames: 450,
+    inputProps: { hook: a.hook, proofs: beats, cta, brand: { primaryColor: "#0F172A", accentColor: "#F59E0B" } },
+    script: [a.hook, ...beats, cta].join("\n"),
+    caption: post.content,
+    channel: f.channel,
+    angle: resolvedAngle,
+  }
+}

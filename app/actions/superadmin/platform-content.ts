@@ -10,7 +10,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
-import { buildWeeklyProductCalendar, canTransitionDraft } from "@/lib/platform/product-content"
+import { buildWeeklyProductCalendar, canTransitionDraft, composeProductVideoSpec, type ProductVideoFormat } from "@/lib/platform/product-content"
 import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
 
 async function requireMarketing(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
@@ -62,7 +62,7 @@ export async function listProductDraftsAction(): Promise<{ ok: true; drafts: any
   if (!auth.ok) return auth
   const svc = createServiceClient()
   const { data, error } = await svc.from("platform_social_drafts")
-    .select("id, channel, angle, content, hashtags, status, scheduled_for, permalink, created_at")
+    .select("id, channel, angle, content, hashtags, status, scheduled_for, permalink, media_type, format, script, video_url, created_at")
     .neq("status", "discarded").order("scheduled_for", { ascending: true }).limit(100)
   if (error) return { ok: false, error: error.message }
   return { ok: true, drafts: data ?? [] }
@@ -72,15 +72,53 @@ export async function transitionProductDraftAction(input: { id: string; to: stri
   const auth = await requireMarketing()
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  const { data: draft } = await svc.from("platform_social_drafts").select("id, status").eq("id", input.id).maybeSingle()
+  const { data: draft } = await svc.from("platform_social_drafts").select("id, status, media_type, video_url").eq("id", input.id).maybeSingle()
   if (!draft) return { ok: false, error: "Draft not found" }
   const check = canTransitionDraft((draft as any).status, input.to, input.permalink)
   if (!check.ok) return { ok: false, error: check.reason }
+  // A VIDEO draft can only be posted once the rendered file is attached.
+  if (input.to === "posted" && (draft as any).media_type === "video" && !((draft as any).video_url ?? "").trim()) {
+    return { ok: false, error: "Attach the rendered video (video_url) before marking a video posted" }
+  }
   const patch: Record<string, unknown> = { status: input.to, updated_at: new Date().toISOString() }
   if (input.to === "posted") patch.permalink = (input.permalink ?? "").trim()
   const { error } = await svc.from("platform_social_drafts").update(patch).eq("id", input.id)
   if (error) return { ok: false, error: error.message }
   await audit(auth.userId, auth.email, `platform_content.${input.to}`, input.id, { permalink: input.permalink ?? null })
+  revalidatePath("/dashboard/superadmin/growth")
+  return { ok: true }
+}
+
+/** Create a product VIDEO draft — the same angle story, video-shaped. The spec
+ *  targets the real ProductPromoReel composition; render with the Remotion CLI
+ *  and attach the file URL before posting. */
+export async function generateProductVideoDraftAction(input: { angle: string; format?: ProductVideoFormat }): Promise<{ ok: true; id: string; script: string } | { ok: false; error: string }> {
+  const auth = await requireMarketing()
+  if (!auth.ok) return auth
+  const spec = composeProductVideoSpec(input.angle, input.format ?? "vertical")
+  const svc = createServiceClient()
+  const { data, error } = await svc.from("platform_social_drafts").insert({
+    channel: spec.channel, angle: spec.angle, content: spec.caption,
+    hashtags: null, status: "draft", created_by: auth.userId,
+    media_type: "video", format: spec.format, script: spec.script,
+  }).select("id").single()
+  if (error) return { ok: false, error: error.message }
+  await audit(auth.userId, auth.email, "platform_content.video_draft", (data as any).id, { angle: spec.angle, format: spec.format, compositionId: spec.compositionId })
+  revalidatePath("/dashboard/superadmin/growth")
+  return { ok: true, id: (data as any).id, script: spec.script }
+}
+
+/** Attach the rendered video file URL to a video draft (from the Remotion render). */
+export async function attachProductVideoAction(input: { id: string; videoUrl: string }): Promise<{ ok: boolean; error?: string }> {
+  const auth = await requireMarketing()
+  if (!auth.ok) return auth
+  const url = (input.videoUrl ?? "").trim()
+  if (!url) return { ok: false, error: "videoUrl required" }
+  const svc = createServiceClient()
+  const { error } = await svc.from("platform_social_drafts").update({ video_url: url, updated_at: new Date().toISOString() })
+    .eq("id", input.id).eq("media_type", "video")
+  if (error) return { ok: false, error: error.message }
+  await audit(auth.userId, auth.email, "platform_content.video_attached", input.id, { videoUrl: url })
   revalidatePath("/dashboard/superadmin/growth")
   return { ok: true }
 }
