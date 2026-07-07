@@ -131,6 +131,14 @@ console.log("\n── PURE: disclosures + tenancy matrix ──")
   check("matrix: scrapers/rentcast/exa/remotion platform-owned; stripe covers tenant→vendor Connect; quickbooks is the tenant's own OAuth",
     ["scrapers", "rentcast", "exa", "remotion"].every((k) => providerTenancy(k)?.models.includes("platform_metered")) &&
     /connect/i.test(providerTenancy("stripe")!.why) && providerTenancy("quickbooks")!.models.includes("user_oauth"))
+  check("matrix: batchdata beyond skip-trace + NON-FCRA legal line; peoplesdata enrichment; scrapers carry the compliance",
+    /comparables|AVM/i.test(providerTenancy("batchdata")!.why) && /FCRA/.test(providerTenancy("batchdata")!.why) &&
+    /FCRA/.test(providerTenancy("peoplesdata")!.why) && /DNC\/TCPA scrub/.test(providerTenancy("scrapers")!.why))
+  check("matrix: media lives on OUR storage (vendor outputs copied home; bookends+thumbnails+QR common packages)",
+    /copied home/.test(providerTenancy("supabase_storage")!.why) && /Bookends/i.test(providerTenancy("supabase_storage")!.why) &&
+    /QR/.test(providerTenancy("supabase_storage")!.why))
+  check("matrix: quickbooks DUAL — tenant's own book AND the platform's own company, never mixed",
+    /never mixed/i.test(providerTenancy("quickbooks")!.why))
   check("matrix: twilio = subaccounts + BYO top tier; elevenlabs/vapi = platform metered",
     providerTenancy("twilio")!.models.includes("platform_subaccount") &&
     providerTenancy("twilio")!.models.includes("byo_top_tier") &&

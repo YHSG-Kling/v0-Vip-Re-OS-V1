@@ -66,8 +66,20 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   {
     provider: "scrapers",
     models: ["platform_metered"],
-    why: "Lead scraping (Apify actors + BatchData property/skip-trace) is platform plumbing — tenants buy OUTCOMES (leads in their pipeline), never scraper accounts; usage metered per brokerage, suppression/DNC scrubbing enforced platform-side.",
-    envVars: ["APIFY_API_TOKEN", "BATCHDATA_API_KEY"],
+    why: "The scraper FLEET (Apify actors across source families — FSBO/expired/probate/etc.) is platform plumbing — tenants buy OUTCOMES (leads in their pipeline), never scraper accounts. LEGAL LINE: scrape only publicly available data, honor robots/ToS exposure at the platform level, and EVERY scraped record passes the suppression + DNC/TCPA scrub before any tenant can touch it — the platform carries the compliance, not the agent.",
+    envVars: ["APIFY_API_TOKEN"],
+  },
+  {
+    provider: "batchdata",
+    models: ["platform_metered"],
+    why: "Far more than skip tracing: property data + comparables, AVM chain input, geocoding, relisting detection, DNC/TCPA phone scrubbing, address/phone verification. LEGAL LINE: skip-trace/contact data is NON-FCRA — it must never be used for credit, tenancy, or employment screening; contact-data use stays behind the TCPA/DNC gates.",
+    envVars: ["BATCHDATA_API_KEY"],
+  },
+  {
+    provider: "peoplesdata",
+    models: ["platform_metered"],
+    why: "Contact/person enrichment for the lead pipeline (PeopleData/PDL rail) — platform key, enrichment lands via the merge/column-map so tenant records stay canonical. Same NON-FCRA legal line as all enrichment data.",
+    envVars: ["PEOPLEDATA_API_KEY", "PDL_API_KEY"],
   },
   {
     provider: "rentcast",
@@ -95,9 +107,15 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   },
   {
     provider: "quickbooks",
-    models: ["user_oauth"],
-    why: "Tenant ACCOUNTING is the tenant's book — QuickBooks connects via the brokerage's own OAuth (their company file, their accountant); the platform syncs data in/out but never owns the ledger.",
+    models: ["user_oauth", "platform_metered"],
+    why: "DUAL USE: tenant accounting is the TENANT's book (their own OAuth, their company file, their accountant — the platform syncs but never owns the ledger); AND the platform runs its OWN QuickBooks company for platform revenue/expenses (subscriptions, vendor fees) — two connections, never mixed.",
     envVars: ["QUICKBOOKS_CLIENT_ID", "QUICKBOOKS_CLIENT_SECRET"],
+  },
+  {
+    provider: "supabase_storage",
+    models: ["platform_metered"],
+    why: "ALL tenant media lives on OUR Supabase buckets (videos/avatars/TTS in video-assets, listing media, agent media, documents) — never on the vendor: D-ID/ElevenLabs/Remotion outputs are copied home so a vendor account change never strands a tenant's assets. Bookends (intro/outro/B-roll/music) + THUMBNAILS are the common video package every render composes from; QR codes are the common marketing primitive (marketing_asset_qr_links) stitching physical → digital attribution.",
+    envVars: ["NEXT_PUBLIC_SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"],
   },
   {
     provider: "pexels",
