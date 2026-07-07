@@ -10,6 +10,8 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fubToRow, hubspotToRow, loftyToRow, ghlToRow, CRM_IMPORT_PROVIDERS } from "../lib/crm/import-pull"
 import { planTokenAction, RENEWAL_WINDOW_DAYS } from "../lib/social/token-refresh"
+import { detectPortal, parsePortalLeadEmail } from "../lib/lead-pipeline/portal-lead-intake"
+import { getSourceSemantics } from "../lib/lead-pipeline/source-intent-map"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 
 let passed = 0
@@ -63,6 +65,53 @@ console.log("\n── PURE: social token lifecycle (the audit's worst gap) ─�
     planTokenAction({ ...base, platform: "facebook", token_expires_at: soon, is_active: false }, now) === "skip")
   check("no expiry recorded (page tokens) → healthy, never a false alarm",
     planTokenAction({ ...base, platform: "facebook", token_expires_at: null }, now) === "healthy")
+}
+
+console.log("\n── PURE: portal lead intake (Zillow / realtor.com / Opcity) ──")
+{
+  check("portal detection: zillow/realtor/opcity senders recognized; others null",
+    detectPortal("noreply@convo.zillow.com") === "zillow" &&
+    detectPortal("leads@leads.realtor.com") === "realtor_com" &&
+    detectPortal("referral@opcity.com") === "opcity" &&
+    detectPortal("someone@gmail.com") === null && detectPortal(null) === null)
+  const parsed = parsePortalLeadEmail({
+    fromEmail: "notifications@convo.zillow.com",
+    subject: "Dana Kling is requesting information about 12 Oak St, Austin, TX",
+    bodyText: "Name: Dana Kling\nPhone: (512) 555-1234\nEmail: dana@example.com\nMessage: Is it still available? I'm pre-approved.",
+  })
+  check("full parse: name split + email/phone + property + message",
+    parsed?.portal === "zillow" && parsed?.firstName === "Dana" && parsed?.lastName === "Kling" &&
+    parsed?.email === "dana@example.com" && !!parsed?.phone && (parsed?.propertyAddress ?? "").includes("12 Oak St"))
+  check("portal's own address never mistaken for the lead's email",
+    parsePortalLeadEmail({ fromEmail: "n@zillow.com", subject: "Pat Doe is interested in 5 Elm Ave", bodyText: "Reply to notifications@convo.zillow.com\nPhone: 512-555-9999" })?.email === null)
+  check("recognized sender with NO name and NO contact info → null (no fabricated leads)",
+    parsePortalLeadEmail({ fromEmail: "digest@zillow.com", subject: "Your weekly market report", bodyText: "Homes in your area..." }) === null)
+  check("non-portal sender → null regardless of content",
+    parsePortalLeadEmail({ fromEmail: "friend@gmail.com", subject: "Dana Kling is requesting information", bodyText: "Phone: 512-555-1111" }) === null)
+  const sem = getSourceSemantics("portal_lead")
+  check("intent map: portal_lead = buyer, base 82, immediate identity, promotes before enrichment",
+    sem.intentType === "buyer" && sem.baseScore === 82 && sem.identityPolicy === "immediate" && sem.canPromoteBeforeEnrichment === true)
+}
+
+console.log("\n── SOURCE: tenant connections hub ──")
+{
+  const intake = src("lib/lead-pipeline/portal-lead-intake.ts")
+  check("intake feeds the ONE gated pipeline (raw_scraped_leads → processRawRecord), never a direct contact write",
+    intake.includes('"raw_scraped_leads"') && intake.includes("processRawRecord") && !intake.includes('from("contacts")'))
+  check("immediate-processing failure keeps the raw row (never lose a lead)", intake.includes("raw row kept"))
+  const webhook = src("app/api/webhooks/inbound-mail/route.ts")
+  check("hooked into inbound-mail BEFORE the known-contact gate", webhook.includes("parsePortalLeadEmail") &&
+    webhook.indexOf("parsePortalLeadEmail") < webhook.indexOf("if (!contactId || !brokerageId)"))
+  const conn = src("app/actions/tenant-connections.ts")
+  check("tenant slots: listhub + mls_direct + showingtime, brokerage-admin gated, honest ShowingTime note",
+    conn.includes('"listhub"') && conn.includes('"mls_direct"') && conn.includes('"showingtime"') && conn.includes("verifies partner access"))
+  const page = src("app/dashboard/settings/integrations/lead-sources/lead-sources-client.tsx")
+  check("settings page: forwarding instructions + last-30d proof counts per portal",
+    page.includes("auto-forward") && page.includes("last 30 days"))
+  const matrix = src("lib/providers/tenancy-matrix.ts")
+  check("strategy recorded: Twilio convergence (ConversationRelay/Conversations/Voice Intelligence/fraud) + Vapi sunset lane + zyte backup + sinch/plivo/plaid/buffer dropped",
+    matrix.includes("ConversationRelay") && matrix.includes("SUNSET LANE") && matrix.includes("BACKUP scraper lane") && matrix.includes("DROPPED by owner decision"))
+  check("registry burn domain tenant_connections_hub", "tenant_connections_hub" in MAINTENANCE_DOMAINS)
 }
 
 console.log("\n── SOURCE: vendor-audit fixes ──")

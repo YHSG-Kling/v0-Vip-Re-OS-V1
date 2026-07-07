@@ -185,6 +185,29 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // PORTAL LEAD intake (Zillow / realtor.com / Opcity notification emails the
+    // tenant auto-forwards here) — runs BEFORE the known-contact requirement,
+    // since the sender is the portal, never a contact. Conservative detection;
+    // a hit lands in the GATED lead pipeline (raw → dedupe → suppression →
+    // promotion → speed-to-lead). Best-effort.
+    if (brokerageId) {
+      try {
+        const { parsePortalLeadEmail, ingestPortalLead } = await import("@/lib/lead-pipeline/portal-lead-intake")
+        const portalLead = parsePortalLeadEmail({
+          fromEmail: email.fromEmail ?? null,
+          subject: email.subject ?? null,
+          bodyText: email.bodyText ?? null,
+        })
+        if (portalLead) {
+          await ingestPortalLead(supabase, brokerageId, portalLead)
+          results.push({ email_from: email.fromEmail, uploads: 0 })
+          continue
+        }
+      } catch (e) {
+        console.error("[inbound-mail] portal-lead intake failed (non-fatal):", e)
+      }
+    }
+
     if (!contactId || !brokerageId) {
       results.push({ email_from: email.fromEmail, uploads: 0 })
       continue

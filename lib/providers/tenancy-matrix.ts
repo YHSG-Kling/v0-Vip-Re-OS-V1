@@ -36,13 +36,13 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   {
     provider: "twilio",
     models: ["platform_subaccount", "byo_top_tier"],
-    why: "Numbers + SMS are the product ('AI answers your phone'), and A2P 10DLC registration is a platform job — subaccounts isolate each tenant's numbers/usage under one parent. BYO only for enterprises with carrier contracts.",
+    why: "Numbers + SMS are the product ('AI answers your phone'), and A2P 10DLC registration is a platform job — subaccounts isolate each tenant's numbers/usage under one parent. BYO only for enterprises with carrier contracts. STRATEGIC CONVERGENCE (owner decision): Twilio is the long-term home for the whole comms brain — ConversationRelay for conversational voice AI (retiring the separate Vapi dependency), Conversations for the UNIFIED INBOX including social messaging surfaces (WhatsApp/FB Messenger), Voice Intelligence for call semantics, and Verify/Lookup/SHAKEN-STIR for fraud protection. Migration is staged — Vapi stays operational until the Twilio lanes are proven.",
     envVars: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"],
   },
   {
     provider: "vapi",
     models: ["platform_metered"],
-    why: "The AI voice brain — one platform account; assistants + numbers are created per tenant via API; minutes metered per brokerage with budget auto-pause.",
+    why: "The AI voice brain TODAY — one platform account; assistants + numbers created per tenant via API; minutes metered with budget auto-pause. SUNSET LANE (owner decision): converging onto Twilio ConversationRelay once proven — Vapi remains fully operational until then; nothing is ripped out before its replacement carries live traffic.",
     envVars: ["VAPI_API_KEY", "VAPI_WEBHOOK_SECRET", "VAPI_PHONE_NUMBER_ID", "VAPI_ISA_ASSISTANT_ID"],
   },
   {
@@ -66,7 +66,7 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   {
     provider: "scrapers",
     models: ["platform_metered"],
-    why: "The scraper FLEET is FOUR platform-owned lanes: Apify actors (direct-site source families — FSBO/expired/etc.), ZenRows (anti-bot rendering for hard targets), Zyte (managed extraction at scale), and the FREE OSINT lane (court/public-records filings — divorce/probate/foreclosure/tax-lien/eviction/bankruptcy → motivated-seller raw records, no vendor cost). Tenants buy OUTCOMES (leads in their pipeline), never scraper accounts. LEGAL LINE: publicly available data only, robots/ToS exposure carried at the platform level, and EVERY scraped record passes the suppression + DNC/TCPA scrub before any tenant can touch it.",
+    why: "The scraper FLEET is FOUR platform-owned lanes: Apify actors (direct-site source families — FSBO/expired/etc.), ZenRows (anti-bot rendering for hard targets), Zyte (the BACKUP scraper lane — owner decision: kept as failover when Apify/ZenRows can't reach a target; client wiring pending), and the FREE OSINT lane (court/public-records filings — divorce/probate/foreclosure/tax-lien/eviction/bankruptcy → motivated-seller raw records, no vendor cost). Tenants buy OUTCOMES (leads in their pipeline), never scraper accounts. DROPPED by owner decision: sinch, plivo (Twilio/Telnyx/Bandwidth cover SMS), plaid, buffer (native social OAuth covers publishing). LEGAL LINE: publicly available data only, robots/ToS exposure carried at the platform level, and EVERY scraped record passes the suppression + DNC/TCPA scrub before any tenant can touch it.",
     envVars: ["APIFY_API_TOKEN", "ZENROWS_API_KEY", "ZYTE_API_KEY"],
   },
   {
