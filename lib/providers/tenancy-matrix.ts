@@ -54,8 +54,32 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   {
     provider: "did",
     models: ["platform_metered"],
-    why: "Avatar video generation — platform key, per-render metering; agent avatars are per-agent assets on the platform account (same shape as voice clones).",
+    why: "Avatar CREATION + video generation for tenants — platform key, per-render metering; each agent's avatar is their per-agent asset living on the platform account (same shape as voice clones). No HeyGen.",
     envVars: ["DID_API_KEY"],
+  },
+  {
+    provider: "remotion",
+    models: ["platform_metered"],
+    why: "Programmatic video renders run on OUR serverless infrastructure (no per-render vendor) — platform-owned by construction; the company license is a platform obligation once team size crosses Remotion's threshold.",
+    envVars: [],
+  },
+  {
+    provider: "scrapers",
+    models: ["platform_metered"],
+    why: "Lead scraping (Apify actors + BatchData property/skip-trace) is platform plumbing — tenants buy OUTCOMES (leads in their pipeline), never scraper accounts; usage metered per brokerage, suppression/DNC scrubbing enforced platform-side.",
+    envVars: ["APIFY_API_TOKEN", "BATCHDATA_API_KEY"],
+  },
+  {
+    provider: "rentcast",
+    models: ["platform_metered"],
+    why: "Property/AVM data (valuation provider chain) — platform key; data rides into tenant features (CMAs, equity triggers), the vendor relationship is ours.",
+    envVars: ["RENTCAST_API_KEY"],
+  },
+  {
+    provider: "exa",
+    models: ["platform_metered"],
+    why: "Web/competitive-intel search — platform key powering competitor-ad watch and research features; metered like the other intelligence vendors.",
+    envVars: ["EXA_API_KEY"],
   },
   {
     provider: "sendgrid",
@@ -66,8 +90,14 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   {
     provider: "stripe",
     models: ["platform_metered"],
-    why: "The platform's own money rail (subscriptions, setup fees, Stripe Tax flag); vendors use Connect for payouts. Never tenant-owned.",
+    why: "TWO money flows on one platform account: (1) the platform's own rail — tenant subscriptions, setup fees, Stripe Tax flag, vendor marketplace subscriptions; (2) TENANTS charging THEIR counterparties (vendors, clients) via Stripe CONNECT accounts (stripe_account_id) — the tenant's money never mixes with ours. Never tenant-owned keys.",
     envVars: ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"],
+  },
+  {
+    provider: "quickbooks",
+    models: ["user_oauth"],
+    why: "Tenant ACCOUNTING is the tenant's book — QuickBooks connects via the brokerage's own OAuth (their company file, their accountant); the platform syncs data in/out but never owns the ledger.",
+    envVars: ["QUICKBOOKS_CLIENT_ID", "QUICKBOOKS_CLIENT_SECRET"],
   },
   {
     provider: "pexels",

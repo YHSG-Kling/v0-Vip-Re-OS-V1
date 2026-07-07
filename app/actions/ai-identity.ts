@@ -72,6 +72,9 @@ export type SaveAIIdentityInput = {
   aiCallHandleInbound?: boolean
   aiCallHandleOutbound?: boolean
   aiCallForwardNumber?: string | null
+  /** 'always' = AI owns every call; 'after_hours' = hour-aware reception. */
+  aiAnswerMode?: "always" | "after_hours"
+  businessHours?: { timezone?: string; start?: string; end?: string; days?: number[] } | null
 }
 
 export async function getAIIdentityProfile(
@@ -196,6 +199,8 @@ export async function saveAIIdentityProfile(
           ...(input.aiCallHandleInbound !== undefined ? { ai_call_handle_inbound: input.aiCallHandleInbound } : {}),
           ...(input.aiCallHandleOutbound !== undefined ? { ai_call_handle_outbound: input.aiCallHandleOutbound } : {}),
           ...(input.aiCallForwardNumber !== undefined ? { ai_call_forward_number: input.aiCallForwardNumber } : {}),
+          ...(input.aiAnswerMode !== undefined ? { ai_answer_mode: input.aiAnswerMode } : {}),
+          ...(input.businessHours !== undefined ? { business_hours: input.businessHours } : {}),
         },
         { onConflict: "scope_type,scope_id" }
       )

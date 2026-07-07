@@ -14,7 +14,8 @@
 
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
-import { buildInboundAssistantConfig } from "../lib/voice/vapi-numbers"
+import { buildInboundAssistantConfig, composeBusinessHoursRule } from "../lib/voice/vapi-numbers"
+import { rollupCallIntelligence, composeCallIntelBrief } from "../lib/kernel/call-intelligence"
 import { pickCredTier, rollupVoiceUsage } from "../lib/voice/twilio-tenancy"
 import { PROVIDER_TENANCY, providerTenancy } from "../lib/providers/tenancy-matrix"
 import { withAiCallDisclosures, ensureAiDisclosure } from "../lib/communication/call-disclosures"
@@ -87,6 +88,34 @@ console.log("\n── PURE: phone-system tenancy (commercial model) ──")
   check("empty month → zeroed meter, no NaN", rollupVoiceUsage("2026-07", [], []).totalCostCents === 0)
 }
 
+console.log("\n── PURE: hour-aware reception + call intelligence ──")
+{
+  const rule = composeBusinessHoursRule("after_hours", { timezone: "America/Chicago", start: "09:00", end: "18:00", days: [1, 2, 3, 4, 5] })
+  check("after_hours rule: hours + {{now}} + transfer-during-hours + full-reception-after",
+    rule.includes("09:00–18:00") && rule.includes("{{now}}") && rule.includes("transfer_to_agent") && rule.includes("Never tell a caller to call back later"))
+  check("'always' mode / missing hours → empty rule (unchanged default behavior)",
+    composeBusinessHoursRule("always", { start: "09:00", end: "18:00" }) === "" && composeBusinessHoursRule("after_hours", null) === "")
+  const withHours = buildInboundAssistantConfig({
+    assistantName: "Ava", welcomeMessage: null, tone: null, brokerageName: "X", agentName: null,
+    prohibitedLanguage: null, elevenlabsVoiceId: null, forwardNumber: null,
+    answerMode: "after_hours", businessHours: { timezone: "America/Chicago", start: "09:00", end: "18:00", days: [1, 2, 3, 4, 5] },
+  }, "b1") as any
+  check("hour rule lands in the assistant prompt", (withHours.model.systemPrompt as string).includes("OFFICE HOURS"))
+
+  const intel = rollupCallIntelligence([
+    { objections: ["price too high", "Price too high"], sentiment: "positive", urgency_score: 85, coaching_score: 70, intent_primary: "buy" },
+    { objections: ["timing"], sentiment: "negative", urgency_score: 20, coaching_score: 80, intent_primary: "buy" },
+    { objections: null, sentiment: null, urgency_score: null, coaching_score: null, intent_primary: null },
+  ])
+  check("intel rollup: objections case-folded + counted, urgency threshold, coaching avg",
+    intel.topObjections[0].objection === "price too high" && intel.topObjections[0].count === 2 &&
+    intel.highUrgencyCount === 1 && intel.avgCoachingScore === 75 && intel.topIntent === "buy")
+  const brief = composeCallIntelBrief(intel)
+  check("spoken brief names the top objection + honest small-sample line",
+    brief.includes("price too high") && brief.includes("Small sample"))
+  check("zero calls → empty brief (nothing invented)", composeCallIntelBrief(rollupCallIntelligence([])) === "")
+}
+
 console.log("\n── PURE: disclosures + tenancy matrix ──")
 {
   check("AI disclosure prepended when absent; never doubled",
@@ -97,8 +126,11 @@ console.log("\n── PURE: disclosures + tenancy matrix ──")
     /AI assistant/.test(both) && /recorded/i.test(both) && withAiCallDisclosures(both) === both)
   check("unrecorded call skips the recording line only",
     !/recorded/i.test(withAiCallDisclosures("Hello.", { recorded: false })))
-  check("matrix: every provider decision carries a stated WHY + env vars",
-    PROVIDER_TENANCY.length >= 8 && PROVIDER_TENANCY.every((p) => p.why.length > 30 && p.envVars.length > 0))
+  check("matrix: every provider decision carries a stated WHY (+ env vars unless self-hosted like remotion)",
+    PROVIDER_TENANCY.length >= 12 && PROVIDER_TENANCY.every((p) => p.why.length > 30 && (p.envVars.length > 0 || p.provider === "remotion")))
+  check("matrix: scrapers/rentcast/exa/remotion platform-owned; stripe covers tenant→vendor Connect; quickbooks is the tenant's own OAuth",
+    ["scrapers", "rentcast", "exa", "remotion"].every((k) => providerTenancy(k)?.models.includes("platform_metered")) &&
+    /connect/i.test(providerTenancy("stripe")!.why) && providerTenancy("quickbooks")!.models.includes("user_oauth"))
   check("matrix: twilio = subaccounts + BYO top tier; elevenlabs/vapi = platform metered",
     providerTenancy("twilio")!.models.includes("platform_subaccount") &&
     providerTenancy("twilio")!.models.includes("byo_top_tier") &&

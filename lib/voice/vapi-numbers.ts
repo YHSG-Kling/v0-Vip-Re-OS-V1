@@ -65,6 +65,13 @@ export function buildInboundToolDefinitions(): Array<Record<string, unknown>> {
   ]
 }
 
+export interface BusinessHours {
+  timezone?: string | null
+  start?: string | null // "09:00"
+  end?: string | null   // "18:00"
+  days?: number[] | null // 1=Mon … 7=Sun
+}
+
 export interface InboundIdentity {
   assistantName: string | null
   welcomeMessage: string | null
@@ -74,6 +81,27 @@ export interface InboundIdentity {
   prohibitedLanguage: string[] | null
   elevenlabsVoiceId: string | null
   forwardNumber: string | null
+  /** 'always' = the AI owns every call; 'after_hours' = office hours → offer an
+   *  immediate transfer to the human, after hours → full reception. */
+  answerMode?: "always" | "after_hours" | null
+  businessHours?: BusinessHours | null
+}
+
+const DAY_NAMES = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+/** PURE: the hour-aware behavior rule for the reception prompt. The assistant
+ *  gets the CURRENT time via Vapi's {{now}} template + the office hours in
+ *  plain language — behavior branches in-conversation, no re-provisioning at
+ *  9am/6pm. Empty when mode is 'always' (the AI owns every call). */
+export function composeBusinessHoursRule(mode: string | null | undefined, hours: BusinessHours | null | undefined): string {
+  if (mode !== "after_hours" || !hours?.start || !hours?.end) return ""
+  const days = (hours.days ?? [1, 2, 3, 4, 5]).map((d) => DAY_NAMES[d] ?? "").filter(Boolean).join(", ")
+  const tz = hours.timezone ?? "the office's local time"
+  return [
+    `OFFICE HOURS: ${hours.start}–${hours.end} (${tz}), ${days}. The current time is {{now}}.`,
+    `DURING office hours: greet briefly, then offer to connect the caller to the agent right away — use the transfer_to_agent tool. Take a message and full contact details only if they'd rather not be transferred.`,
+    `OUTSIDE office hours: handle the call fully yourself — qualify what they need, book showings or appointments with the tools, and reassure them the agent will follow up first thing next business day. Never tell a caller to call back later.`,
+  ].join("\n")
 }
 
 /** PURE: the inbound reception assistant config from the tenant's AI identity.
@@ -96,6 +124,7 @@ export function buildInboundAssistantConfig(id: InboundIdentity, brokerageId?: s
     id.tone ? `Tone: ${id.tone}.` : "Tone: warm, professional, concise.",
     "Your job on every call: (1) learn who is calling and get a callback number; (2) find out what they need — buying, selling, a showing, or a question on a specific property; (3) offer to book an appointment or a showing; (4) if they ask for the agent directly or the matter is urgent, offer to transfer.",
     "HARD RULES: Never give legal, lending, or tax advice — offer to have the agent follow up. Never discuss the demographics of any neighborhood or steer callers toward or away from areas (Fair Housing). Never invent property details, prices, or availability — if you don't know, say the agent will confirm. Never promise a commission rate or contract terms.",
+    composeBusinessHoursRule(id.answerMode, id.businessHours),
     prohibited.length > 0 ? `Never use these phrases: ${prohibited.join("; ")}.` : "",
     "If the caller asks to stop being contacted, acknowledge it clearly and end politely — their request is recorded.",
     "If the caller asks whether you are an AI or a robot, confirm honestly and immediately — never pretend to be human.",
@@ -141,7 +170,7 @@ export async function ensureInboundAssistant(
   if (!key) return notConfigured("Vapi")
 
   const { data: profile } = await svc.from("ai_identity_profiles")
-    .select("id, brokerage_id, scope_type, scope_id, assistant_name, welcome_message, tone, prohibited_language, elevenlabs_voice_id, ai_call_forward_number, vapi_assistant_id")
+    .select("id, brokerage_id, scope_type, scope_id, assistant_name, welcome_message, tone, prohibited_language, elevenlabs_voice_id, ai_call_forward_number, vapi_assistant_id, ai_answer_mode, business_hours")
     .eq("id", params.profileId).maybeSingle()
   if (!profile) return { ok: false, error: "AI identity profile not found" }
   const p = profile as any
@@ -166,6 +195,8 @@ export async function ensureInboundAssistant(
     prohibitedLanguage: p.prohibited_language,
     elevenlabsVoiceId: p.elevenlabs_voice_id,
     forwardNumber: p.ai_call_forward_number,
+    answerMode: p.ai_answer_mode,
+    businessHours: p.business_hours,
   }, p.brokerage_id)
 
   const existing = p.vapi_assistant_id as string | null

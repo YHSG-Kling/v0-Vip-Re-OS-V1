@@ -195,6 +195,16 @@ export function AIIdentityEditor({
   const [aiCallForwardNumber, setAiCallForwardNumber] = useState<string>(
     (initialProfile as any)?.ai_call_forward_number ?? ""
   )
+  // Hour-aware answering: 'always' = AI owns every call; 'after_hours' = during
+  // office hours it offers an immediate transfer to the human, after hours it
+  // runs the full reception.
+  const [aiAnswerMode, setAiAnswerMode] = useState<"always" | "after_hours">(
+    ((initialProfile as any)?.ai_answer_mode as "always" | "after_hours") ?? "always"
+  )
+  const initialHours = ((initialProfile as any)?.business_hours ?? {}) as { timezone?: string; start?: string; end?: string }
+  const [hoursStart, setHoursStart] = useState<string>(initialHours.start ?? "09:00")
+  const [hoursEnd, setHoursEnd] = useState<string>(initialHours.end ?? "18:00")
+  const [hoursTz, setHoursTz] = useState<string>(initialHours.timezone ?? "America/Chicago")
 
   // ── Preview state
   const [previewText, setPreviewText] = useState<string | null>(null)
@@ -253,6 +263,10 @@ export function AIIdentityEditor({
         aiCallHandleInbound: scope === "brokerage" ? aiCallHandleInbound : undefined,
         aiCallHandleOutbound: scope === "brokerage" ? aiCallHandleOutbound : undefined,
         aiCallForwardNumber: scope === "brokerage" ? (aiCallForwardNumber.trim() || null) : undefined,
+        aiAnswerMode: scope === "brokerage" ? aiAnswerMode : undefined,
+        businessHours: scope === "brokerage" && aiAnswerMode === "after_hours"
+          ? { timezone: hoursTz, start: hoursStart, end: hoursEnd, days: [1, 2, 3, 4, 5] }
+          : undefined,
       }
 
       const result = await saveAIIdentityProfile(input)
@@ -269,6 +283,7 @@ export function AIIdentityEditor({
     tone, formalityLevel, overrideTone, overrideFaq, overrideEscalation,
     faqs, objections, prohibitedChips, escalationRules, followupStyle, parentProfile,
     aiAnswerCalls, aiCallHandleInbound, aiCallHandleOutbound, aiCallForwardNumber,
+    aiAnswerMode, hoursStart, hoursEnd, hoursTz,
   ])
 
   const addFaq = () => setFaqs((prev) => [...prev, { question: "", answer: "" }])
@@ -783,6 +798,40 @@ export function AIIdentityEditor({
                     onCheckedChange={setAiCallHandleOutbound}
                     id="ai-outbound"
                   />
+                </div>
+
+                {/* Hour-aware answering — the after-hours receptionist */}
+                <div className="rounded-md border px-4 py-3 space-y-2">
+                  <p className="font-medium text-sm">When the AI answers</p>
+                  <div className="flex flex-wrap items-center gap-3 text-sm">
+                    <label className="flex items-center gap-1.5">
+                      <input type="radio" name="answer-mode" checked={aiAnswerMode === "always"} onChange={() => setAiAnswerMode("always")} />
+                      Every call
+                    </label>
+                    <label className="flex items-center gap-1.5">
+                      <input type="radio" name="answer-mode" checked={aiAnswerMode === "after_hours"} onChange={() => setAiAnswerMode("after_hours")} />
+                      Office-hours aware
+                    </label>
+                  </div>
+                  {aiAnswerMode === "after_hours" && (
+                    <div className="space-y-1.5">
+                      <p className="text-xs text-muted-foreground">
+                        During office hours the AI greets and offers an immediate transfer to you; after hours it
+                        runs the full reception — qualifies, books, and promises a morning follow-up.
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2 text-sm">
+                        <input type="time" value={hoursStart} onChange={(e) => setHoursStart(e.target.value)} className="rounded border px-2 py-1" />
+                        <span className="text-xs text-muted-foreground">to</span>
+                        <input type="time" value={hoursEnd} onChange={(e) => setHoursEnd(e.target.value)} className="rounded border px-2 py-1" />
+                        <select value={hoursTz} onChange={(e) => setHoursTz(e.target.value)} className="rounded border px-2 py-1 text-sm">
+                          {["America/New_York", "America/Chicago", "America/Denver", "America/Phoenix", "America/Los_Angeles", "America/Anchorage", "Pacific/Honolulu"].map((tz) => (
+                            <option key={tz} value={tz}>{tz.split("/")[1].replace("_", " ")}</option>
+                          ))}
+                        </select>
+                        <span className="text-xs text-muted-foreground">Mon–Fri</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <Separator />

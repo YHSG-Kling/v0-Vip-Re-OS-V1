@@ -19,6 +19,8 @@ export interface WeekReviewNumbers {
   gapToGoalCents: number | null
   weighted30Cents: number | null
   actions: Array<{ title: string; description: string | null; impactCents: number | null }>
+  /** Optional call-intelligence paragraph (lib/kernel/call-intelligence) — "" when no calls. */
+  callIntelBrief?: string
 }
 
 const dollars = (cents: number | null | undefined): string =>
@@ -44,6 +46,8 @@ export function composeWeekInReviewScript(n: WeekReviewNumbers): string {
   if (n.weighted30Cents != null && n.weighted30Cents > 0) {
     lines.push(`Your weighted thirty-day pipeline is ${dollars(n.weighted30Cents)}.`)
   }
+
+  if (n.callIntelBrief) lines.push(n.callIntelBrief)
 
   const top = n.actions.slice(0, 3)
   if (top.length > 0) {
@@ -99,6 +103,14 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
         .select("action_title, action_description, estimated_gci_impact_cents, action_rank")
         .eq("gap_analysis_id", (gap as any).id).order("action_rank", { ascending: true }).limit(5)
 
+      // Call intelligence — what the AI heard on this agent's calls this week
+      // (objections, urgency, sentiment). Best-effort; "" when no calls.
+      let callIntelBrief = ""
+      try {
+        const { loadCallIntelligence, composeCallIntelBrief } = await import("@/lib/kernel/call-intelligence")
+        callIntelBrief = composeCallIntelBrief(await loadCallIntelligence(svc, a.brokerage_id, a.user_id))
+      } catch { /* the income brief still lands */ }
+
       const script = composeWeekInReviewScript({
         firstName: u?.first_name ?? null,
         ytdGciCents: (gap as any).ytd_gci_cents,
@@ -107,6 +119,7 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
         gapToGoalCents: (gap as any).gap_to_goal_cents,
         weighted30Cents: (gap as any).weighted_30_cents,
         actions: ((actions ?? []) as any[]).map((x) => ({ title: x.action_title, description: x.action_description, impactCents: x.estimated_gci_impact_cents })),
+        callIntelBrief,
       })
 
       // Idempotency: one brief per agent per ISO week (notification as the key).
