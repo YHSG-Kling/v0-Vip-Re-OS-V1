@@ -84,7 +84,7 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   {
     provider: "rentcast",
     models: ["platform_metered", "tenant_optional_key"],
-    why: "The DEFAULT for-sale property feed + AVM/valuation chain — every tenant gets working listings/CMAs/equity triggers from day one on the platform key, UNTIL they connect their own IDX/MLS feed (their market's board data), which then takes precedence. Default-that-works, upgrade-when-ready.",
+    why: "The DEFAULT for-sale property feed + AVM/valuation chain — the platform key serves every tenant UNTIL they connect their own IDX feed (IDX Broker connect flow exists; the tenant's board data then takes precedence). HONESTY FLAG: the AVM provider-chain adapters are currently deliberate no-op stubs (lib/avm/provider-chain.ts) — wiring the live RentCast adapter is an open pre-launch task, tracked, not pretended.",
     envVars: ["RENTCAST_API_KEY"],
   },
   {

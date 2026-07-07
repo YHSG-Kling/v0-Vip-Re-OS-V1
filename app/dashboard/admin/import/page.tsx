@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useCallback, useRef, useState, useTransition } from 'react'
+import { CrmPullCard } from "./crm-pull-card"
 import { createImportRecord, runImport, listImports } from '@/app/actions/lead-import/import-actions'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -394,6 +395,9 @@ export default function ImportPage() {
           </div>
         )}
       </section>
+
+      {/* Bring your database with you — old-CRM pull through the SAME gate */}
+      <CrmPullCard />
     </main>
   )
 }

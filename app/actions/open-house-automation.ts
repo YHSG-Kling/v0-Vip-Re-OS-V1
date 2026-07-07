@@ -692,12 +692,14 @@ OUTPUT FORMAT (JSON):
 // AUTOMATED FOLLOW-UPS
 // ============================================
 
-export async function processEventFollowups(eventId: string) {
+export async function processEventFollowups(eventId: string, client?: any) {
   if (!isValidUUID(eventId)) {
     return { success: false, error: "Invalid event ID" }
   }
 
-  const supabase = await createClient()
+  // client seam: the post-event CRON passes the service client (no session);
+  // UI callers keep the session-scoped default.
+  const supabase = client ?? await createClient()
 
   try {
     // Mark event as completed

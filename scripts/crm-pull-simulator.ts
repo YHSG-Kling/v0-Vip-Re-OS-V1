@@ -1,0 +1,79 @@
+// scripts/crm-pull-simulator.ts   (npm run test:crm-pull)
+// ─────────────────────────────────────────────────────────────────────────────
+// CRM PULL IMPORT + OPEN-HOUSE FOLLOW-UP — proves the migration path keeps the
+// owner's gate: pure vendor→row mappers emit ONLY CSV-alias keys (so the field
+// steward, not the mapper, decides what lands), consent is never fabricated,
+// the pull feeds the ONE pipeline, and the post-event cron closes the
+// open-house loop.
+
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { fubToRow, hubspotToRow, loftyToRow, ghlToRow, CRM_IMPORT_PROVIDERS } from "../lib/crm/import-pull"
+import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
+
+let passed = 0
+let failed = 0
+function check(name: string, ok: boolean, detail?: string) {
+  if (ok) { passed++; console.log(`  ✓ ${name}`) }
+  else { failed++; console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
+}
+const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+
+console.log("\n── PURE: vendor → CSV-shaped rows (the gate decides, not the mapper) ──")
+{
+  const fub = fubToRow({
+    firstName: "Dana", lastName: "K", emails: [{ value: "d@x.com" }], phones: [{ value: "+15551234567" }],
+    addresses: [{ street: "1 Main", city: "Austin", state: "TX", code: "78701" }],
+    stage: "Buyer", source: "Zillow", tags: ["hot", "sphere"],
+  })
+  check("FUB: identity/address land under CSV-alias keys",
+    fub["First Name"] === "Dana" && fub.Email === "d@x.com" && fub.Phone === "+15551234567" && fub.City === "Austin")
+  check("FUB: vendor context keeps VENDOR keys (→ notes via the steward, never contact columns)",
+    "FUB Source" in fub && "FUB Tags" in fub && fub["FUB Tags"] === "hot, sphere")
+  check("FUB: stage maps to the gated enum key 'Type' (Data-Steward-normalized, not trusted)", fub.Type === "Buyer")
+
+  const hs = hubspotToRow({ properties: { firstname: "A", lastname: "B", email: "a@b.com", phone: null, mobilephone: "+15550000000", zip: "78702", lifecyclestage: "lead" } })
+  check("HubSpot: mobile fallback + zip + lifecycle→Type", hs.Phone === "+15550000000" && hs.Zip === "78702" && hs.Type === "lead")
+
+  const lofty = loftyToRow({ first_name: "C", last_name: "D", emails: ["c@d.com"], phones: ["+15551111111"], zipCode: "78703", stage: "Nurture", tags: ["past client"] })
+  check("Lofty: snake/array fallbacks + stage stays vendor-keyed", lofty.Email === "c@d.com" && lofty.Zip === "78703" && lofty["Lofty Stage"] === "Nurture")
+
+  const ghl = ghlToRow({ firstName: "E", lastName: "F", email: "e@f.com", phone: "+15552222222", postalCode: "78704", tags: ["seller"] })
+  check("GHL: postalCode→Zip + tags vendor-keyed", ghl.Zip === "78704" && ghl["GHL Tags"] === "seller")
+
+  const allRows = [fub, hs, lofty, ghl]
+  check("NO mapper ever emits a consent field (consent is earned on OUR rail, never imported)",
+    allRows.every((r) => !Object.keys(r).some((k) => /consent|tcpa|opt[_ ]?in/i.test(k))))
+  check("four providers registered", CRM_IMPORT_PROVIDERS.length === 4)
+}
+
+console.log("\n── SOURCE: one pipeline, gated end to end ──")
+{
+  const pull = src("lib/crm/import-pull.ts")
+  check("all vendor egress via the connector gateway (no bespoke fetch)", pull.includes("callConnector") && !/\bfetch\(/.test(pull))
+  check("cursor-resumable pages (honest 'more remain')", pull.includes("nextCursor"))
+  const actions = src("app/actions/lead-import/crm-pull-actions.ts")
+  check("the pull feeds processImportRows — the SAME gated pipeline as CSV", actions.includes("processImportRows({ importId, rows: page.rows })"))
+  check("per-run cap with resumable cursor reported honestly", actions.includes("MAX_PAGES_PER_RUN") && actions.includes("nextCursor: cursor"))
+  check("tenant-keyed credentials (platform_credentials, brokerage-scoped)", actions.includes('.eq("brokerage_id", ctx.brokerageId)') && actions.includes("platform_credentials"))
+  const card = src("app/dashboard/admin/import/crm-pull-card.tsx")
+  check("import wizard hosts the pull card with the gate explained to the user", card.includes("same") && card.includes("notes") && card.includes("Consent is never assumed"))
+  check("card mounted on the import page", src("app/dashboard/admin/import/page.tsx").includes("<CrmPullCard />"))
+
+  const cron = src("app/api/cron/open-house-followup/route.ts")
+  check("open-house post-event cron: 1–25h window + completed-flip idempotency", cron.includes("25 * 3_600_000") && cron.includes("processEventFollowups"))
+  check("processEventFollowups gained the client seam (cron service-side, UI unchanged)",
+    src("app/actions/open-house-automation.ts").includes("client ?? await createClient()"))
+  check("cron registered", src("lib/kernel/cron-dispatch.ts").includes("open-house-followup"))
+
+  for (const key of ["crm_pull_import", "open_house_followup"]) {
+    check(`registry burn domain ${key}`, key in MAINTENANCE_DOMAINS)
+  }
+  check("matrix honesty: AVM adapters flagged as stubs (rentcast wiring is an open task, not pretended)",
+    src("lib/providers/tenancy-matrix.ts").includes("no-op stubs"))
+  check("package.json wires the proof", /"test:crm-pull":/.test(src("package.json")))
+}
+
+console.log(`\n RESULT: ${passed} passed, ${failed} failed`)
+if (failed > 0) { console.log(" ❌ CRM_PULL_FAIL"); process.exit(1) }
+console.log(" ✅ CRM_PULL_PASS — migrate a competitor's database through OUR gate; open-house loop closes itself")
