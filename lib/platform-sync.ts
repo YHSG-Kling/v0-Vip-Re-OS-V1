@@ -48,22 +48,16 @@ export async function syncToPlatform(
   const normalizedPlatform = platformName.toLowerCase().replace(/\s+/g, "")
   const config = PLATFORM_CONFIGS[normalizedPlatform]
 
-  // Check if platform is configured
+  // HONESTY FIX (vendor audit): this used to return success:true with a
+  // FABRICATED listing URL for unconfigured platforms — a fake syndication
+  // claim. Unknown/unconfigured platforms now fail honestly.
   if (!config) {
-    console.log(`[v0] Platform ${platformName} not configured, marking as pending`)
-    return { 
-      success: true, 
-      listingUrl: `https://${normalizedPlatform}.com/listing/pending-${transactionId}` 
-    }
+    return { success: false, error: `${platformName} syndication is not supported/configured — no listing was posted.` }
   }
 
   // Check if API key is available
   if (config.requiresAuth && !config.apiKey) {
-    console.log(`[v0] ${platformName} API key not configured, queueing for manual sync`)
-    return { 
-      success: true, 
-      listingUrl: `https://${normalizedPlatform}.com/listing/manual-${transactionId}` 
-    }
+    return { success: false, error: `${platformName} API key not configured — syndication skipped honestly (no fake URL).` }
   }
 
   try {
@@ -90,11 +84,7 @@ export async function syncToPlatform(
     }
   } catch (error) {
     console.error(`[v0] Error syncing to ${platformName}:`, error)
-    // Return success with placeholder URL to avoid blocking the workflow
-    return { 
-      success: true, 
-      listingUrl: `https://${normalizedPlatform}.com/listing/queued-${transactionId}` 
-    }
+    return { success: false, error: error instanceof Error ? error.message : `${platformName} sync failed` }
   }
 }
 

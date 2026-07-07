@@ -9,6 +9,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fubToRow, hubspotToRow, loftyToRow, ghlToRow, CRM_IMPORT_PROVIDERS } from "../lib/crm/import-pull"
+import { planTokenAction, RENEWAL_WINDOW_DAYS } from "../lib/social/token-refresh"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 
 let passed = 0
@@ -45,6 +46,42 @@ console.log("\n── PURE: vendor → CSV-shaped rows (the gate decides, not th
   check("NO mapper ever emits a consent field (consent is earned on OUR rail, never imported)",
     allRows.every((r) => !Object.keys(r).some((k) => /consent|tcpa|opt[_ ]?in/i.test(k))))
   check("four providers registered", CRM_IMPORT_PROVIDERS.length === 4)
+}
+
+console.log("\n── PURE: social token lifecycle (the audit's worst gap) ──")
+{
+  const now = new Date("2026-07-07T12:00:00Z")
+  const base = { id: "1", brokerage_id: "b", user_id: "u", account_name: "x", access_token: "tok", refresh_token: null, is_active: true }
+  const soon = new Date(now.getTime() + (RENEWAL_WINDOW_DAYS - 1) * 86_400_000).toISOString()
+  const far = new Date(now.getTime() + 40 * 86_400_000).toISOString()
+  check("meta token in the renewal window → exchange", planTokenAction({ ...base, platform: "facebook", token_expires_at: soon }, now) === "exchange_meta")
+  check("linkedin WITH refresh token → refresh; WITHOUT → honest reconnect nudge",
+    planTokenAction({ ...base, platform: "linkedin", refresh_token: "r", token_expires_at: soon }, now) === "refresh_linkedin" &&
+    planTokenAction({ ...base, platform: "linkedin", token_expires_at: soon }, now) === "notify_reconnect")
+  check("far-out expiry → healthy; inactive/no-token → skip",
+    planTokenAction({ ...base, platform: "facebook", token_expires_at: far }, now) === "healthy" &&
+    planTokenAction({ ...base, platform: "facebook", token_expires_at: soon, is_active: false }, now) === "skip")
+  check("no expiry recorded (page tokens) → healthy, never a false alarm",
+    planTokenAction({ ...base, platform: "facebook", token_expires_at: null }, now) === "healthy")
+}
+
+console.log("\n── SOURCE: vendor-audit fixes ──")
+{
+  const sync = src("lib/platform-sync.ts")
+  check("syndication NEVER fabricates success (all three placeholder-URL points removed)",
+    !sync.includes("listing/pending-") && !sync.includes("listing/manual-") && !sync.includes("listing/queued-") &&
+    sync.includes("no fake URL"))
+  const oauth = src("app/api/integrations/oauth/[provider]/route.ts")
+  check("DocuSign OAuth defaults to the PRODUCTION host (demo via env override)",
+    oauth.includes('DOCUSIGN_OAUTH_HOST || "account.docusign.com"'))
+  const sweepCron = src("app/api/cron/credential-refresh/route.ts")
+  check("daily credential-refresh cron runs BOTH sweeps (the registry's flagged follow-up, closed)",
+    sweepCron.includes("runCredentialRefresh") && sweepCron.includes("runSocialTokenSweep"))
+  check("cron registered", src("lib/kernel/cron-dispatch.ts").includes("credential-refresh"))
+  const tokenLib = src("lib/social/token-refresh.ts")
+  check("meta exchange + linkedin refresh via the connector gateway; reconnect nudges deduped weekly",
+    tokenLib.includes("fb_exchange_token") && tokenLib.includes('grant_type: "refresh_token"') && tokenLib.includes("7 * 86_400_000"))
+  check("registry burn domain vendor_connection_audit", "vendor_connection_audit" in MAINTENANCE_DOMAINS)
 }
 
 console.log("\n── SOURCE: one pipeline, gated end to end ──")

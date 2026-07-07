@@ -69,8 +69,11 @@ const OAUTH_CONFIGS: Record<OAuthProvider, OAuthConfig> = {
   docusign: {
     clientIdEnv: "DOCUSIGN_INTEGRATION_KEY",
     clientSecretEnv: "DOCUSIGN_SECRET_KEY",
-    authUrl: "https://account-d.docusign.com/oauth/auth", // Demo environment
-    tokenUrl: "https://account-d.docusign.com/oauth/token",
+    // PRODUCTION FIX (vendor audit): the demo host was hardcoded. Default is
+    // now the PRODUCTION host; set DOCUSIGN_OAUTH_HOST=account-d.docusign.com
+    // for sandbox testing.
+    authUrl: `https://${process.env.DOCUSIGN_OAUTH_HOST || "account.docusign.com"}/oauth/auth`,
+    tokenUrl: `https://${process.env.DOCUSIGN_OAUTH_HOST || "account.docusign.com"}/oauth/token`,
     scopes: ["signature", "extended"],
   },
   quickbooks: {
