@@ -12,6 +12,7 @@ import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import { buildWeeklyProductCalendar, canTransitionDraft, composeProductVideoSpec, type ProductVideoFormat } from "@/lib/platform/product-content"
 import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
+import { loadProductBrand } from "@/lib/platform/product-brand"
 
 async function requireMarketing(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
   const supabase = await createClient()
@@ -37,10 +38,16 @@ async function audit(actorUserId: string, actorEmail: string, action: string, ta
 export async function generateProductCalendarAction(startDateIso: string): Promise<{ ok: true; created: number } | { ok: false; error: string }> {
   const auth = await requireMarketing()
   if (!auth.ok) return auth
-  let calendar
-  try { calendar = buildWeeklyProductCalendar(startDateIso) } catch (e: any) { return { ok: false, error: e?.message ?? "bad date" } }
-
   const svc = createServiceClient()
+  // Brand-driven (the app name lives in platform settings) + topic-infused: odd
+  // days pull from the watched-topic pool (competitor buzz / trends), then those
+  // topics are marked used so the pool rotates.
+  const brand = await loadProductBrand(svc)
+  const { data: topicRows } = await svc.from("platform_content_topics")
+    .select("id, topic").eq("status", "new").order("created_at", { ascending: false }).limit(3)
+  const topics = ((topicRows ?? []) as any[]).map((t) => t.topic as string)
+  let calendar
+  try { calendar = buildWeeklyProductCalendar(startDateIso, brand, topics) } catch (e: any) { return { ok: false, error: e?.message ?? "bad date" } }
   let created = 0
   for (const post of calendar) {
     const { count } = await svc.from("platform_social_drafts").select("id", { count: "exact", head: true })
@@ -52,7 +59,11 @@ export async function generateProductCalendarAction(startDateIso: string): Promi
     })
     if (!error) created++
   }
-  await audit(auth.userId, auth.email, "platform_content.calendar_generated", startDateIso, { created })
+  if (created > 0 && (topicRows ?? []).length > 0) {
+    await svc.from("platform_content_topics").update({ status: "used", used_at: new Date().toISOString() })
+      .in("id", ((topicRows ?? []) as any[]).map((t) => t.id))
+  }
+  await audit(auth.userId, auth.email, "platform_content.calendar_generated", startDateIso, { created, topicsUsed: topics.length })
   revalidatePath("/dashboard/superadmin/growth")
   return { ok: true, created }
 }
@@ -92,11 +103,18 @@ export async function transitionProductDraftAction(input: { id: string; to: stri
 /** Create a product VIDEO draft — the same angle story, video-shaped. The spec
  *  targets the real ProductPromoReel composition; render with the Remotion CLI
  *  and attach the file URL before posting. */
-export async function generateProductVideoDraftAction(input: { angle: string; format?: ProductVideoFormat }): Promise<{ ok: true; id: string; script: string } | { ok: false; error: string }> {
+export async function generateProductVideoDraftAction(input: { angle: string; format?: ProductVideoFormat; topicId?: string }): Promise<{ ok: true; id: string; script: string } | { ok: false; error: string }> {
   const auth = await requireMarketing()
   if (!auth.ok) return auth
-  const spec = composeProductVideoSpec(input.angle, input.format ?? "vertical")
   const svc = createServiceClient()
+  const brand = await loadProductBrand(svc)
+  let topicText: string | null = null
+  if (input.topicId) {
+    const { data: t } = await svc.from("platform_content_topics").select("id, topic").eq("id", input.topicId).maybeSingle()
+    topicText = (t as any)?.topic ?? null
+    if (topicText) await svc.from("platform_content_topics").update({ status: "used", used_at: new Date().toISOString() }).eq("id", input.topicId)
+  }
+  const spec = composeProductVideoSpec(input.angle, input.format ?? "vertical", brand, topicText)
   const { data, error } = await svc.from("platform_social_drafts").insert({
     channel: spec.channel, angle: spec.angle, content: spec.caption,
     hashtags: null, status: "draft", created_by: auth.userId,

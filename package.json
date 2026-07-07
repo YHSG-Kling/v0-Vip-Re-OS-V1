@@ -201,6 +201,7 @@
     "test:referral-appreciation": "tsx scripts/referral-appreciation-simulator.ts",
     "test:product-content": "tsx scripts/product-content-simulator.ts",
     "test:product-video": "tsx scripts/product-video-simulator.ts",
+    "test:platform-brand": "tsx scripts/platform-brand-simulator.ts",
     "test:education-delivery": "tsx scripts/education-delivery-simulator.ts",
     "test:client-tutor": "tsx scripts/client-tutor-simulator.ts",
     "test:ce-provider": "tsx scripts/ce-provider-simulator.ts",

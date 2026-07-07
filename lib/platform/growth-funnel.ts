@@ -90,7 +90,8 @@ const ROLE_HOOK: Record<string, string> = {
  * real estate" pitch, tier-aware. Returned as a GATED draft (never auto-sent); a
  * marketing/superadmin operator reviews + sends. Honest, no fabricated claims.
  */
-export function composeProspectOutreach(p: { name?: string | null; roleInterest?: string | null; company?: string | null }): { subject: string; body: string } {
+export function composeProspectOutreach(p: { name?: string | null; roleInterest?: string | null; company?: string | null; brandName?: string | null }): { subject: string; body: string } {
+  const productName = (p.brandName ?? "").trim() || "VIP Agents"
   const first = (p.name ?? "").trim().split(" ")[0] || "there"
   const hook = ROLE_HOOK[(p.roleInterest ?? "unknown")] ?? ROLE_HOOK.unknown
   const co = (p.company ?? "").trim()
@@ -98,13 +99,13 @@ export function composeProspectOutreach(p: { name?: string | null; roleInterest?
     subject: `An AI team that runs the whole business — from lead to lifetime client`,
     body:
       `Hi ${first},\n\n` +
-      `Most real-estate software gives you another dashboard. VIP Agents gives you an AI TEAM ` +
+      `Most real-estate software gives you another dashboard. ${productName} gives you an AI TEAM ` +
       `of managers that actually do the work together — scraping leads, qualifying, coordinating deals, ` +
       `marketing (video + social + ads), recruiting and retaining agents, managing vendors, and reporting — ` +
       `all overseen from one command center, with a voice admin that takes a command and executes.\n\n` +
       `For ${co || "your business"}, that means you can ${hook} — the AI runs the process end to end and ` +
       `keeps you and your clients on the same page while cutting the busywork.\n\n` +
       `Worth a 15-minute look? I'll show you the AI team handing a real deal between managers, live.\n\n` +
-      `— The VIP Agents team`,
+      "— The " + productName + " team",
   }
 }

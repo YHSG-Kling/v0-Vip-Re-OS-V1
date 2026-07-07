@@ -15,7 +15,7 @@ const ROLES = [
 
 // Public top-of-funnel capture — a prospect raises their hand for VIP Agents. Feeds
 // the platform growth funnel (/dashboard/superadmin/growth).
-export function GetStartedForm() {
+export function GetStartedForm({ source = 'get_started' }: { source?: string }) {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [company, setCompany] = useState('')
@@ -27,7 +27,7 @@ export function GetStartedForm() {
   function submit() {
     setErr(null)
     startTransition(async () => {
-      const r = await capturePlatformProspectAction({ name, email, company, roleInterest: role, source: 'get_started' })
+      const r = await capturePlatformProspectAction({ name, email, company, roleInterest: role, source })
       if (r.ok) setDone(true)
       else setErr(r.error)
     })

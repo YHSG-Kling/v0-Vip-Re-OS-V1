@@ -951,7 +951,8 @@ export const RemotionRoot: React.FC = () => {
             "A voice admin that takes a command and executes it end to end.",
           ],
           cta: "See the AI team hand a real deal between managers — live.",
-          brand: { primaryColor: "#0F172A", accentColor: "#F59E0B" },
+          brand: { primaryColor: "#0F172A", accentColor: "#F59E0B", name: "VIP Agents", tagline: "The AI team that runs the whole business" },
+          ctaDomain: "vipagents.ai/get-started",
         }}
       />
     </>

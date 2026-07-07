@@ -11,6 +11,8 @@
 // get their own credential home — tenant social_media_accounts is brokerage-scoped
 // by design and is NOT reused here).
 
+import { type ProductBrand, DEFAULT_PRODUCT_BRAND, brandCta, topicToAngle } from "./product-brand"
+
 export const PRODUCT_CHANNELS = ["linkedin", "instagram", "facebook", "x"] as const
 export type ProductChannel = (typeof PRODUCT_CHANNELS)[number]
 
@@ -19,7 +21,7 @@ export const X_MAX_CHARS = 280
 // The honest differentiator angles — the product story, no invented numbers.
 export const PRODUCT_ANGLES: Record<string, { hook: string; proof: string }> = {
   ai_team: {
-    hook: "Most real-estate software is another dashboard. VIP Agents is an AI TEAM.",
+    hook: "Most real-estate software is another dashboard. {name} is an AI TEAM.",
     proof: "13 accountable AI managers hand real work to each other — lead to deal to lifetime client — and every action is owned, gated, and auditable in one command center.",
   },
   command_center: {
@@ -58,25 +60,40 @@ export interface ProductPost {
   hashtags: string
 }
 
-/** PURE: compose one channel-shaped product post for an angle. X stays ≤ 280 chars. */
-export function composeProductPost(channel: ProductChannel, angle: string): ProductPost {
-  const a = PRODUCT_ANGLES[angle] ?? PRODUCT_ANGLES.ai_team
-  const cta = "See the AI team live → /get-started"
+/** PURE: compose one channel-shaped product post. BRAND-DRIVEN (the app name is
+ *  configurable in platform settings — never hardcoded) and every CTA carries UTMs
+ *  so the growth funnel can attribute channel × angle. A watched TOPIC (competitor
+ *  buzz / trend) can override the static angle via `custom`. X stays ≤ 280 chars. */
+const applyBrand = (text: string, brand: ProductBrand) => text.split("{name}").join(brand.name)
+
+export function composeProductPost(
+  channel: ProductChannel, angle: string,
+  brand: ProductBrand = DEFAULT_PRODUCT_BRAND,
+  custom?: { hook: string; proof: string },
+): ProductPost {
+  const raw = custom ?? PRODUCT_ANGLES[angle] ?? PRODUCT_ANGLES.ai_team
+  const a = { hook: applyBrand(raw.hook, brand), proof: applyBrand(raw.proof, brand) }
+  const angleKey = custom ? "topic" : (PRODUCT_ANGLES[angle] ? angle : "ai_team")
+  const cta = `See the AI team live → ${brandCta(brand, channel, angleKey === "topic" ? angle : angleKey)}`
   let content: string
   if (channel === "x") {
     content = `${a.hook} ${cta}`
     if (content.length > X_MAX_CHARS) content = content.slice(0, X_MAX_CHARS - 1) + "…"
   } else if (channel === "linkedin") {
-    content = `${a.hook}\n\n${a.proof}\n\nWe built VIP Agents for the teams and brokerages that are done stitching ten tools together. ${cta}`
+    content = `${a.hook}\n\n${a.proof}\n\nWe built ${brand.name} for the teams and brokerages that are done stitching ten tools together. ${cta}`
   } else {
     content = `${a.hook}\n\n${a.proof}\n\n${cta}`
   }
-  return { channel, angle: PRODUCT_ANGLES[angle] ? angle : "ai_team", content, hashtags: PRODUCT_HASHTAGS[channel] }
+  return { channel, angle: angleKey, content, hashtags: PRODUCT_HASHTAGS[channel] }
 }
 
 /** PURE + deterministic: a week of product content rotating angles × channels.
  *  Takes startDateIso explicitly (no Date.now) so a calendar is reproducible. */
-export function buildWeeklyProductCalendar(startDateIso: string): Array<ProductPost & { scheduledFor: string }> {
+export function buildWeeklyProductCalendar(
+  startDateIso: string,
+  brand: ProductBrand = DEFAULT_PRODUCT_BRAND,
+  topics: string[] = [],
+): Array<ProductPost & { scheduledFor: string }> {
   const start = new Date(startDateIso + "T00:00:00Z")
   if (Number.isNaN(start.getTime())) throw new Error("startDateIso must be YYYY-MM-DD")
   const angles = Object.keys(PRODUCT_ANGLES)
@@ -85,7 +102,11 @@ export function buildWeeklyProductCalendar(startDateIso: string): Array<ProductP
     const channel = PRODUCT_CHANNELS[day % PRODUCT_CHANNELS.length]
     const angle = angles[day % angles.length]
     const d = new Date(start.getTime() + day * 86_400_000)
-    out.push({ ...composeProductPost(channel, angle), scheduledFor: d.toISOString().slice(0, 10) })
+    // Watched topics (competitor buzz / trends) take the odd days so the week mixes
+    // evergreen differentiators with what the market is talking about RIGHT NOW.
+    const topic = day % 2 === 1 ? topics[(day - 1) / 2] : undefined
+    const custom = topic ? topicToAngle(topic, brand) : undefined
+    out.push({ ...composeProductPost(channel, angle, brand, custom), scheduledFor: d.toISOString().slice(0, 10) })
   }
   return out
 }
@@ -124,7 +145,7 @@ export interface ProductVideoSpec {
   height: number
   fps: 30
   durationInFrames: 450
-  inputProps: { hook: string; proofs: string[]; cta: string; brand: { primaryColor: string; accentColor: string } }
+  inputProps: { hook: string; proofs: string[]; cta: string; brand: { primaryColor: string; accentColor: string; name?: string; tagline?: string }; ctaDomain?: string }
   /** The voiceover/caption script — hook + beats + CTA, honest, no invented stats. */
   script: string
   /** The social caption that ships WITH the video (same composer as text posts). */
@@ -141,13 +162,21 @@ export function videoProofBeats(angle: string): string[] {
   return [0, 1, 2].map((i) => PRODUCT_ANGLES[keys[(start + i) % keys.length]].proof)
 }
 
-export function composeProductVideoSpec(angle: string, format: ProductVideoFormat = "vertical"): ProductVideoSpec {
-  const a = PRODUCT_ANGLES[angle] ?? PRODUCT_ANGLES.ai_team
-  const resolvedAngle = PRODUCT_ANGLES[angle] ? angle : "ai_team"
+export function composeProductVideoSpec(
+  angle: string, format: ProductVideoFormat = "vertical",
+  brand: ProductBrand = DEFAULT_PRODUCT_BRAND,
+  topic?: string | null,
+): ProductVideoSpec {
+  const custom = topic ? topicToAngle(topic, brand) : undefined
+  const rawA = custom ?? PRODUCT_ANGLES[angle] ?? PRODUCT_ANGLES.ai_team
+  const a = { hook: applyBrand(rawA.hook, brand), proof: applyBrand(rawA.proof, brand) }
+  const resolvedAngle = custom ? "topic" : (PRODUCT_ANGLES[angle] ? angle : "ai_team")
   const f = VIDEO_FORMATS[format] ?? VIDEO_FORMATS.vertical
-  const beats = videoProofBeats(resolvedAngle)
+  const beats = custom
+    ? [custom.proof, ...videoProofBeats("ai_team").slice(0, 2)]
+    : videoProofBeats(resolvedAngle)
   const cta = "See the AI team hand a real deal between managers — live."
-  const post = composeProductPost(f.channel, resolvedAngle)
+  const post = composeProductPost(f.channel, custom ? angle : resolvedAngle, brand, custom)
   return {
     compositionId: "ProductPromoReel",
     format: VIDEO_FORMATS[format] ? format : "vertical",
@@ -155,7 +184,11 @@ export function composeProductVideoSpec(angle: string, format: ProductVideoForma
     height: f.height,
     fps: 30,
     durationInFrames: 450,
-    inputProps: { hook: a.hook, proofs: beats, cta, brand: { primaryColor: "#0F172A", accentColor: "#F59E0B" } },
+    inputProps: {
+      hook: a.hook, proofs: beats, cta,
+      brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, name: brand.name, tagline: brand.tagline },
+      ctaDomain: brand.ctaUrl.replace(/^https?:\/\//, "") + "/get-started",
+    },
     script: [a.hook, ...beats, cta].join("\n"),
     caption: post.content,
     channel: f.channel,

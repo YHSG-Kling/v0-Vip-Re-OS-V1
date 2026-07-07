@@ -84,6 +84,8 @@ export async function draftProspectOutreachAction(id: string): Promise<{ ok: tru
   const svc = createServiceClient()
   const { data: p } = await svc.from("platform_prospects").select("name, role_interest, company").eq("id", id).maybeSingle()
   if (!p) return { ok: false, error: "Prospect not found" }
-  const draft = composeProspectOutreach({ name: (p as any).name, roleInterest: (p as any).role_interest, company: (p as any).company })
+  const { loadProductBrand } = await import("@/lib/platform/product-brand")
+  const brand = await loadProductBrand(svc)
+  const draft = composeProspectOutreach({ name: (p as any).name, roleInterest: (p as any).role_interest, company: (p as any).company, brandName: brand.name })
   return { ok: true, ...draft }
 }
