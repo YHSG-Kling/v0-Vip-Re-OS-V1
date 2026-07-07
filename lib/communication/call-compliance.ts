@@ -154,3 +154,9 @@ export function withRecordingDisclosure(
   if (!disclosure) return firstMessage
   return `${disclosure}${firstMessage}`
 }
+
+// ─── AI + recording disclosures ──────────────────────────────────────────────
+// Pure composers live in ./call-disclosures (no server-only guard — simulators
+// and the assistant builder import them directly); re-exported here so the
+// call paths keep one import site.
+export { hasAiDisclosure, ensureAiDisclosure, withAiCallDisclosures } from "./call-disclosures"

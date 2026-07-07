@@ -18,8 +18,52 @@
 // errors — nothing is faked. Same connector-gateway egress as vapi-client.
 
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { withAiCallDisclosures } from "@/lib/communication/call-disclosures"
 
 const VAPI_BASE = "https://api.vapi.ai"
+
+// ── The receptionist's OUT-OF-THE-BOX tools ───────────────────────────────────
+// These are the in-call actions the webhook already handles (lib/voice/
+// vapi-function-tools.ts, capability-gated per brokerage) — registering them on
+// the created assistant is what makes "the AI answered, qualified, AND booked"
+// true out of the box. brokerage_id rides assistant metadata; the dispatcher
+// falls back to it when the model omits the param.
+export function buildInboundToolDefinitions(): Array<Record<string, unknown>> {
+  const fn = (name: string, description: string, properties: Record<string, unknown>, required: string[]) => ({
+    type: "function",
+    function: { name, description, parameters: { type: "object", properties, required } },
+  })
+  return [
+    fn("book_appointment",
+      "Book an appointment or showing with the agent once the caller agrees on a date and time. Confirm the date/time out loud before calling this.",
+      {
+        contact_id: { type: "string", description: "The caller's contact id if known" },
+        agent_id: { type: "string", description: "The agent's id if known" },
+        date_time: { type: "string", description: "ISO 8601 date-time the caller agreed to" },
+      }, ["date_time"]),
+    fn("transfer_to_agent",
+      "Transfer the live call to the human agent. Use when the caller asks for the agent directly, is upset, or the matter is urgent or beyond your rules.",
+      {
+        contact_id: { type: "string", description: "The caller's contact id if known" },
+        brokerage_id: { type: "string", description: "Brokerage id (from metadata if not known)" },
+      }, []),
+    fn("send_properties_sms",
+      "Text the caller a link to matching properties. Confirm their mobile number out loud first.",
+      {
+        contact_phone: { type: "string", description: "The caller's mobile number in E.164" },
+        contact_id: { type: "string", description: "The caller's contact id if known" },
+        properties_url: { type: "string", description: "The property search or listing URL to send" },
+      }, ["contact_phone"]),
+    fn("request_showing_in_house_listing",
+      "Request a showing on one of the brokerage's own listings for an unrepresented buyer. Use after collecting the caller's name and number.",
+      {
+        listing_id: { type: "string", description: "The listing id being asked about" },
+        brokerage_id: { type: "string", description: "Brokerage id (from metadata if not known)" },
+        caller_name: { type: "string", description: "The caller's name" },
+        caller_phone: { type: "string", description: "The caller's phone in E.164" },
+      }, ["listing_id"]),
+  ]
+}
 
 export interface InboundIdentity {
   assistantName: string | null
@@ -36,11 +80,15 @@ export interface InboundIdentity {
  *  The prompt is qualification-focused and legally careful: capture who's
  *  calling + what they need, offer booking/transfer, NEVER quote legal or
  *  lending terms, Fair-Housing-safe (no steering, no demographic talk). */
-export function buildInboundAssistantConfig(id: InboundIdentity): Record<string, unknown> {
+export function buildInboundAssistantConfig(id: InboundIdentity, brokerageId?: string | null): Record<string, unknown> {
   const office = id.brokerageName ?? "the office"
   const who = id.agentName ? `${id.agentName}'s office at ${office}` : office
   const name = (id.assistantName ?? "Reception Assistant").slice(0, 40)
-  const firstMessage = (id.welcomeMessage ?? `Thanks for calling ${who} — I'm ${name}, the AI assistant. How can I help you today?`).slice(0, 300)
+  // LEGAL SHIELD (uniform national posture): every AI call discloses the AI up
+  // front (FCC 2024 AI-voice ruling + CA/UT/CO bot laws) AND announces
+  // recording (inbound calls are recorded; 13 all-party-consent states).
+  const rawFirst = (id.welcomeMessage ?? `Thanks for calling ${who} — I'm ${name}, the AI assistant. How can I help you today?`).slice(0, 300)
+  const firstMessage = withAiCallDisclosures(rawFirst, { recorded: true })
   const prohibited = (id.prohibitedLanguage ?? []).filter(Boolean).slice(0, 20)
 
   const systemPrompt = [
@@ -50,6 +98,7 @@ export function buildInboundAssistantConfig(id: InboundIdentity): Record<string,
     "HARD RULES: Never give legal, lending, or tax advice — offer to have the agent follow up. Never discuss the demographics of any neighborhood or steer callers toward or away from areas (Fair Housing). Never invent property details, prices, or availability — if you don't know, say the agent will confirm. Never promise a commission rate or contract terms.",
     prohibited.length > 0 ? `Never use these phrases: ${prohibited.join("; ")}.` : "",
     "If the caller asks to stop being contacted, acknowledge it clearly and end politely — their request is recorded.",
+    "If the caller asks whether you are an AI or a robot, confirm honestly and immediately — never pretend to be human.",
     "Keep answers short — this is a phone call, not an essay.",
   ].filter(Boolean).join("\n")
 
@@ -61,7 +110,15 @@ export function buildInboundAssistantConfig(id: InboundIdentity): Record<string,
       model: "claude-haiku-4-5-20251001",
       systemPrompt,
       temperature: 0.4,
+      // The receptionist's out-of-the-box actions — handled by the
+      // authoritative webhook, capability-gated per brokerage.
+      tools: buildInboundToolDefinitions(),
     },
+  }
+  if (brokerageId) {
+    // The tool dispatcher resolves tenancy from call metadata when the model
+    // omits brokerage_id in a tool call.
+    config.metadata = { brokerage_id: brokerageId }
   }
   if (id.elevenlabsVoiceId) {
     config.voice = { provider: "11labs", voiceId: id.elevenlabsVoiceId }
@@ -109,7 +166,7 @@ export async function ensureInboundAssistant(
     prohibitedLanguage: p.prohibited_language,
     elevenlabsVoiceId: p.elevenlabs_voice_id,
     forwardNumber: p.ai_call_forward_number,
-  })
+  }, p.brokerage_id)
 
   const existing = p.vapi_assistant_id as string | null
   const res = await callConnector<{ id: string }>({

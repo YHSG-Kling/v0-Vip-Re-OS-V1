@@ -17,7 +17,7 @@ import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { buildCallContext } from "@/lib/ai-isa/build-call-context"
 import {
   checkQuietHours,
-  withRecordingDisclosure,
+  withAiCallDisclosures,
 } from "@/lib/communication/call-compliance"
 import type { KernelContact } from "@/lib/kernel/types"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
@@ -181,12 +181,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   let vapiResponse: { id: string; status: string; createdAt?: string }
   try {
-    // Prepend state-compliant recording disclosure to the first message.
-    // Default behavior plays disclosure ALWAYS (zero-risk, ~3s overhead);
-    // 12 two-party-consent states require it by law.
-    const firstMessageWithDisclosure = withRecordingDisclosure(
+    // LEGAL SHIELD: AI disclosure (FCC 2024 AI-voice ruling + state bot laws —
+    // never double-discloses if the context already identifies the AI) +
+    // recording disclosure (always played; 13 all-party-consent states
+    // require it, uniform posture costs ~3s).
+    const firstMessageWithDisclosure = withAiCallDisclosures(
       callCtx.firstMessage,
-      phoneNumber
+      { recipientPhone: phoneNumber, recorded: true }
     )
 
     const vapiBody: Record<string, unknown> = {

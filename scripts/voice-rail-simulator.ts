@@ -32,7 +32,7 @@ console.log("\n── PURE: inbound reception assistant config ──")
     assistantName: "Ava", welcomeMessage: null, tone: "warm, upbeat",
     brokerageName: "VIP Premier Realty", agentName: "Dana Kling",
     prohibitedLanguage: ["guaranteed sale"], elevenlabsVoiceId: "voice123", forwardNumber: "+15551234567",
-  }) as any
+  }, "brk-123") as any
   const prompt = full.model.systemPrompt as string
   check("identity honored: name + office + agent in prompt/first message",
     full.name === "Ava" && (full.firstMessage as string).includes("Dana Kling") && prompt.includes("VIP Premier Realty"))
@@ -41,6 +41,20 @@ console.log("\n── PURE: inbound reception assistant config ──")
   check("tenant's prohibited phrases honored", prompt.includes("guaranteed sale"))
   check("stop-contact requests acknowledged in the prompt", /stop being contacted/.test(prompt))
   check("cloned voice + forwarding threaded", full.voice?.voiceId === "voice123" && full.forwardingPhoneNumber === "+15551234567")
+
+  // ── LEGAL SHIELD + OUT-OF-THE-BOX TOOLS ──
+  check("first message DISCLOSES the AI + announces recording (uniform national posture)",
+    /\bAI\b/i.test(full.firstMessage) && /recorded/i.test(full.firstMessage))
+  check("prompt orders honest AI confession if asked ('are you a robot?')",
+    /confirm honestly and immediately/.test(prompt) && /never pretend to be human/.test(prompt))
+  const tools = (full.model.tools ?? []) as any[]
+  check("four in-call tools registered OUT OF THE BOX (book/transfer/SMS/showing)",
+    tools.length === 4 && ["book_appointment", "transfer_to_agent", "send_properties_sms", "request_showing_in_house_listing"]
+      .every((n) => tools.some((t) => t.function?.name === n)))
+  check("tool names match the webhook dispatcher's handlers exactly",
+    tools.every((t) => src("lib/voice/vapi-function-tools.ts").includes(`"${t.function.name}"`)))
+  check("brokerage_id rides assistant metadata (tenancy fallback for tool calls)",
+    full.metadata?.brokerage_id === "brk-123")
 
   const minimal = buildInboundAssistantConfig({
     assistantName: null, welcomeMessage: null, tone: null, brokerageName: null,
@@ -52,7 +66,8 @@ console.log("\n── PURE: inbound reception assistant config ──")
     assistantName: "A".repeat(80), welcomeMessage: "w".repeat(500), tone: null, brokerageName: null,
     agentName: null, prohibitedLanguage: null, elevenlabsVoiceId: null, forwardNumber: null,
   }) as any
-  check("name/message clamps applied", (longName.name as string).length === 40 && (longName.firstMessage as string).length === 300)
+  check("name/message clamps applied (tenant text clamped; legal preamble rides on top)",
+    (longName.name as string).length === 40 && (longName.firstMessage as string).includes("w".repeat(300)) && !(longName.firstMessage as string).includes("w".repeat(301)))
 }
 
 console.log("\n── PURE: phone-system tenancy (commercial model) ──")
