@@ -146,6 +146,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/recruit-outreach"                    , schedule: "0 11 * * 1" },
   { path: "/api/cron/vendor-review-requests"              , schedule: "0 13 * * *" },
   { path: "/api/cron/weekly-income-digest"                , schedule: "0 13 * * 1" },
+  { path: "/api/cron/voice-week-in-review"                , schedule: "30 14 * * 1" },
   { path: "/api/cron/education-delivery"                  , schedule: "0 14 * * 3" },
   { path: "/api/cron/engagement-scores"                   , schedule: "0 2 * * *" },
   { path: "/api/cron/territory-metrics"                   , schedule: "0 2 * * *" },

@@ -3,6 +3,8 @@ import { redirect } from "next/navigation"
 import { loadCommandCenter } from "@/lib/kernel/command-center"
 import { resolveEgressScope, describeScope } from "@/lib/kernel/egress-scope"
 import { computeManagerTrust } from "@/lib/kernel/outcome-learning"
+import { loadDealPlayLift } from "@/lib/kernel/deal-play-outcomes"
+import { createServiceClient } from "@/lib/supabase/service"
 import { CommandCenterClient } from "./command-center-client"
 import { TrustMeter } from "./trust-meter"
 
@@ -93,9 +95,23 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     ? await computeManagerTrust(brokerageId).catch(() => null)
     : null
 
+  // DEAL PLAY LIFT — did the AI-team play move listings? Honest by construction:
+  // "still learning" until both cohorts clear the sample gate (never a thin-data claim).
+  const lift = brokerageId && userType !== "superadmin"
+    ? await loadDealPlayLift(createServiceClient(), brokerageId).catch(() => null)
+    : null
+
   return (
     <>
       {trust && <TrustMeter outcomes={trust.outcomes} feedback={trust.feedback} />}
+      {lift && (lift.playedTotal > 0 || lift.verdict !== "insufficient") && (
+        <div className={"mx-6 mt-4 rounded-lg border p-3 text-sm " + (lift.verdict === "lift" ? "border-emerald-200 bg-emerald-50/50" : "bg-muted/20")}>
+          <span className="font-semibold">
+            {lift.verdict === "lift" ? "📈 Deal Play lift" : lift.verdict === "no_lift" ? "Deal Play — no clear lift yet" : "Deal Play — still learning"}
+          </span>
+          <span className="text-muted-foreground"> · {lift.why}</span>
+        </div>
+      )}
       <CommandCenterClient
         data={data}
         scope={userType === "superadmin" ? "platform" : "brokerage"}

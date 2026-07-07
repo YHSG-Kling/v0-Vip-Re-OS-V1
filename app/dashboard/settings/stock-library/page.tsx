@@ -1,6 +1,7 @@
 import { listStockAssets } from "@/app/actions/stock-library"
 import { resolvePolicyScopeAccess } from "@/lib/identity/policy-scope"
 import { StockLibraryClient } from "./client"
+import { StockProviderCard } from "./stock-provider-card"
 
 export const dynamic = "force-dynamic"
 
@@ -18,16 +19,22 @@ export default async function StockLibraryPage() {
     )
   }
   return (
-    <StockLibraryClient
-      assets={result.assets}
-      access={{
-        canEditAgent:     access.canEditAgent,
-        canEditTeam:      access.canEditTeam,
-        canEditBrokerage: access.canEditBrokerage,
-        agentScopeId:     access.agentScopeId,
-        teamScopeIds:     access.teamScopeIds,
-        brokerageScopeId: access.brokerageScopeId,
-      }}
-    />
+    <div className="space-y-6">
+      <StockLibraryClient
+        assets={result.assets}
+        access={{
+          canEditAgent:     access.canEditAgent,
+          canEditTeam:      access.canEditTeam,
+          canEditBrokerage: access.canEditBrokerage,
+          agentScopeId:     access.agentScopeId,
+          teamScopeIds:     access.teamScopeIds,
+          brokerageScopeId: access.brokerageScopeId,
+        }}
+      />
+      {/* Bring-your-own stock provider key — the tenant's license, the tenant's use. */}
+      <div className="px-6 pb-6">
+        <StockProviderCard />
+      </div>
+    </div>
   )
 }

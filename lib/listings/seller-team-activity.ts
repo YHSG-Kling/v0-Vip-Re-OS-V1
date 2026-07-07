@@ -80,3 +80,40 @@ export function buildSellerTeamActivity(input: SellerTeamInput): SellerTeamMembe
 
   return team
 }
+
+// ── CLIENT-SAFE TEAM TIMELINE ("what your AI team did this week") ─────────────
+// Narrates manager_signals for the seller via a WHITELIST: only signal types
+// with a pre-written client-safe line ever surface — raw manager-to-manager
+// text is NEVER shown, unknown types are dropped, no prices/terms/internal
+// jargon can leak because the copy is fixed here, not composed from payloads.
+
+export const CLIENT_SAFE_SIGNAL_LINES: Record<string, { manager: string; line: string }> = {
+  deal_play_prep_ready:     { manager: "Listing Concierge",    line: "staged your home's full launch plan for your agent's review" },
+  deal_play_reel_ready:     { manager: "Asset Manager",        line: "produced a promo video of your home (pending your agent's approval)" },
+  deal_play_campaign_ready: { manager: "Campaign Orchestrator", line: "drafted the social and email campaign for your home" },
+  deal_play_ads_ready:      { manager: "Ads Manager",          line: "prepared an advertising plan for your agent to approve" },
+  launch_war_room_convened: { manager: "Listing Concierge",    line: "convened your whole AI team on your home's launch" },
+  listing_marketing_ready:  { manager: "Listing Concierge",    line: "handed your home to the marketing team" },
+}
+
+export interface SellerTeamTimelineLine {
+  when: string
+  manager: string
+  line: string
+}
+
+/** PURE: whitelist-narrate a listing's manager signals for the SELLER. Unknown
+ *  signal types are dropped (never leak internal chatter); newest first; capped. */
+export function narrateSignalsForClient(
+  signals: Array<{ signal_type: string | null; created_at: string | null }>,
+  cap = 6,
+): SellerTeamTimelineLine[] {
+  return signals
+    .filter((s) => s.signal_type && s.created_at && CLIENT_SAFE_SIGNAL_LINES[s.signal_type])
+    .sort((a, b) => (b.created_at! < a.created_at! ? -1 : 1))
+    .slice(0, cap)
+    .map((s) => {
+      const safe = CLIENT_SAFE_SIGNAL_LINES[s.signal_type!]
+      return { when: s.created_at!, manager: safe.manager, line: safe.line }
+    })
+}

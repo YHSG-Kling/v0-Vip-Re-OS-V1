@@ -16,6 +16,9 @@ import { join } from "node:path"
 import { composePlayHandoffs } from "../lib/kernel/deal-play"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 import { classifyCoordination } from "../lib/kernel/coordination-kind"
+import { narrateSignalsForClient, CLIENT_SAFE_SIGNAL_LINES } from "../lib/listings/seller-team-activity"
+import { scoreDealPlayOutcomes, median, MIN_COHORT } from "../lib/kernel/deal-play-outcomes"
+import { composeWeekInReviewScript, weekReviewTag, isoWeekOf } from "../lib/kernel/week-in-review"
 
 let passed = 0
 let failed = 0
@@ -47,6 +50,62 @@ console.log("\n── PURE: the four narrated hops ──")
       .every((h) => !/published|sent|live now/i.test(h.message)))
 }
 
+console.log("\n── PURE: client-safe team narration (whitelist) ──")
+{
+  const lines = narrateSignalsForClient([
+    { signal_type: "deal_play_reel_ready", created_at: "2026-07-06T10:00:00Z" },
+    { signal_type: "internal_secret_chatter", created_at: "2026-07-06T11:00:00Z" },
+    { signal_type: "deal_play_prep_ready", created_at: "2026-07-05T10:00:00Z" },
+    { signal_type: null, created_at: "2026-07-04T10:00:00Z" },
+  ])
+  check("whitelist ONLY: unknown/null signal types dropped (no internal chatter leaks)", lines.length === 2)
+  check("newest first + named manager + fixed client-safe copy",
+    lines[0].manager === "Asset Manager" && lines[0].line.includes("promo video") && lines[1].manager === "Listing Concierge")
+  check("no whitelist line contains prices/terms/internal jargon",
+    Object.values(CLIENT_SAFE_SIGNAL_LINES).every((l) => !/\$|price|commission|spend|budget|signal|payload/i.test(l.line)))
+  check("cap honored", narrateSignalsForClient(Array.from({ length: 20 }, (_, i) => ({ signal_type: "deal_play_prep_ready", created_at: `2026-07-0${(i % 7) + 1}T10:00:00Z` })), 6).length === 6)
+}
+
+console.log("\n── PURE: deal-play outcomes (honest learning loop) ──")
+{
+  check("median: empty → null, even/odd handled", median([]) === null && median([1, 3]) === 2 && median([1, 2, 9]) === 2)
+  const thin = scoreDealPlayOutcomes([
+    { played: true, daysToContract: 10, engagement: 50 },
+    { played: false, daysToContract: 30, engagement: 5 },
+  ])
+  check("thin data → 'insufficient' with real Ns (never a thin-data claim)", thin.verdict === "insufficient" && thin.why.includes("1 played / 1 control"))
+  const mk = (played: boolean, days: number) => ({ played, daysToContract: days, engagement: 10 })
+  const liftRows = [
+    ...Array.from({ length: 12 }, () => mk(true, 12)),
+    ...Array.from({ length: 12 }, () => mk(false, 30)),
+  ]
+  const lift = scoreDealPlayOutcomes(liftRows)
+  check("clear gap + both cohorts ≥" + MIN_COHORT + " → lift, why states medians + observational caveat",
+    lift.verdict === "lift" && lift.why.includes("12 days") && /observational/i.test(lift.why))
+  const noLift = scoreDealPlayOutcomes([
+    ...Array.from({ length: 12 }, () => mk(true, 29)),
+    ...Array.from({ length: 12 }, () => mk(false, 30)),
+  ])
+  check("inside the margin → no_lift (counts reported, no claim invented)", noLift.verdict === "no_lift")
+  check("censored (no contract) listings excluded, never imputed",
+    scoreDealPlayOutcomes([...liftRows, { played: true, daysToContract: null, engagement: null }]).playedContracted === 12)
+}
+
+console.log("\n── PURE: voice week-in-review script ──")
+{
+  const script = composeWeekInReviewScript({
+    firstName: "Dana", ytdGciCents: 8_200_000, annualGoalCents: 20_000_000,
+    projectedYearEndCents: 15_000_000, gapToGoalCents: 5_000_000, weighted30Cents: 1_200_000,
+    actions: [{ title: "Call your 6 stale buyer leads", description: null, impactCents: 900_000 }],
+  })
+  check("script greets + states goal progress in dollars", script.includes("Dana") && script.includes("$82,000") && script.includes("$200,000"))
+  check("gap stated honestly + delegation close", script.includes("short") && script.includes("approve it in your command center".slice(0, 20)))
+  const noGoal = composeWeekInReviewScript({ firstName: null, ytdGciCents: null, annualGoalCents: null, projectedYearEndCents: null, gapToGoalCents: null, weighted30Cents: null, actions: [] })
+  check("no goal → honest coaching line, no invented numbers", noGoal.includes("haven't set an annual income goal") && !noGoal.includes("$"))
+  check("weekReviewTag carries agent + ISO week (dedupe key)", weekReviewTag("a1", "2026-W28") === "[WEEKLY_REVIEW] [a1] [2026-W28]")
+  check("isoWeekOf is stable + zero-padded", /^\d{4}-W\d{2}$/.test(isoWeekOf(new Date("2026-07-07T12:00:00Z"))))
+}
+
 console.log("\n── SOURCE: consolidation + gating + UI ──")
 {
   const play = src("lib/kernel/deal-play.ts")
@@ -65,6 +124,24 @@ console.log("\n── SOURCE: consolidation + gating + UI ──")
     panel.includes("runDealPlayAction") && panel.includes("Run the Deal Play") && panel.includes("handoffs narrated"))
   check("registry burn domain listing_deal_play (campaign_orchestrator)",
     "listing_deal_play" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.listing_deal_play.manager === "campaign_orchestrator")
+
+  // ── The three follow-on loops ──
+  const portalPage = src("app/portal/[contactId]/listing/page.tsx")
+  check("seller portal narrates the team timeline (whitelist narrator, entity-scoped query)",
+    portalPage.includes("narrateSignalsForClient") && portalPage.includes('eq("entity_type", "listing")'))
+  const teamCard = src("app/portal/[contactId]/components/seller-mode/seller-team-activity-card.tsx")
+  check("team card renders the timeline with a fixed-copy note", teamCard.includes("timeline") && teamCard.includes("Recently, on your home"))
+  const ccPage = src("app/dashboard/admin/command-center/page.tsx")
+  check("command center hosts the Deal Play lift tile (honest verdict states)", ccPage.includes("loadDealPlayLift") && ccPage.includes("still learning"))
+  const wir = src("lib/kernel/week-in-review.ts")
+  check("week-in-review READS persisted Income Truth (never recomputes)", wir.includes("income_forecast_gap_analysis") && !wir.includes("computeAndPersistGapAction"))
+  check("audio is ElevenLabs-creds-gated (text-only without a key)", wir.includes("ELEVENLABS_API_KEY"))
+  check("delegation close = ONE gated agent-audience proposal, week-deduped", wir.includes("proposeClientMessage") && wir.includes("[WEEKLY_REVIEW]"))
+  const cron = src("lib/kernel/cron-dispatch.ts")
+  check("voice-week-in-review cron registered AFTER the digest computes", cron.includes("voice-week-in-review"))
+  for (const key of ["client_team_narration", "deal_play_outcomes", "voice_week_in_review"]) {
+    check(`registry burn domain ${key}`, key in MAINTENANCE_DOMAINS)
+  }
 }
 
 async function live() {

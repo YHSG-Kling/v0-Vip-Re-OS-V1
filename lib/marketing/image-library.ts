@@ -77,12 +77,15 @@ export function validateLibrarySave(input: {
   return { ok: true, name: name.slice(0, 160), url, scope }
 }
 
-/** Creds-gated Pexels search. Honest "not configured" without PEXELS_API_KEY. */
+/** Creds-gated Pexels search. Key resolution is TWO-RAIL: the tenant's own key
+ *  (platform_credentials, added in Settings → Stock Library — their license,
+ *  their use) wins; the platform env key is the fallback. Honest "not
+ *  configured" when neither exists. */
 export async function searchPexels(
-  query: string, perPage = 12,
+  query: string, perPage = 12, apiKeyOverride?: string | null,
 ): Promise<{ ok: true; images: LibraryImage[] } | { ok: false; error: string; notConfigured?: boolean }> {
-  const key = process.env.PEXELS_API_KEY
-  if (!key) return { ok: false, error: "Stock search not configured — add PEXELS_API_KEY to enable licensed Pexels photo search.", notConfigured: true }
+  const key = apiKeyOverride || process.env.PEXELS_API_KEY
+  if (!key) return { ok: false, error: "Stock search not configured — add your Pexels API key in Settings → Stock Library (or the platform can set PEXELS_API_KEY).", notConfigured: true }
   const q = query.trim()
   if (q.length < 2) return { ok: false, error: "Give the search at least 2 characters." }
   try {

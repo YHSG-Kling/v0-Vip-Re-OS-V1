@@ -11,6 +11,12 @@ interface TeamMember {
   icon?: "home" | "megaphone" | "video" | "users" | "handshake"
 }
 
+interface TimelineLine {
+  when: string
+  manager: string
+  line: string
+}
+
 const ICONS: Record<string, React.ReactNode> = {
   home: <Home className="h-4 w-4 text-emerald-600" />,
   megaphone: <Megaphone className="h-4 w-4 text-blue-600" />,
@@ -19,7 +25,7 @@ const ICONS: Record<string, React.ReactNode> = {
   handshake: <Handshake className="h-4 w-4 text-rose-600" />,
 }
 
-export function SellerTeamActivityCard({ team }: { team: TeamMember[] | null }) {
+export function SellerTeamActivityCard({ team, timeline = [] }: { team: TeamMember[] | null; timeline?: TimelineLine[] }) {
   if (!team || team.length === 0) return null
   return (
     <Card className="shadow-lg border-0">
@@ -47,6 +53,20 @@ export function SellerTeamActivityCard({ team }: { team: TeamMember[] | null }) 
             </div>
           </div>
         ))}
+
+        {/* This-week timeline — whitelist-narrated manager handoffs (client-safe
+            copy is fixed in lib/listings/seller-team-activity.ts, never raw bus text). */}
+        {timeline.length > 0 && (
+          <div className="border-t pt-3 space-y-1.5">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Recently, on your home</p>
+            {timeline.map((t, i) => (
+              <p key={i} className="text-xs text-muted-foreground leading-snug">
+                <span className="font-medium text-foreground">{t.manager}</span> {t.line}
+                <span className="text-[10px]"> · {new Date(t.when).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>
+              </p>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   )

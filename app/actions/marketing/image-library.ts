@@ -30,12 +30,53 @@ function isPlatformMarketing(p: { userType: string | null; platformRole: string 
 }
 
 // ─── Stock search (any authenticated user; creds-gated provider) ─────────────
+// TWO-RAIL key resolution: the tenant's own key (platform_credentials — their
+// stock license, their use) wins; the platform env key is the fallback.
 export async function searchStockImagesAction(query: string): Promise<
   { ok: true; images: LibraryImage[] } | { ok: false; error: string; notConfigured?: boolean }
 > {
   const p = await callerProfile()
   if (!p) return { ok: false, error: "Unauthorized" }
-  return searchPexels(query)
+  let tenantKey: string | null = null
+  const ctx = await getAgentContext().catch(() => null)
+  if (ctx?.isAuthenticated && ctx.brokerageId) {
+    const { data: cred } = await createServiceClient().from("platform_credentials")
+      .select("api_key").eq("brokerage_id", ctx.brokerageId)
+      .eq("platform", "pexels").eq("is_active", true).maybeSingle()
+    tenantKey = (cred as any)?.api_key ?? null
+  }
+  return searchPexels(query, 12, tenantKey)
+}
+
+// ─── Tenant stock-provider key (Settings → Stock Library) ────────────────────
+const TENANT_ADMIN_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+
+export async function setStockProviderKeyAction(input: { apiKey: string }): Promise<{ ok: boolean; error?: string }> {
+  const p = await callerProfile()
+  const ctx = await getAgentContext().catch(() => null)
+  if (!p || !ctx?.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+  if (!TENANT_ADMIN_TYPES.has(p.userType ?? "")) return { ok: false, error: "Forbidden — brokerage admin only" }
+  const apiKey = input.apiKey?.trim()
+  if (!apiKey || apiKey.length < 10) return { ok: false, error: "That doesn't look like a valid API key" }
+  const svc = createServiceClient()
+  const { data: existing } = await svc.from("platform_credentials").select("id")
+    .eq("brokerage_id", ctx.brokerageId).eq("platform", "pexels").maybeSingle()
+  const row = { brokerage_id: ctx.brokerageId, platform: "pexels", api_key: apiKey, is_active: true, updated_at: new Date().toISOString() }
+  const { error } = existing
+    ? await svc.from("platform_credentials").update(row).eq("id", (existing as any).id)
+    : await svc.from("platform_credentials").insert(row)
+  return error ? { ok: false, error: error.message } : { ok: true }
+}
+
+export async function getStockProviderStatusAction(): Promise<{ ok: boolean; tenantKeySet: boolean; platformKeySet: boolean }> {
+  const ctx = await getAgentContext().catch(() => null)
+  let tenantKeySet = false
+  if (ctx?.isAuthenticated && ctx.brokerageId) {
+    const { data } = await createServiceClient().from("platform_credentials").select("id")
+      .eq("brokerage_id", ctx.brokerageId).eq("platform", "pexels").eq("is_active", true).maybeSingle()
+    tenantKeySet = !!data
+  }
+  return { ok: true, tenantKeySet, platformKeySet: !!process.env.PEXELS_API_KEY }
 }
 
 // ─── Save an image into the library ──────────────────────────────────────────

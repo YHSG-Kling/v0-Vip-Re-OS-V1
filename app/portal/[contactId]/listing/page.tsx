@@ -20,7 +20,7 @@ import {
   SellerTeamActivityCard,
   SellerMarketPulseCard,
 } from "../components/seller-mode"
-import { buildSellerTeamActivity } from "@/lib/listings/seller-team-activity"
+import { buildSellerTeamActivity, narrateSignalsForClient } from "@/lib/listings/seller-team-activity"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
@@ -209,6 +209,15 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     videosDelivered: videosDelivered ?? 0,
     offersCount: offerSummary.total,
   })
+  // This-month team timeline — WHITELIST-narrated manager handoffs for this
+  // listing (client-safe copy is fixed in the narrator; raw bus text never shown).
+  const { data: teamSignals } = await supabase
+    .from("manager_signals")
+    .select("signal_type, created_at")
+    .eq("entity_type", "listing").eq("entity_id", listing.id)
+    .gte("created_at", new Date(Date.now() - 30 * 86_400_000).toISOString())
+    .order("created_at", { ascending: false }).limit(50)
+  const sellerTeamTimeline = narrateSignalsForClient((teamSignals ?? []) as any[])
 
   // Build feedback summary
   const feedbackSummary = {
@@ -319,7 +328,7 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
         />
 
         {/* Your AI Team — the named managers working this sale (the "team, not a CRM" differentiator) */}
-        <SellerTeamActivityCard team={sellerTeam} />
+        <SellerTeamActivityCard team={sellerTeam} timeline={sellerTeamTimeline} />
 
         {/* Weekly digest — this week's real activity, client-safe */}
         <SellerWeeklyReportCard report={weeklyReport as any} />
