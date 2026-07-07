@@ -123,6 +123,7 @@ const CONNECTOR_ALLOWLIST: Record<string, string> = {
   "app/actions/phone-provisioning.ts":     "Twilio number provisioning (admin API, not a message)",
   "lib/voice/twilio-tenancy.ts":           "Twilio SUBACCOUNT administration (creates per-tenant subaccounts; admin API, not a message)",
   "lib/voice/twilio-voice.ts":              "Twilio number VoiceUrl binding for the AI reception lane (admin API config write, not a message)",
+  "app/actions/superadmin/platform-reception.ts": "PLATFORM line VoiceUrl binding (master-account admin API config write, not a message)",
 }
 const connectorSenders = files
   .map((abs) => ({ abs, src: readFileSync(abs, "utf8") }))

@@ -2,15 +2,19 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveInboundContext, validateTwilioSignature, planReceptionTurn } from "@/lib/voice/twilio-voice"
 import { twimlGatherTurn, twimlTransfer, twimlHangup, appendTranscript } from "@/lib/voice/reception-brain"
+import { isPlatformNumber, resolvePlatformReceptionContext, planPlatformReceptionTurn, capturePhoneProspect } from "@/lib/voice/platform-reception"
 
 export const dynamic = "force-dynamic"
 
+const xml = (body: string, status = 200) => new NextResponse(body, { status, headers: { "Content-Type": "text/xml" } })
+
 /**
  * TWILIO VOICE — TURN. Each caller utterance arrives here (SpeechResult).
- * The voice_calls row (by CallSid) is the session: transcript in, plan out.
- * Actions reuse the SAME rails as every other engine: booking creates the
- * scheduled showing, transfer dials the human, hangup closes + completes the
- * ledger (call intelligence + the showing lifecycle take it from there).
+ * The scope's ledger row (by CallSid) is the session: transcript in, plan out.
+ * Platform scope: prospect capture into the growth funnel + support routing.
+ * Tenant scopes: booking creates the scheduled showing, transfer dials the
+ * human, hangup closes + completes the ledger (call intelligence + the
+ * showing lifecycle take it from there).
  */
 export async function POST(request: NextRequest) {
   const form = await request.formData()
@@ -21,10 +25,57 @@ export async function POST(request: NextRequest) {
   const to = params.To ?? ""
   const callSid = params.CallSid ?? ""
   const speech = (params.SpeechResult ?? "").trim()
-  const ctx = await resolveInboundContext(svc, to)
-  if (!ctx) return new NextResponse(twimlHangup("Sorry, something went wrong. Goodbye."), { headers: { "Content-Type": "text/xml" } })
-
   const url = `${(process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")}/api/voice/twilio/turn`
+
+  // ── PLATFORM SCOPE: the app's own line ──────────────────────────────────────
+  if (isPlatformNumber(to, process.env.TWILIO_PHONE_NUMBER)) {
+    const pctx = await resolvePlatformReceptionContext(svc)
+    if (!pctx) return xml(twimlHangup("Sorry, something went wrong. Goodbye."))
+    if (!validateTwilioSignature(pctx.authToken, url, params, request.headers.get("x-twilio-signature"))) {
+      return new NextResponse("invalid signature", { status: 403 })
+    }
+
+    const { data: call } = await svc.from("platform_reception_calls")
+      .select("id, transcript, prospect_id").eq("call_sid", callSid).maybeSingle()
+    const transcript = (call as any)?.transcript ?? null
+
+    if (!speech) {
+      const closer = "No problem — call back any time. Goodbye!"
+      if (call) await finishPlatformCall(svc, (call as any).id, appendTranscript(transcript, null, closer), "completed", "silence")
+      return xml(twimlHangup(closer))
+    }
+
+    const plan = await planPlatformReceptionTurn(pctx, transcript, speech)
+    const newTranscript = appendTranscript(transcript, speech, plan.say)
+    if (call) await svc.from("platform_reception_calls").update({ transcript: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
+
+    if (plan.action.kind === "prospect") {
+      const prospect = await capturePhoneProspect(svc, {
+        phone: params.From ?? "",
+        name: plan.action.name, email: plan.action.email,
+        company: plan.action.company, roleInterest: plan.action.roleInterest, note: plan.action.note,
+      })
+      if (call && prospect) {
+        await svc.from("platform_reception_calls").update({ prospect_id: prospect.id, outcome: "prospect_captured" })
+          .eq("id", (call as any).id).then(undefined, () => {})
+      }
+      return xml(twimlGatherTurn(plan.say, url))
+    }
+    if (plan.action.kind === "transfer" && pctx.forwardNumber) {
+      if (call) await finishPlatformCall(svc, (call as any).id, newTranscript, "transferred", "support_transfer")
+      return xml(twimlTransfer(plan.say, pctx.forwardNumber))
+    }
+    if (plan.action.kind === "hangup") {
+      if (call) await finishPlatformCall(svc, (call as any).id, newTranscript, "completed", (call as any)?.prospect_id ? "prospect_captured" : "completed")
+      return xml(twimlHangup(plan.say))
+    }
+    return xml(twimlGatherTurn(plan.say, url))
+  }
+
+  // ── TENANT SCOPES: brokerage/agent lines ────────────────────────────────────
+  const ctx = await resolveInboundContext(svc, to)
+  if (!ctx) return xml(twimlHangup("Sorry, something went wrong. Goodbye."))
+
   if (!validateTwilioSignature(ctx.authToken, url, params, request.headers.get("x-twilio-signature"))) {
     return new NextResponse("invalid signature", { status: 403 })
   }
@@ -86,5 +137,11 @@ export async function POST(request: NextRequest) {
 async function finishCall(svc: any, callId: string, transcript: string, outcome = "completed"): Promise<void> {
   await svc.from("voice_calls").update({
     status: "completed", outcome, ended_at: new Date().toISOString(), transcription: transcript,
+  }).eq("id", callId).then(undefined, () => {})
+}
+
+async function finishPlatformCall(svc: any, callId: string, transcript: string, status: string, outcome: string): Promise<void> {
+  await svc.from("platform_reception_calls").update({
+    status, outcome, ended_at: new Date().toISOString(), transcript,
   }).eq("id", callId).then(undefined, () => {})
 }

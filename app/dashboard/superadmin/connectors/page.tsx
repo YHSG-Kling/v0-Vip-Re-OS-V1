@@ -8,6 +8,7 @@ import {
   getInvocationAnalyticsAction,
 } from "@/app/actions/superadmin/connector-health"
 import { Activity, AlertTriangle, Clock, PlugZap, Cpu } from "lucide-react"
+import { PlatformReceptionPanel } from "./platform-reception-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -196,6 +197,8 @@ export default async function SuperadminConnectorsPage() {
           )}
         </CardContent>
       </Card>
+
+      <PlatformReceptionPanel />
     </div>
   )
 }

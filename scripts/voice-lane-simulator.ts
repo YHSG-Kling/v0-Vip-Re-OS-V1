@@ -12,6 +12,9 @@ import {
   twimlGatherTurn, twimlTransfer, twimlHangup, TURN_INSTRUCTIONS,
 } from "../lib/voice/reception-brain"
 import { computeTwilioSignature, validateTwilioSignature } from "../lib/voice/twilio-voice"
+import {
+  isPlatformNumber, composeTierLines, buildPlatformReceptionPrompt, parsePlatformTurnPlan, PLATFORM_TURN_INSTRUCTIONS,
+} from "../lib/voice/platform-reception"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 
 let passed = 0, failed = 0
@@ -78,6 +81,38 @@ console.log("\n── PURE: Twilio signature ──")
   check("missing signature rejected", !validateTwilioSignature(token, url, params, null))
 }
 
+console.log("\n── PURE: the PLATFORM scope (the app's own line) ──")
+{
+  check("platform number matched by digits, any formatting", isPlatformNumber("+1 (555) 000-1111", "+15550001111") && !isPlatformNumber("+15559998888", "+15550001111") && !isPlatformNumber("", "+15550001111") && !isPlatformNumber("+15550001111", ""))
+  const lines = composeTierLines([
+    { display_name: "Solo", monthly_price_cents: 9900, max_agents: 1, is_active: true },
+    { display_name: "Brokerage", monthly_price_cents: 79900, max_agents: 50, is_active: true },
+    { display_name: "Old", monthly_price_cents: 100, is_active: false },
+  ])
+  check("tier lines from LIVE plan rows: cents→dollars, seats, inactive excluded",
+    lines.length === 2 && lines[0].includes("$99 per month") && lines[1].includes("$799 per month") && lines[1].includes("up to 50 agents"))
+  check("zero tiers → honest 'team will follow up', never an invented price",
+    composeTierLines([])[0].includes("Never invent a price"))
+
+  const p = buildPlatformReceptionPrompt({ brandName: "VIP Agents", tagline: "The AI team", tierLines: lines, hasTransfer: false })
+  check("SAME legal preamble: AI disclosure + recording announced on the platform line", /\bAI\b/i.test(p.firstMessage) && /recorded/i.test(p.firstMessage))
+  check("brand + LIVE pricing threaded; honest-selling hard rules", p.systemPrompt.includes("VIP Agents") && p.systemPrompt.includes("$799 per month") && p.systemPrompt.includes("Never invent pricing") && p.systemPrompt.includes("confirm honestly and immediately"))
+  check("no forward number → the prompt FORBIDS claiming a transfer", p.systemPrompt.includes("Never claim you can transfer"))
+  check("forward number configured → transfer offered", buildPlatformReceptionPrompt({ brandName: "X", tagline: "t", tierLines: [], hasTransfer: true }).systemPrompt.includes("action 'transfer'"))
+
+  const pr = parsePlatformTurnPlan('{"say":"Got it — the team will reach out.","action":"prospect","name":"Dana","email":"dana@broker.com","company":"Kling Group","role_interest":"brokerage","note":"Wants a demo"}')
+  check("prospect action parsed with contact fields", pr.action.kind === "prospect" && (pr.action as any).name === "Dana" && (pr.action as any).email === "dana@broker.com" && (pr.action as any).roleInterest === "brokerage")
+  const bad = parsePlatformTurnPlan('{"say":"ok","action":"prospect","email":"not-an-email","role_interest":"ceo"}')
+  check("garbage email DROPPED (not stored) + unknown role normalized to the funnel CHECK list",
+    bad.action.kind === "prospect" && (bad.action as any).email === null && (bad.action as any).roleInterest === "unknown")
+  check("platform transfer/hangup/malformed all safe",
+    parsePlatformTurnPlan('{"say":"Connecting.","action":"transfer"}').action.kind === "transfer"
+    && parsePlatformTurnPlan('{"say":"Bye!","action":"hangup"}').action.kind === "hangup"
+    && parsePlatformTurnPlan("no json here").action.kind === "say")
+  check("PLATFORM_TURN_INSTRUCTIONS pin the prospect contract (caller ID already captured)",
+    PLATFORM_TURN_INSTRUCTIONS.includes('"prospect"') && PLATFORM_TURN_INSTRUCTIONS.includes("caller ID"))
+}
+
 console.log("\n── SOURCE: wiring ──")
 {
   const inbound = src("app/api/voice/twilio/inbound/route.ts")
@@ -97,6 +132,18 @@ console.log("\n── SOURCE: wiring ──")
   check("matrix: vapi = LEGACY, twilio-native default (no new vapi)", matrix.includes("LEGACY voice lane") && matrix.includes("VOICE_ENGINE=vapi"))
   check("registry burn domain twilio_voice_lane (ai_isa)",
     "twilio_voice_lane" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.twilio_voice_lane.manager === "ai_isa")
+  check("PLATFORM scope: inbound + turn routes branch by the platform's own number; ledger is platform_reception_calls",
+    inbound.includes("isPlatformNumber") && inbound.includes('from("platform_reception_calls")')
+    && turn.includes("isPlatformNumber") && turn.includes("finishPlatformCall"))
+  check("PLATFORM scope: prospect hand-raise lands in the EXISTING growth funnel (capturePhoneProspect → platform_prospects)",
+    turn.includes("capturePhoneProspect") && src("lib/voice/platform-reception.ts").includes('from("platform_prospects")')
+    && src("lib/voice/platform-reception.ts").includes('"phone:reception"'))
+  check("PLATFORM scope: nothing about the product hardcoded — brand from platform_settings, pricing from subscription_tiers",
+    src("lib/voice/platform-reception.ts").includes("loadProductBrand") && src("lib/voice/platform-reception.ts").includes('from("subscription_tiers")'))
+  check("PLATFORM bind action: providers-gated + audited, master account, VoiceUrl → the shared inbound webhook",
+    (() => { const a = src("app/actions/superadmin/platform-reception.ts"); return a.includes('platformStaffCan(role, "providers")') && a.includes("VoiceUrl") && a.includes("superadmin_audit_log") })())
+  check("registry burn domain platform_reception (data_steward)",
+    "platform_reception" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.platform_reception.manager === "data_steward")
   check("rentcast MCP fixes: rental long-term path + range params", src("lib/property/rentcast.ts").includes("/listings/rental/long-term") && src("lib/property/rentcast.ts").includes("MCP-verified contract"))
   check("package.json wires the proof", /"test:voice-lane":/.test(src("package.json")))
 }

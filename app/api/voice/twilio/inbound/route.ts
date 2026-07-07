@@ -2,15 +2,20 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveInboundContext, validateTwilioSignature } from "@/lib/voice/twilio-voice"
 import { buildReceptionPrompt, twimlGatherTurn, twimlHangup, appendTranscript } from "@/lib/voice/reception-brain"
+import { isPlatformNumber, resolvePlatformReceptionContext, buildPlatformReceptionPrompt } from "@/lib/voice/platform-reception"
 
 export const dynamic = "force-dynamic"
 
+const xml = (body: string, status = 200) => new NextResponse(body, { status, headers: { "Content-Type": "text/xml" } })
+
 /**
- * TWILIO VOICE — INBOUND (the Twilio-native lane; no Vapi). The tenant's
- * number's VoiceUrl points here. Resolves the tenant by the CALLED number,
- * validates X-Twilio-Signature against the TENANT's own auth token, opens the
- * voice_calls ledger row (the session state), and answers with the legal
- * preamble + greeting, then listens (<Gather input="speech"> → /turn).
+ * TWILIO VOICE — INBOUND (the Twilio-native lane; no Vapi). The number's
+ * VoiceUrl points here. THREE scopes share this webhook: the PLATFORM's own
+ * line (master account — sell the product, capture prospects, route support)
+ * and tenant brokerage/agent lines (subaccounts — the reception brain).
+ * Every request validates X-Twilio-Signature against the OWNING account's
+ * auth token, opens the scope's ledger row (the session state), and answers
+ * with the legal preamble + greeting, then listens (<Gather> → /turn).
  */
 export async function POST(request: NextRequest) {
   const form = await request.formData()
@@ -21,11 +26,30 @@ export async function POST(request: NextRequest) {
   const to = params.To ?? ""
   const from = params.From ?? ""
   const callSid = params.CallSid ?? ""
+  const url = `${(process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")}/api/voice/twilio/inbound`
+
+  // ── PLATFORM SCOPE: the app's own line ──────────────────────────────────────
+  if (isPlatformNumber(to, process.env.TWILIO_PHONE_NUMBER)) {
+    const pctx = await resolvePlatformReceptionContext(svc)
+    if (!pctx) return xml(twimlHangup("This line isn't configured yet. Goodbye."))
+    if (!validateTwilioSignature(pctx.authToken, url, params, request.headers.get("x-twilio-signature"))) {
+      return new NextResponse("invalid signature", { status: 403 })
+    }
+    const { firstMessage } = buildPlatformReceptionPrompt({
+      brandName: pctx.brandName, tagline: pctx.tagline, tierLines: pctx.tierLines, hasTransfer: !!pctx.forwardNumber,
+    })
+    await svc.from("platform_reception_calls").insert({
+      call_sid: callSid, phone_from: from, phone_to: to,
+      transcript: appendTranscript(null, null, firstMessage),
+    }).then(undefined, () => {})
+    return xml(twimlGatherTurn(firstMessage, url.replace(/\/inbound$/, "/turn")))
+  }
+
+  // ── TENANT SCOPES: brokerage/agent lines ────────────────────────────────────
   const ctx = await resolveInboundContext(svc, to)
-  if (!ctx) return new NextResponse(twimlHangup("This number isn't configured yet. Goodbye."), { headers: { "Content-Type": "text/xml" } })
+  if (!ctx) return xml(twimlHangup("This number isn't configured yet. Goodbye."))
 
   // Signature: the request must be signed with THIS tenant's auth token.
-  const url = `${(process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")}/api/voice/twilio/inbound`
   if (!validateTwilioSignature(ctx.authToken, url, params, request.headers.get("x-twilio-signature"))) {
     return new NextResponse("invalid signature", { status: 403 })
   }
