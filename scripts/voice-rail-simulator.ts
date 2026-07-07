@@ -16,6 +16,8 @@ import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { buildInboundAssistantConfig } from "../lib/voice/vapi-numbers"
 import { pickCredTier, rollupVoiceUsage } from "../lib/voice/twilio-tenancy"
+import { PROVIDER_TENANCY, providerTenancy } from "../lib/providers/tenancy-matrix"
+import { withAiCallDisclosures, ensureAiDisclosure } from "../lib/communication/call-disclosures"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 
 let passed = 0
@@ -85,6 +87,26 @@ console.log("\n── PURE: phone-system tenancy (commercial model) ──")
   check("empty month → zeroed meter, no NaN", rollupVoiceUsage("2026-07", [], []).totalCostCents === 0)
 }
 
+console.log("\n── PURE: disclosures + tenancy matrix ──")
+{
+  check("AI disclosure prepended when absent; never doubled",
+    ensureAiDisclosure("Hi, this is Dana's office.").startsWith("You're speaking with an AI assistant") &&
+    ensureAiDisclosure("I'm Ava, the AI assistant.") === "I'm Ava, the AI assistant.")
+  const both = withAiCallDisclosures("Hi, this is Dana's office.", { recorded: true })
+  check("full preamble = AI line + recording line, idempotent",
+    /AI assistant/.test(both) && /recorded/i.test(both) && withAiCallDisclosures(both) === both)
+  check("unrecorded call skips the recording line only",
+    !/recorded/i.test(withAiCallDisclosures("Hello.", { recorded: false })))
+  check("matrix: every provider decision carries a stated WHY + env vars",
+    PROVIDER_TENANCY.length >= 8 && PROVIDER_TENANCY.every((p) => p.why.length > 30 && p.envVars.length > 0))
+  check("matrix: twilio = subaccounts + BYO top tier; elevenlabs/vapi = platform metered",
+    providerTenancy("twilio")!.models.includes("platform_subaccount") &&
+    providerTenancy("twilio")!.models.includes("byo_top_tier") &&
+    providerTenancy("elevenlabs")!.models.includes("platform_metered") &&
+    providerTenancy("vapi")!.models.includes("platform_metered"))
+  check("matrix: email prefers the agent's own OAuth identity", providerTenancy("sendgrid")!.models.includes("user_oauth"))
+}
+
 console.log("\n── SOURCE: the wiring ──")
 {
   const numbers = src("lib/voice/vapi-numbers.ts")
@@ -145,6 +167,18 @@ console.log("\n── SOURCE: the wiring ──")
     "inbound_receptionist" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.inbound_receptionist.manager === "ai_isa")
   check("registry burn domain phone_system_tenancy (finance_manager)",
     "phone_system_tenancy" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.phone_system_tenancy.manager === "finance_manager")
+  check("registry burn domains ai_call_legal_shield + provider_tenancy_matrix",
+    "ai_call_legal_shield" in MAINTENANCE_DOMAINS && "provider_tenancy_matrix" in MAINTENANCE_DOMAINS)
+  const smsResolver = src("lib/providers/messaging/resolve-sms-provider.ts")
+  check("SMS gains the platform-managed tier: tenant's own number via tenant creds, BEFORE the env fallback",
+    smsResolver.includes("resolveTenantTwilioCreds") &&
+    smsResolver.indexOf('resolvedScope: "platform_managed"') < smsResolver.indexOf("// Environment fallback — Twilio only") &&
+    smsResolver.indexOf('resolvedScope: "platform_managed"') > 0)
+  check("SMS platform tier prefers the AGENT's own number over the brokerage number",
+    smsResolver.includes("own ?? shared"))
+  const runbook = src("docs/PHONE-SYSTEM-SETUP.md")
+  check("runbook covers SMS order + A2P-per-subaccount honesty + platform ElevenLabs",
+    runbook.includes("platform-managed") && runbook.includes("A2P 10DLC note") && runbook.includes("PLATFORM-OWNED"))
   check("package.json wires the proof", /"test:voice-rail":/.test(src("package.json")))
 }
 

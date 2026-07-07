@@ -32,7 +32,7 @@ export interface ResolvedSMSProvider {
   isEnvFallback: boolean
   credentialId:  string | null
   /** Which scope the resolution landed on (helps debugging). */
-  resolvedScope: "user" | "team" | "brokerage" | "env"
+  resolvedScope: "user" | "team" | "brokerage" | "platform_managed" | "env"
 }
 
 export interface ResolveSMSContext {
@@ -113,6 +113,38 @@ export async function resolveSMSProviderForActor(
     throw new Error(
       `Selected '${preferredProvider}' as SMS provider but no active credentials are configured. Add credentials in Settings → Integrations.`
     )
+  }
+
+  // PLATFORM-MANAGED tier (the phone-system commercial model, lib/voice/
+  // twilio-tenancy.ts): before falling to the shared env number, send from the
+  // tenant's OWN provisioned number — the agent's number first, else a
+  // brokerage-scoped one — via the tenant's Twilio creds (BYO → subaccount →
+  // master). SMS from the number the contact recognizes, zero tenant setup.
+  if (ctx.brokerageId) {
+    const svc = createServiceClient()
+    const { data: numbers } = await svc
+      .from("vapi_phone_numbers")
+      .select("phone_number, agent_user_id, scope_type")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("is_active", true)
+      .limit(20)
+    const list = (numbers ?? []) as Array<{ phone_number: string | null; agent_user_id: string | null; scope_type: string | null }>
+    const own = ctx.userId ? list.find((n) => n.agent_user_id === ctx.userId) : null
+    const shared = list.find((n) => n.scope_type === "brokerage")
+    const num = own ?? shared ?? null
+    if (num?.phone_number) {
+      const { resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
+      const creds = await resolveTenantTwilioCreds(svc, ctx.brokerageId)
+      if (creds) {
+        return {
+          providerName: "twilio",
+          credentials: { apiKey: creds.accountSid, apiSecret: creds.authToken, fromNumber: num.phone_number },
+          isEnvFallback: false,
+          credentialId: null,
+          resolvedScope: "platform_managed",
+        }
+      }
+    }
   }
 
   // Environment fallback — Twilio only

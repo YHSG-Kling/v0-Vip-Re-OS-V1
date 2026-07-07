@@ -30,9 +30,25 @@ automatic.
    registration writes `<APP_URL>/api/voice/vapi-webhook?brokerage_id=<id>`
    as each number's server URL.
 
-### ElevenLabs (voices; optional but recommended)
-- `ELEVENLABS_API_KEY` — agent voice clones + week-in-review audio. Without
-  it, everything still works with Vapi's built-in voices.
+### ElevenLabs (voices — PLATFORM-OWNED)
+- `ELEVENLABS_API_KEY` — one platform account. Agent voice **clones** are
+  per-agent assets created on the platform key (usage metered per character,
+  vendor budget auto-pause per brokerage). Without the key, everything still
+  works with Vapi's built-in voices.
+
+### SMS (same commercial model as voice)
+- SMS resolution order per send: the agent's own connected provider (their
+  credentials) → **platform-managed: the agent's own provisioned number via
+  the tenant's Twilio subaccount** → shared env number (legacy fallback).
+  Zero tenant setup; texts come from the number the contact recognizes.
+- **A2P 10DLC note:** messaging from subaccount numbers requires campaign
+  registration per subaccount (Twilio ISV flow). Do the platform's primary
+  brand registration once; register each tenant subaccount's campaign as
+  volume grows — until then their SMS rides the registered platform number.
+
+The full who-owns-which-vendor decision table lives in
+`lib/providers/tenancy-matrix.ts` (platform_metered / platform_subaccount /
+user_oauth / tenant_optional_key / byo_top_tier — with the WHY per provider).
 
 ## 2. What happens automatically per tenant (no dashboard visits)
 
