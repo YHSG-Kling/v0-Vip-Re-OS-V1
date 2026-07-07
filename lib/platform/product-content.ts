@@ -145,7 +145,7 @@ export interface ProductVideoSpec {
   height: number
   fps: 30
   durationInFrames: 450
-  inputProps: { hook: string; proofs: string[]; cta: string; brand: { primaryColor: string; accentColor: string; name?: string; tagline?: string }; ctaDomain?: string }
+  inputProps: { hook: string; proofs: string[]; cta: string; brand: { primaryColor: string; accentColor: string; name?: string; tagline?: string }; ctaDomain?: string; imageUrls?: string[] }
   /** The voiceover/caption script — hook + beats + CTA, honest, no invented stats. */
   script: string
   /** The social caption that ships WITH the video (same composer as text posts). */
@@ -166,6 +166,7 @@ export function composeProductVideoSpec(
   angle: string, format: ProductVideoFormat = "vertical",
   brand: ProductBrand = DEFAULT_PRODUCT_BRAND,
   topic?: string | null,
+  imageUrls: string[] = [],
 ): ProductVideoSpec {
   const custom = topic ? topicToAngle(topic, brand) : undefined
   const rawA = custom ?? PRODUCT_ANGLES[angle] ?? PRODUCT_ANGLES.ai_team
@@ -188,6 +189,7 @@ export function composeProductVideoSpec(
       hook: a.hook, proofs: beats, cta,
       brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, name: brand.name, tagline: brand.tagline },
       ctaDomain: brand.ctaUrl.replace(/^https?:\/\//, "") + "/get-started",
+      imageUrls,
     },
     script: [a.hook, ...beats, cta].join("\n"),
     caption: post.content,

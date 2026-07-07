@@ -1,8 +1,10 @@
 import Link from "next/link"
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { getSubscriptionOversightAction } from "@/app/actions/superadmin/subscription-oversight"
 import type { SubscriptionState } from "@/lib/platform/subscription-oversight"
+import { loadRevenueAnalytics } from "@/lib/platform/revenue-analytics"
 
 export const dynamic = "force-dynamic"
 
@@ -28,9 +30,13 @@ export default async function SuperadminSubscriptionsPage() {
   const isSuper = (profile as any)?.user_type === "superadmin" || (profile as any)?.platform_role === "superadmin"
   if (!isSuper) return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
 
-  const res = await getSubscriptionOversightAction()
+  const [res, revenue] = await Promise.all([
+    getSubscriptionOversightAction(),
+    loadRevenueAnalytics(createServiceClient()).catch(() => null),
+  ])
   if (!res.ok) return <div className="p-6 text-red-600">Failed: {res.error}</div>
   const { rows, queue, counts, totalMrrCents, attentionCount } = res.data
+  const maxMonth = Math.max(1, ...(revenue?.months ?? []).map((m) => m.paidCents))
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -46,6 +52,31 @@ export default async function SuperadminSubscriptionsPage() {
           <Link href="/dashboard/superadmin/platform" className="rounded-md border px-3 py-1 text-sm">Platform</Link>
         </div>
       </div>
+
+      {/* Revenue trend — collected (paid) revenue by month + churn, from billing_invoices */}
+      {revenue && (
+        <section className="rounded-lg border p-4 space-y-3">
+          <div className="flex items-end justify-between flex-wrap gap-2">
+            <h2 className="text-lg font-semibold">Revenue trend</h2>
+            <div className="flex items-center gap-4 text-sm">
+              <span><span className="font-bold tabular-nums">{fmtCents(revenue.currentMrrCents)}</span> <span className="text-muted-foreground">collected this month</span></span>
+              <span className={revenue.momGrowth >= 0 ? "text-emerald-700" : "text-red-700"}>
+                {revenue.momGrowth >= 0 ? "▲" : "▼"} {(Math.abs(revenue.momGrowth) * 100).toFixed(0)}% MoM
+              </span>
+              <span><span className="font-bold tabular-nums">{(revenue.churnRate * 100).toFixed(1)}%</span> <span className="text-muted-foreground">churn</span></span>
+              <span className="text-muted-foreground">{revenue.activeCount} active · {revenue.trialingCount} trialing · {revenue.cancelledInWindow} cancelled</span>
+            </div>
+          </div>
+          <div className="flex items-end gap-2 h-24">
+            {revenue.months.map((m) => (
+              <div key={m.month} className="flex-1 flex flex-col items-center gap-1">
+                <div className="w-full rounded-t bg-emerald-500/70" style={{ height: `${Math.max(3, Math.round((m.paidCents / maxMonth) * 80))}px` }} title={`${m.month}: ${fmtCents(m.paidCents)} (${m.invoices} invoices)`} />
+                <span className="text-[10px] text-muted-foreground">{m.month.slice(5)}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* State counts */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2">

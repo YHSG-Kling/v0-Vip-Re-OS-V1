@@ -15,6 +15,7 @@
 import React from "react"
 import {
   AbsoluteFill,
+  Img,
   Sequence,
   interpolate,
   spring,
@@ -26,6 +27,9 @@ export interface ProductPromoReelProps {
   hook: string
   proofs: string[]
   cta: string
+  /** Optional platform screenshots — a dimmed Ken Burns slideshow behind the
+   *  scenes (one image per scene, cycling). Text-only grid remains the fallback. */
+  imageUrls?: string[]
   brand?: { primaryColor?: string; accentColor?: string; name?: string; tagline?: string }
   ctaDomain?: string
 }
@@ -97,7 +101,18 @@ const CapabilityChip: React.FC<{ label: string; index: number; accent: string; w
   )
 }
 
-export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs, cta, brand, ctaDomain }) => {
+const KenBurnsShot: React.FC<{ src: string; primary: string }> = ({ src, primary }) => {
+  const frame = useCurrentFrame()
+  const scale = 1.06 + 0.10 * (frame / 120)
+  return (
+    <AbsoluteFill>
+      <Img src={src} style={{ width: "100%", height: "100%", objectFit: "cover", transform: `scale(${scale})`, opacity: 0.34 }} />
+      <AbsoluteFill style={{ background: `linear-gradient(${primary}d9, ${primary}f0)` }} />
+    </AbsoluteFill>
+  )
+}
+
+export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs, cta, brand, ctaDomain, imageUrls }) => {
   const primary = brand?.primaryColor ?? "#0F172A"
   const accent = brand?.accentColor ?? "#F59E0B"
   const name = (brand?.name ?? "VIP Agents").toUpperCase()
@@ -125,6 +140,12 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs
           backgroundPosition: `0px ${-(frame * 0.35) % grid}px`,
         }}
       />
+      {/* optional platform-screenshot slideshow (dimmed, Ken Burns) — one per scene */}
+      {(imageUrls ?? []).length > 0 && [0, 90, 170, 250, 330].map((from, idx) => (
+        <Sequence key={`shot-${idx}`} from={from} durationInFrames={idx === 4 ? 120 : idx === 0 ? 90 : 80}>
+          <KenBurnsShot src={imageUrls![idx % imageUrls!.length]} primary={primary} />
+        </Sequence>
+      ))}
       <AbsoluteFill style={{ background: `radial-gradient(circle at ${interpolate(frame, [0, 450], [15, 85])}% 12%, ${accent}26, transparent 55%)` }} />
 
       {/* persistent brand eyebrow + live-status dot */}

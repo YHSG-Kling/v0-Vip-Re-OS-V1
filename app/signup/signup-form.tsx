@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { CheckCircle2, Loader2, User, Briefcase, Building2, MapPin } from "lucide-react"
 import { signupBrokerageAction, type CanonicalTier } from "@/app/actions/auth/signup-brokerage"
+import { recordTosAcceptanceAction, getCurrentTosVersionAction } from "@/app/actions/public/tos-acceptance"
 
 // EVERY tier field (name, blurb, bullets, highlight, price) is DB-driven from
 // subscription_tiers — nothing is hardcoded here except the per-tier icon (UI only).
@@ -41,6 +42,7 @@ export function SignupForm({ tiers = [] }: { tiers?: SignupTier[] }) {
   const [firstName, setFirstName]         = useState("")
   const [lastName, setLastName]           = useState("")
   const [email, setEmail]                 = useState("")
+  const [tosAccepted, setTosAccepted]     = useState(false)
   // Solo-agent only: is the agent's managing brokerage / team also on the platform? This decides
   // whether broker-side steps (CDA signature, compliance) run in-app or route to their external
   // form platform.
@@ -54,6 +56,9 @@ export function SignupForm({ tiers = [] }: { tiers?: SignupTier[] }) {
     e.preventDefault()
     setFeedback(null)
     startTransition(async () => {
+      // Durable ToS acceptance record (version from platform settings) BEFORE provisioning.
+      const tosV = await getCurrentTosVersionAction()
+      await recordTosAcceptanceAction({ email, version: tosV.ok ? tosV.version : "2026-07-01" })
       const r = await signupBrokerageAction({
         brokerageName, adminFirstName: firstName, adminLastName: lastName, adminEmail: email,
         tier, brokerageCity: city || undefined, brokerageState: state || undefined,
@@ -192,7 +197,11 @@ export function SignupForm({ tiers = [] }: { tiers?: SignupTier[] }) {
       )}
 
       <div className="flex justify-end">
-        <Button type="submit" size="lg" disabled={isPending}>
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input type="checkbox" required checked={tosAccepted} onChange={e => setTosAccepted(e.target.checked)} />
+          I agree to the Terms of Service and Privacy Policy (acceptance is recorded with the current terms version).
+        </label>
+        <Button type="submit" size="lg" disabled={isPending || !tosAccepted}>
           {isPending ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Provisioning…</> : "Start free trial"}
         </Button>
       </div>
