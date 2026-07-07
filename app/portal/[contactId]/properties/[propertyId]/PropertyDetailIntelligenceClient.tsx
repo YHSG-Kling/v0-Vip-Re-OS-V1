@@ -23,6 +23,7 @@ import {
   updateShowingFeedback,
 } from "@/app/actions/smart-insights"
 import { NeighborhoodLifestyleCard } from "./NeighborhoodLifestyleCard"
+import { getBookableSlotsAction, bookShowingSlotAction } from "@/app/actions/self-book-showing"
 
 interface CommuteDestination { name: string; address: string; type: "work" | "school" | "family" | "other" }
 
@@ -195,6 +196,43 @@ export function PropertyDetailIntelligenceClient({
         }
       }
     })
+  }
+
+  // ── LIVE SELF-BOOKING — the agent's real availability, bookable in one tap.
+  // Loads when the modal opens; in-house listings with self-booking enabled +
+  // a connected agent calendar get instant slots; everything else falls back
+  // to the classic request form below (honest reason shown).
+  const [liveSlots, setLiveSlots] = useState<Array<{ startTime: string; endTime: string }> | null>(null)
+  const [liveSlotsReason, setLiveSlotsReason] = useState<string | null>(null)
+  const [bookingSlot, setBookingSlot] = useState<string | null>(null)
+  useEffect(() => {
+    if (!showingOpen) return
+    setLiveSlots(null)
+    getBookableSlotsAction({ listingId: propertyId, contactId })
+      .then((r) => {
+        if (r.ok && r.enabled) setLiveSlots(r.slots)
+        else { setLiveSlots([]); setLiveSlotsReason((r as any).reason ?? null) }
+      })
+      .catch(() => setLiveSlots([]))
+  }, [showingOpen, propertyId, contactId])
+
+  async function handleBookSlot(slotStartIso: string) {
+    setBookingSlot(slotStartIso)
+    try {
+      const r = await bookShowingSlotAction({ listingId: propertyId, contactId, slotStartIso })
+      if (!r.ok) {
+        toast({ title: "Couldn't book that time", description: r.error, variant: "destructive" })
+        if (r.errorCode === "slot_gone") {
+          const refreshed = await getBookableSlotsAction({ listingId: propertyId, contactId })
+          if (refreshed.ok && refreshed.enabled) setLiveSlots(refreshed.slots)
+        }
+        return
+      }
+      toast({ title: "Showing booked!", description: "It's confirmed and on your agent's calendar. Check your messages for details." })
+      setShowingOpen(false)
+    } finally {
+      setBookingSlot(null)
+    }
   }
 
   async function handleRequestShowing() {
@@ -550,6 +588,35 @@ export function PropertyDetailIntelligenceClient({
           </DialogHeader>
           <div className="space-y-4 py-2">
             <p className="text-sm text-muted-foreground">{propertyAddress}</p>
+
+            {/* Live availability — book instantly against the agent's real calendar */}
+            {liveSlots && liveSlots.length > 0 && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 space-y-2">
+                <p className="text-sm font-medium">Book instantly — your agent&apos;s live availability</p>
+                <div className="flex flex-wrap gap-2">
+                  {liveSlots.map((s) => {
+                    const d = new Date(s.startTime)
+                    return (
+                      <button
+                        key={s.startTime}
+                        onClick={() => handleBookSlot(s.startTime)}
+                        disabled={bookingSlot !== null}
+                        className="rounded-md border bg-white px-2.5 py-1.5 text-xs font-medium hover:border-emerald-500 disabled:opacity-50"
+                      >
+                        {bookingSlot === s.startTime
+                          ? "Booking…"
+                          : `${d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })} · ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`}
+                      </button>
+                    )
+                  })}
+                </div>
+                <p className="text-[11px] text-muted-foreground">Or request a different time below.</p>
+              </div>
+            )}
+            {liveSlots && liveSlots.length === 0 && liveSlotsReason && (
+              <p className="text-[11px] text-muted-foreground">{liveSlotsReason}</p>
+            )}
+
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label htmlFor="showingDate">Preferred Date</Label>
