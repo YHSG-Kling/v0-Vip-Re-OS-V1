@@ -34,6 +34,7 @@ const ALLOWLIST: Record<string, { cls: Class; why: string }> = {
   "app/actions/instant-property-alerts.ts":     { cls: "gated-inline", why: "buyer alerts check opt-out / consent inline before send" },
   "app/api/agent-assistant/tool-call/route.ts": { cls: "gated-inline", why: "voice admin tool-call checks consent/opt-out inline before any send" },
   "app/api/cron/weekly-income-digest/route.ts": { cls: "non-client", why: "agent-facing weekly digest (to the user themselves, not a client)" },
+  "lib/kernel/showing-lifecycle.ts":            { cls: "gated-inline", why: "T-24h reminder for a showing the buyer THEMSELVES booked (transactional per TCPA: EWC skipped but DNC/quiet-hours/opt-out enforced inside sendSMS); one per showing, metadata-deduped" },
   "lib/billing/dunning.ts":                     { cls: "b2b-transactional", why: "dunning email to the TENANT billing admin (the platform own customer, past-due recovery, not consumer marketing; SendGrid-gated, one step per episode via platform_dunning_events)" },
   "app/actions/lender-status-request.ts":       { cls: "b2b-transactional", why: "transactional request to a lender (B2B, not consumer marketing)" },
   "lib/transactions/deal-vendor-notify.ts":     { cls: "b2b-transactional", why: "Deal-Save Huddle B2B leg — notifies the loan officer / title-escrow officer of a deal issue (business counterparty on the file; deduped + audited)" },

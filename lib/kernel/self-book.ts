@@ -196,9 +196,11 @@ export async function bookShowingSlot(
   } catch { /* calendar is a mirror, not the source of truth */ }
 
   // Confirmation the buyer actually SEES + the agent's heads-up.
+  // direction CHECK is agent_to_client; agent_id is a NOT NULL FK to agents.id
+  // (the listing agent — guaranteed non-null by loadBookableSlots).
   await svc.from("client_portal_messages").insert({
-    contact_id: params.contactId, brokerage_id: l.brokerage_id,
-    direction: "outbound", channel: "portal",
+    contact_id: params.contactId, brokerage_id: l.brokerage_id, agent_id: l.agent_id,
+    direction: "agent_to_client", channel: "portal",
     body: `Your showing is booked ✓ You're confirmed for ${l.address} on ${when.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })} at ${when.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}. Your agent's calendar is updated — reply here if anything changes.`,
   }).then(undefined, () => {})
   if (avail.agentUserId) {

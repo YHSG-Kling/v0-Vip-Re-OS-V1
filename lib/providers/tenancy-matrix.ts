@@ -66,13 +66,13 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   {
     provider: "scrapers",
     models: ["platform_metered"],
-    why: "The scraper FLEET (Apify actors across source families — FSBO/expired/probate/etc.) is platform plumbing — tenants buy OUTCOMES (leads in their pipeline), never scraper accounts. LEGAL LINE: scrape only publicly available data, honor robots/ToS exposure at the platform level, and EVERY scraped record passes the suppression + DNC/TCPA scrub before any tenant can touch it — the platform carries the compliance, not the agent.",
-    envVars: ["APIFY_API_TOKEN"],
+    why: "The scraper FLEET is FOUR platform-owned lanes: Apify actors (direct-site source families — FSBO/expired/etc.), ZenRows (anti-bot rendering for hard targets), Zyte (managed extraction at scale), and the FREE OSINT lane (court/public-records filings — divorce/probate/foreclosure/tax-lien/eviction/bankruptcy → motivated-seller raw records, no vendor cost). Tenants buy OUTCOMES (leads in their pipeline), never scraper accounts. LEGAL LINE: publicly available data only, robots/ToS exposure carried at the platform level, and EVERY scraped record passes the suppression + DNC/TCPA scrub before any tenant can touch it.",
+    envVars: ["APIFY_API_TOKEN", "ZENROWS_API_KEY", "ZYTE_API_KEY"],
   },
   {
     provider: "batchdata",
     models: ["platform_metered"],
-    why: "Far more than skip tracing: property data + comparables, AVM chain input, geocoding, relisting detection, DNC/TCPA phone scrubbing, address/phone verification. LEGAL LINE: skip-trace/contact data is NON-FCRA — it must never be used for credit, tenancy, or employment screening; contact-data use stays behind the TCPA/DNC gates.",
+    why: "The MOTIVATED-SELLER + niche-seller sourcing engine (investor buy-box, distress/equity niches, comparables, AVM chain input, geocoding, relisting detection) PLUS the compliance utilities (DNC/TCPA phone scrub, address/phone verification) — skip tracing is one feature among many. LEGAL LINE: contact data is NON-FCRA — never for credit, tenancy, or employment screening; every sourced contact stays behind the TCPA/DNC gates.",
     envVars: ["BATCHDATA_API_KEY"],
   },
   {
@@ -83,14 +83,14 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   },
   {
     provider: "rentcast",
-    models: ["platform_metered"],
-    why: "Property/AVM data (valuation provider chain) — platform key; data rides into tenant features (CMAs, equity triggers), the vendor relationship is ours.",
+    models: ["platform_metered", "tenant_optional_key"],
+    why: "The DEFAULT for-sale property feed + AVM/valuation chain — every tenant gets working listings/CMAs/equity triggers from day one on the platform key, UNTIL they connect their own IDX/MLS feed (their market's board data), which then takes precedence. Default-that-works, upgrade-when-ready.",
     envVars: ["RENTCAST_API_KEY"],
   },
   {
     provider: "exa",
     models: ["platform_metered"],
-    why: "Web/competitive-intel search — platform key powering competitor-ad watch and research features; metered like the other intelligence vendors.",
+    why: "Exa is a full NEURAL-SEARCH rail, not just competitor watch: BUYER-INTENT discovery (people describing a home search in their own words across forums/blogs/social — what keyword scrapers miss), competitor-ad intelligence, and research features. Platform key, metered; sourced identities ride the same viability + consent gates as every lead lane.",
     envVars: ["EXA_API_KEY"],
   },
   {

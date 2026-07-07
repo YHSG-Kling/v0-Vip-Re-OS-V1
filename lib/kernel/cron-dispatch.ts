@@ -154,6 +154,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/revenue-protection-rollup"           , schedule: "0 3 * * *" },
   { path: "/api/cron/billing-dunning"                     , schedule: "0 14 * * *" },
   { path: "/api/cron/support-sla"                         , schedule: "30 * * * *" },
+  { path: "/api/cron/showing-lifecycle"                   , schedule: "15 * * * *" },
   { path: "/api/cron/tenant-safety-scan"                  , schedule: "0 4 * * *" },
   { path: "/api/cron/lead-scraping"                       , schedule: "0 5 * * *" },
   { path: "/api/cron/lifetime-npv-forecast-rollup"        , schedule: "0 5 * * *" },

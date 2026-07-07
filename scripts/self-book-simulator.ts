@@ -6,6 +6,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { filterBookableSlots, excludeShowingConflicts, selfBookingEnabled, SELF_BOOK_DEFAULTS } from "../lib/kernel/self-book"
+import { composeShowingReminder, composeFeedbackAsk } from "../lib/kernel/showing-lifecycle"
 import { computeFreeSlots } from "../lib/providers/calendar/free-slots"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 
@@ -42,6 +43,15 @@ console.log("\n── PURE: bookable-slot math ──")
     selfBookingEnabled({ self_booking: { enabled: true } }))
 }
 
+console.log("\n── PURE: showing lifecycle (feedback ask + T-24h reminder) ──")
+{
+  const reminder = composeShowingReminder("12 Oak St", "2026-07-09T15:00:00Z", "https://tour.example/x")
+  check("reminder carries address + day/time + virtual-tour invite", reminder.includes("12 Oak St") && /Reminder/.test(reminder) && reminder.includes("https://tour.example/x"))
+  check("no virtual tour → no tour clause (nothing invented)", !composeShowingReminder("12 Oak St", "2026-07-09T15:00:00Z", null).includes("virtually"))
+  const ask = composeFeedbackAsk("12 Oak St", "https://app.example/showings/feedback/tok123")
+  check("feedback ask carries the tokenized public form link", ask.includes("/showings/feedback/tok123"))
+}
+
 console.log("\n── SOURCE: governance + wiring ──")
 {
   const kernel = src("lib/kernel/self-book.ts")
@@ -61,6 +71,19 @@ console.log("\n── SOURCE: governance + wiring ──")
     ui.includes("getBookableSlotsAction") && ui.includes("handleBookSlot") && ui.includes('"slot_gone"') && ui.includes("Request Showing"))
   check("registry burn domain client_self_booking (shopping_agent)",
     "client_self_booking" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.client_self_booking.manager === "shopping_agent")
+  const lifecycle = src("lib/kernel/showing-lifecycle.ts")
+  check("feedback auto-request: deduped per showing, tokenized public form, portal delivery",
+    lifecycle.includes("showing_feedback_requests") && lifecycle.includes("feedback_token") && lifecycle.includes("showing_feedback_ask"))
+  check("T-24h buyer reminder: metadata dedupe + TRANSACTIONAL SMS (DNC/quiet-hours still enforced)",
+    lifecycle.includes('{ kind: "showing_reminder", showing_id: s.id }') && lifecycle.includes("transactional: true"))
+  check("portal messages carry the live contract: direction agent_to_client + NOT NULL agent_id (live-proof-caught bug)",
+    lifecycle.includes('"agent_to_client"') && lifecycle.includes("agent_id: s.agent_id") &&
+    src("lib/kernel/self-book.ts").includes('"agent_to_client"') && src("lib/kernel/self-book.ts").includes("agent_id: l.agent_id,\n    direction"))
+  check("virtual-tour link woven in when present", lifecycle.includes("virtual_tour_url") && lifecycle.includes("matterport_url"))
+  check("no LLM in the cron path (deterministic composers only)", !lifecycle.includes("generateText"))
+  check("showing-lifecycle cron registered hourly", src("lib/kernel/cron-dispatch.ts").includes("showing-lifecycle"))
+  check("registry burn domain showing_lifecycle (shopping_agent) + ShowingTime decision recorded",
+    "showing_lifecycle" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.showing_lifecycle.what.includes("SHOWINGTIME"))
   check("package.json wires the proof", /"test:self-book":/.test(src("package.json")))
 }
 
