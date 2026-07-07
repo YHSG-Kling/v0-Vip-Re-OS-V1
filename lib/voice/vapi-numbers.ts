@@ -138,9 +138,7 @@ export async function registerNumberWithVapi(
   params: { numberRowId: string; assistantId: string },
 ): Promise<{ ok: true; vapiPhoneNumberId: string } | { ok: false; error: string; notConfigured?: boolean }> {
   const key = process.env.VAPI_API_KEY
-  const twilioSid = process.env.TWILIO_ACCOUNT_SID
-  const twilioToken = process.env.TWILIO_AUTH_TOKEN
-  if (!key || !twilioSid || !twilioToken) return notConfigured("Vapi/Twilio")
+  if (!key) return notConfigured("Vapi")
 
   const { data: row } = await svc.from("vapi_phone_numbers")
     .select("id, brokerage_id, agent_user_id, phone_number, vapi_phone_number_id, is_active")
@@ -148,6 +146,12 @@ export async function registerNumberWithVapi(
   if (!row) return { ok: false, error: "Phone number row not found" }
   const n = row as any
   if (!n.is_active) return { ok: false, error: "Number is inactive" }
+
+  // The number lives in the TENANT's Twilio account (BYO → subaccount →
+  // platform master) — Vapi must import it with the SAME creds that own it.
+  const { resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
+  const twilio = await resolveTenantTwilioCreds(svc, n.brokerage_id)
+  if (!twilio) return notConfigured("Twilio")
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL
   if (!appUrl) return { ok: false, error: "NEXT_PUBLIC_APP_URL not set — can't register the webhook URL" }
@@ -159,8 +163,8 @@ export async function registerNumberWithVapi(
     : {
         provider: "twilio",
         number: n.phone_number,
-        twilioAccountSid: twilioSid,
-        twilioAuthToken: twilioToken,
+        twilioAccountSid: twilio.accountSid,
+        twilioAuthToken: twilio.authToken,
         assistantId: params.assistantId,
         server: { url: serverUrl, secret: process.env.VAPI_WEBHOOK_SECRET },
       }

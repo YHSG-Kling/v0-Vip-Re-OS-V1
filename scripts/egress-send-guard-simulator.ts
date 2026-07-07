@@ -120,6 +120,7 @@ const CONNECTOR_ALLOWLIST: Record<string, string> = {
   "lib/showings/dispatchers.ts":           "agent-to-agent showing coordination (B2B, no consumer contact)",
   "lib/onboarding/integration-tester.ts":  "onboarding self-test send (the agent tests their OWN integration, not a consumer)",
   "app/actions/phone-provisioning.ts":     "Twilio number provisioning (admin API, not a message)",
+  "lib/voice/twilio-tenancy.ts":           "Twilio SUBACCOUNT administration (creates per-tenant subaccounts; admin API, not a message)",
 }
 const connectorSenders = files
   .map((abs) => ({ abs, src: readFileSync(abs, "utf8") }))

@@ -12,3 +12,10 @@ ALTER TABLE public.vapi_phone_numbers ALTER COLUMN vapi_phone_number_id DROP NOT
 ALTER TABLE public.phone_number_events DROP CONSTRAINT phone_number_events_event_type_check;
 ALTER TABLE public.phone_number_events ADD CONSTRAINT phone_number_events_event_type_check
   CHECK (event_type = ANY (ARRAY['purchased','manually_added','ported_in','released','failed','vapi_registered']));
+
+-- platform_credentials vocabulary: twilio_subaccount (platform-created tenant
+-- subaccount), twilio_byo (top-tier bring-your-own), pexels (tenant stock key —
+-- the earlier save path would have failed the old CHECK; caught by this proof).
+ALTER TABLE public.platform_credentials DROP CONSTRAINT platform_credentials_platform_check;
+ALTER TABLE public.platform_credentials ADD CONSTRAINT platform_credentials_platform_check
+  CHECK (platform = ANY (ARRAY['dotloop','docusign','skyslope','authentisign','formsimplicity','brokermint','showingtime','mls','zillow','realtor_com','idxbroker','facebook','instagram','linkedin','buffer','heygen','google_flow','did','twilio','telnyx','bandwidth','sinch','vapi','plivo','sendgrid','resend','postmark','mailgun','gmail','outlook','google_calendar','stripe','plaid','lob','quickbooks','gohighlevel','followupboss','lofty','hubspot','twilio_subaccount','twilio_byo','pexels']));

@@ -123,12 +123,18 @@ export async function autoProvisionAgentPhone(params: {
     return { success: true, phoneNumber: existing.phone_number }
   }
 
-  // Purchase via Twilio API
-  const accountSid = process.env.TWILIO_ACCOUNT_SID
-  const authToken = process.env.TWILIO_AUTH_TOKEN
-  if (!accountSid || !authToken) {
+  // TENANT ISOLATION: numbers are purchased inside the brokerage's own Twilio
+  // SUBACCOUNT (created on first provision; platform master is the parent).
+  // Resolution order: BYO creds (top tier) -> tenant subaccount -> platform
+  // master (legacy fallback). See lib/voice/twilio-tenancy.ts.
+  const { ensureTenantSubaccount, resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
+  await ensureTenantSubaccount(svc, ctx.brokerageId).then(undefined, () => {}) // best-effort; master fallback below
+  const creds = await resolveTenantTwilioCreds(svc, ctx.brokerageId)
+  if (!creds) {
     return { success: false, error: "Twilio not configured (missing TWILIO_ACCOUNT_SID / AUTH_TOKEN)" }
   }
+  const accountSid = creds.accountSid
+  const authToken = creds.authToken
 
   // Search available numbers in area code
   let availableNumber: string | null = null

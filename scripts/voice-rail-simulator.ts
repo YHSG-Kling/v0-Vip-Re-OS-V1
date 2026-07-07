@@ -15,6 +15,7 @@
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { buildInboundAssistantConfig } from "../lib/voice/vapi-numbers"
+import { pickCredTier, rollupVoiceUsage } from "../lib/voice/twilio-tenancy"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 
 let passed = 0
@@ -52,6 +53,21 @@ console.log("\n── PURE: inbound reception assistant config ──")
     agentName: null, prohibitedLanguage: null, elevenlabsVoiceId: null, forwardNumber: null,
   }) as any
   check("name/message clamps applied", (longName.name as string).length === 40 && (longName.firstMessage as string).length === 300)
+}
+
+console.log("\n── PURE: phone-system tenancy (commercial model) ──")
+{
+  check("cred order: BYO wins over subaccount over master",
+    pickCredTier({ byo: true, subaccount: true, master: true }) === "byo" &&
+    pickCredTier({ byo: false, subaccount: true, master: true }) === "subaccount" &&
+    pickCredTier({ byo: false, subaccount: false, master: true }) === "master" &&
+    pickCredTier({ byo: false, subaccount: false, master: false }) === null)
+  const usage = rollupVoiceUsage("2026-07",
+    [{ minutes_billed: 3, cost_cents: 27 }, { minutes_billed: 5, cost_cents: 45 }, { minutes_billed: null, cost_cents: null }],
+    [{ is_active: true }, { is_active: true }, { is_active: false }])
+  check("usage rollup: calls/minutes/costs + active numbers × $1.15",
+    usage.callCount === 3 && usage.minutes === 8 && usage.vapiCostCents === 72 && usage.activeNumbers === 2 && usage.numberCostCents === 230 && usage.totalCostCents === 302)
+  check("empty month → zeroed meter, no NaN", rollupVoiceUsage("2026-07", [], []).totalCostCents === 0)
 }
 
 console.log("\n── SOURCE: the wiring ──")
@@ -93,8 +109,27 @@ console.log("\n── SOURCE: the wiring ──")
   check("legacy webhook is a thin compatible endpoint using the SAME module (no duplicated handlers)",
     compat.includes("dispatchVapiFunctionCall") && !compat.includes("async function handleBookAppointment"))
 
+  // ── Tenancy model wiring ──
+  const tenancy = src("lib/voice/twilio-tenancy.ts")
+  check("subaccount create is idempotent + creds-gated + save-failure surfaced",
+    tenancy.includes("created: false") && tenancy.includes("Nothing was changed") && tenancy.includes("reconcile manually"))
+  const prov = src("app/actions/phone-provisioning.ts")
+  check("provisioning buys numbers inside the TENANT's account (BYO → subaccount → master)",
+    prov.includes("ensureTenantSubaccount") && prov.includes("resolveTenantTwilioCreds"))
+  const nums = src("lib/voice/vapi-numbers.ts")
+  check("Vapi import uses the SAME tenant creds that own the number", nums.includes("resolveTenantTwilioCreds"))
+  const tenancyAction = src("app/actions/voice-tenancy.ts")
+  check("BYO is multi_location-tier-gated with an honest refusal for other tiers",
+    tenancyAction.includes('"multi_location"') && tenancyAction.includes("platform-managed numbers"))
+  check("BYO validates the Twilio SID shape", tenancyAction.includes("^AC[a-f0-9]{32}$"))
+  const phonePage = src("app/dashboard/admin/phone-settings/page.tsx")
+  check("usage meter card on the phone-settings page (calls/min/numbers/$ + cred tier)",
+    phonePage.includes("getVoiceUsageAction") && phonePage.includes("Voice usage"))
+
   check("registry burn domain inbound_receptionist (ai_isa)",
     "inbound_receptionist" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.inbound_receptionist.manager === "ai_isa")
+  check("registry burn domain phone_system_tenancy (finance_manager)",
+    "phone_system_tenancy" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.phone_system_tenancy.manager === "finance_manager")
   check("package.json wires the proof", /"test:voice-rail":/.test(src("package.json")))
 }
 
