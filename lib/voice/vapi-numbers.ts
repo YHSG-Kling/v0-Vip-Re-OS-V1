@@ -293,9 +293,13 @@ export interface ApplyBindingResult {
   notConfigured?: boolean
 }
 
-/** The toggle made real: when ai_answer_calls is ON for a profile, ensure the
- *  assistant exists and bind every active number in the profile's scope. When
- *  OFF, nothing is changed (numbers keep working as plain lines). */
+/** The toggle made real: when ai_answer_calls is ON for a profile, bind every
+ *  active number in the profile's scope. ENGINE (owner decision — Twilio-first,
+ *  no new Vapi): default 'twilio' points each number's VoiceUrl at our own
+ *  reception webhook (no vendor assistant object — the brain builds the prompt
+ *  live from this profile, so editing the profile IS re-provisioning). Set
+ *  VOICE_ENGINE=vapi only for the legacy lane during migration. When the
+ *  toggle is OFF, nothing is changed (numbers keep working as plain lines). */
 export async function applyInboundCallBinding(svc: any, profileId: string): Promise<ApplyBindingResult> {
   const { data: profile } = await svc.from("ai_identity_profiles")
     .select("id, brokerage_id, scope_type, scope_id, ai_answer_calls")
@@ -303,6 +307,31 @@ export async function applyInboundCallBinding(svc: any, profileId: string): Prom
   if (!profile) return { ok: false, applied: false, error: "Profile not found" }
   const p = profile as any
   if (!p.ai_answer_calls) return { ok: true, applied: false }
+
+  const engine = process.env.VOICE_ENGINE === "vapi" ? "vapi" : "twilio"
+  if (engine === "twilio") {
+    // Twilio-native lane: no assistant to ensure — bind the scope's numbers.
+    let nq = svc.from("vapi_phone_numbers").select("id").eq("brokerage_id", p.brokerage_id).eq("is_active", true)
+    if (p.scope_type === "agent") {
+      const { data: agent } = await svc.from("agents").select("user_id").eq("id", p.scope_id).maybeSingle()
+      const userId = (agent as any)?.user_id
+      if (!userId) return { ok: false, applied: false, error: "Agent has no user account" }
+      nq = nq.eq("agent_user_id", userId)
+    } else {
+      nq = nq.eq("scope_type", "brokerage")
+    }
+    const { data: nums } = await nq.limit(10)
+    const { bindNumberToTwilioLane } = await import("@/lib/voice/twilio-voice")
+    let bound = 0
+    let lastErr: string | undefined
+    for (const num of (nums ?? []) as any[]) {
+      const r = await bindNumberToTwilioLane(svc, num.id)
+      if (r.ok) bound += 1
+      else lastErr = r.error
+    }
+    if (bound === 0 && lastErr) return { ok: false, applied: false, error: lastErr }
+    return { ok: true, applied: true, numbersBound: bound }
+  }
 
   const asst = await ensureInboundAssistant(svc, { profileId })
   if (!asst.ok) return { ok: false, applied: false, error: asst.error, notConfigured: asst.notConfigured }

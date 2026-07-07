@@ -42,7 +42,7 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   {
     provider: "vapi",
     models: ["platform_metered"],
-    why: "The AI voice brain TODAY — one platform account; assistants + numbers created per tenant via API; minutes metered with budget auto-pause. SUNSET LANE (owner decision): converging onto Twilio ConversationRelay once proven — Vapi remains fully operational until then; nothing is ripped out before its replacement carries live traffic.",
+    why: "LEGACY voice lane (owner decision — retired in favor of Twilio-native). The default engine is now TWILIO: inbound reception runs turn-based on pure Twilio (VoiceUrl → our webhook, <Gather input=speech> → the AI gateway → TwiML), no third-party voice-AI vendor, fully serverless. Vapi stays reachable ONLY behind VOICE_ENGINE=vapi for the migration window — new tenants bind to Twilio; nothing new is built on Vapi.",
     envVars: ["VAPI_API_KEY", "VAPI_WEBHOOK_SECRET", "VAPI_PHONE_NUMBER_ID", "VAPI_ISA_ASSISTANT_ID"],
   },
   {

@@ -8,7 +8,7 @@
  *
  * Key endpoints used:
  *   GET /v1/listings/sale?city=X&state=Y&bedrooms=&bathrooms=&maxPrice=&minPrice=
- *   GET /v1/listings/rental?city=X&state=Y&...
+ *   GET /v1/listings/rental/long-term?city=X&state=Y&...
  *   GET /v1/avm/value?address=...
  *   GET /v1/properties?address=...&city=...&state=...
  */
@@ -134,8 +134,15 @@ export async function searchRentcastSaleListings(params: {
   if (f.city) qs.set("city", f.city)
   if (f.state) qs.set("state", f.state)
   if (f.zipCode) qs.set("zipCode", f.zipCode)
-  if (f.bedroomsMin != null) qs.set("bedrooms", String(f.bedroomsMin))
-  if (f.bathroomsMin != null) qs.set("bathrooms", String(f.bathroomsMin))
+  // MCP-verified contract: bedrooms/bathrooms/price are RANGE params — a plain
+  // "3" means EXACTLY 3 (a 3+ buyer would silently lose 4-bed homes); the min-
+  // only form is "3:*". Price has no minPrice/maxPrice — one `price=min:max`.
+  if (f.bedroomsMin != null && f.bedroomsMax != null) qs.set("bedrooms", `${f.bedroomsMin}:${f.bedroomsMax}`)
+  else if (f.bedroomsMin != null) qs.set("bedrooms", `${f.bedroomsMin}:*`)
+  if (f.bathroomsMin != null) qs.set("bathrooms", `${f.bathroomsMin}:*`)
+  if (f.priceMin != null && f.priceMax != null) qs.set("price", `${f.priceMin}:${f.priceMax}`)
+  else if (f.priceMin != null) qs.set("price", `${f.priceMin}:*`)
+  else if (f.priceMax != null) qs.set("price", `*:${f.priceMax}`)
   if (f.propertyType) qs.set("propertyType", f.propertyType)
   qs.set("status", f.status ?? "Active")
   qs.set("limit", String(f.limit ?? 30))
@@ -155,7 +162,8 @@ export async function searchRentcastSaleListings(params: {
     const data = res.data
     const arr: any[] = Array.isArray(data) ? data : []
 
-    // Apply price filters client-side (Rentcast doesn't always honor min/max)
+    // Belt-and-braces re-filter (the server-side price/bedrooms ranges above are
+    // the MCP-verified contract; this keeps bedroomsMax exact + guards nulls)
     const filtered = arr.filter((r) => {
       const price = r?.price ?? r?.listPrice ?? null
       if (f.priceMin != null && (price == null || price < f.priceMin)) return false
@@ -211,12 +219,12 @@ export async function searchRentcastRentalListings(params: {
   qs.set("limit", String(f.limit ?? 20))
 
   try {
-    const res = await rentcastGet(apiKey, "/listings/rental", qs)
+    const res = await rentcastGet(apiKey, "/listings/rental/long-term", qs)
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "api_call",
       cost: COST_PER_LISTING_SEARCH,
-      endpoint: "/listings/rental",
+      endpoint: "/listings/rental/long-term",
       metadata: { ok: res.ok, status: res.status },
     })
     if (!res.ok) {
