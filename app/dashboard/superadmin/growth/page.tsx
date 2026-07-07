@@ -5,6 +5,7 @@ import { listProductDraftsAction } from "@/app/actions/superadmin/platform-conte
 import { getProductBrandAction, listTopicsAction } from "@/app/actions/superadmin/platform-brand"
 import { DEFAULT_PRODUCT_BRAND } from "@/lib/platform/product-brand"
 import { BrandTopicsCard } from "./brand-topics-card"
+import { ImageLibraryCard } from "./image-library-card"
 import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
 import { PlatformGrowthBoard } from "./platform-growth-board"
 import { ProductContentBoard } from "./product-content-board"
@@ -39,6 +40,8 @@ export default async function PlatformGrowthPage() {
       )}
       {/* Brand kit (configurable product name) + watched-topic pool */}
       <BrandTopicsCard initialBrand={brandRes.ok ? brandRes.brand : DEFAULT_PRODUCT_BRAND} initialTopics={topicsRes.ok ? topicsRes.topics : []} />
+      {/* Shared image library — stock + AI stills, platform-curated, tenant-reused */}
+      <ImageLibraryCard />
       {/* The platform's own social calendar — market the OS on the company channels */}
       <ProductContentBoard initialDrafts={draftsRes.ok ? draftsRes.drafts : []} />
     </div>

@@ -117,6 +117,33 @@ export async function getMyTicketThread(ticketId: string): Promise<import("@/lib
   return loadTicketThread(svc, ticketId)
 }
 
+// ─── Agent: rate a resolved ticket (CSAT — once, 1–5) ────────────────────────
+export async function rateMyTicket(input: {
+  ticketId: string
+  rating: number
+  comment?: string
+}): Promise<{ ok: boolean; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+  const svc = createServiceClient()
+  const { data: t } = await svc.from("support_tickets")
+    .select("agent_id, status, satisfaction_rating").eq("id", input.ticketId).maybeSingle()
+  if (!t || (t as any).agent_id !== ctx.agentId) return { ok: false, error: "Ticket not found" }
+
+  const { canRateTicket } = await import("@/lib/support/support-sla")
+  const gate = canRateTicket(t as any, input.rating)
+  if (!gate.ok) return { ok: false, error: gate.reason }
+
+  const { error } = await svc.from("support_tickets").update({
+    satisfaction_rating: input.rating,
+    satisfaction_comment: input.comment?.trim() || null,
+    satisfaction_at: new Date().toISOString(),
+  }).eq("id", input.ticketId)
+  if (error) return { ok: false, error: error.message }
+  revalidatePath("/dashboard/help")
+  return { ok: true }
+}
+
 // ─── Agent: my tickets ───────────────────────────────────────────────────────
 export async function listMyTickets(): Promise<SupportTicket[]> {
   const ctx = await getAgentContext()

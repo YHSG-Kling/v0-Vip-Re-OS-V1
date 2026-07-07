@@ -86,6 +86,25 @@ export default async function SuperadminBrokerageDetailPage(
       {/* Config snapshots — capture this tenant as a template / apply a template here */}
       <TenantSnapshotsPanel brokerageId={brokerage.id} />
 
+      {/* Offboarding — the tenant's data, downloadable. Export never deletes;
+          retention-law records stay put regardless of tenancy. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">Offboarding &amp; data export</CardTitle>
+        </CardHeader>
+        <CardContent className="flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-xs text-muted-foreground max-w-xl">
+            One JSON bundle of this tenant&apos;s core business records (contacts, deals, communications,
+            billing, support — 23 tables). Every export is audit-logged. Offboarding order: export → cancel
+            subscription (above) → archive. Nothing is deleted by exporting; transaction and communication
+            records remain under their legal retention window.
+          </p>
+          <a href={`/api/superadmin/tenant-export/${brokerage.id}`} className="rounded-md border px-3 py-1.5 text-sm font-medium text-indigo-600 hover:bg-indigo-50">
+            Download tenant export
+          </a>
+        </CardContent>
+      </Card>
+
       {/* Subscriptions history */}
       {subscriptions.length > 0 && (
         <Card>

@@ -11,6 +11,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { postTicketReply, loadTicketThread, awaitingFirstResponse, type TicketThread } from "@/lib/support/support-thread"
+import { evaluateTicketSla, rollupCsat, type SlaBreachKind } from "@/lib/support/support-sla"
 
 const STAFF_ROLES = new Set(["superadmin", "support"])
 
@@ -34,19 +35,23 @@ export interface SupportQueueRow {
   category: string | null
   assignedTo: string | null
   awaitingFirstResponse: boolean
+  /** SLA breaches active right now (priority-based deadlines, lib/support/support-sla). */
+  slaBreaches: SlaBreachKind[]
+  slaAtRisk: boolean
+  satisfactionRating: number | null
   createdAt: string
   updatedAt: string
 }
 
 export async function listAllTicketsAction(filter?: { status?: string }): Promise<
-  | { ok: true; rows: SupportQueueRow[]; counts: Record<string, number>; awaiting: number }
+  | { ok: true; rows: SupportQueueRow[]; counts: Record<string, number>; awaiting: number; breached: number; csatAverage: number | null; csatRated: number }
   | { ok: false; error: string }
 > {
   const auth = await requireStaff()
   if (!auth.ok) return auth
   const svc = createServiceClient()
 
-  let q = svc.from("support_tickets").select("id, brokerage_id, subject, status, priority, category, assigned_to, first_response_at, created_at, updated_at").order("updated_at", { ascending: false }).limit(500)
+  let q = svc.from("support_tickets").select("id, brokerage_id, subject, status, priority, category, assigned_to, first_response_at, resolved_at, satisfaction_rating, created_at, updated_at").order("updated_at", { ascending: false }).limit(500)
   if (filter?.status) q = q.eq("status", filter.status)
   const { data: tickets } = await q
 
@@ -60,17 +65,23 @@ export async function listAllTicketsAction(filter?: { status?: string }): Promis
 
   const counts: Record<string, number> = { open: 0, in_progress: 0, resolved: 0, closed: 0 }
   let awaiting = 0
+  let breached = 0
   const rows: SupportQueueRow[] = rows0.map((t) => {
     counts[t.status] = (counts[t.status] ?? 0) + 1
     const aw = awaitingFirstResponse({ status: t.status, first_response_at: t.first_response_at })
     if (aw) awaiting += 1
+    const sla = evaluateTicketSla(t)
+    if (sla.breaches.length > 0) breached += 1
     return {
       id: t.id, brokerageId: t.brokerage_id, brokerageName: t.brokerage_id ? nameById.get(t.brokerage_id) ?? null : null,
       subject: t.subject, status: t.status, priority: t.priority, category: t.category, assignedTo: t.assigned_to,
-      awaitingFirstResponse: aw, createdAt: t.created_at, updatedAt: t.updated_at,
+      awaitingFirstResponse: aw, slaBreaches: sla.breaches, slaAtRisk: sla.atRisk,
+      satisfactionRating: t.satisfaction_rating ?? null,
+      createdAt: t.created_at, updatedAt: t.updated_at,
     }
   })
-  return { ok: true, rows, counts, awaiting }
+  const csat = rollupCsat(rows0.map((t) => ({ satisfaction_rating: t.satisfaction_rating ?? null })))
+  return { ok: true, rows, counts, awaiting, breached, csatAverage: csat.average, csatRated: csat.rated }
 }
 
 export async function getTicketThreadAction(ticketId: string): Promise<{ ok: true; thread: TicketThread } | { ok: false; error: string }> {

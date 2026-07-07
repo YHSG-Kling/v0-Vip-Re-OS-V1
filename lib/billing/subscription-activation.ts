@@ -57,6 +57,19 @@ export function buildCheckoutConfig(tier: CheckoutTier, billingCycle: "monthly" 
   return { lineItems, addInvoiceItems }
 }
 
+/** PURE: the Stripe-Tax session fragment. Gated on platform_settings.collect_tax
+ *  (default OFF — enabling requires a live Stripe Tax registration, so the flag
+ *  lives in the DB, never a hardcode). automatic_tax needs a customer address,
+ *  hence customer_update address auto-save. */
+export function buildCheckoutTaxConfig(collectTax: boolean): Record<string, unknown> {
+  if (!collectTax) return {}
+  return {
+    automatic_tax: { enabled: true },
+    customer_update: { address: "auto", name: "auto" },
+    tax_id_collection: { enabled: true },
+  }
+}
+
 // ── PURE: the subscription-row patch from a normalized Stripe subscription ─────
 
 export interface NormalizedStripeSub {

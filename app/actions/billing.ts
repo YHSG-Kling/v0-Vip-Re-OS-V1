@@ -186,14 +186,19 @@ export async function startSubscriptionCheckout(
   const { stripe } = await import("@/lib/stripe")
 
   // Collect the recurring plan + a one-time SETUP FEE on the first invoice.
-  const { buildCheckoutConfig } = await import("@/lib/billing/subscription-activation")
+  const { buildCheckoutConfig, buildCheckoutTaxConfig } = await import("@/lib/billing/subscription-activation")
   const { lineItems, addInvoiceItems } = buildCheckoutConfig(tier as any, billingCycle)
+
+  // Stripe Tax rides the platform flag (requires a live Stripe Tax registration).
+  const { data: platformRow } = await supabase.from("platform_settings").select("collect_tax").limit(1).maybeSingle()
+  const taxConfig = buildCheckoutTaxConfig((platformRow as any)?.collect_tax === true)
 
   // Create checkout session for subscription
   const session = await stripe.checkout.sessions.create({
     customer: customerId,
     ui_mode: "embedded",
     mode: "subscription",
+    ...(taxConfig as any),
     line_items: lineItems as any,
     subscription_data: {
       // add_invoice_items charges the one-time setup fee on the first invoice only.

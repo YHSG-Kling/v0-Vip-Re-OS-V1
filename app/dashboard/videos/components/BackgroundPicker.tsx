@@ -1,12 +1,13 @@
 "use client"
 
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
 import { Upload, Loader2, Check } from "lucide-react"
+import { listImageLibraryAction, type LibraryAssetRow } from "@/app/actions/marketing/image-library"
 
 export type BackgroundValue =
   | { type: "color"; value: string }
@@ -29,39 +30,9 @@ const SOLID_COLORS = [
   { label: "Warm Taupe", hex: "#c4b49a" },
 ]
 
-// Preset virtual backgrounds (public Supabase Storage URLs under video-backgrounds/ bucket)
-const PRESET_BACKGROUNDS = [
-  {
-    id: "home-office",
-    label: "Home Office",
-    url: "https://images.unsplash.com/photo-1497366216548-37526070297c?w=800&q=80",
-  },
-  {
-    id: "modern-living",
-    label: "Modern Living Room",
-    url: "https://images.unsplash.com/photo-1555041469-a586c61ea9bc?w=800&q=80",
-  },
-  {
-    id: "luxury-interior",
-    label: "Luxury Interior",
-    url: "https://images.unsplash.com/photo-1600210492486-724fe5c67fb0?w=800&q=80",
-  },
-  {
-    id: "outdoor-patio",
-    label: "Outdoor Patio",
-    url: "https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=800&q=80",
-  },
-  {
-    id: "neutral-studio",
-    label: "Neutral Studio",
-    url: "https://images.unsplash.com/photo-1618221195710-dd6b41faaea6?w=800&q=80",
-  },
-  {
-    id: "open-house",
-    label: "Open House Foyer",
-    url: "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?w=800&q=80",
-  },
-]
+// Virtual backgrounds come from the SHARED IMAGE LIBRARY (marketing_assets:
+// platform-curated rows every tenant sees + the tenant's own saved images) —
+// the previous hardcoded demo URLs are gone; staff curate the set in the DB.
 
 function ColorSwatch({
   hex,
@@ -138,6 +109,11 @@ export function BackgroundPicker({ value, onChange, brokerageId }: Props) {
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // Shared library (platform-curated + this tenant's saved images).
+  const [library, setLibrary] = useState<LibraryAssetRow[] | null>(null)
+  useEffect(() => {
+    listImageLibraryAction().then((r) => setLibrary(r.ok ? r.assets : []))
+  }, [])
 
   const isColor = (hex: string) => value.type === "color" && value.value === hex
   const isImage = (url: string) => value.type === "image" && value.url === url
@@ -219,24 +195,33 @@ export function BackgroundPicker({ value, onChange, brokerageId }: Props) {
           </div>
         </TabsContent>
 
-        {/* ── Virtual Backgrounds ───────────────────────── */}
+        {/* ── Virtual Backgrounds (shared image library) ───────────────────── */}
         <TabsContent value="virtual">
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-1">
-            {PRESET_BACKGROUNDS.map((bg) => (
-              <ImageTile
-                key={bg.id}
-                url={bg.url}
-                label={bg.label}
-                selected={isImage(bg.url)}
-                onClick={() => onChange({ type: "image", url: bg.url, label: bg.label })}
-              />
-            ))}
-          </div>
+          {library === null ? (
+            <p className="pt-2 text-xs text-muted-foreground">Loading library…</p>
+          ) : library.length === 0 ? (
+            <p className="pt-2 text-xs text-muted-foreground">
+              No shared backgrounds yet. Upload your own on the Upload tab — or your brokerage/platform staff
+              can curate the shared image library.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-1">
+              {library.map((bg) => (
+                <ImageTile
+                  key={bg.id}
+                  url={bg.thumbnailUrl ?? bg.url}
+                  label={bg.name}
+                  selected={isImage(bg.url)}
+                  onClick={() => onChange({ type: "image", url: bg.url, label: bg.name })}
+                />
+              ))}
+            </div>
+          )}
         </TabsContent>
 
         {/* ── Custom Upload ─────────────────────────────── */}
         <TabsContent value="upload" className="space-y-3 pt-1">
-          {value.type === "image" && !PRESET_BACKGROUNDS.find((b) => b.url === value.url) && (
+          {value.type === "image" && !(library ?? []).find((b) => b.url === value.url) && (
             <div className="relative overflow-hidden rounded-lg border aspect-video">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={value.url} alt="Custom background" className="h-full w-full object-cover" />

@@ -99,13 +99,14 @@ export interface TicketThread {
   resolvedAt: string | null
   createdAt: string
   requesterName: string | null
+  satisfactionRating: number | null
   messages: TicketMessage[]
 }
 
 /** Load a ticket with its brokerage identity, requester name, and full message thread. */
 export async function loadTicketThread(svc: Svc, ticketId: string): Promise<TicketThread | null> {
   const { data: t } = await svc.from("support_tickets")
-    .select("id, brokerage_id, agent_id, subject, description, status, priority, category, assigned_to, first_response_at, resolved_at, created_at")
+    .select("id, brokerage_id, agent_id, subject, description, status, priority, category, assigned_to, first_response_at, resolved_at, created_at, satisfaction_rating")
     .eq("id", ticketId).maybeSingle()
   if (!t) return null
   const tk = t as any
@@ -123,6 +124,7 @@ export async function loadTicketThread(svc: Svc, ticketId: string): Promise<Tick
     subject: tk.subject, description: tk.description, status: tk.status, priority: tk.priority, category: tk.category,
     assignedTo: tk.assigned_to, firstResponseAt: tk.first_response_at, resolvedAt: tk.resolved_at, createdAt: tk.created_at,
     requesterName: uu ? [uu.first_name, uu.last_name].filter(Boolean).join(" ") || null : null,
+    satisfactionRating: tk.satisfaction_rating ?? null,
     messages: ((msgs ?? []) as any[]).map((m) => ({ id: m.id, ticketId: m.ticket_id, authorUserId: m.author_user_id, authorKind: m.author_kind, body: m.body, createdAt: m.created_at })),
   }
 }

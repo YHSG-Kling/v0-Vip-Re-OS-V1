@@ -24,14 +24,18 @@ export default async function SuperadminSupportPage({ searchParams }: { searchPa
   const { status } = await searchParams
   const res = await listAllTicketsAction(status ? { status } : undefined)
   if (!res.ok) return <div className="p-6 text-red-600">Failed: {res.error}</div>
-  const { rows, counts, awaiting } = res
+  const { rows, counts, awaiting, breached, csatAverage, csatRated } = res
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       <div className="flex items-end justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold">Support — every tenant</h1>
-          <p className="text-muted-foreground text-sm mt-1">Respond to any tenant&apos;s tickets. {awaiting} awaiting first response.</p>
+          <p className="text-muted-foreground text-sm mt-1">
+            Respond to any tenant&apos;s tickets. {awaiting} awaiting first response
+            {breached > 0 ? <> · <span className="font-semibold text-red-600">{breached} past SLA</span></> : " · SLA green"}
+            {csatAverage != null && <> · CSAT {csatAverage.toFixed(1)}/5 ({csatRated} rated)</>}
+          </p>
         </div>
         <Link href="/dashboard/superadmin/platform" className="rounded-md border px-3 py-1 text-sm">Platform</Link>
       </div>
@@ -57,7 +61,10 @@ export default async function SuperadminSupportPage({ searchParams }: { searchPa
                 <p className="text-sm font-medium truncate">{t.subject ?? "(no subject)"}</p>
                 <p className="text-xs text-muted-foreground truncate">{t.brokerageName ?? "Unknown tenant"}{t.category ? ` · ${t.category}` : ""}</p>
               </div>
-              {t.awaitingFirstResponse && <span className="shrink-0 rounded bg-red-600 px-2 py-0.5 text-[11px] font-semibold text-white">needs reply</span>}
+              {t.slaBreaches.length > 0 && <span className="shrink-0 rounded bg-red-600 px-2 py-0.5 text-[11px] font-semibold text-white">SLA breached</span>}
+              {t.slaBreaches.length === 0 && t.slaAtRisk && <span className="shrink-0 rounded bg-amber-500 px-2 py-0.5 text-[11px] font-semibold text-white">SLA at risk</span>}
+              {t.awaitingFirstResponse && <span className="shrink-0 rounded bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">needs reply</span>}
+              {t.satisfactionRating != null && <span className="shrink-0 text-[11px] text-muted-foreground">⭐ {t.satisfactionRating}/5</span>}
               <span className="shrink-0 text-xs text-indigo-600 font-medium">Open →</span>
             </Link>
           ))}
