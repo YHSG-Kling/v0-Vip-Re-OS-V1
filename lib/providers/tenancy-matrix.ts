@@ -84,7 +84,7 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   {
     provider: "rentcast",
     models: ["platform_metered", "tenant_optional_key"],
-    why: "The DEFAULT for-sale property feed + AVM/valuation chain — the platform key serves every tenant UNTIL they connect their own IDX feed (IDX Broker connect flow exists; the tenant's board data then takes precedence). HONESTY FLAG: the AVM provider-chain adapters are currently deliberate no-op stubs (lib/avm/provider-chain.ts) — wiring the live RentCast adapter is an open pre-launch task, tracked, not pretended.",
+    why: "The DEFAULT for-sale property feed + AVM/valuation chain — the platform key serves every tenant UNTIL they connect their own IDX feed (IDX Broker connect flow exists; the tenant's board data then takes precedence). VERIFIED LIVE: the AVM cascade (Perplexity free tier → OSINT → paid RentCast/BatchData/ZenRows-Zillow behind usePaidProviders + the vendor budget gate) runs on real connector-gateway calls with per-call metering — an earlier stale header claimed stubs; corrected after verification.",
     envVars: ["RENTCAST_API_KEY"],
   },
   {

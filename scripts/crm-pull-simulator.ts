@@ -69,8 +69,13 @@ console.log("\n── SOURCE: one pipeline, gated end to end ──")
   for (const key of ["crm_pull_import", "open_house_followup"]) {
     check(`registry burn domain ${key}`, key in MAINTENANCE_DOMAINS)
   }
-  check("matrix honesty: AVM adapters flagged as stubs (rentcast wiring is an open task, not pretended)",
-    src("lib/providers/tenancy-matrix.ts").includes("no-op stubs"))
+  check("matrix truth: AVM cascade VERIFIED LIVE (stale stub-claim header corrected after verification)",
+    src("lib/providers/tenancy-matrix.ts").includes("VERIFIED LIVE") &&
+    src("lib/avm/provider-chain.ts").includes("STATUS (verified): the adapters are LIVE"))
+  check("AVM adapters call the REAL clients (rentcast/batchdata/zenrows via connector gateway)",
+    src("lib/avm/provider-chain.ts").includes("getRentcastAVM") &&
+    src("lib/property/rentcast.ts").includes('connector: "rentcast"') &&
+    src("lib/external/zenrows-client.ts").includes('connector: "zenrows"'))
   check("package.json wires the proof", /"test:crm-pull":/.test(src("package.json")))
 }
 

@@ -18,9 +18,13 @@
  * fail silently — the chain just tries the next one. No provider's failure
  * propagates as an error to the caller.
  *
- * NOTE: This module deliberately does NOT call any external providers itself.
- * Adapters are stubbed to no-op and return null. Wiring the actual API calls
- * is a separate session — when those are wired, the cascade runs unchanged.
+ * STATUS (verified): the adapters are LIVE — RentCast via lib/property/rentcast
+ * (connector-gateway, X-Api-Key, per-call metering), BatchData via
+ * lib/external/batchdata-client, Zillow-via-ZenRows via lib/external/
+ * zenrows-client, Perplexity via the AI gateway. Each is creds-gated (no key →
+ * null → next provider) and the paid tier sits behind usePaidProviders + the
+ * vendor budget gate. The only remaining stub is the OSINT direct-AVM path
+ * (public records give life events, not values — deliberate).
  */
 
 import "server-only"
