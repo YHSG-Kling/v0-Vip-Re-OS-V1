@@ -102,9 +102,10 @@ console.log("\n── SOURCE: tenant connections hub ──")
   const webhook = src("app/api/webhooks/inbound-mail/route.ts")
   check("hooked into inbound-mail BEFORE the known-contact gate", webhook.includes("parsePortalLeadEmail") &&
     webhook.indexOf("parsePortalLeadEmail") < webhook.indexOf("if (!contactId || !brokerageId)"))
-  const conn = src("app/actions/tenant-connections.ts")
-  check("tenant slots: listhub + mls_direct + showingtime, brokerage-admin gated, honest ShowingTime note",
-    conn.includes('"listhub"') && conn.includes('"mls_direct"') && conn.includes('"showingtime"') && conn.includes("verifies partner access"))
+  const slots = src("lib/settings/tenant-connection-slots.ts")
+  check("tenant slots: listhub + mls_direct + showingtime + honest ShowingTime note",
+    slots.includes('"listhub"') && slots.includes('"mls_direct"') && slots.includes('"showingtime"') && slots.includes("verifies partner access"))
+  check("connection save is brokerage-admin gated", src("app/actions/tenant-connections.ts").includes("requireAdmin"))
   const page = src("app/dashboard/settings/integrations/lead-sources/lead-sources-client.tsx")
   check("settings page: forwarding instructions + last-30d proof counts per portal",
     page.includes("auto-forward") && page.includes("last 30 days"))
