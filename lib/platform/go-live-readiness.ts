@@ -132,7 +132,8 @@ export async function runGoLiveReadiness(svc: any): Promise<GoLiveReadiness> {
       })
       if (!res.ok) return r("broken", `Stripe rejected the key (${res.status ?? "—"})`)
       const live = (res.data as any)?.livemode
-      return r("ready", `Key accepted · ${live ? "LIVE mode" : "TEST mode — swap to the live key before charging real customers"}`)
+      const whsec = process.env.STRIPE_WEBHOOK_SECRET ? "webhook secret set" : "STRIPE_WEBHOOK_SECRET unset — register https://<app>/api/webhooks/stripe in the dashboard and set it, or paid signups never activate"
+      return r(process.env.STRIPE_WEBHOOK_SECRET ? "ready" : "broken", `Key accepted · ${live ? "LIVE mode" : "TEST mode — swap to the live key before charging real customers"} · ${whsec}`)
     },
 
     // ── AI voice/media vendors ──────────────────────────────────────────────

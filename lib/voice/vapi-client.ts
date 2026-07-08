@@ -1,3 +1,11 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// ⚠ LEGACY RAIL — SCHEDULED FOR RETIREMENT (keep-one review, July 2026).
+// The Twilio-native lane owns BOTH directions (inbound reception + outbound
+// ISA) and every new capability lands there only. This Vapi module remains
+// solely for the VOICE_ENGINE=vapi migration window; once no tenant runs on
+// it, delete this file, the vapi webhook routes, and the vapi_voice_calls
+// billing writer together (they retire as one unit).
+// ─────────────────────────────────────────────────────────────────────────────
 /**
  * lib/voice/vapi-client.ts
  * ─────────────────────────────────────────────────────────────────────────────

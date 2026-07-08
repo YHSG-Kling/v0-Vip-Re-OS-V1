@@ -174,3 +174,17 @@ Stripe's official AI stack: a remote MCP server at `https://mcp.stripe.com`
 meters. That library is the designated path when we turn the per-tenant AI
 metering (ai_tool_usage / voice rollups) into USAGE-BASED line items on top
 of subscription tiers — adopt post-launch, not days before it.
+
+## Stripe live setup (done via the Stripe MCP, July 2026)
+
+The live account (acct_1TqtRU22mFQ1pzus) now carries the four recurring
+monthly prices, created with lookup keys + tier metadata and linked back to
+subscription_tiers.stripe_price_id:
+- solo_agent_monthly  $99  → price_1TqtaH22mFQ1pzusauA8hhC9
+- team_monthly        $299 → price_1TqtaS22mFQ1pzusKoCO8hij
+- brokerage_monthly   $799 → price_1TqtaY22mFQ1pzusTvcnK7uk
+- multi_location_monthly $1,999 → price_1Tqtac22mFQ1pzusxrIoR0Dq
+REMAINING OWNER STEP: register the webhook endpoint
+`https://<app>/api/webhooks/stripe` in the Stripe dashboard (subscription +
+checkout events) and set STRIPE_WEBHOOK_SECRET — the readiness board now
+flags Stripe as broken until it's set (paid signups never activate without it).
