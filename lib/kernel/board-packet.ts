@@ -65,9 +65,10 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
   for (const b of (brokerages ?? []) as any[]) {
     r.brokerages += 1
     try {
-      const path = `board-packets/${b.id}/${sISO.slice(0, 7)}.md`
-      const { data: existing } = await svc.storage.from("documents").list(`board-packets/${b.id}`, { search: `${sISO.slice(0, 7)}.md` })
-      if ((existing ?? []).some((f: any) => f.name === `${sISO.slice(0, 7)}.md`)) continue
+      // Delivered as PDF (owner rule) — pdf-lib composition, serverless-safe.
+      const path = `board-packets/${b.id}/${sISO.slice(0, 7)}.pdf`
+      const { data: existing } = await svc.storage.from("documents").list(`board-packets/${b.id}`, { search: `${sISO.slice(0, 7)}.pdf` })
+      if ((existing ?? []).some((f: any) => f.name === `${sISO.slice(0, 7)}.pdf`)) continue
 
       const cnt = async (q: any) => ((await q) as any)?.count ?? 0
       const [newContacts, activeListings, showings, openHouses, aiCalls, aiOut, aiBookings, draftsUsed, optOuts, closedRows] = await Promise.all([
@@ -83,15 +84,17 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
         svc.from("listings").select("sold_price").eq("brokerage_id", b.id).not("sold_date", "is", null).gte("sold_date", sISO.slice(0, 10)).lt("sold_date", eISO.slice(0, 10)).limit(1000),
       ])
       const closed = ((closedRows as any)?.data ?? []) as Array<{ sold_price: number | null }>
-      const md = composeBoardPacketMarkdown({
+      const packetData = {
         brokerageName: b.name ?? "Brokerage", monthLabel,
         newContacts, activeListings, showings, openHouses,
         aiCallsAnswered: aiCalls, aiOutboundConnects: aiOut, aiBookings, draftsUsed, optOutsHonored: optOuts,
         closedCount: closed.length,
         closedVolumeCents: closed.reduce((a, l) => a + Math.round(Number(l.sold_price ?? 0) * 100), 0),
-      })
+      }
+      const { renderBoardPacketPdf } = await import("./board-packet-pdf")
+      const pdf = await renderBoardPacketPdf(packetData)
       const { error: upErr } = await svc.storage.from("documents")
-        .upload(path, Buffer.from(md, "utf8"), { contentType: "text/markdown", upsert: false })
+        .upload(path, Buffer.from(pdf), { contentType: "application/pdf", upsert: false })
       if (upErr) { r.errors += 1; continue }
       const { data: pub } = svc.storage.from("documents").getPublicUrl(path)
 
