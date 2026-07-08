@@ -82,6 +82,17 @@ export interface RelayPlanRequest {
   to: string
   from: string
   utterance: string
+  /** How many times the caller has barged in over TTS this session — the
+   *  companion counts {type:"interrupt"} frames; the brain paces to it. */
+  interrupts: number
+}
+
+/** PURE: barge-in pacing — a caller who keeps talking over the AI wants
+ *  SHORTER answers, not repeated ones. Empty at zero (no prompt noise). */
+export function composePacingRule(interrupts: number): string {
+  if (interrupts <= 0) return ""
+  if (interrupts === 1) return "PACING: The caller just talked over you — they move fast. Answer in ONE short sentence, then stop and listen."
+  return `PACING: The caller has interrupted ${interrupts} times — strip every reply to its shortest useful form (one short sentence, no preamble), and let them drive.`
 }
 
 export interface RelayPlanResponse {
@@ -100,5 +111,6 @@ export function parseRelayPlanRequest(body: any): RelayPlanRequest | null {
   const from = String(body.from ?? "").trim()
   const utterance = String(body.utterance ?? "").trim()
   if (!callSid || !to || !from || !utterance) return null
-  return { callSid, to, from, utterance: utterance.slice(0, 2000) }
+  const interrupts = Number(body.interrupts)
+  return { callSid, to, from, utterance: utterance.slice(0, 2000), interrupts: Number.isFinite(interrupts) && interrupts > 0 ? Math.min(Math.round(interrupts), 20) : 0 }
 }

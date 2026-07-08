@@ -32,7 +32,10 @@ const wss = new WebSocketServer({ server, path: "/relay" })
 
 wss.on("connection", (ws) => {
   // Per-session state: Twilio sends setup once, then a prompt per utterance.
+  // Interrupt frames (caller barges in over TTS) are COUNTED and passed to
+  // the plan endpoint so the brain paces down — shorter replies for fast talkers.
   let session = { callSid: "", from: "", to: "" }
+  let interrupts = 0
 
   ws.on("message", async (raw) => {
     let frame
@@ -42,13 +45,14 @@ wss.on("connection", (ws) => {
       session = { callSid: frame.callSid ?? "", from: frame.from ?? "", to: frame.to ?? "" }
       return
     }
+    if (frame?.type === "interrupt") { interrupts += 1; return }
     if (frame?.type !== "prompt" || frame.last === false || !session.callSid) return
 
     try {
       const res = await fetch(`${APP_URL}/api/voice/relay/plan`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-relay-secret": SECRET },
-        body: JSON.stringify({ ...session, utterance: String(frame.voicePrompt ?? "") }),
+        body: JSON.stringify({ ...session, utterance: String(frame.voicePrompt ?? ""), interrupts }),
       })
       if (!res.ok) {
         ws.send(JSON.stringify({ type: "text", token: "Sorry — could you say that once more?", last: true }))

@@ -176,11 +176,13 @@ export async function planPlatformReceptionTurn(
   ctx: PlatformReceptionContext,
   transcript: string | null,
   callerUtterance: string,
+  extraRules?: string,
 ): Promise<PlatformTurnPlan> {
-  const { systemPrompt } = buildPlatformReceptionPrompt({
+  let { systemPrompt } = buildPlatformReceptionPrompt({
     brandName: ctx.brandName, tagline: ctx.tagline, tierLines: ctx.tierLines, hasTransfer: !!ctx.forwardNumber,
     voicePitch: ctx.voicePitch, receptionGreeting: ctx.receptionGreeting,
   })
+  if (extraRules) systemPrompt = `${systemPrompt}\n\n${extraRules}`
   const { transcriptToMessages } = await import("@/lib/voice/reception-brain")
   const convo = transcriptToMessages(transcript).map((m) => `${m.role === "assistant" ? "AI" : "Caller"}: ${m.content}`).join("\n")
   const { generateTextRouted } = await import("@/lib/ai/models")

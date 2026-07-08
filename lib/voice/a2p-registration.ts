@@ -28,6 +28,10 @@ export interface A2pBusinessProfile {
   contactLastName: string
   contactEmail: string
   contactPhone: string
+  /** REQUIRED on every campaign since June 30, 2026 — submissions without
+   *  them hard-400 (contract-verified against Twilio's current docs). */
+  privacyPolicyUrl: string
+  termsUrl: string
   /** Human-readable description of the texting use (goes on the campaign). */
   useCaseDescription: string
 }
@@ -46,6 +50,8 @@ const REQUIRED: Array<[keyof A2pBusinessProfile, string]> = [
   ["contactLastName", "Contact last name"],
   ["contactEmail", "Contact email"],
   ["contactPhone", "Contact phone"],
+  ["privacyPolicyUrl", "Privacy policy URL"],
+  ["termsUrl", "Terms & conditions URL"],
 ]
 
 /** PURE: validate the tenant's business profile — an honest missing list, and
@@ -61,6 +67,9 @@ export function validateA2pProfile(raw: any): A2pProfileValidation {
   if (get("ein") && ein.length !== 9) missing.push("EIN must be 9 digits")
   if (get("contactEmail") && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(get("contactEmail"))) missing.push("Contact email must be valid")
   if (get("website") && !/^https?:\/\//.test(get("website"))) missing.push("Website must start with http(s)://")
+  for (const k of ["privacyPolicyUrl", "termsUrl"] as const) {
+    if (get(k) && !/^https?:\/\//.test(get(k))) missing.push(`${k === "privacyPolicyUrl" ? "Privacy policy" : "Terms"} URL must start with http(s)://`)
+  }
   if (missing.length > 0) return { ok: false, missing }
   return {
     ok: true,
@@ -76,6 +85,8 @@ export function validateA2pProfile(raw: any): A2pProfileValidation {
       contactLastName: get("contactLastName").slice(0, 60),
       contactEmail: get("contactEmail").slice(0, 120),
       contactPhone: get("contactPhone").slice(0, 24),
+      privacyPolicyUrl: get("privacyPolicyUrl").slice(0, 300),
+      termsUrl: get("termsUrl").slice(0, 300),
       useCaseDescription: (get("useCaseDescription") || "Real estate brokerage: appointment confirmations, showing reminders, and replies to client-initiated conversations.").slice(0, 400),
     },
   }
@@ -136,8 +147,11 @@ export function describeA2pState(s: A2pState): string {
 
 const TRUSTHUB = "https://trusthub.twilio.com"
 const MESSAGING = "https://messaging.twilio.com"
-// Twilio's published policy SIDs (constant across all accounts):
-const SECONDARY_PROFILE_POLICY = "RN806dd6cd175f314e1f96a9727ee271f4"
+// Twilio's published policy SIDs (constant across all accounts) —
+// CONTRACT-VERIFIED against Twilio's current docs: RNdfbf… is the SECONDARY
+// customer-profile policy (the standard/EIN path); RN806dd… is the STARTER
+// (sole-prop) policy and would fail evaluation for an EIN registration.
+const SECONDARY_PROFILE_POLICY = "RNdfbf3fae0e1107f8aded0e7cead80bf5"
 const A2P_TRUST_POLICY = "QE2c6890da8086d771620e9b13fadeba0b"
 
 type Creds = { accountSid: string; authToken: string }
@@ -183,9 +197,11 @@ export interface A2pRunResult {
  * Idempotent + resumable: completed steps are skipped (their sids persist);
  * async carrier reviews (brand/campaign) are POLLED, never assumed. Any
  * Twilio validation error is persisted verbatim so the tenant sees exactly
- * what the carrier registry rejected.
+ * what the carrier registry rejected. opts.mock uses Twilio's Mock-brand API
+ * (BrandRegistrations Mock=true) — the documented way to exercise the WHOLE
+ * ISV chain end-to-end without a real TCR filing (pre-production verification).
  */
-export async function runA2pRegistration(svc: any, brokerageId: string): Promise<A2pRunResult> {
+export async function runA2pRegistration(svc: any, brokerageId: string, opts?: { mock?: boolean }): Promise<A2pRunResult> {
   const { rowId, state } = await loadA2pState(svc, brokerageId)
   const fail = async (error: string): Promise<A2pRunResult> => {
     const s = { ...state, last_error: error.slice(0, 400) }
@@ -298,6 +314,7 @@ export async function runA2pRegistration(svc: any, brokerageId: string): Promise
       const brand = await twilio<{ sid?: string; status?: string }>(master, MESSAGING, "/v1/a2p/BrandRegistrations", "POST", {
         CustomerProfileBundleSid: state.customer_profile_sid!,
         A2PProfileBundleSid: state.trust_product_sid!,
+        ...(opts?.mock ? { Mock: true } : {}),
       })
       if (!brand.ok || !brand.data?.sid) return fail(`Brand registration failed: ${brand.error ?? brand.status}`)
       state.brand_sid = brand.data.sid
@@ -347,16 +364,32 @@ export async function runA2pRegistration(svc: any, brokerageId: string): Promise
         await saveA2pState(svc, brokerageId, rowId, state)
         return { ok: true, state, advancedTo: "campaign" }
       }
+      // CONTRACT-VERIFIED (Twilio Usa2p resource docs, July 2026):
+      // MessageSamples is an ARRAY (2–5 samples, 20–1024 chars each — one
+      // sample hard-fails); PrivacyPolicyUrl + TermsAndConditionsUrl are
+      // REQUIRED since June 30, 2026 (400 without them); keyword opt-in
+      // declared → OptInMessage + OptInKeywords required; SubscriberOptIn /
+      // AgeGated / DirectLending are explicit booleans.
       const campaign = await twilio<{ sid?: string; campaign_status?: string }>(
         { accountSid: sub.accountSid, authToken: sub.authToken }, MESSAGING,
         `/v1/Services/${state.messaging_service_sid}/Compliance/Usa2p`, "POST", {
           BrandRegistrationSid: state.brand_sid!,
           Description: profile.useCaseDescription,
-          MessageFlow: "Contacts opt in by texting or calling the office first, submitting a web form with consent language, or signing in at an open house with express consent. Every message includes opt-out honoring; STOP is processed immediately.",
-          "MessageSamples": "Hi {first name}, confirming your showing at {address} tomorrow at {time}. Reply C to confirm or R to reschedule.",
+          MessageFlow: "Contacts opt in by texting or calling the office first, submitting a web form with consent language, or signing in at an open house with express written consent. Consent language and records are retained. Every message honors opt-out; STOP is processed immediately.",
+          MessageSamples: [
+            "Hi {first name}, confirming your showing at {address} tomorrow at {time}. Reply C to confirm or R to reschedule. Reply STOP to opt out.",
+            `Hi {first name}, this is ${profile.legalName}. The open house at {address} starts at {time} — see you there! Reply STOP to opt out.`,
+          ],
           UsAppToPersonUsecase: "LOW_VOLUME",
           HasEmbeddedLinks: true,
           HasEmbeddedPhone: true,
+          SubscriberOptIn: true,
+          AgeGated: false,
+          DirectLending: false,
+          OptInMessage: `${profile.legalName}: You're opted in to appointment and listing updates (up to 4 msgs/mo). Msg&data rates may apply. Reply HELP for help, STOP to opt out.`,
+          OptInKeywords: ["START", "YES", "UNSTOP"],
+          PrivacyPolicyUrl: profile.privacyPolicyUrl,
+          TermsAndConditionsUrl: profile.termsUrl,
         })
       if (!campaign.ok || !campaign.data?.sid) return fail(`Campaign create failed: ${campaign.error ?? campaign.status}`)
       state.campaign_sid = campaign.data.sid
@@ -373,8 +406,9 @@ export async function runA2pRegistration(svc: any, brokerageId: string): Promise
     if (brand.ok && brand.data?.status) state.brand_status = brand.data.status
   }
   if (state.campaign_sid && !["VERIFIED", "APPROVED", "FAILED"].includes((state.campaign_status ?? "").toUpperCase())) {
+    // Poll by the campaign's OWN sid (returned at creation) — never a constant.
     const c = await twilio<{ campaign_status?: string }>({ accountSid: sub.accountSid, authToken: sub.authToken }, MESSAGING,
-      `/v1/Services/${state.messaging_service_sid}/Compliance/Usa2p/QE2c6890da8086d771620e9b13fadeba0b`, "GET")
+      `/v1/Services/${state.messaging_service_sid}/Compliance/Usa2p/${state.campaign_sid}`, "GET")
     if (c.ok && c.data?.campaign_status) state.campaign_status = c.data.campaign_status
   }
   await saveA2pState(svc, brokerageId, rowId, state)

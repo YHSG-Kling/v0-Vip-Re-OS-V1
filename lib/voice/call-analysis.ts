@@ -44,7 +44,7 @@ export async function analyzeVoiceCallRow(svc: any, call: {
   direction: string | null
   duration_seconds: number | null
   transcription: string
-}): Promise<{ ok: boolean; error?: string }> {
+}): Promise<{ ok: boolean; error?: string; intel?: { urgencyScore: number; intentPrimary: string; summary: string } }> {
   try {
     // The intelligence reader (loadCallIntelligence) filters call_analyses by
     // the agent's USER id — resolve it from the ledger's agents.id.
@@ -86,18 +86,51 @@ Extract: a 2-sentence summary; overall caller sentiment; the caller's objections
       analyzed_by: "voice_intel_sweep",
     })
     if (error) return { ok: false, error: error.message }
-    return { ok: true }
+    return { ok: true, intel: { urgencyScore: Math.round(object.urgencyScore), intentPrimary: object.intentPrimary, summary: object.summary } }
   } catch (e: any) {
     return { ok: false, error: e?.message ?? "analysis failed" }
   }
 }
 
-export interface VoiceIntelSweepResult { candidates: number; analyzed: number; skipped: number; errors: number }
+/** A call scoring at/above this urgency proposes a SAME-DAY human callback —
+ *  the intelligence acting, not just reporting (gated; nothing auto-dials). */
+export const URGENT_CALLBACK_THRESHOLD = 80
+
+/** Propose ONE gated same-day callback for a hot call (deduped per call). */
+async function proposeUrgentCallback(svc: any, call: {
+  id: string; brokerage_id: string; contact_id: string | null; agent_id: string | null
+}, intel: { urgencyScore: number; intentPrimary: string; summary: string }): Promise<boolean> {
+  if (!call.contact_id) return false
+  try {
+    const tag = `[HOT_CALL] [${call.id}]`
+    const { data: dup } = await svc.from("agent_client_messages").select("id")
+      .ilike("rationale", `${tag}%`).limit(1).maybeSingle()
+    if (dup) return false
+    const { data: contact } = await svc.from("contacts").select("first_name, last_name").eq("id", call.contact_id).maybeSingle()
+    const who = [((contact as any)?.first_name ?? "").trim(), ((contact as any)?.last_name ?? "").trim()].filter(Boolean).join(" ") || "This caller"
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const p = await proposeClientMessage({
+      brokerageId: call.brokerage_id,
+      agentKind: "ai_isa",
+      entityType: "contact",
+      entityId: call.contact_id,
+      audience: "agent",
+      subject: `Hot call — ${who} needs a same-day callback`,
+      body: `${who} scored ${intel.urgencyScore}/100 urgency on a call today (${intel.intentPrimary}). ${intel.summary.slice(0, 200)} Approve and I'll queue the callback at the top of today's plan.`,
+      rationale: `${tag} — urgency ${intel.urgencyScore} ≥ ${URGENT_CALLBACK_THRESHOLD}; the AI heard intent to act soon. Transcript is on the call record.`,
+    }, svc)
+    return (p as any)?.ok !== false
+  } catch {
+    return false
+  }
+}
+
+export interface VoiceIntelSweepResult { candidates: number; analyzed: number; skipped: number; errors: number; callbacksProposed: number }
 
 /** Hourly sweep: recent completed AI calls with transcripts, not yet analyzed
  *  (keyed by voice_call_id), newest first, capped per run (LLM cost control). */
 export async function sweepVoiceCallIntelligence(svc: any, limit = 15): Promise<VoiceIntelSweepResult> {
-  const r: VoiceIntelSweepResult = { candidates: 0, analyzed: 0, skipped: 0, errors: 0 }
+  const r: VoiceIntelSweepResult = { candidates: 0, analyzed: 0, skipped: 0, errors: 0, callbacksProposed: 0 }
   const since = new Date(Date.now() - 48 * 3_600_000).toISOString()
   const { data: calls } = await svc.from("voice_calls")
     .select("id, brokerage_id, contact_id, agent_id, direction, duration_seconds, transcription, status")
@@ -115,8 +148,14 @@ export async function sweepVoiceCallIntelligence(svc: any, limit = 15): Promise<
     r.candidates += 1
     if (!isAnalyzableCall(call, analyzedIds.has(call.id))) { r.skipped += 1; continue }
     const res = await analyzeVoiceCallRow(svc, call)
-    if (res.ok) r.analyzed += 1
-    else r.errors += 1
+    if (res.ok) {
+      r.analyzed += 1
+      // THE INTELLIGENCE ACTS: a hot call (urgency ≥ threshold) proposes one
+      // gated same-day callback on the proposal rail — nothing auto-dials.
+      if (res.intel && res.intel.urgencyScore >= URGENT_CALLBACK_THRESHOLD) {
+        if (await proposeUrgentCallback(svc, call, res.intel)) r.callbacksProposed += 1
+      }
+    } else r.errors += 1
   }
   return r
 }

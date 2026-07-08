@@ -132,3 +132,17 @@ parameter contract there before shipping — the same verified-contract
 discipline used for RentCast. Note: the repo is builder tooling only; it has
 no runtime voice framework, which is why this app's turn lane + brainless
 relay companion is the correct serverless architecture.
+
+### A2P contract notes (verified against Twilio docs, July 2026)
+
+- Secondary customer profile policy: `RNdfbf3fae0e1107f8aded0e7cead80bf5`
+  (the `RN806dd…` SID is the STARTER/sole-prop policy — wrong for EIN brands).
+- `MessageSamples` is an array (2–5 samples, 20–1024 chars each).
+- Since June 30, 2026 every campaign REQUIRES `PrivacyPolicyUrl` and
+  `TermsAndConditionsUrl` — the tenant's business profile collects both.
+- `SubscriberOptIn`/`AgeGated`/`DirectLending` are explicit; keyword opt-in
+  declared → `OptInMessage` + `OptInKeywords` supplied.
+- PRE-PRODUCTION VERIFICATION: run the chain with Twilio's Mock-brand API —
+  `runA2pRegistration(svc, brokerageId, { mock: true })` sets `Mock=true` on
+  the BrandRegistration so the whole ISV sequence exercises end-to-end with
+  no real TCR filing or fees. Do this once per environment before go-live.

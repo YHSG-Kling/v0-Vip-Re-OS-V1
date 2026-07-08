@@ -24,6 +24,8 @@ const FIELDS: Array<{ key: string; label: string; placeholder?: string }> = [
   { key: "contactLastName", label: "Contact last name" },
   { key: "contactEmail", label: "Contact email" },
   { key: "contactPhone", label: "Contact phone" },
+  { key: "privacyPolicyUrl", label: "Privacy policy URL", placeholder: "https://…/privacy" },
+  { key: "termsUrl", label: "Terms & conditions URL", placeholder: "https://…/terms" },
 ]
 
 export function A2pRegistrationCard() {

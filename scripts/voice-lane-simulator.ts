@@ -12,7 +12,7 @@ import {
   twimlGatherTurn, twimlTransfer, twimlHangup, TURN_INSTRUCTIONS,
 } from "../lib/voice/reception-brain"
 import { encodeOutboundBrief, decodeOutboundBrief, composeVoicemailMessage } from "../lib/voice/twilio-outbound"
-import { relayConfigured, twimlConnectRelay, parseRelayFrame, relaySpeak, relayEnd, parseRelayPlanRequest } from "../lib/voice/conversation-relay"
+import { relayConfigured, twimlConnectRelay, parseRelayFrame, relaySpeak, relayEnd, parseRelayPlanRequest, composePacingRule } from "../lib/voice/conversation-relay"
 import { validateA2pProfile, nextA2pStep, describeA2pState } from "../lib/voice/a2p-registration"
 import { rollupVoiceActivity, composeVoiceActivityBrief } from "../lib/kernel/call-intelligence"
 import { extractAddressHints, composeInventoryBlock, DISCUSSABLE_STAGES } from "../lib/voice/reception-inventory"
@@ -162,16 +162,23 @@ console.log("\n── PURE: ConversationRelay (the streaming transport) ──")
   check("speak/end frames match Twilio's contract", JSON.parse(relaySpeak("Hello")).type === "text" && JSON.parse(relaySpeak("Hello")).last === true && JSON.parse(relayEnd()).type === "end")
   check("plan-request validation rejects partial bodies", parseRelayPlanRequest({ callSid: "CA1", to: "+1", from: "+2", utterance: "hi" }) !== null
     && parseRelayPlanRequest({ callSid: "", to: "+1", from: "+2", utterance: "hi" }) === null && parseRelayPlanRequest(null) === null)
+  check("BARGE-IN pacing: interrupts counted (default 0, capped) → escalating shorten-your-replies rule; silent at zero",
+    parseRelayPlanRequest({ callSid: "CA1", to: "+1", from: "+2", utterance: "hi" })!.interrupts === 0
+    && parseRelayPlanRequest({ callSid: "CA1", to: "+1", from: "+2", utterance: "hi", interrupts: 99 })!.interrupts === 20
+    && composePacingRule(0) === "" && composePacingRule(1).includes("ONE short sentence") && composePacingRule(3).includes("interrupted 3 times"))
 }
 
 console.log("\n── PURE: A2P 10DLC step machine ──")
 {
   const bad = validateA2pProfile({ legalName: "Kling Realty", ein: "12-34567" })
-  check("profile validation: honest missing list + EIN must be 9 digits", !bad.ok && (bad as any).missing.includes("Business website") && (bad as any).missing.some((m: string) => m.includes("9 digits")))
+  check("profile validation: honest missing list + EIN must be 9 digits + REQUIRED legal URLs (June 30 2026 carrier rule)",
+    !bad.ok && (bad as any).missing.includes("Business website") && (bad as any).missing.some((m: string) => m.includes("9 digits"))
+    && (bad as any).missing.includes("Privacy policy URL") && (bad as any).missing.includes("Terms & conditions URL"))
   const good = validateA2pProfile({
     legalName: "Kling Realty LLC", ein: "12-3456789", website: "https://kling.example",
     street: "1 Main St", city: "Austin", region: "TX", postalCode: "78701",
     contactFirstName: "D", contactLastName: "K", contactEmail: "d@kling.example", contactPhone: "+15125550100",
+    privacyPolicyUrl: "https://kling.example/privacy", termsUrl: "https://kling.example/terms",
   })
   check("complete profile normalizes (EIN digits-only, default use-case supplied)", good.ok && (good as any).value.ein === "123456789" && (good as any).value.useCaseDescription.length > 10)
   check("step machine resumes in order and finishes",
@@ -337,6 +344,20 @@ console.log("\n── SOURCE: wiring ──")
   const a2pLib = src("lib/voice/a2p-registration.ts")
   check("A2P: resumable step machine — persisted sids on platform_credentials 'twilio_a2p', async reviews POLLED never assumed",
     a2pLib.includes('"twilio_a2p"') && a2pLib.includes("BrandRegistrations") && a2pLib.includes("Compliance/Usa2p") && a2pLib.includes("brand_status"))
+  check("A2P CONTRACT-VERIFIED (Twilio docs, July 2026): SECONDARY profile policy RNdfbf… (not the Starter RN806dd…); MessageSamples is an ARRAY of 2; legal URLs + SubscriberOptIn/AgeGated/DirectLending + OptInMessage/Keywords on the campaign",
+    a2pLib.includes("RNdfbf3fae0e1107f8aded0e7cead80bf5") && !a2pLib.includes('= "RN806dd6cd175f314e1f96a9727ee271f4"')
+    && a2pLib.includes("MessageSamples: [") && a2pLib.includes("PrivacyPolicyUrl: profile.privacyPolicyUrl")
+    && a2pLib.includes("TermsAndConditionsUrl") && a2pLib.includes("SubscriberOptIn: true") && a2pLib.includes("OptInKeywords"))
+  check("A2P: campaign review polled by the campaign's OWN sid + Mock-brand test path (BrandRegistrations Mock=true) for pre-production verification",
+    a2pLib.includes("Compliance/Usa2p/${state.campaign_sid}") && a2pLib.includes("Mock: true"))
+  check("GATEWAY: form arrays serialize as REPEATED keys (Twilio array params) — comma-joined would be rejected",
+    src("lib/agentic-os/connector-gateway.ts").includes("Array.isArray(v)) for (const item of v) p.append(k"))
+  check("BARGE-IN wired end-to-end: companion counts interrupt frames → plan request → composePacingRule threaded into every scope's prompt",
+    src("tools/relay-companion/server.mjs").includes('frame?.type === "interrupt"') && src("tools/relay-companion/server.mjs").includes("interrupts")
+    && src("app/api/voice/relay/plan/route.ts").includes("composePacingRule(req.interrupts)"))
+  check("URGENCY ROUTING: a hot call (≥ threshold) proposes ONE gated same-day callback on the proposal rail, deduped per call — nothing auto-dials",
+    src("lib/voice/call-analysis.ts").includes("URGENT_CALLBACK_THRESHOLD") && src("lib/voice/call-analysis.ts").includes("proposeClientMessage")
+    && src("lib/voice/call-analysis.ts").includes("[HOT_CALL]") && src("lib/voice/call-analysis.ts").includes("callbacksProposed"))
   check("A2P: broker-gated tenant actions + the phone-settings card wired",
     src("app/actions/a2p-registration.ts").includes("isBrokerRole") && src("app/dashboard/admin/phone-settings/phone-settings-client.tsx").includes("A2pRegistrationCard"))
 
@@ -353,7 +374,7 @@ console.log("\n── SOURCE: wiring ──")
   check("INVENTORY: reception answers from LIVE listings — planReceptionTurn injects loadInventoryContext; BOTH transports pass svc",
     src("lib/voice/twilio-voice.ts").includes("loadInventoryContext")
     && turn.includes("planReceptionTurn(ctx, transcript, speech, svc)")
-    && src("app/api/voice/relay/plan/route.ts").includes("planReceptionTurn(ctx, transcript, req.utterance, svc)"))
+    && src("app/api/voice/relay/plan/route.ts").includes("planReceptionTurn(ctx, transcript, req.utterance, svc"))
   check("SETTINGS CASCADE: identity resolution walks agent → TEAM → brokerage (nothing hardcoded, brand flows all the way down)",
     src("lib/voice/twilio-voice.ts").includes('"team"') && src("lib/voice/twilio-voice.ts").includes("team_id"))
   check("FLYWHEEL: the Monday brief threads the draft-quality line (loadDraftQuality beside voice activity + call intel)",

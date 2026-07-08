@@ -119,7 +119,20 @@ export async function callConnector<T = any>(req: GatewayRequest): Promise<Gatew
   const serializedBody = req.body === undefined
     ? undefined
     : req.bodyType === "form"
-      ? new URLSearchParams(req.body as Record<string, string>).toString()
+      ? (() => {
+          // Array values become REPEATED keys (Twilio's array params, e.g.
+          // MessageSamples, require MessageSamples=a&MessageSamples=b — the
+          // plain URLSearchParams(record) constructor comma-joins them, which
+          // vendors reject). Scalars keep the original behavior; null/undefined
+          // entries are skipped instead of serializing as "undefined".
+          const p = new URLSearchParams()
+          for (const [k, v] of Object.entries(req.body as Record<string, unknown>)) {
+            if (v === undefined || v === null) continue
+            if (Array.isArray(v)) for (const item of v) p.append(k, String(item))
+            else p.append(k, String(v))
+          }
+          return p.toString()
+        })()
       : req.bodyType === "binary"
         ? (req.body as BodyInit)
         : JSON.stringify(req.body)

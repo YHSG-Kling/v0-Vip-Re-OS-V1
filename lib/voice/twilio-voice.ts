@@ -224,13 +224,15 @@ export async function planReceptionTurn(
   transcript: string | null,
   callerUtterance: string,
   svc?: any,
+  extraRules?: string,
 ): Promise<VoiceTurnPlan> {
   const { systemPrompt } = buildReceptionPrompt(ctx.identity)
   let prompt = systemPrompt
   if (svc) {
     const { loadInventoryContext } = await import("@/lib/voice/reception-inventory")
     const inventory = await loadInventoryContext(svc, ctx.brokerageId, callerUtterance)
-    if (inventory) prompt = `${systemPrompt}\n\n${inventory}`
+    if (inventory) prompt = `${prompt}\n\n${inventory}`
   }
+  if (extraRules) prompt = `${prompt}\n\n${extraRules}`
   return planTurnWithPrompt(prompt, transcript, callerUtterance)
 }

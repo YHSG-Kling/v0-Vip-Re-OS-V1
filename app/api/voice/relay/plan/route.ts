@@ -3,7 +3,7 @@ import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveInboundContext, planReceptionTurn, planTurnWithPrompt, bookShowingFromCall } from "@/lib/voice/twilio-voice"
 import { appendTranscript, buildOutboundPrompt } from "@/lib/voice/reception-brain"
-import { parseRelayPlanRequest, type RelayPlanResponse } from "@/lib/voice/conversation-relay"
+import { parseRelayPlanRequest, composePacingRule, type RelayPlanResponse } from "@/lib/voice/conversation-relay"
 import { isPlatformNumber, resolvePlatformReceptionContext, planPlatformReceptionTurn, capturePhoneProspect } from "@/lib/voice/platform-reception"
 import { decodeOutboundBrief } from "@/lib/voice/twilio-outbound"
 
@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
     const { data: call } = await svc.from("platform_reception_calls")
       .select("id, transcript").eq("call_sid", req.callSid).maybeSingle()
     const transcript = (call as any)?.transcript ?? null
-    const plan = await planPlatformReceptionTurn(pctx, transcript, req.utterance)
+    const plan = await planPlatformReceptionTurn(pctx, transcript, req.utterance, composePacingRule(req.interrupts))
     const newTranscript = appendTranscript(transcript, req.utterance, plan.say)
     if (call) await svc.from("platform_reception_calls").update({ transcript: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
 
@@ -94,11 +94,12 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  const pacing = composePacingRule(req.interrupts)
   const plan = brief
     ? await planTurnWithPrompt(
-        buildOutboundPrompt(ctx.identity, { objective: brief.objective, contactName: brief.contactName, extraSystemPrompt: brief.systemPrompt }).systemPrompt,
+        `${buildOutboundPrompt(ctx.identity, { objective: brief.objective, contactName: brief.contactName, extraSystemPrompt: brief.systemPrompt }).systemPrompt}${pacing ? `\n\n${pacing}` : ""}`,
         transcript, req.utterance)
-    : await planReceptionTurn(ctx, transcript, req.utterance, svc)
+    : await planReceptionTurn(ctx, transcript, req.utterance, svc, pacing)
   const newTranscript = appendTranscript(transcript, req.utterance, plan.say)
   if (call) await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
 
