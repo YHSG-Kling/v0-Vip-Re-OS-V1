@@ -48,6 +48,7 @@ export async function renderBoardPacketPdf(d: BoardPacketData): Promise<Uint8Arr
   line(`Appointments booked live on calls: ${d.aiBookings}`)
   line(`AI reply drafts your agents sent: ${d.draftsUsed}`)
   line(`Opt-outs honored immediately: ${d.optOutsHonored} — compliance is a feature`)
+  line(`Marketing-attributed closed volume: ${money(d.attributedGciCents)} across ${d.attributedDeals} deal${d.attributedDeals === 1 ? "" : "s"} (attribution-weighted)`)
 
   page.drawText(
     `Composed automatically from the operating ledgers — every number traces to records in the ${d.monthLabel} window.`,

@@ -21,6 +21,10 @@ export interface BoardPacketData {
   aiBookings: number
   draftsUsed: number
   optOutsHonored: number
+  /** Attribution-weighted marketing credit on closed deals (the existing
+   *  marketing_attribution_credits engine — measured, never re-modeled here). */
+  attributedGciCents: number
+  attributedDeals: number
 }
 
 const money = (cents: number) => `$${Math.round(cents / 100).toLocaleString("en-US")}`
@@ -44,6 +48,7 @@ export function composeBoardPacketMarkdown(d: BoardPacketData): string {
     `- Appointments booked live on calls: **${d.aiBookings}**`,
     `- AI reply drafts your agents sent: **${d.draftsUsed}**`,
     `- Opt-outs honored immediately: **${d.optOutsHonored}** (compliance is a feature)`,
+    `- Marketing-attributed closed volume: **${money(d.attributedGciCents)}** across **${d.attributedDeals}** deal${d.attributedDeals === 1 ? "" : "s"} (attribution-weighted)`,
     ``,
     `---`,
     `*Composed automatically from the operating ledgers — every number traces to records in the ${d.monthLabel} window.*`,
@@ -71,7 +76,7 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
       if ((existing ?? []).some((f: any) => f.name === `${sISO.slice(0, 7)}.pdf`)) continue
 
       const cnt = async (q: any) => ((await q) as any)?.count ?? 0
-      const [newContacts, activeListings, showings, openHouses, aiCalls, aiOut, aiBookings, draftsUsed, optOuts, closedRows] = await Promise.all([
+      const [newContacts, activeListings, showings, openHouses, aiCalls, aiOut, aiBookings, draftsUsed, optOuts, closedRows, creditRows] = await Promise.all([
         cnt(svc.from("contacts").select("id", { count: "exact", head: true }).eq("brokerage_id", b.id).gte("created_at", sISO).lt("created_at", eISO)),
         cnt(svc.from("listings").select("id", { count: "exact", head: true }).eq("brokerage_id", b.id).is("deleted_at", null).in("lifecycle_stage", ["COMING_SOON_ACTIVE", "MLS_ACTIVE", "OPEN_HOUSE_MARKETING", "OPEN_HOUSE_EVENT", "SHOWINGS_ACTIVE", "OFFERS_RECEIVED", "NEGOTIATION"])),
         cnt(svc.from("showings").select("id", { count: "exact", head: true }).eq("brokerage_id", b.id).gte("created_at", sISO).lt("created_at", eISO)),
@@ -82,14 +87,19 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
         cnt(svc.from("ai_message_drafts").select("id", { count: "exact", head: true }).eq("brokerage_id", b.id).in("status", ["accepted", "sent", "edited"]).gte("created_at", sISO).lt("created_at", eISO)),
         cnt(svc.from("voice_calls").select("id", { count: "exact", head: true }).eq("brokerage_id", b.id).eq("outcome", "opt_out").gte("started_at", sISO).lt("started_at", eISO)),
         svc.from("listings").select("sold_price").eq("brokerage_id", b.id).not("sold_date", "is", null).gte("sold_date", sISO.slice(0, 10)).lt("sold_date", eISO.slice(0, 10)).limit(1000),
+        svc.from("marketing_attribution_credits").select("credit_dollars, transaction_id")
+          .eq("brokerage_id", b.id).gte("created_at", sISO).lt("created_at", eISO).limit(2000),
       ])
       const closed = ((closedRows as any)?.data ?? []) as Array<{ sold_price: number | null }>
+      const credits = ((creditRows as any)?.data ?? []) as Array<{ credit_dollars: number | null; transaction_id: string | null }>
       const packetData = {
         brokerageName: b.name ?? "Brokerage", monthLabel,
         newContacts, activeListings, showings, openHouses,
         aiCallsAnswered: aiCalls, aiOutboundConnects: aiOut, aiBookings, draftsUsed, optOutsHonored: optOuts,
         closedCount: closed.length,
         closedVolumeCents: closed.reduce((a, l) => a + Math.round(Number(l.sold_price ?? 0) * 100), 0),
+        attributedGciCents: credits.reduce((a, c) => a + Math.round(Number(c.credit_dollars ?? 0) * 100), 0),
+        attributedDeals: new Set(credits.map((c) => c.transaction_id).filter(Boolean)).size,
       }
       const { renderBoardPacketPdf } = await import("./board-packet-pdf")
       const pdf = await renderBoardPacketPdf(packetData)
