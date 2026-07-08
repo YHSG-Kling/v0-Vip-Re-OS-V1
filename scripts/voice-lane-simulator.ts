@@ -160,6 +160,9 @@ console.log("\n── PURE: ConversationRelay (the streaming transport) ──")
     && (parseRelayFrame('{"type":"prompt","voicePrompt":"hi","last":true}') as any).voicePrompt === "hi"
     && parseRelayFrame("not json").type === "unknown" && parseRelayFrame('{"type":"???"}').type === "unknown")
   check("speak/end frames match Twilio's contract", JSON.parse(relaySpeak("Hello")).type === "text" && JSON.parse(relaySpeak("Hello")).last === true && JSON.parse(relayEnd()).type === "end")
+  check("Conversational Intelligence attaches via TwiML attribute ONLY when a service sid is configured (env-gated, never fabricated)",
+    twimlConnectRelay("wss://r.example/relay", "hi", undefined, "GA0123456789abcdef0123456789abcdef").includes('intelligenceService="GA0123456789abcdef0123456789abcdef"')
+    && !twimlConnectRelay("wss://r.example/relay", "hi").includes("intelligenceService"))
   check("plan-request validation rejects partial bodies", parseRelayPlanRequest({ callSid: "CA1", to: "+1", from: "+2", utterance: "hi" }) !== null
     && parseRelayPlanRequest({ callSid: "", to: "+1", from: "+2", utterance: "hi" }) === null && parseRelayPlanRequest(null) === null)
   check("BARGE-IN pacing: interrupts counted (default 0, capped) → escalating shorten-your-replies rule; silent at zero",
@@ -355,6 +358,16 @@ console.log("\n── SOURCE: wiring ──")
   check("BARGE-IN wired end-to-end: companion counts interrupt frames → plan request → composePacingRule threaded into every scope's prompt",
     src("tools/relay-companion/server.mjs").includes('frame?.type === "interrupt"') && src("tools/relay-companion/server.mjs").includes("interrupts")
     && src("app/api/voice/relay/plan/route.ts").includes("composePacingRule(req.interrupts)"))
+  // ── Conversational Intelligence merge + mock verify + portal inventory ──
+  const ciRoute = src("app/api/voice/twilio/intelligence/route.ts")
+  check("CI WEBHOOK: token-gated (timing-safe, 404 silent) + our sweep's fields always WIN (merge fills only empty summary/sentiment; operators ride intent_signals)",
+    ciRoute.includes("timingSafeEqual") && ciRoute.includes('"not found"')
+    && ciRoute.includes("!(call as any).summary") && ciRoute.includes("intent_signals"))
+  check("A2P MOCK VERIFY: providers-gated one-click action (Mock=true chain) + audited + card on the connectors page",
+    (() => { const a = src("app/actions/superadmin/a2p-verify.ts"); return a.includes('platformStaffCan(role, "providers")') && a.includes("mock: true") && a.includes("superadmin_audit_log") })()
+    && src("app/dashboard/superadmin/connectors/page.tsx").includes("A2pVerifyCard"))
+  check("PORTAL CHAT gains the SAME live-inventory facts (additive: buyers only, share-freely exception stated, read failure never breaks the chat)",
+    (() => { const p = src("app/api/portal/ai-chat/route.ts"); return p.includes("loadInventoryContext") && p.includes("portalView !== 'seller'") && p.includes("share freely") })())
   check("URGENCY ROUTING: a hot call (≥ threshold) proposes ONE gated same-day callback on the proposal rail, deduped per call — nothing auto-dials",
     src("lib/voice/call-analysis.ts").includes("URGENT_CALLBACK_THRESHOLD") && src("lib/voice/call-analysis.ts").includes("proposeClientMessage")
     && src("lib/voice/call-analysis.ts").includes("[HOT_CALL]") && src("lib/voice/call-analysis.ts").includes("callbacksProposed"))

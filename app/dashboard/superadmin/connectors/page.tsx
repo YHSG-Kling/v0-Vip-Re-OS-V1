@@ -9,6 +9,7 @@ import {
 } from "@/app/actions/superadmin/connector-health"
 import { Activity, AlertTriangle, Clock, PlugZap, Cpu } from "lucide-react"
 import { PlatformReceptionPanel } from "./platform-reception-panel"
+import { A2pVerifyCard } from "./a2p-verify-card"
 
 export const dynamic = "force-dynamic"
 
@@ -199,6 +200,8 @@ export default async function SuperadminConnectorsPage() {
       </Card>
 
       <PlatformReceptionPanel />
+
+      <A2pVerifyCard />
     </div>
   )
 }

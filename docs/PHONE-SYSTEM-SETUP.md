@@ -146,3 +146,22 @@ relay companion is the correct serverless architecture.
   `runA2pRegistration(svc, brokerageId, { mock: true })` sets `Mock=true` on
   the BrandRegistration so the whole ISV sequence exercises end-to-end with
   no real TCR filing or fees. Do this once per environment before go-live.
+
+## Conversational Intelligence (native transcription + language operators)
+
+Optional, env-gated: create an Intelligence Service in the Twilio console,
+set `TWILIO_INTELLIGENCE_SERVICE_SID=GA…` on Vercel, and register the
+service's webhook as
+`https://<app>/api/voice/twilio/intelligence?token=<RELAY_SHARED_SECRET>`.
+Relay-lane calls then get Twilio-native transcription + operators
+(summarization, sentiment, custom operators); results MERGE onto the call
+ledger — our own intelligence sweep's fields always win, Twilio fills gaps
+(voice_calls.summary/sentiment) and operator results ride
+call_analyses.intent_signals. Unset the env and nothing attaches.
+
+## One-click pre-production A2P verification
+
+Superadmin → Connectors → "Verify A2P pipeline (mock)": enter a tenant's
+brokerage id (needs a provisioned number + saved business profile) and the
+whole ISV chain runs against the live account with a MOCK brand — no TCR
+filing, no fees, honest per-step errors. Audited to superadmin_audit_log.

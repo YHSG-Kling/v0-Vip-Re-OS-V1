@@ -30,9 +30,12 @@ export function relayConfigured(env: { CONVERSATION_RELAY_WSS_URL?: string; RELA
 
 /** PURE: TwiML that hands the call to the relay companion. The welcome
  *  greeting carries the SAME disclosed first message as the Gather lane —
- *  the legal shield is transport-independent. */
-export function twimlConnectRelay(wssUrl: string, welcomeGreeting: string, voice = "en-US-Journey-O"): string {
-  return `<?xml version="1.0" encoding="UTF-8"?><Response><Connect><ConversationRelay url="${xmlEscape(wssUrl)}" welcomeGreeting="${xmlEscape(welcomeGreeting.slice(0, 500))}" voice="${xmlEscape(voice)}" dtmfDetection="true" interruptible="true"/></Connect></Response>`
+ *  the legal shield is transport-independent. An Intelligence Service sid
+ *  (Twilio Conversational Intelligence) attaches native transcription +
+ *  language operators to the session — env-gated, never fabricated. */
+export function twimlConnectRelay(wssUrl: string, welcomeGreeting: string, voice = "en-US-Journey-O", intelligenceServiceSid?: string | null): string {
+  const intel = (intelligenceServiceSid ?? "").trim()
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Connect><ConversationRelay url="${xmlEscape(wssUrl)}" welcomeGreeting="${xmlEscape(welcomeGreeting.slice(0, 500))}" voice="${xmlEscape(voice)}" dtmfDetection="true" interruptible="true"${intel ? ` intelligenceService="${xmlEscape(intel)}"` : ""}/></Connect></Response>`
 }
 
 // ── Companion-side protocol (pure — unit-tested here, executed by the relay) ─

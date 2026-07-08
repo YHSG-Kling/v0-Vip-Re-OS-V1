@@ -228,6 +228,23 @@ export async function POST(request: Request) {
       ? 'seller'
       : 'buyer'
 
+    // LIVE INVENTORY (additive — the same block the voice receptionist uses):
+    // a BUYER asking "what do you have near…" gets real for-sale facts from
+    // the brokerage's own listings (public information, no-invention rule
+    // scoped to the list). Sellers/data gates untouched; a read failure never
+    // breaks the chat. One brain's facts, every surface.
+    let inventoryBlock = ''
+    if (portalView !== 'seller' && contact.brokerage_id) {
+      try {
+        const { loadInventoryContext } = await import('@/lib/voice/reception-inventory')
+        const lastUser = [...messages].reverse().find(m => m.role === 'user')
+        const lastText = lastUser?.parts
+          ?.filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+          .map(p => p.text).join('') ?? ''
+        inventoryBlock = await loadInventoryContext(serviceClient, contact.brokerage_id, lastText)
+      } catch { /* inventory is an enhancement, never a dependency */ }
+    }
+
     const systemPrompt = [
       `You are ${aiIdentity.assistant_name}, a ${aiIdentity.persona_label} for ${contactName}'s real estate client portal.`,
       `Tone: ${aiIdentity.tone}. Formality: ${aiIdentity.formality_level}.`,
@@ -264,6 +281,7 @@ export async function POST(request: Request) {
         `  Stage: ${activeListing.current_stage ?? 'listed'}`,
         `  List price: $${activeListing.list_price?.toLocaleString() ?? 'TBD'}`,
       ].join('\n') : '',
+      inventoryBlock ? `\n${inventoryBlock}\n(These listings are public facts you may share freely — an exception to the context-only rule above. For any OTHER property, the agent confirms.)` : '',
       '',
       'TONE: Warm, clear, reassuring. Plain English. No jargon unless you explain it.',
       'ESCALATION: If the contact asks to speak to a human, says this is urgent, or seems very stressed, tell them their agent will be notified right away.',

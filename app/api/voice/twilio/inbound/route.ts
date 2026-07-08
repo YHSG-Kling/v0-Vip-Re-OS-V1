@@ -14,7 +14,7 @@ const xml = (body: string, status = 200) => new NextResponse(body, { status, hea
  *  brain, same disclosed greeting — only the transport differs. */
 const answerTwiml = (firstMessage: string, turnUrl: string) =>
   relayConfigured()
-    ? twimlConnectRelay(process.env.CONVERSATION_RELAY_WSS_URL!, firstMessage)
+    ? twimlConnectRelay(process.env.CONVERSATION_RELAY_WSS_URL!, firstMessage, undefined, process.env.TWILIO_INTELLIGENCE_SERVICE_SID)
     : twimlGatherTurn(firstMessage, turnUrl)
 
 /**
