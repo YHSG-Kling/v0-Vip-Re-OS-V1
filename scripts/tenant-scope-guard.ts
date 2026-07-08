@@ -57,6 +57,12 @@ for (const dir of ["app", "lib"]) {
       const needle = `.from("${table}")`
       let idx = src.indexOf(needle)
       while (idx !== -1) {
+        // storage.from("documents") is a BUCKET, not the documents table —
+        // storage paths are tenant-prefixed by convention, not by .eq().
+        if (src.slice(Math.max(0, idx - 12), idx).includes("storage")) {
+          idx = src.indexOf(needle, idx + 1)
+          continue
+        }
         const window = src.slice(idx, idx + WINDOW)
         // Head-only counts (count/head:true aggregate) still leak counts — no exemption.
         const scoped = SCOPE_EVIDENCE.some((e) => window.includes(e))

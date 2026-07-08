@@ -34,7 +34,6 @@
   "app/api/migrate/verify/route.ts :: listings": 1,
   "app/api/migrate/verify/route.ts :: transactions": 1,
   "app/api/migrate/verify/route.ts :: vendors": 1,
-  "app/api/offers/[offerId]/upload-document/route.ts :: documents": 1,
   "app/api/webhooks/inbound-suppression/route.ts :: contacts": 1,
   "app/api/webhooks/linkedin/route.ts :: contacts": 1,
   "app/api/webhooks/meta/route.ts :: contacts": 1,
