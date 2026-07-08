@@ -121,3 +121,14 @@ pooling → LOW_VOLUME campaign. Brand/campaign reviews are asynchronous
 (hours–days): re-running the button polls and resumes; failures surface
 Twilio's reason verbatim. State persists on `platform_credentials`
 (`twilio_a2p`) so every step is idempotent.
+
+## Verifying Twilio contracts (official docs MCP)
+
+Twilio ships an MCP server + Agent Skills for AI coding agents at
+https://github.com/twilio/ai (docs endpoint: `https://mcp.twilio.com/docs`,
+tools `twilio__search` / `twilio__retrieve`). When building against any Twilio
+API surface (ConversationRelay, TrustHub/A2P, Messaging Services), verify the
+parameter contract there before shipping — the same verified-contract
+discipline used for RentCast. Note: the repo is builder tooling only; it has
+no runtime voice framework, which is why this app's turn lane + brainless
+relay companion is the correct serverless architecture.

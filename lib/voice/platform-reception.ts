@@ -30,6 +30,10 @@ export function isPlatformNumber(toNumber: string | null | undefined, platformNu
 export interface PlatformReceptionContext {
   brandName: string
   tagline: string
+  /** What the receptionist says the product is — a SETTING (product_brand.voicePitch). */
+  voicePitch: string
+  /** The opening question — a SETTING (product_brand.receptionGreeting). */
+  receptionGreeting: string
   tierLines: string[]
   forwardNumber: string | null
   authToken: string
@@ -65,6 +69,8 @@ export async function resolvePlatformReceptionContext(svc: any): Promise<Platfor
   return {
     brandName: brand.name,
     tagline: brand.tagline,
+    voicePitch: brand.voicePitch,
+    receptionGreeting: brand.receptionGreeting,
     tierLines: composeTierLines(tiers),
     forwardNumber: (process.env.PLATFORM_RECEPTION_FORWARD_NUMBER ?? "").trim() || null,
     authToken,
@@ -75,14 +81,19 @@ export async function resolvePlatformReceptionContext(svc: any): Promise<Platfor
 
 export function buildPlatformReceptionPrompt(id: {
   brandName: string; tagline: string; tierLines: string[]; hasTransfer: boolean
+  voicePitch?: string; receptionGreeting?: string
 }): { firstMessage: string; systemPrompt: string } {
-  const rawFirst = `Thanks for calling ${id.brandName} — I'm the AI assistant. Are you calling to learn about the platform, or are you already a customer who needs support?`
+  // NO HARDCODED COPY (owner rule): the greeting question + product pitch are
+  // SETTINGS (product_brand.receptionGreeting / .voicePitch — resolved with
+  // defaults by resolveProductBrand); only the legal preamble is composed here.
+  const greeting = (id.receptionGreeting ?? "").trim() || "How can I help you today?"
+  const rawFirst = `Thanks for calling ${id.brandName} — I'm the AI assistant. ${greeting}`
   const firstMessage = withAiCallDisclosures(rawFirst, { recorded: true })
 
   const systemPrompt = [
     `You are the AI reception assistant answering the main phone line for ${id.brandName} — ${id.tagline}. This is the PLATFORM's own line: callers are either prospects curious about the product or existing customers who need support.`,
     "Tone: warm, professional, concise. Keep answers short — this is a phone call, not an essay.",
-    `WHAT THE PRODUCT IS: an AI-powered operating system for real-estate brokerages, teams, and agents — an accountable AI team that handles reception, follow-up, marketing, and operations in one command center.`,
+    `WHAT THE PRODUCT IS: ${(id.voicePitch ?? "").trim() || `${id.brandName} — ${id.tagline}`}.`,
     `CURRENT PLANS (the ONLY pricing you may state — read from the live plan catalog):\n${id.tierLines.map((l) => `- ${l}`).join("\n")}`,
     "FOR PROSPECTS: (1) learn their name and what they run — solo agent, team, brokerage, or multi-location; (2) answer honestly from what you know above; (3) ask for the best email so the team can send details and set up a walkthrough. Once they've shared contact details, use the 'prospect' action to save them.",
     id.hasTransfer
@@ -168,6 +179,7 @@ export async function planPlatformReceptionTurn(
 ): Promise<PlatformTurnPlan> {
   const { systemPrompt } = buildPlatformReceptionPrompt({
     brandName: ctx.brandName, tagline: ctx.tagline, tierLines: ctx.tierLines, hasTransfer: !!ctx.forwardNumber,
+    voicePitch: ctx.voicePitch, receptionGreeting: ctx.receptionGreeting,
   })
   const { transcriptToMessages } = await import("@/lib/voice/reception-brain")
   const convo = transcriptToMessages(transcript).map((m) => `${m.role === "assistant" ? "AI" : "Caller"}: ${m.content}`).join("\n")

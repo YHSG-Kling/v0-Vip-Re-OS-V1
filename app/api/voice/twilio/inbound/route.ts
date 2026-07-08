@@ -46,6 +46,7 @@ export async function POST(request: NextRequest) {
     }
     const { firstMessage } = buildPlatformReceptionPrompt({
       brandName: pctx.brandName, tagline: pctx.tagline, tierLines: pctx.tierLines, hasTransfer: !!pctx.forwardNumber,
+      voicePitch: pctx.voicePitch, receptionGreeting: pctx.receptionGreeting,
     })
     await svc.from("platform_reception_calls").insert({
       call_sid: callSid, phone_from: from, phone_to: to,

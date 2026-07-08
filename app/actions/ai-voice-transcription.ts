@@ -114,7 +114,11 @@ Extract:
 11. Coaching opportunities for agent improvement`,
     })
 
-    // Save analysis
+    // Save analysis. LIVE-SCHEMA FACT: call_analyses.sentiment CHECK allows
+    // only positive|neutral|negative|mixed — the model's very_positive /
+    // very_negative violated it and this insert was silently dropped. Map to
+    // the CHECK vocabulary.
+    const sentimentForDb = analysis.sentiment.replace(/^very_/, "")
     const { data: savedAnalysis } = await supabase
       .from("call_analyses")
       .insert({
@@ -126,7 +130,7 @@ Extract:
         call_type: params.callType,
         call_duration: params.callDuration,
         summary: analysis.summary,
-        sentiment: analysis.sentiment,
+        sentiment: sentimentForDb,
         key_topics: analysis.keyTopics,
         client_concerns: analysis.clientConcerns,
         agent_commitments: analysis.agentCommitments,

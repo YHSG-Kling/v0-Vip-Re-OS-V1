@@ -14,6 +14,12 @@ export interface ProductBrand {
   accentColor: string
   /** Marketing site origin for CTAs (no trailing slash). */
   ctaUrl: string
+  /** What the AI receptionist SAYS the product is (owner rule: no hardcoded
+   *  prompts — the platform line's pitch is a setting like everything else). */
+  voicePitch: string
+  /** The platform line's opening question (the legal preamble is composed
+   *  around it automatically — never part of the setting). */
+  receptionGreeting: string
 }
 
 export const DEFAULT_PRODUCT_BRAND: ProductBrand = {
@@ -22,6 +28,8 @@ export const DEFAULT_PRODUCT_BRAND: ProductBrand = {
   primaryColor: "#0F172A",
   accentColor: "#F59E0B",
   ctaUrl: "https://vipagents.ai",
+  voicePitch: "an AI-powered operating system for real-estate brokerages, teams, and agents — an accountable AI team that handles reception, follow-up, marketing, and operations in one command center",
+  receptionGreeting: "Are you calling to learn about the platform, or are you already a customer who needs support?",
 }
 
 const HEX = /^#[0-9a-fA-F]{6}$/
@@ -35,6 +43,8 @@ export function resolveProductBrand(raw: any): ProductBrand {
     primaryColor: HEX.test(r.primaryColor ?? "") ? r.primaryColor : DEFAULT_PRODUCT_BRAND.primaryColor,
     accentColor: HEX.test(r.accentColor ?? "") ? r.accentColor : DEFAULT_PRODUCT_BRAND.accentColor,
     ctaUrl: (typeof r.ctaUrl === "string" && /^https?:\/\//.test(r.ctaUrl)) ? r.ctaUrl.replace(/\/$/, "") : DEFAULT_PRODUCT_BRAND.ctaUrl,
+    voicePitch: (typeof r.voicePitch === "string" && r.voicePitch.trim()) ? r.voicePitch.trim().slice(0, 600) : DEFAULT_PRODUCT_BRAND.voicePitch,
+    receptionGreeting: (typeof r.receptionGreeting === "string" && r.receptionGreeting.trim()) ? r.receptionGreeting.trim().slice(0, 300) : DEFAULT_PRODUCT_BRAND.receptionGreeting,
   }
 }
 

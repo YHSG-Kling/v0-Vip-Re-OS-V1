@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
     ? await planTurnWithPrompt(
         buildOutboundPrompt(ctx.identity, { objective: brief.objective, contactName: brief.contactName, extraSystemPrompt: brief.systemPrompt }).systemPrompt,
         transcript, req.utterance)
-    : await planReceptionTurn(ctx, transcript, req.utterance)
+    : await planReceptionTurn(ctx, transcript, req.utterance, svc)
   const newTranscript = appendTranscript(transcript, req.utterance, plan.say)
   if (call) await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
 

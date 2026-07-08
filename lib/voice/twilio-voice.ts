@@ -48,15 +48,25 @@ export async function resolveInboundContext(svc: any, toNumber: string): Promise
   if (!num) return null
   const n = num as any
 
-  // The scope's AI identity profile (agent scope wins over brokerage).
+  // The scope's AI identity profile — the FULL settings cascade (owner rule:
+  // nothing hardcoded, brand flows platform → brokerage → team → agent):
+  // most-specific wins — agent profile, else the agent's TEAM profile, else
+  // the brokerage profile.
   let profile: any = null
+  let teamId: string | null = null
   if (n.agent_user_id) {
-    const { data: agent } = await svc.from("agents").select("id").eq("user_id", n.agent_user_id).maybeSingle()
+    const { data: agent } = await svc.from("agents").select("id, team_id").eq("user_id", n.agent_user_id).maybeSingle()
     if (agent) {
+      teamId = (agent as any).team_id ?? null
       const { data: p } = await svc.from("ai_identity_profiles").select("*")
         .eq("scope_type", "agent").eq("scope_id", (agent as any).id).maybeSingle()
       profile = p
     }
+  }
+  if (!profile && teamId) {
+    const { data: p } = await svc.from("ai_identity_profiles").select("*")
+      .eq("scope_type", "team").eq("scope_id", teamId).maybeSingle()
+    profile = p
   }
   if (!profile) {
     const { data: p } = await svc.from("ai_identity_profiles").select("*")
@@ -205,12 +215,22 @@ export async function bookShowingFromCall(
   } catch { /* the spoken confirmation stands; the agent sees the transcript */ }
 }
 
-/** One reception turn: transcript + new utterance → the brain → plan. */
+/** One reception turn: transcript + new utterance → the brain → plan. Pass
+ *  svc and the reception AI answers from the tenant's LIVE INVENTORY (facts
+ *  from listings rows injected per turn; the no-invention rule scopes to the
+ *  list — see lib/voice/reception-inventory). */
 export async function planReceptionTurn(
   ctx: InboundCallContext,
   transcript: string | null,
   callerUtterance: string,
+  svc?: any,
 ): Promise<VoiceTurnPlan> {
   const { systemPrompt } = buildReceptionPrompt(ctx.identity)
-  return planTurnWithPrompt(systemPrompt, transcript, callerUtterance)
+  let prompt = systemPrompt
+  if (svc) {
+    const { loadInventoryContext } = await import("@/lib/voice/reception-inventory")
+    const inventory = await loadInventoryContext(svc, ctx.brokerageId, callerUtterance)
+    if (inventory) prompt = `${systemPrompt}\n\n${inventory}`
+  }
+  return planTurnWithPrompt(prompt, transcript, callerUtterance)
 }

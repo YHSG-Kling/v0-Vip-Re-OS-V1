@@ -15,6 +15,11 @@ import { encodeOutboundBrief, decodeOutboundBrief, composeVoicemailMessage } fro
 import { relayConfigured, twimlConnectRelay, parseRelayFrame, relaySpeak, relayEnd, parseRelayPlanRequest } from "../lib/voice/conversation-relay"
 import { validateA2pProfile, nextA2pStep, describeA2pState } from "../lib/voice/a2p-registration"
 import { rollupVoiceActivity, composeVoiceActivityBrief } from "../lib/kernel/call-intelligence"
+import { extractAddressHints, composeInventoryBlock, DISCUSSABLE_STAGES } from "../lib/voice/reception-inventory"
+import { isAnalyzableCall } from "../lib/voice/call-analysis"
+import { rollupDraftQuality, composeDraftQualityBrief } from "../lib/kernel/draft-quality"
+import { resolveProductBrand, DEFAULT_PRODUCT_BRAND } from "../lib/platform/product-brand"
+import { buildPlatformReceptionPrompt as buildPlatformPromptForBrandCheck } from "../lib/voice/platform-reception"
 import { computeTwilioSignature, validateTwilioSignature } from "../lib/voice/twilio-voice"
 import {
   isPlatformNumber, composeTierLines, buildPlatformReceptionPrompt, parsePlatformTurnPlan, PLATFORM_TURN_INSTRUCTIONS,
@@ -197,6 +202,54 @@ console.log("\n── PURE: voice-lane activity → the Monday brief ──")
   check("silent week → empty string (the brief never pads)", composeVoiceActivityBrief(rollupVoiceActivity([], 0)) === "")
 }
 
+console.log("\n── PURE: inventory-aware reception ──")
+{
+  const hints = extractAddressHints("I'm calling about 12 Oak Street, is it still available?")
+  check("address hints extracted (number + street)", hints.includes("12") && hints.some((h) => /oak street/i.test(h)))
+  const block = composeInventoryBlock([
+    { address: "12 Oak St", city: "Austin", list_price: 450000, bedrooms: 3, bathrooms: 2, sqft: 1850, property_type: "single_family", open_house_event_date: "2026-07-12" },
+    { address: null, city: null, list_price: 1, bedrooms: null, bathrooms: null, sqft: null, property_type: null, open_house_event_date: null },
+  ])
+  check("inventory block: real facts (price/beds/open house) + the SCOPED no-invention rule; address-less rows dropped",
+    block.includes("$450,000") && block.includes("3bd") && block.includes("open house 2026-07-12") && block.includes("never invent details") && !block.includes("null"))
+  check("empty inventory → empty block (the original refusal rule stands)", composeInventoryBlock([]) === "")
+  check("discussable stages use the CANONICAL lifecycle vocabulary (live-verified UPPERCASE; UNDER_CONTRACT excluded — never spoken as available)",
+    DISCUSSABLE_STAGES.includes("MLS_ACTIVE" as any) && DISCUSSABLE_STAGES.includes("COMING_SOON_ACTIVE" as any)
+    && !(DISCUSSABLE_STAGES as readonly string[]).includes("UNDER_CONTRACT") && DISCUSSABLE_STAGES.every((s) => s === s.toUpperCase()))
+}
+
+console.log("\n── PURE: voice intelligence sweep ──")
+{
+  const good = { status: "completed", transcription: "AI: Thanks for calling — I'm an AI assistant and this call may be recorded. How can I help?\nCaller: I want to see 12 Oak St this weekend, we're pre-approved and moving fast." }
+  check("analyzable: completed + a real caller line", isAnalyzableCall(good, false))
+  check("greeting-only / short / non-completed / already-analyzed all skipped",
+    !isAnalyzableCall({ status: "completed", transcription: "AI: Thanks for calling — I'm an AI assistant. How can I help you today, and what brings you in?" }, false)
+    && !isAnalyzableCall({ status: "in_progress", transcription: good.transcription }, false)
+    && !isAnalyzableCall(good, true))
+}
+
+console.log("\n── PURE: draft-quality flywheel ──")
+{
+  const q = rollupDraftQuality([
+    { status: "accepted", edit_delta: { changed: false }, channel: "sms" },
+    { status: "accepted", edit_delta: { changed: true, pct_changed: 30 }, channel: "sms" },
+    { status: "dismissed", edit_delta: null, channel: "sms" },
+    { status: "pending", edit_delta: null, channel: "email" },
+  ])
+  check("flywheel fold: drafted/accepted/untouched/dismissed/avg-edit", q.drafted === 4 && q.accepted === 2 && q.sentUntouched === 1 && q.dismissed === 1 && q.avgEditPct === 15)
+  check("brief speaks adoption + the learning line", composeDraftQualityBrief(q).includes("drafted 4 replies") && composeDraftQualityBrief(q).includes("1 of them untouched") && composeDraftQualityBrief(q).includes("15%"))
+  check("nothing drafted → empty (never pads)", composeDraftQualityBrief(rollupDraftQuality([])) === "")
+}
+
+console.log("\n── PURE: no hardcoded copy — the platform pitch/greeting are SETTINGS ──")
+{
+  const custom = resolveProductBrand({ voicePitch: "the operating system for winning brokerages", receptionGreeting: "Curious about the platform, or need a hand with your account?" })
+  check("product_brand carries voicePitch + receptionGreeting with defaults", DEFAULT_PRODUCT_BRAND.voicePitch.length > 20 && custom.voicePitch === "the operating system for winning brokerages")
+  const p = buildPlatformPromptForBrandCheck({ brandName: "VIP Agents", tagline: "t", tierLines: [], hasTransfer: false, voicePitch: custom.voicePitch, receptionGreeting: custom.receptionGreeting })
+  check("the platform prompt SPEAKS the settings, not hardcoded copy",
+    p.systemPrompt.includes("the operating system for winning brokerages") && p.firstMessage.includes("Curious about the platform"))
+}
+
 console.log("\n── SOURCE: wiring ──")
 {
   const inbound = src("app/api/voice/twilio/inbound/route.ts")
@@ -290,6 +343,24 @@ console.log("\n── SOURCE: wiring ──")
   // ── Approved build 3: voice week-in-review ──
   check("WEEK-IN-REVIEW: the Monday brief speaks the voice lane's WORK (loadVoiceActivity threaded next to the coaching intel)",
     src("lib/kernel/week-in-review.ts").includes("voiceActivityBrief") && src("lib/kernel/week-in-review.ts").includes("loadVoiceActivity"))
+  // ── Approved builds: intelligence sweep + inventory + flywheel ──
+  check("VOICE INTEL: hourly cron registered + sweep idempotent by voice_call_id + agent_id carries the USER id the reader filters by",
+    src("lib/kernel/cron-dispatch.ts").includes("/api/cron/voice-call-analysis")
+    && src("app/api/cron/voice-call-analysis/route.ts").includes("sweepVoiceCallIntelligence")
+    && src("lib/voice/call-analysis.ts").includes("voice_call_id") && src("lib/voice/call-analysis.ts").includes("agentUserId"))
+  check("VOICE INTEL: the manual analyzer's sentiment now maps to the live CHECK vocabulary (very_* was silently dropped)",
+    src("app/actions/ai-voice-transcription.ts").includes('replace(/^very_/, "")'))
+  check("INVENTORY: reception answers from LIVE listings — planReceptionTurn injects loadInventoryContext; BOTH transports pass svc",
+    src("lib/voice/twilio-voice.ts").includes("loadInventoryContext")
+    && turn.includes("planReceptionTurn(ctx, transcript, speech, svc)")
+    && src("app/api/voice/relay/plan/route.ts").includes("planReceptionTurn(ctx, transcript, req.utterance, svc)"))
+  check("SETTINGS CASCADE: identity resolution walks agent → TEAM → brokerage (nothing hardcoded, brand flows all the way down)",
+    src("lib/voice/twilio-voice.ts").includes('"team"') && src("lib/voice/twilio-voice.ts").includes("team_id"))
+  check("FLYWHEEL: the Monday brief threads the draft-quality line (loadDraftQuality beside voice activity + call intel)",
+    src("lib/kernel/week-in-review.ts").includes("draftQualityBrief") && src("lib/kernel/week-in-review.ts").includes("loadDraftQuality"))
+  check("registry burn domains: voice_intelligence_sweep + inventory_aware_reception + draft_quality_flywheel (ai_isa)",
+    ["voice_intelligence_sweep", "inventory_aware_reception", "draft_quality_flywheel"]
+      .every((k) => k in MAINTENANCE_DOMAINS && (MAINTENANCE_DOMAINS as any)[k].manager === "ai_isa"))
   check("registry burn domains: conversation_relay_lane (ai_isa) + a2p_auto_registration (compliance_officer)",
     "conversation_relay_lane" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.conversation_relay_lane.manager === "ai_isa"
     && "a2p_auto_registration" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.a2p_auto_registration.manager === "compliance_officer")

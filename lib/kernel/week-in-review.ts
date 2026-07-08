@@ -23,6 +23,8 @@ export interface WeekReviewNumbers {
   callIntelBrief?: string
   /** Optional voice-lane work report (what the AI DID on the phones) — "" on a silent week. */
   voiceActivityBrief?: string
+  /** Optional draft-flywheel line (adoption + edit rate) — "" when nothing drafted. */
+  draftQualityBrief?: string
 }
 
 const dollars = (cents: number | null | undefined): string =>
@@ -51,6 +53,7 @@ export function composeWeekInReviewScript(n: WeekReviewNumbers): string {
 
   if (n.voiceActivityBrief) lines.push(n.voiceActivityBrief)
   if (n.callIntelBrief) lines.push(n.callIntelBrief)
+  if (n.draftQualityBrief) lines.push(n.draftQualityBrief)
 
   const top = n.actions.slice(0, 3)
   if (top.length > 0) {
@@ -111,14 +114,18 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
       // booked, voicemails, opt-outs honored). Best-effort; "" when silent.
       let callIntelBrief = ""
       let voiceActivityBrief = ""
+      let draftQualityBrief = ""
       try {
         const { loadCallIntelligence, composeCallIntelBrief, loadVoiceActivity, composeVoiceActivityBrief } = await import("@/lib/kernel/call-intelligence")
-        const [intel, activity] = await Promise.all([
+        const { loadDraftQuality, composeDraftQualityBrief } = await import("@/lib/kernel/draft-quality")
+        const [intel, activity, drafts] = await Promise.all([
           loadCallIntelligence(svc, a.brokerage_id, a.user_id),
           loadVoiceActivity(svc, a.brokerage_id, a.user_id),
+          loadDraftQuality(svc, a.brokerage_id, a.user_id),
         ])
         callIntelBrief = composeCallIntelBrief(intel)
         voiceActivityBrief = composeVoiceActivityBrief(activity)
+        draftQualityBrief = composeDraftQualityBrief(drafts)
       } catch { /* the income brief still lands */ }
 
       const script = composeWeekInReviewScript({
@@ -131,6 +138,7 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
         actions: ((actions ?? []) as any[]).map((x) => ({ title: x.action_title, description: x.action_description, impactCents: x.estimated_gci_impact_cents })),
         callIntelBrief,
         voiceActivityBrief,
+        draftQualityBrief,
       })
 
       // Idempotency: one brief per agent per ISO week (notification as the key).

@@ -131,7 +131,7 @@ export async function POST(request: NextRequest) {
         })
         return planTurnWithPrompt(systemPrompt, transcript, speech)
       })()
-    : await planReceptionTurn(ctx, transcript, speech)
+    : await planReceptionTurn(ctx, transcript, speech, svc)
   const newTranscript = appendTranscript(transcript, speech, plan.say)
   if (call) {
     await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
