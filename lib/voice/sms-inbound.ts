@@ -57,7 +57,7 @@ export async function recordInboundMessage(svc: any, input: {
   messageSid: string | null
   fromPhone: string | null
   toPhone: string | null
-}): Promise<{ recorded: boolean }> {
+}): Promise<{ recorded: boolean; messageId?: string; conversationId?: string; agentUserId?: string | null }> {
   if (input.messageSid) {
     const { data: dup } = await svc.from("messages").select("id")
       .eq("contact_id", input.contactId)
@@ -79,7 +79,7 @@ export async function recordInboundMessage(svc: any, input: {
   })
   if (!conversationId) return { recorded: false }
 
-  const { error } = await svc.from("messages").insert({
+  const { data: inserted, error } = await svc.from("messages").insert({
     conversation_id: conversationId,
     brokerage_id: input.brokerageId,
     contact_id: input.contactId,
@@ -89,16 +89,27 @@ export async function recordInboundMessage(svc: any, input: {
     body: input.body.slice(0, 4000),
     status: "unread",
     metadata: { surface: input.channel, message_sid: input.messageSid, from: input.fromPhone, to: input.toPhone },
-  })
+  }).select("id").single()
   if (error) {
     console.error("[sms-inbound] messages insert failed:", error.message)
     return { recorded: false }
   }
   await touchConversation(svc, conversationId, { inbound: true })
 
-  if (input.agentUserId) {
+  // Resolve WHO the draft belongs to when the number has no agent scope —
+  // the contact's assigned agent works the thread.
+  let draftAgentUserId = input.agentUserId
+  if (!draftAgentUserId) {
+    const { data: contact } = await svc.from("contacts").select("agent_id").eq("id", input.contactId).maybeSingle()
+    if ((contact as any)?.agent_id) {
+      const { data: owner } = await svc.from("agents").select("user_id").eq("id", (contact as any).agent_id).maybeSingle()
+      draftAgentUserId = (owner as any)?.user_id ?? null
+    }
+  }
+
+  if (draftAgentUserId) {
     await svc.from("notifications").insert({
-      user_id: input.agentUserId,
+      user_id: draftAgentUserId,
       brokerage_id: input.brokerageId,
       type: "inbound_text_received",
       title: input.channel === "whatsapp" ? "New WhatsApp message" : "New text message",
@@ -110,7 +121,35 @@ export async function recordInboundMessage(svc: any, input: {
       is_read: false,
     }).then(undefined, () => {})
   }
-  return { recorded: true }
+  return { recorded: true, messageId: (inserted as any)?.id, conversationId, agentUserId: draftAgentUserId }
+}
+
+/**
+ * PROACTIVE AI REPLY DRAFT — the inbound text arrives WITH the reply already
+ * drafted (one tap to accept/edit/send). Consolidation: rides the EXISTING
+ * reply-coach rail (ai_message_drafts + accept/edit/reject lifecycle + the
+ * inbox's draft panel + smart-assistant suggestion) — the same generator the
+ * `A` keyboard verb calls, fired by the webhook instead of a keystroke. The
+ * generator itself enforces DNC/TCPA and brand voice; NOTHING auto-sends.
+ */
+export async function draftProactiveReply(input: {
+  brokerageId: string
+  contactId: string
+  conversationId: string
+  messageId: string
+  agentUserId: string
+  body: string
+}): Promise<void> {
+  const { generateAIReplyDraft } = await import("@/app/actions/ai-reply-coach")
+  await generateAIReplyDraft({
+    brokerageId: input.brokerageId,
+    agentUserId: input.agentUserId,
+    conversationId: input.conversationId,
+    contactId: input.contactId,
+    inboundMessageId: input.messageId,
+    inboundBody: input.body,
+    channel: "sms",
+  })
 }
 
 /**

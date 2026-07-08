@@ -1,0 +1,82 @@
+"use server"
+
+// app/actions/a2p-registration.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// A2P 10DLC — the tenant-facing half of carrier registration: save the real
+// business profile (validated, honest missing-field list), kick/resume the
+// step machine, read the status line. Broker/admin gated; the platform's
+// master + subaccount creds do the actual filing (lib/voice/a2p-registration).
+
+import { createServiceClient } from "@/lib/supabase/service"
+import { resolveWriteContext } from "@/lib/kernel/identity"
+import { validateA2pProfile, loadA2pState, runA2pRegistration, describeA2pState, nextA2pStep, type A2pState } from "@/lib/voice/a2p-registration"
+
+function isBrokerRole(t?: string | null) {
+  return ["admin", "broker", "broker_admin", "superadmin"].includes(t ?? "")
+}
+
+async function requireBrokerCtx(): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
+  const ctx = await resolveWriteContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+  if (!isBrokerRole(ctx.userType)) return { ok: false, error: "Only broker / admin can manage carrier registration" }
+  return { ok: true, brokerageId: ctx.brokerageId }
+}
+
+export interface A2pStatusView {
+  statusLine: string
+  nextStep: string
+  profileSaved: boolean
+  profileMissing: string[]
+  state: A2pState
+}
+
+export async function getA2pStatusAction(): Promise<{ ok: true; status: A2pStatusView } | { ok: false; error: string }> {
+  const auth = await requireBrokerCtx()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+  const [{ state }, { data: bs }] = await Promise.all([
+    loadA2pState(svc, auth.brokerageId),
+    svc.from("brokerage_settings").select("settings").eq("brokerage_id", auth.brokerageId).maybeSingle(),
+  ])
+  const v = validateA2pProfile((bs as any)?.settings?.a2p_business_profile)
+  return {
+    ok: true,
+    status: {
+      statusLine: describeA2pState(state),
+      nextStep: nextA2pStep(state),
+      profileSaved: v.ok,
+      profileMissing: v.ok ? [] : v.missing,
+      state,
+    },
+  }
+}
+
+export async function saveA2pBusinessProfileAction(input: Record<string, string>): Promise<{ ok: boolean; error?: string; missing?: string[] }> {
+  const auth = await requireBrokerCtx()
+  if (!auth.ok) return auth
+  const v = validateA2pProfile(input)
+  if (!v.ok) return { ok: false, error: "Profile incomplete", missing: v.missing }
+  const svc = createServiceClient()
+  const { data: bs } = await svc.from("brokerage_settings").select("id, settings").eq("brokerage_id", auth.brokerageId).maybeSingle()
+  const settings = { ...((bs as any)?.settings ?? {}), a2p_business_profile: v.value }
+  const write = bs
+    ? await svc.from("brokerage_settings").update({ settings, updated_at: new Date().toISOString() }).eq("id", (bs as any).id)
+    : await svc.from("brokerage_settings").insert({ brokerage_id: auth.brokerageId, settings })
+  if (write.error) return { ok: false, error: write.error.message }
+  return { ok: true }
+}
+
+/** Kick/resume registration — every call advances as far as carriers allow
+ *  right now and polls the async reviews. Safe to press repeatedly. */
+export async function runA2pRegistrationAction(): Promise<{ ok: boolean; statusLine: string; error?: string }> {
+  const auth = await requireBrokerCtx()
+  if (!auth.ok) return { ok: false, statusLine: "", error: auth.error }
+  const svc = createServiceClient()
+  const r = await runA2pRegistration(svc, auth.brokerageId)
+  await svc.from("phone_number_events").insert({
+    brokerage_id: auth.brokerageId, phone_number: "a2p",
+    event_type: "vapi_registered", source: "a2p_registration",
+    notes: `A2P step machine ran → ${r.advancedTo}${r.error ? ` (error: ${r.error.slice(0, 160)})` : ""}`,
+  }).then(undefined, () => {})
+  return { ok: r.ok, statusLine: describeA2pState(r.state), error: r.error }
+}

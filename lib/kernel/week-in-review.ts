@@ -21,6 +21,8 @@ export interface WeekReviewNumbers {
   actions: Array<{ title: string; description: string | null; impactCents: number | null }>
   /** Optional call-intelligence paragraph (lib/kernel/call-intelligence) — "" when no calls. */
   callIntelBrief?: string
+  /** Optional voice-lane work report (what the AI DID on the phones) — "" on a silent week. */
+  voiceActivityBrief?: string
 }
 
 const dollars = (cents: number | null | undefined): string =>
@@ -47,6 +49,7 @@ export function composeWeekInReviewScript(n: WeekReviewNumbers): string {
     lines.push(`Your weighted thirty-day pipeline is ${dollars(n.weighted30Cents)}.`)
   }
 
+  if (n.voiceActivityBrief) lines.push(n.voiceActivityBrief)
   if (n.callIntelBrief) lines.push(n.callIntelBrief)
 
   const top = n.actions.slice(0, 3)
@@ -104,11 +107,18 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
         .eq("gap_analysis_id", (gap as any).id).order("action_rank", { ascending: true }).limit(5)
 
       // Call intelligence — what the AI heard on this agent's calls this week
-      // (objections, urgency, sentiment). Best-effort; "" when no calls.
+      // (objections, urgency, sentiment) + what it DID on the phones (answered,
+      // booked, voicemails, opt-outs honored). Best-effort; "" when silent.
       let callIntelBrief = ""
+      let voiceActivityBrief = ""
       try {
-        const { loadCallIntelligence, composeCallIntelBrief } = await import("@/lib/kernel/call-intelligence")
-        callIntelBrief = composeCallIntelBrief(await loadCallIntelligence(svc, a.brokerage_id, a.user_id))
+        const { loadCallIntelligence, composeCallIntelBrief, loadVoiceActivity, composeVoiceActivityBrief } = await import("@/lib/kernel/call-intelligence")
+        const [intel, activity] = await Promise.all([
+          loadCallIntelligence(svc, a.brokerage_id, a.user_id),
+          loadVoiceActivity(svc, a.brokerage_id, a.user_id),
+        ])
+        callIntelBrief = composeCallIntelBrief(intel)
+        voiceActivityBrief = composeVoiceActivityBrief(activity)
       } catch { /* the income brief still lands */ }
 
       const script = composeWeekInReviewScript({
@@ -120,6 +130,7 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
         weighted30Cents: (gap as any).weighted_30_cents,
         actions: ((actions ?? []) as any[]).map((x) => ({ title: x.action_title, description: x.action_description, impactCents: x.estimated_gci_impact_cents })),
         callIntelBrief,
+        voiceActivityBrief,
       })
 
       // Idempotency: one brief per agent per ISO week (notification as the key).

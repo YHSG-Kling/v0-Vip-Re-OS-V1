@@ -12,6 +12,9 @@ import {
   twimlGatherTurn, twimlTransfer, twimlHangup, TURN_INSTRUCTIONS,
 } from "../lib/voice/reception-brain"
 import { encodeOutboundBrief, decodeOutboundBrief, composeVoicemailMessage } from "../lib/voice/twilio-outbound"
+import { relayConfigured, twimlConnectRelay, parseRelayFrame, relaySpeak, relayEnd, parseRelayPlanRequest } from "../lib/voice/conversation-relay"
+import { validateA2pProfile, nextA2pStep, describeA2pState } from "../lib/voice/a2p-registration"
+import { rollupVoiceActivity, composeVoiceActivityBrief } from "../lib/kernel/call-intelligence"
 import { computeTwilioSignature, validateTwilioSignature } from "../lib/voice/twilio-voice"
 import {
   isPlatformNumber, composeTierLines, buildPlatformReceptionPrompt, parsePlatformTurnPlan, PLATFORM_TURN_INSTRUCTIONS,
@@ -141,6 +144,59 @@ console.log("\n── PURE: the PLATFORM scope (the app's own line) ──")
     PLATFORM_TURN_INSTRUCTIONS.includes('"prospect"') && PLATFORM_TURN_INSTRUCTIONS.includes("caller ID"))
 }
 
+console.log("\n── PURE: ConversationRelay (the streaming transport) ──")
+{
+  check("relay is a SWITCH, never a stub: unconfigured env → Gather lane", !relayConfigured({}) && !relayConfigured({ CONVERSATION_RELAY_WSS_URL: "https://not-wss" as any, RELAY_SHARED_SECRET: "x" }) && relayConfigured({ CONVERSATION_RELAY_WSS_URL: "wss://relay.example/relay", RELAY_SHARED_SECRET: "s" }))
+  const tw = twimlConnectRelay("wss://relay.example/relay", 'Hi — I\'m an AI & this call is recorded <ok>')
+  check("relay TwiML: Connect+ConversationRelay, greeting XML-escaped (the SAME disclosed opener)",
+    tw.includes("<Connect><ConversationRelay") && tw.includes("wss://relay.example/relay") && tw.includes("&amp;") && tw.includes("&lt;ok&gt;") && /welcomeGreeting=/.test(tw))
+  check("frame parser: setup/prompt parsed; malformed → unknown (never a crash mid-call)",
+    parseRelayFrame('{"type":"setup","callSid":"CA1","from":"+1555","to":"+1666"}').type === "setup"
+    && (parseRelayFrame('{"type":"prompt","voicePrompt":"hi","last":true}') as any).voicePrompt === "hi"
+    && parseRelayFrame("not json").type === "unknown" && parseRelayFrame('{"type":"???"}').type === "unknown")
+  check("speak/end frames match Twilio's contract", JSON.parse(relaySpeak("Hello")).type === "text" && JSON.parse(relaySpeak("Hello")).last === true && JSON.parse(relayEnd()).type === "end")
+  check("plan-request validation rejects partial bodies", parseRelayPlanRequest({ callSid: "CA1", to: "+1", from: "+2", utterance: "hi" }) !== null
+    && parseRelayPlanRequest({ callSid: "", to: "+1", from: "+2", utterance: "hi" }) === null && parseRelayPlanRequest(null) === null)
+}
+
+console.log("\n── PURE: A2P 10DLC step machine ──")
+{
+  const bad = validateA2pProfile({ legalName: "Kling Realty", ein: "12-34567" })
+  check("profile validation: honest missing list + EIN must be 9 digits", !bad.ok && (bad as any).missing.includes("Business website") && (bad as any).missing.some((m: string) => m.includes("9 digits")))
+  const good = validateA2pProfile({
+    legalName: "Kling Realty LLC", ein: "12-3456789", website: "https://kling.example",
+    street: "1 Main St", city: "Austin", region: "TX", postalCode: "78701",
+    contactFirstName: "D", contactLastName: "K", contactEmail: "d@kling.example", contactPhone: "+15125550100",
+  })
+  check("complete profile normalizes (EIN digits-only, default use-case supplied)", good.ok && (good as any).value.ein === "123456789" && (good as any).value.useCaseDescription.length > 10)
+  check("step machine resumes in order and finishes",
+    nextA2pStep({}) === "customer_profile"
+    && nextA2pStep({ customer_profile_sid: "BU1" }) === "trust_product"
+    && nextA2pStep({ customer_profile_sid: "BU1", trust_product_sid: "BU2", brand_sid: "BN1" }) === "messaging_service"
+    && nextA2pStep({ customer_profile_sid: "BU1", trust_product_sid: "BU2", brand_sid: "BN1", messaging_service_sid: "MG1", number_attached: true, campaign_sid: "QE1" }) === "done")
+  check("status lines honest: pending review vs FAILED verbatim",
+    describeA2pState({ customer_profile_sid: "BU1", trust_product_sid: "BU2", brand_sid: "BN1", messaging_service_sid: "MG1", number_attached: true, campaign_sid: "QE1", campaign_status: "PENDING" }).includes("under carrier review")
+    && describeA2pState({ customer_profile_sid: "BU1", trust_product_sid: "BU2", brand_sid: "BN1", messaging_service_sid: "MG1", number_attached: true, campaign_sid: "QE1", campaign_status: "FAILED", last_error: "brand mismatch" }).includes("brand mismatch"))
+}
+
+console.log("\n── PURE: voice-lane activity → the Monday brief ──")
+{
+  const v = rollupVoiceActivity([
+    { direction: "inbound", call_type: "vapi_inbound", status: "completed", outcome: "completed" },
+    { direction: "inbound", call_type: "vapi_inbound", status: "completed", outcome: "completed" },
+    { direction: "outbound", call_type: "ai_isa_call", status: "completed", outcome: "completed" },
+    { direction: "outbound", call_type: "ai_isa_call", status: "completed", outcome: "voicemail" },
+    { direction: "outbound", call_type: "ai_isa_call", status: "completed", outcome: "no_answer" },
+    { direction: "outbound", call_type: "ai_isa_call", status: "completed", outcome: "opt_out" },
+  ], 1)
+  check("activity fold: answered/connected/voicemail counted; no-answer excluded; opt-out separated",
+    v.inboundAnswered === 2 && v.outboundConnected === 1 && v.voicemailsLeft === 1 && v.optOutsHonored === 1 && v.aiBookings === 1)
+  const brief = composeVoiceActivityBrief(v)
+  check("brief speaks the work + the compliance (opt-outs stated plainly)",
+    brief.includes("answered 2 inbound calls") && brief.includes("booked 1 appointment") && brief.includes("honored and recorded"))
+  check("silent week → empty string (the brief never pads)", composeVoiceActivityBrief(rollupVoiceActivity([], 0)) === "")
+}
+
 console.log("\n── SOURCE: wiring ──")
 {
   const inbound = src("app/api/voice/twilio/inbound/route.ts")
@@ -148,8 +204,9 @@ console.log("\n── SOURCE: wiring ──")
     inbound.includes("validateTwilioSignature") && inbound.includes('from("voice_calls")') && inbound.includes("buildReceptionPrompt"))
   check("inbound: caller becomes a consented contact (calling in IS consent)", inbound.includes("captureContact") && inbound.includes('source: "inbound_call"'))
   const turn = src("app/api/voice/twilio/turn/route.ts")
-  check("turn: book → real scheduled showing on the SAME rails; transfer → Dial; hangup → complete",
-    turn.includes('from("showings")') && turn.includes("twimlTransfer") && turn.includes("finishCall"))
+  check("turn: book → real scheduled showing on the SAME rails (via the shared bookShowingFromCall); transfer → Dial; hangup → complete",
+    turn.includes("bookShowingFromCall") && turn.includes("twimlTransfer") && turn.includes("finishCall")
+    && src("lib/voice/twilio-voice.ts").includes('from("showings")'))
   const binding = src("lib/voice/vapi-numbers.ts")
   check("binding DEFAULTS to the Twilio lane; VOICE_ENGINE=vapi is legacy-only",
     binding.includes('process.env.VOICE_ENGINE === "vapi" ? "vapi" : "twilio"') && binding.includes("bindNumberToTwilioLane"))
@@ -207,6 +264,35 @@ console.log("\n── SOURCE: wiring ──")
   check("KEEP-ONE: every messages writer resolves the NOT-NULL conversation thread via the canonical helper (latent silent-fail fixed in inbox reply, compliance override, open-house greeting)",
     ["lib/kernel/communications.ts", "app/actions/inbox.ts", "app/actions/workflows.ts", "lib/open-house/instant-greeting.ts", "lib/voice/sms-inbound.ts"]
       .every((f) => src(f).includes("ensureConversationForContact")))
+
+  // ── Approved build 1: proactive reply drafts ──
+  check("PROACTIVE DRAFTS: inbound text fires the EXISTING reply-coach rail (ai_message_drafts lifecycle — no parallel draft store); nothing auto-sends",
+    src("lib/voice/sms-inbound.ts").includes("generateAIReplyDraft") && inboundProviders.includes("draftProactiveReply"))
+
+  // ── Approved build 4: ConversationRelay ──
+  check("RELAY: inbound answers via the transport switch (relayConfigured → ConversationRelay; else Gather) at BOTH scopes",
+    inbound.includes("answerTwiml") && inbound.includes("relayConfigured") && inbound.includes("twimlConnectRelay"))
+  const relayPlan = src("app/api/voice/relay/plan/route.ts")
+  check("RELAY plan endpoint: timing-safe shared secret + the SAME planners/actors as the turn webhook (zero drift by construction)",
+    relayPlan.includes("timingSafeEqual") && relayPlan.includes("planReceptionTurn") && relayPlan.includes("planPlatformReceptionTurn")
+    && relayPlan.includes("bookShowingFromCall") && relayPlan.includes("processOptOut") && relayPlan.includes("capturePhoneProspect"))
+  check("RELAY: human transfer executes SERVER-SIDE (live-call REST redirect) — the companion never holds Twilio creds",
+    relayPlan.includes("redirectLiveCallToDial") && (() => { const c = src("tools/relay-companion/server.mjs"); return c.includes("x-relay-secret") && c.includes("/api/voice/relay/plan") && !c.includes("TWILIO_AUTH_TOKEN") })())
+  check("KEEP-ONE: both transports book through the ONE bookShowingFromCall", turn.includes("bookShowingFromCall") && relayPlan.includes("bookShowingFromCall"))
+
+  // ── Approved build 2: A2P 10DLC ──
+  const a2pLib = src("lib/voice/a2p-registration.ts")
+  check("A2P: resumable step machine — persisted sids on platform_credentials 'twilio_a2p', async reviews POLLED never assumed",
+    a2pLib.includes('"twilio_a2p"') && a2pLib.includes("BrandRegistrations") && a2pLib.includes("Compliance/Usa2p") && a2pLib.includes("brand_status"))
+  check("A2P: broker-gated tenant actions + the phone-settings card wired",
+    src("app/actions/a2p-registration.ts").includes("isBrokerRole") && src("app/dashboard/admin/phone-settings/phone-settings-client.tsx").includes("A2pRegistrationCard"))
+
+  // ── Approved build 3: voice week-in-review ──
+  check("WEEK-IN-REVIEW: the Monday brief speaks the voice lane's WORK (loadVoiceActivity threaded next to the coaching intel)",
+    src("lib/kernel/week-in-review.ts").includes("voiceActivityBrief") && src("lib/kernel/week-in-review.ts").includes("loadVoiceActivity"))
+  check("registry burn domains: conversation_relay_lane (ai_isa) + a2p_auto_registration (compliance_officer)",
+    "conversation_relay_lane" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.conversation_relay_lane.manager === "ai_isa"
+    && "a2p_auto_registration" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.a2p_auto_registration.manager === "compliance_officer")
   check("registry burn domains: twilio_outbound_lane + sms_unified_inbox (ai_isa)",
     "twilio_outbound_lane" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.twilio_outbound_lane.manager === "ai_isa"
     && "sms_unified_inbox" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.sms_unified_inbox.manager === "ai_isa")

@@ -132,17 +132,34 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // universal inbox reads — previously inbound texts were invisible there).
   // Idempotent by MessageSid; the owning agent gets a high-priority heads-up. ──
   if (inbound.providerType === "twilio" && entityType === "contact" && (inbound.text ?? "").trim()) {
-    const { recordInboundMessage } = await import("@/lib/voice/sms-inbound")
-    await recordInboundMessage(supabase, {
-      brokerageId: inbound.brokerageId,
-      contactId: entityId,
-      agentUserId: numberCtx?.agentUserId ?? null,
-      channel: inbound.channel === "whatsapp" ? "whatsapp" : "sms",
-      body: inbound.text ?? "",
-      messageSid: inbound.messageId,
-      fromPhone: inbound.fromPhone,
-      toPhone: inbound.toPhone,
-    }).catch((err) => console.error("[InboundRouter] inbox record failed (non-blocking):", err))
+    const { recordInboundMessage, draftProactiveReply } = await import("@/lib/voice/sms-inbound")
+    try {
+      const rec = await recordInboundMessage(supabase, {
+        brokerageId: inbound.brokerageId,
+        contactId: entityId,
+        agentUserId: numberCtx?.agentUserId ?? null,
+        channel: inbound.channel === "whatsapp" ? "whatsapp" : "sms",
+        body: inbound.text ?? "",
+        messageSid: inbound.messageId,
+        fromPhone: inbound.fromPhone,
+        toPhone: inbound.toPhone,
+      })
+      // PROACTIVE DRAFT: the text arrives with the reply already prepared —
+      // gated on the reply-coach rail (agent accepts/edits/sends; the
+      // generator enforces DNC/TCPA + brand voice). Best-effort.
+      if (rec.recorded && rec.messageId && rec.conversationId && rec.agentUserId) {
+        await draftProactiveReply({
+          brokerageId: inbound.brokerageId,
+          contactId: entityId,
+          conversationId: rec.conversationId,
+          messageId: rec.messageId,
+          agentUserId: rec.agentUserId,
+          body: inbound.text ?? "",
+        }).catch((err) => console.error("[InboundRouter] proactive draft failed (non-blocking):", err))
+      }
+    } catch (err) {
+      console.error("[InboundRouter] inbox record failed (non-blocking):", err)
+    }
   }
 
   // ── Step 6: Write lifecycle_events ─────────────────────────────────────────

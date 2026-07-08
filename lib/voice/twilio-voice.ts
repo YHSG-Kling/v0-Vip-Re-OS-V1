@@ -172,6 +172,39 @@ export async function planTurnWithPrompt(
   return parseTurnPlan(text)
 }
 
+/** The booking side-effect BOTH transports share (Gather turn + relay plan):
+ *  a real scheduled showing + the agent's heads-up. Best-effort by design —
+ *  the spoken confirmation stands; the transcript is on the call record. */
+export async function bookShowingFromCall(
+  svc: any,
+  ctx: InboundCallContext,
+  call: { id: string; contact_id: string; agent_id: string },
+  dateTimeIso: string,
+): Promise<void> {
+  try {
+    const when = new Date(dateTimeIso)
+    await svc.from("showings").insert({
+      contact_id: call.contact_id, agent_id: call.agent_id,
+      brokerage_id: ctx.brokerageId,
+      scheduled_at: when.toISOString(),
+      scheduled_date: when.toISOString().slice(0, 10),
+      scheduled_time: when.toISOString().slice(11, 19),
+      duration_minutes: 30, status: "scheduled", is_confirmed: true,
+      confirmed_at: new Date().toISOString(),
+      scheduling_method: "self_book", notes: "Booked by the AI receptionist on a live call (Twilio lane).",
+      listing_id: null,
+    }).then(undefined, () => {})
+    if (ctx.agentUserId) {
+      await svc.from("notifications").insert({
+        user_id: ctx.agentUserId, brokerage_id: ctx.brokerageId, type: "showing_self_booked",
+        title: "The AI receptionist booked an appointment on a live call",
+        body: `${when.toLocaleString()} — booked during an inbound call. Transcript is on the call record.`,
+        entity_type: "voice_call", entity_id: call.id, priority: "high", channel: "in_app", is_read: false,
+      }).then(undefined, () => {})
+    }
+  } catch { /* the spoken confirmation stands; the agent sees the transcript */ }
+}
+
 /** One reception turn: transcript + new utterance → the brain → plan. */
 export async function planReceptionTurn(
   ctx: InboundCallContext,

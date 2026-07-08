@@ -6,6 +6,7 @@ import { Switch } from "@/components/ui/switch"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Phone, Volume2, CheckCircle2, AlertCircle, Loader2 } from "lucide-react"
+import { A2pRegistrationCard } from "./a2p-card"
 import {
   updateBrokeragePhoneSettings,
   type BrokeragePhoneSettings,
@@ -197,6 +198,9 @@ export function PhoneSettingsClient({ initialSettings, genericVoices }: Props) {
           {error}
         </p>
       )}
+
+      {/* Carrier registration — the platform files A2P 10DLC for the tenant */}
+      <A2pRegistrationCard />
 
       {/* Compliance note */}
       <Card className="bg-amber-50/50 border-amber-200">

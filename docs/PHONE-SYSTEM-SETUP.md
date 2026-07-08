@@ -92,3 +92,32 @@ user_oauth / tenant_optional_key / byo_top_tier — with the WHY per provider).
 thin compatible shim — if any assistant/number in the Vapi dashboard still
 points at it, migrate the server URL to the authoritative endpoint and match
 the credential scheme, then the shim can be removed.
+
+## ConversationRelay (streaming voice — the newest Twilio conversational transport)
+
+The default inbound lane is turn-based (`<Gather>` → plan → TwiML) and runs 100%
+on Vercel. To upgrade to real-time streaming (sub-second turns, barge-in):
+
+1. Deploy `tools/relay-companion/server.mjs` anywhere that can hold a WebSocket
+   (Fly/Railway/Render/VPS). Env: `APP_URL`, `RELAY_SHARED_SECRET`, `PORT`.
+2. Set on Vercel: `CONVERSATION_RELAY_WSS_URL=wss://<companion-host>/relay` and
+   the same `RELAY_SHARED_SECRET`.
+3. Done — inbound answers switch to `<Connect><ConversationRelay>` at every
+   scope (platform + brokerage + agent). Unset the env to fall back to Gather.
+
+The companion is brainless: every prompt is one authenticated POST to
+`/api/voice/relay/plan`, where the SAME brains/gates run (TCPA, opt-out honor,
+booking, prospect capture; transfers execute server-side via a live-call REST
+redirect — the companion never holds Twilio credentials).
+
+## A2P 10DLC (carrier registration — required for business SMS deliverability)
+
+Tenant-facing: Dashboard → Admin → Phone Settings → "Carrier registration".
+The broker enters the real business profile once (legal name, 9-digit EIN,
+address, contact); "Run / resume registration" walks the whole ISV chain —
+TrustHub customer profile → A2P trust product → brand → messaging service (in
+the tenant's subaccount, inbound pointed at `/api/providers/inbound`) → number
+pooling → LOW_VOLUME campaign. Brand/campaign reviews are asynchronous
+(hours–days): re-running the button polls and resumes; failures surface
+Twilio's reason verbatim. State persists on `platform_credentials`
+(`twilio_a2p`) so every step is idempotent.

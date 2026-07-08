@@ -3,10 +3,19 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveInboundContext, validateTwilioSignature } from "@/lib/voice/twilio-voice"
 import { buildReceptionPrompt, twimlGatherTurn, twimlHangup, appendTranscript } from "@/lib/voice/reception-brain"
 import { isPlatformNumber, resolvePlatformReceptionContext, buildPlatformReceptionPrompt } from "@/lib/voice/platform-reception"
+import { relayConfigured, twimlConnectRelay } from "@/lib/voice/conversation-relay"
 
 export const dynamic = "force-dynamic"
 
 const xml = (body: string, status = 200) => new NextResponse(body, { status, headers: { "Content-Type": "text/xml" } })
+
+/** TRANSPORT SWITCH: ConversationRelay (streaming, sub-second) when the
+ *  companion is configured; the serverless <Gather> lane otherwise. Same
+ *  brain, same disclosed greeting — only the transport differs. */
+const answerTwiml = (firstMessage: string, turnUrl: string) =>
+  relayConfigured()
+    ? twimlConnectRelay(process.env.CONVERSATION_RELAY_WSS_URL!, firstMessage)
+    : twimlGatherTurn(firstMessage, turnUrl)
 
 /**
  * TWILIO VOICE — INBOUND (the Twilio-native lane; no Vapi). The number's
@@ -42,7 +51,7 @@ export async function POST(request: NextRequest) {
       call_sid: callSid, phone_from: from, phone_to: to,
       transcript: appendTranscript(null, null, firstMessage),
     }).then(undefined, () => {})
-    return xml(twimlGatherTurn(firstMessage, url.replace(/\/inbound$/, "/turn")))
+    return xml(answerTwiml(firstMessage, url.replace(/\/inbound$/, "/turn")))
   }
 
   // ── TENANT SCOPES: brokerage/agent lines ────────────────────────────────────
@@ -105,5 +114,5 @@ export async function POST(request: NextRequest) {
   }
 
   const turnUrl = `${url.replace(/\/inbound$/, "/turn")}`
-  return new NextResponse(twimlGatherTurn(firstMessage, turnUrl), { headers: { "Content-Type": "text/xml" } })
+  return xml(answerTwiml(firstMessage, turnUrl))
 }

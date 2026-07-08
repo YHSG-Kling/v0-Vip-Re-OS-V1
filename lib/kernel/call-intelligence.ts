@@ -96,3 +96,68 @@ export async function loadCallIntelligence(
     .gte("created_at", since).limit(500)
   return rollupCallIntelligence((data ?? []) as CallAnalysisRow[])
 }
+
+// ── VOICE-LANE ACTIVITY — what the AI team DID on the phones this week ───────
+// Distinct from the coaching rollup above (what it HEARD): this is the work
+// report — calls answered, appointments booked live, outbound connects,
+// voicemails left, opt-outs honored. Spoken in the Monday week-in-review so
+// the voice AI's work is visible, never silent.
+
+export interface VoiceActivity {
+  inboundAnswered: number
+  outboundConnected: number
+  voicemailsLeft: number
+  aiBookings: number
+  optOutsHonored: number
+}
+
+/** PURE: fold ledger rows into the work report. */
+export function rollupVoiceActivity(
+  calls: Array<{ direction: string | null; call_type: string | null; status: string | null; outcome: string | null }>,
+  aiBookings: number,
+): VoiceActivity {
+  let inboundAnswered = 0, outboundConnected = 0, voicemailsLeft = 0, optOutsHonored = 0
+  for (const c of calls) {
+    if ((c.outcome ?? "") === "opt_out") { optOutsHonored++; continue }
+    if ((c.outcome ?? "") === "voicemail") { voicemailsLeft++; continue }
+    if (c.direction === "inbound" && (c.status === "completed" || c.status === "in_progress")) inboundAnswered++
+    else if (c.direction === "outbound" && c.status === "completed" && !["busy", "no_answer", "failed", "canceled"].includes(c.outcome ?? "")) outboundConnected++
+  }
+  return { inboundAnswered, outboundConnected, voicemailsLeft, aiBookings, optOutsHonored }
+}
+
+/** PURE: the spoken work-report sentence(s) — "" on a silent week (the brief
+ *  never pads); opt-outs stated plainly (compliance is a feature, not a secret). */
+export function composeVoiceActivityBrief(v: VoiceActivity): string {
+  const total = v.inboundAnswered + v.outboundConnected + v.voicemailsLeft
+  if (total === 0 && v.aiBookings === 0) return ""
+  const parts: string[] = []
+  if (v.inboundAnswered > 0) parts.push(`answered ${v.inboundAnswered} inbound call${v.inboundAnswered === 1 ? "" : "s"}`)
+  if (v.outboundConnected > 0) parts.push(`reached ${v.outboundConnected} contact${v.outboundConnected === 1 ? "" : "s"} on follow-up calls`)
+  if (v.voicemailsLeft > 0) parts.push(`left ${v.voicemailsLeft} voicemail${v.voicemailsLeft === 1 ? "" : "s"}`)
+  const lines: string[] = []
+  if (parts.length > 0) lines.push(`On the phones, your AI ${parts.join(", ")}.`)
+  if (v.aiBookings > 0) lines.push(`It booked ${v.aiBookings} appointment${v.aiBookings === 1 ? "" : "s"} live on calls.`)
+  if (v.optOutsHonored > 0) lines.push(`${v.optOutsHonored} caller${v.optOutsHonored === 1 ? "" : "s"} asked not to be called — honored and recorded immediately.`)
+  return lines.join(" ")
+}
+
+/** Load one agent's last-N-days voice-lane activity (read-only). */
+export async function loadVoiceActivity(
+  svc: any, brokerageId: string, agentUserId: string, sinceDays = 7,
+): Promise<VoiceActivity> {
+  const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString()
+  const { data: agent } = await svc.from("agents").select("id")
+    .eq("user_id", agentUserId).eq("brokerage_id", brokerageId).maybeSingle()
+  const agentRowId = (agent as any)?.id
+  if (!agentRowId) return rollupVoiceActivity([], 0)
+  const [{ data: calls }, { count: bookings }] = await Promise.all([
+    svc.from("voice_calls").select("direction, call_type, status, outcome")
+      .eq("brokerage_id", brokerageId).eq("agent_id", agentRowId)
+      .gte("started_at", since).limit(1000),
+    svc.from("showings").select("id", { count: "exact", head: true })
+      .eq("brokerage_id", brokerageId).eq("agent_id", agentRowId)
+      .gte("created_at", since).ilike("notes", "%AI receptionist%"),
+  ])
+  return rollupVoiceActivity((calls ?? []) as any[], bookings ?? 0)
+}
