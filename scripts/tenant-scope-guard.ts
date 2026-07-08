@@ -28,6 +28,8 @@ const SCOPE_EVIDENCE = [
   '.eq("id"', ".eq('id'", '.in("id"', ".in('id'",
   "vapi_call_id", "call_sid",
   '.eq("user_id"', ".eq('user_id'",
+  // Unique-key lookups (globally unique — the row IS the scope):
+  '.eq("slug"', '.eq("public_id"', '.eq("token"', '.eq("public_slug"', "stripe_",
   "contact_id", "conversation_id", "event_id", "listing_id", "transaction_id", "agent_id",
 ]
 
