@@ -8,6 +8,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { useState, useEffect } from "react"
+import { providerPortalMode } from "@/lib/integrations/providers/catalog"
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from "@/components/ui/card"
@@ -410,6 +411,36 @@ export function FormsLibraryClient({
 
           {/* ── Tab 1: Transaction Forms (kernel-loaded) ── */}
           <TabsContent value="transaction-forms" className="mt-4 space-y-4">
+            {/* THE PROVIDER'S OWN WINDOW (owner ask): browse the connected
+                provider's live forms portal without leaving the app — iframe
+                when the vendor permits framing (catalog embed:true), honest
+                new-tab button when their X-Frame/CSP blocks it. Selection
+                happens in their window; FILLING stays native below (where the
+                AI prefill lives); sending stays launchEsignEnvelope. */}
+            {(() => {
+              const portal = providerPortalMode(resolvedProvider?.provider_name)
+              if (!portal || !resolvedProvider?.is_configured) return null
+              return portal.mode === "iframe" ? (
+                <Card>
+                  <CardContent className="p-2">
+                    <div className="flex items-center justify-between px-2 pb-2">
+                      <p className="text-xs font-medium">{portal.label} — your live forms workspace (signed in with your {portal.label} session)</p>
+                      <a href={portal.url} target="_blank" rel="noopener noreferrer" className="text-xs underline text-muted-foreground">Open full screen</a>
+                    </div>
+                    <iframe src={portal.url} title={`${portal.label} forms portal`} className="w-full rounded border" style={{ height: 560 }} />
+                  </CardContent>
+                </Card>
+              ) : (
+                <Card>
+                  <CardContent className="flex items-center justify-between py-3 px-4">
+                    <p className="text-xs text-muted-foreground">{portal.label} doesn't allow embedding its window (their security policy) — it opens in a new tab; your work syncs back here via the provider connection.</p>
+                    <Button size="sm" variant="outline" asChild>
+                      <a href={portal.url} target="_blank" rel="noopener noreferrer">Open {portal.label}</a>
+                    </Button>
+                  </CardContent>
+                </Card>
+              )
+            })()}
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div>
                 <p className="text-sm font-medium">Available Transaction Forms</p>

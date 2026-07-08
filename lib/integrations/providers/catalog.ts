@@ -58,6 +58,33 @@ export function getCatalogEntry(name?: string | null): ProviderCatalogEntry | nu
   return PROVIDER_CATALOG[name.toLowerCase() as ProviderName] ?? null
 }
 
+/** Each provider's own portal (their forms library / transaction workspace).
+ *  Consumed by the Forms Library's provider window: rendered IN-APP as an
+ *  iframe when capabilities.embed=true (the vendor permits framing), opened
+ *  in a new tab when false (X-Frame/CSP blocks framing — an iframe would just
+ *  render blank, so we never pretend). The agent's own provider session does
+ *  the auth; we never proxy their credentials. */
+export const PROVIDER_PORTAL_URLS: Record<ProviderName, string> = {
+  dotloop:        "https://www.dotloop.com/my/loops",
+  docusign:       "https://app.docusign.com",
+  skyslope:       "https://app.skyslope.com",
+  authentisign:   "https://www.authentisign.com",
+  brokermint:     "https://my.brokermint.com",
+  formsimplicity: "https://www.formsimplicity.com",
+}
+
+/** PURE: how the Forms Library surfaces a provider's portal window. */
+export function providerPortalMode(name?: string | null): { url: string; label: string; mode: "iframe" | "new_tab" } | null {
+  if (!isKnownProvider(name)) return null
+  const key = name.toLowerCase() as ProviderName
+  const entry = PROVIDER_CATALOG[key]
+  return {
+    url: PROVIDER_PORTAL_URLS[key],
+    label: entry.label,
+    mode: entry.capabilities.embed ? "iframe" : "new_tab",
+  }
+}
+
 export function isProviderImplemented(name?: string | null): boolean {
   return getCatalogEntry(name)?.implemented === true
 }

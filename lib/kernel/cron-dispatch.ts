@@ -160,6 +160,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/overnight-digest"                    , schedule: "30 12 * * *" },
   { path: "/api/cron/board-packet"                        , schedule: "0 13 1 * *" },
   { path: "/api/cron/signature-chase"                     , schedule: "0 15 * * *" },
+  { path: "/api/cron/listing-propensity"                  , schedule: "0 14 * * 2" },
   { path: "/api/cron/credential-refresh"                  , schedule: "0 7 * * *" },
   { path: "/api/cron/tenant-safety-scan"                  , schedule: "0 4 * * *" },
   { path: "/api/cron/lead-scraping"                       , schedule: "0 5 * * *" },
