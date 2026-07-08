@@ -83,6 +83,7 @@ export async function POST(request: NextRequest) {
   if (Object.keys(patch).length > 0) {
     await svc.from("voice_calls").update(patch).eq("id", (call as any).id).then(undefined, () => {})
   }
+  let complianceEscalations = 0
   if (results.length > 0) {
     const compact = results.slice(0, 12).map((r) => ({
       operator: r?.name ?? r?.operator_type ?? "unknown",
@@ -93,7 +94,48 @@ export async function POST(request: NextRequest) {
       .update({ intent_signals: { twilio_ci: compact, transcript_sid: transcriptSid } })
       .eq("voice_call_id", (call as any).id)
       .then(undefined, () => {})
+
+    // COMPLIANCE WATCH: custom operators named for regulatory risk (define
+    // them in the Twilio console — fair-housing phrases, steering,
+    // discrimination, unlicensed-advice) that fire TRUE land on the immutable
+    // compliance ledger + alert the humans who own compliance. Nothing is
+    // fabricated: only a positive operator hit escalates.
+    const WATCH = /fair.?housing|steering|discriminat|redlin|unlicensed|legal.?advice|compliance/i
+    const hits = results.filter((r) => {
+      const name = String(r?.name ?? r?.operator_type ?? "")
+      const label = String(r?.predicted_label ?? "").toLowerCase()
+      return WATCH.test(name) && (label === "true" || label === "detected" || label === "positive_match" || Number(r?.predicted_probability ?? 0) >= 0.8)
+    })
+    if (hits.length > 0) {
+      const { data: fullCall } = await svc.from("voice_calls").select("brokerage_id, contact_id").eq("id", (call as any).id).maybeSingle()
+      const brokerageId = (fullCall as any)?.brokerage_id
+      if (brokerageId) {
+        await svc.from("compliance_events").insert({
+          brokerage_id: brokerageId,
+          actor_role: "system",
+          entity_type: "voice_call",
+          entity_id: (call as any).id,
+          message_type: "call",
+          gate_name: "twilio_ci_operator",
+          allowed: true, // the call already happened — this is detection, not a block
+          violations: hits.map((h) => `CI operator hit: ${h?.name ?? h?.operator_type}`),
+          blocked_reason: null,
+        }).then(undefined, () => {})
+        const { data: reviewers } = await svc.from("users").select("id")
+          .eq("brokerage_id", brokerageId)
+          .in("user_type", ["compliance_officer", "admin", "broker", "broker_admin"]).limit(10)
+        for (const r of (reviewers ?? []) as any[]) {
+          await svc.from("notifications").insert({
+            user_id: r.id, brokerage_id: brokerageId, type: "call_compliance_watch",
+            title: "A call tripped a compliance watch operator",
+            body: `Twilio Conversational Intelligence flagged: ${hits.map((h) => h?.name ?? h?.operator_type).join(", ")}. Review the call transcript.`,
+            entity_type: "voice_call", entity_id: (call as any).id, priority: "high", channel: "in_app", is_read: false,
+          }).then(undefined, () => {})
+        }
+        complianceEscalations = hits.length
+      }
+    }
   }
 
-  return NextResponse.json({ ok: true, merged: Object.keys(patch), operators: results.length })
+  return NextResponse.json({ ok: true, merged: Object.keys(patch), operators: results.length, complianceEscalations })
 }

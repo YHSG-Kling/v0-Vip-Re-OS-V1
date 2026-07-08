@@ -163,6 +163,85 @@ export async function bindNumberToTwilioLane(
   return { ok: true }
 }
 
+/** RSVP the caller to a matching listing's next open house — live on the
+ *  call, both transports. Honest: no matching listing or no upcoming event →
+ *  false (the spoken reply still stands; the agent sees the transcript). */
+export async function rsvpOpenHouseFromCall(
+  svc: any,
+  ctx: InboundCallContext,
+  call: { id: string; contact_id: string | null },
+  address: string,
+): Promise<boolean> {
+  if (!call.contact_id) return false
+  try {
+    const hint = address.replace(/[%,]/g, "").slice(0, 80)
+    const { data: listing } = await svc.from("listings").select("id, address")
+      .eq("brokerage_id", ctx.brokerageId).is("deleted_at", null)
+      .ilike("address", `%${hint}%`).limit(1).maybeSingle()
+    if (!listing) return false
+    const { data: event } = await svc.from("open_house_events").select("id, event_date, start_time")
+      .eq("brokerage_id", ctx.brokerageId).eq("listing_id", (listing as any).id)
+      .in("status", ["scheduled", "marketing", "active"])
+      .gte("event_date", new Date().toISOString().slice(0, 10))
+      .order("event_date", { ascending: true }).limit(1).maybeSingle()
+    if (!event) return false
+
+    // Idempotent per (event, contact): a repeat "yes" updates, never duplicates.
+    const { data: existing } = await svc.from("open_house_rsvp_tracking").select("id")
+      .eq("event_id", (event as any).id).eq("contact_id", call.contact_id).maybeSingle()
+    if (existing) {
+      await svc.from("open_house_rsvp_tracking").update({ rsvp_status: "yes", rsvp_updated_at: new Date().toISOString() })
+        .eq("id", (existing as any).id).then(undefined, () => {})
+    } else {
+      const { error } = await svc.from("open_house_rsvp_tracking").insert({
+        brokerage_id: ctx.brokerageId, contact_id: call.contact_id,
+        event_id: (event as any).id, rsvp_status: "yes", source: "ai_reception",
+      })
+      if (error) return false
+    }
+    if (ctx.agentUserId) {
+      await svc.from("notifications").insert({
+        user_id: ctx.agentUserId, brokerage_id: ctx.brokerageId, type: "open_house_rsvp",
+        title: "The AI receptionist RSVP'd a caller to your open house",
+        body: `${(listing as any).address} on ${(event as any).event_date} — RSVP'd live on an inbound call. Transcript on the call record.`,
+        entity_type: "voice_call", entity_id: call.id, priority: "medium", channel: "in_app", is_read: false,
+      }).then(undefined, () => {})
+    }
+    return true
+  } catch { return false }
+}
+
+/** "What's my home worth?" on a live call → ONE gated CMA proposal on the
+ *  canonical rail (deduped per call) — the AI never quotes a value itself. */
+export async function proposeSellerLeadFromCall(
+  svc: any,
+  ctx: InboundCallContext,
+  call: { id: string; contact_id: string | null },
+  address: string | null,
+): Promise<boolean> {
+  if (!call.contact_id) return false
+  try {
+    const tag = `[SELLER_LEAD] [${call.id}]`
+    const { data: dup } = await svc.from("agent_client_messages").select("id")
+      .ilike("rationale", `${tag}%`).limit(1).maybeSingle()
+    if (dup) return false
+    const { data: contact } = await svc.from("contacts").select("first_name, last_name").eq("id", call.contact_id).maybeSingle()
+    const who = [((contact as any)?.first_name ?? "").trim(), ((contact as any)?.last_name ?? "").trim()].filter(Boolean).join(" ") || "A caller"
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const p = await proposeClientMessage({
+      brokerageId: ctx.brokerageId,
+      agentKind: "listing_concierge",
+      entityType: "contact",
+      entityId: call.contact_id,
+      audience: "agent",
+      subject: `Seller hand-raise — ${who} asked what their home is worth`,
+      body: `${who} asked about their home's value on a live call${address ? ` (${address})` : ""}. Approve and the team preps a real CMA and follow-up — the AI promised a professional valuation, not a guess.`,
+      rationale: `${tag} — valuation ask on a live reception call${address ? `; property: ${address.slice(0, 120)}` : ""}. Transcript on the call record.`,
+    }, svc)
+    return (p as any)?.ok !== false
+  } catch { return false }
+}
+
 /** One turn against ANY system prompt (reception or outbound brief) — the
  *  shared engine both directions ride. */
 export async function planTurnWithPrompt(

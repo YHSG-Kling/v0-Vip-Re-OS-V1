@@ -23,7 +23,7 @@ export function buildReceptionPrompt(id: InboundIdentity): { name: string; first
   const systemPrompt = [
     `You are ${name}, the AI reception assistant answering inbound phone calls for ${who}.`,
     id.tone ? `Tone: ${id.tone}.` : "Tone: warm, professional, concise.",
-    "Your job on every call: (1) learn who is calling and get a callback number; (2) find out what they need — buying, selling, a showing, or a question on a specific property; (3) offer to book an appointment or a showing; (4) if they ask for the agent directly or the matter is urgent, offer to transfer.",
+    "Your job on every call: (1) learn who is calling and get a callback number; (2) find out what they need — buying, selling, a showing, or a question on a specific property; (3) offer to book an appointment or a showing; (4) when the LIVE INVENTORY shows an upcoming open house that fits what they want, INVITE them and RSVP them on the spot if they say yes; (5) if they mention selling or ask what their home is worth, never guess a number — offer to have the team prepare a real valuation and capture their property address; (6) if they ask for the agent directly or the matter is urgent, offer to transfer.",
     "HARD RULES: Never give legal, lending, or tax advice — offer to have the agent follow up. Never discuss the demographics of any neighborhood or steer callers toward or away from areas (Fair Housing). Never invent property details, prices, or availability — if you don't know, say the agent will confirm. Never promise a commission rate or contract terms.",
     prohibited.length > 0 ? `Never use these phrases: ${prohibited.join("; ")}.` : "",
     composeBusinessHoursRule(id.answerMode, id.businessHours),
@@ -74,6 +74,8 @@ export type VoiceTurnAction =
   | { kind: "say" }                                     // keep talking
   | { kind: "transfer" }                                // dial the human
   | { kind: "book"; dateTime: string }                  // book appointment/showing
+  | { kind: "rsvp"; address: string }                   // RSVP the caller to an open house
+  | { kind: "seller_lead"; address: string | null }     // "what's my home worth" → gated CMA
   | { kind: "hangup" }                                  // caller done
 
 export interface VoiceTurnPlan {
@@ -85,10 +87,13 @@ export interface VoiceTurnPlan {
 export const TURN_INSTRUCTIONS = [
   "Respond with JSON ONLY, no prose around it:",
   '{ "say": "<what you speak next — one to three short sentences>",',
-  '  "action": "continue" | "transfer" | "book" | "hangup",',
-  '  "date_time": "<ISO 8601, ONLY when action is book>" }',
+  '  "action": "continue" | "transfer" | "book" | "rsvp" | "seller_lead" | "hangup",',
+  '  "date_time": "<ISO 8601, ONLY when action is book>",',
+  '  "address": "<the property address, ONLY when action is rsvp or seller_lead>" }',
   "Rules: action 'transfer' when the caller asks for the agent / is urgent / office-hours rule says so.",
   "action 'book' ONLY after the caller has confirmed a specific date and time out loud.",
+  "action 'rsvp' ONLY after the caller says yes to attending an open house from the LIVE INVENTORY list — include that listing's address.",
+  "action 'seller_lead' when the caller asks what their home is worth or mentions selling — include their property address if they gave it. Never quote a value yourself; say the team will prepare a real valuation.",
   "action 'hangup' when the caller says goodbye or the call is complete — say a warm close first.",
   "Otherwise action 'continue'.",
 ].join("\n")
@@ -99,7 +104,7 @@ export function parseTurnPlan(raw: string): VoiceTurnPlan {
   try {
     const match = raw.match(/\{[\s\S]*\}/)
     if (!match) throw new Error("no json")
-    const p = JSON.parse(match[0]) as { say?: string; action?: string; date_time?: string }
+    const p = JSON.parse(match[0]) as { say?: string; action?: string; date_time?: string; address?: string }
     const say = (p.say ?? "").trim().slice(0, 600)
     if (!say) throw new Error("empty say")
     const a = (p.action ?? "continue").toLowerCase()
@@ -107,6 +112,14 @@ export function parseTurnPlan(raw: string): VoiceTurnPlan {
     if (a === "hangup") return { say, action: { kind: "hangup" } }
     if (a === "book" && p.date_time && !Number.isNaN(new Date(p.date_time).getTime())) {
       return { say, action: { kind: "book", dateTime: new Date(p.date_time).toISOString() } }
+    }
+    // rsvp needs a real address to match a listing; without one it degrades to
+    // continue (the model is told to include it — garbage never RSVPs).
+    if (a === "rsvp" && (p.address ?? "").trim().length >= 4) {
+      return { say, action: { kind: "rsvp", address: (p.address as string).trim().slice(0, 200) } }
+    }
+    if (a === "seller_lead") {
+      return { say, action: { kind: "seller_lead", address: (p.address ?? "").trim().slice(0, 200) || null } }
     }
     return { say, action: { kind: "say" } }
   } catch {

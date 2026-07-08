@@ -146,6 +146,14 @@ export async function POST(request: NextRequest) {
     const { bookShowingFromCall } = await import("@/lib/voice/twilio-voice")
     await bookShowingFromCall(svc, ctx, call as any, plan.action.dateTime)
   }
+  if (plan.action.kind === "rsvp" && call) {
+    const { rsvpOpenHouseFromCall } = await import("@/lib/voice/twilio-voice")
+    await rsvpOpenHouseFromCall(svc, ctx, call as any, plan.action.address)
+  }
+  if (plan.action.kind === "seller_lead" && call) {
+    const { proposeSellerLeadFromCall } = await import("@/lib/voice/twilio-voice")
+    await proposeSellerLeadFromCall(svc, ctx, call as any, plan.action.address)
+  }
   if (plan.action.kind === "hangup") {
     if (call) await finishCall(svc, (call as any).id, newTranscript)
     return new NextResponse(twimlHangup(plan.say), { headers: { "Content-Type": "text/xml" } })

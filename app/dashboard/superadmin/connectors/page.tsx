@@ -10,6 +10,7 @@ import {
 import { Activity, AlertTriangle, Clock, PlugZap, Cpu } from "lucide-react"
 import { PlatformReceptionPanel } from "./platform-reception-panel"
 import { A2pVerifyCard } from "./a2p-verify-card"
+import { GoLiveCard } from "./go-live-card"
 
 export const dynamic = "force-dynamic"
 
@@ -198,6 +199,8 @@ export default async function SuperadminConnectorsPage() {
           )}
         </CardContent>
       </Card>
+
+      <GoLiveCard />
 
       <PlatformReceptionPanel />
 

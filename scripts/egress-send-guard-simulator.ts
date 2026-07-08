@@ -128,6 +128,7 @@ const CONNECTOR_ALLOWLIST: Record<string, string> = {
   "app/api/voice/relay/plan/route.ts":      "live-call transfer redirect (call-control REST on an ALREADY-GATED in-progress call; secret-gated endpoint, not a message)",
   "lib/voice/a2p-registration.ts":          "A2P 10DLC carrier registration (TrustHub/Messaging admin APIs — compliance filings, not messages)",
   "app/api/voice/twilio/intelligence/route.ts": "Conversational Intelligence transcript/operator READS (GET-only merge onto the call ledger, not a message)",
+  "lib/platform/go-live-readiness.ts":      "go-live readiness probes (read-only GET reachability checks per vendor — never a message)",
 }
 const connectorSenders = files
   .map((abs) => ({ abs, src: readFileSync(abs, "utf8") }))

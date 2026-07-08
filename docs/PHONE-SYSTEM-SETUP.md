@@ -165,3 +165,12 @@ Superadmin → Connectors → "Verify A2P pipeline (mock)": enter a tenant's
 brokerage id (needs a provisioned number + saved business profile) and the
 whole ISV chain runs against the live account with a MOCK brand — no TCR
 filing, no fees, honest per-step errors. Audited to superadmin_audit_log.
+
+## Stripe AI tooling (github.com/stripe/ai)
+
+Stripe's official AI stack: a remote MCP server at `https://mcp.stripe.com`
+(OAuth — authorize it in claude.ai connector settings for agent tooling) and
+`@stripe/token-meter`, which bills AI token/minute usage straight into Stripe
+meters. That library is the designated path when we turn the per-tenant AI
+metering (ai_tool_usage / voice rollups) into USAGE-BASED line items on top
+of subscription tiers — adopt post-launch, not days before it.

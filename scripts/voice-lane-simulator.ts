@@ -54,6 +54,16 @@ console.log("\n── PURE: turn planning (never crashes mid-call) ──")
   check("book requires a valid ISO date_time (normalized)", book.action.kind === "book" && new Date((book.action as any).dateTime).getTime() === new Date("2026-07-10T15:00:00Z").getTime())
   check("book with a bad date degrades to continue (never books garbage)", parseTurnPlan('{"say":"ok","action":"book","date_time":"whenever"}').action.kind === "say")
   check("hangup parsed", parseTurnPlan('{"say":"Take care!","action":"hangup"}').action.kind === "hangup")
+  const rsvp = parseTurnPlan('{"say":"You are on the list!","action":"rsvp","address":"12 Oak St"}')
+  check("rsvp parsed with the listing address; address-less rsvp degrades to continue (garbage never RSVPs)",
+    rsvp.action.kind === "rsvp" && (rsvp.action as any).address === "12 Oak St"
+    && parseTurnPlan('{"say":"ok","action":"rsvp"}').action.kind === "say")
+  const sl = parseTurnPlan('{"say":"The team will prepare a real valuation.","action":"seller_lead","address":"44 Elm Ave"}')
+  check("seller_lead parsed (address optional — a hand-raise without one still routes)",
+    sl.action.kind === "seller_lead" && (sl.action as any).address === "44 Elm Ave"
+    && (parseTurnPlan('{"say":"ok","action":"seller_lead"}').action as any).address === null)
+  check("TURN_INSTRUCTIONS pin the new actions: rsvp only on a spoken yes; seller_lead never quotes a value",
+    TURN_INSTRUCTIONS.includes('"rsvp"') && TURN_INSTRUCTIONS.includes("seller_lead") && TURN_INSTRUCTIONS.includes("Never quote a value"))
   check("malformed JSON → safe clarifier, action continue (no mid-call crash)",
     (() => { const p = parseTurnPlan("the model rambled without json"); return p.action.kind === "say" && p.say.includes("say that once more") })())
   check("empty say → safe fallback", parseTurnPlan('{"action":"continue"}').say.length > 0)
@@ -368,6 +378,27 @@ console.log("\n── SOURCE: wiring ──")
     && src("app/dashboard/superadmin/connectors/page.tsx").includes("A2pVerifyCard"))
   check("PORTAL CHAT gains the SAME live-inventory facts (additive: buyers only, share-freely exception stated, read failure never breaks the chat)",
     (() => { const p = src("app/api/portal/ai-chat/route.ts"); return p.includes("loadInventoryContext") && p.includes("portalView !== 'seller'") && p.includes("share freely") })())
+  // ── Reception autonomous actions + readiness + compliance watch ──
+  const voiceLib = src("lib/voice/twilio-voice.ts")
+  check("RSVP action: matches a real listing → next scheduled open house → idempotent RSVP (source ai_reception, l34-s01) + agent heads-up; BOTH transports route it",
+    voiceLib.includes("rsvpOpenHouseFromCall") && voiceLib.includes('"ai_reception"') && voiceLib.includes('from("open_house_rsvp_tracking")')
+    && turn.includes("rsvpOpenHouseFromCall") && src("app/api/voice/relay/plan/route.ts").includes("rsvpOpenHouseFromCall")
+    && src("scripts/l34-s01-rsvp-source-ai-reception.sql").includes("ai_reception"))
+  check("SELLER LEAD action: gated CMA proposal on the canonical rail, deduped per call ([SELLER_LEAD]); the AI never quotes a value; BOTH transports route it",
+    voiceLib.includes("proposeSellerLeadFromCall") && voiceLib.includes("[SELLER_LEAD]")
+    && turn.includes("proposeSellerLeadFromCall") && src("app/api/voice/relay/plan/route.ts").includes("proposeSellerLeadFromCall"))
+  check("reception prompt INVITES to open houses from live inventory + never guesses a home value",
+    src("lib/voice/reception-brain.ts").includes("INVITE them and RSVP them") && src("lib/voice/reception-brain.ts").includes("never guess a number"))
+  const readiness = src("lib/platform/go-live-readiness.ts")
+  check("GO-LIVE READINESS: live probes per domain (Twilio master + line binding, SendGrid, Stripe live/test, ElevenLabs, D-ID, storage, DB, cron, A2P) — never env-presence-only for vendors",
+    readiness.includes("Accounts/${sid}.json") && readiness.includes("IncomingPhoneNumbers.json") && readiness.includes("/v3/scopes")
+    && readiness.includes("/v1/balance") && readiness.includes("livemode") && readiness.includes("/v1/user") && readiness.includes("/credits")
+    && readiness.includes('"twilio_a2p"'))
+  check("GO-LIVE READINESS: providers-gated + audited action, card on the connectors page, required-vs-optional go/no-go rollup",
+    src("app/actions/superadmin/go-live-readiness.ts").includes('platformStaffCan(role, "providers")')
+    && src("app/dashboard/superadmin/connectors/page.tsx").includes("GoLiveCard") && readiness.includes("rollupReadiness"))
+  check("CI COMPLIANCE WATCH: watch-named operator hits (true/high-probability only) → immutable compliance_events + compliance-owner alerts",
+    ciRoute.includes("fair.?housing") && ciRoute.includes('from("compliance_events")') && ciRoute.includes("call_compliance_watch"))
   check("URGENCY ROUTING: a hot call (≥ threshold) proposes ONE gated same-day callback on the proposal rail, deduped per call — nothing auto-dials",
     src("lib/voice/call-analysis.ts").includes("URGENT_CALLBACK_THRESHOLD") && src("lib/voice/call-analysis.ts").includes("proposeClientMessage")
     && src("lib/voice/call-analysis.ts").includes("[HOT_CALL]") && src("lib/voice/call-analysis.ts").includes("callbacksProposed"))

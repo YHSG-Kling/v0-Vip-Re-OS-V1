@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveInboundContext, planReceptionTurn, planTurnWithPrompt, bookShowingFromCall } from "@/lib/voice/twilio-voice"
+import { resolveInboundContext, planReceptionTurn, planTurnWithPrompt, bookShowingFromCall, rsvpOpenHouseFromCall, proposeSellerLeadFromCall } from "@/lib/voice/twilio-voice"
 import { appendTranscript, buildOutboundPrompt } from "@/lib/voice/reception-brain"
 import { parseRelayPlanRequest, composePacingRule, type RelayPlanResponse } from "@/lib/voice/conversation-relay"
 import { isPlatformNumber, resolvePlatformReceptionContext, planPlatformReceptionTurn, capturePhoneProspect } from "@/lib/voice/platform-reception"
@@ -112,6 +112,12 @@ export async function POST(request: NextRequest) {
   }
   if (plan.action.kind === "book" && call && (call as any).contact_id && (call as any).agent_id) {
     await bookShowingFromCall(svc, ctx, call as any, plan.action.dateTime)
+  }
+  if (plan.action.kind === "rsvp" && call) {
+    await rsvpOpenHouseFromCall(svc, ctx, call as any, plan.action.address)
+  }
+  if (plan.action.kind === "seller_lead" && call) {
+    await proposeSellerLeadFromCall(svc, ctx, call as any, plan.action.address)
   }
   if (plan.action.kind === "hangup" && call) {
     await svc.from("voice_calls").update({ status: "completed", outcome: "completed", ended_at: new Date().toISOString(), transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
