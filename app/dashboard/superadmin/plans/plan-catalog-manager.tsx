@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Loader2, Plus, Save, Trash2, RefreshCw, Star } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
-import { upsertPlanTierAction, removePlanTierAction, syncPlanTierFromStripeAction, listPlanTiersAction } from '@/app/actions/superadmin/plan-catalog'
+import { upsertPlanTierAction, removePlanTierAction, syncPlanTierFromStripeAction, publishTierToStripeAction, listPlanTiersAction } from '@/app/actions/superadmin/plan-catalog'
 
 const CANON = ['solo_agent', 'team', 'brokerage', 'multi_location']
 
@@ -82,6 +82,17 @@ export function PlanCatalogManager({ initialTiers }: { initialTiers: Tier[] }) {
     })
   }
 
+  // Pricing day is one click: save the tier's price here, then Publish —
+  // creates the Stripe price from the DB value and links it (the old
+  // price's product is archived; existing subscriptions keep billing).
+  function publish(id: string) {
+    startTransition(async () => {
+      const r = await publishTierToStripeAction(id)
+      if (r.ok) { toast({ title: `Published to Stripe — ${r.priceId}` }); reload() }
+      else toast({ title: 'Publish failed', description: r.error, variant: 'destructive' })
+    })
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex justify-end">
@@ -110,6 +121,7 @@ export function PlanCatalogManager({ initialTiers }: { initialTiers: Tier[] }) {
               <div className="flex gap-2 pt-1">
                 <Button size="sm" variant="outline" onClick={() => setEditing({ ...t, marketing_bullets: t.marketing_bullets ?? [] })}>Edit</Button>
                 {t.stripe_price_id && <Button size="sm" variant="ghost" disabled={pending} onClick={() => sync(t.id!)}><RefreshCw className="h-3.5 w-3.5" /></Button>}
+                {t.id && <Button size="sm" variant="outline" disabled={pending} onClick={() => publish(t.id!)} title="Publish this tier's price to Stripe (creates + links the live price)">Publish</Button>}
                 <Button size="sm" variant="ghost" className="text-red-600" disabled={pending} onClick={() => remove(t.id!)}><Trash2 className="h-3.5 w-3.5" /></Button>
               </div>
             </CardContent>

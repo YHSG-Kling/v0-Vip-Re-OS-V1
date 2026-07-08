@@ -110,3 +110,50 @@ export async function syncPlanTierFromStripeAction(tierId: string): Promise<{ ok
     return { ok: false, error: `Stripe sync failed: ${err?.message ?? "unknown"}` }
   }
 }
+
+/**
+ * PUBLISH a tier's CURRENT DB pricing to Stripe — pricing day is one click:
+ * edit the tier in the plan catalog, press Publish. Creates a fresh Stripe
+ * product+price from the tier's monthly_price_cents (Stripe prices are
+ * immutable — a change means a NEW price), archives the previously linked
+ * price's product (existing subscriptions keep billing on their old price),
+ * and links the new id. Nothing here decides pricing — the DB is the source
+ * of truth; Stripe mirrors it on demand.
+ */
+export async function publishTierToStripeAction(tierId: string): Promise<{ ok: true; priceId: string } | { ok: false; error: string }> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+  const { data: tier } = await svc.from("subscription_tiers")
+    .select("id, tier_name, display_name, monthly_price_cents, stripe_price_id, is_active")
+    .eq("id", tierId).maybeSingle()
+  if (!tier) return { ok: false, error: "Tier not found" }
+  const t = tier as any
+  if (!t.is_active) return { ok: false, error: "Tier is inactive — activate it before publishing" }
+  if (!(t.monthly_price_cents > 0)) return { ok: false, error: "Tier has no monthly price set — decide pricing in the catalog first" }
+
+  try {
+    const { stripe } = await import("@/lib/stripe")
+    // Archive the previously linked price's product (old price keeps billing
+    // existing subscriptions; it just can't be used for NEW checkouts).
+    if (t.stripe_price_id) {
+      try {
+        const old = await stripe.prices.retrieve(t.stripe_price_id)
+        if (typeof old.product === "string") await stripe.products.update(old.product, { active: false })
+      } catch { /* an already-gone old price never blocks the new publish */ }
+    }
+    const price = await stripe.prices.create({
+      currency: "usd",
+      unit_amount: t.monthly_price_cents,
+      recurring: { interval: "month" },
+      product_data: { name: t.display_name ?? t.tier_name },
+      lookup_key: `${t.tier_name}_monthly_${Date.now()}`,
+      metadata: { tier_name: t.tier_name },
+    })
+    await svc.from("subscription_tiers").update({ stripe_price_id: price.id }).eq("id", tierId)
+    revalidatePath("/dashboard/superadmin/plans"); revalidatePath("/signup")
+    return { ok: true, priceId: price.id }
+  } catch (err: any) {
+    return { ok: false, error: `Stripe publish failed: ${err?.message ?? "unknown"}` }
+  }
+}

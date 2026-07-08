@@ -177,13 +177,13 @@ of subscription tiers — adopt post-launch, not days before it.
 
 ## Stripe live setup (done via the Stripe MCP, July 2026)
 
-The live account (acct_1TqtRU22mFQ1pzus) now carries the four recurring
-monthly prices, created with lookup keys + tier metadata and linked back to
-subscription_tiers.stripe_price_id:
-- solo_agent_monthly  $99  → price_1TqtaH22mFQ1pzusauA8hhC9
-- team_monthly        $299 → price_1TqtaS22mFQ1pzusKoCO8hij
-- brokerage_monthly   $799 → price_1TqtaY22mFQ1pzusTvcnK7uk
-- multi_location_monthly $1,999 → price_1Tqtac22mFQ1pzusxrIoR0Dq
+PRICING IS NOT FINAL (owner decision) — the four placeholder prices created
+during setup verification were ARCHIVED and subscription_tiers.stripe_price_id
+reset to NULL. Pricing day is ONE CLICK: edit each tier's price in
+Superadmin → Plans, then press its "Publish" button
+(publishTierToStripeAction) — it creates the live Stripe product+price from
+the DB value, archives any previously linked one (existing subscriptions
+keep billing), and links the new id. No code change, no MCP needed.
 REMAINING OWNER STEP: register the webhook endpoint
 `https://<app>/api/webhooks/stripe` in the Stripe dashboard (subscription +
 checkout events) and set STRIPE_WEBHOOK_SECRET — the readiness board now
