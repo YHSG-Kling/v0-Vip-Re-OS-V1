@@ -139,6 +139,20 @@ export async function POST(request: NextRequest) {
 
   // ── Actions on the SAME rails as every other engine ────────────────────────
   if (plan.action.kind === "transfer" && ctx.forwardNumber) {
+    // WARM BRIDGE first (brief-then-bridge): the caller holds while the
+    // agent hears the settings-driven whisper and presses 1. Blind <Dial>
+    // remains the honest fallback when the bridge can't start.
+    if (call) {
+      const { startWarmBridge, twimlHoldInConference, conferenceNameFor } = await import("@/lib/voice/warm-transfer")
+      const bridged = await startWarmBridge(svc, ctx, {
+        callerCallSid: callSid, callerLabel: speech ? "a caller" : "a caller",
+        topic: speech.slice(0, 90) || null, voiceCallId: (call as any).id,
+      })
+      if (bridged) {
+        await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
+        return xml(twimlHoldInConference(`${plan.say} One moment while I bring them in.`, conferenceNameFor(callSid)))
+      }
+    }
     if (call) await finishCall(svc, (call as any).id, newTranscript, "transferred")
     return new NextResponse(twimlTransfer(plan.say, ctx.forwardNumber), { headers: { "Content-Type": "text/xml" } })
   }

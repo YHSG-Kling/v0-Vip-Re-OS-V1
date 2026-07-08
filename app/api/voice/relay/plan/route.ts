@@ -104,8 +104,28 @@ export async function POST(request: NextRequest) {
   if (call) await svc.from("voice_calls").update({ transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
 
   if (plan.action.kind === "transfer" && ctx.forwardNumber) {
+    // WARM BRIDGE first — same brief-then-bridge as the Gather lane: redirect
+    // the caller's live call into the hold conference, ring the agent with
+    // the whisper. Blind redirect stays the honest fallback.
     const { resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
     const creds = await resolveTenantTwilioCreds(svc, ctx.brokerageId)
+    if (call && creds) {
+      const { startWarmBridge, twimlHoldInConference, conferenceNameFor } = await import("@/lib/voice/warm-transfer")
+      const bridged = await startWarmBridge(svc, ctx, {
+        callerCallSid: req.callSid, callerLabel: "a caller",
+        topic: req.utterance.slice(0, 90) || null, voiceCallId: (call as any).id,
+      })
+      if (bridged) {
+        const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+        const hold = await callConnector({
+          connector: "twilio", baseUrl: "https://api.twilio.com",
+          path: `/2010-04-01/Accounts/${creds.accountSid}/Calls/${req.callSid}.json`, method: "POST", bodyType: "form",
+          body: { Twiml: twimlHoldInConference(`${plan.say} One moment while I bring them in.`, conferenceNameFor(req.callSid)) },
+          auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
+        })
+        if (hold.ok) return json({ say: "", endSession: true, transferred: true })
+      }
+    }
     const transferred = creds ? await redirectLiveCallToDial(req.callSid, plan.say, ctx.forwardNumber, creds) : false
     if (call) await svc.from("voice_calls").update({ status: "completed", outcome: "transferred", ended_at: new Date().toISOString(), transcription: newTranscript }).eq("id", (call as any).id).then(undefined, () => {})
     return json({ say: transferred ? "" : plan.say, endSession: true, transferred })

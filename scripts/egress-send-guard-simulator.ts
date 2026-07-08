@@ -130,6 +130,8 @@ const CONNECTOR_ALLOWLIST: Record<string, string> = {
   "lib/voice/a2p-registration.ts":          "A2P 10DLC carrier registration (TrustHub/Messaging admin APIs — compliance filings, not messages)",
   "app/api/voice/twilio/intelligence/route.ts": "Conversational Intelligence transcript/operator READS (GET-only merge onto the call ledger, not a message)",
   "lib/platform/go-live-readiness.ts":      "go-live readiness probes (read-only GET reachability checks per vendor — never a message)",
+  "lib/voice/warm-transfer.ts":             "warm-bridge agent leg (call-control dial to the AGENT on an already-gated live call — a bridge, not a consumer message)",
+  "app/api/voice/twilio/whisper/route.ts":  "warm-bridge caller redirect (call-control on the SAME already-gated live call; token-gated endpoints we author ourselves)",
 }
 const connectorSenders = files
   .map((abs) => ({ abs, src: readFileSync(abs, "utf8") }))
