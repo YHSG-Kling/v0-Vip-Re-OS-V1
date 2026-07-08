@@ -207,6 +207,9 @@ export async function rsvpOpenHouseFromCall(
         entity_type: "voice_call", entity_id: call.id, priority: "medium", channel: "in_app", is_read: false,
       }).then(undefined, () => {})
     }
+    // Written confirmation card — same transactional rail as the booking text.
+    await textCallConfirmation(svc, ctx, call.contact_id,
+      `You're on the list for the open house at ${(listing as any).address}, ${(event as any).event_date}${(event as any).start_time ? ` at ${String((event as any).start_time).slice(0, 5)}` : ""}. See you there! Reply STOP to opt out.`)
     return true
   } catch { return false }
 }
@@ -291,7 +294,24 @@ export async function bookShowingFromCall(
         entity_type: "voice_call", entity_id: call.id, priority: "high", channel: "in_app", is_read: false,
       }).then(undefined, () => {})
     }
+    // Written confirmation halves no-shows. TRANSACTIONAL (they called in and
+    // booked): EWC skipped per TCPA, DNC/quiet-hours/opt-out still enforced
+    // inside sendSMS. Same rail as the showing-lifecycle reminder.
+    await textCallConfirmation(svc, ctx, call.contact_id,
+      `You're booked for ${when.toLocaleString("en-US", { weekday: "long", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}${ctx.identity.agentName ? ` with ${ctx.identity.agentName}` : ""}. Reply R to reschedule. Reply STOP to opt out.`)
   } catch { /* the spoken confirmation stands; the agent sees the transcript */ }
+}
+
+/** Best-effort transactional confirmation text after a live-call outcome. */
+async function textCallConfirmation(svc: any, ctx: InboundCallContext, contactId: string | null, message: string): Promise<void> {
+  if (!contactId) return
+  try {
+    const { data: contact } = await svc.from("contacts").select("phone").eq("id", contactId).maybeSingle()
+    const phone = (contact as any)?.phone
+    if (!phone) return
+    const { sendSMS } = await import("@/lib/providers/messaging")
+    await sendSMS({ to: phone, message, contactId, brokerageId: ctx.brokerageId, transactional: true })
+  } catch { /* the spoken outcome stands */ }
 }
 
 /** One reception turn: transcript + new utterance → the brain → plan. Pass

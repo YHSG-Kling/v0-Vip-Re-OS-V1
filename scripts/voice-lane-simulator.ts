@@ -18,6 +18,7 @@ import { rollupVoiceActivity, composeVoiceActivityBrief } from "../lib/kernel/ca
 import { extractAddressHints, composeInventoryBlock, DISCUSSABLE_STAGES } from "../lib/voice/reception-inventory"
 import { isAnalyzableCall } from "../lib/voice/call-analysis"
 import { rollupDraftQuality, composeDraftQualityBrief } from "../lib/kernel/draft-quality"
+import { composeOvernightDigest } from "../lib/kernel/overnight-digest"
 import { resolveProductBrand, DEFAULT_PRODUCT_BRAND } from "../lib/platform/product-brand"
 import { buildPlatformReceptionPrompt as buildPlatformPromptForBrandCheck } from "../lib/voice/platform-reception"
 import { computeTwilioSignature, validateTwilioSignature } from "../lib/voice/twilio-voice"
@@ -261,6 +262,16 @@ console.log("\n── PURE: draft-quality flywheel ──")
   check("nothing drafted → empty (never pads)", composeDraftQualityBrief(rollupDraftQuality([])) === "")
 }
 
+console.log("\n── PURE: the overnight digest ──")
+{
+  const busy = composeOvernightDigest({ callsAnswered: 3, bookings: 1, rsvps: 2, sellerLeads: 1, hotCallbacks: 1, textsReceived: 4 })
+  check("busy night narrated: calls, texts, bookings, RSVPs + seller/hot-call action lines",
+    busy.includes("answered 3 calls") && busy.includes("took 4 texts") && busy.includes("booked 1 appointment")
+    && busy.includes("RSVP'd 2 guests") && busy.includes("what their home is worth") && busy.includes("same-day callback"))
+  check("silent night → empty string (the digest never pads)",
+    composeOvernightDigest({ callsAnswered: 0, bookings: 0, rsvps: 0, sellerLeads: 0, hotCallbacks: 0, textsReceived: 0 }) === "")
+}
+
 console.log("\n── PURE: no hardcoded copy — the platform pitch/greeting are SETTINGS ──")
 {
   const custom = resolveProductBrand({ voicePitch: "the operating system for winning brokerages", receptionGreeting: "Curious about the platform, or need a hand with your account?" })
@@ -389,6 +400,13 @@ console.log("\n── SOURCE: wiring ──")
     && turn.includes("proposeSellerLeadFromCall") && src("app/api/voice/relay/plan/route.ts").includes("proposeSellerLeadFromCall"))
   check("reception prompt INVITES to open houses from live inventory + never guesses a home value",
     src("lib/voice/reception-brain.ts").includes("INVITE them and RSVP them") && src("lib/voice/reception-brain.ts").includes("never guess a number"))
+  check("CONFIRMATION TEXTING: booking + RSVP each send a transactional card via the ONE gated sendSMS (DNC/quiet-hours enforced inside; best-effort)",
+    voiceLib.includes("textCallConfirmation") && voiceLib.includes("transactional: true")
+    && voiceLib.includes("Reply R to reschedule") && voiceLib.includes("on the list for the open house"))
+  check("OVERNIGHT DIGEST: morning cron registered + per-agent dedupe-per-day + counts trace to ledgers",
+    src("lib/kernel/cron-dispatch.ts").includes("/api/cron/overnight-digest")
+    && src("app/api/cron/overnight-digest/route.ts").includes("runOvernightDigest")
+    && src("lib/kernel/overnight-digest.ts").includes("overnight_ai_digest") && src("lib/kernel/overnight-digest.ts").includes("[SELLER_LEAD]"))
   const readiness = src("lib/platform/go-live-readiness.ts")
   check("GO-LIVE READINESS: live probes per domain (Twilio master + line binding, SendGrid, Stripe live/test, ElevenLabs, D-ID, storage, DB, cron, A2P) — never env-presence-only for vendors",
     readiness.includes("Accounts/${sid}.json") && readiness.includes("IncomingPhoneNumbers.json") && readiness.includes("/v3/scopes")

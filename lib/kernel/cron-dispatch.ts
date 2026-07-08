@@ -157,6 +157,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/showing-lifecycle"                   , schedule: "15 * * * *" },
   { path: "/api/cron/open-house-followup"                 , schedule: "45 * * * *" },
   { path: "/api/cron/voice-call-analysis"                 , schedule: "20 * * * *" },
+  { path: "/api/cron/overnight-digest"                    , schedule: "30 12 * * *" },
   { path: "/api/cron/credential-refresh"                  , schedule: "0 7 * * *" },
   { path: "/api/cron/tenant-safety-scan"                  , schedule: "0 4 * * *" },
   { path: "/api/cron/lead-scraping"                       , schedule: "0 5 * * *" },
