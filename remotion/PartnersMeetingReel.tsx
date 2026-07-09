@@ -18,6 +18,7 @@
  */
 import React from "react"
 import { AbsoluteFill, Img, Sequence, Video, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { QrOutroBadge } from "./components/QrOutroBadge"
 
 type ReelCardKind = "team" | "finance" | "compliance"
 interface ReelCard { value: string; label: string; sub?: string; kind: ReelCardKind }
@@ -32,6 +33,10 @@ export interface PartnersMeetingReelProps {
   avatarVideoUrl: string | null
   agentPhotoUrl: string | null
   brand: Brand
+  /** Tracked outro QR — finish-spec rule: CLIENT-FACING uses of this
+   *  composition (pitch, deal room) carry it; internal reports skip it. */
+  qrCodeDataUrl?: string | null
+  qrCaption?: string
 }
 
 const KIND_ACCENT: Record<ReelCardKind, string> = {
@@ -202,7 +207,7 @@ const AskScene: React.FC<{ brand: Brand; oneAsk: string }> = ({ brand, oneAsk })
   )
 }
 
-const OutroScene: React.FC<{ brand: Brand; showEho: boolean }> = ({ brand, showEho }) => {
+const OutroScene: React.FC<{ brand: Brand; showEho: boolean; qrCodeDataUrl?: string | null; qrCaption?: string }> = ({ brand, showEho, qrCodeDataUrl, qrCaption }) => {
   const frame = useCurrentFrame()
   return (
     <AbsoluteFill>
@@ -217,12 +222,18 @@ const OutroScene: React.FC<{ brand: Brand; showEho: boolean }> = ({ brand, showE
           </div>
         </div>
       </AbsoluteFill>
+      <QrOutroBadge
+        qrCodeDataUrl={qrCodeDataUrl}
+        caption={qrCaption ?? "Scan to connect"}
+        primaryColor={brand.primaryColor}
+        accentColor={brand.accentColor}
+      />
     </AbsoluteFill>
   )
 }
 
 export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
-  weekLabel, cards, oneAsk, agentName, avatarVideoUrl, agentPhotoUrl, brand,
+  weekLabel, cards, oneAsk, agentName, avatarVideoUrl, agentPhotoUrl, brand, qrCodeDataUrl, qrCaption,
 }) => {
   const { durationInFrames, fps } = useVideoConfig()
   const showEho = brand.showEhoMark ?? true
@@ -256,7 +267,7 @@ export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
 
       {/* OUTRO */}
       <Sequence from={durationInFrames - OUTRO} durationInFrames={OUTRO}>
-        <OutroScene brand={brand} showEho={showEho} />
+        <OutroScene brand={brand} showEho={showEho} qrCodeDataUrl={qrCodeDataUrl} qrCaption={qrCaption} />
       </Sequence>
     </AbsoluteFill>
   )

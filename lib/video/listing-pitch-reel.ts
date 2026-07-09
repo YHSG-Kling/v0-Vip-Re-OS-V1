@@ -115,6 +115,14 @@ export async function queueListingPitchReel(
     voiceId: identity.voiceId, renderKey: `pitch-${p.appointmentId.slice(0, 8)}`,
   })
   if (voUrl) props.voiceover_url = voUrl
+  // Finish-spec: the pitch is CLIENT-FACING → tracked outro QR (scan to book).
+  try {
+    if (p.agentUserId) {
+      const { mintVideoQr } = await import("@/lib/video/video-qr")
+      const minted = await mintVideoQr({ brokerageId: p.brokerageId, agentUserId: p.agentUserId, kind: "explainer" }, svc)
+      if (minted) { props.qrCodeDataUrl = minted.qrCodeDataUrl; props.qrCaption = "Scan to get started" }
+    }
+  } catch { /* QR is additive */ }
   props.thumbnail_props = {
     kind: "presentation", title: p.address, subtitle: `Listed with ${brand.brokerageName}`, eyebrow: "LISTING PRESENTATION",
     agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl,

@@ -145,6 +145,14 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
           renderKey: `dealroom-${String(t.id).slice(0, 8)}`,
         })
         if (voUrl) props.voiceover_url = voUrl
+        // Finish-spec: the Deal Room is CLIENT-FACING → tracked outro QR.
+        try {
+          if (agentUserId) {
+            const { mintVideoQr } = await import("@/lib/video/video-qr")
+            const minted = await mintVideoQr({ brokerageId: b.id, agentUserId, kind: "explainer", contactId }, svc)
+            if (minted) { props.qrCodeDataUrl = minted.qrCodeDataUrl; props.qrCaption = "Scan to reach your team" }
+          }
+        } catch { /* QR is additive */ }
         props.thumbnail_props = {
           kind: "presentation", title: address, subtitle: "Your deal this week", eyebrow: "DEAL ROOM",
           agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl,

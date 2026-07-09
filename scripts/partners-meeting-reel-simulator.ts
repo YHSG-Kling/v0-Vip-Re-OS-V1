@@ -212,6 +212,35 @@ console.log("\n[11 · VIDEO-PATH AUDIT LOCKS — b-roll on avatar video, QR ever
     existsSync(join(process.cwd(), "scripts/l37-s01-composition-registry-complete.sql")))
 }
 
+console.log("\n[12 · THE FINISH SPEC — one definition of which video gets which stitching]")
+import { VIDEO_FINISH_SPEC, REEL_USE_FINISH, finishForVideo } from "../lib/video/finish-spec"
+{
+  const rootIds = Array.from(src("remotion/Root.tsx").matchAll(/id="([A-Za-z0-9]+)"/g)).map((m) => m[1])
+  const missing = rootIds.filter((id) => !(id in VIDEO_FINISH_SPEC))
+  check(`every Root.tsx composition has a finish spec (${rootIds.length} compositions)`, missing.length === 0)
+  check("stills get NOTHING (they ARE the card); marketing gets the works",
+    ["VideoCoverThumb", "LeadMagnetCard", "PostcardFront4x6"].every((id) => {
+      const f = VIDEO_FINISH_SPEC[id]; return !f.bookends && !f.music && !f.qr && !f.thumbnail
+    })
+    && ["JustListedReelSquare", "JustSoldReelSquare", "OpenHouseAnnounceReel"].every((id) => {
+      const f = VIDEO_FINISH_SPEC[id]; return f.bookends && f.music && f.qr && f.thumbnail && f.captions
+    }))
+  check("report shows: INTERNAL uses skip the QR (audience is in the app); CLIENT-FACING uses carry it",
+    !REEL_USE_FINISH.partners_meeting_reel.qr && !REEL_USE_FINISH.board_packet_reel.qr
+    && REEL_USE_FINISH.listing_pitch_reel.qr && REEL_USE_FINISH.deal_room_reel.qr
+    && finishForVideo("PartnersMeetingReel", "deal_room_reel").qr === true
+    && finishForVideo("PartnersMeetingReel", "partners_meeting_reel").qr === false)
+  check("narrated slide decks skip music (it fights the voice); the animation reel skips b-roll (it IS the visual)",
+    !VIDEO_FINISH_SPEC.ListingPresentationSlide.music && !VIDEO_FINISH_SPEC.BuyerConsultationSlide.music
+    && VIDEO_FINISH_SPEC.ExplainerAnimReel.broll === "none")
+  check("the spec is ENFORCED where it matters: PartnersMeetingReel outro renders the QR badge; pitch + deal-room mint it",
+    src("remotion/PartnersMeetingReel.tsx").includes("QrOutroBadge")
+    && src("lib/video/listing-pitch-reel.ts").includes("mintVideoQr")
+    && src("lib/kernel/deal-room-reel.ts").includes("mintVideoQr"))
+  check("finishForVideo never returns undefined (unknown composition → safe default)",
+    finishForVideo("NotARealComposition").thumbnail === true && finishForVideo("NotARealComposition").qr === false)
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
