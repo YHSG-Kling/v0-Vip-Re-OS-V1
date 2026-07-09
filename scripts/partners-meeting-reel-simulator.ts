@@ -434,6 +434,17 @@ console.log("\n[21 · THE EXPRESSIVE LOOP, CLOSED — engine recorded, never gue
     src("lib/intelligence/partners-meeting.ts").includes('identity.expressiveAvatarId || identity.avatarPhotoUrl ? "video" : "audio"'))
 }
 
+console.log("\n[22 · THE FLYWHEEL FOUNDATION + THE STUDIO'S V4 FUTURE, STRUCTURAL]")
+{
+  check("SENTIMENT RECORDED at commission (video_metadata.sentiment) — you can't learn what you don't record; outcome-learning reads it like format-learning reads composition_id",
+    src("lib/video/video-director.ts").includes("sentiment: sentimentForSituation(situation.kind)"))
+  check("the PERFORMED expression is recorded on the render (provider_metadata.expression_used) — the flywheel's outcome dimension",
+    src("app/api/cron/director-reel-render/route.ts").includes("expression_used"))
+  check("STRUCTURAL V4 INHERITANCE: the Studio's avatar ids pass straight through resolveAvatarSource as actorId, and lib/did routes @avt_ ids to /expressives — the day D-ID ships custom expressive avatar creation, every agent inherits V4 with ZERO pipeline change",
+    src("lib/did/index.ts").includes("if (input.actorId) return { actorId: input.actorId }")
+    && src("lib/did/index.ts").includes('includes("@avt_")'))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }

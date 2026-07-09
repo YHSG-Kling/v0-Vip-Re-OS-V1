@@ -981,6 +981,12 @@ export async function commissionVideo(
     // The situation that produced this reel — stamped so the autonomous repurpose loop can
     // replay it for platform-short VARIANTS (same kind/tier/entity, a different target channel).
     situation: { kind: situation.kind, tier: situation.tier, target_channel: situation.targetChannel },
+    // THE SENTIMENT FLYWHEEL'S DATA FOUNDATION: the performance this video was
+    // commissioned with (sentimentForSituation — celebratory/steady/warm). You
+    // can't learn what you don't record: outcome-learning reads this to ask
+    // "do happy just-solds outperform neutral ones for THIS brokerage?" the
+    // same way format-learning reads composition_id today.
+    sentiment: sentimentForSituation(situation.kind),
     composition_id: format.compositionId,
     supports_bookends: supportsBookends,
     needs_avatar: requiresAvatar,

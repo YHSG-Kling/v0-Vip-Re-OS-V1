@@ -144,6 +144,9 @@ export async function GET(request: Request) {
             // Engine RECORDED at submit (talks = V2 photo, expressives = V4);
             // the poll cron keys off this — never guessed from id shapes.
             mode: r.engine === "expressives" ? "expressive" : (meta.mode ?? null),
+            // The performance actually submitted (agent override or the
+            // situation's sentiment) — the flywheel's outcome dimension.
+            expression_used: presenter.expression ?? (vmeta.sentiment as string | undefined) ?? null,
             talk_id: r.videoId,
             target_composition_id: compositionId,
             input_props: inputProps,
