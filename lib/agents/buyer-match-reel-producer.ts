@@ -113,6 +113,19 @@ export async function produceBuyerMatchReel(
   const inputProps = buildBuyerMatchReelProps(facts, { agentName, agentPhone, brokerageName })
   if (!inputProps) return { queued: false, reason: "no renderable matches" }
 
+  // TRACKED QR on the outro (owner rule: QR on every non-selfie video) — the
+  // buyer scans to book; idempotent per contact via the shared tracked-QR core.
+  try {
+    if (agentUserId) {
+      const { mintVideoQr } = await import("@/lib/video/video-qr")
+      const minted = await mintVideoQr({ brokerageId, agentUserId, kind: "explainer", contactId }, supabase)
+      if (minted) {
+        ;(inputProps as Record<string, unknown>).qrCodeDataUrl = minted.qrCodeDataUrl
+        ;(inputProps as Record<string, unknown>).qrCaption = "Scan to book a tour"
+      }
+    }
+  } catch { /* QR is additive */ }
+
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
     brokerageId, compositionId: COMPOSITION_ID, agentUserId,

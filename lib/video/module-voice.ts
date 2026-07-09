@@ -10,10 +10,18 @@ import { createServiceClient } from "@/lib/supabase/service"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-/** The brokerage's ASSISTANT voice (the AI ISA/assistant clone) — used for AGENT-facing videos. */
+/** The brokerage's ASSISTANT voice — used for AGENT-facing videos. KEEP-ONE:
+ *  the CANONICAL assistant identity is ai_identity_profiles (the same row the
+ *  phone reception and report reels speak with; the settings page edits it);
+ *  the legacy brokerages.default_isa_voice_id column stays as the fallback so
+ *  tenants that only ever set the old field keep working. */
 export async function resolveAssistantVoiceId(brokerageId: string, client?: Svc): Promise<string | null> {
   const svc = client ?? createServiceClient()
   if (!brokerageId) return null
+  const { data: profile } = await svc.from("ai_identity_profiles")
+    .select("elevenlabs_voice_id")
+    .eq("scope_type", "brokerage").eq("scope_id", brokerageId).maybeSingle()
+  if ((profile as any)?.elevenlabs_voice_id) return (profile as any).elevenlabs_voice_id
   const { data } = await svc.from("brokerages").select("default_isa_voice_id").eq("id", brokerageId).maybeSingle()
   return (data as { default_isa_voice_id?: string | null } | null)?.default_isa_voice_id ?? null
 }

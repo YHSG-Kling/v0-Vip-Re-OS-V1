@@ -50,6 +50,7 @@ import {
   useCurrentFrame,
 } from "remotion"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { BrollLayer } from "./_BrollLayer"
 
 export interface AgentTalkingHeadReelProps {
   /** Top hook label — short eyebrow (e.g. "MARKET UPDATE", "JUST LISTED",
@@ -79,6 +80,11 @@ export interface AgentTalkingHeadReelProps {
   qrCodeDataUrl?: string | null
   /** Caption under the outro QR, e.g. "Scan to connect". */
   qrCaption?:     string
+  /** Optional B-roll (owner rule: TikTok-style avatar videos carry cutaway
+   *  footage). When present, the clips fill the BODY background (brand-tinted
+   *  for caption legibility) and the avatar shrinks to a floating card —
+   *  the scroll-stopping pattern. Absent → the original solid-brand layout. */
+  brollClips?: Array<{ url: string; caption?: string }>
   brand: {
     primaryColor:    string
     accentColor:     string
@@ -98,10 +104,16 @@ const OUTRO  = 2  * FPS
 
 export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   hook, agentName, caption, ctaLabel, avatarVideoUrl, agentPhotoUrl,
-  qrCodeDataUrl, qrCaption, brand,
+  qrCodeDataUrl, qrCaption, brand, brollClips,
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
+  const hasBroll = (brollClips?.length ?? 0) > 0
+  // With B-roll behind, the avatar floats as a card (bottom-left) so the
+  // footage reads; without it, the original near-full-bleed layout stands.
+  const avatarBox: React.CSSProperties = hasBroll
+    ? { position: "absolute", bottom: 130, left: 48, width: 560, height: 560 }
+    : { position: "absolute", top: 90, left: 90, width: 900, height: 900 }
 
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, sans-serif" }}>
@@ -138,37 +150,43 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           caption strip on top, brokerage chrome at corners. */}
       <Sequence from={COVER} durationInFrames={BODY}>
         <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
+          {/* B-roll background (TikTok pattern): cutaway footage behind the
+              floating avatar, brand-tinted so the caption strip stays legible. */}
+          {hasBroll && (
+            <BrollLayer
+              clips={brollClips!}
+              totalFrames={BODY}
+              overlayColor={`${brand.primaryColor}59`}
+            />
+          )}
           {avatarVideoUrl ? (
             <Video
               src={avatarVideoUrl}
               startFrom={0}
               endAt={BODY}
               style={{
-                position: "absolute",
-                top: 90, left: 90, width: 900, height: 900,
+                ...avatarBox,
                 objectFit: "cover",
                 borderRadius: 12,
-                boxShadow: `0 0 0 6px ${brand.accentColor}`,
+                boxShadow: `0 0 0 6px ${brand.accentColor}, 0 18px 44px rgba(0,0,0,0.4)`,
               }}
             />
           ) : agentPhotoUrl ? (
             <Img
               src={agentPhotoUrl}
               style={{
-                position: "absolute",
-                top: 90, left: 90, width: 900, height: 900,
+                ...avatarBox,
                 objectFit: "cover",
                 borderRadius: 12,
-                boxShadow: `0 0 0 6px ${brand.accentColor}`,
+                boxShadow: `0 0 0 6px ${brand.accentColor}, 0 18px 44px rgba(0,0,0,0.4)`,
               }}
             />
           ) : (
             <div style={{
-              position: "absolute",
-              top: 90, left: 90, width: 900, height: 900,
+              ...avatarBox,
               backgroundColor: brand.accentColor, borderRadius: 12,
               display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 320, color: brand.primaryColor, fontWeight: 800,
+              fontSize: hasBroll ? 200 : 320, color: brand.primaryColor, fontWeight: 800,
             }}>
               {(agentName[0] ?? "A").toUpperCase()}
             </div>

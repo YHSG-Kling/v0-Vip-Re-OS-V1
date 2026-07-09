@@ -70,7 +70,7 @@ check("carries the earned reel props as inputProps (cards + one ask)",
   req.inputProps.cards.length === full.cards.length && req.inputProps.oneAsk === full.oneAsk)
 
 console.log("\n[5 · LIVE WIRING — the show actually runs (composition was orphaned before)]")
-import { readFileSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 const pm = src("lib/intelligence/partners-meeting.ts")
@@ -191,6 +191,25 @@ console.log("\n[10 · DAY-ONE ASSISTANT — Aria exists before anyone opens sett
     && src("lib/kernel/assistant-starter.ts").includes("profile exists — tenant identity is theirs"))
   check("the daily tenant-safety-scan backfills existing tenants (idempotent sweep)",
     src("app/api/cron/tenant-safety-scan/route.ts").includes("seedStarterAssistant"))
+}
+
+console.log("\n[11 · VIDEO-PATH AUDIT LOCKS — b-roll on avatar video, QR everywhere, registry complete]")
+{
+  check("AgentTalkingHeadReel (the TikTok-style avatar video) renders B-ROLL behind a floating avatar",
+    src("remotion/AgentTalkingHeadReel.tsx").includes("BrollLayer")
+    && src("remotion/AgentTalkingHeadReel.tsx").includes("brollClips")
+    && src("remotion/AgentTalkingHeadReel.tsx").includes("hasBroll"))
+  check("the seller update carries the seller's OWN listing photos as b-roll + a tracked outro QR",
+    src("lib/agents/seller-update-reel-producer.ts").includes("props.brollClips")
+    && src("lib/agents/seller-update-reel-producer.ts").includes("mintVideoQr"))
+  check("the buyer match reel mints a tracked book-a-tour QR (generic-queue reels no longer ship QR-less)",
+    src("lib/agents/buyer-match-reel-producer.ts").includes("mintVideoQr")
+    && src("lib/agents/buyer-match-reel-producer.ts").includes("Scan to book a tour"))
+  check("KEEP-ONE assistant voice: module-voice consults ai_identity_profiles FIRST (legacy column is fallback only)",
+    src("lib/video/module-voice.ts").includes('from("ai_identity_profiles")')
+    && src("lib/video/module-voice.ts").indexOf("ai_identity_profiles") < src("lib/video/module-voice.ts").indexOf("default_isa_voice_id"))
+  check("l37-s01 recorded: the live registry covers every Root.tsx composition (EquityReport/ExplainerAnim/PhotoWalkthrough/ProductPromo were queueable-but-unresolvable)",
+    existsSync(join(process.cwd(), "scripts/l37-s01-composition-registry-complete.sql")))
 }
 
 console.log("\n──────────────────────────────────────────────────")

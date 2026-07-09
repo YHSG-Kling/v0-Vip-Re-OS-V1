@@ -175,11 +175,31 @@ export async function requestSellerUpdateReel(
   const { data: b } = await supabase.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
   if ((b as { name?: string } | null)?.name) brokerageName = String((b as { name: string }).name)
 
-  const props = {
+  const props: Record<string, unknown> = {
     ...buildSellerUpdateReelProps(gathered.stats, { agentName, brokerageName, agentPhone, agentPhotoUrl }),
     listing_id: listingId,
     seller_contact_id: gathered.sellerContactId,
   }
+
+  // B-ROLL (owner rule: avatar videos carry cutaway footage) — the seller's OWN
+  // listing photos behind the floating avatar; the most personal b-roll there is.
+  try {
+    const { data: lphotos } = await supabase.from("listings").select("photos, primary_photo_url").eq("id", listingId).maybeSingle()
+    const photoList = Array.isArray((lphotos as any)?.photos) ? ((lphotos as any).photos as unknown[]) : []
+    const urls = [...photoList.map((p: any) => (typeof p === "string" ? p : p?.url)), (lphotos as any)?.primary_photo_url]
+      .filter((u): u is string => typeof u === "string" && u.startsWith("http")).slice(0, 5)
+    if (urls.length > 0) props.brollClips = urls.map((url) => ({ url }))
+  } catch { /* no photos → the solid-brand layout stands */ }
+
+  // TRACKED QR on the outro (owner rule: QR ships on every non-selfie video) —
+  // "scan to talk" via the shared tracked-QR core, idempotent per listing.
+  try {
+    if (agentUserId) {
+      const { mintVideoQr } = await import("@/lib/video/video-qr")
+      const minted = await mintVideoQr({ brokerageId, agentUserId, kind: "explainer", listingId }, supabase)
+      if (minted) { props.qrCodeDataUrl = minted.qrCodeDataUrl; props.qrCaption = "Scan to reach me" }
+    }
+  } catch { /* QR is additive */ }
 
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
