@@ -63,7 +63,17 @@ export function buildListingPitchReelProps(
     weekLabel: p.address,
     cards,
     oneAsk: `Let's put this team to work on ${p.address}`,
-    narration: `${p.address} — presented by ${p.agentName} and the AI team at ${p.brand.brokerageName}.`,
+    narration: [
+      `Hi, I'm ${p.agentName} with ${p.brand.brokerageName}. Here's what listing ${p.address} with us looks like.`,
+      `From day one, an AI team works your listing around the clock — every inquiry answered, every showing followed up.`,
+      p.roi.attributedGciCents > 0
+        ? `In the last ${p.roi.periodDays} days, our marketing produced ${money(p.roi.attributedGciCents)} in closed volume across ${p.roi.attributedDeals} deal${p.roi.attributedDeals === 1 ? "" : "s"} — measured by our attribution engine, not claimed.`
+        : null,
+      p.roi.callsAnswered > 0
+        ? `${p.roi.callsAnswered} buyer call${p.roi.callsAnswered === 1 ? "" : "s"} answered live${p.roi.appointmentsBooked > 0 ? `, ${p.roi.appointmentsBooked} appointment${p.roi.appointmentsBooked === 1 ? "" : "s"} booked on the call` : ""} — no buyer goes to voicemail.`
+        : null,
+      `And every message that goes out is reviewed for Fair Housing and consent before it sends. Let's put this team to work on ${p.address}.`,
+    ].filter(Boolean).join(" "),
     agentName: p.agentName,
     avatarVideoUrl: null,
     agentPhotoUrl: p.agentPhotoUrl,
@@ -97,6 +107,14 @@ export async function queueListingPitchReel(
   const props = buildListingPitchReelProps({
     address: p.address, agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl, brand, roi,
   }) as unknown as Record<string, unknown>
+  // Voice on every video: the AGENT's cloned voice narrates their own pitch
+  // (contact-facing rule — the licensed human speaks to clients). Best-effort.
+  const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
+  const voUrl = await prepareReelVoiceover({
+    brokerageId: p.brokerageId, narration: (props as any).narration,
+    voiceId: identity.voiceId, renderKey: `pitch-${p.appointmentId.slice(0, 8)}`,
+  })
+  if (voUrl) props.voiceover_url = voUrl
   props.thumbnail_props = {
     kind: "presentation", title: p.address, subtitle: `Listed with ${brand.brokerageName}`, eyebrow: "LISTING PRESENTATION",
     agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl,
@@ -122,7 +140,7 @@ export async function deliverListingPitchReels(svc: any, now: Date = new Date())
   const { data: renders } = await svc.from("remotion_composition_renders")
     .select("id, brokerage_id, agent_user_id, output_url, input_props")
     .eq("entity_type", LISTING_PITCH_REEL_ENTITY)
-    .eq("render_status", "completed").not("output_url", "is", null)
+    .eq("render_status", "succeeded").not("output_url", "is", null)
     .gte("created_at", sinceIso).limit(100)
   for (const ren of ((renders ?? []) as any[])) {
     out.completed += 1

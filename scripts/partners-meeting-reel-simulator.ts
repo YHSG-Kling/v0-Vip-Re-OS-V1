@@ -136,6 +136,63 @@ console.log("\n[7 · the LISTING PITCH REEL — win the listing with the team on
     && src("app/dashboard/admin/command-center/command-center-client.tsx").includes("What your AI team earned"))
 }
 
+console.log("\n[8 · VOICE ON EVERY VIDEO — narration pipeline end to end]")
+import { buildDealRoomReelProps, clearedContingencies } from "../lib/kernel/deal-room-reel"
+import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
+{
+  const coord = src("lib/remotion/render-coordinator.ts")
+  check("the coordinator muxes input_props.voiceover_url BEFORE music and stamps used_voiceover",
+    coord.includes("mixNarrationVoiceover") && coord.includes("used_voiceover:      usedVoiceover")
+    && coord.indexOf("mixNarrationVoiceover") < coord.indexOf("mixBackgroundMusic("))
+  check("the mixer degrades honestly: amix when the video has audio, direct-map when silent",
+    src("lib/remotion/voiceover-mixer.ts").includes("amix=inputs=2")
+    && src("lib/remotion/voiceover-mixer.ts").includes('"-map", "1:a"'))
+  check("ALL reel producers synthesize narration at queue time (assistant voice on reports, agent clone on client-facing)",
+    ["lib/intelligence/partners-meeting.ts", "lib/kernel/board-packet-reel.ts", "lib/video/listing-pitch-reel.ts", "lib/kernel/deal-room-reel.ts"]
+      .every((f) => src(f).includes("prepareReelVoiceover")))
+  check("TTS rides the canonical primitive + the vendor budget gate (no second ElevenLabs path)",
+    src("lib/video/reel-voiceover.ts").includes('import("@/lib/voice/elevenlabs-tts")')
+    && src("lib/video/reel-voiceover.ts").includes("brokerageId: p.brokerageId"))
+  check("AUDIT CATCH locked: every delivery sweep filters render_status='succeeded' (the value the pipeline writes)",
+    ["lib/video/reel-brand.ts", "lib/video/listing-pitch-reel.ts", "lib/kernel/deal-room-reel.ts"]
+      .every((f) => src(f).includes('"succeeded"') && !src(f).includes('"render_status", "completed"')))
+}
+
+console.log("\n[9 · THE DEAL ROOM — under-contract clients see their deal on camera]")
+{
+  const facts = {
+    address: "12 Oak Ln", stage: "INSPECTION", daysToClose: 21,
+    clearedThisWeek: ["Financing contingency"], nextDeadline: { label: "appraisal deadline", date: "2026-07-20" },
+    activityCount7d: 6,
+  }
+  const props = buildDealRoomReelProps({ facts, clientFirstName: "Sam", agentName: "Dana K", agentPhotoUrl: null, brand: { primaryColor: "#1d4ed8", accentColor: "#F59E0B", brokerageName: "X Realty", logoUrl: null, showEhoMark: true } })
+  check("a live deal narrates the REAL facts: days-to-close, cleared contingency, next deadline, activity",
+    props.cards.some((c) => c.label === "DAYS TO CLOSING" && c.value === "21")
+    && props.cards.some((c) => c.value === "CLEARED")
+    && props.narration!.includes("Sam") && props.narration!.includes("Financing contingency cleared")
+    && props.narration!.includes("appraisal deadline"))
+  check("cleared-contingency detection uses the REAL removed_at timestamps within the week window",
+    clearedContingencies({ financing_contingency_removed_at: "2026-07-08T00:00:00Z", appraisal_contingency_removed_at: "2026-06-01T00:00:00Z" }, "2026-07-02T00:00:00Z").join(",") === "Financing contingency")
+  check("client egress is GATED: deliver phase proposes via proposeClientMessage with the [DEAL_ROOM] weekly dedupe",
+    src("lib/kernel/deal-room-reel.ts").includes("proposeClientMessage")
+    && src("lib/kernel/deal-room-reel.ts").includes("[DEAL_ROOM]")
+    && src("app/api/cron/client-pulse/route.ts").includes("proposeDealRoomReels")
+    && src("lib/kernel/cron-dispatch.ts").includes("client-pulse?phase=deliver"))
+  check("registry: deal_room owned by deal_coordinator, video voice+identity by asset_manager (proof = THIS simulator)",
+    (MAINTENANCE_DOMAINS as any).deal_room?.manager === "deal_coordinator"
+    && (MAINTENANCE_DOMAINS as any).video_voice_identity?.manager === "asset_manager"
+    && (MAINTENANCE_DOMAINS as any).deal_room?.proof === "test:partners-meeting-reel")
+}
+
+console.log("\n[10 · DAY-ONE ASSISTANT — Aria exists before anyone opens settings]")
+{
+  check("signup seeds the starter identity (name + generated headshot + narration voice), never overwriting",
+    src("app/actions/auth/signup-brokerage.ts").includes("seedStarterAssistant")
+    && src("lib/kernel/assistant-starter.ts").includes("profile exists — tenant identity is theirs"))
+  check("the daily tenant-safety-scan backfills existing tenants (idempotent sweep)",
+    src("app/api/cron/tenant-safety-scan/route.ts").includes("seedStarterAssistant"))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }

@@ -123,13 +123,27 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // ─── Day-one assistant backfill ────────────────────────────────────────
+    // Every tenant must have a NAMED assistant (it answers the phone, hosts
+    // the weekly show, presents report videos). Signup seeds new tenants; this
+    // idempotent sweep covers tenants that predate the seeder or missed it.
+    let assistantsSeeded = 0
+    try {
+      const { seedStarterAssistant } = await import("@/lib/kernel/assistant-starter")
+      const { data: allBrokerages } = await supabase.from("brokerages").select("id").limit(2000)
+      for (const b of ((allBrokerages ?? []) as Array<{ id: string }>)) {
+        const r = await seedStarterAssistant(supabase, b.id)
+        if (r.seeded) assistantsSeeded += 1
+      }
+    } catch { /* best-effort — next scan retries */ }
+
     await recordCronSuccessAction({
       context_id:        contextId,
       records_processed: summary.findings_inserted,
-      metadata:          { ...summary, scanned_tables: SENSITIVE_TABLES.length },
+      metadata:          { ...summary, scanned_tables: SENSITIVE_TABLES.length, assistants_seeded: assistantsSeeded },
     })
 
-    return NextResponse.json({ message: "Tenant safety scan complete", summary })
+    return NextResponse.json({ message: "Tenant safety scan complete", summary, assistantsSeeded })
   } catch (e) {
     const message = e instanceof Error ? e.message : "Scan failed"
     await recordCronFailureAction({ context_id: contextId, error: message })

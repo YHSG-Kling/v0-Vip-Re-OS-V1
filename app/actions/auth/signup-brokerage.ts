@@ -158,6 +158,14 @@ export async function signupBrokerageAction(
     updated_at:          new Date().toISOString(),
   })
 
+  // DAY-ONE ASSISTANT — seed the starter AI identity (name + generated headshot
+  // + narration voice) so Aria answers the phone and hosts the first weekly show
+  // immediately; the settings page becomes personalization, not setup. Best-effort.
+  try {
+    const { seedStarterAssistant } = await import("@/lib/kernel/assistant-starter")
+    await seedStarterAssistant(service, brokerage.id)
+  } catch (err) { console.warn("[signupBrokerage] assistant seed failed:", (err as any)?.message) }
+
   // SUBSCRIPTION_CREATED — emit the lifecycle event (best-effort, never blocks signup) so downstream
   // reactors have a real-time hook; the weekly cron is the idempotent safety net that authors the tier
   // onboarding curriculum if this misses.

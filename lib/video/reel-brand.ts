@@ -54,7 +54,7 @@ export async function deliverCompletedReels(
   const { data: renders } = await svc.from("remotion_composition_renders")
     .select("id, brokerage_id, output_url")
     .eq("entity_type", p.entityType)
-    .eq("render_status", "completed").not("output_url", "is", null)
+    .eq("render_status", "succeeded").not("output_url", "is", null)
     .gte("created_at", p.sinceIso).limit(200)
   for (const ren of ((renders ?? []) as any[])) {
     out.completed += 1

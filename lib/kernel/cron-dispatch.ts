@@ -52,6 +52,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/idle-hands",                     schedule: "0 * * * *" },
   // Client Pulse — the weekly "what your team did for you" for sellers + buyers.
   { path: "/api/cron/client-pulse",                   schedule: "0 16 * * 5" },
+  { path: "/api/cron/client-pulse?phase=deliver",     schedule: "0 18 * * 5" },
   // Manager office hours — morning + afternoon drops sweep approval pings into one card.
   { path: "/api/cron/office-hours",                   schedule: "0 13,19 * * *" },
   // Farm Play — the marketing bench convenes geographic farming on each closed deal.

@@ -195,6 +195,28 @@ export async function finalizeCoordinatedRender(
     }
   }
 
+  // ─── Narration voiceover (owner rule: voice on every video unless stated) ───
+  // Producers synthesize the script at queue time (assistant's voice for
+  // internal reports, the agent's clone for contact-facing) and carry the mp3
+  // URL in input_props.voiceover_url; we mux it here BEFORE music so the music
+  // ducks under the narration. Best-effort — a mux failure ships the video silent.
+  let usedVoiceover = composition.requires_voiceover
+  try {
+    const { data: renderRow } = await svc.from("remotion_composition_renders")
+      .select("input_props").eq("id", renderId).maybeSingle()
+    const voUrl = (renderRow as any)?.input_props?.voiceover_url
+    if (typeof voUrl === "string" && voUrl.startsWith("http")) {
+      const { mixNarrationVoiceover } = await import("./voiceover-mixer")
+      const narrated = await mixNarrationVoiceover({ videoBuffer: working, voiceoverUrl: voUrl })
+      if (narrated.ok && narrated.outputBuffer.length > 0) {
+        working = narrated.outputBuffer
+        usedVoiceover = true
+      }
+    }
+  } catch (e) {
+    console.warn("[render-coordinator] voiceover mux failed; continuing:", (e as Error).message)
+  }
+
   // ─── Music ───
   // The Director's "none" mood suppresses music entirely (informational cuts);
   // any other mood PREFERS a mood-tagged licensed track, else falls back to any.
@@ -233,6 +255,7 @@ export async function finalizeCoordinatedRender(
         used_intro_asset_id: introAssetId,
         used_outro_asset_id: outroAssetId,
         used_music_asset_id: musicAssetId,
+        used_voiceover:      usedVoiceover,
         completed_at:        new Date().toISOString(),
       })
       .eq("id", renderId)
