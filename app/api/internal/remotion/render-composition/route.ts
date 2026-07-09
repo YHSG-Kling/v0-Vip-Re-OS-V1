@@ -33,7 +33,6 @@
  */
 import "server-only"
 import { NextResponse, type NextRequest } from "next/server"
-import { put } from "@vercel/blob"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getBundle } from "@/lib/remotion/bundle-cache"
 import { getComposition, recordRenderCompleted, type CompositionTier } from "@/lib/remotion/registry"
@@ -114,11 +113,8 @@ export async function POST(req: NextRequest) {
       // 4a. STILL — renderStill → PNG → blob. No coordinator (stills
       //     have no audio to mix or bookends to concat).
       const bytes = await renderStillToBuffer(bundleLocation, row.composition_id, inputProps, executablePath, row.id)
-      const uploaded = await put(
-        `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}.png`,
-        bytes,
-        { access: "public", contentType: "image/png" },
-      )
+      const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+      const uploaded = { url: await hostRenderedMedia(svc, `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}.png`, bytes, "image/png") }
       await recordRenderCompleted({
         renderId: row.id, compositionId: row.composition_id,
         status: "succeeded", outputUrl: uploaded.url, thumbnailUrl: uploaded.url,
@@ -167,12 +163,8 @@ export async function POST(req: NextRequest) {
         const thumbBytes = await renderStillToBuffer(
           bundleLocation, composition.thumbnail_composition_id!, thumbProps, executablePath, `${row.id}-thumb`,
         )
-        const up = await put(
-          `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}-thumb.png`,
-          thumbBytes,
-          { access: "public", contentType: "image/png" },
-        )
-        thumbnailUrl = up.url
+        const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+        thumbnailUrl = await hostRenderedMedia(svc, `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}-thumb.png`, thumbBytes, "image/png")
         await svc.from("remotion_composition_renders")
           .update({ thumbnail_url: thumbnailUrl })
           .eq("id", row.id)

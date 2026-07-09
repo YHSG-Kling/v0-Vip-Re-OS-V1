@@ -241,11 +241,14 @@ export async function finalizeCoordinatedRender(
     }
   }
 
-  // ─── Upload ───
+  // ─── Upload — SUPABASE STORAGE hosts the finished product (owner rule:
+  // we host the delivery URL). video-assets bucket (public, created live);
+  // Vercel Blob stays as the fallback so a storage hiccup never loses a
+  // finished render. ───
   try {
-    const { put } = await import("@vercel/blob")
+    const { hostRenderedMedia } = await import("./media-host")
     const path = `compositions/${intent.brokerageId}/${composition.composition_id}/${renderId}.mp4`
-    const uploaded = await put(path, working, { access: "public", contentType: "video/mp4" })
+    const uploaded = { url: await hostRenderedMedia(svc, path, working, "video/mp4") }
 
     // Audit: record the per-asset attribution alongside the standard fields.
     await svc.from("remotion_composition_renders")

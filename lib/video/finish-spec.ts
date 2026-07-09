@@ -49,8 +49,11 @@ const STILL: VideoFinish = { presenter: "none", bookends: false, broll: "none", 
 /** Per-composition finish. PartnersMeetingReel hosts FOUR uses — the reel-use
  *  overrides below refine it; the composition default is the client posture. */
 export const VIDEO_FINISH_SPEC: Record<string, VideoFinish> = {
-  // ── Listing marketing (the works) ──
-  JustListedReel: { ...MARKETING, presenter: "did_talking_head" }, // hybrid D-ID hook intro
+  // ── Listing marketing (the works) — OWNER RULE: the HOUSE is the star.
+  // Photos of the property with the status sign (JUST LISTED / SOLD / OPEN
+  // HOUSE banner) carried by the agent's cloned-voice narration — no talking
+  // head competing with the home. ──
+  JustListedReel: MARKETING,
   JustListedReelSquare: MARKETING,
   JustListedReelHorizontal: { ...MARKETING, broll: "optional" },
   JustSoldReelSquare: MARKETING,
@@ -61,15 +64,19 @@ export const VIDEO_FINISH_SPEC: Record<string, VideoFinish> = {
   NeighborhoodSpotlightReel: { ...MARKETING, broll: "required" },
   // ── Chart/data reels ──
   CMAReel: CHART_REEL,
-  MarketUpdateReel: { ...AVATAR_LED, broll: "optional" },
+  // OWNER RULE: explainers/market updates present with the CIRCLE avatar —
+  // the person rides as a floating presenter; the content stays the star.
+  MarketUpdateReel: { ...AVATAR_LED, presenter: "circle_pip", broll: "optional" },
   AffordabilitySnapshotReel: CHART_REEL,
   EquityReportReel: { ...CHART_REEL, qr: true }, // anniversary QR
   ExplainerAnimReel: { ...CHART_REEL, broll: "none" }, // the animation IS the visual
-  // ── Avatar-led personal video ──
+  // ── Avatar-led personal video. The talking head is for PERSONAL messages
+  // (the agent speaking TO one person); explainers + narrated slide decks use
+  // the CIRCLE avatar so the material stays the star (owner rule). ──
   AgentTalkingHeadReel: AVATAR_LED,
-  AgentExplainerReel: AVATAR_LED,
-  ListingPresentationSlide: { ...AVATAR_LED, broll: "none", music: false }, // narrated slides — music fights the voice
-  BuyerConsultationSlide: { ...AVATAR_LED, broll: "none", music: false },
+  AgentExplainerReel: { ...AVATAR_LED, presenter: "circle_pip" },
+  ListingPresentationSlide: { ...AVATAR_LED, presenter: "circle_pip", broll: "none", music: false }, // music fights the voice
+  BuyerConsultationSlide: { ...AVATAR_LED, presenter: "circle_pip", broll: "none", music: false },
   ListingSectionReel: { ...CHART_REEL, broll: "none" },
   // ── Report shows (PartnersMeetingReel serves 4 uses; see REEL_USE_FINISH) ──
   PartnersMeetingReel: REPORT_INTERNAL,

@@ -239,6 +239,32 @@ import { VIDEO_FINISH_SPEC, REEL_USE_FINISH, finishForVideo } from "../lib/video
     && src("lib/kernel/deal-room-reel.ts").includes("mintVideoQr"))
   check("finishForVideo never returns undefined (unknown composition → safe default)",
     finishForVideo("NotARealComposition").thumbnail === true && finishForVideo("NotARealComposition").qr === false)
+  // Owner corrections (2026-07-09): the HOUSE is the star of listing marketing
+  // (photos + status sign + voiceover, no talking head); explainers, market
+  // updates and narrated slide decks present with the CIRCLE avatar.
+  check("listing marketing: photos + status sign + VOICEOVER — no presenter competing with the home",
+    VIDEO_FINISH_SPEC.JustListedReel.presenter === "none"
+    && VIDEO_FINISH_SPEC.JustListedReelSquare.presenter === "none"
+    && VIDEO_FINISH_SPEC.JustSoldReelSquare.presenter === "none")
+  check("explainer / market update / narrated slide decks present with the CIRCLE avatar",
+    VIDEO_FINISH_SPEC.AgentExplainerReel.presenter === "circle_pip"
+    && VIDEO_FINISH_SPEC.MarketUpdateReel.presenter === "circle_pip"
+    && VIDEO_FINISH_SPEC.ListingPresentationSlide.presenter === "circle_pip"
+    && VIDEO_FINISH_SPEC.BuyerConsultationSlide.presenter === "circle_pip")
+  check("the personal talking head stays full-frame (it IS the message)",
+    VIDEO_FINISH_SPEC.AgentTalkingHeadReel.presenter === "did_talking_head")
+}
+
+console.log("\n[13 · ONE FINISH LINE + SUPABASE-HOSTED DELIVERY]")
+{
+  check("finished media is hosted on SUPABASE STORAGE (video-assets bucket), Blob only as fallback — one helper, every upload site",
+    src("lib/remotion/media-host.ts").includes('storage.from("video-assets")')
+    && src("lib/remotion/render-coordinator.ts").includes("hostRenderedMedia")
+    && src("app/api/internal/remotion/render-composition/route.ts").includes("hostRenderedMedia")
+    && src("lib/video/reel-voiceover.ts").includes("hostRenderedMedia"))
+  check("the newsletter route rides the coordinator finish line (bookends + music + capture + audit) instead of a raw-cut upload",
+    src("app/api/internal/remotion/render-newsletter-video/route.ts").includes("finalizeCoordinatedRender")
+    && src("app/api/internal/remotion/render-newsletter-video/route.ts").includes("no voiceover_url in input_props"))
 }
 
 console.log("\n──────────────────────────────────────────────────")

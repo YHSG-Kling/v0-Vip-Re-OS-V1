@@ -272,7 +272,46 @@ Return ONLY the spoken text.${fix}`
     })
     const bytes = await fs.readFile(outPath)
     await fs.unlink(outPath).catch(() => {})
-    const blob = await put(`newsletter-video/reels/${ledger.id}.mp4`, bytes, { access: "public", contentType: "video/mp4" })
+
+    // ONE FINISH LINE (finish-spec rule): this bespoke route previously
+    // uploaded the raw cut, silently skipping the branded bookends + music +
+    // Supabase-hosted delivery the registry declares for NewsletterDigestVideo.
+    // Now it lands a REAL render row and hands the buffer to the coordinator
+    // finalize — bookends, mood music (mixed UNDER the embedded narration),
+    // storage-hosted URL, marketing-asset capture, audit trail: identical to
+    // every generic-rail video. Blob fallback keeps a finish failure from
+    // losing a finished render.
+    let finishedUrl: string | null = null
+    try {
+      const { recordRenderQueued } = await import("@/lib/remotion/registry")
+      const { buildRenderIntent } = await import("@/lib/remotion/render-decision")
+      const { finalizeCoordinatedRender } = await import("@/lib/remotion/render-coordinator")
+      const rq = await recordRenderQueued({
+        brokerageId: camp.brokerage_id, compositionId: "NewsletterDigestVideo",
+        agentUserId: ledger.agent_id ?? null,
+        entityType: "newsletter_video", entityId: ledger.id,
+        usedVoiceover: true,
+        // NOTE: no voiceover_url in input_props — the narration is already the
+        // composition's audio track; setting it would double the voice.
+        inputProps: { kind: "newsletter_digest", music_mood: "calm" },
+        scopeType: "brokerage", scopeId: camp.brokerage_id, requestedVia: "cron",
+      })
+      if (rq.ok && rq.renderId) {
+        const intent = buildRenderIntent({
+          brokerage_id: camp.brokerage_id, composition_id: "NewsletterDigestVideo",
+          agent_user_id: ledger.agent_id ?? null, entity_type: "newsletter_video", entity_id: ledger.id,
+          scope_type: "brokerage", scope_id: camp.brokerage_id,
+          input_props: { music_mood: "calm" },
+        } as Parameters<typeof buildRenderIntent>[0], "brokerage")
+        const fin = await finalizeCoordinatedRender(intent, rq.renderId, bytes)
+        if (fin.ok && fin.outputUrl) finishedUrl = fin.outputUrl
+      }
+    } catch (finishErr) {
+      console.warn("[render-newsletter-video] coordinator finish failed; shipping raw cut:", (finishErr as Error).message)
+    }
+    const blob = finishedUrl
+      ? { url: finishedUrl }
+      : await put(`newsletter-video/reels/${ledger.id}.mp4`, bytes, { access: "public", contentType: "video/mp4" })
 
     // 6. ai_video_projects + ledger close.
     const { data: project } = await svc.from("ai_video_projects").insert({

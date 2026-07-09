@@ -21,13 +21,14 @@ export async function prepareReelVoiceover(
     const tts = await synthesizeSpeech({ text: text.slice(0, 2400), voiceId: p.voiceId, brokerageId: p.brokerageId })
     if (!tts.success || !tts.audioBuffer || tts.audioBuffer.length === 0) return null
     const audio = tts.audioBuffer
-    const { put } = await import("@vercel/blob")
-    const uploaded = await put(
-      `voiceovers/${p.brokerageId}/${p.renderKey}.mp3`,
-      audio as Buffer,
-      { access: "public", contentType: "audio/mpeg", addRandomSuffix: true },
+    // SUPABASE STORAGE hosts our media (owner rule); Blob is the fallback.
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+    return await hostRenderedMedia(
+      createServiceClient(),
+      `voiceovers/${p.brokerageId}/${p.renderKey}-${Date.now()}.mp3`,
+      audio as Buffer, "audio/mpeg",
     )
-    return uploaded.url
   } catch {
     return null
   }
