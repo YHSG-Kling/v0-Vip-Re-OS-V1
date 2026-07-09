@@ -407,7 +407,7 @@ export async function updateTrainingJobStatus(
 
   // If completed successfully, save the voice clone ID and quality score
   if (status === "completed" && providerResponse?.voice_id) {
-    profileUpdate.heygen_voice_clone_id = providerResponse.voice_id
+    profileUpdate.elevenlabs_voice_id = providerResponse.voice_id
 
     // Quality check — do not auto-mark as usable if quality is below threshold
     const qualityScore = providerResponse.quality_score ?? providerResponse.score ?? null
@@ -560,12 +560,10 @@ export async function getAgentContext(userId: string): Promise<{
  * Returns both standard voices and completed voice clones
  */
 export async function getVoiceOptionsForGeneration(agentId: string) {
-  const standardVoices = [
-    { id: "en-US-JennyNeural", name: "Jenny (Female)", type: "standard", language: "English" },
-    { id: "en-US-GuyNeural", name: "Guy (Male)", type: "standard", language: "English" },
-    { id: "en-US-AriaNeural", name: "Aria (Female)", type: "standard", language: "English" },
-    { id: "en-US-DavisNeural", name: "Davis (Male)", type: "standard", language: "English" },
-  ]
+  // ElevenLabs premade voices ONLY (the platform's single TTS vendor — the
+  // old list here was Azure Neural ids that no renderer could speak).
+  const { ASSISTANT_VOICE_OPTIONS } = await import("@/lib/video/assistant-options")
+  const standardVoices = ASSISTANT_VOICE_OPTIONS.map((v) => ({ id: v.voiceId, name: v.label, type: "standard", language: "English" }))
 
   if (!isValidUUID(agentId)) {
     return { standardVoices, voiceClones: [], defaultVoiceClone: null }
@@ -575,14 +573,14 @@ export async function getVoiceOptionsForGeneration(agentId: string) {
 
   const { data: voiceClones } = await supabase
     .from("agent_voice_profiles")
-    .select("id, profile_name, heygen_voice_clone_id, is_default, quality_score")
+    .select("id, profile_name, elevenlabs_voice_id, is_default, quality_score")
     .eq("agent_id", agentId)
     .eq("training_status", "completed")
-    .not("heygen_voice_clone_id", "is", null)
+    .not("elevenlabs_voice_id", "is", null)
     .order("is_default", { ascending: false })
 
   const mappedClones = (voiceClones || []).map(vc => ({
-    id: vc.heygen_voice_clone_id!,
+    id: vc.elevenlabs_voice_id!,
     name: vc.profile_name,
     type: "clone" as const,
     profileId: vc.id,

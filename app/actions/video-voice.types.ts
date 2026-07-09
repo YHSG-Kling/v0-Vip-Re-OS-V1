@@ -17,7 +17,7 @@ export interface VoiceProfile {
   profile_name: string
   training_status: VoiceTrainingStatus
   sample_count: number
-  heygen_voice_clone_id: string | null
+  elevenlabs_voice_id: string | null
   quality_score: number | null
   is_default: boolean
   created_at: string

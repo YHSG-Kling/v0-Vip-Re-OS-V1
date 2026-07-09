@@ -5,7 +5,7 @@
  * agent choice — see lib/kernel/providers.ts (`video` is a system-only type).
  * Resolution therefore delegates to the kernel registry: superadmin override
  * or the platform default (D-ID). The per-agent avatar/voice ASSET IDs
- * (did_avatar_id, heygen_voice_clone_id, …) are applied downstream by the
+ * (did_avatar_id, elevenlabs_voice_id, …) are applied downstream by the
  * generation code; only the vendor is decided here.
  *
  * Why D-ID is the platform default:

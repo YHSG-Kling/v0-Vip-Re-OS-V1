@@ -41,6 +41,7 @@ export interface AIIdentityProfile {
   assistant_name: string
   persona_label: string | null
   avatar_url: string | null
+  elevenlabs_voice_id: string | null
   tone: string | null
   formality_level: string | null
   objection_library: Array<{ objection: string; response: string; category: string }>
@@ -62,6 +63,9 @@ export type SaveAIIdentityInput = {
   personaLabel: string
   /** Photo the assistant uses when it PRESENTS (report videos, avatar PIPs). */
   avatarUrl?: string | null
+  /** The assistant's ElevenLabs voice (a curated preset from
+   *  ASSISTANT_VOICE_OPTIONS, or a custom id) — phone + narration. */
+  assistantVoiceId?: string | null
   tone: string | null
   formalityLevel: string | null
   objectionLibrary: Array<{ objection: string; response: string; category: string }>
@@ -189,6 +193,7 @@ export async function saveAIIdentityProfile(
           assistant_name: input.assistantName,
           persona_label: input.personaLabel || null,
           ...(input.avatarUrl !== undefined ? { avatar_url: input.avatarUrl } : {}),
+          ...(input.assistantVoiceId !== undefined ? { elevenlabs_voice_id: input.assistantVoiceId } : {}),
           tone: input.tone || null,
           formality_level: input.formalityLevel || null,
           objection_library: input.objectionLibrary,
@@ -265,5 +270,24 @@ export async function generateIdentityPreview(input: {
     return { success: true, preview: text }
   } catch (err) {
     return { success: false, error: "Preview generation failed — check AI configuration" }
+  }
+}
+
+/** Generate the assistant HEADSHOT GALLERY (owner rule: real OPTIONS for the
+ *  assistant's face) through the existing image-gen rail. Auth: any signed-in
+ *  brokerage user (same bar as editing the identity). Best-effort per option. */
+export async function generateAssistantFaceOptionsAction(): Promise<
+  { success: true; options: Array<{ key: string; imageUrl: string }> } | { success: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthenticated" }
+  try {
+    const { generateAssistantFaceOptions } = await import("@/lib/video/assistant-options")
+    const options = await generateAssistantFaceOptions(3)
+    if (options.length === 0) return { success: false, error: "Image generation unavailable — add a photo URL instead" }
+    return { success: true, options }
+  } catch (e) {
+    return { success: false, error: (e as Error).message }
   }
 }

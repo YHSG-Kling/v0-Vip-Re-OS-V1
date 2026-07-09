@@ -1022,134 +1022,20 @@ export async function getAgentVideoProfile(agentId: string) {
   return data
 }
 
-export async function updateAgentVideoProfile(data: {
-  agentId: string
-  heygenAvatarId?: string
-  defaultVoiceId?: string
-  defaultBackgroundId?: string
-  brandingPresetId?: string
-  introScript?: string
-  outroScript?: string
-  defaultStyle?: string
-}) {
-  if (!isValidUUID(data.agentId)) throw new Error("Invalid agent ID")
-
-  const auth = await requireCaller()
-  if (!auth.ok) throw new Error(auth.error)
-
-  const supabase = createServiceClient()
-
-  // Verify the agent_id belongs to caller's brokerage
-  const { data: agentRow } = await supabase
-    .from("agents").select("brokerage_id, user_id").eq("id", data.agentId).maybeSingle()
-  if (!agentRow) throw new Error("Agent not found")
-  if (agentRow.brokerage_id !== auth.brokerageId) throw new Error("Forbidden")
-
-  // Canonical agent_voice_profiles (D-ID + ElevenLabs). Avatar/voice map to
-  // did_avatar_id / elevenlabs_voice_id; branding/background/intro/outro/style have
-  // no column here (those live on video_branding_presets). profile_name is NOT NULL
-  // with no default. UNIQUE index is on agent_id → upsert must target onConflict:agent_id.
-  const patch: Record<string, unknown> = {
-    agent_id: data.agentId,
-    brokerage_id: auth.brokerageId,
-    profile_name: "Default Profile",
-    preferred_avatar_provider: "did",
-    updated_at: new Date().toISOString(),
-  }
-  if (data.heygenAvatarId !== undefined) patch.did_avatar_id = data.heygenAvatarId
-  if (data.defaultVoiceId !== undefined) patch.elevenlabs_voice_id = data.defaultVoiceId
-
-  const { data: profile, error } = await supabase
-    .from("agent_voice_profiles")
-    .upsert(patch, { onConflict: "agent_id" })
-    .select()
-    .single()
-
-  if (error) throw error
-
-  revalidatePath("/dashboard/videos/settings")
-  return profile
-}
+// updateAgentVideoProfile was DELETED (l38 heygen purge): zero callers, a
+// heygen-named param, and it duplicated the Twin Studio — the ONE place
+// agents create their D-ID avatar (photo or video upload) and ElevenLabs
+// voice clone (app/dashboard/settings/twin-studio).
 
 // ============================================
-// VIDEO BRANDING PRESETS
+// VIDEO BRANDING — keep-one (HeyGen-era presets removed)
 // ============================================
-
-export async function getVideoBrandingPresets(agentId: string) {
-  if (!isValidUUID(agentId)) {
-    return []
-  }
-
-  const auth = await requireCaller()
-  if (!auth.ok) return []
-
-  const supabase = createServiceClient()
-
-  // Scope by brokerage so agent_id collisions can't leak another tenant's
-  // presets. Also expose brokerage-wide defaults (is_default=true).
-  const { data, error } = await supabase
-    .from("video_branding_presets")
-    .select("*")
-    .eq("brokerage_id", auth.brokerageId)
-    .or(`agent_id.eq.${agentId},is_default.eq.true`)
-    .order("is_default", { ascending: false })
-
-  if (error) {
-    console.error("Error fetching branding presets:", error)
-    return []
-  }
-
-  return data || []
-}
-
-export async function saveBrandingPreset(data: {
-  agentId: string
-  presetName: string
-  logoUrl?: string
-  primaryColor?: string
-  secondaryColor?: string
-  fontFamily?: string
-  introAnimation?: string
-  outroAnimation?: string
-  watermarkPosition?: string
-  socialHandles?: any
-}) {
-  if (!isValidUUID(data.agentId)) throw new Error("Invalid agent ID")
-
-  const auth = await requireCaller()
-  if (!auth.ok) throw new Error(auth.error)
-
-  const supabase = createServiceClient()
-
-  // Verify the agent_id belongs to caller's brokerage
-  const { data: agentRow } = await supabase
-    .from("agents").select("brokerage_id").eq("id", data.agentId).maybeSingle()
-  if (!agentRow) throw new Error("Agent not found")
-  if (agentRow.brokerage_id !== auth.brokerageId) throw new Error("Forbidden")
-
-  const { data: preset, error } = await supabase
-    .from("video_branding_presets")
-    .insert({
-      agent_id: data.agentId,
-      brokerage_id: auth.brokerageId,
-      preset_name: data.presetName,
-      logo_url: data.logoUrl,
-      primary_color: data.primaryColor,
-      secondary_color: data.secondaryColor,
-      font_family: data.fontFamily,
-      intro_animation: data.introAnimation,
-      outro_animation: data.outroAnimation,
-      watermark_position: data.watermarkPosition,
-      social_handles: data.socialHandles,
-    })
-    .select()
-    .single()
-
-  if (error) throw error
-
-  revalidatePath("/dashboard/videos/branding")
-  return preset
-}
+// The video_branding_presets table (HeyGen-era: heygen_avatar_id /
+// heygen_template_id columns) was DROPPED live in l38-s01 — it had zero
+// UI callers and duplicated the canonical brand sources. Video branding
+// comes from ONE place: brokerages.primary_color/logo_url +
+// brokerage_brand_settings.accent_color via resolveReelBrand
+// (lib/video/reel-brand.ts) — the same brand every reel producer uses.
 
 // ============================================
 // ORIGINAL VIDEO GENERATION FUNCTIONS

@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
+import { ASSISTANT_VOICE_OPTIONS } from "@/lib/video/assistant-options"
 import {
   Select,
   SelectContent,
@@ -144,6 +145,12 @@ export function AIIdentityEditor({
   const [avatarUrl, setAvatarUrl] = useState(
     initialProfile?.avatar_url ?? parentProfile?.avatar_url ?? ""
   )
+  const [assistantVoiceId, setAssistantVoiceId] = useState(
+    initialProfile?.elevenlabs_voice_id ?? parentProfile?.elevenlabs_voice_id ?? ""
+  )
+  const [faceOptions, setFaceOptions] = useState<Array<{ key: string; imageUrl: string }>>([])
+  const [facesBusy, setFacesBusy] = useState(false)
+  const [facesError, setFacesError] = useState<string | null>(null)
   const [tone, setTone] = useState<string | null>(
     initialProfile?.tone ?? parentProfile?.tone ?? null
   )
@@ -254,6 +261,7 @@ export function AIIdentityEditor({
         assistantName,
         personaLabel,
         avatarUrl: avatarUrl.trim() || null,
+        assistantVoiceId: assistantVoiceId.trim() || null,
         tone: overrideTone || scope === "brokerage" ? tone : null,
         formalityLevel: overrideTone || scope === "brokerage" ? formalityLevel : null,
         objectionLibrary: objections,
@@ -283,7 +291,7 @@ export function AIIdentityEditor({
       }
     })
   }, [
-    scope, scopeId, brokerageId, assistantName, personaLabel, avatarUrl,
+    scope, scopeId, brokerageId, assistantName, personaLabel, avatarUrl, assistantVoiceId,
     tone, formalityLevel, overrideTone, overrideFaq, overrideEscalation,
     faqs, objections, prohibitedChips, escalationRules, followupStyle, parentProfile,
     aiAnswerCalls, aiCallHandleInbound, aiCallHandleOutbound, aiCallForwardNumber,
@@ -380,6 +388,63 @@ export function AIIdentityEditor({
             </div>
             <p className="text-xs text-muted-foreground">
               Report videos (Partners&apos; Meeting, board packet) are hosted by your named assistant with this photo and its voice — client-facing videos always use the agent&apos;s own face and voice.
+            </p>
+            {/* FACE OPTIONS — one click renders a small gallery of distinct
+                AI-generated personas; pick one and it becomes the assistant's
+                face everywhere it presents. Never a photo of a real person. */}
+            <div className="flex items-center gap-2 pt-1">
+              <Button
+                type="button" size="sm" variant="outline" disabled={facesBusy}
+                onClick={async () => {
+                  setFacesBusy(true); setFacesError(null)
+                  const { generateAssistantFaceOptionsAction } = await import("@/app/actions/ai-identity")
+                  const res = await generateAssistantFaceOptionsAction()
+                  if (res.success) setFaceOptions(res.options)
+                  else setFacesError(res.error)
+                  setFacesBusy(false)
+                }}
+              >
+                {facesBusy ? "Generating faces…" : "Generate face options"}
+              </Button>
+              {facesError && <span className="text-xs text-red-600">{facesError}</span>}
+            </div>
+            {faceOptions.length > 0 && (
+              <div className="flex gap-3 pt-1">
+                {faceOptions.map((f) => (
+                  <button
+                    key={f.key} type="button" onClick={() => setAvatarUrl(f.imageUrl)}
+                    className={`rounded-full border-2 transition ${avatarUrl === f.imageUrl ? "border-primary ring-2 ring-primary/30" : "border-transparent hover:border-muted-foreground/40"}`}
+                    title="Use this face"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={f.imageUrl} alt={f.key} className="h-16 w-16 rounded-full object-cover" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Assistant VOICE — curated ElevenLabs presets (the assistant picks
+              from professional voices; the humans clone their OWN voice in the
+              Twin Studio). This voice answers the phone and narrates reports. */}
+          <div className="space-y-2">
+            <Label htmlFor="assistant-voice">Assistant voice</Label>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+              {ASSISTANT_VOICE_OPTIONS.map((v) => (
+                <button
+                  key={v.voiceId} type="button" onClick={() => setAssistantVoiceId(v.voiceId)}
+                  className={`rounded-md border p-2 text-left transition ${assistantVoiceId === v.voiceId ? "border-primary ring-2 ring-primary/30 bg-primary/5" : "hover:border-muted-foreground/40"}`}
+                >
+                  <div className="text-sm font-medium">{v.label}</div>
+                  <div className="text-xs text-muted-foreground leading-snug">{v.style}</div>
+                </button>
+              ))}
+            </div>
+            {assistantVoiceId && !ASSISTANT_VOICE_OPTIONS.some((v) => v.voiceId === assistantVoiceId) && (
+              <p className="text-xs text-muted-foreground">Using a custom voice id: <code>{assistantVoiceId}</code></p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              This voice answers your phone line and narrates your report videos. Agents&apos; own cloned voices (Twin Studio) always speak client-facing videos.
             </p>
           </div>
 

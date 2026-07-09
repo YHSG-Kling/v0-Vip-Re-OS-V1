@@ -342,8 +342,8 @@ export async function submitVideoGenerationJob(
   }
 
   // Submit via the platform vendor selector — dispatchVideo picks D-ID or
-  // HeyGen per getPlatformVideoProvider(), so the kernel no longer hard-codes
-  // a vendor. Returns the provider's job id regardless of which one rendered.
+  // D-ID via the platform dispatcher (the only avatar vendor — never HeyGen).
+  // Returns the provider's job id.
   let providerJobId: string
   try {
     providerJobId = await submitViaPlatformVendor({
@@ -693,10 +693,10 @@ function parseSceneBreakpoints(
 }
 
 /**
- * Submit a render job via the platform vendor selector. dispatchVideo() reads
- * getPlatformVideoProvider() and routes to D-ID (default) or HeyGen (super-
- * admin override). Returns the provider's job id regardless of which vendor
- * rendered — the caller persists it to provider_job_id.
+ * Submit a render job via the platform vendor dispatcher. dispatchVideo()
+ * routes to D-ID — the platform's ONLY avatar-video vendor (owner rule:
+ * D-ID + ElevenLabs, never HeyGen; getPlatformVideoProvider always resolves
+ * "did"). Returns the provider's job id; the caller persists provider_job_id.
  *
  * Previously this function was named submitToHeyGen() which falsely implied
  * a HeyGen-only path even though it has gone through dispatchVideo since the

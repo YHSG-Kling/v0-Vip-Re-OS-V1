@@ -315,6 +315,32 @@ import { detectRateMoment, isTestimonialWorthy, isWalkthroughEligible } from "..
     && src("lib/kernel/manager-registry.ts").includes('"/api/cron/video-plays": "asset_manager"'))
 }
 
+console.log("\n[16 · NO HEYGEN + THE ASSISTANT'S WARDROBE (real options for face + voice)]")
+import { ASSISTANT_VOICE_OPTIONS, ASSISTANT_FACE_BRIEFS, assistantVoiceLabel } from "../lib/video/assistant-options"
+{
+  check("D-ID + ElevenLabs ONLY: no live HeyGen network path; voice clones read/write the CANONICAL elevenlabs_voice_id (heygen column dropped live, l38-s01)",
+    !src("app/actions/video-voice.ts").includes("heygen_voice_clone_id")
+    && !src("app/actions/video-voice.types.ts").includes("heygen_voice_clone_id")
+    && existsSync(join(process.cwd(), "scripts/l38-s01-heygen-purge.sql")))
+  check("the dead HeyGen-era branding presets + zero-caller updateAgentVideoProfile are GONE (keep-one: resolveReelBrand is the brand source)",
+    !src("app/actions/video-generation.ts").includes('.from("video_branding_presets")')
+    && !src("app/actions/video-generation.ts").includes("export async function updateAgentVideoProfile"))
+  check("assistant VOICE options are curated ElevenLabs PREMADES (≥5 distinct, labeled by style; the old Azure Neural list is gone)",
+    ASSISTANT_VOICE_OPTIONS.length >= 5
+    && new Set(ASSISTANT_VOICE_OPTIONS.map((v) => v.voiceId)).size === ASSISTANT_VOICE_OPTIONS.length
+    && ASSISTANT_VOICE_OPTIONS.every((v) => v.style.length > 10)
+    && assistantVoiceLabel("21m00Tcm4TlvDq8ikWAM") === "Rachel"
+    && assistantVoiceLabel("custom-clone-id") === null
+    && !src("app/actions/video-voice.ts").includes("en-US-JennyNeural"))
+  check("assistant FACE options: ≥3 distinct persona briefs render a pick-one gallery (never a real person's photo)",
+    ASSISTANT_FACE_BRIEFS.length >= 3
+    && new Set(ASSISTANT_FACE_BRIEFS.map((b) => b.key)).size === ASSISTANT_FACE_BRIEFS.length)
+  check("the identity editor offers BOTH pickers and the save action persists them (avatar_url + elevenlabs_voice_id)",
+    src("app/components/ai-identity/AIIdentityEditor.tsx").includes("Generate face options")
+    && src("app/components/ai-identity/AIIdentityEditor.tsx").includes("ASSISTANT_VOICE_OPTIONS")
+    && src("app/actions/ai-identity.ts").includes("elevenlabs_voice_id: input.assistantVoiceId"))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }

@@ -2,7 +2,7 @@
  * lib/voice/sync-voice-id.ts
  *
  * Promotes a completed voice clone (elevenlabs_voice_id captured on
- * agent_voice_profiles after HeyGen/ElevenLabs training finishes) to the
+ * agent_voice_profiles after ElevenLabs voice-clone training finishes) to the
  * canonical agents.voice_id slot so the AI ISA call-context resolver
  * (lib/ai-isa/build-call-context.ts) actually finds and uses it.
  *
