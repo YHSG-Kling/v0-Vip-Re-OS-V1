@@ -118,6 +118,13 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
           priority: "medium", channel: "in_app", is_read: false,
         }).then(undefined, () => {})
       }
+      // The packet as a VIDEO — the AI team presents the month (PartnersMeetingReel
+      // composition reused; earned cards + attribution receipts). Best-effort:
+      // a render-queue hiccup never blocks the PDF.
+      try {
+        const { queueBoardPacketReel } = await import("./board-packet-reel")
+        await queueBoardPacketReel(svc, { brokerageId: b.id, monthStartIso: eISO, data: packetData })
+      } catch { /* reel is additive */ }
       r.packets += 1
     } catch { r.errors += 1 }
   }

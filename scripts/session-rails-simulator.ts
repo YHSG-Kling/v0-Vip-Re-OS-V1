@@ -12,6 +12,7 @@ import { join } from "node:path"
 import { classifySignatureStall, composeChaseLine, chaseTag } from "../lib/kernel/signature-chase"
 import { composeOvernightDigest } from "../lib/kernel/overnight-digest"
 import { composeBoardPacketMarkdown } from "../lib/kernel/board-packet"
+import { buildBoardPacketReelProps, BOARD_PACKET_REEL_COMPOSITION } from "../lib/kernel/board-packet-reel"
 import { scoreListingPropensity, composePropensityBrief, PROPENSITY_BRIEF_THRESHOLD } from "../lib/kernel/listing-propensity"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 
@@ -60,6 +61,29 @@ console.log("\n── PURE: board packet ──")
     md.includes("$1,000,000") && md.includes("Marketing-attributed closed volume") && md.includes("412,000") && md.includes("compliance is a feature"))
   check("delivered as PDF (owner rule) — pdf-lib renderer wired in the runner",
     src("lib/kernel/board-packet.ts").includes("renderBoardPacketPdf") && src("lib/kernel/board-packet.ts").includes('"application/pdf"'))
+}
+
+console.log("\n── PURE: board packet as VIDEO (the AI team presents the month) ──")
+{
+  const FULL = {
+    brokerageName: "X", monthLabel: "June 2026", newContacts: 1, activeListings: 1,
+    closedCount: 2, closedVolumeCents: 100000000, showings: 1, openHouses: 1,
+    aiCallsAnswered: 12, aiOutboundConnects: 1, aiBookings: 3, draftsUsed: 4,
+    optOutsHonored: 1, attributedGciCents: 41200000, attributedDeals: 2,
+  }
+  const props = buildBoardPacketReelProps(FULL)
+  check("KEEP-ONE: the video reuses the PartnersMeetingReel composition (no second Remotion surface)",
+    BOARD_PACKET_REEL_COMPOSITION === "PartnersMeetingReel")
+  check("the ATTRIBUTION RECEIPT is a finance card + spoken in the narration (measured, not claimed)",
+    props.cards.some((c) => c.kind === "finance" && c.label.includes("ATTRIBUTED") && c.sub!.includes("receipts"))
+    && props.narration!.includes("attribution engine, not claimed"))
+  check("earned cards only: a busy month earns team+finance+compliance; an empty month earns NONE",
+    props.cards.length === 6 && props.cards.some((c) => c.kind === "compliance")
+    && buildBoardPacketReelProps({ ...FULL, closedCount: 0, closedVolumeCents: 0, aiCallsAnswered: 0, aiBookings: 0, draftsUsed: 0, optOutsHonored: 0, attributedGciCents: 0, attributedDeals: 0 }).cards.length === 0)
+  check("the runner QUEUES the reel with the PDF; the deliver phase sweeps completed renders",
+    src("lib/kernel/board-packet.ts").includes("queueBoardPacketReel")
+    && src("app/api/cron/board-packet/route.ts").includes("deliverBoardPacketReels")
+    && src("lib/kernel/cron-dispatch.ts").includes("board-packet?phase=deliver"))
 }
 
 console.log("\n── PURE: listing propensity ──")

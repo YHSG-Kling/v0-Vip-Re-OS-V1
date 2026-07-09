@@ -1,0 +1,139 @@
+// lib/kernel/board-packet-reel.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// THE BOARD PACKET AS A VIDEO — the monthly packet, presented by the AI team.
+// KEEP-ONE: this REUSES the PartnersMeetingReel composition (the weekly show's
+// registered Remotion surface) with monthly BoardPacketData mapped into the
+// same earned-cards + narration contract — no second composition, no drift.
+// This is also the composition's FIRST live producer (the weekly props builder
+// existed but nothing ever queued a render).
+//
+// The differentiator card is the ATTRIBUTION RECEIPT: marketing-attributed
+// closed volume from the marketing_attribution_credits engine — measured,
+// never re-modeled — spoken to the broker as "here's what the AI team's
+// marketing actually closed." Earned cards only; a thin month is a short
+// video, never a padded one.
+
+import type { BoardPacketData } from "./board-packet"
+import type { PartnersMeetingReelProps, ReelCard } from "@/lib/intelligence/partners-meeting-reel-props"
+
+export const BOARD_PACKET_REEL_COMPOSITION = "PartnersMeetingReel"
+/** entity_type on the render row — the dedupe + delivery-sweep key. */
+export const BOARD_PACKET_REEL_ENTITY = "board_packet_reel"
+
+const money = (cents: number) => {
+  const v = Math.round(Math.max(0, cents) / 100)
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
+  if (v >= 10_000) return `$${Math.round(v / 1000)}K`
+  return `$${v.toLocaleString("en-US")}`
+}
+
+/** PURE: BoardPacketData → the reel props. Earned cards only (a number must be
+ *  > 0 to appear); the finance card is the attribution receipt. */
+export function buildBoardPacketReelProps(
+  d: BoardPacketData,
+  opts: { agentName?: string; avatarVideoUrl?: string | null; agentPhotoUrl?: string | null; brand?: Partial<PartnersMeetingReelProps["brand"]> } = {},
+): PartnersMeetingReelProps {
+  const cards: ReelCard[] = []
+  if (d.closedCount > 0) cards.push({ value: String(d.closedCount), label: "CLOSED THIS MONTH", sub: `${money(d.closedVolumeCents)} volume`, kind: "team" })
+  if (d.aiCallsAnswered > 0) cards.push({ value: String(d.aiCallsAnswered), label: "CALLS ANSWERED BY YOUR AI", sub: "every one disclosed, logged, and worked", kind: "team" })
+  if (d.aiBookings > 0) cards.push({ value: String(d.aiBookings), label: "APPOINTMENTS BOOKED LIVE", sub: "on the phone, while agents slept", kind: "team" })
+  if (d.draftsUsed > 0) cards.push({ value: String(d.draftsUsed), label: "AI DRAFTS YOUR AGENTS SENT", sub: "written for them, approved by them", kind: "team" })
+  if (d.attributedGciCents > 0) {
+    cards.push({
+      value: money(d.attributedGciCents),
+      label: "MARKETING-ATTRIBUTED CLOSED VOLUME",
+      sub: `across ${d.attributedDeals} deal${d.attributedDeals === 1 ? "" : "s"} — the receipts, attribution-weighted`,
+      kind: "finance",
+    })
+  }
+  if (d.optOutsHonored > 0) {
+    cards.push({ value: String(d.optOutsHonored), label: "OPT-OUTS HONORED IMMEDIATELY", sub: "compliance is a feature, not a checkbox", kind: "compliance" })
+  }
+
+  const spoken: string[] = [`${d.monthLabel} at ${d.brokerageName}, presented by your AI team.`]
+  if (d.closedCount > 0) spoken.push(`You closed ${d.closedCount} transaction${d.closedCount === 1 ? "" : "s"} for ${money(d.closedVolumeCents)} in volume.`)
+  if (d.aiCallsAnswered > 0) spoken.push(`Your AI answered ${d.aiCallsAnswered} inbound call${d.aiCallsAnswered === 1 ? "" : "s"}${d.aiBookings > 0 ? ` and booked ${d.aiBookings} appointment${d.aiBookings === 1 ? "" : "s"} live` : ""}.`)
+  if (d.attributedGciCents > 0) spoken.push(`The marketing the team ran is attributed to ${money(d.attributedGciCents)} of that closed volume across ${d.attributedDeals} deal${d.attributedDeals === 1 ? "" : "s"} — measured by the attribution engine, not claimed.`)
+  if (d.optOutsHonored > 0) spoken.push(`${d.optOutsHonored} opt-out${d.optOutsHonored === 1 ? " was" : "s were"} honored the moment they were spoken.`)
+  spoken.push(`The full packet is in your documents.`)
+
+  return {
+    weekLabel: `${d.monthLabel} · Board Packet`,
+    cards,
+    oneAsk: "The full packet PDF is in your documents",
+    narration: spoken.join(" "),
+    agentName: opts.agentName ?? "Your AI Team",
+    avatarVideoUrl: opts.avatarVideoUrl ?? null,
+    agentPhotoUrl: opts.agentPhotoUrl ?? null,
+    brand: {
+      primaryColor: opts.brand?.primaryColor ?? "#0F172A",
+      accentColor: opts.brand?.accentColor ?? "#F59E0B",
+      brokerageName: d.brokerageName,
+      showEhoMark: opts.brand?.showEhoMark ?? true,
+      logoUrl: opts.brand?.logoUrl ?? null,
+    },
+  }
+}
+
+/** Queue ONE packet reel per brokerage per month (idempotent by entity + month
+ *  window on the render ledger). Best-effort — a queue failure never blocks
+ *  the PDF packet. */
+export async function queueBoardPacketReel(
+  svc: any, p: { brokerageId: string; monthStartIso: string; data: BoardPacketData },
+): Promise<boolean> {
+  const { data: existing } = await svc.from("remotion_composition_renders").select("id")
+    .eq("brokerage_id", p.brokerageId)
+    .eq("composition_id", BOARD_PACKET_REEL_COMPOSITION)
+    .eq("entity_type", BOARD_PACKET_REEL_ENTITY)
+    .eq("entity_id", p.brokerageId)
+    .gte("created_at", p.monthStartIso)
+    .limit(1).maybeSingle()
+  if (existing) return false
+  const { recordRenderQueued } = await import("@/lib/remotion/registry")
+  const r = await recordRenderQueued({
+    brokerageId: p.brokerageId,
+    compositionId: BOARD_PACKET_REEL_COMPOSITION,
+    entityType: BOARD_PACKET_REEL_ENTITY,
+    entityId: p.brokerageId,
+    inputProps: buildBoardPacketReelProps(p.data) as unknown as Record<string, unknown>,
+    scopeType: "brokerage",
+    scopeId: p.brokerageId,
+    requestedVia: "cron",
+  })
+  return r.ok
+}
+
+export interface PacketReelDeliveryResult { completed: number; notified: number }
+
+/** DELIVERY SWEEP (phase=deliver, runs the day after the packet cron): any
+ *  COMPLETED packet reel this month whose broker admins haven't been told →
+ *  one notification each, deduped by the render id carried in the body. */
+export async function deliverBoardPacketReels(svc: any, now: Date = new Date()): Promise<PacketReelDeliveryResult> {
+  const out: PacketReelDeliveryResult = { completed: 0, notified: 0 }
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString()
+  const { data: renders } = await svc.from("remotion_composition_renders")
+    .select("id, brokerage_id, output_url")
+    .eq("composition_id", BOARD_PACKET_REEL_COMPOSITION)
+    .eq("entity_type", BOARD_PACKET_REEL_ENTITY)
+    .eq("render_status", "completed").not("output_url", "is", null)
+    .gte("created_at", monthStart).limit(200)
+  for (const ren of ((renders ?? []) as any[])) {
+    out.completed += 1
+    const marker = `[packet-reel:${ren.id}]`
+    const { data: dup } = await svc.from("notifications").select("id")
+      .eq("brokerage_id", ren.brokerage_id).ilike("body", `%${marker}%`).limit(1).maybeSingle()
+    if (dup) continue
+    const { data: admins } = await svc.from("users").select("id")
+      .eq("brokerage_id", ren.brokerage_id).in("user_type", ["broker", "broker_admin", "admin"]).limit(5)
+    for (const u of ((admins ?? []) as any[])) {
+      await svc.from("notifications").insert({
+        user_id: u.id, brokerage_id: ren.brokerage_id, type: "board_packet_ready",
+        title: "Your board packet video is ready",
+        body: `Your AI team presents the month on camera — production, the receipts, and the compliance line. Watch: ${ren.output_url} ${marker}`,
+        priority: "medium", channel: "in_app", is_read: false,
+      }).then(undefined, () => {})
+      out.notified += 1
+    }
+  }
+  return out
+}
