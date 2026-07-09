@@ -110,11 +110,19 @@ export async function queueListingPitchReel(
   // Voice on every video: the AGENT's cloned voice narrates their own pitch
   // (contact-facing rule — the licensed human speaks to clients). Best-effort.
   const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
-  const voUrl = await prepareReelVoiceover({
+  const vo = await prepareReelVoiceover({
     brokerageId: p.brokerageId, narration: (props as any).narration,
     voiceId: identity.voiceId, renderKey: `pitch-${p.appointmentId.slice(0, 8)}`,
   })
-  if (voUrl) props.voiceover_url = voUrl
+  if (vo) {
+    props.voiceover_url = vo.url
+    // WORD-SYNCED CAPTIONS (finish-spec: client-facing report shows carry
+    // captions) — real alignment when the timestamped path succeeded, honest
+    // even-distribution from the script otherwise.
+    const { buildCaptionPlan } = await import("@/lib/video/caption-plan")
+    const plan = buildCaptionPlan(vo.alignment ?? (props as any).narration, 900, 30, { tailPaddingFrames: 45 })
+    if (plan.cues.length > 0) props.captionsCues = plan.cues
+  }
   // Finish-spec: the pitch is CLIENT-FACING → tracked outro QR (scan to book).
   try {
     if (p.agentUserId) {

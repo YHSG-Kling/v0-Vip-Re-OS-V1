@@ -183,6 +183,8 @@ export async function POST(req: NextRequest) {
     //    (the DRIFT FIX) and reports back which composition actually rendered.
     const reel = await renderRemotionReel({
       promoId: promo.id,
+      brokerageId: promo.brokerage_id,
+      agentUserId: promo.agent_id,
       facts,
       brand,
       voiceoverUrl,
@@ -465,6 +467,8 @@ function qrCaptionForEvent(eventType: string): string {
 
 async function renderRemotionReel(args: {
   promoId: string
+  brokerageId: string
+  agentUserId: string | null
   facts: ListingFacts
   brand: BrandContext
   voiceoverUrl: string
@@ -570,11 +574,75 @@ async function renderRemotionReel(args: {
 
   const bytes = await fs.readFile(outPath)
   await fs.unlink(outPath).catch(() => {})
-  const blob = await put(
-    `listing-promo/reels/${args.promoId}.mp4`,
-    bytes,
-    { access: "public", contentType: "video/mp4" },
-  )
+
+  // ONE FINISH LINE (finish-spec): this bespoke route previously uploaded the
+  // raw cut — no music, no companion thumbnail, blob-only hosting. It now
+  // lands a real render row and rides the coordinator finalize for the mood
+  // music (mixed UNDER the embedded cloned-voice narration), Supabase-hosted
+  // delivery, marketing-asset capture and audit. BOOKENDS STAY OFF here —
+  // this lane's bookends are the hybrid D-ID hook/outro stitched later by
+  // listing-promo-hybrid-composite (registry bookends would double them).
+  let finishedUrl: string | null = null
+  const svcFin = createServiceClient()
+  try {
+    const { recordRenderQueued } = await import("@/lib/remotion/registry")
+    const { buildRenderIntent } = await import("@/lib/remotion/render-decision")
+    const { finalizeCoordinatedRender } = await import("@/lib/remotion/render-coordinator")
+    const rq = await recordRenderQueued({
+      brokerageId: args.brokerageId, compositionId,
+      agentUserId: args.agentUserId,
+      entityType: "listing_promo", entityId: args.promoId,
+      usedVoiceover: true,
+      inputProps: { kind: "listing_promo", music_mood: "upbeat" },
+      scopeType: "brokerage", scopeId: args.brokerageId, requestedVia: "cron",
+    })
+    if (rq.ok && rq.renderId) {
+      const intent = buildRenderIntent({
+        brokerage_id: args.brokerageId, composition_id: compositionId,
+        agent_user_id: args.agentUserId, entity_type: "listing_promo", entity_id: args.promoId,
+        scope_type: "brokerage", scope_id: args.brokerageId,
+        input_props: { music_mood: "upbeat" },
+      } as Parameters<typeof buildRenderIntent>[0], "brokerage")
+      intent.applyBookends = false // hybrid D-ID bookends stitch later — never double
+      const fin = await finalizeCoordinatedRender(intent, rq.renderId, bytes)
+      if (fin.ok && fin.outputUrl) {
+        finishedUrl = fin.outputUrl
+        // COMPANION THUMBNAIL (registry declares VideoCoverThumb; the bespoke
+        // route never rendered it): branded share/OG card, best-effort.
+        try {
+          const { renderStill } = await import("@remotion/renderer")
+          const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+          const thumbComp = await selectComposition({
+            serveUrl: bundleLocation, id: "VideoCoverThumb",
+            inputProps: {
+              kind: "listing", title: args.facts.address || eventLabel(args.eventType),
+              subtitle: eventLabel(args.eventType), eyebrow: eventLabel(args.eventType).toUpperCase(),
+              heroImageUrl: args.facts.images?.[0] ?? null,
+              agentName: args.brand.agentName ?? args.brand.brokerageName ?? "Your Agent",
+              brand: { primaryColor: args.brand.primaryColor, accentColor: args.brand.accentColor, brokerageName: args.brand.brokerageName ?? "Your Brokerage", showEhoMark: true },
+            },
+          })
+          const thumbPath = path.join(tmpdir(), `listing-promo-${args.promoId}-thumb.png`)
+          await renderStill({
+            composition: thumbComp, serveUrl: bundleLocation, output: thumbPath,
+            chromiumOptions: { headless: true, gl: "swangle" },
+            ...(executablePath ? { browserExecutable: executablePath } : {}),
+          })
+          const thumbBytes = await fs.readFile(thumbPath)
+          await fs.unlink(thumbPath).catch(() => {})
+          const thumbUrl = await hostRenderedMedia(svcFin, `listing-promo/thumbs/${args.promoId}.png`, thumbBytes, "image/png")
+          await svcFin.from("remotion_composition_renders").update({ thumbnail_url: thumbUrl }).eq("id", rq.renderId)
+        } catch (te) {
+          console.warn("[render-just-listed] thumbnail pass failed; video kept:", (te as Error).message)
+        }
+      }
+    }
+  } catch (finishErr) {
+    console.warn("[render-just-listed] coordinator finish failed; shipping raw cut:", (finishErr as Error).message)
+  }
+  const blob = finishedUrl
+    ? { url: finishedUrl }
+    : await put(`listing-promo/reels/${args.promoId}.mp4`, bytes, { access: "public", contentType: "video/mp4" })
   const durationSeconds = composition.fps > 0
     ? Math.round(composition.durationInFrames / composition.fps)
     : 25

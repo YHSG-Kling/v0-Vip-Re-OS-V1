@@ -19,6 +19,7 @@
 import React from "react"
 import { AbsoluteFill, Img, Sequence, Video, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { CaptionLayer } from "./components/CaptionLayer"
 
 type ReelCardKind = "team" | "finance" | "compliance"
 interface ReelCard { value: string; label: string; sub?: string; kind: ReelCardKind }
@@ -37,6 +38,9 @@ export interface PartnersMeetingReelProps {
    *  composition (pitch, deal room) carry it; internal reports skip it. */
   qrCodeDataUrl?: string | null
   qrCaption?: string
+  /** WORD-SYNCED caption cues (built upstream from the real ElevenLabs
+   *  alignment) — finish-spec: client-facing uses carry sound-off captions. */
+  captionsCues?: Array<{ text: string; fromFrame: number; durationFrames: number }> | null
 }
 
 const KIND_ACCENT: Record<ReelCardKind, string> = {
@@ -233,7 +237,7 @@ const OutroScene: React.FC<{ brand: Brand; showEho: boolean; qrCodeDataUrl?: str
 }
 
 export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
-  weekLabel, cards, oneAsk, agentName, avatarVideoUrl, agentPhotoUrl, brand, qrCodeDataUrl, qrCaption,
+  weekLabel, cards, oneAsk, agentName, avatarVideoUrl, agentPhotoUrl, brand, qrCodeDataUrl, qrCaption, captionsCues,
 }) => {
   const { durationInFrames, fps } = useVideoConfig()
   const showEho = brand.showEhoMark ?? true
@@ -269,6 +273,12 @@ export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
       <Sequence from={durationInFrames - OUTRO} durationInFrames={OUTRO}>
         <OutroScene brand={brand} showEho={showEho} qrCodeDataUrl={qrCodeDataUrl} qrCaption={qrCaption} />
       </Sequence>
+
+      {/* WORD-SYNCED CAPTIONS — whole-timeline overlay, muted-feed readable.
+          Sits above the progress dots, clear of the presenter PIP. */}
+      {captionsCues && captionsCues.length > 0 && (
+        <CaptionLayer cues={captionsCues} accentColor={brand.accentColor} bottomPercent={84} />
+      )}
     </AbsoluteFill>
   )
 }

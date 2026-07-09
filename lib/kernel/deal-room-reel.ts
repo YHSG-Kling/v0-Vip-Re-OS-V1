@@ -140,11 +140,17 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
           brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, logoUrl: brand.logoUrl, showEhoMark: true },
         }) as unknown as Record<string, unknown>
         const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
-        const voUrl = await prepareReelVoiceover({
+        const vo = await prepareReelVoiceover({
           brokerageId: b.id, narration: (props as any).narration, voiceId: identity.voiceId,
           renderKey: `dealroom-${String(t.id).slice(0, 8)}`,
         })
-        if (voUrl) props.voiceover_url = voUrl
+        if (vo) {
+          props.voiceover_url = vo.url
+          // WORD-SYNCED CAPTIONS (client-facing per the finish spec).
+          const { buildCaptionPlan } = await import("@/lib/video/caption-plan")
+          const plan = buildCaptionPlan(vo.alignment ?? (props as any).narration, 900, 30, { tailPaddingFrames: 45 })
+          if (plan.cues.length > 0) props.captionsCues = plan.cues
+        }
         // Finish-spec: the Deal Room is CLIENT-FACING → tracked outro QR.
         try {
           if (agentUserId) {

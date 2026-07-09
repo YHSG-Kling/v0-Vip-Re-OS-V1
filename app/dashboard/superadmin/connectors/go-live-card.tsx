@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Rocket } from "lucide-react"
-import { getGoLiveReadinessAction } from "@/app/actions/superadmin/go-live-readiness"
+import { getGoLiveReadinessAction, queueRenderPipelineProbeAction } from "@/app/actions/superadmin/go-live-readiness"
 import type { GoLiveReadiness } from "@/lib/platform/go-live-readiness"
 
 const STATUS_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
@@ -31,6 +31,17 @@ export function GoLiveCard() {
     setBusy(false)
   }
 
+  const [probeBusy, setProbeBusy] = useState(false)
+  const [probeNote, setProbeNote] = useState<string | null>(null)
+  const probeRender = async () => {
+    setProbeBusy(true); setProbeNote(null)
+    const res = await queueRenderPipelineProbeAction()
+    setProbeNote(res.ok
+      ? `Probe queued (render ${res.renderId.slice(0, 8)}…) — the render queue drains it within minutes; the finished video's URL on the render row is the proof.`
+      : res.error)
+    setProbeBusy(false)
+  }
+
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -46,6 +57,9 @@ export function GoLiveCard() {
       <CardContent className="space-y-3 text-sm">
         <div className="flex items-center gap-3">
           <Button size="sm" onClick={run} disabled={busy}>{busy ? "Probing…" : "Run readiness checks"}</Button>
+          <Button size="sm" variant="outline" onClick={probeRender} disabled={probeBusy}>
+            {probeBusy ? "Queuing…" : "Queue render proof"}
+          </Button>
           {r && (
             <span className={r.requiredReady === r.requiredTotal ? "text-green-600 font-medium" : "text-amber-600 font-medium"}>
               {r.requiredReady}/{r.requiredTotal} required domains ready
@@ -54,6 +68,7 @@ export function GoLiveCard() {
           )}
         </div>
         {err && <div className="text-xs text-red-600">{err}</div>}
+        {probeNote && <div className="text-xs text-muted-foreground">{probeNote}</div>}
         {r && (
           <ul className="space-y-1.5">
             {r.domains.map((dom) => {

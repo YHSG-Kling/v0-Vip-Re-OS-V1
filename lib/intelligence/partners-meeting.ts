@@ -283,11 +283,11 @@ export async function queuePartnersMeetingReel(
   // own voice — the same script the reel shows as cards. Best-effort; silent
   // video when no voice is configured, never a blocked render.
   const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
-  const voUrl = await prepareReelVoiceover({
+  const vo = await prepareReelVoiceover({
     brokerageId: p.brokerageId, narration: req.inputProps.narration,
     voiceId: identity.voiceId, renderKey: `partners-${p.brokerageId.slice(0, 8)}`,
   })
-  if (voUrl) props.voiceover_url = voUrl
+  if (vo) props.voiceover_url = vo.url
   props.thumbnail_props = {
     kind: "presentation", title: "Partners' Meeting", subtitle: p.week.weekLabel, eyebrow: "THE AI TEAM'S WEEK",
     agentName: brand.brokerageName,

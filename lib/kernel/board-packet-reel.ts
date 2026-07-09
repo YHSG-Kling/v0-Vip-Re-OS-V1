@@ -104,11 +104,11 @@ export async function queueBoardPacketReel(
   // Voice on every video: the assistant narrates the month (its ElevenLabs
   // voice, the same one that answers the phone). Best-effort.
   const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
-  const voUrl = await prepareReelVoiceover({
+  const vo = await prepareReelVoiceover({
     brokerageId: p.brokerageId, narration: (props as any).narration,
     voiceId: identity.voiceId, renderKey: `packet-${p.brokerageId.slice(0, 8)}`,
   })
-  if (voUrl) props.voiceover_url = voUrl
+  if (vo) props.voiceover_url = vo.url
   props.thumbnail_props = {
     kind: "presentation", title: `${p.data.monthLabel} Board Packet`,
     subtitle: "Presented by your AI team", eyebrow: "BOARD PACKET",

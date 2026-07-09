@@ -265,6 +265,25 @@ console.log("\n[13 · ONE FINISH LINE + SUPABASE-HOSTED DELIVERY]")
   check("the newsletter route rides the coordinator finish line (bookends + music + capture + audit) instead of a raw-cut upload",
     src("app/api/internal/remotion/render-newsletter-video/route.ts").includes("finalizeCoordinatedRender")
     && src("app/api/internal/remotion/render-newsletter-video/route.ts").includes("no voiceover_url in input_props"))
+  check("the just-listed route rides the finish line too — music + Supabase hosting + companion thumbnail; registry bookends OFF (hybrid D-ID stitches later, never doubled)",
+    src("app/api/internal/remotion/render-just-listed/route.ts").includes("finalizeCoordinatedRender")
+    && src("app/api/internal/remotion/render-just-listed/route.ts").includes("intent.applyBookends = false")
+    && src("app/api/internal/remotion/render-just-listed/route.ts").includes('"VideoCoverThumb"'))
+}
+
+console.log("\n[14 · WORD-SYNCED CAPTIONS + THE RENDER PROOF BUTTON]")
+{
+  check("reel narration uses the TIMESTAMPED TTS path (alignment for word-accurate cues; plain synthesis as fallback)",
+    src("lib/video/reel-voiceover.ts").includes("synthesizeSpeechWithTimestamps")
+    && src("lib/video/reel-voiceover.ts").includes("alignment"))
+  check("client-facing report reels (pitch + Deal Room) build caption cues from the real alignment; the composition renders them",
+    src("lib/video/listing-pitch-reel.ts").includes("buildCaptionPlan")
+    && src("lib/kernel/deal-room-reel.ts").includes("buildCaptionPlan")
+    && src("remotion/PartnersMeetingReel.tsx").includes("CaptionLayer"))
+  check("one-click STAGED RENDER PROOF: providers-gated action queues a real video through the full deployed pipeline",
+    src("app/actions/superadmin/go-live-readiness.ts").includes("queueRenderPipelineProbeAction")
+    && src("app/actions/superadmin/go-live-readiness.ts").includes('"render_probe"')
+    && src("app/dashboard/superadmin/connectors/go-live-card.tsx").includes("Queue render proof"))
 }
 
 console.log("\n──────────────────────────────────────────────────")
