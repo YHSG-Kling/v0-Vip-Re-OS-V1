@@ -23,6 +23,10 @@ export type VideoPurpose = "contact_facing" | "internal_report"
 export interface VideoIdentity {
   /** Whose face/voice fronts the video. */
   kind: "assistant" | "agent" | "none"
+  /** D-ID V4 expressive avatar id ("...@avt_...") when the assistant is
+   *  configured to present as a MOVING sentiment-aligned host (internal
+   *  reports only — the licensed human always fronts clients). */
+  expressiveAvatarId?: string | null
   /** Display name spoken/shown in the PIP (assistant_name or the human's name). */
   speakerName: string
   /** Still photo for the D-ID avatar / PIP (assistant avatar_url or did_photo_url). */
@@ -34,7 +38,7 @@ export interface VideoIdentity {
 /** The scope's assistant identity via the SAME agent → team → brokerage cascade
  *  the phone reception uses (most-specific wins; nothing hardcoded). */
 async function loadAssistantIdentity(svc: any, brokerageId: string, agentUserId: string | null): Promise<{
-  name: string | null; photo: string | null; voiceId: string | null
+  name: string | null; photo: string | null; voiceId: string | null; expressiveAvatarId?: string | null
 } | null> {
   let profile: any = null
   let teamId: string | null = null
@@ -43,20 +47,20 @@ async function loadAssistantIdentity(svc: any, brokerageId: string, agentUserId:
     if (agent) {
       teamId = (agent as any).team_id ?? null
       const { data: p } = await svc.from("ai_identity_profiles")
-        .select("assistant_name, avatar_url, elevenlabs_voice_id")
+        .select("assistant_name, avatar_url, elevenlabs_voice_id, did_expressive_avatar_id")
         .eq("scope_type", "agent").eq("scope_id", (agent as any).id).maybeSingle()
       profile = p
     }
   }
   if (!profile && teamId) {
     const { data: p } = await svc.from("ai_identity_profiles")
-      .select("assistant_name, avatar_url, elevenlabs_voice_id")
+      .select("assistant_name, avatar_url, elevenlabs_voice_id, did_expressive_avatar_id")
       .eq("scope_type", "team").eq("scope_id", teamId).maybeSingle()
     profile = p
   }
   if (!profile) {
     const { data: p } = await svc.from("ai_identity_profiles")
-      .select("assistant_name, avatar_url, elevenlabs_voice_id")
+      .select("assistant_name, avatar_url, elevenlabs_voice_id, did_expressive_avatar_id")
       .eq("scope_type", "brokerage").eq("scope_id", brokerageId).maybeSingle()
     profile = p
   }
@@ -65,6 +69,7 @@ async function loadAssistantIdentity(svc: any, brokerageId: string, agentUserId:
     name: profile.assistant_name ?? null,
     photo: profile.avatar_url ?? null,
     voiceId: profile.elevenlabs_voice_id ?? null,
+    expressiveAvatarId: profile.did_expressive_avatar_id ?? null,
   }
 }
 
@@ -110,6 +115,7 @@ export async function resolveVideoIdentity(
         speakerName: assistant.name ?? "Your AI Assistant",
         avatarPhotoUrl: assistant.photo,
         voiceId: assistant.voiceId,
+        expressiveAvatarId: assistant.expressiveAvatarId ?? null,
       }
     }
     // Assistant not configured → the human's own clone (better than silence).

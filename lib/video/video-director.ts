@@ -401,6 +401,21 @@ export interface OutroSpec {
 /** The music MOOD the Director assigns a situation. The render coordinator picks a
  *  licensed track tagged with this mood (video_assets.music_mood), VO stays dominant
  *  (music ducked to ~20%). "none" = informational cut, no music. */
+/** SENTIMENT-FROM-CONTENT (finish-spec editorial rule): the situation decides
+ *  the avatar's performance — celebratory for wins, steady for analysis, warm
+ *  by default. Rides generateVideo's expression input, which lib/did maps to
+ *  V2 driver_expressions AND the V4 /expressives sentiment_id. */
+export function sentimentForSituation(kind: SituationKind): "happy" | "neutral" | "serious" {
+  switch (kind) {
+    case "just_sold":
+    case "testimonial":
+    case "anniversary":   return "happy"
+    case "market_update":
+    case "cma":           return "serious"
+    default:              return "neutral"
+  }
+}
+
 export type MusicMood = "none" | "energetic" | "sophisticated" | "calm" | "upbeat"
 
 export interface AssemblySpec {

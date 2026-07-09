@@ -104,9 +104,14 @@ const defaultProducer = (supabase: Svc, brokerageId: string): MeetingProducer =>
     const identity = await resolveVideoIdentity(supabase, { brokerageId, agentUserId, purpose: "internal_report" })
     if (!identity.voiceId) return null
     const { generateVideo } = await import("@/lib/did")
+    // V4 EXPRESSIVE HOST: when the assistant has a did_expressive_avatar_id
+    // ("@avt_"), it presents as a MOVING sentiment-aligned avatar via
+    // /expressives (lib/did routes by the id marker); else the photo path.
     const res = await generateVideo({
       script, voiceId: identity.voiceId, agentUserId, brokerageId,
-      avatarImageUrl: identity.avatarPhotoUrl, voiceOnly: !identity.avatarPhotoUrl,
+      ...(identity.expressiveAvatarId
+        ? { actorId: identity.expressiveAvatarId }
+        : { avatarImageUrl: identity.avatarPhotoUrl, voiceOnly: !identity.avatarPhotoUrl }),
     })
     if (!res.videoUrl) return null
     return { kind: identity.avatarPhotoUrl ? "video" : "audio", url: res.videoUrl }

@@ -66,3 +66,13 @@ export async function generateAssistantFaceOptions(count = 3): Promise<Assistant
   }))
   return results.filter((r): r is AssistantFaceOption => !!r)
 }
+
+/** D-ID V4 EXPRESSIVE stock avatars the assistant can present AS — a moving,
+ *  sentiment-aligned host instead of a still photo PIP. Ids carry "@avt_"
+ *  (the marker lib/did routes to /expressives). The documented public stock
+ *  id ships as the starter; a custom field accepts any expressive id the
+ *  tenant licenses. NEVER used for client-facing video (the licensed human
+ *  fronts clients — the finish-spec rule stands). */
+export const ASSISTANT_EXPRESSIVE_AVATARS: Array<{ avatarId: string; label: string; style: string }> = [
+  { avatarId: "public_amber_casual@avt_PfMblk", label: "Amber", style: "Casual, warm — the approachable concierge on camera" },
+]

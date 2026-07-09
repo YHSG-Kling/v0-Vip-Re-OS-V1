@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { ASSISTANT_VOICE_OPTIONS } from "@/lib/video/assistant-options"
+import { ASSISTANT_VOICE_OPTIONS, ASSISTANT_EXPRESSIVE_AVATARS } from "@/lib/video/assistant-options"
 import {
   Select,
   SelectContent,
@@ -150,6 +150,9 @@ export function AIIdentityEditor({
   )
   const [faceOptions, setFaceOptions] = useState<Array<{ key: string; imageUrl: string }>>([])
   const [voicePreviewBusy, setVoicePreviewBusy] = useState<string | null>(null)
+  const [expressiveAvatarId, setExpressiveAvatarId] = useState(
+    initialProfile?.did_expressive_avatar_id ?? parentProfile?.did_expressive_avatar_id ?? ""
+  )
   const [facesBusy, setFacesBusy] = useState(false)
   const [facesError, setFacesError] = useState<string | null>(null)
   const [tone, setTone] = useState<string | null>(
@@ -263,6 +266,7 @@ export function AIIdentityEditor({
         personaLabel,
         avatarUrl: avatarUrl.trim() || null,
         assistantVoiceId: assistantVoiceId.trim() || null,
+        assistantExpressiveAvatarId: expressiveAvatarId.trim() || null,
         tone: overrideTone || scope === "brokerage" ? tone : null,
         formalityLevel: overrideTone || scope === "brokerage" ? formalityLevel : null,
         objectionLibrary: objections,
@@ -292,7 +296,7 @@ export function AIIdentityEditor({
       }
     })
   }, [
-    scope, scopeId, brokerageId, assistantName, personaLabel, avatarUrl, assistantVoiceId,
+    scope, scopeId, brokerageId, assistantName, personaLabel, avatarUrl, assistantVoiceId, expressiveAvatarId,
     tone, formalityLevel, overrideTone, overrideFaq, overrideEscalation,
     faqs, objections, prohibitedChips, escalationRules, followupStyle, parentProfile,
     aiAnswerCalls, aiCallHandleInbound, aiCallHandleOutbound, aiCallForwardNumber,
@@ -464,6 +468,39 @@ export function AIIdentityEditor({
             )}
             <p className="text-xs text-muted-foreground">
               This voice answers your phone line and narrates your report videos. Agents&apos; own cloned voices (Twin Studio) always speak client-facing videos.
+            </p>
+          </div>
+
+          {/* EXPRESSIVE PRESENTER (D-ID V4) — pick a moving, sentiment-aligned
+              host for report videos; None keeps the photo PIP. Never used for
+              client-facing video (the licensed human fronts clients). */}
+          <div className="space-y-2">
+            <Label htmlFor="assistant-expressive">On-camera presenter (D-ID V4 Expressive)</Label>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button" onClick={() => setExpressiveAvatarId("")}
+                className={`rounded-md border p-2 text-left transition ${!expressiveAvatarId ? "border-primary ring-2 ring-primary/30 bg-primary/5" : "hover:border-muted-foreground/40"}`}
+              >
+                <div className="text-sm font-medium">Photo only</div>
+                <div className="text-xs text-muted-foreground">Still photo PIP (default)</div>
+              </button>
+              {ASSISTANT_EXPRESSIVE_AVATARS.map((a) => (
+                <button
+                  key={a.avatarId} type="button" onClick={() => setExpressiveAvatarId(a.avatarId)}
+                  className={`rounded-md border p-2 text-left transition ${expressiveAvatarId === a.avatarId ? "border-primary ring-2 ring-primary/30 bg-primary/5" : "hover:border-muted-foreground/40"}`}
+                >
+                  <div className="text-sm font-medium">{a.label} · moving</div>
+                  <div className="text-xs text-muted-foreground leading-snug">{a.style}</div>
+                </button>
+              ))}
+            </div>
+            <Input
+              id="assistant-expressive" value={expressiveAvatarId}
+              onChange={(e) => setExpressiveAvatarId(e.target.value)}
+              placeholder="Custom D-ID expressive avatar id (…@avt_…)"
+            />
+            <p className="text-xs text-muted-foreground">
+              With a presenter set, your weekly show and board packet are hosted by a moving, sentiment-aligned avatar (D-ID V4). Leave empty for the photo PIP.
             </p>
           </div>
 

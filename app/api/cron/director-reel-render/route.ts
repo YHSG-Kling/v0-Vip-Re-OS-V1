@@ -118,7 +118,10 @@ export async function GET(request: Request) {
         actorId: presenter.actorId,
         avatarImageUrl: presenter.avatarImageUrl,
         agentUserId, brokerageId,
-        expression: presenter.expression,
+        // SENTIMENT-FROM-CONTENT: the situation decides the performance
+        // (celebratory for wins, steady for analysis); the agent's configured
+        // expression wins when they set one explicitly.
+        expression: presenter.expression ?? (await import("@/lib/video/video-director")).sentimentForSituation((vmeta.situation_kind as any) ?? "explainer"),
         submitOnly: true,
       })
       if (r.status === "error" || !r.videoId) {

@@ -42,6 +42,7 @@ export interface AIIdentityProfile {
   persona_label: string | null
   avatar_url: string | null
   elevenlabs_voice_id: string | null
+  did_expressive_avatar_id: string | null
   tone: string | null
   formality_level: string | null
   objection_library: Array<{ objection: string; response: string; category: string }>
@@ -66,6 +67,9 @@ export type SaveAIIdentityInput = {
   /** The assistant's ElevenLabs voice (a curated preset from
    *  ASSISTANT_VOICE_OPTIONS, or a custom id) — phone + narration. */
   assistantVoiceId?: string | null
+  /** D-ID V4 expressive avatar id ("@avt_") — the assistant presents report
+   *  videos as a MOVING sentiment-aligned host when set. */
+  assistantExpressiveAvatarId?: string | null
   tone: string | null
   formalityLevel: string | null
   objectionLibrary: Array<{ objection: string; response: string; category: string }>
@@ -194,6 +198,7 @@ export async function saveAIIdentityProfile(
           persona_label: input.personaLabel || null,
           ...(input.avatarUrl !== undefined ? { avatar_url: input.avatarUrl } : {}),
           ...(input.assistantVoiceId !== undefined ? { elevenlabs_voice_id: input.assistantVoiceId } : {}),
+          ...(input.assistantExpressiveAvatarId !== undefined ? { did_expressive_avatar_id: input.assistantExpressiveAvatarId } : {}),
           tone: input.tone || null,
           formality_level: input.formalityLevel || null,
           objection_library: input.objectionLibrary,

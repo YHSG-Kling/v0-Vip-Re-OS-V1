@@ -382,6 +382,28 @@ console.log("\n[18 · HEYGEN GONE FROM THE SCHEMA + D-ID V4 EXPRESSIVE ENGINE]")
     && src("app/api/cron/poll-did-videos/route.ts").includes('"expressives"'))
 }
 
+console.log("\n[19 · THE MOVING ASSISTANT + SENTIMENT-FROM-CONTENT (V4 era)]")
+import { ASSISTANT_EXPRESSIVE_AVATARS } from "../lib/video/assistant-options"
+import { sentimentForSituation } from "../lib/video/video-director"
+{
+  check("expressive presenter options exist and every id carries the @avt_ marker lib/did routes to /expressives",
+    ASSISTANT_EXPRESSIVE_AVATARS.length >= 1
+    && ASSISTANT_EXPRESSIVE_AVATARS.every((a) => a.avatarId.includes("@avt_")))
+  check("the identity chain carries expressiveAvatarId (profile column → resolver → the weekly-show producer submits actorId)",
+    src("lib/video/video-identity.ts").includes("did_expressive_avatar_id")
+    && src("lib/intelligence/partners-meeting.ts").includes("actorId: identity.expressiveAvatarId")
+    && src("app/actions/ai-identity.ts").includes("did_expressive_avatar_id: input.assistantExpressiveAvatarId"))
+  check("the editor offers Photo-only vs moving presenter vs custom @avt_ id",
+    src("app/components/ai-identity/AIIdentityEditor.tsx").includes("ASSISTANT_EXPRESSIVE_AVATARS")
+    && src("app/components/ai-identity/AIIdentityEditor.tsx").includes("Photo only"))
+  check("SENTIMENT-FROM-CONTENT: wins are happy, analysis is serious, default warm-neutral; the director render uses it as the fallback performance",
+    sentimentForSituation("just_sold") === "happy" && sentimentForSituation("testimonial") === "happy"
+    && sentimentForSituation("market_update") === "serious" && sentimentForSituation("explainer") === "neutral"
+    && src("app/api/cron/director-reel-render/route.ts").includes("sentimentForSituation"))
+  check("client-facing rule intact: contact_facing identity NEVER returns an assistant/expressive presenter",
+    src("lib/video/video-identity.ts").includes("contact_facing — the licensed human, full stop"))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
