@@ -286,6 +286,35 @@ console.log("\n[14 · WORD-SYNCED CAPTIONS + THE RENDER PROOF BUTTON]")
     && src("app/dashboard/superadmin/connectors/go-live-card.tsx").includes("Queue render proof"))
 }
 
+console.log("\n[15 · THE AUTONOMOUS VIDEO PLAYS — the white space the competitive survey confirmed]")
+import { detectRateMoment, isTestimonialWorthy, isWalkthroughEligible } from "../lib/video/video-plays"
+{
+  check("rate moment: an eighth-point 30yr DROP fires with an honest label; rises + noise NEVER manufacture urgency",
+    detectRateMoment(662.5, 675).moment === true
+    && detectRateMoment(662.5, 675).label.includes("dropped 0.13% to 6.63%")
+    && detectRateMoment(675, 662.5).moment === false
+    && detectRateMoment(670, 675).moment === false
+    && detectRateMoment(null, 675).moment === false)
+  check("testimonial-worthy: five stars + real words + no video yet; thin/unrated/already-filmed never become videos",
+    isTestimonialWorthy({ rating: 5, review_text: "The team was incredible from listing to closing day, truly.", video_url: null }) === true
+    && isTestimonialWorthy({ rating: 4, review_text: "The team was incredible from listing to closing day, truly.", video_url: null }) === false
+    && isTestimonialWorthy({ rating: 5, review_text: "Great!", video_url: null }) === false
+    && isTestimonialWorthy({ rating: 5, review_text: "The team was incredible from listing to closing day, truly.", video_url: "https://x/v.mp4" }) === false)
+  check("walkthrough premiere: marketing-window + ≥5 photos; staged/sold/thin listings skipped",
+    isWalkthroughEligible({ lifecycle_stage: "MLS_ACTIVE", photos: [1, 2, 3, 4, 5] }) === true
+    && isWalkthroughEligible({ lifecycle_stage: "MLS_ACTIVE", photos: [1, 2] }) === false
+    && isWalkthroughEligible({ lifecycle_stage: "SOLD", photos: [1, 2, 3, 4, 5] }) === false)
+  check("the Director learned photo_walkthrough (PhotoWalkthroughReel, photos ARE the video) — every play stages through commissionVideo",
+    src("lib/video/video-director.ts").includes('"photo_walkthrough"')
+    && src("lib/video/video-plays.ts").includes("commissionVideo")
+    && !src("lib/video/video-plays.ts").includes("recordRenderQueued"))
+  check("wiring: market-moment rides the rates cron tick; testimonial + walkthrough ride the daily video-plays cron (asset_manager-owned)",
+    src("app/api/cron/refresh-market-rates/route.ts").includes("runMarketMomentReels")
+    && src("app/api/cron/video-plays/route.ts").includes("runTestimonialReels")
+    && src("lib/kernel/cron-dispatch.ts").includes("/api/cron/video-plays")
+    && src("lib/kernel/manager-registry.ts").includes('"/api/cron/video-plays": "asset_manager"'))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }

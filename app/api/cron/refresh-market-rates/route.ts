@@ -75,6 +75,16 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Failed to persist rate snapshot" }, { status: 500 })
     }
 
+    // MARKET-MOMENT REELS — the play no competitor runs: a meaningful 30yr
+    // drop stages a circle-avatar MarketUpdateReel per active agent in the
+    // SAME tick the snapshot lands (agents' faces on the news within the
+    // hour, gated before anything posts). Best-effort — never blocks rates.
+    let marketMoment: { rateMoment: boolean; marketReels: number; errors: number } | null = null
+    try {
+      const { runMarketMomentReels } = await import("@/lib/video/video-plays")
+      marketMoment = await runMarketMomentReels(supabase)
+    } catch (e) { console.warn("[refresh-market-rates] market-moment play failed:", (e as Error).message) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: 1,
@@ -84,6 +94,7 @@ export async function GET(request: Request) {
         rate_15yr_fixed_bps: rates.rate15yrFixedBps,
         observation_date: rates.rateDate,
         source: rates.source,
+        ...(marketMoment ? { rate_moment: marketMoment.rateMoment, market_reels_staged: marketMoment.marketReels } : {}),
       },
     })
 

@@ -105,6 +105,7 @@ export function compositionHintFor(kind: SituationKind, channel: TargetChannel):
     case "anniversary":   return "EquityReportReel"
     case "testimonial":   return "TestimonialReel"
     case "neighborhood":  return "NeighborhoodSpotlightReel"
+    case "photo_walkthrough": return "PhotoWalkthroughReel"
   }
 }
 

@@ -74,6 +74,9 @@ export type SituationKind =
   | "anniversary"
   | "testimonial"
   | "neighborhood"
+  // The listing PREMIERE's day-one asset: Ken Burns walkthrough over the
+  // listing's own photos — zero agent effort, every photo-rich listing.
+  | "photo_walkthrough"
   // A 1:1 intro reel addressed to a PRE-CONVERSION lead — the AI ISA delegates it to the
   // Asset Manager (video director). Avatar-led + persona-matched; CTA is "book a consult"
   // (book_meeting QR), NOT a listing. Never broadcast — it distributes 1:1 over email only.
@@ -296,6 +299,15 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
         aspect: "square",
         targetChannels: socialFeed,
       }
+
+    case "photo_walkthrough":
+      return {
+        compositionId: "PhotoWalkthroughReel",
+        needsAvatar: false,  // the photos ARE the video (finish-spec)
+        needsBroll: false, needsCharts: false, needsSlides: false,
+        aspect: "square",
+        targetChannels: socialFeed,
+      }
   }
 }
 
@@ -411,6 +423,7 @@ export function musicMoodForSituation(kind: SituationKind): MusicMood {
     case "new_listing":
     case "price_drop":
     case "coming_soon":   return "sophisticated"
+    case "photo_walkthrough": return "sophisticated"
     case "open_house":
     case "neighborhood":  return "upbeat"
     case "market_update":
@@ -443,6 +456,7 @@ export function qrKindForSituation(kind: SituationKind): VideoQrKind {
     case "explainer":     return "explainer"
     case "testimonial":   return "testimonial"
     case "neighborhood":  return "neighborhood"
+    case "photo_walkthrough":
     case "new_listing":
     case "price_drop":
     default:              return "just_listed"
@@ -463,6 +477,7 @@ export function qrCaptionForSituation(kind: SituationKind): string {
     case "anniversary":    return "Scan for your equity report"
     case "testimonial":    return "Scan to work with me"
     case "neighborhood":   return "Scan for the neighborhood guide"
+    case "photo_walkthrough": return "Scan to step inside"
     case "coming_soon":    return "Scan to see the listing"
     case "new_listing":
     case "price_drop":
@@ -480,6 +495,7 @@ export function defaultHookForSituation(kind: SituationKind): string {
     case "open_house":    return "Open House This Weekend"
     case "coming_soon":   return "Coming Soon"
     case "market_update": return "Your Market This Month"
+    case "photo_walkthrough": return "Step Inside"
     case "cma":           return "What Your Home Is Worth"
     case "explainer":     return "What You Should Know"
     case "presentation":  return "Your Listing Strategy"
@@ -568,6 +584,7 @@ function hookForAngle(kind: SituationKind, angle: HookAngle): string {
         case "new_listing":   return "Here's What You Get"
         case "cma":           return "What Your Home Is Worth"
         case "market_update": return "Your Market This Month"
+    case "photo_walkthrough": return "Step Inside"
         case "explainer":     return "What You Should Know"
         case "anniversary":   return "Your Equity This Year"
         default:              return base
@@ -640,6 +657,7 @@ function videoTypeForSituation(kind: SituationKind): string {
     case "open_house":    return "open_house_promo"
     case "coming_soon":   return "coming_soon"
     case "market_update": return "market_update"
+    case "photo_walkthrough": return "listing_promo"
     case "cma":           return "pre_appointment"
     case "explainer":     return "education"
     case "lead_intro":    return "education"
