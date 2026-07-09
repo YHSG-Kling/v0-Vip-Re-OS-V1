@@ -84,7 +84,12 @@ export async function GET(request: NextRequest) {
       results.processed++
 
       try {
-        const mode = (video.provider_metadata as any)?.mode === "clip" ? "clips" : "talks"
+        // Engine by job: clips (V3 Pro), expressives (V4 — owner rule for
+        // personalized avatar video), else the classic talks (V2 photo).
+        const pmeta = video.provider_metadata as any
+        const mode = pmeta?.mode === "clip" ? "clips"
+          : pmeta?.mode === "expressive" || String(video.provider_job_id ?? "").startsWith("exp") ? "expressives"
+          : "talks"
         const statusRes = await fetch(`${DID_API_BASE}/${mode}/${video.provider_job_id}`, {
           headers: { Authorization: auth, Accept: "application/json" },
         })

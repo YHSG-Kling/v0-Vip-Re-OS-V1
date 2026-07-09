@@ -338,7 +338,7 @@ async function fanOutToChannel(
       //   * audience_type — derived from learning_module.audience_roles:
       //       'customer' → 'customer_facing' (compliance gate applies)
       //       agent/staff/tc/compliance/team_lead → 'in_house' (brand voice only)
-      //   * Initial provider columns — set heygen_status / provider_status
+      //   * Initial provider columns — set provider_status
       //     to 'pending' only for the chosen provider.
       const { resolveVideoProvider, initialProviderColumns } = await import("@/lib/marketing/video-provider-resolver")
       const provider = await resolveVideoProvider(supabase, {

@@ -141,7 +141,13 @@ async function pollUntilDone(talkId: string): Promise<string | null> {
   const deadline = Date.now() + POLL_TIMEOUT_MS
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
-    const data = await didGet(`/talks/${talkId}`)
+    // Both engines: photo avatars live at /talks; V4 expressive at /expressives.
+    let data: Record<string, unknown>
+    try {
+      data = await didGet(`/talks/${talkId}`)
+    } catch {
+      data = await didGet(`/expressives/${talkId}`)
+    }
     const status = data.status as string | undefined
     if (status === "done") {
       return (data.result_url as string) ?? null
@@ -339,10 +345,29 @@ export async function generateVideo(
     }
   }
 
+  // V4 EXPRESSIVE (owner rule: personalized avatar video rides D-ID's newest
+  // engine when the avatar supports it). Expressive avatar ids carry "@avt_"
+  // (e.g. "public_amber_casual@avt_..."); those submit to /expressives with
+  // avatar_id + a sentiment mapped from the resolved expression — the
+  // diffusion engine aligns tone to the message. Photo-derived avatars keep
+  // the proven /talks path with driver_expressions. One submit, two engines,
+  // zero drift for callers.
+  const isV4Expressive = typeof avatarSrc.actorId === "string" && avatarSrc.actorId.includes("@avt_")
   let talkId: string
   try {
-    const created = await didPost("/talks", bodyBase)
-    talkId = created.id
+    if (isV4Expressive) {
+      const sentimentFor: Record<string, string> = { happy: "happy", neutral: "neutral", serious: "serious", surprise: "surprise" }
+      const created = await didPost("/expressives", {
+        avatar_id: avatarSrc.actorId,
+        script: scriptBlock,
+        sentiment_id: sentimentFor[expression] ?? "neutral",
+        config: { result_format: "mp4" },
+      })
+      talkId = created.id
+    } else {
+      const created = await didPost("/talks", bodyBase)
+      talkId = created.id
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     throw new Error(`D-ID submit failed: ${msg}`)

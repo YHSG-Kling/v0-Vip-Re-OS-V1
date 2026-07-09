@@ -29,7 +29,7 @@ interface VideoProject {
   project_name: string
   video_type: string
   status: string
-  heygen_status?: string
+  provider_status?: string
   video_url?: string
   thumbnail_url?: string
   created_at: string

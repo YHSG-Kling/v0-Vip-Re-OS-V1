@@ -219,10 +219,9 @@ export async function createVideoProject(params: {
   title: string
   scriptContent: string
   videoType: string
+  avatarId?: string
+  voiceId?: string
   templateId?: string
-  heygenAvatarId?: string
-  heygenVoiceId?: string
-  heygenTemplateId?: string
 }) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -260,9 +259,9 @@ export async function createVideoProject(params: {
       ...providerCols,
       status:              "planning",
       audience_type:       "customer_facing",
-      heygen_avatar_id:    params.heygenAvatarId ?? null,
-      heygen_voice_id:     params.heygenVoiceId ?? null,
-      heygen_template_id:  params.heygenTemplateId ?? null,
+      provider_avatar_id:  params.avatarId ?? null,
+      provider_voice_id:   params.voiceId ?? null,
+      provider_template_id: params.templateId ?? null,
     })
     .select("id")
     .single()

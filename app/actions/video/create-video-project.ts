@@ -38,8 +38,8 @@ export interface VideoProject {
   script_content: string
   video_type: string
   status: "draft" | "generating" | "ready" | "failed" | "distributed"
-  heygen_video_id: string | null
-  heygen_status: string | null
+  provider_job_id: string | null
+  provider_status: string | null
   video_url: string | null
   thumbnail_url: string | null
   error_message: string | null
@@ -234,8 +234,8 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
       title: params.title,
       script_content: params.script,
       video_type: params.videoType,
-      heygen_avatar_id: params.avatarId ?? null,
-      heygen_voice_id: params.voiceId ?? null,
+      provider_avatar_id: params.avatarId ?? null,
+      provider_voice_id: params.voiceId ?? null,
       background_type: params.backgroundType,
       background_url: params.backgroundUrl ?? null,
       video_metadata: params.backgroundColorHex
@@ -288,7 +288,7 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
 export async function submitToHeyGen(
   projectId: string,
   brokerageId: string
-): Promise<{ success: boolean; heygenVideoId?: string; error?: string; requiresConfiguration?: boolean }> {
+): Promise<{ success: boolean; providerVideoId?: string; error?: string; requiresConfiguration?: boolean }> {
   if (!isValidUUID(projectId)) return { success: false, error: "Invalid project ID" }
 
   const supabase = await createClient()
@@ -304,7 +304,7 @@ export async function submitToHeyGen(
     return { success: false, error: "Video project not found" }
   }
 
-  if (!project.heygen_avatar_id || !project.heygen_voice_id) {
+  if (!project.provider_avatar_id || !project.provider_voice_id) {
     return {
       success: false,
       error: "Avatar and voice must be configured before generating. Set them up in Settings.",
@@ -314,13 +314,13 @@ export async function submitToHeyGen(
   // Mark as generating
   await supabase
     .from("ai_video_projects")
-    .update({ status: "generating", heygen_status: "pending", updated_at: new Date().toISOString() })
+    .update({ status: "generating", provider_status: "pending", updated_at: new Date().toISOString() })
     .eq("id", projectId)
 
-  // Submit to D-ID (platform-locked engine; heygen_* columns retained for legacy rows)
+  // Submit to D-ID (platform-locked engine; canonical provider_* columns)
   const result = await generateHeyGenVideo({
-    avatarId: project.heygen_avatar_id,
-    voiceId: project.heygen_voice_id,
+    avatarId: project.provider_avatar_id,
+    voiceId: project.provider_voice_id,
     script: project.script_content,
     brokerageId,
   })
@@ -331,7 +331,7 @@ export async function submitToHeyGen(
       .from("ai_video_projects")
       .update({
         status: "failed",
-        heygen_status: "failed",
+        provider_status: "failed",
         error_message: result.error ?? "HeyGen submission failed",
         updated_at: new Date().toISOString(),
       })
@@ -348,16 +348,15 @@ export async function submitToHeyGen(
   await supabase
     .from("ai_video_projects")
     .update({
-      heygen_video_id: result.videoId,
-      heygen_status: "processing",
       provider_job_id: result.videoId,
+      provider_status: "processing",
       updated_at: new Date().toISOString(),
     })
     .eq("id", projectId)
 
   revalidatePath("/dashboard/videos")
 
-  return { success: true, heygenVideoId: result.videoId }
+  return { success: true, providerVideoId: result.videoId }
 }
 
 // ─── POLL VIDEO STATUS ────────────────────────────────────────────────────────
@@ -377,7 +376,7 @@ export async function pollVideoStatus(
 
   const { data: project } = await supabase
     .from("ai_video_projects")
-    .select("heygen_video_id, status, video_url, thumbnail_url, error_message")
+    .select("provider_job_id, status, video_url, thumbnail_url, error_message")
     .eq("id", projectId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
@@ -392,28 +391,27 @@ export async function pollVideoStatus(
     return { status: "failed", error: project.error_message ?? "Generation failed" }
   }
 
-  if (!project.heygen_video_id) {
+  if (!project.provider_job_id) {
     return { status: "generating" }
   }
 
   // Poll HeyGen
-  const heygenResult = await getHeyGenVideoStatus(project.heygen_video_id)
+  const providerResult = await getHeyGenVideoStatus(project.provider_job_id)
 
-  if (!heygenResult.success) {
+  if (!providerResult.success) {
     return { status: "generating" }
   }
 
-  const heygenStatus: string = heygenResult.status ?? "processing"
+  const heygenStatus: string = providerResult.status ?? "processing"
 
-  if (heygenStatus === "completed" && heygenResult.videoUrl) {
+  if (heygenStatus === "completed" && providerResult.videoUrl) {
     // Update project to ready
     await supabase
       .from("ai_video_projects")
       .update({
         status: "ready",
-        heygen_status: "completed",
-        video_url: heygenResult.videoUrl,
         provider_status: "completed",
+        video_url: providerResult.videoUrl,
         completed_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
@@ -425,7 +423,7 @@ export async function pollVideoStatus(
       entity_id: projectId,
       brokerage_id: brokerageId,
       event_type: KernelEvent.VIDEO_PREVIEW_READY,
-      metadata: { video_url: heygenResult.videoUrl },
+      metadata: { video_url: providerResult.videoUrl },
     })
 
     await processKernelEvent({
@@ -437,7 +435,7 @@ export async function pollVideoStatus(
 
     revalidatePath("/dashboard/videos")
 
-    return { status: "ready", videoUrl: heygenResult.videoUrl }
+    return { status: "ready", videoUrl: providerResult.videoUrl }
   }
 
   if (heygenStatus === "failed") {
@@ -445,7 +443,7 @@ export async function pollVideoStatus(
       .from("ai_video_projects")
       .update({
         status: "failed",
-        heygen_status: "failed",
+        provider_status: "failed",
         error_message: "HeyGen video generation failed",
         updated_at: new Date().toISOString(),
       })
@@ -528,8 +526,8 @@ export async function retryVideoGeneration(
     .from("ai_video_projects")
     .update({
       status: "draft",
-      heygen_status: null,
-      heygen_video_id: null,
+      provider_status: null,
+      provider_job_id: null,
       video_url: null,
       error_message: null,
       retry_count: retryCount,
@@ -564,22 +562,29 @@ export async function getUserAvatarConfig(userId: string, brokerageId: string) {
     .eq("active", true)
     .maybeSingle()
 
-  // Check video_branding_presets for heygen avatar + voice
-  const { data: preset } = await supabase
-    .from("video_branding_presets")
-    .select("id, heygen_avatar_id, heygen_voice_id, logo_url, primary_color, preset_name")
+  // CANONICAL sources (video_branding_presets was DROPPED, l38-s01): the
+  // agent's D-ID avatar + ElevenLabs clone live on agent_voice_profiles (the
+  // Twin Studio's output); brand colors/logo come from the brokerage brand.
+  const { data: vp } = await supabase
+    .from("agent_voice_profiles")
+    .select("id, did_avatar_id, elevenlabs_voice_id")
     .eq("agent_id", userId)
     .eq("is_default", true)
+    .maybeSingle()
+  const { data: brok } = await supabase
+    .from("brokerages")
+    .select("primary_color, logo_url")
+    .eq("id", brokerageId)
     .maybeSingle()
 
   return {
     avatarUrl: profile?.avatar_url ?? null,
-    heygenAvatarId: preset?.heygen_avatar_id ?? null,
-    heygenVoiceId: preset?.heygen_voice_id ?? null,
-    brandingPresetId: preset?.id ?? null,
-    primaryColor: preset?.primary_color ?? null,
-    logoUrl: preset?.logo_url ?? null,
-    isConfigured: !!(preset?.heygen_avatar_id && preset?.heygen_voice_id),
+    avatarId: vp?.did_avatar_id ?? null,
+    voiceId: vp?.elevenlabs_voice_id ?? null,
+    brandingPresetId: vp?.id ?? null,
+    primaryColor: brok?.primary_color ?? null,
+    logoUrl: brok?.logo_url ?? null,
+    isConfigured: !!(vp?.did_avatar_id && vp?.elevenlabs_voice_id),
   }
 }
 

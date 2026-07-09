@@ -17,7 +17,7 @@
  *   }
  *
  * In an API route:
- *   await collectError({ workflowName: 'heygen_video_generation', errorMessage: err.message,
+ *   await collectError({ workflowName: 'video_generation', errorMessage: err.message,
  *                        severity: 'medium', agentId, context: { scriptId, templateId } })
  */
 

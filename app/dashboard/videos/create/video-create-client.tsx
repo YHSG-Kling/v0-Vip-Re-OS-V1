@@ -226,7 +226,7 @@ export default function VideoCreatePage() {
   const bgFileInputRef = useRef<HTMLInputElement>(null)
 
   // Platform provider (loaded once from global_settings)
-  const [platformProvider, setPlatformProvider] = useState<"did" | "heygen">("did")
+  const [platformProvider, setPlatformProvider] = useState<"did">("did")
   const [agentDIDProfile, setAgentDIDProfile] = useState<{
     elevenlabs_voice_id: string | null
     did_photo_url: string | null
@@ -258,7 +258,7 @@ export default function VideoCreatePage() {
 
       try {
         // Platform video engine is D-ID + ElevenLabs ONLY (HeyGen removed).
-        // platformProvider is pinned to "did" — the heygen branches below are dead.
+        // platformProvider is pinned to "did" — the only avatar engine.
         setPlatformProvider("did")
 
         // Load approved scripts from library
@@ -426,9 +426,9 @@ export default function VideoCreatePage() {
             ? scripts.find((s: any) => s.id === selectedScript)?.script_type ?? "custom"
             : aiScriptVideoType ?? "custom",
           status: "pending",
-          heygen_status: "pending",
-          heygen_avatar_id: null,
-          heygen_voice_id: null,
+          provider_status: "pending",
+          provider_avatar_id: null,
+          provider_voice_id: null,
           video_provider: platformProvider,
           // listing_id is only relevant when the user explicitly selected a listing as the
           // video context. Other context types (contact, homeowner, market, none) do not

@@ -294,7 +294,7 @@ export async function updateVideoGenerationSettings(
  * 4. SUBMIT VIDEO GENERATION JOB
  * Input: SubmitVideoGenerationJobInput { projectId, scriptText, voiceProfileId, ... }
  * Output: SubmitVideoGenerationJobOutput { jobId, status, estimatedCompletionMinutes }
- * Database: UPDATE ai_video_projects with heygen_job_id
+ * Database: UPDATE ai_video_projects with provider_job_id
  */
 export async function submitVideoGenerationJob(
   input: SubmitVideoGenerationJobInput
@@ -320,14 +320,13 @@ export async function submitVideoGenerationJob(
   const brokerageId = project.brokerage_id
 
   // Atomically claim the project slot. provider_status is the canonical column;
-  // we keep heygen_status synced for legacy readers (the poll-heygen-videos
+  // Canonical provider_* columns only (heygen_* columns DROPPED live, l39-s01
   // cron and the dashboard UI still consume it).
   const { data: reserved, error: preMarkError } = await supabase
     .from("ai_video_projects")
     .update({
       status:          "generating",
       provider_status: "submitting",
-      heygen_status:   "submitting",
       updated_at:      new Date().toISOString(),
     })
     .eq("id", input.projectId)
@@ -359,22 +358,19 @@ export async function submitVideoGenerationJob(
       .update({
         status:          "setup",
         provider_status: null,
-        heygen_status:   null,
         updated_at:      new Date().toISOString(),
       })
       .eq("id", input.projectId)
     throw dispatchErr
   }
 
-  // Persist on the canonical columns; keep heygen_* synced for legacy callers.
+  // Persist on the canonical provider_* columns.
   // The video_provider column is the source of truth for which vendor rendered.
   const { error } = await supabase
     .from("ai_video_projects")
     .update({
       provider_job_id: providerJobId,
       provider_status: "queued",
-      heygen_video_id: providerJobId,
-      heygen_status:   "queued",
       status:          "generating",
       updated_at:      new Date().toISOString(),
     })
@@ -414,28 +410,15 @@ export async function loadVideoGenerationState(
     throw new Error(`Video project not found: ${input.projectId}`)
   }
 
-  // Poll HeyGen if job in progress
-  if (project.heygen_status === "processing" && project.heygen_job_id) {
-    const status = await checkHeyGenJobStatus(project.heygen_job_id)
-    if (status.videoUrl) {
-      await supabase
-        .from("ai_video_projects")
-        .update({
-          video_url: status.videoUrl,
-          heygen_status: "completed",
-          status: "ready",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", input.projectId)
-    }
-  }
+  // In-progress D-ID jobs are completed by the poll-did-videos cron
+  // (provider_job_id / provider_status) — no inline vendor poll here.
 
   return {
     projectId: project.id,
     status: project.status,
     scriptText: project.script_content,
     settings: project.provider_metadata,
-    heygenStatus: project.heygen_status,
+    heygenStatus: project.provider_status,
     videoUrl: project.video_url,
     createdAt: project.created_at,
     updatedAt: project.updated_at,
@@ -727,17 +710,6 @@ async function submitViaPlatformVendor(params: {
   const jobId = result.messageId
   if (!jobId) throw new Error("Video provider returned no job id — cannot track job")
   return jobId
-}
-
-// HeyGen is not used (D-ID + ElevenLabs only) — no new HeyGen jobs are created, so
-// this polls nothing. Retained as a no-op only for any ancient in-flight
-// heygen_status='processing' rows; it makes ZERO network calls to api.heygen.com.
-// New projects track D-ID via provider_status / provider_job_id.
-async function checkHeyGenJobStatus(_jobId: string): Promise<{
-  status: string
-  videoUrl?: string
-}> {
-  return { status: "unknown" }
 }
 
 // ============================================================================

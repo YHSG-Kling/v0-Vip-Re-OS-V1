@@ -17,7 +17,7 @@
  *   newsletter_subscribers:  email, first_name, last_name, status, brokerage_id, agent_id, contact_id
  *   newsletter_scheduled_sends: newsletter_id, scheduled_time, sent_time, recipient_count
  *   blog_posts:              title, slug, excerpt, content, publish_status (NOT status), brokerage_id, agent_user_id, created_by, seo_score, featured_image_url, wordpress_post_id
- *   ai_video_projects:       title, status, script_content, video_type, agent_id, listing_id, brokerage_id, heygen_status, video_url
+ *   ai_video_projects:       title, status, script_content, video_type, agent_id, listing_id, brokerage_id, provider_status, video_url
  *   podcast_episodes:        title, description, script, status, brokerage_id, agent_id, source_video_project_id, publish_channels, published_at, audio_url
  *   direct_mail_campaigns:   campaign_name, target_audience, design_url, copy_text, quantity, status, brokerage_id, agent_id, created_by, mailing_date, per_piece_cost, lob_order_id
  *   direct_mail_recipients:  campaign_id, brokerage_id, first_name, last_name, address_line1, address_line2, city, state, zip, contact_id, delivery_status
@@ -911,7 +911,7 @@ export async function createVideoProject(
       script_content:      input.scriptContent.trim(),
       video_type:          input.videoType,
       listing_id:          input.listingId    ?? null,
-      heygen_template_id:  input.templateId ?? null,
+      provider_template_id: input.templateId ?? null,
       status:              "draft",
       video_provider:      provider,
       ...providerCols,

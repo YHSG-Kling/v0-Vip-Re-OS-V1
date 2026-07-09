@@ -360,6 +360,28 @@ import { buildSellerUpdateMessage } from "../lib/agents/seller-update-reel-produ
     && src("lib/agents/seller-update-reel-producer.ts").includes("scan_count"))
 }
 
+console.log("\n[18 · HEYGEN GONE FROM THE SCHEMA + D-ID V4 EXPRESSIVE ENGINE]")
+{
+  const sweep = ["lib/kernel/video.ts", "lib/kernel/brand-compliance.ts", "lib/kernel/marketing.ts",
+    "lib/ai-isa/isa-outreach-logger.ts", "app/actions/listing-media.ts", "app/actions/video/create-video-project.ts",
+    "app/dashboard/listings/[id]/media/components/video-panel.tsx", "app/components/features/video/VideosDashboard.tsx"]
+  check("ZERO heygen_* COLUMN references remain (l39-s01 dropped the five ai_video_projects columns live; canonical provider_* everywhere)",
+    sweep.every((f) => !/heygen_(avatar_id|voice_id|template_id|video_id|status)\b/.test(src(f).replace(/\/\/.*|\* .*/g, "")))
+    && existsSync(join(process.cwd(), "scripts/l39-s01-heygen-columns-drop.sql")))
+  check("the snapshot tracks provider_avatar_id/provider_voice_id/provider_template_id (drift guard sees the real schema)",
+    ["provider_avatar_id", "provider_voice_id", "provider_template_id"].every((c) => {
+      const m = src("scripts/schema-snapshot.ts").match(/^  ai_video_projects: \[(.*?)\],$/m)
+      return !!m && m[1].includes(`"${c}"`)
+    }))
+  check("the dead HeyGen cost-fallback module is DELETED (zero callers; D-ID is the only engine choice)",
+    !existsSync(join(process.cwd(), "lib/marketing/video-provider-cost.ts")))
+  check("D-ID V4 EXPRESSIVE (owner rule): expressive avatars (@avt_ ids) submit to /expressives with a sentiment mapped from the agent's expression; photo avatars keep /talks; the poller covers both",
+    src("lib/did/index.ts").includes('didPost("/expressives"')
+    && src("lib/did/index.ts").includes("sentiment_id")
+    && src("lib/did/index.ts").includes('includes("@avt_")')
+    && src("app/api/cron/poll-did-videos/route.ts").includes('"expressives"'))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }

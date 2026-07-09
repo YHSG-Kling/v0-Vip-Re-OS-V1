@@ -37,7 +37,7 @@ export interface TrainingVideo {
   order_index: number
   is_required: boolean
   is_platform_default: boolean
-  heygen_project_id: string | null
+  provider_project_id: string | null
   created_at: string
 }
 

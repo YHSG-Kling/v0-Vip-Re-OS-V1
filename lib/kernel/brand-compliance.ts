@@ -12,8 +12,8 @@
  * Brand rules are loaded from global_settings.additional_settings (jsonb):
  *   approved_hashtags     string[]
  *   prohibited_language   string[]
- *   brokerage_avatar_id   string   (expected heygen_avatar_id for video)
- *   brokerage_voice_id    string   (expected heygen_voice_id for video)
+ *   brokerage_avatar_id   string   (expected provider_avatar_id for video)
+ *   brokerage_voice_id    string   (expected provider_voice_id for video)
  *   cma_disclaimer_text   string   (required substring for document type)
  *
  * Emits KernelEvent.BRAND_COMPLIANCE_PASSED or BRAND_COMPLIANCE_FAILED
@@ -257,7 +257,7 @@ async function checkVideo(ctx: {
 
   const { data: video } = await supabase
     .from("ai_video_projects")
-    .select("heygen_avatar_id, heygen_voice_id, status, usage_intent, has_verbal_disclosure, has_visual_brand_overlay, script_content")
+    .select("provider_avatar_id, provider_voice_id, status, usage_intent, has_verbal_disclosure, has_visual_brand_overlay, script_content")
     .eq("id", contentId)
     .maybeSingle()
 
@@ -288,15 +288,15 @@ async function checkVideo(ctx: {
 
   // Public-marketing path: brokerage avatar / voice are checked when the
   // brokerage has them configured.
-  if (brokerageAvatarId && video.heygen_avatar_id !== brokerageAvatarId) {
+  if (brokerageAvatarId && video.provider_avatar_id !== brokerageAvatarId) {
     violations.push(
-      `Video uses avatar '${video.heygen_avatar_id ?? "none"}' — expected brokerage avatar '${brokerageAvatarId}'`
+      `Video uses avatar '${video.provider_avatar_id ?? "none"}' — expected brokerage avatar '${brokerageAvatarId}'`
     )
   }
 
-  if (brokerageVoiceId && video.heygen_voice_id !== brokerageVoiceId) {
+  if (brokerageVoiceId && video.provider_voice_id !== brokerageVoiceId) {
     violations.push(
-      `Video uses voice '${video.heygen_voice_id ?? "none"}' — expected brokerage voice '${brokerageVoiceId}'`
+      `Video uses voice '${video.provider_voice_id ?? "none"}' — expected brokerage voice '${brokerageVoiceId}'`
     )
   }
 

@@ -50,7 +50,7 @@ interface VideoProject {
   title: string
   video_type: string
   status: string
-  heygen_status?: string
+  provider_status?: string
   script_content?: string
   created_at: string
   video_url?: string
@@ -176,7 +176,7 @@ export default function VideoKanbanBoard() {
 
         // Identify videos that need polling
         const needsPolling = data
-          .filter((v: any) => ["generating", "pending"].includes(v.status) || ["generating", "processing", "pending"].includes(v.heygen_status || ""))
+          .filter((v: any) => ["generating", "pending"].includes(v.status) || ["generating", "processing", "pending"].includes(v.provider_status || ""))
           .map((v: any) => v.id)
         setPollingVideoIds(new Set(needsPolling))
       }
@@ -278,7 +278,7 @@ export default function VideoKanbanBoard() {
         .from("ai_video_projects")
         .update({
           status: "pending",
-          heygen_status: "pending",
+          provider_status: "pending",
           error_message: null,
           retry_count: (video.retry_count || 0) + 1,
         })
@@ -418,7 +418,7 @@ export default function VideoKanbanBoard() {
   }
 
   const getColumnVideos = (columnId: string) => {
-    return videos.filter((v) => mapStatusToColumn(v.status, v.heygen_status) === columnId)
+    return videos.filter((v) => mapStatusToColumn(v.status, v.provider_status) === columnId)
   }
 
   // ─── RENDER ─────────────────────────────────────────────────────────────────
@@ -500,7 +500,7 @@ export default function VideoKanbanBoard() {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                              {(video.status === "preview_ready" || video.heygen_status === "completed") && (
+                              {(video.status === "preview_ready" || video.provider_status === "completed") && (
                                 <>
                                   <DropdownMenuItem onClick={() => setPreviewDialog({ open: true, video })}>
                                     <Eye className="mr-2 h-4 w-4" />

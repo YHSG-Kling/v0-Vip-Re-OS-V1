@@ -52,10 +52,10 @@ interface VideoProject {
   script_content: string | null
   status: string | null
   video_url: string | null
-  heygen_status: string | null
-  heygen_avatar_id: string | null
-  heygen_voice_id: string | null
-  heygen_template_id: string | null
+  provider_status: string | null
+  provider_avatar_id: string | null
+  provider_voice_id: string | null
+  provider_template_id: string | null
   video_type: string | null
   duration_seconds: number | null
   error_message: string | null
@@ -98,9 +98,9 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
     title:           "",
     scriptContent:   "",
     videoType:       "listing_tour",
-    heygenAvatarId:  "",
-    heygenVoiceId:   "",
-    heygenTemplateId: "",
+    avatarId:  "",
+    voiceId:   "",
+    templateId: "",
   })
 
   const applyTemplate = (template: VideoTemplate) => {
@@ -109,7 +109,7 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
       ...f,
       title:            template.template_name,
       scriptContent:    template.default_script ?? "",
-      heygenTemplateId: f.heygenTemplateId,
+      templateId: f.templateId,
     }))
   }
 
@@ -122,9 +122,9 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
         title:             form.title.trim(),
         scriptContent:     form.scriptContent.trim(),
         videoType:         form.videoType,
-        heygenAvatarId:    form.heygenAvatarId.trim() || undefined,
-        heygenVoiceId:     form.heygenVoiceId.trim() || undefined,
-        heygenTemplateId:  form.heygenTemplateId.trim() || undefined,
+        avatarId:    form.avatarId.trim() || undefined,
+        voiceId:     form.voiceId.trim() || undefined,
+        templateId:  form.templateId.trim() || undefined,
       })
       if (result.error) {
         toast({ title: "Error creating project", description: result.error, variant: "destructive" })
@@ -133,7 +133,7 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
       const updated = await import("@/app/actions/listing-media").then(m => m.getVideoProjects(listingId))
       onVideosChange(updated.data ?? [])
       setCreateOpen(false)
-      setForm({ title: "", scriptContent: "", videoType: "listing_tour", heygenAvatarId: "", heygenVoiceId: "", heygenTemplateId: "" })
+      setForm({ title: "", scriptContent: "", videoType: "listing_tour", avatarId: "", voiceId: "", templateId: "" })
       setSelectedTemplate(null)
       toast({ title: "Video project created", description: "Brand compliance check queued." })
     })
@@ -263,9 +263,9 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
                     <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_COLORS[v.status ?? "planning"] ?? STATUS_COLORS.planning}`}>
                       {v.status ?? "planning"}
                     </span>
-                    {v.heygen_status && v.heygen_status !== v.status && (
+                    {v.provider_status && v.provider_status !== v.status && (
                       <Badge variant="outline" className="text-xs">
-                        Render: {v.heygen_status}
+                        Render: {v.provider_status}
                       </Badge>
                     )}
                     {v.duration_seconds && (
@@ -305,9 +305,9 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
                   <p className="text-xs text-destructive mt-1">{v.error_message}</p>
                 )}
                 <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground flex-wrap">
-                  {v.heygen_avatar_id && <span>Avatar: {v.heygen_avatar_id}</span>}
-                  {v.heygen_voice_id && <span>Voice: {v.heygen_voice_id}</span>}
-                  {v.heygen_template_id && <span>Template: {v.heygen_template_id}</span>}
+                  {v.provider_avatar_id && <span>Avatar: {v.provider_avatar_id}</span>}
+                  {v.provider_voice_id && <span>Voice: {v.provider_voice_id}</span>}
+                  {v.provider_template_id && <span>Template: {v.provider_template_id}</span>}
                 </div>
               </CardContent>
             </Card>
@@ -374,8 +374,8 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
                 <Label htmlFor="avatarId">D-ID Avatar ID</Label>
                 <Input
                   id="avatarId"
-                  value={form.heygenAvatarId}
-                  onChange={e => setForm(f => ({ ...f, heygenAvatarId: e.target.value }))}
+                  value={form.avatarId}
+                  onChange={e => setForm(f => ({ ...f, avatarId: e.target.value }))}
                   placeholder="avatar_..."
                 />
               </div>
@@ -383,8 +383,8 @@ export function VideoPanel({ listingId, brokerageId, videos, templates, onVideos
                 <Label htmlFor="voiceId">ElevenLabs Voice ID</Label>
                 <Input
                   id="voiceId"
-                  value={form.heygenVoiceId}
-                  onChange={e => setForm(f => ({ ...f, heygenVoiceId: e.target.value }))}
+                  value={form.voiceId}
+                  onChange={e => setForm(f => ({ ...f, voiceId: e.target.value }))}
                   placeholder="voice_..."
                 />
               </div>

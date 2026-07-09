@@ -73,7 +73,7 @@ export async function generateListingVideo(params: {
         agent_id: params.agentId,
         listing_id: property.id, // this is a listing video, not a contact
         video_type: mapVideoType(videoType), // map to the CHECK-valid vocabulary
-        heygen_status: 'pending',
+        provider_status: 'pending',
         is_ai_generated: true,
         duration_seconds: getDurationForType(videoType),
         video_metadata: {
@@ -127,7 +127,7 @@ export async function generateListingVideo(params: {
       .from('ai_video_projects')
       .update({
         script_content: script,
-        heygen_status: 'pending',
+        provider_status: 'pending',
         compliance_status: validation.passed ? 'passed' : 'needs_review',
         provider_metadata: { them_first_score: Math.round(validation.overall_score * 100) },
       })
@@ -389,7 +389,7 @@ export async function publishVideoToPlatforms(params: {
   try {
     const { data: project } = await supabase.from('ai_video_projects').select('*').eq('id', params.projectId).single()
 
-    if (!project || project.heygen_status !== 'completed') {
+    if (!project || project.provider_status !== 'completed') {
       return { success: false, error: 'Video not ready for publishing' }
     }
 

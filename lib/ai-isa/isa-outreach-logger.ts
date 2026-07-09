@@ -19,7 +19,7 @@ export async function logISAOutreach(params: {
   bodySnippet?: string
   themFirstScore?: number | null
   compliancePassed?: boolean
-  heygenVideoId?: string
+  providerVideoId?: string
   lobLetterId?: string
 }): Promise<void> {
   const supabase = createServiceClient()
@@ -72,7 +72,7 @@ export async function logISAOutreach(params: {
       channel:           params.channel,
       subject:           params.subject ?? null,
       body_snippet:      params.bodySnippet ?? null,
-      heygen_video_id:   params.heygenVideoId ?? null,
+      provider_job_id:   params.providerVideoId ?? null,
       lob_letter_id:     params.lobLetterId ?? null,
       status:            'sent',
       them_first_score:  params.themFirstScore ?? null,
