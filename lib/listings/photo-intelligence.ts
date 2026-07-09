@@ -467,11 +467,13 @@ export async function runPhotoIntelligenceSweep(
 ): Promise<{ photosAnalyzed: number; analysisFailures: number; heroesSet: number }> {
   const analyzeLimit = opts?.analyzeLimit ?? 40
 
+  // Cross-tenant cron sweep by design — every row carries its brokerage_id
+  // so downstream writes stay attributable to their tenant.
   const { data: listings } = await svc.from("listings")
-    .select("id, address, city, state, list_price")
+    .select("id, brokerage_id, address, city, state, list_price")
     .eq("status", "active")
     .limit(2000)
-  const listingRows = (listings ?? []) as Array<{ id: string; address: string | null; city: string | null; state: string | null; list_price: number | null }>
+  const listingRows = (listings ?? []) as Array<{ id: string; brokerage_id: string; address: string | null; city: string | null; state: string | null; list_price: number | null }>
   const listingById = new Map(listingRows.map((l) => [l.id, l]))
   const listingIds = listingRows.map((l) => l.id)
   if (listingIds.length === 0) return { photosAnalyzed: 0, analysisFailures: 0, heroesSet: 0 }
