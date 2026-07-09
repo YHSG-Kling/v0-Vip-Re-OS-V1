@@ -419,6 +419,21 @@ console.log("\n[20 · ONE PERSONA EVERYWHERE — the portal wears the AGENT'S fa
     && src("lib/kernel/assistant-starter.ts").includes("the intro is a delight, not a dependency"))
 }
 
+console.log("\n[21 · THE EXPRESSIVE LOOP, CLOSED — engine recorded, never guessed]")
+{
+  const did = src("lib/did/index.ts")
+  check("generateVideo RECORDS the engine on every return path (talks = V2 photo, expressives = V4)",
+    did.includes('engine?: "talks" | "expressives"')
+    && (did.match(/engine: isV4Expressive \? "expressives" : "talks"/g) ?? []).length >= 3)
+  check("the director render stamps provider_metadata.mode='expressive' from the RECORDED engine; the poll cron keys off the record (prefix survives only for legacy rows)",
+    src("app/api/cron/director-reel-render/route.ts").includes('r.engine === "expressives" ? "expressive"')
+    && src("app/api/cron/poll-did-videos/route.ts").includes("RECORDED provider_metadata.mode"))
+  check("the persisted D-ID copy rides the SUPABASE media host (storage-first, blob fallback) — no bare blob put",
+    did.includes("hostRenderedMedia") && !did.includes('await put(`workflow-video/'))
+  check("an expressive render with no photo is a VIDEO, not mislabeled audio (the weekly show's kind check)",
+    src("lib/intelligence/partners-meeting.ts").includes('identity.expressiveAvatarId || identity.avatarPhotoUrl ? "video" : "audio"'))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }

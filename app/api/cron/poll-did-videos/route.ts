@@ -87,6 +87,8 @@ export async function GET(request: NextRequest) {
         // Engine by job: clips (V3 Pro), expressives (V4 — owner rule for
         // personalized avatar video), else the classic talks (V2 photo).
         const pmeta = video.provider_metadata as any
+        // Engine keyed off the RECORDED provider_metadata.mode (stamped at
+        // submit); the id-prefix check survives only for pre-stamp legacy rows.
         const mode = pmeta?.mode === "clip" ? "clips"
           : pmeta?.mode === "expressive" || String(video.provider_job_id ?? "").startsWith("exp") ? "expressives"
           : "talks"

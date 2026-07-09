@@ -141,6 +141,9 @@ export async function GET(request: Request) {
           provider_metadata: {
             ...meta,
             provider: "did",
+            // Engine RECORDED at submit (talks = V2 photo, expressives = V4);
+            // the poll cron keys off this — never guessed from id shapes.
+            mode: r.engine === "expressives" ? "expressive" : (meta.mode ?? null),
             talk_id: r.videoId,
             target_composition_id: compositionId,
             input_props: inputProps,

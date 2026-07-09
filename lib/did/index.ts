@@ -91,6 +91,9 @@ export interface GenerateVideoInput {
 export interface GenerateVideoResult {
   /** Permanent video (mp4) or audio (mp3) URL — null if still processing */
   videoUrl: string | null
+  /** Which D-ID engine rendered it — RECORDED at submit (talks = V2 photo,
+   *  expressives = V4). Pollers key off this; never guess from id shapes. */
+  engine?: "talks" | "expressives"
   /** D-ID talk/clip job ID for later polling */
   videoId: string
   /** Processing status at return time */
@@ -393,6 +396,7 @@ export async function generateVideo(
       videoId: talkId,
       videoUrl: null,
       status: "processing",
+      engine: isV4Expressive ? "expressives" : "talks",
       note: [notes.length ? notes.join("; ") : undefined, `D-ID job ${talkId} submitted — poll-did-videos will complete it`].filter(Boolean).join("; "),
     }
   }
@@ -418,14 +422,12 @@ export async function generateVideo(
       })
       if (dl.ok && dl.data) {
         const bytes = dl.data
-        const blob = await put(`workflow-video/${talkId}.mp4`, bytes, {
-          access: "public",
-          contentType: "video/mp4",
-        })
-        return { videoId: talkId, videoUrl: blob.url, status: "done", note }
+        const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+        const hosted = await hostRenderedMedia(createServiceClient(), `workflow-video/${talkId}.mp4`, bytes, "video/mp4")
+        return { videoId: talkId, videoUrl: hosted, status: "done", engine: isV4Expressive ? "expressives" : "talks", note }
       }
     } catch { /* fall through with D-ID URL — better than nothing */ }
-    return { videoId: talkId, videoUrl, status: "done", note }
+    return { videoId: talkId, videoUrl, status: "done", engine: isV4Expressive ? "expressives" : "talks", note }
   }
 
   // Timed out — return partial result so caller can record and continue

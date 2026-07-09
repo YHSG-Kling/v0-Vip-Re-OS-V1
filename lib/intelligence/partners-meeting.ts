@@ -114,7 +114,7 @@ const defaultProducer = (supabase: Svc, brokerageId: string): MeetingProducer =>
         : { avatarImageUrl: identity.avatarPhotoUrl, voiceOnly: !identity.avatarPhotoUrl }),
     })
     if (!res.videoUrl) return null
-    return { kind: identity.avatarPhotoUrl ? "video" : "audio", url: res.videoUrl }
+    return { kind: identity.expressiveAvatarId || identity.avatarPhotoUrl ? "video" : "audio", url: res.videoUrl }
   } catch { return null }
 }
 
