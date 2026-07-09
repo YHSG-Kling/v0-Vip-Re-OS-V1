@@ -16,7 +16,7 @@
 // PURE (only pure imports: the manager registry + the signal registry) → unit-testable + safe to
 // render in a client compliance surface.
 
-import { MANAGERS, MAINTENANCE_DOMAINS, TABLE_MANAGER, type ManagerKey } from "@/lib/kernel/manager-registry"
+import { MANAGERS, MAINTENANCE_DOMAINS, TABLE_MANAGER, CRON_MANAGER, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { SIGNAL_REGISTRY } from "@/lib/kernel/signal-registry"
 
 export type EvalDimension =
@@ -46,6 +46,8 @@ export interface ManagerGovernanceScore {
   manager: ManagerKey
   label: string
   ownedTables: number
+  /** Scheduled crons this manager RUNS (from CRON_MANAGER — zero-orphan on the dispatcher). */
+  runsCrons: number
   consumesSignals: string[]
   burnDomains: string[]
   dimensions: DimensionCoverage[]
@@ -155,6 +157,11 @@ export function buildManagerGovernanceScorecard(): ManagerGovernanceScore[] {
     tableCountByManager.set(owner, (tableCountByManager.get(owner) ?? 0) + 1)
   }
 
+  const cronCountByManager = new Map<ManagerKey, number>()
+  for (const owner of Object.values(CRON_MANAGER) as ManagerKey[]) {
+    cronCountByManager.set(owner, (cronCountByManager.get(owner) ?? 0) + 1)
+  }
+
   const consumesByManager = new Map<ManagerKey, string[]>()
   for (const [signal, spec] of Object.entries(SIGNAL_REGISTRY)) {
     for (const consumer of spec.consumers as ManagerKey[]) {
@@ -172,6 +179,7 @@ export function buildManagerGovernanceScorecard(): ManagerGovernanceScore[] {
       manager: m,
       label: MANAGERS[m].label,
       ownedTables: tableCountByManager.get(m) ?? 0,
+      runsCrons: cronCountByManager.get(m) ?? 0,
       consumesSignals: consumesByManager.get(m) ?? [],
       burnDomains: burnByManager.get(m) ?? [],
       dimensions,

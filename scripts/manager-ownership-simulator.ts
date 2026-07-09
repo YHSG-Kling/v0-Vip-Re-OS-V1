@@ -16,8 +16,10 @@
 import {
   MANAGERS, QUEUE_MANAGER, resolveActionManager,
   MAINTENANCE_DOMAINS, TABLE_MANAGER, resolveMaintenanceManager, resolveTableManager,
+  CRON_MANAGER, resolveCronManager,
   type ManagerKey,
 } from "../lib/kernel/manager-registry"
+import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
 import { CONTENT_SOURCES } from "../lib/kernel/approval-sources"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 
@@ -111,6 +113,23 @@ check("LIFETIME side: Sphere Manager's charter names closed & past clients",
   /past client/i.test(MANAGERS.sphere_of_influence.domain))
 check("boundary preservation is itself a governed burn domain",
   MAINTENANCE_DOMAINS.manager_boundaries?.manager === "data_steward")
+
+console.log("\n[5c · CRON ownership — every schedule on the dispatcher is RUN BY a manager]")
+// The owner's invariant: no code runs unmanaged. The path set is derived from the
+// LIVE dispatcher registry, so registering a cron without an owner fails here.
+const cronPaths = Array.from(new Set(CRON_REGISTRY.map((c) => c.path.split("?")[0])))
+const unownedCrons = cronPaths.filter((p) => !(p in CRON_MANAGER))
+check(`every registered cron has an owning manager (${cronPaths.length} schedules, derived from CRON_REGISTRY)`,
+  unownedCrons.length === 0, unownedCrons.join(", "))
+const staleCrons = Object.keys(CRON_MANAGER).filter((p) => !cronPaths.includes(p))
+check("no stale CRON_MANAGER entry points at an unregistered schedule", staleCrons.length === 0, staleCrons.join(", "))
+check("every CRON_MANAGER target is a real manager",
+  Object.values(CRON_MANAGER).every((k) => k in MANAGERS))
+check("resolveCronManager: signature-chase → Deal Coordinator; unknown → fallback (never undefined)",
+  resolveCronManager("/api/cron/signature-chase").key === "deal_coordinator"
+  && resolveCronManager("/api/cron/not-a-cron").label.length > 0)
+check("every one of the 13 managers RUNS at least one schedule (no idle manager on the clock)",
+  (Object.keys(MANAGERS) as ManagerKey[]).every((k) => Object.values(CRON_MANAGER).includes(k)))
 
 console.log("\n[6 · every manager is well-formed]")
 const keys = Object.keys(MANAGERS) as ManagerKey[]

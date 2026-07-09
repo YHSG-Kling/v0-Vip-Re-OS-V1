@@ -77,6 +77,22 @@ console.log("\n── PURE: listing propensity ──")
     src("lib/kernel/listing-propensity.ts").includes("generated_at") && !src("lib/kernel/listing-propensity.ts").includes('gte("created_at", since).limit(1000)'))
 }
 
+console.log("\n── KEEP-ONE: recruiting depth already has its single brains ──")
+{
+  // A 'recruiting depth' pass nearly shipped a SECOND recruit ranker and a
+  // SECOND flight-risk scorer. The investigation found both already exist and
+  // are richer — these checks make that consolidation a CI invariant.
+  check("recruit PRIORITY has ONE brain: the switch-propensity scout, riding the weekly recruit-outreach cron",
+    existsSync(join(process.cwd(), "lib/recruiting/switch-propensity.ts"))
+    && src("app/api/cron/recruit-outreach/route.ts").includes("runSwitchPropensityScoutAll")
+    && !existsSync(join(process.cwd(), "lib/kernel/recruit-retention.ts")))
+  check("agent RETENTION has ONE brain: the retention radar, riding the daily compliance-monitoring cron",
+    existsSync(join(process.cwd(), "lib/recruiting/retention-score.ts"))
+    && src("app/api/cron/compliance-monitoring/route.ts").includes("runRetentionRadarAll"))
+  check("both recruiting brains are registry-owned by the recruiting_manager",
+    /retention_radar/.test(src("lib/kernel/manager-registry.ts")) && /switch_propensity/.test(src("lib/kernel/manager-registry.ts")))
+}
+
 console.log("\n── MANAGER COVERAGE: every rail owned, scheduled, and real ──")
 {
   const RAILS: Array<{ domain: string; manager: string; cron: string }> = [
