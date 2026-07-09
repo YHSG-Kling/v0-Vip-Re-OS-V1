@@ -34,6 +34,10 @@ export interface SellerUpdateStats {
   interestLabel: "strong" | "moderate" | "light" | "none"
   daysOnMarket: number | null
   listPrice: number | null
+  /** THE SCAN CURVE — total tracked-QR scans across this listing's videos
+   *  (qr_codes.scan_count, listing-scoped). The receipt no competitor can
+   *  show a seller: what the video campaign actually DID. */
+  videoScans?: number
 }
 
 /** Pure: coarse interest label from completed-showing interest levels. */
@@ -87,6 +91,7 @@ export function buildSellerUpdateMessage(
   const lines = [
     `Here's your weekly update on ${stats.listingAddress}.`,
     `${showings}, and we're at ${dom}.`,
+    (stats.videoScans ?? 0) > 0 ? `Your marketing videos have driven ${stats.videoScans} QR scan${stats.videoScans === 1 ? "" : "s"} from interested buyers so far.` : "",
     videoUrl ? `I recorded a short video walking you through it: ${videoUrl}` : "",
     `I'll follow up with next-step recommendations. — ${safeName}`,
   ].filter(Boolean)
@@ -118,6 +123,16 @@ async function gatherSellerUpdateStats(supabase: Svc, brokerageId: string, listi
   const { computeDaysOnMarket } = await import("@/lib/listings/compute-dom")
   const dom = computeDaysOnMarket(l.go_live_date)
 
+  // THE SCAN CURVE — every video this listing's campaign shipped carries a
+  // tracked QR (qr_codes.listing_id); the summed scan_count is the receipt
+  // the seller sees: what the video marketing actually DID.
+  let videoScans = 0
+  try {
+    const { data: qrs } = await supabase.from("qr_codes")
+      .select("scan_count").eq("brokerage_id", brokerageId).eq("listing_id", listingId).limit(50)
+    videoScans = ((qrs ?? []) as Array<{ scan_count: number | null }>).reduce((a, q) => a + (Number(q.scan_count) || 0), 0)
+  } catch { /* scans are additive — never block the update */ }
+
   return {
     stats: {
       listingAddress: l.address ?? "your listing",
@@ -125,6 +140,7 @@ async function gatherSellerUpdateStats(supabase: Svc, brokerageId: string, listi
       interestLabel: interestLabelFor(levels),
       daysOnMarket: dom,
       listPrice: l.list_price,
+      videoScans,
     },
     sellerContactId: l.seller_contact_id,
     agentId: l.agent_id,

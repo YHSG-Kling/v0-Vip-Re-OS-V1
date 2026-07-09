@@ -149,6 +149,7 @@ export function AIIdentityEditor({
     initialProfile?.elevenlabs_voice_id ?? parentProfile?.elevenlabs_voice_id ?? ""
   )
   const [faceOptions, setFaceOptions] = useState<Array<{ key: string; imageUrl: string }>>([])
+  const [voicePreviewBusy, setVoicePreviewBusy] = useState<string | null>(null)
   const [facesBusy, setFacesBusy] = useState(false)
   const [facesError, setFacesError] = useState<string | null>(null)
   const [tone, setTone] = useState<string | null>(
@@ -431,13 +432,31 @@ export function AIIdentityEditor({
             <Label htmlFor="assistant-voice">Assistant voice</Label>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
               {ASSISTANT_VOICE_OPTIONS.map((v) => (
-                <button
-                  key={v.voiceId} type="button" onClick={() => setAssistantVoiceId(v.voiceId)}
-                  className={`rounded-md border p-2 text-left transition ${assistantVoiceId === v.voiceId ? "border-primary ring-2 ring-primary/30 bg-primary/5" : "hover:border-muted-foreground/40"}`}
+                <div
+                  key={v.voiceId}
+                  className={`rounded-md border p-2 transition cursor-pointer ${assistantVoiceId === v.voiceId ? "border-primary ring-2 ring-primary/30 bg-primary/5" : "hover:border-muted-foreground/40"}`}
+                  onClick={() => setAssistantVoiceId(v.voiceId)}
                 >
-                  <div className="text-sm font-medium">{v.label}</div>
+                  <div className="flex items-center justify-between gap-1">
+                    <div className="text-sm font-medium">{v.label}</div>
+                    <button
+                      type="button" title={`Hear ${v.label}`}
+                      className="text-xs px-1.5 py-0.5 rounded border hover:bg-muted disabled:opacity-50"
+                      disabled={voicePreviewBusy === v.voiceId}
+                      onClick={async (e) => {
+                        e.stopPropagation()
+                        setVoicePreviewBusy(v.voiceId)
+                        const { previewAssistantVoiceAction } = await import("@/app/actions/ai-identity")
+                        const res = await previewAssistantVoiceAction(v.voiceId)
+                        if (res.success) new Audio(res.audioDataUrl).play().catch(() => {})
+                        setVoicePreviewBusy(null)
+                      }}
+                    >
+                      {voicePreviewBusy === v.voiceId ? "…" : "▶"}
+                    </button>
+                  </div>
                   <div className="text-xs text-muted-foreground leading-snug">{v.style}</div>
-                </button>
+                </div>
               ))}
             </div>
             {assistantVoiceId && !ASSISTANT_VOICE_OPTIONS.some((v) => v.voiceId === assistantVoiceId) && (

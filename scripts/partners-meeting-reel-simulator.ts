@@ -341,6 +341,25 @@ import { ASSISTANT_VOICE_OPTIONS, ASSISTANT_FACE_BRIEFS, assistantVoiceLabel } f
     && src("app/actions/ai-identity.ts").includes("elevenlabs_voice_id: input.assistantVoiceId"))
 }
 
+console.log("\n[17 · VOICE PREVIEW + THE SELLER SCAN CURVE]")
+import { buildSellerUpdateMessage } from "../lib/agents/seller-update-reel-producer"
+{
+  check("every voice card has a PLAY preview (canonical TTS, budget-gated, data-URL playback)",
+    src("app/actions/ai-identity.ts").includes("previewAssistantVoiceAction")
+    && src("app/actions/ai-identity.ts").includes("audioDataUrl")
+    && src("app/components/ai-identity/AIIdentityEditor.tsx").includes("previewAssistantVoiceAction"))
+  const withScans = buildSellerUpdateMessage(
+    { listingAddress: "12 Oak Ln", showingsThisWeek: 3, interestLabel: "strong", daysOnMarket: 9, listPrice: 500000, videoScans: 37 }, "Dana K", "https://x/v.mp4")
+  const noScans = buildSellerUpdateMessage(
+    { listingAddress: "12 Oak Ln", showingsThisWeek: 3, interestLabel: "strong", daysOnMarket: 9, listPrice: 500000, videoScans: 0 }, "Dana K", null)
+  check("the seller update SPEAKS the scan curve when earned ('your videos drove N scans') and stays silent at zero",
+    withScans.body.includes("37 QR scans from interested buyers")
+    && !noScans.body.includes("QR scan"))
+  check("the scan curve reads the LIVE ledger (qr_codes.scan_count, listing-scoped)",
+    src("lib/agents/seller-update-reel-producer.ts").includes('.eq("listing_id", listingId)')
+    && src("lib/agents/seller-update-reel-producer.ts").includes("scan_count"))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
