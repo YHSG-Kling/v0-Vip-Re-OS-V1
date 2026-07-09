@@ -15,8 +15,6 @@
   "app/actions/contact-enrichment.ts :: contacts": 4,
   "app/actions/copilot.ts :: listings": 1,
   "app/actions/data-health.ts :: contacts": 1,
-  "app/actions/demo-contacts.ts :: contacts": 3,
-  "app/actions/email-campaigns.ts :: contacts": 1,
   "app/actions/lifetime-customer-touchpoints.ts :: referrals": 1,
   "app/actions/listings-kernel.ts :: listings": 1,
   "app/actions/open-house-automation.ts :: open_house_events": 3,

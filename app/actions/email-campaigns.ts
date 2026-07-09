@@ -735,6 +735,7 @@ async function getListingCampaignRecipients(
     const { data: contacts } = await supabase
       .from("contacts")
       .select("id")
+      .eq("brokerage_id", listing.brokerage_id)
       .eq("status", "active")
       .gte("budget_max", (listing.price || 0) * 0.9)
       .lte("budget_min", (listing.price || 0) * 1.1)
@@ -759,7 +760,8 @@ async function getListingCampaignRecipients(
     return viewers?.map((v) => v.contact_id).filter((id) => id) || []
   }
 
-  const { data: allContacts } = await supabase.from("contacts").select("id").eq("status", "active").limit(100)
+  const { data: allContacts } = await supabase.from("contacts").select("id")
+    .eq("brokerage_id", listing.brokerage_id).eq("status", "active").limit(100)
   return allContacts?.map((c) => c.id) || []
 }
 
