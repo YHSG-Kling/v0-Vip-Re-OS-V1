@@ -404,6 +404,21 @@ import { sentimentForSituation } from "../lib/video/video-director"
     src("lib/video/video-identity.ts").includes("contact_facing — the licensed human, full stop"))
 }
 
+console.log("\n[20 · ONE PERSONA EVERYWHERE — the portal wears the AGENT'S face, chat remembers]")
+{
+  const route = src("app/api/portal/ai-chat/route.ts")
+  check("PORTAL RULE (owner): the contact's chat shows THEIR AGENT (photo + name) with the assistant disclosed as the AI, reviewed by the agent",
+    route.includes("agentPhotoUrl") && route.includes("identityOnly")
+    && src("app/components/features/portal/ai/PortalAIAssistant.tsx").includes("AI, reviewed by your agent"))
+  check("CONTINUITY: the context spine (shared memory across calls, videos, chat) rides the portal prompt — referenced naturally, never contradicted, never invented beyond",
+    route.includes("context_spine") && route.includes("WHAT THE TEAM ALREADY KNOWS"))
+  check("the prompt frames the team correctly: the assistant works FOR the agent",
+    route.includes("you are the assistant, ${agentName} is their agent"))
+  check("DAY-ONE INTRO: the seeded assistant introduces itself on camera (D-ID from its generated headshot; a render failure never blocks the seed)",
+    src("lib/kernel/assistant-starter.ts").includes("MEET YOUR ASSISTANT")
+    && src("lib/kernel/assistant-starter.ts").includes("the intro is a delight, not a dependency"))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }

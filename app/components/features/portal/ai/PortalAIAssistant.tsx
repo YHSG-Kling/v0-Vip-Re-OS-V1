@@ -68,6 +68,17 @@ export default function PortalAIAssistant({
   const [unreadCount, setUnreadCount] = useState(0)
   const [input,       setInput]       = useState('')
   const [sessionId,   setSessionId]   = useState<string | null>(null)
+  // WHO the contact is talking to (owner rule: the portal shows THEIR AGENT;
+  // the assistant is disclosed as the AI doing the typing).
+  const [chatIdentity, setChatIdentity] = useState<{ agentName: string | null; agentPhotoUrl: string | null; assistantName: string } | null>(null)
+  useEffect(() => {
+    if (!isOpen || chatIdentity) return
+    fetch('/api/portal/ai-chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contactId, identityOnly: true, messages: [{ role: 'user', content: 'hi' }] }),
+    }).then((r) => r.json()).then((d) => { if (d?.identity) setChatIdentity(d.identity) }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen])
   const [hasOpened,   setHasOpened]   = useState(false)
   const [error,       setError]       = useState<string | null>(null)
 
@@ -215,12 +226,19 @@ export default function PortalAIAssistant({
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 bg-foreground text-background">
             <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-full bg-background/20 flex items-center justify-center">
-                <MessageSquare className="h-4 w-4" />
-              </div>
+              {chatIdentity?.agentPhotoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={chatIdentity.agentPhotoUrl} alt={chatIdentity.agentName ?? 'Your agent'} className="w-8 h-8 rounded-full object-cover ring-2 ring-background/30" />
+              ) : (
+                <div className="w-7 h-7 rounded-full bg-background/20 flex items-center justify-center">
+                  <MessageSquare className="h-4 w-4" />
+                </div>
+              )}
               <div>
-                <p className="text-sm font-semibold leading-tight">Your Agent Assistant</p>
-                <p className="text-xs text-background/60 leading-tight">Ask me anything about your {portalView === 'lifetime' ? 'home' : portalView === 'seller' ? 'listing' : 'transaction'}</p>
+                <p className="text-sm font-semibold leading-tight">{chatIdentity?.agentName ?? 'Your Agent'}&apos;s team</p>
+                <p className="text-xs text-background/60 leading-tight">
+                  {chatIdentity?.assistantName ?? 'AI assistant'} · AI, reviewed by your agent
+                </p>
               </div>
             </div>
             <div className="flex items-center gap-1">

@@ -51,5 +51,35 @@ export async function seedStarterAssistant(svc: any, brokerageId: string): Promi
     active: true,
   })
   if (error) return { seeded: false, withPhoto: false, reason: error.message }
+
+  // MEET YOUR ASSISTANT — a one-time 20-second intro video (D-ID from the
+  // generated headshot + the starter narration voice) delivered to the
+  // broker: onboarding magic on day one. Best-effort — a render failure
+  // never blocks the seed; the assistant still answers the phone.
+  try {
+    if (photoUrl) {
+      const { data: b } = await svc.from("brokerages").select("name").eq("id", brokerageId).maybeSingle()
+      const brokName = (b as any)?.name ?? "your brokerage"
+      const { generateVideo } = await import("@/lib/did")
+      const intro = await generateVideo({
+        script: `Hi, I'm ${STARTER_ASSISTANT_NAME} — the AI assistant for ${brokName}. I answer your calls, brief your mornings, host your weekly show, and keep your clients in the loop. You can rename me, change my face, or pick my voice any time in settings. Let's get to work.`,
+        voiceId: FALLBACK_VOICE_ID, avatarImageUrl: photoUrl,
+        agentUserId: null as any, brokerageId,
+      })
+      if (intro?.videoUrl) {
+        const { data: admins } = await svc.from("users").select("id")
+          .eq("brokerage_id", brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(3)
+        for (const u of ((admins ?? []) as any[])) {
+          await svc.from("notifications").insert({
+            user_id: u.id, brokerage_id: brokerageId, type: "assistant_intro",
+            title: `Meet ${STARTER_ASSISTANT_NAME} — your AI assistant`,
+            body: `${STARTER_ASSISTANT_NAME} introduces itself on camera: ${intro.videoUrl}`,
+            priority: "medium", channel: "in_app", is_read: false,
+          }).then(undefined, () => {})
+        }
+      }
+    }
+  } catch { /* the intro is a delight, not a dependency */ }
+
   return { seeded: true, withPhoto: !!photoUrl }
 }

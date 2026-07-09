@@ -165,6 +165,32 @@ export async function POST(request: Request) {
       .limit(1)
       .maybeSingle()
 
+    // ── CHAT IDENTITY (owner rule: the contact's portal shows THEIR AGENT —
+    // the licensed human they hired — with the named assistant disclosed as
+    // the AI doing the typing, reviewed by the agent). ──
+    let agentName: string | null = null
+    let agentPhotoUrl: string | null = null
+    if (contact.agent_id) {
+      const { data: ag } = await supabase.from('agents')
+        .select('user_id, photo_url, profile_image_url').eq('id', contact.agent_id).maybeSingle()
+      agentPhotoUrl = (ag as any)?.photo_url ?? (ag as any)?.profile_image_url ?? null
+      if ((ag as any)?.user_id) {
+        const { data: u } = await supabase.from('users')
+          .select('first_name, last_name').eq('id', (ag as any).user_id).maybeSingle()
+        agentName = u ? [(u as any).first_name, (u as any).last_name].filter(Boolean).join(' ') || null : null
+      }
+    }
+
+    // ── CONTINUITY — the context spine (one shared memory across phone, video,
+    // and chat): what the team already discussed, referenced naturally. ──
+    let contextSpine: string | null = null
+    try {
+      const { data: cmeta } = await supabase.from('contacts')
+        .select('metadata').eq('id', contactId).maybeSingle()
+      const spine = (cmeta as any)?.metadata?.context_spine
+      if (spine?.summary) contextSpine = String(spine.summary).slice(0, 1200)
+    } catch { /* continuity is additive */ }
+
     // ── Load AI identity profile (agent-scope → brokerage-scope → defaults) ─────
     let aiIdentity: {
       assistant_name: string
@@ -245,10 +271,23 @@ export async function POST(request: Request) {
       } catch { /* inventory is an enhancement, never a dependency */ }
     }
 
+    // Identity-only handshake: the panel header fetches WHO it is talking to
+    // before any model spend (agent face + name, assistant name disclosed).
+    if ((body as any).identityOnly) {
+      return NextResponse.json({
+        identity: {
+          agentName, agentPhotoUrl,
+          assistantName: aiIdentity.assistant_name,
+        },
+      })
+    }
+
     const systemPrompt = [
       `You are ${aiIdentity.assistant_name}, a ${aiIdentity.persona_label} for ${contactName}'s real estate client portal.`,
       `Tone: ${aiIdentity.tone}. Formality: ${aiIdentity.formality_level}.`,
       `You are helping ${contactName} with their ${portalView} journey.`,
+      agentName ? `You work FOR ${contactName}'s agent, ${agentName} — you are the assistant, ${agentName} is their agent. Speak as the team.` : '',
+      contextSpine ? `\nWHAT THE TEAM ALREADY KNOWS (shared memory across calls, videos, and chat — reference naturally, NEVER contradict, never invent beyond it):\n${contextSpine}\n` : '',
       '',
       'YOUR RULES:',
       '- You may ONLY discuss information from the context below.',
