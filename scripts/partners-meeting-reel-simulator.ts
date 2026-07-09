@@ -69,6 +69,25 @@ check("targets the registered PartnersMeetingReel composition at 1920×1080 / 90
 check("carries the earned reel props as inputProps (cards + one ask)",
   req.inputProps.cards.length === full.cards.length && req.inputProps.oneAsk === full.oneAsk)
 
+console.log("\n[5 · LIVE WIRING — the show actually runs (composition was orphaned before)]")
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+const pm = src("lib/intelligence/partners-meeting.ts")
+check("the weekly producer QUEUES the reel (one per brokerage per week) with the D-ID clip as the avatar PIP",
+  pm.includes("queuePartnersMeetingReel") && pm.includes("avatarVideoUrl: avatarClipUrl")
+  && pm.includes('PARTNERS_MEETING_REEL_ENTITY = "partners_meeting_reel"'))
+check("brand comes from the ONE live resolver (brokerages + brand settings — never HeyGen presets)",
+  pm.includes("resolveReelBrand") && src("lib/video/reel-brand.ts").includes("brokerage_brand_settings")
+  && !src("lib/video/reel-brand.ts").includes('.from("video_branding_presets")'))
+check("branded VideoCoverThumb pass rides input_props.thumbnail_props on both reel producers",
+  pm.includes("thumbnail_props") && src("lib/kernel/board-packet-reel.ts").includes("thumbnail_props"))
+check("?phase=deliver sweeps completed shows Monday afternoon (route branch + dispatcher schedule)",
+  src("app/api/cron/partners-meeting/route.ts").includes("deliverPartnersMeetingReels")
+  && src("lib/kernel/cron-dispatch.ts").includes("partners-meeting?phase=deliver"))
+check("KEEP-ONE delivery sweep: both reels share deliverCompletedReels (no second sweep)",
+  pm.includes("deliverCompletedReels") && src("lib/kernel/board-packet-reel.ts").includes("deliverCompletedReels"))
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }

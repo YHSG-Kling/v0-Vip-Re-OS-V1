@@ -136,6 +136,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/dotloop-sync"                        , schedule: "0 */6 * * *" },
   { path: "/api/cron/earnings-rollup"                     , schedule: "0 1 * * *" },
   { path: "/api/cron/partners-meeting"                    , schedule: "0 1 * * 1" },
+  { path: "/api/cron/partners-meeting?phase=deliver"      , schedule: "0 16 * * 1" },
   { path: "/api/cron/ghost-detection"                     , schedule: "0 10 * * *" },
   { path: "/api/cron/distribute-podcast-episodes"         , schedule: "0 10 * * 2" },
   { path: "/api/cron/referral-asks"                       , schedule: "0 10 * * 2" },

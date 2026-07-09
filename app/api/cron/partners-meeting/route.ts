@@ -19,8 +19,9 @@ export async function GET(req: NextRequest) {
   const unauth = verifyCronAuth(req)
   if (unauth) return unauth
 
+  const phase = new URL(req.url).searchParams.get("phase") ?? "produce"
   const contextResult = await createCronRunContextAction({
-    cron_name: "partners-meeting",
+    cron_name: phase === "deliver" ? "partners-meeting-deliver" : "partners-meeting",
     cron_path: "/app/api/cron/partners-meeting/route.ts",
   })
   if (!contextResult.success || !contextResult.data) {
@@ -34,6 +35,15 @@ export async function GET(req: NextRequest) {
   let meetings = 0, video = 0, audio = 0, memo = 0
 
   try {
+    // ?phase=deliver (Monday afternoon): sweep the completed weekly-show
+    // renders (the reel queued by the 01:00 produce pass) → notify leadership.
+    if (phase === "deliver") {
+      const { deliverPartnersMeetingReels } = await import("@/lib/intelligence/partners-meeting")
+      const delivery = await deliverPartnersMeetingReels(supabase)
+      await recordCronSuccessAction({ context_id: contextId, records_processed: delivery.notified, metadata: delivery as any }).catch(() => {})
+      return NextResponse.json({ ok: true, ...delivery })
+    }
+
     const { data: rows, error } = await supabase.from("brokerages").select("id").limit(500)
     if (error) throw error
 

@@ -77,7 +77,8 @@ export function buildBoardPacketReelProps(
 
 /** Queue ONE packet reel per brokerage per month (idempotent by entity + month
  *  window on the render ledger). Best-effort — a queue failure never blocks
- *  the PDF packet. */
+ *  the PDF packet. Branded from the LIVE tenant brand tables + a branded
+ *  VideoCoverThumb pass (thumbnail_props). */
 export async function queueBoardPacketReel(
   svc: any, p: { brokerageId: string; monthStartIso: string; data: BoardPacketData },
 ): Promise<boolean> {
@@ -89,13 +90,22 @@ export async function queueBoardPacketReel(
     .gte("created_at", p.monthStartIso)
     .limit(1).maybeSingle()
   if (existing) return false
+  const { resolveReelBrand } = await import("@/lib/video/reel-brand")
+  const brand = await resolveReelBrand(svc, p.brokerageId)
+  const props = buildBoardPacketReelProps(p.data, { brand }) as unknown as Record<string, unknown>
+  props.thumbnail_props = {
+    kind: "presentation", title: `${p.data.monthLabel} Board Packet`,
+    subtitle: "Presented by your AI team", eyebrow: "BOARD PACKET",
+    agentName: brand.brokerageName,
+    brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: true, ...(brand.logoUrl ? { logoUrl: brand.logoUrl } : {}) },
+  }
   const { recordRenderQueued } = await import("@/lib/remotion/registry")
   const r = await recordRenderQueued({
     brokerageId: p.brokerageId,
     compositionId: BOARD_PACKET_REEL_COMPOSITION,
     entityType: BOARD_PACKET_REEL_ENTITY,
     entityId: p.brokerageId,
-    inputProps: buildBoardPacketReelProps(p.data) as unknown as Record<string, unknown>,
+    inputProps: props,
     scopeType: "brokerage",
     scopeId: p.brokerageId,
     requestedVia: "cron",
@@ -109,31 +119,12 @@ export interface PacketReelDeliveryResult { completed: number; notified: number 
  *  COMPLETED packet reel this month whose broker admins haven't been told →
  *  one notification each, deduped by the render id carried in the body. */
 export async function deliverBoardPacketReels(svc: any, now: Date = new Date()): Promise<PacketReelDeliveryResult> {
-  const out: PacketReelDeliveryResult = { completed: 0, notified: 0 }
-  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString()
-  const { data: renders } = await svc.from("remotion_composition_renders")
-    .select("id, brokerage_id, output_url")
-    .eq("composition_id", BOARD_PACKET_REEL_COMPOSITION)
-    .eq("entity_type", BOARD_PACKET_REEL_ENTITY)
-    .eq("render_status", "completed").not("output_url", "is", null)
-    .gte("created_at", monthStart).limit(200)
-  for (const ren of ((renders ?? []) as any[])) {
-    out.completed += 1
-    const marker = `[packet-reel:${ren.id}]`
-    const { data: dup } = await svc.from("notifications").select("id")
-      .eq("brokerage_id", ren.brokerage_id).ilike("body", `%${marker}%`).limit(1).maybeSingle()
-    if (dup) continue
-    const { data: admins } = await svc.from("users").select("id")
-      .eq("brokerage_id", ren.brokerage_id).in("user_type", ["broker", "broker_admin", "admin"]).limit(5)
-    for (const u of ((admins ?? []) as any[])) {
-      await svc.from("notifications").insert({
-        user_id: u.id, brokerage_id: ren.brokerage_id, type: "board_packet_ready",
-        title: "Your board packet video is ready",
-        body: `Your AI team presents the month on camera — production, the receipts, and the compliance line. Watch: ${ren.output_url} ${marker}`,
-        priority: "medium", channel: "in_app", is_read: false,
-      }).then(undefined, () => {})
-      out.notified += 1
-    }
-  }
-  return out
+  const { deliverCompletedReels } = await import("@/lib/video/reel-brand")
+  return deliverCompletedReels(svc, {
+    entityType: BOARD_PACKET_REEL_ENTITY,
+    sinceIso: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
+    notificationType: "board_packet_ready",
+    title: "Your board packet video is ready",
+    bodyIntro: "Your AI team presents the month on camera — production, the receipts, and the compliance line.",
+  })
 }

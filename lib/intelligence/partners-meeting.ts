@@ -212,6 +212,8 @@ export async function producePartnersMeeting(
   }
 
   let meetings = 0, video = 0, audio = 0, memo = 0
+  let avatarClipUrl: string | null = null
+  let avatarUserName: string | null = null
   for (const user of audience) {
     // One meeting per user per week.
     const { data: already } = await supabase.from("notifications").select("id")
@@ -230,10 +232,71 @@ export async function producePartnersMeeting(
     })
     if (error) continue
     meetings += 1
-    if (media?.kind === "video") video += 1
+    if (media?.kind === "video") { video += 1; avatarClipUrl = avatarClipUrl ?? media.url; avatarUserName = avatarUserName ?? user.first_name }
     else if (media?.kind === "audio") audio += 1
     else memo += 1
   }
 
+  // ── The SHOW: one PartnersMeetingReel render per brokerage per week — the
+  // same earned numbers as branded 1080p stat cards, with the D-ID avatar clip
+  // (the broker's cloned voice, already generated above) in the PIP. Queued on
+  // the shared render rail; the Monday ?phase=deliver sweep notifies leadership.
+  // Best-effort — a render-queue hiccup never blocks the meeting itself. ──
+  try {
+    await queuePartnersMeetingReel(supabase, {
+      brokerageId, week, avatarVideoUrl: avatarClipUrl, agentName: avatarUserName ?? "Your AI Team", now,
+    })
+  } catch { /* reel is additive */ }
+
   return { meetings, video, audio, memo }
+}
+
+/** entity_type on the weekly show's render row (dedupe + delivery-sweep key). */
+export const PARTNERS_MEETING_REEL_ENTITY = "partners_meeting_reel"
+
+/** Queue ONE weekly-show render per brokerage per week, branded from the live
+ *  tenant brand tables, with a branded VideoCoverThumb pass. Idempotent on the
+ *  render ledger (entity + 6-day window). */
+export async function queuePartnersMeetingReel(
+  supabase: Svc,
+  p: { brokerageId: string; week: WeekInBusiness; avatarVideoUrl: string | null; agentName: string; now: Date },
+): Promise<boolean> {
+  const sinceIso = new Date(p.now.getTime() - 6 * 86_400_000).toISOString()
+  const { data: existing } = await supabase.from("remotion_composition_renders").select("id")
+    .eq("brokerage_id", p.brokerageId).eq("composition_id", "PartnersMeetingReel")
+    .eq("entity_type", PARTNERS_MEETING_REEL_ENTITY).eq("entity_id", p.brokerageId)
+    .gte("created_at", sinceIso).limit(1).maybeSingle()
+  if (existing) return false
+
+  const { resolveReelBrand } = await import("@/lib/video/reel-brand")
+  const brand = await resolveReelBrand(supabase, p.brokerageId)
+  const { buildPartnersMeetingRenderRequest } = await import("@/lib/intelligence/partners-meeting-reel-props")
+  const req = buildPartnersMeetingRenderRequest(p.week, {
+    agentName: p.agentName, avatarVideoUrl: p.avatarVideoUrl, brand,
+  })
+  const props = req.inputProps as unknown as Record<string, unknown>
+  props.thumbnail_props = {
+    kind: "presentation", title: "Partners' Meeting", subtitle: p.week.weekLabel, eyebrow: "THE AI TEAM'S WEEK",
+    agentName: brand.brokerageName,
+    brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: true, ...(brand.logoUrl ? { logoUrl: brand.logoUrl } : {}) },
+  }
+  const { recordRenderQueued } = await import("@/lib/remotion/registry")
+  const r = await recordRenderQueued({
+    brokerageId: p.brokerageId, compositionId: req.compositionId,
+    entityType: PARTNERS_MEETING_REEL_ENTITY, entityId: p.brokerageId,
+    inputProps: props, scopeType: "brokerage", scopeId: p.brokerageId, requestedVia: "cron",
+  })
+  return r.ok
+}
+
+/** Monday-afternoon sweep: completed weekly shows → leadership notified. */
+export async function deliverPartnersMeetingReels(supabase: Svc, now: Date = new Date()) {
+  const { deliverCompletedReels } = await import("@/lib/video/reel-brand")
+  return deliverCompletedReels(supabase, {
+    entityType: PARTNERS_MEETING_REEL_ENTITY,
+    sinceIso: new Date(now.getTime() - 6 * 86_400_000).toISOString(),
+    notificationType: "partners_meeting",
+    title: "This week's show is ready — your AI team on camera",
+    bodyIntro: "The Partners' Meeting as a branded video: the week's plays, the money booked, and the compliance disposition.",
+  })
 }
