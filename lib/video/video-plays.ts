@@ -137,3 +137,87 @@ export async function runWalkthroughPremieres(svc: any): Promise<Pick<VideoPlays
   }
   return out
 }
+
+/** LISTING FLYER runner — every photo-rich listing in its marketing window
+ *  gets the 8.5x11 print flyer (still render, tracked scan-to-tour QR),
+ *  idempotent per listing; the finished PNG is handed to THE AGENT. Closes
+ *  the print family (the QR system anticipated `listing_flyer` for years). */
+export async function runListingFlyers(svc: any): Promise<{ flyers: number; delivered: number; errors: number }> {
+  const out = { flyers: 0, delivered: 0, errors: 0 }
+  const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+  const { data: listings } = await svc.from("listings")
+    .select("id, brokerage_id, agent_id, address, city, state, list_price, bedrooms, bathrooms, sqft, property_type, public_remarks, photos, primary_photo_url, lifecycle_stage")
+    .in("lifecycle_stage", ["COMING_SOON_ACTIVE", "MLS_ACTIVE", "OPEN_HOUSE_MARKETING", "OPEN_HOUSE_EVENT"])
+    .is("deleted_at", null).gte("created_at", since).limit(300)
+  for (const l of ((listings ?? []) as any[])) {
+    const photos = Array.isArray(l.photos) ? l.photos.map((p: any) => (typeof p === "string" ? p : p?.url)).filter((u: any) => typeof u === "string") : []
+    const hero = l.primary_photo_url ?? photos[0]
+    if (!hero) continue
+    try {
+      const { data: existing } = await svc.from("remotion_composition_renders").select("id")
+        .eq("brokerage_id", l.brokerage_id).eq("composition_id", "ListingFlyer")
+        .eq("entity_type", "listing_flyer").eq("entity_id", l.id).limit(1).maybeSingle()
+      if (existing) continue
+
+      const { data: agent } = await svc.from("agents").select("user_id, photo_url, profile_image_url").eq("id", l.agent_id).maybeSingle()
+      const agentUserId = (agent as any)?.user_id
+      if (!agentUserId) continue
+      const { data: u } = await svc.from("users").select("first_name, last_name, phone").eq("id", agentUserId).maybeSingle()
+      const agentName = u ? [(u as any).first_name, (u as any).last_name].filter(Boolean).join(" ") || "Your Agent" : "Your Agent"
+
+      const [{ resolveReelBrand }, { mintVideoQr }] = await Promise.all([
+        import("@/lib/video/reel-brand"), import("@/lib/video/video-qr"),
+      ])
+      const brand = await resolveReelBrand(svc, l.brokerage_id)
+      const qr = await mintVideoQr({ brokerageId: l.brokerage_id, agentUserId, kind: "just_listed", listingId: l.id }, svc)
+
+      const stage = String(l.lifecycle_stage ?? "").toUpperCase()
+      const statusLine = stage.startsWith("OPEN_HOUSE") ? "OPEN HOUSE" : stage === "COMING_SOON_ACTIVE" ? "COMING SOON" : "JUST LISTED"
+      const highlights = String(l.public_remarks ?? "").split(/[.\n]/).map((s: string) => s.trim()).filter((s: string) => s.length > 12 && s.length < 70).slice(0, 4)
+      const price = l.list_price ? `$${Number(l.list_price).toLocaleString("en-US")}` : ""
+
+      const { recordRenderQueued } = await import("@/lib/remotion/registry")
+      const rq = await recordRenderQueued({
+        brokerageId: l.brokerage_id, compositionId: "ListingFlyer", agentUserId,
+        entityType: "listing_flyer", entityId: l.id,
+        inputProps: {
+          address: l.address ?? "", cityState: [l.city, l.state].filter(Boolean).join(", "),
+          price, beds: String(l.bedrooms ?? ""), baths: String(l.bathrooms ?? ""),
+          sqft: l.sqft ? Number(l.sqft).toLocaleString("en-US") : "", propertyType: l.property_type ?? "",
+          highlights, heroImageUrl: hero, photoUrls: photos.slice(1, 4),
+          agentName, agentPhone: (u as any)?.phone ?? "",
+          agentPhotoUrl: (agent as any)?.photo_url ?? (agent as any)?.profile_image_url ?? null,
+          qrCodeDataUrl: qr?.qrCodeDataUrl ?? null, qrCaption: "Scan to tour",
+          statusLine,
+          brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, logoUrl: brand.logoUrl, brokerageName: brand.brokerageName, licenseLine: null, showEhoMark: true },
+        },
+        scopeType: "brokerage", scopeId: l.brokerage_id, requestedVia: "cron",
+      })
+      if (rq.ok) out.flyers += 1
+    } catch { out.errors += 1 }
+  }
+
+  // Deliver finished flyers (stills render within minutes) to THE AGENT.
+  try {
+    const { data: done } = await svc.from("remotion_composition_renders")
+      .select("id, brokerage_id, agent_user_id, output_url, input_props")
+      .eq("entity_type", "listing_flyer").eq("render_status", "succeeded")
+      .not("output_url", "is", null).gte("created_at", since).limit(100)
+    for (const ren of ((done ?? []) as any[])) {
+      if (!ren.agent_user_id) continue
+      const marker = `[flyer:${ren.id}]`
+      const { data: dup } = await svc.from("notifications").select("id")
+        .eq("brokerage_id", ren.brokerage_id).ilike("body", `%${marker}%`).limit(1).maybeSingle()
+      if (dup) continue
+      const address = (ren.input_props as any)?.address ?? "your listing"
+      await svc.from("notifications").insert({
+        user_id: ren.agent_user_id, brokerage_id: ren.brokerage_id, type: "listing_flyer_ready",
+        title: `Print flyer ready — ${address}`,
+        body: `Your 8.5x11 open-house flyer (300 DPI, tracked QR) is print-ready: ${ren.output_url} ${marker}`,
+        priority: "medium", channel: "in_app", is_read: false,
+      }).then(undefined, () => {})
+      out.delivered += 1
+    }
+  } catch { /* delivery retries next run */ }
+  return out
+}

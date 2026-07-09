@@ -34,6 +34,7 @@ import { LeadMagnetCard } from "./LeadMagnetCard"
 import { NewsletterDigestVideo } from "./NewsletterDigestVideo"
 import { NewsletterDigestThumb } from "./NewsletterDigestThumb"
 import { PostcardFront4x6 } from "./PostcardFront4x6"
+import { ListingFlyer } from "./ListingFlyer"
 import { PostcardBack4x6 } from "./PostcardBack4x6"
 import { PostcardFront6x9 } from "./PostcardFront6x9"
 import { PostcardBack6x9 } from "./PostcardBack6x9"
@@ -790,6 +791,28 @@ export const RemotionRoot: React.FC = () => {
       {/* Wave 36 — 4×6 postcard front. Lob's bleed canvas is 4.25"×6.25"
           at 300 DPI = 1275×1875 px. renderStill() produces the PNG that
           ships to Lob's postcards.create({ front: <url> }). */}
+      {/* THE LISTING FLYER — 8.5x11 @ 300 DPI print still (bleed canvas
+          2625x3375). The open-house handout with hero photo, facts strip,
+          agent block, and the tracked scan-to-tour QR. */}
+      <Composition
+        id="ListingFlyer"
+        component={ListingFlyer as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={1}
+        fps={30}
+        width={2625}
+        height={3375}
+        defaultProps={{
+          address: "128 Harborview Lane", cityState: "Naples, FL 34102",
+          price: "$1,250,000", beds: "4", baths: "3.5", sqft: "3,240",
+          propertyType: "Single Family", highlights: ["Chef's kitchen with quartz island", "Saltwater pool + lanai", "Half-acre corner lot", "3-car garage"],
+          heroImageUrl: null, photoUrls: [], agentName: "Your Agent",
+          agentPhone: "(555) 010-2000", agentPhotoUrl: null,
+          qrCodeDataUrl: null, qrCaption: "Scan to tour",
+          statusLine: "JUST LISTED",
+          brand: { primaryColor: "#0F172A", accentColor: "#F59E0B", logoUrl: null, brokerageName: "Your Brokerage", licenseLine: null, showEhoMark: true },
+        }}
+      />
+
       <Composition
         id="PostcardFront4x6"
         component={PostcardFront4x6 as unknown as React.FC<Record<string, unknown>>}

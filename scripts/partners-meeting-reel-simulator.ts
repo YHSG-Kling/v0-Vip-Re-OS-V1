@@ -304,10 +304,11 @@ import { detectRateMoment, isTestimonialWorthy, isWalkthroughEligible } from "..
     isWalkthroughEligible({ lifecycle_stage: "MLS_ACTIVE", photos: [1, 2, 3, 4, 5] }) === true
     && isWalkthroughEligible({ lifecycle_stage: "MLS_ACTIVE", photos: [1, 2] }) === false
     && isWalkthroughEligible({ lifecycle_stage: "SOLD", photos: [1, 2, 3, 4, 5] }) === false)
-  check("the Director learned photo_walkthrough (PhotoWalkthroughReel, photos ARE the video) — every play stages through commissionVideo",
+  check("the Director learned photo_walkthrough — every VIDEO play stages through commissionVideo (direct queueing is reserved for the print STILL flyer)",
     src("lib/video/video-director.ts").includes('"photo_walkthrough"')
     && src("lib/video/video-plays.ts").includes("commissionVideo")
-    && !src("lib/video/video-plays.ts").includes("recordRenderQueued"))
+    && (src("lib/video/video-plays.ts").match(/recordRenderQueued/g) ?? []).length <= 2
+    && src("lib/video/video-plays.ts").includes('compositionId: "ListingFlyer"'))
   check("wiring: market-moment rides the rates cron tick; testimonial + walkthrough ride the daily video-plays cron (asset_manager-owned)",
     src("app/api/cron/refresh-market-rates/route.ts").includes("runMarketMomentReels")
     && src("app/api/cron/video-plays/route.ts").includes("runTestimonialReels")
@@ -443,6 +444,25 @@ console.log("\n[22 · THE FLYWHEEL FOUNDATION + THE STUDIO'S V4 FUTURE, STRUCTUR
   check("STRUCTURAL V4 INHERITANCE: the Studio's avatar ids pass straight through resolveAvatarSource as actorId, and lib/did routes @avt_ ids to /expressives — the day D-ID ships custom expressive avatar creation, every agent inherits V4 with ZERO pipeline change",
     src("lib/did/index.ts").includes("if (input.actorId) return { actorId: input.actorId }")
     && src("lib/did/index.ts").includes('includes("@avt_")'))
+}
+
+console.log("\n[23 · PRINT TOP-OF-LINE — the LISTING FLYER closes the family the QR system anticipated]")
+{
+  const rootIds2 = Array.from(src("remotion/Root.tsx").matchAll(/id="([A-Za-z0-9]+)"/g)).map((m) => m[1])
+  check("ListingFlyer exists: 8.5x11 @ 300 DPI print still (2625x3375 bleed canvas), registered in Root + the finish spec (stills ARE the deliverable)",
+    rootIds2.includes("ListingFlyer")
+    && src("remotion/ListingFlyer.tsx").includes("2625") && src("remotion/ListingFlyer.tsx").includes("3375")
+    && VIDEO_FINISH_SPEC.ListingFlyer.bookends === false && VIDEO_FINISH_SPEC.ListingFlyer.music === false
+    && existsSync(join(process.cwd(), "scripts/l41-s01-listing-flyer.sql")))
+  check("the flyer carries the full print discipline: hero + price band + facts strip + agent block + tracked QR + EHO/license footer",
+    ["heroImageUrl", "qrCodeDataUrl", "Equal Housing Opportunity", "agentPhone", "statusLine"].every((s2) => src("remotion/ListingFlyer.tsx").includes(s2)))
+  check("the flyer play runs on the video-plays cron: photo-rich marketing-window listings, idempotent per listing, finished PNG delivered to THE AGENT",
+    src("lib/video/video-plays.ts").includes("runListingFlyers")
+    && src("lib/video/video-plays.ts").includes('"listing_flyer"')
+    && src("lib/video/video-plays.ts").includes("Scan to tour")
+    && src("app/api/cron/video-plays/route.ts").includes("runListingFlyers"))
+  check("image generation is on the CURRENT model (gpt-image-1 via the AI Gateway) — flyer/postcard image inputs are top-of-line",
+    src("lib/ai/image-generation.ts").includes("gpt-image-1"))
 }
 
 console.log("\n──────────────────────────────────────────────────")

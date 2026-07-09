@@ -84,6 +84,7 @@ export const VIDEO_FINISH_SPEC: Record<string, VideoFinish> = {
   NewsletterDigestVideo: { ...MARKETING, broll: "optional" },
   ProductPromoReel: { ...MARKETING, broll: "optional", qr: true },
   // ── Stills — they ARE the deliverable ──
+  ListingFlyer: STILL, // 8.5x11 print — the flyer IS the deliverable
   VideoCoverThumb: STILL,
   NewsletterDigestThumb: STILL,
   LeadMagnetCard: STILL,
