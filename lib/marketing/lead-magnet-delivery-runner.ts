@@ -32,7 +32,7 @@ export async function recordMagnetDelivery(
  *  demand topics, AI-written, and compliance-gated. Best-effort. */
 export async function deliverMagnet(
   args: { brokerageId: string; contactId: string; agentUserId?: string | null; magnetType: MagnetType; ctx?: CopyContext }, client?: Svc,
-): Promise<{ delivered: boolean; fromTopics: boolean }> {
+): Promise<{ delivered: boolean; fromTopics: boolean; pdfUrl?: string | null }> {
   const svc = client ?? createServiceClient()
 
   // 1. What are buyers/sellers actually asking? (gated web-search rail → ranked topics)
@@ -56,6 +56,42 @@ export async function deliverMagnet(
 
   const deliverable = await prepareMagnetDeliverable(args.magnetType, args.ctx, { topics, copyGenerator: realCopyGenerator, gate }).catch(() => null)
   if (!deliverable) return { delivered: false, fromTopics: false }
+
+  // 3. Guide magnets get the DESIGNED BOOKLET: a real branded PDF (cover +
+  //    chapters + agent attribution) hosted on our storage, with the download
+  //    link appended to the delivery copy. The AI/topic-grounded copy above is
+  //    the booklet intro; the evergreen chapters are the durable spine.
+  //    Best-effort — the copy still delivers if the PDF render hiccups.
+  let pdfUrl: string | null = null
+  if (args.magnetType === "buyer_guide" || args.magnetType === "seller_guide") {
+    try {
+      const { resolvePdfBrand, produceClientDocument } = await import("@/lib/documents/client-document-producer")
+      const { guideBookletSpec } = await import("@/lib/documents/client-pdf")
+      const { guideChaptersFor } = await import("./guide-booklet-content")
+      const brand = await resolvePdfBrand(svc, { brokerageId: args.brokerageId, agentUserId: args.agentUserId })
+      const dateLabel = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long" })
+      const spec = guideBookletSpec({
+        kind: args.magnetType,
+        title: deliverable.title,
+        intro: deliverable.body,
+        chapters: guideChaptersFor(args.magnetType),
+        areaLabel: args.ctx?.area ?? null,
+      }, brand, dateLabel)
+      const produced = await produceClientDocument(svc, {
+        brokerageId: args.brokerageId,
+        agentUserId: args.agentUserId,
+        contactId: args.contactId,
+        documentType: args.magnetType,
+        spec,
+        metadata: { source: "lead_magnet_delivery" },
+      })
+      if (produced.ok && produced.pdfUrl) {
+        pdfUrl = produced.pdfUrl
+        deliverable.body = `${deliverable.body}\n\nDownload your full guide (PDF): ${produced.pdfUrl}`
+      }
+    } catch { /* copy-only delivery is still a delivery */ }
+  }
+
   const r = await recordMagnetDelivery({ ...args, deliverable }, svc)
-  return { delivered: r.ok, fromTopics: topics.length > 0 }
+  return { delivered: r.ok, fromTopics: topics.length > 0, pdfUrl }
 }

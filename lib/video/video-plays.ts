@@ -221,3 +221,82 @@ export async function runListingFlyers(svc: any): Promise<{ flyers: number; deli
   } catch { /* delivery retries next run */ }
   return out
 }
+
+/** DOOR HANGER PLAY — a listing CLOSES and the neighborhood door-knock piece
+ *  is waiting for the agent the same day: "JUST SOLD" + the neighbor hook +
+ *  a scan-to-value QR (4.25x11 @ 300 DPI print still, dashed knob die-cut
+ *  guide). Idempotent per listing (entity_type door_hanger). A print STILL,
+ *  not a Director video — it queues the render directly like the flyer. */
+export async function runDoorHangers(svc: any): Promise<{ doorHangers: number; hangersDelivered: number; hangerErrors: number }> {
+  const out = { doorHangers: 0, hangersDelivered: 0, hangerErrors: 0 }
+  const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+  const { data: listings } = await svc.from("listings")
+    .select("id, brokerage_id, agent_id, address, city, state, photos, primary_photo_url, lifecycle_stage, updated_at")
+    .eq("lifecycle_stage", "CLOSED")
+    .is("deleted_at", null).gte("updated_at", since).limit(200)
+  for (const l of ((listings ?? []) as any[])) {
+    const photos = Array.isArray(l.photos) ? l.photos.map((p: any) => (typeof p === "string" ? p : p?.url)).filter((u: any) => typeof u === "string") : []
+    const hero = l.primary_photo_url ?? photos[0]
+    if (!hero) continue
+    try {
+      const { data: existing } = await svc.from("remotion_composition_renders").select("id")
+        .eq("brokerage_id", l.brokerage_id).eq("composition_id", "DoorHanger")
+        .eq("entity_type", "door_hanger").eq("entity_id", l.id).limit(1).maybeSingle()
+      if (existing) continue
+
+      const { data: agent } = await svc.from("agents").select("user_id, photo_url, profile_image_url").eq("id", l.agent_id).maybeSingle()
+      const agentUserId = (agent as any)?.user_id
+      if (!agentUserId) continue
+      const { data: u } = await svc.from("users").select("first_name, last_name, phone").eq("id", agentUserId).maybeSingle()
+      const agentName = u ? [(u as any).first_name, (u as any).last_name].filter(Boolean).join(" ") || "Your Agent" : "Your Agent"
+
+      const [{ resolveReelBrand }, { mintVideoQr }] = await Promise.all([
+        import("@/lib/video/reel-brand"), import("@/lib/video/video-qr"),
+      ])
+      const brand = await resolveReelBrand(svc, l.brokerage_id)
+      const qr = await mintVideoQr({ brokerageId: l.brokerage_id, agentUserId, kind: "just_sold", listingId: l.id }, svc)
+
+      const { recordRenderQueued } = await import("@/lib/remotion/registry")
+      const rq = await recordRenderQueued({
+        brokerageId: l.brokerage_id, compositionId: "DoorHanger", agentUserId,
+        entityType: "door_hanger", entityId: l.id,
+        inputProps: {
+          headline: "JUST SOLD",
+          address: l.address ?? "", cityState: [l.city, l.state].filter(Boolean).join(", "),
+          heroImageUrl: hero,
+          hook: "Curious what YOUR home is worth in today's market?",
+          agentName, agentPhone: (u as any)?.phone ?? "",
+          agentPhotoUrl: (agent as any)?.photo_url ?? (agent as any)?.profile_image_url ?? null,
+          qrCodeDataUrl: qr?.qrCodeDataUrl ?? null, qrCaption: "Scan for your home's value",
+          brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, logoUrl: brand.logoUrl, brokerageName: brand.brokerageName, licenseLine: null, showEhoMark: true },
+        },
+        scopeType: "brokerage", scopeId: l.brokerage_id, requestedVia: "cron",
+      })
+      if (rq.ok) out.doorHangers += 1
+    } catch { out.hangerErrors += 1 }
+  }
+
+  // Deliver finished hangers to THE AGENT (stills render within minutes).
+  try {
+    const { data: done } = await svc.from("remotion_composition_renders")
+      .select("id, brokerage_id, agent_user_id, output_url, input_props")
+      .eq("entity_type", "door_hanger").eq("render_status", "succeeded")
+      .not("output_url", "is", null).gte("created_at", since).limit(100)
+    for (const ren of ((done ?? []) as any[])) {
+      if (!ren.agent_user_id) continue
+      const marker = `[hanger:${ren.id}]`
+      const { data: dup } = await svc.from("notifications").select("id")
+        .eq("brokerage_id", ren.brokerage_id).ilike("body", `%${marker}%`).limit(1).maybeSingle()
+      if (dup) continue
+      const address = (ren.input_props as any)?.address ?? "your sold listing"
+      await svc.from("notifications").insert({
+        user_id: ren.agent_user_id, brokerage_id: ren.brokerage_id, type: "door_hanger_ready",
+        title: `Door hangers ready — ${address}`,
+        body: `Your just-sold door-knock piece (4.25x11, 300 DPI, scan-to-value QR) is print-ready for the neighborhood: ${ren.output_url} ${marker}`,
+        priority: "medium", channel: "in_app", is_read: false,
+      }).then(undefined, () => {})
+      out.hangersDelivered += 1
+    }
+  } catch { /* delivery retries next run */ }
+  return out
+}

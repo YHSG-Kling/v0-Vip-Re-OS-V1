@@ -35,6 +35,7 @@ import { NewsletterDigestVideo } from "./NewsletterDigestVideo"
 import { NewsletterDigestThumb } from "./NewsletterDigestThumb"
 import { PostcardFront4x6 } from "./PostcardFront4x6"
 import { ListingFlyer } from "./ListingFlyer"
+import { DoorHanger } from "./DoorHanger"
 import { PostcardBack4x6 } from "./PostcardBack4x6"
 import { PostcardFront6x9 } from "./PostcardFront6x9"
 import { PostcardBack6x9 } from "./PostcardBack6x9"
@@ -809,6 +810,27 @@ export const RemotionRoot: React.FC = () => {
           agentPhone: "(555) 010-2000", agentPhotoUrl: null,
           qrCodeDataUrl: null, qrCaption: "Scan to tour",
           statusLine: "JUST LISTED",
+          brand: { primaryColor: "#0F172A", accentColor: "#F59E0B", logoUrl: null, brokerageName: "Your Brokerage", licenseLine: null, showEhoMark: true },
+        }}
+      />
+
+      {/* THE DOOR HANGER — 4.25x11 @ 300 DPI print still (bleed canvas
+          1350x3375, dashed die-cut knob guide). The just-sold door-knock
+          piece: neighbor hook + scan-to-value QR + agent block. */}
+      <Composition
+        id="DoorHanger"
+        component={DoorHanger as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={1}
+        fps={30}
+        width={1350}
+        height={3375}
+        defaultProps={{
+          headline: "JUST SOLD",
+          address: "128 Harborview Lane", cityState: "Naples, FL 34102",
+          heroImageUrl: null,
+          hook: "Curious what YOUR home is worth in today's market?",
+          agentName: "Your Agent", agentPhone: "(555) 010-2000", agentPhotoUrl: null,
+          qrCodeDataUrl: null, qrCaption: "Scan for your home's value",
           brand: { primaryColor: "#0F172A", accentColor: "#F59E0B", logoUrl: null, brokerageName: "Your Brokerage", licenseLine: null, showEhoMark: true },
         }}
       />

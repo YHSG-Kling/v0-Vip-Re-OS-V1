@@ -1,0 +1,295 @@
+#!/usr/bin/env tsx
+/**
+ * scripts/asset-production-simulator.ts
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE ASSET-PRODUCTION PROOF — the 2026-07 asset-type gap audit's three builds,
+ * locked so they can never quietly regress to the stubs they replaced:
+ *
+ *  [1] PHOTO INTELLIGENCE (was three fakes: filename-regex "room detection",
+ *      a quality score that returned null, and an "enhancement" that appended
+ *      ?enhanced=true inside a setTimeout that never fires in serverless):
+ *      real vision analysis, REAL pixel enhancement (sharp), virtual staging +
+ *      twilight via gpt-image-1 EDITS with the MLS disclosure, staged variants
+ *      quarantined to marketing_assets (never the MLS photo set), a nightly
+ *      asset_manager sweep with autonomous hero fill.
+ *  [2] CLIENT PDF ENGINE (was a mock whose "PDF" was raw HTML bytes with a
+ *      .pdf name): real pdf-lib multi-page documents — CMA leave-behind wired
+ *      into the listing-presentation builder, buyer/seller guide BOOKLETS
+ *      wired into lead-magnet delivery, compliance footer on every page,
+ *      hosted on Supabase storage, recorded in generated_documents.
+ *  [3] DOOR HANGER (print family completion): 4.25x11 @300DPI just-sold
+ *      door-knock still, autonomous on CLOSED via the video-plays cron,
+ *      scan-to-value QR, anti-solicitation line.
+ *
+ * Layer 1 is PURE (real sharp pixels, real pdf-lib bytes — no mocks, no DB).
+ * Layer 2 is source-lock (the wiring + the dead stubs stay dead).
+ *
+ * Run: npx tsx scripts/asset-production-simulator.ts   (npm run test:asset-production)
+ */
+import { readFileSync, existsSync } from "fs"
+import { join, dirname } from "path"
+import { fileURLToPath } from "url"
+import sharp from "sharp"
+import { PDFDocument, StandardFonts } from "pdf-lib"
+import {
+  applyEnhancements,
+  buildMultipartBody,
+  stagingPrompt,
+  twilightPrompt,
+  VIRTUAL_STAGING_DISCLOSURE,
+  TWILIGHT_DISCLOSURE,
+  LISTING_ROOM_TYPES,
+} from "../lib/listings/photo-intelligence"
+import {
+  renderClientPdf,
+  cmaPdfSpec,
+  netSheetPdfSpec,
+  guideBookletSpec,
+  wrapText,
+  hexToRgb,
+  CMA_DISCLAIMER,
+  NET_SHEET_DISCLAIMER,
+  type ClientPdfBrand,
+} from "../lib/documents/client-pdf"
+import { guideChaptersFor } from "../lib/marketing/guide-booklet-content"
+import { VIDEO_FINISH_SPEC } from "../lib/video/finish-spec"
+
+let passed = 0, failed = 0
+const failures: string[] = []
+function check(name: string, cond: boolean, detail?: string) {
+  if (cond) { passed++; console.log(`  ✓ ${name}`) }
+  else { failed++; failures.push(name + (detail ? ` — ${detail}` : "")); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
+}
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
+const src = (p: string) => (existsSync(join(ROOT, p)) ? readFileSync(join(ROOT, p), "utf-8") : "")
+
+// Fair-Housing / steering terms that must NEVER appear in client-facing copy.
+const FH_BANNED = /\b(family|families|kids|children|safe neighborhood|christian|church|no kids|adults only|ideal for (a )?famil|exclusive neighborhood|great for retirees|demographic)\b/i
+
+async function main() {
+  console.log("══════════════════════════════════════════════════")
+  console.log(" Asset-production simulator (photo AI · client PDFs · door hanger)")
+  console.log("══════════════════════════════════════════════════")
+
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[1 · REAL PIXEL ENHANCEMENT — sharp does actual work]")
+  const source = await sharp({
+    create: { width: 96, height: 96, channels: 3, background: { r: 140, g: 90, b: 60 } },
+  }).png().toBuffer()
+  const enhanced = await applyEnhancements(source, ["auto", "brightness", "contrast", "saturation"])
+  check("enhanced output is a real JPEG (FFD8 magic), not the input with a query string",
+    enhanced.length > 100 && enhanced[0] === 0xff && enhanced[1] === 0xd8)
+  check("enhancement CHANGES the pixels (different bytes, decodable image)",
+    !enhanced.equals(source) && (await sharp(enhanced).metadata()).width === 96)
+  const noop = await applyEnhancements(source, [])
+  check("empty enhancement list still yields a valid JPEG (format normalize only)",
+    noop[0] === 0xff && noop[1] === 0xd8)
+
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[2 · MULTIPART BODY — the gpt-image-1 edits wire format]")
+  const fileBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01])
+  const body = buildMultipartBody([
+    { name: "model", value: "gpt-image-1" },
+    { name: "image", filename: "photo.png", contentType: "image/png", data: fileBytes },
+  ], "BOUNDARY123")
+  const bodyStr = body.toString("latin1")
+  check("multipart framing: opening boundary + field + file part + terminator",
+    bodyStr.startsWith("--BOUNDARY123\r\n")
+    && bodyStr.includes('Content-Disposition: form-data; name="model"')
+    && bodyStr.includes('name="image"; filename="photo.png"')
+    && bodyStr.includes("Content-Type: image/png")
+    && bodyStr.endsWith("--BOUNDARY123--\r\n"))
+  check("binary payload survives intact inside the body", body.includes(fileBytes))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[3 · EDITORIAL GUARDRAILS — staging is furnishings-only, disclosed]")
+  const sp = stagingPrompt("living_room", "scandinavian")
+  check("staging prompt: room + style + the structural DO-NOT-ALTER guardrail + no people",
+    sp.includes("living room") && sp.includes("scandinavian")
+    && /Do NOT alter/i.test(sp) && /architecture|walls|windows/i.test(sp) && /Do not add people/i.test(sp))
+  check("twilight prompt: lighting-only conversion, same guardrail",
+    /twilight|dusk/i.test(twilightPrompt()) && /Do NOT alter/i.test(twilightPrompt()) && /only the time of day and lighting change/i.test(twilightPrompt()))
+  check("MLS disclosures exist and say what they must",
+    /virtually staged/i.test(VIRTUAL_STAGING_DISCLOSURE) && /digitally rendered/i.test(VIRTUAL_STAGING_DISCLOSURE)
+    && /digitally enhanced/i.test(TWILIGHT_DISCLOSURE))
+  const pi = src("lib/listings/photo-intelligence.ts")
+  check("staged variants land in marketing_assets WITH the disclosure — and NEVER insert into listing_photos (MLS set integrity)",
+    pi.includes('from("marketing_assets").insert') && pi.includes("disclosure: params.disclosure")
+    && !/from\("listing_photos"\)\s*\.insert/.test(pi))
+  check("room taxonomy is the real one (exterior/kitchen/primary/floor_plan present)",
+    (LISTING_ROOM_TYPES as readonly string[]).includes("exterior_front")
+    && (LISTING_ROOM_TYPES as readonly string[]).includes("kitchen")
+    && (LISTING_ROOM_TYPES as readonly string[]).includes("floor_plan"))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[4 · THE PHOTO STUBS STAY DEAD — vision is real, jobs are honest]")
+  const pm = src("app/actions/photo-management.ts")
+  check("the fake ?enhanced=true enhancement is GONE (with its serverless-dead setTimeout)",
+    !pm.includes("?enhanced=true") && !pm.includes("setTimeout"))
+  check("no filename-regex room detection, no null-returning quality score",
+    !pm.includes("calculateQualityScore") && !/url\.match\(\/exterior/.test(pm))
+  check("actions delegate to the REAL engine (persistPhotoAnalysis / enhanceListingPhoto / staging pair)",
+    pm.includes("persistPhotoAnalysis") && pm.includes("enhanceListingPhoto")
+    && pm.includes("virtualStagePhoto") && pm.includes("twilightConvertPhoto"))
+  check("actions read photos through the RLS-scoped session client before service writes (tenant boundary)",
+    pm.includes("RLS-scoped") && pm.split("createServiceClient()").length >= 2)
+  check("vision call: gateway image_url content part + structured JSON contract + 0-100 clamp",
+    pi.includes('type: "image_url"') && pi.includes("quality_score") && pi.includes("hero_worthy")
+    && pi.includes("Math.max(0, Math.min(100"))
+  check("analysis persists to the real columns (room_type, ai_quality_score, ai_analyzed_at, ai_analysis_completed)",
+    pi.includes("room_type: analysis.roomType") && pi.includes("ai_quality_score: analysis.qualityScore")
+    && pi.includes("ai_analysis_completed: true"))
+  check("enhancement job lifecycle is honest: processing → completed with a REAL hosted URL, failed with error_message — awaited inline",
+    pi.includes('status: "processing"') && pi.includes('status: "completed"')
+    && pi.includes('status: "failed"') && pi.includes("hostRenderedMedia") && !pi.includes("setTimeout("))
+  check("image edits ride the single-egress gateway (callConnector), AI Gateway first with direct-OpenAI fallback",
+    pi.includes("callConnector") && pi.includes("ai-gateway.vercel.sh") && pi.includes("api.openai.com")
+    && pi.includes('bodyType: "binary"'))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[5 · THE NIGHTLY SWEEP — asset_manager owns photo intelligence]")
+  const cronRoute = src("app/api/cron/photo-intelligence/route.ts")
+  check("cron route exists, verifies auth, runs the sweep, records the run",
+    cronRoute.includes("verifyCronAuth") && cronRoute.includes("runPhotoIntelligenceSweep")
+    && cronRoute.includes("recordCronSuccessAction"))
+  check("dispatcher schedules it; CRON_MANAGER maps it to asset_manager (zero-orphan rule)",
+    src("lib/kernel/cron-dispatch.ts").includes("/api/cron/photo-intelligence")
+    && src("lib/kernel/manager-registry.ts").includes('"/api/cron/photo-intelligence": "asset_manager"'))
+  check("sweep is BOUNDED per run (analyzeLimit) and hero fill only fires when NO hero exists",
+    pi.includes("analyzeLimit") && pi.includes("photos.some((p) => p.is_hero)) continue"))
+  check("hero fill prefers exterior_front, then quality — never a random first upload",
+    pi.includes('room_type === "exterior_front"') && pi.includes("ai_quality_score ?? 0"))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[6 · REAL CLIENT PDFs — pdf-lib bytes, not HTML with a .pdf name]")
+  const brand: ClientPdfBrand = {
+    primaryColor: "#0F172A", brokerageName: "Harbor & Main Realty",
+    agentName: "Jordan Avery", agentPhone: "(555) 010-2000", agentEmail: "j@hm.example",
+    licenseLine: "Lic #01234567 (FL)", showEhoMark: true,
+  }
+  const cmaBytes = await renderClientPdf(cmaPdfSpec({
+    propertyAddress: "128 Harborview Lane, Naples FL",
+    preparedFor: "Sam Seller",
+    valueLow: 1_100_000, valueMid: 1_250_000, valueHigh: 1_400_000,
+    confidence: 82,
+    narrative: "Inventory in this corridor remains tight.\n\nComparable closings over the last 90 days support a mid-point near $1.25M.",
+    marketingPlanHighlights: ["Coming-soon launch", "Twilight photography", "Open house weekend one"],
+    netSheetRows: [
+      { label: "Conservative", listPrice: 1_100_000, proceeds: 690_000 },
+      { label: "Target", listPrice: 1_250_000, proceeds: 830_000 },
+      { label: "Aspirational", listPrice: 1_400_000, proceeds: 975_000 },
+    ],
+  }, brand, "July 9, 2026"))
+  check("CMA PDF is a REAL PDF (%PDF magic, substantive size)",
+    Buffer.from(cmaBytes.slice(0, 5)).toString() === "%PDF-" && cmaBytes.length > 2000)
+  const cmaDoc = await PDFDocument.load(cmaBytes)
+  check("CMA PDF parses and has pages", cmaDoc.getPageCount() >= 1)
+
+  const netBytes = await renderClientPdf(netSheetPdfSpec({
+    propertyAddress: "128 Harborview Lane",
+    sellerName: "Sam Seller",
+    scenarios: [
+      { label: "List price", salePrice: 1_250_000, commission: 62_500, closingCosts: 18_000, mortgagePayoff: 320_000, netProceeds: 849_500 },
+      { label: "Current offer", salePrice: 1_215_000, commission: 60_750, closingCosts: 18_000, mortgagePayoff: 320_000, netProceeds: 816_250 },
+    ],
+  }, brand, "July 9, 2026"))
+  check("net-sheet PDF is real and parses", Buffer.from(netBytes.slice(0, 5)).toString() === "%PDF-" && (await PDFDocument.load(netBytes)).getPageCount() >= 1)
+
+  const bookletBytes = await renderClientPdf(guideBookletSpec({
+    kind: "buyer_guide", title: "The Home Buyer's Playbook",
+    intro: "Here is what actually matters in today's market, grounded in the questions buyers are asking right now.",
+    chapters: guideChaptersFor("buyer_guide"), areaLabel: "Naples, FL",
+  }, brand, "July 2026"))
+  const bookletDoc = await PDFDocument.load(bookletBytes)
+  check("guide BOOKLET is real and multi-page (chapters paginate)",
+    Buffer.from(bookletBytes.slice(0, 5)).toString() === "%PDF-" && bookletDoc.getPageCount() >= 2)
+
+  // wrapText honesty — measured with the same font family the engine embeds
+  const measureDoc = await PDFDocument.create()
+  const helv = await measureDoc.embedFont(StandardFonts.Helvetica)
+  const longText = "A comparative market analysis looks at what actually closed near you in the last ninety days adjusted for size condition and timing"
+  const lines = wrapText(longText, helv, 10.5, 200)
+  check("wrapText: every line fits the width, nothing dropped",
+    lines.length > 2
+    && lines.every((ln) => helv.widthOfTextAtSize(ln, 10.5) <= 200)
+    && lines.join(" ") === longText)
+  check("hexToRgb parses brand colors and falls back safely",
+    hexToRgb("#F59E0B").red > 0.9 && hexToRgb("not-a-color").blue > 0)
+
+  const pdfSrc = src("lib/documents/client-pdf.ts")
+  check("compliance footer on EVERY page: attribution + EHO + page numbers",
+    pdfSrc.includes("Equal Housing Opportunity") && pdfSrc.includes("pages.forEach")
+    && pdfSrc.includes("${i + 1} / ${pages.length}"))
+  check("CMA disclaimer is the honest one (not-an-appraisal, USPAP)",
+    /USPAP/.test(CMA_DISCLAIMER) && /not an appraisal/i.test(CMA_DISCLAIMER)
+    && /not a guarantee/i.test(NET_SHEET_DISCLAIMER))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[7 · THE PDF MOCK STAYS DEAD — and the real engine is WIRED]")
+  check("the mock (app/actions/pdf-generation.tsx — HTML bytes as 'PDF') is DELETED",
+    !existsSync(join(ROOT, "app/actions/pdf-generation.tsx")))
+  const producer = src("lib/documents/client-document-producer.ts")
+  check("producer hosts on Supabase storage (media-host rule) and records generated_documents",
+    producer.includes("hostRenderedMedia") && producer.includes('from("generated_documents").insert'))
+  check("producer resolves REAL brand + license (brokerages.primary_color, agent_licenses)",
+    producer.includes("primary_color") && producer.includes("agent_licenses"))
+  const presBuilder = src("lib/workflow/intelligence/listing-presentation-builder.ts")
+  check("listing-presentation builder produces the CMA leave-behind PDF (best-effort, never fails the build)",
+    presBuilder.includes("produceClientDocument") && presBuilder.includes("cmaPdfSpec")
+    && presBuilder.includes("leaveBehindPdfUrl"))
+  const magnetRunner = src("lib/marketing/lead-magnet-delivery-runner.ts")
+  check("guide magnets ship the DESIGNED BOOKLET with the download link appended to the delivery copy",
+    magnetRunner.includes("guideBookletSpec") && magnetRunner.includes("guideChaptersFor")
+    && magnetRunner.includes("Download your full guide (PDF)"))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[8 · GUIDE CHAPTERS — substantive, Fair-Housing-safe, wire-fraud-aware]")
+  for (const kind of ["buyer_guide", "seller_guide"] as const) {
+    const chapters = guideChaptersFor(kind)
+    check(`${kind}: 5 substantive chapters (each a real read, not a stub)`,
+      chapters.length === 5 && chapters.every((c) => c.body.length > 300 && c.heading.length > 8))
+    check(`${kind}: Fair-Housing clean (no steering / demographic language)`,
+      chapters.every((c) => !FH_BANNED.test(`${c.heading} ${c.body}`)))
+  }
+  check("buyer guide teaches the wire-fraud phone-verification rule (the industry's #1 client loss)",
+    guideChaptersFor("buyer_guide").some((c) => /wire/i.test(c.body) && /by phone/i.test(c.body)))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[9 · DOOR HANGER — print family complete, autonomous on CLOSED]")
+  const root = src("remotion/Root.tsx")
+  check("DoorHanger registered in Root.tsx as a 1350x3375 still (bleed canvas, durationInFrames 1)",
+    root.includes('id="DoorHanger"') && root.includes("width={1350}") && root.includes("height={3375}"))
+  const dh = VIDEO_FINISH_SPEC.DoorHanger
+  check("finish spec: the hanger IS the deliverable (no bookends/music/thumbnail — the QR is in the artwork)",
+    !!dh && dh.presenter === "none" && !dh.bookends && !dh.music && !dh.thumbnail)
+  const hanger = src("remotion/DoorHanger.tsx")
+  check("composition carries the die-cut knob guide, EHO + the anti-solicitation line",
+    hanger.includes("dashed") && hanger.includes("Equal Housing Opportunity")
+    && hanger.includes("this is not a solicitation"))
+  const plays = src("lib/video/video-plays.ts")
+  check("runDoorHangers: fires on CLOSED, idempotent per listing (entity_type door_hanger), scan-to-value QR",
+    plays.includes('.eq("lifecycle_stage", "CLOSED")') && plays.includes('"door_hanger"')
+    && plays.includes('kind: "just_sold"') && plays.includes("Scan for your home's value"))
+  check("delivery: finished hangers notify THE AGENT once ([hanger:id] dedupe marker)",
+    plays.includes("[hanger:${ren.id}]") && plays.includes("door_hanger_ready"))
+  check("the daily video-plays cron runs the hanger play alongside the flyer",
+    src("app/api/cron/video-plays/route.ts").includes("runDoorHangers"))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[10 · UI — the media manager exposes the real tools]")
+  const ui = src("app/dashboard/listings/[id]/media/media-manager-client.tsx")
+  check("vacant rooms offer Stage, exteriors offer Twilight, low scores offer Enhance",
+    ui.includes("stageListingPhoto") && ui.includes("twilightListingPhoto")
+    && ui.includes("score.vacant") && ui.includes('score.room_type === "exterior_front"'))
+  check("staging toast tells the agent the disclosure rode along",
+    ui.includes("required disclosure"))
+
+  console.log("\n──────────────────────────────────────────────────")
+  console.log(` RESULT: ${passed} passed, ${failed} failed`)
+  if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
+  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete.")
+  console.log(" ASSET_PRODUCTION_PASS")
+  process.exit(0)
+}
+
+main().catch((e) => { console.error(e); process.exit(1) })

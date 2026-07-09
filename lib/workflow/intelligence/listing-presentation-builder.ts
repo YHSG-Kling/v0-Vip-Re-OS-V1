@@ -486,6 +486,46 @@ export async function buildListingPresentation(
       return { success: false, error: presErr?.message ?? "Could not save presentation" }
     }
 
+    // 7a. The printed leave-behind: a real branded CMA PDF (value range +
+    //     net sheet + marketing plan) recorded in generated_documents so the
+    //     agent walks in with a client-ready document, not just an in-app
+    //     deck. Best-effort — a PDF failure must not fail the build.
+    let leaveBehindPdfUrl: string | null = null
+    try {
+      const { resolvePdfBrand, produceClientDocument } = await import("@/lib/documents/client-document-producer")
+      const { cmaPdfSpec } = await import("@/lib/documents/client-pdf")
+      const brand = await resolvePdfBrand(svc, { brokerageId: input.brokerageId, agentUserId: input.agentUserId })
+      const dateLabel = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+      const spec = cmaPdfSpec({
+        propertyAddress: input.propertyAddress,
+        valueLow: cma.estimatedValueLow,
+        valueMid: cma.estimatedValueMid,
+        valueHigh: cma.estimatedValueHigh,
+        confidence: cma.confidenceScore,
+        narrative: cma.aiNarrative,
+        marketingPlanHighlights: [
+          marketingPlan.comingSoonStrategy,
+          marketingPlan.photographyPlan,
+          marketingPlan.openHousePlan,
+          ...marketingPlan.mlsHighlights.slice(0, 3),
+        ].filter(Boolean),
+        netSheetRows: netSheet.map((r) => ({
+          label: r.pricePoint === "conservative" ? "Conservative" : r.pricePoint === "target" ? "Target" : "Aspirational",
+          listPrice: r.listPrice,
+          proceeds: r.estimatedSellerProceeds,
+        })),
+      }, brand, dateLabel)
+      const produced = await produceClientDocument(svc, {
+        brokerageId: input.brokerageId,
+        agentUserId: input.agentUserId,
+        contactId: input.contactId,
+        documentType: "listing_presentation",
+        spec,
+        metadata: { presentation_id: pres.id, source: "auto_listing_presentation" },
+      })
+      if (produced.ok) leaveBehindPdfUrl = produced.pdfUrl
+    } catch { /* the deck still ships without the PDF */ }
+
     // 7b. Gate 1 (PRODUCE) is automatic — materialize the seller-facing sections and
     // auto-render + narrate them (CMA chart sections + branded slides + the agent's
     // narrated avatar). The sections are scheduled but HELD: nothing drips to the
@@ -504,7 +544,7 @@ export async function buildListingPresentation(
         brokerage_id: input.brokerageId,
         type:         "listing_presentation_ready",
         title:        `Listing presentation ready for ${input.propertyAddress}`,
-        body:         `Value range $${Math.round(cma.estimatedValueLow / 1000)}K-$${Math.round(cma.estimatedValueHigh / 1000)}K · 3-price net sheet · marketing plan · listing packet ready to sign at the table.`,
+        body:         `Value range $${Math.round(cma.estimatedValueLow / 1000)}K-$${Math.round(cma.estimatedValueHigh / 1000)}K · 3-price net sheet · marketing plan · listing packet ready to sign at the table.${leaveBehindPdfUrl ? ` Printable leave-behind PDF: ${leaveBehindPdfUrl}` : ""}`,
         priority:     "high",
         entity_type:  "listing_presentation",
         entity_id:    pres.id,

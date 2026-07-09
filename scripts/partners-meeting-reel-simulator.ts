@@ -304,11 +304,12 @@ import { detectRateMoment, isTestimonialWorthy, isWalkthroughEligible } from "..
     isWalkthroughEligible({ lifecycle_stage: "MLS_ACTIVE", photos: [1, 2, 3, 4, 5] }) === true
     && isWalkthroughEligible({ lifecycle_stage: "MLS_ACTIVE", photos: [1, 2] }) === false
     && isWalkthroughEligible({ lifecycle_stage: "SOLD", photos: [1, 2, 3, 4, 5] }) === false)
-  check("the Director learned photo_walkthrough — every VIDEO play stages through commissionVideo (direct queueing is reserved for the print STILL flyer)",
+  check("the Director learned photo_walkthrough — every VIDEO play stages through commissionVideo (direct queueing is reserved for the print STILLS: flyer + door hanger)",
     src("lib/video/video-director.ts").includes('"photo_walkthrough"')
     && src("lib/video/video-plays.ts").includes("commissionVideo")
-    && (src("lib/video/video-plays.ts").match(/recordRenderQueued/g) ?? []).length <= 2
-    && src("lib/video/video-plays.ts").includes('compositionId: "ListingFlyer"'))
+    && (src("lib/video/video-plays.ts").match(/recordRenderQueued/g) ?? []).length <= 4
+    && src("lib/video/video-plays.ts").includes('compositionId: "ListingFlyer"')
+    && src("lib/video/video-plays.ts").includes('compositionId: "DoorHanger"'))
   check("wiring: market-moment rides the rates cron tick; testimonial + walkthrough ride the daily video-plays cron (asset_manager-owned)",
     src("app/api/cron/refresh-market-rates/route.ts").includes("runMarketMomentReels")
     && src("app/api/cron/video-plays/route.ts").includes("runTestimonialReels")

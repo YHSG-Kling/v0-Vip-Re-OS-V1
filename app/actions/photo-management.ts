@@ -1,144 +1,88 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
-import { handleError } from "@/lib/errors"
+import {
+  persistPhotoAnalysis,
+  enhanceListingPhoto,
+  virtualStagePhoto,
+  twilightConvertPhoto,
+  type PhotoEnhancement,
+  type StagingStyle,
+} from "@/lib/listings/photo-intelligence"
 
 // ============================================
-// AI PHOTO ANALYSIS
+// AI PHOTO ANALYSIS — real vision call (lib/listings/photo-intelligence)
 // ============================================
 
 export async function analyzePhoto(params: { photoId: string; photoUrl: string }) {
   if (!isValidUUID(params.photoId)) {
-    return {
-      success: false,
-      error: "Invalid photo ID",
-    }
+    return { success: false, error: "Invalid photo ID" }
   }
-
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Not authenticated" }
 
   try {
-    const roomType = detectRoomType(params.photoUrl)
-    const qualityScore = calculateQualityScore()
+    // RLS-scoped visibility check — the session client can only see photos in
+    // the caller's tenant; the service client below only writes to that row.
+    const { data: visible } = await supabase
+      .from("listing_photos").select("id, photo_url").eq("id", params.photoId).maybeSingle()
+    if (!visible) return { success: false, error: "Photo not found" }
 
-    // AI analysis would integrate with vision API (OpenAI Vision, Google Vision, etc.)
-    const analysis = {
-      room_type: roomType,
-      quality_score: qualityScore,
-      detected_features: [] as string[],
-      composition_score: null as number | null,
-      lighting_quality: null as string | null,
-      suggestions: [] as string[],
-      is_hero_worthy: null as boolean | null,
+    const svc = createServiceClient()
+    const analysis = await persistPhotoAnalysis(svc, {
+      photoId: params.photoId,
+      photoUrl: visible.photo_url ?? params.photoUrl,
+    })
+    if (analysis.error) return { success: false, error: analysis.error }
+    return {
+      success: true,
+      data: {
+        room_type: analysis.roomType,
+        quality_score: analysis.qualityScore,
+        is_hero_worthy: analysis.heroWorthy,
+        lighting_quality: analysis.lighting,
+        suggestions: analysis.issues,
+        vacant: analysis.vacant,
+      },
     }
-
-    // Update photo record — only write fields with real values
-    await supabase
-      .from("listing_photos")
-      .update({
-        ...(roomType !== 'unknown' && { room_type: roomType }),
-        ...(qualityScore !== null && { ai_quality_score: qualityScore }),
-        ai_analyzed_at: new Date().toISOString(),
-        ai_analysis_completed: true,
-      })
-      .eq("id", params.photoId)
-
-    return { success: true, data: analysis }
   } catch (error) {
     console.error("Analyze photo error:", error)
     return { success: false, error: "Failed to analyze photo" }
   }
 }
 
-function detectRoomType(photoUrl: string): string {
-  const url = (photoUrl || '').toLowerCase()
-  if (url.match(/exterior|front|outside|curb|street|aerial|drone/)) return 'exterior_front'
-  if (url.match(/kitchen|kit_/)) return 'kitchen'
-  if (url.match(/master|primary|bedroom|bed_/)) return 'primary_bedroom'
-  if (url.match(/bath|wc|toilet/)) return 'bathroom'
-  if (url.match(/living|lounge|great_room/)) return 'living_room'
-  if (url.match(/dining/)) return 'dining_room'
-  if (url.match(/garage|carport/)) return 'garage'
-  if (url.match(/pool|yard|garden|patio|deck|backyard/)) return 'exterior_back'
-  if (url.match(/office|study/)) return 'office'
-  if (url.match(/laundry|utility/)) return 'utility'
-  return 'unknown'
-}
-
-function calculateQualityScore(): number | null {
-  // Real scoring requires computer vision API (AWS Rekognition, Google Vision, etc.)
-  // Returns null until wired — do not use random numbers for real estate decisions
-  return null
-}
-
 // ============================================
-// AUTOMATED PHOTO ENHANCEMENT
+// REAL PHOTO ENHANCEMENT — sharp pixel work, awaited inline
 // ============================================
 
 export async function enhancePhoto(params: {
   photoId: string
-  enhancements: Array<"brightness" | "contrast" | "saturation" | "hdr" | "straighten">
+  enhancements: Array<PhotoEnhancement>
   agentId: string
 }) {
   if (!isValidUUID(params.photoId) || !isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid IDs" }
   }
-
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Not authenticated" }
 
-  try {
-    const { data: photo } = await supabase
-      .from("listing_photos")
-      .select("*")
-      .eq("id", params.photoId)
-      .single()
+  const { data: visible } = await supabase
+    .from("listing_photos").select("id").eq("id", params.photoId).maybeSingle()
+  if (!visible) return { success: false, error: "Photo not found" }
 
-    if (!photo) {
-      return { success: false, error: "Photo not found" }
-    }
-
-    // Create enhancement job
-    const { data: job } = await supabase
-      .from("photo_enhancement_jobs")
-      .insert({
-        photo_id: params.photoId,
-        agent_id: params.agentId,
-        original_url: photo.photo_url,
-        enhancement_type: params.enhancements.join(","),
-        status: "processing",
-      })
-      .select()
-      .single()
-
-    // In production, this would call image processing API (Cloudinary, Imgix, etc.)
-    // Simulate processing
-    setTimeout(async () => {
-      const enhancedUrl = `${photo.photo_url}?enhanced=true`
-
-      await supabase
-        .from("photo_enhancement_jobs")
-        .update({
-          enhanced_url: enhancedUrl,
-          status: "completed",
-          completed_at: new Date().toISOString(),
-        })
-        .eq("id", job.id)
-
-      await supabase
-        .from("listing_photos")
-        .update({
-          photo_url: enhancedUrl,
-        })
-        .eq("id", params.photoId)
-    }, 2000)
-
-    return { success: true, jobId: job.id }
-  } catch (error) {
-    console.error("Enhance photo error:", error)
-    return { success: false, error: "Failed to enhance photo" }
-  }
+  const svc = createServiceClient()
+  const result = await enhanceListingPhoto(svc, {
+    photoId: params.photoId,
+    agentId: params.agentId,
+    enhancements: params.enhancements,
+  })
+  if (!result.ok) return { success: false, error: result.error ?? "Enhancement failed" }
+  return { success: true, jobId: result.jobId, enhancedUrl: result.enhancedUrl }
 }
 
 export async function batchEnhancePhotos(params: {
@@ -149,38 +93,106 @@ export async function batchEnhancePhotos(params: {
   if (!isValidUUID(params.listingId) || !isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid IDs" }
   }
-
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Not authenticated" }
 
   try {
+    // RLS-scoped read: only photos in the caller's tenant come back.
     const { data: photos } = await supabase
       .from("listing_photos")
-      .select("*")
+      .select("id, ai_quality_score, enhancement_applied")
       .eq("listing_id", params.listingId)
       .eq("ai_analysis_completed", true)
 
-    if (!photos || photos.length === 0) {
-      return { success: true, enhanced: 0 }
+    if (!photos || photos.length === 0) return { success: true, enhanced: 0 }
+
+    const svc = createServiceClient()
+    // Only scored, lower-quality, not-yet-enhanced photos
+    const candidates = photos.filter(
+      (p) => p.ai_quality_score !== null && p.ai_quality_score < 80 && !p.enhancement_applied,
+    )
+    let enhanced = 0
+    for (const photo of candidates) {
+      const r = await enhanceListingPhoto(svc, {
+        photoId: photo.id,
+        agentId: params.agentId,
+        enhancements: ["auto"],
+      })
+      if (r.ok) enhanced++
     }
 
-    const enhancementPromises = photos
-      .filter((p) => p.ai_quality_score !== null && p.ai_quality_score < 80) // Only enhance scored, lower-quality photos
-      .map((photo) =>
-        enhancePhoto({
-          photoId: photo.id,
-          enhancements: ["brightness", "contrast", "saturation"],
-          agentId: params.agentId,
-        })
-      )
-
-    await Promise.all(enhancementPromises)
-
     revalidatePath(`/dashboard/listings/${params.listingId}`)
-    return { success: true, enhanced: enhancementPromises.length }
+    return { success: true, enhanced }
   } catch (error) {
     console.error("Batch enhance error:", error)
     return { success: false, error: "Failed to batch enhance photos" }
   }
+}
+
+// ============================================
+// VIRTUAL STAGING + TWILIGHT — gpt-image-1 edits, disclosure-carrying assets
+// ============================================
+
+async function resolvePhotoContext(photoId: string) {
+  // RLS-scoped read: the session client only sees photos in the caller's
+  // tenant, so cross-tenant photo ids resolve to null here.
+  const supabase = await createClient()
+  const { data: photo } = await supabase
+    .from("listing_photos")
+    .select("id, photo_url, room_type, listing_id, brokerage_id")
+    .eq("id", photoId)
+    .maybeSingle()
+  if (!photo?.photo_url) return null
+  let brokerageId = photo.brokerage_id as string | null
+  if (!brokerageId && photo.listing_id) {
+    const { data: listing } = await supabase
+      .from("listings").select("brokerage_id").eq("id", photo.listing_id).maybeSingle()
+    brokerageId = (listing as { brokerage_id: string } | null)?.brokerage_id ?? null
+  }
+  return brokerageId ? { svc: createServiceClient(), photo, brokerageId } : null
+}
+
+export async function stageListingPhoto(params: { photoId: string; style?: StagingStyle }) {
+  if (!isValidUUID(params.photoId)) return { success: false, error: "Invalid photo ID" }
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Not authenticated" }
+
+  const ctx = await resolvePhotoContext(params.photoId)
+  if (!ctx) return { success: false, error: "Photo not found" }
+
+  const result = await virtualStagePhoto(ctx.svc, {
+    brokerageId: ctx.brokerageId,
+    agentUserId: user.id,
+    listingId: ctx.photo.listing_id,
+    photoId: ctx.photo.id,
+    photoUrl: ctx.photo.photo_url,
+    roomType: ctx.photo.room_type,
+    style: params.style,
+  })
+  if (!result.ok) return { success: false, error: result.error ?? "Staging failed" }
+  return { success: true, stagedUrl: result.stagedUrl, assetId: result.assetId }
+}
+
+export async function twilightListingPhoto(params: { photoId: string }) {
+  if (!isValidUUID(params.photoId)) return { success: false, error: "Invalid photo ID" }
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Not authenticated" }
+
+  const ctx = await resolvePhotoContext(params.photoId)
+  if (!ctx) return { success: false, error: "Photo not found" }
+
+  const result = await twilightConvertPhoto(ctx.svc, {
+    brokerageId: ctx.brokerageId,
+    agentUserId: user.id,
+    listingId: ctx.photo.listing_id,
+    photoId: ctx.photo.id,
+    photoUrl: ctx.photo.photo_url,
+  })
+  if (!result.ok) return { success: false, error: result.error ?? "Twilight conversion failed" }
+  return { success: true, stagedUrl: result.stagedUrl, assetId: result.assetId }
 }
 
 // ============================================

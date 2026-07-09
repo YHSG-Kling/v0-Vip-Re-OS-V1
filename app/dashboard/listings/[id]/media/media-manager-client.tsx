@@ -7,8 +7,8 @@ import { Button } from "@/components/ui/button"
 import { MediaGrid } from "./components/media-grid"
 import { VideoPanel } from "./components/video-panel"
 import { SocialPanel } from "./components/social-panel"
-import { ImageIcon, VideoIcon, Share2Icon, Sparkles, Loader2 } from "lucide-react"
-import { analyzePhoto } from "@/app/actions/photo-management"
+import { ImageIcon, VideoIcon, Share2Icon, Sparkles, Loader2, Sofa, Sunset, Wand2 } from "lucide-react"
+import { analyzePhoto, stageListingPhoto, twilightListingPhoto, enhancePhoto } from "@/app/actions/photo-management"
 import { toast } from "sonner"
 
 interface Listing {
@@ -50,6 +50,30 @@ export function MediaManagerClient({
   const [posts, setPosts] = useState(initialPosts)
   const [photoScores, setPhotoScores] = useState<Record<string, any>>({})
   const [isPending, startTransition] = useTransition()
+  const [busyPhotoId, setBusyPhotoId] = useState<string | null>(null)
+
+  const runPhotoTool = (photoId: string, tool: "stage" | "twilight" | "enhance") => {
+    setBusyPhotoId(photoId)
+    startTransition(async () => {
+      try {
+        const result =
+          tool === "stage" ? await stageListingPhoto({ photoId })
+          : tool === "twilight" ? await twilightListingPhoto({ photoId })
+          : await enhancePhoto({ photoId, enhancements: ["auto"], agentId })
+        if (result.success) {
+          toast.success(
+            tool === "stage" ? "Virtually staged — saved to your marketing assets with the required disclosure"
+            : tool === "twilight" ? "Twilight version saved to your marketing assets"
+            : "Photo enhanced",
+          )
+        } else {
+          toast.error(result.error ?? "Photo tool failed")
+        }
+      } finally {
+        setBusyPhotoId(null)
+      }
+    })
+  }
 
   const canApprove = userRole === "admin" || userRole === "broker"
 
@@ -143,6 +167,32 @@ export function MediaManagerClient({
                     <p className="font-medium capitalize">{score.room_type?.replace(/_/g, " ") ?? "Unknown"}</p>
                     <p className="text-muted-foreground">Quality: {score.quality_score ?? "—"}/100</p>
                     {score.is_hero_worthy && <p className="text-amber-600 font-medium">★ Hero Shot</p>}
+                    {Array.isArray(score.suggestions) && score.suggestions.length > 0 && (
+                      <p className="text-muted-foreground mt-1">{score.suggestions.join(" · ")}</p>
+                    )}
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {score.vacant && (
+                        <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+                          disabled={busyPhotoId === photoId}
+                          onClick={() => runPhotoTool(photoId, "stage")}>
+                          <Sofa className="h-3 w-3 mr-1" /> Stage
+                        </Button>
+                      )}
+                      {(score.room_type === "exterior_front" || score.room_type === "exterior_back") && (
+                        <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+                          disabled={busyPhotoId === photoId}
+                          onClick={() => runPhotoTool(photoId, "twilight")}>
+                          <Sunset className="h-3 w-3 mr-1" /> Twilight
+                        </Button>
+                      )}
+                      {(score.quality_score ?? 100) < 80 && (
+                        <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]"
+                          disabled={busyPhotoId === photoId}
+                          onClick={() => runPhotoTool(photoId, "enhance")}>
+                          <Wand2 className="h-3 w-3 mr-1" /> Enhance
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
