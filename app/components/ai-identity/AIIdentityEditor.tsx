@@ -141,6 +141,9 @@ export function AIIdentityEditor({
   const [personaLabel, setPersonaLabel] = useState(
     initialProfile?.persona_label ?? parentProfile?.persona_label ?? "AI Real Estate Specialist"
   )
+  const [avatarUrl, setAvatarUrl] = useState(
+    initialProfile?.avatar_url ?? parentProfile?.avatar_url ?? ""
+  )
   const [tone, setTone] = useState<string | null>(
     initialProfile?.tone ?? parentProfile?.tone ?? null
   )
@@ -250,6 +253,7 @@ export function AIIdentityEditor({
         brokerageId,
         assistantName,
         personaLabel,
+        avatarUrl: avatarUrl.trim() || null,
         tone: overrideTone || scope === "brokerage" ? tone : null,
         formalityLevel: overrideTone || scope === "brokerage" ? formalityLevel : null,
         objectionLibrary: objections,
@@ -279,7 +283,7 @@ export function AIIdentityEditor({
       }
     })
   }, [
-    scope, scopeId, brokerageId, assistantName, personaLabel,
+    scope, scopeId, brokerageId, assistantName, personaLabel, avatarUrl,
     tone, formalityLevel, overrideTone, overrideFaq, overrideEscalation,
     faqs, objections, prohibitedChips, escalationRules, followupStyle, parentProfile,
     aiAnswerCalls, aiCallHandleInbound, aiCallHandleOutbound, aiCallForwardNumber,
@@ -350,6 +354,33 @@ export function AIIdentityEditor({
                 placeholder="Your AI Listing Specialist"
               />
             </div>
+          </div>
+
+          {/* Assistant photo — the face your assistant uses when it PRESENTS:
+              the weekly Partners' Meeting show, the board-packet video, and
+              report videos are hosted by this photo + your assistant's voice
+              (so you're briefed by your assistant, not a mirror of yourself). */}
+          <div className="space-y-2">
+            <Label htmlFor="assistant-avatar">Assistant photo</Label>
+            <div className="flex items-center gap-3">
+              {avatarUrl.trim() ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={avatarUrl} alt="Assistant" className="h-12 w-12 rounded-full object-cover border" />
+              ) : (
+                <div className="h-12 w-12 rounded-full bg-muted flex items-center justify-center text-lg font-semibold text-muted-foreground border">
+                  {(assistantName[0] ?? "A").toUpperCase()}
+                </div>
+              )}
+              <Input
+                id="assistant-avatar"
+                value={avatarUrl}
+                onChange={(e) => setAvatarUrl(e.target.value)}
+                placeholder="https://… (photo used when your assistant presents reports & videos)"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Report videos (Partners&apos; Meeting, board packet) are hosted by your named assistant with this photo and its voice — client-facing videos always use the agent&apos;s own face and voice.
+            </p>
           </div>
 
           {/* Tone selector */}

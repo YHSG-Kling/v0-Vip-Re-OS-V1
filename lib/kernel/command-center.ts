@@ -112,6 +112,10 @@ export interface CommandCenterData {
   /** AI-authored curriculum awaiting a human publish — the OS teaching itself to teach.
    *  Brokerage-wide; null when unavailable. */
   curriculumBoard: import("@/lib/intelligence/curriculum-board").CurriculumBoard | null
+  /** THE ROI LEDGER — what the AI team EARNED in the trailing window, every number
+   *  traced to ledger rows (attribution credits, calls, live bookings, sent drafts).
+   *  The renewal argument, live. Brokerage-wide; null when unavailable. */
+  roiLedger: import("@/lib/intelligence/roi-ledger").RoiLedger | null
   /** THE AI EXECUTIVE STANDUP — the weekly ROI-ranked org plan synthesized ACROSS every manager's output
    *  (retention flight-risk, WoW GCI swings, SLA-breached approval backlog, recruiting flywheel, enablement)
    *  and the single human ask. The executive layer above the per-manager P&L. Brokerage-wide; null when
@@ -415,8 +419,9 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   let skillBoard: import("@/lib/intelligence/skill-freshness-board").SkillFreshnessBoard | null = null
   let revenueShareBoard: import("@/lib/intelligence/revenue-share-board").RevenueShareBoard | null = null
   let curriculumBoard: import("@/lib/intelligence/curriculum-board").CurriculumBoard | null = null
+  let roiLedger: import("@/lib/intelligence/roi-ledger").RoiLedger | null = null
   if (brokerageWide && brokerageId) {
-    const [standupRes, pnlRes, delivRes, retentionRes, outcomesRes, skillRes, revShareRes, curriculumRes] = await Promise.allSettled([
+    const [standupRes, pnlRes, delivRes, retentionRes, outcomesRes, skillRes, revShareRes, curriculumRes, roiRes] = await Promise.allSettled([
       import("@/lib/intelligence/manager-standup").then((m) => m.generateManagerStandup(brokerageId)),
       import("@/lib/intelligence/manager-weekly-pnl").then((m) => m.generateManagerWeeklyPnl(brokerageId)),
       import("@/lib/intelligence/deliverables-summary").then((m) => m.generateDeliverablesSummary({ brokerageId })),
@@ -425,6 +430,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
       import("@/lib/intelligence/skill-freshness-board").then((m) => m.generateSkillFreshnessBoard(brokerageId)),
       import("@/lib/intelligence/revenue-share-board").then((m) => m.generateRevenueShareBoard(brokerageId)),
       import("@/lib/intelligence/curriculum-board").then((m) => m.generateCurriculumBoard(brokerageId)),
+      import("@/lib/intelligence/roi-ledger").then((m) => m.generateRoiLedger(supabase, brokerageId)),
     ])
     if (standupRes.status === "fulfilled") standup = standupRes.value
     else console.error("[command-center] manager standup failed:", standupRes.reason)
@@ -442,6 +448,8 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     else console.error("[command-center] revenue share board failed:", revShareRes.reason)
     if (curriculumRes.status === "fulfilled") curriculumBoard = curriculumRes.value
     else console.error("[command-center] curriculum board failed:", curriculumRes.reason)
+    if (roiRes.status === "fulfilled") roiLedger = roiRes.value
+    else console.error("[command-center] roi ledger failed:", roiRes.reason)
   }
 
   // Proposed AI ISA dial batches awaiting approval — surfaced as a one-tap callout.
@@ -491,6 +499,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     skillBoard,
     revenueShareBoard,
     curriculumBoard,
+    roiLedger,
     weeklyExecPlan,
     dialBatches,
     managerTalk,

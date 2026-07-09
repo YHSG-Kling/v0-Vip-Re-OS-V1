@@ -88,6 +88,54 @@ check("?phase=deliver sweeps completed shows Monday afternoon (route branch + di
 check("KEEP-ONE delivery sweep: both reels share deliverCompletedReels (no second sweep)",
   pm.includes("deliverCompletedReels") && src("lib/kernel/board-packet-reel.ts").includes("deliverCompletedReels"))
 
+console.log("\n[6 · WHO FRONTS THE VIDEO — the owner's identity rule, structural]")
+import { buildListingPitchReelProps } from "../lib/video/listing-pitch-reel"
+import { composeRoiHeadline } from "../lib/intelligence/roi-ledger"
+{
+  const vi = src("lib/video/video-identity.ts")
+  check("internal REPORTS are hosted by the named ASSISTANT (ai_identity_profiles cascade) — never a mirror",
+    vi.includes('"internal_report"') && vi.includes("assistant_name") && vi.includes("avatar_url")
+    && pm.includes('purpose: "internal_report"'))
+  check("contact-facing video is ALWAYS the licensed human (the assistant never fronts clients)",
+    vi.includes("contact_facing — the licensed human, full stop")
+    && src("lib/video/listing-pitch-reel.ts").includes('purpose: "contact_facing"'))
+  check("the identity editor exposes the assistant PHOTO (name it, give it a face)",
+    src("app/components/ai-identity/AIIdentityEditor.tsx").includes("assistant-avatar")
+    && src("app/actions/ai-identity.ts").includes("avatar_url: input.avatarUrl"))
+  check("the composition is DESIGNED, not plain: gradient depth + logo header + presenter nameplate + progress dots",
+    ["SceneBackground", "SceneHeader", "ProgressDots", "radial-gradient"].every((s) => src("remotion/PartnersMeetingReel.tsx").includes(s)))
+}
+
+console.log("\n[7 · the LISTING PITCH REEL — win the listing with the team on camera]")
+{
+  const rich = buildListingPitchReelProps({
+    address: "12 Oak Ln", agentName: "Dana K", agentPhotoUrl: "https://x/p.jpg",
+    brand: { primaryColor: "#1d4ed8", accentColor: "#F59E0B", brokerageName: "X Realty", logoUrl: null, showEhoMark: true },
+    roi: { periodDays: 90, attributedGciCents: 41200000, attributedDeals: 2, callsAnswered: 12, appointmentsBooked: 3, optOutsHonored: 1 },
+  })
+  check("the pitch leads with the address, is fronted by the AGENT, and shows MEASURED proof",
+    rich.weekLabel === "12 Oak Ln" && rich.agentName === "Dana K"
+    && rich.cards.some((c) => c.kind === "finance" && c.sub!.includes("attribution-measured"))
+    && rich.oneAsk.includes("12 Oak Ln"))
+  const young = buildListingPitchReelProps({
+    address: "12 Oak Ln", agentName: "Dana K", agentPhotoUrl: null,
+    brand: { primaryColor: "#1d4ed8", accentColor: "#F59E0B", brokerageName: "X Realty", logoUrl: null, showEhoMark: true },
+    roi: { periodDays: 90, attributedGciCents: 0, attributedDeals: 0, callsAnswered: 0, appointmentsBooked: 0, optOutsHonored: 0 },
+  })
+  check("a young brokerage pitches HONESTLY: team promise + compliance discipline, no fabricated volume",
+    young.cards.length === 2 && !young.cards.some((c) => c.kind === "finance"))
+  check("prep cron queues it per appointment + ?phase=deliver hands it to THE AGENT before the meeting",
+    src("app/api/cron/listing-presentation-prep/route.ts").includes("queueListingPitchReel")
+    && src("app/api/cron/listing-presentation-prep/route.ts").includes("deliverListingPitchReels")
+    && src("lib/kernel/cron-dispatch.ts").includes("listing-presentation-prep?phase=deliver"))
+  check("ROI headline: earned lines only, silent when nothing earned (the tile never pads)",
+    composeRoiHeadline({ periodDays: 90, sinceIso: "", attributedGciCents: 41200000, attributedDeals: 2, callsAnswered: 12, appointmentsBooked: 3, draftsSent: 4, optOutsHonored: 1 }).includes("not claimed")
+    && composeRoiHeadline({ periodDays: 90, sinceIso: "", attributedGciCents: 0, attributedDeals: 0, callsAnswered: 0, appointmentsBooked: 0, draftsSent: 0, optOutsHonored: 0 }) === "")
+  check("the ROI ledger is LIVE on the command center (loader + tile)",
+    src("lib/kernel/command-center.ts").includes("generateRoiLedger")
+    && src("app/dashboard/admin/command-center/command-center-client.tsx").includes("What your AI team earned"))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }

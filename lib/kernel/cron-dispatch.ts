@@ -32,6 +32,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/contingency-scan",               schedule: "0 13 * * *" },   // documented
   { path: "/api/cron/generate-brokerage-fee-charges", schedule: "0 6 * * *" },    // documented
   { path: "/api/cron/listing-presentation-prep",      schedule: "0 17 * * *" },   // documented
+  { path: "/api/cron/listing-presentation-prep?phase=deliver", schedule: "0 19 * * *" },
   { path: "/api/cron/retry-errors",                   schedule: "*/30 * * * *" }, // documented (every 30 min)
   { path: "/api/cron/ad-performance-sync",            schedule: "0 */6 * * *" },
   { path: "/api/cron/ads-manager-sweep",              schedule: "0 12 * * *" },

@@ -1,19 +1,23 @@
 /**
  * remotion/PartnersMeetingReel.tsx
  *
- * THE PARTNERS' MEETING — the AI team's weekly recap "show", narrated by the broker's D-ID avatar in
- * their ElevenLabs-cloned voice. The differentiator no competitor ships: the AI management team
- * presents the week back to the broker — the plays it ran, the deadlines it saved, the money booked,
- * and (the moat) the COMPLIANCE disposition: every outbound message pre-flighted, Fair-Housing &
- * consent cleared, nothing shipped over an unreviewed objection.
+ * THE PARTNERS' MEETING — the AI team's recap "show" (weekly week-in-business +
+ * monthly board packet), hosted by the tenant's NAMED AI ASSISTANT (its photo
+ * and name in the presenter PIP — the human is briefed BY their assistant, not
+ * by a mirror of themselves) or the broker's D-ID avatar clip when one exists.
+ * The differentiator no competitor ships: the AI management team presents the
+ * period back to leadership — the plays it ran, the money booked, and (the
+ * moat) the COMPLIANCE disposition.
  *
- * Horizontal 1920×1080 (desk/TV viewing for leadership). Cards are EARNED ONLY (the pure builder
- * lib/intelligence/partners-meeting-reel-props.ts emits a card only when the number > 0), so a quiet
- * week is short and honest. Types are declared INLINE (no import of the server-coupled props module)
- * so this composition never drags server deps into the Remotion client bundle.
+ * Horizontal 1920×1080 (desk/TV viewing). Cards are EARNED ONLY (the pure
+ * builder emits a card only when the number > 0) — a quiet week is short and
+ * honest. Design: layered brand-color gradients for depth, eased entrances
+ * (interpolate + bezier, never CSS animation), tenant logo in every scene,
+ * accent bar + progress dots, presenter nameplate under the PIP. Types are
+ * declared INLINE so this composition never drags server deps into the bundle.
  */
 import React from "react"
-import { AbsoluteFill, Img, Sequence, Video, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { AbsoluteFill, Img, Sequence, Video, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 
 type ReelCardKind = "team" | "finance" | "compliance"
 interface ReelCard { value: string; label: string; sub?: string; kind: ReelCardKind }
@@ -41,51 +45,178 @@ const KIND_TAG: Record<ReelCardKind, string> = {
   compliance: "COMPLIANCE OFFICER",
 }
 
+const EASE = Easing.bezier(0.16, 1, 0.3, 1)
+const fadeUp = (frame: number, from: number, to: number) => ({
+  opacity: interpolate(frame, [from, to], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: EASE }),
+  transform: `translateY(${interpolate(frame, [from, to], [28, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: EASE })}px)`,
+})
+
+/** Layered depth: brand-color base, accent glow top-right, cool glow bottom-left,
+ *  vignette. Static (renders identically every frame) — depth without noise. */
+const SceneBackground: React.FC<{ brand: Brand; accent?: string }> = ({ brand, accent }) => (
+  <AbsoluteFill>
+    <AbsoluteFill style={{ backgroundColor: brand.primaryColor }} />
+    <AbsoluteFill style={{ background: `radial-gradient(1200px 800px at 85% 8%, ${accent ?? brand.accentColor}26, transparent 65%)` }} />
+    <AbsoluteFill style={{ background: `radial-gradient(1000px 700px at 8% 95%, #ffffff10, transparent 60%)` }} />
+    <AbsoluteFill style={{ background: "radial-gradient(1800px 1200px at 50% 50%, transparent 55%, #00000045 100%)" }} />
+  </AbsoluteFill>
+)
+
+/** Header on every scene: logo (when set) + show name + brokerage, accent rule. */
+const SceneHeader: React.FC<{ brand: Brand; right?: React.ReactNode }> = ({ brand, right }) => (
+  <>
+    <div style={{ position: "absolute", top: 44, left: 64, right: 64, display: "flex", alignItems: "center", gap: 20 }}>
+      {brand.logoUrl && <Img src={brand.logoUrl} style={{ height: 44, objectFit: "contain" }} />}
+      <div style={{ fontSize: 24, letterSpacing: 5, color: "#fff", opacity: 0.85, fontWeight: 700 }}>
+        {brand.brokerageName.toUpperCase()}
+      </div>
+      <div style={{ fontSize: 20, letterSpacing: 4, color: "#fff", opacity: 0.45 }}>· PARTNERS&apos; MEETING</div>
+      <div style={{ marginLeft: "auto" }}>{right}</div>
+    </div>
+    <div style={{ position: "absolute", top: 104, left: 64, width: 120, height: 4, borderRadius: 2, backgroundColor: brand.accentColor }} />
+  </>
+)
+
+/** Presenter PIP: D-ID clip → assistant/agent photo → monogram, with a
+ *  NAMEPLATE (the assistant's name) so the host is a character, not a circle. */
 const AvatarPIP: React.FC<{ avatarVideoUrl: string | null; agentPhotoUrl: string | null; agentName: string; accentColor: string; primaryColor: string }> = ({
   avatarVideoUrl, agentPhotoUrl, agentName, accentColor, primaryColor,
 }) => {
   const ring: React.CSSProperties = {
-    position: "absolute", bottom: 40, right: 40, width: 220, height: 220, borderRadius: 110,
-    boxShadow: `0 0 0 5px ${accentColor}, 0 18px 40px rgba(0,0,0,0.35)`, overflow: "hidden", backgroundColor: primaryColor,
+    width: 230, height: 230, borderRadius: 115, overflow: "hidden", backgroundColor: primaryColor,
+    boxShadow: `0 0 0 5px ${accentColor}, 0 18px 40px rgba(0,0,0,0.35)`,
   }
-  if (avatarVideoUrl) return <div style={ring}><Video src={avatarVideoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>
-  if (agentPhotoUrl) return <div style={ring}><Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>
   return (
-    <div style={{ ...ring, backgroundColor: accentColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 88, color: primaryColor, fontWeight: 800 }}>
-      {(agentName[0] ?? "T").toUpperCase()}
+    <div style={{ position: "absolute", bottom: 44, right: 56, display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
+      {avatarVideoUrl ? (
+        <div style={ring}><Video src={avatarVideoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>
+      ) : agentPhotoUrl ? (
+        <div style={ring}><Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>
+      ) : (
+        <div style={{ ...ring, backgroundColor: accentColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 92, color: primaryColor, fontWeight: 800 }}>
+          {(agentName[0] ?? "T").toUpperCase()}
+        </div>
+      )}
+      <div style={{
+        padding: "8px 22px", borderRadius: 999, backgroundColor: "#00000055", border: `1px solid ${accentColor}66`,
+        color: "#fff", fontSize: 22, fontWeight: 700, letterSpacing: 1, whiteSpace: "nowrap",
+      }}>
+        {agentName}
+      </div>
     </div>
   )
 }
+
+const ProgressDots: React.FC<{ index: number; total: number; accent: string }> = ({ index, total, accent }) => (
+  <div style={{ position: "absolute", bottom: 64, left: 64, display: "flex", gap: 12 }}>
+    {Array.from({ length: total }, (_, i) => (
+      <div key={i} style={{
+        width: i === index ? 34 : 12, height: 12, borderRadius: 6,
+        backgroundColor: i === index ? accent : "#ffffff3d",
+      }} />
+    ))}
+  </div>
+)
 
 const CardScene: React.FC<{ card: ReelCard; index: number; total: number; brand: Brand }> = ({ card, index, total, brand }) => {
   const frame = useCurrentFrame()
   const accent = KIND_ACCENT[card.kind]
   return (
-    <AbsoluteFill style={{ backgroundColor: brand.primaryColor, padding: "120px 140px", justifyContent: "center" }}>
-      <div style={{ position: "absolute", top: 48, left: 64, fontSize: 22, letterSpacing: 4, color: "#fff", opacity: 0.5 }}>
-        PARTNERS&apos; MEETING · {brand.brokerageName.toUpperCase()}
-      </div>
-      <div style={{ position: "absolute", top: 48, right: 64, fontSize: 20, letterSpacing: 3, color: accent, fontWeight: 700 }}>
-        {index + 1} / {total}
-      </div>
-      <div style={{
-        display: "inline-block", alignSelf: "flex-start", padding: "8px 20px", borderRadius: 6,
-        backgroundColor: accent, color: brand.primaryColor, fontSize: 22, fontWeight: 800, letterSpacing: 4,
-        marginBottom: 28, opacity: interpolate(frame, [0, 12], [0, 1]),
-      }}>
-        {KIND_TAG[card.kind]}
-      </div>
-      <div style={{ fontSize: 220, fontWeight: 900, lineHeight: 0.9, color: "#fff", opacity: interpolate(frame, [4, 22], [0, 1]) }}>
-        {card.value}
-      </div>
-      <div style={{ fontSize: 44, letterSpacing: 6, color: "#fff", opacity: 0.85, textTransform: "uppercase", marginTop: 16 }}>
-        {card.label}
-      </div>
-      {card.sub && (
-        <div style={{ fontSize: 30, color: accent, marginTop: 20, opacity: interpolate(frame, [16, 32], [0, 1]) }}>
-          {card.sub}
+    <AbsoluteFill>
+      <SceneBackground brand={brand} accent={accent} />
+      <SceneHeader brand={brand} right={
+        <span style={{ fontSize: 20, letterSpacing: 3, color: accent, fontWeight: 700 }}>{index + 1} / {total}</span>
+      } />
+      <AbsoluteFill style={{ padding: "150px 150px 120px", justifyContent: "center" }}>
+        <div style={{
+          display: "inline-block", alignSelf: "flex-start", padding: "9px 22px", borderRadius: 6,
+          backgroundColor: accent, color: brand.primaryColor, fontSize: 23, fontWeight: 800, letterSpacing: 4,
+          marginBottom: 34, ...fadeUp(frame, 0, 14),
+        }}>
+          {KIND_TAG[card.kind]}
         </div>
-      )}
+        <div style={{ display: "flex", alignItems: "stretch", gap: 40 }}>
+          <div style={{ width: 10, borderRadius: 5, backgroundColor: accent, opacity: interpolate(frame, [2, 16], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }} />
+          <div>
+            <div style={{ fontSize: 210, fontWeight: 900, lineHeight: 0.92, color: "#fff", textShadow: "0 10px 44px rgba(0,0,0,0.35)", ...fadeUp(frame, 4, 22) }}>
+              {card.value}
+            </div>
+            <div style={{ fontSize: 44, letterSpacing: 6, color: "#ffffffe6", textTransform: "uppercase", marginTop: 18, ...fadeUp(frame, 10, 26) }}>
+              {card.label}
+            </div>
+            {card.sub && (
+              <div style={{ fontSize: 30, color: accent, marginTop: 20, fontWeight: 600, ...fadeUp(frame, 16, 32) }}>
+                {card.sub}
+              </div>
+            )}
+          </div>
+        </div>
+      </AbsoluteFill>
+      <ProgressDots index={index} total={total} accent={accent} />
+    </AbsoluteFill>
+  )
+}
+
+const CoverScene: React.FC<{ brand: Brand; weekLabel: string; agentName: string }> = ({ brand, weekLabel, agentName }) => {
+  const frame = useCurrentFrame()
+  return (
+    <AbsoluteFill>
+      <SceneBackground brand={brand} />
+      <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", padding: 80, textAlign: "center" }}>
+        {brand.logoUrl && <Img src={brand.logoUrl} style={{ height: 96, objectFit: "contain", marginBottom: 44, ...fadeUp(frame, 0, 14) }} />}
+        <div style={{
+          display: "inline-block", padding: "12px 30px", borderRadius: 8, backgroundColor: brand.accentColor,
+          color: brand.primaryColor, fontSize: 25, fontWeight: 800, letterSpacing: 6, textTransform: "uppercase",
+          marginBottom: 36, ...fadeUp(frame, 4, 20),
+        }}>
+          Partners&apos; Meeting
+        </div>
+        <div style={{ fontSize: 100, fontWeight: 800, color: "#fff", lineHeight: 1.04, textShadow: "0 10px 44px rgba(0,0,0,0.35)", ...fadeUp(frame, 10, 28) }}>
+          {brand.brokerageName}
+        </div>
+        <div style={{ fontSize: 40, color: "#fff", marginTop: 22, opacity: interpolate(frame, [16, 34], [0, 0.75], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }}>
+          {weekLabel}
+        </div>
+        <div style={{ fontSize: 27, color: brand.accentColor, marginTop: 30, fontWeight: 700, letterSpacing: 2, ...fadeUp(frame, 24, 40) }}>
+          Hosted by {agentName} — your AI management team
+        </div>
+      </AbsoluteFill>
+    </AbsoluteFill>
+  )
+}
+
+const AskScene: React.FC<{ brand: Brand; oneAsk: string }> = ({ brand, oneAsk }) => {
+  const frame = useCurrentFrame()
+  return (
+    <AbsoluteFill>
+      <SceneBackground brand={brand} />
+      <SceneHeader brand={brand} />
+      <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", padding: 80, textAlign: "center", color: "#fff" }}>
+        <div style={{ fontSize: 28, letterSpacing: 6, color: brand.accentColor, fontWeight: 700, marginBottom: 28, ...fadeUp(frame, 0, 14) }}>THE ONE ASK</div>
+        <div style={{ fontSize: 74, fontWeight: 800, lineHeight: 1.12, maxWidth: 1400, textShadow: "0 10px 44px rgba(0,0,0,0.3)", ...fadeUp(frame, 6, 24) }}>{oneAsk}</div>
+        <div style={{ fontSize: 32, marginTop: 30, opacity: interpolate(frame, [18, 34], [0, 0.75], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }}>
+          Clear it and the team rolls into Monday at full speed.
+        </div>
+      </AbsoluteFill>
+    </AbsoluteFill>
+  )
+}
+
+const OutroScene: React.FC<{ brand: Brand; showEho: boolean }> = ({ brand, showEho }) => {
+  const frame = useCurrentFrame()
+  return (
+    <AbsoluteFill>
+      <SceneBackground brand={brand} />
+      <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", color: "#fff", textAlign: "center" }}>
+        <div>
+          {brand.logoUrl && <Img src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 30, ...fadeUp(frame, 0, 12) }} />}
+          <div style={{ fontSize: 44, fontWeight: 800, ...fadeUp(frame, 4, 18) }}>{brand.brokerageName}</div>
+          <div style={{ width: 90, height: 4, borderRadius: 2, backgroundColor: brand.accentColor, margin: "22px auto 0" }} />
+          <div style={{ fontSize: 23, opacity: 0.65, marginTop: 22 }}>
+            Presented by your AI management team{showEho && " · Equal Housing Opportunity"}
+          </div>
+        </div>
+      </AbsoluteFill>
     </AbsoluteFill>
   )
 }
@@ -93,7 +224,6 @@ const CardScene: React.FC<{ card: ReelCard; index: number; total: number; brand:
 export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
   weekLabel, cards, oneAsk, agentName, avatarVideoUrl, agentPhotoUrl, brand,
 }) => {
-  const frame = useCurrentFrame()
   const { durationInFrames, fps } = useVideoConfig()
   const showEho = brand.showEhoMark ?? true
 
@@ -107,25 +237,10 @@ export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, sans-serif" }}>
       {/* COVER */}
       <Sequence from={0} durationInFrames={COVER}>
-        <AbsoluteFill style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 80, textAlign: "center" }}>
-          {brand.logoUrl && <Img src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 40, opacity: interpolate(frame, [0, 12], [0, 1]) }} />}
-          <div style={{
-            display: "inline-block", padding: "12px 28px", borderRadius: 8, backgroundColor: brand.accentColor,
-            color: brand.primaryColor, fontSize: 24, fontWeight: 800, letterSpacing: 6, textTransform: "uppercase",
-            marginBottom: 32, opacity: interpolate(frame, [4, 20], [0, 1]),
-          }}>
-            Partners&apos; Meeting
-          </div>
-          <div style={{ fontSize: 96, fontWeight: 800, color: "#fff", lineHeight: 1.05, opacity: interpolate(frame, [10, 28], [0, 1]) }}>
-            Your AI team&apos;s week
-          </div>
-          <div style={{ fontSize: 40, color: "#fff", opacity: interpolate(frame, [16, 34], [0, 0.7]), marginTop: 20 }}>
-            {weekLabel}
-          </div>
-        </AbsoluteFill>
+        <CoverScene brand={brand} weekLabel={weekLabel} agentName={agentName} />
       </Sequence>
 
-      {/* EARNED CARDS */}
+      {/* EARNED CARDS — the presenter rides every card */}
       {cards.map((card, i) => (
         <Sequence key={i} from={COVER + per * i} durationInFrames={per}>
           <CardScene card={card} index={i} total={cards.length} brand={brand} />
@@ -135,23 +250,13 @@ export const PartnersMeetingReel: React.FC<PartnersMeetingReelProps> = ({
 
       {/* THE ONE ASK */}
       <Sequence from={COVER + cardTotal} durationInFrames={ASK}>
-        <AbsoluteFill style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 80, textAlign: "center", color: "#fff" }}>
-          <div style={{ fontSize: 28, letterSpacing: 6, color: brand.accentColor, fontWeight: 700, marginBottom: 24 }}>THE ONE ASK</div>
-          <div style={{ fontSize: 72, fontWeight: 800, lineHeight: 1.1, maxWidth: 1400 }}>{oneAsk}</div>
-          <div style={{ fontSize: 32, opacity: 0.7, marginTop: 28 }}>Clear it and the team rolls into Monday at full speed.</div>
-        </AbsoluteFill>
+        <AskScene brand={brand} oneAsk={oneAsk} />
+        <AvatarPIP avatarVideoUrl={avatarVideoUrl} agentPhotoUrl={agentPhotoUrl} agentName={agentName} accentColor={brand.accentColor} primaryColor={brand.primaryColor} />
       </Sequence>
 
       {/* OUTRO */}
       <Sequence from={durationInFrames - OUTRO} durationInFrames={OUTRO}>
-        <AbsoluteFill style={{ display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}>
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 40, fontWeight: 700 }}>{brand.brokerageName}</div>
-            <div style={{ fontSize: 22, opacity: 0.6, marginTop: 12 }}>
-              Presented by your AI management team{showEho && " · Equal Housing Opportunity"}
-            </div>
-          </div>
-        </AbsoluteFill>
+        <OutroScene brand={brand} showEho={showEho} />
       </Sequence>
     </AbsoluteFill>
   )

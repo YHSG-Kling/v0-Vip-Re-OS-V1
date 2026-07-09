@@ -1,0 +1,144 @@
+// lib/video/listing-pitch-reel.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// THE LISTING-PITCH REEL — win the listing with the team on camera. When a
+// listing appointment is on the calendar, the prep cron already pre-builds the
+// CMA + net sheets + deck; this adds the SHOWSTOPPER: a branded video the
+// agent opens on the seller's kitchen table — "meet the team that will sell
+// your home" — fronted by the AGENT'S OWN face and name (contact-facing rule:
+// the licensed human, never the assistant) over the brokerage's MEASURED
+// proof: attributed closed volume, calls answered around the clock, the
+// compliance discipline. Every number from the ROI ledger (keep-one — the
+// same counting the command-center tile shows), never a claim.
+//
+// KEEP-ONE: reuses the PartnersMeetingReel composition + the shared brand
+// resolver + the shared delivery sweep. Delivered to the AGENT (internal
+// notification with the watch link) — the human decides to show or send it;
+// no client egress from this rail.
+
+import type { PartnersMeetingReelProps, ReelCard } from "@/lib/intelligence/partners-meeting-reel-props"
+import type { RoiLedger } from "@/lib/intelligence/roi-ledger"
+import type { ReelBrand } from "@/lib/video/reel-brand"
+
+export const LISTING_PITCH_REEL_ENTITY = "listing_pitch_reel"
+
+const money = (cents: number) => {
+  const v = Math.round(Math.max(0, cents) / 100)
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
+  if (v >= 10_000) return `$${Math.round(v / 1000).toLocaleString("en-US")}K`
+  return `$${v.toLocaleString("en-US")}`
+}
+
+/** PURE: the pitch props — earned proof only (a young brokerage gets a shorter,
+ *  still-honest pitch; zero-proof tenants get the team-promise card alone). */
+export function buildListingPitchReelProps(
+  p: { address: string; agentName: string; agentPhotoUrl: string | null; brand: ReelBrand; roi: Pick<RoiLedger, "periodDays" | "attributedGciCents" | "attributedDeals" | "callsAnswered" | "appointmentsBooked" | "optOutsHonored"> },
+): PartnersMeetingReelProps {
+  const cards: ReelCard[] = []
+  cards.push({
+    value: "24/7", label: "AN AI TEAM ON YOUR LISTING", kind: "team",
+    sub: "every inquiry answered, every showing followed up, day one",
+  })
+  if (p.roi.attributedGciCents > 0) {
+    cards.push({
+      value: money(p.roi.attributedGciCents), label: "CLOSED VOLUME OUR MARKETING PRODUCED",
+      sub: `across ${p.roi.attributedDeals} deal${p.roi.attributedDeals === 1 ? "" : "s"} in ${p.roi.periodDays} days — attribution-measured, not claimed`,
+      kind: "finance",
+    })
+  }
+  if (p.roi.callsAnswered > 0) {
+    cards.push({
+      value: String(p.roi.callsAnswered), label: "BUYER CALLS ANSWERED LIVE",
+      sub: p.roi.appointmentsBooked > 0 ? `${p.roi.appointmentsBooked} appointments booked on the call` : "no voicemail, no missed buyer",
+      kind: "team",
+    })
+  }
+  if (p.roi.optOutsHonored >= 0) {
+    cards.push({
+      value: "100%", label: "FAIR HOUSING & CONSENT PRE-FLIGHT",
+      sub: "every outbound reviewed before it sends — discipline your listing deserves",
+      kind: "compliance",
+    })
+  }
+  return {
+    weekLabel: p.address,
+    cards,
+    oneAsk: `Let's put this team to work on ${p.address}`,
+    narration: `${p.address} — presented by ${p.agentName} and the AI team at ${p.brand.brokerageName}.`,
+    agentName: p.agentName,
+    avatarVideoUrl: null,
+    agentPhotoUrl: p.agentPhotoUrl,
+    brand: {
+      primaryColor: p.brand.primaryColor, accentColor: p.brand.accentColor,
+      brokerageName: p.brand.brokerageName, showEhoMark: true, logoUrl: p.brand.logoUrl,
+    },
+  }
+}
+
+/** Queue ONE pitch reel per listing appointment (idempotent on the render
+ *  ledger). Fronted by the AGENT (contact-facing identity). Best-effort. */
+export async function queueListingPitchReel(
+  svc: any,
+  p: { brokerageId: string; agentUserId: string | null; appointmentId: string; address: string },
+): Promise<boolean> {
+  const { data: existing } = await svc.from("remotion_composition_renders").select("id")
+    .eq("brokerage_id", p.brokerageId).eq("composition_id", "PartnersMeetingReel")
+    .eq("entity_type", LISTING_PITCH_REEL_ENTITY).eq("entity_id", p.appointmentId)
+    .limit(1).maybeSingle()
+  if (existing) return false
+
+  const [{ resolveReelBrand }, { resolveVideoIdentity }, { generateRoiLedger }] = await Promise.all([
+    import("@/lib/video/reel-brand"), import("@/lib/video/video-identity"), import("@/lib/intelligence/roi-ledger"),
+  ])
+  const [brand, identity, roi] = await Promise.all([
+    resolveReelBrand(svc, p.brokerageId),
+    resolveVideoIdentity(svc, { brokerageId: p.brokerageId, agentUserId: p.agentUserId, purpose: "contact_facing" }),
+    generateRoiLedger(svc, p.brokerageId),
+  ])
+  const props = buildListingPitchReelProps({
+    address: p.address, agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl, brand, roi,
+  }) as unknown as Record<string, unknown>
+  props.thumbnail_props = {
+    kind: "presentation", title: p.address, subtitle: `Listed with ${brand.brokerageName}`, eyebrow: "LISTING PRESENTATION",
+    agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl,
+    brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, showEhoMark: true, ...(brand.logoUrl ? { logoUrl: brand.logoUrl } : {}) },
+  }
+  const { recordRenderQueued } = await import("@/lib/remotion/registry")
+  const r = await recordRenderQueued({
+    brokerageId: p.brokerageId, compositionId: "PartnersMeetingReel",
+    agentUserId: p.agentUserId,
+    entityType: LISTING_PITCH_REEL_ENTITY, entityId: p.appointmentId,
+    inputProps: props, scopeType: "brokerage", scopeId: p.brokerageId, requestedVia: "cron",
+  })
+  return r.ok
+}
+
+export interface PitchReelDeliveryResult { completed: number; notified: number }
+
+/** Deliver completed pitch reels to THEIR AGENT (the render row carries
+ *  agent_user_id) ahead of the appointment. Deduped by render-id marker. */
+export async function deliverListingPitchReels(svc: any, now: Date = new Date()): Promise<PitchReelDeliveryResult> {
+  const out: PitchReelDeliveryResult = { completed: 0, notified: 0 }
+  const sinceIso = new Date(now.getTime() - 2 * 86_400_000).toISOString()
+  const { data: renders } = await svc.from("remotion_composition_renders")
+    .select("id, brokerage_id, agent_user_id, output_url, input_props")
+    .eq("entity_type", LISTING_PITCH_REEL_ENTITY)
+    .eq("render_status", "completed").not("output_url", "is", null)
+    .gte("created_at", sinceIso).limit(100)
+  for (const ren of ((renders ?? []) as any[])) {
+    out.completed += 1
+    if (!ren.agent_user_id) continue
+    const marker = `[reel:${ren.id}]`
+    const { data: dup } = await svc.from("notifications").select("id")
+      .eq("brokerage_id", ren.brokerage_id).ilike("body", `%${marker}%`).limit(1).maybeSingle()
+    if (dup) continue
+    const address = (ren.input_props as any)?.weekLabel ?? "your listing appointment"
+    await svc.from("notifications").insert({
+      user_id: ren.agent_user_id, brokerage_id: ren.brokerage_id, type: "listing_presentation_ready",
+      title: `Your pitch video for ${address} is ready`,
+      body: `Open it on the seller's kitchen table — you, the team, and the measured proof, on camera. Watch: ${ren.output_url} ${marker}`,
+      priority: "high", channel: "in_app", is_read: false,
+    }).then(undefined, () => {})
+    out.notified += 1
+  }
+  return out
+}

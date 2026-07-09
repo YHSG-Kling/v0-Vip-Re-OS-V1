@@ -40,6 +40,7 @@ export interface AIIdentityProfile {
   brokerage_id: string
   assistant_name: string
   persona_label: string | null
+  avatar_url: string | null
   tone: string | null
   formality_level: string | null
   objection_library: Array<{ objection: string; response: string; category: string }>
@@ -59,6 +60,8 @@ export type SaveAIIdentityInput = {
   brokerageId: string
   assistantName: string
   personaLabel: string
+  /** Photo the assistant uses when it PRESENTS (report videos, avatar PIPs). */
+  avatarUrl?: string | null
   tone: string | null
   formalityLevel: string | null
   objectionLibrary: Array<{ objection: string; response: string; category: string }>
@@ -185,6 +188,7 @@ export async function saveAIIdentityProfile(
           brokerage_id: auth.brokerageId,  // always from session
           assistant_name: input.assistantName,
           persona_label: input.personaLabel || null,
+          ...(input.avatarUrl !== undefined ? { avatar_url: input.avatarUrl } : {}),
           tone: input.tone || null,
           formality_level: input.formalityLevel || null,
           objection_library: input.objectionLibrary,

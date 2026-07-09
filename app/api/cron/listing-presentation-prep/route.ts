@@ -25,6 +25,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   const svc = createServiceClient()
 
+  // ?phase=deliver (19:00, two hours after prep — renders are done): completed
+  // pitch reels land with THEIR agent ahead of tomorrow's appointment.
+  if (new URL(req.url).searchParams.get("phase") === "deliver") {
+    const { deliverListingPitchReels } = await import("@/lib/video/listing-pitch-reel")
+    const delivery = await deliverListingPitchReels(svc)
+    return NextResponse.json({ phase: "deliver", ...delivery })
+  }
+
   // Find appointments in the next 24h marked as a listing consultation
   const now = new Date().toISOString()
   const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
@@ -87,7 +95,19 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       zip:             apptAny.property_zip ?? null,
     })
 
-    if (result.success) built++
+    if (result.success) {
+      built++
+      // The showstopper: the pitch VIDEO — the agent + the team's measured
+      // proof, on camera, for the seller's kitchen table. Best-effort; a
+      // render-queue hiccup never blocks the deck/CMA prep.
+      try {
+        const { queueListingPitchReel } = await import("@/lib/video/listing-pitch-reel")
+        await queueListingPitchReel(svc, {
+          brokerageId: apptAny.brokerage_id, agentUserId,
+          appointmentId: appt.id, address: propertyAddress,
+        })
+      } catch { /* pitch reel is additive */ }
+    }
     else errors.push({ appointmentId: appt.id, error: result.error ?? "unknown" })
   }
 

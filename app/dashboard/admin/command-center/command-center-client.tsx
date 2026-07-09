@@ -236,6 +236,43 @@ export function CommandCenterClient({
         </section>
       )}
 
+      {/* THE ROI LEDGER — what the AI team EARNED, live. Every number traces to a
+          ledger row (attribution credits, calls, live bookings, sent drafts) — the
+          software's numbers, measured, not claimed. Silent when nothing earned. */}
+      {data.roiLedger && data.roiLedger.headline && (
+        <section className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold">What your AI team earned</h2>
+            <span className="text-xs text-muted-foreground">last {data.roiLedger.periodDays} days · from the ledgers</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Card className="p-4 border-emerald-300 bg-emerald-50/40">
+              <div className="text-xs text-muted-foreground">Attributed closed volume</div>
+              <div className="text-2xl font-semibold text-emerald-700">
+                ${Math.round(data.roiLedger.attributedGciCents / 100).toLocaleString()}
+              </div>
+              <div className="text-xs text-muted-foreground">{data.roiLedger.attributedDeals} deal{data.roiLedger.attributedDeals === 1 ? "" : "s"} · attribution-weighted</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-xs text-muted-foreground">Calls answered</div>
+              <div className="text-2xl font-semibold">{data.roiLedger.callsAnswered}</div>
+              <div className="text-xs text-muted-foreground">{data.roiLedger.appointmentsBooked} booked live</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-xs text-muted-foreground">AI drafts sent</div>
+              <div className="text-2xl font-semibold">{data.roiLedger.draftsSent}</div>
+              <div className="text-xs text-muted-foreground">written by the team, approved by agents</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-xs text-muted-foreground">Opt-outs honored</div>
+              <div className="text-2xl font-semibold">{data.roiLedger.optOutsHonored}</div>
+              <div className="text-xs text-muted-foreground">compliance is a feature</div>
+            </Card>
+          </div>
+          <p className="text-xs text-muted-foreground">{data.roiLedger.headline}</p>
+        </section>
+      )}
+
       {/* Retention board — the Recruiting Manager's daily flight-risk scores made visible.
           People health beside production: who's trending down and why, before they leave. */}
       {data.retentionBoard && data.retentionBoard.scored > 0 && (

@@ -91,8 +91,16 @@ export async function queueBoardPacketReel(
     .limit(1).maybeSingle()
   if (existing) return false
   const { resolveReelBrand } = await import("@/lib/video/reel-brand")
-  const brand = await resolveReelBrand(svc, p.brokerageId)
-  const props = buildBoardPacketReelProps(p.data, { brand }) as unknown as Record<string, unknown>
+  const { resolveVideoIdentity } = await import("@/lib/video/video-identity")
+  const [brand, identity] = await Promise.all([
+    resolveReelBrand(svc, p.brokerageId),
+    // The brokerage's named ASSISTANT presents the month (internal report —
+    // never the broker's own face reading their own numbers back to them).
+    resolveVideoIdentity(svc, { brokerageId: p.brokerageId, agentUserId: null, purpose: "internal_report" }),
+  ])
+  const props = buildBoardPacketReelProps(p.data, {
+    brand, agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl,
+  }) as unknown as Record<string, unknown>
   props.thumbnail_props = {
     kind: "presentation", title: `${p.data.monthLabel} Board Packet`,
     subtitle: "Presented by your AI team", eyebrow: "BOARD PACKET",

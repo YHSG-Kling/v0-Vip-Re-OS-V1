@@ -95,25 +95,21 @@ export type MeetingProducer = (
 
 const defaultProducer = (supabase: Svc, brokerageId: string): MeetingProducer => async (script, agentUserId) => {
   try {
-    const { resolveAssistantVoiceId } = await import("@/lib/intelligence/appointment-whisper")
-    const voiceId = await resolveAssistantVoiceId(supabase, agentUserId)
-    if (!voiceId) return null
-    // Avatar photo from the SAME configured profile (voice_assistant_config → profile).
-    const { data: cfg } = await supabase.from("voice_assistant_config")
-      .select("voice_profile_id").eq("agent_id", agentUserId).maybeSingle()
-    let photo: string | null = null
-    if ((cfg as any)?.voice_profile_id) {
-      const { data: vp } = await supabase.from("agent_voice_profiles")
-        .select("did_photo_url").eq("id", (cfg as any).voice_profile_id).maybeSingle()
-      photo = (vp as any)?.did_photo_url ?? null
-    }
+    // WHO FRONTS IT (owner rule): an internal REPORT is presented by the named
+    // AI ASSISTANT (ai_identity_profiles cascade — the same identity that
+    // answers the phone), not the human's own clone — nobody wants to be
+    // briefed by a mirror. Falls back to the human's clone when no assistant
+    // is configured; memo when neither exists.
+    const { resolveVideoIdentity } = await import("@/lib/video/video-identity")
+    const identity = await resolveVideoIdentity(supabase, { brokerageId, agentUserId, purpose: "internal_report" })
+    if (!identity.voiceId) return null
     const { generateVideo } = await import("@/lib/did")
     const res = await generateVideo({
-      script, voiceId, agentUserId, brokerageId,
-      avatarImageUrl: photo, voiceOnly: !photo,
+      script, voiceId: identity.voiceId, agentUserId, brokerageId,
+      avatarImageUrl: identity.avatarPhotoUrl, voiceOnly: !identity.avatarPhotoUrl,
     })
     if (!res.videoUrl) return null
-    return { kind: photo ? "video" : "audio", url: res.videoUrl }
+    return { kind: identity.avatarPhotoUrl ? "video" : "audio", url: res.videoUrl }
   } catch { return null }
 }
 
@@ -213,7 +209,7 @@ export async function producePartnersMeeting(
 
   let meetings = 0, video = 0, audio = 0, memo = 0
   let avatarClipUrl: string | null = null
-  let avatarUserName: string | null = null
+  let avatarUserId: string | null = null
   for (const user of audience) {
     // One meeting per user per week.
     const { data: already } = await supabase.from("notifications").select("id")
@@ -232,7 +228,7 @@ export async function producePartnersMeeting(
     })
     if (error) continue
     meetings += 1
-    if (media?.kind === "video") { video += 1; avatarClipUrl = avatarClipUrl ?? media.url; avatarUserName = avatarUserName ?? user.first_name }
+    if (media?.kind === "video") { video += 1; avatarClipUrl = avatarClipUrl ?? media.url; avatarUserId = avatarUserId ?? user.id }
     else if (media?.kind === "audio") audio += 1
     else memo += 1
   }
@@ -244,7 +240,8 @@ export async function producePartnersMeeting(
   // Best-effort — a render-queue hiccup never blocks the meeting itself. ──
   try {
     await queuePartnersMeetingReel(supabase, {
-      brokerageId, week, avatarVideoUrl: avatarClipUrl, agentName: avatarUserName ?? "Your AI Team", now,
+      brokerageId, week, avatarVideoUrl: avatarClipUrl,
+      agentUserId: avatarUserId ?? audience[0]?.id ?? null, now,
     })
   } catch { /* reel is additive */ }
 
@@ -259,7 +256,7 @@ export const PARTNERS_MEETING_REEL_ENTITY = "partners_meeting_reel"
  *  render ledger (entity + 6-day window). */
 export async function queuePartnersMeetingReel(
   supabase: Svc,
-  p: { brokerageId: string; week: WeekInBusiness; avatarVideoUrl: string | null; agentName: string; now: Date },
+  p: { brokerageId: string; week: WeekInBusiness; avatarVideoUrl: string | null; agentUserId: string | null; now: Date },
 ): Promise<boolean> {
   const sinceIso = new Date(p.now.getTime() - 6 * 86_400_000).toISOString()
   const { data: existing } = await supabase.from("remotion_composition_renders").select("id")
@@ -269,10 +266,17 @@ export async function queuePartnersMeetingReel(
   if (existing) return false
 
   const { resolveReelBrand } = await import("@/lib/video/reel-brand")
-  const brand = await resolveReelBrand(supabase, p.brokerageId)
+  const { resolveVideoIdentity } = await import("@/lib/video/video-identity")
+  const [brand, identity] = await Promise.all([
+    resolveReelBrand(supabase, p.brokerageId),
+    // The named ASSISTANT hosts the show (photo PIP + on-screen name) — the
+    // owner rule: reporting is presented TO the human, not BY the human.
+    resolveVideoIdentity(supabase, { brokerageId: p.brokerageId, agentUserId: p.agentUserId, purpose: "internal_report" }),
+  ])
   const { buildPartnersMeetingRenderRequest } = await import("@/lib/intelligence/partners-meeting-reel-props")
   const req = buildPartnersMeetingRenderRequest(p.week, {
-    agentName: p.agentName, avatarVideoUrl: p.avatarVideoUrl, brand,
+    agentName: identity.speakerName, avatarVideoUrl: p.avatarVideoUrl,
+    agentPhotoUrl: identity.avatarPhotoUrl, brand,
   })
   const props = req.inputProps as unknown as Record<string, unknown>
   props.thumbnail_props = {
