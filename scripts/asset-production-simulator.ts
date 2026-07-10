@@ -239,7 +239,7 @@ async function main() {
     && presBuilder.includes("leaveBehindPdfUrl"))
   const magnetRunner = src("lib/marketing/lead-magnet-delivery-runner.ts")
   check("guide magnets ship the DESIGNED BOOKLET with the download link appended to the delivery copy",
-    magnetRunner.includes("guideBookletSpec") && magnetRunner.includes("guideChaptersFor")
+    magnetRunner.includes("guideBookletSpec") && magnetRunner.includes("generateGuideChapters")
     && magnetRunner.includes("Download your full guide (PDF)"))
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -284,10 +284,91 @@ async function main() {
   check("staging toast tells the agent the disclosure rode along",
     ui.includes("required disclosure"))
 
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[11 · SOCIAL CAROUSEL — a real multi-image SET, AI copy, approval-gated]")
+  const { fallbackCarouselPlan, planListingCarousel } = await import("../lib/marketing/social-carousel")
+  const facts = {
+    address: "128 Harborview Lane", cityState: "Naples, FL", price: "$1,250,000",
+    beds: "4", baths: "3.5", sqft: "3,240", statusLine: "JUST LISTED",
+    highlights: ["Chef's kitchen with quartz island", "Saltwater pool + lanai"],
+  }
+  const fb = fallbackCarouselPlan(facts)
+  check("fallback plan: hook first, cta last, a stat slide, built ONLY from listing facts",
+    fb[0].role === "hook" && fb[fb.length - 1].role === "cta"
+    && fb.some((s) => s.role === "stat" && s.statValue === facts.price)
+    && fb.every((s) => !FH_BANNED.test(`${s.kicker} ${s.title} ${s.body}`)))
+  const gatedPlan = await planListingCarousel(facts, { gate: async () => ({ allowed: false }) })
+  check("a blocking compliance gate forces the deterministic fallback (AI copy never ships ungated)",
+    gatedPlan.fromAI === false && gatedPlan.slides.length === fb.length)
+  const carousel = src("lib/marketing/social-carousel.ts")
+  check("slides render through the still rail; the set assembles into ONE social_posts row (draft + pending approval, ordered media_urls)",
+    carousel.includes('compositionId: "CarouselSlide"') && carousel.includes('post_type: "carousel"')
+    && carousel.includes('status: "draft"') && carousel.includes('approval_status: "pending"')
+    && carousel.includes("slideIndex") && carousel.includes("media_urls: mediaUrls"))
+  check("idempotent per listing + the agent gets the set even without a connected account",
+    carousel.includes('entityType: "social_carousel"') && carousel.includes("[carousel:${listingId}]"))
+  const rootSrc = src("remotion/Root.tsx")
+  check("CarouselSlide registered 1080x1350 still; finish spec: the set IS the deliverable",
+    rootSrc.includes('id="CarouselSlide"') && rootSrc.includes("width={1080}") && rootSrc.includes("height={1350}")
+    && !!VIDEO_FINISH_SPEC.CarouselSlide && !VIDEO_FINISH_SPEC.CarouselSlide.bookends)
+  const slideSrc = src("remotion/CarouselSlide.tsx")
+  check("the slide is RICH by design (brand washes, accent geometry, duotone photo press, dots, swipe cue, EHO closer)",
+    slideSrc.includes("radial-gradient") && slideSrc.includes("rotate(") && slideSrc.includes("SWIPE")
+    && slideSrc.includes("Equal Housing Opportunity") && slideSrc.includes("slideIndex"))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[12 · LISTING BROCHURE — multi-page, photo-forward, autonomous]")
+  const { listingBrochureSpec } = await import("../lib/documents/listing-brochure")
+  const jpeg = await sharp({ create: { width: 320, height: 200, channels: 3, background: { r: 30, g: 60, b: 90 } } })
+    .jpeg().toBuffer()
+  const brochureSpec = listingBrochureSpec(
+    {
+      id: "x", brokerage_id: "y", address: "128 Harborview Lane", cityState: "Naples, FL",
+      price: "$1,250,000", beds: "4", baths: "3.5", sqft: "3,240", propertyType: "Single Family",
+      remarks: "Chef's kitchen. Saltwater pool.", highlights: ["Chef's kitchen", "Saltwater pool"],
+      photoUrls: [],
+    },
+    "An editorial opening paragraph.\n\nAnd a second one.",
+    Array.from({ length: 7 }, () => ({ bytes: jpeg, kind: "jpg" as const })),
+    brand, "July 2026",
+  )
+  const brochureBytes = await renderClientPdf(brochureSpec)
+  const brochureDoc = await PDFDocument.load(brochureBytes)
+  check("brochure renders as a REAL multi-page PDF with embedded photo spreads",
+    Buffer.from(brochureBytes.slice(0, 5)).toString() === "%PDF-" && brochureDoc.getPageCount() >= 2
+    && brochureBytes.length > jpeg.length) // photos actually embedded
+  check("brochure carries the anti-solicitation + verify-facts disclaimer",
+    /not a solicitation/i.test(brochureSpec.disclaimer ?? "") && /verify/i.test(brochureSpec.disclaimer ?? ""))
+  const brochureSrc = src("lib/documents/listing-brochure.ts")
+  check("autonomous: marketing-window listings with a real photo story (≥6), idempotent via generated_documents, agent notified",
+    brochureSrc.includes("MLS_ACTIVE") && brochureSrc.includes("photoUrls.length < 6")
+    && brochureSrc.includes('eq("document_type", "listing_brochure")') && brochureSrc.includes("listing_brochure_ready"))
+  check("brochure narrative is AI-FIRST with the listing's own remarks as fallback (never hardcoded prose)",
+    brochureSrc.includes("generatePersonaCopy") && brochureSrc.includes("draft.body || narrative"))
+  check("the daily plays cron runs carousels + brochures",
+    src("app/api/cron/video-plays/route.ts").includes("runListingCarousels")
+    && src("app/api/cron/video-plays/route.ts").includes("runListingBrochures"))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[13 · NO HARDCODED CONTENT — AI-first with a gated deterministic floor]")
+  const gbc = src("lib/marketing/guide-booklet-content.ts")
+  check("guide chapters: generateGuideChapters is AI-first (demand topics + factual floor + gate) with deterministic fallback",
+    gbc.includes("generateGuideChapters") && gbc.includes("gatewayChatJSON")
+    && gbc.includes("fromAI") && gbc.includes("return { chapters: fallback, fromAI: false }"))
+  const { generateGuideChapters } = await import("../lib/marketing/guide-booklet-content")
+  const blocked = await generateGuideChapters("buyer_guide", { gate: async () => ({ allowed: false }) })
+  check("a blocking gate (or unreachable model) yields the FH-safe deterministic chapters",
+    blocked.chapters.length === 5)
+  check("delivery runner uses the AI-first chapters (not the static list)",
+    src("lib/marketing/lead-magnet-delivery-runner.ts").includes("generateGuideChapters"))
+  check("door-hanger hook is AI-written per listing with the deterministic line as fallback",
+    src("lib/video/video-plays.ts").includes("generatePersonaCopy")
+    && src("lib/video/video-plays.ts").includes("fallback hook stands"))
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete.")
+  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded.")
   console.log(" ASSET_PRODUCTION_PASS")
   process.exit(0)
 }

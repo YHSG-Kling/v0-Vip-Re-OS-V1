@@ -39,13 +39,17 @@ export async function GET(request: NextRequest) {
   try {
     const svc = createServiceClient()
     const { runTestimonialReels, runWalkthroughPremieres, runListingFlyers, runDoorHangers } = await import("@/lib/video/video-plays")
-    const [testimonials, walkthroughs, flyers, hangers] = await Promise.all([
+    const { runListingCarousels } = await import("@/lib/marketing/social-carousel")
+    const { runListingBrochures } = await import("@/lib/documents/listing-brochure")
+    const [testimonials, walkthroughs, flyers, hangers, carousels, brochures] = await Promise.all([
       runTestimonialReels(svc),
       runWalkthroughPremieres(svc),
       runListingFlyers(svc),
       runDoorHangers(svc),
+      runListingCarousels(svc),
+      runListingBrochures(svc),
     ])
-    const summary = { ...testimonials, ...walkthroughs, ...flyers, ...hangers }
+    const summary = { ...testimonials, ...walkthroughs, ...flyers, ...hangers, ...carousels, ...brochures }
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: testimonials.testimonialReels + walkthroughs.walkthroughs,

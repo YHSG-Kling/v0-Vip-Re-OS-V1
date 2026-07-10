@@ -86,6 +86,7 @@ export const VIDEO_FINISH_SPEC: Record<string, VideoFinish> = {
   // ── Stills — they ARE the deliverable ──
   ListingFlyer: STILL, // 8.5x11 print — the flyer IS the deliverable
   DoorHanger: STILL, // 4.25x11 print — the door-knock piece IS the deliverable
+  CarouselSlide: STILL, // one swipe of a social carousel — the set IS the deliverable
   VideoCoverThumb: STILL,
   NewsletterDigestThumb: STILL,
   LeadMagnetCard: STILL,

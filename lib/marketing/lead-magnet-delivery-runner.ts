@@ -67,14 +67,24 @@ export async function deliverMagnet(
     try {
       const { resolvePdfBrand, produceClientDocument } = await import("@/lib/documents/client-document-producer")
       const { guideBookletSpec } = await import("@/lib/documents/client-pdf")
-      const { guideChaptersFor } = await import("./guide-booklet-content")
+      const { generateGuideChapters } = await import("./guide-booklet-content")
       const brand = await resolvePdfBrand(svc, { brokerageId: args.brokerageId, agentUserId: args.agentUserId })
       const dateLabel = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long" })
+      // Chapters are AI-written (grounded in the same demand topics as the
+      // copy, gated) — the evergreen set is only the fallback floor.
+      const { chapters } = await generateGuideChapters(args.magnetType, {
+        topics: topics.map((t) => t.topic),
+        area: args.ctx?.area ?? null,
+        gate: async (text) => {
+          const g = await gate(text)
+          return { allowed: g.allowed }
+        },
+      })
       const spec = guideBookletSpec({
         kind: args.magnetType,
         title: deliverable.title,
         intro: deliverable.body,
-        chapters: guideChaptersFor(args.magnetType),
+        chapters,
         areaLabel: args.ctx?.area ?? null,
       }, brand, dateLabel)
       const produced = await produceClientDocument(svc, {

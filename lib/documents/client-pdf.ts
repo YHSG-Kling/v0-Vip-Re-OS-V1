@@ -57,13 +57,22 @@ export interface ClientPdfPriceCard {
   note?: string
 }
 
+export interface ClientPdfPhoto {
+  /** Raw image bytes — the caller downloads; the engine stays network-free. */
+  bytes: Uint8Array
+  kind: "jpg" | "png"
+  caption?: string
+}
+
 export interface ClientPdfSection {
   heading?: string
   paragraphs?: string[]
   bullets?: string[]
   table?: ClientPdfTable
   priceCards?: ClientPdfPriceCard[]
-  /** Start this section on a fresh page (booklet chapters). */
+  /** Embedded photos, laid out 2-up (a lone photo runs full width). */
+  photos?: ClientPdfPhoto[]
+  /** Start this section on a fresh page (booklet chapters / photo spreads). */
   pageBreak?: boolean
 }
 
@@ -211,6 +220,37 @@ function drawPriceCards(c: Cursor, cards: ClientPdfPriceCard[]): void {
   c.y = top - cardH - 14
 }
 
+async function drawPhotos(c: Cursor, photos: ClientPdfPhoto[]): Promise<void> {
+  const gap = 12
+  for (let i = 0; i < photos.length; ) {
+    const pair = photos.slice(i, i + 2)
+    const isPair = pair.length === 2
+    const cellW = isPair ? (BODY_W - gap) / 2 : BODY_W
+    const embedded = await Promise.all(pair.map(async (p) =>
+      p.kind === "png" ? c.doc.embedPng(p.bytes) : c.doc.embedJpg(p.bytes),
+    ))
+    const heights = embedded.map((img) => (img.height / img.width) * cellW)
+    const rowH = Math.min(Math.max(...heights), 300)
+    ensure(c, rowH + 26)
+    const top = c.y
+    embedded.forEach((img, j) => {
+      // Cover-fit: scale to fill the cell height, clip via width cap
+      const scale = rowH / ((img.height / img.width) * cellW)
+      const w = Math.min(cellW, cellW * scale)
+      const h = (img.height / img.width) * w
+      const x = MARGIN_X + j * (cellW + gap) + (cellW - w) / 2
+      c.page.drawImage(img, { x, y: top - Math.min(h, rowH), width: w, height: Math.min(h, rowH) })
+      const caption = pair[j].caption
+      if (caption) {
+        c.page.drawText(caption.slice(0, 60), { x: MARGIN_X + j * (cellW + gap), y: top - rowH - 12, size: 8, font: c.font, color: MUTE })
+      }
+    })
+    c.y = top - rowH - (pair.some((p) => p.caption) ? 24 : 12)
+    i += 2
+  }
+  c.y -= 6
+}
+
 /** Render the spec to real PDF bytes (starts with %PDF — the sim asserts it). */
 export async function renderClientPdf(spec: ClientPdfSpec): Promise<Uint8Array> {
   const doc = await PDFDocument.create()
@@ -245,6 +285,7 @@ export async function renderClientPdf(spec: ClientPdfSpec): Promise<Uint8Array> 
     for (const p of section.paragraphs ?? []) drawParagraph(c, p)
     if (section.bullets?.length) drawBullets(c, section.bullets)
     if (section.table) drawTable(c, section.table)
+    if (section.photos?.length) await drawPhotos(c, section.photos)
   }
 
   // ── DISCLAIMER ──

@@ -36,6 +36,7 @@ import { NewsletterDigestThumb } from "./NewsletterDigestThumb"
 import { PostcardFront4x6 } from "./PostcardFront4x6"
 import { ListingFlyer } from "./ListingFlyer"
 import { DoorHanger } from "./DoorHanger"
+import { CarouselSlide } from "./CarouselSlide"
 import { PostcardBack4x6 } from "./PostcardBack4x6"
 import { PostcardFront6x9 } from "./PostcardFront6x9"
 import { PostcardBack6x9 } from "./PostcardBack6x9"
@@ -810,6 +811,28 @@ export const RemotionRoot: React.FC = () => {
           agentPhone: "(555) 010-2000", agentPhotoUrl: null,
           qrCodeDataUrl: null, qrCaption: "Scan to tour",
           statusLine: "JUST LISTED",
+          brand: { primaryColor: "#0F172A", accentColor: "#F59E0B", logoUrl: null, brokerageName: "Your Brokerage", licenseLine: null, showEhoMark: true },
+        }}
+      />
+
+      {/* THE CAROUSEL SLIDE — 1080x1350 (4:5 IG portrait) still, one per
+          swipe. The producer renders N and the sweep assembles the ordered
+          set into one approval-gated social_posts row (media_urls). */}
+      <Composition
+        id="CarouselSlide"
+        component={CarouselSlide as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={1}
+        fps={30}
+        width={1080}
+        height={1350}
+        defaultProps={{
+          role: "hook", slideIndex: 0, slideCount: 5,
+          kicker: "JUST LISTED · NAPLES, FL",
+          title: "128 Harborview Lane",
+          body: "$1,250,000",
+          photoUrl: null, statValue: "", statLabel: "",
+          agentName: "Your Agent", agentPhotoUrl: null,
+          handleLine: "Your Brokerage",
           brand: { primaryColor: "#0F172A", accentColor: "#F59E0B", logoUrl: null, brokerageName: "Your Brokerage", licenseLine: null, showEhoMark: true },
         }}
       />

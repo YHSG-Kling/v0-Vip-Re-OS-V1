@@ -88,3 +88,66 @@ export const SELLER_GUIDE_CHAPTERS: GuideChapter[] = [
 export function guideChaptersFor(kind: "buyer_guide" | "seller_guide"): GuideChapter[] {
   return kind === "buyer_guide" ? BUYER_GUIDE_CHAPTERS : SELLER_GUIDE_CHAPTERS
 }
+
+/**
+ * AI-FIRST chapters (owner rule: content is never hardcoded in the
+ * autonomous OS). The model rewrites the booklet grounded in (a) the real
+ * demand topics buyers/sellers are asking right now and (b) the evergreen
+ * chapters above as the factual floor it may not contradict — then the
+ * whole text clears the compliance gate. Any failure at any step falls
+ * back to the deterministic chapters (FH-safe by construction).
+ */
+export async function generateGuideChapters(
+  kind: "buyer_guide" | "seller_guide",
+  opts: {
+    topics?: string[]
+    area?: string | null
+    gate?: (text: string) => Promise<{ allowed: boolean }>
+    model?: string
+  } = {},
+): Promise<{ chapters: GuideChapter[]; fromAI: boolean }> {
+  const fallback = guideChaptersFor(kind)
+  try {
+    const { gatewayChatJSON } = await import("@/lib/ai/gateway-chat")
+    const res = await gatewayChatJSON<{ chapters: Array<{ heading?: string; body?: string }> }>({
+      model: opts.model ?? "openai/gpt-4o-mini",
+      maxTokens: 2400,
+      temperature: 0.6,
+      messages: [
+        {
+          role: "system",
+          content:
+            `You write a 5-chapter ${kind === "buyer_guide" ? "home buyer's" : "home seller's"} guide booklet. HARD RULES: ` +
+            "FAIR HOUSING — never reference or imply race, religion, national origin, family status, disability, sex; " +
+            "no steering language ('safe neighborhood', 'perfect for families', 'great for retirees'). " +
+            "No legal, tax, or lending advice — process and money mechanics only. No market predictions, no invented statistics. " +
+            "Keep the buyer guide's wire-fraud rule: verify wire instructions BY PHONE with the title company. " +
+            'Return STRICT JSON: {"chapters":[{"heading":"Step N — ...","body":"2-3 short paragraphs separated by \\n\\n"}]} with exactly 5 chapters.',
+        },
+        {
+          role: "user",
+          content:
+            `Rewrite this guide so it answers what people are ACTUALLY asking right now.\n` +
+            (opts.area ? `Market area: ${opts.area}\n` : "") +
+            (opts.topics?.length ? `Real questions being asked:\n${opts.topics.slice(0, 6).map((t) => `- ${t}`).join("\n")}\n` : "") +
+            `Factual floor (do not contradict; you may restructure and sharpen):\n` +
+            fallback.map((c) => `## ${c.heading}\n${c.body}`).join("\n\n"),
+        },
+      ],
+    })
+    const raw = res.ok ? res.data?.chapters : null
+    if (!Array.isArray(raw) || raw.length !== 5) return { chapters: fallback, fromAI: false }
+    const chapters: GuideChapter[] = raw.map((c, i) => ({
+      heading: String(c.heading ?? fallback[i].heading).slice(0, 90),
+      body: String(c.body ?? "").trim(),
+    }))
+    if (chapters.some((c) => c.body.length < 250)) return { chapters: fallback, fromAI: false }
+    if (opts.gate) {
+      const g = await opts.gate(chapters.map((c) => `${c.heading}\n${c.body}`).join("\n\n")).catch(() => ({ allowed: false }))
+      if (!g.allowed) return { chapters: fallback, fromAI: false }
+    }
+    return { chapters, fromAI: true }
+  } catch {
+    return { chapters: fallback, fromAI: false }
+  }
+}

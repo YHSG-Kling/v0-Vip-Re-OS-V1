@@ -256,6 +256,18 @@ export async function runDoorHangers(svc: any): Promise<{ doorHangers: number; h
       const brand = await resolveReelBrand(svc, l.brokerage_id)
       const qr = await mintVideoQr({ brokerageId: l.brokerage_id, agentUserId, kind: "just_sold", listingId: l.id }, svc)
 
+      // The neighbor hook is AI-written per listing (the copy rail bakes in
+      // the Fair-Housing rules) — the deterministic line is only the fallback.
+      let hook = "Curious what YOUR home is worth in today's market?"
+      try {
+        const { generatePersonaCopy, realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+        const draft = await generatePersonaCopy(
+          { goal: "a one-sentence door-hanger hook inviting a neighbor to check their home's value after a nearby sale", facts: [l.address ?? "", [l.city, l.state].filter(Boolean).join(", ")], channel: "landing_page", persona: { audience: "neighbors" }, words: 14 },
+          { body: hook }, { generator: realCopyGenerator },
+        )
+        hook = (draft.body || hook).slice(0, 110)
+      } catch { /* fallback hook stands */ }
+
       const { recordRenderQueued } = await import("@/lib/remotion/registry")
       const rq = await recordRenderQueued({
         brokerageId: l.brokerage_id, compositionId: "DoorHanger", agentUserId,
@@ -264,7 +276,7 @@ export async function runDoorHangers(svc: any): Promise<{ doorHangers: number; h
           headline: "JUST SOLD",
           address: l.address ?? "", cityState: [l.city, l.state].filter(Boolean).join(", "),
           heroImageUrl: hero,
-          hook: "Curious what YOUR home is worth in today's market?",
+          hook,
           agentName, agentPhone: (u as any)?.phone ?? "",
           agentPhotoUrl: (agent as any)?.photo_url ?? (agent as any)?.profile_image_url ?? null,
           qrCodeDataUrl: qr?.qrCodeDataUrl ?? null, qrCaption: "Scan for your home's value",
