@@ -251,10 +251,18 @@ export async function runListingCarousels(svc: any): Promise<{ carousels: number
       } catch { /* fallback caption stands */ }
 
       if (account?.id) {
+        // A real CALENDAR slot (tomorrow 16:00 UTC — prime feed time): the
+        // draft sits on the content calendar at its date, and once a human
+        // approves it the publisher ships it at that slot. Delivery is the
+        // last stop of the loop, never a dangling draft.
+        const slot = new Date()
+        slot.setUTCDate(slot.getUTCDate() + 1)
+        slot.setUTCHours(16, 0, 0, 0)
         const { error } = await svc.from("social_posts").insert({
           brokerage_id: brokerageId, agent_id: agentRow.id, social_account_id: account.id,
           listing_id: listingId, platform: "instagram", post_type: "carousel",
           content: caption, media_urls: mediaUrls,
+          scheduled_for: slot.toISOString(),
           status: "draft", approval_status: "pending", ai_generated: true,
           created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
         })

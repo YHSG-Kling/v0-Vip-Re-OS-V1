@@ -63,17 +63,27 @@ export function buildListingCreative(facts: ListingFacts, kind: ListingAdKind): 
 
 export interface ProduceResult { produced: boolean; campaignId?: string; creativeId?: string; reason?: string }
 
-/** Find the best Asset-Manager video to back the listing ad (avatar/listing reel). */
+/** Find the best Asset-Manager media to back the listing ad. Video first
+ *  (avatar/listing reel), then the image library — the still rail now feeds
+ *  ads too (carousel hooks, twilight/staged photos, flyer art), so a tenant
+ *  with no finished video still runs image ads instead of nothing. */
 async function resolveMedia(brokerageId: string, agentUserId: string | null, supabase: ReturnType<typeof createServiceClient>): Promise<{ assetId: string; url: string } | null> {
-  const { data } = await supabase.from("marketing_assets")
-    .select("id, asset_url, agent_user_id, tags")
-    .eq("brokerage_id", brokerageId).eq("asset_type", "video").eq("approval_status", "approved").not("asset_url", "is", null)
-    .order("created_at", { ascending: false }).limit(20)
-  const rows = (data ?? []) as Array<{ id: string; asset_url: string | null; agent_user_id: string | null; tags: string[] | null }>
-  if (rows.length === 0) return null
-  const isReel = (t: string[] | null) => Array.isArray(t) && t.some((x) => x === "avatar" || x === "reusable" || x === "listing")
-  const pick = rows.find((r) => r.agent_user_id === agentUserId && isReel(r.tags)) ?? rows.find((r) => isReel(r.tags)) ?? rows[0]
-  return pick.asset_url ? { assetId: pick.id, url: pick.asset_url } : null
+  const pickFrom = (rows: Array<{ id: string; asset_url: string | null; agent_user_id: string | null; tags: string[] | null }>) => {
+    if (rows.length === 0) return null
+    const isAdWorthy = (t: string[] | null) => Array.isArray(t) && t.some((x) =>
+      x === "avatar" || x === "reusable" || x === "listing" || x === "twilight" || x === "virtually_staged" || x === "CarouselSlide")
+    const pick = rows.find((r) => r.agent_user_id === agentUserId && isAdWorthy(r.tags)) ?? rows.find((r) => isAdWorthy(r.tags)) ?? rows[0]
+    return pick.asset_url ? { assetId: pick.id, url: pick.asset_url } : null
+  }
+  for (const assetType of ["video", "image"] as const) {
+    const { data } = await supabase.from("marketing_assets")
+      .select("id, asset_url, agent_user_id, tags")
+      .eq("brokerage_id", brokerageId).eq("asset_type", assetType).eq("approval_status", "approved").not("asset_url", "is", null)
+      .order("created_at", { ascending: false }).limit(20)
+    const picked = pickFrom((data ?? []) as Array<{ id: string; asset_url: string | null; agent_user_id: string | null; tags: string[] | null }>)
+    if (picked) return picked
+  }
+  return null
 }
 
 /**

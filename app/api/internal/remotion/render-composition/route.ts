@@ -119,6 +119,13 @@ export async function POST(req: NextRequest) {
         renderId: row.id, compositionId: row.composition_id,
         status: "succeeded", outputUrl: uploaded.url, thumbnailUrl: uploaded.url,
       })
+      // Stills join the reusable marketing_assets library too (flyers,
+      // hangers, carousel slides) — the ads media resolver and the asset
+      // library must see every finished deliverable, not just videos.
+      try {
+        const { captureRenderAsMarketingAsset } = await import("@/lib/marketing/capture-render-asset")
+        await captureRenderAsMarketingAsset(row.id, svc)
+      } catch { /* capture is best-effort — the render itself succeeded */ }
       return NextResponse.json({ ok: true, render_id: row.id, kind: "still", output_url: uploaded.url })
     }
 

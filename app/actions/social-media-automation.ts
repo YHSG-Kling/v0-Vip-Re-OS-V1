@@ -452,6 +452,18 @@ export async function approveSocialPost(postId: string, _approverUserId?: string
   const supabase = await createClient()
 
   try {
+    // Approval is the LAST HUMAN STOP — a draft/pending post must leave here
+    // publishable, or the loop dead-ends: the publisher only picks up
+    // status='scheduled' AND scheduled_for <= now, so approving without
+    // scheduling silently strands the post forever.
+    const { data: current } = await supabase
+      .from("social_posts")
+      .select("status, scheduled_for")
+      .eq("id", postId)
+      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
+    const needsScheduling = current?.status === "draft" || current?.status === "pending_approval"
+
     const { data: post, error } = await supabase
       .from("social_posts")
       .update({
@@ -459,6 +471,10 @@ export async function approveSocialPost(postId: string, _approverUserId?: string
         approved_by: auth.userId,
         approved_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
+        ...(needsScheduling && {
+          status: "scheduled",
+          scheduled_for: current?.scheduled_for ?? new Date().toISOString(),
+        }),
       })
       .eq("id", postId)
       .eq("brokerage_id", auth.brokerageId)

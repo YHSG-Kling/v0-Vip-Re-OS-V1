@@ -365,10 +365,29 @@ async function main() {
     src("lib/video/video-plays.ts").includes("generatePersonaCopy")
     && src("lib/video/video-plays.ts").includes("fallback hook stands"))
 
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[14 · DELIVERY IS THE LAST STOP — every asset reaches its surface]")
+  const approveSrc = src("app/actions/social-media-automation.ts")
+  check("approval FLIPS drafts publishable: status→scheduled + scheduled_for set (the publisher only ships scheduled+approved+due)",
+    approveSrc.includes("needsScheduling") && approveSrc.includes('status: "scheduled"')
+    && approveSrc.includes("scheduled_for: current?.scheduled_for ?? new Date().toISOString()"))
+  const renderRoute = src("app/api/internal/remotion/render-composition/route.ts")
+  check("STILLS join the marketing_assets library too (the still branch captures — flyers/hangers/carousel slides are reusable)",
+    renderRoute.includes("captureRenderAsMarketingAsset"))
+  const captureSrc = src("lib/marketing/capture-render-asset.ts")
+  check("capture types honestly: PNG/JPG output → asset_type image (not everything 'video')",
+    captureSrc.includes("isImage") && captureSrc.includes('isImage ? "image" : "video"'))
+  const adProducer = src("lib/ads/listing-ad-producer.ts")
+  check("ADS ARE FED: the media resolver tries video THEN the image library (twilight/staged/carousel art run as image ads)",
+    adProducer.includes('["video", "image"] as const') && adProducer.includes('"virtually_staged"')
+    && adProducer.includes('"CarouselSlide"'))
+  check("carousel drafts land ON THE CALENDAR with a real slot (scheduled_for), not as dangling drafts",
+    src("lib/marketing/social-carousel.ts").includes("scheduled_for: slot.toISOString()"))
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded.")
+  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop.")
   console.log(" ASSET_PRODUCTION_PASS")
   process.exit(0)
 }

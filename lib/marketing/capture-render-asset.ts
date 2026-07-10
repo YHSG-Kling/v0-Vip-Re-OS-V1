@@ -61,13 +61,17 @@ export async function captureRenderAsMarketingAsset(
     render.used_did_avatar ? "avatar" : undefined,
   ].filter(Boolean) as string[]
 
+  // Stills (flyers, hangers, carousel slides, thumbnails) upload as PNG/JPG —
+  // capture them as images so the ads resolver + library filter correctly.
+  const isImage = /\.(png|jpe?g|webp)(\?|$)/i.test(render.output_url)
+
   const { data: inserted, error } = await supabase
     .from("marketing_assets")
     .insert({
       brokerage_id:    render.brokerage_id,
       agent_user_id:   render.agent_user_id ?? null,
       visibility_scope: render.scope_type ?? "agent",   // already on the m176 ladder
-      asset_type:      "video",
+      asset_type:      isImage ? "image" : "video",
       asset_name:      assetNameFor(render.composition_id, sectionKey, render.entity_type ?? null),
       asset_url:       render.output_url,
       thumbnail_url:   render.thumbnail_url ?? null,
