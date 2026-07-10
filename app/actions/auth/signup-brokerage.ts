@@ -100,6 +100,10 @@ export async function signupBrokerageAction(
     .from("brokerages")
     .insert({
       name:               input.brokerageName.trim(),
+      // The tenant's public slug — day one it powers /site/[slug] (their
+      // full website, zero hosting) and /recruiting/[slug]. Kebab of the
+      // name + a short suffix so collisions can't 500 a signup.
+      slug: `${input.brokerageName.trim().toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "brokerage"}-${Math.random().toString(36).slice(2, 6)}`,
       email:              input.adminEmail.trim().toLowerCase(),
       city:               input.brokerageCity ?? null,
       state:              input.brokerageState ?? null,

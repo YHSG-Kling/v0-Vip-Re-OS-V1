@@ -105,8 +105,39 @@ export function recruitingPitchSpec(
   }
 }
 
+/** PURE: team rows carry their own real recruiting facts — bio/tagline are
+ *  the pitch, split fields are the terms. No new columns invented. */
+export function teamPitchFacts(t: {
+  name: string | null
+  tagline: string | null
+  bio_text: string | null
+  team_split_percent: number | null
+  team_split_value: number | null
+  team_split_type: string | null
+  team_fees_json: unknown
+  phone: string | null
+}): RecruitingPitchFacts {
+  const fees = t.team_fees_json && typeof t.team_fees_json === "object" ? t.team_fees_json as Record<string, unknown> : null
+  const monthly = fees && Number.isFinite(Number(fees.monthly_fee)) ? Number(fees.monthly_fee) : null
+  const split = t.team_split_percent != null ? Number(t.team_split_percent)
+    : t.team_split_type === "percent" && t.team_split_value != null ? Number(t.team_split_value) : null
+  return {
+    brokerageName: t.name ?? "This team",
+    pitch: [t.tagline, t.bio_text].filter(Boolean).join("\n\n") || null,
+    valueProps: [],
+    splitToAgent: split,
+    monthlyFee: monthly,
+    recruitedGciDollars: null,
+    recruitedAgentCount: null,
+    contactLine: t.phone ? `Reach the team lead directly: ${t.phone}` : null,
+  }
+}
+
 /**
- * Produce/refresh the kit for every recruiting-configured brokerage.
+ * Produce/refresh the kit for every recruiting-configured brokerage AND
+ * every team with a real pitch (owner rule: teams recruit too — the team
+ * lead gets their own recruit-facing one-pager from the team's own
+ * bio/tagline/split, on the brokerage's brand).
  * Settings-hash idempotent: unchanged settings → no new document.
  */
 export async function runRecruitingPitchKits(svc: any): Promise<{ pitchKits: number; pitchSkipped: number; pitchErrors: number }> {
@@ -190,6 +221,75 @@ export async function runRecruitingPitchKits(svc: any): Promise<{ pitchKits: num
           user_id: broker.id, brokerage_id: b.id, type: "recruiting_pitch_ready",
           title: "Your recruiting pitch kit is ready",
           body: `The recruit-facing one-pager (your pitch, the AI team, your terms${facts.recruitedGciDollars ? ", measured recruited-agent production" : ""}) is print-ready: ${produced.pdfUrl} [recruit-pitch:${hash}]`,
+          priority: "medium", channel: "in_app", is_read: false,
+        }).then(undefined, () => {})
+      }
+      out.pitchKits++
+    } catch { out.pitchErrors++ }
+  }
+
+  // ── TEAM PASS — teams recruit too. A team qualifies when it has a real
+  // pitch of its own (bio or tagline); the kit renders on the brokerage's
+  // brand with the team's own terms, and the TEAM LEAD gets the link.
+  const { data: teams } = await svc.from("teams")
+    .select("id, brokerage_id, name, tagline, bio_text, team_split_percent, team_split_value, team_split_type, team_fees_json, phone, team_lead_id")
+    .or("bio_text.not.is.null,tagline.not.is.null")
+    .is("deleted_at", null)
+    .limit(500)
+  for (const t of ((teams ?? []) as any[])) {
+    try {
+      const facts = teamPitchFacts(t)
+      if (!facts.pitch) continue
+      const hash = pitchSettingsHash(facts)
+      const { data: existing } = await svc.from("generated_documents")
+        .select("id, metadata").eq("brokerage_id", t.brokerage_id)
+        .eq("document_type", "recruiting_pitch")
+        .contains("metadata", { team_id: t.id })
+        .order("created_at", { ascending: false }).limit(1).maybeSingle()
+      if ((existing?.metadata as any)?.settings_hash === hash) { out.pitchSkipped++; continue }
+
+      let polished = facts.pitch
+      try {
+        const { generatePersonaCopy, realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+        const draft = await generatePersonaCopy(
+          {
+            goal: "a two-paragraph team recruiting pitch inviting a licensed agent to a confidential conversation",
+            facts: [facts.brokerageName, facts.pitch],
+            channel: "landing_page", persona: { audience: "licensed real-estate agents" }, words: 110,
+          },
+          { body: polished }, { generator: realCopyGenerator },
+        )
+        polished = draft.body || polished
+      } catch { /* team-authored text stands */ }
+
+      const { resolvePdfBrand, produceClientDocument } = await import("@/lib/documents/client-document-producer")
+      const brand = await resolvePdfBrand(svc, { brokerageId: t.brokerage_id })
+      const dateLabel = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long" })
+      const spec = recruitingPitchSpec(facts, polished, brand, dateLabel)
+      const produced = await produceClientDocument(svc, {
+        brokerageId: t.brokerage_id,
+        documentType: "recruiting_pitch",
+        spec,
+        metadata: { settings_hash: hash, team_id: t.id, source: "auto_team_recruiting_pitch" },
+      })
+      if (!produced.ok || !produced.pdfUrl) { out.pitchErrors++; continue }
+
+      // Notify the TEAM LEAD (fall back to the broker pattern when unset).
+      let notifyUserId: string | null = null
+      if (t.team_lead_id) {
+        const { data: leadAgent } = await svc.from("agents").select("user_id").eq("id", t.team_lead_id).maybeSingle()
+        notifyUserId = (leadAgent as any)?.user_id ?? null
+      }
+      if (!notifyUserId) {
+        const { data: broker } = await svc.from("users").select("id")
+          .eq("brokerage_id", t.brokerage_id).order("created_at", { ascending: true }).limit(1).maybeSingle()
+        notifyUserId = (broker as any)?.id ?? null
+      }
+      if (notifyUserId) {
+        await svc.from("notifications").insert({
+          user_id: notifyUserId, brokerage_id: t.brokerage_id, type: "recruiting_pitch_ready",
+          title: `${facts.brokerageName} — team recruiting pitch ready`,
+          body: `The recruit-facing one-pager for your team (your pitch, the AI team, your terms) is print-ready: ${produced.pdfUrl} [recruit-pitch:${hash}]`,
           priority: "medium", channel: "in_app", is_read: false,
         }).then(undefined, () => {})
       }

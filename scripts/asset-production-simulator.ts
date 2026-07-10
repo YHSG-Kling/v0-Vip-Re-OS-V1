@@ -578,10 +578,43 @@ async function main() {
       && kitRunner.includes("recruiting_pitch_ready"))
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[20 · TEAMS RECRUIT TOO + THE TENANT WEBSITE (the OS loop closes on the public web)]")
+  {
+    const { teamPitchFacts, pitchSettingsHash: tHash } = await import("../lib/recruiting/recruiting-pitch-kit")
+    const tf = teamPitchFacts({
+      name: "The Avery Group", tagline: "Volume with a life.", bio_text: "We cap at 20 agents on purpose.",
+      team_split_percent: 70, team_split_value: null, team_split_type: null,
+      team_fees_json: { monthly_fee: 150 }, phone: "(555) 010-3000",
+    })
+    check("team pitch facts come from the team's OWN columns (tagline+bio → pitch, split fields → terms, fees json → fee) — no invented columns",
+      tf.pitch?.includes("Volume with a life.") === true && tf.splitToAgent === 70 && tf.monthlyFee === 150
+      && tf.contactLine?.includes("(555) 010-3000") === true)
+    check("a team with no real pitch produces nothing (bio/tagline empty → skip)",
+      teamPitchFacts({ name: "X", tagline: null, bio_text: null, team_split_percent: null, team_split_value: null, team_split_type: null, team_fees_json: null, phone: null }).pitch === null)
+    check("team hash keys the refresh independently of the brokerage kit",
+      tHash(tf) !== tHash({ ...tf, splitToAgent: 60 }))
+    const kitRunner2 = src("lib/recruiting/recruiting-pitch-kit.ts")
+    check("the runner has the TEAM PASS: teams with a pitch, hash-idempotent per team (metadata.team_id), TEAM LEAD notified",
+      kitRunner2.includes("TEAM PASS") && kitRunner2.includes('contains("metadata", { team_id: t.id })')
+      && kitRunner2.includes("team_lead_id"))
+
+    const site = src("app/site/[slug]/page.tsx")
+    check("the TENANT WEBSITE exists at /site/[slug] — served on the platform origin (zero tenant hosting/DNS)",
+      site.includes("loadSite") && site.includes('.eq("slug", slug)'))
+    check("assembled from LIVE surfaces: active listings → /listing, agents → /p, published blogs → /blog, recruiting → /recruiting",
+      site.includes("/listing/") && site.includes("/p/") && site.includes("/blog/") && site.includes("/recruiting/"))
+    check("brand-true (tenant primary color validated), RealEstateAgent JSON-LD, compliance footer (license + EHO + not-a-solicitation)",
+      site.includes("RealEstateAgent") && site.includes("Equal Housing Opportunity")
+      && site.includes("not a solicitation") && site.includes("/^#[0-9a-fA-F]{6}$/"))
+    check("tenant sites are GEO-indexed: the sitemap lists /site/[slug] for every slugged brokerage",
+      src("app/sitemap.ts").includes("/site/${sb.slug}"))
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together, identity is a setting, media-type decisions are proven, every finished video carries its content kit, and the brokerage's own growth marketing produces itself.")
+  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together, identity is a setting, media-type decisions are proven, every finished video carries its content kit, growth marketing produces itself for brokerages AND teams, and every tenant gets a website with zero hosting.")
   console.log(" ASSET_PRODUCTION_PASS")
   process.exit(0)
 }
