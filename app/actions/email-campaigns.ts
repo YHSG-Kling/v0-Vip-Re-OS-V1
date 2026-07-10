@@ -532,6 +532,18 @@ export async function prepareListingEmailCampaign(params: {
 
     const listing = transaction.listings
 
+    // MEDIA PAIRING (owner rule: nothing ships bare) — a listing email
+    // without the listing's photo is a text blast. Hero (is_hero first,
+    // else primary/first) rides at the top of the template body.
+    const photoRows = (Array.isArray(transaction.listing_photos) ? transaction.listing_photos : []) as Array<{ photo_url: string | null; is_hero: boolean | null }>
+    const heroUrl =
+      photoRows.find((p) => p.is_hero && p.photo_url)?.photo_url ??
+      (listing as any).primary_photo_url ??
+      photoRows.find((p) => p.photo_url)?.photo_url ?? null
+    const heroHtml = heroUrl
+      ? `<img src="${heroUrl}" alt="${String(listing.address ?? "Listing").replace(/"/g, "&quot;")}" style="width:100%;max-width:640px;border-radius:8px;display:block;margin:0 auto 16px;" />`
+      : ""
+
     const emailContent = await generateEmail({
       agentId: transaction.agent_id,
       emailType: params.campaignType as any,
@@ -588,7 +600,7 @@ export async function prepareListingEmailCampaign(params: {
         slug: `${params.campaignType}-${listing.id}-${Date.now()}`,
         template_type: TEMPLATE_TYPE_MAP[params.campaignType] ?? "followup",
         subject: emailSubject,
-        body: emailContent.data.generated_content,
+        body: `${heroHtml}${emailContent.data.generated_content}`,
         variables: {
           property_address: listing.address,
           property_city: listing.city,

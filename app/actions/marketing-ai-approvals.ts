@@ -213,6 +213,23 @@ export async function approveMarketingAssetAction(
       await svc.from("blog_posts").update({ publish_status: "approved" }).eq("id", id)
     }
   }
+  if (kind === "podcast") {
+    //   podcast — the distributor ships approval_status='approved' episodes
+    //   to episode.publish_channels ∩ the brokerage's enabled channels, but
+    //   the auto-producer stages with NO channels — approve-only would
+    //   never distribute. Default the channels to everything the brokerage
+    //   has enabled (none enabled → honestly nothing to ship to).
+    const { data: ep } = await svc.from("podcast_episodes")
+      .select("publish_channels, brokerage_id").eq("id", id).maybeSingle()
+    if (ep && (!Array.isArray(ep.publish_channels) || ep.publish_channels.length === 0)) {
+      const { data: channels } = await svc.from("podcast_distribution_channels")
+        .select("channel_name").eq("brokerage_id", ep.brokerage_id).eq("is_enabled", true)
+      const names = ((channels ?? []) as Array<{ channel_name: string }>).map((c) => c.channel_name)
+      if (names.length > 0) {
+        await svc.from("podcast_episodes").update({ publish_channels: names }).eq("id", id)
+      }
+    }
+  }
 
   revalidatePath("/dashboard/admin/marketing-approvals")
   return { ok: true }

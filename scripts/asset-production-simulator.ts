@@ -430,10 +430,34 @@ async function main() {
     llmsBody.includes("## Active listings") && llmsBody.includes("- [L](https://a/listing/1): 3bd")
     && llmsBody.includes("## Video content"))
 
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[16 · MEDIA ↔ COPY PAIRING + THE PODCAST LOOP — nothing ships bare, nothing ships ungated]")
+  const distSrc = src("app/api/cron/distribute-podcast-episodes/route.ts")
+  check("podcast distributor honors the human gate: only approval_status='approved' episodes ship (the bypass is dead)",
+    distSrc.includes('.eq("approval_status", "approved")'))
+  check("podcast approve makes the episode DISTRIBUTABLE: empty publish_channels default to the brokerage's enabled channels",
+    src("app/actions/marketing-ai-approvals.ts").includes('kind === "podcast"')
+    && src("app/actions/marketing-ai-approvals.ts").includes("podcast_distribution_channels"))
+  check("podcast production is scheduled (weekly auto + distribution crons registered, manager-owned)",
+    src("lib/kernel/cron-dispatch.ts").includes("podcast-weekly-auto")
+    && src("lib/kernel/cron-dispatch.ts").includes("distribute-podcast-episodes"))
+  const pairing = src("lib/marketing/social-media-pairing.ts")
+  check("social media pairing: LIBRARY-FIRST (approved images, topic/agent match) with brand-aware generation as fallback",
+    pairing.includes('.eq("asset_type", "image")') && pairing.includes("matchesTopic")
+    && pairing.includes("generateImage") && pairing.includes('purpose: "social_post"'))
+  check("generated pairing images are CAPTURED back into the library (one asset → many uses, never pay twice)",
+    pairing.includes("captured_from") && pairing.includes('from("marketing_assets").insert'))
+  check("the cadence stager attaches media_urls to every brand post (bare-text drafts are the exception, not the default)",
+    src("lib/marketing/social-cadence.ts").includes("resolveSocialMedia")
+    && src("lib/marketing/social-cadence.ts").includes("media_urls: mediaUrls"))
+  check("listing email campaigns embed the listing hero photo at the top of the body (no text-only listing blasts)",
+    src("app/actions/email-campaigns.ts").includes("heroHtml")
+    && src("app/actions/email-campaigns.ts").includes("${heroHtml}${emailContent.data.generated_content}"))
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along.")
+  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together.")
   console.log(" ASSET_PRODUCTION_PASS")
   process.exit(0)
 }

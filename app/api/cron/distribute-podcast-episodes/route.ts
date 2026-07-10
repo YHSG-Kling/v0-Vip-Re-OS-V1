@@ -74,10 +74,15 @@ export async function GET(request: NextRequest) {
     // ══════════════════════════════════════════════════════════════════════════
     // STEP 1: Fetch episodes ready for distribution
     // ══════════════════════════════════════════════════════════════════════════
+    // approval_status filter: the auto-producer stages pending_review and
+    // PROMISES the distributor only ships approved episodes — without this
+    // predicate, un-reviewed AI episodes with channels set would go public
+    // (an approval BYPASS, caught by the 2026-07 autonomy audit).
     const { data: episodes, error: fetchError } = await supabase
       .from("podcast_episodes")
       .select("*")
       .eq("status", "completed")
+      .eq("approval_status", "approved")
       .is("published_at", null)
       .not("publish_channels", "eq", "{}")
       .order("created_at", { ascending: true })
