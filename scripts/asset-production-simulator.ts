@@ -611,10 +611,58 @@ async function main() {
       src("app/sitemap.ts").includes("/site/${sb.slug}"))
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[21 · THE AD OUTCOME LOOP — creative and budget driven by the ledger, gated]")
+  {
+    const { decideWinningArm, decideBudgetRebalance } = await import("../lib/ads/ad-outcome-loop")
+    check("winning-arm gate: two READ arms (≥800 imp or ≥$50) + >25% lift on leads-per-dollar → winner; thin evidence → null",
+      decideWinningArm([
+        { arm: "A", spend: 100, impressions: 5000, clicks: 100, leads: 8 },
+        { arm: "B", spend: 100, impressions: 5000, clicks: 100, leads: 3 },
+      ])?.arm === "A"
+      && decideWinningArm([{ arm: "A", spend: 100, impressions: 5000, clicks: 100, leads: 8 }]) === null
+      && decideWinningArm([
+        { arm: "A", spend: 10, impressions: 200, clicks: 5, leads: 0 },
+        { arm: "B", spend: 12, impressions: 300, clicks: 4, leads: 0 },
+      ]) === null)
+    check("CTR is the fallback basis when lead volume is thin — and near-ties return null (no false winners)",
+      decideWinningArm([
+        { arm: "A", spend: 60, impressions: 4000, clicks: 200, leads: 1 },
+        { arm: "B", spend: 60, impressions: 4000, clicks: 100, leads: 1 },
+      ])?.basis === "ctr"
+      && decideWinningArm([
+        { arm: "A", spend: 60, impressions: 4000, clicks: 110, leads: 1 },
+        { arm: "B", spend: 60, impressions: 4000, clicks: 100, leads: 1 },
+      ]) === null)
+    check("budget rebalance: ≥2x CPL gap (or spend-with-zero-leads vs a producer) → proposal; anything closer → null",
+      decideBudgetRebalance([
+        { campaignId: "good", campaignName: "G", spend: 200, leads: 10 },
+        { campaignId: "bad", campaignName: "B", spend: 200, leads: 2 },
+      ])?.fromCampaignId === "bad"
+      && decideBudgetRebalance([
+        { campaignId: "good", campaignName: "G", spend: 200, leads: 10 },
+        { campaignId: "dead", campaignName: "D", spend: 90, leads: 0 },
+      ])?.fromCampaignId === "dead"
+      && decideBudgetRebalance([
+        { campaignId: "a", campaignName: "A", spend: 200, leads: 10 },
+        { campaignId: "b", campaignName: "B", spend: 200, leads: 8 },
+      ]) === null)
+    const loop = src("lib/ads/ad-outcome-loop.ts")
+    check("distribution intelligence is GATED: rebalances ride the manager bus as proposals (deduped 14d per pair) — nothing spends on its own",
+      loop.includes("publishManagerSignal") && loop.includes('"budget_rebalance"')
+      && loop.includes("from_campaign_id: decision.fromCampaignId") && !loop.includes("daily_budget:"))
+    const producer = src("lib/ads/listing-ad-producer.ts")
+    check("feedback-conditioned generation: the producer adopts ONLY a generic learned headline (no digits, another listing's facts can never leak) and records generated_from='learned:<arm>'",
+      producer.includes("learnedCreativeEmphasis") && producer.includes("!/\\d/.test(learned.headline)")
+      && producer.includes("learned:${learned.arm}"))
+    check("the loop rides the ads-manager sweep (ads_manager owns it)",
+      src("app/api/cron/ads-manager-sweep/route.ts").includes("runAdOutcomeLoop"))
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together, identity is a setting, media-type decisions are proven, every finished video carries its content kit, growth marketing produces itself for brokerages AND teams, and every tenant gets a website with zero hosting.")
+  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together, identity is a setting, media-type decisions are proven, every finished video carries its content kit, growth marketing produces itself for brokerages AND teams, every tenant gets a website with zero hosting, and the ad channel closes its outcome loop.")
   console.log(" ASSET_PRODUCTION_PASS")
   process.exit(0)
 }

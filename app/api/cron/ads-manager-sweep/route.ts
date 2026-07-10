@@ -43,7 +43,19 @@ export async function GET(request: Request) {
       const res = await proposeCompetitorInspiredCreative(bid, svc)
       creativesProposed += res.proposed
     }
-    return NextResponse.json({ ok: true, optimize_brokerages: optimizeIds.length, create_brokerages: createIds.length, scanned, proposed, creativesProposed, published })
+
+    // THE OUTCOME LOOP — distribution intelligence: budget follows CPL via
+    // GATED rebalance proposals on the manager bus (a human approves before
+    // money moves). Feedback-conditioned generation runs inside the
+    // listing-ad producer at creative time.
+    let rebalancesProposed = 0
+    try {
+      const { runAdOutcomeLoop } = await import("@/lib/ads/ad-outcome-loop")
+      const loop = await runAdOutcomeLoop(svc)
+      rebalancesProposed = loop.rebalancesProposed
+    } catch { /* loop retries next sweep */ }
+
+    return NextResponse.json({ ok: true, optimize_brokerages: optimizeIds.length, create_brokerages: createIds.length, scanned, proposed, creativesProposed, published, rebalancesProposed })
   } catch (e) {
     return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 })
   }

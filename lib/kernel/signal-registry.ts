@@ -71,6 +71,7 @@ export const SIGNAL_REGISTRY: Record<string, SignalSpec> = {
 
   // ── Feed-only — surfaced on the Command Center for a HUMAN (no automated consumer by design) ──
   creative_fatigue:               { consumers: [], disposition: "feed_only", kind: "alert",      what: "an ad creative's performance is fatiguing — refresh advised" },
+  budget_rebalance:               { consumers: [], disposition: "feed_only", kind: "update",      what: "the ad outcome loop found a >=2x CPL gap between live campaigns — a GATED budget-shift proposal (a human approves before money moves; deduped 14d per campaign pair)" },
   first_touch_deferred:           { consumers: [], disposition: "feed_only", kind: "deferral",   what: "a manager yielded the first touch to another (soft dissent — 'you've got this')" },
   deferral_stall_nudge:           { consumers: [], disposition: "feed_only", kind: "deferral",   what: "a deferred touch has stalled past its window — nudge to pick it back up" },
   relist_recovery:                { consumers: ["ai_isa"], disposition: "handled", kind: "handoff",    what: "a listing expired/withdrawn — the Listing Concierge routes the ACUTE re-list call to the AI ISA, which picks it up via the canonical consent-gated contact engagement (the seller re-launch message already went out separately)" },

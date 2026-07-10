@@ -128,12 +128,34 @@ export async function produceListingAdCampaign(
   const campaignId = (campaign as { id: string }).id
 
   const creative = buildListingCreative(listing, kind)
+
+  // FEEDBACK-CONDITIONED GENERATION (the outcome loop): when this
+  // brokerage's own ad ledger has a PROVEN winning variation (experiment-
+  // gated: real impressions/spend per arm, >25% lift), the new creative
+  // leads with the winner's hook instead of regenerating from first
+  // principles — and generated_from records the decision so the flywheel
+  // is auditable ('learned:<arm>' vs the norm path).
+  let generatedFrom = "listing_handoff"
+  try {
+    const { learnedCreativeEmphasis } = await import("./ad-outcome-loop")
+    const learned = await learnedCreativeEmphasis(supabase, brokerageId)
+    // Only the winner's HEADLINE hook is adoptable, and only when it is
+    // generic (no digits/addresses — a past listing's facts must never leak
+    // into this listing's ad). The primary text ALWAYS stays fact-built
+    // from THIS listing.
+    const genericHeadline = learned?.headline && learned.headline.length <= 40 && !/\d/.test(learned.headline)
+    if (learned && genericHeadline && learned.arm !== creative.variationName) {
+      creative.headline = learned.headline as string
+      generatedFrom = `learned:${learned.arm}`
+    }
+  } catch { /* the deterministic FH-clean creative stands */ }
+
   const media = await resolveMedia(brokerageId, agentUserId, supabase)
   const { data: cr, error: crErr } = await supabase.from("ad_creative_variations").insert({
     brokerage_id: brokerageId, ad_campaign_id: campaignId, variation_name: creative.variationName,
     headline: creative.headline, primary_text: creative.primaryText, description: creative.description, call_to_action: creative.callToAction,
     media_asset_url: media?.url ?? null, source_marketing_asset_id: media?.assetId ?? null,
-    generated_from: "listing_handoff", approval_status: "draft",
+    generated_from: generatedFrom, approval_status: "draft",
   }).select("id").single()
   if (crErr || !cr) return { produced: false, campaignId, reason: crErr?.message ?? "creative insert failed" }
 
