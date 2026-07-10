@@ -4,7 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { FirstDealClient } from "./first-deal-client"
 
 export const metadata = {
-  title: "First Deal · VIP Real Estate OS",
+  title: "First Deal",
   description: "A guided path from your first contact to your first close.",
 }
 

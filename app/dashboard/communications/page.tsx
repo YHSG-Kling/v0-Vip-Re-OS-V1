@@ -6,7 +6,7 @@ import { getConversations, prioritizeInbox } from "@/app/actions/ai-communicatio
 import { CommunicationsOSClient } from "./communications-os-client"
 
 export const metadata = {
-  title: "Communications OS | VIP Real Estate OS",
+  title: "Communications OS",
   description: "Unified communications command center — inbox, outreach, AI-assisted messaging across all channels including social media",
 }
 

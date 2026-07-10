@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { loadStaleQueue } from "./actions"
 import { StaleClient } from "./stale-client"
 
-export const metadata = { title: "Stale Queue · VIP Real Estate OS" }
+export const metadata = { title: "Stale Queue" }
 export const dynamic = "force-dynamic"
 
 export default async function StalePage() {

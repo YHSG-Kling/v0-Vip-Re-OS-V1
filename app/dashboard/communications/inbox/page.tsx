@@ -6,7 +6,7 @@ import { getConversations } from "@/app/actions/ai-communication-hub"
 import InboxClient from "./InboxClient"
 
 export const metadata = {
-  title: "Inbox | VIP Real Estate OS",
+  title: "Inbox",
   description: "Unified communications inbox — email, SMS, in-app, voice",
 }
 

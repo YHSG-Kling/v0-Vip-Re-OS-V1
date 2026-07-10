@@ -26,11 +26,8 @@ import {
 export const dynamic = "force-dynamic"
 export const revalidate = 300
 
-const SITE_NAME = "VIP Real Estate OS"
-
-function siteUrl(): string {
-  return (process.env.NEXT_PUBLIC_APP_URL || "https://app.viprealestateos.com").replace(/\/$/, "")
-}
+import { siteUrl } from "@/lib/platform/site-url"
+import { loadProductBrand } from "@/lib/platform/product-brand"
 
 interface RenderRow {
   id:             string
@@ -116,7 +113,7 @@ async function loadPage(slug: string): Promise<PageData | null> {
   }
 
   const title = composition.seo_title || composition.display_name
-  const descBase = composition.seo_description || `${composition.display_name} produced by ${brokerageName ?? SITE_NAME}.`
+  const descBase = composition.seo_description || `${composition.display_name} produced by ${brokerageName ?? (await loadProductBrand(svc)).name}.`
   const description = agentName ? `${descBase} Presented by ${agentName}.` : descBase
 
   const disclosures = await assembleSocialDisclosures(svc as never, {
@@ -179,7 +176,7 @@ async function loadProjectPage(
 
   const title = proj.title || `${(proj.video_type ?? "video").replace(/_/g, " ")} reel`
   const descBase = (proj.script_content && proj.script_content.trim())
-    || `${title} produced by ${brokerageName ?? SITE_NAME}.`
+    || `${title} produced by ${brokerageName ?? (await loadProductBrand(svc)).name}.`
   const description = agentName ? `${descBase} Presented by ${agentName}.` : descBase
 
   const disclosures = await assembleSocialDisclosures(svc as never, {
@@ -253,7 +250,7 @@ export default async function VideoLandingPage({ params }: { params: Promise<{ s
       })
     : null
   const breadcrumbLd = buildBreadcrumbJsonLd({
-    siteName: SITE_NAME, siteUrl: siteUrl(), agentName: data.agentName, pageUrl: url, pageName: data.title,
+    siteName: (await loadProductBrand(createServiceClient())).name, siteUrl: siteUrl(), agentName: data.agentName, pageUrl: url, pageName: data.title,
   })
 
   const facts: string[] = []

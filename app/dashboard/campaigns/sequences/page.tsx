@@ -5,7 +5,7 @@ import { listCampaignSequences } from "@/app/actions/campaign-sequences"
 import SequencesListClient from "./SequencesListClient"
 
 export const metadata = {
-  title: "Campaign Sequences | VIP Real Estate OS",
+  title: "Campaign Sequences",
   description: "Build and manage multi-step outreach sequences across email, SMS, video, and direct mail.",
 }
 

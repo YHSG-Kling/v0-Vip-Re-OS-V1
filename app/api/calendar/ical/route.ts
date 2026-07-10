@@ -58,7 +58,7 @@ export async function GET(request: NextRequest) {
     const lines: string[] = [
       "BEGIN:VCALENDAR",
       "VERSION:2.0",
-      "PRODID:-//VIP Real Estate OS//Calendar//EN",
+      "PRODID:-//RealEstateOS//Calendar//EN", // neutral spec id — the product name is a setting, never hardcoded
       "CALSCALE:GREGORIAN",
     ]
 

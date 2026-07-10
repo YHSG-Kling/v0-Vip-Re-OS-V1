@@ -608,7 +608,7 @@ export async function askOnboardingBuddy(params: {
     // Generate AI response
     const { text: answer } = await generateText({
       model: "openai/gpt-4o-mini",
-      prompt: `You are the Smart Engine AI Onboarding Buddy for new real estate agents.
+      prompt: `You are the AI Onboarding Buddy for new real estate agents on this platform.
 
 Your Role:
 - Help new agents learn the system
@@ -793,7 +793,7 @@ export async function certifyAgent(params: {
       user_id: certAgent?.user_id ?? params.agentId,
       type: "certification_achieved",
       title: "Congratulations! You're Certified!",
-      body: "Welcome to the team. You now have full access to Smart Engine.",
+      body: "Welcome to the team. You now have full access to the platform.",
       priority: "high",
       created_at: new Date().toISOString(),
     })

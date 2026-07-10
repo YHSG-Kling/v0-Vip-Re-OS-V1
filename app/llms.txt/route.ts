@@ -8,13 +8,12 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { buildLlmsTxt, type LlmsTxtPage } from "@/lib/geo/video-landing"
+import { loadProductBrand } from "@/lib/platform/product-brand"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 3600
 
-function siteUrl(): string {
-  return (process.env.NEXT_PUBLIC_APP_URL || "https://app.viprealestateos.com").replace(/\/$/, "")
-}
+import { siteUrl } from "@/lib/platform/site-url"
 
 export async function GET() {
   const base = siteUrl()
@@ -112,8 +111,10 @@ export async function GET() {
       })
   } catch { /* video pages alone still serve */ }
 
+  // The platform's name is a SETTING (product_brand), never hardcoded.
+  const brand = await loadProductBrand(createServiceClient())
   const body = buildLlmsTxt({
-    siteName:    "VIP Real Estate OS",
+    siteName:    brand.name,
     siteSummary: "AI-powered real-estate marketing: listing, market-update, neighborhood, and explainer videos produced for licensed agents. Every video below is a public, citable page with the property/market facts it covers.",
     pages,
     sections: [

@@ -5,7 +5,7 @@ import { getEducationModules } from "@/app/actions/admin/license-tracking"
 import { EducationContentClient } from "./education-client"
 
 export const metadata = {
-  title: "Education Content | Admin | VIP Real Estate OS",
+  title: "Education Content | Admin",
 }
 
 export default async function AdminEducationPage() {

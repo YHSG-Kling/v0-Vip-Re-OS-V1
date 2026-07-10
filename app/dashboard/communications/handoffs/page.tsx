@@ -8,7 +8,7 @@ import {
 } from "./handoffs-cockpit-client"
 
 export const metadata = {
-  title: "Handoff Cockpit | VIP Real Estate OS",
+  title: "Handoff Cockpit",
   description: "AI-to-human handoffs and conversation ownership",
 }
 

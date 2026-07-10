@@ -4,7 +4,7 @@ import { loadClosingConciergeBoard } from "./actions"
 import { ClosingConciergeClient } from "./concierge-client"
 
 export const metadata = {
-  title: "Closing Concierge · VIP Real Estate OS",
+  title: "Closing Concierge",
   description: "Every open transaction action across all your deals — AI draftss the email, you send it.",
 }
 

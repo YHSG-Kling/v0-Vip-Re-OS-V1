@@ -6,7 +6,7 @@ import { ShowingBriefClient } from "./brief-client"
 interface PageProps { params: Promise<{ showingId: string }> }
 
 export const metadata = {
-  title: "Showing Brief · VIP Real Estate OS",
+  title: "Showing Brief",
 }
 
 export default async function ShowingBriefPage({ params }: PageProps) {

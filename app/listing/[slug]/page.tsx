@@ -8,6 +8,9 @@ import {
 } from "@/app/actions/listing-landing"
 import { calculateDaysOnMarket, formatPrice } from "@/app/lib/listing-utils"
 import { buildRealEstateListingJsonLd, buildBreadcrumbJsonLd, serializeJsonLd } from "@/lib/geo/video-landing"
+import { siteUrl } from "@/lib/platform/site-url"
+import { loadProductBrand } from "@/lib/platform/product-brand"
+import { createServiceClient } from "@/lib/supabase/service"
 import { ListingHero } from "@/app/components/listing-landing/ListingHero"
 import { NeighborhoodWidget } from "@/app/components/listing-landing/NeighborhoodWidget"
 import { ShowingRequestForm } from "@/app/components/listing-landing/ShowingRequestForm"
@@ -130,7 +133,8 @@ export default async function ListingLandingPage({ params, searchParams }: PageP
   // GEO — schema.org RealEstateListing + BreadcrumbList so AI search engines
   // (ChatGPT browse, Perplexity, AI Overviews, Claude) can read and CITE the
   // page every QR and campaign points at. Same pure builders as /v/[slug].
-  const siteBase = (process.env.NEXT_PUBLIC_APP_URL || "https://app.viprealestateos.com").replace(/\/$/, "")
+  const siteBase = siteUrl()
+  const productName = (await loadProductBrand(createServiceClient())).name
   const pageUrl = `${siteBase}/listing/${slug}`
   const lAny = listing as unknown as {
     address?: string; city?: string; state?: string; list_price?: number
@@ -151,7 +155,7 @@ export default async function ListingLandingPage({ params, searchParams }: PageP
     bathrooms: lAny.bathrooms ?? null,
   })
   const breadcrumbJsonLd = buildBreadcrumbJsonLd({
-    siteName: "VIP Real Estate OS", siteUrl: siteBase,
+    siteName: productName, siteUrl: siteBase,
     agentName: [lAny.agent?.first_name, lAny.agent?.last_name].filter(Boolean).join(" ") || null,
     pageName: lAny.address ?? "Listing", pageUrl,
   })

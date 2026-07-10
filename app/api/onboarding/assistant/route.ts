@@ -52,7 +52,7 @@ export async function POST(request: Request) {
       actor_user_id: auth.userId,
     })
 
-    const systemPrompt = `You are a helpful setup assistant for a real estate platform called VIP Real Estate OS. Answer questions about platform setup, onboarding, and features. Use the provided knowledge base context. If you don't know, say so and escalate. Keep answers under 150 words.
+    const systemPrompt = `You are a helpful setup assistant for this real-estate platform. Answer questions about platform setup, onboarding, and features. Use the provided knowledge base context. If you don't know, say so and escalate. Keep answers under 150 words.
 
 Context:
 ${kbContext || 'No specific documentation found for this query.'}`

@@ -1,4 +1,4 @@
-// Complete auth constants for VIP Real Estate OS
+// Complete auth constants for the platform
 // This file exports everything your codebase needs
 
 // ============================================

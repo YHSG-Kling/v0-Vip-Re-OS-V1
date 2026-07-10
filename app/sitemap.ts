@@ -11,9 +11,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 export const dynamic = "force-dynamic"
 export const revalidate = 3600
 
-function siteUrl(): string {
-  return (process.env.NEXT_PUBLIC_APP_URL || "https://app.viprealestateos.com").replace(/\/$/, "")
-}
+import { siteUrl } from "@/lib/platform/site-url"
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const base = siteUrl()

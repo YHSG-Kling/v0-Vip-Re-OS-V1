@@ -3,7 +3,7 @@ import { redirect } from "next/navigation"
 import { DealHealthDashboardClient } from "./deal-health-dashboard-client"
 
 export const metadata = {
-  title: "Deal Health Dashboard | VIP Real Estate OS",
+  title: "Deal Health Dashboard",
   description: "Monitor deal health across all active transactions",
 }
 

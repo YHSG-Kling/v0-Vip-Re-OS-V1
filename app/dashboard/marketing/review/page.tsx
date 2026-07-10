@@ -5,7 +5,7 @@ import { loadMarketingReview } from "./actions"
 import { MarketingReviewClient } from "./review-client"
 
 export const metadata = {
-  title: "Marketing Review · VIP Real Estate OS",
+  title: "Marketing Review",
   description: "Triage every AI-drafted email, social post, listing video/photo, and QR code in one place.",
 }
 

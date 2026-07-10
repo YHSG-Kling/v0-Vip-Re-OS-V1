@@ -6,7 +6,7 @@ import { listISACampaigns, getEngagementFeed, getQualificationOutcomes, getGhost
 import OutreachClient from "./OutreachClient"
 
 export const metadata = {
-  title: "Outreach | VIP Real Estate OS",
+  title: "Outreach",
   description: "AI ISA campaigns, engagement feed, and ghost recovery queue.",
 }
 

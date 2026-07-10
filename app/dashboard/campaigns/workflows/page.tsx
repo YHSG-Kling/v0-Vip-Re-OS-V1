@@ -4,7 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { WorkflowBuilderClient } from "./workflow-builder-client"
 
 export const metadata = {
-  title: "Workflow Builder | VIP Real Estate OS",
+  title: "Workflow Builder",
   description: "Build multi-step outreach workflows with email, SMS, direct mail, waits, and conditions.",
 }
 

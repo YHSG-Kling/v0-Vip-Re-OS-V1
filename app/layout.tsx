@@ -9,8 +9,20 @@ import './globals.css'
 const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
 
-export const metadata: Metadata = {
-  title: 'VIP Agents AI - Real Estate CRM',
+// The platform's NAME is a setting (platform_settings.product_brand), never
+// hardcoded — the root metadata resolves it per request and gives every child
+// page a title template so no page carries the name itself.
+export async function generateMetadata(): Promise<Metadata> {
+  const { loadProductBrand } = await import('@/lib/platform/product-brand')
+  const { createServiceClient } = await import('@/lib/supabase/service')
+  const brand = await loadProductBrand(createServiceClient()) // never throws — defaults inside
+  return {
+    title: { default: brand.name, template: `%s · ${brand.name}` },
+    ...baseMetadata,
+  }
+}
+
+const baseMetadata: Metadata = {
   description: 'AI-powered real estate operating system for agents, brokers, and teams',
   generator: 'v0.app',
   icons: {

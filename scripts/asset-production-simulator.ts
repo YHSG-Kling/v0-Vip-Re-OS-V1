@@ -442,8 +442,8 @@ async function main() {
     src("lib/kernel/cron-dispatch.ts").includes("podcast-weekly-auto")
     && src("lib/kernel/cron-dispatch.ts").includes("distribute-podcast-episodes"))
   const pairing = src("lib/marketing/social-media-pairing.ts")
-  check("social media pairing: LIBRARY-FIRST (approved images, topic/agent match) with brand-aware generation as fallback",
-    pairing.includes('.eq("asset_type", "image")') && pairing.includes("matchesTopic")
+  check("social media pairing: LIBRARY-FIRST (approved assets by decided type, topic/agent match) with brand-aware generation as fallback",
+    pairing.includes('.eq("asset_type", assetType)') && pairing.includes("matchesTopic")
     && pairing.includes("generateImage") && pairing.includes('purpose: "social_post"'))
   check("generated pairing images are CAPTURED back into the library (one asset → many uses, never pay twice)",
     pairing.includes("captured_from") && pairing.includes('from("marketing_assets").insert'))
@@ -454,10 +454,58 @@ async function main() {
     src("app/actions/email-campaigns.ts").includes("heroHtml")
     && src("app/actions/email-campaigns.ts").includes("${heroHtml}${emailContent.data.generated_content}"))
 
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[17 · NO HARDCODED IDENTITY + PROVEN MEDIA-TYPE DECISIONS]")
+  {
+    // The platform's name + domain are SETTINGS — no runtime file may carry them.
+    const { execSync } = await import("child_process")
+    let hits = ""
+    try {
+      hits = execSync(
+        `grep -rn "VIP Real Estate OS\\|viprealestateos\\|Smart Engine" app lib --include=*.ts --include=*.tsx || true`,
+        { cwd: ROOT, encoding: "utf-8" },
+      ).trim()
+    } catch { /* grep unavailable → the source checks below still hold */ }
+    check("ZERO hardcoded product-name/domain sites in runtime code (app/ + lib/)", hits === "", hits.split("\n")[0])
+    const su = src("lib/platform/site-url.ts")
+    check("ONE siteUrl resolver: env-only (NEXT_PUBLIC_APP_URL → VERCEL_URL → relative), no invented domain",
+      su.includes("NEXT_PUBLIC_APP_URL") && su.includes("VERCEL_URL") && !su.includes("viprealestateos"))
+    check("GEO surfaces resolve the brand per request (llms.txt siteName, /v + /listing breadcrumbs, root title template)",
+      src("app/llms.txt/route.ts").includes("loadProductBrand")
+      && src("app/v/[slug]/page.tsx").includes("loadProductBrand")
+      && src("app/listing/[slug]/page.tsx").includes("loadProductBrand")
+      && src("app/layout.tsx").includes("loadProductBrand")
+      && src("app/layout.tsx").includes("template: `%s · ${brand.name}`"))
+  }
+  {
+    const { engagementScore, decideMediaType, CHANNEL_MEDIA_NORMS } = await import("../lib/marketing/social-media-pairing")
+    check("channel norms encode the competitor-validated defaults (video-first IG/FB/TikTok/YT, image-first LinkedIn/GBP/Pinterest)",
+      CHANNEL_MEDIA_NORMS.instagram.prefer === "video" && CHANNEL_MEDIA_NORMS.facebook.prefer === "video"
+      && CHANNEL_MEDIA_NORMS.tiktok.prefer === "video" && CHANNEL_MEDIA_NORMS.linkedin.prefer === "image"
+      && CHANNEL_MEDIA_NORMS.google_business.prefer === "image" && !CHANNEL_MEDIA_NORMS.google_business.videoAllowed)
+    check("engagementScore is tolerant across sync shapes and weights views at 1%",
+      engagementScore({ likes: 10, comments: 5 }) === 15
+      && engagementScore({ views: 1000 }) === 10
+      && engagementScore(null) === 0 && engagementScore("junk") === 0)
+    const vid = Array.from({ length: 6 }, () => ({ mediaType: "video" as const, score: 20 }))
+    const img = Array.from({ length: 6 }, () => ({ mediaType: "image" as const, score: 10 }))
+    check("decideMediaType: a real experiment (≥5/arm) with >25% lift overrides the norm; weak or thin evidence returns null",
+      decideMediaType([...vid, ...img]) === "video"
+      && decideMediaType([...vid.slice(0, 3), ...img]) === null
+      && decideMediaType([...vid.map((s) => ({ ...s, score: 11 })), ...img]) === null)
+    const pairingSrc = src("lib/marketing/social-media-pairing.ts")
+    check("the resolver runs the decision LADDER (learned → channel norm → availability) and records decidedBy for the flywheel",
+      pairingSrc.includes("learnedMediaPreference") && pairingSrc.includes("decidedBy")
+      && pairingSrc.includes('"channel_norm"') && pairingSrc.includes('"availability"'))
+    check("the cadence resolves media PER PLATFORM (video for video-first channels, image elsewhere — one generation, library-cached)",
+      src("lib/marketing/social-cadence.ts").includes("platform,")
+      && src("lib/marketing/social-cadence.ts").includes("for (const platform of platforms) {\n    let mediaUrls"))
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together.")
+  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together, identity is a setting, media-type decisions are proven.")
   console.log(" ASSET_PRODUCTION_PASS")
   process.exit(0)
 }

@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { loadSphereResonance } from "./actions"
 import { SphereClient } from "./sphere-client"
 
-export const metadata = { title: "Sphere Resonance · VIP Real Estate OS" }
+export const metadata = { title: "Sphere Resonance" }
 export const dynamic = "force-dynamic"
 
 export default async function SphereResonancePage() {

@@ -4,7 +4,7 @@ import { loadListingHealthBoard } from "./actions"
 import { ListingHealthBoardClient } from "./health-client"
 
 export const metadata = {
-  title: "Listing Health · VIP Real Estate OS",
+  title: "Listing Health",
   description: "Every listing you have, sorted by how worried you should be — with AI-drafted seller emails ready to send.",
 }
 

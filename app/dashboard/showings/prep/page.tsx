@@ -4,7 +4,7 @@ import { loadUpcomingShowingsForAgent } from "./actions"
 import { ShowingPrepListClient } from "./prep-list-client"
 
 export const metadata = {
-  title: "Showing Prep · VIP Real Estate OS",
+  title: "Showing Prep",
   description: "Every upcoming showing with an AI-generated 1-pager you can read in the car.",
 }
 

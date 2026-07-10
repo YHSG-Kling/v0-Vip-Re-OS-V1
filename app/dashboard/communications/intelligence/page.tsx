@@ -4,7 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import IntelligenceClient from "./IntelligenceClient"
 
 export const metadata = {
-  title: "Communication Intelligence | VIP Real Estate OS",
+  title: "Communication Intelligence",
   description: "Conversation health scores, audit flags, and AI-driven insights.",
 }
 

@@ -60,7 +60,7 @@ export async function deliverAlertResults(
         })
 
         const fromEmail = (sgCred.config as any)?.from_email ?? process.env.SENDGRID_FROM_EMAIL ?? "alerts@vip-re.com"
-        const fromName  = (sgCred.config as any)?.from_name  ?? "VIP Real Estate OS"
+        const fromName  = (sgCred.config as any)?.from_name  ?? (await import("@/lib/platform/product-brand")).DEFAULT_PRODUCT_BRAND.name
 
         await dispatchEmail({
           brokerageId,

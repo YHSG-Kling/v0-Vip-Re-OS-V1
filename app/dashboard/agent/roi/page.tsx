@@ -4,7 +4,7 @@ import { loadAgentRoiSnapshot } from "./actions"
 import { AgentRoiClient } from "./roi-client"
 
 export const metadata = {
-  title: "Your AI ROI · VIP Real Estate OS",
+  title: "Your AI ROI",
   description: "How much revenue your AI tools produced and how many hours they saved you.",
 }
 

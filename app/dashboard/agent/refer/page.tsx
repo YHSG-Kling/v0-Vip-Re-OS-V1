@@ -4,7 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { ReferralPanelClient } from "./referral-panel-client"
 
 export const metadata = {
-  title: "Refer an Agent · VIP Real Estate OS",
+  title: "Refer an Agent",
   description: "Share your personalized recruiting link and earn referral credit when someone joins.",
 }
 

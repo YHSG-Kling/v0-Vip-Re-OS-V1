@@ -9,9 +9,7 @@
 import type { MetadataRoute } from "next"
 import { AI_CRAWLER_BOTS } from "@/lib/geo/video-landing"
 
-function siteUrl(): string {
-  return (process.env.NEXT_PUBLIC_APP_URL || "https://app.viprealestateos.com").replace(/\/$/, "")
-}
+import { siteUrl } from "@/lib/platform/site-url"
 
 const DISALLOW = ["/dashboard", "/api/", "/admin", "/portal", "/settings", "/login", "/signup"]
 const ALLOW = ["/v/", "/p/", "/listing", "/open-house", "/home-value"]

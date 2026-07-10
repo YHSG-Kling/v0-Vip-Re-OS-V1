@@ -83,7 +83,7 @@ export async function sendAlertNotification(
 
       if (sgCred?.api_key) {
         const fromEmail = (sgCred.config as any)?.from_email ?? process.env.SENDGRID_FROM_EMAIL ?? "alerts@vip-re.com"
-        const fromName  = (sgCred.config as any)?.from_name  ?? "VIP Real Estate OS"
+        const fromName  = (sgCred.config as any)?.from_name  ?? (await import("@/lib/platform/product-brand")).DEFAULT_PRODUCT_BRAND.name
         const subject   = `${n} New ${n === 1 ? "Property Matches" : "Properties Match"} Your Search`
 
         const cards = matches.map(m => `

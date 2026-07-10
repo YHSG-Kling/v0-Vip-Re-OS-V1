@@ -53,7 +53,7 @@ export interface CitationObservation {
 export interface DetectionTarget {
   /** Our citable /v/[slug] URLs (full URL) AND any standalone slugs to match. */
   slugs:    string[]
-  /** Our domains/hosts (e.g. "app.viprealestateos.com") — a bare domain mention counts. */
+  /** Our domains/hosts (from NEXT_PUBLIC_APP_URL) — a bare domain mention counts. */
   domains:  string[]
   /** Brand strings (brokerage + agent name). A brand mention is an unlinked citation. */
   brands:   string[]
@@ -193,7 +193,8 @@ export const realSearchFetcher: SearchFetcher = async (params) => {
 
 /** The public site origin the /v/[slug] pages live on (same source as app/v/[slug]). */
 export function siteOrigin(): string {
-  return (process.env.NEXT_PUBLIC_APP_URL || "https://app.viprealestateos.com").replace(/\/$/, "")
+  const { siteUrl } = require("@/lib/platform/site-url") as typeof import("@/lib/platform/site-url")
+  return siteUrl()
 }
 
 /** Host (no scheme) of the site origin — the bare-domain detection target. */

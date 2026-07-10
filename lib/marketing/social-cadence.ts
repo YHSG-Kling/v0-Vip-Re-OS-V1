@@ -86,25 +86,30 @@ export async function stageSocialFromCadence(
       ? "This week in your local market — what buyers and sellers should know."
       : "A quick real-estate tip worth two minutes of your time."
 
-  // MEDIA PAIRING (owner rule: nothing ships bare) — library-first, then a
-  // brand-aware generated image captured back into the library. Null means
-  // "stage without media" — a bare draft the approval UI surfaces beats no
-  // post, but it should be the exception, not the default it used to be.
-  let mediaUrls: string[] = []
-  try {
-    const { resolveSocialMedia } = await import("./social-media-pairing")
-    const paired = await resolveSocialMedia(svc, {
-      brokerageId: input.brokerageId,
-      agentUserId: input.agentUserId,
-      topicTitle,
-      postType,
-    })
-    if (paired) mediaUrls = paired.mediaUrls
-  } catch { /* bare draft fallback */ }
+  // MEDIA PAIRING PER CHANNEL (owner rule: video/image are media TYPES, not
+  // channels — each channel gets the type that is PROVEN for it: the
+  // tenant's own learned engagement first, competitor-validated channel
+  // norms second, library availability last). Generation happens at most
+  // once — the generated image is captured into the library, so the next
+  // platform's library lookup finds it instead of paying again. A null
+  // pairing stages a bare draft the approval UI surfaces — the exception,
+  // not the default it used to be.
+  const { resolveSocialMedia } = await import("./social-media-pairing")
 
   // One gated draft per connected platform (a human approves/edits before publish-social-posts sends).
   let count = 0
   for (const platform of platforms) {
+    let mediaUrls: string[] = []
+    try {
+      const paired = await resolveSocialMedia(svc, {
+        brokerageId: input.brokerageId,
+        agentUserId: input.agentUserId,
+        topicTitle,
+        postType,
+        platform,
+      })
+      if (paired) mediaUrls = paired.mediaUrls
+    } catch { /* bare draft fallback */ }
     const { data: post } = await svc
       .from("social_posts")
       .insert({
