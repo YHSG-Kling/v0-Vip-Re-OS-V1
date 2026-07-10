@@ -384,10 +384,56 @@ async function main() {
   check("carousel drafts land ON THE CALENDAR with a real slot (scheduled_for), not as dangling drafts",
     src("lib/marketing/social-carousel.ts").includes("scheduled_for: slot.toISOString()"))
 
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[15 · THE FULL MARKETING LOOP — every channel produce→schedule→SEND, GEO riding along]")
+  const sender = src("lib/marketing/email-campaign-sender.ts")
+  check("email campaigns: scheduled sends finally have a consumer (send-email-campaigns cron → one sender, claim-guarded)",
+    sender.includes("runScheduledEmailCampaigns") && sender.includes('.eq("status", "scheduled")')
+    && sender.includes('.lte("send_date"') && sender.includes('.neq("status", "sending")')
+    && src("app/api/cron/send-email-campaigns/route.ts").includes("runScheduledEmailCampaigns")
+    && src("lib/kernel/cron-dispatch.ts").includes("/api/cron/send-email-campaigns")
+    && src("lib/kernel/manager-registry.ts").includes('"/api/cron/send-email-campaigns": "campaign_orchestrator"'))
+  check("email campaigns: template-body campaigns and queued email_sends both drain through the consent-gated dispatchEmail",
+    sender.includes("resolveCampaignHtml") && sender.includes('.eq("status", "queued")')
+    && sender.includes("dispatchEmail") && src("app/actions/email-campaigns.ts").includes("sendCampaignNow"))
+  check("newsletter approval schedules (status→scheduled + send_date) — approve-only no longer strands the AI newsletter",
+    src("app/actions/marketing-ai-approvals.ts").includes('kind === "newsletter"')
+    && src("app/actions/marketing-ai-approvals.ts").includes("send_date: nl.send_date ?? new Date().toISOString()"))
+  check("blog approval advances publish_status AND the cadence cron's publish phase ships approved hosted/embed posts public",
+    src("app/actions/marketing-ai-approvals.ts").includes('kind === "blog"')
+    && src("app/api/cron/blog-cadence-tick/route.ts").includes('publish_status: "published"')
+    && src("app/api/cron/blog-cadence-tick/route.ts").includes('["hosted", "embed"]'))
+  check("the SECOND social approval handler (handleContentApproved) also flips drafts publishable — both approval paths agree",
+    src("app/actions/social-publishing.ts").includes("needsScheduling")
+    && src("app/actions/social-publishing.ts").includes('status: "scheduled"'))
+  check("ONE sequence worker: the duplicate /api/sequences/execute route is gone from disk + registry (campaign-sequence-steps carries the queue)",
+    !existsSync(join(ROOT, "app/api/sequences/execute/route.ts"))
+    && !src("lib/kernel/cron-dispatch.ts").includes("/api/sequences/execute")
+    && src("lib/kernel/cron-dispatch.ts").includes("/api/cron/campaign-sequence-steps"))
+  // GEO — AI-search visibility rides every public marketing surface
+  const sitemapSrc = src("app/sitemap.ts")
+  check("sitemap covers the WHOLE public surface: listings + videos + blogs + agent profiles + lead magnets",
+    sitemapSrc.includes("/listing/") && sitemapSrc.includes("/v/") && sitemapSrc.includes("/blog/")
+    && sitemapSrc.includes("/p/") && sitemapSrc.includes("/lm/"))
+  const llmsSrc = src("app/llms.txt/route.ts")
+  check("llms.txt sections: active listings + articles + agents beyond the videos",
+    llmsSrc.includes("Active listings") && llmsSrc.includes("Articles") && llmsSrc.includes("Agents"))
+  check("the listing page (where every QR lands) carries RealEstateListing + Breadcrumb JSON-LD",
+    src("app/listing/[slug]/page.tsx").includes("buildRealEstateListingJsonLd")
+    && src("app/listing/[slug]/page.tsx").includes("application/ld+json"))
+  const llmsBody = (await import("../lib/geo/video-landing")).buildLlmsTxt({
+    siteName: "S", siteSummary: "x",
+    pages: [{ title: "V", url: "https://a/v/1", summary: "s" }],
+    sections: [{ heading: "Active listings", pages: [{ title: "L", url: "https://a/listing/1", summary: "3bd" }] }],
+  })
+  check("buildLlmsTxt renders extra sections (and stays backward-compatible without them)",
+    llmsBody.includes("## Active listings") && llmsBody.includes("- [L](https://a/listing/1): 3bd")
+    && llmsBody.includes("## Video content"))
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop.")
+  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along.")
   console.log(" ASSET_PRODUCTION_PASS")
   process.exit(0)
 }

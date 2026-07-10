@@ -187,6 +187,33 @@ export async function approveMarketingAssetAction(
     .eq("id", id)
   if (error) return { ok: false, error: error.message }
 
+  // APPROVAL IS THE LAST HUMAN STOP — each kind must leave here PUBLISHABLE
+  // or the loop dead-ends (the 2026-07 loop audit found both of these):
+  //   newsletter — publish-newsletters only sends status='scheduled' AND
+  //     send_date<=now; the stager writes draft/pending with NO send_date,
+  //     so approve-only stranded every AI newsletter forever.
+  //   blog — publishBlogPost keys on publish_status (a separate ladder from
+  //     approval_status); approving the queue row never made the post
+  //     publishable. Approval now advances publish_status so the blog
+  //     cadence cron's publish phase can ship it.
+  if (kind === "newsletter") {
+    const { data: nl } = await svc.from("newsletter_campaigns")
+      .select("status, send_date").eq("id", id).maybeSingle()
+    if (nl && (nl.status === "draft" || nl.status === "pending_review")) {
+      await svc.from("newsletter_campaigns").update({
+        status: "scheduled",
+        send_date: nl.send_date ?? new Date().toISOString(),
+      }).eq("id", id)
+    }
+  }
+  if (kind === "blog") {
+    const { data: bp } = await svc.from("blog_posts")
+      .select("publish_status").eq("id", id).maybeSingle()
+    if (bp && bp.publish_status === "draft") {
+      await svc.from("blog_posts").update({ publish_status: "approved" }).eq("id", id)
+    }
+  }
+
   revalidatePath("/dashboard/admin/marketing-approvals")
   return { ok: true }
 }

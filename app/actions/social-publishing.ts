@@ -144,18 +144,27 @@ export async function handleContentApproved(payload: any) {
   // Verify post belongs to caller's brokerage before mutating
   const { data: post } = await supabase
     .from("social_posts")
-    .select("brokerage_id, user_id")
+    .select("brokerage_id, user_id, status, scheduled_for")
     .eq("id", content_id)
     .maybeSingle()
   if (!post) return { success: false, error: "Post not found" }
   if (post.brokerage_id !== caller.brokerageId) return { success: false, error: "Forbidden" }
 
+  // Approval must leave the post PUBLISHABLE: the publisher only ships
+  // status='scheduled' + approved + due, so a draft (repurpose rail) has to
+  // flip to scheduled here or it strands forever (same contract as
+  // approveSocialPost in social-media-automation).
+  const needsScheduling = post.status === "draft" || post.status === "pending_approval"
   await supabase
     .from("social_posts")
     .update({
       approval_status: "approved",
       approved_by: caller.userId,
       approved_at: new Date().toISOString(),
+      ...(needsScheduling && {
+        status: "scheduled",
+        scheduled_for: post.scheduled_for ?? new Date().toISOString(),
+      }),
     })
     .eq("id", content_id)
     .eq("brokerage_id", caller.brokerageId)

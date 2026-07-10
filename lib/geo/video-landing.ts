@@ -216,11 +216,14 @@ export interface LlmsTxtPage {
 }
 
 /** Build an llms.txt body (the emerging standard that tells AI systems what
- *  a site is + where the citable content lives). */
+ *  a site is + where the citable content lives). Beyond the video pages,
+ *  optional extra SECTIONS carry the rest of the public marketing surface
+ *  (listings, agent profiles, guides) so AI search reads the whole estate. */
 export function buildLlmsTxt(args: {
   siteName:    string
   siteSummary: string
   pages:       LlmsTxtPage[]
+  sections?:   Array<{ heading: string; pages: LlmsTxtPage[] }>
 }): string {
   const lines: string[] = []
   lines.push(`# ${args.siteName}`)
@@ -232,6 +235,14 @@ export function buildLlmsTxt(args: {
     lines.push("- (no published videos yet)")
   } else {
     for (const p of args.pages) {
+      lines.push(`- [${p.title}](${p.url}): ${p.summary}`)
+    }
+  }
+  for (const section of args.sections ?? []) {
+    if (section.pages.length === 0) continue
+    lines.push("")
+    lines.push(`## ${section.heading}`)
+    for (const p of section.pages) {
       lines.push(`- [${p.title}](${p.url}): ${p.summary}`)
     }
   }

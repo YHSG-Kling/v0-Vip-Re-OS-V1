@@ -190,10 +190,33 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // ── PUBLISH PHASE — delivery is the last stop of the loop. Human-approved
+  // posts (publish_status='approved' via the marketing approvals queue) on
+  // the hosted/embed targets go PUBLIC here: flip published + published_at
+  // and /blog/[slug] serves them (and the sitemap/llms.txt pick them up).
+  // WordPress-target posts stay manual — they need per-tenant credentials
+  // and the interactive error surface the action provides.
+  let published = 0
+  try {
+    const { data: approved } = await svc.from("blog_posts")
+      .select("id, slug, publish_target")
+      .eq("publish_status", "approved")
+      .in("publish_target", ["hosted", "embed"])
+      .limit(50)
+    for (const post of ((approved ?? []) as Array<{ id: string; slug: string; publish_target: string }>)) {
+      const { error: pubErr } = await svc.from("blog_posts").update({
+        publish_status: "published",
+        published_at: new Date().toISOString(),
+      }).eq("id", post.id).eq("publish_status", "approved")
+      if (!pubErr) published++
+    }
+  } catch { /* publish phase retries next tick */ }
+
   return NextResponse.json({
     ran_at: new Date().toISOString(),
     policies_evaluated: policies?.length ?? 0,
     dispatched:         results.length,
+    published,
     results,
   })
 }

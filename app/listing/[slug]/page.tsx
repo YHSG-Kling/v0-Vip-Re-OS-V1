@@ -7,6 +7,7 @@ import {
   logLandingSession,
 } from "@/app/actions/listing-landing"
 import { calculateDaysOnMarket, formatPrice } from "@/app/lib/listing-utils"
+import { buildRealEstateListingJsonLd, buildBreadcrumbJsonLd, serializeJsonLd } from "@/lib/geo/video-landing"
 import { ListingHero } from "@/app/components/listing-landing/ListingHero"
 import { NeighborhoodWidget } from "@/app/components/listing-landing/NeighborhoodWidget"
 import { ShowingRequestForm } from "@/app/components/listing-landing/ShowingRequestForm"
@@ -126,8 +127,41 @@ export default async function ListingLandingPage({ params, searchParams }: PageP
     aiGreeting = `Welcome back! You're viewing ${listing.address}.`
   }
 
+  // GEO — schema.org RealEstateListing + BreadcrumbList so AI search engines
+  // (ChatGPT browse, Perplexity, AI Overviews, Claude) can read and CITE the
+  // page every QR and campaign points at. Same pure builders as /v/[slug].
+  const siteBase = (process.env.NEXT_PUBLIC_APP_URL || "https://app.viprealestateos.com").replace(/\/$/, "")
+  const pageUrl = `${siteBase}/listing/${slug}`
+  const lAny = listing as unknown as {
+    address?: string; city?: string; state?: string; list_price?: number
+    bedrooms?: number; bathrooms?: number; public_remarks?: string
+    photos?: Array<{ url?: string }>
+    agent?: { first_name?: string; last_name?: string } | null
+  }
+  const listingJsonLd = buildRealEstateListingJsonLd({
+    name: lAny.address ?? "Listing",
+    description: (lAny.public_remarks ?? "").slice(0, 300) || `${lAny.address ?? "Home"} for sale`,
+    url: pageUrl,
+    imageUrl: lAny.photos?.[0]?.url ?? null,
+    streetAddress: lAny.address ?? null,
+    city: lAny.city ?? null,
+    state: lAny.state ?? null,
+    price: lAny.list_price ?? null,
+    bedrooms: lAny.bedrooms ?? null,
+    bathrooms: lAny.bathrooms ?? null,
+  })
+  const breadcrumbJsonLd = buildBreadcrumbJsonLd({
+    siteName: "VIP Real Estate OS", siteUrl: siteBase,
+    agentName: [lAny.agent?.first_name, lAny.agent?.last_name].filter(Boolean).join(" ") || null,
+    pageName: lAny.address ?? "Listing", pageUrl,
+  })
+
   return (
     <div className="min-h-screen bg-background">
+      {listingJsonLd && (
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(listingJsonLd) }} />
+      )}
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(breadcrumbJsonLd) }} />
       {/* AI Greeting Banner */}
       {aiGreeting && (
         <div className="bg-primary/10 border-b border-primary/20 px-4 py-3 text-center">

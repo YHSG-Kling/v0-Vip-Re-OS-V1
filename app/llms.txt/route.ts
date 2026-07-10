@@ -65,10 +65,62 @@ export async function GET() {
     pages = []
   }
 
+  // The rest of the public marketing surface — active listings + agent
+  // profiles are the pages campaigns/QRs actually point at; AI search
+  // should read them as citable real-estate knowledge too.
+  let listingPages: LlmsTxtPage[] = []
+  let agentPages: LlmsTxtPage[] = []
+  let blogPages: LlmsTxtPage[] = []
+  try {
+    const svc = createServiceClient()
+    const [{ data: listings }, { data: agents }, { data: blogs }] = await Promise.all([
+      // Cross-tenant by design (one public llms.txt) — rows carry brokerage_id
+      svc.from("listings").select("id, brokerage_id, mls_number, address, city, state, list_price, bedrooms, bathrooms")
+        .eq("status", "active").is("deleted_at", null)
+        .order("updated_at", { ascending: false }).limit(500),
+      svc.from("agents").select("public_slug, brokerage_id, bio, user_id, users(first_name, last_name)")
+        .not("public_slug", "is", null).limit(200),
+      svc.from("blog_posts").select("slug, title, excerpt")
+        .eq("publish_status", "published").not("slug", "is", null)
+        .order("published_at", { ascending: false }).limit(300),
+    ])
+    blogPages = ((blogs ?? []) as Array<{ slug: string; title: string | null; excerpt: string | null }>)
+      .map((bp) => ({
+        title: bp.title || "Article",
+        url: `${base}/blog/${bp.slug}`,
+        summary: (bp.excerpt ?? "").trim().slice(0, 160) || "Real-estate article.",
+      }))
+    listingPages = ((listings ?? []) as Array<{ id: string; mls_number: string | null; address: string | null; city: string | null; state: string | null; list_price: number | null; bedrooms: number | null; bathrooms: number | null }>)
+      .map((l) => ({
+        title: l.address || "Listing",
+        url: `${base}/listing/${l.mls_number ?? l.id}`,
+        summary: [
+          [l.city, l.state].filter(Boolean).join(", ") || null,
+          l.list_price ? `$${Number(l.list_price).toLocaleString("en-US")}` : null,
+          [l.bedrooms ? `${l.bedrooms} bed` : null, l.bathrooms ? `${l.bathrooms} bath` : null].filter(Boolean).join(" / ") || null,
+        ].filter(Boolean).join(" · ") || "Active listing.",
+      }))
+    agentPages = ((agents ?? []) as Array<{ public_slug: string; bio: string | null; users: { first_name: string | null; last_name: string | null } | Array<{ first_name: string | null; last_name: string | null }> | null }>)
+      .map((a) => {
+        const u = Array.isArray(a.users) ? a.users[0] : a.users
+        const name = [u?.first_name, u?.last_name].filter(Boolean).join(" ") || "Agent"
+        return {
+          title: name,
+          url: `${base}/p/${a.public_slug}`,
+          summary: (a.bio ?? "").trim().slice(0, 160) || "Licensed real-estate agent profile.",
+        }
+      })
+  } catch { /* video pages alone still serve */ }
+
   const body = buildLlmsTxt({
     siteName:    "VIP Real Estate OS",
     siteSummary: "AI-powered real-estate marketing: listing, market-update, neighborhood, and explainer videos produced for licensed agents. Every video below is a public, citable page with the property/market facts it covers.",
     pages,
+    sections: [
+      { heading: "Active listings", pages: listingPages },
+      { heading: "Articles", pages: blogPages },
+      { heading: "Agents", pages: agentPages },
+    ],
   })
 
   return new Response(body, {

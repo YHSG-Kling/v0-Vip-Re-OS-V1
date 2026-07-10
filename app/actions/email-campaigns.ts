@@ -369,7 +369,7 @@ export async function sendEmailCampaign(campaignId: string, _actorUserId?: strin
 
     const { data: campaign } = await supabase
       .from("email_campaigns")
-      .select("id, status, content, subject_line, agent_id, brokerage_id")
+      .select("id, status, brokerage_id")
       .eq("id", campaignId)
       .maybeSingle()
 
@@ -377,121 +377,23 @@ export async function sendEmailCampaign(campaignId: string, _actorUserId?: strin
     if (campaign.brokerage_id !== brokerageId) {
       return { success: false, error: "Forbidden" }
     }
-    if (campaign.status === "sent" || campaign.status === "sending") {
-      return { success: false, error: "Campaign already sent or currently sending" }
-    }
-    if (!campaign.content) return { success: false, error: "Campaign has no content to send" }
 
-    // Use service client so we can read subscribers across all agents in the brokerage
+    // ONE sender (lib/marketing/email-campaign-sender) serves this manual
+    // action AND the send-email-campaigns cron — auth here, egress there
+    // (every message rides the consent-gated dispatchEmail). It resolves
+    // content from the campaign body OR the linked template (listing
+    // campaigns keep their content in email_templates) and drains queued
+    // email_sends rows when they exist.
     const { createServiceClient } = await import("@/lib/supabase/service")
-    const svc = createServiceClient()
+    const { sendCampaignNow } = await import("@/lib/marketing/email-campaign-sender")
+    const result = await sendCampaignNow(createServiceClient(), campaignId)
+    if (!result.ok) return { success: false, error: result.error ?? "Send failed" }
 
-    // Resolve from_email from the campaign agent's profile (or actorUserId)
-    const agentId = campaign.agent_id ?? actorUserId
-    let fromEmail = "noreply@example.com"
-    const { data: agentUser } = await svc
-      .from("users")
-      .select("email, first_name, last_name")
-      .eq("id", agentId)
-      .maybeSingle()
-    if (agentUser?.email) {
-      fromEmail = agentUser.email
-    }
-
-    // Fetch subscribed recipients — newsletter_subscribers.brokerage_id is NOT NULL
-    // and exists on every row, so a single brokerage-scoped query covers both
-    // the agent-specific and brokerage-wide cases. When campaign.agent_id is
-    // set we additionally narrow to that agent's list. CANONICAL status is
-    // 'subscribed' (the CHECK constraint forbids 'active' — it matched zero rows).
-    let subscriberQuery = svc
-      .from("newsletter_subscribers")
-      .select("id, email, first_name, last_name, contact_id")
-      .eq("brokerage_id", brokerageId)
-      .eq("status", "subscribed")
-    if (campaign.agent_id) {
-      subscriberQuery = subscriberQuery.eq("agent_id", campaign.agent_id)
-    }
-    const { data: subscribersData } = await subscriberQuery
-    const subscribers: Array<{ id: string; email: string; first_name: string | null; last_name: string | null; contact_id: string | null }> = subscribersData ?? []
-
-    // Deduplicate by email so a contact subscribed to multiple agents only gets one copy
-    const seen = new Set<string>()
-    const uniqueSubs = subscribers.filter(s => {
-      if (seen.has(s.email)) return false
-      seen.add(s.email)
-      return true
-    })
-
-    if (uniqueSubs.length === 0) {
-      return { success: false, error: "No active subscribers found for this campaign" }
-    }
-
-    // Mark as sending before the loop so concurrent re-sends are blocked
-    await svc
-      .from("email_campaigns")
-      .update({ status: "sending" })
-      .eq("id", campaignId)
-      .eq("brokerage_id", brokerageId)
-
-    const { dispatchEmail } = await import("@/lib/providers/dispatch")
-    let sent = 0
-    let failed = 0
-
-    for (const sub of uniqueSubs) {
-      const result = await dispatchEmail({
-        brokerageId,
-        userId: agentId,
-        from: fromEmail,
-        to: sub.email,
-        subject: campaign.subject_line,
-        html: campaign.content,
-        contactId: sub.contact_id ?? undefined,
-        channelPurpose: "campaign",
-        systemSource: "email_campaign",
-        metadata: { campaign_id: campaignId, subscriber_id: sub.id },
-      })
-
-      // Per-recipient tracking goes through newsletter_sends when the subscriber
-      // is linked to a contact. Subscribers without a contact_id are counted in
-      // the campaign-level totals only.
-      if (sub.contact_id) {
-        await svc.from("newsletter_sends").insert({
-          brokerage_id: brokerageId,
-          contact_id:   sub.contact_id,
-          campaign_id:  campaignId,
-          subject:      campaign.subject_line,
-          status:       result.success ? "sent" : "failed",
-          sent_at:      result.success ? new Date().toISOString() : null,
-        })
-      }
-
-      if (result.success) sent++; else failed++
-    }
-
-    // Mark final status with real counts
-    await svc
-      .from("email_campaigns")
-      .update({
-        status: "sent",
-        sent_at: new Date().toISOString(),
-        recipient_count: uniqueSubs.length,
-        delivered_count: sent,
-      })
-      .eq("id", campaignId)
-      .eq("brokerage_id", brokerageId)
-
-    await processKernelEvent({
-      event: KernelEvent.EMAIL_CAMPAIGN_SENT,
-      brokerageId,
-      entityType: "newsletter_campaign",
-      entityId: campaignId,
-    }).catch((err) => {
-      console.error("[EmailCampaigns] Send event failed (non-blocking):", err)
-    })
+    void actorUserId // auth-derived; the sender attributes from the campaign's agent
 
     revalidatePath("/dashboard/marketing/studio")
     revalidatePath("/newsletters")
-    return { success: true, recipientCount: uniqueSubs.length, sent, failed }
+    return { success: true, recipientCount: result.recipients, sent: result.sent, failed: result.failed }
   } catch (error) {
     return handleError(error, "sendEmailCampaign")
   }
