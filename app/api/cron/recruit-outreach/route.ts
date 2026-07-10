@@ -78,6 +78,17 @@ export async function GET(req: NextRequest) {
       priorityBriefs = scout.briefs
     } catch (e: any) { errors.push(`scout: ${e?.message ?? String(e)}`) }
 
+    // RECRUITING PITCH KIT — the recruit-facing one-pager (the brokerage's own
+    // pitch + the real AI-team roster + terms + measured recruited-agent GCI),
+    // produced/refreshed only when the settings actually change
+    // (settings-hash idempotent), broker notified print-ready.
+    let pitchKits = 0
+    try {
+      const { runRecruitingPitchKits } = await import("@/lib/recruiting/recruiting-pitch-kit")
+      const kits = await runRecruitingPitchKits(supabase)
+      pitchKits = kits.pitchKits
+    } catch (e: any) { errors.push(`pitch-kit: ${e?.message ?? String(e)}`) }
+
     // VENDOR RECRUITMENT SCOUT — the marketplace-growth mirror: a weekly gated "invite these vendors"
     // brief for the off-platform vendors the brokerage already relies on (grow the marketplace toward
     // the vendors it already depends on).

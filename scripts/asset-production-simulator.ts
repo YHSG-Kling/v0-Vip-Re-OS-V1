@@ -542,10 +542,46 @@ async function main() {
       && src("lib/repurpose/distribute.ts").includes("kit?.built_at"))
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[19 · THE RECRUITING PITCH KIT — the brokerage's own growth marketing, real data only]")
+  {
+    const { pitchSettingsHash, aiTeamBullets, recruitingPitchSpec } = await import("../lib/recruiting/recruiting-pitch-kit")
+    const facts = {
+      brokerageName: "Harbor & Main Realty",
+      pitch: "We built the brokerage we always wanted to work at.",
+      valueProps: ["AI operations team included", "No desk fees", "Weekly coaching"],
+      splitToAgent: 85, monthlyFee: 99,
+      recruitedGciDollars: 412000, recruitedAgentCount: 6,
+      contactLine: "Reach us directly: (555) 010-2000",
+    }
+    check("the AI-team section enumerates the LIVE registry (13 managers) — the pitch can never advertise what the product doesn't ship",
+      aiTeamBullets().length === 13 && aiTeamBullets().some((b) => b.startsWith("AI ISA"))
+      && aiTeamBullets().some((b) => b.includes("Compliance Officer")))
+    check("settings-hash is stable + change-sensitive (the refresh key)",
+      pitchSettingsHash(facts) === pitchSettingsHash({ ...facts })
+      && pitchSettingsHash(facts) !== pitchSettingsHash({ ...facts, splitToAgent: 80 }))
+    const spec = recruitingPitchSpec(facts, "Two real paragraphs.\n\nAbout the brokerage.", brand, "July 2026")
+    check("terms + measured GCI ride ONLY from real data; omitted facts drop their sections (never invented)",
+      JSON.stringify(spec.sections).includes("85%") && JSON.stringify(spec.sections).includes("412,000")
+      && !JSON.stringify(recruitingPitchSpec({ ...facts, splitToAgent: null, monthlyFee: null, recruitedGciDollars: null }, "p", brand, "d").sections).includes("The terms"))
+    const pitchBytes = await renderClientPdf(spec)
+    check("the pitch kit renders as a REAL branded PDF through the one engine",
+      Buffer.from(pitchBytes.slice(0, 5)).toString() === "%PDF-" && (await PDFDocument.load(pitchBytes)).getPageCount() >= 1)
+    check("independent-contractor disclaimer + not-an-offer line present",
+      /independent-contractor/i.test(spec.disclaimer ?? "") && /not an offer/i.test(spec.disclaimer ?? ""))
+    const kitRunner = src("lib/recruiting/recruiting-pitch-kit.ts")
+    check("autonomous + honest: settings-configured brokerages only, hash-idempotent, AI-polish gated with the broker's own text as fallback, ledger GCI only when >0",
+      kitRunner.includes("recruiting_pitch.not.is.null") && kitRunner.includes("settings_hash")
+      && kitRunner.includes("generatePersonaCopy") && kitRunner.includes("if (gci > 0)"))
+    check("rides the weekly recruit-outreach cron (recruiting_manager's sweep) and notifies the broker print-ready",
+      src("app/api/cron/recruit-outreach/route.ts").includes("runRecruitingPitchKits")
+      && kitRunner.includes("recruiting_pitch_ready"))
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together, identity is a setting, media-type decisions are proven, every finished video carries its content kit.")
+  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together, identity is a setting, media-type decisions are proven, every finished video carries its content kit, and the brokerage's own growth marketing produces itself.")
   console.log(" ASSET_PRODUCTION_PASS")
   process.exit(0)
 }
