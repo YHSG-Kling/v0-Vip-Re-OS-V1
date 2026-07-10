@@ -502,10 +502,50 @@ async function main() {
       && src("lib/marketing/social-cadence.ts").includes("for (const platform of platforms) {\n    let mediaUrls"))
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[18 · THE VIDEO CONTENT KIT — an anchor asset ships with proven copy for every destination]")
+  {
+    const { fallbackVideoKit, composeVideoKit, kitCaptionFor } = await import("../lib/marketing/video-content-kit")
+    const kitFacts = {
+      title: "Just Listed — 128 Harborview Lane",
+      videoType: "listing_promo",
+      scriptExcerpt: "Welcome to 128 Harborview Lane in Naples...",
+      listing: { address: "128 Harborview Lane", cityState: "Naples, FL", price: "$1,250,000", beds: "4", baths: "3.5" },
+      agentName: "Jordan Avery", brokerageName: "Harbor & Main",
+    }
+    const fb = fallbackVideoKit(kitFacts, "2026-07-10T00:00:00Z")
+    check("fallback kit: every destination filled from the video's own facts (IG/FB/LI/GBP + email + SMS + portal), FH-clean",
+      fb.instagram_caption.includes("128 Harborview Lane") && fb.email_subject.length <= 60
+      && fb.sms_line.length <= 140 && fb.portal_message.length > 10 && fb.built_by === "fallback"
+      && !FH_BANNED.test(Object.values(fb).filter((v) => typeof v === "string").join(" ")))
+    const gated = await composeVideoKit(kitFacts, { gate: async () => ({ allowed: false }), now: "2026-07-10T00:00:00Z" })
+    check("a blocking compliance gate (or unreachable model) forces the fact-built fallback — AI kit copy never ships ungated",
+      gated.built_by === "fallback")
+    check("kitCaptionFor maps channels to their fitting field (IG/TikTok/YT → hook caption, GBP → informational post)",
+      kitCaptionFor(fb, "instagram") === fb.instagram_caption
+      && kitCaptionFor(fb, "tiktok") === fb.instagram_caption
+      && kitCaptionFor(fb, "google_business") === fb.gbp_post
+      && kitCaptionFor(fb, "linkedin") === fb.linkedin_caption)
+    const kitSrc = src("lib/marketing/video-content-kit.ts")
+    check("the kit is idempotent, stored on the project (video_metadata.content_kit), grounded + gated",
+      kitSrc.includes("content_kit") && kitSrc.includes("if (existing?.built_at) return")
+      && kitSrc.includes("evaluateOutbound") && kitSrc.includes("Use ONLY the facts provided"))
+    const handler = src("lib/orchestrator/internal.ts")
+    check("the completion handler builds the kit FIRST (section 0) so every downstream section ships fitting content",
+      handler.includes("THE CONTENT KIT") && handler.includes("buildVideoContentKit")
+      && handler.indexOf("buildVideoContentKit") < handler.indexOf("Personal videos to a specific contact"))
+    check("the hardcoded one-caption-for-all-channels social fan-out is DEMOTED to fallback — kit captions ride per platform",
+      handler.includes("kitCaptionFor(contentKit, platform)") && handler.includes("fallbackCaption")
+      && !handler.includes('const caption = captionByType[video_type] ?? "New video'))
+    check("repurpose distribution consumes the kit (one gated voice) with per-platform generation as legacy fallback only",
+      src("lib/repurpose/distribute.ts").includes("kitCaptionFor")
+      && src("lib/repurpose/distribute.ts").includes("kit?.built_at"))
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together, identity is a setting, media-type decisions are proven.")
+  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together, identity is a setting, media-type decisions are proven, every finished video carries its content kit.")
   console.log(" ASSET_PRODUCTION_PASS")
   process.exit(0)
 }

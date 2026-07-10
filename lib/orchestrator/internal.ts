@@ -584,6 +584,24 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
     const { createServiceClient: svcCreate } = await import("@/lib/supabase/service")
     const svc = svcCreate()
 
+    // ── 0. THE CONTENT KIT — a finished video is an ANCHOR ASSET: build the
+    // proven multi-channel copy around it FIRST (per-channel captions, email
+    // subject+blurb, SMS line, portal message — grounded in the video's own
+    // script + listing facts, compliance-gated, fact-built fallback) so every
+    // section below ships fitting content instead of a generic line.
+    // Idempotent; stored on video_metadata.content_kit. Best-effort.
+    let contentKit: import("@/lib/marketing/video-content-kit").VideoContentKit | null = null
+    try {
+      const { buildVideoContentKit } = await import("@/lib/marketing/video-content-kit")
+      const kitResult = await buildVideoContentKit(svc, video_id)
+      if (kitResult.ok && kitResult.kit) {
+        contentKit = kitResult.kit
+        summary.push(`content kit ${kitResult.kit.built_by}`)
+      }
+    } catch (kitErr) {
+      console.error("[handleVideoGenerated] Content kit build failed:", kitErr)
+    }
+
     // ── 1. Personal videos to a specific contact → drafts in ai_message_drafts ─
     // Channels: email if contact has email, SMS if contact has phone. Agent
     // reviews + acts on these drafts from their unified inbox.
@@ -662,11 +680,18 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
         neighborhood_tour:  "Neighborhood tour — discover what makes this area special. #NeighborhoodTour",
         agent_introduction: "Hi, I'm your local real estate expert. Let's connect! #RealEstate #YourAgent",
       }
-      const caption = captionByType[video_type] ?? "New video from your real estate team. #RealEstate"
+      const fallbackCaption = captionByType[video_type] ?? "New video from your real estate team. #RealEstate"
       const platforms = ["facebook", "instagram", "linkedin"]
       try {
         const { createSocialPost } = await import("@/app/actions/social-publishing")
+        const { kitCaptionFor } = await import("@/lib/marketing/video-content-kit")
         for (const platform of platforms) {
+          // CHANNEL-FIT copy from the content kit (owner rule: no hardcoded
+          // content, no one-caption-for-all-channels); type-map fallback only
+          // when the kit could not be built.
+          const caption = contentKit
+            ? [kitCaptionFor(contentKit, platform), contentKit.hashtags.map((h) => `#${h}`).join(" ")].filter(Boolean).join("\n\n")
+            : fallbackCaption
           await createSocialPost({
             content:         caption,
             mediaUrls:       [video_url],
@@ -738,7 +763,9 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
     // ── 4b. Omnipresence repurposer videos → draft per-channel social posts ──
     // No-op unless the project carries repurpose distribution intent
     // (video_metadata.repurpose). Uses the service client (RLS-bypassing) since
-    // there is no user session in the cron context.
+    // there is no user session in the cron context. Captions come from the
+    // content kit (one voice across channels) with per-platform generation
+    // as the legacy fallback.
     try {
       const { distributeRepurposedVideoAsDraft } = await import("@/lib/repurpose/distribute")
       const dist = await distributeRepurposedVideoAsDraft(svc, video_id)

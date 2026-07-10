@@ -65,16 +65,28 @@ export async function distributeRepurposedVideoAsDraft(
     const accountId = accountByPlatform.get(cfg.platform)
     if (!accountId) continue // channel selected but not connected — skip
 
+    // THE CONTENT KIT is the caption source of record (built once at video
+    // completion, gated, one voice across channels). The per-platform
+    // generation below survives only as the legacy fallback for videos that
+    // finished before the kit existed.
     let content = project.title ?? "New video"
-    try {
-      const cap = await generateAIResponse({
-        prompt: `Write a platform-native ${cfg.displayName} caption for a real estate agent's short video, with a clear call to action and a few relevant non-discriminatory hashtags. Keep it concise.`,
-        maxTokens: 300,
-        metadata: { userId: project.agent_id, brokerageId: project.brokerage_id, feature: "video_script_generation" },
-      })
-      content = (cap.text ?? content).trim() || content
-    } catch {
-      // fall back to the title if caption generation fails
+    const kit = (metadata as any)?.content_kit
+    if (kit?.built_at) {
+      const { kitCaptionFor } = await import("@/lib/marketing/video-content-kit")
+      const kitCaption = kitCaptionFor(kit, cfg.platform)
+      const tags = Array.isArray(kit.hashtags) ? kit.hashtags.map((h: string) => `#${h}`).join(" ") : ""
+      content = [kitCaption, tags].filter(Boolean).join("\n\n") || content
+    } else {
+      try {
+        const cap = await generateAIResponse({
+          prompt: `Write a platform-native ${cfg.displayName} caption for a real estate agent's short video, with a clear call to action and a few relevant non-discriminatory hashtags. Keep it concise.`,
+          maxTokens: 300,
+          metadata: { userId: project.agent_id, brokerageId: project.brokerage_id, feature: "video_script_generation" },
+        })
+        content = (cap.text ?? content).trim() || content
+      } catch {
+        // fall back to the title if caption generation fails
+      }
     }
 
     // Keep hashtags only in the hashtags[] column; strip the inline #tags from
