@@ -112,6 +112,8 @@ export interface DerivationResult {
   confirmed: number
   conflictsProposed: number
   proposed: number
+  /** ambers acted on autonomously under a broker-granted ratchet shape. */
+  autoResolved: number
   reason?: string
 }
 
@@ -131,13 +133,19 @@ export async function deriveDeadlinesFromDocument(
     fields: Record<string, unknown>
   },
 ): Promise<DerivationResult> {
-  const zero: DerivationResult = { candidates: 0, inserted: 0, confirmed: 0, conflictsProposed: 0, proposed: 0 }
+  const zero: DerivationResult = { candidates: 0, inserted: 0, confirmed: 0, conflictsProposed: 0, proposed: 0, autoResolved: 0 }
   if (!input.transactionId) return { ...zero, reason: "no transaction — deadlines are transaction-scoped" }
 
   const candidates = deriveDeadlineCandidates(input.classification, input.fields ?? {})
   if (candidates.length === 0) return { ...zero, reason: "no date-bearing fields for this classification" }
 
   const result: DerivationResult = { ...zero, candidates: candidates.length }
+
+  // THE AUTONOMY RATCHET — amber shapes this broker has GRANTED (earned
+  // from their own approval history) act autonomously; everything else
+  // still proposes. Fail-closed: no grant record, no autonomous act.
+  const { loadDocKernelGrants, shapeKey } = await import("./autonomy-ratchet")
+  const grants = await loadDocKernelGrants(svc, input.brokerageId)
 
   // A human-verified field is the strongest evidence there is — a candidate
   // whose source field was verified derives at HIGH confidence regardless of
@@ -212,6 +220,47 @@ export async function deriveDeadlinesFromDocument(
       result.confirmed++
     } else if (verdict.decision === "amber") {
       const isConflict = verdict.recommendedAction === "confirm_deadline_correction"
+      const grantedShape = shapeKey(isConflict ? "deadline_correction" : "deadline_propose", c.deadlineType)
+      if (grants.has(grantedShape)) {
+        // Broker-granted shape: act autonomously, record the grant on the ledger.
+        if (isConflict && existing) {
+          const { error } = await svc.from("transaction_deadlines").update({
+            deadline_date: c.date,
+            source_document_id: input.documentId,
+            source_field_key: c.fieldKey,
+            notes: [((existing as any).notes as string | null) ?? null, `Corrected to ${c.date} from the scanned ${input.classification.replace(/_/g, " ")} (broker-granted autonomy: ${grantedShape}).`]
+              .filter(Boolean).join(" "),
+          }).eq("id", existing.id)
+          if (!error) result.autoResolved++
+        } else if (!isConflict) {
+          const { error } = await svc.from("transaction_deadlines").insert({
+            transaction_id: input.transactionId,
+            brokerage_id: input.brokerageId,
+            deadline_type: c.deadlineType,
+            deadline_date: c.date,
+            status: "pending",
+            source_document_id: input.documentId,
+            source_field_key: c.fieldKey,
+            notes: `Tracked from the scanned ${input.classification.replace(/_/g, " ")}: ${c.basis} (broker-granted autonomy: ${grantedShape}).`,
+          })
+          if (!error) result.autoResolved++
+        }
+        await recordPolicyDecision(svc, {
+          brokerageId: input.brokerageId,
+          transactionId: input.transactionId,
+          documentId: input.documentId,
+          targetType: "transaction_deadline",
+          targetId: c.deadlineType,
+          verdict: {
+            decision: "green",
+            reasons: [`acted under broker-granted autonomy (${grantedShape})`, c.basis],
+            recommendedAction: isConflict ? "auto_adopted_granted" : "auto_tracked_granted",
+            requiredApproverRole: null,
+          },
+          evidence: { granted_shape: grantedShape, derived_date: c.date, field_key: c.fieldKey },
+        })
+        continue
+      }
       const raised = await proposeDeadlineReview(svc, {
         brokerageId: input.brokerageId,
         transactionId: input.transactionId,

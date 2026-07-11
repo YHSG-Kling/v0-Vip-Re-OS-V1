@@ -102,6 +102,17 @@ export interface AutonomyImpactReport {
     creditDollars: number
     creditedTransactions: number
   }
+  /** THE DOCUMENT KERNEL LINE — deal files read, facts verified, deadlines
+   *  tracked straight from the paperwork, conflicts caught before they cost
+   *  a deal. Every number traces to the scan/extraction/policy ledgers. */
+  docKernel: {
+    documentsScanned: number
+    factsExtracted: number
+    factsVerified: number
+    deadlinesFromDocuments: number
+    conflictsCaught: number
+    autonomousActs: number
+  }
 }
 
 export async function generateAutonomyImpactReport(input: {
@@ -114,7 +125,7 @@ export async function generateAutonomyImpactReport(input: {
     const { ctx } = input
     const from = input.dateFrom ?? new Date(Date.now() - 30 * 86_400_000).toISOString()
     const to = input.dateTo ?? new Date().toISOString()
-    const { tier, agentUserIds } = await resolveScope(svc, ctx)
+    const { tier, agentIds, agentUserIds } = await resolveScope(svc, ctx)
 
     const scopedByUser = <T extends { in: any; eq: any }>(q: T, col: string): T => {
       if (agentUserIds) return q.in(col, agentUserIds)
@@ -179,6 +190,61 @@ export async function generateAutonomyImpactReport(input: {
       .eq("brokerage_id", ctx.brokerageId).gte("created_at", from).lte("created_at", to).limit(2000)
     const creditRows = (credits ?? []) as Array<{ credit_dollars: number | null; transaction_id: string | null }>
 
+    // Document kernel — the deal-file trust ledgers. Tier-scoped through the
+    // scope's transactions (documents carry no agent column; the transaction
+    // does): narrower-than-brokerage tiers count only their own deals' docs.
+    const NO_MATCH = "00000000-0000-0000-0000-000000000000"
+    let scopeTxIds: string[] | null = null
+    let scopeDocIds: string[] | null = null
+    if (agentIds) {
+      const { data: scopeTxs } = await svc.from("transactions")
+        .select("id")
+        .eq("brokerage_id", ctx.brokerageId)
+        .in("agent_id", agentIds.length > 0 ? agentIds : [NO_MATCH])
+        .limit(1000)
+      scopeTxIds = ((scopeTxs ?? []) as Array<{ id: string }>).map((t) => t.id)
+      const { data: scopeDocs } = await svc.from("documents")
+        .select("id")
+        .eq("brokerage_id", ctx.brokerageId)
+        .in("transaction_id", scopeTxIds.length > 0 ? scopeTxIds : [NO_MATCH])
+        .limit(1000)
+      scopeDocIds = ((scopeDocs ?? []) as Array<{ id: string }>).map((d) => d.id)
+    }
+    const inScope = <T extends { in: any }>(q: T, col: string, ids: string[] | null): T =>
+      ids ? q.in(col, ids.length > 0 ? ids : [NO_MATCH]) : q
+
+    const [scanned, extracted, verified, dlFromDocs, policyRows] = await Promise.all([
+      inScope(
+        svc.from("documents").select("id", { count: "exact", head: true })
+          .eq("brokerage_id", ctx.brokerageId).not("scanned_at", "is", null)
+          .gte("scanned_at", from).lte("scanned_at", to) as any, "transaction_id", scopeTxIds,
+      ),
+      inScope(
+        svc.from("document_field_extractions").select("id", { count: "exact", head: true })
+          .eq("brokerage_id", ctx.brokerageId).gte("created_at", from).lte("created_at", to) as any,
+        "document_id", scopeDocIds,
+      ),
+      inScope(
+        svc.from("document_field_extractions").select("id", { count: "exact", head: true })
+          .eq("brokerage_id", ctx.brokerageId).not("verified_at", "is", null)
+          .gte("verified_at", from).lte("verified_at", to) as any, "document_id", scopeDocIds,
+      ),
+      inScope(
+        svc.from("transaction_deadlines").select("id", { count: "exact", head: true })
+          .eq("brokerage_id", ctx.brokerageId).not("source_document_id", "is", null)
+          .gte("created_at", from).lte("created_at", to) as any, "transaction_id", scopeTxIds,
+      ),
+      inScope(
+        svc.from("policy_decisions").select("recommended_action")
+          .eq("brokerage_id", ctx.brokerageId).eq("target_type", "transaction_deadline")
+          .in("recommended_action", ["confirm_deadline_correction", "auto_adopted_granted", "auto_tracked_granted"])
+          .gte("created_at", from).lte("created_at", to).limit(2000) as any, "transaction_id", scopeTxIds,
+      ),
+    ])
+    const policyActions = (((policyRows as any).data ?? []) as Array<{ recommended_action: string | null }>)
+    const conflictsCaught = policyActions.filter((r) => r.recommended_action === "confirm_deadline_correction").length
+    const autonomousActs = policyActions.filter((r) => r.recommended_action?.startsWith("auto_")).length
+
     return {
       success: true,
       data: {
@@ -202,6 +268,14 @@ export async function generateAutonomyImpactReport(input: {
         attribution: {
           creditDollars: Math.round(creditRows.reduce((s, r) => s + (Number(r.credit_dollars) || 0), 0)),
           creditedTransactions: new Set(creditRows.map((r) => r.transaction_id).filter(Boolean)).size,
+        },
+        docKernel: {
+          documentsScanned: (scanned as any).count ?? 0,
+          factsExtracted: (extracted as any).count ?? 0,
+          factsVerified: (verified as any).count ?? 0,
+          deadlinesFromDocuments: (dlFromDocs as any).count ?? 0,
+          conflictsCaught,
+          autonomousActs,
         },
       },
     }
@@ -357,6 +431,17 @@ export function composeKpiNarrative(
     lines.push(
       `Marketing the OS produced is credited with $${autonomy.attribution.creditDollars.toLocaleString("en-US")} across ${autonomy.attribution.creditedTransactions} transaction${autonomy.attribution.creditedTransactions === 1 ? "" : "s"} — measured by the attribution ledger, not claimed.`,
     )
+  }
+  const dk = autonomy.docKernel
+  if (dk && dk.documentsScanned + dk.factsExtracted + dk.deadlinesFromDocuments + dk.conflictsCaught > 0) {
+    const parts: string[] = []
+    if (dk.documentsScanned > 0) parts.push(`read ${dk.documentsScanned} deal document${dk.documentsScanned === 1 ? "" : "s"}`)
+    if (dk.factsExtracted > 0) parts.push(`pulled ${dk.factsExtracted} fact${dk.factsExtracted === 1 ? "" : "s"}${dk.factsVerified > 0 ? ` (${dk.factsVerified} human-verified)` : ""}`)
+    if (dk.deadlinesFromDocuments > 0) parts.push(`tracked ${dk.deadlinesFromDocuments} deadline${dk.deadlinesFromDocuments === 1 ? "" : "s"} straight from the paperwork`)
+    if (dk.conflictsCaught > 0) parts.push(`caught ${dk.conflictsCaught} date conflict${dk.conflictsCaught === 1 ? "" : "s"} before ${dk.conflictsCaught === 1 ? "it" : "they"} cost a deal`)
+    if (parts.length > 0) {
+      lines.push(`The team ${parts.join(", ")}.${dk.autonomousActs > 0 ? ` ${dk.autonomousActs} of those moves ran under autonomy you granted from your own approval history.` : ""}`)
+    }
   }
   if (coaching.medianFirstResponseMinutes != null) {
     lines.push(`Median first response to a new contact: ${coaching.medianFirstResponseMinutes} minutes.`)

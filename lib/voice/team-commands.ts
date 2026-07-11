@@ -123,6 +123,66 @@ export async function dispatchTeamCommand(
       return { ok: r.ok, spoken: r.spoken, data: { addressQuery } }
     }
 
+    case "kernel_proposals": {
+      // "Hey team, any proposals waiting on me?" — the document kernel's open
+      // amber proposals, numbered so the agent can resolve by rank.
+      const { listOpenKernelProposals } = await import("@/lib/documents/kernel-review-core")
+      const proposals = await listOpenKernelProposals(svc, ctx.brokerageId, 5)
+      if (proposals.length === 0) {
+        return { ok: true, spoken: "Nothing's waiting on you — the deal files are clean.", data: { count: 0 } }
+      }
+      const lines = proposals.map((p, i) => {
+        const where = p.address ? ` on ${p.address}` : ""
+        if (p.signalType === "deadline_conflict_finding") {
+          const t = String(p.payload.deadline_type ?? "deadline").replace(/_/g, " ")
+          return p.payload.current_date
+            ? `Number ${i + 1}: the paperwork${where} says the ${t} is ${p.payload.proposed_date}, but ${p.payload.current_date} is tracked.`
+            : `Number ${i + 1}: the paperwork${where} supports a ${t} of ${p.payload.proposed_date} — say approve to track it.`
+        }
+        if (p.signalType === "stage_advance_candidate") {
+          return `Number ${i + 1}: the deal${where} looks ready to move to ${String(p.payload.to_stage ?? "").replace(/_/g, " ")}.`
+        }
+        return `Number ${i + 1}: an earned-autonomy grant on ${String(p.payload.deadline_type ?? "a deadline").replace(/_/g, " ")} dates — that one's for the broker on the dashboard.`
+      })
+      return {
+        ok: true,
+        spoken: `${proposals.length} ${proposals.length === 1 ? "proposal is" : "proposals are"} waiting. ${lines.join(" ")} Say "approve number one" or "decline number two".`,
+        data: { count: proposals.length, proposals: proposals.map((p) => ({ signalId: p.signalId, type: p.signalType })) },
+      }
+    }
+    case "kernel_resolve": {
+      // "Approve number two" — re-list LIVE (never a stale rank) and resolve
+      // through the SAME cores the feed buttons use. Ratchet grants refuse by
+      // voice — standing autonomy is broker policy, decided on the dashboard.
+      const ordinal = Number(params.ordinal ?? 0)
+      const decision = String(params.decision ?? "").toLowerCase()
+      if (!ordinal || (decision !== "approve" && decision !== "decline")) {
+        return { ok: false, spoken: "Which one, and which way? Say something like: approve number one." }
+      }
+      const { listOpenKernelProposals, resolveDeadlineConflictCore, approveStageAdvanceCore, dismissStageCandidateCore } =
+        await import("@/lib/documents/kernel-review-core")
+      const proposals = await listOpenKernelProposals(svc, ctx.brokerageId, 5)
+      const target = proposals[ordinal - 1]
+      if (!target) return { ok: false, spoken: proposals.length === 0 ? "Nothing's waiting on you right now." : `There ${proposals.length === 1 ? "is only one proposal" : `are only ${proposals.length}`} open — say the rank again.` }
+      const actor = { userId: ctx.agentUserId, brokerageId: ctx.brokerageId }
+      if (target.signalType === "deadline_conflict_finding") {
+        const r = await resolveDeadlineConflictCore(svc, actor, { signalId: target.signalId, adopt: decision === "approve" })
+        return { ok: r.ok, spoken: r.ok ? `Done. ${r.message}` : r.error ?? "That one wouldn't resolve.", data: { signalId: target.signalId } }
+      }
+      if (target.signalType === "stage_advance_candidate") {
+        const r = decision === "approve"
+          ? await approveStageAdvanceCore(svc, actor, { signalId: target.signalId })
+          : await dismissStageCandidateCore(svc, actor, { signalId: target.signalId })
+        const blocked = !r.ok && "blockers" in r && Array.isArray((r as any).blockers) && (r as any).blockers.length > 0
+        return {
+          ok: r.ok,
+          spoken: r.ok ? `Done. ${r.message}` : blocked ? `The engine blocked it: ${(r as any).blockers.join("; ")}. It stays open until that's fixed.` : (r.error ?? "That one wouldn't resolve."),
+          data: { signalId: target.signalId },
+        }
+      }
+      return { ok: false, spoken: "That one's an earned-autonomy grant — the broker decides those on the Command Center, not by voice." }
+    }
+
     case "find_properties": {
       // "Find the Hendersons a 3-bed under 500k in Austin" — resolve the buyer, run the natural-language
       // match (our inventory + RentCast/IDX, Fair-Housing-sanitized in the explanation layer), read back

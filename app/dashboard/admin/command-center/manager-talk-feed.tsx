@@ -24,6 +24,7 @@ import {
   resolveDeadlineConflictAction,
   approveStageAdvanceAction,
   dismissStageCandidateAction,
+  resolveAutonomyRatchetAction,
 } from "@/app/actions/document-kernel-review"
 
 // Coordination-kind visual vocabulary so the feed reads as a negotiation, not a log.
@@ -145,10 +146,31 @@ function ProposalActions({
     )
   }
 
+  if (line.signalType === "autonomy_ratchet_proposal") {
+    const shape = String(line.payload?.deadline_type ?? line.payload?.shape ?? "this move").replace(/_/g, " ")
+    return (
+      <div className="space-y-1 pt-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" className="h-7 text-xs" disabled={busy !== null}
+            onClick={() => run("grant", () => resolveAutonomyRatchetAction({ signalId: line.id, grant: true }))}>
+            {busy === "grant" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            Grant it — run {shape} green
+          </Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" disabled={busy !== null}
+            onClick={() => run("decline", () => resolveAutonomyRatchetAction({ signalId: line.id, grant: false }))}>
+            {busy === "decline" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            Keep it human
+          </Button>
+        </div>
+        {error && <p className="text-xs text-red-700">{error}</p>}
+      </div>
+    )
+  }
+
   return null
 }
 
-const ACTIONABLE_TYPES = new Set(["deadline_conflict_finding", "stage_advance_candidate"])
+const ACTIONABLE_TYPES = new Set(["deadline_conflict_finding", "stage_advance_candidate", "autonomy_ratchet_proposal"])
 
 export function ManagerTalkFeed({ talk: initialTalk }: { talk: ManagerTalkLine[] }) {
   const [talk, setTalk] = useState<ManagerTalkLine[]>(initialTalk ?? [])

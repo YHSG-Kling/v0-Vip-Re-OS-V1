@@ -163,9 +163,33 @@ export async function spawnManagedAgentSession(
   let managedAgentRowId: string
   let anthropicAgentId: string
 
-  if (existingAgent) {
+  if (existingAgent && existingAgent.anthropic_agent_id) {
     managedAgentRowId = existingAgent.id as string
     anthropicAgentId  = existingAgent.anthropic_agent_id as string
+  } else if (existingAgent) {
+    // A POLICY-ONLY row (config.autonomy_tier / doc_kernel_grants written
+    // before any session was ever spawned) — ADOPT it: create the Anthropic
+    // agent and fill the identity on the SAME row. One row per
+    // (brokerage, kind); never a duplicate that would fork the policy.
+    const displayName = await resolveAgentDisplayName(input.brokerageId, tpl.kind)
+    const created = await createManagedAgent({
+      name:        displayName,
+      model:       tpl.model,
+      system:      tpl.system,
+      tools:       tpl.tools       ?? [{ type: "agent_toolset_20260401", default_config: { enabled: true } }],
+      mcp_servers: tpl.mcpServers,
+      metadata:    { brokerage_id: input.brokerageId, kind: tpl.kind },
+    })
+    if (!created.ok || !created.agent) return { ok: false, error: created.error ?? "createManagedAgent failed" }
+    anthropicAgentId  = created.agent.id
+    managedAgentRowId = existingAgent.id as string
+    const { error: updErr } = await svc.from("managed_agents").update({
+      anthropic_agent_id: anthropicAgentId,
+      anthropic_version:  created.agent.version != null ? String(created.agent.version) : null,
+      model:              tpl.model,
+      updated_at:         new Date().toISOString(),
+    }).eq("id", managedAgentRowId)
+    if (updErr) return { ok: false, error: `managed_agents adopt: ${updErr.message}` }
   } else {
     const displayName = await resolveAgentDisplayName(input.brokerageId, tpl.kind)
     const created = await createManagedAgent({

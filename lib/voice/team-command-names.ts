@@ -9,8 +9,10 @@
 /** The read-only bullpen commands. */
 export const TEAM_QUERY_COMMANDS = new Set<string>(["team_query", "area_query", "morning_standup"])
 
-/** The ACTING commands — each delegates to a backend that enforces its own gate. */
-export const TEAM_ACTION_COMMANDS = new Set<string>(["standup_action", "voice_followup", "start_marketing", "cut_promo"])
+/** The ACTING commands — each delegates to a backend that enforces its own gate.
+ *  kernel_proposals/kernel_resolve are the document kernel's spoken loop: list the
+ *  open amber proposals, resolve one by rank — the SAME cores the feed buttons use. */
+export const TEAM_ACTION_COMMANDS = new Set<string>(["standup_action", "voice_followup", "start_marketing", "cut_promo", "kernel_proposals", "kernel_resolve"])
 
 /** Read-only buyer commands — search inventory + the market for a buyer. */
 export const BUYER_COMMANDS = new Set<string>(["find_properties"])

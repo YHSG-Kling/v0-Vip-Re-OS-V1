@@ -306,6 +306,33 @@ export const voiceTools: Record<string, VoiceTool> = {
     description: "Why a contact got (or didn't get) recent touches — 'why did the Hendersons get that?'. Reads the decision receipts: every send, every skip/block WITH its reason, opens/replies, and which manager + intent produced each. Pass contact_id or person_query. Read-only.",
   },
 
+  // ── Document kernel (the deal-file proposals, spoken) ──────────────────────
+  // Same cores as the Command Center feed buttons (lib/documents/
+  // kernel-review-core.ts) — two front-ends, one resolution path, no drift.
+  kernel_proposals: {
+    name: "kernel_proposals",
+    category: "report",
+    authority: "agent",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "List the document kernel's open proposals waiting on a human — deadline conflicts from scanned paperwork, stage-advance candidates — numbered for spoken resolution. 'Hey team, anything waiting on me?'",
+  },
+  kernel_resolve: {
+    name: "kernel_resolve",
+    category: "stage",
+    authority: "agent",
+    gates: [],  // Deadline adopt/keep writes the existing rail with provenance; a stage
+                // approve drives the SAME advanceStage engine (state machine + milestones +
+                // compliance gates hold). Autonomy-grant proposals REFUSE by voice — broker
+                // policy is decided on the dashboard.
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Resolve a kernel proposal by rank — 'approve number one' / 'decline number two'. Pass ordinal + decision (approve|decline). Re-lists live so the rank is never stale; every resolution lands in policy_decisions.",
+  },
+
   // ── Team coordination (acting verbs — the team DOES what you say) ──────────
   // Each delegates to a backend that enforces its OWN gate; nothing sends autonomously.
   standup_action: {

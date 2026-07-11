@@ -44,6 +44,7 @@ async function main() {
     aiLane: { draftsWritten: 0, draftsSent: 0, draftAdoptionRate: null },
     provenance: { learned: 0, norm: 0, fallback: 0, learnedShare: null },
     attribution: { creditDollars: 0, creditedTransactions: 0 },
+    docKernel: { documentsScanned: 0, factsExtracted: 0, factsVerified: 0, deadlinesFromDocuments: 0, conflictsCaught: 0, autonomousActs: 0 },
   }
   const quietCoaching: CoachingSignalsReport = {
     tier: "agent", window: { from: "a", to: "b" },
@@ -60,6 +61,7 @@ async function main() {
     aiLane: { draftsWritten: 40, draftsSent: 28, draftAdoptionRate: 0.7 },
     provenance: { learned: 6, norm: 3, fallback: 1, learnedShare: 0.6 },
     attribution: { creditDollars: 84250, creditedTransactions: 3 },
+    docKernel: { documentsScanned: 12, factsExtracted: 48, factsVerified: 9, deadlinesFromDocuments: 5, conflictsCaught: 2, autonomousActs: 3 },
   }
   const busyCoaching: CoachingSignalsReport = {
     tier: "brokerage", window: { from: "a", to: "b" },
@@ -75,6 +77,12 @@ async function main() {
     && lines.some((l) => l.includes("7 minutes"))
     && lines.some((l) => l.includes("5 active contacts"))
     && lines.some((l) => l.includes("2 at risk, 1 missed")))
+  check("THE DOCUMENT KERNEL LINE — read the paperwork, verified facts, deadlines from paper, conflicts caught, granted-autonomy acts",
+    lines.some((l) => l.includes("read 12 deal documents")
+      && l.includes("pulled 48 facts (9 human-verified)")
+      && l.includes("tracked 5 deadlines straight from the paperwork")
+      && l.includes("caught 2 date conflicts")
+      && l.includes("3 of those moves ran under autonomy you granted from your own approval history")))
 
   console.log("\n[2 · keep-one wiring — the EXISTING reporting kernel, extended]")
   const mod = src("lib/kernel/reporting-autonomy.ts")

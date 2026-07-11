@@ -26,6 +26,7 @@ import { decideDeadlinePolicy } from "../lib/documents/policy-decisions"
 import { deriveDeadlineCandidates, parseDocDate } from "../lib/documents/deadline-derivation"
 import { decideStageCandidate } from "../lib/documents/stage-candidates"
 import { agreementUrgency } from "../lib/referrals/partner-agreement-watch"
+import { computeShapeStats, decideAutonomyRatchet, shapeKey, RATCHET_MIN_APPROVALS } from "../lib/documents/autonomy-ratchet"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -145,13 +146,14 @@ async function main() {
   check("the scanner runs the stage-candidate hook post-scan (Phase B rides the same event)",
     src("lib/documents/scan-uploaded-document.ts").includes("proposeStageCandidateFromDocument"))
   const review = src("app/actions/document-kernel-review.ts")
-  check("the feed actions are auth-first + role-gated, resolve into policy_decisions + consumed_action (the trail survives the human hop)",
+  const reviewCore = src("lib/documents/kernel-review-core.ts")
+  check("the feed actions are auth-first + role-gated wrappers over the shared core, which resolves into policy_decisions + consumed_action (the trail survives the human hop)",
     review.includes("auth.getUser") && review.includes("REVIEW_ROLES")
-    && review.includes("recordPolicyDecision") && review.includes('"consumed"'))
+    && reviewCore.includes("recordPolicyDecision") && reviewCore.includes('"consumed"'))
   check("approve drives the SAME advanceStage engine as the manual click — blockers surface honestly, signal stays open on failure",
-    review.includes("advanceStage") && review.includes("blockers: result.blockers"))
+    reviewCore.includes("advanceStage") && reviewCore.includes("blockers: result.blockers"))
   check("adopting the document's date writes the existing rail with source provenance; keeping the tracked date is recorded, not lost",
-    review.includes("source_document_id") && review.includes("human_kept_tracked_date"))
+    reviewCore.includes("source_document_id") && reviewCore.includes("human_kept_tracked_date"))
   const feed = src("app/dashboard/admin/command-center/manager-talk-feed.tsx")
   check("the Command Center feed renders one-click decisions on BOTH proposal types",
     feed.includes("deadline_conflict_finding") && feed.includes("stage_advance_candidate")
@@ -179,7 +181,79 @@ async function main() {
     src("lib/kernel/manager-registry.ts").includes("partner_agreement_watch:")
     && src("lib/kernel/manager-registry.ts").includes("assisted→autonomous ladder"))
 
-  console.log("\n[7 · live — the full derivation against the real database]")
+  console.log("\n[7 · pure — THE AUTONOMY RATCHET: earned, never assumed]")
+  {
+    const approve = (t: string, current: string | null) => ({
+      recommended_action: "human_adopted_document_date", target_id: t, evidence_json: { current_date: current },
+    })
+    const decline = (t: string, current: string | null) => ({
+      recommended_action: "human_kept_tracked_date", target_id: t, evidence_json: { current_date: current },
+    })
+    const tenApprovals = Array.from({ length: RATCHET_MIN_APPROVALS }, () => approve("closing", "2026-09-15"))
+    const stats10 = computeShapeStats(tenApprovals)
+    check("10 consecutive approvals on ONE shape earns the ratchet; 9 does not",
+      stats10.length === 1 && stats10[0].shape === shapeKey("deadline_correction", "closing")
+      && decideAutonomyRatchet(stats10[0]) === true
+      && decideAutonomyRatchet(computeShapeStats(tenApprovals.slice(1))[0]) === false)
+    check("a SINGLE decline resets trust to zero — 20 approvals + 1 decline never ratchets",
+      decideAutonomyRatchet(computeShapeStats([
+        ...Array.from({ length: 20 }, () => approve("closing", "2026-09-15")),
+        decline("closing", "2026-09-15"),
+      ])[0]) === false)
+    check("shapes are distinct per (mode, deadline_type): corrections and proposes never pool evidence",
+      computeShapeStats([approve("closing", "2026-09-15"), approve("closing", null)]).length === 2
+      && computeShapeStats([approve("closing", "x"), approve("earnest_money", "x")]).length === 2)
+    check("unrelated policy rows (stage advances, dismissals) contribute NOTHING to the ratchet",
+      computeShapeStats([
+        { recommended_action: "stage_advanced", target_id: "APPRAISAL", evidence_json: {} },
+        { recommended_action: "stage_candidate_dismissed", target_id: "APPRAISAL", evidence_json: {} },
+        { recommended_action: "auto_adopted_granted", target_id: "closing", evidence_json: {} },
+      ]).length === 0)
+  }
+
+  console.log("\n[8 · wiring — ratchet + spoken loop + KPI line, keep-one everywhere]")
+  const ratchet = src("lib/documents/autonomy-ratchet.ts")
+  check("grants live on managed_agents.config (the EXISTING autonomy policy surface) and load FAIL-CLOSED",
+    ratchet.includes('from("managed_agents")') && ratchet.includes("doc_kernel_grants")
+    && ratchet.includes("fail CLOSED"))
+  check("the sweep proposes TO THE BROKER with the evidence counts, 30d re-ask dedupe, riding the deadline-watcher cron",
+    ratchet.includes("autonomy_ratchet_proposal") && ratchet.includes("30 * 86_400_000")
+    && src("app/api/cron/deadline-watcher/route.ts").includes("runAutonomyRatchetSweep"))
+  const deriv2 = src("lib/documents/deadline-derivation.ts")
+  check("the deriver honors granted shapes (auto-adopt / auto-track) and records green auto_* policy rows — the trail never thins",
+    deriv2.includes("loadDocKernelGrants") && deriv2.includes("auto_adopted_granted")
+    && deriv2.includes("auto_tracked_granted") && deriv2.includes("grants.has(grantedShape)"))
+  check("granting is broker/admin-ONLY on the action; stage shapes are structurally unratchetable (deadline modes only)",
+    src("app/actions/document-kernel-review.ts").includes("GRANT_ROLES")
+    && ratchet.includes('"deadline_correction" | "deadline_propose"')
+    && !ratchet.includes("stage_advance"))
+  const feed2 = src("app/dashboard/admin/command-center/manager-talk-feed.tsx")
+  check("the feed renders the grant decision (grant it / keep it human)",
+    feed2.includes("autonomy_ratchet_proposal") && feed2.includes("resolveAutonomyRatchetAction")
+    && feed2.includes("Keep it human"))
+  const core = src("lib/documents/kernel-review-core.ts")
+  check("ONE resolution core — the feed actions AND the voice verbs both ride kernel-review-core (no drift)",
+    core.includes("resolveDeadlineConflictCore") && core.includes("approveStageAdvanceCore")
+    && src("app/actions/document-kernel-review.ts").includes("kernel-review-core")
+    && src("lib/voice/team-commands.ts").includes("kernel-review-core"))
+  check("the spoken loop: kernel_proposals lists numbered, kernel_resolve re-lists LIVE and resolves by rank; ratchet grants REFUSE by voice",
+    src("lib/voice/team-commands.ts").includes('case "kernel_proposals"')
+    && src("lib/voice/team-commands.ts").includes('case "kernel_resolve"')
+    && src("lib/voice/team-commands.ts").includes("the broker decides those on the Command Center")
+    && src("lib/voice/tool-registry.ts").includes("kernel_resolve")
+    && src("lib/voice/team-command-names.ts").includes("kernel_proposals"))
+  check("both spoken front-ends route the new verbs through the SAME dispatcher",
+    src("app/api/agent-assistant/tool-call/route.ts").includes('case "kernel_proposals"'))
+  const rep = src("lib/kernel/reporting-autonomy.ts")
+  check("the KPI line reads the kernel's OWN ledgers (scans, extractions, verified, deadlines-from-paper, conflicts, granted acts), tier-scoped via scope transactions",
+    rep.includes("docKernel") && rep.includes("documentsScanned")
+    && rep.includes('not("source_document_id", "is", null)')
+    && rep.includes("auto_adopted_granted") && rep.includes("scopeTxIds"))
+  check("the reports surface shows deadlines-from-paperwork; the narrative carries the doc-kernel line",
+    src("app/dashboard/reports/page.tsx").includes("deadlines from paperwork")
+    && rep.includes("straight from the paperwork"))
+
+  console.log("\n[9 · live — the full derivation against the real database]")
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {

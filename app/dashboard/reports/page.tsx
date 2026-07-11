@@ -72,7 +72,7 @@ export default async function ReportsPage() {
           <div className="rounded-xl border bg-card p-6">
             <h2 className="text-lg font-semibold">Your AI team, measured</h2>
             <p className="text-xs text-muted-foreground mt-0.5 capitalize">{autonomy.tier} view · last 30 days · every number traces to a ledger row</p>
-            <div className="mt-4 grid gap-4 grid-cols-2 md:grid-cols-4 lg:grid-cols-7 text-center">
+            <div className="mt-4 grid gap-4 grid-cols-2 md:grid-cols-4 lg:grid-cols-8 text-center">
               <div><div className="text-2xl font-bold">{autonomy.assets.videosProduced + autonomy.assets.rendersProduced}</div><div className="text-xs text-muted-foreground">videos &amp; renders</div></div>
               <div><div className="text-2xl font-bold">{autonomy.assets.documentsProduced}</div><div className="text-xs text-muted-foreground">documents</div></div>
               <div><div className="text-2xl font-bold">{autonomy.assets.socialPostsPublished}</div><div className="text-xs text-muted-foreground">posts published</div></div>
@@ -80,6 +80,7 @@ export default async function ReportsPage() {
               <div><div className="text-2xl font-bold">{autonomy.provenance.learnedShare != null ? `${Math.round(autonomy.provenance.learnedShare * 100)}%` : "—"}</div><div className="text-xs text-muted-foreground">decisions on your own evidence</div></div>
               <div><div className="text-2xl font-bold">${autonomy.attribution.creditDollars.toLocaleString("en-US")}</div><div className="text-xs text-muted-foreground">attributed credit · {autonomy.attribution.creditedTransactions} deals</div></div>
               <div><div className="text-2xl font-bold">{coaching.medianFirstResponseMinutes != null ? `${coaching.medianFirstResponseMinutes}m` : "—"}</div><div className="text-xs text-muted-foreground">median first response{coaching.followUpGaps ? ` · ${coaching.followUpGaps} follow-up gaps` : ""}</div></div>
+              <div><div className="text-2xl font-bold">{autonomy.docKernel.deadlinesFromDocuments}</div><div className="text-xs text-muted-foreground">deadlines from paperwork{autonomy.docKernel.conflictsCaught ? ` · ${autonomy.docKernel.conflictsCaught} conflicts caught` : ""}</div></div>
             </div>
             {narrative.length > 0 && (
               <ul className="mt-5 space-y-1.5 text-sm border-t pt-4">
