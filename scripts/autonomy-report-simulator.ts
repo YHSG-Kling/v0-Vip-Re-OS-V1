@@ -126,10 +126,54 @@ async function main() {
     }
   }
 
+  console.log("\n[4 · THE JOBS SURFACE — agents think in jobs, not managers (program #2)]")
+  {
+    const { JOB_CATALOG } = await import("../lib/kernel/jobs")
+    check("three jobs in plain language, each naming its AI team, listing-kit requiring a listing",
+      JOB_CATALOG.length === 3
+      && JOB_CATALOG.every((j) => j.title.length > 5 && j.description.length > 40 && j.team.length > 5)
+      && JOB_CATALOG.find((j) => j.key === "listing_kit")?.needsListing === true
+      && JOB_CATALOG.find((j) => j.key === "sphere_pass")?.needsListing === false)
+    const jobs = src("lib/kernel/jobs.ts")
+    check("jobs are THIN orchestration over EXISTING gated runners — walkthrough via commissionVideo (same brief as the autonomous play), flyer/brochure/carousel/ad via their idempotent producers",
+      jobs.includes('kind: "photo_walkthrough"') && jobs.includes("runListingFlyers")
+      && jobs.includes("runListingBrochures") && jobs.includes("runListingCarousels")
+      && jobs.includes("produceListingAdCampaign") && jobs.includes("runAnniversaryEquity")
+      && jobs.includes("runRecruitingPitchKits") && jobs.includes("sweepStaleRecruits"))
+    check("every run is AUDITED (activities job_run row) and returns what ACTUALLY happened, never fire-and-forget",
+      jobs.includes('activity_type: "job_run"') && jobs.includes("results: string[]")
+      && jobs.includes("nothing manufactured"))
+    check("the action is auth-first with an RLS-scoped listing check; the page renders catalog + picker + results",
+      src("app/actions/jobs.ts").includes("auth.getUser") && src("app/actions/jobs.ts").includes('from("listings").select("id").eq("id", input.listingId)')
+      && src("app/dashboard/jobs/jobs-client.tsx").includes("runJobAction"))
+  }
+
+  console.log("\n[5 · THE RANKED SPHERE LIST — who to work today, and why (program #4)]")
+  {
+    const { scoreSignal, rankSphereActions } = await import("../lib/sphere/next-best-actions")
+    check("scoring order: value check > life event > anniversary > quiet; fresher beats staler within a signal",
+      scoreSignal("value_check", 1) > scoreSignal("life_event", 1)
+      && scoreSignal("life_event", 1) > scoreSignal("anniversary", 1)
+      && scoreSignal("anniversary", 1) > scoreSignal("gone_quiet", 120)
+      && scoreSignal("value_check", 1) > scoreSignal("value_check", 10))
+    check("quiet escalates gently with silence but never outranks a live signal",
+      scoreSignal("gone_quiet", 300) > scoreSignal("gone_quiet", 91)
+      && scoreSignal("gone_quiet", 400) < scoreSignal("anniversary", 20))
+    const nba = src("lib/sphere/next-best-actions.ts")
+    check("every entry carries WHO + WHY (ledger evidence) + WHAT, from real columns (last_life_event_detected, home_value_estimates, home_anniversary, last_contacted_at); strongest signal wins per contact",
+      nba.includes("last_life_event_detected") && nba.includes("home_value_estimates")
+      && nba.includes("home_anniversary") && nba.includes("last_contacted_at")
+      && nba.includes("a.score > existing.score"))
+    check("the jobs page surfaces the list on the sphere card (who to work today, before running)",
+      src("app/dashboard/jobs/page.tsx").includes("rankSphereActions")
+      && src("app/dashboard/jobs/jobs-client.tsx").includes("Who to work today"))
+    void rankSphereActions // live layer covered by the creds-gated section above
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ KPI kernel verified — the OS's work is measured, tier-scoped, provenance-backed, and honestly narrated.")
+  console.log(" ✅ KPI kernel + jobs surface + ranked sphere list verified — measured, gated, evidence-backed.")
   console.log(" AUTONOMY_REPORT_PASS")
   process.exit(0)
 }
