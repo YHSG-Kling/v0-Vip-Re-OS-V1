@@ -399,7 +399,44 @@ async function main() {
       && preload.includes("skipReason"))
   }
 
-  console.log("\n[15 · live — the full derivation against the real database]")
+  console.log("\n[15 · pure + wiring — THE ONBOARDING DECISION ROOM (day one IS the product)]")
+  {
+    const { composeOnboardingDecisions } = await import("../lib/onboarding/onboarding-decisions")
+    const zero = composeOnboardingDecisions({
+      brandName: null, aiIdentityConfigured: false, contactsImported: 0, sphereSignals: 0,
+      pendingApprovals: 0, socialConnected: false, siteSlug: null, documentsScanned: 0,
+    })
+    check("a ZERO-fact tenant gets honest WAITING cards with the unblocking step — never invented readiness",
+      zero.find((d) => d.key === "first_sphere_pass")?.state === "waiting"
+      && zero.find((d) => d.key === "first_approvals")?.state === "waiting"
+      && zero.find((d) => d.key === "your_website")?.state === "waiting"
+      && zero.find((d) => d.key === "meet_your_assistant")?.state === "ready" // the one thing always adoptable
+      && zero.find((d) => d.key === "first_deal_file")?.state === "ready")
+    const rich = composeOnboardingDecisions({
+      brandName: "Harbor Realty", aiIdentityConfigured: false, contactsImported: 412, sphereSignals: 6,
+      pendingApprovals: 3, socialConnected: true, siteSlug: "harbor-realty", documentsScanned: 0,
+    })
+    check("a rich tenant's cards carry the EVIDENCE (real counts) and route to EXISTING rails (jobs, approvals, site)",
+      Boolean(rich.find((d) => d.key === "first_sphere_pass")?.evidence.includes("412")
+      && rich.find((d) => d.key === "first_sphere_pass")?.evidence.includes("6 carry a live signal")
+      && rich.find((d) => d.key === "first_sphere_pass")?.action.href === "/dashboard/jobs"
+      && rich.find((d) => d.key === "first_approvals")?.evidence.includes("3 AI-staged drafts")
+      && rich.find((d) => d.key === "first_approvals")?.recommendation.includes("EARN standing autonomy")
+      && rich.find((d) => d.key === "your_website")?.evidence.includes("/site/harbor-realty")
+      && rich.find((d) => d.key === "meet_your_assistant")?.recommendation.includes('"Harbor Realty Assistant"')))
+    const act = src("app/actions/onboarding-decisions.ts")
+    check("adopting the assistant identity is PRINCIPAL-gated via the ONE shared tenancy rule, idempotent on UNIQUE(scope_type,scope_id), ledger-recorded",
+      act.includes("isTenancyPrincipal") && act.includes('.eq("scope_type", "brokerage")')
+      && act.includes("assistant_identity_adopted"))
+    check("the tier-parity rule is CONSOLIDATED (grant actions + onboarding share lib/kernel/tenancy-principal — no drift)",
+      src("app/actions/document-kernel-review.ts").includes("tenancy-principal")
+      && src("lib/kernel/tenancy-principal.ts").includes('tier === "solo_agent"'))
+    check("the Decision Room renders ABOVE the setup checklist on the same card (one first-week surface, not a new page)",
+      src("app/components/onboarding/setup-readiness-card.tsx").includes("DecisionRoom")
+      && src("app/components/onboarding/decision-room.tsx").includes("Adopt the proposed identity"))
+  }
+
+  console.log("\n[16 · live — the full derivation against the real database]")
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {
