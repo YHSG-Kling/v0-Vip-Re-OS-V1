@@ -14,10 +14,13 @@ export function SiteChatLauncher({
   brokerageSlug,
   accentColor,
   assistantLabel,
+  widgetQuery,
 }: {
   brokerageSlug: string
   accentColor: string
   assistantLabel?: string | null
+  /** Tier scope for the widget identity ("team=<slug>" | "agent=<slug>"). */
+  widgetQuery?: string | null
 }) {
   const [open, setOpen] = useState(false)
   return (
@@ -25,7 +28,7 @@ export function SiteChatLauncher({
       {open && (
         <div className="fixed bottom-24 right-5 z-50 w-[min(400px,calc(100vw-2.5rem))] h-[min(600px,70vh)] rounded-2xl shadow-2xl border overflow-hidden bg-background">
           <iframe
-            src={`/widget/${brokerageSlug}`}
+            src={`/widget/${brokerageSlug}${widgetQuery ? `?${widgetQuery}` : ""}`}
             title={assistantLabel ?? "AI assistant"}
             className="w-full h-full border-0"
           />

@@ -698,6 +698,22 @@ async function main() {
     check("the team site mounts it too, riding the BROKERAGE's widget + identity (teams don't get a second assistant)",
       src("app/team/[slug]/page.tsx").includes("SiteChatLauncher")
       && src("app/team/[slug]/page.tsx").includes("widget_enabled"))
+
+    // ── TIER IDENTITY (owner rule): brokerage site → brokerage assistant,
+    //    team page → TEAM assistant, agent page → AGENT assistant ──
+    const widgetPage = src("app/widget/[brokerageSlug]/page.tsx")
+    check("the widget resolves identity at the REQUESTED tier (?agent / ?team), tenant-checked (slug must belong to THIS brokerage), cascade fallback to brokerage",
+      widgetPage.includes("sp.agent") && widgetPage.includes("sp.team")
+      && widgetPage.includes("'agent').eq('scope_id'") && widgetPage.includes("'team').eq('scope_id'")
+      && widgetPage.includes(".eq('brokerage_id', brokerage.id)") && widgetPage.includes("entityName"))
+    check("the team page scopes its chat to the TEAM identity (widgetQuery team=<slug>, team assistant on the button)",
+      src("app/team/[slug]/page.tsx").includes("widgetQuery={`team=${t.public_slug}`}")
+      && src("app/team/[slug]/page.tsx").includes("teamAssistantName"))
+    check("the agent profile scopes its chat to the AGENT identity (widgetQuery agent=<slug>)",
+      src("app/p/[agentSlug]/page.tsx").includes("widgetQuery={`agent=${agentSlug}`}")
+      && src("app/p/[agentSlug]/page.tsx").includes('"agent").eq("scope_id", agent.id)'))
+    check("the launcher threads the scope into the widget URL",
+      src("app/components/public-site/SiteChatLauncher.tsx").includes("widgetQuery ? `?${widgetQuery}`"))
   }
 
   console.log("\n──────────────────────────────────────────────────")

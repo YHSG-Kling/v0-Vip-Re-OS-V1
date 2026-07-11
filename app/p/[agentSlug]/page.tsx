@@ -8,6 +8,7 @@ import {
   Star, Award, Phone, Mail, MapPin, Home as HomeIcon, ArrowRight, Sparkles,
 } from "lucide-react"
 import { ProfileLeadCaptureForm } from "./profile-lead-capture-form"
+import { SiteChatLauncher } from "@/app/components/public-site/SiteChatLauncher"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 60
@@ -60,6 +61,7 @@ async function loadProfile(slug: string): Promise<{
   listings: ListingItem[]
   reviews: ReviewItem[]
   averageRating: number
+  chat: { brokerageSlug: string | null; widgetEnabled: boolean; assistantName: string | null }
 } | null> {
   const svc = createServiceClient()
 
@@ -79,7 +81,7 @@ async function loadProfile(slug: string): Promise<{
   const [{ data: user }, { data: brokerage }, { data: listings }, { data: reviews }] =
     await Promise.all([
       svc.from("users").select("first_name, last_name, email, phone").eq("id", agent.user_id).maybeSingle(),
-      svc.from("brokerages").select("name, phone, primary_color").eq("id", agent.brokerage_id).maybeSingle(),
+      svc.from("brokerages").select("name, phone, primary_color, slug, widget_enabled").eq("id", agent.brokerage_id).maybeSingle(),
       svc
         .from("listings")
         .select("id, address, city, state, list_price, bedrooms, bathrooms, sqft, status")
@@ -95,6 +97,9 @@ async function loadProfile(slug: string): Promise<{
         .order("created_at", { ascending: false })
         .limit(8),
     ])
+
+  const { data: agentIdentity } = await svc.from("ai_identity_profiles")
+    .select("assistant_name").eq("scope_type", "agent").eq("scope_id", agent.id).maybeSingle()
 
   const fullName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || "Your Agent"
   const reviewArr = reviews ?? []
@@ -127,6 +132,11 @@ async function loadProfile(slug: string): Promise<{
     listings: (listings ?? []) as ListingItem[],
     reviews: reviewArr as ReviewItem[],
     averageRating,
+    chat: {
+      brokerageSlug: (brokerage as any)?.slug ?? null,
+      widgetEnabled: (brokerage as any)?.widget_enabled !== false,
+      assistantName: (agentIdentity as any)?.assistant_name ?? null,
+    },
   }
 }
 
@@ -144,7 +154,7 @@ export default async function AgentPublicProfilePage({
   const data = await loadProfile(agentSlug)
   if (!data) notFound()
 
-  const { profile, listings, reviews, averageRating } = data
+  const { profile, listings, reviews, averageRating, chat } = data
   const brand = profile.primaryColor ?? "#0f172a"
   const phoneDisplay = profile.phoneMobile ?? profile.phoneOffice
   const initials = profile.fullName.split(/\s+/).map((p) => p[0]).slice(0, 2).join("").toUpperCase()
@@ -386,6 +396,18 @@ export default async function AgentPublicProfilePage({
           </Card>
         </aside>
       </main>
+
+      {/* LIVE AI — the agent's OWN assistant answers here (tier rule:
+          agent site/call → agent identity; cascade falls back team →
+          brokerage only when the agent hasn't configured one). */}
+      {chat.brokerageSlug && chat.widgetEnabled && (
+        <SiteChatLauncher
+          brokerageSlug={chat.brokerageSlug}
+          accentColor={profile.primaryColor ?? "#0f172a"}
+          assistantLabel={chat.assistantName}
+          widgetQuery={`agent=${agentSlug}`}
+        />
+      )}
 
       <footer className="border-t bg-white">
         <div className="max-w-5xl mx-auto px-6 py-4 text-[10px] text-gray-500 text-center">

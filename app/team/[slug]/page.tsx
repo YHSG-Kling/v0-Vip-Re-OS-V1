@@ -33,8 +33,10 @@ async function loadTeamSite(slug: string) {
     svc.from("brokerages").select("name, slug, widget_enabled, license_number, license_state").eq("id", t.brokerage_id).maybeSingle(),
     svc.from("agents")
       .select("id, public_slug, photo_url, users(first_name, last_name)")
-      .eq("team_id", t.id).eq("is_active", true).limit(24),
+      .eq("brokerage_id", t.brokerage_id).eq("team_id", t.id).eq("is_active", true).limit(24),
   ])
+  const { data: teamIdentity } = await svc.from("ai_identity_profiles")
+    .select("assistant_name").eq("scope_type", "team").eq("scope_id", t.id).maybeSingle()
   const agentIds = ((agents ?? []) as Array<{ id: string }>).map((a) => a.id)
   let listings: any[] = []
   if (agentIds.length > 0) {
@@ -44,7 +46,7 @@ async function loadTeamSite(slug: string) {
       .order("updated_at", { ascending: false }).limit(6)
     listings = ls ?? []
   }
-  return { t, b, agents: agents ?? [], listings }
+  return { t, b, teamAssistantName: (teamIdentity as any)?.assistant_name ?? null, agents: agents ?? [], listings }
 }
 
 export async function generateMetadata({ params }: PageProps) {
@@ -61,7 +63,7 @@ export default async function TeamSitePage({ params }: PageProps) {
   const { slug } = await params
   const data = await loadTeamSite(slug)
   if (!data) notFound()
-  const { t, b, agents, listings } = data
+  const { t, b, teamAssistantName, agents, listings } = data
   const primary = /^#[0-9a-fA-F]{6}$/.test(t.primary_color ?? "") ? (t.primary_color as string) : "#0F172A"
   const pageUrl = `${siteUrl()}/team/${t.public_slug}`
 
@@ -153,7 +155,12 @@ export default async function TeamSitePage({ params }: PageProps) {
       {/* LIVE AI — the team site answers questions through the brokerage's
           assistant (teams ride the brokerage's widget + identity) */}
       {(b as any)?.slug && (b as any)?.widget_enabled !== false && (
-        <SiteChatLauncher brokerageSlug={(b as any).slug} accentColor={primary} />
+        <SiteChatLauncher
+          brokerageSlug={(b as any).slug}
+          accentColor={primary}
+          assistantLabel={teamAssistantName}
+          widgetQuery={`team=${t.public_slug}`}
+        />
       )}
 
       <footer className="border-t">
