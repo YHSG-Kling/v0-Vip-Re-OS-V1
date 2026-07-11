@@ -221,6 +221,33 @@ export async function scanUploadedDocument(params: {
     console.error("[scan] auto-populate hook failed (non-fatal):", err?.message ?? err)
   }
 
+  // Post-scan hook 2 — THE DOCUMENT KERNEL (Phase A): break the extraction
+  // blob into the per-field ledger (each fact individually auditable and
+  // verifiable), then derive deadline dates onto the existing
+  // transaction_deadlines rail through the green/amber/red policy gate
+  // (additive inserts only; conflicts become gated review proposals).
+  try {
+    const { recordFieldExtractions } = await import("./field-extraction-ledger")
+    await recordFieldExtractions(supabase as any, {
+      documentId,
+      brokerageId: doc.brokerage_id as string,
+      fields: extracted as Record<string, unknown>,
+      confidence,
+      extractionModel: "router:document_classification",
+    })
+    const { deriveDeadlinesFromDocument } = await import("./deadline-derivation")
+    await deriveDeadlinesFromDocument(supabase as any, {
+      documentId,
+      brokerageId: doc.brokerage_id as string,
+      transactionId: ((doc as any).transaction_id as string | null) ?? null,
+      classification,
+      confidence,
+      fields: extracted as Record<string, unknown>,
+    })
+  } catch (err: any) {
+    console.error("[scan] document-kernel hook failed (non-fatal):", err?.message ?? err)
+  }
+
   return {
     success: true,
     documentId,

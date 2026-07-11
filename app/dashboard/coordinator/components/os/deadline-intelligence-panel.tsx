@@ -28,7 +28,9 @@ export function DeadlineIntelligencePanel({ brokerageId }: DeadlineIntelligenceP
             deadline_type,
             deadline_date,
             status,
-            created_at
+            created_at,
+            source_document_id,
+            source_field_key
           `)
           .eq('brokerage_id', brokerageId)
           .order('deadline_date', { ascending: true })
@@ -127,6 +129,14 @@ export function DeadlineIntelligencePanel({ brokerageId }: DeadlineIntelligenceP
                     <p className="font-medium text-sm">{deadline.deadline_type}</p>
                     <p className="text-xs text-muted-foreground">
                       Due: {deadline.deadline_date ? new Date(deadline.deadline_date).toLocaleDateString() : '—'}
+                      {deadline.source_document_id && (
+                        <span
+                          className="ml-2 text-blue-600"
+                          title={deadline.source_field_key ? `Extracted from the scanned document (${String(deadline.source_field_key).replace(/_/g, ' ')})` : 'Extracted from the scanned document'}
+                        >
+                          · from document
+                        </span>
+                      )}
                     </p>
                   </div>
                 </div>
