@@ -24,6 +24,8 @@ import { join, dirname } from "path"
 import { fileURLToPath } from "url"
 import { decideDeadlinePolicy } from "../lib/documents/policy-decisions"
 import { deriveDeadlineCandidates, parseDocDate } from "../lib/documents/deadline-derivation"
+import { decideStageCandidate } from "../lib/documents/stage-candidates"
+import { agreementUrgency } from "../lib/referrals/partner-agreement-watch"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -113,7 +115,71 @@ async function main() {
     snapshot.includes("document_field_extractions:") && snapshot.includes("policy_decisions:")
     && /transaction_deadlines:.*source_document_id/.test(snapshot))
 
-  console.log("\n[4 · live — the full derivation against the real database]")
+  console.log("\n[4 · pure — stage candidates (Phase B): evidence → legal move only]")
+  check("the document ladder: EM receipt → INSPECTION, inspection report → APPRAISAL, appraisal → FINANCING_PENDING, CD → CLOSING_PREP",
+    decideStageCandidate("UNDER_CONTRACT", new Set(["earnest_money_receipt"]))?.toStage === "INSPECTION"
+    && decideStageCandidate("INSPECTION", new Set(["inspection_report"]))?.toStage === "APPRAISAL"
+    && decideStageCandidate("APPRAISAL", new Set(["appraisal_report"]))?.toStage === "FINANCING_PENDING"
+    && decideStageCandidate("FINANCING_PENDING", new Set(["closing_disclosure"]))?.toStage === "CLOSING_PREP")
+  check("evidence out of stage-order asserts nothing (a CD during INSPECTION is a record, not a move); terminal stages never advance",
+    decideStageCandidate("INSPECTION", new Set(["closing_disclosure"])) === null
+    && decideStageCandidate("CLOSED", new Set(["closing_disclosure"])) === null
+    && decideStageCandidate(null, new Set(["inspection_report"])) === null
+    && decideStageCandidate("UNDER_CONTRACT", new Set(["addendum"])) === null)
+  check("every candidate carries the plain-language evidence line",
+    (decideStageCandidate("INSPECTION", new Set(["inspection_report"]))?.evidence ?? "").includes("inspection"))
+
+  console.log("\n[5 · pure — partner agreement urgency (the silent-lapse fix)]")
+  check("lapsed / expiring-within-30d / current / untracked — never a fabricated urgency",
+    agreementUrgency("2026-01-01", "2026-07-11T00:00:00Z") === "lapsed"
+    && agreementUrgency("2026-07-25", "2026-07-11T00:00:00Z") === "expiring"
+    && agreementUrgency("2027-01-01", "2026-07-11T00:00:00Z") === "current"
+    && agreementUrgency(null, "2026-07-11T00:00:00Z") === "untracked"
+    && agreementUrgency("garbage", "2026-07-11T00:00:00Z") === "untracked")
+
+  console.log("\n[6 · wiring — Phase B + the human loop, keep-one everywhere]")
+  const stageMod = src("lib/documents/stage-candidates.ts")
+  check("stage candidates consult the REAL engine gate (canAdvanceStage) BEFORE proposing; blocked → red policy decision, no bus spam",
+    stageMod.includes("canAdvanceStage") && stageMod.includes('"resolve_blockers_first"')
+    && stageMod.includes("stage_advance_candidate") && stageMod.includes("STAGE_TRANSITIONS"))
+  check("the scanner runs the stage-candidate hook post-scan (Phase B rides the same event)",
+    src("lib/documents/scan-uploaded-document.ts").includes("proposeStageCandidateFromDocument"))
+  const review = src("app/actions/document-kernel-review.ts")
+  check("the feed actions are auth-first + role-gated, resolve into policy_decisions + consumed_action (the trail survives the human hop)",
+    review.includes("auth.getUser") && review.includes("REVIEW_ROLES")
+    && review.includes("recordPolicyDecision") && review.includes('"consumed"'))
+  check("approve drives the SAME advanceStage engine as the manual click — blockers surface honestly, signal stays open on failure",
+    review.includes("advanceStage") && review.includes("blockers: result.blockers"))
+  check("adopting the document's date writes the existing rail with source provenance; keeping the tracked date is recorded, not lost",
+    review.includes("source_document_id") && review.includes("human_kept_tracked_date"))
+  const feed = src("app/dashboard/admin/command-center/manager-talk-feed.tsx")
+  check("the Command Center feed renders one-click decisions on BOTH proposal types",
+    feed.includes("deadline_conflict_finding") && feed.includes("stage_advance_candidate")
+    && feed.includes("resolveDeadlineConflictAction") && feed.includes("approveStageAdvanceAction")
+    && feed.includes("dismissStageCandidateAction"))
+  const extract = src("app/actions/document-extractions.ts")
+  check("verification stamps a NAMED human + lifts confidence; the raw scan blob is never rewritten; re-derivation runs on verify",
+    extract.includes("verified_by_user_id") && extract.includes('confidence: "high"')
+    && extract.includes("deriveDeadlinesFromDocument") && !extract.includes('from("documents")\n    .update'))
+  check("the deriver treats a verified field as HIGH confidence — the amber→green upgrade is structural, not a special case",
+    src("lib/documents/deadline-derivation.ts").includes("verifiedKeys.has(c.fieldKey)")
+    && src("lib/documents/deadline-derivation.ts").includes("effectiveConfidence"))
+  check("the coordinator surfaces the Extracted Facts panel (confirm / correct, assisted-mode UI)",
+    src("app/dashboard/coordinator/components/os/extracted-facts-panel.tsx").includes("verifyExtractionAction")
+    && src("app/dashboard/coordinator/page.tsx").includes("ExtractedFactsPanel"))
+  const watch = src("lib/referrals/partner-agreement-watch.ts")
+  check("the partner agreement watch rides the EXISTING referral-asks cron (no new cron) and never auto-contacts the partner",
+    watch.includes("partner_agreement_lapsing") && !watch.includes("dispatchEmail")
+    && src("app/api/cron/referral-asks/route.ts").includes("runPartnerAgreementWatch"))
+  const signals2 = src("lib/kernel/signal-registry.ts")
+  check("both new signals registered with classifier-matching kinds ('candidate'→handoff, 'lapsing'→escalation)",
+    /stage_advance_candidate:.*kind: "handoff"/.test(signals2)
+    && /partner_agreement_lapsing:.*kind: "escalation"/.test(signals2))
+  check("registry: Phase B + verification + feed resolution recorded on document_kernel; partner watch owned by the Sphere",
+    src("lib/kernel/manager-registry.ts").includes("partner_agreement_watch:")
+    && src("lib/kernel/manager-registry.ts").includes("assisted→autonomous ladder"))
+
+  console.log("\n[7 · live — the full derivation against the real database]")
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {

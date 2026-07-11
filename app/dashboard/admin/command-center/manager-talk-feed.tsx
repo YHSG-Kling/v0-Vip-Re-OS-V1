@@ -14,9 +14,17 @@
  * vocabulary can't drift from the governed bus.
  */
 
+import { useState, useTransition } from "react"
 import { Card } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Loader2 } from "lucide-react"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import type { ManagerTalkLine } from "@/lib/kernel/manager-signals"
+import {
+  resolveDeadlineConflictAction,
+  approveStageAdvanceAction,
+  dismissStageCandidateAction,
+} from "@/app/actions/document-kernel-review"
 
 // Coordination-kind visual vocabulary so the feed reads as a negotiation, not a log.
 const KIND_STYLE: Record<
@@ -66,9 +74,88 @@ function ManagerChip({ mkey, label }: { mkey: string; label: string }) {
   )
 }
 
-export function ManagerTalkFeed({ talk }: { talk: ManagerTalkLine[] }) {
+/** The one-click human decisions on the kernel's amber proposals — the
+ *  approve/decline happens ON the feed line, lands in policy_decisions +
+ *  consumed_action, so the negotiation resolves where it's read. */
+function ProposalActions({
+  line,
+  onResolved,
+}: {
+  line: ManagerTalkLine
+  onResolved: (id: string, actionText: string) => void
+}) {
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [, startTransition] = useTransition()
+
+  const run = (key: string, fn: () => Promise<{ ok: boolean; message?: string; error?: string; blockers?: string[] }>) => {
+    setBusy(key)
+    setError(null)
+    startTransition(async () => {
+      try {
+        const r = await fn()
+        if (r.ok) onResolved(line.id, r.message ?? "resolved")
+        else setError(r.blockers?.length ? `Blocked: ${r.blockers.join("; ")}` : r.error ?? "Failed")
+      } finally {
+        setBusy(null)
+      }
+    })
+  }
+
+  if (line.signalType === "deadline_conflict_finding") {
+    const proposed = String(line.payload?.proposed_date ?? "")
+    const current = line.payload?.current_date ? String(line.payload.current_date) : null
+    return (
+      <div className="space-y-1 pt-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" className="h-7 text-xs" disabled={busy !== null}
+            onClick={() => run("adopt", () => resolveDeadlineConflictAction({ signalId: line.id, adopt: true }))}>
+            {busy === "adopt" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            {current ? `Adopt the document's ${proposed}` : `Track ${proposed}`}
+          </Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" disabled={busy !== null}
+            onClick={() => run("keep", () => resolveDeadlineConflictAction({ signalId: line.id, adopt: false }))}>
+            {busy === "keep" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            {current ? `Keep ${current}` : "Don't track it"}
+          </Button>
+        </div>
+        {error && <p className="text-xs text-red-700">{error}</p>}
+      </div>
+    )
+  }
+
+  if (line.signalType === "stage_advance_candidate") {
+    const toStage = String(line.payload?.to_stage ?? "").replace(/_/g, " ")
+    return (
+      <div className="space-y-1 pt-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" className="h-7 text-xs" disabled={busy !== null}
+            onClick={() => run("advance", () => approveStageAdvanceAction({ signalId: line.id }))}>
+            {busy === "advance" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            Advance to {toStage}
+          </Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" disabled={busy !== null}
+            onClick={() => run("dismiss", () => dismissStageCandidateAction({ signalId: line.id }))}>
+            {busy === "dismiss" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            Not yet
+          </Button>
+        </div>
+        {error && <p className="text-xs text-red-700">{error}</p>}
+      </div>
+    )
+  }
+
+  return null
+}
+
+const ACTIONABLE_TYPES = new Set(["deadline_conflict_finding", "stage_advance_candidate"])
+
+export function ManagerTalkFeed({ talk: initialTalk }: { talk: ManagerTalkLine[] }) {
+  const [talk, setTalk] = useState<ManagerTalkLine[]>(initialTalk ?? [])
   if (!talk || talk.length === 0) return null
   const open = talk.filter((t) => t.status === "open").length
+  const markResolved = (id: string, actionText: string) =>
+    setTalk((prev) => prev.map((t) => (t.id === id ? { ...t, status: "consumed", consumedAction: actionText } : t)))
 
   return (
     <section className="space-y-3">
@@ -102,9 +189,13 @@ export function ManagerTalkFeed({ talk }: { talk: ManagerTalkLine[] }) {
                   <p className="text-sm text-foreground">{t.message}</p>
                   {t.status === "consumed" && t.consumedAction ? (
                     <div className="flex items-start gap-1.5 rounded-md bg-green-50 px-2 py-1">
-                      <span className="shrink-0 text-xs font-medium text-green-700">{t.toLabel} acted</span>
+                      <span className="shrink-0 text-xs font-medium text-green-700">
+                        {ACTIONABLE_TYPES.has(t.signalType) ? "Resolved" : `${t.toLabel} acted`}
+                      </span>
                       <span className="text-xs text-green-800">— {t.consumedAction}</span>
                     </div>
+                  ) : t.status === "open" && ACTIONABLE_TYPES.has(t.signalType) ? (
+                    <ProposalActions line={t} onResolved={markResolved} />
                   ) : t.status === "open" ? (
                     <p className="text-xs text-amber-700">⏳ awaiting {t.toLabel}</p>
                   ) : null}

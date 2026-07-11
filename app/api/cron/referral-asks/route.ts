@@ -74,6 +74,7 @@ export async function GET(req: NextRequest) {
     // relationships (they refer us, we don't reciprocate) so the agent protects their best
     // referrers. Honest: outbound is only counted for partners linked to a vendor.
     const { runReferralReciprocity } = await import("@/lib/referrals/referral-reciprocity-runner")
+    const { runPartnerAgreementWatch } = await import("@/lib/referrals/partner-agreement-watch")
     const { data: brokerages } = await supabase.from("brokerages").select("id").is("deleted_at", null)
     for (const b of (brokerages ?? []) as Array<{ id: string }>) {
       try {
@@ -81,6 +82,12 @@ export async function GET(req: NextRequest) {
         reciprocityFlagged += rec.escalated
         reciprocityLinked += rec.linked
       } catch (e: any) { errors.push(`reciprocity ${b.id}: ${e?.message ?? String(e)}`) }
+      // PARTNER AGREEMENT EXPIRY WATCH — a referral fee agreement lapsing
+      // silently is a commission-dispute exposure; one gated renewal
+      // escalation per partner, deduped per open signal.
+      try {
+        await runPartnerAgreementWatch(supabase as any, { brokerageId: b.id })
+      } catch (e: any) { errors.push(`agreement-watch ${b.id}: ${e?.message ?? String(e)}`) }
     }
   } catch (err: any) {
     errors.push(`Referral asks cron failed: ${err.message}`)

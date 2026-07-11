@@ -22,6 +22,7 @@ import {
   MilestoneOperationsPanel,
   TaskQueuePanel,
   ClosingPrepPanel,
+  ExtractedFactsPanel,
 } from "./components/os"
 import { AlertCircle, AlertTriangle, UserCog, ClipboardList, Clock, CheckCircle2, Calendar, ChevronDown } from "lucide-react"
 import Link from "next/link"
@@ -330,6 +331,11 @@ export default async function CoordinatorDashboard({
         <ComplianceMonitorPanel brokerageId={brokerageId || ""} />
         <MilestoneOperationsPanel brokerageId={brokerageId || ""} />
         <TaskQueuePanel brokerageId={brokerageId || ""} />
+      </div>
+
+      {/* Document kernel — what the AI read, confirm or correct each fact */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <ExtractedFactsPanel />
       </div>
 
       {/* OS Closing Prep */}

@@ -2055,6 +2055,11 @@ export interface ManagerTalkLine {
   /** Coordination kind (deferral / handoff / escalation / alert / update) so the feed renders the
    *  negotiation, not a flat log. */
   kind: import("./coordination-kind").CoordinationKind
+  /** The registered signal type — actionable proposals (deadline conflicts, stage candidates)
+   *  render decision buttons on the feed keyed off this. */
+  signalType: string
+  /** The proposal's payload, for rendering the decision (dates, stages). */
+  payload: Record<string, unknown> | null
 }
 
 /** The Command Center's "managers talking" feed — recent inter-manager conversation. */
@@ -2065,7 +2070,7 @@ export async function loadRecentManagerTalk(
   const { classifyCoordination } = await import("./coordination-kind")
   const { data } = await supabase
     .from("manager_signals")
-    .select("id, from_manager, to_manager, signal_type, message, status, consumed_action, created_at")
+    .select("id, from_manager, to_manager, signal_type, message, status, consumed_action, created_at, payload")
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false }).limit(limit)
   return ((data ?? []) as any[]).map((r) => ({
@@ -2079,5 +2084,7 @@ export async function loadRecentManagerTalk(
     consumedAction: r.consumed_action ?? null,
     createdAt: r.created_at,
     kind: classifyCoordination(r.signal_type),
+    signalType: r.signal_type,
+    payload: (r.payload && typeof r.payload === "object" ? r.payload : null) as Record<string, unknown> | null,
   }))
 }

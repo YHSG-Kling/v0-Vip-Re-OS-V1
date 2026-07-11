@@ -139,6 +139,17 @@ export async function deriveDeadlinesFromDocument(
 
   const result: DerivationResult = { ...zero, candidates: candidates.length }
 
+  // A human-verified field is the strongest evidence there is — a candidate
+  // whose source field was verified derives at HIGH confidence regardless of
+  // the original scan's doc-level confidence (the amber→green upgrade loop:
+  // verify the fact, re-derive, the proposal becomes an autonomous insert).
+  const { data: verifiedRows } = await svc
+    .from("document_field_extractions")
+    .select("field_key")
+    .eq("document_id", input.documentId)
+    .not("verified_at", "is", null)
+  const verifiedKeys = new Set(((verifiedRows ?? []) as Array<{ field_key: string }>).map((r) => r.field_key))
+
   const { data: existingRows } = await svc
     .from("transaction_deadlines")
     .select("id, deadline_type, deadline_date, status, source_document_id")
@@ -153,8 +164,9 @@ export async function deriveDeadlinesFromDocument(
     // A completed/waived deadline is settled history — nothing to decide.
     if (existing && (existing.status === "completed" || existing.status === "waived")) continue
 
+    const effectiveConfidence = verifiedKeys.has(c.fieldKey) ? "high" : input.confidence
     const verdict = decideDeadlinePolicy({
-      confidence: input.confidence,
+      confidence: effectiveConfidence,
       derivedDate: c.date,
       existingDate: existing ? String(existing.deadline_date).slice(0, 10) : null,
     })
@@ -173,6 +185,8 @@ export async function deriveDeadlinesFromDocument(
         basis: c.basis,
         existing_date: existing ? String(existing.deadline_date).slice(0, 10) : null,
         scan_confidence: input.confidence,
+        effective_confidence: effectiveConfidence,
+        field_verified: verifiedKeys.has(c.fieldKey),
       },
     })
 
@@ -206,6 +220,7 @@ export async function deriveDeadlinesFromDocument(
         proposedDate: c.date,
         currentDate: existing ? String(existing.deadline_date).slice(0, 10) : null,
         basis: c.basis,
+        fieldKey: c.fieldKey,
       })
       if (raised) {
         if (isConflict) result.conflictsProposed++
@@ -230,6 +245,7 @@ async function proposeDeadlineReview(
     proposedDate: string
     currentDate: string | null
     basis: string
+    fieldKey: string
   },
 ): Promise<boolean> {
   const dedupSince = new Date(Date.now() - 14 * 86_400_000).toISOString()
@@ -261,6 +277,7 @@ async function proposeDeadlineReview(
       proposed_date: input.proposedDate,
       current_date: input.currentDate,
       document_id: input.documentId,
+      field_key: input.fieldKey,
     },
   }, svc)
   return true

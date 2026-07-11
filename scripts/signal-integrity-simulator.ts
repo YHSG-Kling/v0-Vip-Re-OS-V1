@@ -102,6 +102,7 @@ const HANDOFF_ANNOUNCEMENTS = new Set<string>([
   "first_touch_claimed",     // a coordination RECORD — the bullpen race resolved (no further action)
   "listing_marketing_ready", // the kernel-event fanout enrolls the marketing sequences; this only announces
   "offer_docs_ready",        // the runner notifies the Deal Coordinator + agent INLINE; signal is the record
+  "stage_advance_candidate", // resolved by the HUMAN on the feed (approveStageAdvanceAction / dismiss) — the buttons ARE the consumer; verified by test:doc-kernel
 ])
 
 function main() {

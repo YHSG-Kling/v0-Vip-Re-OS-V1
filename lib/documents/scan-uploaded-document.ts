@@ -244,6 +244,15 @@ export async function scanUploadedDocument(params: {
       confidence,
       fields: extracted as Record<string, unknown>,
     })
+    // Phase B: does this document's arrival mean the deal has MOVED? The
+    // kernel proposes a stage advance (real engine gates consulted first);
+    // a human approves on the feed — the kernel never moves a stage itself.
+    const { proposeStageCandidateFromDocument } = await import("./stage-candidates")
+    await proposeStageCandidateFromDocument(supabase as any, {
+      documentId,
+      brokerageId: doc.brokerage_id as string,
+      transactionId: ((doc as any).transaction_id as string | null) ?? null,
+    })
   } catch (err: any) {
     console.error("[scan] document-kernel hook failed (non-fatal):", err?.message ?? err)
   }
