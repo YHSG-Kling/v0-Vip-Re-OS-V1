@@ -16,6 +16,7 @@ import Link from "next/link"
 import { createServiceClient } from "@/lib/supabase/service"
 import { siteUrl } from "@/lib/platform/site-url"
 import { serializeJsonLd } from "@/lib/geo/video-landing"
+import { SiteChatLauncher } from "@/app/components/public-site/SiteChatLauncher"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 300
@@ -29,7 +30,7 @@ async function loadTeamSite(slug: string) {
     .eq("public_slug", slug).is("deleted_at", null).maybeSingle()
   if (!t) return null
   const [{ data: b }, { data: agents }] = await Promise.all([
-    svc.from("brokerages").select("name, license_number, license_state").eq("id", t.brokerage_id).maybeSingle(),
+    svc.from("brokerages").select("name, slug, widget_enabled, license_number, license_state").eq("id", t.brokerage_id).maybeSingle(),
     svc.from("agents")
       .select("id, public_slug, photo_url, users(first_name, last_name)")
       .eq("team_id", t.id).eq("is_active", true).limit(24),
@@ -147,6 +148,12 @@ export default async function TeamSitePage({ params }: PageProps) {
             </div>
           </div>
         </section>
+      )}
+
+      {/* LIVE AI — the team site answers questions through the brokerage's
+          assistant (teams ride the brokerage's widget + identity) */}
+      {(b as any)?.slug && (b as any)?.widget_enabled !== false && (
+        <SiteChatLauncher brokerageSlug={(b as any).slug} accentColor={primary} />
       )}
 
       <footer className="border-t">

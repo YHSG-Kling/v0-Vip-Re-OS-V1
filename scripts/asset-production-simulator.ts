@@ -685,10 +685,25 @@ async function main() {
       && producer2.includes("learned:${learned.arm}@${learned.scope}"))
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[23 · THE SITE ANSWERS LIVE QUESTIONS — one assistant, every public tier]")
+  {
+    const launcher = src("app/components/public-site/SiteChatLauncher.tsx")
+    check("ONE launcher reuses the EXISTING gated widget (/widget/[brokerageSlug]) — no second chat rail invented",
+      launcher.includes("/widget/${brokerageSlug}") && launcher.includes("iframe"))
+    check("the brokerage site mounts the live AI (widget_enabled honored, the tenant's NAMED assistant on the button)",
+      src("app/site/[slug]/page.tsx").includes("SiteChatLauncher")
+      && src("app/site/[slug]/page.tsx").includes("widget_enabled !== false")
+      && src("app/site/[slug]/page.tsx").includes("assistant_name"))
+    check("the team site mounts it too, riding the BROKERAGE's widget + identity (teams don't get a second assistant)",
+      src("app/team/[slug]/page.tsx").includes("SiteChatLauncher")
+      && src("app/team/[slug]/page.tsx").includes("widget_enabled"))
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together, identity is a setting, media-type decisions are proven, every finished video carries its content kit, growth marketing produces itself for brokerages AND teams, every tier gets its own website with zero hosting, and every tier's outcome loop learns from its own evidence.")
+  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together, identity is a setting, media-type decisions are proven, every finished video carries its content kit, growth marketing produces itself for brokerages AND teams, every tier gets its own website with zero hosting that ANSWERS live questions, and every tier's outcome loop learns from its own evidence.")
   console.log(" ASSET_PRODUCTION_PASS")
   process.exit(0)
 }

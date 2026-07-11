@@ -23,6 +23,7 @@ import Link from "next/link"
 import { createServiceClient } from "@/lib/supabase/service"
 import { siteUrl } from "@/lib/platform/site-url"
 import { serializeJsonLd } from "@/lib/geo/video-landing"
+import { SiteChatLauncher } from "@/app/components/public-site/SiteChatLauncher"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 300
@@ -32,9 +33,11 @@ interface PageProps { params: Promise<{ slug: string }> }
 async function loadSite(slug: string) {
   const svc = createServiceClient()
   const { data: b } = await svc.from("brokerages")
-    .select("id, name, slug, logo_url, primary_color, about_text, bio_text, phone, email, website, license_number, license_state, city, state, recruiting_pitch")
+    .select("id, name, slug, logo_url, primary_color, about_text, bio_text, phone, email, website, license_number, license_state, city, state, recruiting_pitch, widget_enabled")
     .eq("slug", slug).is("deleted_at", null).maybeSingle()
   if (!b) return null
+  const { data: identity } = await svc.from("ai_identity_profiles")
+    .select("assistant_name").eq("scope_id", b.id).eq("scope_type", "brokerage").maybeSingle()
   const [{ data: listings }, { data: agents }, { data: posts }] = await Promise.all([
     svc.from("listings")
       .select("id, mls_number, address, city, state, list_price, bedrooms, bathrooms, sqft, primary_photo_url")
@@ -48,7 +51,7 @@ async function loadSite(slug: string) {
       .eq("brokerage_id", b.id).eq("publish_status", "published").not("slug", "is", null)
       .order("published_at", { ascending: false }).limit(3),
   ])
-  return { b, listings: listings ?? [], agents: agents ?? [], posts: posts ?? [] }
+  return { b, assistantName: (identity as any)?.assistant_name ?? null, listings: listings ?? [], agents: agents ?? [], posts: posts ?? [] }
 }
 
 export async function generateMetadata({ params }: PageProps) {
@@ -69,7 +72,7 @@ export default async function TenantSitePage({ params }: PageProps) {
   const { slug } = await params
   const data = await loadSite(slug)
   if (!data) notFound()
-  const { b, listings, agents, posts } = data
+  const { b, assistantName, listings, agents, posts } = data
   const primary = /^#[0-9a-fA-F]{6}$/.test(b.primary_color ?? "") ? (b.primary_color as string) : "#0F172A"
   const base = siteUrl()
   const pageUrl = `${base}/site/${b.slug}`
@@ -181,6 +184,12 @@ export default async function TenantSitePage({ params }: PageProps) {
             ))}
           </div>
         </section>
+      )}
+
+      {/* LIVE AI — the site ANSWERS questions (the tenant's own assistant,
+          same inventory-aware gated chat that answers their phone) */}
+      {b.widget_enabled !== false && (
+        <SiteChatLauncher brokerageSlug={b.slug} accentColor={primary} assistantLabel={assistantName} />
       )}
 
       {/* COMPLIANCE FOOTER */}
