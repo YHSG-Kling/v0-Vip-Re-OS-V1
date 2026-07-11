@@ -40,6 +40,12 @@ export interface WeekInBusiness {
   complianceAdvisories: number
   /** …and how many a human RELEASED over an open objection — the number a broker must defend. */
   complianceReleasedOverObjection: number
+  /** TRUST DELTAS (optional — older callers omit them): autonomy the broker
+   *  GRANTED this week, acts run under already-granted autonomy, and the
+   *  date conflicts the document kernel caught before they cost a deal. */
+  autonomyGrantsThisWeek?: number
+  autonomousActsThisWeek?: number
+  docConflictsCaughtThisWeek?: number
 }
 
 /** Speak a dollar figure the way a partner would ("$1.2M" / "$180K" / "$3,200"). */
@@ -79,6 +85,13 @@ export function composePartnersMeetingScript(w: WeekInBusiness, audienceName?: s
     }
     parts.push(line)
   }
+  // The trust deltas — the graduated-autonomy story, spoken. Only earned lines.
+  const grantsWk = w.autonomyGrantsThisWeek ?? 0
+  const actsWk = w.autonomousActsThisWeek ?? 0
+  const conflictsWk = w.docConflictsCaughtThisWeek ?? 0
+  if (conflictsWk > 0) parts.push(`The document kernel caught ${conflictsWk} date conflict${conflictsWk === 1 ? "" : "s"} in the paperwork before ${conflictsWk === 1 ? "it" : "they"} cost a deal.`)
+  if (grantsWk > 0) parts.push(`You granted the team ${grantsWk} new standing move${grantsWk === 1 ? "" : "s"} this week — autonomy it earned from your own approvals.`)
+  if (actsWk > 0) parts.push(`It ran ${actsWk} action${actsWk === 1 ? "" : "s"} under autonomy you've already granted, every one on the policy ledger.`)
   if (w.proposalsSent > 0) parts.push(`${w.proposalsSent} approved message${w.proposalsSent === 1 ? "" : "s"} went out to clients.`)
   parts.push(
     w.proposalsPending > 0
@@ -178,6 +191,20 @@ export async function producePartnersMeeting(
     .eq("brokerage_id", brokerageId).eq("gate_name", PREFLIGHT_GATE).gte("created_at", weekAgo).limit(2000)
   const led = summarizeComplianceLedger((ledgerRows ?? []) as any[])
 
+  // The trust deltas — from the SAME policy ledger every autonomy decision lives on.
+  const [grantsWk, actsWk, conflictsWk] = await Promise.all([
+    supabase.from("policy_decisions").select("id", { count: "exact", head: true })
+      .eq("brokerage_id", brokerageId).eq("target_type", "autonomy_grant")
+      .eq("recommended_action", "autonomy_granted").gte("created_at", weekAgo),
+    supabase.from("policy_decisions").select("id", { count: "exact", head: true })
+      .eq("brokerage_id", brokerageId)
+      .in("recommended_action", ["auto_adopted_granted", "auto_tracked_granted", "auto_approved_by_grant"])
+      .gte("created_at", weekAgo),
+    supabase.from("policy_decisions").select("id", { count: "exact", head: true })
+      .eq("brokerage_id", brokerageId).eq("target_type", "transaction_deadline")
+      .eq("recommended_action", "confirm_deadline_correction").gte("created_at", weekAgo),
+  ])
+
   const weekStart = new Date(now.getTime() - 7 * 86_400_000)
   const week: WeekInBusiness = {
     weekLabel: `the week of ${weekStart.toISOString().slice(0, 10)}`,
@@ -196,6 +223,9 @@ export async function producePartnersMeeting(
     complianceReviewed: led.total,
     complianceAdvisories: led.advisory + led.blocked,
     complianceReleasedOverObjection: led.approvedDespiteAdvisory,
+    autonomyGrantsThisWeek: grantsWk.count ?? 0,
+    autonomousActsThisWeek: actsWk.count ?? 0,
+    docConflictsCaughtThisWeek: conflictsWk.count ?? 0,
   }
 
   // ── The partners: leadership first, agents as fallback ──

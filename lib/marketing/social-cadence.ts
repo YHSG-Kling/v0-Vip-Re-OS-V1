@@ -96,7 +96,31 @@ export async function stageSocialFromCadence(
   // not the default it used to be.
   const { resolveSocialMedia } = await import("./social-media-pairing")
 
-  // One gated draft per connected platform (a human approves/edits before publish-social-posts sends).
+  // THE MARKETING AUTONOMY RATCHET — when the broker has GRANTED this
+  // post_type (earned: >=20 straight human approvals, zero rejections) AND
+  // the Campaign Orchestrator's autonomy posture allows it (approval_required
+  // — broker override, eval probation, or the platform circuit-breaker —
+  // OVERRIDES any grant), the post stages APPROVED + SCHEDULED instead of
+  // waiting in the queue. Fair Housing + every dispatch gate still run on
+  // send; the act is recorded on the policy ledger. Fail-closed everywhere.
+  let autoApprove = false
+  let grantedShape: string | null = null
+  try {
+    const { loadMarketingGrants } = await import("@/lib/documents/autonomy-ratchet")
+    const grants = await loadMarketingGrants(svc, input.brokerageId)
+    const shape = `social_post:${postType}`
+    if (grants.has(shape)) {
+      const { resolveManagerAutonomy } = await import("@/lib/managers/autonomy-gate")
+      const posture = await resolveManagerAutonomy(input.brokerageId, "campaign_orchestrator", svc as any)
+      if (posture !== "approval_required") {
+        autoApprove = true
+        grantedShape = shape
+      }
+    }
+  } catch { /* fail closed — the queue is the default */ }
+
+  // One draft per connected platform (gated in the approval queue unless the
+  // broker granted this shape — then approved + scheduled, ledger-recorded).
   let count = 0
   for (const platform of platforms) {
     let mediaUrls: string[] = []
@@ -121,12 +145,35 @@ export async function stageSocialFromCadence(
         post_type: postType,
         content: caption,
         media_urls: mediaUrls,
-        status: "draft",
-        approval_status: "pending", // GATED — publish-social-posts only sends approval_status='approved'
+        ai_generated: true, // AI-staged — the ratchet's evidence ledger reads this
+        ...(autoApprove
+          // post_brief is TEXT (live contract) — a plain provenance marker, not jsonb.
+          ? { status: "scheduled", approval_status: "approved", scheduled_for: new Date().toISOString(), post_brief: `auto_approved_by_grant:${grantedShape}` }
+          : { status: "draft", approval_status: "pending" }), // GATED — publish-social-posts only sends approval_status='approved'
       })
       .select("id")
       .maybeSingle()
-    if (post?.id) count++
+    if (post?.id) {
+      count++
+      if (autoApprove && grantedShape) {
+        // The autonomous act goes on the SAME policy ledger the doc kernel uses.
+        try {
+          const { recordPolicyDecision } = await import("@/lib/documents/policy-decisions")
+          await recordPolicyDecision(svc as any, {
+            brokerageId: input.brokerageId,
+            targetType: "social_post",
+            targetId: postType,
+            verdict: {
+              decision: "green",
+              reasons: [`staged approved+scheduled under broker-granted autonomy (${grantedShape})`],
+              recommendedAction: "auto_approved_by_grant",
+              requiredApproverRole: null,
+            },
+            evidence: { granted_shape: grantedShape, platform, post_id: (post as any).id },
+          })
+        } catch { /* ledger write is best-effort; the post itself is already gated at dispatch */ }
+      }
+    }
   }
 
   return count > 0

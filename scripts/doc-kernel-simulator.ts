@@ -26,7 +26,9 @@ import { decideDeadlinePolicy } from "../lib/documents/policy-decisions"
 import { deriveDeadlineCandidates, parseDocDate } from "../lib/documents/deadline-derivation"
 import { decideStageCandidate } from "../lib/documents/stage-candidates"
 import { agreementUrgency } from "../lib/referrals/partner-agreement-watch"
-import { computeShapeStats, decideAutonomyRatchet, shapeKey, RATCHET_MIN_APPROVALS } from "../lib/documents/autonomy-ratchet"
+import { computeShapeStats, decideAutonomyRatchet, shapeKey, RATCHET_MIN_APPROVALS, grantTargetForShape } from "../lib/documents/autonomy-ratchet"
+import { computeSocialShapeStats, decideMarketingRatchet, MARKETING_RATCHET_MIN_APPROVALS } from "../lib/marketing/marketing-autonomy-ratchet"
+import { composePartnersMeetingScript } from "../lib/intelligence/partners-meeting"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -253,7 +255,71 @@ async function main() {
     src("app/dashboard/reports/page.tsx").includes("deadlines from paperwork")
     && rep.includes("straight from the paperwork"))
 
-  console.log("\n[9 · live — the full derivation against the real database]")
+  console.log("\n[9 · pure — THE MARKETING RATCHET: a higher bar for the brand surface]")
+  {
+    const row = (postType: string, status: string, approver: string | null, ai = true) =>
+      ({ post_type: postType, approval_status: status, approved_by: approver, ai_generated: ai })
+    const twenty = Array.from({ length: MARKETING_RATCHET_MIN_APPROVALS }, () => row("market_update", "approved", "u1"))
+    const s20 = computeSocialShapeStats(twenty)
+    check("20 straight human approvals on one post_type earns the proposal; 19 does not (higher bar than the deal-file 10)",
+      MARKETING_RATCHET_MIN_APPROVALS > RATCHET_MIN_APPROVALS
+      && s20.length === 1 && s20[0].shape === "social_post:market_update"
+      && decideMarketingRatchet(s20[0]) === true
+      && decideMarketingRatchet(computeSocialShapeStats(twenty.slice(1))[0]) === false)
+    check("ONE rejection resets trust; approvals need a NAMED approver; non-AI posts prove nothing",
+      decideMarketingRatchet(computeSocialShapeStats([...twenty, row("market_update", "rejected", null)])[0]) === false
+      && computeSocialShapeStats([row("market_update", "approved", null)]).length === 0
+      && computeSocialShapeStats([row("market_update", "approved", "u1", false)]).length === 0)
+    check("grantTargetForShape routes by prefix: social shapes → Campaign Orchestrator's marketing_grants, deadline shapes → Deal Coordinator's doc_kernel_grants",
+      grantTargetForShape("social_post:market_update").agentKind === "campaign_orchestrator"
+      && grantTargetForShape("social_post:market_update").configKey === "marketing_grants"
+      && grantTargetForShape("deadline_correction:closing").agentKind === "deal_coordinator"
+      && grantTargetForShape("deadline_correction:closing").configKey === "doc_kernel_grants")
+  }
+
+  console.log("\n[10 · pure — the Partners' Meeting trust deltas (spoken, earned-only)]")
+  {
+    const base = {
+      weekLabel: "the week of 2026-07-05", teamPlays: 0, fireDrills: 0, whispers: 0,
+      consentFallbacks: 0, withdrawnRespectfully: 0, handoffs: 0, dissents: 0,
+      proposalsSent: 0, proposalsPending: 0, dealsClosed: 0,
+      gciClosedThisWeek: 0, gciWeightedPipeline: 0,
+      complianceReviewed: 0, complianceAdvisories: 0, complianceReleasedOverObjection: 0,
+    }
+    const withTrust = composePartnersMeetingScript({ ...base, autonomyGrantsThisWeek: 2, autonomousActsThisWeek: 7, docConflictsCaughtThisWeek: 1 }, "Dana")
+    check("the meeting speaks the trust deltas: conflicts caught, grants this week, acts under granted autonomy",
+      withTrust.includes("caught 1 date conflict in the paperwork")
+      && withTrust.includes("granted the team 2 new standing moves")
+      && withTrust.includes("ran 7 actions under autonomy you've already granted"))
+    const noTrust = composePartnersMeetingScript(base, "Dana")
+    check("a week with no trust movement stays silent (no fabricated grants); optional fields keep older callers valid",
+      !noTrust.includes("standing move") && !noTrust.includes("under autonomy") && !noTrust.includes("date conflict"))
+  }
+
+  console.log("\n[11 · wiring — marketing lane + governance panel]")
+  const mkt = src("lib/marketing/marketing-autonomy-ratchet.ts")
+  check("the marketing sweep proposes on the SAME signal + feed buttons (one trust system, two domains), riding the social-cadence cron",
+    mkt.includes("autonomy_ratchet_proposal") && mkt.includes('fromManager: "campaign_orchestrator"')
+    && src("app/api/cron/social-cadence-tick/route.ts").includes("runMarketingRatchetSweep"))
+  const cadence = src("lib/marketing/social-cadence.ts")
+  check("the cadence honors a granted shape (approved+scheduled) but the manager's POSTURE overrides — approval_required beats any grant; fail-closed",
+    cadence.includes("loadMarketingGrants") && cadence.includes("resolveManagerAutonomy")
+    && cadence.includes('posture !== "approval_required"') && cadence.includes("fail closed"))
+  check("auto-approved posts are ledger-recorded (auto_approved_by_grant) and stamped ai_generated for the evidence loop",
+    cadence.includes("auto_approved_by_grant") && cadence.includes("ai_generated: true")
+    && cadence.includes("recordPolicyDecision"))
+  check("a grant loosens ONLY the queue — the publish terminal still requires approved status and the dispatch gates are untouched",
+    cadence.includes("publish-social-posts only sends approval_status='approved'"))
+  const panel = src("app/dashboard/admin/command-center/earned-autonomy-panel.tsx")
+  check("the Earned Autonomy panel shows every grant with its evidence (earned-on, acts-since) and one-click revoke",
+    panel.includes("actsSince") && panel.includes("earnedOn") && panel.includes("revokeAutonomyGrantAction"))
+  const review2 = src("app/actions/document-kernel-review.ts")
+  check("list + revoke are broker/admin-only; revoke writes the autonomy_revoked ledger row; the panel sits on the Command Center beside the Trust Meter",
+    review2.includes("listEarnedAutonomyAction") && review2.includes("autonomy_revoked")
+    && review2.includes("GRANT_ROLES")
+    && src("app/dashboard/admin/command-center/page.tsx").includes("EarnedAutonomyPanel"))
+
+  console.log("\n[12 · live — the full derivation against the real database]")
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {

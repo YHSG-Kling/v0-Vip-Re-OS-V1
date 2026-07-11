@@ -7,6 +7,8 @@ import { loadDealPlayLift } from "@/lib/kernel/deal-play-outcomes"
 import { createServiceClient } from "@/lib/supabase/service"
 import { CommandCenterClient } from "./command-center-client"
 import { TrustMeter } from "./trust-meter"
+import { EarnedAutonomyPanel } from "./earned-autonomy-panel"
+import { listEarnedAutonomyAction } from "@/app/actions/document-kernel-review"
 
 export const metadata = {
   title:       "Agent Command Center | Kernel OS Admin",
@@ -101,9 +103,20 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     ? await loadDealPlayLift(createServiceClient(), brokerageId).catch(() => null)
     : null
 
+  // EARNED AUTONOMY — the grant ledger beside the Trust Meter (broker/admin
+  // only; the action enforces the role — a non-granting viewer sees nothing).
+  const earned = brokerageId && userType !== "superadmin"
+    ? await listEarnedAutonomyAction().catch(() => null)
+    : null
+
   return (
     <>
       {trust && <TrustMeter outcomes={trust.outcomes} feedback={trust.feedback} />}
+      {earned?.ok && earned.grants && (
+        <div className="mx-6 mt-4">
+          <EarnedAutonomyPanel grants={earned.grants} />
+        </div>
+      )}
       {lift && (lift.playedTotal > 0 || lift.verdict !== "insufficient") && (
         <div className={"mx-6 mt-4 rounded-lg border p-3 text-sm " + (lift.verdict === "lift" ? "border-emerald-200 bg-emerald-50/50" : "bg-muted/20")}>
           <span className="font-semibold">

@@ -80,58 +80,87 @@ export function decideAutonomyRatchet(stats: ShapeStats): boolean {
   return stats.declines === 0 && stats.approvals >= RATCHET_MIN_APPROVALS
 }
 
-/** The granted shapes for a brokerage (managed_agents.config.doc_kernel_grants
- *  on the deal_coordinator row — the existing autonomy policy surface). */
-export async function loadDocKernelGrants(svc: Svc, brokerageId: string): Promise<Set<string>> {
+/** WHERE a granted shape lives — the shape prefix routes to the OWNING
+ *  manager's policy row and config key (one policy surface per manager,
+ *  never a global grant table). PURE. */
+export function grantTargetForShape(shape: string): { agentKind: string; configKey: string } {
+  if (shape.startsWith("social_post:")) return { agentKind: "campaign_orchestrator", configKey: "marketing_grants" }
+  return { agentKind: "deal_coordinator", configKey: "doc_kernel_grants" }
+}
+
+/** The granted shapes on one manager's policy row. Fail CLOSED — no grant
+ *  record, no autonomous act. */
+export async function loadGrantsFor(
+  svc: Svc,
+  brokerageId: string,
+  agentKind: string,
+  configKey: string,
+): Promise<Set<string>> {
   try {
     const { data } = await svc
       .from("managed_agents")
       .select("config")
       .eq("brokerage_id", brokerageId)
-      .eq("agent_kind", "deal_coordinator")
+      .eq("agent_kind", agentKind)
       .is("archived_at", null)
       .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle()
-    const grants = ((data as any)?.config?.doc_kernel_grants ?? []) as unknown
+    const grants = ((data as any)?.config?.[configKey] ?? []) as unknown
     return new Set(Array.isArray(grants) ? grants.map(String) : [])
   } catch {
     return new Set() // fail CLOSED for autonomy grants — no grant record, no autonomous act
   }
 }
 
-/** Persist a grant (or revoke) on the deal_coordinator managed_agents row. */
-export async function writeDocKernelGrant(
+/** The deal-file grants (deal_coordinator.doc_kernel_grants) — the deriver's read. */
+export async function loadDocKernelGrants(svc: Svc, brokerageId: string): Promise<Set<string>> {
+  return loadGrantsFor(svc, brokerageId, "deal_coordinator", "doc_kernel_grants")
+}
+
+/** The marketing grants (campaign_orchestrator.marketing_grants) — the cadence's read. */
+export async function loadMarketingGrants(svc: Svc, brokerageId: string): Promise<Set<string>> {
+  return loadGrantsFor(svc, brokerageId, "campaign_orchestrator", "marketing_grants")
+}
+
+/** Persist a grant (or revoke) on the OWNING manager's policy row —
+ *  routed by shape prefix (deadline shapes → Deal Coordinator, social
+ *  shapes → Campaign Orchestrator). */
+export async function writeAutonomyGrant(
   svc: Svc,
   input: { brokerageId: string; shape: string; grant: boolean },
 ): Promise<{ ok: boolean; error?: string }> {
+  const { agentKind, configKey } = grantTargetForShape(input.shape)
   const { data: row } = await svc
     .from("managed_agents")
     .select("id, config")
     .eq("brokerage_id", input.brokerageId)
-    .eq("agent_kind", "deal_coordinator")
+    .eq("agent_kind", agentKind)
     .is("archived_at", null)
     .order("updated_at", { ascending: false })
     .limit(1)
     .maybeSingle()
 
-  const existing = new Set<string>((((row as any)?.config?.doc_kernel_grants ?? []) as unknown[]).map(String))
+  const existing = new Set<string>((((row as any)?.config?.[configKey] ?? []) as unknown[]).map(String))
   if (input.grant) existing.add(input.shape)
   else existing.delete(input.shape)
   const grants = [...existing]
 
   if (row) {
-    const config = { ...(((row as any).config ?? {}) as Record<string, unknown>), doc_kernel_grants: grants }
+    const config = { ...(((row as any).config ?? {}) as Record<string, unknown>), [configKey]: grants }
     const { error } = await svc.from("managed_agents").update({ config, updated_at: new Date().toISOString() }).eq("id", (row as any).id)
     return { ok: !error, error: error?.message }
   }
   const { error } = await svc.from("managed_agents").insert({
     brokerage_id: input.brokerageId,
-    agent_kind: "deal_coordinator",
-    config: { doc_kernel_grants: grants },
+    agent_kind: agentKind,
+    config: { [configKey]: grants },
   })
   return { ok: !error, error: error?.message }
 }
+
+/** @deprecated compatibility alias — routes through writeAutonomyGrant. */
+export const writeDocKernelGrant = writeAutonomyGrant
 
 export interface RatchetSweepResult {
   shapesQualified: number
@@ -206,7 +235,7 @@ export async function resolveAutonomyRatchetCore(
   if (!p.shape) return { ok: false, error: "Proposal payload is incomplete" }
 
   if (input.grant) {
-    const w = await writeDocKernelGrant(svc, { brokerageId: actor.brokerageId, shape: p.shape, grant: true })
+    const w = await writeAutonomyGrant(svc, { brokerageId: actor.brokerageId, shape: p.shape, grant: true })
     if (!w.ok) return { ok: false, error: w.error ?? "Grant write failed" }
   }
 
@@ -224,8 +253,12 @@ export async function resolveAutonomyRatchetCore(
     },
     evidence: { resolved_by_user_id: actor.userId, shape: p.shape },
   })
+  const managerLabel = grantTargetForShape(p.shape).agentKind === "campaign_orchestrator" ? "Campaign Orchestrator" : "Deal Coordinator"
+  const thing = p.shape.startsWith("social_post:")
+    ? `${String(p.shape.split(":")[1] ?? "").replace(/_/g, " ")} social posts`
+    : `${String(p.deadline_type ?? p.shape).replace(/_/g, " ")} dates from documents`
   const message = input.grant
-    ? `Granted — the Deal Coordinator now handles ${String(p.deadline_type ?? p.shape).replace(/_/g, " ")} dates from documents autonomously (every act stays on the policy ledger).`
+    ? `Granted — the ${managerLabel} now handles ${thing} autonomously (every act stays on the policy ledger).`
     : "Declined — the shape stays human-approved."
   await consumeSignal(svc, input.signalId, message)
   return { ok: true, message }

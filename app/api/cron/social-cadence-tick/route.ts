@@ -81,5 +81,20 @@ export async function GET(req: NextRequest) {
     results.push({ scope_type: p.scope_type, scope_id: p.scope_id, outcome: r.staged ? `staged:${r.count}:${r.postType ?? ""}` : "skipped", reason: r.staged ? undefined : r.reason })
   }
 
-  return NextResponse.json({ ok: true, fired: results.filter((r) => r.outcome.startsWith("staged")).length, results })
+  // THE MARKETING RATCHET SWEEP — same lane, same heartbeat: for every
+  // brokerage this tick touched, check whether any social shape EARNED a
+  // grant proposal (>=20 straight human approvals, zero rejections).
+  let ratchetsProposed = 0
+  try {
+    const { runMarketingRatchetSweep } = await import("@/lib/marketing/marketing-autonomy-ratchet")
+    const touched = Array.from(new Set(((policies ?? []) as PolicyRow[]).map((p) => p.brokerage_id).filter(Boolean))) as string[]
+    for (const brokerageId of touched) {
+      const r = await runMarketingRatchetSweep(svc as any, { brokerageId })
+      ratchetsProposed += r.proposed
+    }
+  } catch (e) {
+    console.error("[social-cadence-tick] marketing ratchet sweep failed (non-fatal):", e)
+  }
+
+  return NextResponse.json({ ok: true, fired: results.filter((r) => r.outcome.startsWith("staged")).length, ratchetsProposed, results })
 }
