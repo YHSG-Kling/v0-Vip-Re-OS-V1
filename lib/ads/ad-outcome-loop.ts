@@ -55,50 +55,81 @@ export function decideWinningArm(samples: CreativeArmSample[]): { arm: string; b
   return null
 }
 
-/** Aggregate the per-creative time-series into variation arms for a
- *  brokerage (last 90 days), then run the experiment gate. Returns the
- *  winning variation row (headline/text as the style exemplar) or null. */
+/**
+ * Aggregate the per-creative time-series into variation arms (last 90
+ * days) and run the experiment gate — SCOPE-AWARE (the tier rule: every
+ * tenant tier learns from ITS OWN evidence first). The ladder:
+ *   1. AGENT arms — only this agent's campaigns (a solo agent's winning
+ *      hook is theirs, not the brokerage blend's)
+ *   2. TEAM arms — the agent's team's campaigns
+ *   3. BROKERAGE arms — everything
+ * The first scope whose arms pass the gate wins; the result names the
+ * scope so generated_from records WHOSE evidence drove the creative.
+ */
 export async function learnedCreativeEmphasis(
   svc: any,
   brokerageId: string,
-): Promise<{ arm: string; headline: string | null; primaryText: string | null; basis: string } | null> {
+  scope?: { agentUserId?: string | null; teamId?: string | null },
+): Promise<{ arm: string; headline: string | null; primaryText: string | null; basis: string; scope: "agent" | "team" | "brokerage" } | null> {
   try {
     const since = new Date(Date.now() - 90 * 86_400_000).toISOString()
     const { data: hist } = await svc.from("ad_performance_history")
-      .select("ad_creative_id, impressions, clicks, leads, cost_per_lead")
+      .select("ad_creative_id, ad_campaign_id, impressions, clicks, leads, cost_per_lead")
       .eq("brokerage_id", brokerageId).gte("captured_at", since)
       .not("ad_creative_id", "is", null).limit(2000)
-    const rows = (hist ?? []) as Array<{ ad_creative_id: string; impressions: number | null; clicks: number | null; leads: number | null; cost_per_lead: number | null }>
+    const rows = (hist ?? []) as Array<{ ad_creative_id: string; ad_campaign_id: string | null; impressions: number | null; clicks: number | null; leads: number | null; cost_per_lead: number | null }>
     if (rows.length === 0) return null
 
     const creativeIds = Array.from(new Set(rows.map((r) => r.ad_creative_id)))
-    const { data: creatives } = await svc.from("ad_creative_variations")
-      .select("id, variation_name, headline, primary_text")
-      .in("id", creativeIds)
+    const campaignIds = Array.from(new Set(rows.map((r) => r.ad_campaign_id).filter(Boolean))) as string[]
+    const [{ data: creatives }, { data: campaigns }] = await Promise.all([
+      svc.from("ad_creative_variations")
+        .select("id, variation_name, headline, primary_text")
+        .in("id", creativeIds),
+      campaignIds.length
+        ? svc.from("ad_campaigns").select("id, agent_user_id, team_id").in("id", campaignIds)
+        : Promise.resolve({ data: [] }),
+    ])
     const byId = new Map(((creatives ?? []) as Array<{ id: string; variation_name: string | null; headline: string | null; primary_text: string | null }>).map((c) => [c.id, c]))
+    const campById = new Map(((campaigns ?? []) as Array<{ id: string; agent_user_id: string | null; team_id: string | null }>).map((c) => [c.id, c]))
 
-    const arms = new Map<string, CreativeArmSample>()
-    for (const r of rows) {
-      const c = byId.get(r.ad_creative_id)
-      if (!c) continue
-      const arm = c.variation_name ?? "unnamed"
-      const agg = arms.get(arm) ?? { arm, spend: 0, impressions: 0, clicks: 0, leads: 0 }
-      agg.impressions += Number(r.impressions) || 0
-      agg.clicks += Number(r.clicks) || 0
-      agg.leads += Number(r.leads) || 0
-      // spend approximated from CPL × leads when the series carries it
-      if (r.cost_per_lead && r.leads) agg.spend += Number(r.cost_per_lead) * Number(r.leads)
-      arms.set(arm, agg)
+    const buildArms = (filter: (camp: { agent_user_id: string | null; team_id: string | null } | undefined) => boolean) => {
+      const arms = new Map<string, CreativeArmSample>()
+      for (const r of rows) {
+        const camp = r.ad_campaign_id ? campById.get(r.ad_campaign_id) : undefined
+        if (!filter(camp)) continue
+        const c = byId.get(r.ad_creative_id)
+        if (!c) continue
+        const arm = c.variation_name ?? "unnamed"
+        const agg = arms.get(arm) ?? { arm, spend: 0, impressions: 0, clicks: 0, leads: 0 }
+        agg.impressions += Number(r.impressions) || 0
+        agg.clicks += Number(r.clicks) || 0
+        agg.leads += Number(r.leads) || 0
+        // spend approximated from CPL × leads when the series carries it
+        if (r.cost_per_lead && r.leads) agg.spend += Number(r.cost_per_lead) * Number(r.leads)
+        arms.set(arm, agg)
+      }
+      return [...arms.values()]
     }
-    const winner = decideWinningArm([...arms.values()])
-    if (!winner) return null
-    const exemplar = ((creatives ?? []) as any[]).find((c) => (c.variation_name ?? "unnamed") === winner.arm)
-    return {
-      arm: winner.arm,
-      headline: exemplar?.headline ?? null,
-      primaryText: exemplar?.primary_text ?? null,
-      basis: winner.basis,
+
+    const ladder: Array<{ scope: "agent" | "team" | "brokerage"; filter: (camp: { agent_user_id: string | null; team_id: string | null } | undefined) => boolean }> = []
+    if (scope?.agentUserId) ladder.push({ scope: "agent", filter: (c) => c?.agent_user_id === scope.agentUserId })
+    if (scope?.teamId) ladder.push({ scope: "team", filter: (c) => c?.team_id === scope.teamId })
+    ladder.push({ scope: "brokerage", filter: () => true })
+
+    for (const rung of ladder) {
+      const winner = decideWinningArm(buildArms(rung.filter))
+      if (!winner) continue
+      const exemplar = ((creatives ?? []) as any[]).find((c) => (c.variation_name ?? "unnamed") === winner.arm)
+      return {
+        arm: winner.arm,
+        headline: exemplar?.headline ?? null,
+        primaryText: exemplar?.primary_text ?? null,
+        basis: winner.basis,
+        scope: rung.scope,
+      }
     }
+    return null
   } catch {
     return null
   }

@@ -138,7 +138,14 @@ export async function produceListingAdCampaign(
   let generatedFrom = "listing_handoff"
   try {
     const { learnedCreativeEmphasis } = await import("./ad-outcome-loop")
-    const learned = await learnedCreativeEmphasis(supabase, brokerageId)
+    // Scope ladder: this agent's own evidence first, then their team's,
+    // then the brokerage blend — every tier learns from ITS OWN results.
+    let teamId: string | null = null
+    if (listing.agent_id) {
+      const { data: agentRow } = await supabase.from("agents").select("team_id").eq("id", listing.agent_id).maybeSingle()
+      teamId = (agentRow as { team_id: string | null } | null)?.team_id ?? null
+    }
+    const learned = await learnedCreativeEmphasis(supabase, brokerageId, { agentUserId, teamId })
     // Only the winner's HEADLINE hook is adoptable, and only when it is
     // generic (no digits/addresses — a past listing's facts must never leak
     // into this listing's ad). The primary text ALWAYS stays fact-built
@@ -146,7 +153,7 @@ export async function produceListingAdCampaign(
     const genericHeadline = learned?.headline && learned.headline.length <= 40 && !/\d/.test(learned.headline)
     if (learned && genericHeadline && learned.arm !== creative.variationName) {
       creative.headline = learned.headline as string
-      generatedFrom = `learned:${learned.arm}`
+      generatedFrom = `learned:${learned.arm}@${learned.scope}`
     }
   } catch { /* the deterministic FH-clean creative stands */ }
 

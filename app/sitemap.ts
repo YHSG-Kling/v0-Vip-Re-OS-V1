@@ -56,7 +56,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     //   /listing/[slug]  — active listing pages (slug = mls_number or id)
     //   /p/[agentSlug]   — agent profiles
     //   /lm/[slug]       — lead-magnet landing pages
-    const [listings, agents, magnets, blogs, sites] = await Promise.all([
+    const [listings, agents, magnets, blogs, sites, teamSites] = await Promise.all([
       svc.from("listings").select("id, mls_number, updated_at")
         .eq("status", "active").is("deleted_at", null)
         .order("updated_at", { ascending: false }).limit(5000),
@@ -71,6 +71,9 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       // Tenant WEBSITES — every brokerage with a slug has a full public site
       svc.from("brokerages").select("slug, updated_at")
         .not("slug", "is", null).is("deleted_at", null).limit(2000),
+      // TEAM sites — the middle tier gets the same zero-hosting presence
+      svc.from("teams").select("public_slug, brokerage_id, updated_at")
+        .not("public_slug", "is", null).is("deleted_at", null).limit(2000),
     ])
     const listingEntries: MetadataRoute.Sitemap = ((listings.data ?? []) as Array<{ id: string; mls_number: string | null; updated_at: string | null }>)
       .map((l) => ({
@@ -109,7 +112,15 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
         priority: 0.8,
       }))
 
-    return [...staticEntries, ...siteEntries, ...listingEntries, ...videoEntries, ...blogEntries, ...agentEntries, ...magnetEntries]
+    const teamEntries: MetadataRoute.Sitemap = ((teamSites.data ?? []) as Array<{ public_slug: string; updated_at: string | null }>)
+      .map((ts) => ({
+        url: `${base}/team/${ts.public_slug}`,
+        lastModified: ts.updated_at ?? undefined,
+        changeFrequency: "weekly" as const,
+        priority: 0.7,
+      }))
+
+    return [...staticEntries, ...siteEntries, ...teamEntries, ...listingEntries, ...videoEntries, ...blogEntries, ...agentEntries, ...magnetEntries]
   } catch {
     return staticEntries
   }

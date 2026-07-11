@@ -659,10 +659,36 @@ async function main() {
       src("app/api/cron/ads-manager-sweep/route.ts").includes("runAdOutcomeLoop"))
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[22 · EVERY TIER OWNS ITS LOOP — teams get a site, agents/teams learn from THEIR OWN evidence]")
+  {
+    const teamSite = src("app/team/[slug]/page.tsx")
+    check("the TEAM website exists at /team/[slug] (the middle tier had no public presence at all)",
+      teamSite.includes("loadTeamSite") && teamSite.includes('.eq("public_slug", slug)'))
+    check("assembled from the team's OWN surfaces: brand (tagline/bio/colors/logo), roster → /p, the team's agents' active listings",
+      teamSite.includes('.eq("team_id", t.id)') && teamSite.includes('.in("agent_id", agentIds)')
+      && teamSite.includes("/p/") && teamSite.includes("/listing/"))
+    check("teams advertise under the BROKERAGE's license — the footer names both + EHO + not-a-solicitation; JSON-LD carries parentOrganization",
+      teamSite.includes("Brokerage License") && teamSite.includes("Equal Housing Opportunity")
+      && teamSite.includes("not a solicitation") && teamSite.includes("parentOrganization"))
+    check("teams.public_slug is in the schema snapshot (live column, backfilled) and the sitemap lists /team/[slug]",
+      src("scripts/schema-snapshot.ts").includes('"public_slug", "tagline"')
+      && src("app/sitemap.ts").includes("/team/${ts.public_slug}"))
+
+    const loop2 = src("lib/ads/ad-outcome-loop.ts")
+    check("ad learning is SCOPE-AWARE: the ladder tries the AGENT's own arms, then the TEAM's, then the brokerage blend — first gated winner wins",
+      loop2.includes('scope: "agent"') && loop2.includes('scope: "team"') && loop2.includes('scope: "brokerage"')
+      && loop2.includes("c?.agent_user_id === scope.agentUserId") && loop2.includes("c?.team_id === scope.teamId"))
+    const producer2 = src("lib/ads/listing-ad-producer.ts")
+    check("the producer resolves the agent's team and records WHOSE evidence drove the creative (learned:<arm>@<scope>)",
+      producer2.includes('select("team_id")') && producer2.includes("{ agentUserId, teamId }")
+      && producer2.includes("learned:${learned.arm}@${learned.scope}"))
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
-  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together, identity is a setting, media-type decisions are proven, every finished video carries its content kit, growth marketing produces itself for brokerages AND teams, every tenant gets a website with zero hosting, and the ad channel closes its outcome loop.")
+  console.log(" ✅ Asset production verified — photo AI real, client PDFs real, print family complete, carousels + brochures live, content never hardcoded, delivery is the last stop, the full marketing loop closes with GEO riding along, media and copy always ship together, identity is a setting, media-type decisions are proven, every finished video carries its content kit, growth marketing produces itself for brokerages AND teams, every tier gets its own website with zero hosting, and every tier's outcome loop learns from its own evidence.")
   console.log(" ASSET_PRODUCTION_PASS")
   process.exit(0)
 }
