@@ -34,7 +34,27 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
 
   const userType    = userData?.user_type ?? "agent"
   const brokerageId = userData?.brokerage_id ?? undefined
-  if (!["admin", "broker", "superadmin"].includes(userType)) redirect("/dashboard")
+  // TIER PARITY (owner rule): the Command Center — the feed, the Trust Meter,
+  // Earned Autonomy — is for the tenancy's PRINCIPAL, whatever shape the
+  // tenancy has. A solo agent IS their own broker; a team lead governs a team
+  // signup. Only brokerage/multi_location tiers require the broker/admin seat.
+  let mayEnter = ["admin", "broker", "superadmin"].includes(userType)
+  if (!mayEnter && brokerageId) {
+    const svcGate = createServiceClient()
+    const { data: brk } = await svcGate.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()
+    const tier = String((brk as any)?.plan_tier ?? "solo_agent")
+    if (tier === "solo_agent") mayEnter = true
+    else if (tier === "team") {
+      const { data: myAgent } = await svcGate.from("agents").select("id").eq("user_id", user.id).eq("brokerage_id", brokerageId).maybeSingle()
+      if (myAgent) {
+        const { data: lead } = await svcGate.from("teams").select("id")
+          .eq("brokerage_id", brokerageId).eq("team_lead_id", (myAgent as any).id)
+          .is("deleted_at", null).limit(1).maybeSingle()
+        if (lead) mayEnter = true
+      }
+    }
+  }
+  if (!mayEnter) redirect("/dashboard")
 
   // Resolve the egress scope so the surface shows the right slice. superadmin = platform-wide (no
   // scope). For everyone else, resolve their office (agents.location_id) + team so a multi-location

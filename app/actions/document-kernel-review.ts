@@ -42,8 +42,31 @@ async function loadActor(allowed: Set<string>): Promise<
     .maybeSingle()
   const role = String((row as any)?.role ?? (row as any)?.user_type ?? "")
   if (!row?.brokerage_id) return { ok: false, error: "No brokerage" }
-  if (!allowed.has(role)) return { ok: false, error: "Not permitted to review kernel proposals" }
-  return { ok: true, userId: user.id, brokerageId: (row as any).brokerage_id }
+  if (allowed.has(role)) return { ok: true, userId: user.id, brokerageId: (row as any).brokerage_id }
+
+  // TIER PARITY (owner rule: every tenancy shape gets the SAME trust system —
+  // nobody signs up to discover governance belongs to an org chart they don't
+  // have). Only the GRANT authority widens; the review set already covers agents.
+  if (allowed === GRANT_ROLES) {
+    const svc = createServiceClient()
+    const brokerageId = (row as any).brokerage_id as string
+    const { data: brk } = await svc.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()
+    const tier = String((brk as any)?.plan_tier ?? "solo_agent")
+    // A SOLO tenancy: the agent IS the principal — their shop, their grants.
+    if (tier === "solo_agent") return { ok: true, userId: user.id, brokerageId }
+    // A TEAM tenancy: the team lead governs (teams.team_lead_id → their agents row).
+    if (tier === "team") {
+      const { data: agentRow } = await svc.from("agents").select("id").eq("user_id", user.id).eq("brokerage_id", brokerageId).maybeSingle()
+      if (agentRow) {
+        const { data: lead } = await svc.from("teams").select("id")
+          .eq("brokerage_id", brokerageId).eq("team_lead_id", (agentRow as any).id)
+          .is("deleted_at", null).limit(1).maybeSingle()
+        if (lead) return { ok: true, userId: user.id, brokerageId }
+      }
+    }
+    // brokerage / multi_location tiers keep the broker/admin requirement.
+  }
+  return { ok: false, error: "Not permitted to review kernel proposals" }
 }
 
 export async function resolveDeadlineConflictAction(input: {
