@@ -11,6 +11,8 @@
 
 import { resolveEgressScope, type EgressScopeKind } from "./egress-scope"
 
+export type { EgressScopeKind } from "./egress-scope"
+
 export interface ReportScopeCtx {
   userType: string
   userId: string
