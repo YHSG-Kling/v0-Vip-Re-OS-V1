@@ -354,7 +354,52 @@ async function main() {
       && pitch.includes("Fair Housing and consent gates run on every send regardless"))
   }
 
-  console.log("\n[13 · live — the full derivation against the real database]")
+  console.log("\n[13 · pure — the SELLER DECISION trust layer (provenance → confidence → policy)]")
+  {
+    const { defaultProvenance, netSheetConfidence, decideNetSheetPolicy, counterScenario } = await import("../lib/offers/net-sheet-calc")
+    const { extractTaxFigures } = await import("../lib/offers/public-record-preload")
+    const base = defaultProvenance()
+    check("a defaulted payoff is LOW confidence → RED: a $0 payoff overstates net by the whole mortgage — figures stay agent-only",
+      netSheetConfidence(base) === "low" && decideNetSheetPolicy(base).decision === "red"
+      && decideNetSheetPolicy(base).reasons[0].includes("overstate"))
+    check("confirmed payoff + template prorations → MEDIUM/amber with the estimate lines NAMED; all strong → HIGH/green",
+      netSheetConfidence({ ...base, mortgagePayoff: "confirmed" }) === "medium"
+      && decideNetSheetPolicy({ ...base, mortgagePayoff: "confirmed" }).decision === "amber"
+      && decideNetSheetPolicy({ ...base, mortgagePayoff: "confirmed" }).needsConfirmation.includes("countyCityTaxes")
+      && netSheetConfidence({ commissionRate: "template", mortgagePayoff: "confirmed", countyCityTaxes: "public_record", hoaDuesProration: "confirmed", otherProratedFees: "default" }) === "high")
+    const cs = counterScenario({ offerPrice: 500_000, buyerClosingCredit: 5_000 }, 515_000,
+      { commissionRate: 0.06, mortgagePayoff: 200_000, countyCityTaxes: 2_500, hoaDuesProration: 300, otherProratedFees: 5_000 })
+    check("counter what-if: recomputed net + honest delta + risk-aware explanation (no persuasion on a downside)",
+      cs.deltaVsOffer === Math.round(15_000 * 0.94) && cs.explanation.includes("if the buyer accepts"))
+    check("the records parser adopts ONLY positive finite figures across BatchData's shapes; garbage yields nulls",
+      extractTaxFigures({ assessment: { taxAmount: "4,250", assessedValue: 310_000, taxYear: 2025 } }).tax === 4250
+      && extractTaxFigures({ tax: { annualTaxAmount: 3900 } }).tax === 3900
+      && extractTaxFigures({ assessment: { taxAmount: -5 } }).tax === null
+      && extractTaxFigures("garbage").tax === null)
+  }
+
+  console.log("\n[14 · wiring — the net-sheet runner carries the trust layer end to end]")
+  {
+    const runner = src("lib/kernel/offer-net-sheet.ts")
+    check("the runner preloads public-record taxes (provider-gated; a skip leaves the default AND its provenance)",
+      runner.includes("preloadPublicRecordCosts") && runner.includes('"public_record"'))
+    check("every net-sheet run records its green/amber/red on the SAME policy ledger (target seller_net_sheet)",
+      runner.includes("recordPolicyDecision") && runner.includes('"seller_net_sheet"')
+      && runner.includes("confirm_payoff_before_presenting"))
+    check("the agent summary LEADS with the confidence state — red says the figures overstate; the portal card stays number-free by design",
+      runner.includes("Presentation-grade") && runner.includes("OVERSTATE")
+      && runner.includes("net_policy: netPolicy.decision"))
+    const sheet = src("app/components/features/offers/interactive-net-sheet.tsx")
+    check("the interactive sheet warns on a $0 payoff and carries the live counter what-if (pure counterScenario)",
+      sheet.includes("Payoff is still $0") && sheet.includes("counterScenario")
+      && sheet.includes("What if we counter?"))
+    const preload = src("lib/offers/public-record-preload.ts")
+    check("the preload rides the EXISTING BatchData rail and never fabricates a 'verified' (clean skip on unconfigured/no-figure)",
+      preload.includes("batchDataPreferMcp") && preload.includes("never a fabricated")
+      && preload.includes("skipReason"))
+  }
+
+  console.log("\n[15 · live — the full derivation against the real database]")
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {

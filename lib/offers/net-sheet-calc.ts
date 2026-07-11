@@ -211,3 +211,107 @@ export function defaultSellerCosts(args: {
     otherProratedFees: Math.round(price * 0.01),
   }
 }
+
+// ─── Line-item PROVENANCE + confidence (the Seller Decision trust layer) ──────
+//
+// Every cost line knows WHERE its number came from, so the sheet can say
+// "verified" vs "estimate — confirm with your agent" instead of presenting a
+// default as a fact. Same discipline as the document kernel's per-field
+// ledger, applied to the seller's money.
+
+export type CostLineSource =
+  | "public_record"   // pulled from a records lookup (tax data)
+  | "confirmed"       // a human confirmed/entered the real figure
+  | "template"        // brokerage/market template value
+  | "default"         // heuristic starting point — an ESTIMATE, not a fact
+
+export type CostLineKey = "commissionRate" | "mortgagePayoff" | "countyCityTaxes" | "hoaDuesProration" | "otherProratedFees"
+
+export type SellerCostProvenance = Record<CostLineKey, CostLineSource>
+
+/** Everything starts as a default estimate until something better lands. */
+export function defaultProvenance(): SellerCostProvenance {
+  return {
+    commissionRate: "template", // the brokerage's own rate — policy, not a guess
+    mortgagePayoff: "default",
+    countyCityTaxes: "default",
+    hoaDuesProration: "default",
+    otherProratedFees: "default",
+  }
+}
+
+export type NetSheetConfidence = "high" | "medium" | "low"
+
+/**
+ * PURE: how much can a seller trust these numbers? The PAYOFF dominates —
+ * a defaulted payoff of $0 silently overstates net proceeds by the whole
+ * mortgage balance (the single worst failure a net sheet can have).
+ */
+export function netSheetConfidence(prov: SellerCostProvenance): NetSheetConfidence {
+  const strong = (s: CostLineSource) => s === "confirmed" || s === "public_record"
+  if (!strong(prov.mortgagePayoff)) return "low"
+  if (strong(prov.countyCityTaxes) && strong(prov.hoaDuesProration)) return "high"
+  return "medium"
+}
+
+export interface NetSheetPolicyVerdict {
+  decision: "green" | "amber" | "red"
+  reasons: string[]
+  /** the lines still carrying estimates the agent should confirm. */
+  needsConfirmation: CostLineKey[]
+}
+
+/**
+ * PURE: may these numbers go seller-facing? green = presentation-grade;
+ * amber = usable with estimate disclosure; red = the DOLLAR FIGURES stay
+ * agent-only until the payoff is real (the comparison narrative may still
+ * flow — it carries no numbers).
+ */
+export function decideNetSheetPolicy(prov: SellerCostProvenance): NetSheetPolicyVerdict {
+  const confidence = netSheetConfidence(prov)
+  const needsConfirmation = (Object.keys(prov) as CostLineKey[]).filter((k) => prov[k] === "default")
+  if (confidence === "low") {
+    return {
+      decision: "red",
+      reasons: ["the mortgage payoff is an unconfirmed default — net figures would overstate what the seller keeps"],
+      needsConfirmation,
+    }
+  }
+  if (confidence === "medium") {
+    return {
+      decision: "amber",
+      reasons: [`estimates remain on: ${needsConfirmation.join(", ") || "prorations"} — disclose before presenting`],
+      needsConfirmation,
+    }
+  }
+  return { decision: "green", reasons: ["payoff and prorations verified or confirmed"], needsConfirmation }
+}
+
+// ─── Counter what-if (the scenario builder's pure core) ───────────────────────
+
+export interface CounterScenario {
+  counterPrice: number
+  netProceeds: number
+  /** net delta vs the offer as written. */
+  deltaVsOffer: number
+  /** plain-language tradeoff line — factual, no persuasion. */
+  explanation: string
+}
+
+/** PURE: "what if we counter at X?" — recomputed net + the tradeoff, live. */
+export function counterScenario(
+  offer: { offerPrice: number; buyerClosingCredit: number },
+  counterPrice: number,
+  costs: Omit<SellerCosts, "buyerClosingCredit">,
+): CounterScenario {
+  const baseNet = computeNetProceeds(offer, costs)
+  const counterNet = computeNetProceeds({ offerPrice: counterPrice, buyerClosingCredit: offer.buyerClosingCredit }, costs)
+  const delta = counterNet - baseNet
+  const explanation =
+    delta === 0
+      ? `Countering at ${fmtUsd(counterPrice)} nets the same as the offer as written.`
+      : delta > 0
+        ? `Countering at ${fmtUsd(counterPrice)} would net ${fmtUsd(delta)} more — if the buyer accepts. Weigh that against the risk of losing them.`
+        : `Countering at ${fmtUsd(counterPrice)} would net ${fmtUsd(-delta)} less than the offer as written.`
+  return { counterPrice, netProceeds: counterNet, deltaVsOffer: delta, explanation }
+}

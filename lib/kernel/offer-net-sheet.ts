@@ -36,6 +36,7 @@ import type { CopyGenerator } from "@/lib/kernel/ai-copy"
 export * from "@/lib/offers/net-sheet-calc"
 import {
   fmtUsd, defaultSellerCosts, offerSetSignature, rankOffersByNet, composeComparisonFallback,
+  defaultProvenance, decideNetSheetPolicy,
   type OfferNetInput, type SellerCosts, type OfferNetSheetResult,
 } from "@/lib/offers/net-sheet-calc"
 
@@ -127,7 +128,7 @@ export async function runOfferNetSheets(
     // Resolve seller-responsible costs (commission from the listing rate when set).
     const commissionRateDecimal =
       lst.commission_rate != null ? Number(lst.commission_rate) / 100 : 0.06
-    const costs = opts.costsResolver
+    let costs = opts.costsResolver
       ? await opts.costsResolver({
           listingId: lst.id,
           listPrice: lst.list_price != null ? Number(lst.list_price) : null,
@@ -139,6 +140,62 @@ export async function runOfferNetSheets(
           commissionRateDecimal,
           hoaDuesMonthly: lst.hoa_dues != null ? Number(lst.hoa_dues) : null,
         })
+
+    // PROVENANCE — every line knows where its number came from. HOA from the
+    // listing row counts as confirmed data; an injected costsResolver (the
+    // simulator / a live agent session) supplies KNOWN figures.
+    const provenance = defaultProvenance()
+    if (opts.costsResolver) {
+      provenance.mortgagePayoff = "confirmed"
+      provenance.countyCityTaxes = "confirmed"
+      provenance.hoaDuesProration = "confirmed"
+      provenance.otherProratedFees = "confirmed"
+    } else if (lst.hoa_dues != null) {
+      provenance.hoaDuesProration = "confirmed"
+    }
+
+    // PUBLIC-RECORD PRELOAD — the tax line arrives REAL when the records rail
+    // is configured (provider-gated; a skip leaves the template default AND
+    // its 'default' provenance — never a fabricated "verified").
+    if (!opts.costsResolver && lst.address) {
+      try {
+        const { preloadPublicRecordCosts } = await import("@/lib/offers/public-record-preload")
+        const addr = String(lst.address)
+        const m = /^(.*?),\s*([^,]+),\s*([A-Za-z]{2})\s+(\d{5})/.exec(addr)
+        const rec = await preloadPublicRecordCosts(
+          m
+            ? { street: m[1], city: m[2], state: m[3].toUpperCase(), zip: m[4] }
+            : { street: addr, city: (lst as any).city ?? null, state: (lst as any).state ?? null, zip: (lst as any).zip_code ?? null },
+        )
+        if (rec.annualTaxAmount !== null) {
+          // Seller owes the prorated share to close — half a year is the honest
+          // mid-point when the close date isn't fixed yet; the agent adjusts live.
+          costs = { ...costs, countyCityTaxes: Math.round(rec.annualTaxAmount / 2) }
+          provenance.countyCityTaxes = "public_record"
+        }
+      } catch { /* preload is additive — the default stands */ }
+    }
+
+    // POLICY — may these numbers go seller-facing? Recorded on the SAME
+    // policy ledger the document kernel writes; red keeps dollar figures
+    // agent-only (the portal card carries no numbers by design).
+    const netPolicy = decideNetSheetPolicy(provenance)
+    try {
+      const { recordPolicyDecision } = await import("@/lib/documents/policy-decisions")
+      await recordPolicyDecision(supabase as any, {
+        brokerageId,
+        targetType: "seller_net_sheet",
+        targetId: lst.id,
+        verdict: {
+          decision: netPolicy.decision,
+          reasons: netPolicy.reasons,
+          recommendedAction: netPolicy.decision === "green" ? "present_to_seller"
+            : netPolicy.decision === "amber" ? "disclose_estimates_then_present" : "confirm_payoff_before_presenting",
+          requiredApproverRole: null,
+        },
+        evidence: { provenance, needs_confirmation: netPolicy.needsConfirmation, offer_set_signature: signature },
+      })
+    } catch { /* ledger best-effort */ }
 
     const inputs: OfferNetInput[] = open.map((o) => ({
       offerId: o.id,
@@ -191,8 +248,16 @@ export async function runOfferNetSheets(
         recipientContactId: null, // audience 'agent' — internal gated summary
         audience: "agent",
         subject: `Offer comparison ready for ${lst.address ?? "your listing"}${deltaNote}`,
-        body: fallback.agentSummary,
-        rationale: `OFFER NET SHEET — sig:${signature} — ${inputs.length} offer(s); ranked by net proceeds (payoff/taxes/HOA/commission/credit); net winner ${ranking.netBeatsPrice ? "BEATS" : "matches"} price winner; seller portal value card pushed.`,
+        body: [
+          // THE TRUST HEADER — the agent sees the confidence state before the numbers.
+          netPolicy.decision === "green"
+            ? "✅ Presentation-grade: payoff and prorations are verified or confirmed."
+            : netPolicy.decision === "amber"
+              ? `⚠️ Estimates remain (${netPolicy.needsConfirmation.map((k) => k.replace(/([A-Z])/g, " $1").toLowerCase()).join(", ")}) — disclose before presenting to the seller.`
+              : "⛔ The mortgage payoff is an unconfirmed default — these net figures OVERSTATE what the seller keeps. Confirm the payoff on the interactive sheet before presenting any dollar amounts.",
+          fallback.agentSummary,
+        ].join("\n\n"),
+        rationale: `OFFER NET SHEET — sig:${signature} — ${inputs.length} offer(s); ranked by net proceeds (payoff/taxes/HOA/commission/credit); confidence ${netPolicy.decision}; net winner ${ranking.netBeatsPrice ? "BEATS" : "matches"} price winner; seller portal value card pushed.`,
         channel: "portal",
       },
       supabase,
@@ -219,6 +284,7 @@ export async function runOfferNetSheets(
         net_beats_price: ranking.netBeatsPrice,
         agent_summary_id: proposed.id ?? null,
         seller_safe: true,
+        net_policy: netPolicy.decision, // green/amber/red — the portal shows numbers only via the agent anyway
       },
       created_at: now.toISOString(),
     })

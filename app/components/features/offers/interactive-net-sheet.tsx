@@ -25,6 +25,7 @@ import { Calculator, TrendingUp, Trophy } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   rankOffersByNet,
+  counterScenario,
   type OfferNetInput,
   type SellerCosts,
 } from "@/lib/offers/net-sheet-calc"
@@ -91,6 +92,7 @@ export function InteractiveNetSheet({
   const [countyCityTaxes, setCountyCityTaxes] = useState(initialCosts.countyCityTaxes)
   const [hoaDuesProration, setHoaDuesProration] = useState(initialCosts.hoaDuesProration)
   const [otherProratedFees, setOtherProratedFees] = useState(initialCosts.otherProratedFees)
+  const [counterPrice, setCounterPrice] = useState<number | null>(null)
 
   const ranking = useMemo(
     () =>
@@ -106,6 +108,14 @@ export function InteractiveNetSheet({
 
   const netWinner = ranking.lines.find((l) => l.offerId === ranking.topByNet)
   const priceWinner = ranking.lines.find((l) => l.offerId === ranking.topByPrice)
+  const counter = useMemo(() => {
+    if (!netWinner || counterPrice === null || !Number.isFinite(counterPrice) || counterPrice <= 0) return null
+    return counterScenario(
+      { offerPrice: netWinner.offerPrice, buyerClosingCredit: netWinner.buyerClosingCredit },
+      counterPrice,
+      { commissionRate: commissionPct / 100, mortgagePayoff, countyCityTaxes, hoaDuesProration, otherProratedFees },
+    )
+  }, [netWinner, counterPrice, commissionPct, mortgagePayoff, countyCityTaxes, hoaDuesProration, otherProratedFees])
   const delta =
     netWinner && priceWinner && ranking.netBeatsPrice ? netWinner.netProceeds - priceWinner.netProceeds : 0
 
@@ -157,7 +167,42 @@ export function InteractiveNetSheet({
             <NumberField label="HOA dues/proration" value={hoaDuesProration} onChange={setHoaDuesProration} readOnly={readOnly} />
             <NumberField label="Other prorated fees" value={otherProratedFees} onChange={setOtherProratedFees} readOnly={readOnly} />
           </div>
+          {mortgagePayoff === 0 && (
+            <p className="mt-2 text-xs text-red-700">
+              ⛔ Payoff is still $0 — every net figure above overstates what the seller keeps. Enter the real payoff before presenting.
+            </p>
+          )}
         </div>
+
+        {/* Counter what-if — "what if we counter at X?" recomputed live */}
+        {!readOnly && netWinner && (
+          <div className="rounded-lg border p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+              What if we counter?
+            </p>
+            <div className="flex items-end gap-3">
+              <div className="w-40">
+                <Label className="text-xs">Counter price</Label>
+                <Input
+                  type="number"
+                  value={counterPrice ?? ""}
+                  onChange={(e) => setCounterPrice(e.target.value === "" ? null : Number(e.target.value))}
+                  placeholder={String(netWinner.offerPrice)}
+                  className="h-8 text-sm"
+                />
+              </div>
+              {counter && (
+                <div className="flex-1 text-sm">
+                  <span className="font-semibold">{fmt(counter.netProceeds)} net</span>
+                  <span className={cn("ml-2 text-xs", counter.deltaVsOffer >= 0 ? "text-green-700" : "text-red-700")}>
+                    {counter.deltaVsOffer >= 0 ? "+" : ""}{fmt(counter.deltaVsOffer)} vs {netWinner.buyerName ?? "the top-net offer"}
+                  </span>
+                  <p className="text-xs text-muted-foreground mt-0.5">{counter.explanation}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Side-by-side comparison */}
         <div className="overflow-x-auto">
