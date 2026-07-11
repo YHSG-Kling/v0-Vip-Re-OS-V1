@@ -554,8 +554,8 @@ async function main() {
       recruitedGciDollars: 412000, recruitedAgentCount: 6,
       contactLine: "Reach us directly: (555) 010-2000",
     }
-    check("the AI-team section enumerates the LIVE registry (13 managers) — the pitch can never advertise what the product doesn't ship",
-      aiTeamBullets().length === 13 && aiTeamBullets().some((b) => b.startsWith("AI ISA"))
+    check("the AI-team section enumerates the LIVE registry (14 managers) — the pitch can never advertise what the product doesn't ship",
+      aiTeamBullets().length === 14 && aiTeamBullets().some((b) => b.startsWith("AI ISA"))
       && aiTeamBullets().some((b) => b.includes("Compliance Officer")))
     check("settings-hash is stable + change-sensitive (the refresh key)",
       pitchSettingsHash(facts) === pitchSettingsHash({ ...facts })

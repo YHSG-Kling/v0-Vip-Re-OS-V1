@@ -84,6 +84,6 @@ async function main() {
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ MANAGER_OPS_FAIL"); process.exit(1) }
-  console.log(" ✅ MANAGER_OPS_PASS — per-manager cost / p95 / error-rate + SLO: runaway spend or latency on any of the 13 managers is now visible")
+  console.log(" ✅ MANAGER_OPS_PASS — per-manager cost / p95 / error-rate + SLO: runaway spend or latency on any of the 14 managers is now visible")
 }
 main()

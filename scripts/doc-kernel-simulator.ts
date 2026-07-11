@@ -319,7 +319,42 @@ async function main() {
     && review2.includes("GRANT_ROLES")
     && src("app/dashboard/admin/command-center/page.tsx").includes("EarnedAutonomyPanel"))
 
-  console.log("\n[12 · live — the full derivation against the real database]")
+  console.log("\n[12 · wiring — the 14th manager + the remaining marketing lanes + the pitch trust story]")
+  {
+    const { MANAGERS } = await import("../lib/kernel/manager-registry")
+    check("the roster is 14 — the Cron Manager (operations) owns the heartbeat that keeps every other manager running",
+      Object.keys(MANAGERS).length === 14 && "cron_manager" in MANAGERS
+      && (MANAGERS as any).cron_manager.domain.toLowerCase().includes("heartbeat"))
+    const reg = src("lib/kernel/manager-registry.ts")
+    check("the ops portfolio moved to the Cron Manager: cron dispatch, SLO, bus self-heal, AI-ops console, OS sentinel + the ops crons",
+      /cron_dispatch:\s*\{ manager: "cron_manager"/.test(reg)
+      && /manager_ops_slo:\s*\{ manager: "cron_manager"/.test(reg)
+      && /signal_dead_letter_retry:\s*\{ manager: "cron_manager"/.test(reg)
+      && /os_sentinel:\s*\{ manager: "cron_manager"/.test(reg)
+      && reg.includes('"/api/cron/health-check": "cron_manager"')
+      && reg.includes('"/api/cron/manager-signals": "cron_manager"'))
+    check("grantTargetForShape routes the NEW lanes (newsletter:/blog:) to the Campaign Orchestrator's marketing_grants",
+      grantTargetForShape("newsletter:default").configKey === "marketing_grants"
+      && grantTargetForShape("blog:default").configKey === "marketing_grants")
+    const mkt2 = src("lib/marketing/marketing-autonomy-ratchet.ts")
+    check("the sweep's evidence covers newsletter_campaigns + blog_posts (human-by-rail-construction on AI rows) at the SAME 20 bar",
+      mkt2.includes('"newsletter_campaigns"') && mkt2.includes('"blog_posts"')
+      && mkt2.includes("human by rail construction"))
+    const bench = src("lib/kernel/marketing-bench.ts")
+    check("the bench honors granted newsletter/blog shapes publish-ready (posture overrides, fail-closed, ledger-recorded)",
+      bench.includes("grantedAutoApprove") && bench.includes('"newsletter:default"')
+      && bench.includes('"blog:default"') && bench.includes("fail closed")
+      && bench.includes("recordGrantAct"))
+    check("the newsletter cadence honors the grant with the publish terminal's exact shape (approved + scheduled + send_date)",
+      src("lib/marketing/newsletter-cadence.ts").includes('grants.has("newsletter:default")')
+      && src("lib/marketing/newsletter-cadence.ts").includes('send_date: now.toISOString()'))
+    const pitch = src("lib/recruiting/recruiting-pitch-kit.ts")
+    check("the recruiting pitch sells the trust story (earned, visible, revocable, ledger-backed; legal gates always on)",
+      pitch.includes("An AI team that earns your trust") && pitch.includes("revocable in one click")
+      && pitch.includes("Fair Housing and consent gates run on every send regardless"))
+  }
+
+  console.log("\n[13 · live — the full derivation against the real database]")
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {

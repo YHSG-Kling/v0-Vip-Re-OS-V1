@@ -77,6 +77,14 @@ export function recruitingPitchSpec(
     ],
     bullets: aiTeamBullets(),
   })
+  // THE TRUST STORY — the differentiator no portal CRM can say: autonomy is
+  // EARNED from the broker's own approvals, visible, revocable, ledger-backed.
+  sections.push({
+    heading: "An AI team that earns your trust",
+    paragraphs: [
+      "Nothing publishes or spends without a human until the team has earned it: every proposal you approve or decline is recorded, and only a spotless approval record lets the broker grant a standing move — visible on one governance panel, revocable in one click, with every autonomous act written to a policy ledger you can audit. Fair Housing and consent gates run on every send regardless.",
+    ],
+  })
   const terms: string[][] = []
   if (f.splitToAgent != null) terms.push(["Commission split to agent", `${f.splitToAgent}%`])
   if (f.monthlyFee != null) terms.push(["Monthly fee", `$${Number(f.monthlyFee).toLocaleString("en-US")}`])

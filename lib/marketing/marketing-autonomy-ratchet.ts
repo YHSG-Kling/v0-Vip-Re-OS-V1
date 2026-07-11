@@ -98,10 +98,36 @@ export async function runMarketingRatchetSweep(
     .limit(2000)
 
   const stats = computeSocialShapeStats((rows ?? []) as SocialDecisionRow[])
+
+  // NEWSLETTER + BLOG lanes — same bar, same proposal. These tables carry no
+  // approved_by column, but on AI-staged rows (is_ai_generated=true) the ONLY
+  // writer of approval_status='approved'/'rejected' is the admin-gated
+  // approval action — human by rail construction.
+  const laneShapes: SocialShapeStats[] = []
+  for (const lane of [
+    { table: "newsletter_campaigns", shape: "newsletter:default", postType: "newsletter" },
+    { table: "blog_posts", shape: "blog:default", postType: "blog" },
+  ]) {
+    const { data: laneRows } = await svc
+      .from(lane.table)
+      .select("approval_status")
+      .eq("brokerage_id", input.brokerageId)
+      .eq("is_ai_generated", true)
+      .in("approval_status", ["approved", "rejected"])
+      .order("created_at", { ascending: false })
+      .limit(2000)
+    let approvals = 0, rejections = 0
+    for (const r of ((laneRows ?? []) as Array<{ approval_status: string | null }>)) {
+      if (r.approval_status === "approved") approvals++
+      else if (r.approval_status === "rejected") rejections++
+    }
+    if (approvals + rejections > 0) laneShapes.push({ shape: lane.shape, postType: lane.postType, approvals, rejections })
+  }
+
   const { loadMarketingGrants } = await import("@/lib/documents/autonomy-ratchet")
   const granted = await loadMarketingGrants(svc, input.brokerageId)
 
-  for (const s of stats) {
+  for (const s of [...stats, ...laneShapes]) {
     if (!decideMarketingRatchet(s)) continue
     if (granted.has(s.shape)) continue
     out.shapesQualified++
@@ -118,14 +144,17 @@ export async function runMarketingRatchetSweep(
       .maybeSingle()
     if (dup) continue
 
+    const laneLabel = s.shape.startsWith("social_post:")
+      ? `${s.postType.replace(/_/g, " ")} social posts`
+      : s.shape.startsWith("newsletter:") ? "newsletters" : "blog posts"
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
     const sig = await publishManagerSignal({
       brokerageId: input.brokerageId,
       fromManager: "campaign_orchestrator",
       toManager: "compliance_officer",
       signalType: "autonomy_ratchet_proposal",
-      message: `Earned autonomy: you've approved ${s.approvals} of ${s.approvals} AI-staged ${s.postType.replace(/_/g, " ")} social posts — zero rejections. Grant the Campaign Orchestrator this one content type and it publishes on schedule without the queue (Fair Housing and every dispatch gate still run on every send; revoke any time).`,
-      payload: { shape: s.shape, mode: "social_post", post_type: s.postType, approvals: s.approvals, declines: s.rejections },
+      message: `Earned autonomy: you've approved ${s.approvals} of ${s.approvals} AI-staged ${laneLabel} — zero rejections. Grant the Campaign Orchestrator this one content type and it publishes on schedule without the queue (Fair Housing and every dispatch gate still run on every send; revoke any time).`,
+      payload: { shape: s.shape, mode: "marketing", post_type: s.postType, approvals: s.approvals, declines: s.rejections },
       dedupe: false, // entity-less — the payload-contains check above is the dedupe
     }, svc)
     if (sig.ok) out.proposed++

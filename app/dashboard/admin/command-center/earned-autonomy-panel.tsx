@@ -19,6 +19,8 @@ import { revokeAutonomyGrantAction, type EarnedGrant } from "@/app/actions/docum
 
 function describeShape(shape: string): string {
   if (shape.startsWith("social_post:")) return `Publish ${shape.split(":")[1]?.replace(/_/g, " ")} social posts on schedule`
+  if (shape.startsWith("newsletter:")) return "Send AI newsletters on schedule"
+  if (shape.startsWith("blog:")) return "Publish AI blog posts on schedule"
   if (shape.startsWith("deadline_correction:")) return `Correct the ${shape.split(":")[1]?.replace(/_/g, " ")} deadline from scanned documents`
   if (shape.startsWith("deadline_propose:")) return `Track the ${shape.split(":")[1]?.replace(/_/g, " ")} deadline from scanned documents`
   return shape.replace(/_/g, " ")

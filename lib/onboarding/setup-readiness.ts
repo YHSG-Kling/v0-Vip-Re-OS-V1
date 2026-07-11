@@ -337,7 +337,7 @@ export const ROLE_OVERVIEW: Record<SetupRole, RoleOverview> = {
   },
   broker: {
     mission: "Run the brokerage — recruit & retain agents, oversee compliance & finances, and grow the business.",
-    aiTeam: ["All 13 managers report to your Command Center", "Recruiting Manager works your talent pipeline", "Finance Manager runs brokerage P&L", "The AI Executive Standup ranks your week"],
+    aiTeam: ["All 14 managers report to your Command Center", "Recruiting Manager works your talent pipeline", "Finance Manager runs brokerage P&L", "The AI Executive Standup ranks your week"],
     youCanNow: ["Approve the whole team's AI work in one place", "See the weekly ROI-ranked org plan + one ask", "Watch retention, recruiting & P&L boards live"],
   },
   admin: {

@@ -62,13 +62,30 @@ export async function stageNewsletterFromCadence(
   const monthLabel = now.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
   const subject = topicTitle || `Your ${monthLabel} real-estate update`
 
+  // THE MARKETING AUTONOMY RATCHET — a broker-granted newsletter shape stages
+  // publish-ready (approved + scheduled + send_date, exactly what the human
+  // approve action would set) instead of waiting in the queue; the manager's
+  // autonomy posture OVERRIDES any grant, dispatch gates untouched. Fail-closed.
+  let autoApprove = false
+  try {
+    const { loadMarketingGrants } = await import("@/lib/documents/autonomy-ratchet")
+    const grants = await loadMarketingGrants(svc, input.brokerageId)
+    if (grants.has("newsletter:default")) {
+      const { resolveManagerAutonomy } = await import("@/lib/managers/autonomy-gate")
+      const posture = await resolveManagerAutonomy(input.brokerageId, "campaign_orchestrator", svc as any)
+      autoApprove = posture !== "approval_required"
+    }
+  } catch { /* fail closed — the queue is the default */ }
+
   const { data, error } = await svc
     .from("newsletter_campaigns")
     .insert({
       campaign_name: `Auto newsletter — ${now.toISOString().slice(0, 10)}`,
       subject_line: subject,
-      status: "draft",
-      approval_status: "pending_review", // GATED — a human approves before publish-newsletters sends it
+      ...(autoApprove
+        // publish-newsletters requires approved + scheduled + send_date<=now.
+        ? { status: "scheduled", approval_status: "approved", send_date: now.toISOString() }
+        : { status: "draft", approval_status: "pending_review" }), // GATED — a human approves before publish-newsletters sends it
       is_ai_generated: true,
       brokerage_id: input.brokerageId,
       agent_id: input.agentsId,
@@ -77,5 +94,22 @@ export async function stageNewsletterFromCadence(
     .maybeSingle()
 
   if (error || !data) return { staged: false, reason: error?.message ?? "insert_failed" }
+  if (autoApprove) {
+    try {
+      const { recordPolicyDecision } = await import("@/lib/documents/policy-decisions")
+      await recordPolicyDecision(svc as any, {
+        brokerageId: input.brokerageId,
+        targetType: "newsletter",
+        targetId: "default",
+        verdict: {
+          decision: "green",
+          reasons: ["staged publish-ready under broker-granted autonomy (newsletter:default)"],
+          recommendedAction: "auto_approved_by_grant",
+          requiredApproverRole: null,
+        },
+        evidence: { granted_shape: "newsletter:default", campaign_id: (data as { id: string }).id },
+      })
+    } catch { /* ledger best-effort */ }
+  }
   return { staged: true, campaignId: (data as { id: string }).id, subject }
 }

@@ -84,7 +84,9 @@ export function decideAutonomyRatchet(stats: ShapeStats): boolean {
  *  manager's policy row and config key (one policy surface per manager,
  *  never a global grant table). PURE. */
 export function grantTargetForShape(shape: string): { agentKind: string; configKey: string } {
-  if (shape.startsWith("social_post:")) return { agentKind: "campaign_orchestrator", configKey: "marketing_grants" }
+  if (shape.startsWith("social_post:") || shape.startsWith("newsletter:") || shape.startsWith("blog:")) {
+    return { agentKind: "campaign_orchestrator", configKey: "marketing_grants" }
+  }
   return { agentKind: "deal_coordinator", configKey: "doc_kernel_grants" }
 }
 

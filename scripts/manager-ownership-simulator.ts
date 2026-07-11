@@ -128,12 +128,12 @@ check("every CRON_MANAGER target is a real manager",
 check("resolveCronManager: signature-chase → Deal Coordinator; unknown → fallback (never undefined)",
   resolveCronManager("/api/cron/signature-chase").key === "deal_coordinator"
   && resolveCronManager("/api/cron/not-a-cron").label.length > 0)
-check("every one of the 13 managers RUNS at least one schedule (no idle manager on the clock)",
+check("every one of the 14 managers RUNS at least one schedule (no idle manager on the clock)",
   (Object.keys(MANAGERS) as ManagerKey[]).every((k) => Object.values(CRON_MANAGER).includes(k)))
 
 console.log("\n[6 · every manager is well-formed]")
 const keys = Object.keys(MANAGERS) as ManagerKey[]
-check("all 13 managers present (11 lead-working agent_kinds + Compliance Officer & Finance Manager back-office oversight)", keys.length === 13)
+check("all 14 managers present (11 lead-working agent_kinds + Compliance Officer & Finance Manager oversight + the Cron Manager operations seat)", keys.length === 14)
 // The two back-office oversight managers own their cross-cutting functions explicitly (no longer
 // diffused into Data Steward / Deal Coordinator) — a re-map here is a product decision, not a refactor.
 check("COMPLIANCE: Fair Housing logs → Compliance Officer",

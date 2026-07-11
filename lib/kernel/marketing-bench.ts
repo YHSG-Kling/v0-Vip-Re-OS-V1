@@ -22,6 +22,44 @@ type Svc = ReturnType<typeof createServiceClient>
 
 export type BenchChannel = "social" | "email" | "newsletter" | "blog" | "direct_mail"
 
+/** THE MARKETING AUTONOMY RATCHET at the bench: may this shape stage
+ *  publish-ready? Requires a broker GRANT (earned: >=20 straight human
+ *  approvals, zero rejections) AND the Campaign Orchestrator's autonomy
+ *  posture to allow it (approval_required — broker override, eval
+ *  probation, platform circuit-breaker — OVERRIDES any grant). Dispatch
+ *  gates are untouched. Fail-closed on any error. */
+async function grantedAutoApprove(supabase: Svc, brokerageId: string, shape: string): Promise<boolean> {
+  try {
+    const { loadMarketingGrants } = await import("@/lib/documents/autonomy-ratchet")
+    const grants = await loadMarketingGrants(supabase as any, brokerageId)
+    if (!grants.has(shape)) return false
+    const { resolveManagerAutonomy } = await import("@/lib/managers/autonomy-gate")
+    const posture = await resolveManagerAutonomy(brokerageId, "campaign_orchestrator", supabase as any)
+    return posture !== "approval_required"
+  } catch {
+    return false // fail closed — the queue is the default
+  }
+}
+
+/** Record the autonomous act on the SAME policy ledger every grant lives on. */
+async function recordGrantAct(supabase: Svc, brokerageId: string, targetType: string, shape: string): Promise<void> {
+  try {
+    const { recordPolicyDecision } = await import("@/lib/documents/policy-decisions")
+    await recordPolicyDecision(supabase as any, {
+      brokerageId,
+      targetType,
+      targetId: "default",
+      verdict: {
+        decision: "green",
+        reasons: [`staged publish-ready under broker-granted autonomy (${shape})`],
+        recommendedAction: "auto_approved_by_grant",
+        requiredApproverRole: null,
+      },
+      evidence: { granted_shape: shape },
+    })
+  } catch { /* ledger best-effort */ }
+}
+
 export interface BenchDraft {
   channel: BenchChannel
   /** Deterministic name/title used as the idempotency key for name-keyed channels. */
@@ -79,23 +117,33 @@ async function stageOne(supabase: Svc, ctx: BenchContext, d: BenchDraft): Promis
       const { data: exists } = await supabase.from("newsletter_campaigns").select("id")
         .eq("brokerage_id", ctx.brokerageId).eq("campaign_name", d.idemName).limit(1).maybeSingle()
       if (exists) return false
+      const auto = await grantedAutoApprove(supabase, ctx.brokerageId, "newsletter:default")
       const { error } = await supabase.from("newsletter_campaigns").insert({
         brokerage_id: ctx.brokerageId, agent_id: ctx.agentRowId, campaign_name: d.idemName,
         subject_line: d.subject, content: d.body,
-        status: "draft", approval_status: "pending_review", is_ai_generated: true,
+        // publish-newsletters requires approved + scheduled + send_date<=now.
+        ...(auto
+          ? { status: "scheduled", approval_status: "approved", send_date: new Date().toISOString() }
+          : { status: "draft", approval_status: "pending_review" }),
+        is_ai_generated: true,
       })
+      if (!error && auto) await recordGrantAct(supabase, ctx.brokerageId, "newsletter", "newsletter:default")
       return !error
     }
     case "blog": {
       const { data: exists } = await supabase.from("blog_posts").select("id")
         .eq("brokerage_id", ctx.brokerageId).eq("title", d.idemName).limit(1).maybeSingle()
       if (exists) return false
+      const auto = await grantedAutoApprove(supabase, ctx.brokerageId, "blog:default")
       const { error } = await supabase.from("blog_posts").insert({
         brokerage_id: ctx.brokerageId, agent_user_id: ctx.agentUserId, title: d.idemName,
         excerpt: d.subject, content: d.body, category: "market",
-        publish_status: "pending_review", publish_target: "hosted", visibility_scope: "brokerage",
-        approval_status: "pending", is_ai_generated: true,
+        // the blog publish phase ships publish_status='approved' rows.
+        publish_status: auto ? "approved" : "pending_review",
+        publish_target: "hosted", visibility_scope: "brokerage",
+        approval_status: auto ? "approved" : "pending", is_ai_generated: true,
       })
+      if (!error && auto) await recordGrantAct(supabase, ctx.brokerageId, "blog", "blog:default")
       return !error
     }
     case "direct_mail": {
