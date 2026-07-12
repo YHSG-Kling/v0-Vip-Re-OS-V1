@@ -239,12 +239,57 @@ export function composeAgentBrief(args: {
   const equityLine = args.line.hasLoanData && args.line.estimatedEquity != null
     ? `est. equity ${fmtUsd(args.line.estimatedEquity)} (value − est. remaining balance ${fmtUsd(args.line.estimatedRemainingBalance ?? 0)})`
     : `equity not computed — no original loan amount on file, so the note honestly reports appreciation only`
+  const decision = composeEquityDecision(args.line, args.anniversaryNumber)
   return (
     `${ordinal(args.anniversaryNumber)} closing anniversary for ${who}${home}. ` +
     `Est. current value ${fmtUsd(args.estimatedValue)} (source: ${args.valuationSource}) vs paid ${fmtUsd(args.line.basisPrice)} → ` +
     `appreciation ${fmtUsd(args.line.appreciation)} (${args.line.appreciationPct}%); ${equityLine}. ` +
+    `EQUITY REVIEW — recommend ${decision.recommended.replace(/_/g, " ").toUpperCase()}: ${decision.reason} ` +
+    decision.options.map((o) => `· ${o}`).join(" ") + " " +
     `All figures are estimates, not an appraisal. Approve to deliver the anniversary note to their portal — the lifetime relationship gets its yearly value moment.`
   )
+}
+
+// ─── THE EQUITY REVIEW DECISION (stay / equity conversation / move-up) ─────────
+//
+// The annual value moment becomes a composed DECISION the agent presents,
+// not just a number: the house methodology (preload → decide → explain →
+// gate → audit) on the lifetime-customer lane. HONEST bounds: rate/loan
+// advice belongs to a lender — the options frame CONVERSATIONS, never
+// terms; appreciation-only lines (no loan data) never claim equity.
+
+export interface EquityReviewDecision {
+  recommended: "stay_and_protect" | "equity_conversation" | "move_up_conversation"
+  reason: string
+  options: string[]
+}
+
+/** PURE: the annual decision from the honest equity line. */
+export function composeEquityDecision(line: EquityLine, yearsHeld: number): EquityReviewDecision {
+  const options = [
+    "STAY & PROTECT — a yearly insurance/valuation check keeps the asset healthy; no move needed.",
+    "EQUITY CONVERSATION — walk the numbers with their lender (HELOC/refi is the lender's call, not ours).",
+    "MOVE-UP CONVERSATION — model what this equity does as the next down payment (net sheet ready).",
+  ]
+  if (line.hasLoanData && (line.estimatedEquity ?? 0) >= 100_000 && line.appreciationPct >= 20) {
+    return {
+      recommended: "move_up_conversation",
+      reason: `≈${fmtUsd(line.estimatedEquity ?? 0)} estimated equity after ${yearsHeld} year${yearsHeld === 1 ? "" : "s"} — enough to fund a move-up down payment; the strongest listing-lead moment on the lifetime lane.`,
+      options,
+    }
+  }
+  if (line.appreciationPct >= 12) {
+    return {
+      recommended: "equity_conversation",
+      reason: `${line.appreciationPct}% appreciation${line.hasLoanData ? "" : " (equity not computed — no loan on file, appreciation only)"} — worth a numbers conversation; route rate/loan specifics to their lender.`,
+      options,
+    }
+  }
+  return {
+    recommended: "stay_and_protect",
+    reason: `Modest growth (${line.appreciationPct}%) — the relationship move is protection value (insurance review, tax-assessment check), not a transaction push.`,
+    options,
+  }
 }
 
 // ─── Injectable seams ───────────────────────────────────────────────────────────

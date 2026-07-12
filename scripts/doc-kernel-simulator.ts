@@ -501,7 +501,33 @@ async function main() {
       && guide.includes("composeGuideFallback"))
   }
 
-  console.log("\n[18 · live — the full derivation against the real database]")
+  console.log("\n[18 · wiring — the direct-mail campaign drain + the equity review decision]")
+  {
+    const drain = src("lib/direct-mail/campaign-drain.ts")
+    check("the drain mails approved 'planning' campaign rows through the SHARED orchestrator (every gate applies) and stamps the SAME row — no duplicates, no simulated sends",
+      drain.includes("orchestrateRenderAndSend") && drain.includes('.eq("approval_status", "approved")')
+      && drain.includes('.is("lob_order_id", null)') && drain.includes("lob_order_id: result.messageId")
+      && !drain.includes("Simulate"))
+    check("audience rows stay with their own dispatchers; no deliverable address is an HONEST failed terminal; agents.id → users.id resolved for the brand/license lines",
+      drain.includes("skippedAudience") && drain.includes("skippedNoAddress")
+      && drain.includes('select("user_id").eq("id", row.agent_id)'))
+    check("the drain rides the existing mail heartbeat (farm-mail-weekly), never a new cron",
+      src("app/api/cron/farm-mail-weekly/route.ts").includes("runDirectMailCampaignDrain"))
+    const { composeEquityDecision } = await import("../lib/kernel/anniversary-equity")
+    check("EQUITY REVIEW: big equity + strong growth → move-up conversation (the lifetime lane's listing-lead moment)",
+      composeEquityDecision({ basisPrice: 400_000, appreciation: 150_000, appreciationPct: 37.5, hasLoanData: true, estimatedRemainingBalance: 280_000, estimatedEquity: 270_000, equityBasis: "value_minus_estimated_balance" }, 5).recommended === "move_up_conversation")
+    check("growth without loan data NEVER claims equity — the equity conversation routes rate/loan specifics to the lender; modest growth recommends protection, not a push",
+      composeEquityDecision({ basisPrice: 400_000, appreciation: 60_000, appreciationPct: 15, hasLoanData: false, estimatedRemainingBalance: null, estimatedEquity: null, equityBasis: "appreciation_only" }, 3).recommended === "equity_conversation"
+      && composeEquityDecision({ basisPrice: 400_000, appreciation: 60_000, appreciationPct: 15, hasLoanData: false, estimatedRemainingBalance: null, estimatedEquity: null, equityBasis: "appreciation_only" }, 3).reason.includes("appreciation only")
+      && composeEquityDecision({ basisPrice: 400_000, appreciation: 12_000, appreciationPct: 3, hasLoanData: true, estimatedRemainingBalance: 300_000, estimatedEquity: 112_000, equityBasis: "value_minus_estimated_balance" }, 2).recommended === "stay_and_protect")
+    check("the annual brief CARRIES the composed decision (options + recommendation) — the value moment became a decision surface",
+      src("lib/kernel/anniversary-equity.ts").includes("EQUITY REVIEW — recommend")
+      && src("lib/kernel/anniversary-equity.ts").includes("MOVE-UP CONVERSATION"))
+    check("the pilot runbook exists and walks signup → decision room → earned autonomy (the demo arc)",
+      src("docs/PILOT_RUNBOOK.md").includes("Earned autonomy") && src("docs/PILOT_RUNBOOK.md").includes("Decision Room"))
+  }
+
+  console.log("\n[19 · live — the full derivation against the real database]")
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {

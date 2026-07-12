@@ -172,11 +172,30 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // THE APPROVED-CAMPAIGN DRAIN — same mail heartbeat: approved 'planning'
+  // campaign rows that carry their recipient mail through the shared
+  // orchestrator (every gate applies); audience rows stay with their own
+  // dispatchers. Approval is the last human stop — nothing strands after it.
+  let drained = 0
+  if (!dryRun) {
+    try {
+      const { runDirectMailCampaignDrain } = await import("@/lib/direct-mail/campaign-drain")
+      const { data: allBrokerages } = await svc.from("brokerages").select("id").is("deleted_at", null)
+      for (const b of ((allBrokerages ?? []) as Array<{ id: string }>)) {
+        const r = await runDirectMailCampaignDrain(svc as any, { brokerageId: b.id })
+        drained += r.sent
+      }
+    } catch (e) {
+      console.error("[farm-mail-weekly] campaign drain failed (non-fatal):", e)
+    }
+  }
+
   return NextResponse.json({
     ran_at:               new Date().toISOString(),
     dry_run:              dryRun,
     brokerages_processed: tenantScope.length,
     agents_processed:     results.length,
+    approved_campaigns_drained: drained,
     results,
   })
 }
