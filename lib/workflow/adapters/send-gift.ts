@@ -151,37 +151,21 @@ export const sendGiftAdapter: ChannelAdapter = {
 
         // If autoPay was false (or payment requires agent action), create a "pay" task
         const orderId = orderResult?.orderId ?? orderResult?.giftOrder?.id ?? orderResult?.id
-        let paid = autoPay && (orderResult?.paid || orderResult?.success)
-
-        // EXTERNAL FULFILLMENT SEAM (platform-provider-gated, e.g. Goody): a
-        // configured gifting provider handles the physical order hands-free —
-        // the recipient confirms their own address via the provider's flow.
-        // Unconfigured / failed → the pay/manual task path below stands
-        // unchanged (never a simulated fulfillment).
-        let externalOrderId: string | null = null
-        try {
-          const { data: cEmail } = await supabase.from("contacts")
-            .select("email, first_name, last_name").eq("id", contact.id).maybeSingle()
-          const { fulfillGiftExternally } = await import("@/lib/gifting/external-fulfillment")
-          const ext = await fulfillGiftExternally({
-            recipientName: [`${(cEmail as any)?.first_name ?? ""}`, `${(cEmail as any)?.last_name ?? ""}`].join(" ").trim() || (contact.first_name ?? "Client"),
-            recipientEmail: ((cEmail as any)?.email as string | null) ?? null,
-            message: noteText ?? null,
-            costCapCents: amountCents,
-          })
-          if (ext.attempted && ext.ok) {
-            externalOrderId = ext.externalOrderId
-            paid = true // the provider owns fulfillment + billing — no pay-task needed
-          }
-        } catch { /* seam is additive — the task fallback stands */ }
+        const paid = autoPay && (orderResult?.paid || orderResult?.success)
 
         if (!paid) {
+          // B2C GIFTING (owner rule: no fulfillment provider in the middle —
+          // the agent buys personally). The task carries SHOPPABLE LINKS for
+          // the exact recommended gift so purchase is one click, in the
+          // agent's own name, on their own card.
+          const { composeShoppableLinks } = await import("@/lib/gifting/shoppable-links")
+          const shop = composeShoppableLinks(recommendedGift.name, { budgetMax: recommendedGift.cost || null })
           void Promise.resolve(supabase.from("tasks").insert({
             brokerage_id: brokerageId,
             contact_id:   contact.id,
             assigned_to_agent_id: agentId,
             title: `Pay for ${validOccasion} gift to ${contact.first_name ?? "contact"}`,
-            description: `Gift order ${orderId ?? "(pending)"} from ${recommendedGift.vendor} — $${recommendedGift.cost}. Click through to confirm payment.`,
+            description: `Gift order ${orderId ?? "(pending)"} from ${recommendedGift.vendor} — $${recommendedGift.cost}. ${shop.taskLine}`,
             due_date: new Date(Date.now() + 2 * 86_400_000).toISOString(),
             assignee_type: "agent",
             source: "workflow_sequence",
@@ -203,7 +187,6 @@ export const sendGiftAdapter: ChannelAdapter = {
             cost:          recommendedGift.cost,
             note:          noteText,
             auto_paid:     paid,
-            external_order_id: externalOrderId, // provider fulfillment when configured
           },
         }
       }
@@ -227,12 +210,16 @@ async function createPickProviderTask(
   reason: string
 ): Promise<StepResult> {
   const { contact, brokerageId, agentId, supabase } = ctx
+  // Even the manual path gets a one-click starting point (B2C — the agent
+  // buys personally; searches keyed to the occasion, no provider).
+  const { composeShoppableLinks } = await import("@/lib/gifting/shoppable-links")
+  const shop = composeShoppableLinks(`${occasion.replace(/_/g, " ")} gift real estate client`)
   const { data: task } = await supabase.from("tasks").insert({
     brokerage_id: brokerageId,
     contact_id:   contact?.id ?? null,
     assigned_to_agent_id: agentId,
     title: `Pick + send ${occasion} gift to ${contact?.first_name ?? "contact"}`,
-    description: reason,
+    description: `${reason} ${shop.taskLine}`,
     due_date: new Date(Date.now() + 2 * 86_400_000).toISOString(),
     assignee_type: "agent",
     source: "workflow_sequence",

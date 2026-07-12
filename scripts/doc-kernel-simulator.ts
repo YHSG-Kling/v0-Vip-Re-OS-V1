@@ -572,11 +572,13 @@ async function main() {
       && dm.includes('from("social_media_accounts")') && dm.includes("never fabricate"))
     check("DM threads land as conversations type 'social_dm' — the unified inbox's own table, one row per (page, sender) thread",
       dm.includes('"social_dm"') && dm.includes("page_id: ev.pageId, sender_id: ev.senderId"))
-    const gift = src("lib/gifting/external-fulfillment.ts")
-    check("gift fulfillment is provider-gated (GIFTING_PROVIDER=goody + key → a REAL order via the connector; else attempted:false and the task fallback stands) — zero regression, never simulated",
-      gift.includes("GIFTING_PROVIDER") && gift.includes("api.ongoody.com")
-      && gift.includes("attempted: false") && gift.includes("never fabricated")
-      && src("lib/workflow/adapters/send-gift.ts").includes("fulfillGiftExternally"))
+    const { composeShoppableLinks } = await import("../lib/gifting/shoppable-links")
+    const shop = composeShoppableLinks("closing gift charcuterie board", { budgetMax: 100 })
+    check("B2C GIFTING (owner rule: no fulfillment provider) — the gift task carries one-click SHOPPABLE links for the exact recommended item; the agent buys personally",
+      shop.etsy.includes("etsy.com/search?q=closing%20gift%20charcuterie%20board")
+      && shop.amazon.includes("amazon.com/s?k=")
+      && src("lib/workflow/adapters/send-gift.ts").includes("composeShoppableLinks")
+      && !src("lib/workflow/adapters/send-gift.ts").includes("fulfillGiftExternally"))
   }
 
   console.log("\n[21 · live — the full derivation against the real database]")

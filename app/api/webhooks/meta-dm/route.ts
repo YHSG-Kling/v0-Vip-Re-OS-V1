@@ -2,8 +2,13 @@
  * app/api/webhooks/meta-dm/route.ts
  *
  * SOCIAL DM INGESTION — the unified inbox's last lane (2026-07 audit).
- * Meta (Messenger + Instagram DMs) webhooks land here once the PLATFORM
- * registers the app products (owner rule: providers are platform setup):
+ * OWNERSHIP MODEL (owner correction): the Meta app is only the SHELL —
+ * TENANTS connect their OWN pages/IG accounts through it (that's what
+ * social_media_accounts rows are: each tenant's connected identity).
+ * Meta delivers every connected page's DMs to this ONE webhook; the
+ * page→tenant mapping routes each thread home. The env pieces here
+ * (verify token / app secret) are the shell's plumbing, not a provider
+ * the platform operates on tenants' behalf:
  *
  *   GET  — Meta's subscription handshake (hub.challenge echo against
  *          META_WEBHOOK_VERIFY_TOKEN; unset = honest 404 not-configured).
