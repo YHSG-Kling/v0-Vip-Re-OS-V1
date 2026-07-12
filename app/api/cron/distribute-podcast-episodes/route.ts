@@ -42,6 +42,10 @@ export async function GET(request: NextRequest) {
   const unauth = verifyCronAuth(request)
   if (unauth) return unauth
 
+  // Fresh per run — a warm lambda must not replay last tick's memoized
+  // syndication result (or failure) against a since-fixed distributor.
+  syndicationByEpisode.clear()
+
   const contextResult = await createCronRunContextAction({
     cron_name: "distribute-podcast-episodes",
     cron_path: "/app/api/cron/distribute-podcast-episodes/route.ts",
@@ -306,9 +310,26 @@ export async function GET(request: NextRequest) {
 }
 
 /**
- * Distribute episode to a specific channel
- * In production, this would call the actual provider APIs (Spotify, Apple, etc.)
+ * Distribute an episode to one channel — the REAL rail (consolidation:
+ * this cron previously SIMULATED spotify/apple/youtube/rss success with
+ * fabricated external ids while the manual publish action already rode
+ * the true path; the 2026-07 audit killed the drift):
+ *
+ *   · A host like Transistor publishes ONCE to its managed RSS, which
+ *     fans out to Spotify / Apple / YouTube Music / RSS — so every
+ *     platform channel resolves through the SAME per-tier distributor
+ *     cascade (agent → team → brokerage → platform) and records the
+ *     provider's REAL episode id + share URL.
+ *   · Custom channels distribute via a configured webhook (a real POST).
+ *   · No distributor + no webhook = an HONEST failure the log carries —
+ *     never a simulated "published".
+ *
+ * Per-episode memo: the syndication runs once and every platform
+ * channel's log row reflects that single real publish.
  */
+const PLATFORM_CHANNELS = new Set(["spotify", "apple", "apple_podcasts", "youtube", "youtube_music", "rss", "other"])
+const syndicationByEpisode = new Map<string, { externalEpisodeId: string; providerResponse: Record<string, any> } | { error: string }>()
+
 async function distributeToChannel(
   episode: any,
   channelName: string,
@@ -317,127 +338,9 @@ async function distributeToChannel(
   externalEpisodeId: string
   providerResponse: Record<string, any>
 }> {
-  // Provider-specific distribution logic
-  switch (channelName.toLowerCase()) {
-    case "spotify":
-      return distributeToSpotify(episode, channelConfig)
-    case "apple":
-      return distributeToApple(episode, channelConfig)
-    case "youtube":
-      return distributeToYouTube(episode, channelConfig)
-    case "rss":
-      return distributeToRSS(episode, channelConfig)
-    default:
-      return distributeGeneric(episode, channelName, channelConfig)
-  }
-}
-
-// Spotify distribution (stub — integrate with Spotify for Podcasters API)
-async function distributeToSpotify(
-  episode: any,
-  channelConfig: any
-): Promise<{ externalEpisodeId: string; providerResponse: Record<string, any> }> {
-  // In production: POST to Spotify for Podcasters API
-  const externalShowId = channelConfig.external_show_id
-
-  if (!externalShowId) {
-    throw new Error("Spotify show ID not configured")
-  }
-
-  // Simulate API call
-  await new Promise(resolve => setTimeout(resolve, 100))
-
-  return {
-    externalEpisodeId: `spotify_${episode.id}_${Date.now()}`,
-    providerResponse: {
-      status: "success",
-      platform: "spotify",
-      show_id: externalShowId,
-      timestamp: new Date().toISOString(),
-    },
-  }
-}
-
-// Apple Podcasts distribution (stub — integrate with Apple Podcasts Connect API)
-async function distributeToApple(
-  episode: any,
-  channelConfig: any
-): Promise<{ externalEpisodeId: string; providerResponse: Record<string, any> }> {
-  const externalShowId = channelConfig.external_show_id
-
-  if (!externalShowId) {
-    throw new Error("Apple Podcasts show ID not configured")
-  }
-
-  // Simulate API call
-  await new Promise(resolve => setTimeout(resolve, 100))
-
-  return {
-    externalEpisodeId: `apple_${episode.id}_${Date.now()}`,
-    providerResponse: {
-      status: "success",
-      platform: "apple",
-      show_id: externalShowId,
-      timestamp: new Date().toISOString(),
-    },
-  }
-}
-
-// YouTube distribution (stub — integrate with YouTube Data API)
-async function distributeToYouTube(
-  episode: any,
-  channelConfig: any
-): Promise<{ externalEpisodeId: string; providerResponse: Record<string, any> }> {
-  const channelId = channelConfig.external_show_id
-
-  if (!channelId) {
-    throw new Error("YouTube channel ID not configured")
-  }
-
-  // Simulate API call
-  await new Promise(resolve => setTimeout(resolve, 100))
-
-  return {
-    externalEpisodeId: `youtube_${episode.id}_${Date.now()}`,
-    providerResponse: {
-      status: "success",
-      platform: "youtube",
-      channel_id: channelId,
-      timestamp: new Date().toISOString(),
-    },
-  }
-}
-
-// RSS feed distribution (updates the RSS feed file)
-async function distributeToRSS(
-  episode: any,
-  channelConfig: any
-): Promise<{ externalEpisodeId: string; providerResponse: Record<string, any> }> {
-  // In production: Update RSS feed XML stored in Vercel Blob or S3
-  await new Promise(resolve => setTimeout(resolve, 50))
-
-  return {
-    externalEpisodeId: `rss_${episode.id}_${Date.now()}`,
-    providerResponse: {
-      status: "success",
-      platform: "rss",
-      feed_updated: true,
-      timestamp: new Date().toISOString(),
-    },
-  }
-}
-
-// Generic distribution handler for custom channels
-async function distributeGeneric(
-  episode: any,
-  channelName: string,
-  channelConfig: any
-): Promise<{ externalEpisodeId: string; providerResponse: Record<string, any> }> {
-  // Generic webhook distribution
-  const webhookUrl = channelConfig.distribution_config?.webhook_url
-
-  if (webhookUrl) {
-    // POST to webhook
+  // Custom webhook channels are their own real path.
+  const webhookUrl = channelConfig?.distribution_config?.webhook_url
+  if (!PLATFORM_CHANNELS.has(channelName.toLowerCase()) && webhookUrl) {
     const response = await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -449,18 +352,71 @@ async function distributeGeneric(
         duration_seconds: episode.duration_seconds,
       }),
     })
-
-    if (!response.ok) {
-      throw new Error(`Webhook failed: ${response.status}`)
+    if (!response.ok) throw new Error(`Webhook failed: ${response.status}`)
+    return {
+      externalEpisodeId: `webhook:${new URL(webhookUrl).hostname}`,
+      providerResponse: { status: "success", platform: channelName, via: "webhook", timestamp: new Date().toISOString() },
     }
   }
 
-  return {
-    externalEpisodeId: `${channelName}_${episode.id}_${Date.now()}`,
+  // Platform channels ride the ONE real syndication per episode.
+  const memo = syndicationByEpisode.get(episode.id)
+  if (memo) {
+    if ("error" in memo) throw new Error(memo.error)
+    return memo
+  }
+
+  const supabase = createServiceClient()
+  // Resolve the episode host's user for the ownership cascade (podcast_episodes
+  // .agent_id carries agents.id by FK convention; tolerate a users.id).
+  let agentUserId: string | null = null
+  if (episode.agent_id) {
+    const { data: agentRow } = await supabase.from("agents").select("user_id").eq("id", episode.agent_id).maybeSingle()
+    agentUserId = ((agentRow as any)?.user_id as string | null) ?? (episode.agent_id as string)
+  }
+  let teamId: string | null = null
+  if (agentUserId) {
+    const { data: a } = await supabase.from("agents").select("team_id").eq("user_id", agentUserId).maybeSingle()
+    teamId = ((a as any)?.team_id as string | null) ?? null
+  }
+
+  const { resolveScopedConnection } = await import("@/lib/connections/resolve-scoped")
+  const distributor = await resolveScopedConnection("transistor", {
+    agentUserId,
+    teamId,
+    brokerageId: episode.brokerage_id,
+  }).catch(() => null)
+
+  if (!distributor?.apiKey) {
+    const failure = { error: "No podcast distributor connected (Connection Center → Transistor). Refusing to simulate a publish." }
+    syndicationByEpisode.set(episode.id, failure)
+    throw new Error(failure.error)
+  }
+
+  const { syndicateEpisode } = await import("@/lib/podcast/transistor-client")
+  const syn = await syndicateEpisode({
+    apiKey: distributor.apiKey,
+    showId: ((distributor.config as Record<string, unknown> | null)?.show_id as string) ?? distributor.accountId ?? "",
+    title: episode.title ?? "Episode",
+    summary: episode.description ?? episode.summary ?? "",
+    audioUrl: episode.audio_url ?? "",
+  })
+  if (!syn.ok || !syn.episodeId) {
+    const failure = { error: syn.error ?? "Distributor rejected the episode" }
+    syndicationByEpisode.set(episode.id, failure)
+    throw new Error(failure.error)
+  }
+
+  const result = {
+    externalEpisodeId: syn.episodeId,
     providerResponse: {
       status: "success",
-      platform: channelName,
+      via: "transistor",
+      share_url: syn.shareUrl ?? null,
+      covers: channelName,
       timestamp: new Date().toISOString(),
     },
   }
+  syndicationByEpisode.set(episode.id, result)
+  return result
 }

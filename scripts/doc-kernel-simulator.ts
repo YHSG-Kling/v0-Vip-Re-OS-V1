@@ -470,7 +470,38 @@ async function main() {
       && src("lib/platform/go-live-readiness.ts").includes("OUT OF BALANCE"))
   }
 
-  console.log("\n[17 · live — the full derivation against the real database]")
+  console.log("\n[17 · wiring — the podcast rail is REAL end to end + the on-demand educator]")
+  {
+    const dist = src("app/api/cron/distribute-podcast-episodes/route.ts")
+    check("the cron distributor rides the REAL Transistor rail (scoped-connection cascade → one syndication covers every platform channel) — the four simulated-success stubs are DEAD",
+      dist.includes("resolveScopedConnection") && dist.includes("syndicateEpisode")
+      && !dist.includes("Simulate API call") && !dist.includes("spotify_${episode.id}")
+      && dist.includes("Refusing to simulate a publish"))
+    check("the per-run memo clears on every tick (a warm lambda never replays a stale failure against a fixed distributor); custom channels keep the real webhook path",
+      dist.includes("syndicationByEpisode.clear()") && dist.includes("webhook_url"))
+    const { guideSearchTerms, composeGuideFallback } = await import("../lib/education/agent-guide")
+    check("the guide's term extraction drops stopwords and keeps the meat",
+      guideSearchTerms("How do I set up my voice twin?").includes("voice")
+      && guideSearchTerms("How do I set up my voice twin?").includes("twin")
+      && !guideSearchTerms("How do I set up my voice twin?").includes("how"))
+    check("no matching guide → an HONEST answer that flags the gap (never invented steps); a match points to the module with its minutes",
+      composeGuideFallback("x", []).includes("flagged")
+      && composeGuideFallback("x", [{ moduleId: "m1", title: "Your voice twin", summary: "Set up ElevenLabs + D-ID.", estimatedMinutes: 4 }]).includes('"Your voice twin" (4 min)'))
+    const guide = src("lib/education/agent-guide.ts")
+    check("every question logs to the SAME chat ledger the question-gap miner reads — the library grows from real questions",
+      guide.includes('"internal_assistant"') && guide.includes('from("chat_messages")')
+      && guide.includes("question-gap miner"))
+    check("ask_guidance rides the shared team-command dispatcher + registry, reachable from BOTH spoken front-ends",
+      src("lib/voice/team-commands.ts").includes('case "ask_guidance"')
+      && src("lib/voice/tool-registry.ts").includes("ask_guidance")
+      && src("lib/voice/team-command-names.ts").includes("ask_guidance")
+      && src("app/api/agent-assistant/tool-call/route.ts").includes('case "ask_guidance"'))
+    check("grounding is PUBLISHED modules only; answers compose via the gateway with the deterministic fallback",
+      guide.includes('eq("status", "published")') && guide.includes("generatePersonaCopy")
+      && guide.includes("composeGuideFallback"))
+  }
+
+  console.log("\n[18 · live — the full derivation against the real database]")
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {

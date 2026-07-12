@@ -6,8 +6,10 @@
 // + its simulator able to assert "the parser only emits a real, dispatchable command" with no
 // server-only import and no drift.
 
-/** The read-only bullpen commands. */
-export const TEAM_QUERY_COMMANDS = new Set<string>(["team_query", "area_query", "morning_standup"])
+/** The read-only bullpen commands. ask_guidance is the on-demand educator —
+ *  "how do I…?" answered from the published curriculum, gaps logged so the
+ *  library grows from real questions. */
+export const TEAM_QUERY_COMMANDS = new Set<string>(["team_query", "area_query", "morning_standup", "ask_guidance"])
 
 /** The ACTING commands — each delegates to a backend that enforces its own gate.
  *  kernel_proposals/kernel_resolve are the document kernel's spoken loop: list the

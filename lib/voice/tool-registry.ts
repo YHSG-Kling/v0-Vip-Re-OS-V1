@@ -306,6 +306,18 @@ export const voiceTools: Record<string, VoiceTool> = {
     description: "Why a contact got (or didn't get) recent touches — 'why did the Hendersons get that?'. Reads the decision receipts: every send, every skip/block WITH its reason, opens/replies, and which manager + intent produced each. Pass contact_id or person_query. Read-only.",
   },
 
+  // ── On-demand education (someone always there helping) ─────────────────────
+  ask_guidance: {
+    name: "ask_guidance",
+    category: "report",
+    authority: "agent_or_isa",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Answer the agent's how-do-I question from the tenant's PUBLISHED curriculum (grounded — never invented steps), pointing to the academy module; an unanswerable question is logged so the curriculum author writes the missing lesson. 'How do I set up my voice twin?'",
+  },
+
   // ── Document kernel (the deal-file proposals, spoken) ──────────────────────
   // Same cores as the Command Center feed buttons (lib/documents/
   // kernel-review-core.ts) — two front-ends, one resolution path, no drift.

@@ -84,6 +84,21 @@ export async function dispatchTeamCommand(
       const r = await runMorningStandup(ctx.brokerageId, ctx.agentUserId, { firstName: ctx.firstName ?? null }, svc)
       return { ok: true, spoken: r.spoken, data: { items: r.items } }
     }
+    case "ask_guidance": {
+      // "Hey team, how do I set up my voice twin?" — the on-demand educator:
+      // answered NOW from the published curriculum (grounded, never invented
+      // steps), and the question feeds the gap miner so a missing lesson gets
+      // authored — someone is always there helping, and the library learns.
+      const question = String(params.question ?? params.query ?? "").trim()
+      if (question.length < 5) return { ok: false, spoken: "What would you like a hand with? Ask me how anything here works." }
+      const { answerAgentQuestion } = await import("@/lib/education/agent-guide")
+      const r = await answerAgentQuestion(svc, { brokerageId: ctx.brokerageId, userId: ctx.agentUserId, question })
+      return {
+        ok: true,
+        spoken: r.spoken,
+        data: { matches: r.matches.map((m) => ({ moduleId: m.moduleId, title: m.title, href: `/academy/module/${m.moduleId}` })), gapLogged: r.gapLogged },
+      }
+    }
 
     // ── Acting verbs — the team DOES what you say (each backend enforces its own gate) ──
     case "standup_action": {
