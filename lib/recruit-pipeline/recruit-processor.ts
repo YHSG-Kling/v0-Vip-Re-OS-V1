@@ -112,11 +112,30 @@ export async function processRawRecruit(
 
   const effectiveBrokerageId = brokerageId ?? marketBrokerageId
   if (!effectiveBrokerageId) {
+    // PLATFORM PROSPECT CAPTURE (2026-07 growth directive) — a switch-intent
+    // agent in a territory NO subscriber owns isn't waste: nobody can recruit
+    // them in-app, which makes them OUR prospect (a solo-tier OS customer).
+    // Idempotent by email (the growth funnel's own upsert key); platform
+    // staff work the funnel — nothing auto-sends to the prospect.
+    const fullName = [firstName, lastName].filter(Boolean).join(" ").trim()
+    if (email && fullName) {
+      try {
+        await supabase.from("platform_prospects").upsert({
+          name: fullName,
+          email,
+          company: preview.currentBrokerage ?? null,
+          role_interest: "solo_agent",
+          source: "recruit_scrape_unclaimed_territory",
+          interest_note: `Switch-intent signal scraped in an unclaimed territory${preview.licenseState ? ` (${preview.licenseState})` : ""} — no subscribing brokerage can work them; a direct solo-tier OS prospect.`,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "email" })
+      } catch { /* capture is additive — the recruit pipeline verdict stands */ }
+    }
     await setStatus(supabase, rawId, "unassigned_no_market")
     return {
       success: false,
       action: "skipped",
-      reason: "Cannot resolve owning brokerage (no brokerageId and no market territory)",
+      reason: "Cannot resolve owning brokerage (no brokerageId and no market territory)" + (email && fullName ? " — captured as a PLATFORM prospect (solo-tier)" : ""),
       stage: "brokerage_resolution",
     }
   }

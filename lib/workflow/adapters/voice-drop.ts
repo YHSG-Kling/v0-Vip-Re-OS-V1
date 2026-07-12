@@ -1,12 +1,20 @@
 /**
- * Voice Drop adapter — Vapi native voicedrop (not voicemail/RVM).
+ * Voice Drop adapter — CONSOLIDATED onto the canonical voicedrop rail
+ * (lib/voicedrop/orchestrate-voicedrop-send: provider-configurable via
+ * VOICEDROP_PROVIDER through the connector gateway, TCPA + compliance
+ * gated, preset-based with a situational script override).
  *
- * Delivers a pre-recorded or TTS audio clip to the contact's voicemail
- * WITHOUT causing the phone to ring. Vapi native voicedrop handles this.
+ * DRIFT KILLED (2026-07 omnichannel audit): this adapter previously
+ * called the RAW Vapi API — a provider the platform decommissioned
+ * (Twilio-native voice lane) — so any sequence voice_drop step rode a
+ * dead vendor while the real rail sat beside it. Now the step's
+ * generated, persona-grounded script (ai_intent → body) is the
+ * scriptOverride on the brokerage's ACTIVE voicedrop preset; no active
+ * preset = an honest error the executor records (the deferral/skip
+ * ledger says why), never a fake send.
  */
 
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export const voiceDropAdapter: ChannelAdapter = {
   channel: "voice_drop",
@@ -15,65 +23,43 @@ export const voiceDropAdapter: ChannelAdapter = {
     const { contact, step, brokerageId, agentUserId } = ctx
 
     if (!contact?.phone) {
-      return { status: "error", providerKey: "vapi", error: "No phone on contact" }
+      return { status: "error", providerKey: "voicedrop", error: "No phone on contact" }
     }
-
-    const script = step.voice_drop_script ?? step.body
+    const script = (step.voice_drop_script as string | null) ?? (step.body as string | null)
     if (!script) {
-      return { status: "error", providerKey: "vapi", error: "No voice drop script configured" }
+      return { status: "error", providerKey: "voicedrop", error: "No voice drop script configured" }
     }
 
-    // Resolve voice: step-level override → agent's cloned voice
-    let voiceId: string | null = step.voice_drop_voice_id ?? null
-    if (!voiceId && agentUserId) {
-      try {
-        const { resolveSelfVoice } = await import("@/lib/voice/voice-resolver")
-        const resolved = await resolveSelfVoice(agentUserId)
-        voiceId = resolved.voiceId ?? null
-      } catch { /* best-effort */ }
+    // The brokerage's ACTIVE voicedrop preset — the canonical rail requires
+    // one (it carries the synthesized-voice + provider config).
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+    const { data: preset } = await svc.from("voicedrop_presets")
+      .select("id")
+      .eq("brokerage_id", brokerageId)
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (!preset) {
+      return { status: "error", providerKey: "voicedrop", error: "No active voicedrop preset for this brokerage — configure one in settings" }
     }
 
-    // Dispatch via Vapi voicedrop
-    try {
-      const vapiKey = process.env.VAPI_API_KEY
-      if (!vapiKey) {
-        return { status: "error", providerKey: "vapi", error: "VAPI_API_KEY not configured" }
-      }
+    const { orchestrateVoicedropSend } = await import("@/lib/voicedrop/orchestrate-voicedrop-send")
+    const result = await orchestrateVoicedropSend({
+      brokerageId,
+      presetId: (preset as { id: string }).id,
+      contactId: contact.id,
+      toPhone: contact.phone,
+      recipientFirstName: (contact as { first_name?: string | null }).first_name ?? null,
+      agentUserId: agentUserId ?? null,
+      systemSource: "sequence",
+      scriptOverride: script,
+    })
 
-      // Vapi REST call for voicedrop (ringless voicemail delivery)
-      const response = await callConnector<{ id?: string }>({
-        connector: "vapi",
-        baseUrl: "https://api.vapi.ai",
-        path: "/call/phone",
-        method: "POST",
-        auth: { style: "bearer", token: vapiKey },
-        body: {
-          phoneNumberId: process.env.VAPI_PHONE_NUMBER_ID,
-          customer: { number: contact.phone },
-          assistantOverrides: {
-            firstMessage: script,
-            ...(voiceId ? { voice: { provider: "11labs", voiceId } } : {}),
-          },
-          // Vapi voicedrop flag — deliver without ringing
-          voicemailDetectionEnabled: true,
-          metadata: { voicedrop: true, brokerageId, contactId: contact.id },
-        },
-      })
-
-      if (!response.ok) {
-        return { status: "error", providerKey: "vapi", error: `Vapi error: ${response.error ?? `HTTP ${response.status}`}` }
-      }
-
-      const data = response.data ?? {}
-      return {
-        status: "sent",
-        providerKey: "vapi",
-        messageId: data?.id,
-        output: { call_id: data?.id },
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return { status: "error", providerKey: "vapi", error: `Voice drop failed: ${msg}` }
+    if (!result.success) {
+      return { status: "error", providerKey: result.providerKey ?? "voicedrop", error: result.error ?? "voicedrop failed" }
     }
+    return { status: "sent", providerKey: result.providerKey ?? "voicedrop" }
   },
 }

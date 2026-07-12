@@ -527,7 +527,29 @@ async function main() {
       src("docs/PILOT_RUNBOOK.md").includes("Earned autonomy") && src("docs/PILOT_RUNBOOK.md").includes("Decision Room"))
   }
 
-  console.log("\n[19 · live — the full derivation against the real database]")
+  console.log("\n[19 · wiring — omnichannel voicedrop rung + the platform's own lead capture]")
+  {
+    const installer = src("lib/lead-pipeline/reactivation-sequence-installer.ts")
+    check("the reactivation ladder gained the VOICE DROP rung (step 4) — omnichannel including voicedrops, per the owner directive",
+      installer.includes('channel: "voice_drop"') && installer.includes("Ringless voicemail")
+      && installer.includes("ringless voicemail in the agent's voice"))
+    check("live tenants UPGRADE in place — an existing sequence gains missing rungs idempotently by step_number (no reinstall)",
+      installer.includes("UPGRADE PATH") && installer.includes("!have.has(s.step_number)"))
+    const adapter = src("lib/workflow/adapters/voice-drop.ts")
+    check("the sequence voice_drop adapter rides the CANONICAL voicedrop rail (provider-configurable, TCPA+compliance gated) — the raw decommissioned-Vapi drift is DEAD",
+      adapter.includes("orchestrateVoicedropSend") && !adapter.includes("api.vapi.ai")
+      && adapter.includes("scriptOverride: script")
+      && adapter.includes('eq("is_active", true)'))
+    check("no active preset = an honest per-step error, never a fake send; the executor's TCPA gate already covers voice_drop",
+      adapter.includes("No active voicedrop preset")
+      && src("lib/campaign-sequences/step-executor.ts").includes('"voice_drop"'))
+    const proc = src("lib/recruit-pipeline/recruit-processor.ts")
+    check("PLATFORM LEAD CAPTURE — a switch-intent agent in an UNCLAIMED territory upserts platform_prospects (solo-tier, idempotent by email); nothing auto-sends",
+      proc.includes("platform_prospects") && proc.includes("recruit_scrape_unclaimed_territory")
+      && proc.includes('onConflict: "email"') && proc.includes("nothing auto-sends"))
+  }
+
+  console.log("\n[20 · live — the full derivation against the real database]")
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {

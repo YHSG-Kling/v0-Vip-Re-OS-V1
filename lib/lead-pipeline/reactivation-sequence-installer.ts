@@ -28,9 +28,12 @@ interface StepSeed {
 }
 
 // Multi-channel, persona-driven. delay_days is relative to the PREVIOUS step. Leads auto-skip the
-// sms rung (lead-only gate) and reach the email rungs; sequence completion fires the kernel's
-// ISA_MAX_TOUCHES_REACHED escalation for BOTH. Richer rungs (direct mail, voice drop, video-email,
-// FB retarget) extend this same sequence once their per-brokerage assets are configured.
+// sms + voice_drop rungs (lead-only gate + the executor's TCPA gate, enforced per step) and reach
+// the email rungs; sequence completion fires the kernel's ISA_MAX_TOUCHES_REACHED escalation for
+// BOTH. The VOICE DROP rung (2026-07 omnichannel directive) rides the canonical voicedrop rail —
+// the brokerage's active preset with the step's situational script; no preset = an honest per-step
+// error and the sequence advances. Remaining richer rungs (direct mail, video-email, FB retarget)
+// extend this SAME sequence as their per-brokerage assets land.
 const STEPS: StepSeed[] = [
   {
     step_number: 1, step_name: "Warm re-intro email", channel: "email", delay_days: 0,
@@ -43,6 +46,10 @@ const STEPS: StepSeed[] = [
   {
     step_number: 3, step_name: "Value-forward email", channel: "email", delay_days: 7,
     ai_intent: "a short, value-forward second email — offer something genuinely helpful (a quick market read, or a simple question) while staying low-pressure",
+  },
+  {
+    step_number: 4, step_name: "Ringless voicemail — a human voice", channel: "voice_drop", delay_days: 7,
+    ai_intent: "a warm, 20-second ringless voicemail in the agent's voice for someone who hasn't answered email or text — acknowledge life gets busy, offer one genuinely helpful thing, no pressure, easy callback",
   },
 ]
 
@@ -60,7 +67,26 @@ export async function ensureReactivationSequence(brokerageId: string, client?: S
     .eq("trigger_event", REACTIVATION_TRIGGER)
     .eq("sequence_type", "reactivation")
     .maybeSingle()
-  if (existing) return { sequenceId: (existing as any).id, created: false }
+  if (existing) {
+    // UPGRADE PATH: a previously-installed sequence gains any NEW rungs
+    // (idempotent per step_number) — live tenants get the voice-drop rung
+    // without a reinstall; enrolled contacts pick it up as they advance.
+    const existingId = (existing as any).id as string
+    try {
+      const { data: haveSteps } = await svc
+        .from("campaign_sequence_steps")
+        .select("step_number")
+        .eq("sequence_id", existingId)
+      const have = new Set(((haveSteps ?? []) as Array<{ step_number: number }>).map((s) => s.step_number))
+      const missing = STEPS.filter((s) => !have.has(s.step_number))
+      if (missing.length > 0) {
+        await svc.from("campaign_sequence_steps").insert(
+          missing.map((s) => ({ sequence_id: existingId, is_active: true, delay_hours: 0, ...s })),
+        )
+      }
+    } catch { /* upgrade is best-effort — the sequence keeps running as-is */ }
+    return { sequenceId: existingId, created: false }
+  }
 
   const { data: seq, error: seqErr } = await svc
     .from("campaign_sequences")
