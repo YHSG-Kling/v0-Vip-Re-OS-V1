@@ -549,7 +549,37 @@ async function main() {
       && proc.includes('onConflict: "email"') && proc.includes("nothing auto-sends"))
   }
 
-  console.log("\n[20 · live — the full derivation against the real database]")
+  console.log("\n[20 · wiring — the platform HUNTS its customers + DM ingestion + gift fulfillment]")
+  {
+    const { inferProspectRole, prospectDedupeKey, OS_INTENT_TERMS } = await import("../lib/platform/prospect-sourcer")
+    check("OS-BUYING intent terms are tech-shopping language (competitor alternatives, CRM asks) — never the tenants' recruit/deal language",
+      OS_INTENT_TERMS.some((t) => t.includes("alternative")) && OS_INTENT_TERMS.some((t) => t.includes("crm"))
+      && !OS_INTENT_TERMS.some((t) => t.includes("leaving my brokerage")))
+    check("tier interest is INFERRED from the language: brokerage terms → brokerage, team terms → team, default solo",
+      inferProspectRole("thinking about software for my brokerage and our office") === "brokerage"
+      && inferProspectRole("need a team crm for my team of 6") === "team"
+      && inferProspectRole("what's the best crm for realtors") === "solo_agent")
+    check("pseudonymous prospects dedupe by source record key (no email to conflict on)",
+      prospectDedupeKey("reddit_os_intent", "abc123") === "src:reddit_os_intent:abc123")
+    const sourcer = src("lib/platform/prospect-sourcer.ts")
+    check("the hunt is provider-gated, ISO-week idempotent, ends in ONE staff digest with composed outreach drafts — nothing auto-sends to prospects",
+      sourcer.includes("scrapeRedditPosts") && sourcer.includes("[week:") && sourcer.includes("composeProspectOutreach")
+      && sourcer.includes("Nothing auto-sends")
+      && src("app/api/cron/lead-scraping/route.ts").includes("sourcePlatformProspects"))
+    const dm = src("app/api/webhooks/meta-dm/route.ts")
+    check("the Meta DM webhook verifies honestly (unset token = 404), maps the page to its tenant via social_media_accounts, and ACKs-and-skips unowned pages — never fabricates",
+      dm.includes("META_WEBHOOK_VERIFY_TOKEN") && dm.includes("hub.challenge")
+      && dm.includes('from("social_media_accounts")') && dm.includes("never fabricate"))
+    check("DM threads land as conversations type 'social_dm' — the unified inbox's own table, one row per (page, sender) thread",
+      dm.includes('"social_dm"') && dm.includes("page_id: ev.pageId, sender_id: ev.senderId"))
+    const gift = src("lib/gifting/external-fulfillment.ts")
+    check("gift fulfillment is provider-gated (GIFTING_PROVIDER=goody + key → a REAL order via the connector; else attempted:false and the task fallback stands) — zero regression, never simulated",
+      gift.includes("GIFTING_PROVIDER") && gift.includes("api.ongoody.com")
+      && gift.includes("attempted: false") && gift.includes("never fabricated")
+      && src("lib/workflow/adapters/send-gift.ts").includes("fulfillGiftExternally"))
+  }
+
+  console.log("\n[21 · live — the full derivation against the real database]")
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {

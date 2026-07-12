@@ -11,6 +11,7 @@ export const PROSPECT_STATUSES = ["new", "contacted", "trial", "converted", "los
 export type ProspectStatus = (typeof PROSPECT_STATUSES)[number]
 
 export const PROSPECT_ROLES = ["solo_agent", "team", "brokerage", "multi_location", "unknown"] as const
+export type ProspectRole = (typeof PROSPECT_ROLES)[number]
 
 export interface ProspectInput {
   name?: string | null

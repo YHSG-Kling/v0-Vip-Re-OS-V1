@@ -828,7 +828,21 @@ export async function GET(request: Request) {
       created_at:   new Date().toISOString(),
     }).then(() => {}, () => {})
 
-    return NextResponse.json({ message: "Lead scraping completed", results })
+    // THE PLATFORM HUNTS ITS OWN CUSTOMERS — same scraping heartbeat, pointed
+    // at OS-BUYING intent (agents/teams/brokerages shopping for tech). Weekly
+    // ISO-gated inside the sourcer; provider-gated; staff digest only, never
+    // automated outreach to the prospect. Best-effort.
+    let platformProspects = 0
+    try {
+      const { sourcePlatformProspects } = await import("@/lib/platform/prospect-sourcer")
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const r = await sourcePlatformProspects(createServiceClient() as any)
+      platformProspects = r.captured
+    } catch (e) {
+      console.error("[lead-scraping] platform prospect hunt failed (non-fatal):", e)
+    }
+
+    return NextResponse.json({ message: "Lead scraping completed", platformProspects, results })
   } catch (error) {
     const durationMs = Date.now() - cronStartedAt
     console.error("[Lead Scraping Cron] Fatal error:", error)

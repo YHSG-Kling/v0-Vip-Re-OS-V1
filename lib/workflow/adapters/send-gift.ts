@@ -151,7 +151,29 @@ export const sendGiftAdapter: ChannelAdapter = {
 
         // If autoPay was false (or payment requires agent action), create a "pay" task
         const orderId = orderResult?.orderId ?? orderResult?.giftOrder?.id ?? orderResult?.id
-        const paid = autoPay && (orderResult?.paid || orderResult?.success)
+        let paid = autoPay && (orderResult?.paid || orderResult?.success)
+
+        // EXTERNAL FULFILLMENT SEAM (platform-provider-gated, e.g. Goody): a
+        // configured gifting provider handles the physical order hands-free —
+        // the recipient confirms their own address via the provider's flow.
+        // Unconfigured / failed → the pay/manual task path below stands
+        // unchanged (never a simulated fulfillment).
+        let externalOrderId: string | null = null
+        try {
+          const { data: cEmail } = await supabase.from("contacts")
+            .select("email, first_name, last_name").eq("id", contact.id).maybeSingle()
+          const { fulfillGiftExternally } = await import("@/lib/gifting/external-fulfillment")
+          const ext = await fulfillGiftExternally({
+            recipientName: [`${(cEmail as any)?.first_name ?? ""}`, `${(cEmail as any)?.last_name ?? ""}`].join(" ").trim() || (contact.first_name ?? "Client"),
+            recipientEmail: ((cEmail as any)?.email as string | null) ?? null,
+            message: noteText ?? null,
+            costCapCents: amountCents,
+          })
+          if (ext.attempted && ext.ok) {
+            externalOrderId = ext.externalOrderId
+            paid = true // the provider owns fulfillment + billing — no pay-task needed
+          }
+        } catch { /* seam is additive — the task fallback stands */ }
 
         if (!paid) {
           void Promise.resolve(supabase.from("tasks").insert({
@@ -181,6 +203,7 @@ export const sendGiftAdapter: ChannelAdapter = {
             cost:          recommendedGift.cost,
             note:          noteText,
             auto_paid:     paid,
+            external_order_id: externalOrderId, // provider fulfillment when configured
           },
         }
       }
