@@ -436,7 +436,41 @@ async function main() {
       && src("app/components/onboarding/decision-room.tsx").includes("Adopt the proposed identity"))
   }
 
-  console.log("\n[16 · live — the full derivation against the real database]")
+  console.log("\n[16 · pure + wiring — the LISTING-EXPIRY DECISION + lessons-at-the-moment + platform provider probe]")
+  {
+    const { composeExpiryDecision } = await import("../lib/listings/expiry-decision")
+    const base = { daysToExpiry: 12, daysOnMarket: 60, areaMedianDom: 30, listPrice: 500_000, priceCutNets: [{ price: 485_000, net: 240_000, cutPct: 3 }] }
+    check("live offer activity ALWAYS recommends relist — you don't release a listing with offers on the table",
+      composeExpiryDecision({ ...base, showingsLast30: 1, offersReceived: 2 }).recommended === "relist")
+    check("healthy showings at normal pace → relist (the term ran out, not the demand)",
+      composeExpiryDecision({ ...base, daysOnMarket: 35, showingsLast30: 6, offersReceived: 0 }).recommended === "relist")
+    check("thin showings → reprice, carrying the REAL price-cut net (canonical math, labeled estimate)",
+      composeExpiryDecision({ ...base, showingsLast30: 1, offersReceived: 0 }).recommended === "reprice"
+      && composeExpiryDecision({ ...base, showingsLast30: 1, offersReceived: 0 }).reason.includes("$240,000"))
+    check("zero showings at 2x+ the area pace → release respectfully; unknown pace NEVER fabricates a pace claim",
+      composeExpiryDecision({ ...base, daysOnMarket: 70, showingsLast30: 0, offersReceived: 0 }).recommended === "release"
+      && composeExpiryDecision({ ...base, areaMedianDom: null, showingsLast30: 0, offersReceived: 0 }).recommended === "reprice"
+      && !composeExpiryDecision({ ...base, areaMedianDom: null, showingsLast30: 0, offersReceived: 0 }).options[0].evidence.includes("area median"))
+    const exp = src("lib/listings/expiry-decision.ts")
+    check("the runner ledgers an ALWAYS-amber verdict (agreement decisions are human) and proposes the gated agent brief, idempotent per listing",
+      exp.includes('"listing_expiry"') && exp.includes('decision: "amber"')
+      && exp.includes("LISTING EXPIRY DECISION") && exp.includes("PROPOSAL_DEDUP_DAYS")
+      && src("app/api/cron/listing-health-scan/route.ts").includes("runExpiryDecisions"))
+    const { attachLessons } = await import("../lib/onboarding/onboarding-decisions")
+    const withLesson = attachLessons(
+      [{ key: "first_approvals", title: "t", evidence: "e", recommendation: "r", state: "ready" as const, action: { label: "l", href: "/x" } }],
+      new Map([["working_with_managers", "mod-123"]]),
+    )
+    check("Decision Room cards teach at the moment of action — a published module attaches as /academy/module/<id>; no module, no fabricated link",
+      withLesson[0].lessonHref === "/academy/module/mod-123"
+      && attachLessons(withLesson, new Map())[0] !== undefined
+      && src("app/components/onboarding/decision-room.tsx").includes("quick lesson"))
+    check("the records provider (BatchData) probes on the PLATFORM go-live board (owner rule: providers are platform setup) — out-of-balance reads BROKEN with the reason, never silently ready",
+      src("lib/platform/go-live-readiness.ts").includes('"records_provider"')
+      && src("lib/platform/go-live-readiness.ts").includes("OUT OF BALANCE"))
+  }
+
+  console.log("\n[17 · live — the full derivation against the real database]")
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {

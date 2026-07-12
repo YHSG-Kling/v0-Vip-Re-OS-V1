@@ -3,7 +3,7 @@ import { normalizeSetupRole, loadSetupReadiness } from "@/lib/onboarding/setup-r
 import { SetupReadinessCardView } from "./setup-readiness-view"
 import { DecisionRoom } from "./decision-room"
 import { createServiceClient } from "@/lib/supabase/service"
-import { composeOnboardingDecisions, loadOnboardingDecisionFacts } from "@/lib/onboarding/onboarding-decisions"
+import { composeOnboardingDecisions, loadOnboardingDecisionFacts, attachLessons } from "@/lib/onboarding/onboarding-decisions"
 
 /**
  * Server setup-readiness card — resolves the viewer's role + real configured state and renders the shared
@@ -26,7 +26,7 @@ export async function SetupReadinessCard() {
   if (ctx.brokerageId) {
     try {
       const facts = await loadOnboardingDecisionFacts(createServiceClient() as any, { brokerageId: ctx.brokerageId })
-      const composed = composeOnboardingDecisions(facts)
+      const composed = attachLessons(composeOnboardingDecisions(facts), facts.moduleIdByTopic ?? new Map())
       // The room earns its space only while something is actionable.
       if (composed.some((d) => d.state !== "done")) decisions = composed
     } catch { /* decision room is additive — the checklist always renders */ }

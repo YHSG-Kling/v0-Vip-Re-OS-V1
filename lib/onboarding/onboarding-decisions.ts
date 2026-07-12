@@ -31,6 +31,9 @@ export interface OnboardingDecisionFacts {
   socialConnected: boolean
   siteSlug: string | null
   documentsScanned: number
+  /** published onboarding lesson per curriculum topic (loader-filled; the
+   *  pure composer ignores it — attachLessons consumes it). */
+  moduleIdByTopic?: Map<string, string>
 }
 
 export type DecisionState = "ready" | "waiting" | "done"
@@ -46,6 +49,30 @@ export interface OnboardingDecision {
   action: { label: string; href: string }
   /** true when the card's primary act is the in-place adopt (assistant identity). */
   adoptable?: boolean
+  /** a published curriculum module teaching THIS decision — learning at the
+   *  moment of action, not in a library (owner's education-extension rule). */
+  lessonHref?: string
+}
+
+/** decision key → the curriculum topics that teach it (onboardingTag keys). */
+export const DECISION_LESSON_TOPICS: Record<string, string[]> = {
+  meet_your_assistant: ["platform_tour"],
+  first_sphere_pass: ["solo_pipeline", "working_with_managers"],
+  first_approvals: ["working_with_managers"],
+  your_website: ["self_marketing", "platform_tour"],
+  first_deal_file: ["guidance_essentials"],
+}
+
+/** PURE: attach lesson links from published modules (tag → module id). */
+export function attachLessons(
+  decisions: OnboardingDecision[],
+  moduleIdByTopic: Map<string, string>,
+): OnboardingDecision[] {
+  return decisions.map((d) => {
+    const topics = DECISION_LESSON_TOPICS[d.key] ?? []
+    const moduleId = topics.map((t) => moduleIdByTopic.get(t)).find(Boolean)
+    return moduleId ? { ...d, lessonHref: `/academy/module/${moduleId}` } : d
+  })
 }
 
 /** PURE: facts → the decisions waiting on the human. Honest by construction:
@@ -164,7 +191,26 @@ export async function loadOnboardingDecisionFacts(
     } catch { /* evidence stays 0 — never invented */ }
   }
 
+  // Published onboarding lessons — keyed by topic so cards teach at the
+  // moment of action (gap_tags carry 'onboarding:{tier}:{topic}').
+  const moduleIdByTopic = new Map<string, string>()
+  try {
+    const { data: modules } = await svc.from("learning_modules")
+      .select("id, gap_tags")
+      .eq("brokerage_id", input.brokerageId)
+      .eq("status", "published")
+      .eq("milestone_key", "platform_onboarding")
+      .limit(50)
+    for (const m of ((modules ?? []) as Array<{ id: string; gap_tags: string[] | null }>)) {
+      for (const tag of (m.gap_tags ?? [])) {
+        const topic = /^onboarding:[^:]+:(.+)$/.exec(String(tag))?.[1]
+        if (topic && !moduleIdByTopic.has(topic)) moduleIdByTopic.set(topic, m.id)
+      }
+    }
+  } catch { /* lessons are additive */ }
+
   return {
+    moduleIdByTopic,
     brandName: (brand.data as any)?.name ?? null,
     aiIdentityConfigured: (identity.count ?? 0) > 0,
     contactsImported: contacts.count ?? 0,

@@ -63,10 +63,28 @@ export async function GET(request: NextRequest) {
     }
 
     const atRisk = results.filter((r) => r.riskLevel === "at_risk" || r.riskLevel === "critical").length
+
+    // THE LISTING-EXPIRY DECISION SURFACE — same scan, same heartbeat: for
+    // every brokerage with listings approaching agreement expiry (21d),
+    // compose the RELIST / REPRICE / RELEASE decision with real evidence and
+    // price-cut nets, ledger the amber verdict, propose the gated agent
+    // brief. Best-effort — never blocks the health scan.
+    let expiryProposed = 0
+    try {
+      const { runExpiryDecisions } = await import("@/lib/listings/expiry-decision")
+      const { data: brokerages } = await supabase.from("brokerages").select("id").is("deleted_at", null)
+      for (const b of ((brokerages ?? []) as Array<{ id: string }>)) {
+        const r = await runExpiryDecisions(supabase as any, { brokerageId: b.id })
+        expiryProposed += r.decisionsProposed
+      }
+    } catch (e) {
+      console.error("[listing-health-scan] expiry-decision sweep failed (non-fatal):", e)
+    }
+
     await recordCronSuccessAction({
       context_id:        contextId,
       records_processed: results.length,
-      metadata: { at_risk_count: atRisk, error_count: results.filter((r) => r.error).length },
+      metadata: { at_risk_count: atRisk, error_count: results.filter((r) => r.error).length, expiry_decisions_proposed: expiryProposed },
     })
 
     return NextResponse.json({

@@ -76,6 +76,11 @@ export function DecisionRoom({ decisions: initial }: { decisions: OnboardingDeci
                 <Link href={d.action.href} className="text-xs font-medium text-indigo-700 hover:underline">
                   {d.action.label} →
                 </Link>
+                {d.lessonHref && (
+                  <Link href={d.lessonHref} className="text-xs text-muted-foreground hover:underline">
+                    quick lesson
+                  </Link>
+                )}
               </div>
             </li>
           )
