@@ -437,6 +437,57 @@ export async function generateDailyBriefing(
     console.error("[DailyBriefing] i-saw-you fetch failed:", err)
   }
 
+  // 2d. SMALL-WINS CELEBRATION — yesterday's mid-deal wins (offer accepted,
+  //     under contract, financing cleared, listing live) become a congrats
+  //     note the agent sends this morning, drafted and addressed. Reads the
+  //     projector's portal_event_stream (already contact+agent resolved,
+  //     severity 'celebration'); closing + anniversary are owned by the
+  //     Gift Studio queue / anniversary rail (pure exclusion). Deterministic.
+  let smallWinActions: PriorityAction[] = []
+  try {
+    const { composeSmallWinActions } = await import("./small-wins")
+    const { resolveAddressing } = await import("@/lib/kernel/addressing")
+    const since24 = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    // portal_event_stream.agent_user_id is users.id — resolve tolerantly
+    // (agentId may be either users.id or agents.id depending on the caller).
+    const { data: agentRow3 } = await supabase
+      .from("agents").select("id, user_id").or(`user_id.eq.${agentId},id.eq.${agentId}`).maybeSingle()
+    const agentUserIds = Array.from(new Set([agentId, agentRow3?.user_id].filter(Boolean))) as string[]
+
+    const { data: wins } = await supabase
+      .from("portal_event_stream")
+      .select("contact_id, event_type, occurred_at")
+      .eq("severity", "celebration")
+      .in("agent_user_id", agentUserIds)
+      .gte("occurred_at", since24)
+      .order("occurred_at", { ascending: false })
+      .limit(20)
+    const winRows = ((wins ?? []) as Array<{ contact_id: string | null; event_type: string | null }>)
+      .filter((w) => w.contact_id && w.event_type)
+    const winContactIds = Array.from(new Set(winRows.map((w) => w.contact_id as string)))
+    if (winContactIds.length > 0) {
+      const { data: winContacts } = await supabase
+        .from("contacts")
+        .select("id, first_name, last_name, preferred_name, salutation_style")
+        .in("id", winContactIds)
+      const nameById = new Map<string, string>()
+      for (const c of ((winContacts ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null; preferred_name: string | null; salutation_style: string | null }>)) {
+        nameById.set(c.id, resolveAddressing({
+          firstName: c.first_name, lastName: c.last_name,
+          preferredName: c.preferred_name, namePronunciation: null,
+          salutationStyle: c.salutation_style,
+        }).addressAs)
+      }
+      smallWinActions = composeSmallWinActions(winRows.map((w) => ({
+        contactId: w.contact_id as string,
+        addressAs: nameById.get(w.contact_id as string) ?? "your client",
+        eventType: w.event_type as string,
+      })))
+    }
+  } catch (err) {
+    console.error("[DailyBriefing] small-wins fetch failed:", err)
+  }
+
   // 3. Call Claude to generate briefing
   const dataSnapshot = {
     tasks: tasks.slice(0, 10),
@@ -548,7 +599,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
   // qualified lead is never left to the model's judgment. "I saw you" recognition
   // notes ride next (same rule: a heavy client evening is a fact, not a model call).
   // AI items fill the rest.
-  const deterministicActions = [...isaActions, ...iSawYouActions]
+  const deterministicActions = [...isaActions, ...iSawYouActions, ...smallWinActions]
   const finalPriorityActions = [
     ...deterministicActions,
     ...(aiResponse.top_priority_actions ?? []).filter(

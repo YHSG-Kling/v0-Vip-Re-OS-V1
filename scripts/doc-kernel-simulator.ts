@@ -722,6 +722,27 @@ async function main() {
     check("NOT-NULL assignee contract (live catch): both task-creating concierge actions resolve the contact's agent → caller's agents row → HONEST refusal, never a broken insert",
       src("app/actions/strategy-session.ts").includes("No agent to assign")
       && src("app/actions/gift-studio.ts").includes("No agent to assign"))
+    const { composeSmallWinActions, CELEBRATIONS_OWNED_ELSEWHERE } = await import("../lib/intelligence/small-wins")
+    const winActions = composeSmallWinActions([
+      { contactId: "c-1", addressAs: "Bill", eventType: "offer.accepted" },
+      { contactId: "c-1", addressAs: "Bill", eventType: "transaction.under_contract" },
+      { contactId: "c-2", addressAs: "Ana", eventType: "transaction.closed" },
+      { contactId: "c-3", addressAs: "Maya", eventType: "financing.cleared" },
+    ])
+    check("SMALL-WINS CELEBRATION (concierge #20) — mid-deal wins earn a drafted congrats + Gift Studio pointer; ONE win per contact; closing/anniversary are OWNED ELSEWHERE (Gift Studio queue / anniversary rail) so nothing double-nudges",
+      winActions.length === 2 && winActions[0]?.entity_id === "c-1"
+      && Boolean(winActions[0]?.context.includes("their offer just got accepted")) && Boolean(winActions[0]?.context.includes("Gift Studio"))
+      && winActions.every((a) => a.entity_id !== "c-2")
+      && CELEBRATIONS_OWNED_ELSEWHERE.has("transaction.closed") && CELEBRATIONS_OWNED_ELSEWHERE.has("lifetime.anniversary")
+      && winActions[0]?.manager === "shopping_agent" && winActions[1]?.manager === "deal_coordinator")
+    check("small wins ride the SAME deterministic briefing rail (projector's portal_event_stream, severity 'celebration', tolerant users.id/agents.id resolution) and EVERY session-built concierge rail is REGISTERED to its manager in MAINTENANCE_DOMAINS",
+      src("lib/intelligence/daily-briefing-generator.ts").includes('from("portal_event_stream")')
+      && src("lib/intelligence/daily-briefing-generator.ts").includes('.eq("severity", "celebration")')
+      && src("lib/intelligence/daily-briefing-generator.ts").includes("...smallWinActions")
+      && src("lib/kernel/manager-registry.ts").includes("gift_studio:")
+      && src("lib/kernel/manager-registry.ts").includes("addressing_memory:")
+      && src("lib/kernel/manager-registry.ts").includes("i_saw_you_recognition:")
+      && src("lib/kernel/manager-registry.ts").includes("strategy_sessions:"))
   }
 
   console.log("\n[23 · live — the full derivation against the real database]")
