@@ -583,11 +583,11 @@ async function main() {
 
   console.log("\n[21 · pure + wiring — THE GIFT STUDIO (the AI knows the customer AND the deal)]")
   {
-    const { composeGiftSelections } = await import("../lib/gifting/gift-studio")
+    const { composeGiftSelections, mineGiftInterests, mineLifeEvents } = await import("../lib/gifting/gift-studio")
     const rich = composeGiftSelections({
       occasion: "closing", familyName: "Henderson", firstNames: "Dana & Sam",
       homeAddress: "12 Birch Lane", closeYear: 2026, persona: "first_time_buyer",
-      budgetMax: null, pastGiftKeys: [],
+      budgetMax: null, pastGiftKeys: [], interests: [], lifeEvents: [],
     })
     check("deal-grounded picks: the engraving line is ALREADY WRITTEN from the closed home's address + family + year; every pick carries evidence + a pre-scoped buy link",
       rich.length >= 3 && rich.some((s) => s.personalization === "The Henderson Family · 12 Birch Lane · Est. 2026")
@@ -595,18 +595,54 @@ async function main() {
       && rich.every((s) => s.whyThisFits.length > 10) && rich.every((s) => s.etsyUrl.includes("etsy.com/search")))
     const noAddress = composeGiftSelections({
       occasion: "closing", familyName: null, firstNames: "Dana",
-      homeAddress: null, closeYear: null, persona: null, budgetMax: null, pastGiftKeys: [],
+      homeAddress: null, closeYear: null, persona: null, budgetMax: null, pastGiftKeys: [], interests: [], lifeEvents: [],
     })
     check("no address = HONEST degradation — address-personalized archetypes drop out, the universal basket stands; past gifts never repeat",
       noAddress.every((s) => !s.title.includes("address") || s.personalization === null)
       && noAddress.some((s) => s.key === "local_gourmet_basket")
-      && composeGiftSelections({ occasion: "closing", familyName: "H", firstNames: "D", homeAddress: "1 Elm", closeYear: 2026, persona: null, budgetMax: null, pastGiftKeys: ["home_portrait_cutting_board"] })
+      && composeGiftSelections({ occasion: "closing", familyName: "H", firstNames: "D", homeAddress: "1 Elm", closeYear: 2026, persona: null, budgetMax: null, pastGiftKeys: ["home_portrait_cutting_board"], interests: [], lifeEvents: [] })
         .every((s) => s.key !== "home_portrait_cutting_board"))
     check("the in-window flow is complete: queue of ungifted closings → selections → order row (personalization_note) + purchase task, all inside the OS",
       src("app/actions/gift-studio.ts").includes("personalization_note")
       && src("app/actions/gift-studio.ts").includes('source: "gift_studio"')
       && src("app/dashboard/gifts/page.tsx").includes("GiftStudioClient")
       && src("app/dashboard/gifts/gift-studio-client.tsx").includes("Create the order"))
+    // MEMORY EXPANSION (owner: "the gifts don't need to be limited to house
+    // painting or cutting boards" + service manifesto's deep-memory principle)
+    const mined = mineGiftInterests({
+      tags: ["past_client"], notes: "Two golden retrievers; she loves her garden. Just joined the leadership team.",
+      occupation: null, aiInsights: null, contactType: null,
+    })
+    check("MEMORY MINING is word-boundary honest — 'golden retrievers' + 'garden' mine to pet/garden; 'joined the team' NEVER becomes 'tea'; life_events jsonb normalizes to actionable keys",
+      mined.includes("pet") && mined.includes("garden") && !mined.includes("tea")
+      && mineLifeEvents([{ type: "marriage_detected", detail: "wedding announcement" }]).includes("marriage")
+      && mineLifeEvents(null).length === 0)
+    const dogOwner = composeGiftSelections({
+      occasion: "closing", familyName: "Ortiz", firstNames: "Maya",
+      homeAddress: "9 Cedar Ct", closeYear: 2026, persona: null,
+      budgetMax: null, pastGiftKeys: [], interests: ["pet"], lifeEvents: [],
+    }, 4)
+    check("beyond the house category: a remembered pet EARNS the pet-portrait pick, carries its memoryHook ('from their story'), and OUTRANKS the category defaults",
+      dogOwner[0]?.key === "custom_pet_portrait" && dogOwner[0]?.memoryHook === "pet"
+      && dogOwner.some((s) => s.key === "home_portrait_cutting_board")
+      && rich.every((s) => s.key !== "custom_pet_portrait"))
+    const birthdayNoHouse = composeGiftSelections({
+      occasion: "birthday", familyName: "Lee", firstNames: "Ana",
+      homeAddress: null, closeYear: null, persona: null,
+      budgetMax: null, pastGiftKeys: [], interests: ["coffee"], lifeEvents: [],
+    }, 4)
+    const newlywed = composeGiftSelections({
+      occasion: "congratulations", familyName: "Nguyen", firstNames: "Bao & Linh",
+      homeAddress: null, closeYear: 2026, persona: null,
+      budgetMax: null, pastGiftKeys: [], interests: [], lifeEvents: ["marriage"],
+    }, 4)
+    check("occasion breadth without the house: a birthday pick rides the coffee ritual (memory-hooked), a detected wedding earns the newlywed keepsake with the celebration line",
+      birthdayNoHouse[0]?.key === "morning_ritual_set" && birthdayNoHouse[0]?.etsyUrl.includes("coffee")
+      && newlywed[0]?.key === "newlywed_keepsake" && newlywed[0]?.personalization === "The Nguyen Family · Est. 2026")
+    check("the action feeds the miners from the file's REAL memory columns (tags/notes/occupation/ai_insights/life_events) and the UI shows the hook",
+      src("app/actions/gift-studio.ts").includes("mineGiftInterests") && src("app/actions/gift-studio.ts").includes("life_events")
+      && src("app/dashboard/gifts/gift-studio-client.tsx").includes("from their story")
+      && src("app/dashboard/gifts/gift-studio-client.tsx").includes("referral_thank_you"))
   }
 
   console.log("\n[22 · live — the full derivation against the real database]")

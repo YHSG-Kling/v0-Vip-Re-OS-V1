@@ -20,7 +20,16 @@ import {
   orderGiftSelectionAction,
   type GiftableClosing,
 } from "@/app/actions/gift-studio"
-import type { GiftSelection } from "@/lib/gifting/gift-studio"
+import type { GiftFacts, GiftSelection } from "@/lib/gifting/gift-studio"
+
+const OCCASIONS: Array<{ key: GiftFacts["occasion"]; label: string }> = [
+  { key: "closing", label: "Closing" },
+  { key: "anniversary", label: "Home anniversary" },
+  { key: "birthday", label: "Birthday" },
+  { key: "referral_thank_you", label: "Referral thank-you" },
+  { key: "holiday", label: "Holiday" },
+  { key: "congratulations", label: "Congratulations" },
+]
 
 export function GiftStudioClient({
   initialClosings,
@@ -34,16 +43,16 @@ export function GiftStudioClient({
   const [closings, setClosings] = useState(initialClosings)
   const [selections, setSelections] = useState(initialSelections)
   const [selectedId, setSelectedId] = useState(initialSelectedId)
+  const [occasion, setOccasion] = useState<GiftFacts["occasion"]>("closing")
   const [busy, setBusy] = useState<string | null>(null)
   const [ordered, setOrdered] = useState<Set<string>>(new Set())
   const [, startTransition] = useTransition()
 
-  const pick = (contactId: string) => {
-    setSelectedId(contactId)
+  const reload = (contactId: string, forOccasion: GiftFacts["occasion"]) => {
     setBusy("load")
     startTransition(async () => {
       try {
-        const r = await getGiftStudioAction({ contactId })
+        const r = await getGiftStudioAction({ contactId, occasion: forOccasion })
         if (r.ok) setSelections(r.selections)
       } finally {
         setBusy(null)
@@ -51,12 +60,22 @@ export function GiftStudioClient({
     })
   }
 
+  const pick = (contactId: string) => {
+    setSelectedId(contactId)
+    reload(contactId, occasion)
+  }
+
+  const pickOccasion = (o: GiftFacts["occasion"]) => {
+    setOccasion(o)
+    if (selectedId) reload(selectedId, o)
+  }
+
   const order = (s: GiftSelection) => {
     if (!selectedId) return
     setBusy(s.key)
     startTransition(async () => {
       try {
-        const r = await orderGiftSelectionAction({ contactId: selectedId, selection: s })
+        const r = await orderGiftSelectionAction({ contactId: selectedId, selection: s, occasion })
         if (r.ok) {
           setOrdered((prev) => new Set(prev).add(s.key))
           setClosings((prev) => prev.filter((c) => c.contactId !== selectedId || prev.length <= 1))
@@ -103,9 +122,20 @@ export function GiftStudioClient({
       <div className="lg:col-span-2 space-y-3">
         {selected && (
           <p className="text-sm text-muted-foreground">
-            The team's picks for <span className="font-medium text-foreground">{selected.name}</span> — personalized from their deal, ready to order.
+            The team's picks for <span className="font-medium text-foreground">{selected.name}</span> — personalized from their deal and their story, ready to order.
           </p>
         )}
+        <div className="flex flex-wrap gap-1">
+          {OCCASIONS.map((o) => (
+            <button
+              key={o.key}
+              onClick={() => pickOccasion(o.key)}
+              className={`rounded-full border px-3 py-1 text-xs ${occasion === o.key ? "border-rose-300 bg-rose-50 font-medium text-rose-900" : "text-muted-foreground hover:bg-muted/50"}`}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
         {busy === "load" ? (
           <div className="py-10 text-center text-muted-foreground"><Loader2 className="mx-auto h-5 w-5 animate-spin" /></div>
         ) : selections.length === 0 ? (
@@ -117,6 +147,7 @@ export function GiftStudioClient({
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-semibold">{s.title}</span>
                   <Badge className="bg-rose-100 text-rose-800 text-[10px]">${s.priceBand[0]}–${s.priceBand[1]}</Badge>
+                  {s.memoryHook && <Badge className="bg-sky-100 text-sky-800 text-[10px]">from their story: {s.memoryHook.replace(/_/g, " ")}</Badge>}
                   {s.personalization && <Badge className="bg-emerald-100 text-emerald-800 text-[10px]">personalized from the deal</Badge>}
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">{s.whyThisFits}</p>

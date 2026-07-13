@@ -14,7 +14,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { composeGiftSelections, type GiftSelection, type GiftFacts } from "@/lib/gifting/gift-studio"
+import { composeGiftSelections, mineGiftInterests, mineLifeEvents, type GiftSelection, type GiftFacts } from "@/lib/gifting/gift-studio"
 
 async function loadMember() {
   const supabase = await createClient()
@@ -79,11 +79,20 @@ export async function getGiftStudioAction(input?: { contactId?: string; occasion
   if (selectedContactId) {
     const closing = closings.find((c) => c.contactId === selectedContactId)
     const { data: contact } = await svc.from("contacts")
-      .select("first_name, last_name, tags, contact_type")
+      .select("first_name, last_name, tags, contact_type, notes, occupation, ai_insights, life_events")
       .eq("id", selectedContactId).eq("brokerage_id", m.brokerageId).maybeSingle()
     const { data: past } = await svc.from("client_gifts")
       .select("gift_type").eq("contact_id", selectedContactId).limit(20)
     const c = contact as any
+    // The file's memory — tags, notes, occupation, AI insights, life events —
+    // is what lets the studio pick beyond the house category.
+    const interests = mineGiftInterests({
+      tags: Array.isArray(c?.tags) ? c.tags : null,
+      notes: (c?.notes as string | null) ?? null,
+      occupation: (c?.occupation as string | null) ?? null,
+      aiInsights: c?.ai_insights != null ? (typeof c.ai_insights === "string" ? c.ai_insights : JSON.stringify(c.ai_insights)) : null,
+      contactType: (c?.contact_type as string | null) ?? null,
+    })
     selections = composeGiftSelections({
       occasion: input?.occasion ?? "closing",
       familyName: (c?.last_name as string | null) ?? null,
@@ -93,7 +102,9 @@ export async function getGiftStudioAction(input?: { contactId?: string; occasion
       persona: Array.isArray(c?.tags) ? c.tags.join(",") : (c?.contact_type ?? null),
       budgetMax: null,
       pastGiftKeys: ((past ?? []) as any[]).map((g) => String(g.gift_type ?? "")),
-    })
+      interests,
+      lifeEvents: mineLifeEvents(c?.life_events),
+    }, 4)
   }
 
   return { ok: true, closings, selections, selectedContactId }
