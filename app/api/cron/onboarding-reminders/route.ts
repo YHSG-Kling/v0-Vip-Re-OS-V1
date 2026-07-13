@@ -44,6 +44,18 @@ export async function GET(request: Request) {
       console.error("[OnboardingReminders] mentorship lifecycle:", e)
     }
 
+    // TENANT CHECK-IN CADENCE — the built-in success manager's first-week /
+    // first-month / first-quarter check-ins to a new account's principals
+    // (idempotent per window; honest live-vs-stalled facts).
+    let tenantCheckIns = { sent: 0, skipped: 0 }
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { runTenantCheckIns } = await import("@/lib/onboarding/checkin-cadence")
+      tenantCheckIns = await runTenantCheckIns(createServiceClient())
+    } catch (e) {
+      console.error("[OnboardingReminders] tenant check-ins:", e)
+    }
+
     // SKILL-FRESHNESS RADAR — continuing-competency loop: nudge agents to refresh a decayed skill
     // (objection drill / knowledge check / course review) BEFORE it goes stale, so their edge stays sharp.
     let skillRefreshers = 0
@@ -68,8 +80,8 @@ export async function GET(request: Request) {
       console.error("[OnboardingReminders] fall-behind:", e)
     }
 
-    await recordCronSuccessAction({ context_id: contextId, records_processed: mentorship.graduated + mentorship.nudged + skillRefreshers + fallBehindInterventions, metadata: { mentorship, skillRefreshers, fallBehindInterventions } })
-    return NextResponse.json({ ok: true, mentorship, skillRefreshers, fallBehindInterventions }, { status: 200 })
+    await recordCronSuccessAction({ context_id: contextId, records_processed: mentorship.graduated + mentorship.nudged + skillRefreshers + fallBehindInterventions + tenantCheckIns.sent, metadata: { mentorship, skillRefreshers, fallBehindInterventions, tenantCheckIns } })
+    return NextResponse.json({ ok: true, mentorship, skillRefreshers, fallBehindInterventions, tenantCheckIns }, { status: 200 })
   } catch (err) {
     console.error("[cron/onboarding-reminders] Failed:", err)
     await recordCronFailureAction({ context_id: contextId, error: err as Error | string, stage: "main-processing" })

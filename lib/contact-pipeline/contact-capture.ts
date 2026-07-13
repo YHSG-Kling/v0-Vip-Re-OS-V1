@@ -214,6 +214,17 @@ export async function captureContact(
       metadata: { source: params.source, from_lead_id: params.fromLeadId ?? null },
     })
 
+    // CLIENT WELCOME (concierge #1–2) — a new buyer/seller client gets the
+    // gated warm-welcome + journey-map draft. Best-effort, never blocks capture.
+    try {
+      const { ensureClientWelcome } = await import('@/lib/kernel/client-welcome')
+      await ensureClientWelcome(supabase as any, {
+        id: created.id, brokerageId: params.brokerageId,
+        contactType: params.contact_type ?? null,
+        firstName: params.first_name ?? null, lastName: params.last_name ?? null,
+      })
+    } catch { /* welcome is care, not a dependency */ }
+
     return { contactId: created.id, action: 'created' }
   }
 
@@ -452,6 +463,17 @@ export async function captureContact(
     entityType: 'contact',
     entityId: contactId,
   })
+
+  // CLIENT WELCOME (concierge #1–2) — same gated draft on the direct-capture
+  // path. Best-effort, never blocks capture.
+  try {
+    const { ensureClientWelcome } = await import('@/lib/kernel/client-welcome')
+    await ensureClientWelcome(supabase as any, {
+      id: contactId, brokerageId: params.brokerageId,
+      contactType: params.contact_type ?? null,
+      firstName: params.first_name ?? null, lastName: params.last_name ?? null,
+    })
+  } catch { /* welcome is care, not a dependency */ }
 
   await queueContactEnrichmentAndScore({
     brokerageId: params.brokerageId,

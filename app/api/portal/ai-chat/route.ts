@@ -282,6 +282,31 @@ export async function POST(request: Request) {
       })
     }
 
+    // ── CONCERN-MATCHED SOCIAL PROOF (concierge #25) — when the client voices
+    // a specific worry (timing, pricing, schools, resale, first-time nerves),
+    // hand the model ONE real published review that speaks to it. Never a
+    // fabricated quote; zero matches = zero proof (honest silence). ──
+    let socialProofLine: string | null = null
+    try {
+      const { mineClientConcern, pickSocialProof } = await import('@/lib/kernel/social-proof')
+      const earlyUserText = [...messages].reverse().find(m => m.role === 'user')?.parts
+        ?.filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+        .map(p => p.text).join('') ?? ''
+      const concern = mineClientConcern(earlyUserText)
+      if (concern) {
+        const { data: reviews } = await supabase.from('agent_reviews')
+          .select('review_text, rating, reviewer_name')
+          .eq('brokerage_id', contact.brokerage_id)
+          .eq('is_published', true)
+          .gte('rating', 4)
+          .order('created_at', { ascending: false })
+          .limit(10)
+        socialProofLine = pickSocialProof(concern, ((reviews ?? []) as any[]).map(r => ({
+          reviewText: r.review_text, rating: r.rating, reviewerName: r.reviewer_name,
+        })))
+      }
+    } catch { /* social proof is additive */ }
+
     const systemPrompt = [
       `You are ${aiIdentity.assistant_name}, a ${aiIdentity.persona_label} for ${contactName}'s real estate client portal.`,
       `Tone: ${aiIdentity.tone}. Formality: ${aiIdentity.formality_level}.`,
@@ -321,6 +346,7 @@ export async function POST(request: Request) {
         `  List price: $${activeListing.list_price?.toLocaleString() ?? 'TBD'}`,
       ].join('\n') : '',
       inventoryBlock ? `\n${inventoryBlock}\n(These listings are public facts you may share freely — an exception to the context-only rule above. For any OTHER property, the agent confirms.)` : '',
+      socialProofLine ? `\nREAL CLIENT PROOF (a published review relevant to their concern — you may reference it naturally, quote VERBATIM only, never alter or invent reviews):\n  ${socialProofLine}` : '',
       '',
       'TONE: Warm, clear, reassuring. Plain English. No jargon unless you explain it.',
       'ESCALATION: If the contact asks to speak to a human, says this is urgent, or seems very stressed, tell them their agent will be notified right away.',

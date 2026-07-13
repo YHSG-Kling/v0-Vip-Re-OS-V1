@@ -8,7 +8,9 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { CommandCenterClient } from "./command-center-client"
 import { TrustMeter } from "./trust-meter"
 import { EarnedAutonomyPanel } from "./earned-autonomy-panel"
+import { QuarterlyReviewCard } from "./quarterly-review-card"
 import { listEarnedAutonomyAction } from "@/app/actions/document-kernel-review"
+import { getQuarterlyReviewAction } from "@/app/actions/quarterly-review"
 
 export const metadata = {
   title:       "Agent Command Center | Kernel OS Admin",
@@ -129,12 +131,23 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     ? await listEarnedAutonomyAction().catch(() => null)
     : null
 
+  // QUARTERLY BUSINESS REVIEW + adoption pulse — the principal's 90-day read
+  // (the action enforces tier-parity principal access; others see nothing).
+  const qbr = brokerageId && userType !== "superadmin"
+    ? await getQuarterlyReviewAction().catch(() => null)
+    : null
+
   return (
     <>
       {trust && <TrustMeter outcomes={trust.outcomes} feedback={trust.feedback} />}
       {earned?.ok && earned.grants && (
         <div className="mx-6 mt-4">
           <EarnedAutonomyPanel grants={earned.grants} />
+        </div>
+      )}
+      {qbr?.ok && (
+        <div className="mx-6 mt-4">
+          <QuarterlyReviewCard review={qbr.review} pulse={qbr.pulse} />
         </div>
       )}
       {lift && (lift.playedTotal > 0 || lift.verdict !== "insufficient") && (

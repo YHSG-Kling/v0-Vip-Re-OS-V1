@@ -745,7 +745,77 @@ async function main() {
       && src("lib/kernel/manager-registry.ts").includes("strategy_sessions:"))
   }
 
-  console.log("\n[23 · live — the full derivation against the real database]")
+  console.log("\n[23 · pure + wiring — TENANT CONCIERGE (QBR, pulse, expansion, check-ins) + client welcome & social proof]")
+  {
+    const { composeQuarterlyReview } = await import("../lib/intelligence/quarterly-review")
+    const { decideExpansionSuggestion } = await import("../lib/platform/expansion-advisor")
+    const richQ = composeQuarterlyReview({
+      windowLabel: "Apr 14 – Jul 13", planTier: "solo_agent",
+      closedDeals: 3, closedVolume: 1_450_000, activeDeals: 4, newContacts: 22,
+      approvals: 31, autonomousActs: 6, grantsHeld: 2, conflictsCaught: 1,
+      giftsOrdered: 2, briefingsOpened: 40, unusedRails: [],
+      expansion: decideExpansionSuggestion({ planTier: "solo_agent", activeAgents: 3, locations: 1 }),
+    })
+    const emptyQ = composeQuarterlyReview({
+      windowLabel: "Apr 14 – Jul 13", planTier: "team",
+      closedDeals: 0, closedVolume: 0, activeDeals: 1, newContacts: 0,
+      approvals: 0, autonomousActs: 0, grantsHeld: 0, conflictsCaught: 0,
+      giftsOrdered: 0, briefingsOpened: 0,
+      unusedRails: ["Social publishing isn't connected — the cadence engine is idle."],
+      expansion: null,
+    })
+    check("QBR (tenant #32) — outcomes carry the real volume, trust carries grants+acts+conflicts, and the EXPANSION ADVISOR (#35) lands INSIDE the review grounded in agent count (3 actives on solo → team), never as upsell spam",
+      richQ.outcomes.some((o) => o.includes("$1,450,000")) && richQ.trust.some((t) => t.includes("2 standing autonomy grant"))
+      && richQ.nextMoves.some((n) => n.includes("team plan") && n.includes("3 active agents"))
+      && decideExpansionSuggestion({ planTier: "team", activeAgents: 4, locations: 1 }) === null)
+    check("QBR honest degradation — a zero quarter SHOWS its zeros with the unblocking step (approval queue named, unread briefing named), never dressed up",
+      emptyQ.outcomes.some((o) => o.includes("No closings")) && emptyQ.trust.some((t) => t.includes("approval queue"))
+      && emptyQ.gaps.some((g) => g.includes("briefing went unread")) && emptyQ.gaps.some((g) => g.includes("cadence engine")))
+    const { rankNeedsHelp, PULSE_MIN_SCORE } = await import("../lib/intelligence/adoption-pulse")
+    const pulse = rankNeedsHelp([
+      { agentId: "a1", name: "Sam", overdueTasks: 4, staleContacts: 3, activities14d: 0, briefingOpened14d: false },
+      { agentId: "a2", name: "Lee", overdueTasks: 0, staleContacts: 0, activities14d: 9, briefingOpened14d: true },
+      { agentId: "a3", name: "Kim", overdueTasks: 1, staleContacts: 1, activities14d: 5, briefingOpened14d: true },
+    ])
+    check("ADOPTION PULSE (tenant #23/#31) — the struggling agent ranks with COACHABLE REASONS, the healthy agent NEVER appears (care, not surveillance), the borderline stays under threshold",
+      pulse.length === 1 && pulse[0]?.agentId === "a1"
+      && pulse[0]!.reasons.some((r) => r.includes("no logged activity"))
+      && PULSE_MIN_SCORE >= 3
+      && src("app/dashboard/admin/command-center/page.tsx").includes("QuarterlyReviewCard"))
+    const { checkInWindow, composeCheckIn } = await import("../lib/onboarding/checkin-cadence")
+    const now = new Date("2026-07-13T12:00:00Z")
+    check("TENANT CHECK-INS (tenant #8) — day 7 → week_one, day 30 → month_one, day 90 → quarter_one, day 50 → honest null; copy is honest about live vs stalled; rides the EXISTING onboarding-reminders cron",
+      checkInWindow(new Date(now.getTime() - 7 * 86_400_000).toISOString(), now) === "week_one"
+      && checkInWindow(new Date(now.getTime() - 30 * 86_400_000).toISOString(), now) === "month_one"
+      && checkInWindow(new Date(now.getTime() - 90 * 86_400_000).toISOString(), now) === "quarter_one"
+      && checkInWindow(new Date(now.getTime() - 50 * 86_400_000).toISOString(), now) === null
+      && composeCheckIn("week_one", { live: [], stalled: ["no contacts imported yet"] }).body.includes("one approval away")
+      && src("app/api/cron/onboarding-reminders/route.ts").includes("runTenantCheckIns")
+      && src("lib/onboarding/checkin-cadence.ts").includes('priority: "medium"'))
+    const { composeClientWelcome } = await import("../lib/kernel/client-welcome")
+    const welcome = composeClientWelcome({ side: "buyer", addressAs: "Bill", agentName: "Dana Reed" })
+    check("CLIENT WELCOME (client #1–2) — the warm intro + numbered journey map + the here's-what's-next promise, addressed by preferred name; proposed as ONE gated draft on the canonical rail from BOTH capture paths",
+      welcome.body.startsWith("Bill, welcome") && welcome.body.includes("1. ") && welcome.body.includes("here's what's next")
+      && src("lib/kernel/client-welcome.ts").includes("proposeClientMessage")
+      && (src("lib/contact-pipeline/contact-capture.ts").match(/ensureClientWelcome/g) ?? []).length >= 2)
+    const { mineClientConcern, pickSocialProof } = await import("../lib/kernel/social-proof")
+    check("SOCIAL PROOF (client #25) — the concern is mined word-boundary honest, only a PUBLISHED high-rated review that GENUINELY speaks to it qualifies, and zero matches = honest null (a fabricated quote is impossible)",
+      mineClientConcern("I'm nervous, this is our first home") === "first_time"
+      && mineClientConcern("what's on tv tonight") === null
+      && pickSocialProof("first_time", [{ reviewText: "She walked us through every step of our first purchase — so patient.", rating: 5, reviewerName: "The Ortiz Family" }])
+        === `The Ortiz Family (verified review): "She walked us through every step of our first purchase — so patient."`
+      && pickSocialProof("first_time", [{ reviewText: "Great!", rating: 5, reviewerName: "A" }]) === null
+      && src("app/api/portal/ai-chat/route.ts").includes("pickSocialProof")
+      && src("app/api/portal/ai-chat/route.ts").includes("quote VERBATIM only"))
+    check("ALL SIX new rails are REGISTERED to their managers (finance: QBR+expansion; recruiting: pulse+check-ins; shopping: welcome; marketing: social proof)",
+      src("lib/kernel/manager-registry.ts").includes("quarterly_business_review:")
+      && src("lib/kernel/manager-registry.ts").includes("leader_adoption_pulse:")
+      && src("lib/kernel/manager-registry.ts").includes("tenant_checkin_cadence:")
+      && src("lib/kernel/manager-registry.ts").includes("client_welcome_sequence:")
+      && src("lib/kernel/manager-registry.ts").includes("concern_matched_social_proof:"))
+  }
+
+  console.log("\n[24 · live — the full derivation against the real database]")
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {
