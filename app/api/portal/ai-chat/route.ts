@@ -282,6 +282,23 @@ export async function POST(request: Request) {
       })
     }
 
+    // ── LOCAL LIFESTYLE (concierge #30) — REAL nearby places for the property
+    // they're focused on (Geoapify/OpenStreetMap, provider-gated: no key or a
+    // slow provider = clean skip; the assistant NEVER invents an amenity). ──
+    let nearbyLifeBlock: string | null = null
+    try {
+      const { geoapifyConfigured, fetchNearbyPlaces } = await import('@/lib/external/geoapify-client')
+      const focusAddress = activeTransaction?.property_address
+        ?? (activeListing ? [activeListing.address, activeListing.city, activeListing.state].filter(Boolean).join(', ') : null)
+      if (geoapifyConfigured() && focusAddress) {
+        const nearby = await fetchNearbyPlaces(focusAddress)
+        if (nearby.ok) {
+          const { composeLocalLifestyle } = await import('@/lib/kernel/local-lifestyle')
+          nearbyLifeBlock = composeLocalLifestyle(nearby.places)
+        }
+      }
+    } catch { /* nearby life is additive */ }
+
     // ── CONCERN-MATCHED SOCIAL PROOF (concierge #25) — when the client voices
     // a specific worry (timing, pricing, schools, resale, first-time nerves),
     // hand the model ONE real published review that speaks to it. Never a
@@ -347,6 +364,7 @@ export async function POST(request: Request) {
       ].join('\n') : '',
       inventoryBlock ? `\n${inventoryBlock}\n(These listings are public facts you may share freely — an exception to the context-only rule above. For any OTHER property, the agent confirms.)` : '',
       socialProofLine ? `\nREAL CLIENT PROOF (a published review relevant to their concern — you may reference it naturally, quote VERBATIM only, never alter or invent reviews):\n  ${socialProofLine}` : '',
+      nearbyLifeBlock ? `\nNEARBY LIFE around their property (REAL places from OpenStreetMap — you may share these; never invent amenities beyond this list, and never characterize school QUALITY):\n${nearbyLifeBlock}` : '',
       '',
       'TONE: Warm, clear, reassuring. Plain English. No jargon unless you explain it.',
       'ESCALATION: If the contact asks to speak to a human, says this is urgent, or seems very stressed, tell them their agent will be notified right away.',

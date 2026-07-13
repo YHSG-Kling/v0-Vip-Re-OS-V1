@@ -813,6 +813,33 @@ async function main() {
       && src("lib/kernel/manager-registry.ts").includes("tenant_checkin_cadence:")
       && src("lib/kernel/manager-registry.ts").includes("client_welcome_sequence:")
       && src("lib/kernel/manager-registry.ts").includes("concern_matched_social_proof:"))
+    check("WELCOME CONTENT IS NEVER HARDCODED (owner rule) — production routes through generatePersonaCopy with the deterministic journey map as the FACT SET and the guaranteed fallback",
+      src("lib/kernel/client-welcome.ts").includes("generatePersonaCopy")
+      && src("lib/kernel/client-welcome.ts").includes("{ body: fallback.body }")
+      && src("lib/kernel/client-welcome.ts").includes("Journey step"))
+    const { classifyCardTarget } = await import("../lib/contacts/card-classifier")
+    check("BUSINESS CARD → VENDOR (owner directive) — an inspector's card routes to the VENDOR book with the live CHECK category, a co-op agent's card stays a CONTACT, a blank card defaults to the human-reviewed contact path; the action creates a PENDING vendors row and keeps company/title (previously dropped)",
+      classifyCardTarget({ title: "Senior Home Inspector", company: "Acme Inspections LLC" }).target === "vendor"
+      && classifyCardTarget({ title: "Senior Home Inspector", company: "Acme Inspections LLC" }).category === "Inspector"
+      && classifyCardTarget({ title: "Realtor", company: "Sunrise Realty" }).target === "contact"
+      && classifyCardTarget({ title: "Loan Officer NMLS 12345", company: null }).category === "Lender"
+      && classifyCardTarget({ title: null, company: null }).target === "contact"
+      && src("app/actions/business-card/business-card-actions.ts").includes('status: "pending"')
+      && src("app/actions/business-card/business-card-actions.ts").includes("classifyCardTarget")
+      && src("app/actions/business-card/business-card-actions.ts").includes("From their card:"))
+    const { composeLocalLifestyle } = await import("../lib/kernel/local-lifestyle")
+    const nearby = composeLocalLifestyle([
+      { name: "Maple Park", category: "leisure.park", distanceMeters: 600 },
+      { name: "Franklin Elementary", category: "education.school", distanceMeters: 2200 },
+      { name: "Blue Door Cafe", category: "catering.cafe", distanceMeters: 900 },
+    ])
+    check("LOCAL LIFESTYLE (client #30, Geoapify/OSM) — REAL places group closest-first with walkability notes, zero places = honest null; provider-gated with a hard timeout; the chat rule forbids inventing amenities or characterizing school QUALITY",
+      Boolean(nearby?.includes("Maple Park (walkable)")) && Boolean(nearby?.includes("Franklin Elementary (~1.4 mi)"))
+      && composeLocalLifestyle([]) === null
+      && src("lib/external/geoapify-client.ts").includes("GEOAPIFY_API_KEY")
+      && src("app/api/portal/ai-chat/route.ts").includes("never characterize school QUALITY")
+      && src("lib/kernel/manager-registry.ts").includes("card_vendor_routing:")
+      && src("lib/kernel/manager-registry.ts").includes("local_lifestyle_poi:"))
   }
 
   console.log("\n[24 · live — the full derivation against the real database]")

@@ -35,7 +35,10 @@ const SELLER_JOURNEY = [
   "We close — and I keep watching your equity after",
 ]
 
-/** PURE: the warm welcome + journey map, side-aware, addressed properly. */
+/** PURE deterministic FALLBACK (owner rule: content is never hardcoded —
+ *  production routes through generatePersonaCopy with THIS as the guaranteed
+ *  floor; the journey steps are the FACTS the generator may rephrase but
+ *  never invent beyond). */
 export function composeClientWelcome(input: {
   side: "buyer" | "seller"
   addressAs: string
@@ -81,7 +84,24 @@ export async function ensureClientWelcome(svc: Svc, contact: {
     preferredName: contact.preferredName ?? null,
     namePronunciation: null, salutationStyle: null,
   })
-  const copy = composeClientWelcome({ side, addressAs: addressing.addressAs, agentName: null })
+  const fallback = composeClientWelcome({ side, addressAs: addressing.addressAs, agentName: null })
+
+  // PERSONA-GENERATED body (never hardcoded); the deterministic journey map is
+  // the fact set AND the guaranteed fallback — the generator personalizes,
+  // it never invents steps.
+  const steps = side === "buyer" ? BUYER_JOURNEY : SELLER_JOURNEY
+  const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
+  const draft = await generatePersonaCopy(
+    {
+      goal: `a warm welcome for a brand-new ${side} client — introduce how the team works, walk the journey map steps IN ORDER, and promise that every update ends with "here's what's next"; no one is dropped into complexity`,
+      facts: [`Address them as "${addressing.addressAs}"`, ...steps.map((s, i) => `Journey step ${i + 1}: ${s}`)],
+      channel: "portal",
+      persona: { name: addressing.addressAs, audience: side, situation: `just became a ${side} client` },
+      words: 140,
+    },
+    { body: fallback.body },
+  )
+  const copy = { subject: fallback.subject, body: draft.body }
 
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
   const res = await proposeClientMessage({

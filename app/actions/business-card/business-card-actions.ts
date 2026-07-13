@@ -38,7 +38,10 @@ export async function uploadBusinessCard(params: {
   mimeType: "image/jpeg" | "image/png" | "image/webp"
   agentId?: string  // ignored — derived from session
   brokerageId?: string  // ignored — derived from session
-}): Promise<{ scanId: string; contactId: string | null; viable: boolean }> {
+  /** explicit routing override; omitted = auto-classified from title/company
+   *  (an inspector's card becomes a VENDOR, a co-op agent stays a contact). */
+  target?: "contact" | "vendor"
+}): Promise<{ scanId: string; contactId: string | null; vendorId: string | null; target: "contact" | "vendor"; viable: boolean }> {
   const auth = await requireCaller()
   if (!auth.ok) throw new Error(auth.error)
   const brokerageId = auth.brokerageId
@@ -141,12 +144,54 @@ export async function uploadBusinessCard(params: {
       })
     }
 
-    return { scanId: scan!.id, contactId: null, viable: false }
+    return { scanId: scan!.id, contactId: null, vendorId: null, target: "contact", viable: false }
   }
 
-  // 6) Viable → captureContact (tcpa_consent=false always for business cards).
+  // 6) Route the card: an explicit override wins, else the pure classifier
+  // (an inspector/stager/lender card is a VENDOR; a co-op agent stays a contact).
+  const { classifyCardTarget } = await import("@/lib/contacts/card-classifier")
+  const cls = classifyCardTarget({ title: extracted.title ?? null, company: extracted.company ?? null })
+  const target = params.target ?? cls.target
+
+  if (target === "vendor") {
+    const fullName = [extracted.first_name, extracted.last_name].filter(Boolean).join(" ").trim()
+    // vendors.category/status CHECK vocabularies verified live; a scanned
+    // vendor lands PENDING — the vendor verification rail vets it before use.
+    const { data: vendor, error: vendorError } = await supabase.from("vendors").insert({
+      brokerage_id: brokerageId,
+      name: (extracted.company ?? "").trim() || fullName || "Scanned vendor",
+      category: cls.category ?? "Other",
+      email: extracted.email ?? null,
+      phone: extracted.phone ?? null,
+      website: extracted.website ?? null,
+      status: "pending",
+      notes: [
+        `Scanned from a business card.`,
+        fullName ? `Contact person: ${fullName}${extracted.title ? ` (${extracted.title})` : ""}.` : null,
+        extracted.address ? `Address on card: ${extracted.address}.` : null,
+      ].filter(Boolean).join(" "),
+    }).select("id").single()
+    if (vendorError || !vendor) throw new Error(`Vendor create failed: ${vendorError?.message ?? "no data"}`)
+
+    await supabase.from("business_card_scans").update({
+      extracted_data: { ...extracted, routed_to: "vendor", vendor_id: vendor.id },
+    }).eq("id", scan!.id)
+
+    await supabase.from("lifecycle_events").insert({
+      brokerage_id: brokerageId,
+      entity_type: "vendor",
+      entity_id: vendor.id,
+      event_type: KernelEvent.BUSINESS_CARD_APPROVED,
+      metadata: { scanId: scan!.id, routed_to: "vendor", category: cls.category ?? "Other" },
+    })
+
+    return { scanId: scan!.id, contactId: null, vendorId: vendor.id, target: "vendor", viable: true }
+  }
+
+  // Viable contact → captureContact (tcpa_consent=false always for business cards).
   // Owner agent resolves via brokerage assignment rules — the scanner doesn't
-  // own the contact just because they scanned it.
+  // own the contact just because they scanned it. Company/title/website from
+  // the card ride the notes (previously extracted then DROPPED).
   const { contactId } = await captureContact({
     brokerageId: brokerageId,
     ownerAgentId: null,
@@ -155,6 +200,12 @@ export async function uploadBusinessCard(params: {
     last_name: extracted.last_name ?? null,
     email: extracted.email ?? null,
     phone: extracted.phone ?? null,
+    notes: [
+      extracted.title || extracted.company
+        ? `From their card: ${[extracted.title, extracted.company].filter(Boolean).join(" @ ")}.`
+        : null,
+      extracted.website ? `Website: ${extracted.website}` : null,
+    ].filter(Boolean).join("\n") || undefined,
     tcpa_consent: false,
     tcpa_consent_date: null,
   })
@@ -180,7 +231,7 @@ export async function uploadBusinessCard(params: {
     entityId: contactId,
   })
 
-  return { scanId: scan!.id, contactId, viable: true }
+  return { scanId: scan!.id, contactId, vendorId: null, target: "contact", viable: true }
 }
 
 export async function getRecentScans(params: {
