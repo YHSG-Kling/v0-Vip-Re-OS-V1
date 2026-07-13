@@ -17,10 +17,15 @@
 
 import "server-only"
 import { createClient } from "@/lib/supabase/server"
+import { resolveAddressing } from "@/lib/kernel/addressing"
 
 export interface ContactBrief {
   contactId: string
   fullName: string
+  /** ADDRESSING MEMORY — what to actually call them ("Bill", never "William"). */
+  addressAs: string
+  /** pronunciation cue, surfaced the moment it matters most: right before a call. */
+  pronunciationNote: string | null
   contactType: string | null
   contactPersona: string | null
   buyerStage: string | null
@@ -84,7 +89,8 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
   const { data: contact } = await supabase
     .from("contacts")
     .select(
-      `id, first_name, last_name, contact_type, contact_persona, buyer_stage, city, state,
+      `id, first_name, last_name, preferred_name, name_pronunciation, salutation_style,
+       contact_type, contact_persona, buyer_stage, city, state,
        engagement_score, last_contacted_at,
        dnc_status, email_opt_out, sms_opt_out, phone_opt_out`,
     )
@@ -133,8 +139,23 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
 
   const fullName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "Unknown"
 
+  // Addressing memory leads the brief — the seconds before a call are exactly
+  // when "call them Bill" and the pronunciation cue matter (l48-s01).
+  const addressing = resolveAddressing({
+    firstName: (contact as any).first_name ?? null,
+    lastName: (contact as any).last_name ?? null,
+    preferredName: (contact as any).preferred_name ?? null,
+    namePronunciation: (contact as any).name_pronunciation ?? null,
+    salutationStyle: (contact as any).salutation_style ?? null,
+  })
+
   // Build short, agent-actionable talking points the call panel can show inline.
   const talkingPoints: string[] = []
+  if ((contact as any).preferred_name || (contact as any).name_pronunciation) {
+    talkingPoints.push(
+      [`Call them "${addressing.addressAs}".`, addressing.pronunciationNote].filter(Boolean).join(" "),
+    )
+  }
   if (lastContactDays != null) {
     talkingPoints.push(
       lastContactDays === 0
@@ -155,6 +176,8 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
   return {
     contactId: contact.id,
     fullName,
+    addressAs: addressing.addressAs,
+    pronunciationNote: addressing.pronunciationNote,
     contactType: contact.contact_type ?? null,
     contactPersona: contact.contact_persona ?? null,
     buyerStage: contact.buyer_stage ?? null,

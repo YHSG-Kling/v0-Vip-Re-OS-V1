@@ -119,11 +119,18 @@ export async function orderGiftSelectionAction(input: {
   if (!m) return { ok: false, error: "Not authenticated" }
   const svc = createServiceClient()
 
-  // Tenant check + the agent who owns the relationship.
+  // Tenant check + the agent who owns the relationship. tasks.assigned_to_agent_id
+  // is NOT NULL (live contract) — agent-less contacts fall to the caller's own
+  // agents row; no agent at all = an honest refusal, never a broken insert.
   const { data: contact } = await svc.from("contacts")
     .select("id, first_name, agent_id").eq("id", input.contactId).eq("brokerage_id", m.brokerageId).maybeSingle()
   if (!contact) return { ok: false, error: "Contact not found" }
-  const agentId = ((contact as any).agent_id as string | null) ?? null
+  let agentId = ((contact as any).agent_id as string | null) ?? null
+  if (!agentId) {
+    const { data: me } = await svc.from("agents").select("id").eq("user_id", m.userId).maybeSingle()
+    agentId = ((me as any)?.id as string | null) ?? null
+  }
+  if (!agentId) return { ok: false, error: "No agent to assign the purchase task to — assign an agent to this contact first" }
 
   // The order row — the studio's ledger (dedupe key for the queue).
   await svc.from("client_gifts").insert({

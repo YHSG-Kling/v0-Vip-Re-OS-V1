@@ -5,6 +5,7 @@ import { SellerLifetimeOverview }   from "./seller-lifetime-overview"
 import { getBuyerEnabledGates }     from "@/app/actions/buyer-lifecycle-core"
 import { ContactQuickActions }      from "@/components/contact/ContactQuickActions"
 import { AddressingCard }           from "@/components/contact/AddressingCard"
+import { StrategySessionCard }      from "@/components/contact/StrategySessionCard"
 import { InvestorDealsPanel }        from "@/components/contact/investor-deals-panel"
 import { assertCanActOnContact }    from "@/lib/auth/contact-access"
 
@@ -87,8 +88,9 @@ export default async function ContactDetailPage({ params }: PageProps) {
         />
       </div>
 
-      {/* Addressing memory — "call me Bill"; every AI draft and team note honors it. */}
-      <div className="px-4 pt-3">
+      {/* Addressing memory ("call me Bill") + the auto-prepared strategy session
+          for this client's current moment — the concierge pair on every contact. */}
+      <div className="grid gap-3 px-4 pt-3 lg:grid-cols-2">
         <AddressingCard
           contactId={contactId}
           firstName={contact.first_name ?? null}
@@ -97,6 +99,7 @@ export default async function ContactDetailPage({ params }: PageProps) {
           initialPronunciation={contact.name_pronunciation ?? null}
           initialSalutationStyle={contact.salutation_style ?? null}
         />
+        <StrategySessionCard contactId={contactId} />
       </div>
 
       {/* Investor off-market deal finder — buyer-side match against our scraped off-market inventory.

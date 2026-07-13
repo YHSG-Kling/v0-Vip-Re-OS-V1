@@ -687,6 +687,41 @@ async function main() {
       && src("lib/intelligence/daily-briefing-generator.ts").includes('from("client_portal_activity")')
       && src("lib/intelligence/daily-briefing-generator.ts").includes("...iSawYouActions")
       && src("lib/intelligence/daily-briefing-generator.ts").includes('.eq("agent_id", owningAgentId)'))
+    const { inferStrategyMoment, composeStrategySession } = await import("../lib/kernel/strategy-session")
+    check("STRATEGY MOMENTS resolve by real state priority — offers on the table beat a stale listing beat a fresh launch beat the buyer kickoff; nothing to plan = honest null",
+      inferStrategyMoment({ buyerStage: null, hasActiveListing: true, daysOnMarket: 40, offersAwaitingResponse: 2 }) === "offer_decision"
+      && inferStrategyMoment({ buyerStage: null, hasActiveListing: true, daysOnMarket: 28, offersAwaitingResponse: 0 }) === "price_change"
+      && inferStrategyMoment({ buyerStage: null, hasActiveListing: true, daysOnMarket: 5, offersAwaitingResponse: 0 }) === "listing_launch"
+      && inferStrategyMoment({ buyerStage: "searching", hasActiveListing: false, daysOnMarket: null, offersAwaitingResponse: 0 }) === "buyer_kickoff"
+      && inferStrategyMoment({ buyerStage: null, hasActiveListing: false, daysOnMarket: null, offersAwaitingResponse: 0 }) === null)
+    const priceTalk = composeStrategySession({
+      moment: "price_change", clientName: "Bill", listingAddress: "12 Birch Lane",
+      listPrice: 500_000, daysOnMarket: 28, showingCount: 3, offersAwaitingResponse: 0,
+      topOfferPrice: null, sellerNetEstimate: null, responseDeadline: null,
+      budgetMin: null, budgetMax: null, buyerStage: null,
+    })
+    const kickoff = composeStrategySession({
+      moment: "buyer_kickoff", clientName: "Ana", listingAddress: null,
+      listPrice: null, daysOnMarket: null, showingCount: null, offersAwaitingResponse: 0,
+      topOfferPrice: null, sellerNetEstimate: null, responseDeadline: null,
+      budgetMin: 400_000, budgetMax: 550_000, buyerStage: "searching",
+    })
+    check("the AGENDA IS AUTO-PREPARED from the real numbers — the price talk carries the honest 3%/5% dollar options and the DOM/showings read; the kickoff carries the budget range; every session ships a warm invite draft",
+      priceTalk.agenda.some((a) => a.includes("$485,000") && a.includes("$475,000"))
+      && priceTalk.agenda.some((a) => a.includes("28 days") && a.includes("3 showings"))
+      && Boolean(priceTalk.inviteLine.startsWith("Bill,"))
+      && kickoff.agenda.some((a) => a.includes("$400,000") && a.includes("$550,000"))
+      && kickoff.durationMin === 45)
+    check("the session flow is complete IN-WINDOW — access-gated action grounds facts in listings/offers (responded_at-null = on the table), the card rides the contact page, confirm creates the agenda-carrying task; the PRE-CALL BRIEF now leads with the addressing memory",
+      src("app/actions/strategy-session.ts").includes("assertCanActOnContact")
+      && src("app/actions/strategy-session.ts").includes('.is("responded_at", null)')
+      && src("app/actions/strategy-session.ts").includes('source: "strategy_session"')
+      && src("app/crm/contacts/[contactId]/page.tsx").includes("StrategySessionCard")
+      && src("lib/contacts/contact-brief.ts").includes("resolveAddressing")
+      && src("lib/contacts/contact-brief.ts").includes("Call them"))
+    check("NOT-NULL assignee contract (live catch): both task-creating concierge actions resolve the contact's agent → caller's agents row → HONEST refusal, never a broken insert",
+      src("app/actions/strategy-session.ts").includes("No agent to assign")
+      && src("app/actions/gift-studio.ts").includes("No agent to assign"))
   }
 
   console.log("\n[23 · live — the full derivation against the real database]")
