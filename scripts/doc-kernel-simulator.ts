@@ -581,7 +581,35 @@ async function main() {
       && !src("lib/workflow/adapters/send-gift.ts").includes("fulfillGiftExternally"))
   }
 
-  console.log("\n[21 · live — the full derivation against the real database]")
+  console.log("\n[21 · pure + wiring — THE GIFT STUDIO (the AI knows the customer AND the deal)]")
+  {
+    const { composeGiftSelections } = await import("../lib/gifting/gift-studio")
+    const rich = composeGiftSelections({
+      occasion: "closing", familyName: "Henderson", firstNames: "Dana & Sam",
+      homeAddress: "12 Birch Lane", closeYear: 2026, persona: "first_time_buyer",
+      budgetMax: null, pastGiftKeys: [],
+    })
+    check("deal-grounded picks: the engraving line is ALREADY WRITTEN from the closed home's address + family + year; every pick carries evidence + a pre-scoped buy link",
+      rich.length >= 3 && rich.some((s) => s.personalization === "The Henderson Family · 12 Birch Lane · Est. 2026")
+      && rich.every((s) => s.personalization !== null)
+      && rich.every((s) => s.whyThisFits.length > 10) && rich.every((s) => s.etsyUrl.includes("etsy.com/search")))
+    const noAddress = composeGiftSelections({
+      occasion: "closing", familyName: null, firstNames: "Dana",
+      homeAddress: null, closeYear: null, persona: null, budgetMax: null, pastGiftKeys: [],
+    })
+    check("no address = HONEST degradation — address-personalized archetypes drop out, the universal basket stands; past gifts never repeat",
+      noAddress.every((s) => !s.title.includes("address") || s.personalization === null)
+      && noAddress.some((s) => s.key === "local_gourmet_basket")
+      && composeGiftSelections({ occasion: "closing", familyName: "H", firstNames: "D", homeAddress: "1 Elm", closeYear: 2026, persona: null, budgetMax: null, pastGiftKeys: ["home_portrait_cutting_board"] })
+        .every((s) => s.key !== "home_portrait_cutting_board"))
+    check("the in-window flow is complete: queue of ungifted closings → selections → order row (personalization_note) + purchase task, all inside the OS",
+      src("app/actions/gift-studio.ts").includes("personalization_note")
+      && src("app/actions/gift-studio.ts").includes('source: "gift_studio"')
+      && src("app/dashboard/gifts/page.tsx").includes("GiftStudioClient")
+      && src("app/dashboard/gifts/gift-studio-client.tsx").includes("Create the order"))
+  }
+
+  console.log("\n[22 · live — the full derivation against the real database]")
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {
