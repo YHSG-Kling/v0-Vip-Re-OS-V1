@@ -4,6 +4,7 @@ import { BuyerOverviewClient }      from "./buyer-overview-client"
 import { SellerLifetimeOverview }   from "./seller-lifetime-overview"
 import { getBuyerEnabledGates }     from "@/app/actions/buyer-lifecycle-core"
 import { ContactQuickActions }      from "@/components/contact/ContactQuickActions"
+import { AddressingCard }           from "@/components/contact/AddressingCard"
 import { InvestorDealsPanel }        from "@/components/contact/investor-deals-panel"
 import { assertCanActOnContact }    from "@/lib/auth/contact-access"
 
@@ -83,6 +84,18 @@ export default async function ContactDetailPage({ params }: PageProps) {
           addressVerified={contact.mailing_address_verified ?? null}
           contactType={contact.contact_type ?? null}
           buyerStage={contact.buyer_stage ?? null}
+        />
+      </div>
+
+      {/* Addressing memory — "call me Bill"; every AI draft and team note honors it. */}
+      <div className="px-4 pt-3">
+        <AddressingCard
+          contactId={contactId}
+          firstName={contact.first_name ?? null}
+          lastName={contact.last_name ?? null}
+          initialPreferredName={contact.preferred_name ?? null}
+          initialPronunciation={contact.name_pronunciation ?? null}
+          initialSalutationStyle={contact.salutation_style ?? null}
         />
       </div>
 

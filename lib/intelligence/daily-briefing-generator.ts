@@ -370,6 +370,73 @@ export async function generateDailyBriefing(
     console.error("[DailyBriefing] overnight-AI-work fetch failed:", err)
   }
 
+  // 2c. END-OF-DAY "I SAW YOU" — heavy client engagement yesterday (real
+  //     client_portal_activity + property_views rows) becomes a recognition
+  //     note the agent sends this morning. Deterministic (i-saw-you.ts),
+  //     merged below the AI call so a heavy evening is never dropped by a
+  //     model's judgment. Writers of client_portal_activity only reliably
+  //     set contact_id — ownership is resolved through contacts, never
+  //     trusted from the activity row.
+  let iSawYouActions: PriorityAction[] = []
+  try {
+    const { composeISawYouActions, humanizePortalActivity } = await import("./i-saw-you")
+    const { resolveAddressing } = await import("@/lib/kernel/addressing")
+    const since24 = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const { data: agentRow2 } = await supabase
+      .from("agents").select("id").or(`user_id.eq.${agentId},id.eq.${agentId}`).maybeSingle()
+    const owningAgentId = agentRow2?.id ?? agentId
+
+    const { data: acts } = await supabase
+      .from("client_portal_activity")
+      .select("contact_id, activity_type, created_at")
+      .gte("created_at", since24)
+      .order("created_at", { ascending: false })
+      .limit(500)
+    const actsByContact = new Map<string, { count: number; latestType: string | null }>()
+    for (const a of ((acts ?? []) as Array<{ contact_id: string | null; activity_type: string | null }>)) {
+      if (!a.contact_id) continue
+      const cur = actsByContact.get(a.contact_id) ?? { count: 0, latestType: null }
+      cur.count += 1
+      if (!cur.latestType) cur.latestType = a.activity_type ?? null
+      actsByContact.set(a.contact_id, cur)
+    }
+    const activeIds = Array.from(actsByContact.keys()).slice(0, 100)
+    if (activeIds.length > 0) {
+      const [{ data: mine }, { data: views }] = await Promise.all([
+        supabase
+          .from("contacts")
+          .select("id, first_name, last_name, preferred_name, salutation_style")
+          .in("id", activeIds)
+          .eq("agent_id", owningAgentId),
+        supabase
+          .from("property_views")
+          .select("contact_id")
+          .in("contact_id", activeIds)
+          .gte("last_viewed_at", since24),
+      ])
+      const viewsByContact = new Map<string, number>()
+      for (const v of ((views ?? []) as Array<{ contact_id: string | null }>)) {
+        if (!v.contact_id) continue
+        viewsByContact.set(v.contact_id, (viewsByContact.get(v.contact_id) ?? 0) + 1)
+      }
+      iSawYouActions = composeISawYouActions(
+        ((mine ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null; preferred_name: string | null; salutation_style: string | null }>).map((c) => ({
+          contactId: c.id,
+          addressAs: resolveAddressing({
+            firstName: c.first_name, lastName: c.last_name,
+            preferredName: c.preferred_name, namePronunciation: null,
+            salutationStyle: c.salutation_style,
+          }).addressAs,
+          portalActions: actsByContact.get(c.id)?.count ?? 0,
+          homesViewed: viewsByContact.get(c.id) ?? 0,
+          highlight: humanizePortalActivity(actsByContact.get(c.id)?.latestType),
+        })),
+      )
+    }
+  } catch (err) {
+    console.error("[DailyBriefing] i-saw-you fetch failed:", err)
+  }
+
   // 3. Call Claude to generate briefing
   const dataSnapshot = {
     tasks: tasks.slice(0, 10),
@@ -478,11 +545,14 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
   ].slice(0, 5)
 
   // ISA handoffs awaiting first touch lead the list DETERMINISTICALLY — an unclaimed
-  // qualified lead is never left to the model's judgment. AI items fill the rest.
+  // qualified lead is never left to the model's judgment. "I saw you" recognition
+  // notes ride next (same rule: a heavy client evening is a fact, not a model call).
+  // AI items fill the rest.
+  const deterministicActions = [...isaActions, ...iSawYouActions]
   const finalPriorityActions = [
-    ...isaActions,
+    ...deterministicActions,
     ...(aiResponse.top_priority_actions ?? []).filter(
-      (a) => !isaActions.some((i) => i.entity_id && i.entity_id === a.entity_id),
+      (a) => !deterministicActions.some((i) => i.entity_id && i.entity_id === a.entity_id),
     ),
   ].slice(0, 7)
 

@@ -257,7 +257,7 @@ export async function loadContactInteractions(
 /** Read the already-known canonical facts for the contact (NOT re-derived — surfaced as-is). */
 async function loadContactFacts(supabase: Svc, contactId: string): Promise<ContactFacts> {
   const { data: c } = await supabase.from("contacts")
-    .select("contact_type, buyer_stage, contact_persona, metadata")
+    .select("contact_type, buyer_stage, contact_persona, metadata, preferred_name, name_pronunciation")
     .eq("id", contactId).maybeSingle()
   if (!c) return {}
   const md = ((c as any).metadata ?? {}) as Record<string, any>
@@ -265,6 +265,18 @@ async function loadContactFacts(supabase: Svc, contactId: string): Promise<Conta
   const prefs = Array.isArray(md.preferences)
     ? (md.preferences as any[]).map((p) => String(p)).filter(Boolean)
     : []
+  // ADDRESSING MEMORY leads the shared note — "nothing important said twice"
+  // starts with never getting their name wrong (columns from l48-s01).
+  const preferredName = ((c as any).preferred_name as string | null)?.trim() || null
+  const pronunciation = ((c as any).name_pronunciation as string | null)?.trim() || null
+  if (preferredName || pronunciation) {
+    prefs.unshift(
+      [
+        preferredName ? `prefers to be called "${preferredName}"` : null,
+        pronunciation ? `name pronounced "${pronunciation}"` : null,
+      ].filter(Boolean).join("; "),
+    )
+  }
   return {
     contactType: (c as any).contact_type ?? null,
     buyerStage: (c as any).buyer_stage ?? null,

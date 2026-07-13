@@ -645,7 +645,51 @@ async function main() {
       && src("app/dashboard/gifts/gift-studio-client.tsx").includes("referral_thank_you"))
   }
 
-  console.log("\n[22 · live — the full derivation against the real database]")
+  console.log("\n[22 · pure + wiring — LUXURY DETAILS (addressing memory + end-of-day recognition)]")
+  {
+    const { resolveAddressing } = await import("../lib/kernel/addressing")
+    const bill = resolveAddressing({
+      firstName: "William", lastName: "Chen", preferredName: "Bill",
+      namePronunciation: null, salutationStyle: "casual",
+    })
+    const siobhan = resolveAddressing({
+      firstName: "Siobhan", lastName: "Kelly", preferredName: null,
+      namePronunciation: "SHIV-on", salutationStyle: "formal",
+    })
+    const empty = resolveAddressing({
+      firstName: null, lastName: null, preferredName: null,
+      namePronunciation: null, salutationStyle: null,
+    })
+    check("ADDRESSING MEMORY ('call me Bill') — the preferred name WINS with a never-'William' rule; pronunciation rides formal greetings; nothing captured = plain fallback with NO prompt rule",
+      bill.addressAs === "Bill" && bill.greeting === "Hi Bill," && Boolean(bill.promptLine?.includes('never "William"'))
+      && siobhan.greeting === "Dear Siobhan Kelly," && siobhan.pronunciationNote === 'Pronounced "SHIV-on".'
+      && empty.addressAs === "there" && empty.promptLine === null)
+    check("addressing is ENFORCED at the copy seams — outreach drafts prefer preferred_name, the shared team note leads with the addressing rule, the contact card captures it (l48-s01 live)",
+      src("lib/ai-isa/personalize-outreach.ts").includes("input.preferred_name ?? input.first_name")
+      && src("lib/kernel/conversation-memory.ts").includes("prefers to be called")
+      && src("app/crm/contacts/[contactId]/page.tsx").includes("AddressingCard")
+      && src("app/actions/contacts/update-addressing.ts").includes("assertCanActOnContact")
+      && src("scripts/l48-s01-contacts-addressing.sql").includes("preferred_name"))
+    const { composeISawYouActions, humanizePortalActivity, I_SAW_YOU_MIN_SIGNALS } = await import("../lib/intelligence/i-saw-you")
+    const heavy = composeISawYouActions([
+      { contactId: "c-1", addressAs: "Bill", portalActions: 3, homesViewed: 4, highlight: humanizePortalActivity("affordability_checked") },
+      { contactId: "c-2", addressAs: "Ana", portalActions: 1, homesViewed: 1, highlight: null },
+      { contactId: "c-3", addressAs: "Maya", portalActions: 9, homesViewed: 2, highlight: null },
+    ])
+    check("END-OF-DAY 'I SAW YOU' — a heavy client evening earns a recognition draft (non-salesy, addressed by preferred name, busiest first); a drive-by NEVER triggers it",
+      heavy.length === 2 && heavy[0]?.entity_id === "c-3" && heavy[1]?.entity_id === "c-1"
+      && Boolean(heavy[1]?.context.includes("Bill, I saw how much ground you covered"))
+      && Boolean(heavy[1]?.context.includes("checking what you can afford"))
+      && heavy.every((a) => a.action_type === "draft_followup" && !a.context.toLowerCase().includes("listing"))
+      && I_SAW_YOU_MIN_SIGNALS >= 3)
+    check("the recognition rides the MORNING BRIEFING deterministically (real client_portal_activity + property_views; ownership resolved through contacts, never trusted from the activity row)",
+      src("lib/intelligence/daily-briefing-generator.ts").includes("composeISawYouActions")
+      && src("lib/intelligence/daily-briefing-generator.ts").includes('from("client_portal_activity")')
+      && src("lib/intelligence/daily-briefing-generator.ts").includes("...iSawYouActions")
+      && src("lib/intelligence/daily-briefing-generator.ts").includes('.eq("agent_id", owningAgentId)'))
+  }
+
+  console.log("\n[23 · live — the full derivation against the real database]")
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) {

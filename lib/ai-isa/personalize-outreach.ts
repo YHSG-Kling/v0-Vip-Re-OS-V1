@@ -24,6 +24,10 @@ export type OutreachChannel = "email" | "sms" | "voicemail" | "call_opener" | "d
 export interface PersonalizationInput {
   // Lead/contact first-class columns
   first_name?: string | null
+  /** ADDRESSING MEMORY (contacts.preferred_name) — what they said to call them.
+   *  When present it IS the name every draft uses ("Bill", never "William");
+   *  lib/kernel/addressing.ts is the canonical resolver. */
+  preferred_name?: string | null
   last_name?: string | null
   city?: string | null
   motivation_type?: string | null
@@ -82,7 +86,8 @@ export function buildPersonalizationFacts(input: PersonalizationInput): Personal
   }
 
   // ── Identity ──────────────────────────────────────────────────────────────
-  push("first_name",   "Name",       input.first_name)
+  // The preferred name outranks the record name in every draft ("call me Bill").
+  push("first_name",   "Name",       input.preferred_name ?? input.first_name)
   push("city",         "City",       input.city ?? input.enrichment_profile?.["city"] as string | undefined)
 
   // ── Real estate intent ────────────────────────────────────────────────────
