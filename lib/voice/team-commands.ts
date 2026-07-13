@@ -84,6 +84,29 @@ export async function dispatchTeamCommand(
       const r = await runMorningStandup(ctx.brokerageId, ctx.agentUserId, { firstName: ctx.firstName ?? null }, svc)
       return { ok: true, spoken: r.spoken, data: { items: r.items } }
     }
+    case "quarterly_review": {
+      // THE QBR SPOKEN TWIN — the same loader the Command Center card uses
+      // (keep-one), principal-gated exactly like the dashboard action.
+      const { data: me } = await svc.from("users").select("role").eq("id", ctx.agentUserId).maybeSingle()
+      const { isTenancyPrincipal } = await import("@/lib/kernel/tenancy-principal")
+      const principal = await isTenancyPrincipal(svc, {
+        userId: ctx.agentUserId, brokerageId: ctx.brokerageId, role: String((me as any)?.role ?? ""),
+      })
+      if (!principal) {
+        return { ok: false, spoken: "The quarterly review is for the account principal — ask your broker or team lead to pull it up." }
+      }
+      const { loadQuarterlyReview } = await import("@/lib/intelligence/quarterly-review-loader")
+      const { review, pulse } = await loadQuarterlyReview(svc, ctx.brokerageId)
+      const spoken = [
+        `${review.headline}.`,
+        review.outcomes[0] ?? null,
+        review.trust[0] ?? null,
+        review.gaps[0] ? `One thing sitting unused: ${review.gaps[0]}` : null,
+        review.nextMoves[0] ? `Next move: ${review.nextMoves[0]}` : null,
+        pulse[0] ? `And ${pulse[0].name} could use a hand — ${pulse[0].reasons[0]}.` : null,
+      ].filter(Boolean).join(" ")
+      return { ok: true, spoken, data: { review, pulse } }
+    }
     case "ask_guidance": {
       // "Hey team, how do I set up my voice twin?" — the on-demand educator:
       // answered NOW from the published curriculum (grounded, never invented

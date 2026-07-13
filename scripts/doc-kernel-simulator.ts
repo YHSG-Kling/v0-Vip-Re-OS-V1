@@ -818,10 +818,9 @@ async function main() {
       && src("lib/kernel/client-welcome.ts").includes("{ body: fallback.body }")
       && src("lib/kernel/client-welcome.ts").includes("Journey step"))
     const { classifyCardTarget } = await import("../lib/contacts/card-classifier")
-    check("BUSINESS CARD → VENDOR (owner directive) — an inspector's card routes to the VENDOR book with the live CHECK category, a co-op agent's card stays a CONTACT, a blank card defaults to the human-reviewed contact path; the action creates a PENDING vendors row and keeps company/title (previously dropped)",
+    check("BUSINESS CARD → VENDOR (owner directive) — an inspector's card routes to the VENDOR book with the live CHECK category, a blank card defaults to the human-reviewed contact path; the action creates a PENDING vendors row and keeps company/title (previously dropped)",
       classifyCardTarget({ title: "Senior Home Inspector", company: "Acme Inspections LLC" }).target === "vendor"
       && classifyCardTarget({ title: "Senior Home Inspector", company: "Acme Inspections LLC" }).category === "Inspector"
-      && classifyCardTarget({ title: "Realtor", company: "Sunrise Realty" }).target === "contact"
       && classifyCardTarget({ title: "Loan Officer NMLS 12345", company: null }).category === "Lender"
       && classifyCardTarget({ title: null, company: null }).target === "contact"
       && src("app/actions/business-card/business-card-actions.ts").includes('status: "pending"')
@@ -840,6 +839,36 @@ async function main() {
       && src("app/api/portal/ai-chat/route.ts").includes("never characterize school QUALITY")
       && src("lib/kernel/manager-registry.ts").includes("card_vendor_routing:")
       && src("lib/kernel/manager-registry.ts").includes("local_lifestyle_poi:"))
+    check("CARD TRIAGE IS THREE-WAY (owner rule: 'other agents are users') — a realtor's card routes to the RECRUITING pipeline (status 'prospect', live CHECK), never the client CRM; the QBR has a SPOKEN TWIN on the same loader (keep-one), principal-gated by voice too",
+      classifyCardTarget({ title: "Realtor", company: "Sunrise Realty" }).target === "recruit"
+      && src("app/actions/business-card/business-card-actions.ts").includes('from("recruits")')
+      && src("app/actions/business-card/business-card-actions.ts").includes('status: "prospect"')
+      && src("lib/voice/team-command-names.ts").includes('"quarterly_review"')
+      && src("lib/voice/team-commands.ts").includes("loadQuarterlyReview")
+      && src("lib/voice/team-commands.ts").includes("isTenancyPrincipal")
+      && src("app/actions/quarterly-review.ts").includes("quarterly-review-loader"))
+    const { composeServiceRecovery, composeRecoveryActions } = await import("../lib/kernel/service-recovery")
+    const rec = composeRecoveryActions([
+      { contactId: "c-1", addressAs: "Bill", subject: "Your update", sendError: "bounce" },
+      { contactId: "c-1", addressAs: "Bill", subject: "dup", sendError: "bounce" },
+    ])
+    check("SERVICE RECOVERY — distinct apology per failure type (vendor no-show ≠ system hiccup), failed sends LEAD the briefing at HIGH priority with the recovery drafted, one per contact",
+      composeServiceRecovery("vendor_no_show", "Ana").draft.includes("didn't show")
+      && composeServiceRecovery("system_outage", "Ana").draft.includes("hiccuped")
+      && rec.length === 1 && rec[0]?.priority === "high" && Boolean(rec[0]?.context.includes("Bill, A message we meant to send"))
+      && src("lib/intelligence/daily-briefing-generator.ts").includes("...recoveryActions,")
+      && src("lib/intelligence/daily-briefing-generator.ts").includes('.not("send_error", "is", null)'))
+    check("DEAL-SHAKY + ACTING-AS + VENDOR EXPIRY are enforced, ledgered, and manager-owned — shaky suspends grants IN the deriver, assumed views land on the ledger, whole-vendor expiry gates the vendor read; all five registered",
+      src("lib/documents/deadline-derivation.ts").includes("deal_shaky") && src("lib/documents/deadline-derivation.ts").includes("grants = new Set()")
+      && src("app/transactions/[transactionId]/page.tsx").includes("DealShakyToggle")
+      && src("app/actions/deal-shaky.ts").includes("deal_marked_shaky")
+      && src("app/dashboard/admin/command-center/page.tsx").includes("acting_as_view")
+      && src("app/actions/vendor-contact-access.ts").includes("access_expires_at")
+      && src("lib/kernel/manager-registry.ts").includes("deal_shaky_flag:")
+      && src("lib/kernel/manager-registry.ts").includes("service_recovery:")
+      && src("lib/kernel/manager-registry.ts").includes("card_recruit_routing:")
+      && src("lib/kernel/manager-registry.ts").includes("acting_as_audit:")
+      && src("lib/kernel/manager-registry.ts").includes("vendor_access_expiry:"))
   }
 
   console.log("\n[24 · live — the full derivation against the real database]")

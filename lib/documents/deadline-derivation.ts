@@ -145,7 +145,17 @@ export async function deriveDeadlinesFromDocument(
   // from their own approval history) act autonomously; everything else
   // still proposes. Fail-closed: no grant record, no autonomous act.
   const { loadDocKernelGrants, shapeKey } = await import("./autonomy-ratchet")
-  const grants = await loadDocKernelGrants(svc, input.brokerageId)
+  let grants = await loadDocKernelGrants(svc, input.brokerageId)
+
+  // "DEAL FEELS SHAKY" (l49-s01) — the agent's gut overrides earned trust:
+  // a shaky-flagged deal SUSPENDS every grant for this file, so all derived
+  // dates go back to human proposals until the flag clears. The flag never
+  // blocks derivation itself — only the autonomous half.
+  if (grants.size > 0) {
+    const { data: txRow } = await svc
+      .from("transactions").select("deal_shaky").eq("id", input.transactionId).maybeSingle()
+    if ((txRow as any)?.deal_shaky) grants = new Set()
+  }
 
   // A human-verified field is the strongest evidence there is — a candidate
   // whose source field was verified derives at HIGH confidence regardless of

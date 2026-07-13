@@ -39,9 +39,10 @@ export async function uploadBusinessCard(params: {
   agentId?: string  // ignored — derived from session
   brokerageId?: string  // ignored — derived from session
   /** explicit routing override; omitted = auto-classified from title/company
-   *  (an inspector's card becomes a VENDOR, a co-op agent stays a contact). */
-  target?: "contact" | "vendor"
-}): Promise<{ scanId: string; contactId: string | null; vendorId: string | null; target: "contact" | "vendor"; viable: boolean }> {
+   *  (an inspector's card → VENDOR book; a fellow agent's card → RECRUITING
+   *  pipeline — agents are platform users, never CRM contacts). */
+  target?: "contact" | "vendor" | "recruit"
+}): Promise<{ scanId: string; contactId: string | null; vendorId: string | null; recruitId: string | null; target: "contact" | "vendor" | "recruit"; viable: boolean }> {
   const auth = await requireCaller()
   if (!auth.ok) throw new Error(auth.error)
   const brokerageId = auth.brokerageId
@@ -144,7 +145,7 @@ export async function uploadBusinessCard(params: {
       })
     }
 
-    return { scanId: scan!.id, contactId: null, vendorId: null, target: "contact", viable: false }
+    return { scanId: scan!.id, contactId: null, vendorId: null, recruitId: null, target: "contact", viable: false }
   }
 
   // 6) Route the card: an explicit override wins, else the pure classifier
@@ -185,7 +186,43 @@ export async function uploadBusinessCard(params: {
       metadata: { scanId: scan!.id, routed_to: "vendor", category: cls.category ?? "Other" },
     })
 
-    return { scanId: scan!.id, contactId: null, vendorId: vendor.id, target: "vendor", viable: true }
+    return { scanId: scan!.id, contactId: null, vendorId: vendor.id, recruitId: null, target: "vendor", viable: true }
+  }
+
+  if (target === "recruit") {
+    // A fellow agent's card = a RECRUITING prospect (agents are platform
+    // users, owner rule). recruits.status CHECK vocabulary verified live.
+    const { data: recruit, error: recruitError } = await supabase.from("recruits").insert({
+      brokerage_id: brokerageId,
+      recruiter_agent_id: agentId,
+      first_name: extracted.first_name ?? null,
+      last_name: extracted.last_name ?? null,
+      email: extracted.email ?? null,
+      phone: extracted.phone ?? null,
+      current_brokerage: extracted.company ?? null,
+      status: "prospect",
+      referral_source: "business_card",
+      notes: [
+        `Scanned from a business card.`,
+        extracted.title ? `Title on card: ${extracted.title}.` : null,
+        extracted.website ? `Website: ${extracted.website}` : null,
+      ].filter(Boolean).join(" "),
+    }).select("id").single()
+    if (recruitError || !recruit) throw new Error(`Recruit create failed: ${recruitError?.message ?? "no data"}`)
+
+    await supabase.from("business_card_scans").update({
+      extracted_data: { ...extracted, routed_to: "recruit", recruit_id: recruit.id },
+    }).eq("id", scan!.id)
+
+    await supabase.from("lifecycle_events").insert({
+      brokerage_id: brokerageId,
+      entity_type: "recruit",
+      entity_id: recruit.id,
+      event_type: KernelEvent.BUSINESS_CARD_APPROVED,
+      metadata: { scanId: scan!.id, routed_to: "recruit" },
+    })
+
+    return { scanId: scan!.id, contactId: null, vendorId: null, recruitId: recruit.id, target: "recruit", viable: true }
   }
 
   // Viable contact → captureContact (tcpa_consent=false always for business cards).
@@ -231,7 +268,7 @@ export async function uploadBusinessCard(params: {
     entityId: contactId,
   })
 
-  return { scanId: scan!.id, contactId, vendorId: null, target: "contact", viable: true }
+  return { scanId: scan!.id, contactId, vendorId: null, recruitId: null, target: "contact", viable: true }
 }
 
 export async function getRecentScans(params: {

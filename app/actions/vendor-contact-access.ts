@@ -224,6 +224,16 @@ export async function listVendorAssignedContactsAction(): Promise<
   if (!roleRow?.vendor_id) return { ok: false, error: "Not a vendor account" }
 
   const svc = createServiceClient()
+
+  // VENDOR-LEVEL EXPIRY (l49-s01, concierge §1.7) — assignment-level
+  // expires_at was already enforced below; this adds the whole-vendor
+  // time box (engagement ended = every assignment goes dark at once).
+  const { data: vendorRow } = await svc
+    .from("vendors").select("access_expires_at, status").eq("id", roleRow.vendor_id).maybeSingle()
+  if (vendorRow?.access_expires_at && new Date(vendorRow.access_expires_at).getTime() < Date.now()) {
+    return { ok: false, error: "Vendor access has expired — ask the brokerage to renew it" }
+  }
+
   const { data, error } = await svc
     .from("vendor_contact_assignments")
     .select(`

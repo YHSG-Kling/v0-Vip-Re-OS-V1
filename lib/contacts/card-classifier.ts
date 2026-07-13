@@ -14,7 +14,7 @@
  * override either way. NOT server-only (simulator-driven).
  */
 
-export type CardTarget = "contact" | "vendor"
+export type CardTarget = "contact" | "vendor" | "recruit"
 
 export interface CardClassification {
   target: CardTarget
@@ -31,14 +31,16 @@ const VENDOR_FAMILIES: Array<{ category: CardClassification["category"]; pattern
   { category: "Other", pattern: /\b(photograph|videograph|clean(er|ing)|landscap|mover|moving compan|attorney|law firm|insurance|apprais|pest|survey(or|ing)|locksmith|organizer)\b/ },
 ]
 
-/** a fellow agent's card is a RELATIONSHIP, never a vendor. */
+/** a fellow agent's card is a RECRUIT — agents are USERS of this platform
+ *  (owner rule), so their card lands in the recruiting pipeline, never the
+ *  client CRM and never the vendor book. */
 const REAL_ESTATE_AGENT = /\b(realtor|real estate agent|broker associate|listing agent|buyer'?s agent|realty|brokerage)\b/
 
 /** PURE: where does this card belong? */
 export function classifyCardTarget(input: { title?: string | null; company?: string | null }): CardClassification {
   const hay = [input.title ?? "", input.company ?? ""].join(" ").toLowerCase()
   if (!hay.trim()) return { target: "contact", category: null }
-  if (REAL_ESTATE_AGENT.test(hay)) return { target: "contact", category: null }
+  if (REAL_ESTATE_AGENT.test(hay)) return { target: "recruit", category: null }
   for (const fam of VENDOR_FAMILIES) {
     if (fam.pattern.test(hay)) return { target: "vendor", category: fam.category }
   }

@@ -100,6 +100,20 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       if (kind === "location") effectiveScope = resolveEgressScope({ userType: "admin", userId: user.id, brokerageId, locationId: id })
       else if (kind === "team") effectiveScope = resolveEgressScope({ userType: "team_lead", userId: user.id, brokerageId, teamId: id })
       else if (kind === "agent") effectiveScope = resolveEgressScope({ userType: "agent", userId: id, brokerageId })
+
+      // ACTING-AS AUDIT (concierge §1.2) — a principal assuming a
+      // subordinate's view is legitimate (troubleshooting, coaching) but
+      // NEVER silent: every assumed view lands on the ledger. Best-effort.
+      if (kind === "agent" || kind === "team") {
+        await createServiceClient().from("lifecycle_events").insert({
+          brokerage_id: brokerageId,
+          entity_type: kind,
+          entity_id: id,
+          event_type: "acting_as_view",
+          actor_user_id: user.id,
+          metadata: { surface: "command_center", viewer_role: userType },
+        }).then(() => {}, () => {})
+      }
     }
   }
 

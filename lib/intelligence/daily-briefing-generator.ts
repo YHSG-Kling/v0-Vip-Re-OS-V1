@@ -488,6 +488,51 @@ export async function generateDailyBriefing(
     console.error("[DailyBriefing] small-wins fetch failed:", err)
   }
 
+  // 2e. SERVICE RECOVERY — a client message that FAILED to send yesterday
+  //     (agent_client_messages.send_error) gets a human recovery this
+  //     morning with the apology already drafted. Deterministic; the
+  //     failure never dies silently in a status column.
+  let recoveryActions: PriorityAction[] = []
+  try {
+    const { composeRecoveryActions } = await import("@/lib/kernel/service-recovery")
+    const { resolveAddressing } = await import("@/lib/kernel/addressing")
+    const since24 = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const { data: failed } = await supabase
+      .from("agent_client_messages")
+      .select("recipient_contact_id, subject, send_error")
+      .eq("brokerage_id", brokerageId)
+      .not("send_error", "is", null)
+      .gte("created_at", since24)
+      .limit(20)
+    const failRows = ((failed ?? []) as Array<{ recipient_contact_id: string | null; subject: string | null; send_error: string | null }>)
+      .filter((f) => f.recipient_contact_id)
+    const failIds = Array.from(new Set(failRows.map((f) => f.recipient_contact_id as string)))
+    if (failIds.length > 0) {
+      const { data: agentRow4 } = await supabase
+        .from("agents").select("id").or(`user_id.eq.${agentId},id.eq.${agentId}`).maybeSingle()
+      const { data: mine } = await supabase
+        .from("contacts")
+        .select("id, first_name, last_name, preferred_name, salutation_style")
+        .in("id", failIds)
+        .eq("agent_id", agentRow4?.id ?? agentId)
+      const nameById = new Map(((mine ?? []) as any[]).map((c) => [c.id, resolveAddressing({
+        firstName: c.first_name, lastName: c.last_name,
+        preferredName: c.preferred_name, namePronunciation: null, salutationStyle: c.salutation_style,
+      }).addressAs]))
+      recoveryActions = composeRecoveryActions(
+        failRows
+          .filter((f) => nameById.has(f.recipient_contact_id as string))
+          .map((f) => ({
+            contactId: f.recipient_contact_id as string,
+            addressAs: nameById.get(f.recipient_contact_id as string) ?? "your client",
+            subject: f.subject, sendError: f.send_error,
+          })),
+      )
+    }
+  } catch (err) {
+    console.error("[DailyBriefing] service-recovery fetch failed:", err)
+  }
+
   // 3. Call Claude to generate briefing
   const dataSnapshot = {
     tasks: tasks.slice(0, 10),
@@ -599,7 +644,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
   // qualified lead is never left to the model's judgment. "I saw you" recognition
   // notes ride next (same rule: a heavy client evening is a fact, not a model call).
   // AI items fill the rest.
-  const deterministicActions = [...isaActions, ...iSawYouActions, ...smallWinActions]
+  const deterministicActions = [...recoveryActions, ...isaActions, ...iSawYouActions, ...smallWinActions]
   const finalPriorityActions = [
     ...deterministicActions,
     ...(aiResponse.top_priority_actions ?? []).filter(
