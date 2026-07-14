@@ -104,7 +104,7 @@ export async function POST(req: NextRequest) {
 
         // One conversation per (page, sender) thread — the unified inbox row.
         const { data: existing } = await svc.from("conversations")
-          .select("id, message_count, unread_count")
+          .select("id, message_count, unread_count, contact_id")
           .eq("brokerage_id", brokerageId)
           .eq("type", "social_dm")
           .contains("context_data", { page_id: ev.pageId, sender_id: ev.senderId })
@@ -112,7 +112,11 @@ export async function POST(req: NextRequest) {
           .maybeSingle()
 
         const nowIso = new Date().toISOString()
+        let conversationId: string | null = null
+        let conversationContactId: string | null = null
         if (existing) {
+          conversationId = (existing as any).id
+          conversationContactId = ((existing as any).contact_id as string | null) ?? null
           await svc.from("conversations").update({
             last_message_at: nowIso,
             message_count: (Number((existing as any).message_count) || 0) + 1,
@@ -124,7 +128,7 @@ export async function POST(req: NextRequest) {
             updated_at: nowIso,
           }).eq("id", (existing as any).id)
         } else {
-          await svc.from("conversations").insert({
+          const { data: createdConv } = await svc.from("conversations").insert({
             brokerage_id: brokerageId,
             agent_id: threadAgentId,
             type: "social_dm",
@@ -137,7 +141,27 @@ export async function POST(req: NextRequest) {
               account_name: (account as any)?.account_name ?? null,
               last_message: ev.text,
             },
-          })
+          }).select("id").single()
+          conversationId = ((createdConv as any)?.id as string | null) ?? null
+        }
+
+        // THE TIMELINE ROW (owner rule: the unified inbox carries social DMs) —
+        // every DM lands in messages, the ONE timeline table; once the thread
+        // is linked to a contact, the DM appears on that contact's inbox.
+        if (conversationId) {
+          await svc.from("messages").insert({
+            conversation_id: conversationId,
+            contact_id: conversationContactId,
+            brokerage_id: brokerageId,
+            agent_id: threadAgentId,
+            type: "social_dm",
+            direction: "inbound",
+            sender_type: "contact",
+            body: ev.text ?? "",
+            status: "delivered",
+            created_at: nowIso,
+            updated_at: nowIso,
+          }).then(() => {}, () => {})
         }
       } catch { /* per-event best-effort — the ack stands */ }
     }

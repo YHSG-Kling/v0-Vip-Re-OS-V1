@@ -253,6 +253,15 @@ export async function scanUploadedDocument(params: {
       brokerageId: doc.brokerage_id as string,
       transactionId: ((doc as any).transaction_id as string | null) ?? null,
     })
+    // Hook 4 — SCANNED DATA → THE CONTACT: verified/high-confidence contract
+    // parties fill the deal contacts' EMPTY legal names (additive-only,
+    // provenance-stamped; a recorded legal name is never overwritten).
+    const { writebackLegalNames } = await import("./contact-legal-writeback")
+    await writebackLegalNames(supabase as any, {
+      documentId,
+      brokerageId: doc.brokerage_id as string,
+      transactionId: ((doc as any).transaction_id as string | null) ?? null,
+    })
   } catch (err: any) {
     console.error("[scan] document-kernel hook failed (non-fatal):", err?.message ?? err)
   }

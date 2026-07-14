@@ -783,6 +783,27 @@ async function main() {
       && src("app/api/cron/proactive-intelligence/route.ts").includes("runSiteTrafficInsights")
       && src("lib/kernel/site-traffic-insights.ts").includes("rows.length < 10")
       && src("lib/kernel/manager-registry.ts").includes("site_traffic_learning:"))
+    const { partyMatchesContact, splitLegalName } = await import("../lib/documents/contact-legal-writeback")
+    check("SCAN → CONTACT (owner rule) — verified contract parties fill EMPTY legal names under doc-kernel discipline: the party must plausibly BE the contact ('Bill Chen' never fills from 'Robert Smith'), the legal split preserves middle names, hook 4 rides the scan, and filing (names/linkage/classification) verified by construction",
+      partyMatchesContact("William Robert Chen", { firstName: "William", lastName: "Chen" })
+      && !partyMatchesContact("Robert Smith Jr", { firstName: "William", lastName: "Chen" })
+      && splitLegalName("William Robert Chen", "Chen")?.legalFirst === "William Robert"
+      && splitLegalName("William Robert Chen", "Chen")?.legalLast === "Chen"
+      && splitLegalName("Chen", "Chen") === null
+      && src("lib/documents/scan-uploaded-document.ts").includes("writebackLegalNames")
+      && src("lib/documents/contact-legal-writeback.ts").includes("never overwrite")
+      && src("lib/documents/upload-document.ts").includes("file_name")
+      && src("lib/kernel/manager-registry.ts").includes("scan_contact_writeback:"))
+    check("UNIFIED INBOX COMPLETENESS (owner rule) — Meta DMs land messages rows (the ONE timeline table, linked threads surface on the contact), the SendGrid event webhook is secret-gated (unset=404) with exact-id-then-recipient correlation and read-never-downgrades, spam complaints suppress with the EXACT vocabulary reason, sends return providerMessageId, and the chips render read/delivered",
+      src("app/api/webhooks/meta-dm/route.ts").includes('type: "social_dm"')
+      && src("app/api/webhooks/meta-dm/route.ts").includes('from("messages")')
+      && src("app/api/webhooks/sendgrid-events/route.ts").includes("SENDGRID_WEBHOOK_SECRET")
+      && src("app/api/webhooks/sendgrid-events/route.ts").includes("sg_message_id")
+      && src("app/api/webhooks/sendgrid-events/route.ts").includes('reason: "spam_complaint"')
+      && src("lib/providers/messaging/index.ts").includes("providerMessageId")
+      && src("app/components/contact/UnifiedInboxTab.tsx").includes('"social_dm"')
+      && src("app/components/contact/UnifiedInboxTab.tsx").includes('status === "read"')
+      && src("lib/kernel/manager-registry.ts").includes("inbox_social_email_status:"))
     check("the session flow is complete IN-WINDOW — access-gated action grounds facts in listings/offers (responded_at-null = on the table), the card rides the contact page, confirm creates the agenda-carrying task; the PRE-CALL BRIEF now leads with the addressing memory",
       src("app/actions/strategy-session.ts").includes("assertCanActOnContact")
       && src("app/actions/strategy-session.ts").includes('.is("responded_at", null)')

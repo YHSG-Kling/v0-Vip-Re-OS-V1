@@ -259,6 +259,9 @@ export interface SendEmailResult {
   mock?: boolean
   /** Which provider actually sent the message */
   provider?: "gmail" | "outlook" | "sendgrid"
+  /** Provider message id (SendGrid x-message-id) — store in messages.metadata.sg_message_id
+   *  for EXACT delivered/read correlation in the event webhook. */
+  providerMessageId?: string | null
 }
 
 export async function sendEmail(params: SendEmailParams): Promise<SendEmailResult> {
@@ -321,5 +324,8 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
     throw new Error(response.error || "SendGrid API error")
   }
 
-  return { success: true, status: "sent", provider: "sendgrid" }
+  // The provider id enables EXACT delivered/read correlation in the event
+  // webhook (messages writers store it in metadata.sg_message_id).
+  const sgMessageId = (response as any).headers?.["x-message-id"] ?? null
+  return { success: true, status: "sent", provider: "sendgrid", providerMessageId: sgMessageId }
 }

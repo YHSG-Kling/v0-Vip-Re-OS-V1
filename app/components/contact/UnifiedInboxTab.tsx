@@ -49,6 +49,7 @@ type Channel =
   | "linkedin"
   | "twitter"
   | "in_app"
+  | "social_dm"
   | "ai"
   | "voice"
 
@@ -131,7 +132,7 @@ function directionIcon(direction: Direction, callStatus?: string) {
 function statusChip(status?: string) {
   if (!status) return null
   const color =
-    status === "sent" || status === "delivered" || status === "completed"
+    status === "sent" || status === "delivered" || status === "read" || status === "completed"
       ? "bg-green-100 text-green-700"
       : status === "queued" || status === "pending_manual"
         ? "bg-amber-100 text-amber-700"

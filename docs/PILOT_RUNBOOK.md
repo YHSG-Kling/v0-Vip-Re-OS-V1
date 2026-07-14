@@ -12,7 +12,9 @@ All providers are PLATFORM setup — tenants never see them.
    Twilio master creds + `TWILIO_PHONE_NUMBER`, `SENDGRID_API_KEY`,
    `STRIPE_SECRET_KEY` (live) + `STRIPE_WEBHOOK_SECRET`, one model key,
    `ELEVENLABS_API_KEY`, `DID_API_KEY`, `BATCHDATA_MCP_URL` (funded),
-   RentCast + scraper (Apify/ZenRows) keys, `GEOAPIFY_API_KEY` (nearby-life
+   RentCast + scraper (Apify/ZenRows) keys, `SENDGRID_WEBHOOK_SECRET` (delivered/read + spam-complaint hygiene —
+   register the SendGrid Event Webhook at /api/webhooks/sendgrid-events?secret=…),
+   `GEOAPIFY_API_KEY` (nearby-life
    POI data — OpenStreetMap via Geoapify; unset = the portal simply skips
    local-lifestyle suggestions, never invents them).
 2. Open **/dashboard/superadmin → Go-Live Readiness** — every required domain
