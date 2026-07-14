@@ -1054,6 +1054,25 @@ async function main() {
       && src("lib/kernel/manager-registry.ts").includes("career_brand_architect:")
       && src("lib/kernel/manager-registry.ts").includes("neighborhood_momentum:")
       && src("lib/kernel/manager-registry.ts").includes("twin_provenance:"))
+    const { composeFutureLens, composeColdStartBandLine, PERMIT_HOT_COUNT } = await import("../lib/intelligence/neighborhood-future-lens")
+    const appr = { zip: "78701", oldYear: 2018, newYear: 2022, oldValue: 400_000, newValue: 520_000, totalPct: 30, annualPct: 6.8 }
+    const lensHot = composeFutureLens({ zip: "78701", appreciation: appr, permitCount: 10 })
+    const lensNone = composeFutureLens({ zip: "78701", appreciation: null, permitCount: 0 })
+    const { composeColdStartCareer } = await import("../lib/intelligence/career-architect")
+    const coldCareer = composeColdStartCareer({ topTouchedZip: { zip: "78701", count: 6 }, contactCount: 6 })
+    check("FUTURE LENS + NEW-AGENT COLD START (owner corrections: free public records + new solos hold no history) — Census two-vintage appreciation + OSINT permit density compose honest source-cited signals (30% up + 10 permits = 2 signals, each labeled forecast-not-fact; no data = no signal, never invented), the cold-start seller line fills the null band with clearly-labeled AREA data, and a new agent gets the touched-ZIP farm instead of silence; registered",
+      lensHot.hasSignal === true && lensHot.signals.length === 2
+      && Boolean(lensHot.signals[0].includes("U.S. Census")) && Boolean(lensHot.signals.some((s) => s.includes("building permits")))
+      && lensNone.hasSignal === false && lensNone.signals.length === 0
+      && PERMIT_HOT_COUNT === 8
+      && Boolean(composeColdStartBandLine(appr as any)?.includes("area data, not a specific-home valuation"))
+      && composeColdStartBandLine(null) === null
+      && coldCareer.length === 1 && coldCareer[0].key === "cold_start_farm" && Boolean(coldCareer[0].line.includes("farm forming"))
+      && composeColdStartCareer({ topTouchedZip: { zip: "x", count: 2 }, contactCount: 2 }).length === 0
+      && src("lib/external/census-appreciation.ts").includes("B25077_001E")
+      && src("app/portal/[contactId]/offers/page.tsx").includes("composeColdStartBandLine")
+      && src("lib/intelligence/career-architect.ts").includes("loadTopTouchedZip")
+      && src("lib/kernel/manager-registry.ts").includes("neighborhood_future_lens:"))
     const { isShallowBody, recoverTopicForModule, DEPTH_MARKER } = await import("../lib/education/depth-reauthor")
     const reOnb = await recoverTopicForModule({ id: "m1", title: "old", summary: null, gap_tags: ["onboarding:solo_agent:contract_walkthrough"], audience_roles: ["agent"] }, "team")
     const reBook = await recoverTopicForModule({ id: "m2", title: "old", summary: null, gap_tags: ["program:book_authority:write_with_ai_team"], audience_roles: ["agent"] }, "solo_agent")

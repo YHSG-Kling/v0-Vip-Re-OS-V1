@@ -264,13 +264,25 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   // for this ZIP (honest-null on thin samples; aggregate only, no PII).
   let negotiationLine: string | null = null
   let momentumLine: string | null = null
+  const futureLensLines: string[] = []
   try {
     const { createServiceClient } = await import("@/lib/supabase/service")
-    const { loadNegotiationContext, composeSellerBandLine, composeMomentumLine } = await import("@/lib/intelligence/negotiation-bands")
+    const { loadNegotiationContext, composeSellerBandLine, composeMomentumLine, zipFromAddress } = await import("@/lib/intelligence/negotiation-bands")
     if (listing?.brokerage_id) {
-      const ctx = await loadNegotiationContext(createServiceClient(), listing.brokerage_id, listing.address ?? null)
+      const svc = createServiceClient()
+      const ctx = await loadNegotiationContext(svc, listing.brokerage_id, listing.address ?? null)
       negotiationLine = composeSellerBandLine(ctx.band)
       momentumLine = composeMomentumLine(ctx.momentum)
+
+      const zip = zipFromAddress(listing.address ?? null)
+      if (zip) {
+        // COLD START (owner: a new solo agent holds no closed history) + FUTURE
+        // LENS — both ride FREE public records (Census + OSINT permits).
+        const { loadFutureLensSignals, composeFutureLens, composeColdStartBandLine } = await import("@/lib/intelligence/neighborhood-future-lens")
+        const signals = await loadFutureLensSignals(svc, zip, listing.city ?? null, listing.state ?? null)
+        if (!negotiationLine) negotiationLine = composeColdStartBandLine(signals.appreciation)
+        futureLensLines.push(...composeFutureLens(signals).signals)
+      }
     }
   } catch { /* context is best-effort — the page stands without it */ }
 
@@ -461,10 +473,11 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                 </div>
               </div>
 
-              {negotiationLine && (
+              {(negotiationLine || futureLensLines.length > 0) && (
                 <div className="rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-950/20 p-3 text-sm text-blue-900 dark:text-blue-200 space-y-2">
-                  <p>{negotiationLine}</p>
+                  {negotiationLine && <p>{negotiationLine}</p>}
                   {momentumLine && <p>{momentumLine}</p>}
+                  {futureLensLines.map((l, i) => <p key={i}>{l}</p>)}
                 </div>
               )}
 

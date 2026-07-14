@@ -29,6 +29,20 @@ export interface CareerProfile {
 
 export interface CareerSuggestion { key: string; line: string }
 
+/**
+ * PURE COLD-START (owner: a NEW solo agent holds no closing history) — a
+ * getting-started brief grounded in the farm they've already TOUCHED (the ZIP
+ * they've worked contacts in), not their non-existent closed deals. Honest:
+ * needs a real touched-ZIP concentration or it stays silent.
+ */
+export function composeColdStartCareer(p: { topTouchedZip: { zip: string; count: number } | null; contactCount: number }): CareerSuggestion[] {
+  if (!p.topTouchedZip || p.topTouchedZip.count < 3) return []
+  return [{
+    key: "cold_start_farm",
+    line: `You're new to closings, so here's where to plant your flag: ${p.topTouchedZip.count} of the contacts you've worked so far are in ${p.topTouchedZip.zip}. That's a farm forming on its own — commit to it now (a monthly neighborhood guide, open houses there, the book program on that ZIP) and your first listings compound instead of scattering.`,
+  }]
+}
+
 /** PURE: only defensible, number-cited suggestions. Null profile = no brief. */
 export function composeCareerSuggestions(p: CareerProfile): CareerSuggestion[] {
   if (p.closings < MIN_CLOSINGS) return []
@@ -102,6 +116,19 @@ export async function loadCareerProfiles(svc: Svc, brokerageId: string, now: Dat
   })
 }
 
+/** The ZIP an agent has worked the most contacts in (the forming farm, pre-closings). */
+async function loadTopTouchedZip(svc: Svc, brokerageId: string, agentId: string, now: Date): Promise<{ zip: string; count: number } | null> {
+  const { data: contacts } = await svc.from("contacts")
+    .select("zip_code, city").eq("brokerage_id", brokerageId).eq("agent_id", agentId).limit(1000)
+  const counts = new Map<string, number>()
+  for (const c of ((contacts ?? []) as any[])) {
+    const zip = typeof c.zip_code === "string" && /^\d{5}/.test(c.zip_code) ? c.zip_code.slice(0, 5) : null
+    if (zip) counts.set(zip, (counts.get(zip) ?? 0) + 1)
+  }
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
+  return top ? { zip: top[0], count: top[1] } : null
+}
+
 const quarterTag = (now: Date) => `career_architect:${now.getFullYear()}-Q${Math.floor(now.getMonth() / 3) + 1}`
 
 /** Quarterly gated brief per producing agent. Idempotent per (agent, quarter). */
@@ -110,7 +137,13 @@ export async function runCareerArchitect(svc: Svc, brokerageId: string, now: Dat
   let briefed = 0
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
   for (const p of profiles) {
-    const suggestions = composeCareerSuggestions(p)
+    let suggestions = composeCareerSuggestions(p)
+    // COLD START — a producing agent gets the full brief; a NEW agent (too few
+    // closings) gets the touched-farm variant instead of silence.
+    if (suggestions.length === 0 && p.closings < MIN_CLOSINGS) {
+      const touched = await loadTopTouchedZip(svc, brokerageId, p.agentId, now).catch(() => null)
+      if (touched) suggestions = composeColdStartCareer({ topTouchedZip: touched, contactCount: touched.count })
+    }
     if (suggestions.length === 0) continue
     const tag = `${quarterTag(now)}:${p.agentId}`
     const { data: dup } = await svc.from("agent_client_messages")
