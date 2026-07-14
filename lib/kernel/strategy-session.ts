@@ -52,6 +52,9 @@ export interface StrategySessionFacts {
   budgetMin: number | null
   budgetMax: number | null
   buyerStage: string | null
+  /** the seller's walk-away floor (listings.seller_walkaway_price, l52-s01) —
+   *  SELLER-side only (owner rule: never a buyer gate). */
+  sellerWalkawayPrice: number | null
 }
 
 export interface StrategySession {
@@ -87,6 +90,9 @@ export function composeStrategySession(f: StrategySessionFacts): StrategySession
         f.responseDeadline
           ? `The clock: a response is due ${new Date(f.responseDeadline).toLocaleDateString()} — decide today what happens if we do nothing.`
           : `Response timing — what the deadline pressure really is, and what it isn't.`,
+        f.sellerWalkawayPrice != null
+          ? `The floor you set before offers arrived: ${usd(f.sellerWalkawayPrice)} — every option gets measured against it, decided calmly then, not under pressure now.`
+          : `Set the walk-away floor in this session — the number below which we don't say yes, decided calmly, not under offer pressure.`,
         `Counter strategy: accept, counter on price, or counter on terms — the trade-offs of each.`,
         `Take a beat: the decision framework before anything is signed (no same-hour signatures on the biggest asset they own).`,
       ],
@@ -112,7 +118,9 @@ export function composeStrategySession(f: StrategySessionFacts): StrategySession
         `Where we are honestly: ${dom} on market${addr ? ` at ${addr}` : ""}, ${showings}, and no offer yet — what that pattern usually means.`,
         `What the market said since launch: feedback themes and how buyers are reading the price.`,
         cuts,
-        `The alternatives to a price move: presentation refresh, marketing re-push, or holding with a date to revisit.`,
+        f.sellerWalkawayPrice != null
+          ? `Your walk-away floor stands at ${usd(f.sellerWalkawayPrice)} — any adjustment keeps a healthy margin above it.`
+          : `The alternatives to a price move: presentation refresh, marketing re-push, or holding with a date to revisit.`,
         `Decide the plan and the message — the listing story stays confident either way.`,
       ],
       agentPrep: [

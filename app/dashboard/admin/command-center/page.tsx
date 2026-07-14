@@ -10,6 +10,7 @@ import { TrustMeter } from "./trust-meter"
 import { EarnedAutonomyPanel } from "./earned-autonomy-panel"
 import { QuarterlyReviewCard } from "./quarterly-review-card"
 import { ActingAsLog } from "./acting-as-log"
+import { CoverageCard } from "./coverage-card"
 import { listEarnedAutonomyAction } from "@/app/actions/document-kernel-review"
 import { getQuarterlyReviewAction } from "@/app/actions/quarterly-review"
 
@@ -152,6 +153,28 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     ? await getQuarterlyReviewAction().catch(() => null)
     : null
 
+  // COVERAGE MODE — who's away, who covers, until when (principal surface).
+  let coverageAgents: import("./coverage-card").CoverageAgentOption[] = []
+  let activeCoverages: import("./coverage-card").ActiveCoverage[] = []
+  if (qbr?.ok && brokerageId) {
+    try {
+      const svc = createServiceClient()
+      const { data: ags } = await svc.from("agents")
+        .select("id, user_id, covering_agent_id, coverage_until")
+        .eq("brokerage_id", brokerageId).eq("is_active", true).limit(100)
+      const userIds = ((ags ?? []) as any[]).map((a) => a.user_id).filter(Boolean)
+      const { data: us } = userIds.length > 0
+        ? await svc.from("users").select("id, first_name, last_name").in("id", userIds)
+        : { data: [] }
+      const nameByUser = new Map(((us ?? []) as any[]).map((u) => [u.id, [u.first_name, u.last_name].filter(Boolean).join(" ") || "Agent"]))
+      const nameByAgent = new Map(((ags ?? []) as any[]).map((a) => [a.id, (a.user_id && nameByUser.get(a.user_id)) || "Agent"]))
+      coverageAgents = ((ags ?? []) as any[]).map((a) => ({ agentId: a.id, name: nameByAgent.get(a.id) ?? "Agent" }))
+      activeCoverages = ((ags ?? []) as any[])
+        .filter((a) => a.covering_agent_id && a.coverage_until && new Date(a.coverage_until).getTime() > Date.now())
+        .map((a) => ({ awayAgentId: a.id, awayName: nameByAgent.get(a.id) ?? "Agent", coveringName: nameByAgent.get(a.covering_agent_id) ?? "Agent", until: a.coverage_until }))
+    } catch { /* coverage panel is additive */ }
+  }
+
   // ACTING-AS LOG — the assumed-view audit trail made visible (last 14d).
   let actingAsRows: import("./acting-as-log").ActingAsRow[] = []
   if (qbr?.ok && brokerageId) {
@@ -192,8 +215,9 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
         </div>
       )}
       {qbr?.ok && (
-        <div className="mx-6 mt-4">
+        <div className="mx-6 mt-4 grid gap-4 lg:grid-cols-2">
           <ActingAsLog rows={actingAsRows} />
+          <CoverageCard agents={coverageAgents} active={activeCoverages} />
         </div>
       )}
       {lift && (lift.playedTotal > 0 || lift.verdict !== "insufficient") && (

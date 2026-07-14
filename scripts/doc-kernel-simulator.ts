@@ -698,13 +698,13 @@ async function main() {
       moment: "price_change", clientName: "Bill", listingAddress: "12 Birch Lane",
       listPrice: 500_000, daysOnMarket: 28, showingCount: 3, offersAwaitingResponse: 0,
       topOfferPrice: null, sellerNetEstimate: null, responseDeadline: null,
-      budgetMin: null, budgetMax: null, buyerStage: null,
+      budgetMin: null, budgetMax: null, buyerStage: null, sellerWalkawayPrice: null,
     })
     const kickoff = composeStrategySession({
       moment: "buyer_kickoff", clientName: "Ana", listingAddress: null,
       listPrice: null, daysOnMarket: null, showingCount: null, offersAwaitingResponse: 0,
       topOfferPrice: null, sellerNetEstimate: null, responseDeadline: null,
-      budgetMin: 400_000, budgetMax: 550_000, buyerStage: "searching",
+      budgetMin: 400_000, budgetMax: 550_000, buyerStage: "searching", sellerWalkawayPrice: null,
     })
     check("the AGENDA IS AUTO-PREPARED from the real numbers — the price talk carries the honest 3%/5% dollar options and the DOM/showings read; the kickoff carries the budget range; every session ships a warm invite draft",
       priceTalk.agenda.some((a) => a.includes("$485,000") && a.includes("$475,000"))
@@ -712,6 +712,31 @@ async function main() {
       && Boolean(priceTalk.inviteLine.startsWith("Bill,"))
       && kickoff.agenda.some((a) => a.includes("$400,000") && a.includes("$550,000"))
       && kickoff.durationMin === 45)
+    const floorSession = composeStrategySession({
+      moment: "offer_decision", clientName: "Bill", listingAddress: "12 Birch Lane",
+      listPrice: 500_000, daysOnMarket: 10, showingCount: 6, offersAwaitingResponse: 2,
+      topOfferPrice: 495_000, sellerNetEstimate: null, responseDeadline: null,
+      budgetMin: null, budgetMax: null, buyerStage: null, sellerWalkawayPrice: 480_000,
+    })
+    check("SELLER WALK-AWAY FLOOR (owner-corrected #35: SELLER-side only, never a buyer gate; l52-s01) — a set floor anchors the offer session ('decided calmly then, not under pressure now'), an unset floor makes SETTING it the agenda item; loader reads it, setter is tenant-gated",
+      floorSession.agenda.some((a) => a.includes("$480,000") && a.includes("not under pressure now"))
+      && priceTalk.agenda.some((a) => a.includes("presentation refresh"))
+      && src("app/actions/strategy-session.ts").includes("seller_walkaway_price")
+      && src("app/actions/strategy-session.ts").includes("setSellerFloorAction")
+      && src("scripts/l52-s01-seller-floor-coverage.sql").includes("seller_walkaway_price"))
+    const { coverageRedirect } = await import("../lib/agents/coverage-mode")
+    const now2 = new Date("2026-07-13T12:00:00Z")
+    check("COVERAGE MODE (forgotten #12; l52-s01) — active coverage redirects NEW work (pure, one hop, never chained), expired/unset coverage does NOT; enforcement at the assignment engine's single terminal with *_coverage attribution; principal-gated card with 'they're back'; both rails REGISTERED",
+      coverageRedirect({ coveringAgentId: "a-2", coverageUntil: "2026-07-20T00:00:00Z" }, now2) === "a-2"
+      && coverageRedirect({ coveringAgentId: "a-2", coverageUntil: "2026-07-10T00:00:00Z" }, now2) === null
+      && coverageRedirect({ coveringAgentId: null, coverageUntil: "2026-07-20T00:00:00Z" }, now2) === null
+      && src("lib/lead-assignment/assignment-engine.ts").includes("redirectForCoverage")
+      && src("lib/lead-assignment/assignment-engine.ts").includes("_coverage")
+      && src("app/actions/coverage-mode.ts").includes("cannot cover themselves")
+      && src("app/dashboard/admin/command-center/coverage-card.tsx").includes("They're back")
+      && src("app/components/contact/StrategySessionCard.tsx").includes("Set the floor")
+      && src("lib/kernel/manager-registry.ts").includes("seller_walkaway_floor:")
+      && src("lib/kernel/manager-registry.ts").includes("coverage_mode:"))
     check("the session flow is complete IN-WINDOW — access-gated action grounds facts in listings/offers (responded_at-null = on the table), the card rides the contact page, confirm creates the agenda-carrying task; the PRE-CALL BRIEF now leads with the addressing memory",
       src("app/actions/strategy-session.ts").includes("assertCanActOnContact")
       && src("app/actions/strategy-session.ts").includes('.is("responded_at", null)')

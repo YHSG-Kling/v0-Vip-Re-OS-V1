@@ -15,6 +15,7 @@ import { CalendarClock, Loader2, Check } from "lucide-react"
 import {
   getStrategySessionAction,
   scheduleStrategySessionAction,
+  setSellerFloorAction,
 } from "@/app/actions/strategy-session"
 import type { StrategySession } from "@/lib/kernel/strategy-session"
 
@@ -27,6 +28,9 @@ const MOMENT_LABELS: Record<string, string> = {
 
 export function StrategySessionCard({ contactId }: { contactId: string }) {
   const [session, setSession] = useState<StrategySession | null>(null)
+  const [listingId, setListingId] = useState<string | null>(null)
+  const [floor, setFloor] = useState("")
+  const [floorSaved, setFloorSaved] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [scheduled, setScheduled] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -36,7 +40,7 @@ export function StrategySessionCard({ contactId }: { contactId: string }) {
     setError(null)
     startTransition(async () => {
       const r = await getStrategySessionAction({ contactId })
-      if (r.ok) { setSession(r.session); setLoaded(true) }
+      if (r.ok) { setSession(r.session); setListingId(r.listingId ?? null); setLoaded(true) }
       else setError(r.error)
     })
   }
@@ -82,6 +86,25 @@ export function StrategySessionCard({ contactId }: { contactId: string }) {
               {session.agenda.map((a, i) => <li key={i}>{a}</li>)}
             </ol>
             <p className="rounded bg-muted/40 px-2 py-1 text-xs italic">Invite: “{session.inviteLine}”</p>
+            {listingId && session.moment !== "buyer_kickoff" && (
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  value={floor}
+                  onChange={(e) => { setFloor(e.target.value); setFloorSaved(false) }}
+                  placeholder="Seller's walk-away floor ($)"
+                  className="h-7 w-52 rounded-md border bg-background px-2 text-xs"
+                />
+                <Button size="sm" variant="outline" className="h-7 text-xs" disabled={pending || !floor}
+                  onClick={() => startTransition(async () => {
+                    const r = await setSellerFloorAction({ listingId, floor: Number(floor) })
+                    if (r.ok) setFloorSaved(true); else setError(r.error)
+                  })}>
+                  {floorSaved ? "Floor set" : "Set the floor"}
+                </Button>
+                <span className="text-[11px] text-muted-foreground">Decided calmly now — honored under offer pressure later.</span>
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <Button size="sm" className="h-7 text-xs" onClick={schedule} disabled={pending || scheduled}>
                 {pending ? <Loader2 className="h-3 w-3 animate-spin" /> : scheduled ? <Check className="h-3 w-3" /> : null}

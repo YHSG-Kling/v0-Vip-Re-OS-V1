@@ -168,6 +168,19 @@ export async function evaluateAndAssignLead(params: {
     }
   }
 
+  // Step 5b: COVERAGE MODE (l52-s01) — an agent on leave never silently
+  // collects new leads: active coverage redirects the pick to the covering
+  // agent (one hop, never chained). The away agent's existing book is
+  // untouched — coverage is reversible by construction.
+  {
+    const { redirectForCoverage } = await import("@/lib/agents/coverage-mode")
+    const redirected = await redirectForCoverage(supabase, matchedAgentId)
+    if (redirected !== matchedAgentId) {
+      matchedAgentId = redirected
+      matchedMethod = `${matchedMethod}_coverage`
+    }
+  }
+
   // Step 6: Call handleLeadAssigned — advances lifecycle_state + auto-creates contact
   await handleLeadAssigned({
     leadId,

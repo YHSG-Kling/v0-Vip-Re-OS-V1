@@ -18,7 +18,7 @@ import {
 } from "@/lib/kernel/strategy-session"
 
 export async function getStrategySessionAction(input: { contactId: string }): Promise<
-  | { ok: true; session: StrategySession | null }
+  | { ok: true; session: StrategySession | null; listingId?: string | null }
   | { ok: false; error: string }
 > {
   const gate = await assertCanActOnContact(input.contactId)
@@ -32,7 +32,7 @@ export async function getStrategySessionAction(input: { contactId: string }): Pr
 
   // Their active listing (seller side) — either linkage column counts.
   const { data: listing } = await svc.from("listings")
-    .select("id, address, list_price, listing_date, go_live_date, showing_count, status")
+    .select("id, address, list_price, listing_date, go_live_date, showing_count, status, seller_walkaway_price")
     .or(`seller_contact_id.eq.${input.contactId},contact_id.eq.${input.contactId}`)
     .in("status", ["active", "coming_soon", "pending"])
     .order("created_at", { ascending: false })
@@ -69,7 +69,7 @@ export async function getStrategySessionAction(input: { contactId: string }): Pr
     daysOnMarket,
     offersAwaitingResponse: offersAwaiting,
   })
-  if (!moment) return { ok: true, session: null }
+  if (!moment) return { ok: true, session: null, listingId: null }
 
   const session = composeStrategySession({
     moment,
@@ -91,8 +91,9 @@ export async function getStrategySessionAction(input: { contactId: string }): Pr
     budgetMin: (c as any).budget_min ?? null,
     budgetMax: (c as any).budget_max ?? null,
     buyerStage: (c as any).buyer_stage ?? null,
+    sellerWalkawayPrice: (listing as any)?.seller_walkaway_price ?? null,
   })
-  return { ok: true, session }
+  return { ok: true, session, listingId: ((listing as any)?.id as string | null) ?? null }
 }
 
 export async function scheduleStrategySessionAction(input: {
@@ -133,6 +134,30 @@ export async function scheduleStrategySessionAction(input: {
     status: "pending",
     created_at: new Date().toISOString(),
   })
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
+
+export async function setSellerFloorAction(input: {
+  listingId: string
+  /** the seller's walk-away floor in dollars; null clears it. */
+  floor: number | null
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const gate = await (await import("@/lib/supabase/server")).createClient().then(async (sb) => {
+    const { data: { user } } = await sb.auth.getUser()
+    if (!user) return null
+    const { data: me } = await sb.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+    return (me as any)?.brokerage_id ? { brokerageId: (me as any).brokerage_id as string } : null
+  })
+  if (!gate) return { ok: false, error: "Not authenticated" }
+  const svc = createServiceClient()
+  const { data: listing } = await svc.from("listings")
+    .select("id, brokerage_id").eq("id", input.listingId).maybeSingle()
+  if (!listing || (listing as any).brokerage_id !== gate.brokerageId) return { ok: false, error: "Listing not found" }
+  const floor = input.floor != null && input.floor > 0 ? Math.round(input.floor) : null
+  const { error } = await svc.from("listings")
+    .update({ seller_walkaway_price: floor }).eq("id", input.listingId)
   if (error) return { ok: false, error: error.message }
   return { ok: true }
 }
