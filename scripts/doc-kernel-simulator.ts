@@ -804,6 +804,12 @@ async function main() {
       && src("app/components/contact/UnifiedInboxTab.tsx").includes('"social_dm"')
       && src("app/components/contact/UnifiedInboxTab.tsx").includes('status === "read"')
       && src("lib/kernel/manager-registry.ts").includes("inbox_social_email_status:"))
+    check("SIGNING-ORDER GATE (approved #1) — no e-sign leaves without the confirmed order; the refusal is ACTIONABLE (suggested signers lead with the scan-filled LEGAL name); the wizard prompts inline and one entry point means one gate; inbox/CRM double-check verdicts recorded (Twilio completed SMS/voice — email+social COMPLEMENT; no inbound CRM sync, setup-only rule holds)",
+      src("app/actions/buyer-offers.ts").includes("needsSigningOrder")
+      && src("app/actions/buyer-offers.ts").includes("legal_first_name")
+      && src("app/actions/buyer-offers.ts").includes("confirmSigningOrderAction")
+      && src("app/crm/contacts/[contactId]/offers/components/offer-form-wizard.tsx").includes("Confirm signing order & send")
+      && src("lib/kernel/manager-registry.ts").includes("signing_order_check:"))
     check("the session flow is complete IN-WINDOW — access-gated action grounds facts in listings/offers (responded_at-null = on the table), the card rides the contact page, confirm creates the agenda-carrying task; the PRE-CALL BRIEF now leads with the addressing memory",
       src("app/actions/strategy-session.ts").includes("assertCanActOnContact")
       && src("app/actions/strategy-session.ts").includes('.is("responded_at", null)')

@@ -518,13 +518,56 @@ export async function createOffer(
 
 // ─── SEND FOR ESIGN ───────────────────────────────────────────────────────────
 
+/** SIGNING-ORDER MICRO-CHECK (concierge micro-list: "record who will
+ *  physically sign and their signing order, so e-sign flows don't break at
+ *  the last second"). Confirm BEFORE any send; suggestions derive from the
+ *  contact's legal names (the scan write-back feeds this directly). */
+export async function confirmSigningOrderAction(
+  offerId: string,
+  brokerageId: string,
+  signers: string[],
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = createServiceClient()
+  const clean = signers.map((x) => x.trim()).filter(Boolean).slice(0, 6)
+  if (clean.length === 0) return { success: false, error: "At least one signer is required" }
+  const { data: offer } = await supabase.from("offers")
+    .select("id, metadata").eq("id", offerId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (!offer) return { success: false, error: "Offer not found" }
+  const { error } = await supabase.from("offers").update({
+    metadata: { ...((offer as any).metadata ?? {}), signing_order: clean, signing_order_confirmed_at: new Date().toISOString() },
+  }).eq("id", offerId)
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
 export async function sendOfferForESign(
   offerId: string,
   contactId: string,
   brokerageId: string,
   agentUserId: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; needsSigningOrder?: boolean; suggestedSigners?: string[] }> {
   const supabase = createServiceClient()
+
+  // THE GATE — no e-sign leaves without the signing order confirmed (both
+  // spouses? POA? entity signer?) — the flow that breaks at the last second
+  // when it's left to memory. Suggestions lead with the LEGAL name when the
+  // document scan has already filled it.
+  const { data: offerRow } = await supabase.from("offers")
+    .select("metadata").eq("id", offerId).eq("brokerage_id", brokerageId).maybeSingle()
+  const signingOrder = ((offerRow as any)?.metadata?.signing_order ?? []) as string[]
+  if (!Array.isArray(signingOrder) || signingOrder.length === 0) {
+    const { data: c } = await supabase.from("contacts")
+      .select("first_name, last_name, legal_first_name, legal_last_name")
+      .eq("id", contactId).maybeSingle()
+    const legal = [(c as any)?.legal_first_name, (c as any)?.legal_last_name].filter(Boolean).join(" ")
+    const plain = [(c as any)?.first_name, (c as any)?.last_name].filter(Boolean).join(" ")
+    return {
+      success: false,
+      needsSigningOrder: true,
+      suggestedSigners: [legal || plain || "Buyer"].filter(Boolean),
+      error: "Confirm who physically signs and in what order before sending — both spouses? POA? entity signer? E-sign flows break at the last second when this is left to memory.",
+    }
+  }
 
   const { error } = await supabase
     .from("offers")

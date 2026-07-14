@@ -3,7 +3,7 @@
 import { useState, useTransition, useEffect } from "react"
 import { cn } from "@/lib/utils"
 import {
-  createOffer, sendOfferForESign,
+  createOffer, sendOfferForESign, confirmSigningOrderAction,
   type OfferFormData, type StrategyRecommendation,
 } from "@/app/actions/buyer-offers"
 import { runCompleteOfferWorkflow } from "@/app/actions/ai-offer-creation"
@@ -316,11 +316,34 @@ export function OfferFormWizard({
     })
   }
 
+  const [signingPrompt, setSigningPrompt] = useState<string[] | null>(null)
+  const [signersText, setSignersText] = useState("")
+
   function sendESign() {
     if (!createdOfferId) return
     startTrans(async () => {
-      await sendOfferForESign(createdOfferId, contactId, brokerageId, agentUserId)
+      const r = await sendOfferForESign(createdOfferId, contactId, brokerageId, agentUserId)
+      if (r.needsSigningOrder) {
+        // SIGNING-ORDER MICRO-CHECK — confirm who signs, in order, BEFORE the
+        // send (both spouses? POA? entity signer?). Legal names prefill when
+        // the document scan already captured them.
+        setSigningPrompt(r.suggestedSigners ?? [])
+        setSignersText((r.suggestedSigners ?? []).join("\n"))
+        return
+      }
       onSuccess()
+    })
+  }
+
+  function confirmSignersAndSend() {
+    if (!createdOfferId) return
+    startTrans(async () => {
+      const signers = signersText.split("\n").map((x) => x.trim()).filter(Boolean)
+      const c = await confirmSigningOrderAction(createdOfferId, brokerageId, signers)
+      if (!c.success) return
+      setSigningPrompt(null)
+      const r = await sendOfferForESign(createdOfferId, contactId, brokerageId, agentUserId)
+      if (r.success) onSuccess()
     })
   }
 
@@ -561,7 +584,22 @@ export function OfferFormWizard({
                   Send to: <span className="text-foreground font-medium">{contactName}</span>
                   {contactEmail && <span className="text-muted-foreground"> — {contactEmail}</span>}
                 </p>
-                <button
+                {signingPrompt !== null && (
+              <div className="rounded-md border bg-amber-50/60 p-2 space-y-1.5">
+                <p className="text-xs font-medium text-amber-900">Who physically signs — in order? (both spouses? POA? entity signer?)</p>
+                <textarea
+                  value={signersText}
+                  onChange={(e) => setSignersText(e.target.value)}
+                  rows={3}
+                  placeholder={"One signer per line, signing order top to bottom"}
+                  className="w-full rounded-md border bg-background px-2 py-1 text-xs"
+                />
+                <button onClick={confirmSignersAndSend} className="rounded-md bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700">
+                  Confirm signing order & send
+                </button>
+              </div>
+            )}
+            <button
                   onClick={sendESign}
                   disabled={isPending}
                   className="w-full rounded-md bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
