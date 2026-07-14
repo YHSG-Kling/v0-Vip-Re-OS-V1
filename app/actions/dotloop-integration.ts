@@ -218,7 +218,8 @@ export async function sendForDotloopSignature(data: {
       })
       .eq("id", data.documentId)
 
-    // Create signature request record
+    // Create signature request record — provider_envelope_id (l54-s02) lets the
+    // provider webhook COMPLETE this packet the moment the envelope is signed.
     await supabase.from("signature_requests").insert({
       document_id: data.documentId,
       contact_id: data.contactId,
@@ -227,6 +228,7 @@ export async function sendForDotloopSignature(data: {
       request_status: "pending",
       sent_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+      provider_envelope_id: data.loopId,
     })
 
     // Log audit trail — caller identity comes from session, not input

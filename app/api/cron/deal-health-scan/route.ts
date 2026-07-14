@@ -144,11 +144,20 @@ export async function GET(request: NextRequest) {
 
     const atRiskCount = results.filter((r) => r.riskLevel === "at_risk" || r.riskLevel === "critical").length
 
+    // OS SELF-AUDIT — the live-data integrity sweep nothing else reads:
+    // decision-latency breaches (client said yes 48h+ ago, nothing moved) +
+    // vendor bookings stuck in pre-accept limbo. Dedupe-tagged, best-effort.
+    let selfAudit: Record<string, number> | null = null
+    try {
+      const { runOsSelfAudit } = await import("@/lib/kernel/os-self-audit")
+      selfAudit = await runOsSelfAudit(supabase) as any
+    } catch (e) { console.error("[deal-health-scan] self-audit failed (non-blocking)", e) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: transactions.length,
       output_count: atRiskCount,
-      metadata: { total: transactions.length, atRiskCount },
+      metadata: { total: transactions.length, atRiskCount, selfAudit },
     })
 
     return NextResponse.json({

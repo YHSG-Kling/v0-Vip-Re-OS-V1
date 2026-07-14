@@ -39,6 +39,7 @@ async function recordSignaturePacket(supabase: StepContext["supabase"], p: {
   contactId: string | null
   transactionId: string | null
   signingUrl: string | null
+  envelopeId?: string | null
 }): Promise<void> {
   // LIVE-SCHEMA CONTRACT: signature_requests.document_id FKs to
   // client_documents — this adapter sends AI-drafted `documents` rows, so
@@ -55,6 +56,7 @@ async function recordSignaturePacket(supabase: StepContext["supabase"], p: {
     sent_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
     signing_url: p.signingUrl,
+    provider_envelope_id: p.envelopeId ?? null,
   }).then(() => {}, () => {})
 }
 
@@ -189,6 +191,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
               contactId: contact?.id ?? null,
               transactionId: (document as any).transaction_id ?? null,
               signingUrl: result?.signingUrl ?? null,
+              envelopeId: result?.loopId ?? null,
             })
             return {
               status: "sent",
@@ -222,6 +225,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
               contactId: contact?.id ?? null,
               transactionId: (document as any).transaction_id ?? null,
               signingUrl: result?.signingUrl ?? null,
+              envelopeId: result?.loopId ?? null,
             })
             return {
               status: "sent",
@@ -321,6 +325,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
             contactId: contact?.id ?? null,
             transactionId: (document as any).transaction_id ?? null,
             signingUrl: null, // Dotloop invites ride email; the portal card says so
+            envelopeId: txResult.externalTransactionId,
           })
         }
 

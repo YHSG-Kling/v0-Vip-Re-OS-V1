@@ -68,6 +68,15 @@ export async function POST(request: NextRequest) {
         .single()
 
       if (!error && doc) {
+        // Complete the signature packet keyed to THIS client_documents row —
+        // the portal Sign button gates on it (owner rule: gone the moment ink lands).
+        await supabase
+          .from("signature_requests")
+          .update({ request_status: "completed", completed_at: now })
+          .eq("document_id", doc.id)
+          .is("completed_at", null)
+          .then(() => {}, () => {})
+
         // Check if all documents in the loop are signed
         const { data: allDocs } = await supabase
           .from("client_documents")

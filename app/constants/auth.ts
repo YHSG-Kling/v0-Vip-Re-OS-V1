@@ -125,7 +125,10 @@ export const PROTECTED_ROUTES = [
 // DEMO MODE CONFIGURATION
 // ============================================
 export const DEMO_CONFIG = {
-  ENABLED: process.env.NEXT_PUBLIC_DEMO_MODE === 'true',
+  // HARD production gate (pre-launch security audit): demo sign-in can NEVER
+  // be enabled on the production deployment, even if the flag ships by
+  // accident — the repo carries the demo credentials in plain text.
+  ENABLED: process.env.NEXT_PUBLIC_DEMO_MODE === 'true' && process.env.VERCEL_ENV !== 'production',
   MODE: 'password' as const,
   AUTO_LOGIN: false,
   PASSWORD: process.env.NEXT_PUBLIC_DEMO_PASSWORD || 'Demo@123456',

@@ -919,6 +919,33 @@ async function main() {
       && src("app/vendor/jobs/jobs-client.tsx").includes('b.status === "booked"')
       && src("lib/kernel/manager-registry.ts").includes("client_decisions_tile:")
       && src("lib/kernel/manager-registry.ts").includes("vendor_booking_vocabulary:"))
+    const { isDecisionBreach, isStuckBooking, auditTag, DECISION_BREACH_HOURS } = await import("../lib/kernel/os-self-audit")
+    const nowT = new Date("2026-07-14T12:00:00Z")
+    check("E-SIGN PACKET COMPLETION + OS SELF-AUDIT + DEMO HARD GATE (production week) — the universal webhook rail now COMPLETES both packet tables on envelope-signed (l54-s02 linkage, both writers stamp the ref, dotloop also completes by document linkage, is-null idempotent); the self-audit watches decision-latency breaches (48h pure gate, undated never counts) + pre-accept booking limbo with one-tag-forever dedupe on the deal-health cron; demo login can NEVER enable on production; all three registered",
+      isDecisionBreach({ status: "pending", created_at: "2026-07-11T12:00:00Z" }, nowT) === true
+      && isDecisionBreach({ status: "pending", created_at: "2026-07-14T02:00:00Z" }, nowT) === false
+      && isDecisionBreach({ status: "completed", created_at: "2026-07-01T00:00:00Z" }, nowT) === false
+      && isDecisionBreach({ status: "pending", created_at: null }, nowT) === false
+      && isStuckBooking({ status: "booked", created_at: "2026-07-01T00:00:00Z" }, nowT) === true
+      && isStuckBooking({ status: "confirmed", created_at: "2026-07-01T00:00:00Z" }, nowT) === false
+      && auditTag("decision_breach", "t-1") === "[OS_AUDIT:decision_breach] [t-1]"
+      && DECISION_BREACH_HOURS === 48
+      && src("lib/esign-webhooks/finalize-packet.ts").includes('request_status: "completed"')
+      && src("lib/esign-webhooks/finalize-packet.ts").includes('esign_status: "fully_signed"')
+      && !src("lib/esign-webhooks/finalize-packet.ts").includes('esign_status: "signed"')
+      && src("app/dashboard/onboarding/license/license-intake-client.tsx").includes('"fully_signed"')
+      && !src("app/dashboard/onboarding/license/license-intake-client.tsx").includes('=== "signed"')
+      && src("lib/esign-webhooks/finalize-packet.ts").includes('.eq("provider_envelope_id", envelopeId)')
+      && src("lib/esign-webhooks/finalize-packet.ts").includes('.is("completed_at", null)')
+      && src("app/api/webhooks/dotloop/route.ts").includes('request_status: "completed"')
+      && src("app/actions/dotloop-integration.ts").includes("provider_envelope_id: data.loopId")
+      && src("lib/workflow/adapters/send-for-esign.ts").includes("provider_envelope_id: p.envelopeId")
+      && src("scripts/l54-s02-packet-envelope-ref.sql").includes("provider_envelope_id")
+      && src("app/api/cron/deal-health-scan/route.ts").includes("runOsSelfAudit")
+      && src("app/constants/auth.ts").includes("VERCEL_ENV !== 'production'")
+      && src("lib/kernel/manager-registry.ts").includes("esign_packet_completion:")
+      && src("lib/kernel/manager-registry.ts").includes("os_self_audit:")
+      && src("lib/kernel/manager-registry.ts").includes("demo_login_hard_gate:"))
     const { isShallowBody, recoverTopicForModule, DEPTH_MARKER } = await import("../lib/education/depth-reauthor")
     const reOnb = await recoverTopicForModule({ id: "m1", title: "old", summary: null, gap_tags: ["onboarding:solo_agent:contract_walkthrough"], audience_roles: ["agent"] }, "team")
     const reBook = await recoverTopicForModule({ id: "m2", title: "old", summary: null, gap_tags: ["program:book_authority:write_with_ai_team"], audience_roles: ["agent"] }, "solo_agent")

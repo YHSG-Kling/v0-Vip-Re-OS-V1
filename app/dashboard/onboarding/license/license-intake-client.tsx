@@ -725,7 +725,7 @@ function ContractStep({
 
   // Poll for contract status when sent
   const { data: contractStatus } = useSWR(
-    contractId && status?.contractRecord?.status !== "signed"
+    contractId && status?.contractRecord?.status !== "fully_signed"
       ? `/api/onboarding/license?action=contract_status&contract_id=${contractId}`
       : null,
     fetcher,
@@ -733,7 +733,7 @@ function ContractStep({
   )
 
   useEffect(() => {
-    if (contractStatus?.status === "signed") {
+    if (contractStatus?.status === "fully_signed") {
       toast.success("Contract signed successfully!")
       onComplete()
     }
@@ -778,7 +778,7 @@ function ContractStep({
   }
 
   const isSent = status?.contractRecord?.status === "sent" || contractStatus?.status === "sent"
-  const isSigned = status?.contractRecord?.status === "signed" || contractStatus?.status === "signed"
+  const isSigned = status?.contractRecord?.status === "fully_signed" || contractStatus?.status === "fully_signed"
 
   return (
     <>

@@ -60,6 +60,25 @@ export async function finalizeVoiceCockpitPacket(
   }
   const now = new Date().toISOString()
 
+  // ── SIGNATURE PACKETS (the gate the portal/onboarding Sign buttons read) ──
+  // Owner rule closed end to end: when the envelope is signed, the packet of
+  // record COMPLETES, so the Sign button disappears the moment ink lands
+  // (l54-s02 provider_envelope_id is the linkage; before it, a signed doc kept
+  // an "active" packet until expiry). Both packet tables, idempotent.
+  await supabase
+    .from("signature_requests")
+    .update({ request_status: "completed", completed_at: now })
+    .eq("provider_envelope_id", envelopeId)
+    .is("completed_at", null)
+    .then(() => {}, () => {})
+  await supabase
+    .from("contract_signatures")
+    // LIVE CHECK vocabulary: the terminal state is 'fully_signed' (not 'signed').
+    .update({ esign_status: "fully_signed", fully_signed_at: now })
+    .eq("provider_envelope_id", envelopeId)
+    .is("fully_signed_at", null)
+    .then(() => {}, () => {})
+
   // ── Documents (offer / listing-agreement) ─────────────────────────────────
   const { data: matchedDocs } = await supabase
     .from("documents")
