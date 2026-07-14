@@ -56,6 +56,8 @@ const SOURCE_META: Record<ActionSource, { label: string; color: string; icon: ty
   lifetime_npv:         { label: "Lifetime NPV",    color: "bg-violet-100 text-violet-800", icon: Crown        },
   negotiation_strategy: { label: "Negotiation",     color: "bg-emerald-100 text-emerald-800", icon: Sparkles   },
   income_gap:           { label: "Income Truth",    color: "bg-rose-100 text-rose-800",     icon: Sparkles    },
+  // The trust-latency rail — a client said yes/asked and it's waiting on you.
+  client_decision:      { label: "Client decision", color: "bg-green-100 text-green-800",   icon: AlertCircle },
 }
 
 const SEVERITY_STRIPE: Record<string, string> = {

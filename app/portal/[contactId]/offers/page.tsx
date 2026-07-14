@@ -260,6 +260,19 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
 
   listing = contactWithListings.listings[0]
 
+  // NEGOTIATION CONTEXT — the brokerage's OWN closed-deal accept-vs-ask band
+  // for this ZIP (honest-null on thin samples; aggregate only, no PII).
+  let negotiationLine: string | null = null
+  try {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { loadNegotiationBand, composeSellerBandLine } = await import("@/lib/intelligence/negotiation-bands")
+    if (listing?.brokerage_id) {
+      negotiationLine = composeSellerBandLine(
+        await loadNegotiationBand(createServiceClient(), listing.brokerage_id, listing.address ?? null),
+      )
+    }
+  } catch { /* context is best-effort — the page stands without it */ }
+
   // Check for recent unacknowledged offer notifications (last 48h)
   // activities has no acknowledged_at column — filter by created_at window only
   const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString()
@@ -446,6 +459,12 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                   )}
                 </div>
               </div>
+
+              {negotiationLine && (
+                <div className="rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-950/20 p-3 text-sm text-blue-900 dark:text-blue-200">
+                  {negotiationLine}
+                </div>
+              )}
 
               <div className="pt-4">
                 <OfferDecisionButtons contactId={contactId} offerId={offer.id} kind="seller" />

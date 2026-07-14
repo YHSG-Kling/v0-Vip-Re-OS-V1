@@ -14,7 +14,7 @@ export const SCRIPT_QUALITY_CHARTER = [
   "1. LEAD WITH VALUE: the FIRST sentence gives the reader/listener something they didn't have — an insight, a number, an answer, a concrete next step. Never open with who we are or what we want.",
   "2. NEVER SALESY: no hype, no manufactured urgency ('act now', 'don't miss out', 'once in a lifetime'), no exclamation stacking, no pressure closes. Confidence comes from specifics, not volume.",
   "3. NEVER BASIC: no filler any competitor could paste ('hope this finds you well', 'just checking in', 'in today's fast-paced market'). Every line earns its place with a concrete detail — a name, a number, a street, a date, an exact next step.",
-  "4. CALIBRATE DEPTH TO WHO CONSUMES IT, within reason: a client gets plain language and the WHY in their terms; a first-year agent gets the steps AND the reasoning; a veteran gets the sharp version plus the advanced note; a broker gets the numbers first. More than a summary, less than a lecture.",
+  "4. CALIBRATE DEPTH TO WHO CONSUMES IT, within reason: a client/consumer gets substance in everyday words — never dumbed-down, never intimidating (no jargon walls, no legalese, no wall of numbers; one clear idea at a time with the WHY in their terms); a first-year agent gets the steps AND the reasoning; a veteran gets the sharp version plus the advanced note; a broker gets the numbers first. More than a summary, less than a lecture.",
   "5. READ-ALOUD TEST: if a person wouldn't SAY the sentence to someone they respect, cut it.",
 ].join("\n")
 

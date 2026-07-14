@@ -984,6 +984,33 @@ async function main() {
       && src("lib/kernel/manager-registry.ts").includes("deal_velocity_scoreboard:")
       && src("lib/kernel/manager-registry.ts").includes("self_audit_telemetry:")
       && src("lib/kernel/manager-registry.ts").includes("script_quality_charter:"))
+    const { computeNegotiationBand, zipFromAddress, composeSellerBandLine, MIN_BAND_SAMPLES } = await import("../lib/intelligence/negotiation-bands")
+    const bandRows = Array.from({ length: 6 }, (_, i) => ({
+      purchase_price: 490_000 + i * 1000, list_price: 500_000,
+      property_address: `${i} Oak Ln, Austin, TX 78701`,
+      created_at: "2026-05-01T00:00:00Z", close_date: "2026-06-05T00:00:00Z",
+    }))
+    const band = computeNegotiationBand(bandRows, "zip", "78701")
+    const junkBand = computeNegotiationBand([
+      ...bandRows.slice(0, 3),
+      { purchase_price: 1, list_price: 500_000, property_address: "x 78701", created_at: null, close_date: null },
+    ], "zip", "78701")
+    check("NEGOTIATION BANDS + CLIENT-DECISION VOICE SOURCE + CLIENT TONE (recs 1/3 + owner refinement) — the band is honest (6 closed deals → ~98.5% median with range + 35d close; junk ratio excluded so 4 rows < MIN_BAND_SAMPLES → null; ZIP parsed with honest null), the seller line names its own-data source and hands off to the agent, the voice cockpit's action queue gains the decision-signal source (7th, critical past 48h), and the charter's client rule is 'never dumbed-down, never intimidating'",
+      zipFromAddress("12 Oak Ln, Austin, TX 78701") === "78701"
+      && zipFromAddress("12 Oak Ln") === null
+      && band !== null && band!.sample === 6 && band!.medianSaleToListPct > 98 && band!.medianSaleToListPct < 99
+      && band!.medianContractToCloseDays === 35
+      && junkBand === null && MIN_BAND_SAMPLES === 5
+      && Boolean(composeSellerBandLine(band)?.includes("of our own closed sales"))
+      && Boolean(composeSellerBandLine(band)?.includes("Your agent will walk you through"))
+      && composeSellerBandLine(null) === null
+      && src("lib/agent-action-queue/composer.ts").includes('"client_decision"')
+      && src("lib/agent-action-queue/composer.ts").includes("fetchClientDecisionActions")
+      && src("lib/agent-action-queue/composer.ts").includes("client_decision:      decisions.length")
+      && src("app/portal/[contactId]/offers/page.tsx").includes("composeSellerBandLine")
+      && src("lib/ai/script-standards.ts").includes("never dumbed-down, never intimidating")
+      && src("lib/kernel/manager-registry.ts").includes("client_decision_voice_source:")
+      && src("lib/kernel/manager-registry.ts").includes("negotiation_bands:"))
     const { isShallowBody, recoverTopicForModule, DEPTH_MARKER } = await import("../lib/education/depth-reauthor")
     const reOnb = await recoverTopicForModule({ id: "m1", title: "old", summary: null, gap_tags: ["onboarding:solo_agent:contract_walkthrough"], audience_roles: ["agent"] }, "team")
     const reBook = await recoverTopicForModule({ id: "m2", title: "old", summary: null, gap_tags: ["program:book_authority:write_with_ai_team"], audience_roles: ["agent"] }, "solo_agent")

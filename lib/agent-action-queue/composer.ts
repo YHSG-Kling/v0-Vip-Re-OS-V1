@@ -43,6 +43,7 @@ export type ActionSource =
   | "lifetime_npv"
   | "negotiation_strategy"
   | "income_gap"
+  | "client_decision"
 
 export type ActionSeverity = "low" | "medium" | "high" | "critical" | "celebration"
 
@@ -650,6 +651,55 @@ export interface ComposedQueue {
   generatedAt:     string
 }
 
+// ─── Source 7: CLIENT DECISIONS (the trust-latency rail) ──────────────────
+// A seller hit Accept / a lender posted conditions / a vendor filed a request
+// and the task still sits pending — these LEAD the spoken briefing because
+// response speed to a client's decision is the product's most trust-critical
+// latency (the same rail the Command Center tile + self-audit read).
+async function fetchClientDecisionActions(
+  supabase: SupabaseClient,
+  input: { agentsId: string | null; brokerageId: string },
+): Promise<AgentActionItem[]> {
+  if (!input.agentsId) return []
+  const { data } = await supabase
+    .from("tasks")
+    .select("id, title, description, source, contact_id, transaction_id, created_at, due_date")
+    .eq("brokerage_id", input.brokerageId)
+    .eq("assigned_to_agent_id", input.agentsId)
+    .in("source", ["client_offer_decision", "vendor_request", "lender_condition"])
+    .eq("status", "pending")
+    .order("created_at", { ascending: true })
+    .limit(10)
+
+  const now = new Date()
+  return ((data ?? []) as any[]).map((t) => {
+    const ageDays = daysBetween(t.created_at, now)
+    const breach = ageDays >= 2 // past the 48h trust line
+    const severity: ActionSeverity = breach ? "critical" : "high"
+    const urgencyScore = clamp(SEVERITY_URGENCY[severity] + ageDays * 5)
+    return {
+      id:                 t.id,
+      source:             "client_decision" as const,
+      title:              String(t.title ?? "A client decision is waiting"),
+      detail:             breach ? `Waiting ${ageDays} days — past the 48-hour trust line.` : (t.description ? String(t.description).slice(0, 140) : null),
+      contactId:          t.contact_id ?? null,
+      contactName:        null,
+      transactionId:      t.transaction_id ?? null,
+      listingId:          null,
+      impactDollars:      null, // honest — the decision's dollar value isn't attributable here
+      severity,
+      urgencyScore,
+      impactScore:        80,   // executing a said-yes is the highest-leverage act in the queue
+      confidenceScore:    100,  // the client literally said it
+      effortScore:        70,
+      priority:           clamp(Math.round(urgencyScore * 0.5 + 80 * 0.3 + 70 * 0.2)),
+      surfacedAt:         t.created_at ?? now.toISOString(),
+      hasInlineDisposition: false,
+      resolveHref:        t.transaction_id ? `/dashboard/transactions/${t.transaction_id}` : (t.contact_id ? `/crm/contacts/${t.contact_id}` : null),
+    }
+  })
+}
+
 export async function composeAgentActionQueue(
   supabase: SupabaseClient,
   input: ComposeInput,
@@ -677,9 +727,13 @@ export async function composeAgentActionQueue(
     // Sprint 14 — Income Truth ranked weekly actions
     fetchIncomeGapActions(supabase, baseInput),
   ])
+  // CLIENT DECISIONS — the trust-latency rail leads the spoken briefing.
+  const decisions = await fetchClientDecisionActions(supabase, {
+    agentsId: input.agentsId, brokerageId: input.brokerageId,
+  }).catch(() => [] as AgentActionItem[])
 
   // Union + sort by priority desc, cap to limit
-  const allItems = [...portal, ...deal, ...listing, ...npv, ...negotiation, ...incomeGap]
+  const allItems = [...decisions, ...portal, ...deal, ...listing, ...npv, ...negotiation, ...incomeGap]
   allItems.sort((a, b) => b.priority - a.priority)
   const items = allItems.slice(0, limit)
 
@@ -691,6 +745,7 @@ export async function composeAgentActionQueue(
     lifetime_npv:         npv.length,
     negotiation_strategy: negotiation.length,
     income_gap:           incomeGap.length,
+    client_decision:      decisions.length,
   }
 
   return {
