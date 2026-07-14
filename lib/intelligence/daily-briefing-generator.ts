@@ -533,6 +533,44 @@ export async function generateDailyBriefing(
     console.error("[DailyBriefing] service-recovery fetch failed:", err)
   }
 
+  // 2f. PROMISE AGING GUARD (concierge A.3) — an explicit promise to a
+  //     client (contacts.last_promise, l50-s01) that's been open 3+ days
+  //     surfaces HIGH until it's kept or rescheduled. The OS will not let
+  //     a promise silently age out. Deterministic.
+  let promiseActions: PriorityAction[] = []
+  try {
+    const { resolveAddressing } = await import("@/lib/kernel/addressing")
+    const { data: agentRow5 } = await supabase
+      .from("agents").select("id").or(`user_id.eq.${agentId},id.eq.${agentId}`).maybeSingle()
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
+    const { data: aging } = await supabase
+      .from("contacts")
+      .select("id, first_name, last_name, preferred_name, salutation_style, last_promise, last_promise_at")
+      .eq("agent_id", agentRow5?.id ?? agentId)
+      .not("last_promise", "is", null)
+      .lt("last_promise_at", threeDaysAgo)
+      .order("last_promise_at", { ascending: true })
+      .limit(3)
+    promiseActions = ((aging ?? []) as any[]).map((c) => {
+      const addressAs = resolveAddressing({
+        firstName: c.first_name, lastName: c.last_name,
+        preferredName: c.preferred_name, namePronunciation: null, salutationStyle: c.salutation_style,
+      }).addressAs
+      const days = c.last_promise_at ? Math.floor((Date.now() - new Date(c.last_promise_at).getTime()) / 86_400_000) : 0
+      return {
+        priority: "high" as const,
+        action: `Keep your promise to ${addressAs} — open ${days} days`,
+        context: `You promised: "${String(c.last_promise).slice(0, 160)}". Deliver it or reschedule it today — then clear the promise on their card so the team knows it's kept.`,
+        manager: "sphere_of_influence",
+        entity_type: "contact" as const,
+        entity_id: c.id,
+        action_type: "open_contact" as const,
+      }
+    })
+  } catch (err) {
+    console.error("[DailyBriefing] promise-aging fetch failed:", err)
+  }
+
   // 3. Call Claude to generate briefing
   const dataSnapshot = {
     tasks: tasks.slice(0, 10),
@@ -644,7 +682,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
   // qualified lead is never left to the model's judgment. "I saw you" recognition
   // notes ride next (same rule: a heavy client evening is a fact, not a model call).
   // AI items fill the rest.
-  const deterministicActions = [...recoveryActions, ...isaActions, ...iSawYouActions, ...smallWinActions]
+  const deterministicActions = [...promiseActions, ...recoveryActions, ...isaActions, ...iSawYouActions, ...smallWinActions]
   const finalPriorityActions = [
     ...deterministicActions,
     ...(aiResponse.top_priority_actions ?? []).filter(

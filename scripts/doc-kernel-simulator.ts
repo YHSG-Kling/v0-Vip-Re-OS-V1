@@ -869,6 +869,17 @@ async function main() {
       && src("lib/kernel/manager-registry.ts").includes("card_recruit_routing:")
       && src("lib/kernel/manager-registry.ts").includes("acting_as_audit:")
       && src("lib/kernel/manager-registry.ts").includes("vendor_access_expiry:"))
+    check("LAST PROMISE MADE (concierge A.3; l50-s01) — one first-class field, tracked on the contact card, PREFERRED by the shared team note over the legacy metadata cue, and the briefing's aging guard surfaces a 3d+ open promise HIGH ('the OS will not let it silently age out')",
+      src("app/actions/contacts/last-promise.ts").includes("last_promise_at")
+      && src("app/crm/contacts/[contactId]/page.tsx").includes("LastPromiseCard")
+      && src("lib/kernel/conversation-memory.ts").includes("last_promise")
+      && src("lib/intelligence/daily-briefing-generator.ts").includes("Keep your promise to")
+      && src("lib/intelligence/daily-briefing-generator.ts").includes("...promiseActions,")
+      && src("scripts/l50-s01-last-promise.sql").includes("last_promise"))
+    check("ACTING-AS is VISIBLE governance — the Command Center renders the assumed-view log (honest empty state), and card-scanned agent prospects surface in the recruiting hub BY CONSTRUCTION (it reads the recruits table the scanner writes)",
+      src("app/dashboard/admin/command-center/acting-as-log.tsx").includes("Assumed views")
+      && src("app/dashboard/admin/command-center/page.tsx").includes("ActingAsLog")
+      && src("app/admin/recruiting-hub/page.tsx").includes('from("recruits")'))
   }
 
   console.log("\n[24 · live — the full derivation against the real database]")

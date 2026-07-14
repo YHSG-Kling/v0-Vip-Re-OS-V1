@@ -9,6 +9,7 @@ import { CommandCenterClient } from "./command-center-client"
 import { TrustMeter } from "./trust-meter"
 import { EarnedAutonomyPanel } from "./earned-autonomy-panel"
 import { QuarterlyReviewCard } from "./quarterly-review-card"
+import { ActingAsLog } from "./acting-as-log"
 import { listEarnedAutonomyAction } from "@/app/actions/document-kernel-review"
 import { getQuarterlyReviewAction } from "@/app/actions/quarterly-review"
 
@@ -151,6 +152,32 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     ? await getQuarterlyReviewAction().catch(() => null)
     : null
 
+  // ACTING-AS LOG — the assumed-view audit trail made visible (last 14d).
+  let actingAsRows: import("./acting-as-log").ActingAsRow[] = []
+  if (qbr?.ok && brokerageId) {
+    try {
+      const svc = createServiceClient()
+      const since14 = new Date(Date.now() - 14 * 86_400_000).toISOString()
+      const { data: views } = await svc.from("lifecycle_events")
+        .select("actor_user_id, entity_type, entity_id, created_at")
+        .eq("brokerage_id", brokerageId)
+        .eq("event_type", "acting_as_view")
+        .gte("created_at", since14)
+        .order("created_at", { ascending: false })
+        .limit(10)
+      const ids = Array.from(new Set(((views ?? []) as any[]).flatMap((v) => [v.actor_user_id, v.entity_type === "agent" ? v.entity_id : null]).filter(Boolean)))
+      const { data: names } = ids.length > 0
+        ? await svc.from("users").select("id, first_name, last_name").in("id", ids)
+        : { data: [] }
+      const nameById = new Map(((names ?? []) as any[]).map((u) => [u.id, [u.first_name, u.last_name].filter(Boolean).join(" ") || "Member"]))
+      actingAsRows = ((views ?? []) as any[]).map((v) => ({
+        actorName: nameById.get(v.actor_user_id) ?? "A principal",
+        targetLabel: v.entity_type === "agent" ? (nameById.get(v.entity_id) ?? "an agent") : `team ${String(v.entity_id).slice(0, 8)}`,
+        at: v.created_at,
+      }))
+    } catch { /* visibility is additive */ }
+  }
+
   return (
     <>
       {trust && <TrustMeter outcomes={trust.outcomes} feedback={trust.feedback} />}
@@ -162,6 +189,11 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       {qbr?.ok && (
         <div className="mx-6 mt-4">
           <QuarterlyReviewCard review={qbr.review} pulse={qbr.pulse} />
+        </div>
+      )}
+      {qbr?.ok && (
+        <div className="mx-6 mt-4">
+          <ActingAsLog rows={actingAsRows} />
         </div>
       )}
       {lift && (lift.playedTotal > 0 || lift.verdict !== "insufficient") && (

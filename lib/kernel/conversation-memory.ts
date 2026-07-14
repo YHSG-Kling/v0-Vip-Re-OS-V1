@@ -257,7 +257,7 @@ export async function loadContactInteractions(
 /** Read the already-known canonical facts for the contact (NOT re-derived — surfaced as-is). */
 async function loadContactFacts(supabase: Svc, contactId: string): Promise<ContactFacts> {
   const { data: c } = await supabase.from("contacts")
-    .select("contact_type, buyer_stage, contact_persona, metadata, preferred_name, name_pronunciation")
+    .select("contact_type, buyer_stage, contact_persona, metadata, preferred_name, name_pronunciation, last_promise")
     .eq("id", contactId).maybeSingle()
   if (!c) return {}
   const md = ((c as any).metadata ?? {}) as Record<string, any>
@@ -282,7 +282,10 @@ async function loadContactFacts(supabase: Svc, contactId: string): Promise<Conta
     buyerStage: (c as any).buyer_stage ?? null,
     persona: (c as any).contact_persona ?? null,
     preferences: prefs,
-    openNextStep: typeof md.open_next_step === "string" ? md.open_next_step : null,
+    // The FIRST-CLASS promise (l50-s01) outranks the legacy metadata note —
+    // "last promise made" is the commitment the whole team honors.
+    openNextStep: ((c as any).last_promise as string | null)
+      ?? (typeof md.open_next_step === "string" ? md.open_next_step : null),
   }
 }
 

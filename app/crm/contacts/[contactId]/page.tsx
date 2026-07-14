@@ -6,6 +6,7 @@ import { getBuyerEnabledGates }     from "@/app/actions/buyer-lifecycle-core"
 import { ContactQuickActions }      from "@/components/contact/ContactQuickActions"
 import { AddressingCard }           from "@/components/contact/AddressingCard"
 import { StrategySessionCard }      from "@/components/contact/StrategySessionCard"
+import { LastPromiseCard }          from "@/components/contact/LastPromiseCard"
 import { InvestorDealsPanel }        from "@/components/contact/investor-deals-panel"
 import { assertCanActOnContact }    from "@/lib/auth/contact-access"
 
@@ -100,6 +101,11 @@ export default async function ContactDetailPage({ params }: PageProps) {
           initialSalutationStyle={contact.salutation_style ?? null}
         />
         <StrategySessionCard contactId={contactId} />
+        <LastPromiseCard
+          contactId={contactId}
+          initialPromise={contact.last_promise ?? null}
+          initialPromiseAt={contact.last_promise_at ?? null}
+        />
       </div>
 
       {/* Investor off-market deal finder — buyer-side match against our scraped off-market inventory.
