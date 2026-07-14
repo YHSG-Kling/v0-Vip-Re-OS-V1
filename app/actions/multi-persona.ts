@@ -442,6 +442,19 @@ export async function submitLoanConditions(data: {
 }) {
   const supabase = await createClient()
 
+  // Resolve the deal from the loan row FIRST so the vendor auth gate can run —
+  // conditions previously saved with NO auth and NO notification (they died in
+  // a notes column; the buyer never learned the lender needed their paystubs).
+  const { data: loanRow } = await supabase
+    .from("transaction_lenders")
+    .select("id, transaction_id, lender_name, notes")
+    .eq("id", data.loanId)
+    .maybeSingle()
+  if (!loanRow?.transaction_id) throw new Error("Loan record not found")
+
+  const { requireLenderVendorActor } = await import("@/lib/kernel/portal-auth")
+  const actor = await requireLenderVendorActor(loanRow.transaction_id as string)
+
   // conditions_list is not a schema column on transaction_lenders.
   // Store as notes JSON until a migration adds a proper column.
   const { error } = await supabase
@@ -452,6 +465,73 @@ export async function submitLoanConditions(data: {
     .eq("id", data.loanId)
 
   if (error) throw error
+
+  // CLOSE THE LOOP (owner rule: "lender requesting certain documents from the
+  // buyer") — NEW outstanding conditions reach the humans who can act:
+  // the agent gets the collection task, the buyer gets a GATED portal draft
+  // (the request flows through the agent's governed rail, never raw), and
+  // the ledger records who asked for what.
+  try {
+    let prior: string[] = []
+    try { prior = (JSON.parse(String(loanRow.notes ?? "[]")) as any[]).map((c) => String(c?.condition ?? "")) } catch { /* fresh list */ }
+    const outstanding = data.conditions.filter((c) => c.status !== "cleared" && c.condition.trim())
+    const fresh = outstanding.filter((c) => !prior.includes(c.condition))
+    if (fresh.length > 0) {
+      const svc = (await import("@/lib/supabase/service")).createServiceClient()
+      const { data: tx } = await svc.from("transactions")
+        .select("id, agent_id, buyer_contact_id, contact_id, property_address, brokerage_id")
+        .eq("id", loanRow.transaction_id).maybeSingle()
+      const docList = fresh.map((c) => c.condition).join("; ")
+
+      await svc.from("lifecycle_events").insert({
+        brokerage_id: actor.brokerageId,
+        entity_type: "transaction",
+        entity_id: loanRow.transaction_id,
+        event_type: "lender_document_request",
+        actor_user_id: actor.userId,
+        metadata: { lender: loanRow.lender_name ?? "lender", conditions: fresh.map((c) => c.condition) },
+      }).then(() => {}, () => {})
+
+      // The agent's collection task (assignee NOT-NULL contract honored).
+      const assignee = (tx as any)?.agent_id ?? null
+      if (assignee) {
+        await svc.from("tasks").insert({
+          brokerage_id: actor.brokerageId,
+          transaction_id: loanRow.transaction_id,
+          contact_id: (tx as any)?.buyer_contact_id ?? (tx as any)?.contact_id ?? null,
+          assigned_to_agent_id: assignee,
+          title: `Lender needs documents from the buyer — ${fresh.length} item${fresh.length === 1 ? "" : "s"}`,
+          description: `${loanRow.lender_name ?? "The lender"} posted new loan conditions${(tx as any)?.property_address ? ` on ${(tx as any).property_address}` : ""}: ${docList}. Collect from the buyer and upload to the deal file.`,
+          due_date: new Date(Date.now() + 2 * 86_400_000).toISOString(),
+          assignee_type: "agent",
+          source: "lender_condition",
+          status: "pending",
+          created_at: new Date().toISOString(),
+        }).then(() => {}, () => {})
+      }
+
+      // The buyer's GATED portal draft — governed like every client touch.
+      const buyerContactId = (tx as any)?.buyer_contact_id ?? (tx as any)?.contact_id ?? null
+      if (buyerContactId) {
+        const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+        await proposeClientMessage({
+          brokerageId: actor.brokerageId,
+          agentKind: "deal_coordinator",
+          entityType: "transaction",
+          entityId: loanRow.transaction_id,
+          recipientContactId: buyerContactId,
+          audience: "buyer",
+          subject: "Your lender needs a few documents",
+          body: `Quick one from your loan team — they need: ${docList}. Send them over whenever you can today or tomorrow and I'll make sure they land in the right hands. This is normal at this stage and keeps your closing on schedule.`,
+          rationale: `lender_condition_request — ${loanRow.lender_name ?? "lender"} posted ${fresh.length} new condition(s); the doc ask flows through the agent's governed rail.`,
+          channel: "portal",
+          outreachReason: "decision_required",
+        }).catch(() => {})
+      }
+    }
+  } catch (e) {
+    console.error("[submitLoanConditions] notify fan-out failed (non-blocking):", e)
+  }
 
   revalidatePath("/portal/lender")
   return { success: true }

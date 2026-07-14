@@ -840,6 +840,32 @@ async function main() {
       && src("lib/education/book-authority-program.ts").includes("read-aloud test")
       && src("lib/education/book-authority-program.ts").includes("no market-data dump required")
       && !src("lib/education/book-authority-program.ts").includes("market updates, and blog posts"))
+    check("VENDOR TRANSACTION EDITS (owner rule: 'any vendor that is part of the transaction should be able to make edits/update to their owned area') — clear-to-close/loan-status/title-status/earnest+survey checklist all ride vendor-authorized rails, and the ONE dead end is closed: submitLoanConditions now AUTHORIZES via requireLenderVendorActor and closes the loop on fresh conditions (ledger event + the agent's collection task + a GATED buyer draft, never lender→buyer raw); registered to deal_coordinator",
+      src("app/actions/lender-portal-actions.ts").includes("requireLenderVendorActor")
+      && src("app/actions/title-portal.ts").includes("requireTitleActor")
+      && src("app/actions/title-portal.ts").includes("updateClosingPrepItem")
+      && src("app/actions/multi-persona.ts").includes("requireLenderVendorActor")
+      && src("app/actions/multi-persona.ts").includes('"lender_document_request"')
+      && src("app/actions/multi-persona.ts").includes('source: "lender_condition"')
+      && src("app/actions/multi-persona.ts").includes('outreachReason: "decision_required"')
+      && src("lib/kernel/manager-registry.ts").includes("lender_condition_loop:"))
+    const { isShallowBody, recoverTopicForModule, DEPTH_MARKER } = await import("../lib/education/depth-reauthor")
+    const reOnb = await recoverTopicForModule({ id: "m1", title: "old", summary: null, gap_tags: ["onboarding:solo_agent:contract_walkthrough"], audience_roles: ["agent"] }, "team")
+    const reBook = await recoverTopicForModule({ id: "m2", title: "old", summary: null, gap_tags: ["program:book_authority:write_with_ai_team"], audience_roles: ["agent"] }, "solo_agent")
+    const reGap = await recoverTopicForModule({ id: "m3", title: "Handling the zestimate objection", summary: "Sellers anchor on the Zestimate.", gap_tags: ["objection:zestimate"], audience_roles: ["agent"] }, "brokerage")
+    const reNone = await recoverTopicForModule({ id: "m4", title: "  ", summary: null, gap_tags: [], audience_roles: null }, "solo_agent")
+    check("DEPTH RE-AUTHOR SWEEP (owner rule extends BACKWARD) — a pre-upgrade module is recognized STRUCTURALLY (no '**Key takeaways**' walkthrough marker); topic recovery is honest+pure (onboarding tag → canonical syllabus entry, book tag → BOOK_TOPICS, gap tag → the module's OWN title/summary, nothing real → skip); the rewrite is gated pending_review, marker-terminated, and rides the weekly cron; registered to recruiting_manager",
+      isShallowBody("Just a two-line summary.") === true
+      && isShallowBody(`## Lesson\n\nfull walkthrough…\n\n${DEPTH_MARKER}\n- point`) === false
+      && reOnb?.topic.key === "contract_walkthrough" && reOnb?.tier === "solo_agent"
+      && reBook?.topic.key === "write_with_ai_team"
+      && reGap?.topic.label === "Handling the zestimate objection"
+      && Boolean(reGap?.topic.brief.includes("Sellers anchor on the Zestimate"))
+      && Boolean(reGap?.topic.brief.includes("SECTION BY SECTION"))
+      && reNone === null
+      && src("lib/education/depth-reauthor.ts").includes('status: "pending_review"')
+      && src("app/api/cron/recruit-outreach/route.ts").includes("runDepthReauthorAll")
+      && src("lib/kernel/manager-registry.ts").includes("education_depth_reauthor:"))
     check("the session flow is complete IN-WINDOW — access-gated action grounds facts in listings/offers (responded_at-null = on the table), the card rides the contact page, confirm creates the agenda-carrying task; the PRE-CALL BRIEF now leads with the addressing memory",
       src("app/actions/strategy-session.ts").includes("assertCanActOnContact")
       && src("app/actions/strategy-session.ts").includes('.is("responded_at", null)')

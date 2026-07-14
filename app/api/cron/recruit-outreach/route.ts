@@ -121,6 +121,15 @@ export async function GET(req: NextRequest) {
       onboardingAuthored = ob.authored
     } catch (e: any) { errors.push(`onboarding-curriculum: ${e?.message ?? String(e)}`) }
 
+    // DEPTH RE-AUTHOR SWEEP — modules authored BEFORE the depth standard are still summaries on the
+    // shelf; rewrite them through the same depth engine (marker-terminated, gated pending_review).
+    let depthReauthored = 0
+    try {
+      const { runDepthReauthorAll } = await import("@/lib/education/depth-reauthor")
+      const dr = await runDepthReauthorAll(supabase)
+      depthReauthored = dr.reauthored
+    } catch (e: any) { errors.push(`depth-reauthor: ${e?.message ?? String(e)}`) }
+
     // CONTENT FRESHNESS — flag AI-authored lessons that have aged out (>180d) for a gated refresh so
     // stale law/market facts never mislead; the human re-authors through the existing review queue.
     let staleModules = 0
@@ -170,9 +179,9 @@ export async function GET(req: NextRequest) {
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors },
+      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors })
+    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
