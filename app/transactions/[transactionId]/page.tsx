@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Progress } from "@/components/ui/progress"
 import { DealShakyToggle } from "@/components/transactions/DealShakyToggle"
+import { WalkthroughOutcomeButtons } from "@/components/transactions/WalkthroughOutcomeButtons"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 import {
@@ -212,7 +213,8 @@ export default function AgentTransactionDetailPage() {
   return (
     <div className="container mx-auto py-6 space-y-6">
       {/* "Deal feels shaky" — the agent's gut suspends earned autonomy on this file */}
-      <div className="flex justify-end">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <WalkthroughOutcomeButtons transactionId={transactionId} />
         <DealShakyToggle transactionId={transactionId} />
       </div>
       {/* Header */}

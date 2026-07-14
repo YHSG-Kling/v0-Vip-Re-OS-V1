@@ -880,6 +880,17 @@ async function main() {
       src("app/dashboard/admin/command-center/acting-as-log.tsx").includes("Assumed views")
       && src("app/dashboard/admin/command-center/page.tsx").includes("ActingAsLog")
       && src("app/admin/recruiting-hub/page.tsx").includes('from("recruits")'))
+    const { composeWalkthroughFollowUp } = await import("../lib/transactions/walkthrough-outcome")
+    const wtGood = composeWalkthroughFollowUp("all_good", "Bill")
+    const wtMajor = composeWalkthroughFollowUp("major_issues", "Bill")
+    check("WALKTHROUGH OUTCOME (forgotten #38) — three DIFFERENT processes: all-good confirms logistics (no shaky), major issues acknowledge-first + same-day huddle + the deal AUTO-FLAGS SHAKY (autonomy suspends); buttons ride the deal file; registered to deal_coordinator",
+      !wtGood.flagShaky && wtGood.agentTasks[0]!.title.includes("closing logistics")
+      && wtMajor.flagShaky && wtMajor.clientLine.includes("own that with you")
+      && wtMajor.agentTasks.some((t) => t.title.includes("TODAY"))
+      && composeWalkthroughFollowUp("minor_issues", "Ana").clientLine.includes("normal at this stage")
+      && src("app/transactions/[transactionId]/page.tsx").includes("WalkthroughOutcomeButtons")
+      && src("lib/transactions/walkthrough-outcome.ts").includes('update({ deal_shaky: true })')
+      && src("lib/kernel/manager-registry.ts").includes("walkthrough_outcome:"))
   }
 
   console.log("\n[24 · live — the full derivation against the real database]")
