@@ -21,6 +21,7 @@ import {
 } from "lucide-react"
 import Link from "next/link"
 import { getDocumentWithAnalysis, getEducationalOverlay, checkStateCompliance } from "@/app/actions/documents"
+import { requestSignatureSend } from "@/app/actions/portal-document-requests"
 
 export default function DocumentViewerPage() {
   const params = useParams()
@@ -33,6 +34,7 @@ export default function DocumentViewerPage() {
   const [educationalOverlay, setEducationalOverlay] = useState<any>(null)
   const [compliance, setCompliance] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [signState, setSignState] = useState<{ pending: boolean; text: string | null; ok: boolean }>({ pending: false, text: null, ok: false })
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     questions: false,
     redFlags: false,
@@ -341,9 +343,11 @@ export default function DocumentViewerPage() {
 
                 {/* Video Explainer */}
                 {educationalOverlay.video_explainer_url && (
-                  <Button variant="outline" className="w-full mt-3 bg-transparent">
-                    <Play className="h-4 w-4 mr-2" />
-                    Watch Explainer Video
+                  <Button variant="outline" className="w-full mt-3 bg-transparent" asChild>
+                    <a href={educationalOverlay.video_explainer_url} target="_blank" rel="noopener noreferrer">
+                      <Play className="h-4 w-4 mr-2" />
+                      Watch Explainer Video
+                    </a>
                   </Button>
                 )}
               </CardContent>
@@ -360,16 +364,33 @@ export default function DocumentViewerPage() {
             </Button>
 
             {document.signature_required && (
-              <Button className="w-full">
-                <PenTool className="h-4 w-4 mr-2" />
-                Sign Document
-              </Button>
+              signState.ok ? (
+                <p className="text-sm text-green-700 bg-green-50 dark:bg-green-950/20 border border-green-200 rounded-md p-3">{signState.text}</p>
+              ) : (
+                <>
+                  <Button
+                    className="w-full"
+                    disabled={signState.pending}
+                    onClick={async () => {
+                      setSignState({ pending: true, text: null, ok: false })
+                      const r = await requestSignatureSend({ contactId, documentId })
+                      setSignState({ pending: false, text: r.success ? (r.message ?? "Signing link on the way.") : (r.error ?? "That didn't go through."), ok: r.success })
+                    }}
+                  >
+                    <PenTool className="h-4 w-4 mr-2" />
+                    {signState.pending ? "Requesting signing link…" : "Sign Document"}
+                  </Button>
+                  {signState.text && !signState.ok && <p className="text-sm text-red-600">{signState.text}</p>}
+                </>
+              )
             )}
 
             {document.ocr_status !== "verified" && (
-              <Button variant="outline" className="w-full bg-transparent">
-                <RefreshCw className="h-4 w-4 mr-2" />
-                Replace Document
+              <Button variant="outline" className="w-full bg-transparent" asChild>
+                <a href={`/portal/${contactId}/documents`}>
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Replace Document
+                </a>
               </Button>
             )}
           </div>

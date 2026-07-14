@@ -11,6 +11,7 @@ import { analyzeMultipleOffers } from "@/app/actions/seller-offers"
 import { CheckCircle2, Clock, FileText, ArrowLeft, PartyPopper, Filter, DollarSign, Calendar, Home } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { SignatureStatusBadge } from "@/app/components/shared/SignatureStatusBadge"
+import { OfferDecisionButtons } from "@/components/portal/offer-decision-buttons"
 import { EsignStatusTracker } from "@/app/components/forms/EsignStatusTracker"
 
 // Buyer offer card component
@@ -446,12 +447,8 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                 </div>
               </div>
 
-              <div className="flex gap-2 pt-4">
-                <Button className="flex-1">Accept Offer</Button>
-                <Button variant="outline" className="flex-1 bg-transparent">
-                  Counter
-                </Button>
-                <Button variant="ghost">Reject</Button>
+              <div className="pt-4">
+                <OfferDecisionButtons contactId={contactId} offerId={offer.id} kind="seller" />
               </div>
             </CardContent>
           </Card>
@@ -666,11 +663,10 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
         </CardContent>
       </Card>
 
-      {/* Action Buttons */}
-      <div className="flex gap-4">
-        <Button>Request Highest & Best from All</Button>
-        <Button variant="outline">Compare Selected</Button>
-      </div>
+      {/* Highest & Best — the click is a signal; the agent runs the call to all buyers */}
+      {offers.length > 1 && (
+        <OfferDecisionButtons contactId={contactId} offerId={offers[0].id} kind="multi" />
+      )}
     </div>
   )
 }

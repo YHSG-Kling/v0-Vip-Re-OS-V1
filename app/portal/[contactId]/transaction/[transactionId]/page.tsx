@@ -31,6 +31,7 @@ import {
   Shield,
 } from "lucide-react"
 import { ClientFeedbackWidget } from "./client-feedback-widget"
+import { LoanChecklistCard } from "./loan-checklist-card"
 import { cn } from "@/lib/utils"
 import { format } from "date-fns"
 
@@ -296,8 +297,8 @@ export default function TransactionDashboard() {
                             </a>
                           )}
                         </div>
-                        <Button size="sm" className="bg-green-500 hover:bg-green-600 text-white">
-                          Mark Done
+                        <Button size="sm" className="bg-green-500 hover:bg-green-600 text-white" asChild>
+                          <a href={`/portal/${contactId}/documents`}>Upload</a>
                         </Button>
                       </div>
                     </div>
@@ -305,6 +306,9 @@ export default function TransactionDashboard() {
                 </div>
               )}
             </Card>
+
+            {/* Loan conditions — what the lender still needs (renders only with real loan state) */}
+            <LoanChecklistCard contactId={contactId} transactionId={transactionId} />
 
             {/* Earnest Money & Checklist Status */}
             <Card className="p-6">
@@ -409,8 +413,10 @@ export default function TransactionDashboard() {
               <Card className="p-6">
                 <h2 className="text-xl font-semibold mb-2">{data.educationalContent.title}</h2>
                 <p className="text-sm text-muted-foreground mb-4">{data.educationalContent.content}</p>
-                <Button className="w-full" variant="default">
-                  Watch Video Guide
+                <Button className="w-full" variant="default" asChild>
+                  <a href={data.educationalContent.videoUrl || `/portal/${contactId}/learn`}>
+                    {data.educationalContent.videoUrl ? "Watch Video Guide" : "Open in your learning center"}
+                  </a>
                 </Button>
               </Card>
             )}
@@ -511,18 +517,35 @@ export default function TransactionDashboard() {
                 <p className="text-sm text-muted-foreground">{data.contactAgent?.message || "Your agent is here to help with any questions."}</p>
               </div>
               <div className="flex gap-2 w-full sm:w-auto">
-                <Button variant="outline" size="sm" className="flex-1 sm:flex-initial">
-                  <Phone className="w-4 h-4 mr-2" />
-                  Call
-                </Button>
-                <Button variant="outline" size="sm" className="flex-1 sm:flex-initial">
-                  <Mail className="w-4 h-4 mr-2" />
-                  Email
-                </Button>
-                <Button size="sm" className="flex-1 sm:flex-initial">
-                  <MessageCircle className="w-4 h-4 mr-2" />
-                  Message
-                </Button>
+                {(() => {
+                  const agent = data.team?.find((m) => m.role?.toLowerCase().includes("agent")) ?? data.team?.[0]
+                  return (
+                    <>
+                      {agent?.phone && (
+                        <Button variant="outline" size="sm" className="flex-1 sm:flex-initial" asChild>
+                          <a href={`tel:${agent.phone}`}>
+                            <Phone className="w-4 h-4 mr-2" />
+                            Call
+                          </a>
+                        </Button>
+                      )}
+                      {agent?.email && (
+                        <Button variant="outline" size="sm" className="flex-1 sm:flex-initial" asChild>
+                          <a href={`mailto:${agent.email}`}>
+                            <Mail className="w-4 h-4 mr-2" />
+                            Email
+                          </a>
+                        </Button>
+                      )}
+                      <Button size="sm" className="flex-1 sm:flex-initial" asChild>
+                        <a href={`/portal/${contactId}/messages`}>
+                          <MessageCircle className="w-4 h-4 mr-2" />
+                          Message
+                        </a>
+                      </Button>
+                    </>
+                  )
+                })()}
               </div>
             </div>
           </Card>

@@ -39,9 +39,11 @@ export default async function VendorPortfolioPage() {
             </h1>
           </div>
         </div>
-        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white">
-          <Plus className="w-4 h-4 mr-2" />
-          Add Work
+        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" asChild>
+          <Link href="/vendor/portfolio/upload">
+            <Plus className="w-4 h-4 mr-2" />
+            Add Work
+          </Link>
         </Button>
       </div>
       {vendor ? (

@@ -46,8 +46,10 @@ export default async function LenderApprovalsPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   {t.contract_price && <span className="font-semibold text-green-700 text-sm">${t.contract_price.toLocaleString()}</span>}
-                  <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white">Approve</Button>
-                  <Button size="sm" variant="outline">Review</Button>
+                  {/* Approvals execute on the loan file (authorized lender actions live there) */}
+                  <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" asChild>
+                    <Link href={`/portal/lender/${t.id}`}>Open loan file</Link>
+                  </Button>
                 </div>
               </CardContent>
             </Card>

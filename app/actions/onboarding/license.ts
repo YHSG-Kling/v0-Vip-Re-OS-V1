@@ -479,38 +479,18 @@ export async function sendContractForSignature(
       return { success: false, error: "No e-sign provider configured. Contact your broker admin." }
     }
 
-    // TODO: Implement actual DocuSign/DotLoop API calls
-    // For now, create a placeholder contract_signatures record
-    const providerDocumentId = `mock_${provider.providerKey}_${Date.now()}`
-
-    const { data: contract, error: contractError } = await supabase
-      .from("contract_signatures")
-      .insert({
-        brokerage_id: brokerageId,
-        agent_id: agentId,
-        contract_type: "independent_contractor", // Independent Contractor Agreement
-        provider_name: provider.providerKey,
-        provider_envelope_id: providerDocumentId,
-        esign_status: "sent",
-        sent_at: new Date().toISOString(),
-      })
-      .select("id")
-      .single()
-
-    if (contractError) {
-      console.error("[L11-License] Failed to create contract:", contractError)
-      return { success: false, error: "Failed to send contract" }
+    // HONEST REFUSAL (production audit): this path used to fabricate a
+    // provider envelope id and mark the contract "sent" without sending
+    // anything — the agent saw "sent for signature" and the status could
+    // never advance (silent false success, the exact failure mode the
+    // podcast-distribution fix killed). The onboarding envelope API for
+    // contract_signatures is not integrated yet, so we refuse to simulate
+    // it and point at the REAL path that works today: sign offline and
+    // record it with markContractSignedManually (same screen).
+    return {
+      success: false,
+      error: `Automatic ${provider.providerKey} sending for onboarding contracts isn't connected yet — send the Independent Contractor Agreement through ${provider.providerKey} directly, then use "Mark as signed" here to record it.`,
     }
-
-    // Fire kernel event
-    await processKernelEvent({
-      event: KernelEvent.CONTRACT_SENT_FOR_SIGNATURE,
-      brokerageId,
-      entityType: "contract_signature",
-      entityId: contract.id,
-    })
-
-    return { success: true, documentId: contract.id }
   } catch (error) {
     console.error("[L11-License] sendContractForSignature error:", error)
     return { success: false, error: "Failed to send contract for signature" }

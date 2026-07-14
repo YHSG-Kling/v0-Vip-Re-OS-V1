@@ -20,7 +20,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Receipt, Loader2, CheckCircle2, X } from "lucide-react"
+import { Receipt, Loader2, CheckCircle2, X, MessageSquarePlus } from "lucide-react"
+import { VendorRequestDialog } from "./vendor-request-dialog"
 import { createVendorInvoice } from "@/app/actions/vendor-payments"
 import {
   acceptVendorBookingAction,
@@ -57,6 +58,7 @@ const STATUS_COLOR: Record<string, string> = {
 export function JobsClient({ bookings: initial }: Props) {
   const [bookings, setBookings] = useState(initial)
   const [invoiceFor, setInvoiceFor] = useState<Booking | null>(null)
+  const [requestFor, setRequestFor] = useState<Booking | null>(null)
   const [invoiced, setInvoiced] = useState<Set<string>>(new Set())
   const [actionPending, startAction] = useTransition()
   const [actingOn, setActingOn] = useState<string | null>(null)
@@ -192,6 +194,17 @@ export function JobsClient({ bookings: initial }: Props) {
                     Complete
                   </Button>
                 )}
+                {b.transaction_id && b.vendor_id && b.status !== "cancelled" && b.status !== "completed" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-xs gap-1"
+                    onClick={() => setRequestFor(b)}
+                  >
+                    <MessageSquarePlus className="h-3 w-3" />
+                    Request
+                  </Button>
+                )}
                 {(b.status === "completed" || b.status === "active") && (
                   invoiced.has(b.id) ? (
                     <Badge variant="outline" className="text-xs gap-1">
@@ -215,6 +228,15 @@ export function JobsClient({ bookings: initial }: Props) {
           </Card>
         ))}
       </div>
+
+      {requestFor && requestFor.transaction_id && requestFor.vendor_id && (
+        <VendorRequestDialog
+          vendorId={requestFor.vendor_id}
+          transactionId={requestFor.transaction_id}
+          propertyAddress={requestFor.transactions?.property_address ?? null}
+          onClose={() => setRequestFor(null)}
+        />
+      )}
 
       {invoiceFor && (
         <InvoiceDialog

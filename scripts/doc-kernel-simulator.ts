@@ -849,6 +849,49 @@ async function main() {
       && src("app/actions/multi-persona.ts").includes('source: "lender_condition"')
       && src("app/actions/multi-persona.ts").includes('outreachReason: "decision_required"')
       && src("lib/kernel/manager-registry.ts").includes("lender_condition_loop:"))
+    const { validateVendorRequest, composeVendorRequestTask, clientPartyForRequest, composeClientRequestBody } = await import("../lib/kernel/vendor-request")
+    const vrBad = validateVendorRequest({ requestType: "demand", details: "utilities on please and the gate code" })
+    const vrThin = validateVendorRequest({ requestType: "access", details: "keys" })
+    const vrOk = validateVendorRequest({ requestType: "access", details: "Need utilities on and the lockbox code for Thursday inspection" })
+    const vrTask = composeVendorRequestTask({ vendorName: "Apex Inspections", vendorCategory: "Inspector", requestType: "access", details: "Need utilities on and the lockbox code", propertyAddress: "12 Oak Ln", neededBy: "2026-07-16" })
+    const vrBody = composeClientRequestBody({ vendorName: "Apex Inspections", vendorCategory: "Inspector", requestType: "access", details: "utilities on for Thursday", neededBy: null })
+    check("VENDOR REQUEST RAIL (owner rule generalized) — typed vocabulary with honest refusals (unknown type + too-thin details both refused with the WHY), the agent's task names who/what/where/by-when, property-side asks route to the OCCUPANT while paperwork asks route to the buyer (gated either way), and the client draft is warm + vendor-attributed; auth mirrors the lender gate and the jobs surface carries the dialog; registered to deal_coordinator",
+      vrBad.ok === false && Boolean(!vrBad.ok && vrBad.error.includes("document"))
+      && vrThin.ok === false
+      && vrOk.ok === true
+      && vrTask.title === "Property access — Apex Inspections"
+      && vrTask.description.includes("Apex Inspections (Inspector)") && vrTask.description.includes("on 12 Oak Ln") && vrTask.description.includes("Needed by 2026-07-16")
+      && clientPartyForRequest("access", { contact_id: "seller-1", buyer_contact_id: "buyer-1" }) === "seller-1"
+      && clientPartyForRequest("document", { contact_id: "seller-1", buyer_contact_id: "buyer-1" }) === "buyer-1"
+      && clientPartyForRequest("access", { contact_id: null, buyer_contact_id: "buyer-1" }) === "buyer-1"
+      && vrBody.subject === "Quick request from your inspector" && vrBody.body.includes("Apex Inspections")
+      && src("app/actions/vendor-requests.ts").includes("requireVendorActor")
+      && src("app/actions/vendor-requests.ts").includes('"vendor_request"')
+      && src("app/actions/vendor-requests.ts").includes("proposeClientMessage")
+      && src("app/vendor/jobs/jobs-client.tsx").includes("VendorRequestDialog")
+      && src("lib/kernel/manager-registry.ts").includes("vendor_request_rail:"))
+    check("BUYER LOAN-CONDITION VISIBILITY — the buyer's read-only checklist is PARTY-ANCHORED, grounded in the SAME transaction_lenders row the lender writes (one rail), honest-null when nothing real to show, and rides the portal deal view; registered to deal_coordinator",
+      src("app/actions/portal-loan-checklist.ts").includes("buyer_contact_id")
+      && src("app/actions/portal-loan-checklist.ts").includes('from("transaction_lenders")')
+      && src("app/actions/portal-loan-checklist.ts").includes("return null")
+      && src("app/portal/[contactId]/transaction/[transactionId]/page.tsx").includes("LoanChecklistCard")
+      && src("app/portal/[contactId]/transaction/[transactionId]/loan-checklist-card.tsx").includes("Clear to close")
+      && src("lib/kernel/manager-registry.ts").includes("buyer_loan_visibility:"))
+    check("PRODUCTION AUDIT — DEAD BUTTONS WIRED, FABRICATION KILLED: the portal's offer Accept/Counter/Decline record a party-anchored DECISION SIGNAL for the agent to execute (never a legal act), the document viewer's Sign requests the real envelope, lender queues route to the AUTHORIZED loan file, and the onboarding e-sign mock now REFUSES honestly (no fake envelope id, no false 'sent') — both registered",
+      src("app/actions/portal-offer-decision.ts").includes('source: "client_offer_decision"')
+      && src("app/actions/portal-offer-decision.ts").includes("not a party to this offer")
+      && src("app/components/portal/offer-decision-buttons.tsx").includes("nothing is final until the paperwork is signed")
+      && src("app/portal/[contactId]/offers/page.tsx").includes("OfferDecisionButtons")
+      && src("app/portal/[contactId]/my-offer/page.tsx").includes("OfferDecisionButtons")
+      && src("app/actions/portal-document-requests.ts").includes('source: "signature_link_request"')
+      && src("app/portal/[contactId]/documents/[documentId]/page.tsx").includes("requestSignatureSend")
+      && src("app/lender/approvals/page.tsx").includes("/portal/lender/")
+      && src("app/lender/underwriting/page.tsx").includes("/portal/lender/")
+      && src("app/vendor/portfolio/page.tsx").includes("/vendor/portfolio/upload")
+      && !src("app/actions/onboarding/license.ts").includes("mock_${provider.providerKey}")
+      && src("app/actions/onboarding/license.ts").includes("refuse to simulate")
+      && src("lib/kernel/manager-registry.ts").includes("client_offer_decision:")
+      && src("lib/kernel/manager-registry.ts").includes("esign_honest_refusal:"))
     const { isShallowBody, recoverTopicForModule, DEPTH_MARKER } = await import("../lib/education/depth-reauthor")
     const reOnb = await recoverTopicForModule({ id: "m1", title: "old", summary: null, gap_tags: ["onboarding:solo_agent:contract_walkthrough"], audience_roles: ["agent"] }, "team")
     const reBook = await recoverTopicForModule({ id: "m2", title: "old", summary: null, gap_tags: ["program:book_authority:write_with_ai_team"], audience_roles: ["agent"] }, "solo_agent")

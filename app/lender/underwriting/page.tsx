@@ -42,8 +42,10 @@ export default async function LenderUnderwritingPage() {
                   <p className="text-sm text-gray-500">{t.client_name}</p>
                 </div>
                 <div className="flex gap-2">
-                  <Button size="sm" variant="outline">Review File</Button>
-                  <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white">Submit to UW</Button>
+                  {/* Underwriting status moves on the loan file (authorized lender actions live there) */}
+                  <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white" asChild>
+                    <Link href={`/portal/lender/${t.id}`}>Open loan file</Link>
+                  </Button>
                 </div>
               </CardContent>
             </Card>

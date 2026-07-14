@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Clock, CheckCircle2, XCircle, RefreshCw, FileText } from "lucide-react"
+import { OfferDecisionButtons } from "@/components/portal/offer-decision-buttons"
 
 export default async function MyOfferPage({ params }: { params: Promise<{ contactId: string }> }) {
   const { contactId } = await params
@@ -154,13 +155,7 @@ export default async function MyOfferPage({ params }: { params: Promise<{ contac
                   </p>
                 </div>
 
-                <div className="flex gap-2">
-                  <Button className="flex-1">Accept Current Terms</Button>
-                  <Button variant="outline" className="flex-1 bg-transparent">
-                    Counter Back
-                  </Button>
-                  <Button variant="ghost">Decline</Button>
-                </div>
+                <OfferDecisionButtons contactId={contactId} offerId={activeOffer.id} kind="buyer" />
               </CardContent>
             </Card>
           )}
