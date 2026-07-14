@@ -57,6 +57,8 @@ type Direction = "inbound" | "outbound" | "internal"
 interface TimelineEntry {
   id: string
   source: "message" | "voice_call" | "isa_outreach"
+  /** AI-authored (messages.sender_type === 'ai') — labeled, never ambiguous. */
+  aiAuthored?: boolean
   channel: Channel
   direction: Direction
   subject?: string
@@ -209,6 +211,7 @@ export default function UnifiedInboxTab({
       timeline.push({
         id: `msg-${m.id}`,
         source: "message",
+        aiAuthored: m.sender_type === "ai",
         channel: (m.type ?? "email") as Channel,
         direction: (m.direction ?? "outbound") as Direction,
         subject: m.subject ?? undefined,
@@ -379,6 +382,12 @@ export default function UnifiedInboxTab({
 
                   {statusChip(entry.status)}
 
+                  {entry.aiAuthored && entry.source === "message" && (
+                    <span className="flex items-center gap-0.5 text-[9px] px-1 py-0.5 rounded bg-muted text-muted-foreground">
+                      <Bot size={9} />
+                      AI
+                    </span>
+                  )}
                   {entry.source === "isa_outreach" && (
                     <span className="flex items-center gap-0.5 text-[9px] px-1 py-0.5 rounded bg-muted text-muted-foreground">
                       <Bot size={9} />

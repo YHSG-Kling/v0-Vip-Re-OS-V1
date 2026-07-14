@@ -51,6 +51,10 @@ const STEPS: StepSeed[] = [
     step_number: 4, step_name: "Ringless voicemail — a human voice", channel: "voice_drop", delay_days: 7,
     ai_intent: "a warm, 20-second ringless voicemail in the agent's voice for someone who hasn't answered email or text — acknowledge life gets busy, offer one genuinely helpful thing, no pressure, easy callback",
   },
+  {
+    step_number: 5, step_name: "AI ISA reconnect call — a real conversation", channel: "ai_call", delay_days: 12,
+    ai_intent: "a warm, unhurried reconnect call: acknowledge it's been a while, ask what changed in their plans, listen more than pitch, and offer ONE concrete next step (fresh listings matched to what they wanted, or a quick market read for their area). If voicemail, leave a 15-second human-sounding message. Never pressure — the goal is a conversation, not a booking.",
+  },
 ]
 
 /**

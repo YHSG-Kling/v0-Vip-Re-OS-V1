@@ -71,6 +71,7 @@ const inAppAdapter: ChannelAdapter = {
       brokerage_id: brokerageId,  // for superadmin billing rollups
       type: "in_app",
       direction: "outbound",
+      sender_type: "ai", // AI-authored sequence send — the unified inbox labels it
       body: step.body ?? "",
       status: "sent",
       created_at: new Date().toISOString(),

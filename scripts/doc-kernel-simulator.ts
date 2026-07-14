@@ -754,6 +754,35 @@ async function main() {
       && src("lib/intelligence/daily-briefing-generator.ts").includes('.eq("covering_agent_id", myAgentsId)')
       && src("lib/intelligence/daily-briefing-generator.ts").includes("...coverageActions,")
       && src("lib/kernel/manager-registry.ts").includes("coverage_aware_briefing:"))
+    const { lintSpamRisk } = await import("../lib/kernel/email-deliverability")
+    const spammy = lintSpamRisk("ACT NOW FREE HOMES!!!", "CLICK here now!! 100% free guaranteed returns $$$ http://a http://b http://c http://d")
+    check("EMAIL DELIVERABILITY (owner rule, the honest guarantee) — the lint catches ALL-CAPS/trigger-phrases/link-stuffing/$$$ (high risk), passes clean copy (low), rides the approval queue as an advisory, and the go-live board probes REAL SendGrid domain auth (SPF/DKIM)",
+      spammy.risk === "high" && spammy.reasons.length >= 4
+      && lintSpamRisk("Quick update on your closing", "Hi Bill, the appraisal came back and we are in good shape. I will call you at 3pm with the details. — Dana").risk === "low"
+      && src("lib/kernel/command-center.ts").includes("Spam-filter risk")
+      && src("lib/platform/go-live-readiness.ts").includes("probeSendgridDomainAuth")
+      && src("lib/kernel/manager-registry.ts").includes("email_deliverability_guard:"))
+    check("INBOX AI/HUMAN LABELING (§4.1 audit fix) + ISA CALL RUNG (owner directive) — sequence sends stamp sender_type='ai' and the unified inbox badges them; the reactivation ladder ends with the consent-gated AI reconnect call (upgrade path covers existing tenants); DOCUMENTS file by scan-written classification (verdict: labeled+filed)",
+      src("lib/workflow/adapters/index.ts").includes('sender_type: "ai"')
+      && src("app/components/contact/UnifiedInboxTab.tsx").includes("aiAuthored")
+      && src("lib/lead-pipeline/reactivation-sequence-installer.ts").includes('channel: "ai_call"')
+      && src("lib/lead-pipeline/reactivation-sequence-installer.ts").includes("listen more than pitch")
+      && src("lib/documents/scan-uploaded-document.ts").includes("classification")
+      && src("lib/kernel/manager-registry.ts").includes("inbox_ai_labeling:")
+      && src("lib/kernel/manager-registry.ts").includes("isa_call_rung:"))
+    const { composeSiteInsights } = await import("../lib/kernel/site-traffic-insights")
+    const siteRows = [
+      ...Array.from({ length: 8 }, () => ({ page: "/home", seconds: 20, source: "google" })),
+      ...Array.from({ length: 6 }, () => ({ page: "/neighborhood-guide", seconds: 180, source: "google" })),
+    ]
+    const si = composeSiteInsights(siteRows)
+    check("SITE TRAFFIC LEARNING (owner rule) — the write-only visitor tables now READ BACK: stickiest page found by time-on-page (5+ visit sample gate), ONE concrete adjustment composed ('feature it before they bounce'), weekly GATED notification (nothing auto-mutates), riding proactive-intelligence",
+      si.stickiest?.page === "/neighborhood-guide" && si.bounciest?.page === "/home"
+      && Boolean(si.adjustment?.includes("/neighborhood-guide")) && Boolean(si.adjustment?.includes("before they bounce"))
+      && composeSiteInsights([]).adjustment === null
+      && src("app/api/cron/proactive-intelligence/route.ts").includes("runSiteTrafficInsights")
+      && src("lib/kernel/site-traffic-insights.ts").includes("rows.length < 10")
+      && src("lib/kernel/manager-registry.ts").includes("site_traffic_learning:"))
     check("the session flow is complete IN-WINDOW — access-gated action grounds facts in listings/offers (responded_at-null = on the table), the card rides the contact page, confirm creates the agenda-carrying task; the PRE-CALL BRIEF now leads with the addressing memory",
       src("app/actions/strategy-session.ts").includes("assertCanActOnContact")
       && src("app/actions/strategy-session.ts").includes('.is("responded_at", null)')

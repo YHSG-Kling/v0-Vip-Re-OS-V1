@@ -57,6 +57,12 @@ export async function runGoLiveReadiness(svc: any): Promise<GoLiveReadiness> {
       return r("ready", `${url} · cron auth set`)
     },
     async () => {
+      const r = d("email_deliverability", "Email deliverability (sender domain auth)", false)
+      const { probeSendgridDomainAuth } = await import("@/lib/kernel/email-deliverability")
+      const p = await probeSendgridDomainAuth()
+      return r(p.status, p.detail)
+    },
+    async () => {
       const r = d("database", "Database (service role)", false)
       try {
         const { count, error } = await svc.from("brokerages").select("id", { count: "exact", head: true })

@@ -69,6 +69,16 @@ export async function GET(request: Request) {
 
     // (2) Buyer-stall + stuck-stage on active buyers (one property_preferences row per buyer).
     try {
+    // SITE TRAFFIC LEARNING — the tenant's site reads its own visitors weekly
+    // (gated insights notification; nothing auto-mutates a public page).
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { runSiteTrafficInsights } = await import("@/lib/kernel/site-traffic-insights")
+      await runSiteTrafficInsights(createServiceClient())
+    } catch (e) {
+      console.error("[ProactiveIntelligence] site traffic insights:", e)
+    }
+
       const { data: buyers } = await svc.from("property_preferences")
         .select("contact_id").not("contact_id", "is", null).eq("brokerage_id", brokerageId).limit(PER_BROKERAGE_CAP)
       for (const p of (buyers ?? []) as Array<{ contact_id: string }>) {

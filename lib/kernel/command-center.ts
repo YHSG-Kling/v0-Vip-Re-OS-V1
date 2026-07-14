@@ -16,6 +16,7 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { describeOutreachReason } from "@/lib/kernel/outreach-reasons"
+import { lintSpamRisk } from "@/lib/kernel/email-deliverability"
 import { loadContentApprovalActions, type ContentQueue } from "./approval-sources"
 import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
 import { resolveActionManager, type ManagerKey } from "./manager-registry"
@@ -361,6 +362,15 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
       { proposer: m.agent_kind ?? "agent", channel: m.channel ?? "portal", subject: m.subject ?? null, body: m.body ?? "" },
       { recipientWithdrawn: consent.withdrawn, emailRevoked: consent.emailRevoked, smsRevoked: consent.smsRevoked, hoursSinceLastSend: null, openFireDrill: false },
     )
+    // DELIVERABILITY LINT — an email draft with spam-filter triggers gets an
+    // advisory BEFORE release (the human fixes the phrasing, the mail lands).
+    if ((m.channel ?? "portal") === "email") {
+      const spam = lintSpamRisk(m.subject ?? null, m.body ?? "")
+      if (spam.risk !== "low") {
+        compliance.findings.push(`✉️ Spam-filter risk (${spam.risk}): ${spam.reasons.join(" ")}`)
+        if (compliance.status === "clear") compliance.status = "advisory"
+      }
+    }
     return {
       id: m.id, queue: "client_message", brokerageId: m.brokerage_id, actionType: "approve_client_message",
       rationale: `${describeOutreachReason(m.outreach_reason) ? `Why now: ${describeOutreachReason(m.outreach_reason)} · ` : ""}${(m.agent_kind ?? "agent").replace(/_/g, " ")} drafted a ${m.audience} update via ${m.channel ?? "portal"} — review/edit before it reaches the client.`,
