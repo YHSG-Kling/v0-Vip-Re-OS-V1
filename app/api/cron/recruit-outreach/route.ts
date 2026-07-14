@@ -137,6 +137,14 @@ export async function GET(req: NextRequest) {
       careerBriefs = (await runCareerArchitectAll(supabase)).briefed
     } catch (e: any) { errors.push(`career-architect: ${e?.message ?? String(e)}`) }
 
+    // PORTFOLIO STRATEGY ADVISOR + RISK LENS — monthly gated broker brief on
+    // where to deploy agents/budget, from the brokerage's own territory ROI.
+    let portfolioBriefs = 0
+    try {
+      const { runPortfolioAdvisorAll } = await import("@/lib/intelligence/portfolio-intelligence")
+      portfolioBriefs = (await runPortfolioAdvisorAll(supabase)).proposed
+    } catch (e: any) { errors.push(`portfolio-advisor: ${e?.message ?? String(e)}`) }
+
     // DEPTH RE-AUTHOR SWEEP — modules authored BEFORE the depth standard are still summaries on the
     // shelf; rewrite them through the same depth engine (marker-terminated, gated pending_review).
     let depthReauthored = 0
@@ -195,9 +203,9 @@ export async function GET(req: NextRequest) {
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, playbooksProposed, careerBriefs, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors },
+      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, playbooksProposed, careerBriefs, portfolioBriefs, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, playbooksProposed, careerBriefs, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors })
+    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, playbooksProposed, careerBriefs, portfolioBriefs, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

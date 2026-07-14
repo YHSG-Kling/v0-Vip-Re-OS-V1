@@ -31,6 +31,7 @@ import { BrokerageComplianceOverview } from "@/app/components/features/dashboard
 import {
   BrokerCommandStrip,
   BrokerRiskRadar,
+  BrokerPortfolioPanel,
   BrokerFinancialPulse,
   BrokerDealHealthPanel,
   BrokerTeamPerformancePanel,
@@ -266,6 +267,14 @@ export default async function BrokerageDashboard({
 
     return null
   })()
+
+  // PORTFOLIO INTELLIGENCE (#7 + #9) — where to deploy, from territory ROI.
+  let portfolioRead: Awaited<ReturnType<typeof import("@/lib/intelligence/portfolio-intelligence").loadPortfolioIntelligence>> | null = null
+  try {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { loadPortfolioIntelligence } = await import("@/lib/intelligence/portfolio-intelligence")
+    if (brokerageId) portfolioRead = await loadPortfolioIntelligence(createServiceClient(), brokerageId)
+  } catch { /* best-effort — the dashboard stands without it */ }
 
   // Build risk signals
   const riskSignals = [
@@ -662,6 +671,7 @@ export default async function BrokerageDashboard({
         {/* Left Column: Risk & Financial */}
         <div className="space-y-6">
           <BrokerRiskRadar signals={riskSignals} />
+          <BrokerPortfolioPanel read={portfolioRead} />
           <BrokerFinancialPulse
             ytdRevenue={totalGCI || 0}
             projectedRevenue={forecast?.likely || 0}

@@ -1099,6 +1099,42 @@ async function main() {
       && src("app/actions/time-to-value.ts").includes("getMyTimeToValue")
       && src("lib/kernel/manager-registry.ts").includes("time_to_value_radar:")
       && src("lib/kernel/manager-registry.ts").includes("consistency_guardian:"))
+    const { aggregateZipMetrics, composeStrategyMoves, composeRiskOpportunities, MIN_ZIP_LEADS } = await import("../lib/intelligence/portfolio-intelligence")
+    const zMetrics = aggregateZipMetrics([
+      { zip_code: "78701", lead_count: 40, conversion_count: 8, roi: 3, cost_per_lead: 20, agent_saturation: 90 },  // hot + saturated
+      { zip_code: "78702", lead_count: 30, conversion_count: 1, roi: 0.5, cost_per_lead: 80, agent_saturation: 40 }, // cold farmed
+      { zip_code: "78703", lead_count: 3, conversion_count: 2, roi: 9, cost_per_lead: 5, agent_saturation: 10 },     // thin — must be ignored
+    ], new Set(["78702"]))
+    const moves = composeStrategyMoves(zMetrics)
+    const riskOps = composeRiskOpportunities(zMetrics)
+    const { composeCampaignPlan, composeCampaignSummary } = await import("../lib/agents/campaign-composer")
+    const planFull = composeCampaignPlan("listing_launch", ["email", "sms", "social_post", "direct_mail"])
+    const planPartial = composeCampaignPlan("listing_launch", ["email"])
+    const { normalizeGuardrails, evaluateOpsGate } = await import("../lib/agents/ops-task-rail")
+    const gr = normalizeGuardrails({ allowedDomains: ["mls.example.com"], requiresApproval: true })
+    const gateOff = evaluateOpsGate({ executionEnabled: false, guardrails: gr, approved: true })
+    const gateNoDomain = evaluateOpsGate({ executionEnabled: true, guardrails: normalizeGuardrails({}), approved: true })
+    const gateOk = evaluateOpsGate({ executionEnabled: true, guardrails: gr, approved: true })
+    check("PORTFOLIO INTELLIGENCE #7/#9 + CAMPAIGN COMPOSER #2 + OPS-TASK RAIL #3 — territory ROI drives lean-in/pull-back/add-capacity moves (thin ZIP ignored below MIN_LEADS), the campaign supervisor marks only registered channels available (partial plan reports connect-these), and the ops gate is DENY-BY-DEFAULT (execution-off blocks, no-domain blocks, only fully-provisioned runs); all registered + gated",
+      zMetrics.length === 3 && zMetrics.find((z) => z.zip === "78701")!.farmed === false
+      && moves.some((m) => m.key === "lean_in" && m.zip === "78701")
+      && moves.some((m) => m.key === "pull_back" && m.zip === "78702")
+      && moves.some((m) => m.key === "add_capacity" && m.zip === "78701")
+      && !JSON.stringify(moves).includes("78703") && MIN_ZIP_LEADS === 10
+      && riskOps.some((r) => r.kind === "opportunity" && r.zip === "78701")
+      && riskOps.some((r) => r.kind === "risk" && r.zip === "78702")
+      && planFull.actionable === true && planFull.tasks.filter((t) => t.available).length === 4 && planFull.unavailableChannels.length === 0
+      && planPartial.actionable === true && planPartial.unavailableChannels.includes("social_post")
+      && Boolean(composeCampaignSummary(planPartial).includes("Connect"))
+      && gr.readOnly === true && gateOff.canRun === false && (gateOff as any).reason.includes("not enabled")
+      && gateNoDomain.canRun === false && (gateNoDomain as any).reason.includes("allowed domains")
+      && gateOk.canRun === true
+      && src("app/dashboard/brokerage/page.tsx").includes("BrokerPortfolioPanel")
+      && src("app/api/cron/recruit-outreach/route.ts").includes("runPortfolioAdvisorAll")
+      && src("scripts/l55-s01-ops-task-queue.sql").includes("ops_task_runs")
+      && src("lib/kernel/manager-registry.ts").includes("portfolio_intelligence:")
+      && src("lib/kernel/manager-registry.ts").includes("campaign_composer:")
+      && src("lib/kernel/manager-registry.ts").includes("ops_task_rail:"))
     const { isShallowBody, recoverTopicForModule, DEPTH_MARKER } = await import("../lib/education/depth-reauthor")
     const reOnb = await recoverTopicForModule({ id: "m1", title: "old", summary: null, gap_tags: ["onboarding:solo_agent:contract_walkthrough"], audience_roles: ["agent"] }, "team")
     const reBook = await recoverTopicForModule({ id: "m2", title: "old", summary: null, gap_tags: ["program:book_authority:write_with_ai_team"], audience_roles: ["agent"] }, "solo_agent")

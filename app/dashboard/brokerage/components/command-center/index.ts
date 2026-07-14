@@ -1,5 +1,6 @@
 export { BrokerCommandStrip, type BrokerPriority } from "./broker-command-strip"
 export { BrokerRiskRadar } from "./broker-risk-radar"
+export { BrokerPortfolioPanel } from "./broker-portfolio-panel"
 export { BrokerFinancialPulse } from "./broker-financial-pulse"
 export { BrokerDealHealthPanel } from "./broker-deal-health-panel"
 export { BrokerTeamPerformancePanel } from "./broker-team-performance-panel"
