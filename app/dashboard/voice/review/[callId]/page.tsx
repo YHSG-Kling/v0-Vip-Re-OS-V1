@@ -20,6 +20,7 @@ import {
   Volume2,
 } from "lucide-react"
 import Link from "next/link"
+import { CallReviewActionsBar } from "./call-review-actions-bar"
 
 export const dynamic = "force-dynamic"
 
@@ -451,14 +452,7 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
       <Card>
         <CardContent className="py-4">
           <div className="flex flex-wrap gap-3">
-            <Button variant="outline" className="gap-2">
-              <Share2 className="h-4 w-4" />
-              Share with Coach
-            </Button>
-            <Button variant="outline" className="gap-2">
-              <Flag className="h-4 w-4" />
-              Flag for Compliance
-            </Button>
+            <CallReviewActionsBar callId={callId} />
             <Link href="/dashboard/voice/isa" className="ml-auto">
               <Button variant="ghost" className="gap-2">
                 <ArrowLeft className="h-4 w-4" />

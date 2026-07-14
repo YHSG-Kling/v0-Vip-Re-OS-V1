@@ -102,19 +102,6 @@ export default function VideoAnalyticsPage() {
     return `${hours}h ${mins}m`
   }
 
-  // Calculate changes (placeholder for now - would need historical data)
-  const calculateChange = (current: number, baseline: number) => {
-    if (baseline === 0) return current > 0 ? 100 : 0
-    return Math.round(((current - baseline) / baseline) * 100)
-  }
-
-  // Device breakdown (would come from actual tracking in production)
-  const deviceBreakdown = [
-    { device: "Mobile", percentage: 62, icon: Smartphone },
-    { device: "Desktop", percentage: 31, icon: Monitor },
-    { device: "Tablet", percentage: 7, icon: Globe },
-  ]
-
   if (loading) {
     return (
       <div className="min-h-screen bg-background">
@@ -364,34 +351,10 @@ export default function VideoAnalyticsPage() {
             </CardContent>
           </Card>
 
-          {/* Device Breakdown */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <PieChart className="h-5 w-5" />
-                Device Breakdown
-              </CardTitle>
-              <CardDescription>Where your videos are watched</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {deviceBreakdown.map((device) => (
-                  <div key={device.device} className="flex items-center gap-4">
-                    <div className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800">
-                      <device.icon className="h-5 w-5 text-slate-600 dark:text-slate-400" />
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm font-medium">{device.device}</span>
-                        <span className="text-sm text-muted-foreground">{device.percentage}%</span>
-                      </div>
-                      <Progress value={device.percentage} className="h-2" />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+          {/* Device breakdown removed (production audit): it rendered a HARDCODED
+              Mobile/Desktop/Tablet split as if it were real per-agent tracking.
+              This platform never fabricates metrics — the card returns when the
+              player actually reports device data. */}
         </div>
 
         {/* Insights */}

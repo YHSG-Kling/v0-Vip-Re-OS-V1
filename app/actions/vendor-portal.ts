@@ -39,11 +39,15 @@ export async function acceptVendorBookingAction(params: {
     .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
   if (!booking) return { success: false, error: "Booking not found in your scope" }
-  if (booking.status !== "pending") {
+  // LIVE-SCHEMA VOCABULARY (caught by the pilot simulation): vendor_bookings.status
+  // CHECK allows booked/confirmed/completed/cancelled/no_show — every creator inserts
+  // 'booked'; this gate demanded a 'pending' that can never exist and wrote a
+  // 'scheduled' the CHECK rejects, so accept ALWAYS failed. Consolidated: booked → confirmed.
+  if (booking.status !== "booked") {
     return { success: false, error: `Cannot accept — status is ${booking.status}` }
   }
 
-  const updatePayload: Record<string, unknown> = { status: "scheduled" }
+  const updatePayload: Record<string, unknown> = { status: "confirmed" }
   if (params.scheduledDate) updatePayload.scheduled_date = params.scheduledDate
 
   const { error } = await supabase
@@ -106,7 +110,8 @@ export async function declineVendorBookingAction(params: {
     .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
   if (!booking) return { success: false, error: "Booking not found in your scope" }
-  if (booking.status !== "pending") {
+  // Same live-vocabulary fix as accept: a declinable booking is 'booked'.
+  if (booking.status !== "booked") {
     return { success: false, error: `Cannot decline — status is ${booking.status}` }
   }
 

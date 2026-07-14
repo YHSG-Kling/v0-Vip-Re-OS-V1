@@ -47,12 +47,14 @@ interface Props {
   bookings: Booking[]
 }
 
+// LIVE vocabulary (vendor_bookings.status CHECK): booked → awaiting the vendor's
+// accept; confirmed → accepted; completed/cancelled/no_show terminal.
 const STATUS_COLOR: Record<string, string> = {
-  pending: "bg-yellow-100 text-yellow-700",
-  active: "bg-blue-100 text-blue-700",
-  scheduled: "bg-indigo-100 text-indigo-700",
+  booked: "bg-yellow-100 text-yellow-700",
+  confirmed: "bg-indigo-100 text-indigo-700",
   completed: "bg-green-100 text-green-700",
   cancelled: "bg-red-100 text-red-700",
+  no_show: "bg-gray-200 text-gray-600",
 }
 
 export function JobsClient({ bookings: initial }: Props) {
@@ -74,7 +76,7 @@ export function JobsClient({ bookings: initial }: Props) {
         vendorId:  b.vendor_id!,
       })
       if (res.success) {
-        setBookings((prev) => prev.map((x) => (x.id === b.id ? { ...x, status: "scheduled" } : x)))
+        setBookings((prev) => prev.map((x) => (x.id === b.id ? { ...x, status: "confirmed" } : x)))
       } else {
         setErrorMsg(res.error ?? "Failed to accept")
       }
@@ -152,7 +154,7 @@ export function JobsClient({ bookings: initial }: Props) {
                 <Badge className={STATUS_COLOR[b.status ?? ""] ?? "bg-gray-100 text-gray-700"}>
                   {b.status}
                 </Badge>
-                {b.status === "pending" && (
+                {b.status === "booked" && (
                   <>
                     <Button
                       size="sm"
@@ -178,7 +180,7 @@ export function JobsClient({ bookings: initial }: Props) {
                     </Button>
                   </>
                 )}
-                {(b.status === "scheduled" || b.status === "active") && (
+                {b.status === "confirmed" && (
                   <Button
                     size="sm"
                     variant="outline"
@@ -194,7 +196,7 @@ export function JobsClient({ bookings: initial }: Props) {
                     Complete
                   </Button>
                 )}
-                {b.transaction_id && b.vendor_id && b.status !== "cancelled" && b.status !== "completed" && (
+                {b.transaction_id && b.vendor_id && b.status !== "cancelled" && b.status !== "completed" && b.status !== "no_show" && (
                   <Button
                     size="sm"
                     variant="outline"
@@ -205,7 +207,7 @@ export function JobsClient({ bookings: initial }: Props) {
                     Request
                   </Button>
                 )}
-                {(b.status === "completed" || b.status === "active") && (
+                {b.status === "completed" && (
                   invoiced.has(b.id) ? (
                     <Badge variant="outline" className="text-xs gap-1">
                       <CheckCircle2 className="h-3 w-3" />

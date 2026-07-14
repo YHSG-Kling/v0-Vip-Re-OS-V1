@@ -1,69 +1,68 @@
 "use server"
 
 /**
- * app/actions/portal-document-requests.ts — production audit fix: the portal
- * document viewer's "Sign Document" button was INERT on documents that
- * REQUIRE a signature. E-sign rides the provider rail (envelope emails), so
- * the honest portal action is the SIGNAL: "I'm ready to sign — send me the
- * link", landing as the agent's task + the engagement ledger. Party-anchored
- * (the document must belong to the requesting contact or their transaction).
+ * app/actions/portal-document-requests.ts — ACTIVE SIGNATURE PACKET loader
+ * (owner rule: "the Sign Document button should not appear unless there is a
+ * signature packet ready for them already… when they click on it, it should
+ * take them to the active e-signature invite"). The packet of record is
+ * signature_requests — written when the agent initiates the send through the
+ * e-sign provider rail. Party-anchored: the packet must be FOR this contact
+ * (or the contact must be a party on its transaction). Active = not
+ * completed, not expired, status pending/sent. signing_url routes straight
+ * to the envelope when the provider returned one (l54-s01); email-only
+ * providers leave it null and the card says where the invite went instead.
+ * No packet → null → the button does not render. Nothing here fabricates a
+ * signing state.
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
 
-export async function requestSignatureSend(input: {
+export interface ActiveSignaturePacket {
+  requestId: string
+  signingUrl: string | null
+  sentAt: string | null
+  expiresAt: string | null
+}
+
+export async function loadActiveSignaturePacket(input: {
   contactId: string
   documentId: string
-}): Promise<{ success: boolean; error?: string; message?: string }> {
+}): Promise<ActiveSignaturePacket | null> {
   const svc = createServiceClient()
 
-  const { data: doc } = await svc.from("documents")
-    .select("id, contact_id, transaction_id, brokerage_id, document_type")
-    .eq("id", input.documentId).maybeSingle()
-  if (!doc) return { success: false, error: "Document not found" }
+  const { data: rows } = await svc.from("signature_requests")
+    .select("id, document_id, contact_id, transaction_id, request_status, completed_at, expires_at, sent_at, signing_url")
+    .or(`document_id.eq.${input.documentId},and(document_id.is.null,contact_id.eq.${input.contactId})`)
+    .in("request_status", ["pending", "sent"])
+    .is("completed_at", null)
+    .order("created_at", { ascending: false })
+    .limit(10)
 
-  // Party check — direct owner, or a party on the document's transaction.
-  let party = (doc as any).contact_id === input.contactId
-  let agentId: string | null = null
-  if ((doc as any).transaction_id) {
-    const { data: tx } = await svc.from("transactions")
-      .select("agent_id, contact_id, buyer_contact_id")
-      .eq("id", (doc as any).transaction_id).maybeSingle()
-    if (tx) {
-      agentId = (tx as any).agent_id ?? null
-      party = party || (tx as any).contact_id === input.contactId || (tx as any).buyer_contact_id === input.contactId
+  const now = Date.now()
+  const live = ((rows ?? []) as any[]).filter(
+    (r) => !r.expires_at || new Date(r.expires_at).getTime() > now,
+  )
+  // Exact document match first; else the adapter-recorded packet (document_id
+  // null — AI-drafted `documents` rows can't carry the client_documents FK),
+  // accepted ONLY when it is unambiguous (exactly one live packet).
+  const exact = live.filter((r) => r.document_id === input.documentId)
+  const anchored = live.filter((r) => r.document_id === null)
+  const candidates = exact.length > 0 ? exact : (anchored.length === 1 ? anchored : [])
+  if (candidates.length === 0) return null
+
+  // Party check — the packet names this contact, or the contact is a party
+  // on the packet's transaction.
+  for (const r of candidates) {
+    if (r.contact_id === input.contactId) {
+      return { requestId: r.id, signingUrl: r.signing_url ?? null, sentAt: r.sent_at ?? null, expiresAt: r.expires_at ?? null }
+    }
+    if (r.transaction_id) {
+      const { data: tx } = await svc.from("transactions")
+        .select("contact_id, buyer_contact_id").eq("id", r.transaction_id).maybeSingle()
+      if (tx && ((tx as any).contact_id === input.contactId || (tx as any).buyer_contact_id === input.contactId)) {
+        return { requestId: r.id, signingUrl: r.signing_url ?? null, sentAt: r.sent_at ?? null, expiresAt: r.expires_at ?? null }
+      }
     }
   }
-  if (!party) return { success: false, error: "This document is not yours to sign" }
-
-  if (!agentId) {
-    const { data: contact } = await svc.from("contacts")
-      .select("agent_id").eq("id", input.contactId).maybeSingle()
-    agentId = (contact as any)?.agent_id ?? null
-  }
-  if (!agentId) return { success: false, error: "No agent is attached yet — message your agent directly and they'll send the signing link." }
-
-  const docLabel = String((doc as any).document_type ?? "document").replace(/_/g, " ")
-
-  await svc.from("client_portal_activity").insert({
-    contact_id: input.contactId,
-    activity_type: "signature_link_requested",
-    metadata: { document_id: input.documentId },
-  }).then(() => {}, () => {})
-
-  const { error } = await svc.from("tasks").insert({
-    brokerage_id: (doc as any).brokerage_id,
-    transaction_id: (doc as any).transaction_id ?? null,
-    contact_id: input.contactId,
-    assigned_to_agent_id: agentId,
-    title: `Client is ready to sign — send the ${docLabel} signature request`,
-    description: `The client hit "Sign" on the ${docLabel} in their portal. Send the e-sign envelope so they can sign while they're engaged.`,
-    due_date: new Date(Date.now() + 86_400_000).toISOString().slice(0, 10),
-    assignee_type: "agent",
-    source: "signature_link_request",
-    status: "pending",
-  })
-  if (error) return { success: false, error: "That didn't go through — message your agent directly to be safe." }
-
-  return { success: true, message: "Your agent is sending the signing link — watch your email." }
+  return null
 }

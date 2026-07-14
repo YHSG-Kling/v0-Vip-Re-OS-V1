@@ -21,7 +21,7 @@ import {
 } from "lucide-react"
 import Link from "next/link"
 import { getDocumentWithAnalysis, getEducationalOverlay, checkStateCompliance } from "@/app/actions/documents"
-import { requestSignatureSend } from "@/app/actions/portal-document-requests"
+import { loadActiveSignaturePacket, type ActiveSignaturePacket } from "@/app/actions/portal-document-requests"
 
 export default function DocumentViewerPage() {
   const params = useParams()
@@ -34,7 +34,7 @@ export default function DocumentViewerPage() {
   const [educationalOverlay, setEducationalOverlay] = useState<any>(null)
   const [compliance, setCompliance] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [signState, setSignState] = useState<{ pending: boolean; text: string | null; ok: boolean }>({ pending: false, text: null, ok: false })
+  const [signaturePacket, setSignaturePacket] = useState<ActiveSignaturePacket | null>(null)
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     questions: false,
     redFlags: false,
@@ -55,6 +55,11 @@ export default function DocumentViewerPage() {
 
         setDocument(doc)
         setAnalysis(analysisData)
+
+        // Sign button gate — render only when an ACTIVE packet is out for this signer.
+        loadActiveSignaturePacket({ contactId, documentId })
+          .then(setSignaturePacket)
+          .catch(() => setSignaturePacket(null))
 
         // Get educational overlay based on document_type
         if (doc.document_type) {
@@ -363,25 +368,24 @@ export default function DocumentViewerPage() {
               </a>
             </Button>
 
-            {document.signature_required && (
-              signState.ok ? (
-                <p className="text-sm text-green-700 bg-green-50 dark:bg-green-950/20 border border-green-200 rounded-md p-3">{signState.text}</p>
-              ) : (
-                <>
-                  <Button
-                    className="w-full"
-                    disabled={signState.pending}
-                    onClick={async () => {
-                      setSignState({ pending: true, text: null, ok: false })
-                      const r = await requestSignatureSend({ contactId, documentId })
-                      setSignState({ pending: false, text: r.success ? (r.message ?? "Signing link on the way.") : (r.error ?? "That didn't go through."), ok: r.success })
-                    }}
-                  >
+            {/* Sign appears ONLY when the agent has an ACTIVE packet out for this signer
+                (owner rule) — with a direct route to the envelope when the provider gave one. */}
+            {signaturePacket && (
+              signaturePacket.signingUrl ? (
+                <Button className="w-full" asChild>
+                  <a href={signaturePacket.signingUrl} target="_blank" rel="noopener noreferrer">
                     <PenTool className="h-4 w-4 mr-2" />
-                    {signState.pending ? "Requesting signing link…" : "Sign Document"}
-                  </Button>
-                  {signState.text && !signState.ok && <p className="text-sm text-red-600">{signState.text}</p>}
-                </>
+                    Sign Document
+                  </a>
+                </Button>
+              ) : (
+                <div className="rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-950/20 p-3 text-sm text-blue-800 dark:text-blue-200">
+                  <p className="font-medium flex items-center gap-1.5"><PenTool className="h-4 w-4" /> Ready for your signature</p>
+                  <p className="mt-1">
+                    Your signing invite{signaturePacket.sentAt ? ` was sent ${new Date(signaturePacket.sentAt).toLocaleDateString()}` : " is on its way"} — open the email from your e-sign provider to sign.
+                    {signaturePacket.expiresAt ? ` It expires ${new Date(signaturePacket.expiresAt).toLocaleDateString()}.` : ""}
+                  </p>
+                </div>
               )
             )}
 

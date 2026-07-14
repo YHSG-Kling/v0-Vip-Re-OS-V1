@@ -844,9 +844,19 @@ function ContractStep({
 
         {isSent && !isSigned && (
           <div className="space-y-4">
-            <p className="text-center text-sm text-muted-foreground">
-              Check your email for the signature request. This page will update automatically when signed.
-            </p>
+            {/* Packet-gated (owner rule): the Sign button appears only when an
+                ACTIVE contract packet exists, routing straight to the invite. */}
+            {status?.contractRecord?.signing_url ? (
+              <Button className="w-full" asChild>
+                <a href={status.contractRecord.signing_url} target="_blank" rel="noopener noreferrer">
+                  Sign Contract Now
+                </a>
+              </Button>
+            ) : (
+              <p className="text-center text-sm text-muted-foreground">
+                Check your email for the signature request. This page will update automatically when signed.
+              </p>
+            )}
 
             <AlertDialog>
               <AlertDialogTrigger asChild>

@@ -26,6 +26,38 @@
 
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
 
+/**
+ * Record the packet of record (signature_requests) for a successful send —
+ * this is the row the client portal's Sign button gates on (owner rule: the
+ * button only appears when an ACTIVE packet exists, and routes to the invite
+ * via signing_url when the provider returned one; l54-s01). Best-effort:
+ * a packet-record failure never fails the send itself.
+ */
+async function recordSignaturePacket(supabase: StepContext["supabase"], p: {
+  brokerageId: string
+  documentId: string
+  contactId: string | null
+  transactionId: string | null
+  signingUrl: string | null
+}): Promise<void> {
+  // LIVE-SCHEMA CONTRACT: signature_requests.document_id FKs to
+  // client_documents — this adapter sends AI-drafted `documents` rows, so
+  // the id only goes on the packet when it actually exists there; otherwise
+  // the packet anchors on (contact, transaction) and the portal's
+  // single-active-packet fallback resolves it.
+  const { data: cd } = await supabase.from("client_documents").select("id").eq("id", p.documentId).maybeSingle()
+  await supabase.from("signature_requests").insert({
+    brokerage_id: p.brokerageId,
+    document_id: cd ? p.documentId : null,
+    contact_id: p.contactId,
+    transaction_id: p.transactionId,
+    request_status: "pending",
+    sent_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+    signing_url: p.signingUrl,
+  }).then(() => {}, () => {})
+}
+
 export const sendForEsignAdapter: ChannelAdapter = {
   channel: "send_for_esign",
 
@@ -152,6 +184,12 @@ export const sendForEsignAdapter: ChannelAdapter = {
             await supabase.from("documents")
               .update({ status: "review", metadata: { ...(document.metadata as any), esign_loop_id: result?.loopId } })
               .eq("id", documentId)
+            await recordSignaturePacket(supabase, {
+              brokerageId, documentId,
+              contactId: contact?.id ?? null,
+              transactionId: (document as any).transaction_id ?? null,
+              signingUrl: result?.signingUrl ?? null,
+            })
             return {
               status: "sent",
               providerKey: "dotloop",
@@ -179,6 +217,12 @@ export const sendForEsignAdapter: ChannelAdapter = {
             await supabase.from("documents")
               .update({ status: "review", metadata: { ...(document.metadata as any), esign_loop_id: result?.loopId } })
               .eq("id", documentId)
+            await recordSignaturePacket(supabase, {
+              brokerageId, documentId,
+              contactId: contact?.id ?? null,
+              transactionId: (document as any).transaction_id ?? null,
+              signingUrl: result?.signingUrl ?? null,
+            })
             return {
               status: "sent",
               providerKey: "dotloop",
@@ -270,6 +314,15 @@ export const sendForEsignAdapter: ChannelAdapter = {
             },
           })
           .eq("id", documentId)
+
+        if (signers.length > 0) {
+          await recordSignaturePacket(supabase, {
+            brokerageId, documentId,
+            contactId: contact?.id ?? null,
+            transactionId: (document as any).transaction_id ?? null,
+            signingUrl: null, // Dotloop invites ride email; the portal card says so
+          })
+        }
 
         return {
           status: "sent",

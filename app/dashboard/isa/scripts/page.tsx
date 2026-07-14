@@ -19,12 +19,14 @@ export default async function ISAScriptsPage() {
     .order('created_at', { ascending: false })
     .limit(30)
 
-  const isaScripts = (scripts || []).filter((s: any) =>
+  // HONEST filter (production audit): only genuinely call-flavored scripts render
+  // here. The old fallback padded the page with unrelated VIDEO scripts labeled
+  // as call scripts — misleading, removed.
+  const displayScripts = (scripts || []).filter((s: any) =>
     s.script_type?.toLowerCase().includes('call') ||
     s.script_type?.toLowerCase().includes('isa') ||
     s.script_type?.toLowerCase().includes('outreach')
   )
-  const displayScripts = isaScripts.length > 0 ? isaScripts : (scripts || []).slice(0, 10)
 
   return (
     <div className="p-6 space-y-6">
@@ -39,9 +41,12 @@ export default async function ISAScriptsPage() {
             <p className="text-gray-500 text-sm">{displayScripts.length} scripts available</p>
           </div>
         </div>
-        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white">
-          <Plus className="w-4 h-4 mr-2" />
-          New Script
+        {/* Objection drills are where call language is authored + practiced today */}
+        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" asChild>
+          <Link href="/dashboard/coaching/practice">
+            <Plus className="w-4 h-4 mr-2" />
+            Practice call scripts
+          </Link>
         </Button>
       </div>
 
@@ -49,8 +54,11 @@ export default async function ISAScriptsPage() {
         <Card>
           <CardContent className="text-center py-12">
             <FileText className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-            <p className="text-gray-500">No call scripts yet.</p>
-            <p className="text-sm text-gray-400 mt-1">Create your first script to get started with AI-assisted calling.</p>
+            <p className="text-gray-500">No call scripts in your library yet.</p>
+            <p className="text-sm text-gray-400 mt-1">
+              Your AI ISA composes its call framing per lead automatically — nothing to configure here.
+              For your own phrasings, drill real scripts in Coaching → Practice.
+            </p>
           </CardContent>
         </Card>
       ) : (
@@ -68,7 +76,10 @@ export default async function ISAScriptsPage() {
                   <Badge className={script.status === 'approved' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}>
                     {script.status || 'draft'}
                   </Badge>
-                  <Button size="sm" variant="outline">Use Script</Button>
+                  {/* Practice IS how a script gets used — drill it aloud with scoring */}
+                  <Button size="sm" variant="outline" asChild>
+                    <Link href="/dashboard/coaching/practice">Practice it</Link>
+                  </Button>
                 </div>
               </CardContent>
             </Card>

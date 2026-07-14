@@ -125,6 +125,42 @@ export function CommandCenterClient({
         <Stat label="SLA breached" value={summary.breachedApprovals} accent={summary.breachedApprovals > 0 ? "text-red-700" : "text-slate-500"} />
       </div>
 
+      {/* CLIENT & DEAL-PARTY DECISIONS — top of fold BY DESIGN: a seller hit Accept,
+          a lender posted conditions, a vendor filed a request. Response speed to a
+          client's decision is the most trust-critical latency in the product. */}
+      {(data.clientDecisions ?? []).length > 0 && (
+        <section className="rounded-lg border-2 border-emerald-300 bg-emerald-50/60 dark:bg-emerald-950/20 p-4 space-y-3">
+          <div className="flex items-baseline justify-between gap-3">
+            <h2 className="text-lg font-semibold">🤝 Client decisions awaiting you</h2>
+            <span className="text-xs text-muted-foreground">{data.clientDecisions.length} waiting — oldest first</span>
+          </div>
+          <ul className="space-y-2">
+            {data.clientDecisions.slice(0, 8).map((d) => (
+              <li key={d.id} className="rounded-md border bg-background p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-medium">{d.title}</p>
+                  <span className="text-xs rounded-full border px-2 py-0.5 text-muted-foreground">
+                    {d.source === "client_offer_decision" ? "Offer decision"
+                      : d.source === "lender_condition" ? "Lender needs docs"
+                      : "Vendor request"}
+                  </span>
+                </div>
+                {d.description && <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{d.description}</p>}
+                <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+                  {d.dueDate && <span className="text-amber-700">Due {new Date(d.dueDate).toLocaleDateString()}</span>}
+                  {d.transactionId && (
+                    <a className="text-primary underline" href={`/dashboard/transactions/${d.transactionId}`}>Open deal →</a>
+                  )}
+                  {d.contactId && (
+                    <a className="text-primary underline" href={`/crm/contacts/${d.contactId}`}>Open contact →</a>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {/* Manager Daily Standup — the morning roll-call: what each Claude manager did in
           the last 24h and what is waiting on a human. The governed-autonomy report. */}
       {data.standup.length > 0 && (

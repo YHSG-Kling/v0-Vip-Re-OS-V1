@@ -1,10 +1,8 @@
 "use client"
 
-import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { ActionConfirmSheet } from "@/app/components/action-framework/action-confirm-sheet"
 import { Users, ExternalLink } from "lucide-react"
 import Link from "next/link"
 
@@ -13,19 +11,7 @@ interface Props {
   brokerageId: string
 }
 
-export function BrokerTeamAssignmentBar({ unassignedLeadsCount, brokerageId }: Props) {
-  const [autoAssignOpen, setAutoAssignOpen] = useState(false)
-  const [running, setRunning] = useState(false)
-
-  // Auto-assignment is not yet implemented as a server action — the confirm
-  // sheet navigates the broker to the assignment rules page where they can
-  // configure and trigger it. This avoids a fake/mock action.
-  async function handleAutoAssign() {
-    setRunning(true)
-    // Navigate to assignment-rules page where real trigger lives
-    window.location.href = "/dashboard/admin/assignment-rules"
-  }
-
+export function BrokerTeamAssignmentBar({ unassignedLeadsCount }: Props) {
   return (
     <>
       <Card className="border-border">
@@ -61,28 +47,17 @@ export function BrokerTeamAssignmentBar({ unassignedLeadsCount, brokerageId }: P
           </Link>
 
           {unassignedLeadsCount > 0 && (
-            <Button
-              variant="default"
-              size="sm"
-              className="w-full justify-start"
-              onClick={() => setAutoAssignOpen(true)}
-            >
-              <Users className="h-4 w-4 mr-2" />
-              Run Auto-Assignment
+            // Honest label (production audit): the real trigger lives on the
+            // Assignment Rules page — this navigates, it does not execute.
+            <Button variant="default" size="sm" className="w-full justify-start" asChild>
+              <Link href="/dashboard/admin/assignment-rules">
+                <Users className="h-4 w-4 mr-2" />
+                Assign these leads →
+              </Link>
             </Button>
           )}
         </CardContent>
       </Card>
-
-      <ActionConfirmSheet
-        open={autoAssignOpen}
-        onOpenChange={setAutoAssignOpen}
-        title="Run AI Auto-Assignment"
-        description={`Run AI auto-assignment for ${unassignedLeadsCount} unassigned lead${unassignedLeadsCount !== 1 ? "s" : ""}? You will be taken to Assignment Rules to confirm and trigger the run.`}
-        actionLabel="Go to Assignment Rules"
-        confirmingLabel="Opening..."
-        onConfirm={handleAutoAssign}
-      />
     </>
   )
 }

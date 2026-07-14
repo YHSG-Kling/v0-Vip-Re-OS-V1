@@ -50,6 +50,7 @@ export interface AgentLicenseStatus {
     sent_at: string | null
     signed_at: string | null
     provider: string
+    signing_url: string | null
   } | null
   completedSteps: string[]
   onboardingId: string | null
@@ -138,16 +139,27 @@ export async function getAgentLicenseStatus(
       .limit(1)
       .single()
 
-    // Get contract record
-    const { data: contractRecord } = await supabase
-      .from("contract_signatures")
-      .select("id, status:esign_status, sent_at, signed_at:fully_signed_at, provider:provider_name")
-      .eq("agent_id", agentId)
+    // Get contract record. LIVE-SCHEMA CONTRACT (caught by the pilot
+    // simulation): contract_signatures.agent_id FKs to AGENTS, while this
+    // action is keyed by the users id — resolve the user's agents row(s)
+    // first or the query can never match a valid row.
+    const { data: agentRows } = await supabase
+      .from("agents")
+      .select("id")
+      .eq("user_id", agentId)
       .eq("brokerage_id", agent.brokerage_id)
-      .eq("contract_type", "independent_contractor")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .single()
+    const agentRowIds = ((agentRows ?? []) as Array<{ id: string }>).map((r) => r.id)
+    const { data: contractRecord } = agentRowIds.length > 0
+      ? await supabase
+          .from("contract_signatures")
+          .select("id, status:esign_status, sent_at, signed_at:fully_signed_at, provider:provider_name, signing_url")
+          .in("agent_id", agentRowIds)
+          .eq("brokerage_id", agent.brokerage_id)
+          .eq("contract_type", "independent_contractor")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .single()
+      : { data: null }
 
     // Get completed steps
     const { data: completedStepsData } = await supabase

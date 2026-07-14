@@ -85,6 +85,26 @@ export interface ManagerBreakdownEntry {
   breached: number
 }
 
+/** One decision-signal task awaiting the agent's execution (source names the rail). */
+export interface ClientDecisionLine {
+  id: string
+  source: "client_offer_decision" | "vendor_request" | "lender_condition"
+  title: string
+  description: string | null
+  contactId: string | null
+  transactionId: string | null
+  dueDate: string | null
+  createdAt: string | null
+}
+
+/** The decision-signal sources that lead the Command Center — a human said/asked
+ *  something on a rail the agent must now execute. */
+export const CLIENT_DECISION_SOURCES = [
+  "client_offer_decision",
+  "vendor_request",
+  "lender_condition",
+] as const
+
 export interface CommandCenterData {
   sessions:        CommandCenterSession[]
   pendingActions:  CommandCenterAction[]
@@ -128,6 +148,11 @@ export interface CommandCenterData {
   /** Managers talking — recent inter-manager signals (who told whom what, and what the
    *  addressed manager did about it). The bus made visible. */
   managerTalk:     import("@/lib/kernel/manager-signals").ManagerTalkLine[]
+  /** CLIENT & DEAL-PARTY DECISIONS AWAITING EXECUTION — the decision-signal rail made
+   *  top-of-fold: a seller hit Accept on an offer, a lender posted doc conditions, a
+   *  vendor filed a request. Response-speed-to-a-client's-accept is the most
+   *  trust-critical latency in the product, so these lead the Command Center. */
+  clientDecisions: ClientDecisionLine[]
   summary: {
     activeSessions:    number
     idleSessions:      number
@@ -298,7 +323,31 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // A team/agent scope sees only messages to its own clients.
   if (contactIdFilter) clientMsgQuery.in("recipient_contact_id", contactIdFilter)
 
-  const [sessionsRes, marketingRes, assetRes, adsRes, clientMsgRes, contentActions] = await Promise.all([sessionsQuery, marketingQuery, assetQuery, adsQuery, clientMsgQuery, contentPromise])
+  // CLIENT & DEAL-PARTY DECISIONS — the decision-signal tasks (a seller hit Accept,
+  // a lender posted conditions, a vendor filed a request). Oldest first: the longest-
+  // waiting human decision is the most trust-critical latency in the product.
+  const decisionsQuery = supabase
+    .from("tasks")
+    .select("id, source, title, description, contact_id, transaction_id, due_date, created_at")
+    .in("source", [...CLIENT_DECISION_SOURCES])
+    .eq("status", "pending")
+    .order("created_at", { ascending: true })
+    .limit(limit)
+  if (brokerageId) decisionsQuery.eq("brokerage_id", brokerageId)
+  if (contactIdFilter) decisionsQuery.in("contact_id", contactIdFilter)
+
+  const [sessionsRes, marketingRes, assetRes, adsRes, clientMsgRes, contentActions, decisionsRes] = await Promise.all([sessionsQuery, marketingQuery, assetQuery, adsQuery, clientMsgQuery, contentPromise, decisionsQuery])
+
+  const clientDecisions: ClientDecisionLine[] = ((decisionsRes.data ?? []) as any[]).map((t) => ({
+    id: t.id,
+    source: t.source,
+    title: t.title,
+    description: t.description ?? null,
+    contactId: t.contact_id ?? null,
+    transactionId: t.transaction_id ?? null,
+    dueDate: t.due_date ?? null,
+    createdAt: t.created_at ?? null,
+  }))
 
   // Compliance Officer pre-flight needs each recipient's consent state (withdrawn / revoked
   // channel) — batch it in ONE query keyed by contact id; Fair Housing is pure on the body.
@@ -514,6 +563,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     weeklyExecPlan,
     dialBatches,
     managerTalk,
+    clientDecisions,
     summary: {
       activeSessions:    sessions.filter((s) => s.status === "running").length,
       idleSessions:      sessions.filter((s) => s.status === "idle").length,
