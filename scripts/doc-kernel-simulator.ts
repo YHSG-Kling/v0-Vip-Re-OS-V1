@@ -753,7 +753,7 @@ async function main() {
       windowLabel: "Apr 14 – Jul 13", planTier: "solo_agent",
       closedDeals: 3, closedVolume: 1_450_000, activeDeals: 4, newContacts: 22,
       approvals: 31, autonomousActs: 6, grantsHeld: 2, conflictsCaught: 1,
-      giftsOrdered: 2, briefingsOpened: 40, unusedRails: [],
+      giftsOrdered: 2, briefingsOpened: 40, unusedRails: [], trustIncidents: 0,
       expansion: decideExpansionSuggestion({ planTier: "solo_agent", activeAgents: 3, locations: 1 }),
     })
     const emptyQ = composeQuarterlyReview({
@@ -762,6 +762,7 @@ async function main() {
       approvals: 0, autonomousActs: 0, grantsHeld: 0, conflictsCaught: 0,
       giftsOrdered: 0, briefingsOpened: 0,
       unusedRails: ["Social publishing isn't connected — the cadence engine is idle."],
+      trustIncidents: 5,
       expansion: null,
     })
     check("QBR (tenant #32) — outcomes carry the real volume, trust carries grants+acts+conflicts, and the EXPANSION ADVISOR (#35) lands INSIDE the review grounded in agent count (3 actives on solo → team), never as upsell spam",
@@ -771,6 +772,13 @@ async function main() {
     check("QBR honest degradation — a zero quarter SHOWS its zeros with the unblocking step (approval queue named, unread briefing named), never dressed up",
       emptyQ.outcomes.some((o) => o.includes("No closings")) && emptyQ.trust.some((t) => t.includes("approval queue"))
       && emptyQ.gaps.some((g) => g.includes("briefing went unread")) && emptyQ.gaps.some((g) => g.includes("cadence engine")))
+    check("TRUST-INCIDENT LEDGER READ + DRIFT REVIEW (forgotten #47 + #50) — incidents are READ from ledgers other rails already write (failed sends, shaky flags, major walkthroughs, automation errors); zero = 'the standard held', >3 triggers the service-standard drift review as a QBR next move",
+      richQ.trust.some((t) => t.includes("Zero trust incidents"))
+      && emptyQ.trust.some((t) => t.includes("5 trust incidents"))
+      && emptyQ.nextMoves.some((n) => n.includes("service-standard drift review") && n.includes("still feel like concierge"))
+      && src("lib/intelligence/quarterly-review-loader.ts").includes('eq("event_type", "deal_marked_shaky")')
+      && src("lib/intelligence/quarterly-review-loader.ts").includes('eq("metadata->>outcome", "major_issues")')
+      && src("lib/kernel/manager-registry.ts").includes("trust_incident_drift_review:"))
     const { rankNeedsHelp, PULSE_MIN_SCORE } = await import("../lib/intelligence/adoption-pulse")
     const pulse = rankNeedsHelp([
       { agentId: "a1", name: "Sam", overdueTasks: 4, staleContacts: 3, activities14d: 0, briefingOpened14d: false },

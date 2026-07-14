@@ -34,6 +34,9 @@ export interface QuarterFacts {
   briefingsOpened: number
   /** honest unused rails, each with its unblocking step. */
   unusedRails: string[]
+  /** moments automation needed a human recovery or override (90d, from the
+   *  ledgers other rails already write) — the drift review's input. */
+  trustIncidents: number
   expansion: ExpansionSuggestion | null
 }
 
@@ -67,6 +70,9 @@ export function composeQuarterlyReview(f: QuarterFacts): QuarterlyReview {
   if (f.conflictsCaught > 0) {
     trust.push(`${f.conflictsCaught} document/date conflict${f.conflictsCaught === 1 ? "" : "s"} caught before ${f.conflictsCaught === 1 ? "it" : "they"} cost anyone a deadline.`)
   }
+  trust.push(f.trustIncidents === 0
+    ? `Zero trust incidents — no send failed, no deal was flagged, nothing needed a recovery. The standard held.`
+    : `${f.trustIncidents} trust incident${f.trustIncidents === 1 ? "" : "s"} (failed sends, flagged deals, recoveries) — each one is on the ledger with what happened next.`)
 
   const gaps = [...f.unusedRails]
   if (f.briefingsOpened === 0) gaps.push(`The morning briefing went unread — it's where handoffs, client recognition, and wins surface daily.`)
@@ -75,6 +81,7 @@ export function composeQuarterlyReview(f: QuarterFacts): QuarterlyReview {
   if (gaps.length > 0) nextMoves.push(`Turn on one unused rail this month — the first one on the list is the highest-leverage.`)
   if (f.approvals > 0 && f.grantsHeld === 0) nextMoves.push(`Keep approving consistently — grants unlock automatically once a shape earns a clean record.`)
   if (f.expansion) nextMoves.push(`${f.expansion.reason} (suggested: ${f.expansion.suggestTier.replace(/_/g, " ")} plan — your call, nothing changes automatically.)`)
+  if (f.trustIncidents > 3) nextMoves.push(`Hold the service-standard drift review — ${f.trustIncidents} moments needed a recovery or an override this quarter. Walk the incident ledger and ask of each rail: does this still feel like concierge?`)
   if (nextMoves.length === 0) nextMoves.push(`Steady quarter — the next review lands in 90 days.`)
 
   return {

@@ -69,6 +69,20 @@ export async function loadQuarterlyReview(svc: Svc, brokerageId: string): Promis
     locations: locationCount ?? 0,
   })
 
+  // TRUST INCIDENTS (forgotten-items #47) — the moments automation needed a
+  // human recovery or an override, READ from ledgers other rails already
+  // write: failed sends, shaky flags, major walkthroughs, automation errors.
+  let trustIncidents = 0
+  try {
+    const [{ count: sendFails }, { count: shakyFlags }, { count: majorWt }, { count: autoErrs }] = await Promise.all([
+      svc.from("agent_client_messages").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).not("send_error", "is", null).gte("created_at", sinceIso),
+      svc.from("lifecycle_events").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("event_type", "deal_marked_shaky").gte("created_at", sinceIso),
+      svc.from("lifecycle_events").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("event_type", "walkthrough_outcome").eq("metadata->>outcome", "major_issues").gte("created_at", sinceIso),
+      svc.from("automation_errors").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).gte("created_at", sinceIso),
+    ])
+    trustIncidents = (sendFails ?? 0) + (shakyFlags ?? 0) + (majorWt ?? 0) + (autoErrs ?? 0)
+  } catch { /* incident read is best-effort — the QBR stands without it */ }
+
   const review = composeQuarterlyReview({
     windowLabel: `${since.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${now.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
     planTier: (brk as any)?.plan_tier ?? null,
@@ -83,6 +97,7 @@ export async function loadQuarterlyReview(svc: Svc, brokerageId: string): Promis
     giftsOrdered: gifts ?? 0,
     briefingsOpened: briefingsOpened ?? 0,
     unusedRails,
+    trustIncidents,
     expansion,
   })
 
