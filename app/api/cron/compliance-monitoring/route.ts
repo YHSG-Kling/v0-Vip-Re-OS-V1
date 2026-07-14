@@ -181,10 +181,18 @@ export async function GET(request: NextRequest) {
       await supabase.from("compliance_flags").insert(violations)
     }
 
+    // CROSS-CHANNEL CONSISTENCY GUARDIAN — flag any queued client message whose
+    // price disagrees with the live listing BEFORE a human releases it.
+    let consistencyFlagged = 0
+    try {
+      const { runConsistencyGuardianAll } = await import("@/lib/kernel/consistency-guardian")
+      consistencyFlagged = (await runConsistencyGuardianAll(supabase)).flagged
+    } catch (e) { console.error("[ComplianceMonitoring] consistency guardian:", e) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: results.certifications_checked,
-      metadata: results,
+      metadata: { ...results, consistencyFlagged },
     })
 
     return NextResponse.json({

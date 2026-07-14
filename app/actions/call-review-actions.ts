@@ -38,7 +38,8 @@ export async function flagCallForCompliance(input: {
     content_type: "voice_call",
     flagged_content: `Call ${input.callId} flagged from the call-review page${note ? `: ${note}` : ""}. Review: /dashboard/voice/review/${input.callId}`,
     severity: "medium",
-    status: "open",
+    // LIVE CHECK vocabulary: flagged/reviewed/resolved/overridden (not 'open').
+    status: "flagged",
     detected_at: new Date().toISOString(),
   })
   if (error) return { success: false, error: "Could not record the flag — try again." }

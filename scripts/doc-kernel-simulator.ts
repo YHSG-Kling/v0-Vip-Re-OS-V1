@@ -1073,6 +1073,32 @@ async function main() {
       && src("app/portal/[contactId]/offers/page.tsx").includes("composeColdStartBandLine")
       && src("lib/intelligence/career-architect.ts").includes("loadTopTouchedZip")
       && src("lib/kernel/manager-registry.ts").includes("neighborhood_future_lens:"))
+    const { computeTimeToValue, composeTimeToValueLine, MINUTES_PER, BENCHMARK_HOURS_30D } = await import("../lib/intelligence/time-to-value-radar")
+    const ttvBig = computeTimeToValue({ draftsSent: 220, callsAnswered: 40, tasksAutocreated: 60, docsExtracted: 20 })
+    const ttvZero = computeTimeToValue({ draftsSent: 0, callsAnswered: 0, tasksAutocreated: 0, docsExtracted: 0 })
+    const { extractPrices, checkPriceConsistency, composeConsistencyFlag, PRICE_TOLERANCE_PCT } = await import("../lib/kernel/consistency-guardian")
+    const priceMatch = checkPriceConsistency("m1", "Great news — offers near $500,000 are coming in!", 485_000)
+    const priceOk = checkPriceConsistency("m2", "Listed at $486,000, right on target.", 485_000)
+    const priceNone = checkPriceConsistency("m3", "Your open house is Saturday at 2pm.", 485_000)
+    check("TIME-TO-VALUE RADAR (#8) + CONSISTENCY GUARDIAN (#12) — hours-saved is honest (conservative constants, benchmarked ahead/behind, a real zero nudges not fabricates) and the guardian flags a MATERIAL price mismatch before release (>2% off live list flags, within-2% and no-price are clean); both registered",
+      ttvBig.minutesSaved === (220 * MINUTES_PER.draft_sent + 40 * MINUTES_PER.call_answered + 60 * MINUTES_PER.task_autocreated + 20 * MINUTES_PER.doc_extracted)
+      && ttvBig.hoursSaved > 0 && ttvBig.standing === "ahead" && ttvBig.benchmarkHours === BENCHMARK_HOURS_30D
+      && ttvZero.hoursSaved === 0 && ttvZero.standing === "behind"
+      && Boolean(composeTimeToValueLine(ttvZero).includes("hasn't saved you measurable time"))
+      && Boolean(composeTimeToValueLine(ttvBig).includes("saved you about"))
+      && extractPrices("from $250k to $1.2M and $485,000").length === 3
+      && priceMatch !== null && priceMatch!.offendingPrice === 500_000 && priceMatch!.deltaPct > 2
+      && priceOk === null && priceNone === null && PRICE_TOLERANCE_PCT === 2
+      && Boolean(composeConsistencyFlag(priceMatch!).includes("live price"))
+      && src("lib/kernel/consistency-guardian.ts").includes('violation_type: "price_inconsistency"')
+      && src("lib/kernel/consistency-guardian.ts").includes('status: "flagged"')
+      && !src("lib/kernel/consistency-guardian.ts").includes('status: "open"')
+      && !src("app/actions/call-review-actions.ts").includes('status: "open"')
+      && src("app/api/cron/compliance-monitoring/route.ts").includes("runConsistencyGuardianAll")
+      && src("app/dashboard/agent/page.tsx").includes("TimeToValueCard")
+      && src("app/actions/time-to-value.ts").includes("getMyTimeToValue")
+      && src("lib/kernel/manager-registry.ts").includes("time_to_value_radar:")
+      && src("lib/kernel/manager-registry.ts").includes("consistency_guardian:"))
     const { isShallowBody, recoverTopicForModule, DEPTH_MARKER } = await import("../lib/education/depth-reauthor")
     const reOnb = await recoverTopicForModule({ id: "m1", title: "old", summary: null, gap_tags: ["onboarding:solo_agent:contract_walkthrough"], audience_roles: ["agent"] }, "team")
     const reBook = await recoverTopicForModule({ id: "m2", title: "old", summary: null, gap_tags: ["program:book_authority:write_with_ai_team"], audience_roles: ["agent"] }, "solo_agent")

@@ -51,6 +51,7 @@ import { IncomeForecastCard } from "./components/income-forecast-card"
 import { getAgentIncomeForecast, type AgentIncomeForecast } from "@/app/actions/lifetime-npv"
 import { OpenActionsCard } from "./components/open-actions-card"
 import { AgentActionQueueCard } from "./components/agent-action-queue-card"
+import { TimeToValueCard } from "./components/time-to-value-card"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
 import { SmarterWidget } from "@/app/components/dashboard/smarter-widget/smarter-widget"
@@ -505,6 +506,9 @@ export default function AgentDashboard() {
             Composes deal-health, listing-health, NPV-due, and portal-event
             actions into one priority-ranked list. Hidden when zero items. */}
         <AgentActionQueueCard />
+
+        {/* Time-to-Value Radar — hours your AI team saved you (adoption story). */}
+        <TimeToValueCard />
 
         <OpenActionsCard />
 
