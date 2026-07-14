@@ -90,6 +90,7 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
     .from("contacts")
     .select(
       `id, first_name, last_name, preferred_name, name_pronunciation, salutation_style,
+       legal_first_name, legal_last_name, legal_name_source,
        contact_type, contact_persona, buyer_stage, city, state,
        engagement_score, last_contacted_at,
        dnc_status, email_opt_out, sms_opt_out, phone_opt_out`,
@@ -172,6 +173,14 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
   if (contact.dnc_status || contact.phone_opt_out) {
     talkingPoints.push("⚠ Phone contact is restricted — confirm before dialing.")
   }
+
+  // TWIN PROVENANCE — what we KNOW vs what the OS INFERS, so the agent never
+  // opens a call asserting a guess as a fact.
+  try {
+    const { classifyTwinFields, composeProvenanceNote } = await import("@/lib/contacts/twin-provenance")
+    const provenanceNote = composeProvenanceNote(classifyTwinFields(contact as any))
+    if (provenanceNote) talkingPoints.push(provenanceNote)
+  } catch { /* provenance is additive — the brief stands without it */ }
 
   return {
     contactId: contact.id,

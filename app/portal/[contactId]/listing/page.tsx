@@ -20,6 +20,7 @@ import {
   SellerTeamActivityCard,
   SellerMarketPulseCard,
 } from "../components/seller-mode"
+import { composeRenovationScenarios, RENOVATION_DISCLAIMER } from "@/lib/intelligence/renovation-simulator"
 import { buildSellerTeamActivity, narrateSignalsForClient } from "@/lib/listings/seller-team-activity"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
@@ -410,6 +411,33 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
             moveReadiness={moveReadiness}
           />
         )}
+
+        {/* Renovation Outcome Simulator — honest industry ranges scaled to THIS
+            home (typical ranges, never a promise; the agent brings real quotes). */}
+        {equityEstimatedValue && equityEstimatedValue > 0 && (() => {
+          const scenarios = composeRenovationScenarios(equityEstimatedValue).slice(0, 3)
+          if (scenarios.length === 0) return null
+          const usd = (n: number) => `$${n.toLocaleString("en-US")}`
+          return (
+            <div className="rounded-lg border bg-card p-6 space-y-3">
+              <h2 className="text-lg font-semibold">Thinking about small improvements before you sell?</h2>
+              <ul className="space-y-3">
+                {scenarios.map((s) => (
+                  <li key={s.key} className="rounded-md border p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-sm font-medium">{s.label}</span>
+                      <span className="text-xs text-muted-foreground">
+                        typically {usd(s.costRange[0])}–{usd(s.costRange[1])} → often worth {usd(s.effectRange[0])}–{usd(s.effectRange[1])} at sale
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">{s.note}</p>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs text-muted-foreground">{RENOVATION_DISCLAIMER}</p>
+            </div>
+          )
+        })()}
 
         {/* Showing Feedback Summary */}
         <ShowingFeedbackSummaryCard

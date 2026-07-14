@@ -1011,6 +1011,49 @@ async function main() {
       && src("lib/ai/script-standards.ts").includes("never dumbed-down, never intimidating")
       && src("lib/kernel/manager-registry.ts").includes("client_decision_voice_source:")
       && src("lib/kernel/manager-registry.ts").includes("negotiation_bands:"))
+    const { composePlaybookCandidates, MIN_COHORT } = await import("../lib/intelligence/playbook-engine")
+    const mkStat = (id: string, vol: number, dec: number | null, ot: number | null, ap: number) =>
+      ({ agentId: id, closings: vol > 0 ? 3 : 0, volume: vol, decisionMedianHours: dec, onTimeRate: ot, approvals: ap })
+    const pbTop = [mkStat("t1", 9e6, 4, 0.95, 30), mkStat("t2", 8e6, 5, 0.9, 25), mkStat("t3", 7e6, 6, 0.92, 28)]
+    const pbRest = Array.from({ length: 9 }, (_, i) => mkStat(`r${i}`, 1e6, 20, 0.6, 4))
+    const playbooks = composePlaybookCandidates([...pbTop, ...pbRest])
+    const thinPlaybooks = composePlaybookCandidates([mkStat("a", 1e6, 5, 0.9, 10), mkStat("b", 5e5, 8, 0.8, 5)])
+    const { composeRenovationScenarios, RENOVATION_DISCLAIMER } = await import("../lib/intelligence/renovation-simulator")
+    const renos = composeRenovationScenarios(500_000)
+    const { composeCareerSuggestions, MIN_CLOSINGS } = await import("../lib/intelligence/career-architect")
+    const career = composeCareerSuggestions({ agentId: "a1", closings: 5, volume: 2_500_000, topZip: { zip: "78701", count: 3 }, decisionMedianHours: 6 })
+    const thinCareer = composeCareerSuggestions({ agentId: "a2", closings: 2, volume: 900_000, topZip: null, decisionMedianHours: 2 })
+    const { computeZipMomentum, composeMomentumLine } = await import("../lib/intelligence/negotiation-bands")
+    const momRows = Array.from({ length: 12 }, (_, i) => ({
+      purchase_price: i < 6 ? 480_000 : 495_000, list_price: 500_000, property_address: "x 78701",
+      created_at: `2026-0${(i % 6) + 1}-01T00:00:00Z`, close_date: `2026-0${(i % 6) + 1}-2${i < 6 ? 0 : 5}T00:00:00Z`,
+    })).map((r, i) => ({ ...r, close_date: i < 6 ? `2026-02-0${(i % 6) + 1}T00:00:00Z` : `2026-06-0${(i % 6) + 1}T00:00:00Z` }))
+    const momentum = computeZipMomentum(momRows)
+    const { classifyTwinFields, composeProvenanceNote } = await import("../lib/contacts/twin-provenance")
+    const twin = classifyTwinFields({ legal_first_name: "William", legal_last_name: "Reyes", legal_name_source: "document_scan", preferred_name: "Bill", contact_persona: "first_time_buyer", buyer_stage: null })
+    const twinNote = composeProvenanceNote(twin)
+    check("FUTURE-PROOF FIVE (approved 1-5) — the playbook engine claims a behavior ONLY with cohorts (3 candidates on a real 12-agent split; 2 agents → none), renovation scenarios scale to the home with the MANDATORY disclaimer, career suggestions cite their numbers and refuse thin data, ZIP momentum reports our own data's direction (buyers→sellers shift detected), and the twin labels document-verified vs stated vs INFERRED with the confirm-live warning; all five registered + cron-ridden",
+      playbooks.length === 3 && playbooks.some((c) => c.key === "decision_speed") && playbooks.some((c) => c.key === "gate_adoption")
+      && thinPlaybooks.length === 0 && MIN_COHORT === 3
+      && renos.length === 5 && renos[0].costRange[0] >= 500 && renos.every((r) => r.effectRange[1] > r.effectRange[0])
+      && composeRenovationScenarios(10_000).length === 0
+      && RENOVATION_DISCLAIMER.includes("not a promise")
+      && career.length === 3 && career.some((s) => s.key === "geographic_farm") && Boolean(career.find((s) => s.key === "speed_brand")?.line.includes("6 hours"))
+      && thinCareer.length === 0 && MIN_CLOSINGS === 3
+      && momentum !== null && momentum!.saleToListDelta === 3 && Boolean(composeMomentumLine(momentum)?.includes("keeping a little more"))
+      && computeZipMomentum(momRows.slice(0, 8)) === null
+      && twin.length === 3 && twin[0].provenance === "document_verified" && twin[1].provenance === "stated" && twin[2].provenance === "inferred"
+      && Boolean(twinNote?.includes("confirm live, don't assert")) && Boolean(twinNote?.includes("signed documents"))
+      && src("app/api/cron/recruit-outreach/route.ts").includes("runPlaybookEngineAll")
+      && src("app/api/cron/recruit-outreach/route.ts").includes("runCareerArchitectAll")
+      && src("app/portal/[contactId]/listing/page.tsx").includes("RENOVATION_DISCLAIMER")
+      && src("app/portal/[contactId]/offers/page.tsx").includes("composeMomentumLine")
+      && src("lib/contacts/contact-brief.ts").includes("composeProvenanceNote")
+      && src("lib/kernel/manager-registry.ts").includes("dynamic_playbook_engine:")
+      && src("lib/kernel/manager-registry.ts").includes("renovation_simulator:")
+      && src("lib/kernel/manager-registry.ts").includes("career_brand_architect:")
+      && src("lib/kernel/manager-registry.ts").includes("neighborhood_momentum:")
+      && src("lib/kernel/manager-registry.ts").includes("twin_provenance:"))
     const { isShallowBody, recoverTopicForModule, DEPTH_MARKER } = await import("../lib/education/depth-reauthor")
     const reOnb = await recoverTopicForModule({ id: "m1", title: "old", summary: null, gap_tags: ["onboarding:solo_agent:contract_walkthrough"], audience_roles: ["agent"] }, "team")
     const reBook = await recoverTopicForModule({ id: "m2", title: "old", summary: null, gap_tags: ["program:book_authority:write_with_ai_team"], audience_roles: ["agent"] }, "solo_agent")

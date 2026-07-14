@@ -263,13 +263,14 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   // NEGOTIATION CONTEXT — the brokerage's OWN closed-deal accept-vs-ask band
   // for this ZIP (honest-null on thin samples; aggregate only, no PII).
   let negotiationLine: string | null = null
+  let momentumLine: string | null = null
   try {
     const { createServiceClient } = await import("@/lib/supabase/service")
-    const { loadNegotiationBand, composeSellerBandLine } = await import("@/lib/intelligence/negotiation-bands")
+    const { loadNegotiationContext, composeSellerBandLine, composeMomentumLine } = await import("@/lib/intelligence/negotiation-bands")
     if (listing?.brokerage_id) {
-      negotiationLine = composeSellerBandLine(
-        await loadNegotiationBand(createServiceClient(), listing.brokerage_id, listing.address ?? null),
-      )
+      const ctx = await loadNegotiationContext(createServiceClient(), listing.brokerage_id, listing.address ?? null)
+      negotiationLine = composeSellerBandLine(ctx.band)
+      momentumLine = composeMomentumLine(ctx.momentum)
     }
   } catch { /* context is best-effort — the page stands without it */ }
 
@@ -461,8 +462,9 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
               </div>
 
               {negotiationLine && (
-                <div className="rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-950/20 p-3 text-sm text-blue-900 dark:text-blue-200">
-                  {negotiationLine}
+                <div className="rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-950/20 p-3 text-sm text-blue-900 dark:text-blue-200 space-y-2">
+                  <p>{negotiationLine}</p>
+                  {momentumLine && <p>{momentumLine}</p>}
                 </div>
               )}
 

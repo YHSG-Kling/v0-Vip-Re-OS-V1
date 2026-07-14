@@ -121,6 +121,22 @@ export async function GET(req: NextRequest) {
       onboardingAuthored = ob.authored
     } catch (e: any) { errors.push(`onboarding-curriculum: ${e?.message ?? String(e)}`) }
 
+    // DYNAMIC PLAYBOOK ENGINE — quartile behavior gaps from the brokerage's own
+    // ledgers → ONE gated monthly broker brief (human reviews before anything is taught).
+    let playbooksProposed = 0
+    try {
+      const { runPlaybookEngineAll } = await import("@/lib/intelligence/playbook-engine")
+      playbooksProposed = (await runPlaybookEngineAll(supabase)).proposed
+    } catch (e: any) { errors.push(`playbook-engine: ${e?.message ?? String(e)}`) }
+
+    // CAREER & BRAND ARCHITECT — quarterly gated per-agent career brief grounded
+    // only in their own ledger (retention play; quarter-idempotent).
+    let careerBriefs = 0
+    try {
+      const { runCareerArchitectAll } = await import("@/lib/intelligence/career-architect")
+      careerBriefs = (await runCareerArchitectAll(supabase)).briefed
+    } catch (e: any) { errors.push(`career-architect: ${e?.message ?? String(e)}`) }
+
     // DEPTH RE-AUTHOR SWEEP — modules authored BEFORE the depth standard are still summaries on the
     // shelf; rewrite them through the same depth engine (marker-terminated, gated pending_review).
     let depthReauthored = 0
@@ -179,9 +195,9 @@ export async function GET(req: NextRequest) {
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: proposed,
-      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors },
+      metadata: { proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, playbooksProposed, careerBriefs, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors })
+    return NextResponse.json({ ok: true, proposed, scanned, roiWritten, priorityBriefs, vendorBriefs, curriculaAuthored, onboardingAuthored, depthReauthored, playbooksProposed, careerBriefs, staleModules, tierUpgrades, tierNudges, leaderboardRows, challengesFinalized, execStandups, brokerages: brokerages.length, errors })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

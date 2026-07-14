@@ -78,6 +78,11 @@ export function computeNegotiationBand(rows: ClosedDealRow[], scope: "zip" | "br
 
 /** Load the band for a property: its ZIP first, brokerage-wide fallback. */
 export async function loadNegotiationBand(svc: Svc, brokerageId: string, propertyAddress: string | null): Promise<NegotiationBand | null> {
+  return (await loadNegotiationContext(svc, brokerageId, propertyAddress)).band
+}
+
+/** ONE fetch → band + momentum (the Future Lens rides the same closed-deal rows). */
+export async function loadNegotiationContext(svc: Svc, brokerageId: string, propertyAddress: string | null): Promise<{ band: NegotiationBand | null; momentum: ZipMomentum | null }> {
   const { data } = await svc.from("transactions")
     .select("purchase_price, close_date, created_at, property_address, listing:listings(list_price)")
     .eq("brokerage_id", brokerageId)
@@ -98,11 +103,60 @@ export async function loadNegotiationBand(svc: Svc, brokerageId: string, propert
   })
 
   const zip = zipFromAddress(propertyAddress)
-  if (zip) {
-    const zipBand = computeNegotiationBand(rows.filter((r) => zipFromAddress(r.property_address) === zip), "zip", zip)
-    if (zipBand) return zipBand
+  const zipRows = zip ? rows.filter((r) => zipFromAddress(r.property_address) === zip) : []
+  const band = (zip ? computeNegotiationBand(zipRows, "zip", zip) : null) ?? computeNegotiationBand(rows, "brokerage", null)
+  const momentum = computeZipMomentum(zipRows.length >= MIN_BAND_SAMPLES * 2 ? zipRows : rows)
+  return { band, momentum }
+}
+
+// ─── NEIGHBORHOOD MOMENTUM (Future Lens, honest v1) ─────────────────────────
+// CONSOLIDATION: momentum reads the SAME closed-deal rows as the band (one
+// loader, one table, no drift). v1 projects nothing — it reports the DIRECTION
+// of our own data: how sale-to-list and time-to-close moved between the older
+// and newer halves of the window. Permit/zoning forecasting stays provider-
+// gated (no data source connected = it does not exist here; never invented).
+
+export interface ZipMomentum {
+  sample: number
+  saleToListDelta: number   // newer median − older median (percentage points)
+  closeDaysDelta: number | null
+}
+
+/** PURE: direction of our own closed data — older half vs newer half. */
+export function computeZipMomentum(rows: ClosedDealRow[]): ZipMomentum | null {
+  const dated = rows
+    .filter((r) => r.close_date && Number(r.list_price) > 0 && Number(r.purchase_price) > 0)
+    .sort((a, b) => new Date(a.close_date!).getTime() - new Date(b.close_date!).getTime())
+  if (dated.length < MIN_BAND_SAMPLES * 2) return null // both halves need a real sample
+  const half = Math.floor(dated.length / 2)
+  const older = computeNegotiationBand(dated.slice(0, half), "zip", null)
+  const newer = computeNegotiationBand(dated.slice(half), "zip", null)
+  if (!older || !newer) return null
+  return {
+    sample: dated.length,
+    saleToListDelta: Math.round((newer.medianSaleToListPct - older.medianSaleToListPct) * 10) / 10,
+    closeDaysDelta: older.medianContractToCloseDays != null && newer.medianContractToCloseDays != null
+      ? newer.medianContractToCloseDays - older.medianContractToCloseDays
+      : null,
   }
-  return computeNegotiationBand(rows, "brokerage", null)
+}
+
+/** PURE: the client-facing momentum sentence (charter tone) — null unless the move is real (≥0.5pt or ≥5d). */
+export function composeMomentumLine(m: ZipMomentum | null): string | null {
+  if (!m) return null
+  const parts: string[] = []
+  if (Math.abs(m.saleToListDelta) >= 0.5) {
+    parts.push(m.saleToListDelta > 0
+      ? `sellers have been keeping a little more of their asking price lately (up ${m.saleToListDelta} points)`
+      : `buyers have been winning slightly bigger discounts lately (${Math.abs(m.saleToListDelta)} points more under ask)`)
+  }
+  if (m.closeDaysDelta != null && Math.abs(m.closeDaysDelta) >= 5) {
+    parts.push(m.closeDaysDelta < 0
+      ? `deals are closing about ${Math.abs(m.closeDaysDelta)} days faster than earlier this period`
+      : `deals are taking about ${m.closeDaysDelta} days longer to close than earlier this period`)
+  }
+  if (parts.length === 0) return null // steady market = say nothing, not filler
+  return `One more thing worth knowing: in our own recent sales, ${parts.join(", and ")}.`
 }
 
 /**
