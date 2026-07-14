@@ -38,7 +38,8 @@ async function loadSite(slug: string) {
   if (!b) return null
   const { data: identity } = await svc.from("ai_identity_profiles")
     .select("assistant_name").eq("scope_id", b.id).eq("scope_type", "brokerage").maybeSingle()
-  const [{ data: listings }, { data: agents }, { data: posts }] = await Promise.all([
+  const todayIso = new Date().toISOString().slice(0, 10)
+  const [{ data: listings }, { data: agents }, { data: posts }, { data: magnets }, { data: openHouses }] = await Promise.all([
     svc.from("listings")
       .select("id, mls_number, address, city, state, list_price, bedrooms, bathrooms, sqft, primary_photo_url")
       .eq("brokerage_id", b.id).eq("status", "active").is("deleted_at", null)
@@ -50,8 +51,20 @@ async function loadSite(slug: string) {
       .select("slug, title, excerpt, published_at")
       .eq("brokerage_id", b.id).eq("publish_status", "published").not("slug", "is", null)
       .order("published_at", { ascending: false }).limit(3),
+    // CONVERSION BLOCKS (owner rule): published lead magnets + upcoming open houses.
+    svc.from("lead_capture_forms")
+      .select("slug, name, magnet_type")
+      .eq("brokerage_id", (b as any).id).eq("is_active", true)
+      .order("submission_count", { ascending: false }).limit(4),
+    svc.from("listings")
+      .select("slug, address, city, list_price, open_house_event_date, primary_photo_url")
+      .eq("brokerage_id", (b as any).id)
+      .gte("open_house_event_date", todayIso)
+      .order("open_house_event_date", { ascending: true }).limit(6),
   ])
-  return { b, assistantName: (identity as any)?.assistant_name ?? null, listings: listings ?? [], agents: agents ?? [], posts: posts ?? [] }
+  const magnetRows = (magnets ?? []) as any[]
+  const valuationMagnet = magnetRows.find((m) => String(m.magnet_type ?? "").toLowerCase().includes("valuation") || String(m.magnet_type ?? "").toLowerCase().includes("home_value")) ?? null
+  return { b, assistantName: (identity as any)?.assistant_name ?? null, listings: listings ?? [], agents: agents ?? [], posts: posts ?? [], magnets: magnetRows, openHouses: openHouses ?? [], valuationMagnet }
 }
 
 export async function generateMetadata({ params }: PageProps) {
@@ -72,7 +85,7 @@ export default async function TenantSitePage({ params }: PageProps) {
   const { slug } = await params
   const data = await loadSite(slug)
   if (!data) notFound()
-  const { b, assistantName, listings, agents, posts } = data
+  const { b, assistantName, listings, agents, posts, magnets, openHouses, valuationMagnet } = data as any
   const primary = /^#[0-9a-fA-F]{6}$/.test(b.primary_color ?? "") ? (b.primary_color as string) : "#0F172A"
   const base = siteUrl()
   const pageUrl = `${base}/site/${b.slug}`
@@ -138,6 +151,57 @@ export default async function TenantSitePage({ params }: PageProps) {
                 </div>
               </Link>
             ))}
+          </div>
+        </section>
+      )}
+
+      {/* OPEN HOUSES (owner rule) — real upcoming dates from the live inventory */}
+      {openHouses.length > 0 && (
+        <section className="container mx-auto px-6 py-16">
+          <h2 className="text-2xl font-bold mb-8">Upcoming open houses</h2>
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {openHouses.map((o: any) => (
+              <a key={o.slug ?? o.address} href={o.slug ? `/listing/${o.slug}` : "#"} className="rounded-lg border p-5 hover:bg-muted/40">
+                <p className="text-sm font-semibold">{o.address}{o.city ? `, ${o.city}` : ""}</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {o.open_house_event_date ? new Date(o.open_house_event_date).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }) : ""}
+                  {o.list_price ? ` · $${Number(o.list_price).toLocaleString("en-US")}` : ""}
+                </p>
+                <p className="mt-2 text-xs font-medium text-primary">See the home →</p>
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* HOME EVALUATION + FREE GUIDES (owner rule) — the site's lead engines */}
+      {(valuationMagnet || magnets.length > 0) && (
+        <section className="bg-muted/40">
+          <div className="container mx-auto px-6 py-16">
+            <div className="grid gap-10 lg:grid-cols-2">
+              <div>
+                <h2 className="text-2xl font-bold">What's your home worth?</h2>
+                <p className="mt-2 text-muted-foreground">A real answer for your exact address — not a generic estimate.</p>
+                <a
+                  href={valuationMagnet ? `/lm/${valuationMagnet.slug}` : (magnets[0] ? `/lm/${magnets[0].slug}` : "#contact")}
+                  className="mt-4 inline-flex rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground"
+                >
+                  Get my home evaluation
+                </a>
+              </div>
+              {magnets.length > 0 && (
+                <div>
+                  <h3 className="text-lg font-semibold">Free guides</h3>
+                  <ul className="mt-3 space-y-2">
+                    {magnets.map((m: any) => (
+                      <li key={m.slug}>
+                        <a href={`/lm/${m.slug}`} className="text-sm text-primary hover:underline">{m.name} →</a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
           </div>
         </section>
       )}

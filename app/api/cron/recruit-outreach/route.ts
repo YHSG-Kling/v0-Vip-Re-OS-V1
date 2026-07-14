@@ -114,6 +114,10 @@ export async function GET(req: NextRequest) {
     try {
       const { runOnboardingCurriculumAll } = await import("@/lib/education/onboarding-curriculum")
       const ob = await runOnboardingCurriculumAll(supabase)
+      // BOOK AUTHORITY PROGRAM — the publish-a-book coaching path, authored
+      // once per brokerage on the same gated education rail.
+      const { runBookAuthorityProgramAll } = await import("@/lib/education/book-authority-program")
+      await runBookAuthorityProgramAll(supabase).catch((e) => console.error("[RecruitOutreach] book program:", e))
       onboardingAuthored = ob.authored
     } catch (e: any) { errors.push(`onboarding-curriculum: ${e?.message ?? String(e)}`) }
 

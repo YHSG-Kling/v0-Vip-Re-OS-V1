@@ -1,3 +1,4 @@
+import { PortalNlSearch } from "./PortalNlSearch"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
@@ -102,6 +103,7 @@ export default async function SearchPage({
       {/* Search Criteria Card */}
       <Card>
         <CardHeader>
+          <div className="mb-4"><PortalNlSearch contactId={contactId} /></div>
           <div className="flex items-center justify-between">
             <div>
               <CardTitle className="flex items-center gap-2">

@@ -810,6 +810,21 @@ async function main() {
       && src("app/actions/buyer-offers.ts").includes("confirmSigningOrderAction")
       && src("app/crm/contacts/[contactId]/offers/components/offer-form-wizard.tsx").includes("Confirm signing order & send")
       && src("lib/kernel/manager-registry.ts").includes("signing_order_check:"))
+    const { BOOK_TOPICS, BOOK_PROGRAM_TAG } = await import("../lib/education/book-authority-program")
+    check("SITE CONVERSION BLOCKS + BUYER NL SEARCH + BOOK PROGRAM (owner directives) — the tenant site gains open-houses/guides/home-evaluation grounded in live tables (empty tenant = clean site, no dead buttons); the buyer's portal gets the SAME NL search engine (keep-one: one engine, three front-ends) logging to the engagement ledger; the four-module book program rides the canonical education rail with the HONEST launch rule (never fake reviews)",
+      src("app/site/[slug]/page.tsx").includes("Upcoming open houses")
+      && src("app/site/[slug]/page.tsx").includes("Get my home evaluation")
+      && src("app/site/[slug]/page.tsx").includes('from("lead_capture_forms")')
+      && src("app/actions/portal-nl-search.ts").includes("searchPropertiesCore")
+      && src("app/actions/portal-nl-search.ts").includes("nl_property_search")
+      && src("app/portal/[contactId]/search/page.tsx").includes("PortalNlSearch")
+      && BOOK_TOPICS.length === 4
+      && BOOK_PROGRAM_TAG("publish_on_kdp") === "program:book_authority:publish_on_kdp"
+      && BOOK_TOPICS.some((t) => t.brief.includes("NEVER purchased or fake reviews"))
+      && src("app/api/cron/recruit-outreach/route.ts").includes("runBookAuthorityProgramAll")
+      && src("lib/kernel/manager-registry.ts").includes("site_conversion_blocks:")
+      && src("lib/kernel/manager-registry.ts").includes("buyer_nl_search:")
+      && src("lib/kernel/manager-registry.ts").includes("book_authority_program:"))
     check("the session flow is complete IN-WINDOW — access-gated action grounds facts in listings/offers (responded_at-null = on the table), the card rides the contact page, confirm creates the agenda-carrying task; the PRE-CALL BRIEF now leads with the addressing memory",
       src("app/actions/strategy-session.ts").includes("assertCanActOnContact")
       && src("app/actions/strategy-session.ts").includes('.is("responded_at", null)')
