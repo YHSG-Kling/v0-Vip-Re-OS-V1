@@ -737,6 +737,23 @@ async function main() {
       && src("app/components/contact/StrategySessionCard.tsx").includes("Set the floor")
       && src("lib/kernel/manager-registry.ts").includes("seller_walkaway_floor:")
       && src("lib/kernel/manager-registry.ts").includes("coverage_mode:"))
+    const { inferOutreachReason, describeOutreachReason, OUTREACH_REASONS } = await import("../lib/kernel/outreach-reasons")
+    check("OUTREACH REASON (concierge A.9; l53-s01) — every touch self-justifies: specific families beat generic (a congrats is celebration, not milestone_update), unmatched stays HONESTLY null, flagships pass explicit reasons, the queue shows 'Why now:', and the propose rail back-fills",
+      inferOutreachReason({ rationale: "congratulations — their offer was accepted", subject: null }) === "celebration"
+      && inferOutreachReason({ rationale: "a warm, brief, no-pressure message to regroup after the rejected offer", subject: null }) === "recovery"
+      && inferOutreachReason({ rationale: "quarterly zoning ordinance xyz", subject: null }) === null
+      && describeOutreachReason("expectation_reset") === "Expectation reset"
+      && OUTREACH_REASONS.length === 8
+      && src("lib/agents/agent-client-messages.ts").includes("inferOutreachReason")
+      && src("lib/kernel/client-welcome.ts").includes('outreachReason: "welcome"')
+      && src("lib/lead-pipeline/offer-rejection-recovery-runner.ts").includes('outreachReason: "recovery"')
+      && src("lib/kernel/command-center.ts").includes("Why now:")
+      && src("lib/kernel/manager-registry.ts").includes("outreach_reason_tags:"))
+    check("COVERAGE-AWARE BRIEFING — while covering, the away agent's aging promises surface in MY briefing at HIGH, labeled '(Covering for X)' with honest options; capped; registered",
+      src("lib/intelligence/daily-briefing-generator.ts").includes("(Covering for ")
+      && src("lib/intelligence/daily-briefing-generator.ts").includes('.eq("covering_agent_id", myAgentsId)')
+      && src("lib/intelligence/daily-briefing-generator.ts").includes("...coverageActions,")
+      && src("lib/kernel/manager-registry.ts").includes("coverage_aware_briefing:"))
     check("the session flow is complete IN-WINDOW — access-gated action grounds facts in listings/offers (responded_at-null = on the table), the card rides the contact page, confirm creates the agenda-carrying task; the PRE-CALL BRIEF now leads with the addressing memory",
       src("app/actions/strategy-session.ts").includes("assertCanActOnContact")
       && src("app/actions/strategy-session.ts").includes('.is("responded_at", null)')

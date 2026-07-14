@@ -129,6 +129,7 @@ async function recover(
       body: draft.body,
       rationale: `${dedupeKey} — ${plan.urgency} window (${plan.hoursSince?.toFixed(0)}h since rejection). ${plan.agentBrief}`,
       channel: "portal",
+      outreachReason: "recovery",
     },
     svc,
   )

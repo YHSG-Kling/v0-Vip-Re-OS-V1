@@ -571,6 +571,61 @@ export async function generateDailyBriefing(
     console.error("[DailyBriefing] promise-aging fetch failed:", err)
   }
 
+  // 2g. COVERAGE-AWARE BRIEFING — while I'm covering someone (l52-s01), the
+  //     redirect handles their NEW leads; THIS is the second half: their
+  //     aging promises and failed sends surface in MY briefing, labeled
+  //     "(covering for X)", so the away agent's open work stays visible.
+  let coverageActions: PriorityAction[] = []
+  try {
+    const { resolveAddressing } = await import("@/lib/kernel/addressing")
+    const { data: myAgentRow } = await supabase
+      .from("agents").select("id").or(`user_id.eq.${agentId},id.eq.${agentId}`).maybeSingle()
+    const myAgentsId = myAgentRow?.id ?? null
+    if (myAgentsId) {
+      const { data: covered } = await supabase
+        .from("agents")
+        .select("id, user_id")
+        .eq("covering_agent_id", myAgentsId)
+        .gt("coverage_until", new Date().toISOString())
+        .limit(2)
+      for (const away of ((covered ?? []) as Array<{ id: string; user_id: string | null }>)) {
+        let awayName = "a teammate"
+        if (away.user_id) {
+          const { data: u } = await supabase.from("users").select("first_name, last_name").in("id", [away.user_id])
+          const row = (u ?? [])[0] as any
+          if (row) awayName = [row.first_name, row.last_name].filter(Boolean).join(" ") || awayName
+        }
+        const threeDaysAgo2 = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
+        const { data: theirAging } = await supabase
+          .from("contacts")
+          .select("id, first_name, last_name, preferred_name, salutation_style, last_promise, last_promise_at")
+          .eq("agent_id", away.id)
+          .not("last_promise", "is", null)
+          .lt("last_promise_at", threeDaysAgo2)
+          .order("last_promise_at", { ascending: true })
+          .limit(2)
+        for (const c of ((theirAging ?? []) as any[])) {
+          const addressAs = resolveAddressing({
+            firstName: c.first_name, lastName: c.last_name,
+            preferredName: c.preferred_name, namePronunciation: null, salutationStyle: c.salutation_style,
+          }).addressAs
+          coverageActions.push({
+            priority: "high",
+            action: `(Covering for ${awayName}) Keep their promise to ${addressAs}`,
+            context: `${awayName} promised: "${String(c.last_promise).slice(0, 140)}" — it's aging while they're out. Deliver it, reschedule it, or tell ${addressAs} when ${awayName} is back.`,
+            manager: "sphere_of_influence",
+            entity_type: "contact",
+            entity_id: c.id,
+            action_type: "open_contact",
+          })
+        }
+      }
+      coverageActions = coverageActions.slice(0, 3)
+    }
+  } catch (err) {
+    console.error("[DailyBriefing] coverage-aware fetch failed:", err)
+  }
+
   // 3. Call Claude to generate briefing
   const dataSnapshot = {
     tasks: tasks.slice(0, 10),
@@ -682,7 +737,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
   // qualified lead is never left to the model's judgment. "I saw you" recognition
   // notes ride next (same rule: a heavy client evening is a fact, not a model call).
   // AI items fill the rest.
-  const deterministicActions = [...promiseActions, ...recoveryActions, ...isaActions, ...iSawYouActions, ...smallWinActions]
+  const deterministicActions = [...promiseActions, ...coverageActions, ...recoveryActions, ...isaActions, ...iSawYouActions, ...smallWinActions]
   const finalPriorityActions = [
     ...deterministicActions,
     ...(aiResponse.top_priority_actions ?? []).filter(

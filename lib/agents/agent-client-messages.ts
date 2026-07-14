@@ -8,6 +8,7 @@
  * Nothing reaches a client without a human in the loop.
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import { inferOutreachReason } from "@/lib/kernel/outreach-reasons"
 
 export interface ProposeClientMessageInput {
   brokerageId:           string
@@ -24,6 +25,9 @@ export interface ProposeClientMessageInput {
   body:                  string
   rationale?:            string | null
   channel?:              "portal" | "portal_push" | "email" | "sms" | "voice_drop" | "direct_mail" | null
+  /** the one-word WHY for this touch (concierge A.9; lib/kernel/outreach-reasons).
+   *  Omitted = inferred from rationale/subject, honestly null when unclear. */
+  outreachReason?:       string | null
 }
 
 export async function proposeClientMessage(
@@ -44,6 +48,7 @@ export async function proposeClientMessage(
     body: input.body,
     rationale: input.rationale ?? null,
     channel: input.channel ?? "portal",
+    outreach_reason: input.outreachReason ?? inferOutreachReason({ rationale: input.rationale, subject: input.subject }),
     status: "proposed",
   }).select("id").single()
   if (error || !data) return { ok: false, error: error?.message ?? "insert failed" }

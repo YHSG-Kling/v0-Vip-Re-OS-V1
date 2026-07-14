@@ -115,6 +115,7 @@ export async function ensureClientWelcome(svc: Svc, contact: {
     body: copy.body,
     rationale: `${WELCOME_RATIONALE_TAG} — warm onboarding welcome + journey map for a new ${side} client (concierge methodology: no one is dropped into complexity).`,
     channel: "portal",
+    outreachReason: "welcome",
   }, svc)
   return { proposed: res.ok }
 }
