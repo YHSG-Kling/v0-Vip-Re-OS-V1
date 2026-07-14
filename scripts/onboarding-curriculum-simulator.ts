@@ -73,8 +73,8 @@ async function liveLayer() {
       summary: "Balance capacity, mentor with cadence, and read the dashboards that keep everyone producing.",
       objectives: ["Rebalance an overloaded agent before the ball drops", "Run a weekly mentor check-in"],
       lessons: [
-        { title: "Read the capacity board", keyPoints: ["Spot an at/over-ceiling agent", "Reassign the newest lead first"] },
-        { title: "Mentor on cadence", keyPoints: ["Bi-weekly check-in", "Unblock one thing per session"] },
+        { title: "Read the capacity board", walkthrough: "Step-by-step walkthrough for the simulator fixture — every term defined, every section explained.", keyPoints: ["Spot an at/over-ceiling agent", "Reassign the newest lead first"] },
+        { title: "Mentor on cadence", walkthrough: "Step-by-step walkthrough for the simulator fixture — every term defined, every section explained.", keyPoints: ["Bi-weekly check-in", "Unblock one thing per session"] },
       ],
       quiz: [{ question: "First move on an overloaded agent?", options: ["Add more leads", "Rebalance work", "Wait"], correctIndex: 1 }],
     }

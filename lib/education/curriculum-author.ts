@@ -23,8 +23,9 @@ export const CurriculumSchema = z.object({
   objectives: z.array(z.string()).min(2).max(6).describe("Concrete, observable learning objectives."),
   lessons: z.array(z.object({
     title: z.string(),
-    keyPoints: z.array(z.string()).min(2).max(6).describe("Specific, actionable teaching points — real scripts/tactics, not platitudes."),
-  })).min(2).max(5),
+    walkthrough: z.string().describe("The FULL teaching text for this lesson — in-depth, step by step, assume the least-experienced licensee: define every term the first time it appears, walk documents/forms section by section (what each section means, how to fill it, the common mistakes), explain the WHY behind every step, and include verbatim scripts where speech is involved. Several substantial paragraphs, never a summary. Where an experienced agent would skip ahead, add a short 'If you've done this before' advanced note."),
+    keyPoints: z.array(z.string()).min(2).max(6).describe("The recap after the walkthrough — specific, actionable takeaways."),
+  })).min(3).max(8),
   quiz: z.array(z.object({
     question: z.string(),
     options: z.array(z.string()).min(3).max(4),
@@ -96,7 +97,8 @@ export async function authorCurriculum(gap: KnowledgeGap): Promise<Curriculum> {
   const { object } = await generateObjectRouted({
     feature: "curriculum_authoring",
     schema: CurriculumSchema,
-    system: "You are a master real-estate sales trainer authoring a SHORT, specific micro-course for licensed agents. Be concrete: real scripts, exact phrasings, tactical steps. No generic filler, no platitudes. Everything must be directly usable on a live call or in a live deal.",
+    system: "You are a master real-estate trainer authoring an IN-DEPTH course for licensed agents of EVERY experience level — a nervous first-year licensee must be able to follow it start to finish, and a veteran must still learn something. Depth rules: define every term the first time it appears; walk any document or form SECTION BY SECTION (what it means, how to fill it, the mistakes that bite); give verbatim scripts wherever speech is involved; explain the WHY behind each step, never just the what. No summaries, no generic filler, no platitudes — if a lesson could fit on an index card, it is too shallow.",
+    maxTokens: 6000,
     prompt: `Author a micro-course that closes this proven, recurring knowledge gap on our team:\n\nTopic: ${gap.topicLabel}\nWhy it matters: ${gap.rationale}${evidence}\n\nWrite tight, specific, and immediately actionable.`,
   })
   return object
@@ -141,7 +143,7 @@ export function renderModuleBody(c: Curriculum, footer: string): string {
     "## What you'll be able to do",
     ...c.objectives.map((o) => `- ${o}`),
     "",
-    ...c.lessons.flatMap((l) => [`## ${l.title}`, ...l.keyPoints.map((k) => `- ${k}`), ""]),
+    ...c.lessons.flatMap((l) => [`## ${l.title}`, "", l.walkthrough, "", "**Key takeaways**", ...l.keyPoints.map((k) => `- ${k}`), ""]),
     footer ? `_${footer}_` : "",
   ].filter(Boolean).join("\n")
 }

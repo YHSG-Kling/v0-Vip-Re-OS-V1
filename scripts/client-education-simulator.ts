@@ -68,8 +68,8 @@ async function liveLayer() {
       summary: "Congratulations! Here's exactly what happens now and what you need to do.",
       objectives: ["Know your next 3 deadlines", "Know what you personally need to do this week"],
       lessons: [
-        { title: "The next two weeks", keyPoints: ["Wire your earnest money", "Schedule your inspection"] },
-        { title: "What we handle for you", keyPoints: ["Appraisal + financing coordination", "We watch every deadline"] },
+        { title: "The next two weeks", walkthrough: "Step-by-step walkthrough for the simulator fixture — every term defined, every section explained.", keyPoints: ["Wire your earnest money", "Schedule your inspection"] },
+        { title: "What we handle for you", walkthrough: "Step-by-step walkthrough for the simulator fixture — every term defined, every section explained.", keyPoints: ["Appraisal + financing coordination", "We watch every deadline"] },
       ],
       quiz: [{ question: "What's due first?", options: ["Closing", "Earnest money", "Nothing"], correctIndex: 1 }],
     }

@@ -68,7 +68,7 @@ async function liveLayer() {
       title: "New TCPA consent rule — what changes",
       summary: "A new consent standard takes effect; here's what you must do.",
       objectives: ["Know the new consent standard", "Update your outreach before the effective date"],
-      lessons: [{ title: "What changed", keyPoints: ["Prior express written consent now required", "Re-confirm existing contacts"] }],
+      lessons: [{ title: "What changed", walkthrough: "Step-by-step walkthrough for the simulator fixture — every term defined, every section explained.", keyPoints: ["Prior express written consent now required", "Re-confirm existing contacts"] }],
       quiz: [{ question: "What's now required?", options: ["Nothing", "Written consent"], correctIndex: 1 }],
     }
     const { persistRegulatoryModule } = await import("../lib/education/regulatory-curriculum")

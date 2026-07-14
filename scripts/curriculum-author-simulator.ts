@@ -115,8 +115,8 @@ async function liveLayer() {
       summary: "Turn a lowball into a real negotiation by anchoring on comps and the cost of waiting.",
       objectives: ["Anchor the seller's price with 3 recent comps", "Reframe a lowball as an opening, not an insult"],
       lessons: [
-        { title: "Anchor on evidence", keyPoints: ["Open with the 3 closest comps", "Translate condition deltas into dollars"] },
-        { title: "Reframe the lowball", keyPoints: ["Thank them for the offer, then counter with data", "Quantify the cost of the home sitting"] },
+        { title: "Anchor on evidence", walkthrough: "Step-by-step walkthrough for the simulator fixture — every term defined, every section explained.", keyPoints: ["Open with the 3 closest comps", "Translate condition deltas into dollars"] },
+        { title: "Reframe the lowball", walkthrough: "Step-by-step walkthrough for the simulator fixture — every term defined, every section explained.", keyPoints: ["Thank them for the offer, then counter with data", "Quantify the cost of the home sitting"] },
       ],
       quiz: [{ question: "First move on a lowball?", options: ["Reject it", "Counter with comps", "Ignore it"], correctIndex: 1 }],
     }

@@ -8,12 +8,22 @@
  * micro-courses on the SAME canonical education rail as everything else
  * (authorModuleFor → gated learning_modules drafts, pending_review,
  * approve → published → the academy + on-demand ask_guidance serve them):
- * niche & outline → write it in 30 days WITH the AI team → publish on
- * Amazon KDP → the best-seller launch week. Idempotent per program tag;
- * rides the weekly recruit-outreach cron beside the onboarding
- * curriculum. HONEST coaching: the launch module teaches category
- * strategy and a real launch push — never fake reviews or bought ranks.
- * recruiting_manager owns education.
+ * niche & outline → write it in 30 days IN THE AGENT'S OWN VOICE →
+ * publish on Amazon KDP → the best-seller launch week.
+ *
+ * SCOPE, precisely (owner clarification): what authors ONCE PER BROKERAGE
+ * is the COURSE — the shared coaching curriculum every agent in the
+ * tenancy studies. Each agent's BOOK is their own: their niche, their
+ * voice, their stories — the course exists to coach EVERY agent through
+ * writing THEIR book. Voice is the whole game: a book that sounds like
+ * AI wrote it is worthless as authority, so the writing module is built
+ * around voice-preservation technique (dictate first, AI structures
+ * second, the agent's phrasings survive every edit). Niche-driven, not
+ * market-data-driven: the outline grows from the topic the agent picks
+ * and what THEY uniquely know. Idempotent per program tag; rides the
+ * weekly recruit-outreach cron. HONEST coaching: the launch module
+ * teaches category strategy and a real launch push — never fake reviews
+ * or bought ranks. recruiting_manager owns education.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -26,15 +36,15 @@ export const BOOK_PROGRAM_TAG = (key: string) => `program:book_authority:${key}`
 export const BOOK_TOPICS: OnboardingTopic[] = [
   {
     key: "niche_and_outline",
-    label: "Your book is your listing presentation: pick the niche, build the outline",
+    label: "Your book is your listing presentation: pick YOUR niche, build the outline",
     audienceRoles: ["agent", "broker"],
-    brief: "Why a local-market book wins listings (authority the competition can't fake); choosing a niche a real agent can own (neighborhood guide, first-time-buyer handbook for THIS city, downsizing playbook, relocation guide); the 10-chapter outline template; mining your own closed deals, market updates, and blog posts for chapter material you already wrote.",
+    brief: "IN DEPTH, for an agent who has never written anything longer than an email: why a book wins listings (authority the competition can't fake); how to choose the ONE niche only YOU can own — walk 8+ real niche archetypes (neighborhood insider guide, first-time-buyer handbook, downsizing parent playbook, relocation guide, investor primer, divorce-sale survival, military PCS moves, luxury positioning) with what makes each work, who buys it, and how to test the pick in one weekend; then build the 10-chapter outline from what the agent ALREADY KNOWS AND SAYS — the questions clients ask them weekly, the stories they tell at kitchen tables — chapter by chapter, with a worked example outline for two different niches. The topic drives the book; no market-data dump required.",
   },
   {
     key: "write_with_ai_team",
-    label: "Write it in 30 days with your AI team",
+    label: "Write it in 30 days — in YOUR voice, never AI's",
     audienceRoles: ["agent"],
-    brief: "The chapter-a-day workflow: dictate what you tell clients (you say it weekly already), let AI structure and tighten it, keep YOUR voice and YOUR local stories (the book must sound like the agent, not a robot); editing passes, a compliance read (fair-housing language, no guarantees), and getting a real cover designed affordably.",
+    brief: "THE VOICE IS THE WHOLE GAME — a book that sounds like AI wrote it is worthless as authority, so teach the voice-preservation workflow step by step: record yourself ANSWERING a real client question for 10 minutes (that transcript IS your voice sample); dictate each chapter as if explaining to one specific client; let AI structure, tighten, and fix grammar but give it the hard rule 'keep my phrasings, my stories, my rhythms — restructure, never rewrite'; the read-aloud test (if you wouldn't SAY a sentence, cut it); how to spot and strip AI-sounding tells (hedged both-sides paragraphs, 'in today's fast-paced market', symmetrical lists). Then the 30-day chapter-a-day schedule, the two editing passes, the compliance read (fair-housing language, no guarantees), and getting a real cover designed affordably — each explained fully, not summarized.",
   },
   {
     key: "publish_on_kdp",

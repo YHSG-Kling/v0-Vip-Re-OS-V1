@@ -825,6 +825,21 @@ async function main() {
       && src("lib/kernel/manager-registry.ts").includes("site_conversion_blocks:")
       && src("lib/kernel/manager-registry.ts").includes("buyer_nl_search:")
       && src("lib/kernel/manager-registry.ts").includes("book_authority_program:"))
+    check("EDUCATION DEPTH MANDATE (owner rule: in-depth for every experience level, never summaries) — the schema REQUIRES a full per-lesson WALKTHROUGH (define every term, forms section by section, verbatim scripts, advanced notes for veterans), both authors demand depth with 6000-token budgets, the body renders walkthrough + takeaways, and the owner-named CORE topics exist (contract section-by-section + running the business); ACADEMY IS NOT PARALLEL (verdict: one learning_modules rail — academy = agent surface, portal /learn = client surface)",
+      src("lib/education/curriculum-author.ts").includes("walkthrough: z.string()")
+      && src("lib/education/curriculum-author.ts").includes("SECTION BY SECTION")
+      && src("lib/education/curriculum-author.ts").includes("maxTokens: 6000")
+      && src("lib/education/onboarding-authoring.ts").includes("maxTokens: 6000")
+      && src("lib/education/curriculum-author.ts").includes("l.walkthrough")
+      && src("lib/education/onboarding-curriculum.ts").includes('key: "contract_walkthrough"')
+      && src("lib/education/onboarding-curriculum.ts").includes('key: "business_operating_rhythm"')
+      && src("app/actions/academy-learning.ts").includes('from("learning_modules")'))
+    check("BOOK PROGRAM CORRECTIONS (owner) — per-brokerage = the COURSE (each agent's book is their own, in their voice); the writing module is voice-preservation technique ('restructure, never rewrite', the read-aloud test, stripping AI tells); niche-driven, no market-data framing",
+      src("lib/education/book-authority-program.ts").includes("what authors ONCE PER BROKERAGE")
+      && src("lib/education/book-authority-program.ts").includes("restructure, never rewrite")
+      && src("lib/education/book-authority-program.ts").includes("read-aloud test")
+      && src("lib/education/book-authority-program.ts").includes("no market-data dump required")
+      && !src("lib/education/book-authority-program.ts").includes("market updates, and blog posts"))
     check("the session flow is complete IN-WINDOW — access-gated action grounds facts in listings/offers (responded_at-null = on the table), the card rides the contact page, confirm creates the agenda-carrying task; the PRE-CALL BRIEF now leads with the addressing memory",
       src("app/actions/strategy-session.ts").includes("assertCanActOnContact")
       && src("app/actions/strategy-session.ts").includes('.is("responded_at", null)')
