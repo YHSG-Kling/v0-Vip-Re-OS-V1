@@ -9,12 +9,15 @@ import { Loader2, Shield, AlertTriangle, CheckCircle2, RefreshCw, Scan, XCircle,
 import { toast } from "sonner"
 import { getDataHealthStats, runDataHygieneScan, getDataHealthLogs } from "@/app/actions/data-health"
 import { refreshStalePredictions } from "@/app/actions/ai-predictions"
+import { loadSelfAuditRollup } from "@/app/actions/self-audit-rollup"
+import type { SelfAuditRollup } from "@/lib/platform/self-audit-rollup"
 
 export default function DataHealthPage() {
   const [stats, setStats] = useState<any>(null)
   const [logs, setLogs] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState<string | null>(null)
+  const [selfAudit, setSelfAudit] = useState<SelfAuditRollup | null>(null)
   const [isPending, startTransition] = useTransition()
 
   const loadData = async () => {
@@ -52,7 +55,11 @@ export default function DataHealthPage() {
     }
   }
 
-  useEffect(() => { loadData() }, [])
+  useEffect(() => {
+    loadData()
+    // First-week telemetry — what the OS caught itself doing wrong, by tenant.
+    loadSelfAuditRollup().then((r) => { if (r.success && r.rollup) setSelfAudit(r.rollup) }).catch(() => {})
+  }, [])
 
   const handleScan = () => {
     startTransition(async () => {
@@ -92,7 +99,7 @@ export default function DataHealthPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Data Health</h1>
-          <p className="text-muted-foreground text-sm mt-1">Contact database hygiene and validation</p>
+          <p className="text-muted-foreground text-sm mt-1">Contact database hygiene, validation, and what the OS caught itself</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => { setLoading(true); loadData() }} disabled={isPending}>
@@ -109,6 +116,40 @@ export default function DataHealthPage() {
           </Button>
         </div>
       </div>
+
+      {/* FIRST-WEEK TELEMETRY — what the OS caught itself doing wrong, by rail and
+          tenant (self-audit findings + signature-chase escalations, trailing 7d).
+          Empty = quiet week; that is a real signal too. */}
+      {selfAudit && selfAudit.totals.length > 0 && (
+        <Card className="border-amber-200">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              What the OS caught itself — last {selfAudit.windowDays} days
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap gap-2">
+              {selfAudit.totals.map((t) => (
+                <Badge key={t.kind} variant="outline" className="capitalize">
+                  {t.kind.replace(/_/g, " ")}: {t.count}
+                </Badge>
+              ))}
+            </div>
+            {selfAudit.byTenant.length > 0 && (
+              <ul className="text-sm space-y-1">
+                {selfAudit.byTenant.slice(0, 10).map((r, i) => (
+                  <li key={i} className="flex justify-between gap-3">
+                    <span className="truncate">{r.brokerageName ?? r.brokerageId}</span>
+                    <span className="text-muted-foreground capitalize">{r.kind.replace(/_/g, " ")} × {r.count}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="text-xs text-muted-foreground">The rails tenants actually stall on — let this pick the next build.</p>
+          </CardContent>
+        </Card>
+      )}
 
       {fetchError && (
         <div className="flex items-start gap-3 p-4 rounded-lg border border-red-200 bg-red-50 text-red-800">

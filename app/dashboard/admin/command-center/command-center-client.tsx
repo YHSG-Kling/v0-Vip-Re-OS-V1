@@ -132,7 +132,16 @@ export function CommandCenterClient({
         <section className="rounded-lg border-2 border-emerald-300 bg-emerald-50/60 dark:bg-emerald-950/20 p-4 space-y-3">
           <div className="flex items-baseline justify-between gap-3">
             <h2 className="text-lg font-semibold">🤝 Client decisions awaiting you</h2>
-            <span className="text-xs text-muted-foreground">{data.clientDecisions.length} waiting — oldest first</span>
+            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              {data.decisionVelocity?.medianHours != null && (
+                <span className="rounded-full border border-emerald-300 bg-emerald-100/60 dark:bg-emerald-900/30 px-2 py-0.5 font-medium text-emerald-800 dark:text-emerald-200">
+                  30-day execute speed: median {data.decisionVelocity.medianHours < 24
+                    ? `${data.decisionVelocity.medianHours}h`
+                    : `${Math.round((data.decisionVelocity.medianHours / 24) * 10) / 10}d`}
+                </span>
+              )}
+              <span>{data.clientDecisions.length} waiting — oldest first</span>
+            </div>
           </div>
           <ul className="space-y-2">
             {data.clientDecisions.slice(0, 8).map((d) => (

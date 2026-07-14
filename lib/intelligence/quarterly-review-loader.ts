@@ -83,6 +83,13 @@ export async function loadQuarterlyReview(svc: Svc, brokerageId: string): Promis
     trustIncidents = (sendFails ?? 0) + (shakyFlags ?? 0) + (majorWt ?? 0) + (autoErrs ?? 0)
   } catch { /* incident read is best-effort — the QBR stands without it */ }
 
+  // DEAL VELOCITY — the decision→execution stat (honest-null on thin samples).
+  let velocityLine: string | null = null
+  try {
+    const { loadDecisionVelocity, composeVelocityLine } = await import("@/lib/intelligence/decision-velocity")
+    velocityLine = composeVelocityLine(await loadDecisionVelocity(svc, brokerageId, now))
+  } catch { /* the QBR stands without it */ }
+
   const review = composeQuarterlyReview({
     windowLabel: `${since.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${now.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
     planTier: (brk as any)?.plan_tier ?? null,

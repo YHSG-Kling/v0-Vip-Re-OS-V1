@@ -153,6 +153,9 @@ export interface CommandCenterData {
    *  vendor filed a request. Response-speed-to-a-client's-accept is the most
    *  trust-critical latency in the product, so these lead the Command Center. */
   clientDecisions: ClientDecisionLine[]
+  /** DEAL VELOCITY — trailing-30d median hours from client decision → agent execution
+   *  (the differentiator metric). Null when the sample is too thin to be honest. */
+  decisionVelocity: import("@/lib/intelligence/decision-velocity").DecisionVelocity | null
   summary: {
     activeSessions:    number
     idleSessions:      number
@@ -337,6 +340,15 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   if (contactIdFilter) decisionsQuery.in("contact_id", contactIdFilter)
 
   const [sessionsRes, marketingRes, assetRes, adsRes, clientMsgRes, contentActions, decisionsRes] = await Promise.all([sessionsQuery, marketingQuery, assetQuery, adsQuery, clientMsgQuery, contentPromise, decisionsQuery])
+
+  // DEAL VELOCITY — brokerage-wide only (the aggregate belongs to the broker view).
+  let decisionVelocity: import("@/lib/intelligence/decision-velocity").DecisionVelocity | null = null
+  if (brokerageWide && brokerageId) {
+    try {
+      const { loadDecisionVelocity } = await import("@/lib/intelligence/decision-velocity")
+      decisionVelocity = await loadDecisionVelocity(supabase, brokerageId, now)
+    } catch { /* the scoreboard is best-effort */ }
+  }
 
   const clientDecisions: ClientDecisionLine[] = ((decisionsRes.data ?? []) as any[]).map((t) => ({
     id: t.id,
@@ -564,6 +576,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     dialBatches,
     managerTalk,
     clientDecisions,
+    decisionVelocity,
     summary: {
       activeSessions:    sessions.filter((s) => s.status === "running").length,
       idleSessions:      sessions.filter((s) => s.status === "idle").length,

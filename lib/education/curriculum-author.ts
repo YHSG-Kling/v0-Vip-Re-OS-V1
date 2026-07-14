@@ -94,10 +94,11 @@ export async function gatherGapSignals(svc: Svc, brokerageId: string, now: Date)
 export async function authorCurriculum(gap: KnowledgeGap): Promise<Curriculum> {
   const { generateObjectRouted } = await import("@/lib/ai/models")
   const evidence = gap.evidence.length ? `\n\nReal evidence from our agents (ground the material in THESE, not generic advice):\n- ${gap.evidence.join("\n- ")}` : ""
+  const { withScriptStandards } = await import("@/lib/ai/script-standards")
   const { object } = await generateObjectRouted({
     feature: "curriculum_authoring",
     schema: CurriculumSchema,
-    system: "You are a master real-estate trainer authoring an IN-DEPTH course for licensed agents of EVERY experience level — a nervous first-year licensee must be able to follow it start to finish, and a veteran must still learn something. Depth rules: define every term the first time it appears; walk any document or form SECTION BY SECTION (what it means, how to fill it, the mistakes that bite); give verbatim scripts wherever speech is involved; explain the WHY behind each step, never just the what. No summaries, no generic filler, no platitudes — if a lesson could fit on an index card, it is too shallow.",
+    system: withScriptStandards("You are a master real-estate trainer authoring an IN-DEPTH course for licensed agents of EVERY experience level — a nervous first-year licensee must be able to follow it start to finish, and a veteran must still learn something. Depth rules: define every term the first time it appears; walk any document or form SECTION BY SECTION (what it means, how to fill it, the mistakes that bite); give verbatim scripts wherever speech is involved; explain the WHY behind each step, never just the what. No summaries, no generic filler, no platitudes — if a lesson could fit on an index card, it is too shallow."),
     maxTokens: 6000,
     prompt: `Author a micro-course that closes this proven, recurring knowledge gap on our team:\n\nTopic: ${gap.topicLabel}\nWhy it matters: ${gap.rationale}${evidence}\n\nWrite tight, specific, and immediately actionable.`,
   })

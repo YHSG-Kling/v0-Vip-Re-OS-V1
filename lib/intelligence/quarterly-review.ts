@@ -38,6 +38,9 @@ export interface QuarterFacts {
    *  ledgers other rails already write) — the drift review's input. */
   trustIncidents: number
   expansion: ExpansionSuggestion | null
+  /** DEAL VELOCITY — the pre-composed decision→execution line (null when the
+   *  sample is too thin to claim honestly; see decision-velocity). */
+  velocityLine?: string | null
 }
 
 export interface QuarterlyReview {
@@ -73,6 +76,8 @@ export function composeQuarterlyReview(f: QuarterFacts): QuarterlyReview {
   trust.push(f.trustIncidents === 0
     ? `Zero trust incidents — no send failed, no deal was flagged, nothing needed a recovery. The standard held.`
     : `${f.trustIncidents} trust incident${f.trustIncidents === 1 ? "" : "s"} (failed sends, flagged deals, recoveries) — each one is on the ledger with what happened next.`)
+  // DEAL VELOCITY — the differentiator stat, only when the sample is honest.
+  if (f.velocityLine) trust.push(f.velocityLine)
 
   const gaps = [...f.unusedRails]
   if (f.briefingsOpened === 0) gaps.push(`The morning briefing went unread — it's where handoffs, client recognition, and wins surface daily.`)

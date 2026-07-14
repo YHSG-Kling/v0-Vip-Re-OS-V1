@@ -946,6 +946,44 @@ async function main() {
       && src("lib/kernel/manager-registry.ts").includes("esign_packet_completion:")
       && src("lib/kernel/manager-registry.ts").includes("os_self_audit:")
       && src("lib/kernel/manager-registry.ts").includes("demo_login_hard_gate:"))
+    const { computeDecisionVelocity, composeVelocityLine, MIN_SAMPLES } = await import("../lib/intelligence/decision-velocity")
+    const velT = new Date("2026-07-14T12:00:00Z")
+    const vel = computeDecisionVelocity([
+      { assigned_to_agent_id: "a1", status: "completed", created_at: "2026-07-10T00:00:00Z", completed_at: "2026-07-10T04:00:00Z" },
+      { assigned_to_agent_id: "a1", status: "completed", created_at: "2026-07-11T00:00:00Z", completed_at: "2026-07-11T08:00:00Z" },
+      { assigned_to_agent_id: "a1", status: "completed", created_at: "2026-07-12T00:00:00Z", completed_at: "2026-07-12T06:00:00Z" },
+      { assigned_to_agent_id: "a2", status: "pending", created_at: "2026-07-10T00:00:00Z", completed_at: null },
+      { assigned_to_agent_id: null, status: "pending", created_at: null, completed_at: null },
+    ], velT)
+    const thinVel = computeDecisionVelocity([
+      { assigned_to_agent_id: "a1", status: "completed", created_at: "2026-07-10T00:00:00Z", completed_at: "2026-07-10T01:00:00Z" },
+    ], velT)
+    const { parseFindingKind } = await import("../lib/platform/self-audit-rollup")
+    const { lintScriptQuality, SCRIPT_QUALITY_CHARTER } = await import("../lib/ai/script-standards")
+    check("DEAL-VELOCITY + TELEMETRY + SCRIPT CHARTER (approved recs + owner standard) — the velocity median is honest (3 samples → 6h median; 1 sample → NULL never fabricated; undated excluded; open-over-48h counted), the QBR line renders only on a real median, telemetry recovers finding kinds from the dedupe tags, and the charter (them-first + value-led + never salesy/basic + consumer-calibrated depth) rides the canonical copy rail + BOTH education authors + video scripts with the pure lint as deterministic backstop; all three registered",
+      vel.medianHours === 6 && vel.executed === 3 && vel.open === 1 && vel.openOver48h === 1
+      && vel.perAgent[0]?.agentId === "a1" && vel.perAgent[0]?.medianHours === 6
+      && thinVel.medianHours === null && MIN_SAMPLES === 3
+      && composeVelocityLine(vel)?.includes("median 6 hours") === true
+      && composeVelocityLine(thinVel) === null
+      && parseFindingKind("os_self_audit", "x [OS_AUDIT:decision_breach] [t-1]") === "decision_breach"
+      && parseFindingKind("signature_chase", "y [SIG_CHASE:escalate] [c:1]") === "signature_escalate"
+      && parseFindingKind("os_self_audit", null) === "os_self_audit"
+      && JSON.stringify(lintScriptQuality("Act now! Don't miss out!! Once in a lifetime!!!")) === JSON.stringify(["salesy_pressure", "exclamation_stacking"])
+      && lintScriptQuality("Just checking in — hope this finds you well.").includes("basic_filler")
+      && lintScriptQuality("Your kitchen photographed beautifully — three buyers asked about it this week.").length === 0
+      && SCRIPT_QUALITY_CHARTER.includes("THEM-FIRST") && SCRIPT_QUALITY_CHARTER.includes("LEAD WITH VALUE")
+      && src("lib/kernel/ai-copy.ts").includes("SCRIPT_QUALITY_CHARTER")
+      && src("lib/education/curriculum-author.ts").includes("withScriptStandards")
+      && src("lib/education/onboarding-authoring.ts").includes("withScriptStandards")
+      && src("app/actions/video/generate-script.ts").includes("SCRIPT_QUALITY_CHARTER")
+      && src("lib/intelligence/quarterly-review-loader.ts").includes("composeVelocityLine")
+      && src("lib/kernel/command-center.ts").includes("decisionVelocity")
+      && src("app/dashboard/admin/command-center/command-center-client.tsx").includes("execute speed")
+      && src("app/dashboard/admin/data-health/page.tsx").includes("What the OS caught itself")
+      && src("lib/kernel/manager-registry.ts").includes("deal_velocity_scoreboard:")
+      && src("lib/kernel/manager-registry.ts").includes("self_audit_telemetry:")
+      && src("lib/kernel/manager-registry.ts").includes("script_quality_charter:"))
     const { isShallowBody, recoverTopicForModule, DEPTH_MARKER } = await import("../lib/education/depth-reauthor")
     const reOnb = await recoverTopicForModule({ id: "m1", title: "old", summary: null, gap_tags: ["onboarding:solo_agent:contract_walkthrough"], audience_roles: ["agent"] }, "team")
     const reBook = await recoverTopicForModule({ id: "m2", title: "old", summary: null, gap_tags: ["program:book_authority:write_with_ai_team"], audience_roles: ["agent"] }, "solo_agent")

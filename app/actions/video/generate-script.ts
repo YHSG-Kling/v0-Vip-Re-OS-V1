@@ -156,11 +156,13 @@ Fair Housing compliance (Gate 4 — mandatory):
 
   // ── Claude script generation ─────────────────────────────────────────────────
   const typeSystemContext = buildTypeSystemContext()
+  const { SCRIPT_QUALITY_CHARTER } = await import("@/lib/ai/script-standards")
   const systemPrompt = [
     typeSystemContext[params.videoType] ?? typeSystemContext.custom,
     TONE_INSTRUCTIONS[params.tone] ?? TONE_INSTRUCTIONS.professional,
     brandVoiceBlock,
     themFirstBlock,
+    SCRIPT_QUALITY_CHARTER,
     fairHousingBlock,
     `Write ONLY the script content — no stage directions, no [pause] markers, no speaker labels.`,
     `Target approximately ${wordTarget} words (for a ${duration}-second video at a natural speaking pace).`,

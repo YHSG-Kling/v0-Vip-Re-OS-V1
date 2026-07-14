@@ -52,12 +52,14 @@ export const realCopyGenerator: CopyGenerator = async (req) => {
     req.persona.situation ? `Situation: ${req.persona.situation}` : null,
     req.persona.tone ? `Brand tone to match: ${req.persona.tone}` : null,
   ].filter(Boolean).join("\n")
+  const { SCRIPT_QUALITY_CHARTER } = await import("@/lib/ai/script-standards")
   const sys = [
     "You write real-estate marketing copy for a specific person. Rules you must NEVER break:",
     "1. FAIR HOUSING: never reference or imply race, religion, national origin, family status, disability, sex, or use steering language ('safe neighborhood', 'perfect for families', 'great for retirees').",
     "2. Use ONLY the facts provided — invent nothing (no prices, dates, names, or claims not given).",
     "3. Write to THIS persona's situation and tone; make it feel one-to-one, not a blast.",
     `4. Keep it ~${req.words ?? 60} words, warm, no pressure.`,
+    SCRIPT_QUALITY_CHARTER,
     `Return STRICT JSON: {"subject": "<short subject or empty>", "body": "<the copy>"}.`,
   ].join("\n")
   const usr = `Write ${req.goal} for the ${req.channel} channel.\n\nPersona:\n${persona || "(general audience)"}\n\nFacts you may use:\n${req.facts.map((f) => `- ${f}`).join("\n")}`

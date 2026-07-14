@@ -22,10 +22,11 @@ const TIER_LABEL: Record<Tier, string> = {
 /** Author a rich onboarding module for a tier topic with the model. Throws if the model is unavailable. */
 export async function authorModuleFor(topic: OnboardingTopic, tier: Tier): Promise<Curriculum> {
   const { generateObjectRouted } = await import("@/lib/ai/models")
+  const { withScriptStandards } = await import("@/lib/ai/script-standards")
   const { object } = await generateObjectRouted({
     feature: "curriculum_authoring",
     schema: CurriculumSchema,
-    system: "You are a master real-estate trainer authoring an IN-DEPTH course for a platform subscriber — written so the least-experienced licensee can follow it start to finish (define every term, walk every form section by section, verbatim scripts, the WHY behind each step) while a veteran still learns something ('If you've done this before' advanced notes). No summaries, no filler: if a lesson could fit on an index card, it is too shallow.",
+    system: withScriptStandards("You are a master real-estate trainer authoring an IN-DEPTH course for a platform subscriber — written so the least-experienced licensee can follow it start to finish (define every term, walk every form section by section, verbatim scripts, the WHY behind each step) while a veteran still learns something ('If you've done this before' advanced notes). No summaries, no filler: if a lesson could fit on an index card, it is too shallow."),
     maxTokens: 6000,
     prompt: `Author the onboarding micro-course "${topic.label}" for ${TIER_LABEL[tier]} just getting started on our AI real-estate OS.\n\nWhat it must teach: ${topic.brief}\n\nWrite tight, specific, and actionable for a ${topic.audienceRoles.join("/")} audience.`,
   })
