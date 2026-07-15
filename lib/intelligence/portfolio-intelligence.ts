@@ -1,37 +1,36 @@
 // lib/intelligence/portfolio-intelligence.ts
 //
-// PORTFOLIO INTELLIGENCE (data_steward → broker) — the brokerage-scale lens
-// TWO shine items share (one loader, two composers, no drift):
+// PORTFOLIO INTELLIGENCE (deal_coordinator → broker) — the brokerage-scale
+// lens two shine items share (one loader, two composers, no drift):
 //   #7 CROSS-PORTFOLIO STRATEGY ADVISOR — "where should I deploy agents,
-//      budget, and marketing?" — the regional-VP call, from real territory ROI.
-//   #9 PORTFOLIO RISK & OPPORTUNITY LENS — rising vs declining segments,
-//      underused farms, pricing pressure, pipeline risk, at the brokerage level.
+//      budget, and marketing?" — the regional-VP call.
+//   #9 PORTFOLIO RISK & OPPORTUNITY LENS — rising vs declining ZIPs,
+//      underused farms, where the book is thin.
 //
-// Grounded ONLY in territory_metrics (per-ZIP: leads, conversion, ROI,
-// cost-per-lead, agent_saturation) + farm_territories (which ZIPs the
-// brokerage is actually farming). HONEST by construction: a ZIP needs
-// MIN_ZIP_LEADS before its conversion/ROI is treated as signal (thin data is
-// never a verdict); no metrics at all → an empty read, never invented
-// strategy. Pure composers; the loader is best-effort. deal_coordinator's
-// broker surfaces render it; a monthly gated broker brief carries the top move.
+// OWNER CORRECTION: this is grounded in the agent's MANAGED BOOK — CONTACTS,
+// the relationships they own — NOT the platform-paid lead territory
+// (territory_metrics is subscription-included lead volume, not the agent's
+// book). We aggregate contacts by ZIP and how many CONVERTED to a closed
+// deal (contacts → transactions), joined to farm_territories (which ZIPs the
+// brokerage actually farms). That is the true "where is our business" map.
+//
+// HONEST by construction: a ZIP needs MIN_ZIP_CONTACTS before its close rate
+// is signal (thin data is never a verdict); no contacts at all → an empty
+// read, never invented strategy. Pure composers; the loader is best-effort.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 type Svc = SupabaseClient<any, any, any>
 
-export const MIN_ZIP_LEADS = 10
-export const WINDOW_DAYS = 90
-export const HOT_CONVERSION = 0.15   // ≥15% converting = a lane worth leaning into
-export const COLD_CONVERSION = 0.04  // ≤4% converting with volume = a lane bleeding budget
+export const MIN_ZIP_CONTACTS = 8    // a farm needs a real book before its close rate counts
+export const HOT_CLOSE_RATE = 0.10   // ≥10% of the book in a ZIP closing = a lane to lean into
+export const COLD_CLOSE_RATE = 0.02  // ≤2% with volume = a book that isn't converting
 
-export interface ZipMetric {
+export interface ZipBook {
   zip: string
-  leads: number
-  conversions: number
-  conversionRate: number
-  roi: number | null
-  costPerLead: number | null
-  saturation: number | null
+  contacts: number
+  closedDeals: number
+  closeRate: number
   /** Is the brokerage actively farming this ZIP (farm_territories)? */
   farmed: boolean
 }
@@ -40,123 +39,127 @@ export interface StrategyMove { key: string; zip: string | null; line: string }
 export interface RiskOpportunity { kind: "opportunity" | "risk"; zip: string; line: string }
 
 export interface PortfolioRead {
-  windowDays: number
   zips: number
+  totalContacts: number
   strategy: StrategyMove[]
   riskOps: RiskOpportunity[]
 }
 
-/** PURE: aggregate per-ZIP metric rows into one ZipMetric each (sum leads/conv, avg the rates). */
-export function aggregateZipMetrics(
-  rows: Array<{ zip_code: string | null; lead_count: number | null; conversion_count: number | null; roi: number | null; cost_per_lead: number | null; agent_saturation: number | null }>,
+/** PURE: fold contact rows (+ which contact ids closed a deal) into per-ZIP books. */
+export function aggregateContactBook(
+  contacts: Array<{ id: string; zip: string | null }>,
+  closedContactIds: Set<string>,
   farmedZips: Set<string>,
-): ZipMetric[] {
-  const byZip = new Map<string, { leads: number; conv: number; roi: number[]; cpl: number[]; sat: number[] }>()
-  for (const r of rows) {
-    const zip = (r.zip_code ?? "").trim()
-    if (!/^\d{5}/.test(zip)) continue
-    const z = zip.slice(0, 5)
-    const e = byZip.get(z) ?? { leads: 0, conv: 0, roi: [], cpl: [], sat: [] }
-    e.leads += Number(r.lead_count ?? 0)
-    e.conv += Number(r.conversion_count ?? 0)
-    if (r.roi != null) e.roi.push(Number(r.roi))
-    if (r.cost_per_lead != null) e.cpl.push(Number(r.cost_per_lead))
-    if (r.agent_saturation != null) e.sat.push(Number(r.agent_saturation))
+): ZipBook[] {
+  const byZip = new Map<string, { contacts: number; closed: number }>()
+  for (const c of contacts) {
+    const raw = (c.zip ?? "").trim()
+    if (!/^\d{5}/.test(raw)) continue
+    const z = raw.slice(0, 5)
+    const e = byZip.get(z) ?? { contacts: 0, closed: 0 }
+    e.contacts += 1
+    if (closedContactIds.has(c.id)) e.closed += 1
     byZip.set(z, e)
   }
-  const avg = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null)
   return [...byZip.entries()].map(([zip, e]) => ({
     zip,
-    leads: e.leads,
-    conversions: e.conv,
-    conversionRate: e.leads > 0 ? e.conv / e.leads : 0,
-    roi: avg(e.roi),
-    costPerLead: avg(e.cpl),
-    saturation: avg(e.sat),
+    contacts: e.contacts,
+    closedDeals: e.closed,
+    closeRate: e.contacts > 0 ? e.closed / e.contacts : 0,
     farmed: farmedZips.has(zip),
   }))
 }
 
-/** PURE #7: the deploy-agents/budget moves. Only defensible, sample-gated calls. */
-export function composeStrategyMoves(zips: ZipMetric[]): StrategyMove[] {
-  const proven = zips.filter((z) => z.leads >= MIN_ZIP_LEADS)
+/** PURE #7: deploy-agents/budget moves from the managed book. Sample-gated. */
+export function composeStrategyMoves(books: ZipBook[]): StrategyMove[] {
+  const proven = books.filter((b) => b.contacts >= MIN_ZIP_CONTACTS)
   const out: StrategyMove[] = []
   const pct = (n: number) => `${Math.round(n * 1000) / 10}%`
 
-  // Lean IN: a proven-hot ZIP the brokerage is NOT farming = the clearest budget move.
-  const hotUnfarmed = proven.filter((z) => z.conversionRate >= HOT_CONVERSION && !z.farmed)
-    .sort((a, b) => b.conversionRate - a.conversionRate)[0]
+  // Lean IN: a proven-converting ZIP the brokerage is NOT farming = the clearest move.
+  const hotUnfarmed = proven.filter((b) => b.closeRate >= HOT_CLOSE_RATE && !b.farmed)
+    .sort((a, b) => b.closeRate - a.closeRate)[0]
   if (hotUnfarmed) {
     out.push({
       key: "lean_in", zip: hotUnfarmed.zip,
-      line: `Put budget into ${hotUnfarmed.zip}: it converts at ${pct(hotUnfarmed.conversionRate)} on ${hotUnfarmed.leads} leads and you're not farming it yet — the fastest ROI move on the board.`,
+      line: `Plant your flag in ${hotUnfarmed.zip}: ${hotUnfarmed.closedDeals} of your ${hotUnfarmed.contacts} contacts there have closed (${pct(hotUnfarmed.closeRate)}) and you're not farming it yet — your book is already telling you where the business is.`,
     })
   }
 
-  // PULL BACK: a proven-cold, expensive, farmed ZIP = budget to redeploy.
-  const coldFarmed = proven.filter((z) => z.conversionRate <= COLD_CONVERSION && z.farmed)
-    .sort((a, b) => (b.costPerLead ?? 0) - (a.costPerLead ?? 0))[0]
+  // BIGGEST BOOK unfarmed: a large relationship base with no farm behind it.
+  const bigUnfarmed = proven.filter((b) => !b.farmed).sort((a, b) => b.contacts - a.contacts)[0]
+  if (bigUnfarmed && (!hotUnfarmed || bigUnfarmed.zip !== hotUnfarmed.zip)) {
+    out.push({
+      key: "farm_the_book", zip: bigUnfarmed.zip,
+      line: `You have ${bigUnfarmed.contacts} contacts in ${bigUnfarmed.zip} with no farm around them — a monthly touch to a base that size is the cheapest listings you'll ever earn.`,
+    })
+  }
+
+  // PULL BACK: a farmed ZIP where the book isn't converting = re-examine the spend.
+  const coldFarmed = proven.filter((b) => b.closeRate <= COLD_CLOSE_RATE && b.farmed)
+    .sort((a, b) => a.closeRate - b.closeRate)[0]
   if (coldFarmed) {
     out.push({
       key: "pull_back", zip: coldFarmed.zip,
-      line: `Reconsider ${coldFarmed.zip}: ${coldFarmed.leads} leads at only ${pct(coldFarmed.conversionRate)} conversion${coldFarmed.costPerLead ? ` and $${Math.round(coldFarmed.costPerLead)}/lead` : ""} — the budget here would work harder in a proven lane.`,
-    })
-  }
-
-  // ADD AGENTS: a hot ZIP with high saturation is leaving deals on the table.
-  const underStaffed = proven.filter((z) => z.conversionRate >= HOT_CONVERSION && (z.saturation ?? 0) >= 80)
-    .sort((a, b) => (b.saturation ?? 0) - (a.saturation ?? 0))[0]
-  if (underStaffed) {
-    out.push({
-      key: "add_capacity", zip: underStaffed.zip,
-      line: `${underStaffed.zip} is converting well but your agents there are near capacity (${Math.round(underStaffed.saturation ?? 0)}% saturated) — adding or reassigning an agent here captures demand you're currently dropping.`,
+      line: `Re-examine ${coldFarmed.zip}: you're farming ${coldFarmed.contacts} contacts there but only ${pct(coldFarmed.closeRate)} have closed — either the book needs nurture or the budget works harder in a proven lane.`,
     })
   }
   return out
 }
 
-/** PURE #9: rising/declining segments + underused farms + pipeline-risk read. */
-export function composeRiskOpportunities(zips: ZipMetric[]): RiskOpportunity[] {
-  const proven = zips.filter((z) => z.leads >= MIN_ZIP_LEADS)
+/** PURE #9: rising/declining segments from the managed book. */
+export function composeRiskOpportunities(books: ZipBook[]): RiskOpportunity[] {
+  const proven = books.filter((b) => b.contacts >= MIN_ZIP_CONTACTS)
   const out: RiskOpportunity[] = []
   const pct = (n: number) => `${Math.round(n * 1000) / 10}%`
-
-  for (const z of proven.filter((z) => z.conversionRate >= HOT_CONVERSION).sort((a, b) => b.conversionRate - a.conversionRate).slice(0, 2)) {
-    out.push({ kind: "opportunity", zip: z.zip, line: `${z.zip} is a rising segment — ${pct(z.conversionRate)} conversion on ${z.leads} leads${z.farmed ? "" : ", and you're not even farming it yet"}.` })
+  for (const b of proven.filter((b) => b.closeRate >= HOT_CLOSE_RATE).sort((a, b) => b.closeRate - a.closeRate).slice(0, 2)) {
+    out.push({ kind: "opportunity", zip: b.zip, line: `${b.zip} is your strongest segment — ${pct(b.closeRate)} of your ${b.contacts} contacts there have closed${b.farmed ? "" : ", and it isn't even farmed yet"}.` })
   }
-  for (const z of proven.filter((z) => z.conversionRate <= COLD_CONVERSION).sort((a, b) => a.conversionRate - b.conversionRate).slice(0, 2)) {
-    out.push({ kind: "risk", zip: z.zip, line: `${z.zip} is underperforming — ${z.leads} leads at ${pct(z.conversionRate)}${z.roi != null && z.roi < 1 ? ` and ROI below breakeven` : ""}; worth a hard look before next quarter's budget.` })
+  for (const b of proven.filter((b) => b.closeRate <= COLD_CLOSE_RATE).sort((a, b) => a.closeRate - b.closeRate).slice(0, 2)) {
+    out.push({ kind: "risk", zip: b.zip, line: `${b.zip} is underconverting — ${b.contacts} contacts, only ${pct(b.closeRate)} closed; the relationships are there but the business isn't following.` })
   }
   return out
 }
 
-/** Load territory metrics + farmed ZIPs and compose both lenses. */
-export async function loadPortfolioIntelligence(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<PortfolioRead> {
-  const since = new Date(now.getTime() - WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10)
-  const [{ data: metrics }, { data: farms }] = await Promise.all([
-    svc.from("territory_metrics")
-      .select("zip_code, lead_count, conversion_count, roi, cost_per_lead, agent_saturation")
-      .eq("brokerage_id", brokerageId).gte("metric_date", since).limit(5000),
+/** Load the managed book (contacts + which closed) + farmed ZIPs, then compose both lenses. */
+export async function loadPortfolioIntelligence(svc: Svc, brokerageId: string): Promise<PortfolioRead> {
+  const [{ data: contactRows }, { data: farms }] = await Promise.all([
+    svc.from("contacts").select("id, zip_code, mailing_zip").eq("brokerage_id", brokerageId).limit(20000),
     svc.from("farm_territories").select("zip_codes").eq("brokerage_id", brokerageId).eq("is_active", true).limit(500),
   ])
+
+  const contacts = ((contactRows ?? []) as any[]).map((c) => ({ id: c.id as string, zip: (c.zip_code ?? c.mailing_zip ?? null) as string | null }))
+
+  // Which of these contacts CONVERTED to a closed deal (contacts → transactions).
+  const closedContactIds = new Set<string>()
+  if (contacts.length > 0) {
+    const { data: closed } = await svc.from("transactions")
+      .select("contact_id, buyer_contact_id").eq("brokerage_id", brokerageId).eq("status", "closed").limit(20000)
+    for (const t of ((closed ?? []) as any[])) {
+      if (t.contact_id) closedContactIds.add(t.contact_id)
+      if (t.buyer_contact_id) closedContactIds.add(t.buyer_contact_id)
+    }
+  }
+
   const farmedZips = new Set<string>()
   for (const f of ((farms ?? []) as any[])) {
     for (const z of ((f.zip_codes ?? []) as string[])) {
       if (typeof z === "string" && /^\d{5}/.test(z)) farmedZips.add(z.slice(0, 5))
     }
   }
-  const zips = aggregateZipMetrics(((metrics ?? []) as any[]), farmedZips)
+
+  const books = aggregateContactBook(contacts, closedContactIds, farmedZips)
   return {
-    windowDays: WINDOW_DAYS,
-    zips: zips.length,
-    strategy: composeStrategyMoves(zips),
-    riskOps: composeRiskOpportunities(zips),
+    zips: books.length,
+    totalContacts: contacts.length,
+    strategy: composeStrategyMoves(books),
+    riskOps: composeRiskOpportunities(books),
   }
 }
 
 /** Monthly gated broker brief carrying the top strategy move + top risk. Idempotent per (brokerage, month). */
 export async function runPortfolioAdvisor(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<{ proposed: boolean }> {
-  const read = await loadPortfolioIntelligence(svc, brokerageId, now)
+  const read = await loadPortfolioIntelligence(svc, brokerageId)
   if (read.strategy.length === 0 && read.riskOps.length === 0) return { proposed: false }
   const tag = `portfolio_advisor:${now.toISOString().slice(0, 7)}`
   const { data: dup } = await svc.from("agent_client_messages")
@@ -164,7 +167,7 @@ export async function runPortfolioAdvisor(svc: Svc, brokerageId: string, now: Da
   if (dup) return { proposed: false }
 
   const body = [
-    "This month's portfolio read, from your own territory ROI (not a national average):",
+    "This month's portfolio read, from your own book of business (the contacts you manage, not paid leads):",
     "",
     ...read.strategy.map((m, i) => `${i + 1}. ${m.line}`),
     ...read.riskOps.filter((r) => r.kind === "risk").slice(0, 1).map((r) => `• Watch: ${r.line}`),
@@ -174,13 +177,13 @@ export async function runPortfolioAdvisor(svc: Svc, brokerageId: string, now: Da
   await proposeClientMessage({
     brokerageId, agentKind: "deal_coordinator", entityType: "brokerage", entityId: brokerageId,
     audience: "agent", subject: "Where to deploy next month — your portfolio read",
-    body, rationale: `${tag} — cross-portfolio strategy + risk from territory_metrics (${read.zips} ZIPs); broker decides, nothing moves automatically.`,
+    body, rationale: `${tag} — cross-portfolio strategy + risk from the managed contact book (${read.zips} ZIPs, ${read.totalContacts} contacts); broker decides, nothing moves automatically.`,
     channel: "portal",
   }).catch(() => {})
   return { proposed: true }
 }
 
-/** Autonomous: multi-location brokerages, monthly (rides the weekly recruit-outreach cron, month-idempotent). */
+/** Autonomous: brokerage/multi-location tiers, monthly (rides the weekly recruit-outreach cron, month-idempotent). */
 export async function runPortfolioAdvisorAll(svc: Svc): Promise<{ brokerages: number; proposed: number }> {
   const { data: brokerages } = await svc.from("brokerages").select("id, plan_tier").in("plan_tier", ["brokerage", "multi_location"]).limit(500)
   let proposed = 0

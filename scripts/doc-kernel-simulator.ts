@@ -1099,42 +1099,43 @@ async function main() {
       && src("app/actions/time-to-value.ts").includes("getMyTimeToValue")
       && src("lib/kernel/manager-registry.ts").includes("time_to_value_radar:")
       && src("lib/kernel/manager-registry.ts").includes("consistency_guardian:"))
-    const { aggregateZipMetrics, composeStrategyMoves, composeRiskOpportunities, MIN_ZIP_LEADS } = await import("../lib/intelligence/portfolio-intelligence")
-    const zMetrics = aggregateZipMetrics([
-      { zip_code: "78701", lead_count: 40, conversion_count: 8, roi: 3, cost_per_lead: 20, agent_saturation: 90 },  // hot + saturated
-      { zip_code: "78702", lead_count: 30, conversion_count: 1, roi: 0.5, cost_per_lead: 80, agent_saturation: 40 }, // cold farmed
-      { zip_code: "78703", lead_count: 3, conversion_count: 2, roi: 9, cost_per_lead: 5, agent_saturation: 10 },     // thin — must be ignored
-    ], new Set(["78702"]))
-    const moves = composeStrategyMoves(zMetrics)
-    const riskOps = composeRiskOpportunities(zMetrics)
-    const { composeCampaignPlan, composeCampaignSummary } = await import("../lib/agents/campaign-composer")
-    const planFull = composeCampaignPlan("listing_launch", ["email", "sms", "social_post", "direct_mail"])
-    const planPartial = composeCampaignPlan("listing_launch", ["email"])
-    const { normalizeGuardrails, evaluateOpsGate } = await import("../lib/agents/ops-task-rail")
-    const gr = normalizeGuardrails({ allowedDomains: ["mls.example.com"], requiresApproval: true })
-    const gateOff = evaluateOpsGate({ executionEnabled: false, guardrails: gr, approved: true })
-    const gateNoDomain = evaluateOpsGate({ executionEnabled: true, guardrails: normalizeGuardrails({}), approved: true })
-    const gateOk = evaluateOpsGate({ executionEnabled: true, guardrails: gr, approved: true })
-    check("PORTFOLIO INTELLIGENCE #7/#9 + CAMPAIGN COMPOSER #2 + OPS-TASK RAIL #3 — territory ROI drives lean-in/pull-back/add-capacity moves (thin ZIP ignored below MIN_LEADS), the campaign supervisor marks only registered channels available (partial plan reports connect-these), and the ops gate is DENY-BY-DEFAULT (execution-off blocks, no-domain blocks, only fully-provisioned runs); all registered + gated",
-      zMetrics.length === 3 && zMetrics.find((z) => z.zip === "78701")!.farmed === false
+    const { aggregateContactBook, composeStrategyMoves, composeRiskOpportunities, MIN_ZIP_CONTACTS } = await import("../lib/intelligence/portfolio-intelligence")
+    // Owner correction: portfolio is the MANAGED CONTACT BOOK, not paid-lead territory.
+    const bookContacts = [
+      ...Array.from({ length: 20 }, (_, i) => ({ id: `h${i}`, zip: "78701" })), // hot unfarmed: 20 contacts, 3 closed
+      ...Array.from({ length: 15 }, (_, i) => ({ id: `c${i}`, zip: "78702" })), // cold farmed: 15 contacts, 0 closed
+      ...Array.from({ length: 3 }, (_, i) => ({ id: `t${i}`, zip: "78703" })),  // thin — must be ignored
+    ]
+    const closedIds = new Set(["h0", "h1", "h2"]) // 3 of the 20 in 78701 closed = 15%
+    const books = aggregateContactBook(bookContacts, closedIds, new Set(["78702"]))
+    const moves = composeStrategyMoves(books)
+    const riskOps = composeRiskOpportunities(books)
+    const { composeConnectionImpact, composeConnectionHeadline, PROVIDER_IMPACT } = await import("../lib/agentic-os/connection-impact")
+    const impact = composeConnectionImpact({ connectors: [
+      { provider: "instagram", status: "expired", expiresAt: "2026-07-01", actionRequired: true },
+      { provider: "dotloop", status: "expiring_soon", expiresAt: "2026-07-20", actionRequired: true },
+      { provider: "gmail", status: "connected", expiresAt: null, actionRequired: false },
+    ] as any })
+    const impactHealthy = composeConnectionImpact({ connectors: [{ provider: "gmail", status: "connected", expiresAt: null, actionRequired: false }] as any })
+    check("PORTFOLIO INTELLIGENCE #7/#9 (owner correction: MANAGED CONTACT BOOK, not paid-lead territory) + TENANT CONNECTION HEALTH (owner's real #3: connectivity fabric, not RPA) — the book drives lean-in to a proven-converting unfarmed ZIP + farm-the-book + pull-back (thin ZIP ignored below MIN_CONTACTS), and the connection impact translates a dead connector into the business flow it broke (broken before expiring; healthy = silence); the redundant campaign composer + RPA ops rail were REMOVED",
+      books.length === 3 && books.find((b) => b.zip === "78701")!.closeRate === 0.15
       && moves.some((m) => m.key === "lean_in" && m.zip === "78701")
       && moves.some((m) => m.key === "pull_back" && m.zip === "78702")
-      && moves.some((m) => m.key === "add_capacity" && m.zip === "78701")
-      && !JSON.stringify(moves).includes("78703") && MIN_ZIP_LEADS === 10
+      && !JSON.stringify(moves).includes("78703") && MIN_ZIP_CONTACTS === 8
       && riskOps.some((r) => r.kind === "opportunity" && r.zip === "78701")
       && riskOps.some((r) => r.kind === "risk" && r.zip === "78702")
-      && planFull.actionable === true && planFull.tasks.filter((t) => t.available).length === 4 && planFull.unavailableChannels.length === 0
-      && planPartial.actionable === true && planPartial.unavailableChannels.includes("social_post")
-      && Boolean(composeCampaignSummary(planPartial).includes("Connect"))
-      && gr.readOnly === true && gateOff.canRun === false && (gateOff as any).reason.includes("not enabled")
-      && gateNoDomain.canRun === false && (gateNoDomain as any).reason.includes("allowed domains")
-      && gateOk.canRun === true
+      && impact.needsAttention === true && impact.broken.length === 1 && impact.broken[0].provider === "instagram"
+      && Boolean(impact.broken[0].line.includes("Instagram listing posts")) && impact.expiring.length === 1 && impact.expiring[0].provider === "dotloop"
+      && Boolean(impact.expiring[0].line.includes("signature")) && Boolean(composeConnectionHeadline(impact).includes("Instagram"))
+      && impactHealthy.needsAttention === false && composeConnectionHeadline(impactHealthy) === ""
+      && PROVIDER_IMPACT["meta"].includes("Instagram")
       && src("app/dashboard/brokerage/page.tsx").includes("BrokerPortfolioPanel")
+      && src("app/dashboard/agent/page.tsx").includes("ConnectionHealthCard")
       && src("app/api/cron/recruit-outreach/route.ts").includes("runPortfolioAdvisorAll")
-      && src("scripts/l55-s01-ops-task-queue.sql").includes("ops_task_runs")
       && src("lib/kernel/manager-registry.ts").includes("portfolio_intelligence:")
-      && src("lib/kernel/manager-registry.ts").includes("campaign_composer:")
-      && src("lib/kernel/manager-registry.ts").includes("ops_task_rail:"))
+      && src("lib/kernel/manager-registry.ts").includes("connection_health_impact:")
+      && !src("lib/kernel/manager-registry.ts").includes("campaign_composer:")
+      && !src("lib/kernel/manager-registry.ts").includes("ops_task_rail:"))
     const { isShallowBody, recoverTopicForModule, DEPTH_MARKER } = await import("../lib/education/depth-reauthor")
     const reOnb = await recoverTopicForModule({ id: "m1", title: "old", summary: null, gap_tags: ["onboarding:solo_agent:contract_walkthrough"], audience_roles: ["agent"] }, "team")
     const reBook = await recoverTopicForModule({ id: "m2", title: "old", summary: null, gap_tags: ["program:book_authority:write_with_ai_team"], audience_roles: ["agent"] }, "solo_agent")

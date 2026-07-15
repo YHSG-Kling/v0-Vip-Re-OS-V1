@@ -20,7 +20,7 @@ export function BrokerPortfolioPanel({ read }: { read: PortfolioRead | null }) {
           <Map className="h-4 w-4 text-indigo-600" />
           Portfolio strategy — where to deploy
         </CardTitle>
-        <p className="text-xs text-muted-foreground">From your own territory ROI across {read.zips} ZIPs · last {read.windowDays} days</p>
+        <p className="text-xs text-muted-foreground">From your own book — {read.totalContacts} contacts across {read.zips} ZIPs</p>
       </CardHeader>
       <CardContent className="space-y-3">
         {read.strategy.map((m) => (
