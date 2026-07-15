@@ -33,6 +33,7 @@ import {
   BrokerCommandStrip,
   BrokerRiskRadar,
   BrokerPortfolioPanel,
+  BrokerSelfHealPanel,
   BrokerFinancialPulse,
   BrokerDealHealthPanel,
   BrokerTeamPerformancePanel,
@@ -673,6 +674,7 @@ export default async function BrokerageDashboard({
         <div className="space-y-6">
           <BrokerRiskRadar signals={riskSignals} />
           <ConnectionHealthCard scope="brokerage" />
+          <BrokerSelfHealPanel />
           <BrokerPortfolioPanel read={portfolioRead} />
           <BrokerFinancialPulse
             ytdRevenue={totalGCI || 0}

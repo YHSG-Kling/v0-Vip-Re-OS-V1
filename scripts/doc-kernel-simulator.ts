@@ -1138,6 +1138,21 @@ async function main() {
       && src("app/api/cron/deal-health-scan/route.ts").includes("runFlowIntegrityAll")
       && src("lib/kernel/manager-registry.ts").includes("connection_scope_and_nudge:")
       && src("lib/kernel/manager-registry.ts").includes("flow_integrity:"))
+    const { classifyFlowRemediation } = await import("../lib/kernel/self-heal-ledger")
+    const remSafe = classifyFlowRemediation("packet_completion")
+    const remUnsafe = classifyFlowRemediation("some_unknown_flow")
+    check("SELF-HEALING OS (owner: data flows self-heal like connectors) — a packet_completion break is classified deterministically SAFE (auto re-run the idempotent completion), an unknown flow is NOT safe (escalate not blind-fix); flow-integrity now auto-remediates + records to the unified self_heal_events ledger, the connector auto-applier writes the SAME ledger, and the broker 'repaired itself' panel reads the rollup; registered",
+      remSafe.safe === true && remSafe.action === "complete_packet" && Boolean(remSafe.reason.includes("idempotent"))
+      && remUnsafe.safe === false && remUnsafe.action === null && Boolean(remUnsafe.reason.includes("escalate"))
+      && src("lib/kernel/flow-integrity.ts").includes("classifyFlowRemediation")
+      && src("lib/kernel/flow-integrity.ts").includes('request_status: "completed"')
+      && src("lib/kernel/flow-integrity.ts").includes("out.healed++")
+      && src("lib/agentic-os/connector-auto-applier.ts").includes("recordSelfHeal")
+      && src("lib/agentic-os/connector-auto-applier.ts").includes('domain: "connector"')
+      && src("scripts/l56-s01-self-heal-events.sql").includes("self_heal_events")
+      && src("app/dashboard/brokerage/page.tsx").includes("BrokerSelfHealPanel")
+      && src("lib/kernel/manager-registry.ts").includes("self_healing_os:")
+      && src("lib/kernel/manager-registry.ts").includes('self_heal_events: "cron_manager"'))
     check("PORTFOLIO INTELLIGENCE #7/#9 (owner correction: MANAGED CONTACT BOOK, not paid-lead territory) + TENANT CONNECTION HEALTH (owner's real #3: connectivity fabric, not RPA) — the book drives lean-in to a proven-converting unfarmed ZIP + farm-the-book + pull-back (thin ZIP ignored below MIN_CONTACTS), and the connection impact translates a dead connector into the business flow it broke (broken before expiring; healthy = silence); the redundant campaign composer + RPA ops rail were REMOVED",
       books.length === 3 && books.find((b) => b.zip === "78701")!.closeRate === 0.15
       && moves.some((m) => m.key === "lean_in" && m.zip === "78701")

@@ -65,11 +65,11 @@ export function detectPacketCompletionGaps(contracts: SignedContractRow[], packe
   return out
 }
 
-export interface FlowIntegrityResult { scanned: number; breaks: number; notified: number }
+export interface FlowIntegrityResult { scanned: number; breaks: number; healed: number; notified: number }
 
 /** Assert the cross-surface contracts for one brokerage; surface real breaks to ops (deduped). */
 export async function runFlowIntegrity(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<FlowIntegrityResult> {
-  const out: FlowIntegrityResult = { scanned: 0, breaks: 0, notified: 0 }
+  const out: FlowIntegrityResult = { scanned: 0, breaks: 0, healed: 0, notified: 0 }
   const since = new Date(now.getTime() - FLOW_LOOKBACK_DAYS * 86_400_000).toISOString()
 
   const [{ data: contracts }, { data: packets }] = await Promise.all([
@@ -89,17 +89,47 @@ export async function runFlowIntegrity(svc: Svc, brokerageId: string, now: Date 
   out.breaks = breaks.length
   if (breaks.length === 0) return out
 
+  // SELF-HEAL (owner: data flows self-heal like connectors). A deterministically
+  // SAFE break is auto-remediated (the idempotent completion re-run); anything
+  // else escalates to a human. Every attempt lands on the self-heal ledger.
+  const { classifyFlowRemediation, recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+  const now2 = new Date().toISOString()
+  const escalated: FlowBreak[] = []
+  for (const brk of breaks) {
+    const decision = classifyFlowRemediation(brk.flow)
+    if (decision.safe && decision.action === "complete_packet") {
+      // Re-run the EXACT idempotent completion the finalizer does (is-null guarded).
+      const { error } = await svc.from("signature_requests")
+        .update({ request_status: "completed", completed_at: now2 })
+        .eq("provider_envelope_id", brk.key).is("completed_at", null)
+      const outcome = error ? "failed" : "healed"
+      if (!error) out.healed++
+      await recordSelfHeal(svc, {
+        brokerageId, domain: "data_flow", subject: brk.key, action: "complete_packet",
+        outcome, detail: { flow: brk.flow, reason: decision.reason },
+      })
+      if (error) escalated.push(brk)
+    } else {
+      escalated.push(brk)
+      await recordSelfHeal(svc, {
+        brokerageId, domain: "data_flow", subject: brk.key, action: "none",
+        outcome: "escalated", detail: { flow: brk.flow, reason: decision.reason },
+      })
+    }
+  }
+
+  // Only what could NOT self-heal reaches a human (deduped).
+  if (escalated.length === 0) return out
   const tag = `[FLOW_INTEGRITY:${brokerageId}:packet]`
   const { data: dup } = await svc.from("notifications").select("id").ilike("body", `%${tag}%`).limit(1).maybeSingle()
   if (dup) return out
-
   const { data: owners } = await svc.from("users").select("id")
     .eq("brokerage_id", brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(3)
   for (const u of ((owners ?? []) as Array<{ id: string }>)) {
     const { error } = await svc.from("notifications").insert({
       brokerage_id: brokerageId, user_id: u.id, type: "flow_integrity",
-      title: "A signed document didn't finish its handoff",
-      body: `${breaks.length} signed envelope${breaks.length === 1 ? "" : "s"} completed signing but the packet never closed — clients may still see a Sign button on a signed doc. Support can re-run completion. ${tag}`.slice(0, 480),
+      title: "A signed document couldn't finish its handoff",
+      body: `${escalated.length} signed envelope${escalated.length === 1 ? "" : "s"} completed signing but the packet couldn't be auto-closed — support needs to look. ${tag}`.slice(0, 480),
       priority: "high", channel: "in_app", is_read: false,
     })
     if (!error) out.notified++
@@ -108,12 +138,12 @@ export async function runFlowIntegrity(svc: Svc, brokerageId: string, now: Date 
 }
 
 /** Autonomous: every brokerage (rides the deal-health-scan cron). */
-export async function runFlowIntegrityAll(svc: Svc): Promise<{ brokerages: number; breaks: number }> {
+export async function runFlowIntegrityAll(svc: Svc): Promise<{ brokerages: number; breaks: number; healed: number }> {
   const { data: brokerages } = await svc.from("brokerages").select("id").limit(1000)
-  let breaks = 0
+  let breaks = 0, healed = 0
   for (const b of ((brokerages ?? []) as Array<{ id: string }>)) {
     const r = await runFlowIntegrity(svc, b.id).catch(() => null)
-    if (r) breaks += r.breaks
+    if (r) { breaks += r.breaks; healed += r.healed }
   }
-  return { brokerages: (brokerages ?? []).length, breaks }
+  return { brokerages: (brokerages ?? []).length, breaks, healed }
 }

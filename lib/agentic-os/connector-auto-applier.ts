@@ -122,6 +122,17 @@ export async function autoApplyPendingProposals(opts?: {
       connector:     p.connector as string,
       proposal_kind: p.proposal_kind as string,
     })
+    // Unify onto the ONE self-healing ledger (owner: connectors + data flows
+    // heal on the same visible spine). Best-effort; a ledger write never fails.
+    try {
+      const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+      await recordSelfHeal(svc, {
+        brokerageId: (p as any).brokerage_id ?? null,
+        domain: "connector", subject: p.connector as string,
+        action: p.proposal_kind as string, outcome: "healed",
+        detail: { proposalId: p.id, confidence: p.confidence },
+      })
+    } catch { /* ledger is additive */ }
   }
 
   return result

@@ -155,17 +155,18 @@ export async function GET(request: NextRequest) {
 
     // FLOW INTEGRITY — assert the OS's own surface-to-surface contracts (a
     // signed envelope whose packet-completion silently didn't fire). Best-effort.
-    let flowBreaks = 0
+    let flowBreaks = 0, flowHealed = 0
     try {
       const { runFlowIntegrityAll } = await import("@/lib/kernel/flow-integrity")
-      flowBreaks = (await runFlowIntegrityAll(supabase)).breaks
+      const fi = await runFlowIntegrityAll(supabase)
+      flowBreaks = fi.breaks; flowHealed = fi.healed
     } catch (e) { console.error("[deal-health-scan] flow-integrity failed (non-blocking)", e) }
 
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: transactions.length,
       output_count: atRiskCount,
-      metadata: { total: transactions.length, atRiskCount, selfAudit, flowBreaks },
+      metadata: { total: transactions.length, atRiskCount, selfAudit, flowBreaks, flowHealed },
     })
 
     return NextResponse.json({
