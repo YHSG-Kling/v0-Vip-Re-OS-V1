@@ -34,6 +34,7 @@ import {
   BrokerRiskRadar,
   BrokerPortfolioPanel,
   BrokerSelfHealPanel,
+  BrokerExceptionCenter,
   BrokerFinancialPulse,
   BrokerDealHealthPanel,
   BrokerTeamPerformancePanel,
@@ -675,6 +676,7 @@ export default async function BrokerageDashboard({
           <BrokerRiskRadar signals={riskSignals} />
           <ConnectionHealthCard scope="brokerage" />
           <BrokerSelfHealPanel />
+          <BrokerExceptionCenter />
           <BrokerPortfolioPanel read={portfolioRead} />
           <BrokerFinancialPulse
             ytdRevenue={totalGCI || 0}

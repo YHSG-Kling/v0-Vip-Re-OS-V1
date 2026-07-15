@@ -1260,6 +1260,41 @@ async function main() {
       && src("scripts/l58-s01-ingress-dead-letters.sql").includes("ingress_dead_letters")
       && src("lib/kernel/manager-registry.ts").includes("ingress_continuity:")
       && src("lib/kernel/manager-registry.ts").includes('ingress_dead_letters: "cron_manager"'))
+    // ── EXCEPTION CENTER + CONTINUITY RECEIPTS (Continuity Engine components 5 + 7) ──
+    const ec = await import("../lib/kernel/exception-center")
+    const ecRead = ec.composeExceptionCenter([
+      { id: "x1", subject: "S1", action: "none", outcome: "escalated", detail: { flow: "listing_agreement_stage_gap", reason: "stage machine fires automations" }, createdAt: "2026-07-10T10:00:00Z" },
+      { id: "x2", subject: "S2", action: "none", outcome: "escalated", detail: { flow: "walkthrough_shaky_gap" }, createdAt: "2026-07-11T10:00:00Z" },
+      { id: "x3", subject: "S2", action: "none", outcome: "resolved", detail: { flow: "walkthrough_shaky_gap", original_event_id: "x2" }, createdAt: "2026-07-12T10:00:00Z" },          // append-only closure
+      { id: "x4", subject: "T1", action: "recreate_decision_task", outcome: "healed", detail: { flow: "decision_task_missing" }, createdAt: "2026-07-12T11:00:00Z" },                   // probation → supervised list
+      { id: "x5", subject: "T2", action: "complete_packet", outcome: "healed", detail: { flow: "packet_completion" }, createdAt: "2026-07-12T12:00:00Z" },                              // seed_safe → NOT listed
+      { id: "x6", subject: "T3", action: "reflag_shaky", outcome: "healed", detail: { flow: "walkthrough_shaky_gap" }, createdAt: "2026-07-12T13:00:00Z" },
+      { id: "x7", subject: "T3", action: "reflag_shaky", outcome: "failed", detail: { flow: "walkthrough_shaky_gap", human_flagged: true }, createdAt: "2026-07-12T14:00:00Z" },        // already vetoed → gone
+    ])
+    const vetoDemotes = shl.classifyFlowRemediation("walkthrough_shaky_gap", { healed: 6, failed: 1 })  // one human veto = supervised again
+    const cr = await import("../lib/kernel/continuity-receipt")
+    const rVerified  = cr.composeContinuityReceipt({ openBreaks: 0, repairedLast30d: 0, checkedAtIso: "2026-07-15T12:00:00Z" })
+    const rRepaired  = cr.composeContinuityReceipt({ openBreaks: 0, repairedLast30d: 2, checkedAtIso: "2026-07-15T12:00:00Z" })
+    const rAttention = cr.composeContinuityReceipt({ openBreaks: 1, repairedLast30d: 5, checkedAtIso: "2026-07-15T12:00:00Z" })
+    const receiptCopy = [rVerified, rRepaired, rAttention].map((r) => `${r.line} ${r.subline}`).join(" ")
+    check("EXCEPTION CENTER (append-only closure + the ratchet's feedback loop) + DEAL CONTINUITY RECEIPTS (client trust, charter tone) — an escalation stays OPEN until a LATER resolved/dismissed/healed row closes it (S1 open, S2 closed); only PROBATION heals are veto-able (seed_safe complete_packet not listed; an already-vetoed repair disappears); ONE human veto (failed row) demotes an earned action back to supervised; the receipt runs real per-deal checks — attention wins over repaired wins over verified, and the client copy never says webhook/database/error/sync failure; wired on the brokerage command center + portal transaction page",
+      ecRead.open.length === 1 && ecRead.open[0].subject === "S1" && ecRead.open[0].flow === "listing_agreement_stage_gap"
+      && Boolean(ecRead.open[0].describes.length > 0) && Boolean(ecRead.open[0].reason.includes("stage machine"))
+      && ecRead.supervised.length === 1 && ecRead.supervised[0].subject === "T1" && ecRead.supervised[0].action === "recreate_decision_task"
+      && vetoDemotes.notify === true && vetoDemotes.earned === false
+      && rVerified.status === "verified" && rRepaired.status === "repaired" && rAttention.status === "attention"
+      && rRepaired.repairedLast30d === 2 && rAttention.openItems === 1
+      && !receiptCopy.toLowerCase().includes("webhook") && !receiptCopy.toLowerCase().includes("database") && !receiptCopy.toLowerCase().includes("error")
+      && src("app/actions/exception-center.ts").includes("flagRepairWrong")
+      && src("app/actions/exception-center.ts").includes('outcome: "failed"')
+      && src("app/actions/exception-center.ts").includes("human_flagged: true")
+      && src("app/actions/exception-center.ts").includes("runFlowIntegrity")
+      && src("app/dashboard/brokerage/page.tsx").includes("BrokerExceptionCenter")
+      && src("app/portal/[contactId]/transaction/[transactionId]/page.tsx").includes("ContinuityReceiptCard")
+      && src("app/actions/continuity-receipt.ts").includes("isParty")
+      && src("scripts/l59-s01-self-heal-outcome-resolution-vocab.sql").includes("'dismissed'")
+      && src("lib/kernel/manager-registry.ts").includes("exception_center:")
+      && src("lib/kernel/manager-registry.ts").includes("continuity_receipts:"))
     check("PORTFOLIO INTELLIGENCE #7/#9 (owner correction: MANAGED CONTACT BOOK, not paid-lead territory) + TENANT CONNECTION HEALTH (owner's real #3: connectivity fabric, not RPA) — the book drives lean-in to a proven-converting unfarmed ZIP + farm-the-book + pull-back (thin ZIP ignored below MIN_CONTACTS), and the connection impact translates a dead connector into the business flow it broke (broken before expiring; healthy = silence); the redundant campaign composer + RPA ops rail were REMOVED",
       books.length === 3 && books.find((b) => b.zip === "78701")!.closeRate === 0.15
       && moves.some((m) => m.key === "lean_in" && m.zip === "78701")

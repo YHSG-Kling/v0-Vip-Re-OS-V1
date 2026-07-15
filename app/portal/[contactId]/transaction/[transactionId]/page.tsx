@@ -32,6 +32,7 @@ import {
 } from "lucide-react"
 import { ClientFeedbackWidget } from "./client-feedback-widget"
 import { LoanChecklistCard } from "./loan-checklist-card"
+import { ContinuityReceiptCard } from "@/app/components/portal/continuity-receipt-card"
 import { cn } from "@/lib/utils"
 import { format } from "date-fns"
 
@@ -306,6 +307,9 @@ export default function TransactionDashboard() {
                 </div>
               )}
             </Card>
+
+            {/* Continuity receipt — the OS proves the file is in sync (real checks run at read time) */}
+            <ContinuityReceiptCard contactId={contactId} transactionId={transactionId} />
 
             {/* Loan conditions — what the lender still needs (renders only with real loan state) */}
             <LoanChecklistCard contactId={contactId} transactionId={transactionId} />
