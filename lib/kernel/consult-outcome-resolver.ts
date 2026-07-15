@@ -44,7 +44,7 @@ export async function resolveConsultOutcomes(input: ResolveConsultInput, client?
     .select("id, to_manager, contact_id, entity_id, entity_type, payload, status, consumed_action")
     .eq("brokerage_id", input.brokerageId)
     .eq("signal_type", "second_opinion_requested")
-    .neq("status", "resolved")
+    .neq("status", "consumed")
     .limit(50)
   // Match the play's entity — by contact and/or by entity id.
   if (input.contactId && input.entityId) {
@@ -78,7 +78,7 @@ export async function resolveConsultOutcomes(input: ResolveConsultInput, client?
 
     // Mark the huddle resolved so the verdict is recorded exactly once.
     await svc.from("manager_signals").update({
-      status: "resolved",
+      status: "consumed",
       consumed_action: `consult outcome recorded: ${sig.to_manager}'s ${playType} read proven ${input.success ? "right" : "wrong"}`,
       consumed_at: new Date().toISOString(),
       payload: { ...(sig.payload ?? {}), outcome_recorded: true, outcome_success: input.success },

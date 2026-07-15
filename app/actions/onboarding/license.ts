@@ -114,7 +114,7 @@ export async function getAgentLicenseStatus(
         .insert({
           agent_id: agentId,
           brokerage_id: agent.brokerage_id,
-          status: "started",
+          status: "in_progress",
           start_date: new Date().toISOString().split("T")[0],
           current_day: 1,
           completion_percentage: 0,
@@ -731,7 +731,7 @@ export async function markComplianceComplete(
         await supabase
           .from("agent_onboarding")
           .update({
-            status: "brand_configured",
+            status: "in_progress",
             updated_at: now,
           })
           .eq("id", onboarding.id)

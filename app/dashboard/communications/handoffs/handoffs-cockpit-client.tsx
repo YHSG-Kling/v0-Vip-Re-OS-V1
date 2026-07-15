@@ -255,7 +255,7 @@ export function HandoffsCockpitClient({ contacts: initialContacts, agentId, brok
     if (action === "approve") {
       await supabase
         .from("ai_message_drafts")
-        .update({ status: "approved", acted_at: new Date().toISOString() })
+        .update({ status: "accepted", acted_at: new Date().toISOString() })
         .eq("id", draftId)
     } else {
       await supabase

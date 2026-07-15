@@ -38,7 +38,7 @@ export async function extractOfferFromPdf(params: {
   // Mark extraction in progress
   await supabase
     .from("offers")
-    .update({ ai_extraction_status: "processing" })
+    .update({ ai_extraction_status: "extracting" })
     .eq("id", offerId)
 
   try {

@@ -333,7 +333,7 @@ export async function sendCounterOffer(params: {
       response_deadline: responseDeadline,
       notes:             notes ?? null,
       contingencies:     contingencyChanges ?? parent.contingencies,
-      ai_extraction_status: "not_applicable",
+      ai_extraction_status: "manual",
       submitted_at:      new Date().toISOString(),
       created_at:        new Date().toISOString(),
       updated_at:        new Date().toISOString(),

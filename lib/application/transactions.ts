@@ -723,7 +723,7 @@ export async function addTransactionDocument(docData: {
   const supabase = await createClient()
   const { data, error } = await supabase
     .from("transaction_documents")
-    .insert({ ...docData, status: "pending" })
+    .insert({ ...docData, status: "requested" })
     .select()
     .single()
 

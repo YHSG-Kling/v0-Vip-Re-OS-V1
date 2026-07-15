@@ -489,7 +489,7 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
     // Update event status
     const { error: statusError } = await service
       .from("open_house_events")
-      .update({ status: "invitations_sent" })
+      .update({ status: "marketing" })
       .eq("id", openHouseId)
     if (statusError) {
       // Non-fatal — invites were sent, just status flag failed

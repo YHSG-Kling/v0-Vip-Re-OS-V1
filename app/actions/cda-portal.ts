@@ -988,7 +988,7 @@ export async function uploadPreliminaryCdAction(input: {
       doc_type: "preliminary_closing_disclosure",
       doc_label: input.fileName,
       storage_url: input.fileUrl,
-      status: "received",
+      status: "uploaded",
       uploaded_by: auth.userId,
       uploaded_at: new Date().toISOString(),
     })

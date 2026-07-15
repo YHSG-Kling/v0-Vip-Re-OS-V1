@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
         brokerage_id: profile.brokerage_id,
         provider: credentials.provider_name,
         sync_type,
-        status: "in_progress",
+        status: "running",
         records_synced: 0,
         records_failed: 0,
         started_at: new Date().toISOString(),

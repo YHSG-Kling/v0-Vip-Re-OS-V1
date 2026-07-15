@@ -375,7 +375,7 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
   async function approveDraft(draftId: string) {
     const { error } = await supabase
       .from('ai_message_drafts')
-      .update({ status: 'approved', acted_at: new Date().toISOString() })
+      .update({ status: 'accepted', acted_at: new Date().toISOString() })
       .eq('id', draftId)
     if (error) { toast.error('Failed to approve draft'); return }
     toast.success('Draft approved for sending')

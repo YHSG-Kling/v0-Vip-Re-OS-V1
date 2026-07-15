@@ -472,7 +472,7 @@ export async function getEmailCampaignStats(_brokerageId?: string) {
         .from("newsletter_subscribers")
         .select("id", { count: "exact", head: true })
         .eq("brokerage_id", auth.brokerageId)
-        .eq("status", "active"),
+        .eq("status", "subscribed"),
     ])
 
     const campaigns = campaignsResult.data || []

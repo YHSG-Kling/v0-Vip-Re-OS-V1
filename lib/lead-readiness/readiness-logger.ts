@@ -39,7 +39,7 @@ export async function logReadinessTransition(
       workflow_name: "lead_readiness_evaluation",
       error_message: `Failed to log readiness transition for lead ${leadId}: ${error.message}`,
       severity: "low",
-      status: "needs_review",
+      status: "open",
       context_json: JSON.stringify({ leadId, evaluation })
     })
   }
@@ -61,7 +61,7 @@ export async function logReadinessAnomaly(
     workflow_name: "lead_readiness_evaluation",
     error_message: `Readiness anomaly: ${anomalyDescription}`,
     severity: "medium",
-    status: "needs_review",
+    status: "open",
     context_json: JSON.stringify({ leadId, ...context })
   })
 }

@@ -962,7 +962,7 @@ export async function retryFailedPost(postId: string, userId: string) {
       brokerage_id: post.brokerage_id,
       platform: post.platform,
       account_id: post.social_account_id,
-      publish_status: "retry_queued",
+      publish_status: "queued",
       created_at: new Date().toISOString(),
     })
 

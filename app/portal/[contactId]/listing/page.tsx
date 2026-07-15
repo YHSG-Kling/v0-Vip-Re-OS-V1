@@ -168,7 +168,7 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     .from("marketing_campaigns")
     .select("id", { count: "exact", head: true })
     .eq("listing_id", listing.id)
-    .eq("status", "active")
+    .eq("status", "live")
   // The seller's weekly digest (seller_weekly_reports, written by runSellerWeeklyReports). Latest week.
   const { data: weeklyReportRow } = await supabase
     .from("seller_weekly_reports")

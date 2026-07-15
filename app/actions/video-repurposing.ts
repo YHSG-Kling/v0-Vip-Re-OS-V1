@@ -624,7 +624,7 @@ export async function logRepurposedContent(data: {
       output_ref_table: data.outputRefTable,
       output_ref_id: data.outputRefId,
       platform_target: data.platformTarget ?? null,
-      status: "created",
+      status: "generated",
       approval_status: "pending_review",
       notes: data.notes ?? null,
       created_by: createdBy,

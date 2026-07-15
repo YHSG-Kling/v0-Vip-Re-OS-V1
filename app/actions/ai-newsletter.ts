@@ -1235,7 +1235,7 @@ export async function manageSubscribers(params: {
         brokerage_id: sessionBrokerageId,
         subscribed_at: new Date().toISOString(),
         source: params.source || "manual",
-        status: "active",
+        status: "subscribed",
       })
 
       if (error) throw error

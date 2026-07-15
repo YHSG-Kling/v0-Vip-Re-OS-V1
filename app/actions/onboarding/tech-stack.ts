@@ -353,7 +353,7 @@ export async function markTechStackComplete(
       await supabase
         .from("agent_onboarding")
         .update({
-          status: "training_in_progress",
+          status: "in_progress",
           updated_at: new Date().toISOString(),
         })
         .eq("id", onboarding.id)

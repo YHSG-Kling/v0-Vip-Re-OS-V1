@@ -227,7 +227,7 @@ export async function getAdminDashboardStats() {
       .from('transaction_documents')
       .select('id', { count: 'exact' })
       .eq('brokerage_id', brokerageId)
-      .in('status', ['pending', 'received']),
+      .in('status', ['requested', 'uploaded']),
 
     // Transaction milestones due within the next 7 days
     supabase

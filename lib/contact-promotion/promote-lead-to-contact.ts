@@ -85,7 +85,7 @@ export async function promoteLeadToContactService(
         workflow_name: "lead_promotion",
         error_message: `Contact created but lead deactivation failed: ${deactivateResult.error}`,
         severity: "high",
-        status: "unresolved",
+        status: "open",
         context_json: JSON.stringify({ leadId, contactId: contactResult.contactId, timestamp: new Date().toISOString() }),
         created_at: new Date().toISOString(),
       })
@@ -111,7 +111,7 @@ export async function promoteLeadToContactService(
       workflow_name: "lead_promotion",
       error_message: error.message || "Unknown error during lead promotion",
       severity: "critical",
-      status: "unresolved",
+      status: "open",
       context_json: JSON.stringify({ leadId, timestamp: new Date().toISOString() }),
       created_at: new Date().toISOString(),
     })

@@ -156,7 +156,7 @@ export default function AgentTransactionDetailPage() {
         transaction_id: transactionId,
         doc_label: file.name,
         doc_type: "upload",
-        status: "pending",
+        status: "requested",
         storage_url: urlData.publicUrl,
         uploaded_at: new Date().toISOString(),
       })

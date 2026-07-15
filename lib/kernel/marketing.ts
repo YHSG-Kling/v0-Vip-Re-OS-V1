@@ -106,7 +106,7 @@ export async function loadMarketingWorkspace(
         .from("newsletter_subscribers")
         .select("id", { count: "exact", head: true })
         .eq("brokerage_id", brokerageId)
-        .eq("status", "active"),
+        .eq("status", "subscribed"),
       supabase.from("blog_posts").select("publish_status").eq("brokerage_id", brokerageId),
       supabase.from("ai_video_projects").select("status").eq("brokerage_id", brokerageId),
       supabase.from("podcast_episodes").select("status").eq("brokerage_id", brokerageId),
@@ -215,7 +215,7 @@ export async function createNewsletterCampaign(
       subject_line:   subjectLine.trim(),
       content:        content ?? null,
       status:         "draft",
-      approval_status: "pending",
+      approval_status: "pending_review",
       brand_compliance_passed: false,
       created_at:     new Date().toISOString(),
     })
@@ -327,7 +327,7 @@ export async function scheduleNewsletterSend(params: {
     .from("newsletter_subscribers")
     .select("id", { count: "exact", head: true })
     .eq("brokerage_id", params.brokerageId)
-    .eq("status", "active")
+    .eq("status", "subscribed")
 
   const [updateResult, insertResult] = await Promise.all([
     supabase
@@ -1413,8 +1413,8 @@ export async function repurposeContentAsset(params: {
       output_ref_table: params.outputRefTable ?? null,
       output_ref_id:    params.outputRefId    ?? null,
       platform_target:  params.platformTarget,
-      status:           "pending",
-      approval_status:  "pending",
+      status:           "generated",
+      approval_status:  "pending_review",
       notes:            params.notes ?? null,
       created_by:       ctx.userId,
       created_at:       new Date().toISOString(),

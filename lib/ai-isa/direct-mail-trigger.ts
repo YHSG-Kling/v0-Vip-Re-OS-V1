@@ -104,7 +104,7 @@ export async function triggerDirectMailCampaign(context: DirectMailContext) {
         target_audience: 'individual_lead',
         quantity:       1,
         design_url:     null,
-        status:         'pending',
+        status:         'planning',
         piece_type:     piece,
         is_ai_generated: true,
         created_at:     new Date().toISOString(),

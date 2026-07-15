@@ -610,7 +610,7 @@ export async function syncCalendar(params: {
         provider_account_id: providerAccount.id,
         brokerage_id: providerAccount.brokerage_id,
         direction: "both",
-        status: "completed",
+        status: "success",
         started_at: now,
         completed_at: now,
         event_count: 0,

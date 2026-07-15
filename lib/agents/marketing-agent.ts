@@ -335,7 +335,7 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
       .from("newsletter_subscribers")
       .select("contact:contacts(city, state)")
       .eq("brokerage_id", brokerageId)
-      .eq("status", "active")
+      .eq("status", "subscribed")
       .limit(2000)
     const counts = new Map<string, { city: string | null; state: string | null; count: number }>()
     for (const row of (data ?? []) as Array<{ contact?: { city?: string | null; state?: string | null } | null }>) {

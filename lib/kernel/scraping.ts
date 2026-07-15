@@ -276,7 +276,7 @@ export async function runScrapeSourcesChronologically(
     .insert({
       cron_name:    'lead-scraping',
       cron_path:    '/api/cron/lead-scraping',
-      status:       'running',
+      status:       'started',
       brokerage_id: params.brokerageId ?? null,
       started_at:   new Date().toISOString(),
     })

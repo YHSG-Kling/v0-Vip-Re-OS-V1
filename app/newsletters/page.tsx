@@ -69,7 +69,7 @@ export default async function NewslettersPage() {
             .from("newsletter_subscribers")
             .select("id", { count: "exact", head: true })
             .eq("brokerage_id", brokerageId)
-            .eq("status", "active")
+            .eq("status", "subscribed")
         : Promise.resolve({ count: 0, error: null }),
     ])
 

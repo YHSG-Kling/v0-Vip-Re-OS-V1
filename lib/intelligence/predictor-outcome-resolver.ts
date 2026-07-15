@@ -48,7 +48,7 @@ export async function resolvePredictorOutcomes(
   const { data: signals } = await svc.from("manager_signals")
     .select("id, signal_type, contact_id, created_at, payload, status")
     .eq("brokerage_id", brokerageId).in("signal_type", PREDICTOR_SIGNALS)
-    .neq("status", "resolved").not("contact_id", "is", null)
+    .neq("status", "consumed").not("contact_id", "is", null)
     .order("created_at", { ascending: true }).limit(opts.limit ?? 500)
 
   for (const sig of (signals ?? []) as any[]) {
@@ -68,7 +68,7 @@ export async function resolvePredictorOutcomes(
     if (!rec.ok) continue
 
     await svc.from("manager_signals").update({
-      status: "resolved",
+      status: "consumed",
       consumed_action: `predictor outcome: ${predictor} ${decision.won ? "won (re-engaged)" : "lost (no re-engagement)"}`,
       consumed_at: new Date().toISOString(),
       payload: { ...(sig.payload ?? {}), outcome_recorded: true, outcome_won: decision.won },

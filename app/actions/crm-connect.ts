@@ -114,7 +114,7 @@ export async function disconnectCrmAction(provider: CrmProvider): Promise<{ ok: 
     await supabase.from("agent_api_credentials").update({ is_active: false }).eq("agent_id", member.agentId).eq("service_name", provider)
   } else {
     await supabase.from("integration_credentials").update({ is_active: false }).eq("brokerage_id", member.brokerageId).eq("provider_name", provider)
-    await supabase.from("brokerage_integrations").update({ status: "inactive" }).eq("brokerage_id", member.brokerageId).eq("provider_name", provider)
+    await supabase.from("brokerage_integrations").update({ status: "not_configured" }).eq("brokerage_id", member.brokerageId).eq("provider_name", provider)
   }
   revalidatePath("/settings/crm")
   return { ok: true }

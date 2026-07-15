@@ -1955,7 +1955,7 @@ export default function CRMPage() {
                                     const startDate = new Date(); const endDate = new Date(); endDate.setDate(endDate.getDate() + 7)
                                     await supabase.from("marketing_campaigns").insert({
                                       campaign_name: result.plan?.plan_name ?? `7-Day Follow-Up — ${selectedContact?.first_name ?? "Contact"}`,
-                                      campaign_type: "nurture", status: "active", brokerage_id: brokerageId,
+                                      campaign_type: "nurture", status: "live", brokerage_id: brokerageId,
                                       agent_user_id: user?.id ?? null, created_by: user?.id ?? null, visibility_scope: "agent",
                                       scheduled_start_at: startDate.toISOString(), scheduled_end_at: endDate.toISOString(),
                                       launched_at: startDate.toISOString(), target_audience: { contact_id: selectedContactId },

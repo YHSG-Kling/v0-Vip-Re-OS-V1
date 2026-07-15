@@ -129,7 +129,7 @@ export async function markWealthActed(recId: string): Promise<{ success: boolean
 
   const { error } = await svc
     .from("wealth_advisor_recommendations")
-    .update({ status: "acted", reviewed_by_user_id: user.id, reviewed_at: new Date().toISOString() })
+    .update({ status: "converted", reviewed_by_user_id: user.id, reviewed_at: new Date().toISOString() })
     .eq("id", recId)
     .eq("agent_id", agentRow.id)
   if (error) return { success: false, error: error.message }

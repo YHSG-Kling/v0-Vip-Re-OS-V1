@@ -866,7 +866,7 @@ export async function assignVendorToTransaction(data: {
       scheduled_date: data.scheduledDate ? new Date(data.scheduledDate).toISOString() : null,
       notes: data.notes,
       assigned_by_agent_id: agentRowId,
-      status: "assigned",
+      status: "pending",
       created_at: new Date().toISOString(),
     })
     .select()

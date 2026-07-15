@@ -134,7 +134,7 @@ export async function persistMessageWithContext(
       workflow_name: 'communication_spine_persist_message',
       error_message: error.message,
       severity: 'high',
-      status: 'unresolved',
+      status: 'open',
       context_json: JSON.stringify({
         contactId: context.contactId,
         brokerageId: context.brokerageId,

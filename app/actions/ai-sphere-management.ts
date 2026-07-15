@@ -183,7 +183,7 @@ Generate:
         contact_id:       params.contactId,
         touchpoint_type:  params.touchpointType,
         message_template: JSON.stringify(touchpoint),
-        status:           "pending",
+        status:           "scheduled",
         ai_generated:     true,
       })
       .select()

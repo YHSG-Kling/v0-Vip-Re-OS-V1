@@ -273,7 +273,7 @@ export async function acceptOfferConditionally(
       brokerage_id:   brokerageId,
       check_type:     "offer_acceptance_gate",
       check_label:    "Compliance Bridge — Offer Acceptance Blocked",
-      status:         "blocked",
+      status:         "fail",
       failure_reason: complianceState.holdReason ?? "compliance.passed event not found",
       is_blocking:    true,
       checked_at:     new Date().toISOString(),
@@ -421,7 +421,7 @@ export async function createTransactionFromCompliantAcceptedOffer(
       transaction_id: result.transactionId,
       check_type:     "offer_acceptance_gate",
       check_label:    "Compliance Bridge — Transaction Created",
-      status:         "passed",
+      status:         "pass",
       is_blocking:    false,
       checked_at:     new Date().toISOString(),
       created_at:     new Date().toISOString(),
@@ -602,7 +602,7 @@ export async function loadComplianceBridgeStatus(offerId: string): Promise<Kerne
       .from("transaction_compliance_log")
       .select("id, failure_reason, checked_at")
       .eq("check_type", "offer_acceptance_gate")
-      .eq("status", "blocked")
+      .eq("status", "fail")
       .order("checked_at", { ascending: false })
       .limit(5),
   ])
@@ -862,7 +862,7 @@ export async function attachTransactionDocument(params: {
         doc_label:      params.docLabel  ?? null,
         storage_url:    params.storageUrl,
         notes:          params.notes     ?? null,
-        status:         "pending",
+        status:         "requested",
         uploaded_at:    new Date().toISOString(),
         created_at:     new Date().toISOString(),
       })

@@ -93,7 +93,7 @@ export async function createVoiceProfile(data: {
       brokerage_id: data.brokerageId,
       agent_id: data.agentId,
       profile_name: data.profileName,
-      training_status: "pending",
+      training_status: "not_started",
       sample_count: 0,
       is_default: false,
     })
@@ -315,7 +315,7 @@ export async function startVoiceCloneTraining(
   await supabase
     .from("agent_voice_profiles")
     .update({
-      training_status: "queued",
+      training_status: "training",
       updated_at: new Date().toISOString(),
     })
     .eq("id", profileId)

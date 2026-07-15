@@ -69,7 +69,7 @@ export default async function BrokerageIntelligencePage() {
       .from("automation_errors")
       .select("id, severity, workflow_name")
       .eq("brokerage_id", brokerageId)
-      .eq("status", "unresolved")
+      .eq("status", "open")
       .gt("created_at", last24h),
 
     // 2. Farm: top 5 territories by ROI

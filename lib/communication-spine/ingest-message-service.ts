@@ -159,7 +159,7 @@ export async function ingestMessageService(
           workflow_name: 'communication_spine_role_violation',
           error_message: validation.reason || 'Role-based messaging rule violated',
           severity: 'medium',
-          status: 'unresolved',
+          status: 'open',
           context_json: JSON.stringify({
             authorType,
             contactId: params.contactId,

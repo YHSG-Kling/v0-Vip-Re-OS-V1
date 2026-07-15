@@ -1680,6 +1680,68 @@ async function main() {
         }
       }
       walk2("lib"); walk2("app")
+      // ── PASS 6: UPDATE/INSERT STATUS-VOCABULARY SWEEP (live CHECKs × every literal) ──
+      {
+        const VOCAB: Record<string, string[]> = {
+          "accounting_sync_log.status": ["pending","running","completed","failed"],
+          "agent_onboarding.status": ["in_progress","completed","paused"],
+          "agent_voice_profiles.training_status": ["not_started","collecting_samples","training","ready","failed"],
+          "ai_message_drafts.status": ["pending","accepted","edited","dismissed","sent"],
+          "automation_errors.status": ["open","investigating","resolved","dismissed"],
+          "brokerage_integrations.status": ["connected","error","not_configured"],
+          "calendar_sync_logs.status": ["success","partial","failed"],
+          "copilot_plans.status": ["active","paused","completed","superseded"],
+          "cron_execution_logs.status": ["started","completed","failed","timeout"],
+          "direct_mail_campaigns.status": ["planning","approved","printed","mailed","cancelled","failed"],
+          "facebook_custom_audiences.status": ["draft","pending_review","approved","synced","failed","deleted"],
+          "leads.reengagement_status": ["none","active","completed","paused","opted_out","stopped","handed_to_sphere","long_horizon"],
+          "manager_signals.status": ["open","consumed","expired"],
+          "marketing_campaigns.status": ["draft","pending_review","approved","scheduled","live","paused","ended","archived","failed"],
+          "newsletter_campaigns.approval_status": ["draft","pending_review","approved","rejected"],
+          "newsletter_sends.status": ["queued","sent","failed","bounced","opened","clicked","suppressed"],
+          "newsletter_subscribers.status": ["subscribed","unsubscribed","bounced","complained"],
+          "offers.ai_extraction_status": ["pending","extracting","completed","failed","manual"],
+          "open_house_events.status": ["scheduled","marketing","active","completed","cancelled"],
+          "repurposed_content_log.approval_status": ["draft","pending_review","approved","rejected"],
+          "repurposed_content_log.status": ["generated","scheduled","published","failed"],
+          "scheduled_touchpoints.status": ["scheduled","sent","completed","skipped","failed"],
+          "sequence_enrollments.status": ["active","completed","paused","unsubscribed","converted","authority_blocked","cancelled","unenrolled"],
+          "social_publish_log.publish_status": ["queued","published","failed","cancelled"],
+          "transaction_compliance_log.status": ["pending","pass","fail","waived","needs_review"],
+          "transaction_documents.status": ["missing","requested","uploaded","under_review","approved","rejected","pending_signature"],
+          "transaction_vendor_services.status": ["ordered","scheduled","in_progress","completed","cancelled","quote_requested","pending_approval","approved"],
+          "transactions.status": ["lead","qualifying","active","under_contract","closing","closed","lost","archived"],
+          "vendor_assignments.status": ["pending","confirmed","in_progress","completed","cancelled"],
+          "wealth_advisor_recommendations.status": ["open","reviewed","presented","converted","dismissed","stale"],
+        }
+        const vocabOffenders: string[] = []
+        const scanVocab = (rel: string) => {
+          const text = readFileSync(join(ROOT, rel), "utf-8")
+          for (const m of text.matchAll(/from\(['"](\w+)['"]\)\s*(?:\.\w+\([^)]*\)\s*)*\.(?:update|insert)\(\{([\s\S]{0,900}?)\}\)/g)) {
+            const tbl = m[1]
+            for (const cm of m[2].matchAll(/(\w*status)\s*:\s*['"]([\w./-]+)['"]/g)) {
+              const allowed = VOCAB[`${tbl}.${cm[1]}`]
+              if (allowed && !allowed.includes(cm[2])) vocabOffenders.push(`${rel}:${tbl}.${cm[1]}='${cm[2]}'`)
+            }
+          }
+        }
+        const walk3 = (dir: string) => {
+          for (const name of readdirSync(join(ROOT, dir))) {
+            const rel = `${dir}/${name}`
+            if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walk3(rel) }
+            else if (/\.(ts|tsx)$/.test(name)) scanVocab(rel)
+          }
+        }
+        walk3("lib"); walk3("app")
+        check(`PASS 6 — STATUS-VOCABULARY SWEEP over UPDATE + INSERT paths (the sibling passes 3 promised; live pg_constraint dump of ~180 status CHECKs cross-checked against every write literal): SIXTY-THREE drifted sites found — every one silently rejected: the ghost-recovery ladder's reengagement states, the sequence engine's cancel/unenroll, the direct-mail drain's failure terminals, the e-sign doc state, the vendor procurement ladder, manager-signal consumption, compliance pass/fail stamps, ISA draft approvals, newsletter suppression refusals, audience sync states, onboarding progress and more. RESOLUTION: 39 write literals normalized to the canonical vocabulary + 9 CHECKs widened where the code's vocabulary is a REAL business state (l72-s03: reengagement ladder, procurement ladder, pending_signature, suppressed, superseded, archived, deleted, cancel/unenroll, mail failure terminals) + 13 READERS aligned (including the two manager-signal outcome resolvers whose skip-filter watched a status that could never exist, and the newsletter subscriber counts filtering a value never written). This block re-runs the sweep with the post-migration vocabulary — offenders now: [${vocabOffenders.join(", ") || "none"}]`,
+          vocabOffenders.length === 0
+          && src("lib/kernel/transactions.ts").includes('.eq("status", "fail")')
+          && src("lib/intelligence/predictor-outcome-resolver.ts").includes('.neq("status", "consumed")')
+          && src("lib/kernel/consult-outcome-resolver.ts").includes('.neq("status", "consumed")')
+          && src("lib/ads/facebook-audience-sync.ts").includes('status: "synced"')
+          && src("lib/audiences/audience-sync.ts").includes('.eq("status", "synced")')
+          && src("app/actions/admin/get-admin-stats.ts").includes("['requested', 'uploaded']"))
+      }
       check(`PASS 5 — NOT-NULL CONTRACT SWEEP (the sibling of the CHECK sweep; live information_schema dump of required-no-default columns cross-checked against every insert literal): lifecycle_events.brokerage_id was missing from FIFTEEN writers — the ISA's outreach/max-touch/pause events, appointment scheduling, ALL commission lifecycle (approved/paid/disputed/resolved), expenses, report exports, listing launch, auto-disputes, review recovery — every one ALWAYS failed NOT NULL silently; tasks.brokerage_id+assigned_to_agent_id were missing from SEVENTEEN writers including createTask itself (the inbox 'T' verb) and all seven listing-lifecycle handlers (no listing task ever landed) — all fixed with honest context resolution (the listing's own agent, the contact's own agent, the caller's agent row) and honest refusals when no agent exists; offenders now: [${offenders.join(", ") || "none"}]`,
         offenders.length === 0
         && src("app/actions/tasks.ts").includes("cannot create the task")

@@ -168,7 +168,7 @@ export async function syncAudience(
 }
 
 /**
- * approveAudience — sets facebook_custom_audiences.status = 'active'.
+ * approveAudience — sets facebook_custom_audiences.status = 'synced' (live on Meta).
  * Business rule: only audiences in 'pending_review' or 'draft' state can be approved.
  * Input: userId string, audienceId string, brokerageId string
  * Output: { success, error? }
@@ -199,13 +199,15 @@ export async function approveAudience(
     return { success: false, error: "Audience not found" }
   }
 
-  if (audience.status === "active") {
+  // CHECK vocabulary (pass 6): 'synced' is the live-on-Meta state ('active'
+  // was silently rejected — this update never landed).
+  if (audience.status === "synced") {
     return { success: true }
   }
 
   const { error: updateError } = await supabase
     .from("facebook_custom_audiences")
-    .update({ status: "active", updated_at: new Date().toISOString() })
+    .update({ status: "synced", updated_at: new Date().toISOString() })
     .eq("id", audienceId)
     .eq("brokerage_id", brokerageId)
 
@@ -249,7 +251,7 @@ export async function deleteAudience(
   }
 
   // Guard: do not delete if audience is actively synced to a live campaign
-  if (audience.status === "active" && audience.ad_campaign_id) {
+  if (audience.status === "synced" && audience.ad_campaign_id) {
     // Check if the linked campaign is live
     const { data: campaign } = await supabase
       .from("ad_campaigns")
@@ -258,7 +260,7 @@ export async function deleteAudience(
       .eq("brokerage_id", brokerageId)
       .maybeSingle()
 
-    if (campaign && (campaign.status === "active" || campaign.status === "launching")) {
+    if (campaign && (campaign.status === "live" || campaign.status === "launching")) {
       return {
         success: false,
         error: "Cannot delete an audience attached to an active campaign. Pause the campaign first.",
