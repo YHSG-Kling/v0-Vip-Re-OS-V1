@@ -69,6 +69,7 @@ export async function autoDetectCommissionDispute(
       .eq("id", commissionId)
       .in("status", ["pending", "approved"]) // idempotent — no-op if already disputed
     await svc.from("lifecycle_events").insert({
+      brokerage_id: params.brokerageId, // NOT NULL (pass 5): missing → the dispute event never landed
       entity_type: "agent_commission", entity_id: commissionId,
       event_type: "commission_disputed", metadata: { reason, auto: true, source: "cda_contract_discrepancy" }, created_at: now,
     }).then(() => {}, () => {})

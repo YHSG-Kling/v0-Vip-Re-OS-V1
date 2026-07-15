@@ -159,9 +159,12 @@ export async function handlePartnerStatusUpdate(payload: any) {
 
   // Create follow-up task based on new status
   if (new_status === "approved") {
-    await supabase.from("tasks").insert({
-      contact_id,
-      assigned_to_agent_id: await agentIdForUser(supabase, user_id),
+    const creditAgentRow = await supabase.from("agents").select("id, brokerage_id").eq("user_id", user_id).maybeSingle().then((r: any) => r.data)
+      // tasks.brokerage_id + assigned_to_agent_id are NOT NULL (pass 5) — without both this insert always failed
+      if (creditAgentRow?.id && creditAgentRow?.brokerage_id) await supabase.from("tasks").insert({
+        brokerage_id: creditAgentRow.brokerage_id,
+        contact_id,
+        assigned_to_agent_id: creditAgentRow.id,
       title: "Schedule credit program kickoff",
       due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       priority: "high",
@@ -198,9 +201,12 @@ export async function handleTargetReached(payload: any) {
   }
 
   // Create follow-up task
-  await supabase.from("tasks").insert({
-    contact_id,
-    assigned_to_agent_id: await agentIdForUser(supabase, user_id),
+  const creditAgentRow = await supabase.from("agents").select("id, brokerage_id").eq("user_id", user_id).maybeSingle().then((r: any) => r.data)
+    // tasks.brokerage_id + assigned_to_agent_id are NOT NULL (pass 5) — without both this insert always failed
+    if (creditAgentRow?.id && creditAgentRow?.brokerage_id) await supabase.from("tasks").insert({
+      brokerage_id: creditAgentRow.brokerage_id,
+      contact_id,
+      assigned_to_agent_id: creditAgentRow.id,
     title: "Re-engage client for home buying",
     description: "Client has reached target credit score and is ready to start looking at homes!",
     due_date: new Date().toISOString(),
@@ -224,9 +230,12 @@ export async function handlePartnerReferral(payload: any) {
   })
 
   // Create follow-up task
-  await supabase.from("tasks").insert({
-    contact_id,
-    assigned_to_agent_id: await agentIdForUser(supabase, user_id),
+  const creditAgentRow = await supabase.from("agents").select("id, brokerage_id").eq("user_id", user_id).maybeSingle().then((r: any) => r.data)
+    // tasks.brokerage_id + assigned_to_agent_id are NOT NULL (pass 5) — without both this insert always failed
+    if (creditAgentRow?.id && creditAgentRow?.brokerage_id) await supabase.from("tasks").insert({
+      brokerage_id: creditAgentRow.brokerage_id,
+      contact_id,
+      assigned_to_agent_id: creditAgentRow.id,
     title: `Follow up on ${partner_name} referral`,
     due_date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
     priority: "medium",
@@ -334,10 +343,20 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
     brokerageId = (c as any)?.brokerage_id ?? ""
   }
 
+  // tasks.brokerage_id + assigned_to_agent_id are NOT NULL (pass 5): the
+  // contact's own agent is the honest assignee; missing context → skip the
+  // task (never a broken insert). The rest of each flow still runs.
+  const { data: creditContactRow } = await supabase.from("contacts").select("agent_id").eq("id", account.contact_id).maybeSingle()
+  const creditTaskAgentId = (creditContactRow as any)?.agent_id ?? null
+  const insertCreditTask = async (fields: Record<string, unknown>) => {
+    if (!brokerageId || !creditTaskAgentId) return
+    await supabase.from("tasks").insert({ brokerage_id: brokerageId, assigned_to_agent_id: creditTaskAgentId, ...fields })
+  }
+
   switch (stage) {
     case "flow_a": // Initial Lead
       // Create follow-up task
-      await supabase.from("tasks").insert({
+      await insertCreditTask({
         contact_id: account.contact_id,
         title: "Send credit info packet to lead",
         description: `Follow up with ${account.contact.first_name} about credit repair options`,
@@ -349,7 +368,7 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
 
     case "flow_b": // Application Started
       // Create application completion reminder
-      await supabase.from("tasks").insert({
+      await insertCreditTask({
         contact_id: account.contact_id,
         title: "Follow up on application completion",
         description: "Check if client needs help completing credit application",
@@ -403,7 +422,7 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
       }
 
       // Create task to schedule next meeting
-      await supabase.from("tasks").insert({
+      await insertCreditTask({
         contact_id: account.contact_id,
         title: "Schedule credit program kickoff call",
         description: "Schedule call to review credit improvement program",
@@ -433,7 +452,7 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
         .eq("id", account.contact_id)
 
       // Create celebration task
-      await supabase.from("tasks").insert({
+      await insertCreditTask({
         contact_id: account.contact_id,
         title: "Send credit success celebration message",
         description: `Congratulate ${account.contact.first_name} on reaching credit goals!`,

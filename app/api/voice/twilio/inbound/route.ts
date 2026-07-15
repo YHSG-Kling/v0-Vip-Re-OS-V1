@@ -113,7 +113,10 @@ export async function POST(request: NextRequest) {
   } catch { /* ledger is best-effort */ }
 
   if (contactId || leadId) {
-    await svc.from("voice_calls").insert({
+    // Sentinel-tracked (pass 4): a lost call-ledger row used to vanish
+    // silently — now it lands on the self-heal ledger for the repair digest.
+    const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+    await sentinelWrite(svc, svc.from("voice_calls").insert({
       brokerage_id: ctx.brokerageId,
       contact_id: contactId,
       lead_id: leadId,
@@ -126,7 +129,7 @@ export async function POST(request: NextRequest) {
       vapi_call_id: callSid, // vendor call id (Twilio CallSid here)
       transcription: appendTranscript(null, null, firstMessage),
       ai_notes: "engine:twilio",
-    }).then(undefined, () => {})
+    }), { table: "voice_calls", flow: "voice_call_ledger", brokerageId: ctx.brokerageId })
   }
 
   const turnUrl = `${url.replace(/\/inbound$/, "/turn")}`

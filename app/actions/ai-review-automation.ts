@@ -412,14 +412,25 @@ Create a comprehensive recovery plan including:
     })
 
     // lifecycle_events: actor_user_id (not agent_id), entity_type + entity_id columns.
-    await supabase.from("lifecycle_events").insert({
-      actor_user_id: params.agentId,
-      entity_type:   "agent_review",
-      entity_id:     params.reviewId,
-      event_type:    "review_recovery_plan_created",
-      payload:       { severity: recoveryPlan.severity, clientId: params.clientId ?? null },
-      created_at:    new Date().toISOString(),
-    })
+    // brokerage_id is NOT NULL (pass 5) — resolve it from the agent row
+    // (either id class) so the event actually lands.
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("brokerage_id")
+      .or(`id.eq.${params.agentId},user_id.eq.${params.agentId}`)
+      .limit(1)
+      .maybeSingle()
+    if (agentRow?.brokerage_id) {
+      await supabase.from("lifecycle_events").insert({
+        brokerage_id:  agentRow.brokerage_id,
+        actor_user_id: params.agentId,
+        entity_type:   "agent_review",
+        entity_id:     params.reviewId,
+        event_type:    "review_recovery_plan_created",
+        payload:       { severity: recoveryPlan.severity, clientId: params.clientId ?? null },
+        created_at:    new Date().toISOString(),
+      })
+    }
 
     return { success: true, data: recoveryPlan }
   } catch (error) {

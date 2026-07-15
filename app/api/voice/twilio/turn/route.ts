@@ -196,9 +196,12 @@ async function maybeRouteLeadIntent(svc: any, call: any): Promise<void> {
 }
 
 async function finishCall(svc: any, callId: string, transcript: string, outcome = "completed"): Promise<void> {
-  await svc.from("voice_calls").update({
+  // Sentinel-tracked (pass 4): a call stuck open because its close silently
+  // failed is exactly the "data stuck between systems" the self-heal OS hunts.
+  const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+  await sentinelWrite(svc, svc.from("voice_calls").update({
     status: "completed", outcome, ended_at: new Date().toISOString(), transcription: transcript,
-  }).eq("id", callId).then(undefined, () => {})
+  }).eq("id", callId), { table: "voice_calls", flow: "voice_call_ledger" })
 }
 
 async function finishPlatformCall(svc: any, callId: string, transcript: string, status: string, outcome: string): Promise<void> {

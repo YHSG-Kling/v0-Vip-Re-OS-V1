@@ -1627,6 +1627,67 @@ async function main() {
       && src("lib/kernel/communications.ts").includes('.eq("outcome", "replied")')        // the lead's replies surface as inbound turns in the lane
       // engage-contact's unified-inbox email mirror resolves the NOT NULL thread first (same class as sendInboxReply)
       && src("app/actions/ai-isa/engage-contact.ts").includes("ensureConversationForContact"))
+    // ── PASS 4: THE WRITE SENTINEL (the silencer class becomes self-reporting) ──
+    {
+      const { readdirSync, statSync } = await import("fs")
+      const silencerRe = /\.then\((undefined|\(\) *=> *(null|\{\})), *\(\) *=> *(null|\{\}|undefined)\)/g
+      let silencerCount = 0
+      const walk = (dir: string) => {
+        for (const name of readdirSync(join(ROOT, dir))) {
+          const rel = `${dir}/${name}`
+          const full = join(ROOT, rel)
+          if (statSync(full).isDirectory()) { if (name !== "node_modules") walk(rel) }
+          else if (/\.(ts|tsx)$/.test(name)) silencerCount += (readFileSync(full, "utf-8").match(silencerRe) ?? []).length
+        }
+      }
+      walk("lib"); walk("app")
+      // RATCHET: 195 is the frozen baseline. New best-effort writes must use
+      // sentinelWrite (which ledgers every loss) — this check FAILS if the
+      // silencer population GROWS. Converting old sites only shrinks it.
+      const SILENCER_BASELINE = 195
+      check(`PASS 4 — WRITE SENTINEL + SILENCER RATCHET (the bug class that hid passes 1–3's defects becomes SELF-REPORTING): supabase-js resolves with { error } instead of throwing, so '.then(()=>{},()=>{})' silencers and unchecked awaits hid FK/CHECK/NOT-NULL row loss for months; sentinelWrite keeps the best-effort contract (never throws, never 500s a webhook) but ledgers every loss to self_heal_events (action 'best_effort_write', outcome 'failed') — the repair digest ranks the losses and the Exception Center sees them; converted first: the ISA outreach logger's four record writes (the EXACT writes pass 3 found silently failing) + the voice call ledger (open + close); the ISA's inbound-email reply now carries REAL conversation memory (the old context read messages by contact_id=leadId — always empty; it now merges isa_outreach_log sends + replied activities chronologically); the silencer population is FROZEN at ${SILENCER_BASELINE} (currently ${silencerCount}) — growth fails this check`,
+        silencerCount <= SILENCER_BASELINE
+        && src("lib/kernel/write-sentinel.ts").includes("best_effort_write")
+        && src("lib/kernel/write-sentinel.ts").includes("recordSelfHeal")
+        && src("lib/ai-isa/isa-outreach-logger.ts").includes("sentinelWrite")
+        && src("lib/ai-isa/isa-outreach-logger.ts").includes("flow: 'isa_outreach_record'")
+        && src("app/api/voice/twilio/inbound/route.ts").includes('flow: "voice_call_ledger"')
+        && src("app/api/voice/twilio/turn/route.ts").includes('flow: "voice_call_ledger"')
+        && src("app/actions/ai-isa/handle-inbound-email.ts").includes("DEAD READ REPLACED")
+        && !src("app/actions/ai-isa/handle-inbound-email.ts").includes(".eq('contact_id', params.leadId)"))
+    }
+    // ── PASS 5: NOT-NULL-WITHOUT-DEFAULT CONTRACTS (live information_schema dump cross-checked against inserts) ──
+    {
+      // Re-run the exact sweep predicates in-code so regressions fail the sim:
+      // every lifecycle_events / tasks insert literal must carry its required columns.
+      const { readdirSync, statSync } = await import("fs")
+      const offenders: string[] = []
+      const checkFile = (rel: string) => {
+        const text = readFileSync(join(ROOT, rel), "utf-8")
+        for (const m of text.matchAll(/from\(['"]lifecycle_events['"]\)\s*\.insert\(\{([\s\S]{0,600}?)\}\)/g)) {
+          if (!m[1].includes("brokerage_id")) offenders.push(`${rel}:lifecycle_events`)
+        }
+        for (const m of text.matchAll(/from\(['"]tasks['"]\)\s*\.insert\(\{([\s\S]{0,900}?)\}\)/g)) {
+          // spread-based helpers carry the stamped fields — only flag literal shapes missing brokerage_id
+          if (!m[1].includes("brokerage_id") && !m[1].includes("...fields")) offenders.push(`${rel}:tasks`)
+        }
+      }
+      const walk2 = (dir: string) => {
+        for (const name of readdirSync(join(ROOT, dir))) {
+          const rel = `${dir}/${name}`
+          if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walk2(rel) }
+          else if (/\.(ts|tsx)$/.test(name)) checkFile(rel)
+        }
+      }
+      walk2("lib"); walk2("app")
+      check(`PASS 5 — NOT-NULL CONTRACT SWEEP (the sibling of the CHECK sweep; live information_schema dump of required-no-default columns cross-checked against every insert literal): lifecycle_events.brokerage_id was missing from FIFTEEN writers — the ISA's outreach/max-touch/pause events, appointment scheduling, ALL commission lifecycle (approved/paid/disputed/resolved), expenses, report exports, listing launch, auto-disputes, review recovery — every one ALWAYS failed NOT NULL silently; tasks.brokerage_id+assigned_to_agent_id were missing from SEVENTEEN writers including createTask itself (the inbox 'T' verb) and all seven listing-lifecycle handlers (no listing task ever landed) — all fixed with honest context resolution (the listing's own agent, the contact's own agent, the caller's agent row) and honest refusals when no agent exists; offenders now: [${offenders.join(", ") || "none"}]`,
+        offenders.length === 0
+        && src("app/actions/tasks.ts").includes("cannot create the task")
+        && src("lib/application/listing-lifecycle.ts").includes("listingTaskContext")
+        && src("lib/kernel/financial.ts").includes("brokerage_id: brokerageId, // NOT NULL (pass 5)")
+        && src("lib/ai-isa/isa-outreach-logger.ts").includes("brokerage_id: params.brokerageId,")
+        && src("app/actions/credit-copilot.ts").includes("insertCreditTask"))
+    }
     // ── REPAIR-PATTERN DIGEST + VOICE SELF-HEAL BRIEF + DEAL TWIN (approved 1/2/3) ──
     const rd = await import("../lib/kernel/repair-digest")
     const digest = rd.composeRepairDigest([

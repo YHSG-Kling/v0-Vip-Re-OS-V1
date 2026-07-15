@@ -125,6 +125,7 @@ export async function scheduleISAAppointment(params: {
   const { error: leError } = await supabase
     .from('lifecycle_events')
     .insert({
+      brokerage_id: params.brokerageId, // NOT NULL (pass 5): missing → the appointment event never landed
       entity_type: entityType,
       entity_id:   entityId,
       event_type:  KernelEvent.ISA_APPOINTMENT_SCHEDULED,

@@ -648,6 +648,7 @@ export async function recalculateCommissionState(
     await supabase
       .from("lifecycle_events")
       .insert({
+        brokerage_id: brokerageId, // NOT NULL (pass 5)
         entity_type: "commission_state",
         entity_id:   brokerageId,
         event_type:  KernelEvent.COMMISSION_STATE_RECALCULATED,
@@ -714,6 +715,7 @@ export async function markCommissionApproved(
     await supabase
       .from("lifecycle_events")
       .insert({
+        brokerage_id: brokerageId, // NOT NULL (pass 5)
         entity_type: "agent_commission",
         entity_id:   commissionId,
         event_type:  KernelEvent.COMMISSION_APPROVED,
@@ -777,6 +779,7 @@ export async function markCommissionPaid(
     await supabase
       .from("lifecycle_events")
       .insert({
+        brokerage_id: brokerageId, // NOT NULL (pass 5)
         entity_type: "agent_commission",
         entity_id:   commissionId,
         event_type:  KernelEvent.COMMISSION_PAID,
@@ -878,6 +881,7 @@ export async function markCommissionDisputed(input: {
       .eq("id", commissionId)
 
     await supabase.from("lifecycle_events").insert({
+      brokerage_id: brokerageId, // NOT NULL (pass 5)
       entity_type: "agent_commission", entity_id: commissionId,
       event_type: KernelEvent.COMMISSION_DISPUTED, metadata: { reason: trimmed, disputedBy: ctx.userId }, created_at: now,
     }).then(() => {}, () => {})
@@ -934,6 +938,7 @@ export async function resolveCommissionDispute(input: {
       .eq("id", commissionId)
 
     await supabase.from("lifecycle_events").insert({
+      brokerage_id: brokerageId, // NOT NULL (pass 5)
       entity_type: "agent_commission", entity_id: commissionId,
       event_type: nextStatus === "approved" ? KernelEvent.COMMISSION_APPROVED : KernelEvent.COMMISSION_CALCULATED,
       metadata: { dispute_resolution: resolution, notes: notes ?? null, resolvedBy: ctx.userId }, created_at: now,
@@ -997,6 +1002,7 @@ export async function createExpenseRecord(
     await supabase
       .from("lifecycle_events")
       .insert({
+        brokerage_id: ctx.brokerageId, // NOT NULL (pass 5)
         entity_type: "business_expense",
         entity_id:   expense.id,
         event_type:  KernelEvent.EXPENSE_CREATED,
@@ -1214,6 +1220,7 @@ export async function exportFinancialReport(
     await supabase
       .from("lifecycle_events")
       .insert({
+        brokerage_id: brokerageId, // NOT NULL (pass 5)
         entity_type: "financial_report",
         entity_id:   brokerageId,
         event_type:  format === "csv" ? KernelEvent.REPORT_EXPORTED_CSV : KernelEvent.REPORT_EXPORTED_PDF,
@@ -1276,6 +1283,7 @@ export async function emailFinancialReport(
     await supabase
       .from("lifecycle_events")
       .insert({
+        brokerage_id: brokerageId, // NOT NULL (pass 5)
         entity_type: "email_report",
         entity_id:   brokerageId,
         event_type:  KernelEvent.REPORT_EMAILED,

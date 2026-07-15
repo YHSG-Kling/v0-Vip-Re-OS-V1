@@ -473,10 +473,12 @@ export async function launchListing(input: {
 
     if (error) return { success: false, error: error.message }
 
-    // Emit lifecycle event
+    // Emit lifecycle event — brokerage_id is NOT NULL (pass 5): the launch
+    // event never landed without it. The updated listing row carries it.
     await supabase
       .from("lifecycle_events")
       .insert({
+        brokerage_id: (listing as any)?.brokerage_id ?? null,
         entity_type:  "listing",
         entity_id:    input.listingId,
         event_type:   "listing_stage_active",

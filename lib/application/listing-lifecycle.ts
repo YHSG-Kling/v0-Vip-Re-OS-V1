@@ -214,9 +214,29 @@ export async function completeListingTaskService(taskId: string) {
   return { success: true }
 }
 
+
+// ── PASS 5 (NOT NULL contract): tasks requires brokerage_id +
+// assigned_to_agent_id. Every handler below used to insert with only
+// listing_id — ALWAYS rejected, so no listing-lifecycle task ever landed.
+// The listing's own agent is the honest assignee; no agent → honest skip.
+async function listingTaskContext(
+  supabase: any,
+  listingId: string,
+): Promise<{ brokerageId: string; agentId: string } | null> {
+  const { data } = await supabase
+    .from("listings")
+    .select("brokerage_id, agent_id") // listings.agent_id FKs agents(id)
+    .eq("id", listingId)
+    .maybeSingle()
+  if (!data?.brokerage_id || !data?.agent_id) return null
+  return { brokerageId: data.brokerage_id, agentId: data.agent_id }
+}
+
 export async function handleListingAppointmentBookedService(payload: any) {
   const supabase = await createClient()
   const { listing_id, contact_id } = payload
+  const taskCtx = await listingTaskContext(supabase, listing_id)
+  if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
   const tasks = [
     { title: "Prepare CMA for consultation", dueDays: 1 },
     { title: "Research comparable sales", dueDays: 1 },
@@ -224,6 +244,8 @@ export async function handleListingAppointmentBookedService(payload: any) {
   ]
   for (const task of tasks) {
     await supabase.from("tasks").insert({
+      brokerage_id: taskCtx.brokerageId,
+      assigned_to_agent_id: taskCtx.agentId,
       listing_id,
       contact_id,
       title: task.title,
@@ -238,6 +260,8 @@ export async function handleListingAppointmentBookedService(payload: any) {
 export async function handleListingAgreementSignedService(payload: any) {
   const supabase = await createClient()
   const { listing_id } = payload
+  const taskCtx = await listingTaskContext(supabase, listing_id)
+  if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
   const tasks = [
     { title: "Order professional photography", dueDays: 1 },
     { title: "Write compelling listing description", dueDays: 2 },
@@ -247,6 +271,8 @@ export async function handleListingAgreementSignedService(payload: any) {
   ]
   for (const task of tasks) {
     await supabase.from("tasks").insert({
+      brokerage_id: taskCtx.brokerageId,
+      assigned_to_agent_id: taskCtx.agentId,
       listing_id,
       title: task.title,
       due_date: new Date(Date.now() + task.dueDays * 24 * 60 * 60 * 1000).toISOString(),
@@ -260,6 +286,8 @@ export async function handleListingAgreementSignedService(payload: any) {
 export async function handleListingLiveService(payload: any) {
   const supabase = await createClient()
   const { listing_id } = payload
+  const taskCtx = await listingTaskContext(supabase, listing_id)
+  if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
   const tasks = [
     { title: "Share on social media", dueDays: 0 },
     { title: "Send to sphere of influence", dueDays: 1 },
@@ -268,6 +296,8 @@ export async function handleListingLiveService(payload: any) {
   ]
   for (const task of tasks) {
     await supabase.from("tasks").insert({
+      brokerage_id: taskCtx.brokerageId,
+      assigned_to_agent_id: taskCtx.agentId,
       listing_id,
       title: task.title,
       due_date: new Date(Date.now() + task.dueDays * 24 * 60 * 60 * 1000).toISOString(),
@@ -281,7 +311,11 @@ export async function handleListingLiveService(payload: any) {
 export async function handlePriceReductionService(payload: any) {
   const supabase = await createClient()
   const { listing_id } = payload
+  const taskCtx = await listingTaskContext(supabase, listing_id)
+  if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
   await supabase.from("tasks").insert({
+    brokerage_id: taskCtx.brokerageId,
+    assigned_to_agent_id: taskCtx.agentId,
     listing_id,
     title: "Update all marketing with new price",
     due_date: new Date().toISOString(),
@@ -294,7 +328,11 @@ export async function handlePriceReductionService(payload: any) {
 export async function handleOfferReceivedService(payload: any) {
   const supabase = await createClient()
   const { listing_id, offer_amount, buyer_name } = payload
+  const taskCtx = await listingTaskContext(supabase, listing_id)
+  if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
   await supabase.from("tasks").insert({
+    brokerage_id: taskCtx.brokerageId,
+    assigned_to_agent_id: taskCtx.agentId,
     listing_id,
     title: `Review offer from ${buyer_name || "buyer"} - $${(offer_amount || 0).toLocaleString()}`,
     due_date: new Date().toISOString(),
@@ -307,7 +345,11 @@ export async function handleOfferReceivedService(payload: any) {
 export async function handleContingencyClearedService(payload: any) {
   const supabase = await createClient()
   const { listing_id, contingency_type } = payload
+  const taskCtx = await listingTaskContext(supabase, listing_id)
+  if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
   await supabase.from("tasks").insert({
+    brokerage_id: taskCtx.brokerageId,
+    assigned_to_agent_id: taskCtx.agentId,
     listing_id,
     title: `${contingency_type} contingency cleared - update transaction status`,
     due_date: new Date().toISOString(),
@@ -320,6 +362,8 @@ export async function handleContingencyClearedService(payload: any) {
 export async function handleClosingApproachingService(payload: any) {
   const supabase = await createClient()
   const { listing_id } = payload
+  const taskCtx = await listingTaskContext(supabase, listing_id)
+  if (!taskCtx) return { success: false, error: "Listing has no agent/brokerage — tasks not created" }
   const tasks = [
     { title: "Confirm final walkthrough scheduled", dueDays: 0 },
     { title: "Verify closing disclosure sent", dueDays: 0 },
@@ -327,6 +371,8 @@ export async function handleClosingApproachingService(payload: any) {
   ]
   for (const task of tasks) {
     await supabase.from("tasks").insert({
+      brokerage_id: taskCtx.brokerageId,
+      assigned_to_agent_id: taskCtx.agentId,
       listing_id,
       title: task.title,
       due_date: new Date(Date.now() + task.dueDays * 24 * 60 * 60 * 1000).toISOString(),

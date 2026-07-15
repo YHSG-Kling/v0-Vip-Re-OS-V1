@@ -35,8 +35,23 @@ export async function handleCoachingSessionBooked(payload: any) {
   const supabase = await createServerClient()
   const { user_id, session_date, coach_id, topic } = payload
 
+  // calendar_events requires brokerage_id + entity_type/entity_id (NOT NULL,
+  // pass 5 live catch — this insert ALWAYS failed without them) and tasks
+  // requires brokerage_id. Resolve both from the agent row once.
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("id, brokerage_id")
+    .eq("user_id", user_id)
+    .maybeSingle()
+  if (!agentRow?.brokerage_id) {
+    return { success: false, error: "No agent profile for this user — cannot book the session" }
+  }
+
   // Create calendar event
   await supabase.from("calendar_events").insert({
+    brokerage_id: agentRow.brokerage_id,
+    entity_type: "agent",
+    entity_id: agentRow.id,
     agent_user_id: user_id,
     title: `Coaching Session: ${topic}`,
     start_at: session_date,
@@ -47,7 +62,8 @@ export async function handleCoachingSessionBooked(payload: any) {
 
   // Create reminder task (assignment keys on agents.id, payload carries users.id)
   await supabase.from("tasks").insert({
-    assigned_to_agent_id: await agentIdForUser(supabase, user_id),
+    brokerage_id: agentRow.brokerage_id,
+    assigned_to_agent_id: agentRow.id,
     title: `Prepare for coaching session: ${topic}`,
     due_date: new Date(new Date(session_date).getTime() - 24 * 60 * 60 * 1000).toISOString(),
     priority: "medium",
@@ -98,11 +114,17 @@ export async function generate7DayPlan(payload: any) {
     { day: 6, title: "Schedule next steps call", priority: "high" },
   ]
 
-  const nurtureAgentId = await agentIdForUser(supabase, user_id)
+  // tasks.brokerage_id is NOT NULL (pass 5) — resolve it with the assignee.
+  const { data: nurtureAgent } = await supabase
+    .from("agents").select("id, brokerage_id").eq("user_id", user_id).maybeSingle()
+  if (!nurtureAgent?.id || !nurtureAgent?.brokerage_id) {
+    return { success: false, error: "No agent profile for this user — nurture plan not created" }
+  }
   for (const task of tasks) {
     await supabase.from("tasks").insert({
+      brokerage_id: nurtureAgent.brokerage_id,
       contact_id,
-      assigned_to_agent_id: nurtureAgentId,
+      assigned_to_agent_id: nurtureAgent.id,
       title: task.title,
       due_date: new Date(Date.now() + task.day * 24 * 60 * 60 * 1000).toISOString(),
       priority: task.priority,

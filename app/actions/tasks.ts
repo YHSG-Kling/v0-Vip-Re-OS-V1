@@ -140,13 +140,31 @@ export async function createTask(params: {
   try {
     const supabase = await createClient()
 
+    // tasks.brokerage_id + assigned_to_agent_id are NOT NULL (pass 5 live
+    // catch — this hub action failed for EVERY caller that omitted an
+    // assignee, and always missed brokerage_id). Resolve both from the
+    // session: the caller's own agent row is the default assignee.
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: "Unauthorized" }
+    const { data: callerAgent } = await supabase
+      .from("agents")
+      .select("id, brokerage_id")
+      .eq("user_id", user.id)
+      .maybeSingle()
+    const assignee = params.assignedTo ?? callerAgent?.id
+    const brokerageId = callerAgent?.brokerage_id
+    if (!assignee || !brokerageId) {
+      return { success: false, error: "No agent profile for this user — cannot create the task" }
+    }
+
     const { data, error } = await supabase
       .from("tasks")
       .insert({
+        brokerage_id: brokerageId,
         title: params.title,
         description: params.description,
         due_date: params.dueDate,
-        assigned_to_agent_id: params.assignedTo,
+        assigned_to_agent_id: assignee,
         contact_id: params.contactId,
         listing_id: params.listingId,
         transaction_id: params.transactionId,

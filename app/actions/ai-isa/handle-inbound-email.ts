@@ -249,18 +249,45 @@ export async function processInboundEmail(params: {
     agentId: lead.agent_id ?? null,
   })
 
-  // ── Fetch last 10 messages for conversation context ───────────────────────
-  const { data: history } = await supabase
-    .from('messages')
-    .select('direction, body, created_at')
-    .eq('contact_id', params.leadId)
-    .order('created_at', { ascending: true })
-    .limit(10)
-
-  const conversationMessages = (history ?? []).map((m) => ({
-    role: (m.direction === 'inbound' ? 'user' : 'assistant') as 'user' | 'assistant',
-    content: m.body ?? '',
-  }))
+  // ── Conversation context from the LEAD-class ledgers ─────────────────────
+  // DEAD READ REPLACED (pass 4): this used to read messages by
+  // contact_id = leadId — always EMPTY, because lead ids never land in that
+  // contacts-FK column. The ISA was replying with NO memory of the thread.
+  // The lead's real history lives on isa_outreach_log (the ISA's sends) and
+  // ai_isa_activities outcome='replied' (the lead's inbound turns) — merge
+  // both chronologically and keep the last 10 turns.
+  const [{ data: sentTurns }, { data: replyTurns }] = await Promise.all([
+    supabase
+      .from('isa_outreach_log')
+      .select('subject, body_snippet, created_at')
+      .eq('lead_id', params.leadId)
+      .eq('channel', 'email')
+      .order('created_at', { ascending: false })
+      .limit(10),
+    supabase
+      .from('ai_isa_activities')
+      .select('summary, created_at')
+      .eq('lead_id', params.leadId)
+      .eq('outcome', 'replied')
+      .order('created_at', { ascending: false })
+      .limit(10),
+  ])
+  const conversationMessages = [
+    ...(sentTurns ?? []).map((t) => ({
+      role: 'assistant' as const,
+      content: [t.subject, t.body_snippet].filter(Boolean).join(' — '),
+      at: t.created_at as string,
+    })),
+    ...(replyTurns ?? []).map((t) => ({
+      role: 'user' as const,
+      content: t.summary ?? '',
+      at: t.created_at as string,
+    })),
+  ]
+    .filter((m) => m.content)
+    .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+    .slice(-10)
+    .map(({ role, content }) => ({ role, content }))
 
   // ── Build system prompt with brand voice ──────────────────────────────────
   const baseSystem = [

@@ -209,13 +209,19 @@ export async function handleHighEngagement(payload: any) {
 
   // Create task to engage with comments if applicable
   if (engagement_type === "comments" && engagement_count > 5) {
-    await supabase.from("tasks").insert({
-      assigned_to_agent_id: await agentIdForUser(supabase, user_id),
-      title: "Respond to video comments",
-      description: `Your video has ${engagement_count} comments. Engage with your audience!`,
-      due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      priority: "medium",
-    })
+    // tasks.brokerage_id is NOT NULL (pass 5) — resolve it with the assignee.
+    const { data: agentRow } = await supabase
+      .from("agents").select("id, brokerage_id").eq("user_id", user_id).maybeSingle()
+    if (agentRow?.id && agentRow?.brokerage_id) {
+      await supabase.from("tasks").insert({
+        brokerage_id: agentRow.brokerage_id,
+        assigned_to_agent_id: agentRow.id,
+        title: "Respond to video comments",
+        description: `Your video has ${engagement_count} comments. Engage with your audience!`,
+        due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        priority: "medium",
+      })
+    }
   }
 
   return { success: true }

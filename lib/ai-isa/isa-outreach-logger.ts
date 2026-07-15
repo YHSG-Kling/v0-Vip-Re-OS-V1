@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
 import { CalendarEventType } from '@/lib/kernel/calendar-types'
 import { processKernelEvent } from '@/lib/kernel'
+import { sentinelWrite } from '@/lib/kernel/write-sentinel'
 
 // ── Entity discriminated union ────────────────────────────────────────────────
 export type Entity =
@@ -38,8 +39,10 @@ export async function logISAOutreach(params: {
   const now = new Date()
   const endAt = new Date(now.getTime() + 15 * 60 * 1000)
 
-  // 1. INSERT calendar_events
-  await supabase.from('calendar_events').insert({
+  // 1. INSERT calendar_events — sentinel-tracked: an unchecked await here
+  // swallows PostgREST { error } results. Pass 3 proved this class hid
+  // months of CHECK-rejected rows; every loss now ledgers to self_heal_events.
+  await sentinelWrite(supabase, supabase.from('calendar_events').insert({
     entity_type:          entityType,
     entity_id:            entityId,
     event_type:           calendarEventType,
@@ -48,7 +51,7 @@ export async function logISAOutreach(params: {
     timezone_name:        'UTC',
     is_system_generated:  true,
     brokerage_id:         params.brokerageId,
-  })
+  }), { table: 'calendar_events', flow: 'isa_outreach_record', brokerageId: params.brokerageId })
 
   // 2. INSERT ai_isa_activities — activity_type + channel CHECKs are live
   // vocabularies (pass-3 verified). The caller's wider channel set normalizes:
@@ -63,7 +66,7 @@ export async function logISAOutreach(params: {
   const ACTIVITY_CHANNEL: Record<string, string> = {
     facebook: 'social', instagram: 'social', linkedin: 'social', twitter: 'social',
   }
-  await supabase.from('ai_isa_activities').insert({
+  await sentinelWrite(supabase, supabase.from('ai_isa_activities').insert({
     brokerage_id:    params.brokerageId,
     activity_type:   ACTIVITY_TYPE[params.channel] ?? params.channel,
     channel:         ACTIVITY_CHANNEL[params.channel] ?? params.channel,
@@ -73,7 +76,7 @@ export async function logISAOutreach(params: {
     them_first_score: params.themFirstScore ?? null,
     outcome:         'sent',
     created_at:      now.toISOString(),
-  })
+  }), { table: 'ai_isa_activities', flow: 'isa_outreach_record', brokerageId: params.brokerageId })
 
   // 3. For lead entities only — INSERT isa_outreach_log
   if (entityType === 'lead') {
@@ -87,7 +90,7 @@ export async function logISAOutreach(params: {
       phone: 'voice',
       facebook: 'social', instagram: 'social', linkedin: 'social', twitter: 'social',
     }
-    await supabase.from('isa_outreach_log').insert({
+    await sentinelWrite(supabase, supabase.from('isa_outreach_log').insert({
       lead_id:           entityId,
       brokerage_id:      params.brokerageId,
       agent_id:          params.agentId ?? null,
@@ -100,17 +103,20 @@ export async function logISAOutreach(params: {
       them_first_score:  params.themFirstScore ?? null,
       compliance_passed: params.compliancePassed ?? true,
       created_at:        now.toISOString(),
-    })
+    }), { table: 'isa_outreach_log', flow: 'isa_outreach_record', brokerageId: params.brokerageId })
   }
 
-  // 4. INSERT lifecycle_events
-  await supabase.from('lifecycle_events').insert({
+  // 4. INSERT lifecycle_events — brokerage_id is NOT NULL (pass 5 live
+  // catch): without it this insert ALWAYS failed and the ISA's outreach
+  // never reached the lifecycle stream.
+  await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
+    brokerage_id: params.brokerageId,
     entity_type: entityType,
     entity_id:   entityId,
     event_type:  KernelEvent.ISA_OUTREACH_SENT,
     metadata:    { channel: params.channel, subject: params.subject },
     created_at:  now.toISOString(),
-  })
+  }), { table: 'lifecycle_events', flow: 'isa_outreach_record', brokerageId: params.brokerageId })
 
   // 5. processKernelEvent
   await processKernelEvent({
@@ -177,13 +183,14 @@ export async function checkMaxTouches(
   const maxTouches = campaign?.max_touches ?? 5
 
   if (touchCount >= maxTouches) {
-    await supabase.from('lifecycle_events').insert({
+    await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
+      brokerage_id: brokerageId, // NOT NULL (pass 5): missing → the event never landed
       entity_type: entityType,
       entity_id:   entityId,
       event_type:  KernelEvent.ISA_MAX_TOUCHES_REACHED,
       metadata:    { touchCount, maxTouches },
       created_at:  new Date().toISOString(),
-    })
+    }), { table: 'lifecycle_events', flow: 'isa_touch_governor', brokerageId })
     await processKernelEvent({
       event:       KernelEvent.ISA_MAX_TOUCHES_REACHED,
       brokerageId,
@@ -213,13 +220,14 @@ export async function checkUnderContractPause(
     .eq('status', 'under_contract')
 
   if ((count ?? 0) > 0) {
-    await supabase.from('lifecycle_events').insert({
+    await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
+      brokerage_id: brokerageId, // NOT NULL (pass 5): missing → the pause was never recorded
       entity_type: entityType,
       entity_id:   entityId,
       event_type:  KernelEvent.ISA_OUTREACH_PAUSED,
       metadata:    { reason: 'under_contract' },
       created_at:  new Date().toISOString(),
-    })
+    }), { table: 'lifecycle_events', flow: 'isa_touch_governor', brokerageId })
     await processKernelEvent({
       event:       KernelEvent.ISA_OUTREACH_PAUSED,
       brokerageId,
