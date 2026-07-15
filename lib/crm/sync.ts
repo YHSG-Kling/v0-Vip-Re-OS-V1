@@ -44,6 +44,25 @@ export async function syncContactToCRM(
 ): Promise<CRMSyncResult> {
   const { brokerageId } = payload
 
+  // ── EGRESS GATE (good data out): a contact with no name or no reachable
+  // identifier is junk in a third party's system — the send is REFUSED and
+  // ledgered, never pushed. The OS's outbound maps stay clean by CI, not hope.
+  try {
+    const { validateEgress, CRM_CONTACT_EGRESS_CONTRACT } = await import("@/lib/kernel/schema-adaptation")
+    const verdict = validateEgress(CRM_CONTACT_EGRESS_CONTRACT, payload, [["email", "phone"]])
+    if (!verdict.ok) {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+      await recordSelfHeal(createServiceClient() as any, {
+        brokerageId, domain: "data_flow",
+        subject: `crm:${payload.email ?? payload.phone ?? payload.lastName ?? "unknown"}`,
+        action: "none", outcome: "escalated",
+        detail: { flow: "egress_rejected", connector: "crm", missing: verdict.missing, reason: "outbound CRM push refused — the payload is missing the identity a third-party map needs" },
+      })
+      return { success: false, providerKey: "egress_gate", error: `Push refused — missing: ${verdict.missing.join(", ")}` }
+    }
+  } catch { /* the gate is best-effort; a gate error never blocks a valid sync */ }
+
   // ── Resolve active CRM provider: the AGENT's own CRM first (per-agent stack), then the
   //    brokerage default (brokerage_integrations), then the system default. ───────────────
   let providerKey = "ghl" // system default

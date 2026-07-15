@@ -1170,7 +1170,7 @@ async function main() {
       && seedStamp.safe === true && seedStamp.notify === false && seedStamp.tier === "seed_safe" && seedStamp.action === "stamp_offer_esign"
       && escStage.safe === false && escStage.action === null && escStage.tier === "escalate"
       && shl.EARNED_AUTONOMY_HEALS === 5
-      && Object.keys(shl.FLOW_CONTRACTS).length === 16
+      && Object.keys(shl.FLOW_CONTRACTS).length === 17
       && shl.composeRepairAutonomy({ complete_packet: { healed: 6, failed: 0 }, recreate_decision_task: { healed: 2, failed: 0 } })
            .some((r) => r.flow === "packet_completion" && r.earned === true)
       && shl.composeRepairAutonomy({ recreate_decision_task: { healed: 2, failed: 0 } })
@@ -1388,6 +1388,25 @@ async function main() {
       && src("app/api/showings/showingtime-webhook/route.ts").includes("quarantineDriftedPayload")
       && src("lib/kernel/ingress-continuity.ts").includes('p.source === "esign_completion"')
       && src("lib/kernel/ingress-continuity.ts").includes('p.source === "dotloop_event"'))
+    // ── PULL-DRIFT SENTINELS + EGRESS GATE (owner: scrapers/enrichment/rentcast pulls + good data pushing out) ──
+    const driftHit   = sa.detectPullDrift({ received: 12, kept: 0 })   // provider drifted — every row silently dropped
+    const driftClean = sa.detectPullDrift({ received: 12, kept: 9 })   // normal quality attrition, not drift
+    const driftEmpty = sa.detectPullDrift({ received: 0, kept: 0 })    // a genuine no-results market is NOT drift
+    const egressGood = sa.validateEgress(sa.CRM_CONTACT_EGRESS_CONTRACT, { firstName: "Ada", lastName: "Lovelace", email: "ada@x.test" }, [["email", "phone"]])
+    const egressNoId = sa.validateEgress(sa.CRM_CONTACT_EGRESS_CONTRACT, { firstName: "Ada", lastName: "Lovelace" }, [["email", "phone"]])       // no reachable identifier → refused
+    const egressNoName = sa.validateEgress(sa.CRM_CONTACT_EGRESS_CONTRACT, { email: "x@x.test", phone: "555" }, [["email", "phone"]])            // no name → refused
+    check("PULL-DRIFT SENTINELS (RentCast comps + BatchData property search — the tolerant normalizers could silently empty a CMA or a scrape when the provider renames a field, with NO alarm) + CRM EGRESS GATE (good data OUT): detectPullDrift fires ONLY on non-empty-in/zero-out (attrition and no-results markets are never drift); reportPullDrift quarantines ONE content-hashed sample as engineer evidence; the egress gate REFUSES an outbound CRM push missing a name or any reachable identifier (email OR phone) and ledgers egress_rejected (escalate tier, 17 contracts — the fix is source data, never an invented field); consolidation verdicts: normalizeBatchDataProperty + rentcast-normalize + zenrows-normalizer ARE their pull adaptation layers (keep-one; zenrows is regex-over-HTML, no schema to drift), PDL no-match is normal (no sentinel), manager-to-manager flows are the canonical model + flow-integrity (adaptation belongs at TRUST BOUNDARIES, not internal calls)",
+      driftHit.drifted === true && Boolean(driftHit.reason.includes("drifted"))
+      && driftClean.drifted === false && driftEmpty.drifted === false
+      && egressGood.ok === true
+      && egressNoId.ok === false && egressNoId.missing.includes("any_of:email|phone")
+      && egressNoName.ok === false && egressNoName.missing.includes("first_name") && egressNoName.missing.includes("last_name")
+      && shl.FLOW_CONTRACTS["egress_rejected"].tier === "escalate" && shl.FLOW_CONTRACTS["egress_rejected"].action === null
+      && src("lib/property/rentcast.ts").includes("reportPullDrift")
+      && src("lib/external/batchdata-client.ts").includes("reportPullDrift")
+      && src("lib/crm/sync.ts").includes("validateEgress")
+      && src("lib/crm/sync.ts").includes("egress_rejected")
+      && src("lib/kernel/ingress-continuity.ts").includes("reportPullDrift"))
     // ── REPAIR-PATTERN DIGEST + VOICE SELF-HEAL BRIEF + DEAL TWIN (approved 1/2/3) ──
     const rd = await import("../lib/kernel/repair-digest")
     const digest = rd.composeRepairDigest([

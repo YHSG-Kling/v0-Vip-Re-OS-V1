@@ -227,6 +227,56 @@ export const ESIGN_COMPLETION_CONTRACTS: Record<string, ConnectorContract> = {
   },
 }
 
+// ── Pull-side drift sentinel + egress validation ────────────────────────────
+
+/**
+ * PURE: the pull-side drift signal — a provider returned a NON-EMPTY response
+ * and our normalizer kept NOTHING. One dropped row is data quality; ALL rows
+ * dropped is the provider's shape drifting out from under the normalizer
+ * (e.g. RentCast renames `price` → every comp silently vanishes and the CMA
+ * goes empty with no alarm). Zero false positives: an empty response (a
+ * genuine no-results market) is NOT drift.
+ */
+export function detectPullDrift(input: { received: number; kept: number }): { drifted: boolean; reason: string } {
+  if (input.received > 0 && input.kept === 0) {
+    return { drifted: true, reason: `provider returned ${input.received} row(s) and the normalizer kept 0 — the response shape has likely drifted out from under the field mapping` }
+  }
+  return { drifted: false, reason: "" }
+}
+
+/**
+ * Outbound contact pushed to a third-party CRM map — GOOD DATA OUT: a contact
+ * with no name and no reachable identifier is junk in someone else's system.
+ */
+export const CRM_CONTACT_EGRESS_CONTRACT: ConnectorContract = {
+  connector: "crm_egress",
+  entity: "contact",
+  fields: [
+    { key: "first_name", type: "string", required: true, paths: ["firstName", "first_name"] },
+    { key: "last_name", type: "string", required: true, paths: ["lastName", "last_name"] },
+    { key: "email", type: "string", required: false, paths: ["email"], defaultValue: null },
+    { key: "phone", type: "string", required: false, paths: ["phone", "phoneNumber"], defaultValue: null },
+  ],
+}
+
+export interface EgressVerdict { ok: boolean; missing: string[] }
+
+/**
+ * PURE: may this payload leave the OS? Required fields must resolve AND each
+ * requireAnyOf group needs at least one non-null member (e.g. email OR phone).
+ * A failed egress check REFUSES the send — the OS never maps junk into a
+ * third party's system.
+ */
+export function validateEgress(contract: ConnectorContract, payload: unknown, requireAnyOf: string[][] = []): EgressVerdict {
+  const adapted = adaptPayload(contract, payload)
+  const missing = [...adapted.missingRequired]
+  for (const group of requireAnyOf) {
+    const satisfied = group.some((k) => adapted.canonical[k] != null && adapted.canonical[k] !== "")
+    if (!satisfied) missing.push(`any_of:${group.join("|")}`)
+  }
+  return { ok: missing.length === 0, missing }
+}
+
 /** Dotloop webhook events — event name + the refs each branch needs. */
 export const DOTLOOP_EVENT_CONTRACT: ConnectorContract = {
   connector: "dotloop",

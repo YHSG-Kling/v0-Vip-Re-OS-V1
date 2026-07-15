@@ -142,6 +142,12 @@ export const FLOW_CONTRACTS: Record<string, FlowContract> = {
   },
 
   // ── ESCALATE: detected with zero false positives, routed to a human ──
+  egress_rejected: {
+    tier: "escalate",
+    action: null,
+    reason: "An outbound push was refused because the payload lacked the identity a third-party map needs — fixing the SOURCE data is a human call, never an invented field.",
+    describes: "an outbound CRM push the OS refused rather than map junk data into a third-party system",
+  },
   listing_agreement_stage_gap: {
     tier: "escalate",
     action: null,

@@ -348,7 +348,19 @@ export async function getRentcastComps(params: {
     })
     if (!res.ok) return []
     const data = res.data
-    return normalizeRentcastComps(data?.comparables)
+    const comps = normalizeRentcastComps(data?.comparables)
+    // PULL-DRIFT SENTINEL: RentCast returned comparables but the normalizer
+    // kept none → the response shape drifted (a renamed `price` would silently
+    // empty every CMA). Quarantines one sample + ledgers, never throws.
+    const received = Array.isArray(data?.comparables) ? data.comparables.length : 0
+    if (received > 0 && comps.length === 0) {
+      const { reportPullDrift } = await import("@/lib/kernel/ingress-continuity")
+      await reportPullDrift(createServiceClient() as any, {
+        connector: "rentcast", source: "rentcast_avm_comps",
+        received, kept: 0, sample: data.comparables[0],
+      })
+    }
+    return comps
   } catch {
     return []
   }

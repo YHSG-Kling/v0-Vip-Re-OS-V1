@@ -122,6 +122,37 @@ export async function quarantineDriftedPayload(svc: Svc, input: {
 }
 
 /**
+ * PULL-SIDE DRIFT SENTINEL: call after normalizing any provider PULL — when
+ * the provider returned rows and the normalizer kept none, the shape has
+ * drifted. Ledgers the escalation + quarantines ONE content-hashed sample
+ * (the evidence an engineer needs to teach the contract), deduped so a
+ * drifting provider doesn't flood the queue. Best-effort, never throws.
+ */
+export async function reportPullDrift(svc: Svc, input: {
+  connector: string
+  source: string
+  received: number
+  kept: number
+  sample: unknown
+}): Promise<{ drifted: boolean }> {
+  try {
+    const { detectPullDrift } = await import("@/lib/kernel/schema-adaptation")
+    const verdict = detectPullDrift({ received: input.received, kept: input.kept })
+    if (!verdict.drifted) return { drifted: false }
+    await quarantineDriftedPayload(svc, {
+      connector: input.connector,
+      source: input.source,
+      raw: input.sample,
+      missing: ["(pull drift — all rows dropped by the normalizer)"],
+      eventType: null,
+    })
+    return { drifted: true }
+  } catch {
+    return { drifted: false }
+  }
+}
+
+/**
  * Call from every e-sign completion webhook AFTER the finalizers ran: if the
  * envelope matched nothing, park it as a dead letter instead of losing it.
  */

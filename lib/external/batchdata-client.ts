@@ -338,6 +338,22 @@ export async function fetchMotivatedSellers(params: FetchMotivatedSellersOptions
   const properties: any[] = data?.results?.properties ?? data?.results ?? []
   const records = properties.map((p) => normalizeBatchDataProperty(p, types[0] ?? 'distressed'))
 
+  // PULL-DRIFT SENTINEL: BatchData returned rows but NONE normalized to a
+  // usable identity (no address, no owner name) → the response shape drifted
+  // out from under normalizeBatchDataProperty. One quarantined sample +
+  // ledger; best-effort, never blocks the scrape.
+  const usable = records.filter((r) => r.address || r.propertyAddress || r.firstName || r.lastName)
+  if (properties.length > 0 && usable.length === 0) {
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { reportPullDrift } = await import("@/lib/kernel/ingress-continuity")
+      await reportPullDrift(createServiceClient() as any, {
+        connector: "batchdata", source: "batchdata_property_search",
+        received: properties.length, kept: 0, sample: properties[0],
+      })
+    } catch { /* the scrape result still returns */ }
+  }
+
   return {
     records,
     recordsFound: data?.results?.meta?.totalResults ?? properties.length,
