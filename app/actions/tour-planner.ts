@@ -266,6 +266,17 @@ export async function createTourPlan(params: CreateTourParams) {
 
   const supabase = createServiceClient()
 
+  // LIVE-FK CATCH: tours.agent_id AND showings.agent_id both reference
+  // agents(id) — inserting the auth users.id here violated the FK and tour
+  // creation failed for EVERY caller. Resolve the caller's agents row
+  // (honest refusal when none — a non-agent seat can't own a tour).
+  const { data: agentRow } = await supabase
+    .from('agents').select('id').eq('user_id', agentUserId).maybeSingle()
+  const agentRowId = (agentRow as { id: string } | null)?.id ?? null
+  if (!agentRowId) {
+    return { success: false, error: 'Your account has no agent profile — tours belong to an agent seat.' }
+  }
+
   // Verify contact belongs to caller's brokerage
   const { data: contact } = await supabase
     .from('contacts').select('brokerage_id').eq('id', contactId).maybeSingle()
@@ -295,7 +306,7 @@ export async function createTourPlan(params: CreateTourParams) {
     .insert({
       contact_id:               contactId,
       buyer_id:                 contactId,
-      agent_id:                 agentUserId,
+      agent_id:                 agentRowId, // agents(id) — the FK's target, never users.id
       brokerage_id:             brokerageId,
       tour_date:                tourDate,
       start_time:               startTime,
@@ -363,7 +374,7 @@ export async function createTourPlan(params: CreateTourParams) {
   // Insert showings (one per stop)
   const showingInserts = (insertedStops ?? []).map((stop, i) => ({
     contact_id:    contactId,
-    agent_id:      agentUserId,
+    agent_id:      agentRowId, // agents(id) — same FK as tours.agent_id
     brokerage_id:  brokerageId,
     listing_id:    stopsWithTimes[i]?.listingId ?? null,
     scheduled_date: tourDate,

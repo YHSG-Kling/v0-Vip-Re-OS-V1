@@ -100,7 +100,7 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
 
   if (!contact) return null
 
-  const [{ data: activities }, { data: openTasks }, { data: txn }] = await Promise.all([
+  const [{ data: activities }, { data: openTasks }, { data: txn }, { data: closedTxn }, { data: lastFrontierRow }] = await Promise.all([
     supabase
       .from("activities")
       .select("activity_type, description, completed_at, scheduled_at, created_at")
@@ -117,6 +117,24 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
       .select("id, status, stage")
       .or(`buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
       .not("status", "in", "(closed,cancelled)")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    // Journey snapshot inputs: the most recent CLOSED deal (post-close journey window)…
+    supabase
+      .from("transactions")
+      .select("close_date")
+      .or(`buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
+      .eq("status", "closed")
+      .not("close_date", "is", null)
+      .order("close_date", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    // …and the last frontier that touched this contact (the tags ARE journey memory).
+    supabase
+      .from("agent_client_messages")
+      .select("rationale, created_at")
+      .eq("recipient_contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
@@ -152,6 +170,26 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
 
   // Build short, agent-actionable talking points the call panel can show inline.
   const talkingPoints: string[] = []
+
+  // JOURNEY SNAPSHOT leads (the spec's "expose visible status" rule): which
+  // journey, what stage, the last frontier that fired, what's next — composed
+  // from state already loaded, no new writes.
+  try {
+    const { composeJourneySnapshot, parseFrontierKind } = await import("@/lib/kernel/journey-snapshot")
+    const frontierKind = parseFrontierKind((lastFrontierRow as any)?.rationale)
+    const snapshot = composeJourneySnapshot({
+      contactType: (contact as any).contact_type ?? null,
+      buyerStage: (contact as any).buyer_stage ?? null,
+      activeDealStage: (txn as any)?.stage ?? null,
+      closedDaysAgo: (closedTxn as any)?.close_date
+        ? Math.max(0, Math.floor((Date.now() - new Date((closedTxn as any).close_date).getTime()) / 86_400_000))
+        : null,
+      lastFrontier: frontierKind && (lastFrontierRow as any)?.created_at
+        ? { kind: frontierKind, at: (lastFrontierRow as any).created_at }
+        : null,
+    })
+    talkingPoints.push(snapshot.line)
+  } catch { /* the brief still renders without the journey line */ }
   if ((contact as any).preferred_name || (contact as any).name_pronunciation) {
     talkingPoints.push(
       [`Call them "${addressing.addressAs}".`, addressing.pronunciationNote].filter(Boolean).join(" "),

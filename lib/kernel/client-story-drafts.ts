@@ -306,7 +306,7 @@ export async function runTourRecaps(svc: Svc, brokerageId: string, now: Date = n
   const since = new Date(now.getTime() - 36 * 3_600_000).toISOString().slice(0, 10) // today or yesterday
 
   const { data: tours } = await svc.from("tours")
-    .select("id, contact_id, tour_date")
+    .select("id, contact_id, agent_id, tour_date")
     .eq("brokerage_id", brokerageId).gte("tour_date", since).lte("tour_date", now.toISOString().slice(0, 10))
     .not("contact_id", "is", null).limit(50)
   for (const t of ((tours ?? []) as any[])) {
@@ -339,6 +339,31 @@ export async function runTourRecaps(svc: Svc, brokerageId: string, now: Date = n
       outreachReason: "decision_required",
     }, svc as any)
     if (r.ok) out.proposed++
+
+    // RECAP → OFFER BRIDGE: a standout reaction is an offer-readiness SIGNAL —
+    // the agent gets the prep task (comps + net sheet) the same evening, once
+    // per tour, so the momentum the recap creates lands on someone's list.
+    const standoutStop = pickStandout(((stops ?? []) as any[]).map((s) => ({ address: s.property_address ?? "the standout home", rating: s.rating ?? null, feedback: s.feedback ?? null })))
+    if (r.ok && standoutStop && t.agent_id) {
+      const bridgeTag = `[TOUR_STANDOUT] [${t.id}]`
+      const { data: priorTask } = await svc.from("tasks").select("id")
+        .eq("brokerage_id", brokerageId).ilike("description", `%${bridgeTag}%`).limit(1).maybeSingle()
+      if (!priorTask) {
+        // LIVE-FK verified: tours.agent_id → agents(id), which is exactly what
+        // tasks.assigned_to_agent_id requires — use it directly.
+        await svc.from("tasks").insert({
+          brokerage_id: brokerageId,
+          contact_id: t.contact_id,
+          assigned_to_agent_id: t.agent_id,
+          title: `Offer-readiness: today's buyer rated ${standoutStop.address} ${standoutStop.rating}/5`,
+          description: `The tour recap flagged ${standoutStop.address} as the standout. Prep the numbers tonight — comps, band, net sheet — so if they say "let's talk," you set the pace instead of reacting to the weekend crowd. ${bridgeTag}`,
+          due_date: new Date(now.getTime() + 86_400_000).toISOString().slice(0, 10),
+          assignee_type: "agent",
+          source: "tour_standout",
+          status: "pending",
+        }).then(() => {}, () => {})
+      }
+    }
   }
   return out
 }

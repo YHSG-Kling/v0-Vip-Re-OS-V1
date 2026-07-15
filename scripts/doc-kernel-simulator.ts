@@ -1523,6 +1523,29 @@ async function main() {
       && src("lib/kernel/postclose-concierge.ts").includes("proposeClientMessage")
       && src("lib/kernel/client-story-drafts.ts").includes("runPostCloseConcierge")
       && src("lib/kernel/manager-registry.ts").includes("postclose_concierge:"))
+    // ── JOURNEY SNAPSHOT + RECAP→OFFER BRIDGE + CRON SWEEP + RENTER DEFERRAL (approved 2+3; expert verdict on 1) ──
+    const js = await import("../lib/kernel/journey-snapshot")
+    const inTx = js.composeJourneySnapshot({ contactType: "buyer", buyerStage: "touring", activeDealStage: "under_contract", closedDaysAgo: null, lastFrontier: { kind: "weekly deal note", at: "2026-07-13T10:00:00Z" } }, new Date("2026-07-15T10:00:00Z"))
+    const postClose = js.composeJourneySnapshot({ contactType: "buyer", buyerStage: null, activeDealStage: null, closedDaysAgo: 10, lastFrontier: null }, new Date("2026-07-15T10:00:00Z"))
+    const buyerJ = js.composeJourneySnapshot({ contactType: "buyer", buyerStage: "touring", activeDealStage: null, closedDaysAgo: null, lastFrontier: { kind: "tour recap", at: "2026-07-15T02:00:00Z" } }, new Date("2026-07-15T10:00:00Z"))
+    const leadJ = js.composeJourneySnapshot({ contactType: null, buyerStage: null, activeDealStage: null, closedDaysAgo: null, lastFrontier: null }, new Date("2026-07-15T10:00:00Z"))
+    check("JOURNEY SNAPSHOT (the spec's 'expose visible status' rule — the journey-first architecture made VISIBLE from state the OS already writes, the tags ARE the memory) + RECAP→OFFER BRIDGE + PRE-LAUNCH CRON SWEEP + RENTER/RESIDENT DEFERRAL: precedence mirrors the business (active deal outranks everything → post-close windows moving-in/settling-in/care → seller → buyer → lead); the one line carries journey · stage · last frontier · next; parseFrontierKind maps every story tag; the bridge turns a standout reaction into the agent's same-evening offer-prep task (comps/band/net-sheet, users.id→agents.id resolved, once per tour); the SWEEP verdict: vercel.json runs ONE minutely dispatcher and the cron-dispatch registry covers 160+ routes (nothing unscheduled); RENTER/RESIDENT journeys DEFERRED by expert verdict (the platform does not serve rentals; renter LEADS are already future buyers in the lead journey — building leasing ops would be scope drift)",
+      inTx.journey === "transaction" && Boolean(inTx.line.includes("under contract")) && Boolean(inTx.line.includes("last touch: weekly deal note 2d ago")) && Boolean(inTx.line.includes("next: weekly deal note"))
+      && postClose.journey === "post_close" && postClose.stage === "settling in"
+      && buyerJ.journey === "buyer" && Boolean(buyerJ.line.includes("tour recap today"))
+      && leadJ.journey === "lead" && Boolean(leadJ.line.includes("speed-to-lead"))
+      && js.parseFrontierKind("x [BUYER_WEEKLY] y") === "weekly search story"
+      && js.parseFrontierKind("x [POSTCLOSE] y") === "post-close check-in"
+      && js.parseFrontierKind("unrelated") === null
+      && src("lib/contacts/contact-brief.ts").includes("composeJourneySnapshot")
+      && src("lib/kernel/client-story-drafts.ts").includes("TOUR_STANDOUT")
+      && src("lib/kernel/client-story-drafts.ts").includes('source: "tour_standout"')
+      && src("lib/kernel/client-story-drafts.ts").includes("assigned_to_agent_id: t.agent_id") // LIVE-FK: tours.agent_id → agents(id), tasks' exact target
+      && src("app/actions/tour-planner.ts").includes("agentRowId") // LIVE CATCH fixed: createTour inserted users.id into two agents(id) FKs — tour creation failed for EVERY caller
+      && src("app/actions/tour-planner.ts").includes("no agent profile")
+      && src("vercel.json").includes('"/api/cron/dispatch"')
+      && ((src("lib/kernel/cron-dispatch.ts").match(/\/api\/cron\//g) ?? []).length >= 160)
+      && src("lib/kernel/manager-registry.ts").includes("journey_visibility_and_bridge:"))
     // ── REPAIR-PATTERN DIGEST + VOICE SELF-HEAL BRIEF + DEAL TWIN (approved 1/2/3) ──
     const rd = await import("../lib/kernel/repair-digest")
     const digest = rd.composeRepairDigest([
