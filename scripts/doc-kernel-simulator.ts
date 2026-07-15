@@ -1586,6 +1586,47 @@ async function main() {
       && !src("app/actions/seller-showings.ts").includes("00000000-0000-0000-0000-000000000000")
       && src("app/actions/seller-showings.ts").includes("add the seller before approving showings")
       && src("app/actions/seller-showings.ts").includes("skippedNoParty"))
+    // ── ISA LEAD LANE IN THE UNIFIED INBOX + LEAD CALL-IN DOOR + PASS 3 (CHECK vocabularies) ──
+    check("ISA LEAD LANE (owner: 'the unified inbox includes lead conversations that the ai isa has been sending… emails/direct mail and leads can call in which the ai isa can then convert to a contact if there is positive direction'): the kernel inbox grows a LEAD lane — isa_outreach_log sends + lead-keyed voice_calls surface as lead:<id> threads (leads are NOT contacts; converted leads leave the lane because the contact thread owns the story; contact-keyed voice lane now excludes lead rows); the inbox UI renders 'Lead · AI ISA' threads read-only with the nurture explainer and a CONVERT TO CONTACT affordance riding the ONE canonical handoff (representation-guarded); the CALL-IN DOOR: an unknown caller who IS a nurtured lead records on voice_calls.lead_id (never a duplicate 'Caller ####' contact), the closed call's transcript routes through the SAME inbound intent classifier the email lane uses (positive → convert via canonical handoff; negative → halt; ambiguous → keep nurturing), lead opt-outs land on the LEAD entity class, and the status callback fires the hook only when IT closed the row (no double-fire)",
+      src("lib/kernel/communications.ts").includes("AI-ISA LEAD LANE")
+      && src("lib/kernel/communications.ts").includes('"isa_outreach_log"')
+      && src("lib/kernel/communications.ts").includes("`lead:${m.lead_id}`")
+      && src("lib/kernel/communications.ts").includes('q.not("contact_id", "is", null)')          // contact voice lane excludes lead rows
+      && src("lib/kernel/communications.ts").includes('.is("contact_id", null)')                   // converted leads leave the lane
+      && src("app/actions/inbox.ts").includes("getLeadInboxThreads")
+      && src("app/actions/inbox.ts").includes("convertLeadFromInbox")
+      && src("app/actions/inbox.ts").includes("under representation — cannot convert")             // same honest guard as the automated path
+      && src("app/dashboard/communications/inbox/page.tsx").includes("getLeadInboxThreads")
+      && src("app/dashboard/communications/inbox/InboxClient.tsx").includes("Convert to contact")
+      && src("app/dashboard/communications/inbox/InboxClient.tsx").includes('id.startsWith("lead:")')
+      && src("app/dashboard/communications/inbox/components/ConversationList.tsx").includes("Lead · AI ISA")
+      && src("app/api/voice/twilio/inbound/route.ts").includes('.is("contact_id", null)')          // lead match precedes new-contact capture
+      && src("app/api/voice/twilio/inbound/route.ts").includes("lead_id: leadId")
+      && src("app/api/voice/twilio/turn/route.ts").includes("maybeRouteLeadIntent")
+      && src("app/api/voice/twilio/turn/route.ts").includes('entityType: (call as any).contact_id ? "contact" : "lead"')
+      && src("app/api/voice/twilio/status/route.ts").includes("routeLeadCallIntent")
+      && src("app/api/voice/twilio/status/route.ts").includes('.select("id, lead_id")')            // transition-gated, no double-fire
+      && src("lib/ai-isa/lead-call-intent.ts").includes("classifyAndRouteInbound"))
+    check("PASS 3 — CHECK-VOCABULARY SWEEP (the DB's enum CHECKs are live vocabularies; drifted literals FAIL SILENTLY behind best-effort inserts): isa_outreach_log.channel rejected 'phone'/'social' — the logger normalizes phone→voice + per-network socials→social and the CHECK gained 'social' (l72-s01); ai_isa_activities.activity_type rejected the whole drifted synonym family — outbound_email/outbound_sms/outbound_call/outbound_direct_mail/outbound_voicedrop and seller_intent_prioritized were ALL silently lost — writers normalized to the canonical values (email/text/call/direct_mail) and the CHECK gained the genuinely-new semantics social/voicedrop/seller_intent_prioritized (l72-s02); checkMaxTouches now counts EVERY outreach type on the contact side (text/call/voicedrop/social were invisible to the cap — parity with the lead side); vendor_bookings/compliance_flags/contract_signatures/notifications.priority literals audited CLEAN (prior passes hold)",
+      src("lib/ai-isa/isa-outreach-logger.ts").includes("LOG_CHANNEL")
+      && src("lib/ai-isa/isa-outreach-logger.ts").includes("phone: 'voice'")
+      && src("lib/ai-isa/isa-outreach-logger.ts").includes("ACTIVITY_TYPE")
+      && src("lib/ai-isa/isa-outreach-logger.ts").includes("sms: 'text', phone: 'call'")
+      && src("lib/ai-isa/isa-outreach-logger.ts").includes("'voicedrop', 'social'")
+      && src("app/actions/ai-isa/engage-contact.ts").includes("activity_type: 'email'")
+      && src("app/actions/ai-isa/engage-contact.ts").includes("activity_type: 'text'")
+      && src("app/actions/ai-isa/engage-contact.ts").includes("activity_type: 'call'")
+      && src("app/actions/ai-isa/engage-contact.ts").includes("activity_type: 'voicedrop'")
+      && !src("app/actions/ai-isa/engage-contact.ts").includes("outbound_email")
+      && !src("app/actions/ai-isa/engage-contact.ts").includes("outbound_voicedrop")
+      // the inbound-lead-email handler's THREE lead-id-into-contacts-FK dead writes replaced with lead-class ledgers
+      && src("app/actions/ai-isa/handle-inbound-email.ts").includes("DEAD-WRITE REPLACED")
+      && !src("app/actions/ai-isa/handle-inbound-email.ts").includes("contact_id: params.leadId")
+      && src("app/actions/ai-isa/handle-inbound-email.ts").includes("logISAOutreach")
+      && src("app/actions/ai-isa/handle-inbound-email.ts").includes("outcome: 'replied'")
+      && src("lib/kernel/communications.ts").includes('.eq("outcome", "replied")')        // the lead's replies surface as inbound turns in the lane
+      // engage-contact's unified-inbox email mirror resolves the NOT NULL thread first (same class as sendInboxReply)
+      && src("app/actions/ai-isa/engage-contact.ts").includes("ensureConversationForContact"))
     // ── REPAIR-PATTERN DIGEST + VOICE SELF-HEAL BRIEF + DEAL TWIN (approved 1/2/3) ──
     const rd = await import("../lib/kernel/repair-digest")
     const digest = rd.composeRepairDigest([

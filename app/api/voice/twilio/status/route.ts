@@ -56,8 +56,22 @@ export async function POST(request: NextRequest) {
   if (callStatus !== "completed") patch.outcome = callStatus.replace("-", "_")
   patch.status = "completed"
 
-  await svc.from("voice_calls").update(patch)
+  // .select() returns the transitioned rows — the hook below fires ONLY when
+  // THIS callback actually closed the row (no double-fire with the turn-route
+  // hangup path, which closes the row first on a normal goodbye).
+  const { data: closed } = await svc.from("voice_calls").update(patch)
     .eq("vapi_call_id", callSid).in("status", ["initiated", "in_progress"])
-    .then(undefined, () => {})
+    .select("id, lead_id")
+    .then((r: any) => r, () => ({ data: null }))
+
+  // A LEAD's call that ended mid-conversation still gets intent-classified:
+  // positive direction converts the lead to a contact (canonical handoff).
+  const leadRow = (closed ?? []).find((r: any) => r.lead_id)
+  if (leadRow && callStatus === "completed") {
+    try {
+      const { routeLeadCallIntent } = await import("@/lib/ai-isa/lead-call-intent")
+      await routeLeadCallIntent(svc, leadRow.id)
+    } catch { /* best-effort — never 500 a Twilio callback */ }
+  }
   return NextResponse.json({ ok: true })
 }

@@ -22,6 +22,10 @@ type Conversation = {
   } | null
   // last message preview from joined messages
   last_message_preview?: string
+  // AI-ISA LEAD threads (leads are NOT contacts): id is `lead:<leads.id>`
+  party?: "lead"
+  lead_id?: string
+  lead_name?: string
 }
 
 interface ConversationListProps {
@@ -99,11 +103,13 @@ export default function ConversationList({
       list = list.filter(c => c.type?.toLowerCase() === channelFilter.toLowerCase())
     }
 
-    // search by contact name
+    // search by contact / lead name
     if (search.trim()) {
       const q = search.toLowerCase()
       list = list.filter(c => {
-        const name = `${c.contacts?.first_name ?? ""} ${c.contacts?.last_name ?? ""}`.toLowerCase()
+        const name = c.party === "lead"
+          ? (c.lead_name ?? "").toLowerCase()
+          : `${c.contacts?.first_name ?? ""} ${c.contacts?.last_name ?? ""}`.toLowerCase()
         return name.includes(q)
       })
     }
@@ -182,10 +188,15 @@ export default function ConversationList({
         )}
         {filtered.map(convo => {
           const contact = convo.contacts
-          const name = `${contact?.first_name ?? ""} ${contact?.last_name ?? ""}`.trim() || "Unknown"
+          const isLead = convo.party === "lead"
+          const name = isLead
+            ? (convo.lead_name || "New lead")
+            : `${contact?.first_name ?? ""} ${contact?.last_name ?? ""}`.trim() || "Unknown"
           const lc = contact?.lifecycle_state ?? ""
-          const isWarning = WARNING_STATES.includes(lc)
-          const badge = LIFECYCLE_BADGE[lc]
+          const isWarning = !isLead && WARNING_STATES.includes(lc)
+          const badge = isLead
+            ? { label: "Lead · AI ISA", className: "bg-indigo-100 text-indigo-700" }
+            : LIFECYCLE_BADGE[lc]
           const isSelected = convo.id === selectedId
           const isNegative = convo.sentiment === "negative" || convo.sentiment === "very_negative"
           const isUrgent = (convo.urgency_score ?? 0) > 7
@@ -202,7 +213,9 @@ export default function ConversationList({
             >
               {/* Avatar */}
               <div className={cn("shrink-0 w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-bold", avatarColor(name))}>
-                {initials(contact?.first_name, contact?.last_name)}
+                {isLead
+                  ? initials(name.split(" ")[0], name.split(" ")[1])
+                  : initials(contact?.first_name, contact?.last_name)}
               </div>
 
               {/* Center */}

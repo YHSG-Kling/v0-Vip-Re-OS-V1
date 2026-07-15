@@ -66,11 +66,14 @@ export async function POST(request: NextRequest) {
 
   const { firstMessage } = buildReceptionPrompt(ctx.identity)
 
-  // voice_calls carries NOT NULL contact_id + agent_id (live-proven schema):
-  // resolve the caller to a contact (calling in IS consent — the Vapi lane's
-  // established rule) and the number's agent. Either missing → the call still
-  // proceeds, just without the ledger row (honest degradation, never a 500).
+  // voice_calls contact_id + agent_id are nullable (live-verified): resolve the
+  // caller in precedence order — CONTACT match, then LEAD match (a lead the AI
+  // ISA is nurturing can CALL IN; the call rides voice_calls.lead_id and its
+  // transcript is intent-classified on completion — positive direction converts
+  // the lead via the canonical handoff, never a duplicate "Caller ####" contact),
+  // then capture a NEW contact (calling in IS consent — the established rule).
   let contactId: string | null = null
+  let leadId: string | null = null
   let agentRowId: string | null = null
   try {
     const digits = from.replace(/\D/g, "")
@@ -78,30 +81,42 @@ export async function POST(request: NextRequest) {
       .eq("brokerage_id", ctx.brokerageId).eq("phone_digits", digits).maybeSingle()
     if (existing) contactId = (existing as any).id
     else {
-      const { captureContact } = await import("@/lib/contact-pipeline/contact-capture")
-      const r = await captureContact({
-        brokerageId: ctx.brokerageId,
-        agentUserId: ctx.agentUserId,
-        source: "inbound_call",
-        first_name: "Caller", last_name: digits.slice(-4),
-        phone: from,
-        tcpa_consent: true,
-        tcpa_consent_date: new Date().toISOString(),
-        tcpa_consent_source: "inbound_call",
-        tcpa_consent_text: "Caller dialed the office line and spoke with the AI reception assistant.",
-      })
-      contactId = r.contactId
+      // Known LEAD calling in? Unconverted leads only (converted leads matched above).
+      const { data: lead } = await svc.from("leads").select("id, agent_id")
+        .eq("brokerage_id", ctx.brokerageId)
+        .or(`phone_digits.eq.${digits},phone.eq.${from}`)
+        .is("contact_id", null)
+        .limit(1).maybeSingle()
+      if (lead) {
+        leadId = (lead as any).id
+        agentRowId = (lead as any).agent_id ?? null // leads.agent_id FKs agents(id)
+      } else {
+        const { captureContact } = await import("@/lib/contact-pipeline/contact-capture")
+        const r = await captureContact({
+          brokerageId: ctx.brokerageId,
+          agentUserId: ctx.agentUserId,
+          source: "inbound_call",
+          first_name: "Caller", last_name: digits.slice(-4),
+          phone: from,
+          tcpa_consent: true,
+          tcpa_consent_date: new Date().toISOString(),
+          tcpa_consent_source: "inbound_call",
+          tcpa_consent_text: "Caller dialed the office line and spoke with the AI reception assistant.",
+        })
+        contactId = r.contactId
+      }
     }
-    if (ctx.agentUserId) {
+    if (!agentRowId && ctx.agentUserId) {
       const { data: agent } = await svc.from("agents").select("id").eq("user_id", ctx.agentUserId).maybeSingle()
       agentRowId = (agent as any)?.id ?? null
     }
   } catch { /* ledger is best-effort */ }
 
-  if (contactId && agentRowId) {
+  if (contactId || leadId) {
     await svc.from("voice_calls").insert({
       brokerage_id: ctx.brokerageId,
       contact_id: contactId,
+      lead_id: leadId,
       agent_id: agentRowId,
       direction: "inbound",
       call_type: "vapi_inbound", // CHECK value for AI inbound; ai_notes carries the real engine

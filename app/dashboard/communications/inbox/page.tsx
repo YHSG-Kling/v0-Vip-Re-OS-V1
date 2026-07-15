@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { getConversations } from "@/app/actions/ai-communication-hub"
+import { getLeadInboxThreads } from "@/app/actions/inbox"
 import InboxClient from "./InboxClient"
 
 export const metadata = {
@@ -44,9 +45,10 @@ export default async function InboxPage() {
   const agentId = await resolveAgentId(service, user.id)
   if (!agentId) redirect("/dashboard/onboarding")
 
-  // Fetch conversations + email_templates in parallel
-  const [conversationsResult, templatesRes] = await Promise.all([
+  // Fetch conversations + AI-ISA lead threads + email_templates in parallel
+  const [conversationsResult, leadThreadsResult, templatesRes] = await Promise.all([
     getConversations({ brokerageId, limit: 100 }),
+    getLeadInboxThreads({ limit: 50 }),
     // email_templates: DB column is template_type (not channel)
     service
       .from("email_templates")
@@ -59,6 +61,23 @@ export default async function InboxPage() {
   const conversations = conversationsResult.success
     ? (conversationsResult as any).conversations ?? []
     : []
+
+  // AI-ISA LEAD threads ride the same list, keyed `lead:<leads.id>` — leads are
+  // NOT contacts. The ISA nurtures them (email / direct mail; leads can call in)
+  // until positive intent converts them to a contact.
+  const leadConversations = (leadThreadsResult.success ? leadThreadsResult.threads ?? [] : [])
+    .filter((t) => t.party === "lead" && t.lead_id)
+    .map((t) => ({
+      id: `lead:${t.lead_id}`,
+      type: t.channel,
+      unread_count: t.unread_count ?? 0,
+      last_message_at: t.last_message_at,
+      last_message_preview: t.last_message_body,
+      contacts: null,
+      party: "lead" as const,
+      lead_id: t.lead_id as string,
+      lead_name: t.contact_name,
+    }))
   // Map template_type → channel so client components can filter by channel
   const emailTemplates = (templatesRes.data ?? []).map((t: any) => ({
     id:      t.id,
@@ -71,7 +90,7 @@ export default async function InboxPage() {
 
   return (
     <InboxClient
-      conversations={conversations}
+      conversations={[...conversations, ...leadConversations]}
       emailTemplates={emailTemplates}
       brokerageId={brokerageId}
       agentId={agentId}

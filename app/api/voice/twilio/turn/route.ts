@@ -87,14 +87,17 @@ export async function POST(request: NextRequest) {
     return new NextResponse("invalid signature", { status: 403 })
   }
 
-  const { data: call } = await svc.from("voice_calls").select("id, contact_id, agent_id, transcription, ai_notes, direction")
+  const { data: call } = await svc.from("voice_calls").select("id, contact_id, lead_id, agent_id, transcription, ai_notes, direction")
     .eq("vapi_call_id", callSid).maybeSingle()
   const transcript = (call as any)?.transcription ?? null
 
   // Silence (Gather timed out with nothing) → one gentle retry then goodbye.
   if (!speech) {
     const closer = "No problem — call back any time. Goodbye!"
-    if (call) await finishCall(svc, (call as any).id, appendTranscript(transcript, null, closer))
+    if (call) {
+      await finishCall(svc, (call as any).id, appendTranscript(transcript, null, closer))
+      await maybeRouteLeadIntent(svc, call)
+    }
     return new NextResponse(twimlHangup(closer), { headers: { "Content-Type": "text/xml" } })
   }
 
@@ -107,12 +110,14 @@ export async function POST(request: NextRequest) {
   if (brief && call) {
     const { detectOptOutIntent } = await import("@/lib/ai-isa/opt-out-utils")
     const opt = detectOptOutIntent(speech)
-    if (opt.isOptOut && opt.confidence === "high" && (call as any).contact_id) {
+    if (opt.isOptOut && opt.confidence === "high" && ((call as any).contact_id || (call as any).lead_id)) {
       const ack = "Understood — I've recorded that, and we won't call again. Sorry to have bothered you. Goodbye."
       try {
         const { processOptOut } = await import("@/app/actions/ai-isa/process-opt-out")
         await processOptOut({
-          entityType: "contact", entityId: (call as any).contact_id,
+          // Leads are NOT contacts — the opt-out lands on the right entity class.
+          entityType: (call as any).contact_id ? "contact" : "lead",
+          entityId: (call as any).contact_id ?? (call as any).lead_id,
           channel: opt.channel === "all" ? "all" : "phone",
           source: "inbound_call", rawMessage: speech.slice(0, 300), brokerageId: ctx.brokerageId,
         })
@@ -169,11 +174,25 @@ export async function POST(request: NextRequest) {
     await proposeSellerLeadFromCall(svc, ctx, call as any, plan.action.address)
   }
   if (plan.action.kind === "hangup") {
-    if (call) await finishCall(svc, (call as any).id, newTranscript)
+    if (call) {
+      await finishCall(svc, (call as any).id, newTranscript)
+      // A LEAD's completed call routes through the inbound intent classifier —
+      // positive direction converts the lead to a contact (canonical handoff).
+      await maybeRouteLeadIntent(svc, call)
+    }
     return new NextResponse(twimlHangup(plan.say), { headers: { "Content-Type": "text/xml" } })
   }
 
   return new NextResponse(twimlGatherTurn(plan.say, url), { headers: { "Content-Type": "text/xml" } })
+}
+
+/** Lead call-ins: classify the closed call's transcript → convert / halt / nurture. */
+async function maybeRouteLeadIntent(svc: any, call: any): Promise<void> {
+  if (!call?.lead_id) return
+  try {
+    const { routeLeadCallIntent } = await import("@/lib/ai-isa/lead-call-intent")
+    await routeLeadCallIntent(svc, call.id)
+  } catch { /* best-effort — the voice webhook never 500s over classification */ }
 }
 
 async function finishCall(svc: any, callId: string, transcript: string, outcome = "completed"): Promise<void> {

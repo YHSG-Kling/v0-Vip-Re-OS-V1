@@ -324,18 +324,37 @@ export async function processInboundEmail(params: {
     ],
   })
 
-  // ── Persist inbound message — stamped with brokerage for billing rollups ─
-  await supabase.from('messages').insert({
-    contact_id: params.leadId,
-    conversation_id: params.conversationId ?? null,
+  // ── Persist the INBOUND reply on the LEAD-class ledgers ──────────────────
+  // DEAD-WRITE REPLACED (pass 3): the old messages insert wrote the LEAD id
+  // into contact_id (FK contacts) with conversation_id null (NOT NULL) — it
+  // could never succeed. Leads are NOT contacts: the reply lands on
+  // ai_isa_activities (lead_id, outcome 'replied' — the unified inbox's lead
+  // lane reads these as the lead's inbound turns) and the most recent email
+  // send is stamped replied (isa_outreach_log's designed semantic).
+  await supabase.from('ai_isa_activities').insert({
     brokerage_id: lead.brokerage_id,
-    type: 'email',
-    direction: 'inbound',
-    subject: params.subject,
-    body: params.body,
-    status: 'received',
+    lead_id: params.leadId,
+    contact_id: null, // leads are NOT contacts
+    activity_type: 'email',
+    channel: 'email',
+    outcome: 'replied',
+    summary: `${params.subject} — ${params.body}`.slice(0, 500),
     created_at: new Date().toISOString(),
-  })
+  }).then(() => null, () => null)
+  const { data: lastSend } = await supabase
+    .from('isa_outreach_log')
+    .select('id')
+    .eq('lead_id', params.leadId)
+    .eq('channel', 'email')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (lastSend) {
+    await supabase.from('isa_outreach_log')
+      .update({ status: 'replied', replied_at: new Date().toISOString() })
+      .eq('id', lastSend.id)
+      .then(() => null, () => null)
+  }
 
   // ── Send reply via kernel dispatch ───────────────────────��───────�����────────
   // assembleEmail() runs inside dispatchEmail() — do NOT pre-assemble.
@@ -357,22 +376,26 @@ export async function processInboundEmail(params: {
     return { success: false, responded: false, error: `Dispatch failed: ${sendResult.error}` }
   }
 
-  // ── Persist outbound message (unified inbox row) — stamped with brokerage ─
-  await supabase.from('messages').insert({
-    contact_id: params.leadId,
-    conversation_id: params.conversationId ?? null,
-    brokerage_id: lead.brokerage_id,
-    type: 'email',
-    direction: 'outbound',
+  // ── Persist the OUTBOUND reply on the LEAD-class ledger ──────────────────
+  // DEAD-WRITE REPLACED (pass 3): same class as the inbound persist above.
+  // isa_outreach_log is the lead-side record of truth — the unified inbox's
+  // lead lane surfaces this send with the lead's name attached.
+  const { logISAOutreach } = await import('@/lib/ai-isa/isa-outreach-logger')
+  await logISAOutreach({
+    brokerageId: lead.brokerage_id,
+    agentId: lead.agent_id ?? undefined,
+    entity: { entityType: 'lead', leadId: params.leadId },
+    channel: 'email',
     subject: params.subject.startsWith('Re:') ? params.subject : `Re: ${params.subject}`,
-    body: replyBody,
-    status: 'sent',
-    created_at: new Date().toISOString(),
-  })
+    bodySnippet: replyBody.slice(0, 500),
+    compliancePassed: true,
+  }).catch(() => null)
 
-  // ── Activity log ─────────────────────────────────────────────────────────
+  // ── Activity log — entity refs carry the lead; contact_id stays honest ────
   await supabase.from('activities').insert({
-    contact_id: params.leadId,
+    contact_id: null, // leads are NOT contacts
+    entity_type: 'lead',
+    entity_id: params.leadId,
     brokerage_id: lead.brokerage_id,
     activity_type: 'ai_isa_conversation',
     description: `AI ISA replied to inbound email. Subject: ${params.subject}`,

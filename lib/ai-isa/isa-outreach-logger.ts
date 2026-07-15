@@ -50,11 +50,23 @@ export async function logISAOutreach(params: {
     brokerage_id:         params.brokerageId,
   })
 
-  // 2. INSERT ai_isa_activities
+  // 2. INSERT ai_isa_activities — activity_type + channel CHECKs are live
+  // vocabularies (pass-3 verified). The caller's wider channel set normalizes:
+  // sms→text / phone→call for activity_type (the CHECK's canonical synonyms),
+  // per-network socials → 'social' on both columns. Before this mapping the
+  // sms/phone/social activity rows FAILED the CHECK silently and the ISA's
+  // activity feed lost them.
+  const ACTIVITY_TYPE: Record<string, string> = {
+    sms: 'text', phone: 'call',
+    facebook: 'social', instagram: 'social', linkedin: 'social', twitter: 'social',
+  }
+  const ACTIVITY_CHANNEL: Record<string, string> = {
+    facebook: 'social', instagram: 'social', linkedin: 'social', twitter: 'social',
+  }
   await supabase.from('ai_isa_activities').insert({
     brokerage_id:    params.brokerageId,
-    activity_type:   params.channel,
-    channel:         params.channel,
+    activity_type:   ACTIVITY_TYPE[params.channel] ?? params.channel,
+    channel:         ACTIVITY_CHANNEL[params.channel] ?? params.channel,
     lead_id:         entityType === 'lead'    ? entityId : null,
     contact_id:      entityType === 'contact' ? entityId : null,
     summary:         params.bodySnippet ?? params.subject ?? null,
@@ -65,11 +77,21 @@ export async function logISAOutreach(params: {
 
   // 3. For lead entities only — INSERT isa_outreach_log
   if (entityType === 'lead') {
+    // isa_outreach_log.channel CHECK allows {email, direct_mail, video, sms,
+    // in_app, voice, social} (live-verified). The wider caller vocabulary is
+    // normalized here — 'phone' IS the voice channel, and the per-network
+    // socials collapse to 'social' (the network stays in subject/body).
+    // Before this mapping, phone/social sends FAILED the CHECK silently and
+    // the lead's outreach record was lost.
+    const LOG_CHANNEL: Record<string, string> = {
+      phone: 'voice',
+      facebook: 'social', instagram: 'social', linkedin: 'social', twitter: 'social',
+    }
     await supabase.from('isa_outreach_log').insert({
       lead_id:           entityId,
       brokerage_id:      params.brokerageId,
       agent_id:          params.agentId ?? null,
-      channel:           params.channel,
+      channel:           LOG_CHANNEL[params.channel] ?? params.channel,
       subject:           params.subject ?? null,
       body_snippet:      params.bodySnippet ?? null,
       provider_job_id:   params.providerVideoId ?? null,
@@ -135,7 +157,10 @@ export async function checkMaxTouches(
       .from('ai_isa_activities')
       .select('id', { count: 'exact', head: true })
       .eq('contact_id', entityId)
-      .in('activity_type', ['email', 'direct_mail', 'video'])
+      // Every OUTREACH type counts as a touch (parity with the lead side,
+      // which counts all isa_outreach_log rows). text/call/voicedrop/social
+      // were previously invisible to the cap.
+      .in('activity_type', ['email', 'direct_mail', 'video', 'text', 'call', 'voicedrop', 'social'])
     touchCount = count ?? 0
   }
 

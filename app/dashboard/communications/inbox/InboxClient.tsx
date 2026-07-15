@@ -13,6 +13,7 @@ import {
   analyzeMessageSentiment,
   generateSmartResponse,
 } from "@/app/actions/ai-communication-hub"
+import { getLeadThreadMessages, convertLeadFromInbox } from "@/app/actions/inbox"
 import { analyzeConversation } from "@/app/actions/ai-predictions"
 import { Sparkles, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -39,6 +40,10 @@ type Conversation = {
     call_stop_flag?: boolean | null
   } | null
   last_message_preview?: string
+  // AI-ISA LEAD threads (leads are NOT contacts): id is `lead:<leads.id>`
+  party?: "lead"
+  lead_id?: string
+  lead_name?: string
 }
 
 type EmailTemplate = {
@@ -90,6 +95,8 @@ export default function InboxClient({
   const totalUnread = conversations.reduce((sum, c) => sum + (c.unread_count ?? 0), 0)
   const selectedConvo = conversations.find(c => c.id === selectedId) ?? null
   const contact = selectedConvo?.contacts ?? null
+  const isLeadThread = selectedConvo?.party === "lead"
+  const [convertingLead, setConvertingLead] = useState(false)
 
   // ── Supabase Realtime — subscribe to new messages in selected conversation ──
   useEffect(() => {
@@ -182,9 +189,39 @@ export default function InboxClient({
     }
   }, [agentId])
 
+  // LEAD threads (id `lead:<leads.id>`): timeline from isa_outreach_log +
+  // lead voice_calls — no conversations row, no read-state to mark.
+  const loadLeadThread = useCallback(async (leadId: string) => {
+    setMessagesLoading(true)
+    setSentiment(null)
+    setLastInboundId(undefined)
+    setLastInboundBody(undefined)
+    try {
+      const result = await getLeadThreadMessages({ leadId })
+      if (result.success && result.messages) {
+        setMessages(result.messages.map(m => ({
+          id: m.id,
+          body: m.body,
+          direction: m.direction,
+          created_at: m.created_at,
+          channel: m.channel,
+          sender_type: m.direction === "outbound" ? "ai_assistant" : undefined,
+        })))
+      } else {
+        setMessages([])
+      }
+    } finally {
+      setMessagesLoading(false)
+    }
+  }, [])
+
   const handleSelect = useCallback((id: string) => {
     setSelectedId(id)
     setMobileView("thread")
+    if (id.startsWith("lead:")) {
+      loadLeadThread(id.slice(5))
+      return
+    }
     loadThread(id)
     startTransition(async () => {
       await markConversationRead(id)
@@ -192,7 +229,29 @@ export default function InboxClient({
         prev.map(c => c.id === id ? { ...c, unread_count: 0 } : c)
       )
     })
-  }, [loadThread])
+  }, [loadThread, loadLeadThread])
+
+  const handleConvertLead = useCallback(async () => {
+    if (!selectedConvo?.lead_id) return
+    setConvertingLead(true)
+    try {
+      const res = await convertLeadFromInbox({ leadId: selectedConvo.lead_id })
+      if (res.success) {
+        toast.success("Lead converted to contact", {
+          description: "The AI ISA hands off — this conversation now lives on the contact's thread.",
+        })
+        // The lead thread is done — remove it from the list.
+        setConversations(prev => prev.filter(c => c.id !== selectedConvo.id))
+        setSelectedId(null)
+        setMessages([])
+        setMobileView("list")
+      } else {
+        toast.error("Conversion failed", { description: res.error })
+      }
+    } finally {
+      setConvertingLead(false)
+    }
+  }, [selectedConvo])
 
   const handleSend = useCallback(async (
     body: string,
@@ -291,7 +350,9 @@ export default function InboxClient({
     }
   }, [selectedId, contact?.id, agentId, messages, selectedConvo?.type])
 
-  const contactName = `${contact?.first_name ?? ""} ${contact?.last_name ?? ""}`.trim() || "Contact"
+  const contactName = isLeadThread
+    ? (selectedConvo?.lead_name || "New lead")
+    : `${contact?.first_name ?? ""} ${contact?.last_name ?? ""}`.trim() || "Contact"
 
   return (
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden bg-background">
@@ -331,9 +392,23 @@ export default function InboxClient({
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-sm text-foreground truncate">{contactName}</p>
                 <p className="text-xs text-muted-foreground capitalize">
-                  {selectedConvo.type ?? "email"} · {contact?.lifecycle_state?.replace(/_/g, " ") ?? ""}
+                  {isLeadThread
+                    ? "Lead · AI ISA nurturing"
+                    : `${selectedConvo.type ?? "email"} · ${contact?.lifecycle_state?.replace(/_/g, " ") ?? ""}`}
                 </p>
               </div>
+              {isLeadThread && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1 text-xs"
+                  onClick={handleConvertLead}
+                  disabled={convertingLead}
+                >
+                  {convertingLead ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+                  Convert to contact
+                </Button>
+              )}
               {/* Role badge for broker/admin */}
               {(role === "broker" || role === "admin") && (
                 <span className="hidden sm:inline-block text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full font-medium">
@@ -379,17 +454,28 @@ export default function InboxClient({
               </div>
             )}
 
-            <ComposeBar
-              conversationId={selectedId!}
-              agentId={agentId}
-              contactId={contact?.id ?? ""}
-              channel={(selectedConvo.type ?? "email") as "email" | "sms" | "in_app"}
-              lifecycleState={contact?.lifecycle_state}
-              tcpaConsent={contact?.tcpa_consent ?? null}
-              emailTemplates={emailTemplates}
-              onSend={handleSend}
-              onDraft={handleDraft}
-            />
+            {isLeadThread ? (
+              // Leads have no reply channel here — the AI ISA owns the nurture
+              // (email + direct mail; calls come in). Positive direction converts.
+              <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground bg-muted/30">
+                Your AI ISA is nurturing this lead by email and direct mail. When the lead replies or
+                calls in with positive intent, it converts to a contact automatically — or use
+                <span className="font-medium text-foreground"> Convert to contact</span> above if
+                you&apos;ve judged the direction positive yourself.
+              </div>
+            ) : (
+              <ComposeBar
+                conversationId={selectedId!}
+                agentId={agentId}
+                contactId={contact?.id ?? ""}
+                channel={(selectedConvo.type ?? "email") as "email" | "sms" | "in_app"}
+                lifecycleState={contact?.lifecycle_state}
+                tcpaConsent={contact?.tcpa_consent ?? null}
+                emailTemplates={emailTemplates}
+                onSend={handleSend}
+                onDraft={handleDraft}
+              />
+            )}
           </>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center gap-2 text-muted-foreground text-sm">
@@ -416,7 +502,7 @@ export default function InboxClient({
           <AIReplyCoachPanel
             brokerageId={brokerageId}
             agentUserId={agentId}
-            conversationId={selectedId}
+            conversationId={isLeadThread ? null : selectedId}
             contactId={contact?.id ?? null}
             lastInboundId={lastInboundId}
             lastInboundBody={lastInboundBody}

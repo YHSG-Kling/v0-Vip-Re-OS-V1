@@ -70,6 +70,10 @@ export interface GetInboxMessagesParams {
   contactId?: string
   unreadOnly?: boolean
   limit?: number
+  /** Restrict to one AI-ISA lead's conversation (leads are NOT contacts). */
+  leadId?: string
+  /** "lead" fetches only the AI-ISA lead lane. */
+  party?: "lead"
 }
 
 export async function getInboxMessages(params: GetInboxMessagesParams = {}): Promise<{
@@ -88,6 +92,8 @@ export async function getInboxMessages(params: GetInboxMessagesParams = {}): Pro
       contactId: params.contactId,
       unreadOnly: params.unreadOnly ?? false,
       limit: params.limit ?? 50,
+      leadId: params.leadId,
+      party: params.party,
     })
 
     if (!result.success || !result.data) {
@@ -316,6 +322,104 @@ export async function forceComplianceOverrideAndSend(
     return { success: false, error: error?.message ?? "Failed to insert message" }
   }
   return { success: true, messageId: msg.id }
+}
+
+// ─── ACTION: getLeadInboxThreads ──────────────────────────────────────────────
+//
+// The AI-ISA LEAD lane of the unified inbox. Leads are NOT contacts: the ISA
+// nurtures them by email / direct mail (no phone or SMS before consent), and
+// leads can call in. Their conversations surface as lead-keyed threads until
+// positive intent converts the lead to a contact.
+
+export async function getLeadInboxThreads(params: { limit?: number } = {}): Promise<{
+  success: boolean
+  threads?: InboxThread[]
+  error?: string
+}> {
+  try {
+    const actorContext = await resolveActorContext()
+    const result = await loadUniversalInbox({
+      actorContext,
+      channel: "all",
+      party: "lead",
+      limit: params.limit ?? 50,
+    })
+    if (!result.success || !result.data) {
+      return { success: false, error: result.error ?? "Failed to load lead lane" }
+    }
+    return { success: true, threads: result.data.threads.filter((t) => t.party === "lead") }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Failed to load lead lane" }
+  }
+}
+
+// ─── ACTION: getLeadThreadMessages ────────────────────────────────────────────
+
+export async function getLeadThreadMessages(params: { leadId: string }): Promise<{
+  success: boolean
+  messages?: InboxMessageRow[]
+  error?: string
+}> {
+  try {
+    const actorContext = await resolveActorContext()
+    const result = await loadUniversalInbox({
+      actorContext,
+      channel: "all",
+      leadId: params.leadId,
+      limit: 100,
+    })
+    if (!result.success || !result.data) {
+      return { success: false, error: result.error ?? "Failed to load lead conversation" }
+    }
+    // Thread view reads oldest-first (kernel returns newest-first).
+    return { success: true, messages: [...result.data.messages].reverse() }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Failed to load lead conversation" }
+  }
+}
+
+// ─── ACTION: convertLeadFromInbox ─────────────────────────────────────────────
+//
+// The human affordance mirroring the ISA's automated intent conversion: the
+// agent read the lead's thread, judged the direction positive, and converts.
+// Rides the ONE canonical handoff (acceptAIISAHandoff) — consent → qualified →
+// lossless contact, ISA dormant, agent notified. Same honest guard as the
+// automated path: a lead under representation is never converted.
+
+export async function convertLeadFromInbox(params: { leadId: string }): Promise<{
+  success: boolean
+  contactId?: string
+  error?: string
+}> {
+  try {
+    const actorContext = await resolveActorContext()
+    const supabase = await createClient()
+
+    const { data: lead } = await supabase
+      .from("leads")
+      .select("id, brokerage_id, lifecycle_state, contact_id")
+      .eq("id", params.leadId)
+      .eq("brokerage_id", actorContext.brokerageId)
+      .maybeSingle()
+    if (!lead) return { success: false, error: "Lead not found in your brokerage" }
+    if (lead.lifecycle_state === "representation") {
+      return { success: false, error: "This lead is under representation — cannot convert" }
+    }
+    if (lead.contact_id) return { success: true, contactId: lead.contact_id }
+
+    const { acceptAIISAHandoff } = await import("@/app/actions/ai-isa/accept-handoff")
+    const result = await acceptAIISAHandoff({
+      leadId: params.leadId,
+      brokerageId: actorContext.brokerageId,
+      actorUserId: actorContext.userId,
+    })
+    if (!result.success || !result.contactId) {
+      return { success: false, error: result.error ?? "Conversion failed" }
+    }
+    return { success: true, contactId: result.contactId }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Conversion failed" }
+  }
 }
 
 // ─── ACTION: markInboxRead ────────────────────────────────────────────────────

@@ -152,6 +152,7 @@ export type InboxChannel = "all" | "sms" | "email" | "voice" | "portal" | "chat"
 
 export interface InboxMessageRow {
   id: string
+  /** contacts.id for contact threads; "" for lead-lane rows (no contact yet). */
   contact_id: string
   contact_name: string
   channel: InboxChannel | string
@@ -159,13 +160,18 @@ export interface InboxMessageRow {
   body: string
   created_at: string
   read: boolean
-  source_table: "messages" | "client_portal_messages" | "voice_calls" | "chat_messages" | "vendor_messages"
+  source_table: "messages" | "client_portal_messages" | "voice_calls" | "chat_messages" | "vendor_messages" | "isa_outreach_log" | "ai_isa_activities"
   sentiment?: string | null
   summary?: string | null
   vendor_id?: string | null
+  /** "lead" for AI-ISA lead-lane rows (isa_outreach_log sends + lead voice calls). */
+  party?: "contact" | "lead"
+  /** leads.id when party === "lead". Leads are NOT contacts — separate id class. */
+  lead_id?: string | null
 }
 
 export interface InboxThread {
+  /** contacts.id, or "" for lead threads (keyed by lead_id instead). */
   contact_id: string
   contact_name: string
   contact_type?: string | null
@@ -173,6 +179,8 @@ export interface InboxThread {
   last_message_body: string
   unread_count: number
   channel: string
+  party?: "contact" | "lead"
+  lead_id?: string | null
 }
 
 export interface LoadUniversalInboxInput {
@@ -181,6 +189,10 @@ export interface LoadUniversalInboxInput {
   contactId?: string
   unreadOnly?: boolean
   limit?: number
+  /** Restrict to ONE lead's conversation (isa_outreach_log + lead voice_calls only). */
+  leadId?: string
+  /** "lead" fetches ONLY the AI-ISA lead lane (skips all contact lanes). */
+  party?: "lead"
 }
 
 export interface UniversalInboxResult {
@@ -211,6 +223,8 @@ export async function loadUniversalInbox(
 ): Promise<{ success: boolean; data?: UniversalInboxResult; error?: string }> {
   try {
     const { actorContext, channel = "all", contactId, unreadOnly = false, limit = 50 } = input
+    // Lead-lane-only mode: one lead's conversation, or the whole ISA lead lane.
+    const leadLaneOnly = !!input.leadId || input.party === "lead"
     const supabase = await createServerClient()
 
     // ── 1. Resolve agent_id from actorContext.userId when role = agent ────────
@@ -228,42 +242,43 @@ export async function loadUniversalInbox(
     // ── 2. Build base contact filter ──────────────────────────────────────────
     // For agents: only contacts they own; for broker/admin: all brokerage contacts
     let contactIds: string[] | null = null
-    if (contactId) {
-      contactIds = [contactId]
-    } else if (agentId) {
-      const { data: agentContacts } = await supabase
-        .from("contacts")
-        .select("id")
-        .eq("agent_id", agentId)
-        .eq("brokerage_id", actorContext.brokerageId)
-        .limit(500)
-      contactIds = (agentContacts ?? []).map((c: any) => c.id)
-      if (contactIds.length === 0) {
-        return { success: true, data: { messages: [], threads: [], totalUnread: 0 } }
+    if (!leadLaneOnly) {
+      if (contactId) {
+        contactIds = [contactId]
+      } else if (agentId) {
+        const { data: agentContacts } = await supabase
+          .from("contacts")
+          .select("id")
+          .eq("agent_id", agentId)
+          .eq("brokerage_id", actorContext.brokerageId)
+          .limit(500)
+        contactIds = (agentContacts ?? []).map((c: any) => c.id)
       }
     }
+    // An agent with zero owned contacts still gets the LEAD lane — don't return early.
+    const skipContactLanes = leadLaneOnly || (contactIds !== null && contactIds.length === 0)
 
     // ── 3. contacts lookup for names ──────────────────────────────────────────
-    const contactNameQuery = supabase
-      .from("contacts")
-      .select("id, first_name, last_name, contact_type")
-      .eq("brokerage_id", actorContext.brokerageId)
-    if (contactIds) contactNameQuery.in("id", contactIds)
-    const { data: contactRows } = await contactNameQuery.limit(500)
-    const contactMap = new Map<string, { name: string; type: string | null }>(
-      (contactRows ?? []).map((c: any) => [
-        c.id,
-        {
+    const contactMap = new Map<string, { name: string; type: string | null }>()
+    if (!skipContactLanes) {
+      const contactNameQuery = supabase
+        .from("contacts")
+        .select("id, first_name, last_name, contact_type")
+        .eq("brokerage_id", actorContext.brokerageId)
+      if (contactIds) contactNameQuery.in("id", contactIds)
+      const { data: contactRows } = await contactNameQuery.limit(500)
+      for (const c of contactRows ?? []) {
+        contactMap.set(c.id, {
           name: `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "Unknown",
           type: c.contact_type ?? null,
-        },
-      ])
-    )
+        })
+      }
+    }
 
     const results: InboxMessageRow[] = []
 
     // ── 4. client_portal_messages ─────────────────────────────────────────────
-    const fetchPortal = channel === "all" || channel === "portal" || channel === "sms" || channel === "email"
+    const fetchPortal = !skipContactLanes && (channel === "all" || channel === "portal" || channel === "sms" || channel === "email")
     if (fetchPortal) {
       let q = supabase
         .from("client_portal_messages")
@@ -291,7 +306,7 @@ export async function loadUniversalInbox(
     }
 
     // ── 5. messages (sms, email, ai, chat) ────────────────────────────────────
-    const fetchMessages = channel === "all" || ["sms", "email", "ai", "chat"].includes(channel)
+    const fetchMessages = !skipContactLanes && (channel === "all" || ["sms", "email", "ai", "chat"].includes(channel))
     if (fetchMessages) {
       let q = supabase
         .from("messages")
@@ -319,8 +334,8 @@ export async function loadUniversalInbox(
       }
     }
 
-    // ── 6. voice_calls ────────────────────────────────────────────────────────
-    const fetchVoice = channel === "all" || channel === "voice"
+    // ── 6. voice_calls (contact-keyed) ────────────────────────────────────────
+    const fetchVoice = !skipContactLanes && (channel === "all" || channel === "voice")
     if (fetchVoice) {
       let q = supabase
         .from("voice_calls")
@@ -329,6 +344,8 @@ export async function loadUniversalInbox(
         .limit(limit)
       if (agentId) q = q.eq("agent_id", agentId)
       if (contactId) q = q.eq("contact_id", contactId)
+      // Lead-keyed calls (contact_id null, lead_id set) belong to the LEAD lane below.
+      q = q.not("contact_id", "is", null)
       const { data: calls } = await q
       for (const v of calls ?? []) {
         const contact = contactMap.get(v.contact_id)
@@ -351,7 +368,7 @@ export async function loadUniversalInbox(
     // ── 6b. vendor_messages (vendor↔contact threads surface in the contact's
     // thread; vendor↔agent threads are not contact-keyed and are shown in the
     // vendor surface, not here) ───────────────────────────────────────────────
-    const fetchVendor = channel === "all" || channel === "vendor"
+    const fetchVendor = !skipContactLanes && (channel === "all" || channel === "vendor")
     if (fetchVendor) {
       let q = supabase
         .from("vendor_messages")
@@ -381,26 +398,145 @@ export async function loadUniversalInbox(
       }
     }
 
+    // ── 6c. AI-ISA LEAD LANE — isa_outreach_log sends + lead-keyed voice calls.
+    // Leads are NOT contacts: the ISA nurtures them by email / direct mail (no
+    // phone or SMS until consent), and leads can CALL IN. Those conversations
+    // surface here, keyed by lead_id, until positive intent converts the lead
+    // to a contact (then the contact thread owns the story). ──────────────────
+    const fetchLeadLane =
+      !contactId &&
+      (!!input.leadId || channel === "all" || channel === "ai" || channel === "email" || channel === "voice")
+    const leadMap = new Map<string, { name: string; state: string | null }>()
+    if (fetchLeadLane) {
+      // Lead scope mirrors contact scoping: agents see their own leads;
+      // broker/admin/solo principals see the brokerage. Converted leads
+      // (contact_id set) live on their contact thread — excluded.
+      let leadQ = supabase
+        .from("leads")
+        .select("id, first_name, last_name, lifecycle_state")
+        .eq("brokerage_id", actorContext.brokerageId)
+        .is("contact_id", null)
+      if (input.leadId) leadQ = leadQ.eq("id", input.leadId)
+      else if (agentId) leadQ = leadQ.eq("agent_id", agentId)
+      const { data: leadRows } = await leadQ.limit(500)
+      for (const l of leadRows ?? []) {
+        leadMap.set(l.id, {
+          name: `${l.first_name ?? ""} ${l.last_name ?? ""}`.trim() || "New lead",
+          state: l.lifecycle_state ?? null,
+        })
+      }
+      const leadIds = [...leadMap.keys()]
+      if (leadIds.length > 0) {
+        // ISA sends (email / direct_mail / video / social / voice) — outbound.
+        if (channel !== "voice") {
+          let q = supabase
+            .from("isa_outreach_log")
+            .select("id, lead_id, channel, subject, body_snippet, status, created_at")
+            .eq("brokerage_id", actorContext.brokerageId)
+            .in("lead_id", leadIds)
+            .order("created_at", { ascending: false })
+            .limit(limit)
+          if (channel === "email") q = q.eq("channel", "email")
+          const { data: sends } = await q
+          for (const s of sends ?? []) {
+            results.push({
+              id: s.id,
+              contact_id: "",
+              contact_name: leadMap.get(s.lead_id)?.name ?? "New lead",
+              channel: s.channel ?? "email",
+              direction: "outbound",
+              body:
+                [s.subject, s.body_snippet].filter(Boolean).join(" — ") ||
+                `${(s.channel ?? "email").replace(/_/g, " ")} outreach sent`,
+              created_at: s.created_at,
+              read: true,
+              source_table: "isa_outreach_log",
+              party: "lead",
+              lead_id: s.lead_id,
+            })
+          }
+        }
+        // The LEAD's replies — inbound turns recorded on ai_isa_activities
+        // (outcome 'replied'; the inbound-email handler writes them lead-keyed
+        // because leads are NOT contacts and messages is contact-FK'd).
+        if (channel !== "voice") {
+          const { data: replies } = await supabase
+            .from("ai_isa_activities")
+            .select("id, lead_id, channel, summary, created_at")
+            .eq("brokerage_id", actorContext.brokerageId)
+            .in("lead_id", leadIds)
+            .eq("outcome", "replied")
+            .order("created_at", { ascending: false })
+            .limit(limit)
+          for (const r of replies ?? []) {
+            results.push({
+              id: r.id,
+              contact_id: "",
+              contact_name: leadMap.get(r.lead_id)?.name ?? "New lead",
+              channel: r.channel ?? "email",
+              direction: "inbound",
+              body: r.summary ?? "Lead replied",
+              created_at: r.created_at,
+              read: true,
+              source_table: "ai_isa_activities",
+              party: "lead",
+              lead_id: r.lead_id,
+            })
+          }
+        }
+        // Lead call-ins (and ISA lead calls) — voice_calls keyed by lead_id.
+        if (channel === "all" || channel === "ai" || channel === "voice" || !!input.leadId) {
+          const { data: leadCalls } = await supabase
+            .from("voice_calls")
+            .select("id, lead_id, direction, summary, transcription, created_at, status")
+            .eq("brokerage_id", actorContext.brokerageId)
+            .in("lead_id", leadIds)
+            .order("created_at", { ascending: false })
+            .limit(limit)
+          for (const v of leadCalls ?? []) {
+            results.push({
+              id: v.id,
+              contact_id: "",
+              contact_name: leadMap.get(v.lead_id)?.name ?? "New lead",
+              channel: "voice",
+              direction: v.direction === "inbound" ? "inbound" : "outbound",
+              body: v.summary ?? (v.transcription ? String(v.transcription).slice(0, 160) : "Voice call"),
+              created_at: v.created_at,
+              read: true,
+              source_table: "voice_calls",
+              summary: v.summary,
+              party: "lead",
+              lead_id: v.lead_id,
+            })
+          }
+        }
+      }
+    }
+
     // ── 7. Sort + deduplicate ─────────────────────────────────────────────────
     const sorted = results
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       .slice(0, limit)
 
-    // ── 8. Build threads (one per contact, latest message wins) ───────────────
+    // ── 8. Build threads (one per contact OR lead, latest message wins) ───────
     const threadMap = new Map<string, InboxThread>()
     for (const m of sorted) {
-      if (!threadMap.has(m.contact_id)) {
-        threadMap.set(m.contact_id, {
+      const key = m.party === "lead" && m.lead_id ? `lead:${m.lead_id}` : m.contact_id
+      if (!threadMap.has(key)) {
+        threadMap.set(key, {
           contact_id: m.contact_id,
           contact_name: m.contact_name,
-          contact_type: contactMap.get(m.contact_id)?.type ?? null,
+          contact_type:
+            m.party === "lead" ? "lead" : contactMap.get(m.contact_id)?.type ?? null,
           last_message_at: m.created_at,
           last_message_body: m.body.slice(0, 80),
           unread_count: m.read ? 0 : 1,
           channel: m.channel,
+          party: m.party ?? "contact",
+          lead_id: m.party === "lead" ? m.lead_id ?? null : null,
         })
       } else {
-        if (!m.read) threadMap.get(m.contact_id)!.unread_count++
+        if (!m.read) threadMap.get(key)!.unread_count++
       }
     }
 

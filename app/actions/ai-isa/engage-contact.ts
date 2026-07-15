@@ -417,18 +417,31 @@ async function dispatchContactChannel(
       bodySnippet: finalBody.substring(0, 500),
     })
 
-    // Write to unified inbox messages table — stamped with brokerage
-    await supabase.from('messages').insert({
-      contact_id: contact.id,
-      agent_id: contact.agent_id ?? null,
-      brokerage_id: brokerageId,
-      type: 'email',
-      direction: 'outbound',
-      subject,
-      body: finalBody.replace(/<[^>]+>/g, '').substring(0, 1000),
-      status: 'sent',
-      created_at: new Date().toISOString(),
-    })
+    // Write to unified inbox messages table — messages.conversation_id is
+    // NOT NULL (live schema): resolve the thread via the ONE canonical helper
+    // first. Without it this insert failed silently (same dead-write class
+    // pass 2 killed on the lead side).
+    try {
+      const { ensureConversationForContact, touchConversation } = await import('@/lib/kernel/conversation-thread')
+      const conversationId = await ensureConversationForContact(supabase, {
+        contactId: contact.id, brokerageId, agentId: contact.agent_id ?? null,
+      })
+      if (conversationId) {
+        await supabase.from('messages').insert({
+          conversation_id: conversationId,
+          contact_id: contact.id,
+          agent_id: contact.agent_id ?? null,
+          brokerage_id: brokerageId,
+          type: 'email',
+          direction: 'outbound',
+          subject,
+          body: finalBody.replace(/<[^>]+>/g, '').substring(0, 1000),
+          status: 'sent',
+          created_at: new Date().toISOString(),
+        })
+        await touchConversation(supabase, conversationId, { inbound: false })
+      }
+    } catch { /* inbox mirror is best-effort; isa_outreach_log + activities are the record */ }
 
     // Write activity
     await supabase.from('activities').insert({
@@ -458,7 +471,7 @@ async function dispatchContactChannel(
       contact_id: contact.id,
       brokerage_id: brokerageId,
       channel: 'email',
-      activity_type: 'outbound_email',
+      activity_type: 'email', // CHECK vocabulary (drifted synonym was silently rejected)
       outcome: 'sent',
       summary: `AI ISA email: ${subject} (trigger: ${reason})`,
     })
@@ -530,7 +543,7 @@ async function dispatchContactChannel(
       contact_id: contact.id,
       brokerage_id: brokerageId,
       channel: 'sms',
-      activity_type: 'outbound_sms',
+      activity_type: 'text', // CHECK vocabulary (drifted synonym was silently rejected)
       outcome: 'sent',
       summary: `AI ISA SMS (trigger: ${reason})`,
     })
@@ -580,7 +593,7 @@ async function dispatchContactChannel(
       contact_id: contact.id,
       brokerage_id: brokerageId,
       channel: 'direct_mail',
-      activity_type: 'outbound_direct_mail',
+      activity_type: 'direct_mail', // CHECK vocabulary (drifted synonym was silently rejected)
       outcome: 'sent',
       summary: `AI ISA direct mail (trigger: ${reason})`,
     })
@@ -656,7 +669,7 @@ async function dispatchContactChannel(
     })
     await supabase.from('ai_isa_activities').insert({
       contact_id: contact.id, brokerage_id: brokerageId, channel: 'phone',
-      activity_type: 'outbound_call', outcome: 'initiated', summary: `AI ISA call (trigger: ${reason})`,
+      activity_type: 'call', outcome: 'initiated', summary: `AI ISA call (trigger: ${reason})`,
     }).then(() => {}, () => {})
     await supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id)
     await emitLifecycleEvent({
@@ -744,7 +757,7 @@ async function tryVoiceDrop(
     })
     await supabase.from('ai_isa_activities').insert({
       contact_id: contact.id, brokerage_id: brokerageId, channel: 'voicedrop',
-      activity_type: 'outbound_voicedrop', outcome: 'sent', summary: `AI ISA voice drop (trigger: ${reason})`,
+      activity_type: 'voicedrop', outcome: 'sent', summary: `AI ISA voice drop (trigger: ${reason})`,
     }).then(() => {}, () => {})
     await supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id)
     await emitLifecycleEvent({
