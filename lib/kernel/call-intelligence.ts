@@ -85,14 +85,21 @@ export function composeCallIntelBrief(intel: CallIntelligence): string {
   return lines.join(" ")
 }
 
-/** Load one agent's last-N-days call analyses (read-only, tenant-scoped). */
+/** Load one agent's last-N-days call analyses (read-only, tenant-scoped).
+ *  LIVE-FK class fix: call_analyses.agent_id FKs agents(id) — resolve the
+ *  caller's agents row first (the old users.id filter always read empty
+ *  because the matching writes were FK-rejected). */
 export async function loadCallIntelligence(
   svc: any, brokerageId: string, agentUserId: string, sinceDays = 7,
 ): Promise<CallIntelligence> {
   const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString()
+  const { data: agentRow } = await svc.from("agents")
+    .select("id").eq("user_id", agentUserId).eq("brokerage_id", brokerageId).maybeSingle()
+  const agentRowId = (agentRow as { id: string } | null)?.id
+  if (!agentRowId) return rollupCallIntelligence([])
   const { data } = await svc.from("call_analyses")
     .select("objections, sentiment, urgency_score, coaching_score, intent_primary")
-    .eq("brokerage_id", brokerageId).eq("agent_id", agentUserId)
+    .eq("brokerage_id", brokerageId).eq("agent_id", agentRowId)
     .gte("created_at", since).limit(500)
   return rollupCallIntelligence((data ?? []) as CallAnalysisRow[])
 }

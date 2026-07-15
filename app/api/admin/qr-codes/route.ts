@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 
@@ -109,7 +110,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         target_url: resolvedUrl,
         destination_type: destinationType ?? null,
         listing_id: listingId ?? null,
-        agent_id: agentUserId,
+        agent_id: (await resolveAgentId(supabase as any, agentUserId)) ?? agentUserId, // qr_codes.agent_id FKs agents(id); tolerate callers already sending agents.id
         brokerage_id: brokerageId,
         is_active: true,
         scan_count: 0,

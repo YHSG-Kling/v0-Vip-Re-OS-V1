@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
@@ -322,7 +323,7 @@ export async function sendCounterOffer(params: {
       listing_id:        listingId,
       contact_id:        parent.contact_id,
       brokerage_id:      brokerageId,
-      agent_id:          agentUserId,
+      agent_id:          await resolveAgentId(supabase as any, agentUserId),
       uploaded_by:       agentUserId,
       offer_price:       counterPrice,
       offer_type:        "counter",
@@ -883,7 +884,7 @@ Provide: 1) RANKED LIST with reasoning 2) COMPARISON MATRIX 3) OVERALL RECOMMEND
   const { data: _compData, error: compInsertError } = await supabase.from("offer_comparison").insert({
     listing_id:              listingId,
     brokerage_id:            brokerageId,
-    agent_id:                userId,
+    agent_id:                await resolveAgentId(supabase as any, userId),
     created_by:              userId,
     offer_ids:               offers.map(o => o.id),
     ai_recommendation:       comparison.substring(0, 500),

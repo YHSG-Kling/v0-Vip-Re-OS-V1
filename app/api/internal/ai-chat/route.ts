@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { streamText, convertToModelMessages, tool, stepCountIs } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -403,7 +404,7 @@ export async function POST(req: NextRequest) {
       .insert({
         contact_id: null,
         brokerage_id: brokerageId,
-        agent_id: user.id,
+        agent_id: await resolveAgentId(service as any, user.id),
         source: "internal",
         session_type: `internal_${role}`,
         status: "active",
@@ -452,8 +453,8 @@ export async function POST(req: NextRequest) {
           .from("tasks")
           .insert({
             brokerage_id: brokerageId,
-            assigned_to_agent_id: user.id,
-            created_by_agent_id: user.id,
+            assigned_to_agent_id: await resolveAgentId(service as any, user.id),
+            created_by_agent_id: await resolveAgentId(service as any, user.id),
             title,
             description: description ?? undefined,
             priority,
@@ -484,7 +485,7 @@ export async function POST(req: NextRequest) {
           .from("activities")
           .insert({
             brokerage_id: brokerageId,
-            agent_id: user.id,
+            agent_id: await resolveAgentId(service as any, user.id),
             contact_id,
             activity_type,
             scheduled_at,
@@ -572,7 +573,7 @@ export async function POST(req: NextRequest) {
           .from("activities")
           .insert({
             brokerage_id: brokerageId,
-            agent_id: user.id,
+            agent_id: await resolveAgentId(service as any, user.id),
             contact_id: contact_id ?? undefined,
             transaction_id: transaction_id ?? undefined,
             activity_type,

@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
@@ -110,7 +111,7 @@ export async function sendDocumentForSignature(params: {
     .from("contract_signatures")
     .insert({
       brokerage_id:       brokerageId,
-      agent_id:           userId,
+      agent_id:           await resolveAgentId(supabase as any, userId),
       contract_type:      docType,
       provider_name:      providerKey,
       esign_status:       "sent",

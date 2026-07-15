@@ -306,7 +306,7 @@ export async function submitLicenseDetails(
 
     if (stepRecord) {
       await supabase.from("agent_step_completions").upsert({
-        agent_id: user.id,
+        agent_id: await resolveAgentId(supabase as any, user.id),
         brokerage_id: agent.brokerage_id,
         step_id: stepRecord.id,
         completed: true,
@@ -424,7 +424,7 @@ export async function submitEOInsurance(
 
     if (stepRecord) {
       await supabase.from("agent_step_completions").upsert({
-        agent_id: user.id,
+        agent_id: await resolveAgentId(supabase as any, user.id),
         brokerage_id: agent.brokerage_id,
         step_id: stepRecord.id,
         completed: true,

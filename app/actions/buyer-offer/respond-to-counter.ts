@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
@@ -70,7 +71,7 @@ export async function respondToCounter(params: RespondToCounterParams) {
     if (!compliancePassed) {
       await supabase.from("activities").insert({
         brokerage_id: brokerageIdC,
-        agent_id: userId,
+        agent_id: await resolveAgentId(supabase as any, userId),
         contact_id: offer.contact_id,
         activity_type: "buyer.offer.block",
         title: "Counter acceptance blocked: compliance gate failed",
@@ -91,7 +92,7 @@ export async function respondToCounter(params: RespondToCounterParams) {
     await supabase.from("activities").insert([
       {
         brokerage_id: brokerageIdC,
-        agent_id: userId,
+        agent_id: await resolveAgentId(supabase as any, userId),
         contact_id: offer.contact_id,
         activity_type: "buyer.offer.counter.accepted",
         title: "Counter offer accepted",
@@ -102,7 +103,7 @@ export async function respondToCounter(params: RespondToCounterParams) {
       },
       {
         brokerage_id: brokerageIdC,
-        agent_id: userId,
+        agent_id: await resolveAgentId(supabase as any, userId),
         contact_id: offer.contact_id,
         activity_type: "buyer.offer.accepted",
         title: "Offer accepted via counter",
@@ -113,7 +114,7 @@ export async function respondToCounter(params: RespondToCounterParams) {
       },
       {
         brokerage_id: brokerageIdC,
-        agent_id: userId,
+        agent_id: await resolveAgentId(supabase as any, userId),
         contact_id: offer.contact_id,
         activity_type: "buyer.under_contract",
         title: "Buyer under contract",
@@ -129,7 +130,7 @@ export async function respondToCounter(params: RespondToCounterParams) {
     if (offer.transaction_id) {
       await supabase.from("activities").insert({
         brokerage_id: brokerageIdC,
-        agent_id: userId,
+        agent_id: await resolveAgentId(supabase as any, userId),
         contact_id: offer.contact_id,
         activity_type: "transaction.lifecycle.initiated",
         title: "Transaction lifecycle initiated",
@@ -143,7 +144,7 @@ export async function respondToCounter(params: RespondToCounterParams) {
   } else if (response === "reject") {
     await supabase.from("activities").insert({
       brokerage_id: brokerageIdC,
-      agent_id: userId,
+      agent_id: await resolveAgentId(supabase as any, userId),
       contact_id: offer.contact_id,
       activity_type: "buyer.offer.counter.rejected",
       title: "Counter offer rejected",
@@ -155,7 +156,7 @@ export async function respondToCounter(params: RespondToCounterParams) {
   } else if (response === "counter_back") {
     await supabase.from("activities").insert({
       brokerage_id: brokerageIdC,
-      agent_id: userId,
+      agent_id: await resolveAgentId(supabase as any, userId),
       contact_id: offer.contact_id,
       activity_type: "buyer.offer.counter.submitted",
       title: "Counter back submitted",

@@ -71,7 +71,7 @@ Extract: a 2-sentence summary; overall caller sentiment; the caller's objections
       voice_call_id: call.id,
       brokerage_id: call.brokerage_id,
       contact_id: call.contact_id,
-      agent_id: agentUserId,
+      agent_id: call.agent_id, // call_analyses.agent_id FKs agents(id) — the ledger id, never users.id
       call_type: call.direction === "outbound" ? "outbound" : "inbound",
       call_duration: call.duration_seconds,
       transcript: call.transcription.slice(0, 20_000),

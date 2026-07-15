@@ -21,6 +21,7 @@
 // Agent task (correct location, no changes) — activity_type: seller.appointment.scheduled, seller.cma.started, seller.presentation.*, seller.decision.*, and all seller lifecycle events
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { transitionLifecycle, processKernelEvent } from "@/lib/kernel"
@@ -85,7 +86,7 @@ export async function scheduleListingAppointment(params: {
   // Human-readable CRM activity (agent task log — activities is correct here)
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.appointment.scheduled",
     title:         "Listing appointment scheduled",
     description:   `Appointment scheduled for ${appointmentDate}`,
@@ -166,7 +167,7 @@ export async function markDripCompleted(params: {
   // CRM human task record — drip sequence completion (activities correct)
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.presentation.drip_completed",
     title:         "Seller drip sequence completed",
     description:   "Presentation drip sequence completed",
@@ -229,7 +230,7 @@ export async function recordSellerDecision(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: activityType,
     title:         `Seller decision: ${decision}`,
     description:   reason ?? `Seller decision: ${decision}`,
@@ -293,7 +294,7 @@ export async function initiateListingAgreement(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.listing_agreement.initiated",
     title:         "Listing agreement initiated",
     description:   `Listing agreement process initiated for listing ${listingId}`,
@@ -404,7 +405,7 @@ export async function markAgreementSigned(params: {
   if (hasAdjustment && commissionTerms) {
     await supabase.from("commission_adjustments").insert({
       brokerage_id:          brokerageId,
-      created_by_agent_id:   userId,
+      created_by_agent_id:   await resolveAgentId(supabase as any, userId),
       adjustment_type:       commissionTerms.adjustmentType!,
       value:                 commissionTerms.adjustmentValue!,
       value_type:            commissionTerms.adjustmentValueType ?? "percent",
@@ -462,7 +463,7 @@ export async function markAgreementSigned(params: {
     brokerage_id:      brokerageId,
     listing_id:        listingId,
     user_id:           userId,
-    agent_id:          userId,
+    agent_id:          await resolveAgentId(supabase as any, userId),
     post_type:         "open_house_announcement",
     platform:          "all",
     status:            "scheduled",
@@ -477,7 +478,7 @@ export async function markAgreementSigned(params: {
   await supabase.from("open_house_events").insert({
     brokerage_id:          brokerageId,
     listing_id:            listingId,
-    agent_id:              userId,
+    agent_id:              await resolveAgentId(supabase as any, userId),
     created_by:            userId,
     event_date:            eventDate.toISOString(),
     event_type:            "open_house",
@@ -580,7 +581,7 @@ export async function recordPreListingRepair(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.repair.required.pre_listing",
     title:         `Pre-listing repair required: ${repairType}`,
     description,
@@ -629,7 +630,7 @@ export async function markRepairCompleted(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.repair.completed.pre_listing",
     title:         "Pre-listing repair completed",
     notes:         JSON.stringify({ listing_id: listingId, repair_id: repairId }),
@@ -655,7 +656,7 @@ export async function markRepairFailed(params: {
 
   const { error } = await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.repair.failed.pre_listing",
     title:         "Pre-listing repair failed",
     description:   reason,
@@ -703,7 +704,7 @@ export async function scheduleMediaCapture(params: {
 
   const { error } = await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.media.scheduled",
     title:         `Media capture scheduled: ${scheduledDate}`,
     description:   `Media capture session scheduled`,
@@ -773,7 +774,7 @@ export async function markMediaCaptured(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.media.captured",
     title:         `Media captured: ${photoCount} photos${hasVideo ? ", video" : ""}`,
     description:   `${photoCount} photos captured${hasVideo ? " with video" : ""}`,
@@ -828,7 +829,7 @@ export async function approveMedia(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.media.approved",
     title:         "Media approved",
     description:   `Media approved by ${role}`,
@@ -889,7 +890,7 @@ export async function prepareComingSoonAssets(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.coming_soon.assets_prepared",
     title:         "Coming soon assets prepared (without address)",
     description:   "Coming soon marketing assets prepared, address withheld per compliance",
@@ -944,7 +945,7 @@ export async function activateComingSoon(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.coming_soon.activated",
     title:         "Coming soon marketing activated",
     description:   `Coming soon activated by ${role}`,
@@ -1003,7 +1004,7 @@ export async function markMLSReady(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.mls.ready",
     title:         "Listing MLS ready",
     description:   "Listing cleared all gates and is ready for MLS submission",
@@ -1075,7 +1076,7 @@ export async function approveOpenHouseMarketing(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.open_house_marketing.approved",
     title:         "Open house marketing approved",
     description:   `Open house marketing approved by ${role}`,
@@ -1113,7 +1114,7 @@ export async function submitToMLSAdmin(params: {
 
   const { error } = await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.mls.submitted_to_admin",
     title:         "Listing submitted to MLS admin",
     description:   "Listing submitted to admin for MLS entry",
@@ -1190,7 +1191,7 @@ export async function activateMLS(params: {
   // CRM human task record for MLS activation (activities correct)
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.mls.activated",
     title:         `Listing activated on MLS: ${mlsNumber}`,
     description:   `Listing published to MLS with number ${mlsNumber}`,
@@ -1249,7 +1250,7 @@ export async function scheduleOpenHouse(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.open_house.scheduled",
     title:         `Open house scheduled: ${eventDate}`,
     description:   `Open house event scheduled for ${eventDate}`,
@@ -1299,7 +1300,7 @@ export async function markOpenHouseCompleted(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.open_house.completed",
     title:         `Open house completed: ${attendeeCount} attendees`,
     description:   `Open house completed with ${attendeeCount} attendees`,
@@ -1326,7 +1327,7 @@ export async function recordShowingCompleted(params: {
 
   const { error } = await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.showing.completed",
     title:         "Showing completed",
     description:   feedback ?? "Showing completed",
@@ -1398,7 +1399,7 @@ export async function markUnderContract(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.under_contract",
     title:         "Listing under contract",
     description:   "Listing moved to under contract — handed off to transaction system",
@@ -1456,7 +1457,7 @@ export async function cancelListing(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.listing.cancelled",
     title:         "Listing cancelled",
     description:   reason,
@@ -1504,7 +1505,7 @@ export async function markListingExpired(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     activity_type: "seller.listing.expired",
     title:         "Listing expired",
     description:   "Listing expired without a contract",

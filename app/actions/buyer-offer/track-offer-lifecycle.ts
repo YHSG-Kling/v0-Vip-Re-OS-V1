@@ -1,6 +1,7 @@
 "use server";
 
 import { createServiceClient } from "@/lib/supabase/service";
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations";
 
 /**
@@ -118,7 +119,7 @@ export async function submitOffer(
     const { data: agentUserS } = await supabase.from("users").select("brokerage_id").eq("id", userId).maybeSingle();
     const { error } = await supabase.from("activities").insert({
       brokerage_id: agentUserS?.brokerage_id ?? null,
-      agent_id: userId,
+      agent_id: await resolveAgentId(supabase as any, userId),
       activity_type: "buyer.offer.submitted",
       title: `Offer submitted`,
       description: `Offer ${offerId} submitted`,
@@ -164,7 +165,7 @@ export async function withdrawOffer(
     const { data: agentUserW } = await supabase.from("users").select("brokerage_id").eq("id", userId).maybeSingle();
     const { error } = await supabase.from("activities").insert({
       brokerage_id: agentUserW?.brokerage_id ?? null,
-      agent_id: userId,
+      agent_id: await resolveAgentId(supabase as any, userId),
       activity_type: "buyer.offer.withdrawn",
       title: `Offer withdrawn`,
       description: reason,
@@ -213,7 +214,7 @@ export async function recordSellerResponse(
 
     const { error } = await supabase.from("activities").insert({
       brokerage_id: agentUserR?.brokerage_id ?? null,
-      agent_id: userId,
+      agent_id: await resolveAgentId(supabase as any, userId),
       activity_type: eventType,
       title: `Seller response: ${response}`,
       description: notes ?? `Seller responded: ${response}`,

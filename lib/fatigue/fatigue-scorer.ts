@@ -14,6 +14,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { transitionLifecycle }  from "@/lib/kernel/lifecycle"
 import { KernelEvent }          from "@/lib/kernel/events"
 
@@ -124,7 +125,7 @@ export async function calculateBuyerFatigue(
       {
         brokerage_id:          brokerageId,
         contact_id:            contactId,
-        agent_id:              agentUserId,
+        agent_id:              await resolveAgentId(supabase as any, agentUserId),
         fatigue_score:         score,
         risk_level:            risk,
         total_showings:        totalShowings,

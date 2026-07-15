@@ -1546,6 +1546,30 @@ async function main() {
       && src("vercel.json").includes('"/api/cron/dispatch"')
       && ((src("lib/kernel/cron-dispatch.ts").match(/\/api\/cron\//g) ?? []).length >= 160)
       && src("lib/kernel/manager-registry.ts").includes("journey_visibility_and_bridge:"))
+    // ── BUYER CLOSING-COST BREAKDOWN + THE RIGOROUS FK PASS (owner: "buyer gets a closing cost breakdown" + "go ahead with the rigorous pass test") ──
+    const bcc = await import("../lib/offers/buyer-closing-costs")
+    const financed = bcc.estimateBuyerClosingCosts({ purchasePrice: 500_000, loanAmount: 400_000, sellerCredit: 5_000 })
+    const cash = bcc.estimateBuyerClosingCosts({ purchasePrice: 500_000, loanAmount: 0, sellerCredit: 0 })
+    check("BUYER CLOSING-COST BREAKDOWN (the buyer-side companion to the seller net sheet — keep-one, different audience) + THE RIGOROUS FK PASS: every cost line is a LOW–HIGH RANGE with its assumption stated (never false precision), cash drops all lender lines, the negotiated seller credit nets against the total, the disclaimer names the BINDING documents (Loan Estimate / Closing Disclosure), party-anchored action refuses a deal with no price (honest absence); THE FK PASS found the createTour bug class SYSTEMIC — 60+ writes of users.id into agents(id)-FK columns (the entire activity trail on leads/offers/listing flows silently FK-rejected; buyer_behavior_log, showings, contract_signatures, chat_sessions, call_analyses all broken) — ALL fixed via the documented resolveAgentId rule the code itself prescribed; call-intelligence reader+writer BOTH corrected (they were consistent-but-broken: writes rejected, reads empty)",
+      financed.isCash === false && financed.lines.length >= 9
+      && financed.lines.every((l) => l.high >= l.low && l.low >= 0)
+      && financed.netLow === financed.totalLow - 5000 && financed.netHigh === financed.totalHigh - 5000
+      && financed.pctLow > 0 && financed.pctHigh >= financed.pctLow
+      && Boolean(financed.lines.find((l) => l.label.includes("Lender fees"))!.note!.includes("0.5%"))
+      && Boolean(financed.disclaimer.includes("Loan Estimate")) && Boolean(financed.disclaimer.includes("Closing Disclosure"))
+      && cash.isCash === true && cash.lines.every((l) => !l.label.includes("Lender") || l.label.includes("Lender's title") === false)
+      && cash.lines.length < financed.lines.length
+      && src("app/actions/buyer-closing-costs.ts").includes("isParty")
+      && src("app/actions/buyer-closing-costs.ts").includes("No purchase price")
+      && src("app/portal/[contactId]/transaction/[transactionId]/page.tsx").includes("BuyerClosingCostsCard")
+      && src("app/actions/leads.ts").includes("resolveAgentId")
+      && src("app/actions/buyer-offer/respond-to-counter.ts").includes("resolveAgentId")
+      && src("app/actions/seller-listing/execution-engine.ts").includes("resolveAgentId")
+      && src("app/actions/seller-showings.ts").includes("resolveAgentId")
+      && src("app/actions/tour-planner.ts").includes("actorAgentId")
+      && src("lib/voice/call-analysis.ts").includes("agent_id: call.agent_id")
+      && src("lib/kernel/call-intelligence.ts").includes('.eq("user_id", agentUserId)')
+      && src("lib/kernel/manager-registry.ts").includes("buyer_closing_costs_and_fk_pass:"))
     // ── REPAIR-PATTERN DIGEST + VOICE SELF-HEAL BRIEF + DEAL TWIN (approved 1/2/3) ──
     const rd = await import("../lib/kernel/repair-digest")
     const digest = rd.composeRepairDigest([

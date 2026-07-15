@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { assignUserRoleAndEntitlements, assignUserToBrokerage } from "@/lib/kernel/users"
 import type { UserDomainRole } from "@/lib/kernel/users"
@@ -132,7 +133,7 @@ export async function updateUser({ userId, updates }: UpdateUserParams): Promise
       .from("activities")
       .insert({
         activity_type: "admin.user.updated",
-        agent_id:      user.id,
+        agent_id:      await resolveAgentId(supabase as any, user.id),
         brokerage_id:  caller?.brokerage_id ?? null,
         title:         `User updated: ${userId}`,
         description:   JSON.stringify({ before, after: patch, updated_by: user.id }),

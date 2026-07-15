@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { inviteTenantMember } from "@/lib/kernel/users"
 import { emitUserProvisionedEvent } from "@/lib/kernel/users"
@@ -123,7 +124,7 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
       .from("activities")
       .insert({
         activity_type: "admin.user.invited",
-        agent_id:      user.id,
+        agent_id:      await resolveAgentId(supabase as any, user.id),
         brokerage_id:  resolvedBrokerageId,
         title:         `User invited: ${params.email}`,
         notes:         JSON.stringify({

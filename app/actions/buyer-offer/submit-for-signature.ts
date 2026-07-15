@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
@@ -98,7 +99,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   if (!offer.buyer_commission_acknowledged_at) {
     await supabase.from("activities").insert({
       activity_type: "buyer.offer.block",
-      agent_id:      userId,
+      agent_id:      await resolveAgentId(supabase as any, userId),
       entity_type:   "offer",
       title:         "Signature blocked: buyer commission disclosure not acknowledged",
       description:   `Offer ${offerId} blocked — NAR 2024 requires explicit commission acknowledgment before submission`,
@@ -116,7 +117,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
     // Emit block event
     await supabase.from("activities").insert({
       activity_type: "buyer.offer.block",
-      agent_id: userId,
+      agent_id: await resolveAgentId(supabase as any, userId),
       entity_type: "offer",
       title:        "Signature blocked: compliance not passed",
       description:  `Offer ${offerId} blocked from submission — compliance gate failed`,
@@ -132,7 +133,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   // Emit signature request event
   const { error: eventError } = await supabase.from("activities").insert({
     activity_type: "buyer.offer.signature.requested",
-    agent_id:      userId,
+    agent_id:      await resolveAgentId(supabase as any, userId),
     entity_type:   "offer",
     title:         "Signature requested",
     description:   `Signature requested for offer ${offerId} (${signers.length} signer(s))`,
@@ -194,7 +195,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
 
       await supabase.from("activities").insert({
         activity_type: "buyer.offer.provider.signature.requested",
-        agent_id:      userId,
+        agent_id:      await resolveAgentId(supabase as any, userId),
         entity_type:   "offer",
         title:         `Provider signature requested via ${credential.platform}`,
         description:   `Offer ${offerId} sent to ${credential.platform} for signature`,

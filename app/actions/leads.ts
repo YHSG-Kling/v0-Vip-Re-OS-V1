@@ -17,6 +17,7 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { getAgentContext } from "@/lib/identity"
 
 // ─── RBAC helpers ────────────────────────────────────────────────────────────
@@ -176,7 +177,7 @@ export async function qualifyLead(leadId: string) {
       activity_type: "lead_qualified",
       entity_type: "lead",
       contact_id: lead.id, // activities.contact_id stores entity ref
-      agent_id: userId,
+      agent_id: await resolveAgentId(supabase as any, userId),
       brokerage_id: brokerageId,
       title: "Lead qualified",
       description: `Lifecycle moved to isa_qualifying`,
@@ -236,7 +237,7 @@ export async function assignLeadToAgent(leadId: string, agentId: string) {
       activity_type: "lead_assigned",
       entity_type: "lead",
       contact_id: leadId,
-      agent_id: userId,
+      agent_id: await resolveAgentId(supabase as any, userId),
       brokerage_id: brokerageId,
       title: "Lead assigned to agent",
       description: `Agent ID: ${agentId}`,
@@ -272,7 +273,7 @@ export async function pauseAIISA(leadId: string) {
       activity_type: "ai_isa_paused",
       entity_type: "lead",
       contact_id: leadId,
-      agent_id: userId,
+      agent_id: await resolveAgentId(supabase as any, userId),
       brokerage_id: brokerageId,
       title: "AI-ISA outreach paused",
       status: "completed",
@@ -305,7 +306,7 @@ export async function resumeAIISA(leadId: string) {
       activity_type: "ai_isa_resumed",
       entity_type: "lead",
       contact_id: leadId,
-      agent_id: userId,
+      agent_id: await resolveAgentId(supabase as any, userId),
       brokerage_id: brokerageId,
       title: "AI-ISA outreach resumed",
       status: "completed",
@@ -373,7 +374,7 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
       activity_type: "ai_isa_handoff",
       entity_type: "lead",
       contact_id: leadId,
-      agent_id: userId,
+      agent_id: await resolveAgentId(supabase as any, userId),
       brokerage_id: brokerageId,
       title: "AI-ISA handed off to human agent",
       description: resolvedAgentId ? `Assigned to agent: ${resolvedAgentId}` : "Queued for manual assignment",

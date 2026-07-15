@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
@@ -362,7 +363,7 @@ export async function approveShowingRequest(params: {
     .insert({
       listing_id:         params.listingId,
       contact_id:         params.contactId ?? req.contact_id ?? "00000000-0000-0000-0000-000000000000",
-      agent_id:           auth.userId,
+      agent_id:           await resolveAgentId(supabase as any, auth.userId), // showings.agent_id FKs agents(id)
       scheduled_at:       scheduledAt,
       scheduled_date:     req.requested_date,
       scheduled_time:     req.requested_start_time,

@@ -935,6 +935,12 @@ export async function completeTour(params: CompleteTourParams) {
 
   const supabase = createServiceClient()
 
+  // buyer_behavior_log.agent_id FKs to agents(id) — resolve the caller's
+  // agents row once (LIVE-FK class fix; users.id here failed the insert).
+  const { data: actorAgent } = await supabase
+    .from('agents').select('id').eq('user_id', agentUserId).maybeSingle()
+  const actorAgentId = (actorAgent as { id: string } | null)?.id ?? null
+
   // Verify tour belongs to caller's brokerage and contact
   const { data: tourRow } = await supabase
     .from('tours')
@@ -982,7 +988,7 @@ export async function completeTour(params: CompleteTourParams) {
     return {
       brokerage_id:     brokerageId,
       contact_id:       contactId,
-      agent_id:         agentUserId,
+      agent_id:         actorAgentId,
       signal_type:      canonicalSignal,
       listing_id:       r.listingId ?? null,
       property_address: r.propertyAddress,

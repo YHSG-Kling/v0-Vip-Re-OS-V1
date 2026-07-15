@@ -33,6 +33,7 @@ import {
 import { ClientFeedbackWidget } from "./client-feedback-widget"
 import { LoanChecklistCard } from "./loan-checklist-card"
 import { ContinuityReceiptCard } from "@/app/components/portal/continuity-receipt-card"
+import { BuyerClosingCostsCard } from "@/app/components/portal/buyer-closing-costs-card"
 import { cn } from "@/lib/utils"
 import { format } from "date-fns"
 
@@ -313,6 +314,9 @@ export default function TransactionDashboard() {
 
             {/* Loan conditions — what the lender still needs (renders only with real loan state) */}
             <LoanChecklistCard contactId={contactId} transactionId={transactionId} />
+
+            {/* Closing-cost breakdown — honest ranges grounded in this deal's numbers */}
+            <BuyerClosingCostsCard contactId={contactId} transactionId={transactionId} />
 
             {/* Earnest Money & Checklist Status */}
             <Card className="p-6">
