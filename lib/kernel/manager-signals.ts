@@ -679,7 +679,13 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     if (!signal.entityId) return null
     let notified = 0
     // Responsible agent for this video, when resolvable.
-    const agentId = (signal.payload?.agent_id as string | undefined) ?? null
+    const rawAgentRef = (signal.payload?.agent_id as string | undefined) ?? null
+    // notifications.user_id FKs users(id); payload refs may carry agents(id) — resolve-or-keep.
+    let agentId: string | null = rawAgentRef
+    if (rawAgentRef) {
+      const { data: aRow } = await ctx.supabase.from("agents").select("user_id").eq("id", rawAgentRef).maybeSingle()
+      if ((aRow as any)?.user_id) agentId = (aRow as any).user_id
+    }
     if (agentId) {
       const { error } = await ctx.supabase.from("notifications").insert({
         user_id: agentId, brokerage_id: ctx.brokerageId, type: "video_compliance_failed",
@@ -1885,9 +1891,15 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       if (!error) notified += 1
     }
     // If the failing agent exists, notify them as well so they see the coaching ping.
+    // notifications.user_id FKs users(id); the payload ref may carry agents(id) — resolve-or-keep.
+    let agentNotifyUserId: string | null = agentId
     if (agentId) {
+      const { data: aRow } = await ctx.supabase.from("agents").select("user_id").eq("id", agentId).maybeSingle()
+      if ((aRow as any)?.user_id) agentNotifyUserId = (aRow as any).user_id
+    }
+    if (agentNotifyUserId) {
       await ctx.supabase.from("notifications").insert({
-        user_id: agentId, brokerage_id: ctx.brokerageId, type: "deal_autopsy",
+        user_id: agentNotifyUserId, brokerage_id: ctx.brokerageId, type: "deal_autopsy",
         title: `Deal autopsy ready — ${reason.replace(/_/g, " ")}`,
         body: `Your ${priceStr} deal was autopsied (${reason.replace(/_/g, " ")}, ${confStr}). Your manager has a coaching brief queued. Check in this week.`,
         entity_type: "transaction", entity_id: signal.entityId, priority: "low", is_read: false,

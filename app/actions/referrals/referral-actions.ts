@@ -65,7 +65,7 @@ export async function createReferral(params: CreateReferralParams): Promise<{ id
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Unauthorized")
 
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
   const db = createServiceClient()
 
   // Step 1: If referred person has email/phone → call captureContact() (Track B)
@@ -128,7 +128,7 @@ export async function createReferral(params: CreateReferralParams): Promise<{ id
     entity_id:     referredContactId ?? referral.id,
     brokerage_id:  brokerageId,
     event_type:    KernelEvent.REFERRAL_RECEIVED,
-    actor_user_id: agentId,
+    actor_user_id: userId, // lifecycle_events.actor_user_id FKs users(id) — agentId is agents(id)
     metadata: {
       referral_id: referral.id,
       partner_id:  params.partnerId,
@@ -148,7 +148,7 @@ export async function updateReferralStatus(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Unauthorized")
 
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
   const db = createServiceClient()
 
   const updates: Partial<ReferralRow> = { status }
@@ -201,7 +201,7 @@ export async function sendReferralThankYou(referralId: string): Promise<{ succes
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Unauthorized")
 
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
   const db = createServiceClient()
 
   const { error } = await db
@@ -224,7 +224,7 @@ export async function createPartner(params: CreatePartnerParams): Promise<{ id: 
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Unauthorized")
 
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
   const db = createServiceClient()
 
   // RESPA GATE — the platform structurally blocks a referral/kickback fee against a settlement-service
@@ -278,7 +278,7 @@ export async function deletePartner(partnerId: string): Promise<void> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Unauthorized")
 
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
   const db = createServiceClient()
 
   const { data: deleted, error } = await db
@@ -303,7 +303,7 @@ export async function listPartnersWithReferrals(): Promise<{
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Unauthorized")
 
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
   const db = createServiceClient()
 
   const [{ data: partners }, { data: referrals }] = await Promise.all([

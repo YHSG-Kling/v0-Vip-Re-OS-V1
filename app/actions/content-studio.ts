@@ -280,15 +280,14 @@ export async function scheduleContent(params: {
   const auth = await requireCaller()
   if (!auth.ok) throw new Error(auth.error)
   const brokerageId = auth.brokerageId
-  const ctx = await getAgentContext()
-  const agentId = ctx.agentId
+  const userId = auth.userId
   const supabase = createServiceClient()
 
   const { data, error } = await supabase
     .from("campaign_calendar")
     .insert({
       brokerage_id: brokerageId,
-      agent_user_id: agentId,
+      agent_user_id: userId, // campaign_calendar.agent_user_id FKs users(id) — never agents(id)
       event_type: params.contentType,
       channel: params.platform ?? null,
       title: params.title,

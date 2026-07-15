@@ -69,7 +69,13 @@ export async function runStalledDeferralNudges(
     // Also surface to the contact's responsible agent (best-effort).
     try {
       const { data: c } = await svc.from("contacts").select("agent_id, first_name, last_name").eq("id", s.contactId).maybeSingle()
-      const agentId = (c as any)?.agent_id
+      // contacts.agent_id is agents(id); notifications.user_id FKs users(id) — resolve.
+      const agentRowId = (c as any)?.agent_id
+      let agentId: string | null = null
+      if (agentRowId) {
+        const { data: a } = await svc.from("agents").select("user_id").eq("id", agentRowId).maybeSingle()
+        agentId = (a as any)?.user_id ?? null
+      }
       if (agentId) {
         const name = `${(c as any).first_name ?? ""} ${(c as any).last_name ?? ""}`.trim() || "A contact"
         await svc.from("notifications").insert({

@@ -407,18 +407,10 @@ async function dispatchToChannel(
       subject,
       bodySnippet: finalEmailBody.substring(0, 500),
     })
-
-    // Unified inbox row — stamped with brokerage for billing rollups
-    await supabase.from('messages').insert({
-      contact_id: leadId,
-      brokerage_id: lead.brokerage_id,
-      type: 'email',
-      direction: 'outbound',
-      subject,
-      body: finalEmailBody.replace(/<[^>]+>/g, '').substring(0, 1000),
-      status: 'sent',
-      created_at: new Date().toISOString(),
-    })
+    // DEAD-WRITE REMOVED (pass 2): the old unified-inbox messages insert could never
+    // succeed — messages.conversation_id is NOT NULL and was never provided, and
+    // messages.contact_id FKs contacts (leads are not contacts). The ISA record of
+    // truth is isa_outreach_log (+ the activities entry) — keep-one, no dead writes.
 
     await logEmailActivity(leadId, lead.brokerage_id, true)
 
@@ -617,16 +609,8 @@ async function dispatchToChannel(
       channel: 'sms',
       bodySnippet: smsBody.substring(0, 160),
     })
-
-    await supabase.from('messages').insert({
-      contact_id: leadId,
-      brokerage_id: lead.brokerage_id,
-      type: 'sms',
-      direction: 'outbound',
-      body: smsBody,
-      status: 'sent',
-      created_at: new Date().toISOString(),
-    })
+    // DEAD-WRITE REMOVED (pass 2): messages.conversation_id is NOT NULL and was
+    // never provided — this insert always failed. isa_outreach_log is the record.
 
     return { success: true, smsSent: true, channel: 'sms' }
   }
@@ -661,16 +645,8 @@ async function dispatchToChannel(
       channel: 'direct_mail',
       bodySnippet: `Persona postcard delegated to the Asset Manager (gated) for ${lead.first_name ?? ''} ${lead.last_name ?? ''}`.trim(),
     })
-
-    await supabase.from('messages').insert({
-      contact_id: leadId,
-      brokerage_id: lead.brokerage_id,
-      type: 'direct_mail',
-      direction: 'outbound',
-      body: 'Persona postcard delegated to the Asset Manager (gated, pending approval)',
-      status: 'queued',
-      created_at: new Date().toISOString(),
-    })
+    // DEAD-WRITE REMOVED (pass 2): messages.conversation_id is NOT NULL and was
+    // never provided — this insert always failed. isa_outreach_log is the record.
 
     return { success: true, reelDelegated: reelDelegation.ok, channel: 'direct_mail' }
   }
@@ -692,16 +668,8 @@ async function dispatchToChannel(
       .filter(Boolean)
       .join(' ')
       .slice(0, 500)
-
-    await supabase.from('messages').insert({
-      contact_id: leadId,
-      brokerage_id: lead.brokerage_id,
-      type: 'social',
-      direction: 'outbound',
-      body: socialBody,
-      status: socialHandle ? 'queued' : 'pending_manual',
-      created_at: new Date().toISOString(),
-    })
+    // DEAD-WRITE REMOVED (pass 2): messages.conversation_id is NOT NULL and was
+    // never provided — this insert always failed. isa_outreach_log is the record.
 
     await logISAOutreach({
       brokerageId: lead.brokerage_id,
@@ -750,15 +718,15 @@ export async function getAIISAEngagementStatus(leadId: string) {
     ])
     .order('created_at', { ascending: false })
 
-  const { data: messages } = await supabase
-    .from('messages')
-    .select('id, direction, type')
-    .eq('contact_id', leadId)
-
-  const inboundCount =
-    messages?.filter((m) => m.direction === 'inbound').length ?? 0
-  const outboundCount =
-    messages?.filter((m) => m.direction === 'outbound').length ?? 0
+  // PASS-2 FIX: the old read filtered messages.contact_id (FKs contacts) by a
+  // LEAD id — always empty. The ISA record of truth is isa_outreach_log;
+  // inbound threads only exist once a lead becomes a contact (honest zero).
+  const { count: outreachCount } = await supabase
+    .from('isa_outreach_log')
+    .select('id', { count: 'exact', head: true })
+    .eq('lead_id', leadId)
+  const inboundCount = 0
+  const outboundCount = outreachCount ?? 0
 
   const { data: lead } = await supabase
     .from('leads')

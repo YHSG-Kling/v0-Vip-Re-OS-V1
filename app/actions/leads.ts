@@ -176,7 +176,8 @@ export async function qualifyLead(leadId: string) {
     await supabase.from("activities").insert({
       activity_type: "lead_qualified",
       entity_type: "lead",
-      contact_id: lead.id, // activities.contact_id stores entity ref
+      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+      entity_id: lead.id,
       agent_id: await resolveAgentId(supabase as any, userId),
       brokerage_id: brokerageId,
       title: "Lead qualified",
@@ -236,7 +237,8 @@ export async function assignLeadToAgent(leadId: string, agentId: string) {
     await supabase.from("activities").insert({
       activity_type: "lead_assigned",
       entity_type: "lead",
-      contact_id: leadId,
+      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+      entity_id: leadId,
       agent_id: await resolveAgentId(supabase as any, userId),
       brokerage_id: brokerageId,
       title: "Lead assigned to agent",
@@ -272,7 +274,8 @@ export async function pauseAIISA(leadId: string) {
     await supabase.from("activities").insert({
       activity_type: "ai_isa_paused",
       entity_type: "lead",
-      contact_id: leadId,
+      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+      entity_id: leadId,
       agent_id: await resolveAgentId(supabase as any, userId),
       brokerage_id: brokerageId,
       title: "AI-ISA outreach paused",
@@ -305,7 +308,8 @@ export async function resumeAIISA(leadId: string) {
     await supabase.from("activities").insert({
       activity_type: "ai_isa_resumed",
       entity_type: "lead",
-      contact_id: leadId,
+      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+      entity_id: leadId,
       agent_id: await resolveAgentId(supabase as any, userId),
       brokerage_id: brokerageId,
       title: "AI-ISA outreach resumed",
@@ -373,7 +377,8 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
     await supabase.from("activities").insert({
       activity_type: "ai_isa_handoff",
       entity_type: "lead",
-      contact_id: leadId,
+      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+      entity_id: leadId,
       agent_id: await resolveAgentId(supabase as any, userId),
       brokerage_id: brokerageId,
       title: "AI-ISA handed off to human agent",

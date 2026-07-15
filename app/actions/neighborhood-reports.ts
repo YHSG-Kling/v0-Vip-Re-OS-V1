@@ -133,7 +133,7 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
   report?: NeighborhoodReport
   error?: string
 }> {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
   const supabase = await createClient()
 
   // Get listing details
@@ -354,7 +354,7 @@ Focus on buyer appeal, market positioning, and neighborhood highlights. Keep it 
     entity_type: "listing",
     entity_id: listingId,
     event_type: KernelEvent.NEIGHBORHOOD_REPORT_GENERATED,
-    actor_user_id: agentId,
+    actor_user_id: userId, // lifecycle_events.actor_user_id FKs users(id) — agentId is agents(id)
     metadata: {
       neighborhood_name: neighborhoodName,
       data_source: reportData.data_source || "AI Generated",

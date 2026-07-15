@@ -70,7 +70,9 @@ export async function logEmailActivity(
   
   // Agent task (correct location, no changes) — activity_type: ai_isa_email
   await supabase.from('activities').insert({
-    contact_id: leadId,
+    contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+    entity_type: 'lead',
+    entity_id: leadId,
     brokerage_id: brokerageId,
     activity_type: 'ai_isa_email',
     title: emailSent ? 'AI ISA First Email Sent' : 'AI ISA Email Failed',

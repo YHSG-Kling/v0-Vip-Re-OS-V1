@@ -97,7 +97,20 @@ export async function syncShowingTimeShowings(params: {
 
   const stShowings: any[] = resp.data?.showings ?? []
 
+  // NOT NULL + FK reality: showings.contact_id/agent_id must be REAL rows —
+  // the old zero-uuid fallback FK-failed every sync row that lacked one. The
+  // honest fallback is the LISTING's own parties (the showing is on their home).
+  const { data: fallbackListing } = await supabase
+    .from("listings").select("seller_contact_id, contact_id, agent_id")
+    .eq("id", params.listingId).maybeSingle()
+  const fallbackContactId = (fallbackListing as any)?.seller_contact_id ?? (fallbackListing as any)?.contact_id ?? null
+  const fallbackAgentId = (fallbackListing as any)?.agent_id ?? null
+
+  let skippedNoParty = 0
   for (const s of stShowings) {
+    const rowContactId = s.contactId ?? fallbackContactId
+    const rowAgentId = s.agentId ?? fallbackAgentId
+    if (!rowContactId || !rowAgentId) { skippedNoParty++; continue } // honest skip — never a fake FK ref
     await supabase
       .from("showings")
       .upsert(
@@ -114,16 +127,16 @@ export async function syncShowingTimeShowings(params: {
           status: s.status ?? "scheduled",
           sync_source: "showingtime",
           synced_at: new Date().toISOString(),
-          // Required NOT NULL columns — showings table: contact_id, agent_id
-          contact_id: s.contactId ?? "00000000-0000-0000-0000-000000000000",
-          agent_id:   s.agentId   ?? "00000000-0000-0000-0000-000000000000",
+          // Required NOT NULL columns — real rows only (see fallback above)
+          contact_id: rowContactId,
+          agent_id:   rowAgentId,
         },
         { onConflict: "showingtime_id", ignoreDuplicates: false }
       )
   }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/showings`)
-  return { success: true, synced: stShowings.length }
+  return { success: true, synced: stShowings.length - skippedNoParty, skippedNoParty }
 }
 
 // ─── SHOWINGTIME MODE: per-showing actions ────────────────────────────────────
@@ -357,13 +370,29 @@ export async function approveShowingRequest(params: {
     `${req.requested_date}T${req.requested_start_time}`
   ).toISOString()
 
+  // showings.contact_id is NOT NULL + FKs contacts — when the request carries
+  // no contact (an outside buyer's agent), the listing's own seller is the
+  // honest deal-context party. Refuse rather than fake a ref.
+  const { data: approveListing } = await supabase
+    .from("listings").select("seller_contact_id, contact_id")
+    .eq("id", params.listingId).maybeSingle()
+  const fallbackSellerContactId = (approveListing as any)?.seller_contact_id ?? (approveListing as any)?.contact_id ?? null
+  if (!params.contactId && !req.contact_id && !fallbackSellerContactId) {
+    return { success: false, error: "This listing has no client on record yet — add the seller before approving showings." }
+  }
+  // showings.agent_id is also NOT NULL + FKs agents — honest refusal for non-agent seats.
+  const approverAgentId = await resolveAgentId(supabase as any, auth.userId)
+  if (!approverAgentId) {
+    return { success: false, error: "Your account has no agent profile — showings belong to an agent seat." }
+  }
+
   // INSERT showings — agent from session, not params
   const { data: showing, error: showErr } = await supabase
     .from("showings")
     .insert({
       listing_id:         params.listingId,
-      contact_id:         params.contactId ?? req.contact_id ?? "00000000-0000-0000-0000-000000000000",
-      agent_id:           await resolveAgentId(supabase as any, auth.userId), // showings.agent_id FKs agents(id)
+      contact_id:         params.contactId ?? req.contact_id ?? fallbackSellerContactId, // real party or refuse — never a fake FK ref
+      agent_id:           approverAgentId, // agents(id) — resolved + refused above when absent
       scheduled_at:       scheduledAt,
       scheduled_date:     req.requested_date,
       scheduled_time:     req.requested_start_time,

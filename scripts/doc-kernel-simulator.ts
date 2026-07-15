@@ -1570,6 +1570,22 @@ async function main() {
       && src("lib/voice/call-analysis.ts").includes("agent_id: call.agent_id")
       && src("lib/kernel/call-intelligence.ts").includes('.eq("user_id", agentUserId)')
       && src("lib/kernel/manager-registry.ts").includes("buyer_closing_costs_and_fk_pass:"))
+    // ── PASS 2 (owner: "continue doing these passes until we are all clean"): the three sibling id-class bugs ──
+    check("ID-CLASS PASS 2 — three sibling classes hunted + fixed: (a) REVERSE direction: agents(id) written into users(id)-FK columns — referral + neighborhood-report lifecycle actors, campaign-calendar, the stuck-in-limbo + video-compliance + deal-autopsy notifications (payload refs resolve-or-keep so either class lands); (b) ZERO-UUID FK fallbacks: the showings sync/approve paths faked NOT-NULL contact/agent refs with a zero uuid that FK-failed EVERY row — replaced with the LISTING's own parties (the honest deal-context fallback) + explicit refusals ('add the seller before approving showings'), never a fake ref; (c) CONTACT/LEAD family: leads are NOT contacts — the lead activity trail + ISA outbox messages wrote lead ids into contacts(id)-FK columns (all FK-rejected); now entity_type/entity_id carry the lead and contact_id is honestly null; query-side zero-uuid no-match sentinels adjudicated LEGITIMATE (reads, not writes)",
+      src("app/actions/leads.ts").includes("leads are NOT contacts")
+      && src("app/actions/ai-isa/initiate-engagement.ts").includes("DEAD-WRITE REMOVED")            // the 4 unified-inbox inserts could NEVER succeed (conversation_id NOT NULL, contact FK) — removed, isa_outreach_log is the record
+      && !src("app/actions/ai-isa/initiate-engagement.ts").includes("from('messages').insert")      // no dead writes remain
+      && src("app/actions/ai-isa/initiate-engagement.ts").includes("isa_outreach_log")              // the status read now hits the real ledger
+      && src("lib/ai-isa/email-generator.ts").includes("entity_id: leadId")
+      && src("app/actions/referrals/referral-actions.ts").includes("actor_user_id: userId")
+      && src("app/actions/neighborhood-reports.ts").includes("actor_user_id: userId")
+      && src("app/actions/content-studio.ts").includes("agent_user_id: userId")
+      && src("lib/kernel/stalled-deferrals-runner.ts").includes('select("user_id")')
+      && src("lib/kernel/manager-signals.ts").includes("resolve-or-keep")
+      && src("lib/kernel/manager-signals.ts").includes("agentNotifyUserId")
+      && !src("app/actions/seller-showings.ts").includes("00000000-0000-0000-0000-000000000000")
+      && src("app/actions/seller-showings.ts").includes("add the seller before approving showings")
+      && src("app/actions/seller-showings.ts").includes("skippedNoParty"))
     // ── REPAIR-PATTERN DIGEST + VOICE SELF-HEAL BRIEF + DEAL TWIN (approved 1/2/3) ──
     const rd = await import("../lib/kernel/repair-digest")
     const digest = rd.composeRepairDigest([
