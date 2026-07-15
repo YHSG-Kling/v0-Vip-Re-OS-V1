@@ -179,11 +179,21 @@ export async function GET(request: NextRequest) {
       await runRepairPatternDigest(supabase)
     } catch (e) { console.error("[deal-health-scan] repair digest failed (non-blocking)", e) }
 
+    // CLIENT STORY DRAFTS — the three recurring client communications every
+    // seat assembled by hand (weekly seller update / tour-evening recap /
+    // weekly deal note), proposed onto the gated rail, tag-deduped. Best-effort.
+    let storyProposed = 0
+    try {
+      const { runClientStoryDraftsAll } = await import("@/lib/kernel/client-story-drafts")
+      const s = await runClientStoryDraftsAll(supabase)
+      storyProposed = s.proposed
+    } catch (e) { console.error("[deal-health-scan] client story drafts failed (non-blocking)", e) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: transactions.length,
       output_count: atRiskCount,
-      metadata: { total: transactions.length, atRiskCount, selfAudit, flowBreaks, flowHealed, ingressReplayed, ingressAbandoned },
+      metadata: { total: transactions.length, atRiskCount, selfAudit, flowBreaks, flowHealed, ingressReplayed, ingressAbandoned, storyProposed },
     })
 
     return NextResponse.json({

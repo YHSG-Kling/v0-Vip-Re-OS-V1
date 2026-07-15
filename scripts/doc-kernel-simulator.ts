@@ -1446,6 +1446,38 @@ async function main() {
       && src("app/dashboard/superadmin/continuity/page.tsx").includes("ingress_dead_letters")
       && src("app/admin/components/os/platform-owner-command-strip.tsx").includes("/dashboard/superadmin/continuity")
       && src("lib/kernel/manager-registry.ts").includes("principal_scoping_and_continuity_board:"))
+    // ── THE THREE JOBS-COMPLETION DRAFTS (weekly seller update / tour recap / weekly deal note) ──
+    const csd = await import("../lib/kernel/client-story-drafts")
+    const busyWeek = csd.composeWeeklySellerUpdate({ sellerFirstName: "Dana", address: "12 Elm St", showingCount: 4, feedbackNotes: ["loved the kitchen", "worried about the busy road"], daysOnMarket: 21 })
+    const quietWeek = csd.composeWeeklySellerUpdate({ sellerFirstName: null, address: "12 Elm St", showingCount: 0, feedbackNotes: [], daysOnMarket: 35 })
+    const recap = csd.composeTourRecap({ buyerFirstName: "Sam", stops: [
+      { address: "1 Oak Ct", rating: 5, feedback: "this is the one" },
+      { address: "2 Pine Rd", rating: 3, feedback: null },
+      { address: "3 Ash Ln", rating: null, feedback: null },
+    ] })
+    const recapNoStandout = csd.composeTourRecap({ buyerFirstName: "Sam", stops: [{ address: "1 Oak Ct", rating: 2, feedback: "too dark" }] })
+    const recapUnknownDay = csd.composeTourRecap({ buyerFirstName: "Sam", stops: [{ address: "1 Oak Ct", rating: null, feedback: null }] })
+    const dealNote = csd.composeDealNote({ clientFirstName: "Lee", address: "9 Birch Way", loanStatus: "in_underwriting", clearToCloseDate: null, upcoming: [{ name: "appraisal_deadline", date: "2026-07-20" }], openTaskCount: 2 })
+    const dealNoteCtc = csd.composeDealNote({ clientFirstName: "Lee", address: null, loanStatus: "clear_to_close", clearToCloseDate: "2026-07-18", upcoming: [], openTaskCount: 0 })
+    const dealNoteEmpty = csd.composeDealNote({ clientFirstName: "Lee", address: null, loanStatus: null, clearToCloseDate: null, upcoming: [], openTaskCount: 3 })
+    const storyCopy = [busyWeek.body, quietWeek.body, recap!.body, dealNote!.body, dealNoteCtc!.body].join(" ")
+    check("THE THREE JOBS-COMPLETION DRAFTS (pure deterministic composers → gated proposals; no LLM in the cron path; nothing invented): a busy seller week leads with real showings + feedback themes while a ZERO-showing week says it straight with the concrete plan (never dressed up); the tour recap names the STANDOUT (rating ≥4) with the offer-readiness nudge, closes honestly when nothing stood out, and returns NULL for a day with no recorded reactions; the deal note translates loan status to client language ('normal at this stage' / CLEAR TO CLOSE), lists the next dates, and returns NULL when the OS holds nothing to report; client copy never says webhook/database/error; all three ride deal-health-scan tag-deduped per listing/tour/deal per period; on-demand LLM seller button KEPT (consolidation: proactive rail beside it, same gate)",
+      Boolean(busyWeek.body.includes("4 showings")) && Boolean(busyWeek.body.includes("loved the kitchen"))
+      && Boolean(quietWeek.body.includes("quieter week")) && Boolean(quietWeek.body.includes("doing about it"))
+      && recap !== null && Boolean(recap.body.includes("1 Oak Ct felt like the standout")) && Boolean(recap.body.includes("talk numbers"))
+      && recapNoStandout !== null && Boolean(recapNoStandout.body.includes("useful information, not a setback"))
+      && recapUnknownDay === null
+      && dealNote !== null && Boolean(dealNote.body.includes("normal at this stage")) && Boolean(dealNote.body.includes("appraisal deadline"))
+      && dealNoteCtc !== null && Boolean(dealNoteCtc.body.includes("CLEAR TO CLOSE"))
+      && dealNoteEmpty === null
+      && csd.sellerWeeklyTag("L1", "2026-W29") === "[SELLER_WEEKLY] [L1] [2026-W29]"
+      && csd.tourRecapTag("T1") === "[TOUR_RECAP] [T1]"
+      && csd.dealWeeklyTag("X1", "2026-W29") === "[TC_WEEKLY] [X1] [2026-W29]"
+      && !storyCopy.toLowerCase().includes("webhook") && !storyCopy.toLowerCase().includes("database") && !storyCopy.toLowerCase().includes("error")
+      && src("app/api/cron/deal-health-scan/route.ts").includes("runClientStoryDraftsAll")
+      && src("lib/kernel/client-story-drafts.ts").includes("proposeClientMessage")
+      && src("app/actions/seller-updates.ts").includes("generateSellerUpdateDraft")
+      && src("lib/kernel/manager-registry.ts").includes("client_story_drafts:"))
     // ── REPAIR-PATTERN DIGEST + VOICE SELF-HEAL BRIEF + DEAL TWIN (approved 1/2/3) ──
     const rd = await import("../lib/kernel/repair-digest")
     const digest = rd.composeRepairDigest([
