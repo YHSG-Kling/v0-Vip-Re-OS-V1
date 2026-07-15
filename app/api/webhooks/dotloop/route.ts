@@ -52,8 +52,36 @@ export async function POST(request: NextRequest) {
     // to client_documents without current_user_brokerage_id.
     const supabase = createServiceClient()
 
-    if (body.event === "document.signed") {
-      const { document_id, loop_id } = body.data
+    // SCHEMA ADAPTATION: dotloop's event + refs normalize through the declared
+    // contract; an event we can't read QUARANTINES instead of being dropped.
+    const { adaptPayload, DOTLOOP_EVENT_CONTRACT } = await import("@/lib/kernel/schema-adaptation")
+    const adapted = adaptPayload(DOTLOOP_EVENT_CONTRACT, body)
+    if (!adapted.ok) {
+      const { quarantineDriftedPayload } = await import("@/lib/kernel/ingress-continuity")
+      const q = await quarantineDriftedPayload(supabase as any, { connector: "dotloop", source: "dotloop_event", raw: body, missing: adapted.missingRequired, eventType: null })
+      return NextResponse.json({ received: true, quarantined: true, ref: q.ref })
+    }
+    const loopEvent = String(adapted.canonical.event ?? "")
+    const canonLoopId = (adapted.canonical.loop_id as string | null) ?? null
+    const canonDocumentId = (adapted.canonical.document_id as string | null) ?? null
+    const canonStatus = (adapted.canonical.status as string | null) ?? null
+    if (adapted.driftRepairs > 0) {
+      const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+      await recordSelfHeal(supabase as any, {
+        brokerageId: null, domain: "data_flow", subject: `dotloop:${canonLoopId ?? canonDocumentId ?? "event"}`, action: "adapt_payload", outcome: "healed",
+        detail: { flow: "schema_drift", connector: "dotloop", repairs: adapted.repairs.filter((r) => r.kind !== "direct").slice(0, 12) },
+      })
+    }
+
+    if (loopEvent === "document.signed") {
+      // A signed-doc event without its refs is unreadable — quarantine, never guess.
+      if (!canonDocumentId || !canonLoopId) {
+        const { quarantineDriftedPayload } = await import("@/lib/kernel/ingress-continuity")
+        const q = await quarantineDriftedPayload(supabase as any, { connector: "dotloop", source: "dotloop_event", raw: body, missing: [!canonDocumentId ? "document_id" : "", !canonLoopId ? "loop_id" : ""].filter(Boolean), eventType: loopEvent })
+        return NextResponse.json({ received: true, quarantined: true, ref: q.ref })
+      }
+      const document_id = canonDocumentId
+      const loop_id = canonLoopId
       const now = new Date().toISOString()
 
       // Update document status on client_documents
@@ -203,13 +231,11 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    if (body.event === "loop.status.updated") {
-      const { loop_id, status } = body.data
-
+    if (loopEvent === "loop.status.updated" && canonLoopId && canonStatus) {
       await supabase
         .from("transactions")
-        .update({ status: mapDotloopStatus(status) })
-        .eq("external_provider_transaction_id", loop_id)
+        .update({ status: mapDotloopStatus(canonStatus) })
+        .eq("external_provider_transaction_id", canonLoopId)
     }
 
     return NextResponse.json({ received: true })

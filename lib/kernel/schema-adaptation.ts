@@ -36,6 +36,13 @@ export interface ContractField {
   paths: string[]
   /** default for a missing OPTIONAL field (never applied to required fields) */
   defaultValue?: string | number | boolean | null
+  /**
+   * How many leading paths are EQUALLY-DOCUMENTED provider forms (default 1).
+   * A provider with several official shapes (DocuSign Connect sends three)
+   * isn't "drifting" when it uses its second form — only a path BEYOND this
+   * count (an alias someone taught the contract later) counts as a repair.
+   */
+  directPathCount?: number
 }
 
 export interface ConnectorContract {
@@ -117,7 +124,7 @@ export function adaptPayload(contract: ConnectorContract, raw: unknown): Adapted
         (field.type === "boolean" && typeof value === "boolean")
       if (sameType) {
         resolved = value as any
-        kind = i === 0 ? "direct" : "alias"
+        kind = i < (field.directPathCount ?? 1) ? "direct" : "alias"
         from = path
         break
       }
@@ -181,5 +188,53 @@ export const SHOWINGTIME_APPOINTMENT_CONTRACT: ConnectorContract = {
     { key: "notes", type: "string", required: false, paths: ["notes", "comments", "message"], defaultValue: null },
     { key: "external_ref", type: "string", required: false, paths: ["external_ref", "externalRef"], defaultValue: null },
     { key: "confirmed_at", type: "string", required: false, paths: ["confirmed_at", "confirmedAt"], defaultValue: null },
+  ],
+}
+
+/**
+ * E-sign completion webhooks — envelope ref + event/status per provider.
+ * Every DOCUMENTED provider form is a direct path (directPathCount); a shape
+ * beyond those is genuine drift the layer absorbed. Replaces the hand-rolled
+ * `body?.data?.envelopeId ?? body?.envelopeId ?? …` chains those routes carried.
+ */
+export const ESIGN_COMPLETION_CONTRACTS: Record<string, ConnectorContract> = {
+  docusign: {
+    connector: "docusign",
+    entity: "envelope_event",
+    fields: [
+      { key: "envelope_id", type: "string", required: true, paths: ["data.envelopeId", "envelopeId", "data.envelopeSummary.envelopeId", "data.envelope_id"], directPathCount: 3 },
+      { key: "event", type: "string", required: false, paths: ["event", "Event"], directPathCount: 2, defaultValue: null },
+      { key: "status", type: "string", required: false, paths: ["data.envelopeSummary.status", "envelopeStatus", "status"], directPathCount: 2, defaultValue: null },
+    ],
+  },
+  skyslope: {
+    connector: "skyslope",
+    entity: "envelope_event",
+    fields: [
+      { key: "envelope_id", type: "string", required: true, paths: ["data.envelopeId", "data.transactionId", "envelopeId", "transactionId"], directPathCount: 4 },
+      { key: "event", type: "string", required: false, paths: ["event", "eventType"], directPathCount: 2, defaultValue: null },
+      { key: "status", type: "string", required: false, paths: ["data.status", "status"], directPathCount: 2, defaultValue: null },
+    ],
+  },
+  authentisign: {
+    connector: "authentisign",
+    entity: "envelope_event",
+    fields: [
+      { key: "envelope_id", type: "string", required: true, paths: ["data.signingId", "data.envelopeId", "signingId", "envelopeId"], directPathCount: 4 },
+      { key: "event", type: "string", required: false, paths: ["event", "eventType"], directPathCount: 2, defaultValue: null },
+      { key: "status", type: "string", required: false, paths: ["data.status", "status"], directPathCount: 2, defaultValue: null },
+    ],
+  },
+}
+
+/** Dotloop webhook events — event name + the refs each branch needs. */
+export const DOTLOOP_EVENT_CONTRACT: ConnectorContract = {
+  connector: "dotloop",
+  entity: "loop_event",
+  fields: [
+    { key: "event", type: "string", required: true, paths: ["event", "eventType"], directPathCount: 1 },
+    { key: "loop_id", type: "string", required: false, paths: ["data.loop_id", "loop_id", "data.loopId", "loopId"], directPathCount: 1, defaultValue: null },
+    { key: "document_id", type: "string", required: false, paths: ["data.document_id", "document_id", "data.documentId"], directPathCount: 1, defaultValue: null },
+    { key: "status", type: "string", required: false, paths: ["data.status", "status"], directPathCount: 1, defaultValue: null },
   ],
 }

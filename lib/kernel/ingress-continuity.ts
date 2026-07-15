@@ -85,6 +85,42 @@ export async function parkIngressEvent(svc: Svc, input: {
   }
 }
 
+/** PURE: stable content hash (djb2) — dedupes exact webhook redeliveries of an unreadable payload. */
+export function payloadHash(raw: unknown): string {
+  const s = JSON.stringify(raw) ?? ""
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
+  return (h >>> 0).toString(36)
+}
+
+/**
+ * Park a payload the schema-adaptation layer could not read (missing required
+ * facts) + ledger the escalation. One call from any drifted-connector route.
+ */
+export async function quarantineDriftedPayload(svc: Svc, input: {
+  connector: string
+  source: string
+  raw: unknown
+  missing: string[]
+  eventType?: string | null
+}): Promise<{ parked: boolean; ref: string }> {
+  const ref = `sdq:${input.connector}:${payloadHash(input.raw)}`
+  const r = await parkIngressEvent(svc, {
+    provider: input.connector,
+    eventKind: "schema_drift_quarantine",
+    externalRef: ref,
+    payload: { source: input.source, event_type: input.eventType ?? null, raw: input.raw, missing: input.missing },
+  })
+  try {
+    const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+    await recordSelfHeal(svc, {
+      brokerageId: null, domain: "data_flow", subject: ref, action: "none", outcome: "escalated",
+      detail: { flow: "schema_drift", connector: input.connector, missing: input.missing, reason: "provider payload is missing required facts — quarantined for review, never guessed" },
+    })
+  } catch { /* the parked letter is the record of truth */ }
+  return { parked: r.parked, ref }
+}
+
 /**
  * Call from every e-sign completion webhook AFTER the finalizers ran: if the
  * envelope matched nothing, park it as a dead letter instead of losing it.
@@ -195,7 +231,53 @@ async function attemptReplay(svc: Svc, letter: DeadLetterRow): Promise<ReplayAtt
     // new alias, the quarantine drains itself. Never guessed, only re-read.
     const base: ReplayAttempt = { result: "unmatched", flow: "schema_drift", action: "adapt_payload" }
     const p = letter.payload ?? {}
-    if (p.source !== "showingtime_appointment" || !p.raw) return base
+    if (!p.raw) return base
+
+    if (p.source === "esign_completion") {
+      // Readable now? Chain into the SAME rail the webhook runs: finalize,
+      // then hand any still-unmatched envelope to the orphan reconciler.
+      try {
+        const { adaptPayload, ESIGN_COMPLETION_CONTRACTS } = await import("@/lib/kernel/schema-adaptation")
+        const contract = ESIGN_COMPLETION_CONTRACTS[letter.provider]
+        if (!contract) return base
+        const re = adaptPayload(contract, p.raw)
+        if (!re.ok) return base // contract still can't read it — wait / age out
+        const envelopeId = String(re.canonical.envelope_id)
+        const { finalizeVoiceCockpitPacket, finalizeLegacyEsignArtifacts } = await import("@/lib/esign-webhooks/finalize-packet")
+        await finalizeVoiceCockpitPacket(svc as any, envelopeId, letter.provider as any)
+        await finalizeLegacyEsignArtifacts(svc as any, envelopeId)
+        await ensureEsignIngressContinuity(svc, { provider: letter.provider as EsignIngressProvider, envelopeId })
+        return { ...base, result: "replayed" }
+      } catch {
+        return { ...base, result: "failed" }
+      }
+    }
+
+    if (p.source === "dotloop_event") {
+      // Dotloop quarantines carry event-specific branch logic — once readable,
+      // route a human-visible abandonment is wrong, but blind replay of a
+      // multi-branch webhook is riskier than the e-sign finalizers. HONEST
+      // MIDDLE: only the completion-shaped events replay (through the same
+      // idempotent finalizers, keyed by loop id); anything else waits for a
+      // taught contract + engineer review via abandonment.
+      try {
+        const { adaptPayload, DOTLOOP_EVENT_CONTRACT } = await import("@/lib/kernel/schema-adaptation")
+        const re = adaptPayload(DOTLOOP_EVENT_CONTRACT, p.raw)
+        if (!re.ok) return base
+        const loopId = (re.canonical.loop_id as string | null) ?? null
+        const evt = String(re.canonical.event ?? "")
+        if (!loopId || (evt !== "transaction.completed" && evt !== "document.signed")) return base
+        const { finalizeVoiceCockpitPacket, finalizeLegacyEsignArtifacts } = await import("@/lib/esign-webhooks/finalize-packet")
+        await finalizeVoiceCockpitPacket(svc as any, loopId, "dotloop" as any)
+        await finalizeLegacyEsignArtifacts(svc as any, loopId)
+        await ensureEsignIngressContinuity(svc, { provider: "dotloop", envelopeId: loopId })
+        return { ...base, result: "replayed" }
+      } catch {
+        return { ...base, result: "failed" }
+      }
+    }
+
+    if (p.source !== "showingtime_appointment") return base
     try {
       const { adaptPayload, SHOWINGTIME_APPOINTMENT_CONTRACT } = await import("@/lib/kernel/schema-adaptation")
       const adapted = adaptPayload(SHOWINGTIME_APPOINTMENT_CONTRACT, p.raw)

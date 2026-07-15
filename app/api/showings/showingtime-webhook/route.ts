@@ -92,20 +92,15 @@ export async function POST(req: NextRequest) {
   const { adaptPayload, SHOWINGTIME_APPOINTMENT_CONTRACT } = await import("@/lib/kernel/schema-adaptation")
   const adapted = adaptPayload(SHOWINGTIME_APPOINTMENT_CONTRACT, payload.appointment)
   if (!adapted.ok) {
-    const { parkIngressEvent } = await import("@/lib/kernel/ingress-continuity")
-    const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
-    const quarantineRef = `stq:${(payload.appointment as any)?.id ?? (payload.appointment as any)?.appointment_id ?? Date.now()}`
-    await parkIngressEvent(supabase, {
-      provider: "showingtime",
-      eventKind: "schema_drift_quarantine",
-      externalRef: quarantineRef,
-      payload: { source: "showingtime_appointment", event_type: payload.event_type, raw: payload.appointment, missing: adapted.missingRequired },
+    const { quarantineDriftedPayload } = await import("@/lib/kernel/ingress-continuity")
+    const q = await quarantineDriftedPayload(supabase, {
+      connector: "showingtime",
+      source: "showingtime_appointment",
+      raw: payload.appointment,
+      missing: adapted.missingRequired,
+      eventType: payload.event_type,
     })
-    await recordSelfHeal(supabase, {
-      brokerageId: null, domain: "data_flow", subject: quarantineRef, action: "none", outcome: "escalated",
-      detail: { flow: "schema_drift", connector: "showingtime", missing: adapted.missingRequired, reason: "provider payload is missing required facts — quarantined for review, never guessed" },
-    })
-    return NextResponse.json({ ok: true, quarantined: true, missing: adapted.missingRequired })
+    return NextResponse.json({ ok: true, quarantined: true, ref: q.ref, missing: adapted.missingRequired })
   }
   const c = adapted.canonical
   const appt: ShowingTimeAppointment = {

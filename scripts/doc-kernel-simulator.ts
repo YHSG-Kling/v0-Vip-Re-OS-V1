@@ -1356,9 +1356,38 @@ async function main() {
       && sa.coerceValue("true", "boolean") === true
       && shl.FLOW_CONTRACTS["schema_drift"].tier === "probation" && shl.FLOW_CONTRACTS["schema_drift"].action === "adapt_payload"
       && src("app/api/showings/showingtime-webhook/route.ts").includes("adaptPayload")
-      && src("app/api/showings/showingtime-webhook/route.ts").includes("schema_drift_quarantine")
+      && src("lib/kernel/ingress-continuity.ts").includes("quarantineDriftedPayload") // ONE shared quarantine writer (routes consolidated onto it)
       && src("lib/kernel/ingress-continuity.ts").includes('event_kind === "schema_drift_quarantine"')
       && src("lib/kernel/manager-registry.ts").includes("schema_adaptation:"))
+    // ── ADAPTATION ACROSS ALL E-SIGN + DOTLOOP INGRESS (owner: "add all from this OS to be considered complete") ──
+    const dsSecondForm = sa.adaptPayload(sa.ESIGN_COMPLETION_CONTRACTS.docusign, { event: "envelope-completed", envelopeId: "ENV-DS-2" })          // documented 2nd form
+    const dsThirdForm  = sa.adaptPayload(sa.ESIGN_COMPLETION_CONTRACTS.docusign, { data: { envelopeSummary: { envelopeId: "ENV-DS-3", status: "Completed" } } }) // documented 3rd form
+    const dsUnreadable = sa.adaptPayload(sa.ESIGN_COMPLETION_CONTRACTS.docusign, { event: "envelope-completed", envelope: { ref: "X" } })          // unknown shape → quarantine
+    const ssForm  = sa.adaptPayload(sa.ESIGN_COMPLETION_CONTRACTS.skyslope, { eventType: "transaction.completed", data: { transactionId: "ENV-SS-1" } })
+    const asForm  = sa.adaptPayload(sa.ESIGN_COMPLETION_CONTRACTS.authentisign, { event: "signing.completed", signingId: "ENV-AS-1" })
+    const dlForm  = sa.adaptPayload(sa.DOTLOOP_EVENT_CONTRACT, { event: "document.signed", data: { document_id: "D1", loop_id: 12345 } })          // numeric loop id → safe coercion
+    const dlNoEvt = sa.adaptPayload(sa.DOTLOOP_EVENT_CONTRACT, { data: { loop_id: "L1" } })                                                        // no event name → quarantine
+    const dpcProbe = sa.adaptPayload({ connector: "t", entity: "t", fields: [{ key: "x", type: "string", required: true, paths: ["a", "b", "c"], directPathCount: 2 }] }, { c: "via-alias" })
+    const dpcDirect = sa.adaptPayload({ connector: "t", entity: "t", fields: [{ key: "x", type: "string", required: true, paths: ["a", "b", "c"], directPathCount: 2 }] }, { b: "second-doc-form" })
+    check("ADAPTATION ACROSS THE WHOLE E-SIGN INGRESS (docusign/skyslope/authentisign/dotloop hand-parsed fallback chains REPLACED by declared contracts): a provider's SECOND or THIRD documented form is NOT drift (directPathCount — no false healing claims), only a later-taught alias counts; every provider's real shapes adapt (incl. dotloop's numeric loop id via safe coercion); an unreadable completion QUARANTINES via the ONE shared quarantineDriftedPayload (content-hash ref dedupes exact redeliveries — showingtime consolidated onto it, keep-one); the reconciler re-adapts esign/dotloop quarantines and chains readable envelopes into the SAME finalizer + orphan rail; consolidation verdicts recorded: normalizeInbound IS the email/SMS adaptation layer (no second layer), Meta's batch envelope is stable + its fields already alias through pickMetaField",
+      dsSecondForm.ok === true && dsSecondForm.canonical.envelope_id === "ENV-DS-2" && dsSecondForm.driftRepairs === 0
+      && dsThirdForm.ok === true && dsThirdForm.canonical.envelope_id === "ENV-DS-3" && String(dsThirdForm.canonical.status).toLowerCase() === "completed" && dsThirdForm.driftRepairs === 0
+      && dsUnreadable.ok === false && dsUnreadable.missingRequired.includes("envelope_id")
+      && ssForm.ok === true && ssForm.canonical.envelope_id === "ENV-SS-1" && ssForm.driftRepairs === 0
+      && asForm.ok === true && asForm.canonical.envelope_id === "ENV-AS-1"
+      && dlForm.ok === true && dlForm.canonical.loop_id === "12345" && dlForm.canonical.document_id === "D1"
+      && dlNoEvt.ok === false && dlNoEvt.missingRequired.includes("event")
+      && dpcDirect.repairs[0].kind === "direct" && dpcProbe.repairs[0].kind === "alias" && dpcProbe.driftRepairs === 1
+      && ic.payloadHash({ a: 1 }) === ic.payloadHash({ a: 1 }) && ic.payloadHash({ a: 1 }) !== ic.payloadHash({ a: 2 })
+      && src("app/api/webhooks/docusign/route.ts").includes("ESIGN_COMPLETION_CONTRACTS")
+      && src("app/api/webhooks/skyslope/route.ts").includes("ESIGN_COMPLETION_CONTRACTS")
+      && src("app/api/webhooks/authentisign/route.ts").includes("ESIGN_COMPLETION_CONTRACTS")
+      && src("app/api/webhooks/dotloop/route.ts").includes("DOTLOOP_EVENT_CONTRACT")
+      && src("app/api/webhooks/docusign/route.ts").includes("quarantineDriftedPayload")
+      && src("app/api/webhooks/dotloop/route.ts").includes("quarantineDriftedPayload")
+      && src("app/api/showings/showingtime-webhook/route.ts").includes("quarantineDriftedPayload")
+      && src("lib/kernel/ingress-continuity.ts").includes('p.source === "esign_completion"')
+      && src("lib/kernel/ingress-continuity.ts").includes('p.source === "dotloop_event"'))
     // ── REPAIR-PATTERN DIGEST + VOICE SELF-HEAL BRIEF + DEAL TWIN (approved 1/2/3) ──
     const rd = await import("../lib/kernel/repair-digest")
     const digest = rd.composeRepairDigest([

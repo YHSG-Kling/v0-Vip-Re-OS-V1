@@ -67,14 +67,13 @@ export async function POST(request: NextRequest) {
     //   - "envelope.completed"           alias used in some Connect versions
     // We process completion events; per-doc signed events are ignored to avoid
     // partial-state flips inside a multi-document envelope.
-    const event  = (body.event ?? body.eventType ?? "").toString().toLowerCase()
-    const status = (body?.data?.status ?? body?.status ?? "").toString().toLowerCase()
-    const envelopeId =
-      body?.data?.envelopeId
-      ?? body?.data?.transactionId
-      ?? body?.envelopeId
-      ?? body?.transactionId
-      ?? null
+    // SCHEMA ADAPTATION: documented shapes are direct paths; new shapes adapt
+    // via taught aliases (drift, ledgered) or QUARANTINE — never lost.
+    const { adaptPayload, ESIGN_COMPLETION_CONTRACTS } = await import("@/lib/kernel/schema-adaptation")
+    const adapted = adaptPayload(ESIGN_COMPLETION_CONTRACTS.skyslope, body)
+    const event  = String(adapted.canonical.event ?? "").toLowerCase()
+    const status = String(adapted.canonical.status ?? "").toLowerCase()
+    const envelopeId = adapted.ok ? String(adapted.canonical.envelope_id) : null
 
     const isCompleted =
       event === "transaction.completed"
@@ -82,8 +81,20 @@ export async function POST(request: NextRequest) {
       || status === "completed"
       || status === "fully_signed"
 
+    if (isCompleted && !envelopeId) {
+      const { quarantineDriftedPayload } = await import("@/lib/kernel/ingress-continuity")
+      const q = await quarantineDriftedPayload(supabase as any, { connector: "skyslope", source: "esign_completion", raw: body, missing: adapted.missingRequired, eventType: event || status })
+      return NextResponse.json({ received: true, quarantined: true, ref: q.ref })
+    }
     if (!isCompleted || !envelopeId) {
       return NextResponse.json({ received: true, action: "ignored", event, status })
+    }
+    if (adapted.driftRepairs > 0) {
+      const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+      await recordSelfHeal(supabase as any, {
+        brokerageId: null, domain: "data_flow", subject: envelopeId, action: "adapt_payload", outcome: "healed",
+        detail: { flow: "schema_drift", connector: "skyslope", repairs: adapted.repairs.filter((r) => r.kind !== "direct").slice(0, 12) },
+      })
     }
 
     const voice  = await finalizeVoiceCockpitPacket(supabase as any, envelopeId, "skyslope")

@@ -58,29 +58,36 @@ export async function POST(request: NextRequest) {
     // documents / BBA status updates without current_user_brokerage_id.
     const supabase = createServiceClient()
 
-    // DocuSign Connect JSON shape:
-    //   { event: "envelope-completed", data: { envelopeId, envelopeSummary: { status, ... } } }
-    //   (or the older XML-derived shape — we accept both common forms)
-    const event = (body.event ?? body.Event ?? "").toString().toLowerCase()
-    const envelopeId =
-      body?.data?.envelopeId
-      ?? body?.envelopeId
-      ?? body?.data?.envelopeSummary?.envelopeId
-      ?? null
-    const envelopeStatus = (
-      body?.data?.envelopeSummary?.status
-      ?? body?.envelopeStatus
-      ?? ""
-    ).toString().toLowerCase()
+    // SCHEMA ADAPTATION: every documented Connect shape is a direct path on
+    // the contract; a NEW shape adapts via taught aliases (drift, ledgered)
+    // or QUARANTINES — a completion event is never lost to a parse miss.
+    const { adaptPayload, ESIGN_COMPLETION_CONTRACTS } = await import("@/lib/kernel/schema-adaptation")
+    const adapted = adaptPayload(ESIGN_COMPLETION_CONTRACTS.docusign, body)
+    const event = String(adapted.canonical.event ?? "").toLowerCase()
+    const envelopeStatus = String(adapted.canonical.status ?? "").toLowerCase()
+    const envelopeId = adapted.ok ? String(adapted.canonical.envelope_id) : null
 
     const isCompleted =
       event === "envelope-completed"
       || event === "recipient-completed"
       || envelopeStatus === "completed"
 
+    if (isCompleted && !envelopeId) {
+      // A completion we can't read = quarantined for review + re-adaptation, never dropped.
+      const { quarantineDriftedPayload } = await import("@/lib/kernel/ingress-continuity")
+      const q = await quarantineDriftedPayload(supabase as any, { connector: "docusign", source: "esign_completion", raw: body, missing: adapted.missingRequired, eventType: event || envelopeStatus })
+      return NextResponse.json({ received: true, quarantined: true, ref: q.ref })
+    }
     if (!isCompleted || !envelopeId) {
       // We log non-completion events but don't take action on them.
       return NextResponse.json({ received: true, action: "ignored", event, envelopeStatus })
+    }
+    if (adapted.driftRepairs > 0) {
+      const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+      await recordSelfHeal(supabase as any, {
+        brokerageId: null, domain: "data_flow", subject: envelopeId, action: "adapt_payload", outcome: "healed",
+        detail: { flow: "schema_drift", connector: "docusign", repairs: adapted.repairs.filter((r) => r.kind !== "direct").slice(0, 12) },
+      })
     }
 
     // Voice-cockpit packet + legacy artifacts — shared helpers handle both.

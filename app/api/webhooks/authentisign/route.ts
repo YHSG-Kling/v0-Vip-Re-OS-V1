@@ -63,22 +63,33 @@ export async function POST(request: NextRequest) {
     //   - "signing.completed"   all signers have signed
     //   - "signing.declined"    a signer declined (not handled here yet)
     //   - "signing.expired"     envelope expired (not handled here yet)
-    const event  = (body.event ?? body.eventType ?? "").toString().toLowerCase()
-    const status = (body?.data?.status ?? body?.status ?? "").toString().toLowerCase()
-    const envelopeId =
-      body?.data?.signingId
-      ?? body?.data?.envelopeId
-      ?? body?.signingId
-      ?? body?.envelopeId
-      ?? null
+    // SCHEMA ADAPTATION: documented shapes are direct paths; new shapes adapt
+    // via taught aliases (drift, ledgered) or QUARANTINE — never lost.
+    const { adaptPayload, ESIGN_COMPLETION_CONTRACTS } = await import("@/lib/kernel/schema-adaptation")
+    const adapted = adaptPayload(ESIGN_COMPLETION_CONTRACTS.authentisign, body)
+    const event  = String(adapted.canonical.event ?? "").toLowerCase()
+    const status = String(adapted.canonical.status ?? "").toLowerCase()
+    const envelopeId = adapted.ok ? String(adapted.canonical.envelope_id) : null
 
     const isCompleted =
       event === "signing.completed"
       || status === "completed"
       || status === "signed"
 
+    if (isCompleted && !envelopeId) {
+      const { quarantineDriftedPayload } = await import("@/lib/kernel/ingress-continuity")
+      const q = await quarantineDriftedPayload(supabase as any, { connector: "authentisign", source: "esign_completion", raw: body, missing: adapted.missingRequired, eventType: event || status })
+      return NextResponse.json({ received: true, quarantined: true, ref: q.ref })
+    }
     if (!isCompleted || !envelopeId) {
       return NextResponse.json({ received: true, action: "ignored", event, status })
+    }
+    if (adapted.driftRepairs > 0) {
+      const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+      await recordSelfHeal(supabase as any, {
+        brokerageId: null, domain: "data_flow", subject: envelopeId, action: "adapt_payload", outcome: "healed",
+        detail: { flow: "schema_drift", connector: "authentisign", repairs: adapted.repairs.filter((r) => r.kind !== "direct").slice(0, 12) },
+      })
     }
 
     const voice  = await finalizeVoiceCockpitPacket(supabase as any, envelopeId, "authentisign")
