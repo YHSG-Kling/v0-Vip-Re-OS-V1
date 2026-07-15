@@ -87,6 +87,12 @@ export async function POST(request: NextRequest) {
     const voice  = await finalizeVoiceCockpitPacket(supabase as any, envelopeId, "docusign")
     const legacy = await finalizeLegacyEsignArtifacts(supabase as any, envelopeId)
 
+    // INGRESS CONTINUITY: an envelope that matched NOTHING (dispatch race /
+    // transient failure) is parked as a dead letter for the daily reconciler
+    // to replay — never lost behind this 200.
+    const { ensureEsignIngressContinuity } = await import("@/lib/kernel/ingress-continuity")
+    await ensureEsignIngressContinuity(supabase as any, { provider: "docusign", envelopeId })
+
     return NextResponse.json({
       received:    true,
       envelopeId,

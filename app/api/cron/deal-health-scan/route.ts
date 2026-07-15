@@ -162,11 +162,21 @@ export async function GET(request: NextRequest) {
       flowBreaks = fi.breaks; flowHealed = fi.healed
     } catch (e) { console.error("[deal-health-scan] flow-integrity failed (non-blocking)", e) }
 
+    // INGRESS RECONCILIATION — replay webhook dead letters whose artifact of
+    // record has since appeared (data stuck between a webhook and where it
+    // belongs finally flows); abandon + escalate what never matches. Best-effort.
+    let ingressReplayed = 0, ingressAbandoned = 0
+    try {
+      const { runIngressReconciliation } = await import("@/lib/kernel/ingress-continuity")
+      const ir = await runIngressReconciliation(supabase)
+      ingressReplayed = ir.replayed; ingressAbandoned = ir.abandoned
+    } catch (e) { console.error("[deal-health-scan] ingress reconciliation failed (non-blocking)", e) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: transactions.length,
       output_count: atRiskCount,
-      metadata: { total: transactions.length, atRiskCount, selfAudit, flowBreaks, flowHealed },
+      metadata: { total: transactions.length, atRiskCount, selfAudit, flowBreaks, flowHealed, ingressReplayed, ingressAbandoned },
     })
 
     return NextResponse.json({

@@ -195,6 +195,11 @@ export async function POST(request: NextRequest) {
         // and kernel event emission. Every provider webhook calls this so the
         // dispatch chain converges regardless of which provider the agent uses.
         await finalizeVoiceCockpitPacket(supabase as any, loop_id, "dotloop")
+
+        // INGRESS CONTINUITY: park an unmatched loop as a dead letter for the
+        // daily reconciler — never lost behind this 200.
+        const { ensureEsignIngressContinuity } = await import("@/lib/kernel/ingress-continuity")
+        await ensureEsignIngressContinuity(supabase as any, { provider: "dotloop", envelopeId: loop_id ?? null })
       }
     }
 

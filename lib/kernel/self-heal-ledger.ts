@@ -66,7 +66,20 @@ export const FLOW_CONTRACTS: Record<string, FlowContract> = {
     describes: "a completed e-sign envelope whose deal-file document never flipped to signed",
   },
 
+  esign_ingress_orphan: {
+    tier: "seed_safe",
+    action: "reconcile_esign_ingress",
+    reason: "Replaying the dead-lettered envelope re-runs the exact idempotent finalizers the webhook runs — safe once the artifact of record exists.",
+    describes: "a signed envelope that arrived before its paperwork was staged (parked, then replayed the moment the paperwork appeared)",
+  },
+
   // ── PROBATION: deterministic, but heals report until autonomy is EARNED ──
+  scraped_lead_stranded: {
+    tier: "probation",
+    action: "reenrich_promote",
+    reason: "Re-enriching a stranded scraped record re-runs the full territory→identity→dedupe→eligibility gate — deterministic, capped at MAX_PROMOTION_ATTEMPTS.",
+    describes: "a scraped lead that stalled before reaching the pipeline (re-enriched and promoted on a later pass)",
+  },
   legal_name_writeback: {
     tier: "probation",
     action: "rerun_legal_name_writeback",

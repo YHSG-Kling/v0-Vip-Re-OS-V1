@@ -84,6 +84,11 @@ export async function POST(request: NextRequest) {
     const voice  = await finalizeVoiceCockpitPacket(supabase as any, envelopeId, "authentisign")
     const legacy = await finalizeLegacyEsignArtifacts(supabase as any, envelopeId)
 
+    // INGRESS CONTINUITY: park an unmatched envelope as a dead letter for the
+    // daily reconciler — never lost behind this 200.
+    const { ensureEsignIngressContinuity } = await import("@/lib/kernel/ingress-continuity")
+    await ensureEsignIngressContinuity(supabase as any, { provider: "authentisign", envelopeId })
+
     return NextResponse.json({
       received:    true,
       envelopeId,

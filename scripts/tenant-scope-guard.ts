@@ -30,6 +30,9 @@ const SCOPE_EVIDENCE = [
   '.eq("user_id"', ".eq('user_id'",
   // Unique-key lookups (globally unique — the row IS the scope):
   '.eq("slug"', '.eq("public_id"', '.eq("token"', '.eq("public_slug"', "stripe_",
+  // Provider-generated envelope refs (unique by construction — the e-sign
+  // webhook/reconciler probes match on them with no session to scope by):
+  "provider_envelope_id", "signature_request_id",
   "contact_id", "conversation_id", "event_id", "listing_id", "transaction_id", "agent_id",
 ]
 

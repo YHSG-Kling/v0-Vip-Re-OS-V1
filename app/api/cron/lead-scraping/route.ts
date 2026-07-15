@@ -776,7 +776,18 @@ export async function GET(request: Request) {
         .eq('id', r.id)
       try {
         const promo = await processRawRecord(r.id)
-        if (promo.action === 'created') results.leads_promoted++
+        if (promo.action === 'created') {
+          results.leads_promoted++
+          // CONTINUITY LEDGER: a previously-STRANDED record recovering on retry
+          // is a self-heal — scraped data that was stuck now flowed to where it
+          // belongs. Same unified ledger as the flow + connector heals.
+          const { recordSelfHeal } = await import('@/lib/kernel/self-heal-ledger')
+          await recordSelfHeal(supabase, {
+            brokerageId: null, domain: 'data_flow', subject: r.id,
+            action: 'reenrich_promote', outcome: 'healed',
+            detail: { flow: 'scraped_lead_stranded', attempt: (r.promotion_attempts ?? 0) + 1 },
+          })
+        }
       } catch (err) {
         results.errors.push(`Re-enrich error for ${r.id}: ${err instanceof Error ? err.message : String(err)}`)
       }

@@ -1170,7 +1170,7 @@ async function main() {
       && seedStamp.safe === true && seedStamp.notify === false && seedStamp.tier === "seed_safe" && seedStamp.action === "stamp_offer_esign"
       && escStage.safe === false && escStage.action === null && escStage.tier === "escalate"
       && shl.EARNED_AUTONOMY_HEALS === 5
-      && Object.keys(shl.FLOW_CONTRACTS).length === 11
+      && Object.keys(shl.FLOW_CONTRACTS).length === 13
       && shl.composeRepairAutonomy({ complete_packet: { healed: 6, failed: 0 }, recreate_decision_task: { healed: 2, failed: 0 } })
            .some((r) => r.flow === "packet_completion" && r.earned === true)
       && shl.composeRepairAutonomy({ recreate_decision_task: { healed: 2, failed: 0 } })
@@ -1236,6 +1236,30 @@ async function main() {
       && src("lib/kernel/flow-integrity.ts").includes("recreate_decision_task")
       && src("lib/kernel/flow-integrity.ts").includes('.eq("deal_shaky", false)')
       && src("lib/kernel/flow-integrity.ts").includes('.eq("status", "pending")'))
+    // ── INGRESS CONTINUITY (owner's Continuity Engine vision: "data gets stuck between one webhook and where it belongs") ──
+    const ic = await import("../lib/kernel/ingress-continuity")
+    check("INGRESS DEAD-LETTER + RECONCILIATION — a completion webhook that matches NO artifact (dispatch race / transient failure) is PARKED, never lost behind the 200: decideIngressAction replays the moment the artifact appears, waits while attempts remain, abandons + escalates at the cap (30 daily ticks); all four e-sign routes park unmatched envelopes; the reconciler rides deal-health-scan and ledgers every replay; the re-enrich sweep ledgers recovered stranded scraped leads onto the SAME self_heal_events spine; both new flows are registered contracts (13 total) so the autonomy panel shows their standing",
+      ic.decideIngressAction({ matched: true, attempts: 0 }) === "replay"
+      && ic.decideIngressAction({ matched: true, attempts: 29 }) === "replay"      // a match always replays, even at the cap
+      && ic.decideIngressAction({ matched: false, attempts: 0 }) === "wait"
+      && ic.decideIngressAction({ matched: false, attempts: 28 }) === "wait"
+      && ic.decideIngressAction({ matched: false, attempts: 29 }) === "abandon"
+      && ic.INGRESS_MAX_ATTEMPTS === 30
+      && shl.FLOW_CONTRACTS["esign_ingress_orphan"].tier === "seed_safe"
+      && shl.FLOW_CONTRACTS["esign_ingress_orphan"].action === "reconcile_esign_ingress"
+      && shl.FLOW_CONTRACTS["scraped_lead_stranded"].tier === "probation"
+      && shl.FLOW_CONTRACTS["scraped_lead_stranded"].action === "reenrich_promote"
+      && src("app/api/webhooks/docusign/route.ts").includes("ensureEsignIngressContinuity")
+      && src("app/api/webhooks/dotloop/route.ts").includes("ensureEsignIngressContinuity")
+      && src("app/api/webhooks/skyslope/route.ts").includes("ensureEsignIngressContinuity")
+      && src("app/api/webhooks/authentisign/route.ts").includes("ensureEsignIngressContinuity")
+      && src("app/api/cron/deal-health-scan/route.ts").includes("runIngressReconciliation")
+      && src("app/api/cron/lead-scraping/route.ts").includes("reenrich_promote")
+      && src("lib/kernel/ingress-continuity.ts").includes("finalizeVoiceCockpitPacket")
+      && src("lib/kernel/ingress-continuity.ts").includes("notifyPlatformStaff")
+      && src("scripts/l58-s01-ingress-dead-letters.sql").includes("ingress_dead_letters")
+      && src("lib/kernel/manager-registry.ts").includes("ingress_continuity:")
+      && src("lib/kernel/manager-registry.ts").includes('ingress_dead_letters: "cron_manager"'))
     check("PORTFOLIO INTELLIGENCE #7/#9 (owner correction: MANAGED CONTACT BOOK, not paid-lead territory) + TENANT CONNECTION HEALTH (owner's real #3: connectivity fabric, not RPA) — the book drives lean-in to a proven-converting unfarmed ZIP + farm-the-book + pull-back (thin ZIP ignored below MIN_CONTACTS), and the connection impact translates a dead connector into the business flow it broke (broken before expiring; healthy = silence); the redundant campaign composer + RPA ops rail were REMOVED",
       books.length === 3 && books.find((b) => b.zip === "78701")!.closeRate === 0.15
       && moves.some((m) => m.key === "lean_in" && m.zip === "78701")
