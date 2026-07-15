@@ -55,6 +55,8 @@ export async function POST(request: NextRequest) {
     // SCHEMA ADAPTATION: dotloop's event + refs normalize through the declared
     // contract; an event we can't read QUARANTINES instead of being dropped.
     const { adaptPayload, DOTLOOP_EVENT_CONTRACT } = await import("@/lib/kernel/schema-adaptation")
+    const { rememberShape } = await import("@/lib/kernel/schema-memory")
+    await rememberShape(supabase as any, { connector: "dotloop", entity: "loop_event", raw: body })
     const adapted = adaptPayload(DOTLOOP_EVENT_CONTRACT, body)
     if (!adapted.ok) {
       const { quarantineDriftedPayload } = await import("@/lib/kernel/ingress-continuity")

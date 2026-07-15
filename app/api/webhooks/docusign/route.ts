@@ -62,6 +62,8 @@ export async function POST(request: NextRequest) {
     // the contract; a NEW shape adapts via taught aliases (drift, ledgered)
     // or QUARANTINES — a completion event is never lost to a parse miss.
     const { adaptPayload, ESIGN_COMPLETION_CONTRACTS } = await import("@/lib/kernel/schema-adaptation")
+    const { rememberShape } = await import("@/lib/kernel/schema-memory")
+    await rememberShape(supabase as any, { connector: "docusign", entity: "envelope_event", raw: body })
     const adapted = adaptPayload(ESIGN_COMPLETION_CONTRACTS.docusign, body)
     const event = String(adapted.canonical.event ?? "").toLowerCase()
     const envelopeStatus = String(adapted.canonical.status ?? "").toLowerCase()

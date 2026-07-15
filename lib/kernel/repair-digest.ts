@@ -119,11 +119,27 @@ export async function runRepairPatternDigest(svc: Svc, now: Date = new Date()): 
   const { loadFlowActionStats } = await import("@/lib/kernel/self-heal-ledger")
   const digest = composeRepairDigest(rows, await loadFlowActionStats(svc))
 
+  // EARLY WARNING (schema memory): connector shapes that CHANGED this week —
+  // drift detected ahead of drift damage. Plus the quarantine backlog, so
+  // parked evidence reaches humans weekly, not only at abandonment.
+  const extraLines: string[] = []
+  try {
+    const { loadRecentShapeChanges } = await import("@/lib/kernel/schema-memory")
+    const changes = await loadRecentShapeChanges(svc, since)
+    for (const c of changes.slice(0, 3)) {
+      extraLines.push(`SHAPE CHANGE: ${c.connector}/${c.entity} started sending a new payload shape — check the contract before anything quarantines.`)
+    }
+    const { count: quarantined } = await svc.from("ingress_dead_letters")
+      .select("id", { count: "exact", head: true })
+      .eq("event_kind", "schema_drift_quarantine").eq("status", "pending")
+    if ((quarantined ?? 0) > 0) extraLines.push(`${quarantined} payload(s) waiting in quarantine for a contract fix.`)
+  } catch { /* the core digest still sends */ }
+
   const { notifyPlatformStaff } = await import("@/lib/notifications/platform-staff")
   await notifyPlatformStaff(svc as any, {
     type: "repair_pattern_digest",
     title: `Self-heal digest: ${digest.totalHealed} repaired, ${digest.totalEscalated} escalated this week`,
-    body: `${digest.lines.join(" ")} ${tag}`.slice(0, 480),
+    body: `${[...digest.lines, ...extraLines].join(" ")} ${tag}`.slice(0, 480),
     entityType: "self_heal_events",
     priority: "medium",
   })

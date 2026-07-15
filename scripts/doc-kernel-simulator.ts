@@ -1407,6 +1407,29 @@ async function main() {
       && src("lib/crm/sync.ts").includes("validateEgress")
       && src("lib/crm/sync.ts").includes("egress_rejected")
       && src("lib/kernel/ingress-continuity.ts").includes("reportPullDrift"))
+    // ── SCHEMA MEMORY (drift detected AHEAD of drift damage) + MAIL EGRESS LEDGER ──
+    const sm = await import("../lib/kernel/schema-memory")
+    const shapeA = { event: "envelope-completed", data: { envelopeId: "E1", envelopeSummary: { status: "completed" } } }
+    const shapeAOtherValues = { event: "recipient-completed", data: { envelopeId: "E999", envelopeSummary: { status: "sent" } } }
+    const shapeB = { eventType: "envelope-completed", payload: { id: "E1" } }
+    const smKeys = sm.extractShapeKeys(shapeA)
+    check("SCHEMA MEMORY (the drift doc's last tier — the OS remembers every payload shape a connector ever sent): the fingerprint is SHAPE identity (same keys + different VALUES = same fingerprint; different keys = different fingerprint) over sorted key PATHS to depth 3 with values NEVER stored (no PII); arrays fingerprint by their first element's shape; a new fingerprint on a connector WITH history is a shape change the weekly digest announces before anything quarantines, alongside the pending-quarantine backlog; wired at all five webhook adapt sites; the direct-mail drain's verified-address refusal now ALSO ledgers egress_rejected on the tenant (a half-address mail piece is money burned — the refusal reaches the Exception Center)",
+      sm.shapeFingerprint(shapeA) === sm.shapeFingerprint(shapeAOtherValues)
+      && sm.shapeFingerprint(shapeA) !== sm.shapeFingerprint(shapeB)
+      && smKeys.includes("data.envelopeId") && smKeys.includes("data.envelopeSummary.status")
+      && !JSON.stringify(smKeys).includes("E1") // values never leak into the shape
+      && sm.extractShapeKeys([{ a: 1 }, { b: 2 }]).includes("[].a") // array shape = first element
+      && src("app/api/webhooks/docusign/route.ts").includes("rememberShape")
+      && src("app/api/webhooks/skyslope/route.ts").includes("rememberShape")
+      && src("app/api/webhooks/authentisign/route.ts").includes("rememberShape")
+      && src("app/api/webhooks/dotloop/route.ts").includes("rememberShape")
+      && src("app/api/showings/showingtime-webhook/route.ts").includes("rememberShape")
+      && src("lib/kernel/repair-digest.ts").includes("loadRecentShapeChanges")
+      && src("lib/kernel/repair-digest.ts").includes("waiting in quarantine")
+      && src("lib/direct-mail/campaign-drain.ts").includes("egress_rejected")
+      && src("scripts/l60-s01-connector-shape-memory.sql").includes("connector_shape_memory")
+      && src("lib/kernel/manager-registry.ts").includes("schema_memory:")
+      && src("lib/kernel/manager-registry.ts").includes('connector_shape_memory: "cron_manager"'))
     // ── REPAIR-PATTERN DIGEST + VOICE SELF-HEAL BRIEF + DEAL TWIN (approved 1/2/3) ──
     const rd = await import("../lib/kernel/repair-digest")
     const digest = rd.composeRepairDigest([

@@ -90,6 +90,8 @@ export async function POST(req: NextRequest) {
   // drift coerces, unknown fields are captured. A payload missing REQUIRED
   // facts QUARANTINES (parks for review) instead of corrupting downstream.
   const { adaptPayload, SHOWINGTIME_APPOINTMENT_CONTRACT } = await import("@/lib/kernel/schema-adaptation")
+  const { rememberShape } = await import("@/lib/kernel/schema-memory")
+  await rememberShape(supabase, { connector: "showingtime", entity: "appointment", raw: payload.appointment })
   const adapted = adaptPayload(SHOWINGTIME_APPOINTMENT_CONTRACT, payload.appointment)
   if (!adapted.ok) {
     const { quarantineDriftedPayload } = await import("@/lib/kernel/ingress-continuity")

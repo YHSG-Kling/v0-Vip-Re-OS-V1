@@ -580,6 +580,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   signal_reactivations: ["brokerage_id", "contact_id", "id", "isa_reactivated", "isa_reactivated_at", "lead_id", "signal_data", "signal_strength", "signal_type", "triggered_at"],
   self_heal_events: ["action", "brokerage_id", "created_at", "detail", "domain", "id", "outcome", "subject"],
   ingress_dead_letters: ["attempts", "created_at", "event_kind", "external_ref", "id", "last_attempt_at", "payload", "provider", "reconciled_at", "status"],
+  connector_shape_memory: ["connector", "entity", "fingerprint", "first_seen_at", "hits", "id", "last_seen_at", "shape_keys"],
   signature_requests: ["all_parties", "brokerage_id", "completed_at", "contact_id", "created_at", "document_id", "id", "provider_envelope_id", "request_status", "sent_at", "signing_order", "signing_url", "transaction_id", "expires_at"],
   site_activity: ["action_taken", "behavioral_signal_id", "brokerage_id", "contact_id", "id", "occurred_at", "page_visited", "search_terms", "time_on_page_seconds", "timestamp"],
   smart_assistant_suggestions: ["action_payload_json", "action_type", "action_url", "agent_id", "brokerage_id", "context_type", "created_at", "description", "feedback_text", "id", "metadata", "priority", "rating", "rating_at", "source_system", "status", "suggestion_type", "title"],

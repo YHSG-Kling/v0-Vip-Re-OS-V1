@@ -80,9 +80,21 @@ export async function runDirectMailCampaignDrain(
     }
     if (!addr) {
       // Honest terminal: without a deliverable address the piece can't mail.
+      // EGRESS LEDGER: the refusal is a recorded fact (Exception Center +
+      // digest see it) — mail to a half-address is money burned, and fixing
+      // the SOURCE address is a human call.
       await svc.from("direct_mail_campaigns")
         .update({ status: "failed" })
         .eq("id", row.id)
+      try {
+        const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+        await recordSelfHeal(svc, {
+          brokerageId: input.brokerageId, domain: "data_flow",
+          subject: `mail:${row.contact_id ?? row.lead_id ?? row.id}`,
+          action: "none", outcome: "escalated",
+          detail: { flow: "egress_rejected", connector: "lob", missing: ["verified_mailing_address"], reason: "direct-mail piece refused — no CASS-verified full address on the recipient; fix the source record" },
+        })
+      } catch { /* the failed status is the record of truth */ }
       out.skippedNoAddress++
       continue
     }
