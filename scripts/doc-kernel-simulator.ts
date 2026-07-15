@@ -1153,6 +1153,89 @@ async function main() {
       && src("app/dashboard/brokerage/page.tsx").includes("BrokerSelfHealPanel")
       && src("lib/kernel/manager-registry.ts").includes("self_healing_os:")
       && src("lib/kernel/manager-registry.ts").includes('self_heal_events: "cron_manager"'))
+    // ── THE FLOW-CONTRACT LIBRARY + CONFIDENCE RATCHET (owner: "keep growing 1 with at least 10 more and complete 2") ──
+    const shl = await import("../lib/kernel/self-heal-ledger")
+    const fiLib = await import("../lib/kernel/flow-integrity")
+    const probFresh  = shl.classifyFlowRemediation("decision_task_missing")                              // no ledger evidence → heals but reports
+    const probMid    = shl.classifyFlowRemediation("decision_task_missing", { healed: 4, failed: 0 })    // 4/5 → still supervised
+    const probEarned = shl.classifyFlowRemediation("decision_task_missing", { healed: 5, failed: 0 })    // ratchet promotes → silent
+    const probDirty  = shl.classifyFlowRemediation("decision_task_missing", { healed: 9, failed: 1 })    // ONE failure blocks autonomy, forever-evidence
+    const seedStamp  = shl.classifyFlowRemediation("offer_esign_stamp")                                  // seed-safe: silent from day one
+    const escStage   = shl.classifyFlowRemediation("listing_agreement_stage_gap")                        // escalate-only tier
+    check("SELF-HEAL CONFIDENCE RATCHET (earned autonomy applied to self-repair, computed from the append-only ledger — no extra state): a probation repair heals-but-REPORTS with no evidence (0/5) and at 4/5, EARNS silence at 5 clean heals with zero failures, and a single recorded failure holds it supervised forever; seed-safe finalizer re-runs are silent from day one; the escalate tier never auto-runs; the governance view (composeRepairAutonomy) + broker panel expose each repair's standing",
+      probFresh.safe === true && probFresh.notify === true && probFresh.earned === false && probFresh.tier === "probation"
+      && probMid.notify === true && probMid.earned === false
+      && probEarned.notify === false && probEarned.earned === true && Boolean(probEarned.reason.includes("EARNED"))
+      && probDirty.notify === true && probDirty.earned === false
+      && seedStamp.safe === true && seedStamp.notify === false && seedStamp.tier === "seed_safe" && seedStamp.action === "stamp_offer_esign"
+      && escStage.safe === false && escStage.action === null && escStage.tier === "escalate"
+      && shl.EARNED_AUTONOMY_HEALS === 5
+      && Object.keys(shl.FLOW_CONTRACTS).length === 11
+      && shl.composeRepairAutonomy({ complete_packet: { healed: 6, failed: 0 }, recreate_decision_task: { healed: 2, failed: 0 } })
+           .some((r) => r.flow === "packet_completion" && r.earned === true)
+      && shl.composeRepairAutonomy({ recreate_decision_task: { healed: 2, failed: 0 } })
+           .some((r) => r.flow === "decision_task_missing" && r.earned === false && r.healed === 2)
+      && src("lib/kernel/flow-integrity.ts").includes("loadFlowActionStats")
+      && src("lib/kernel/flow-integrity.ts").includes("SELF_HEAL_PROBATION")
+      && src("app/actions/self-heal-rollup.ts").includes("getRepairAutonomy")
+      && src("app/dashboard/brokerage/components/command-center/broker-self-heal-panel.tsx").includes("getRepairAutonomy")
+      && src("lib/kernel/manager-registry.ts").includes("flow_contract_ratchet:"))
+    const nowFlow = new Date("2026-07-15T12:00:00Z")
+    const oldEvt = "2026-07-15T11:00:00Z"   // 60 min old — past the grace window, asserted
+    const freshEvt = "2026-07-15T11:55:00Z" // 5 min old — the rail may still be in flight, silent
+    const stampBreaks = fiLib.detectOfferEsignStampGaps([
+      { id: "o1", esignStatus: "fully_signed", esignCompletedAt: null },
+      { id: "o2", esignStatus: "fully_signed", esignCompletedAt: "2026-07-14" },
+      { id: "o3", esignStatus: "partially_signed", esignCompletedAt: null },
+    ])
+    const docBreaks = fiLib.detectDocumentSignedGaps(
+      [{ id: "d1", status: "uploaded", envelopeId: "ENV-9" }, { id: "d2", status: "signed", envelopeId: "ENV-9" }, { id: "d3", status: "uploaded", envelopeId: "ENV-X" }],
+      new Set(["ENV-9"]),
+    )
+    const railBreaks = fiLib.detectMissingRailTasks([
+      { id: "e1", eventType: "client_offer_decision", entityId: "of1", createdAt: oldEvt, metadata: { contact_id: "c1", decision: "accept" } },
+      { id: "e2", eventType: "vendor_request", entityId: "tx1", createdAt: oldEvt, metadata: {} },
+      { id: "e3", eventType: "lender_document_request", entityId: "tx2", createdAt: freshEvt, metadata: {} },
+    ], [
+      { source: "vendor_request", transactionId: "tx1", contactId: null, createdAt: "2026-07-15T11:00:30Z" },
+    ], nowFlow)
+    const shakyBreaks = fiLib.detectWalkthroughShakyGaps(
+      [{ id: "w1", eventType: "walkthrough_outcome", entityId: "tx3", createdAt: oldEvt, metadata: { outcome: "major_issues" } },
+       { id: "w2", eventType: "walkthrough_outcome", entityId: "tx4", createdAt: oldEvt, metadata: { outcome: "major_issues" } },
+       { id: "w3", eventType: "walkthrough_outcome", entityId: "tx5", createdAt: oldEvt, metadata: { outcome: "minor_issues" } }],
+      [{ entityId: "tx4", createdAt: "2026-07-15T11:30:00Z" }],
+      new Map([["tx3", false], ["tx4", false], ["tx5", false]]),
+      nowFlow,
+    )
+    const ctcBreaks = fiLib.detectCtcMilestoneGaps(
+      [{ transactionId: "tx6", clearToCloseDate: "2026-07-14" }, { transactionId: "tx7", clearToCloseDate: "2026-07-14" }],
+      [{ id: "m1", transactionId: "tx6", name: "clear_to_close_received", type: null, status: "pending" },
+       { id: "m2", transactionId: "tx7", name: "clear_to_close_received", type: null, status: "completed" },
+       { id: "m3", transactionId: "tx6", name: "inspection_completed", type: null, status: "pending" }],
+    )
+    const stageBreaks = fiLib.detectListingAgreementStageGaps(
+      [{ id: "la1", listingId: "L1" }, { id: "la2", listingId: "L2" }],
+      new Map([["L1", "LISTING_AGREEMENT_INITIATED"], ["L2", "LISTING_AGREEMENT_SIGNED"]]),
+    )
+    const { partyMatchesContact: pmc } = await import("../lib/documents/contact-legal-writeback")
+    const legalBreaks = fiLib.detectLegalNameGaps([
+      { documentId: "doc1", transactionId: "tx8", parties: ["William Robert Chen"], contacts: [{ id: "c9", firstName: "William", lastName: "Chen", legalFirst: null, legalLast: null }] },
+      { documentId: "doc2", transactionId: "tx9", parties: ["Maria Ann Lopez"], contacts: [{ id: "c10", firstName: "Maria", lastName: "Lopez", legalFirst: "Maria Ann", legalLast: "Lopez" }] },
+      { documentId: "doc3", transactionId: "tx10", parties: ["Robert Smith Jr"], contacts: [{ id: "c11", firstName: "Anna", lastName: "Lee", legalFirst: null, legalLast: null }] },
+    ], pmc)
+    check("FLOW-CONTRACT LIBRARY grown to 11 (10 new, each verified against the LIVE schema + the actual emitting rail, both ends concrete, zero false positives): offer stamp flags only fully_signed-without-timestamp; doc stamp flags only completed-envelope unsigned docs; the four ledger-event→task rails flag only graced events with NO matching task (a matched task or an in-grace event is silent); shaky-gap respects a later human deal_shaky_cleared (never fights a person); CTC flags only a PRESENT pending milestone under a recorded clear-to-close; stage-gap flags only agreement-initiated listings; legal-name flags only a MATCHING party against EMPTY legal names",
+      stampBreaks.length === 1 && stampBreaks[0].key === "o1" && stampBreaks[0].flow === "offer_esign_stamp"
+      && docBreaks.length === 1 && docBreaks[0].key === "d1" && docBreaks[0].flow === "document_signed_stamp"
+      && railBreaks.length === 1 && railBreaks[0].flow === "decision_task_missing" && railBreaks[0].key === "e1"
+      && shakyBreaks.length === 1 && shakyBreaks[0].key === "tx3" && shakyBreaks[0].flow === "walkthrough_shaky_gap"
+      && ctcBreaks.length === 1 && ctcBreaks[0].key === "m1" && ctcBreaks[0].flow === "ctc_milestone_gap"
+      && stageBreaks.length === 1 && stageBreaks[0].key === "la1" && stageBreaks[0].flow === "listing_agreement_stage_gap"
+      && legalBreaks.length === 1 && legalBreaks[0].key === "doc1:c9" && legalBreaks[0].flow === "legal_name_writeback"
+      && fiLib.FLOW_GRACE_MINUTES === 15 && fiLib.RAIL_TASK_CONTRACTS.length === 4
+      && src("lib/kernel/flow-integrity.ts").includes("stamp_offer_esign")
+      && src("lib/kernel/flow-integrity.ts").includes("recreate_decision_task")
+      && src("lib/kernel/flow-integrity.ts").includes('.eq("deal_shaky", false)')
+      && src("lib/kernel/flow-integrity.ts").includes('.eq("status", "pending")'))
     check("PORTFOLIO INTELLIGENCE #7/#9 (owner correction: MANAGED CONTACT BOOK, not paid-lead territory) + TENANT CONNECTION HEALTH (owner's real #3: connectivity fabric, not RPA) — the book drives lean-in to a proven-converting unfarmed ZIP + farm-the-book + pull-back (thin ZIP ignored below MIN_CONTACTS), and the connection impact translates a dead connector into the business flow it broke (broken before expiring; healthy = silence); the redundant campaign composer + RPA ops rail were REMOVED",
       books.length === 3 && books.find((b) => b.zip === "78701")!.closeRate === 0.15
       && moves.some((m) => m.key === "lean_in" && m.zip === "78701")
