@@ -74,6 +74,12 @@ export const FLOW_CONTRACTS: Record<string, FlowContract> = {
   },
 
   // ── PROBATION: deterministic, but heals report until autonomy is EARNED ──
+  meta_lead_orphan: {
+    tier: "probation",
+    action: "replay_meta_lead",
+    reason: "Replaying a parked paid lead re-runs the exact webhook ingest path (idempotent on email/phone) — heals under supervision until earned.",
+    describes: "a paid ad lead that couldn't land when it arrived (page not mapped yet or a provider hiccup) — captured and delivered once the connection caught up",
+  },
   scraped_lead_stranded: {
     tier: "probation",
     action: "reenrich_promote",

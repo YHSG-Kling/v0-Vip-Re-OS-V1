@@ -1170,7 +1170,7 @@ async function main() {
       && seedStamp.safe === true && seedStamp.notify === false && seedStamp.tier === "seed_safe" && seedStamp.action === "stamp_offer_esign"
       && escStage.safe === false && escStage.action === null && escStage.tier === "escalate"
       && shl.EARNED_AUTONOMY_HEALS === 5
-      && Object.keys(shl.FLOW_CONTRACTS).length === 13
+      && Object.keys(shl.FLOW_CONTRACTS).length === 14
       && shl.composeRepairAutonomy({ complete_packet: { healed: 6, failed: 0 }, recreate_decision_task: { healed: 2, failed: 0 } })
            .some((r) => r.flow === "packet_completion" && r.earned === true)
       && shl.composeRepairAutonomy({ recreate_decision_task: { healed: 2, failed: 0 } })
@@ -1295,6 +1295,21 @@ async function main() {
       && src("scripts/l59-s01-self-heal-outcome-resolution-vocab.sql").includes("'dismissed'")
       && src("lib/kernel/manager-registry.ts").includes("exception_center:")
       && src("lib/kernel/manager-registry.ts").includes("continuity_receipts:"))
+    // ── PAID-LEAD INGRESS CONTINUITY (owner: ingress expansion — "pulling scraped data to where it is sent" applied to PAID leads) ──
+    const ali = await import("../lib/ads/ad-lead-intake")
+    check("META-LEADGEN DEAD-LETTER (a paid lead is ALWAYS real money — the old route dropped it behind a 200 on an unmapped page, a transient Graph failure, or missing fields, and Meta never retries): the route + reconciler share ONE ingest path (ingestMetaLeadByRef — the two can never drift) whose stage says exactly where it stopped; recoverable stages PARK (rejected = terminal fact, not parked); the kind-aware replay registry replays a parked lead the moment the page connection catches up (idempotent on email/phone); meta_lead_orphan is a PROBATION contract (14 total) so replays report until earned; pickMetaField maps full_name fallbacks",
+      typeof ali.ingestMetaLeadByRef === "function"
+      && ali.pickMetaField([{ name: "full_name", values: ["Ada Lovelace"] }], "first_name", "full_name", "name") === "Ada Lovelace"
+      && ali.pickMetaField([{ name: "email", values: [] }], "email") === null
+      && shl.FLOW_CONTRACTS["meta_lead_orphan"].tier === "probation"
+      && shl.FLOW_CONTRACTS["meta_lead_orphan"].action === "replay_meta_lead"
+      && src("app/api/webhooks/meta-leadgen/route.ts").includes("ingestMetaLeadByRef")
+      && src("app/api/webhooks/meta-leadgen/route.ts").includes("parkIngressEvent")
+      && src("app/api/webhooks/meta-leadgen/route.ts").includes('res.stage !== "rejected"')
+      && src("lib/kernel/ingress-continuity.ts").includes('event_kind === "meta_lead_received"')
+      && src("lib/kernel/ingress-continuity.ts").includes("attemptReplay")
+      && src("lib/ads/ad-lead-intake.ts").includes('"no_credential"')
+      && src("lib/ads/ad-lead-intake.ts").includes('"graph_error"'))
     check("PORTFOLIO INTELLIGENCE #7/#9 (owner correction: MANAGED CONTACT BOOK, not paid-lead territory) + TENANT CONNECTION HEALTH (owner's real #3: connectivity fabric, not RPA) — the book drives lean-in to a proven-converting unfarmed ZIP + farm-the-book + pull-back (thin ZIP ignored below MIN_CONTACTS), and the connection impact translates a dead connector into the business flow it broke (broken before expiring; healthy = silence); the redundant campaign composer + RPA ops rail were REMOVED",
       books.length === 3 && books.find((b) => b.zip === "78701")!.closeRate === 0.15
       && moves.some((m) => m.key === "lean_in" && m.zip === "78701")

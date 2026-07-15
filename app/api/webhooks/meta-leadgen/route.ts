@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { ingestConsentedAdLead } from "@/lib/ads/ad-lead-intake"
+import { ingestMetaLeadByRef } from "@/lib/ads/ad-lead-intake"
 
 /**
  * app/api/webhooks/meta-leadgen/route.ts
@@ -28,24 +28,6 @@ export async function GET(request: Request) {
   return new NextResponse("forbidden", { status: 403 })
 }
 
-interface LeadField { name: string; values: string[] }
-
-/** Resolve a leadgen_id to its submitted field_data via the Graph API. */
-async function resolveLeadFields(leadgenId: string, pageToken: string): Promise<LeadField[]> {
-  const res = await fetch(`https://graph.facebook.com/v19.0/${leadgenId}?access_token=${encodeURIComponent(pageToken)}`)
-  if (!res.ok) throw new Error(`graph ${res.status}`)
-  const json = (await res.json()) as { field_data?: LeadField[] }
-  return json.field_data ?? []
-}
-
-function pick(fields: LeadField[], ...names: string[]): string | null {
-  for (const n of names) {
-    const f = fields.find((x) => x.name?.toLowerCase() === n)
-    if (f?.values?.[0]) return f.values[0]
-  }
-  return null
-}
-
 export async function POST(request: Request) {
   let body: any
   try { body = await request.json() } catch { return NextResponse.json({ ok: false, error: "bad json" }, { status: 400 }) }
@@ -53,36 +35,41 @@ export async function POST(request: Request) {
   const svc = createServiceClient()
   const entries = Array.isArray(body?.entry) ? body.entry : []
   let ingested = 0
+  let parked = 0
 
   for (const entry of entries) {
     const pageId = String(entry.id ?? "")
     for (const change of entry.changes ?? []) {
       if (change.field !== "leadgen") continue
       const v = change.value ?? {}
-      // Map the Meta page → the brokerage that owns it.
-      const { data: cred } = await svc.from("platform_credentials")
-        .select("brokerage_id, access_token").eq("platform", "facebook").eq("account_id", pageId).maybeSingle()
-      const c = cred as { brokerage_id?: string; access_token?: string } | null
-      if (!c?.brokerage_id) continue
+      const leadgenId = v.leadgen_id ? String(v.leadgen_id) : null
+      const inlineFields = Array.isArray(v.field_data) ? v.field_data : null
 
-      // Inline field_data (tests) or fetch from Graph (production).
-      let fields: LeadField[] = Array.isArray(v.field_data) ? v.field_data : []
-      if (fields.length === 0 && v.leadgen_id && c.access_token) {
-        try { fields = await resolveLeadFields(String(v.leadgen_id), c.access_token) } catch { continue }
+      // ONE ingest path, shared with the reconciler (never drifts).
+      const res = await ingestMetaLeadByRef(svc, {
+        pageId,
+        leadgenId,
+        formId: v.form_id ? String(v.form_id) : null,
+        inlineFields,
+      })
+      if (res.ok) { ingested++; continue }
+
+      // INGRESS CONTINUITY: a PAID lead that couldn't land (page not mapped
+      // yet, transient Graph failure, fields not available yet) is PARKED for
+      // the daily reconciler — never lost behind this 200. Only a lead with a
+      // leadgen_id (or captured fields) is replayable; 'rejected' (no
+      // email/phone in the form) is a terminal fact, not a stuck flow.
+      if (res.stage !== "rejected" && (leadgenId || inlineFields)) {
+        const { parkIngressEvent } = await import("@/lib/kernel/ingress-continuity")
+        const r = await parkIngressEvent(svc, {
+          provider: "meta",
+          eventKind: "meta_lead_received",
+          externalRef: leadgenId ?? `inline:${pageId}:${v.form_id ?? "unknown"}`,
+          payload: { pageId, leadgenId, formId: v.form_id ? String(v.form_id) : null, field_data: inlineFields ?? null, stage: res.stage },
+        })
+        if (r.parked) parked++
       }
-      if (fields.length === 0) continue
-
-      const res = await ingestConsentedAdLead({
-        brokerageId: c.brokerage_id,
-        firstName:   pick(fields, "first_name", "full_name", "name"),
-        lastName:    pick(fields, "last_name"),
-        email:       pick(fields, "email"),
-        phone:       pick(fields, "phone_number", "phone"),
-        platform:    "facebook",
-        formId:      v.form_id ? String(v.form_id) : null,
-      }, svc)
-      if (res.ok) ingested++
     }
   }
-  return NextResponse.json({ ok: true, ingested })
+  return NextResponse.json({ ok: true, ingested, parked })
 }

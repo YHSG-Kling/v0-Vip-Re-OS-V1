@@ -60,10 +60,34 @@ export async function envelopeHasAnyArtifact(svc: Svc, envelopeId: string): Prom
 }
 
 /**
+ * Park ANY unmatched ingress event as a dead letter. Idempotent (unique on
+ * provider+kind+ref) and best-effort — continuity bookkeeping never fails a
+ * webhook response. Each event_kind has a replay runner in the reconciler.
+ */
+export async function parkIngressEvent(svc: Svc, input: {
+  provider: string
+  eventKind: string
+  externalRef: string
+  payload: Record<string, unknown>
+}): Promise<{ parked: boolean }> {
+  try {
+    if (!input.externalRef) return { parked: false }
+    await svc.from("ingress_dead_letters").upsert({
+      provider: input.provider,
+      event_kind: input.eventKind,
+      external_ref: input.externalRef,
+      payload: input.payload,
+      status: "pending",
+    }, { onConflict: "provider,event_kind,external_ref", ignoreDuplicates: true })
+    return { parked: true }
+  } catch {
+    return { parked: false }
+  }
+}
+
+/**
  * Call from every e-sign completion webhook AFTER the finalizers ran: if the
  * envelope matched nothing, park it as a dead letter instead of losing it.
- * Idempotent (unique on provider+ref+kind) and best-effort — continuity
- * bookkeeping never fails a webhook response.
  */
 export async function ensureEsignIngressContinuity(svc: Svc, input: {
   provider: EsignIngressProvider
@@ -73,14 +97,12 @@ export async function ensureEsignIngressContinuity(svc: Svc, input: {
     if (!input.envelopeId) return { parked: false }
     const matched = await envelopeHasAnyArtifact(svc, input.envelopeId)
     if (matched) return { parked: false }
-    await svc.from("ingress_dead_letters").upsert({
+    return await parkIngressEvent(svc, {
       provider: input.provider,
-      event_kind: "esign_envelope_completed",
-      external_ref: input.envelopeId,
+      eventKind: "esign_envelope_completed",
+      externalRef: input.envelopeId,
       payload: { envelopeId: input.envelopeId, provider: input.provider },
-      status: "pending",
-    }, { onConflict: "provider,event_kind,external_ref", ignoreDuplicates: true })
-    return { parked: true }
+    })
   } catch {
     return { parked: false }
   }
@@ -93,6 +115,63 @@ export interface IngressReconciliationResult {
   abandoned: number
 }
 
+interface ReplayAttempt {
+  /** replayed = landed · failed = destination exists but the replay errored · unmatched = destination still missing */
+  result: "replayed" | "failed" | "unmatched"
+  /** the FLOW_CONTRACTS key this letter ledgers under */
+  flow: string
+  /** the ledger action for a heal/fail */
+  action: string
+  brokerageId?: string | null
+}
+
+interface DeadLetterRow { id: string; provider: string; event_kind: string; external_ref: string; payload: Record<string, any> | null; attempts: number | null }
+
+/**
+ * THE REPLAY REGISTRY — one runner per event_kind. Each replays the EXACT
+ * ingest path its webhook runs (shared helpers, so the paths can never
+ * drift), and reports whether the destination has appeared yet.
+ */
+async function attemptReplay(svc: Svc, letter: DeadLetterRow): Promise<ReplayAttempt> {
+  if (letter.event_kind === "esign_envelope_completed") {
+    const base: ReplayAttempt = { result: "unmatched", flow: "esign_ingress_orphan", action: "reconcile_esign_ingress" }
+    const matched = await envelopeHasAnyArtifact(svc, letter.external_ref).catch(() => false)
+    if (!matched) return base
+    try {
+      const { finalizeVoiceCockpitPacket, finalizeLegacyEsignArtifacts } = await import("@/lib/esign-webhooks/finalize-packet")
+      await finalizeVoiceCockpitPacket(svc as any, letter.external_ref, letter.provider as any)
+      await finalizeLegacyEsignArtifacts(svc as any, letter.external_ref)
+      return { ...base, result: "replayed" }
+    } catch {
+      return { ...base, result: "failed" }
+    }
+  }
+
+  if (letter.event_kind === "meta_lead_received") {
+    const base: ReplayAttempt = { result: "unmatched", flow: "meta_lead_orphan", action: "replay_meta_lead" }
+    const p = letter.payload ?? {}
+    if (!p.pageId) return base // no page ref → can never match; ages to abandonment
+    try {
+      const { ingestMetaLeadByRef } = await import("@/lib/ads/ad-lead-intake")
+      const r = await ingestMetaLeadByRef(svc as any, {
+        pageId: String(p.pageId),
+        leadgenId: p.leadgenId ? String(p.leadgenId) : null,
+        formId: p.formId ? String(p.formId) : null,
+        inlineFields: Array.isArray(p.field_data) ? p.field_data : null,
+      })
+      if (r.ok) return { ...base, result: "replayed", brokerageId: r.brokerageId ?? null }
+      // 'rejected' = fields resolved but unusable — a terminal fact the
+      // brokerage should hear about via abandonment, not an infinite retry.
+      return { ...base, result: "unmatched", brokerageId: r.brokerageId ?? null }
+    } catch {
+      return { ...base, result: "failed" }
+    }
+  }
+
+  // Unknown kind: never replay blindly — age it to abandonment + escalation.
+  return { result: "unmatched", flow: "ingress_unknown_kind", action: "none" }
+}
+
 /**
  * The reconciliation worker (rides the deal-health-scan cron beside
  * flow-integrity): replay letters whose artifact has appeared, age the rest,
@@ -102,9 +181,9 @@ export interface IngressReconciliationResult {
 export async function runIngressReconciliation(svc: Svc, now: Date = new Date()): Promise<IngressReconciliationResult> {
   const out: IngressReconciliationResult = { scanned: 0, replayed: 0, waiting: 0, abandoned: 0 }
   const { data: letters } = await svc.from("ingress_dead_letters")
-    .select("id, provider, event_kind, external_ref, attempts")
+    .select("id, provider, event_kind, external_ref, payload, attempts")
     .eq("status", "pending").order("created_at", { ascending: true }).limit(200)
-  const rows = ((letters ?? []) as Array<{ id: string; provider: string; event_kind: string; external_ref: string; attempts: number | null }>)
+  const rows = ((letters ?? []) as DeadLetterRow[])
   out.scanned = rows.length
   if (rows.length === 0) return out
 
@@ -113,20 +192,13 @@ export async function runIngressReconciliation(svc: Svc, now: Date = new Date())
   const abandonedRefs: string[] = []
 
   for (const letter of rows) {
-    const matched = await envelopeHasAnyArtifact(svc, letter.external_ref).catch(() => false)
-    const decision = decideIngressAction({ matched, attempts: letter.attempts ?? 0 })
+    const attempt = await attemptReplay(svc, letter)
+    const decision = attempt.result === "unmatched"
+      ? decideIngressAction({ matched: false, attempts: letter.attempts ?? 0 })
+      : "replay" // matched (replayed or failed-during-replay) — never ages toward abandonment
 
     if (decision === "replay") {
-      // The same idempotent finalizers the webhook runs — the stuck signal
-      // finally lands where it belongs.
-      let ok = true
-      try {
-        const { finalizeVoiceCockpitPacket, finalizeLegacyEsignArtifacts } = await import("@/lib/esign-webhooks/finalize-packet")
-        await finalizeVoiceCockpitPacket(svc as any, letter.external_ref, letter.provider as any)
-        await finalizeLegacyEsignArtifacts(svc as any, letter.external_ref)
-      } catch {
-        ok = false
-      }
+      const ok = attempt.result === "replayed"
       if (ok) {
         await svc.from("ingress_dead_letters")
           .update({ status: "reconciled", reconciled_at: nowIso, attempts: (letter.attempts ?? 0) + 1, last_attempt_at: nowIso })
@@ -139,9 +211,9 @@ export async function runIngressReconciliation(svc: Svc, now: Date = new Date())
         out.waiting++
       }
       await recordSelfHeal(svc, {
-        brokerageId: null, domain: "data_flow", subject: letter.external_ref,
-        action: "reconcile_esign_ingress", outcome: ok ? "healed" : "failed",
-        detail: { flow: "esign_ingress_orphan", provider: letter.provider, attempts: (letter.attempts ?? 0) + 1 },
+        brokerageId: attempt.brokerageId ?? null, domain: "data_flow", subject: letter.external_ref,
+        action: attempt.action, outcome: ok ? "healed" : "failed",
+        detail: { flow: attempt.flow, provider: letter.provider, attempts: (letter.attempts ?? 0) + 1 },
       })
     } else if (decision === "abandon") {
       await svc.from("ingress_dead_letters")
@@ -150,9 +222,9 @@ export async function runIngressReconciliation(svc: Svc, now: Date = new Date())
       out.abandoned++
       abandonedRefs.push(`${letter.provider}:${letter.external_ref}`)
       await recordSelfHeal(svc, {
-        brokerageId: null, domain: "data_flow", subject: letter.external_ref,
+        brokerageId: attempt.brokerageId ?? null, domain: "data_flow", subject: letter.external_ref,
         action: "none", outcome: "escalated",
-        detail: { flow: "esign_ingress_orphan", provider: letter.provider, reason: `no matching artifact after ${INGRESS_MAX_ATTEMPTS} reconciliation attempts — a human must trace this envelope` },
+        detail: { flow: attempt.flow, provider: letter.provider, reason: `still unmatched after ${INGRESS_MAX_ATTEMPTS} reconciliation attempts — a human must trace where this event should have landed` },
       })
     } else {
       await svc.from("ingress_dead_letters")
@@ -169,8 +241,8 @@ export async function runIngressReconciliation(svc: Svc, now: Date = new Date())
       const { notifyPlatformStaff } = await import("@/lib/notifications/platform-staff")
       await notifyPlatformStaff(svc as any, {
         type: "ingress_dead_letter_abandoned",
-        title: `${abandonedRefs.length} signed envelope${abandonedRefs.length === 1 ? "" : "s"} never found ${abandonedRefs.length === 1 ? "its" : "their"} paperwork`,
-        body: `A provider reported these envelopes completed, but no artifact of record ever appeared after ${INGRESS_MAX_ATTEMPTS} daily reconciliation attempts: ${abandonedRefs.slice(0, 5).join(", ")}${abandonedRefs.length > 5 ? "…" : ""}. Trace the dispatch that should have staged them.`,
+        title: `${abandonedRefs.length} inbound event${abandonedRefs.length === 1 ? "" : "s"} never found ${abandonedRefs.length === 1 ? "its" : "their"} destination`,
+        body: `These provider events (signed envelopes, paid leads) never matched a destination after ${INGRESS_MAX_ATTEMPTS} daily reconciliation attempts: ${abandonedRefs.slice(0, 5).join(", ")}${abandonedRefs.length > 5 ? "…" : ""}. Trace where each should have landed.`,
         entityType: "ingress_dead_letters",
         priority: "high",
       })
