@@ -1503,6 +1503,26 @@ async function main() {
       && src("lib/lead-pipeline/stale-preapproval-reengage.ts").length > 0
       && src("app/actions/ai-review-automation.ts").length > 0
       && src("lib/open-house/instant-greeting.ts").length > 0)
+    // ── POST-CLOSE MOVE-IN CONCIERGE (Journey #6's opening frontiers, owner's journey/frontier spec) ──
+    const pcc = await import("../lib/kernel/postclose-concierge")
+    const day3 = pcc.dueFrontiers(3)     // move-in guide window only
+    const day10 = pcc.dueFrontiers(10)   // move-in + settle-in overlap (tags keep each once-per-tx)
+    const day35 = pcc.dueFrontiers(35)   // 30-day care only
+    const day90 = pcc.dueFrontiers(90)   // journey window closed — silence
+    const moveIn = pcc.postCloseBrief("move_in_guide", { buyerFirstName: "Ana", address: "5 Fir Ct", daysSinceClose: 3, hasVendorBench: true })
+    const care = pcc.postCloseBrief("care_30d", { buyerFirstName: "Ana", address: "5 Fir Ct", daysSinceClose: 35, hasVendorBench: false })
+    check("POST-CLOSE MOVE-IN CONCIERGE (the lifetime-customer on-ramp — the stretch AFTER the closing gift where loyalty is won): pure day-window decisioning (day 3 → move-in guide; day 10 → move-in+settle-in overlap deduped by once-per-tx tags; day 35 → 30-day care; day 90 → silence, the journey window closed); briefs carry the practical first-week items + the PURE-CARE honesty rules ('no upsell, no market talk', 'NO referral ask and NO listing pitch — the relationship IS the point') and the vendor-bench fact only when the tenant actually has vendors; authored via the SAME one charter path with honest skip; BUYER-side only by design (seller post-sale care is the gift/anniversary rails' job — consolidation, no overlap); gated proposals ride runClientStoryDraftsAll",
+      day3.length === 1 && day3[0] === "move_in_guide"
+      && day10.length === 2 && day10.includes("move_in_guide") && day10.includes("settle_in_check")
+      && day35.length === 1 && day35[0] === "care_30d"
+      && day90.length === 0
+      && Boolean(moveIn.facts.join(" ").includes("utilities")) && Boolean(moveIn.facts.join(" ").includes("no upsell, no market talk"))
+      && Boolean(care.facts.join(" ").includes("NO referral ask")) && !care.facts.join(" ").includes("vendor bench remains")
+      && pcc.postCloseTag("X1", "care_30d") === "[POSTCLOSE] [X1] [care_30d]"
+      && src("lib/kernel/postclose-concierge.ts").includes("authorStory")
+      && src("lib/kernel/postclose-concierge.ts").includes("proposeClientMessage")
+      && src("lib/kernel/client-story-drafts.ts").includes("runPostCloseConcierge")
+      && src("lib/kernel/manager-registry.ts").includes("postclose_concierge:"))
     // ── REPAIR-PATTERN DIGEST + VOICE SELF-HEAL BRIEF + DEAL TWIN (approved 1/2/3) ──
     const rd = await import("../lib/kernel/repair-digest")
     const digest = rd.composeRepairDigest([

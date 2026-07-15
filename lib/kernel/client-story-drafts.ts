@@ -220,8 +220,9 @@ export function buyerWeeklyTag(contactId: string, isoWeek: string): string {
 // ── The one authoring path (no hardcoded copy, no canned fallback) ──────────
 
 /** Author a brief through the OS's ONE charter-governed copy path. Null = skip
- *  the draft entirely — an honest absence, never template prose. */
-async function authorStory(brief: StoryBrief): Promise<{ subject: string; body: string } | null> {
+ *  the draft entirely — an honest absence, never template prose. Exported so
+ *  every journey frontier (post-close concierge included) authors the SAME way. */
+export async function authorStory(brief: StoryBrief): Promise<{ subject: string; body: string } | null> {
   try {
     const { realCopyGenerator } = await import("@/lib/kernel/ai-copy")
     const draft = await realCopyGenerator({
@@ -458,13 +459,15 @@ export async function runClientStoryDraftsAll(svc: Svc): Promise<{ brokerages: n
   const { data: brokerages } = await svc.from("brokerages").select("id").limit(1000)
   let proposed = 0
   for (const b of ((brokerages ?? []) as Array<{ id: string }>)) {
-    const [a, t, d, bs] = await Promise.all([
+    const { runPostCloseConcierge } = await import("@/lib/kernel/postclose-concierge")
+    const [a, t, d, bs, pc] = await Promise.all([
       runWeeklySellerUpdates(svc, b.id).catch(() => ({ scanned: 0, proposed: 0, skippedNoCopy: 0 })),
       runTourRecaps(svc, b.id).catch(() => ({ scanned: 0, proposed: 0, skippedNoCopy: 0 })),
       runWeeklyDealNotes(svc, b.id).catch(() => ({ scanned: 0, proposed: 0, skippedNoCopy: 0 })),
       runBuyerSearchStories(svc, b.id).catch(() => ({ scanned: 0, proposed: 0, skippedNoCopy: 0 })),
+      runPostCloseConcierge(svc, b.id).catch(() => ({ scanned: 0, proposed: 0, skippedNoCopy: 0 })),
     ])
-    proposed += a.proposed + t.proposed + d.proposed + bs.proposed
+    proposed += a.proposed + t.proposed + d.proposed + bs.proposed + pc.proposed
   }
   return { brokerages: (brokerages ?? []).length, proposed }
 }
