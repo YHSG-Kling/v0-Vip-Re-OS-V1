@@ -216,6 +216,16 @@ export async function GET(req: Request) {
     }
   }
 
+  // ── PROACTIVE TENANT NUDGE ─────────────────────────────────────────────────
+  // The superadmin health log is the operator feed; this reaches the BROKERAGE
+  // OWNER before an expiring/broken connection silently breaks their marketing.
+  // Deduped per attention-signature so re-runs never spam.
+  let nudged = 0
+  try {
+    const { runConnectionNudgeAll } = await import("@/lib/agentic-os/connection-nudge")
+    nudged = (await runConnectionNudgeAll(svc)).notified
+  } catch (e) { console.error("[connector-health] tenant nudge:", e) }
+
   return NextResponse.json({
     success: true,
     timestamp: now.toISOString(),
@@ -226,6 +236,7 @@ export async function GET(req: Request) {
       attentionItems:    attention,
       healingProposed,
       healingSkippedExisting,
+      tenantNudged:      nudged,
     },
   })
 }

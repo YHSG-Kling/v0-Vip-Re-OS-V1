@@ -57,6 +57,11 @@ function allConnectedProviders(): string[] {
  */
 export async function scanConnectivity(ctx: {
   brokerageId: string | null
+  /** OWNER FIX: connections exist at brokerage/team/agent scope. When set, the
+   *  AGENT-owned credential store (agent_api_credentials) is filtered to THIS
+   *  agent — so an agent sees THEIR own connections, not the brokerage pool.
+   *  Omit for the broker/brokerage-wide view (agent pool + platform + integration). */
+  agentId?: string | null
   now?: Date
 }): Promise<ConnectivityReport> {
   const now = ctx.now ?? new Date()
@@ -70,10 +75,13 @@ export async function scanConnectivity(ctx: {
       if (!map.has(canon)) map.set(canon, row)
     }
     try {
-      const { data } = await svc
+      let q = svc
         .from("agent_api_credentials")
         .select("service_name, token_expires_at, is_active")
         .eq("brokerage_id", ctx.brokerageId)
+      // Agent scope: only THIS agent's own connections (owner fix).
+      if (ctx.agentId) q = q.eq("agent_id", ctx.agentId)
+      const { data } = await q
       for (const r of data ?? []) {
         setOnce(r.service_name, { isActive: !!r.is_active, tokenExpiresAt: r.token_expires_at ?? null, source: "agent_api_credentials" })
       }

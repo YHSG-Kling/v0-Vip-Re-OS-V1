@@ -11,15 +11,17 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { PlugZap, AlertTriangle } from "lucide-react"
 import Link from "next/link"
-import { getMyConnectionHealth } from "@/app/actions/connection-health"
+import { getMyConnectionHealth, getBrokerageConnectionHealth } from "@/app/actions/connection-health"
 import type { ConnectionImpactRead } from "@/lib/agentic-os/connection-impact"
 
-export function ConnectionHealthCard() {
+/** scope 'agent' (default) shows the caller's own connections; 'brokerage' the broker view. */
+export function ConnectionHealthCard({ scope = "agent" }: { scope?: "agent" | "brokerage" }) {
   const [read, setRead] = useState<ConnectionImpactRead | null>(null)
 
   useEffect(() => {
-    getMyConnectionHealth().then((r) => { if (r.success) setRead(r.read) }).catch(() => {})
-  }, [])
+    const load = scope === "brokerage" ? getBrokerageConnectionHealth : getMyConnectionHealth
+    load().then((r) => { if (r.success) setRead(r.read) }).catch(() => {})
+  }, [scope])
 
   if (!read || !read.needsAttention) return null
 
@@ -31,7 +33,9 @@ export function ConnectionHealthCard() {
             ? <AlertTriangle className="h-5 w-5 text-red-600" />
             : <PlugZap className="h-5 w-5 text-amber-600" />}
           <p className="text-sm font-semibold">
-            {read.broken.length > 0 ? "A connection stopped working" : "A connection is about to expire"}
+            {scope === "brokerage"
+              ? (read.broken.length > 0 ? "A brokerage connection stopped working" : "A brokerage connection is about to expire")
+              : (read.broken.length > 0 ? "A connection stopped working" : "A connection is about to expire")}
           </p>
         </div>
         <ul className="space-y-1.5">

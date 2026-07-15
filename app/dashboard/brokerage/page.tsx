@@ -7,6 +7,7 @@ import { getRecruitingROISummary, getRecruitingCostBreakdown, getBreakEvenAnalys
 import { getHighFatigueBuyers, getBrokerageFatigueAlerts } from "@/app/actions/buyer-fatigue"
 import { getSystemProviderStatus } from "@/app/actions/settings/provider-settings-actions"
 import { createClient } from "@/lib/supabase/server"
+import { ConnectionHealthCard } from "@/app/dashboard/agent/components/connection-health-card"
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import {
@@ -671,6 +672,7 @@ export default async function BrokerageDashboard({
         {/* Left Column: Risk & Financial */}
         <div className="space-y-6">
           <BrokerRiskRadar signals={riskSignals} />
+          <ConnectionHealthCard scope="brokerage" />
           <BrokerPortfolioPanel read={portfolioRead} />
           <BrokerFinancialPulse
             ytdRevenue={totalGCI || 0}

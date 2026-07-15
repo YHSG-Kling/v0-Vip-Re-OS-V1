@@ -1117,6 +1117,27 @@ async function main() {
       { provider: "gmail", status: "connected", expiresAt: null, actionRequired: false },
     ] as any })
     const impactHealthy = composeConnectionImpact({ connectors: [{ provider: "gmail", status: "connected", expiresAt: null, actionRequired: false }] as any })
+    const { nudgeTag } = await import("../lib/agentic-os/connection-nudge")
+    const { detectPacketCompletionGaps, FLOW_LOOKBACK_DAYS } = await import("../lib/kernel/flow-integrity")
+    const flowBreaks = detectPacketCompletionGaps(
+      [{ envelopeId: "ENV-1", fullySignedAt: "2026-07-10" }, { envelopeId: "ENV-2", fullySignedAt: "2026-07-11" }],
+      [{ envelopeId: "ENV-1", requestStatus: "pending", completedAt: null }, { envelopeId: "ENV-2", requestStatus: "completed", completedAt: "2026-07-11" }],
+    )
+    const flowClean = detectPacketCompletionGaps(
+      [{ envelopeId: "ENV-3", fullySignedAt: "2026-07-10" }],
+      [{ envelopeId: "ENV-3", requestStatus: "completed", completedAt: "2026-07-10" }],
+    )
+    check("CONNECTION SCOPE + NUDGE + FLOW INTEGRITY (owner fixes: per-seat connections, catch-before-fail, prove internal wiring) — the connectivity scan is agent-scopeable and the nudge dedupes per attention-signature (order-independent), and flow-integrity asserts a REAL cross-surface break (fully-signed ENV-1 with a still-pending packet flags; ENV-2 completed is clean) with zero false positives; all registered",
+      src("lib/agentic-os/resolve-connectivity.ts").includes("ctx.agentId")
+      && src("app/actions/connection-health.ts").includes("getBrokerageConnectionHealth")
+      && src("app/dashboard/brokerage/page.tsx").includes('ConnectionHealthCard scope="brokerage"')
+      && nudgeTag("b1", { broken: [{ provider: "meta" } as any], expiring: [{ provider: "dotloop" } as any], needsAttention: true }) === nudgeTag("b1", { broken: [{ provider: "meta" } as any], expiring: [{ provider: "dotloop" } as any], needsAttention: true })
+      && src("app/api/cron/connector-health/route.ts").includes("runConnectionNudgeAll")
+      && flowBreaks.length === 1 && flowBreaks[0].key === "ENV-1" && flowBreaks[0].flow === "packet_completion"
+      && flowClean.length === 0 && FLOW_LOOKBACK_DAYS === 14
+      && src("app/api/cron/deal-health-scan/route.ts").includes("runFlowIntegrityAll")
+      && src("lib/kernel/manager-registry.ts").includes("connection_scope_and_nudge:")
+      && src("lib/kernel/manager-registry.ts").includes("flow_integrity:"))
     check("PORTFOLIO INTELLIGENCE #7/#9 (owner correction: MANAGED CONTACT BOOK, not paid-lead territory) + TENANT CONNECTION HEALTH (owner's real #3: connectivity fabric, not RPA) — the book drives lean-in to a proven-converting unfarmed ZIP + farm-the-book + pull-back (thin ZIP ignored below MIN_CONTACTS), and the connection impact translates a dead connector into the business flow it broke (broken before expiring; healthy = silence); the redundant campaign composer + RPA ops rail were REMOVED",
       books.length === 3 && books.find((b) => b.zip === "78701")!.closeRate === 0.15
       && moves.some((m) => m.key === "lean_in" && m.zip === "78701")
