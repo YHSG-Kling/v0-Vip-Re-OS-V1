@@ -25,6 +25,8 @@ export interface WeekReviewNumbers {
   voiceActivityBrief?: string
   /** Optional draft-flywheel line (adoption + edit rate) — "" when nothing drafted. */
   draftQualityBrief?: string
+  /** Optional self-heal line (repairs + open exceptions for brokers) — "" on a quiet week. */
+  selfHealBrief?: string
 }
 
 const dollars = (cents: number | null | undefined): string =>
@@ -54,6 +56,7 @@ export function composeWeekInReviewScript(n: WeekReviewNumbers): string {
   if (n.voiceActivityBrief) lines.push(n.voiceActivityBrief)
   if (n.callIntelBrief) lines.push(n.callIntelBrief)
   if (n.draftQualityBrief) lines.push(n.draftQualityBrief)
+  if (n.selfHealBrief) lines.push(n.selfHealBrief)
 
   const top = n.actions.slice(0, 3)
   if (top.length > 0) {
@@ -91,8 +94,12 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
   const isoWeek = isoWeekOf(now)
 
   const { data: agents } = await svc.from("agents")
-    .select("id, user_id, brokerage_id, is_active, user:users!inner(first_name)")
+    .select("id, user_id, brokerage_id, is_active, user:users!inner(first_name, user_type)")
     .eq("is_active", true).limit(5000)
+
+  // Self-heal facts once per brokerage (the loop below reuses them): the
+  // week's repair count for everyone, open exceptions for broker voices only.
+  const selfHealByBrokerage = new Map<string, { healed: number; openExceptions: number }>()
 
   for (const a of (agents ?? []) as any[]) {
     r.agents += 1
@@ -128,6 +135,32 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
         draftQualityBrief = composeDraftQualityBrief(drafts)
       } catch { /* the income brief still lands */ }
 
+      // Self-heal line — the voice admin reports the OS's own maintenance.
+      // Repairs for everyone; open exceptions spoken only to broker voices.
+      let selfHealBrief = ""
+      try {
+        let facts = selfHealByBrokerage.get(a.brokerage_id)
+        if (!facts) {
+          const { loadSelfHealRollup } = await import("@/lib/kernel/self-heal-ledger")
+          const { composeExceptionCenter } = await import("@/lib/kernel/exception-center")
+          const rollup = await loadSelfHealRollup(svc, a.brokerage_id)
+          const { data: ledger } = await svc.from("self_heal_events")
+            .select("id, subject, action, outcome, detail, created_at")
+            .eq("domain", "data_flow").eq("brokerage_id", a.brokerage_id)
+            .gte("created_at", new Date(now.getTime() - 30 * 86_400_000).toISOString())
+            .order("created_at", { ascending: true }).limit(1000)
+          const fold = composeExceptionCenter(((ledger ?? []) as any[]).map((r) => ({
+            id: r.id, subject: r.subject, action: r.action ?? null, outcome: r.outcome,
+            detail: (r.detail as any) ?? null, createdAt: r.created_at,
+          })))
+          facts = { healed: rollup.healed, openExceptions: fold.open.length }
+          selfHealByBrokerage.set(a.brokerage_id, facts)
+        }
+        const { composeSelfHealBrief } = await import("@/lib/kernel/repair-digest")
+        const isBrokerVoice = ["broker", "broker_admin", "admin"].includes(String(u?.user_type ?? ""))
+        selfHealBrief = composeSelfHealBrief({ healed: facts.healed, openExceptions: facts.openExceptions, isBrokerVoice })
+      } catch { /* the income brief still lands */ }
+
       const script = composeWeekInReviewScript({
         firstName: u?.first_name ?? null,
         ytdGciCents: (gap as any).ytd_gci_cents,
@@ -139,6 +172,7 @@ export async function runWeekInReview(svc: any, now: Date = new Date()): Promise
         callIntelBrief,
         voiceActivityBrief,
         draftQualityBrief,
+        selfHealBrief,
       })
 
       // Idempotency: one brief per agent per ISO week (notification as the key).

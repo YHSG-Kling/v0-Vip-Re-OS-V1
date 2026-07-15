@@ -172,6 +172,13 @@ export async function GET(request: NextRequest) {
       ingressReplayed = ir.replayed; ingressAbandoned = ir.abandoned
     } catch (e) { console.error("[deal-health-scan] ingress reconciliation failed (non-blocking)", e) }
 
+    // REPAIR-PATTERN DIGEST — weekly ledger read for platform staff (the
+    // first tick of each ISO week sends it; deduped inside). Best-effort.
+    try {
+      const { runRepairPatternDigest } = await import("@/lib/kernel/repair-digest")
+      await runRepairPatternDigest(supabase)
+    } catch (e) { console.error("[deal-health-scan] repair digest failed (non-blocking)", e) }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: transactions.length,

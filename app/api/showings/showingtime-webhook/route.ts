@@ -83,7 +83,50 @@ export async function POST(req: NextRequest) {
   }
 
   const supabase = createServiceClient()
-  const appt = payload.appointment
+
+  // ─── SCHEMA ADAPTATION (owner: self-heal when the provider's shape drifts) ──
+  // The raw appointment is normalized to the canonical contract BEFORE any
+  // code touches it: renames/nesting changes remap through aliases, safe type
+  // drift coerces, unknown fields are captured. A payload missing REQUIRED
+  // facts QUARANTINES (parks for review) instead of corrupting downstream.
+  const { adaptPayload, SHOWINGTIME_APPOINTMENT_CONTRACT } = await import("@/lib/kernel/schema-adaptation")
+  const adapted = adaptPayload(SHOWINGTIME_APPOINTMENT_CONTRACT, payload.appointment)
+  if (!adapted.ok) {
+    const { parkIngressEvent } = await import("@/lib/kernel/ingress-continuity")
+    const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+    const quarantineRef = `stq:${(payload.appointment as any)?.id ?? (payload.appointment as any)?.appointment_id ?? Date.now()}`
+    await parkIngressEvent(supabase, {
+      provider: "showingtime",
+      eventKind: "schema_drift_quarantine",
+      externalRef: quarantineRef,
+      payload: { source: "showingtime_appointment", event_type: payload.event_type, raw: payload.appointment, missing: adapted.missingRequired },
+    })
+    await recordSelfHeal(supabase, {
+      brokerageId: null, domain: "data_flow", subject: quarantineRef, action: "none", outcome: "escalated",
+      detail: { flow: "schema_drift", connector: "showingtime", missing: adapted.missingRequired, reason: "provider payload is missing required facts — quarantined for review, never guessed" },
+    })
+    return NextResponse.json({ ok: true, quarantined: true, missing: adapted.missingRequired })
+  }
+  const c = adapted.canonical
+  const appt: ShowingTimeAppointment = {
+    id: String(c.id),
+    status: "requested" as any,
+    property: { address: (c.address as string) ?? undefined, city: (c.city as string) ?? undefined, state: (c.state as string) ?? undefined, mls_number: (c.mls_number as string) ?? undefined, listing_id: (c.listing_id as string) ?? undefined },
+    buyer_agent: { name: (c.agent_name as string) ?? undefined, email: (c.agent_email as string) ?? undefined, phone: (c.agent_phone as string) ?? undefined, license: (c.agent_license as string) ?? undefined },
+    requested_at: String(c.requested_at),
+    confirmed_at: (c.confirmed_at as string) ?? undefined,
+    duration_minutes: (c.duration_minutes as number) ?? undefined,
+    notes: (c.notes as string) ?? undefined,
+    external_ref: (c.external_ref as string) ?? undefined,
+  }
+  // Drift the OS absorbed (alias/coercion/default repairs) is a real self-heal — ledgered.
+  if (adapted.driftRepairs > 0) {
+    const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+    await recordSelfHeal(supabase, {
+      brokerageId: null, domain: "data_flow", subject: `st:${appt.id}`, action: "adapt_payload", outcome: "healed",
+      detail: { flow: "schema_drift", connector: "showingtime", repairs: adapted.repairs.filter((r) => r.kind !== "direct").slice(0, 12) },
+    })
+  }
 
   // ─── Resolve the listing (shared with the ingress reconciler) ─────────
   const { resolveShowingTimeListing, ingestShowingTimeRequest } = await import("@/lib/showings/showingtime-ingest")

@@ -80,6 +80,12 @@ export const FLOW_CONTRACTS: Record<string, FlowContract> = {
     reason: "Replaying a parked paid lead re-runs the exact webhook ingest path (idempotent on email/phone) — heals under supervision until earned.",
     describes: "a paid ad lead that couldn't land when it arrived (page not mapped yet or a provider hiccup) — captured and delivered once the connection caught up",
   },
+  schema_drift: {
+    tier: "probation",
+    action: "adapt_payload",
+    reason: "Deterministic adaptation only — known aliases, safe type coercion, declared defaults; a payload missing required facts QUARANTINES instead of guessing. Heals under supervision until earned.",
+    describes: "a provider sending data in a changed shape (renamed fields, type drift) — translated to the expected structure before anything downstream could break",
+  },
   showingtime_request_orphan: {
     tier: "probation",
     action: "replay_showingtime_request",

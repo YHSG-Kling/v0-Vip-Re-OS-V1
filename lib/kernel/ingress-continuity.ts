@@ -189,6 +189,44 @@ async function attemptReplay(svc: Svc, letter: DeadLetterRow): Promise<ReplayAtt
     }
   }
 
+  if (letter.event_kind === "schema_drift_quarantine") {
+    // IMMUNIZATION: a quarantined payload re-adapts against the CURRENT
+    // contract each tick — the moment an engineer teaches the contract the
+    // new alias, the quarantine drains itself. Never guessed, only re-read.
+    const base: ReplayAttempt = { result: "unmatched", flow: "schema_drift", action: "adapt_payload" }
+    const p = letter.payload ?? {}
+    if (p.source !== "showingtime_appointment" || !p.raw) return base
+    try {
+      const { adaptPayload, SHOWINGTIME_APPOINTMENT_CONTRACT } = await import("@/lib/kernel/schema-adaptation")
+      const adapted = adaptPayload(SHOWINGTIME_APPOINTMENT_CONTRACT, p.raw)
+      if (!adapted.ok) return base // contract still can't read it — wait / age out
+      if (p.event_type !== "appointment.requested") return { ...base, result: "replayed" } // readable now; nothing further to deliver
+      const c = adapted.canonical
+      const { resolveShowingTimeListing, ingestShowingTimeRequest } = await import("@/lib/showings/showingtime-ingest")
+      const resolved = await resolveShowingTimeListing(svc, {
+        listingId: (c.listing_id as string) ?? null,
+        mlsNumber: (c.mls_number as string) ?? null,
+        brokerageId: null,
+      })
+      if (!resolved) return base // readable but the listing hasn't appeared — keep waiting
+      const r = await ingestShowingTimeRequest(svc, {
+        appt: {
+          id: String(c.id),
+          property: { address: (c.address as string) ?? undefined, city: (c.city as string) ?? undefined, state: (c.state as string) ?? undefined, mls_number: (c.mls_number as string) ?? undefined },
+          buyer_agent: { name: (c.agent_name as string) ?? undefined, email: (c.agent_email as string) ?? undefined, phone: (c.agent_phone as string) ?? undefined, license: (c.agent_license as string) ?? undefined },
+          requested_at: String(c.requested_at),
+          duration_minutes: (c.duration_minutes as number) ?? undefined,
+          notes: (c.notes as string) ?? undefined,
+        },
+        listingId: resolved.listingId,
+        brokerageId: resolved.brokerageId,
+      })
+      return r.ok ? { ...base, result: "replayed", brokerageId: resolved.brokerageId } : { ...base, result: "failed", brokerageId: resolved.brokerageId }
+    } catch {
+      return { ...base, result: "failed" }
+    }
+  }
+
   // Unknown kind: never replay blindly — age it to abandonment + escalation.
   return { result: "unmatched", flow: "ingress_unknown_kind", action: "none" }
 }

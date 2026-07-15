@@ -1170,7 +1170,7 @@ async function main() {
       && seedStamp.safe === true && seedStamp.notify === false && seedStamp.tier === "seed_safe" && seedStamp.action === "stamp_offer_esign"
       && escStage.safe === false && escStage.action === null && escStage.tier === "escalate"
       && shl.EARNED_AUTONOMY_HEALS === 5
-      && Object.keys(shl.FLOW_CONTRACTS).length === 15
+      && Object.keys(shl.FLOW_CONTRACTS).length === 16
       && shl.composeRepairAutonomy({ complete_packet: { healed: 6, failed: 0 }, recreate_decision_task: { healed: 2, failed: 0 } })
            .some((r) => r.flow === "packet_completion" && r.earned === true)
       && shl.composeRepairAutonomy({ recreate_decision_task: { healed: 2, failed: 0 } })
@@ -1325,6 +1325,73 @@ async function main() {
       && src("lib/kernel/ingress-continuity.ts").includes('event_kind === "showingtime_appointment_requested"')
       && src("lib/showings/showingtime-ingest.ts").includes("deduped: true")
       && src("lib/kernel/manager-registry.ts").includes("showingtime"))
+    // ── SCHEMA ADAPTATION LAYER (owner doc: self-heal when a provider sends a different data structure) ──
+    const sa = await import("../lib/kernel/schema-adaptation")
+    const driftedPayload = {
+      appointmentId: "A-1",                       // rename of id
+      requestedAt: "2026-07-20T15:00:00Z",        // camelCase rename
+      duration: "45",                             // renamed + string where number expected → alias + coercion
+      property: { mlsNumber: "MLS-9" },           // nested rename
+      buyerAgent: { name: "Jo Chen", phoneNumber: "555-1" }, // nested renames
+      brand_new_field: { x: 1 },                  // unknown → extension, never dropped
+    }
+    const adapted = sa.adaptPayload(sa.SHOWINGTIME_APPOINTMENT_CONTRACT, driftedPayload)
+    const clean = sa.adaptPayload(sa.SHOWINGTIME_APPOINTMENT_CONTRACT, {
+      id: "A-2", requested_at: "2026-07-20T15:00:00Z", duration_minutes: 30,
+      property: { mls_number: "MLS-9" }, buyer_agent: { name: "Jo" },
+    })
+    const quarantined = sa.adaptPayload(sa.SHOWINGTIME_APPOINTMENT_CONTRACT, { property: { mls_number: "MLS-9" } }) // no id, no requested_at
+    check("SCHEMA ADAPTATION LAYER (deterministic-core-first: direct → alias → SAFE coercion → default → extension → quarantine; ambiguity is NEVER guessed): a drifted provider payload (renames, nesting changes, '45' where 45 expected) adapts to the canonical shape with a per-field repair receipt; a clean payload adapts with ZERO drift repairs (no false healing claims); a payload missing REQUIRED facts quarantines instead of corrupting downstream; unknown fields are CAPTURED as extensions, never dropped; coercion never guesses ('abc' → number is refused); wired into the ShowingTime webhook + quarantine replays re-adapt against the CURRENT contract (immunization: teach the contract a new alias and the quarantine drains itself); contract schema_drift is PROBATION (16 total)",
+      adapted.ok === true && adapted.canonical.id === "A-1" && adapted.canonical.requested_at === "2026-07-20T15:00:00Z"
+      && adapted.canonical.duration_minutes === 45 && adapted.canonical.mls_number === "MLS-9"
+      && adapted.canonical.agent_name === "Jo Chen" && adapted.canonical.agent_phone === "555-1"
+      && adapted.driftRepairs > 0
+      && adapted.repairs.some((r) => r.key === "id" && r.kind === "alias")
+      && adapted.repairs.some((r) => r.key === "duration_minutes" && r.kind === "coerced")
+      && Object.keys(adapted.extensions).includes("brand_new_field")
+      && clean.ok === true && clean.driftRepairs === 0
+      && quarantined.ok === false && quarantined.missingRequired.includes("id") && quarantined.missingRequired.includes("requested_at")
+      && sa.coerceValue("450,000", "number") === 450000
+      && sa.coerceValue("abc", "number") === undefined
+      && sa.coerceValue("true", "boolean") === true
+      && shl.FLOW_CONTRACTS["schema_drift"].tier === "probation" && shl.FLOW_CONTRACTS["schema_drift"].action === "adapt_payload"
+      && src("app/api/showings/showingtime-webhook/route.ts").includes("adaptPayload")
+      && src("app/api/showings/showingtime-webhook/route.ts").includes("schema_drift_quarantine")
+      && src("lib/kernel/ingress-continuity.ts").includes('event_kind === "schema_drift_quarantine"')
+      && src("lib/kernel/manager-registry.ts").includes("schema_adaptation:"))
+    // ── REPAIR-PATTERN DIGEST + VOICE SELF-HEAL BRIEF + DEAL TWIN (approved 1/2/3) ──
+    const rd = await import("../lib/kernel/repair-digest")
+    const digest = rd.composeRepairDigest([
+      { action: "complete_packet", outcome: "healed", brokerageId: "b1", flow: "packet_completion" },
+      { action: "complete_packet", outcome: "healed", brokerageId: "b1", flow: "packet_completion" },
+      { action: "replay_meta_lead", outcome: "healed", brokerageId: "b2", flow: "meta_lead_orphan" },
+      { action: "none", outcome: "escalated", brokerageId: "b1", flow: "listing_agreement_stage_gap" },
+      { action: "reflag_shaky", outcome: "failed", brokerageId: "b1", flow: "walkthrough_shaky_gap" },
+    ], { replay_meta_lead: { healed: 4, failed: 0 }, reflag_shaky: { healed: 9, failed: 1 } })
+    const briefBoth = rd.composeSelfHealBrief({ healed: 3, openExceptions: 2, isBrokerVoice: true })
+    const briefAgent = rd.composeSelfHealBrief({ healed: 3, openExceptions: 2, isBrokerVoice: false })
+    const briefQuiet = rd.composeSelfHealBrief({ healed: 0, openExceptions: 0, isBrokerVoice: true })
+    const crt = await import("../lib/kernel/continuity-receipt")
+    const twinSteps = crt.composeDealTwin([
+      { key: "signing", label: "Signing paperwork", expected: "stamped complete", breaks: 0, checked: 3 },
+      { key: "loan", label: "Loan milestones", expected: "lender matches progress", breaks: 1, checked: 2 },
+      { key: "followthrough", label: "Team follow-through", expected: "requests reach tasks", breaks: 0, checked: 0 }, // nothing to verify → omitted
+    ])
+    const twinReceipt = crt.composeContinuityReceipt({ openBreaks: 1, repairedLast30d: 0, checkedAtIso: "2026-07-15T12:00:00Z", twin: twinSteps })
+    check("REPAIR DIGEST (the ledger as an engineering compass) + VOICE SELF-HEAL BRIEF (the admin reports its own maintenance) + DEAL TWIN (expected-vs-actual per contract, same detectors as the healer so twin and healer can NEVER disagree): the digest ranks packet_completion top (2×), flags replay_meta_lead at 4/5 near-earned while a VETOED action (failed>0) never appears near-earned, and names the noisiest tenant; the spoken brief tells everyone about repairs but ONLY broker voices about open exceptions, silent on a quiet week; the twin keeps only steps with rows to verify (loan diverges, signing ok, empty follow-through omitted) and rides the continuity receipt; the digest rides deal-health-scan ISO-week-deduped and the brief slots into the week-in-review",
+      digest.topFlows[0].flow === "packet_completion" && digest.topFlows[0].healed === 2
+      && digest.nearEarned.some((n) => n.action === "replay_meta_lead" && n.remaining === 1)
+      && !digest.nearEarned.some((n) => n.action === "reflag_shaky")
+      && digest.noisiestTenants[0].brokerageId === "b1" && digest.totalVetoed === 1
+      && Boolean(briefBoth.includes("Exception Center")) && Boolean(briefAgent.includes("repaired")) && !briefAgent.includes("Exception Center")
+      && briefQuiet === ""
+      && twinSteps.length === 2 && twinSteps.find((s) => s.key === "signing")!.ok === true && twinSteps.find((s) => s.key === "loan")!.ok === false
+      && twinReceipt.twin.length === 2 && twinReceipt.status === "attention"
+      && src("app/api/cron/deal-health-scan/route.ts").includes("runRepairPatternDigest")
+      && src("lib/kernel/week-in-review.ts").includes("selfHealBrief")
+      && src("lib/kernel/week-in-review.ts").includes("composeSelfHealBrief")
+      && src("app/components/portal/continuity-receipt-card.tsx").includes("See what was checked")
+      && src("lib/kernel/manager-registry.ts").includes("repair_digest_and_twin:"))
     check("PORTFOLIO INTELLIGENCE #7/#9 (owner correction: MANAGED CONTACT BOOK, not paid-lead territory) + TENANT CONNECTION HEALTH (owner's real #3: connectivity fabric, not RPA) — the book drives lean-in to a proven-converting unfarmed ZIP + farm-the-book + pull-back (thin ZIP ignored below MIN_CONTACTS), and the connection impact translates a dead connector into the business flow it broke (broken before expiring; healthy = silence); the redundant campaign composer + RPA ops rail were REMOVED",
       books.length === 3 && books.find((b) => b.zip === "78701")!.closeRate === 0.15
       && moves.some((m) => m.key === "lean_in" && m.zip === "78701")

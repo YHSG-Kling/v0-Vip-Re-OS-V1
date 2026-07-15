@@ -28,6 +28,19 @@ type Svc = SupabaseClient<any, any, any>
 
 export type ReceiptStatus = "verified" | "repaired" | "attention"
 
+/** One step of the deal's WORKFLOW TWIN: the expected state vs what's real. */
+export interface TwinStep {
+  key: string
+  /** client-language name of the contract being asserted */
+  label: string
+  /** what the OS expects when the flow is healthy */
+  expected: string
+  /** true when reality matches the expectation right now */
+  ok: boolean
+  /** how many concrete rows this step verified */
+  checked: number
+}
+
 export interface ContinuityReceipt {
   status: ReceiptStatus
   line: string
@@ -35,6 +48,15 @@ export interface ContinuityReceipt {
   checkedAtIso: string
   repairedLast30d: number
   openItems: number
+  /** the deal's expected-vs-actual path, one step per contract that applies */
+  twin: TwinStep[]
+}
+
+/** PURE: the twin's steps from per-contract check results (only steps that had rows to verify). */
+export function composeDealTwin(checks: Array<{ key: string; label: string; expected: string; breaks: number; checked: number }>): TwinStep[] {
+  return checks
+    .filter((c) => c.checked > 0 || c.breaks > 0)
+    .map((c) => ({ key: c.key, label: c.label, expected: c.expected, ok: c.breaks === 0, checked: c.checked }))
 }
 
 /** PURE: turn the deal's verification facts into the client's one calm line. */
@@ -42,7 +64,9 @@ export function composeContinuityReceipt(input: {
   openBreaks: number
   repairedLast30d: number
   checkedAtIso: string
+  twin?: TwinStep[]
 }): ContinuityReceipt {
+  const twin = input.twin ?? []
   if (input.openBreaks > 0) {
     return {
       status: "attention",
@@ -51,6 +75,7 @@ export function composeContinuityReceipt(input: {
       checkedAtIso: input.checkedAtIso,
       repairedLast30d: input.repairedLast30d,
       openItems: input.openBreaks,
+      twin,
     }
   }
   if (input.repairedLast30d > 0) {
@@ -61,6 +86,7 @@ export function composeContinuityReceipt(input: {
       checkedAtIso: input.checkedAtIso,
       repairedLast30d: input.repairedLast30d,
       openItems: 0,
+      twin,
     }
   }
   return {
@@ -70,6 +96,7 @@ export function composeContinuityReceipt(input: {
     checkedAtIso: input.checkedAtIso,
     repairedLast30d: 0,
     openItems: 0,
+    twin,
   }
 }
 
@@ -122,11 +149,19 @@ export async function loadDealContinuity(svc: Svc, input: {
   const eventRows: RailEventRow[] = ((dealEvents ?? []) as any[]).map((e) => ({ id: e.id, eventType: e.event_type, entityId: e.entity_id, createdAt: e.created_at, metadata: (e.metadata as any) ?? null }))
   const taskRows: RailTaskRow[] = ((dealTasks ?? []) as any[]).map((t) => ({ source: t.source ?? null, transactionId: t.transaction_id ?? null, contactId: t.contact_id ?? null, createdAt: t.created_at ?? null }))
 
-  const openBreaks =
-    detectOfferEsignStampGaps(offerRows).length +
-    detectPacketCompletionGaps(contractRows, packetRows).length +
-    detectCtcMilestoneGaps(lenderRows, milestoneRows).length +
-    detectMissingRailTasks(eventRows, taskRows, now).length
+  // THE DEAL'S WORKFLOW TWIN — each contract that applies to this deal is one
+  // expected-vs-actual step (the same detectors the OS heals with, so the
+  // twin can never disagree with the healer).
+  const offerBreaks = detectOfferEsignStampGaps(offerRows).length
+  const packetBreaks = detectPacketCompletionGaps(contractRows, packetRows).length
+  const ctcBreaks = detectCtcMilestoneGaps(lenderRows, milestoneRows).length
+  const railBreaks = detectMissingRailTasks(eventRows, taskRows, now).length
+  const twin = composeDealTwin([
+    { key: "signing", label: "Signing paperwork", expected: "Every signed document is stamped complete everywhere it lives", breaks: offerBreaks + packetBreaks, checked: offerRows.length + contractRows.length },
+    { key: "loan", label: "Loan milestones", expected: "What the lender reports matches the progress you see", breaks: ctcBreaks, checked: lenderRows.length + milestoneRows.length },
+    { key: "followthrough", label: "Team follow-through", expected: "Every recorded request or decision reached someone's task list", breaks: railBreaks, checked: eventRows.length },
+  ])
+  const openBreaks = offerBreaks + packetBreaks + ctcBreaks + railBreaks
 
   // Repairs that touched THIS deal: ledger rows whose subject is the
   // transaction, one of its envelopes, or one of its milestone rows.
@@ -139,5 +174,6 @@ export async function loadDealContinuity(svc: Svc, input: {
     openBreaks,
     repairedLast30d: ((repairs ?? []) as any[]).length,
     checkedAtIso: now.toISOString(),
+    twin,
   })
 }
