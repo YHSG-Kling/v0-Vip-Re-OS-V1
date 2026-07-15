@@ -1170,7 +1170,7 @@ async function main() {
       && seedStamp.safe === true && seedStamp.notify === false && seedStamp.tier === "seed_safe" && seedStamp.action === "stamp_offer_esign"
       && escStage.safe === false && escStage.action === null && escStage.tier === "escalate"
       && shl.EARNED_AUTONOMY_HEALS === 5
-      && Object.keys(shl.FLOW_CONTRACTS).length === 14
+      && Object.keys(shl.FLOW_CONTRACTS).length === 15
       && shl.composeRepairAutonomy({ complete_packet: { healed: 6, failed: 0 }, recreate_decision_task: { healed: 2, failed: 0 } })
            .some((r) => r.flow === "packet_completion" && r.earned === true)
       && shl.composeRepairAutonomy({ recreate_decision_task: { healed: 2, failed: 0 } })
@@ -1310,6 +1310,21 @@ async function main() {
       && src("lib/kernel/ingress-continuity.ts").includes("attemptReplay")
       && src("lib/ads/ad-lead-intake.ts").includes('"no_credential"')
       && src("lib/ads/ad-lead-intake.ts").includes('"graph_error"'))
+    // ── SHOWINGTIME INGRESS DOOR (a buyer-agent showing request on OUR listing was acked 200 ignored when the listing hadn't carried its mls_number yet) ──
+    const sti = await import("../lib/showings/showingtime-ingest")
+    const stWin = sti.showingTimeWindow("2026-07-15T14:30:00Z", 45)
+    const stWinDefault = sti.showingTimeWindow("2026-07-15T23:45:00Z") // default 30m, crosses midnight
+    check("SHOWINGTIME DEAD-LETTER — route + reconciler share ONE ingest (resolveShowingTimeListing + ingestShowingTimeRequest, idempotent on listing+date+start+agent so ShowingTime redeliveries AND replays never double-book); only appointment.requested with an mls_number parks (other kinds have nothing to replay); the replay registry delivers the request + notifications the moment the listing resolves; contract showingtime_request_orphan is PROBATION (15 total); pure time-window math is exact incl. midnight wrap; honest rejections recorded: zapier already returns 4xx/5xx (sender retries), GHL is sync-out only, social-DM unknown senders violate zero-false-positives",
+      stWin.date === "2026-07-15" && stWin.start === "14:30:00" && stWin.end === "15:15:00"
+      && stWinDefault.start === "23:45:00" && stWinDefault.end === "00:15:00"
+      && shl.FLOW_CONTRACTS["showingtime_request_orphan"].tier === "probation"
+      && shl.FLOW_CONTRACTS["showingtime_request_orphan"].action === "replay_showingtime_request"
+      && src("app/api/showings/showingtime-webhook/route.ts").includes("ingestShowingTimeRequest")
+      && src("app/api/showings/showingtime-webhook/route.ts").includes("parkIngressEvent")
+      && src("app/api/showings/showingtime-webhook/route.ts").includes('payload.event_type === "appointment.requested"')
+      && src("lib/kernel/ingress-continuity.ts").includes('event_kind === "showingtime_appointment_requested"')
+      && src("lib/showings/showingtime-ingest.ts").includes("deduped: true")
+      && src("lib/kernel/manager-registry.ts").includes("showingtime"))
     check("PORTFOLIO INTELLIGENCE #7/#9 (owner correction: MANAGED CONTACT BOOK, not paid-lead territory) + TENANT CONNECTION HEALTH (owner's real #3: connectivity fabric, not RPA) — the book drives lean-in to a proven-converting unfarmed ZIP + farm-the-book + pull-back (thin ZIP ignored below MIN_CONTACTS), and the connection impact translates a dead connector into the business flow it broke (broken before expiring; healthy = silence); the redundant campaign composer + RPA ops rail were REMOVED",
       books.length === 3 && books.find((b) => b.zip === "78701")!.closeRate === 0.15
       && moves.some((m) => m.key === "lean_in" && m.zip === "78701")

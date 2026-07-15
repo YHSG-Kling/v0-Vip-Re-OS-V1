@@ -80,6 +80,12 @@ export const FLOW_CONTRACTS: Record<string, FlowContract> = {
     reason: "Replaying a parked paid lead re-runs the exact webhook ingest path (idempotent on email/phone) — heals under supervision until earned.",
     describes: "a paid ad lead that couldn't land when it arrived (page not mapped yet or a provider hiccup) — captured and delivered once the connection caught up",
   },
+  showingtime_request_orphan: {
+    tier: "probation",
+    action: "replay_showingtime_request",
+    reason: "Replaying a parked showing request re-runs the exact webhook ingest (idempotent on listing+date+time+agent) once the listing resolves — heals under supervision until earned.",
+    describes: "a buyer-agent showing request that arrived before its listing was matchable — captured and delivered once the listing caught up",
+  },
   scraped_lead_stranded: {
     tier: "probation",
     action: "reenrich_promote",

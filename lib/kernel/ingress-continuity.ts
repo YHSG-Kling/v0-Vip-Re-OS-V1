@@ -168,6 +168,27 @@ async function attemptReplay(svc: Svc, letter: DeadLetterRow): Promise<ReplayAtt
     }
   }
 
+  if (letter.event_kind === "showingtime_appointment_requested") {
+    const base: ReplayAttempt = { result: "unmatched", flow: "showingtime_request_orphan", action: "replay_showingtime_request" }
+    const appt = (letter.payload ?? {}).appointment as Record<string, any> | undefined
+    if (!appt?.property?.mls_number || !appt?.requested_at) return base // nothing to match on — ages to abandonment
+    try {
+      const { resolveShowingTimeListing, ingestShowingTimeRequest } = await import("@/lib/showings/showingtime-ingest")
+      const resolved = await resolveShowingTimeListing(svc, {
+        listingId: appt.property.listing_id ?? null,
+        mlsNumber: appt.property.mls_number,
+        brokerageId: null,
+      })
+      if (!resolved) return base // listing still hasn't appeared — wait
+      const r = await ingestShowingTimeRequest(svc, { appt: appt as any, listingId: resolved.listingId, brokerageId: resolved.brokerageId })
+      return r.ok
+        ? { ...base, result: "replayed", brokerageId: resolved.brokerageId }
+        : { ...base, result: "failed", brokerageId: resolved.brokerageId }
+    } catch {
+      return { ...base, result: "failed" }
+    }
+  }
+
   // Unknown kind: never replay blindly — age it to abandonment + escalation.
   return { result: "unmatched", flow: "ingress_unknown_kind", action: "none" }
 }

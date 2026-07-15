@@ -85,108 +85,43 @@ export async function POST(req: NextRequest) {
   const supabase = createServiceClient()
   const appt = payload.appointment
 
-  // ─── Resolve the listing ──────────────────────────────────────────────
-  // Prefer the brokerage's listing_id if ShowingTime knows it (we set it
-  // when we POST to ShowingTime via dispatchViaShowingTime). Otherwise
-  // match by mls_number + brokerage_id.
-  let listingId: string | null = appt.property.listing_id ?? null
-  let brokerageId: string | null = payload.brokerage_id ?? null
+  // ─── Resolve the listing (shared with the ingress reconciler) ─────────
+  const { resolveShowingTimeListing, ingestShowingTimeRequest } = await import("@/lib/showings/showingtime-ingest")
+  const resolved = await resolveShowingTimeListing(supabase, {
+    listingId: appt.property.listing_id ?? null,
+    mlsNumber: appt.property.mls_number ?? null,
+    brokerageId: payload.brokerage_id ?? null,
+  })
 
-  if (!listingId && appt.property.mls_number) {
-    const { data: l } = await supabase
-      .from("listings")
-      .select("id, brokerage_id")
-      .eq("mls_number", appt.property.mls_number)
-      .maybeSingle()
-    listingId = l?.id ?? null
-    brokerageId = brokerageId ?? l?.brokerage_id ?? null
-  }
-
-  if (!listingId || !brokerageId) {
-    // Acknowledge so ShowingTime doesn't retry, but flag in console
+  if (!resolved) {
+    // INGRESS CONTINUITY: an appointment.requested we can't place yet (the
+    // listing row hasn't carried its mls_number — a real showing request on
+    // OUR listing) is PARKED for the daily reconciler, never lost behind
+    // this 200. Other event kinds with no resolution have nothing to replay.
+    if (payload.event_type === "appointment.requested" && appt.property.mls_number && appt.id) {
+      const { parkIngressEvent } = await import("@/lib/kernel/ingress-continuity")
+      await parkIngressEvent(supabase, {
+        provider: "showingtime",
+        eventKind: "showingtime_appointment_requested",
+        externalRef: String(appt.id),
+        payload: { appointment: appt },
+      })
+      return NextResponse.json({ ok: true, parked: true })
+    }
     console.warn("[showingtime-webhook] could not resolve listing", appt.property)
     return NextResponse.json({ ok: true, ignored: true })
   }
+  const { listingId, brokerageId } = resolved
 
   switch (payload.event_type) {
     case "appointment.requested": {
-      // Insert a showing_requests row exactly the way the public outside-
-      // agent form does. Source = 'external_agent' so the listing agent's
-      // queue can tell apart in-portal vs ShowingTime-originated requests.
-      const startDate = new Date(appt.requested_at)
-      const startHHMM = startDate.toISOString().slice(11, 16)
-      const endStartTotalMinutes =
-        startDate.getUTCHours() * 60 + startDate.getUTCMinutes() +
-        (appt.duration_minutes ?? 30)
-      const endHH = Math.floor(endStartTotalMinutes / 60) % 24
-      const endMM = endStartTotalMinutes % 60
-
-      const { data: showing, error } = await supabase
-        .from("showing_requests")
-        .insert({
-          listing_id:           listingId,
-          brokerage_id:         brokerageId,
-          contact_id:           null,
-          source:               "external_agent",
-          buyer_agent_name:     appt.buyer_agent.name ?? null,
-          buyer_agent_email:    appt.buyer_agent.email ?? null,
-          buyer_agent_phone:    appt.buyer_agent.phone ?? null,
-          buyer_agent_license:  appt.buyer_agent.license ?? null,
-          property_address:     [appt.property.address, appt.property.city, appt.property.state]
-                                  .filter(Boolean).join(", "),
-          mls_number:           appt.property.mls_number ?? null,
-          requested_date:       appt.requested_at.slice(0, 10),
-          requested_start_time: `${startHHMM}:00`,
-          requested_end_time:   `${String(endHH).padStart(2,"0")}:${String(endMM).padStart(2,"0")}:00`,
-          message:              appt.notes ?? "",
-          status:               "pending",
-        })
-        .select("id")
-        .single()
-
-      if (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 })
+      // ONE ingest path, shared with the reconciler (idempotent — a
+      // ShowingTime redelivery never double-books the agent's queue).
+      const r = await ingestShowingTimeRequest(supabase, { appt: appt as any, listingId, brokerageId })
+      if (!r.ok) {
+        return NextResponse.json({ error: "could not record showing request" }, { status: 500 })
       }
-
-      // Notify the listing agent + seller — same path as in-portal request.
-      const { data: listing } = await supabase
-        .from("listings")
-        .select("agent_id, seller_contact_id, address")
-        .eq("id", listingId)
-        .maybeSingle()
-
-      if (listing?.agent_id) {
-        const { data: a } = await supabase
-          .from("agents").select("user_id").eq("id", listing.agent_id).maybeSingle()
-        if (a?.user_id) {
-          await supabase.from("notifications").insert({
-            user_id:      a.user_id,
-            brokerage_id: brokerageId,
-            type:         "showing.request.listing.showingtime",
-            title:        "ShowingTime request",
-            body:         `${appt.buyer_agent.name ?? "An agent"} requested a showing on ${listing.address ?? "your listing"} via ShowingTime.`,
-            entity_type:  "showing_request",
-            entity_id:    showing.id,
-            priority:     "high",
-            channel:      "in_app",
-          }).then(() => null, () => null)
-        }
-      }
-      if (listing?.seller_contact_id) {
-        await supabase.from("notifications").insert({
-          contact_id:   listing.seller_contact_id,
-          brokerage_id: brokerageId,
-          type:         "showing.request.seller",
-          title:        "Showing request on your home",
-          body:         "An agent requested a showing through ShowingTime. Your agent will follow up to confirm.",
-          entity_type:  "showing_request",
-          entity_id:    showing.id,
-          priority:     "high",
-          channel:      "in_app",
-        }).then(() => null, () => null)
-      }
-
-      return NextResponse.json({ ok: true, showing_request_id: showing.id })
+      return NextResponse.json({ ok: true, showing_request_id: r.showingRequestId, deduped: r.deduped ?? false })
     }
 
     case "appointment.confirmed": {
