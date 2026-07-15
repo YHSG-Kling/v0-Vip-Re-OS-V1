@@ -1446,37 +1446,43 @@ async function main() {
       && src("app/dashboard/superadmin/continuity/page.tsx").includes("ingress_dead_letters")
       && src("app/admin/components/os/platform-owner-command-strip.tsx").includes("/dashboard/superadmin/continuity")
       && src("lib/kernel/manager-registry.ts").includes("principal_scoping_and_continuity_board:"))
-    // ── THE THREE JOBS-COMPLETION DRAFTS (weekly seller update / tour recap / weekly deal note) ──
+    // ── THE THREE JOBS-COMPLETION DRAFTS (owner: NO hardcoded content — pure BRIEFS authored by the charter-governed model) ──
     const csd = await import("../lib/kernel/client-story-drafts")
-    const busyWeek = csd.composeWeeklySellerUpdate({ sellerFirstName: "Dana", address: "12 Elm St", showingCount: 4, feedbackNotes: ["loved the kitchen", "worried about the busy road"], daysOnMarket: 21 })
-    const quietWeek = csd.composeWeeklySellerUpdate({ sellerFirstName: null, address: "12 Elm St", showingCount: 0, feedbackNotes: [], daysOnMarket: 35 })
-    const recap = csd.composeTourRecap({ buyerFirstName: "Sam", stops: [
+    const busyBrief = csd.sellerUpdateBrief({ sellerFirstName: "Dana", address: "12 Elm St", showingCount: 4, feedbackNotes: ["loved the kitchen", "worried about the busy road"], daysOnMarket: 21 })
+    const quietBrief = csd.sellerUpdateBrief({ sellerFirstName: null, address: "12 Elm St", showingCount: 0, feedbackNotes: [], daysOnMarket: 35 })
+    const recapBrief = csd.tourRecapBrief({ buyerFirstName: "Sam", stops: [
       { address: "1 Oak Ct", rating: 5, feedback: "this is the one" },
       { address: "2 Pine Rd", rating: 3, feedback: null },
       { address: "3 Ash Ln", rating: null, feedback: null },
     ] })
-    const recapNoStandout = csd.composeTourRecap({ buyerFirstName: "Sam", stops: [{ address: "1 Oak Ct", rating: 2, feedback: "too dark" }] })
-    const recapUnknownDay = csd.composeTourRecap({ buyerFirstName: "Sam", stops: [{ address: "1 Oak Ct", rating: null, feedback: null }] })
-    const dealNote = csd.composeDealNote({ clientFirstName: "Lee", address: "9 Birch Way", loanStatus: "in_underwriting", clearToCloseDate: null, upcoming: [{ name: "appraisal_deadline", date: "2026-07-20" }], openTaskCount: 2 })
-    const dealNoteCtc = csd.composeDealNote({ clientFirstName: "Lee", address: null, loanStatus: "clear_to_close", clearToCloseDate: "2026-07-18", upcoming: [], openTaskCount: 0 })
-    const dealNoteEmpty = csd.composeDealNote({ clientFirstName: "Lee", address: null, loanStatus: null, clearToCloseDate: null, upcoming: [], openTaskCount: 3 })
-    const storyCopy = [busyWeek.body, quietWeek.body, recap!.body, dealNote!.body, dealNoteCtc!.body].join(" ")
-    check("THE THREE JOBS-COMPLETION DRAFTS (pure deterministic composers → gated proposals; no LLM in the cron path; nothing invented): a busy seller week leads with real showings + feedback themes while a ZERO-showing week says it straight with the concrete plan (never dressed up); the tour recap names the STANDOUT (rating ≥4) with the offer-readiness nudge, closes honestly when nothing stood out, and returns NULL for a day with no recorded reactions; the deal note translates loan status to client language ('normal at this stage' / CLEAR TO CLOSE), lists the next dates, and returns NULL when the OS holds nothing to report; client copy never says webhook/database/error; all three ride deal-health-scan tag-deduped per listing/tour/deal per period; on-demand LLM seller button KEPT (consolidation: proactive rail beside it, same gate)",
-      Boolean(busyWeek.body.includes("4 showings")) && Boolean(busyWeek.body.includes("loved the kitchen"))
-      && Boolean(quietWeek.body.includes("quieter week")) && Boolean(quietWeek.body.includes("doing about it"))
-      && recap !== null && Boolean(recap.body.includes("1 Oak Ct felt like the standout")) && Boolean(recap.body.includes("talk numbers"))
-      && recapNoStandout !== null && Boolean(recapNoStandout.body.includes("useful information, not a setback"))
+    const recapNoStandout = csd.tourRecapBrief({ buyerFirstName: "Sam", stops: [{ address: "1 Oak Ct", rating: 2, feedback: "too dark" }] })
+    const recapUnknownDay = csd.tourRecapBrief({ buyerFirstName: "Sam", stops: [{ address: "1 Oak Ct", rating: null, feedback: null }] })
+    const noteBrief = csd.dealNoteBrief({ clientFirstName: "Lee", address: "9 Birch Way", loanStatus: "in_underwriting", clearToCloseDate: null, upcoming: [{ name: "appraisal_deadline", date: "2026-07-20" }], openTaskCount: 2 })
+    const noteCtc = csd.dealNoteBrief({ clientFirstName: "Lee", address: null, loanStatus: "clear_to_close", clearToCloseDate: "2026-07-18", upcoming: [], openTaskCount: 0 })
+    const noteEmpty = csd.dealNoteBrief({ clientFirstName: "Lee", address: null, loanStatus: null, clearToCloseDate: null, upcoming: [], openTaskCount: 3 })
+    const busyFacts = busyBrief.facts.join(" ")
+    const quietFacts = quietBrief.facts.join(" ")
+    const recapFacts = recapBrief!.facts.join(" ")
+    check("THE THREE JOBS-COMPLETION DRAFTS, NO HARDCODED CONTENT (owner rule): the PURE layer builds a BRIEF — grounded facts + the honesty instructions the writer must follow — and the BODY is AUTHORED by the ONE charter-governed copy path (realCopyGenerator: gateway-routed, facts-only, Fair-Housing-ruled); model failure = the draft is SKIPPED (an honest absence, never canned fallback prose). Briefs carry the honesty rules: a ZERO-showing week instructs 'say this plainly… never dress it up' + the concrete plan; the recap brief marks the STANDOUT (rating ≥4) with the no-pressure offer-readiness instruction, instructs 'useful information, not a setback' when nothing stood out, and returns NULL for a day with no recorded reactions; the deal-note brief pins the EXACT client-language loan framing ('normal at this stage' / CLEAR TO CLOSE) and returns NULL when the OS holds nothing to report; tags dedupe per listing/tour/deal per period; rides deal-health-scan; on-demand seller button + existing feedback-CHASE rail (showing-lifecycle) KEPT — consolidation verdicts recorded",
+      Boolean(busyFacts.includes("Showings this week: 4")) && Boolean(busyFacts.includes("loved the kitchen"))
+      && Boolean(quietFacts.includes("ZERO showings")) && Boolean(quietFacts.includes("never dress it up")) && Boolean(quietFacts.includes("concrete plan"))
+      && recapBrief !== null && Boolean(recapFacts.includes("STANDOUT: 1 Oak Ct")) && Boolean(recapFacts.includes("offer-readiness"))
+      && recapNoStandout !== null && Boolean(recapNoStandout.facts.join(" ").includes("useful information, not a setback"))
       && recapUnknownDay === null
-      && dealNote !== null && Boolean(dealNote.body.includes("normal at this stage")) && Boolean(dealNote.body.includes("appraisal deadline"))
-      && dealNoteCtc !== null && Boolean(dealNoteCtc.body.includes("CLEAR TO CLOSE"))
-      && dealNoteEmpty === null
+      && noteBrief !== null && Boolean(noteBrief.facts.join(" ").includes("normal at this stage")) && Boolean(noteBrief.facts.join(" ").includes("appraisal deadline"))
+      && noteCtc !== null && Boolean(noteCtc.facts.join(" ").includes("CLEAR TO CLOSE"))
+      && noteEmpty === null
       && csd.sellerWeeklyTag("L1", "2026-W29") === "[SELLER_WEEKLY] [L1] [2026-W29]"
       && csd.tourRecapTag("T1") === "[TOUR_RECAP] [T1]"
       && csd.dealWeeklyTag("X1", "2026-W29") === "[TC_WEEKLY] [X1] [2026-W29]"
-      && !storyCopy.toLowerCase().includes("webhook") && !storyCopy.toLowerCase().includes("database") && !storyCopy.toLowerCase().includes("error")
+      && src("lib/kernel/client-story-drafts.ts").includes("realCopyGenerator")           // ONE authoring path
+      && src("lib/kernel/client-story-drafts.ts").includes("skippedNoCopy")                // honest skip, never canned copy
+      && !src("lib/kernel/client-story-drafts.ts").includes("felt like the standout")      // the old hardcoded prose is GONE
+      && !src("lib/kernel/client-story-drafts.ts").includes("quieter week at")             // ditto
       && src("app/api/cron/deal-health-scan/route.ts").includes("runClientStoryDraftsAll")
       && src("lib/kernel/client-story-drafts.ts").includes("proposeClientMessage")
       && src("app/actions/seller-updates.ts").includes("generateSellerUpdateDraft")
+      && src("lib/kernel/showing-lifecycle.ts").includes("feedbackRequested")              // the CHASE already exists — kept
       && src("lib/kernel/manager-registry.ts").includes("client_story_drafts:"))
     // ── REPAIR-PATTERN DIGEST + VOICE SELF-HEAL BRIEF + DEAL TWIN (approved 1/2/3) ──
     const rd = await import("../lib/kernel/repair-digest")
