@@ -12,14 +12,19 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { composeExceptionCenter, type ExceptionCenterRead, type ExceptionLedgerRow } from "@/lib/kernel/exception-center"
 
-const BROKER_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin"])
+// PRINCIPAL seats (owner: not every subscription is a brokerage) — whoever
+// OWNS the subscription's operations gets the Exception Center: brokers on
+// brokerage/multi-location tiers, the solo agent on a solo tier, the team
+// lead on a team tier. A team member or a brokerage's staff agent is
+// OVERSEEN by their principal, not a principal themselves.
+const PRINCIPAL_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin", "solo_agent", "team_lead"])
 
 async function resolveBroker() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
   const { data: profile } = await supabase.from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
-  if (!(profile as any)?.brokerage_id || !BROKER_TYPES.has(String((profile as any).user_type ?? ""))) return null
+  if (!(profile as any)?.brokerage_id || !PRINCIPAL_TYPES.has(String((profile as any).user_type ?? ""))) return null
   return { userId: user.id, brokerageId: (profile as any).brokerage_id as string }
 }
 

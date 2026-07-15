@@ -53,6 +53,7 @@ import { OpenActionsCard } from "./components/open-actions-card"
 import { AgentActionQueueCard } from "./components/agent-action-queue-card"
 import { TimeToValueCard } from "./components/time-to-value-card"
 import { ConnectionHealthCard } from "./components/connection-health-card"
+import { BrokerSelfHealPanel, BrokerExceptionCenter } from "@/app/dashboard/brokerage/components/command-center"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { MarketInsightWidget } from "@/app/components/dashboard/market-insight-widget"
 import { SmarterWidget } from "@/app/components/dashboard/smarter-widget/smarter-widget"
@@ -511,6 +512,13 @@ export default function AgentDashboard() {
         {/* Connection health — the tenant's own connectivity-fabric view: what
             broke, what it costs, one tap to fix. Renders only when unhealthy. */}
         <ConnectionHealthCard />
+
+        {/* PRINCIPAL seats only (solo agent / team lead — subscriptions with
+            no broker above them): the OS's own maintenance surfaces. The
+            actions gate on PRINCIPAL_TYPES server-side; for overseen seats
+            these render nothing. */}
+        <BrokerSelfHealPanel />
+        <BrokerExceptionCenter />
 
         {/* Time-to-Value Radar — hours your AI team saved you (adoption story). */}
         <TimeToValueCard />

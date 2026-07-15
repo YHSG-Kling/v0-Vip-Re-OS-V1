@@ -9,14 +9,21 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { loadSelfHealRollup, loadFlowActionStats, composeRepairAutonomy, type SelfHealRollup, type RepairAutonomyRow } from "@/lib/kernel/self-heal-ledger"
 
+// PRINCIPAL seats only (owner: not every subscription is a brokerage): the
+// broker on brokerage tiers, the solo agent on a solo tier, the team lead on
+// a team tier. Overseen seats (team members, brokerage staff agents) don't
+// carry the OS-maintenance surfaces — their principal does.
+const PRINCIPAL_TYPES = new Set(["broker", "broker_admin", "admin", "superadmin", "solo_agent", "team_lead"])
+
 export async function getSelfHealRollup(): Promise<
   { success: true; rollup: SelfHealRollup } | { success: false; error: string }
 > {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
-  const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  const { data: profile } = await supabase.from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
   if (!(profile as any)?.brokerage_id) return { success: false, error: "No brokerage on user" }
+  if (!PRINCIPAL_TYPES.has(String((profile as any).user_type ?? ""))) return { success: false, error: "Principal access required" }
 
   // Include platform-scoped (null-brokerage) connector heals in the count by
   // reading both this brokerage's rows and the platform rows.
@@ -32,8 +39,9 @@ export async function getRepairAutonomy(): Promise<
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
-  const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  const { data: profile } = await supabase.from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
   if (!(profile as any)?.brokerage_id) return { success: false, error: "No brokerage on user" }
+  if (!PRINCIPAL_TYPES.has(String((profile as any).user_type ?? ""))) return { success: false, error: "Principal access required" }
 
   // Autonomy standing is a property of the CODE PATH (platform-wide evidence),
   // so any brokerage admin sees the same honest picture.

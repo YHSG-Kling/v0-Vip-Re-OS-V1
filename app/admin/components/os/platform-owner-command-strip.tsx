@@ -70,6 +70,12 @@ export function PlatformOwnerCommandStrip({ onRefresh }: PlatformOwnerCommandStr
           Observability
         </Button>
       </Link>
+      <Link href="/dashboard/superadmin/continuity">
+        <Button variant="outline" size="sm" className="gap-2">
+          <Shield className="h-4 w-4" />
+          Continuity
+        </Button>
+      </Link>
       {onRefresh && (
         <Button variant="ghost" size="sm" className="gap-2 ml-auto" onClick={onRefresh}>
           <RefreshCw className="h-4 w-4" />

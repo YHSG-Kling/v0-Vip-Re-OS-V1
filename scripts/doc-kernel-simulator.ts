@@ -1430,6 +1430,22 @@ async function main() {
       && src("scripts/l60-s01-connector-shape-memory.sql").includes("connector_shape_memory")
       && src("lib/kernel/manager-registry.ts").includes("schema_memory:")
       && src("lib/kernel/manager-registry.ts").includes('connector_shape_memory: "cron_manager"'))
+    // ── PRINCIPAL-SCOPED CONTROLS + PLATFORM CONTINUITY BOARD (owner: not every subscription is a brokerage; superadmin oversees every subscriber) ──
+    check("PRINCIPAL SCOPING (owner: solo/team subscriptions have no broker above them — the SEAT THAT OWNS the subscription gets the OS-maintenance surfaces): the exception-center + self-heal + autonomy actions gate on PRINCIPAL_TYPES (brokers AND solo_agent AND team_lead; team members and brokerage staff agents stay OVERSEEN by their principal); the panels mount on the agent dashboard and self-hide for overseen seats (server-side gate, not UI trust); the PLATFORM CONTINUITY BOARD (superadmin 'sentinel' capability) reads the whole fleet — per-subscriber heal/escalation activity, the quarantine queue, connector shape changes, and repair autonomy standings — read-only by design (repairs run themselves; this seat watches the watchers); linked from the platform-owner command strip",
+      src("app/actions/exception-center.ts").includes("PRINCIPAL_TYPES")
+      && src("app/actions/exception-center.ts").includes('"solo_agent"')
+      && src("app/actions/exception-center.ts").includes('"team_lead"')
+      && !src("app/actions/exception-center.ts").includes('"team_member"')
+      && src("app/actions/self-heal-rollup.ts").includes("PRINCIPAL_TYPES")
+      && src("app/dashboard/agent/page.tsx").includes("BrokerExceptionCenter")
+      && src("app/dashboard/agent/page.tsx").includes("BrokerSelfHealPanel")
+      && src("app/dashboard/brokerage/components/command-center/index.ts").includes("BrokerExceptionCenter")
+      && src("app/dashboard/superadmin/continuity/page.tsx").includes('requirePlatformCapability("sentinel")')
+      && src("app/dashboard/superadmin/continuity/page.tsx").includes("composeRepairAutonomy")
+      && src("app/dashboard/superadmin/continuity/page.tsx").includes("loadRecentShapeChanges")
+      && src("app/dashboard/superadmin/continuity/page.tsx").includes("ingress_dead_letters")
+      && src("app/admin/components/os/platform-owner-command-strip.tsx").includes("/dashboard/superadmin/continuity")
+      && src("lib/kernel/manager-registry.ts").includes("principal_scoping_and_continuity_board:"))
     // ── REPAIR-PATTERN DIGEST + VOICE SELF-HEAL BRIEF + DEAL TWIN (approved 1/2/3) ──
     const rd = await import("../lib/kernel/repair-digest")
     const digest = rd.composeRepairDigest([
