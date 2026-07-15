@@ -1484,6 +1484,25 @@ async function main() {
       && src("app/actions/seller-updates.ts").includes("generateSellerUpdateDraft")
       && src("lib/kernel/showing-lifecycle.ts").includes("feedbackRequested")              // the CHASE already exists — kept
       && src("lib/kernel/manager-registry.ts").includes("client_story_drafts:"))
+    // ── BUYER WEEKLY SEARCH STORY (the RealScout counter) + FRONTIER SWEEP VERDICTS ──
+    const activeBuyer = csd.buyerStoryBrief({ buyerFirstName: "Kim", portalActivityCount: 6,
+      matches: [{ address: "4 Cedar Ave", confidence: "high" }, { address: "8 Maple Dr", confidence: "medium" }],
+      movedListings: [{ address: "4 Cedar Ave", status: "pending" }] })
+    const tightWeek = csd.buyerStoryBrief({ buyerFirstName: "Kim", portalActivityCount: 3, matches: [], movedListings: [] })
+    const silentBuyer = csd.buyerStoryBrief({ buyerFirstName: "Kim", portalActivityCount: 0, matches: [], movedListings: [] })
+    const buyerFacts = activeBuyer!.facts.join(" ")
+    check("BUYER WEEKLY SEARCH STORY (completes the client-communication triangle; RealScout blasts listings — this AUTHORS the week from the buyer's OWN activity): the brief carries real matches (strong-match flagged), MARKET PACE facts (a matched home going pending is useful pace information, no pressure), the tight-inventory honesty rule when zero matches (never padded with near-misses), the never-surveil-y instruction on activity counts, and returns NULL for a buyer with nothing happening (silence, not filler); dedupe [BUYER_WEEKLY] per buyer per ISO week; authored via the SAME one charter path with honest skip; rides runClientStoryDraftsAll. FRONTIER SWEEP VERDICTS (investigate-before-build): pre-approval expiry EXISTS (stale-preapproval-reengage), review-ask EXISTS (ai-review-automation), price advisory EXISTS (listing-health + predictive-pricing), open-house follow-through COVERED (instant-greeting + invitations + routing), anniversary EXISTS (gift/anniversary rails); genuine gaps NAMED for next: post-close move-in concierge, renter/lease-to-buy nurture",
+      activeBuyer !== null && Boolean(buyerFacts.includes("4 Cedar Ave (strong match)"))
+      && Boolean(buyerFacts.includes("went pending")) && Boolean(buyerFacts.includes("no pressure"))
+      && Boolean(buyerFacts.includes("never surveil-y"))
+      && tightWeek !== null && Boolean(tightWeek.facts.join(" ").includes("inventory at their criteria is tight")) && Boolean(tightWeek.facts.join(" ").includes("never pad"))
+      && silentBuyer === null
+      && csd.buyerWeeklyTag("C1", "2026-W29") === "[BUYER_WEEKLY] [C1] [2026-W29]"
+      && src("lib/kernel/client-story-drafts.ts").includes("runBuyerSearchStories")
+      && src("lib/kernel/client-story-drafts.ts").includes('activity_type", "buyer_search_match')
+      && src("lib/lead-pipeline/stale-preapproval-reengage.ts").length > 0
+      && src("app/actions/ai-review-automation.ts").length > 0
+      && src("lib/open-house/instant-greeting.ts").length > 0)
     // ── REPAIR-PATTERN DIGEST + VOICE SELF-HEAL BRIEF + DEAL TWIN (approved 1/2/3) ──
     const rd = await import("../lib/kernel/repair-digest")
     const digest = rd.composeRepairDigest([

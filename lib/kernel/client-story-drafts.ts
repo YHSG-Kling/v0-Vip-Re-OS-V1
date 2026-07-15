@@ -176,6 +176,47 @@ export function dealWeeklyTag(transactionId: string, isoWeek: string): string {
   return `[TC_WEEKLY] [${transactionId}] [${isoWeek}]`
 }
 
+// ── 4. Buyer weekly search story (the RealScout counter — authored, not a blast) ──
+
+export interface BuyerWeekFacts {
+  buyerFirstName: string | null
+  /** portal activity events in the window (views, searches, decisions) */
+  portalActivityCount: number
+  /** listings matched to this buyer's search this week */
+  matches: Array<{ address: string | null; confidence: string | null }>
+  /** matched homes that have since gone pending/sold — real market-pace facts */
+  movedListings: Array<{ address: string | null; status: string }>
+}
+
+/** PURE: the buyer-story brief. Returns null when the week held NO activity
+ *  and NO matches — a buyer with nothing happening gets silence, not filler. */
+export function buyerStoryBrief(f: BuyerWeekFacts): StoryBrief | null {
+  if (f.portalActivityCount === 0 && f.matches.length === 0) return null
+  const facts: string[] = []
+  if (f.portalActivityCount > 0) facts.push(`The buyer was active on their portal ${f.portalActivityCount} time(s) this week — acknowledge their engagement naturally, never surveil-y.`)
+  if (f.matches.length > 0) {
+    facts.push(`New matches to their search this week: ${f.matches.slice(0, 4).map((m) => `${m.address ?? "a new listing"}${m.confidence === "high" ? " (strong match)" : ""}`).join("; ")}.`)
+  } else {
+    facts.push(`No new matches hit their criteria this week. HONESTY RULE: say that plainly and what it means (inventory at their criteria is tight) — never pad with near-misses.`)
+  }
+  if (f.movedListings.length > 0) {
+    facts.push(`Market pace on homes from their search: ${f.movedListings.slice(0, 3).map((m) => `${m.address ?? "one match"} went ${m.status}`).join("; ")}. Present as useful pace information, no pressure.`)
+  }
+  facts.push(`Close with what the agent is doing next in the search and an easy invitation to adjust criteria or see something in person.`)
+  return {
+    goal: "the buyer's weekly search story — what happened in their home search this week, in their own activity",
+    audience: "buyer",
+    situation: "Active home buyer with a running search; expects a truthful weekly read on matches, market pace, and next steps — not a listing blast.",
+    facts,
+    recipientFirstName: f.buyerFirstName,
+  }
+}
+
+/** PURE: per-buyer-per-week dedupe tag. */
+export function buyerWeeklyTag(contactId: string, isoWeek: string): string {
+  return `[BUYER_WEEKLY] [${contactId}] [${isoWeek}]`
+}
+
 // ── The one authoring path (no hardcoded copy, no canned fallback) ──────────
 
 /** Author a brief through the OS's ONE charter-governed copy path. Null = skip
@@ -351,17 +392,79 @@ export async function runWeeklyDealNotes(svc: Svc, brokerageId: string, now: Dat
   return out
 }
 
-/** Autonomous: all three story rails for every brokerage (rides deal-health-scan). */
+export async function runBuyerSearchStories(svc: Svc, brokerageId: string, now: Date = new Date()): Promise<StoryDraftResult> {
+  const out: StoryDraftResult = { scanned: 0, proposed: 0, skippedNoCopy: 0 }
+  const isoWeek = isoWeekOf(now)
+  const since = new Date(now.getTime() - 7 * 86_400_000).toISOString()
+
+  // Buyers with a live search this week: buyer_search_match activity rows.
+  const { data: matchRows } = await svc.from("activities")
+    .select("contact_id, metadata, created_at")
+    .eq("brokerage_id", brokerageId).eq("activity_type", "buyer_search_match")
+    .gte("created_at", since).limit(500)
+  const byBuyer = new Map<string, Array<Record<string, any>>>()
+  for (const r of ((matchRows ?? []) as any[])) {
+    if (!r.contact_id) continue
+    byBuyer.set(r.contact_id, [...(byBuyer.get(r.contact_id) ?? []), (r.metadata as any) ?? {}])
+  }
+
+  for (const [contactId, metas] of [...byBuyer.entries()].slice(0, 100)) {
+    out.scanned++
+    const tag = buyerWeeklyTag(contactId, isoWeek)
+    if (await alreadyProposed(svc, brokerageId, tag)) continue
+
+    const listingIds = [...new Set(metas.map((m) => m.listing_id).filter(Boolean))] as string[]
+    const [{ data: buyer }, { count: portalCount }, { data: listingRows }] = await Promise.all([
+      svc.from("contacts").select("first_name").eq("id", contactId).maybeSingle(),
+      svc.from("client_portal_activity").select("id", { count: "exact", head: true }).eq("contact_id", contactId).gte("created_at", since),
+      listingIds.length
+        ? svc.from("listings").select("id, address, status").in("id", listingIds.slice(0, 20))
+        : Promise.resolve({ data: [] } as any),
+    ])
+    const listings = ((listingRows ?? []) as any[])
+    const brief = buyerStoryBrief({
+      buyerFirstName: (buyer as any)?.first_name ?? null,
+      portalActivityCount: portalCount ?? 0,
+      matches: metas.slice(0, 4).map((m) => ({
+        address: listings.find((l) => l.id === m.listing_id)?.address ?? null,
+        confidence: (m.confidence_level as string) ?? null,
+      })),
+      movedListings: listings.filter((l) => ["pending", "sold", "under_contract"].includes(String(l.status ?? ""))).map((l) => ({ address: l.address ?? null, status: String(l.status) })),
+    })
+    if (!brief) continue
+    const draft = await authorStory(brief)
+    if (!draft) { out.skippedNoCopy++; continue }
+    const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+    const r = await proposeClientMessage({
+      brokerageId,
+      agentKind: "deal_coordinator",
+      entityType: "contact",
+      entityId: contactId,
+      recipientContactId: contactId,
+      audience: "buyer",
+      subject: draft.subject,
+      body: draft.body,
+      rationale: `buyer weekly search story — matches, market pace, and next steps from their real activity. ${tag}`,
+      channel: "portal",
+      outreachReason: "relationship_maintenance",
+    }, svc as any)
+    if (r.ok) out.proposed++
+  }
+  return out
+}
+
+/** Autonomous: all four story rails for every brokerage (rides deal-health-scan). */
 export async function runClientStoryDraftsAll(svc: Svc): Promise<{ brokerages: number; proposed: number }> {
   const { data: brokerages } = await svc.from("brokerages").select("id").limit(1000)
   let proposed = 0
   for (const b of ((brokerages ?? []) as Array<{ id: string }>)) {
-    const [a, t, d] = await Promise.all([
+    const [a, t, d, bs] = await Promise.all([
       runWeeklySellerUpdates(svc, b.id).catch(() => ({ scanned: 0, proposed: 0, skippedNoCopy: 0 })),
       runTourRecaps(svc, b.id).catch(() => ({ scanned: 0, proposed: 0, skippedNoCopy: 0 })),
       runWeeklyDealNotes(svc, b.id).catch(() => ({ scanned: 0, proposed: 0, skippedNoCopy: 0 })),
+      runBuyerSearchStories(svc, b.id).catch(() => ({ scanned: 0, proposed: 0, skippedNoCopy: 0 })),
     ])
-    proposed += a.proposed + t.proposed + d.proposed
+    proposed += a.proposed + t.proposed + d.proposed + bs.proposed
   }
   return { brokerages: (brokerages ?? []).length, proposed }
 }
