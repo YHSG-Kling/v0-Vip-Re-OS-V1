@@ -1680,6 +1680,16 @@ async function main() {
         }
       }
       walk2("lib"); walk2("app")
+      // ── PASS 7: RLS TENANT-SCOPE AUDIT + PLATFORM PROSPECT FOLLOW-UP ──
+      check("PASS 7 — RLS AUDIT (the last unswept contract family; all 754 tables have RLS ON, so the two failure classes are POLICY-LESS deny-all and USING(true) tenant leaks) + PLATFORM SPEED-TO-LEAD: the audit classified every finding by REAL client access — 10 tenant-scoped tables had USING(true) reads exposing data to ANY authenticated user of ANY tenant (chat templates, newsletter content/sends/sections/SEO scores, CMA comparables + price adjustments via their report join, sequence steps via their campaign join, template feedback) → replaced with membership scoping through ONE SECURITY DEFINER helper (user_brokerage_ids — no RLS recursion); 18 deny-all tables the USER-scoped UI actually reads (the gated-proposal table behind the journey line, manager signals behind the managers-talking feed, buyer move cases, challenges, mentor sessions, tax profiles, deal autopsies, investor matches, brand assets, audience members, vendor review flags, locations, call batches, self-heal events, support ticket messages via their ticket join) → tenant read policies added; platform_* tables and service-only kernel ledgers intentionally KEEP zero policies (deny-all to users IS the correct posture behind platformStaffCan + the service role); live behavioral proof ran as an impersonated authenticated user: foreign tenant's template INVISIBLE, own-tenant proposal + signal VISIBLE, foreign signals INVISIBLE. PLATFORM FOLLOW-UP (owner: 'sending followup to potential leads… we look like a big team'): the growth funnel captured hand-raises but nothing followed up — runProspectFollowupSweep now sends the canonical intro pitch to ≥1h-old 'new' prospects (a human window to intercept first) and ONE respectful day-3 nudge to quiet contacted ones, then silence; trial/converted/lost never touched, the platform's own suppression list is a hard boundary, a FAILED send changes nothing (retried next run — never a fake 'contacted' stamp), every send audited with actor system:prospect_followup; rides the ONE cron dispatcher at 15:00 daily",
+        src("lib/platform/prospect-followup.ts").includes("runProspectFollowupSweep")
+        && src("lib/platform/prospect-followup.ts").includes("isEmailOnSuppressionList")
+        && src("lib/platform/prospect-followup.ts").includes("never a fake")
+        && src("lib/platform/prospect-followup.ts").includes('.eq("followup_count", 1)')          // exactly ONE nudge, then silence
+        && src("lib/platform/growth-funnel.ts").includes("composeProspectNudge")
+        && src("lib/platform/growth-funnel.ts").includes("we won't keep nudging")
+        && src("app/api/cron/platform-prospect-followup/route.ts").includes("verifyCronAuth")
+        && src("lib/kernel/cron-dispatch.ts").includes("/api/cron/platform-prospect-followup"))
       // ── PASS 6: UPDATE/INSERT STATUS-VOCABULARY SWEEP (live CHECKs × every literal) ──
       {
         const VOCAB: Record<string, string[]> = {

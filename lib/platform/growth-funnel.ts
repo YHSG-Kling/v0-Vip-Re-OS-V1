@@ -87,6 +87,25 @@ const ROLE_HOOK: Record<string, string> = {
 }
 
 /**
+ * PURE: compose the day-3 NUDGE for a contacted prospect who hasn't moved.
+ * Short, respectful, one concrete offer — never a re-send of the intro.
+ */
+export function composeProspectNudge(p: { name?: string | null; roleInterest?: string | null; brandName?: string | null }): { subject: string; body: string } {
+  const productName = (p.brandName ?? "").trim() || "VIP Agents"
+  const first = (p.name ?? "").trim().split(" ")[0] || "there"
+  const hook = ROLE_HOOK[(p.roleInterest ?? "unknown")] ?? ROLE_HOOK.unknown
+  return {
+    subject: `Still worth 15 minutes? The AI team demo, whenever you are`,
+    body:
+      `Hi ${first},\n\n` +
+      `Following up once — no pressure. The offer stands: a 15-minute live look at the ${productName} ` +
+      `AI team working a real deal end to end, so you can judge for yourself whether it helps you ${hook}.\n\n` +
+      `Reply with a time that works, or ignore this and we won't keep nudging.\n\n` +
+      "— The " + productName + " team",
+  }
+}
+
+/**
  * PURE: compose the platform's own outreach to a prospect — the "AI OS transforming
  * real estate" pitch, tier-aware. Returned as a GATED draft (never auto-sent); a
  * marketing/superadmin operator reviews + sends. Honest, no fabricated claims.
