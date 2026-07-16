@@ -27,7 +27,7 @@ import {
   type PresetCatalog,
   type UpsertBundleInput,
 } from "@/app/actions/campaign-bundles"
-import { upsertCampaignPreset, type PresetChannel } from "@/app/actions/campaign-presets"
+import { upsertCampaignPreset, deactivateCampaignPreset, type PresetChannel } from "@/app/actions/campaign-presets"
 
 interface AccessProp {
   canEditAgent:     boolean
@@ -73,6 +73,7 @@ export function CampaignBundlesClient({
   const [editing, setEditing] = useState<BundleRow | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [showQuickPreset, setShowQuickPreset] = useState(false)
+  const [showShelves, setShowShelves] = useState(false)
   const [qpChannel, setQpChannel] = useState<PresetChannel>("sms")
   const [qpName, setQpName] = useState("")
   const [qpContent, setQpContent] = useState("")
@@ -114,6 +115,7 @@ export function CampaignBundlesClient({
     social_post: "caption", portal_push: "body_md",
     podcast_episode: "tts_script", ad_retarget: "ad_body",
     blog_post: "content", facebook_audience: "audience_type",
+    newsletter: "content",
   }
   // Channels that carry a media/video attachment (owner spec: ads carry video,
   // social carries media, email/SMS carry a video link, voicedrop carries audio).
@@ -125,6 +127,7 @@ export function CampaignBundlesClient({
     voicedrop: { key: "audio_url", label: "Audio URL (optional — else the script is voiced)" },
     podcast_episode: { key: "voice_id_override", label: "Voice ID (optional — else the agent's clone)" },
     blog_post: { key: "featured_image_url", label: "Featured image URL (optional)" },
+    newsletter: { key: "subject_line", label: "Subject line (optional — else the name is used)" },
   }
   function handleQuickPreset() {
     setError(null)
@@ -160,6 +163,10 @@ export function CampaignBundlesClient({
         </div>
         <div className="flex gap-2">
           <button
+            onClick={() => setShowShelves((v) => !v)}
+            className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded hover:bg-gray-50 whitespace-nowrap"
+          >{showShelves ? "Hide shelves" : "Preset shelves"}</button>
+          <button
             onClick={() => setShowQuickPreset((v) => !v)}
             className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded hover:bg-gray-50 whitespace-nowrap"
           >+ Quick preset</button>
@@ -188,6 +195,7 @@ export function CampaignBundlesClient({
               <option value="podcast_episode">Podcast episode</option>
               <option value="blog_post">Blog post</option>
               <option value="facebook_audience">Facebook audience</option>
+              <option value="newsletter">Newsletter</option>
             </select>
             <input
               value={qpName}
@@ -224,6 +232,54 @@ export function CampaignBundlesClient({
 
       {error && (
         <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded text-sm">{error}</div>
+      )}
+
+      {showShelves && (
+        <section className="p-4 border border-gray-200 rounded-lg space-y-4">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">Preset shelves — everything the bundle builder composes from</h2>
+            <p className="text-xs text-gray-500 mt-1">Retiring a preset hides it from new bundles; already-composed bundles keep their copy.</p>
+          </div>
+          {CHANNEL_ORDER.map((ch) => {
+            const shelf = catalog[ch] ?? []
+            if (shelf.length === 0) return null
+            // Only preset-table channels can be retired here — direct-mail
+            // presets have their own manager on the direct-mail page.
+            const retirable = !ch.startsWith("direct_mail")
+            return (
+              <div key={ch}>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1.5">{CHANNEL_LABEL[ch]} ({shelf.length})</h3>
+                <ul className="divide-y divide-gray-100 border border-gray-100 rounded">
+                  {shelf.map((p) => (
+                    <li key={p.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="text-sm text-gray-900 truncate">{p.name}</p>
+                        <p className="text-xs text-gray-500 truncate">{p.scope_type} · {p.summary || "—"}</p>
+                      </div>
+                      {retirable && (
+                        <button
+                          onClick={() => {
+                            setError(null)
+                            startTransition(async () => {
+                              const r = await deactivateCampaignPreset(ch as PresetChannel, p.id)
+                              if (!r.success) { setError(r.error ?? "Retire failed"); return }
+                              router.refresh()
+                            })
+                          }}
+                          disabled={pending}
+                          className="text-xs text-red-600 hover:text-red-800 shrink-0 disabled:opacity-50"
+                        >Retire</button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )
+          })}
+          {CHANNEL_ORDER.every((ch) => (catalog[ch] ?? []).length === 0) && (
+            <p className="text-sm text-gray-500 italic">No presets saved yet — use “+ Quick preset” to stock the shelves.</p>
+          )}
+        </section>
       )}
 
       <section>

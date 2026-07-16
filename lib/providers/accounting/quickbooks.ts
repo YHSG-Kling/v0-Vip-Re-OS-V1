@@ -142,6 +142,38 @@ export class QuickBooksProvider implements IAccountingProvider {
     }
   }
 
+  /** QBO Purchase — the correct entity for a business EXPENSE. paymentAccountRef is the
+   *  bank/credit account the money left; expenseAccountRef is the expense category account.
+   *  Both come from the tenant's tax_categories mapping — never fabricated. */
+  async createPurchase(params: {
+    amount: number
+    expenseAccountRef: string
+    paymentAccountRef: string
+    description?: string
+    txnDate?: string
+  }): Promise<AccountingWriteResult> {
+    try {
+      const payload = {
+        PaymentType: "Cash",
+        AccountRef: { value: params.paymentAccountRef },
+        ...(params.txnDate ? { TxnDate: params.txnDate } : {}),
+        ...(params.description ? { PrivateNote: params.description } : {}),
+        Line: [
+          {
+            Amount: params.amount,
+            DetailType: "AccountBasedExpenseLineDetail",
+            Description: params.description,
+            AccountBasedExpenseLineDetail: { AccountRef: { value: params.expenseAccountRef } },
+          },
+        ],
+      }
+      const data = await this.request<{ Purchase: { Id: string } }>("POST", "purchase?minorversion=73", payload)
+      return { success: true, externalId: data.Purchase.Id }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
   async createJournalEntry(params: { lines: Array<{ amount: number; accountRef: string; postingType: "Debit" | "Credit" }>; description?: string }): Promise<AccountingWriteResult> {
     try {
       const payload = {

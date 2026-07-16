@@ -20,9 +20,10 @@ export default async function AIAuditPage() {
 
   const supabase = await createClient()
 
-  // Fetch AI quality metrics
+  // Fetch AI quality metrics — ai_generated_content is the canonical AI output
+  // log (ai_content_outputs was a writer-less legacy twin; same columns).
   const { data: aiOutputs } = await supabase
-    .from('ai_content_outputs')
+    .from('ai_generated_content')
     .select('id, content_type, compliance_approved, created_at, agent_id')
     .order('created_at', { ascending: false })
     .limit(50)

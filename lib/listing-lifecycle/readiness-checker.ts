@@ -505,11 +505,14 @@ async function checkClosingDocsReady(
     }
   }
   
-  // Check for closing disclosure
+  // Check for closing disclosure — CDs are FILED as transaction_documents with
+  // doc_type='closing_disclosure' (lender portal + auto-filer both write that
+  // shape); the thin closing_disclosure table was a writer-less twin (repointed).
   const { data: closingDocs } = await supabase
-    .from("closing_disclosure")
+    .from("transaction_documents")
     .select("id")
     .eq("transaction_id", transactions.id)
+    .eq("doc_type", "closing_disclosure")
     .limit(1)
   
   const docsReady = (closingDocs?.length || 0) > 0

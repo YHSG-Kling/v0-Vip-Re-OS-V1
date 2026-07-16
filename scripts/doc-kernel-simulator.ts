@@ -1860,7 +1860,10 @@ async function main() {
           && !!PROBE_SPECS.stripe && !!PROBE_SPECS.quickbooks
           && src("app/api/cron/connector-health/route.ts").includes("PLATFORM_PROVIDER_KEYS")
           && src("app/api/cron/connector-health/route.ts").includes('"silent_gap"')
-          && src("app/api/cron/connector-health/route.ts").includes("QUICKBOOKS SILENT-GAP WATCH")
+          // (round 3 evolved the watch: quickbooks_sync_log was retired as a
+          // fake-writer twin — the SAME silent-gap class now sweeps the ONE
+          // ledger, accounting_sync_log.)
+          && src("app/api/cron/connector-health/route.ts").includes("SILENT-GAP WATCH")
           && src("scripts/writerless-read-sweep.ts").includes("GUARD_WRITE_BASELINE")
           && src("package.json").includes("test:writerless-reads")
           && src("lib/education/skill-freshness-radar.ts").includes("loadAgentSkillFreshness")
@@ -1878,7 +1881,8 @@ async function main() {
         && src("lib/deal-health/health-scorer.ts").includes("deal_health_snapshots")
         && src("lib/deal-health/health-scorer.ts").includes("FACTOR_TYPE")
         && src("lib/deal-health/health-scorer.ts").includes("JSON.stringify({ issues: c.issues, category: c.category })")
-        && JSON.parse(readFileSync(join(ROOT, "scripts/writerless-read-baseline.json"), "utf-8")).length === 45)
+        // Monotone burn-down: later rounds only ever shrink the baseline.
+        && JSON.parse(readFileSync(join(ROOT, "scripts/writerless-read-baseline.json"), "utf-8")).length <= 45)
 
       // ── WRITER-LESS BURN-DOWN, ROUND 2 (54 → 45): FINANCIALS + PRESETS ──
       check("WRITER-LESS BURN-DOWN ROUND 2 (approved campaigns 1+2). FINANCIALS: the BROKER'S MONEY PAGE read brokerage_earnings (mtd/ytd KPIs, 12-month trend, forecast proxy) and brokerage_p_l — writer-less, so every broker's P&L dashboard rendered zeros forever. runBrokerageEarningsRollup now rides the nightly brokerage-pl-rollup cron, folding the SAME canonical agent_commissions source as the per-agent and team snapshots so all three altitudes reconcile exactly; operating-expense lines stay honest-NULL (no ledger source — never fabricated) and net_profit is the provable brokerage-side number. LIVE-FIRE CAUGHT A DOUBLE-SIDED VOCABULARY BUG: brokerage_earnings.period_type CHECK admits monthly/quarterly/annual, but the PAGE read 'mtd'/'ytd' — values that can never exist (the reader itself was phantom-vocabulary). Writer writes monthly/annual; all three reader files fixed to match. Delete-then-insert per tenant (pass-10 rule: no onConflict without a real unique). PRESETS: seven campaign-bundle preset shelves (email/sms/voicedrop/social/portal-push/podcast/ad-retarget) were READ by the bundle dispatcher with NO writer — upsertCampaignPreset is the ONE canonical writer for all seven channels, mirroring the direct-mail preset discipline exactly (tenant-guarded, scope-anchored — scope_id NOT-NULL live-caught, compliance-GATED at save time on every content-carrying channel via evaluateOutbound, field whitelist so caller input never spreads into rows). Sweep learns VARIABLE_TABLE_WRITERS (auditable exemptions naming the writer module). Baseline 54 → 45; remaining campaigns: legacy twins + ingress-expected",
@@ -1910,6 +1914,33 @@ async function main() {
         && src("app/settings/campaign-bundles/client.tsx").includes("QP_MEDIA_FIELD")
         && src("app/settings/campaign-bundles/client.tsx").includes("facebook_audience")
         && src("scripts/schema-snapshot.ts").includes('"receipt_url", "team_id"'))
+    }
+    // ── BURN-DOWN ROUND 3 + BOOK-BOUNDARY CORRECTIONS + THE ONE ACCOUNTING EGRESS ──
+    {
+      const baseline3 = JSON.parse(src("scripts/writerless-read-baseline.json")) as string[]
+      check("BURN-DOWN ROUND 3 (45 → 32) + OWNER CORRECTIONS + ACCOUNTING EGRESS KEEP-ONE. BOOK BOUNDARY: team financials do NOT roll up to brokerage — the P&L expense fold now requires agent_id NULL AND team_id NULL (team expenses stay on the team's book; UI copy says so). NEWSLETTER became a preset channel writing its CANONICAL home newsletter_campaigns (live CHECKs: status draft, approval_status draft, agent_id AGENTS-class). ACCOUNTING: quickbooks_sync_log was a fake-writer twin — ai-financial-management logged 'in_progress' rows and returned synced:true WITHOUT calling Intuit (the permanent silent-gap source). lib/finance/accounting-egress.ts is now the ONE egress (buildQuickBooksForBrokerage moved from the action, QBO Purchase entity for expenses, tax_categories.provider_account_id is the ONLY account mapping — unmapped fails honestly, never a fabricated ledger account); commissions push real invoices; brokerage-scope logScopedExpense rides it best-effort; the silent-gap watch repointed to accounting_sync_log (whose CHECK rejected sync_type 'journal' — pushAccountingEntry's log write failed silently until l72_s11 widened it); quickbooks_sync_log retired everywhere. EIGHT LEGACY-TWIN REPOINTS: social_accounts→social_media_accounts, video_content→video_assets, ai_content_outputs→ai_generated_content, lead_motivated_seller_signals→motivated_seller_signals, closing_disclosure→transaction_documents(doc_type), newsletters→dead segment branch removed, earnings_history→agent_monthly_earnings, brand_asset_library→marketing_assets (which exposed TWO live 42703s: marketing_assets and ai_video_projects have NO is_active — deprecate now uses approval_status/is_published). CADENCE WRITERS: newsletter_cadence_policy + social_cadence_policy finally have their settings writer (upsertMarketingCadencePolicy, unique (scope_type,scope_id) live-verified) wired into the blog-cadence settings page — the two ticker crons no longer read always-empty tables. SENDGRID ENGAGEMENT: the events webhook now writes email_tracking open/click rows (lead-nurture scoring + bundle attribution finally have their event stream). Four seeded catalogs exempted with verdicts. All shapes live-fired, residue 0",
+        src("lib/finance/brokerage-earnings-writer.ts").includes('.is("team_id", null)')
+        && src("app/dashboard/financials/brokerage/scoped-expense-entry.tsx").includes("neither rolls up")
+        && src("app/actions/campaign-presets.ts").includes('"newsletter"')
+        && src("app/actions/campaign-presets.ts").includes("newsletter_campaigns")
+        && src("lib/finance/accounting-egress.ts").includes("pushExpenseToAccounting")
+        && src("lib/finance/accounting-egress.ts").includes("provider_account_id")
+        && src("lib/providers/accounting/quickbooks.ts").includes("createPurchase")
+        && src("app/api/cron/connector-health/route.ts").includes('from("accounting_sync_log")')
+        && !src("app/actions/ai-financial-management.ts").includes('from("quickbooks_sync_log")')
+        && src("app/actions/financials.ts").includes("pushExpenseToAccounting")
+        && src("app/actions/copilot.ts").includes('from("video_assets")')
+        && src("app/actions/video-repurposing.ts").includes('from("social_media_accounts")')
+        && src("app/admin/ai-audit/page.tsx").includes("ai_generated_content")
+        && src("app/actions/ai-predictions.ts").includes('from("motivated_seller_signals")')
+        && src("lib/listing-lifecycle/readiness-checker.ts").includes('.eq("doc_type", "closing_disclosure")')
+        && src("app/actions/financials.ts").includes("agent_monthly_earnings")
+        && src("lib/agents/asset-manager.ts").includes('from("marketing_assets")')
+        && src("lib/agents/asset-manager-actions.ts").includes('approval_status: "rejected"')
+        && src("app/actions/marketing-cadence-policy.ts").includes("upsertMarketingCadencePolicy")
+        && src("app/settings/blog-cadence/client.tsx").includes("ChannelCadenceCard")
+        && src("app/api/webhooks/sendgrid-events/route.ts").includes('from("email_tracking")')
+        && baseline3.length === 32)
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

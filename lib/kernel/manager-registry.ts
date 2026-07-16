@@ -734,7 +734,6 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   push_notification_queue: "data_steward",
   qr_codes: "data_steward",
   qr_scan_events: "data_steward",
-  quickbooks_sync_log: "data_steward",
   reg_change_observations: "compliance_officer",
   revenue_protection_snapshots: "data_steward",
   script_variations: "data_steward",

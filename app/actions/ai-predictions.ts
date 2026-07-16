@@ -145,8 +145,10 @@ export async function predictLeadConversion(leadId: string): Promise<LeadPredict
 
   // Try to get motivated seller signals
   try {
+    // motivated_seller_signals is the canonical signal table (the lead_-prefixed
+    // name never existed as a written table — pure name drift, repointed).
     const { data } = await supabase
-      .from("lead_motivated_seller_signals")
+      .from("motivated_seller_signals")
       .select("*")
       .eq("lead_id", leadId)
     motivatedSellerSignals = data || []

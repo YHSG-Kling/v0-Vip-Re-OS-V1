@@ -22,9 +22,21 @@ export const dynamic = "force-dynamic"
 const STATUS_BY_EVENT: Record<string, string> = {
   delivered: "delivered",
   open: "read",
+  click: "read", // a click implies the mail was read
   bounce: "bounced",
   dropped: "failed",
   spamreport: "bounced",
+}
+
+// email_tracking is the engagement event stream (lead-nurture scoring + bundle
+// attribution both read it) — live CHECK vocabulary for event_type.
+const TRACKING_EVENT: Record<string, string> = {
+  delivered: "delivered",
+  open: "open",
+  click: "click",
+  bounce: "bounce",
+  dropped: "dropped",
+  spamreport: "spam_complaint",
 }
 
 export async function POST(request: NextRequest) {
@@ -73,6 +85,26 @@ export async function POST(request: NextRequest) {
           await svc.from("messages").update({ status, updated_at: new Date().toISOString() }).eq("id", (exact as any).id)
           matched = true
         }
+      }
+
+      // ENGAGEMENT STREAM (burn-down round 3): open/click land as email_tracking
+      // rows — the writer-less half of the SendGrid loop. Contact-correlated
+      // (brokerage stamped from the contact); email_send_id stays NULL when the
+      // send didn't record a provider id — honest partial correlation.
+      const trackingType = TRACKING_EVENT[kind]
+      const { data: trackContacts } = await svc.from("contacts")
+        .select("id, brokerage_id").ilike("email", email).limit(1)
+      const trackContact = ((trackContacts ?? []) as any[])[0] ?? null
+      if (trackingType && trackContact) {
+        await svc.from("email_tracking").insert({
+          contact_id: trackContact.id,
+          brokerage_id: trackContact.brokerage_id ?? null,
+          event_type: trackingType,
+          url: kind === "click" ? (String(ev?.url ?? "") || null) : null,
+          user_agent: String(ev?.useragent ?? "") || null,
+          metadata: { sg_message_id: sgId || null, sg_event_id: String(ev?.sg_event_id ?? "") || null },
+          event_at: ev?.timestamp ? new Date(Number(ev.timestamp) * 1000).toISOString() : new Date().toISOString(),
+        })
       }
 
       // Fallback: the recipient's most recent outbound email within 72h.

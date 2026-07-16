@@ -151,7 +151,10 @@ export async function createExpense(params: ExpenseEntry) {
 
     const expense = expenseResult.data
 
-    await syncExpenseToQuickBooks(expense)
+    // Agent-scoped expenses are the AGENT'S book (Schedule C via CSV export) —
+    // they never post to the brokerage's QuickBooks (same principle as team
+    // financials not rolling up). Brokerage-scoped expenses ride the real
+    // accounting egress in lib/finance/accounting-egress.ts.
 
     revalidatePath("/financials")
 
@@ -565,160 +568,43 @@ Provide comprehensive analysis:
 /**
  * QuickBooks Sync Functions
  */
-async function syncExpenseToQuickBooks(expense: any) {
-  const supabase = await createClient()
-
-  // Resolve agent_id to brokerage_id. pass 12: business_expenses.agent_id is
-  // agents.id — resolve via the agents table (the old users lookup never matched).
-  const { data: agent } = await supabase
-    .from("agents")
-    .select("brokerage_id")
-    .eq("id", expense.agent_id)
-    .maybeSingle()
-
-  if (!agent?.brokerage_id) {
-    console.log("[v0] Agent brokerage not found, skipping sync")
-    return { synced: false }
-  }
-
-  // Check if QuickBooks is connected
-  const { data: integration } = await supabase
-    .from("integration_credentials")
-    .select("*")
-    .eq("brokerage_id", agent.brokerage_id)
-    .eq("provider_name", "quickbooks")
-    .eq("is_active", true)
-    .maybeSingle()
-
-  if (!integration) {
-    console.log("[v0] QuickBooks not connected, skipping sync")
-    return { synced: false }
-  }
-
-  try {
-    // Map to QuickBooks expense format
-    const qbExpense = {
-      PaymentType: "Cash",
-      AccountRef: { value: getCategoryAccountId(expense.category) },
-      TotalAmt: expense.amount,
-      TxnDate: expense.expense_date,
-      PrivateNote: expense.description,
-      Line: [
-        {
-          DetailType: "AccountBasedExpenseLineDetail",
-          Amount: expense.amount,
-          AccountBasedExpenseLineDetail: {
-            AccountRef: { value: getCategoryAccountId(expense.category) },
-          },
-        },
-      ],
-    }
-
-    // Log sync attempt (actual API call would go here).
-    // pass 12: quickbooks_sync_log.brokerage_id is NOT NULL and the kernel does
-    // not stamp brokerage_id on business_expenses — use the resolved agent's.
-    await supabase.from("quickbooks_sync_log").insert({
-      brokerage_id: agent.brokerage_id,
-      agent_id: expense.agent_id,
-      sync_type: "expense",
-      direction: "push",
-      status: "in_progress",
-      payload_summary: { entity_id: expense.id, qb_data: qbExpense },
-      started_at: new Date().toISOString(),
-    })
-
-    return { synced: true, qbData: qbExpense }
-  } catch (error) {
-    console.error("[v0] QuickBooks sync error:", error)
-    return { synced: false, error }
-  }
-}
-
 async function syncCommissionToQuickBooks(commission: any) {
+  // REAL egress (keep-one): the old body built a QBO payload, logged
+  // quickbooks_sync_log 'in_progress' and returned synced:true WITHOUT calling
+  // Intuit — a stub that fed permanent silent-gap alarms. Commissions ARE
+  // brokerage revenue, so they post through the ONE accounting egress with an
+  // honest accounting_sync_log lifecycle (completed/failed, or no row when
+  // QuickBooks isn't connected). quickbooks_sync_log is retired.
   const supabase = await createClient()
-
-  // Resolve agent_id to brokerage_id. pass 12: commission.agent_id is agents.id
-  // (agent_commissions.agent_id → agents) — resolve via the agents table.
   const { data: agent } = await supabase
     .from("agents")
     .select("brokerage_id")
     .eq("id", commission.agent_id)
     .maybeSingle()
+  if (!agent?.brokerage_id) return { synced: false }
 
-  if (!agent?.brokerage_id) {
-    console.log("[v0] Agent brokerage not found, skipping sync")
-    return { synced: false }
-  }
-
-  // Check if QuickBooks is connected
   const { data: integration } = await supabase
     .from("integration_credentials")
-    .select("*")
+    .select("id, webhook_url")
     .eq("brokerage_id", agent.brokerage_id)
     .eq("provider_name", "quickbooks")
     .eq("is_active", true)
     .maybeSingle()
+  if (!integration) return { synced: false }
 
-  if (!integration) {
-    console.log("[v0] QuickBooks not connected, skipping sync")
-    return { synced: false }
-  }
-
-  try {
-    // Map to QuickBooks invoice/payment format.
-    // CustomerRef.value comes from the integration metadata (QB customer ID for this brokerage).
-    // ItemRef.value comes from the integration metadata (QB commission income item ID).
-    const qbCustomerRef = (integration.metadata as any)?.qb_customer_id ?? agent.brokerage_id
-    const qbItemRef     = (integration.metadata as any)?.qb_commission_item_id ?? "COMMISSION"
-    const qbInvoice = {
-      CustomerRef: { value: qbCustomerRef },
-      TotalAmt: commission.gross_commission,
-      Line: [
-        {
-          DetailType: "SalesItemLineDetail",
-          Amount: commission.agent_net,
-          SalesItemLineDetail: {
-            ItemRef: { value: qbItemRef },
-          },
-        },
-      ],
-    }
-
-    // Log sync attempt. pass 12: use the resolved brokerage — the payload built
-    // in aiCalculateCommission carries no brokerage_id, and the column is NOT NULL.
-    await supabase.from("quickbooks_sync_log").insert({
-      brokerage_id: agent.brokerage_id,
-      agent_id: commission.agent_id,
-      sync_type: "commission",
-      direction: "push",
-      status: "in_progress",
-      payload_summary: { entity_id: commission.id, qb_data: qbInvoice },
-      started_at: new Date().toISOString(),
-    })
-
-    return { synced: true, qbData: qbInvoice }
-  } catch (error) {
-    console.error("[v0] QuickBooks sync error:", error)
-    return { synced: false, error }
-  }
+  const { pushCommissionToAccounting } = await import("@/lib/finance/accounting-egress")
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const outcome = await pushCommissionToAccounting(svc, {
+    brokerageId: agent.brokerage_id,
+    grossCommission: Number(commission.gross_commission) || 0,
+    description: `Commission ${commission.id ?? ""}`.trim(),
+    qbCustomerRef: null, // mapped per-tenant on the connection; unmapped fails honestly into the sync-errors UI
+  })
+  return { synced: outcome.success, error: outcome.error }
 }
 
-function getCategoryAccountId(category: string): string {
-  const categoryMap: Record<string, string> = {
-    Marketing: "60",
-    Technology: "61",
-    Transportation: "62",
-    "Professional Development": "63",
-    "Office Supplies": "64",
-    "Client Entertainment": "65",
-    "Licensing & Dues": "66",
-    "Photography/Staging": "67",
-    "Lead Generation": "68",
-    Administrative: "69",
-    Other: "70",
-  }
-  return categoryMap[category] || "70"
-}
+
 
 /**
  * AI Budget Planner

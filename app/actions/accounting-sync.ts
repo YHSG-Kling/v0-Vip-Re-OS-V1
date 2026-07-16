@@ -222,58 +222,22 @@ export async function retrySyncError(data: {
 // resolving the brokerage's OAuth creds via connection-manager (any of the three stores),
 // refreshing the token if near expiry, and recording the outcome in accounting_sync_log.
 
+// Financial cascade: agent → team → brokerage → platform (most-specific QuickBooks
+// connection wins). The build logic moved to lib/finance/accounting-egress.ts
+// (keep-one) so logScopedExpense and the commission path share ONE egress.
 async function buildQuickBooks(
   brokerageId: string,
   actor?: { agentUserId?: string | null; teamId?: string | null },
 ): Promise<QuickBooksProvider | null> {
-  // Financial cascade: agent → team → brokerage → platform (most-specific QuickBooks connection
-  // wins), with the legacy connection-manager fallback. So an agent/team that connected their own
-  // QuickBooks is honored over the brokerage default.
-  const conn = await resolveScopedConnection("quickbooks", {
-    agentUserId: actor?.agentUserId ?? null,
-    teamId: actor?.teamId ?? null,
-    brokerageId,
-  })
-  // Token columns are the canonical store, but older QBO rows kept tokens in `config` — fall back so
-  // both shapes resolve. realmId may be config.realmId (camel), config.realm_id (snake), or account_id.
-  const accessToken = conn?.accessToken ?? ((conn?.config as any)?.access_token as string | undefined) ?? null
-  if (!conn || !accessToken) return null
-  const refreshToken = conn.refreshToken ?? ((conn.config as any)?.refresh_token as string | undefined) ?? ""
-  const clientId = process.env.QUICKBOOKS_CLIENT_ID
-  const clientSecret = process.env.QUICKBOOKS_CLIENT_SECRET
-  if (!clientId || !clientSecret) throw new Error("QuickBooks app credentials not configured (QUICKBOOKS_CLIENT_ID/SECRET)")
-  const realmId = ((conn.config as any)?.realmId as string) || ((conn.config as any)?.realm_id as string) || conn.accountId || ""
-  if (!realmId) throw new Error("QuickBooks connection missing realmId (company id)")
-
-  const provider = new QuickBooksProvider({
-    accessToken,
-    refreshToken,
-    realmId,
-    clientId,
-    clientSecret,
-  })
-
-  const expIso = ((conn.config as any)?.tokenExpiresAt as string) ?? ((conn.config as any)?.token_expires_at as string) ?? null
-  if (expIso && refreshToken) {
-    const exp = Date.parse(expIso)
-    if (!Number.isNaN(exp) && exp <= Date.now() + 5 * 60_000) {
-      const fresh = await provider.refreshAccessToken()
-      if (conn.source !== "integration_credentials") {
-        const svc = createServiceClient()
-        await svc
-          .from(conn.source)
-          .update({ access_token: fresh.accessToken, refresh_token: fresh.refreshToken, token_expires_at: fresh.tokenExpiresAt })
-          .eq("id", conn.credentialId)
-      }
-    }
-  }
-  return provider
+  const { buildQuickBooksForBrokerage } = await import("@/lib/finance/accounting-egress")
+  return buildQuickBooksForBrokerage(brokerageId, actor)
 }
 
 export async function pushAccountingEntry(
   params:
     | { brokerageId: string; kind: "invoice"; customerRef: string; amount: number; description?: string; currency?: string }
-    | { brokerageId: string; kind: "journal"; lines: Array<{ amount: number; accountRef: string; postingType: "Debit" | "Credit" }>; description?: string },
+    | { brokerageId: string; kind: "journal"; lines: Array<{ amount: number; accountRef: string; postingType: "Debit" | "Credit" }>; description?: string }
+    | { brokerageId: string; kind: "expense"; amount: number; expenseAccountRef: string; paymentAccountRef: string; description?: string; txnDate?: string },
 ): Promise<{ ok: true; result: AccountingWriteResult } | { ok: false; error: string }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -313,7 +277,9 @@ export async function pushAccountingEntry(
   const result =
     params.kind === "invoice"
       ? await qbo.createInvoice({ customerRef: params.customerRef, amount: params.amount, description: params.description, currency: params.currency })
-      : await qbo.createJournalEntry({ lines: params.lines, description: params.description })
+      : params.kind === "expense"
+        ? await qbo.createPurchase({ amount: params.amount, expenseAccountRef: params.expenseAccountRef, paymentAccountRef: params.paymentAccountRef, description: params.description, txnDate: params.txnDate })
+        : await qbo.createJournalEntry({ lines: params.lines, description: params.description })
 
   await svc.from("accounting_sync_log").insert({
     brokerage_id: params.brokerageId, provider: "quickbooks", sync_type: params.kind,

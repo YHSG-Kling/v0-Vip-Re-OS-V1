@@ -17,10 +17,11 @@ import { revalidatePath } from "next/cache"
 
 export type PresetChannel =
   | "email" | "sms" | "voicedrop" | "social_post" | "portal_push" | "podcast_episode" | "ad_retarget"
-  // Expansion (owner spec): blog drafts + Facebook audiences are shelf items too —
-  // they write their CANONICAL homes (blog_posts / facebook_custom_audiences),
-  // never a parallel preset table (keep-one).
-  | "blog_post" | "facebook_audience"
+  // Expansion (owner spec): blog drafts, Facebook audiences + newsletters are
+  // shelf items too — they write their CANONICAL homes (blog_posts /
+  // facebook_custom_audiences / newsletter_campaigns), never a parallel preset
+  // table (keep-one).
+  | "blog_post" | "facebook_audience" | "newsletter"
 
 const CHANNEL_TABLE: Partial<Record<PresetChannel, string>> = {
   email: "email_presets",
@@ -46,6 +47,7 @@ const CHANNEL_FIELDS: Record<PresetChannel, string[]> = {
   // Special-cased channels (canonical homes, not CHANNEL_TABLE):
   blog_post: [],
   facebook_audience: [],
+  newsletter: [],
 }
 
 /** The text the compliance gate must see per channel ("" = no free text → no gate). */
@@ -60,6 +62,7 @@ function complianceText(channel: PresetChannel, fields: Record<string, unknown>)
     case "podcast_episode": return String(fields.tts_script ?? "") // script gates like voicedrop; episode ref alone needs none
     case "blog_post": return [fields.title, fields.excerpt, fields.content].filter(Boolean).join("\n")
     case "facebook_audience": return "" // audience definitions carry no outbound copy
+    case "newsletter": return [fields.subject_line, fields.content].filter(Boolean).join("\n")
   }
 }
 
@@ -81,7 +84,7 @@ export async function upsertCampaignPreset(input: UpsertCampaignPresetInput): Pr
 }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
-  const SPECIAL = input.channel === "blog_post" || input.channel === "facebook_audience"
+  const SPECIAL = input.channel === "blog_post" || input.channel === "facebook_audience" || input.channel === "newsletter"
   const table = CHANNEL_TABLE[input.channel]
   if (!table && !SPECIAL) return { success: false, error: "unknown_channel" }
   if (!input.name?.trim()) return { success: false, error: "name_required" }
@@ -97,6 +100,7 @@ export async function upsertCampaignPreset(input: UpsertCampaignPresetInput): Pr
     const MESSAGE_TYPE: Record<string, "email" | "sms" | "social" | "phone" | "in_app"> = {
       email: "email", sms: "sms", voicedrop: "phone",
       social_post: "social", portal_push: "in_app", ad_retarget: "social",
+      newsletter: "email", blog_post: "social",
     }
     const gate = await evaluateOutbound({
       actorContext: { brokerageId: ctx.brokerageId, role: ctx.role ?? "agent", userId: ctx.userId },
@@ -162,6 +166,35 @@ export async function upsertCampaignPreset(input: UpsertCampaignPresetInput): Pr
       status: "draft",
     }
     const { data, error } = await svc.from("facebook_custom_audiences").insert(row).select("id").single()
+    if (error) return { success: false, error: error.message }
+    revalidatePath("/dashboard/campaigns")
+    return { success: true, presetId: data.id as string }
+  }
+  if (input.channel === "newsletter") {
+    // A newsletter "preset" IS a reusable draft on the canonical
+    // newsletter_campaigns table (live CHECKs: status draft/scheduled/…,
+    // approval_status draft/pending_review/…; agent_id is AGENTS-class).
+    const f = input.fields ?? {}
+    const row = {
+      brokerage_id: ctx.brokerageId,
+      agent_id: ctx.agentId, // agents.id FK — nullable for non-producing brokers
+      created_by: ctx.userId,
+      campaign_name: input.name.trim(),
+      subject_line: (f.subject_line as string) ?? null,
+      content: (f.content as string) ?? null,
+      status: "draft",
+      approval_status: "draft",
+      is_ai_generated: false,
+    }
+    if (input.id) {
+      const { data: existing } = await svc.from("newsletter_campaigns").select("brokerage_id").eq("id", input.id).maybeSingle()
+      if (!existing || (existing.brokerage_id as string) !== ctx.brokerageId) return { success: false, error: "tenant_mismatch" }
+      const { error } = await svc.from("newsletter_campaigns").update(row).eq("id", input.id)
+      if (error) return { success: false, error: error.message }
+      revalidatePath("/dashboard/campaigns")
+      return { success: true, presetId: input.id }
+    }
+    const { data, error } = await svc.from("newsletter_campaigns").insert(row).select("id").single()
     if (error) return { success: false, error: error.message }
     revalidatePath("/dashboard/campaigns")
     return { success: true, presetId: data.id as string }

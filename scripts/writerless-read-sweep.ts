@@ -39,6 +39,12 @@ const SEEDED_REFERENCE = new Set([
   "content_topic_sources",
   // Live-verified seeded config (rows exist, written by migration/superadmin):
   "plan_limits", "state_compliance_requirements",
+  // Round-3 verdicts (investigated): behavioral_patterns is a pattern-definition
+  // CATALOG (its own code comments say so); brokerage_forms is the per-state
+  // form-template catalog (degrades to state_required_forms); document_
+  // classifications is the routing RULE set (brokerage_id-null global default
+  // rows); form_field_maps is per-form-template field mapping.
+  "behavioral_patterns", "brokerage_forms", "document_classifications", "form_field_maps",
 ])
 
 /** Database VIEWS — written through their base tables by definition; a read

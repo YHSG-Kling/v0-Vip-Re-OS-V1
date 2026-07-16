@@ -206,27 +206,11 @@ export async function evaluateBroadcastDeconflict(
         .eq("brokerage_id", input.brokerageId)
         .eq("status", "sent")
         .gte("send_date", since)
-      if (input.segment) {
-        // newsletter_campaigns doesn't carry a segment column directly today —
-        // segment-scoped counting joins through newsletters.audience_segment
-        // when the segment is provided. Best-effort: skip the segment filter
-        // if no campaigns join cleanly (still falls back to brokerage cap).
-        const { data: scoped } = await svc
-          .from("newsletters")
-          .select("id")
-          .eq("brokerage_id", input.brokerageId)
-          .eq("audience_segment", input.segment)
-        const ids = (scoped ?? []).map(r => r.id as string)
-        if (ids.length > 0) {
-          q = svc
-            .from("newsletter_campaigns")
-            .select("id", { count: "exact", head: true })
-            .eq("brokerage_id", input.brokerageId)
-            .eq("status", "sent")
-            .in("marketing_campaign_id", ids)
-            .gte("send_date", since)
-        }
-      }
+      // Segment-scoped counting used to join through the legacy `newsletters`
+      // table's audience_segment — but that table has NO writer, so the branch
+      // could never match and only masked the brokerage-wide cap (burn-down
+      // round 3: dead branch removed; the brokerage-wide count IS the cap
+      // until newsletter_campaigns carries a segment dimension).
       const { count } = await q
       sends = count ?? 0
     } else if (input.channel === "social_post") {

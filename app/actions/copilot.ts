@@ -713,10 +713,11 @@ async function checkTransactionDeadlines(transactionId: string) {
 async function postVideoContent(videoId: string, platforms: string[]) {
   const supabase = await createClient()
   
-  // Get video details
+  // video_assets is the canonical video store (video_content was a writer-less
+  // legacy twin — burn-down round 3 repoint; same column names).
   const { data: video } = await supabase
-    .from("video_content")
-    .select("*, agent_id, brokerage_id, title, video_url, thumbnail_url")
+    .from("video_assets")
+    .select("id, agent_id, brokerage_id, title, video_url, thumbnail_url")
     .eq("id", videoId)
     .single()
   

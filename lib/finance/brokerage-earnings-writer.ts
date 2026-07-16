@@ -8,12 +8,14 @@
 // so brokerage totals reconcile EXACTLY with agent and team numbers.
 //
 // EXPENSE FOLD (l72_s10): business_expenses now carries brokerage- and
-// team-scoped rows (agent_id NULL — logged via logScopedExpense on the
-// brokerage money page). The month's non-agent expenses fold into the P&L
+// team-scoped rows (logged via logScopedExpense on the brokerage money page).
+// OWNER RULE: team financials do NOT roll up to brokerage financials — only
+// BROKERAGE-scoped rows (agent_id NULL AND team_id NULL) fold into the P&L
 // buckets by category (marketing/office/technology→tech, rest→operating) and
-// subtract from net_profit. When a tenant has logged NOTHING, the buckets stay
-// honest-NULL and net_profit remains GCI minus splits — never a fabricated 0
-// pretending expenses were tracked.
+// subtract from net_profit. Team expenses stay on the team's own book. When a
+// tenant has logged NOTHING, the buckets stay honest-NULL and net_profit
+// remains GCI minus splits — never a fabricated 0 pretending expenses were
+// tracked.
 
 import "server-only"
 
@@ -84,15 +86,16 @@ export async function runBrokerageEarningsRollup(svc: Svc, now: Date = new Date(
       })))
       if (!earnErr) out.rowsWritten += periods.length
 
-      // brokerage_p_l — one row per month. Fold the month's brokerage/team
-      // scoped expenses (agent_id NULL) into the category buckets; a tenant
-      // with zero logged rows keeps honest-NULL buckets (untracked ≠ $0).
+      // brokerage_p_l — one row per month. Fold ONLY brokerage-scoped expenses
+      // (agent_id NULL AND team_id NULL — owner rule: team financials never
+      // roll up to brokerage). Zero logged rows keeps honest-NULL buckets.
       const m = periods[0].f
       const { data: expRows } = await svc
         .from("business_expenses")
         .select("category, amount")
         .eq("brokerage_id", b.id)
         .is("agent_id", null)
+        .is("team_id", null)
         .gte("expense_date", monthStart.slice(0, 10))
         .limit(5000)
       const exp = (expRows ?? []) as Array<{ category: string | null; amount: number | null }>

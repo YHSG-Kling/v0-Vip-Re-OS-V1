@@ -33,20 +33,33 @@ export default async function BlogCadenceSettingsPage({ searchParams }: PageProp
     : null
 
   let policy: BlogCadencePolicyRow | null = null
+  let newsletterPolicy: BlogCadencePolicyRow | null = null
+  let socialPolicy: BlogCadencePolicyRow | null = null
   if (scopeId) {
     const svc = createServiceClient()
-    const { data } = await svc
-      .from("blog_cadence_policy")
-      .select("cadence, fire_day, preferred_categories, preferred_persona")
-      .eq("scope_type", scopeType)
-      .eq("scope_id", scopeId)
-      .maybeSingle()
-    policy = (data as BlogCadencePolicyRow | null) ?? null
+    // The newsletter + social cadence tables mirror blog's shape (m247/m248) —
+    // one page manages all three so a tenant sees the whole content heartbeat.
+    const [blogR, nlR, soR] = await Promise.all([
+      svc.from("blog_cadence_policy")
+        .select("cadence, fire_day, preferred_categories, preferred_persona")
+        .eq("scope_type", scopeType).eq("scope_id", scopeId).maybeSingle(),
+      svc.from("newsletter_cadence_policy")
+        .select("cadence, fire_day, preferred_categories, preferred_persona")
+        .eq("scope_type", scopeType).eq("scope_id", scopeId).maybeSingle(),
+      svc.from("social_cadence_policy")
+        .select("cadence, fire_day, preferred_categories, preferred_persona")
+        .eq("scope_type", scopeType).eq("scope_id", scopeId).maybeSingle(),
+    ])
+    policy = (blogR.data as BlogCadencePolicyRow | null) ?? null
+    newsletterPolicy = (nlR.data as BlogCadencePolicyRow | null) ?? null
+    socialPolicy = (soR.data as BlogCadencePolicyRow | null) ?? null
   }
 
   return (
     <BlogCadenceSettingsClient
       initialPolicy={policy}
+      initialNewsletterPolicy={newsletterPolicy}
+      initialSocialPolicy={socialPolicy}
       access={access}
       activeTab={scopeType}
       activeTeamId={activeTeamId}

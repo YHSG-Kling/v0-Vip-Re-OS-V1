@@ -7,6 +7,7 @@ import {
   type BlogCadencePolicyRow,
   type CadenceValue,
 } from "@/app/actions/blog-cadence-policy"
+import { upsertMarketingCadencePolicy, type CadenceChannel } from "@/app/actions/marketing-cadence-policy"
 import type { PolicyScopeAccess } from "@/lib/identity/policy-scope"
 
 type TabKey = "agent" | "team" | "brokerage"
@@ -39,11 +40,15 @@ const PERSONA_OPTIONS = [
 
 export function BlogCadenceSettingsClient({
   initialPolicy,
+  initialNewsletterPolicy = null,
+  initialSocialPolicy = null,
   access,
   activeTab = "agent",
   activeTeamId = null,
 }: {
   initialPolicy: BlogCadencePolicyRow | null
+  initialNewsletterPolicy?: BlogCadencePolicyRow | null
+  initialSocialPolicy?: BlogCadencePolicyRow | null
   access?:       PolicyScopeAccess
   activeTab?:    TabKey
   activeTeamId?: string | null
@@ -248,7 +253,107 @@ export function BlogCadenceSettingsClient({
             {isPending ? "Saving…" : "Save Settings"}
           </button>
         </div>
+
+        {/* Newsletter + social auto-cadence — same scope as the tab above.
+            These write the policy rows the newsletter/social cadence-tick crons
+            consume (writer-less burn-down: the crons read always-empty tables
+            until these existed). */}
+        <ChannelCadenceCard
+          channel="newsletter"
+          title="Newsletter Cadence"
+          blurb="Auto-stage a newsletter draft on this schedule — it lands in your approval queue, nothing sends itself."
+          initial={initialNewsletterPolicy}
+          activeTab={activeTab}
+          activeTeamId={activeTeamId}
+        />
+        <ChannelCadenceCard
+          channel="social"
+          title="Social Post Cadence"
+          blurb="Auto-stage brand/engagement social drafts on this schedule — every draft still rides the approval + compliance gates."
+          initial={initialSocialPolicy}
+          activeTab={activeTab}
+          activeTeamId={activeTeamId}
+        />
       </div>
     </div>
+  )
+}
+
+function ChannelCadenceCard({
+  channel, title, blurb, initial, activeTab, activeTeamId,
+}: {
+  channel: CadenceChannel
+  title: string
+  blurb: string
+  initial: BlogCadencePolicyRow | null
+  activeTab: TabKey
+  activeTeamId: string | null
+}) {
+  const [cadence, setCadence] = useState<CadenceValue>((initial?.cadence as CadenceValue) ?? "off")
+  const [fireDay, setFireDay] = useState<number>(initial?.fire_day ?? 0)
+  const [isPending, startTransition] = useTransition()
+  const [error, setError] = useState<string | null>(null)
+  const [savedAt, setSavedAt] = useState<Date | null>(null)
+
+  function handleSave() {
+    setError(null); setSavedAt(null)
+    startTransition(async () => {
+      const r = await upsertMarketingCadencePolicy({
+        channel,
+        cadence,
+        fireDay: cadence === "off" ? null : (cadence === "monthly" && fireDay === 0 ? 1 : fireDay),
+        scopeType: activeTab,
+        scopeId: activeTab === "team" ? (activeTeamId ?? undefined) : undefined,
+      })
+      if (!r.success) setError(r.error ?? "Save failed")
+      else setSavedAt(new Date())
+    })
+  }
+
+  return (
+    <section className="border rounded-lg p-4">
+      <h2 className="font-semibold text-gray-900 mb-1">{title}</h2>
+      <p className="text-sm text-gray-600 mb-3">{blurb}</p>
+      <div className="flex flex-wrap items-end gap-4">
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Cadence</label>
+          <select
+            value={cadence}
+            onChange={(e) => setCadence(e.target.value as CadenceValue)}
+            disabled={isPending}
+            className="border rounded px-3 py-2 w-40"
+          >
+            {(["off", "weekly", "biweekly", "monthly"] as CadenceValue[]).map((c) => (
+              <option key={c} value={c}>{c === "off" ? "Off (manual only)" : c}</option>
+            ))}
+          </select>
+        </div>
+        {cadence !== "off" && (
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">
+              {cadence === "monthly" ? "Day of month" : "Day of week"}
+            </label>
+            {cadence === "monthly" ? (
+              <select value={fireDay < 1 ? 1 : fireDay} onChange={(e) => setFireDay(parseInt(e.target.value, 10))} disabled={isPending} className="border rounded px-3 py-2 w-28">
+                {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            ) : (
+              <select value={fireDay > 6 ? 0 : fireDay} onChange={(e) => setFireDay(parseInt(e.target.value, 10))} disabled={isPending} className="border rounded px-3 py-2 w-36">
+                {DOW_LABELS.map((label, idx) => <option key={idx} value={idx}>{label}</option>)}
+              </select>
+            )}
+          </div>
+        )}
+        <button
+          onClick={handleSave}
+          disabled={isPending}
+          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 text-sm"
+        >
+          {isPending ? "Saving…" : "Save"}
+        </button>
+        {savedAt && <span className="text-sm text-green-700">Saved {savedAt.toLocaleTimeString()}</span>}
+        {error && <span className="text-sm text-red-600">{error}</span>}
+      </div>
+    </section>
   )
 }

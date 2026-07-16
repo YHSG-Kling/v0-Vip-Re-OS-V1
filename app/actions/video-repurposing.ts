@@ -711,8 +711,10 @@ export async function scheduleSnippetToSocial(params: {
 
   // Verify social_account belongs to caller's brokerage if provided
   if (params.socialAccountId && isValidUUID(params.socialAccountId)) {
+    // social_media_accounts is the canonical account store (social_accounts was
+    // a writer-less legacy twin — burn-down round 3 repoint).
     const { data: acct } = await supabase
-      .from("social_accounts").select("brokerage_id").eq("id", params.socialAccountId).maybeSingle()
+      .from("social_media_accounts").select("brokerage_id").eq("id", params.socialAccountId).maybeSingle()
     if (!acct || acct.brokerage_id !== brokerageId) {
       throw new Error("Forbidden: social account not in your brokerage")
     }

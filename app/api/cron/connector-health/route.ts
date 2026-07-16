@@ -173,17 +173,18 @@ export async function GET(req: Request) {
     }
   }
 
-  // ── QUICKBOOKS SILENT-GAP WATCH (the spec's 'silent gap' failure class) ─────
-  // quickbooks_sync_log rows are written 'in_progress' at dispatch and completed
-  // by the sync worker — a row stuck >24h means the sync died with NO error
-  // anywhere. Surface each affected tenant on the health log ('silent_gap' is in
-  // the ATTENTION set) so the healer + superadmin board see it.
+  // ── ACCOUNTING SILENT-GAP WATCH (the spec's 'silent gap' failure class) ─────
+  // accounting_sync_log is the ONE accounting ledger (quickbooks_sync_log was a
+  // fake-writer twin, retired in the QB egress consolidation). A row stuck in
+  // pending/running >24h means the sync died with NO error anywhere. Surface
+  // each affected tenant ('silent_gap' is in the ATTENTION set) so the healer +
+  // superadmin board see it.
   {
     const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
     const { data: stuck } = await svc
-      .from("quickbooks_sync_log")
+      .from("accounting_sync_log")
       .select("brokerage_id, sync_type, started_at")
-      .eq("status", "in_progress")
+      .in("status", ["pending", "running"])
       .lt("started_at", dayAgo)
       .limit(200)
     const byBrokerage = new Map<string, { count: number; oldest: string }>()

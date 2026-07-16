@@ -147,15 +147,29 @@ async function runHandler(
       const reason  = String(input.reason ?? "unspecified")
       if (!assetId) return { status: "failed", result: { error: "asset_id required" } }
       const svc = createServiceClient()
-      // Try brand_asset_library first (newest), then marketing_assets,
-      // then ai_video_projects. At most one match per asset_id.
-      for (const table of ["brand_asset_library", "marketing_assets", "ai_video_projects"]) {
-        const { count } = await svc.from(table)
-          .update({ is_active: false } as Record<string, unknown>, { count: "exact" })
+      // marketing_assets is the canonical store (brand_asset_library was a
+      // writer-less twin — removed from the loop). marketing_assets has NO
+      // is_active column (live-verified — the old update 42703'd silently);
+      // retirement there is approval_status='rejected'. ai_video_projects
+      // keeps its is_active flag. At most one match per asset_id.
+      {
+        const { count } = await svc.from("marketing_assets")
+          .update({ approval_status: "rejected" }, { count: "exact" })
           .eq("id", assetId)
           .eq("brokerage_id", brokerageId)
         if ((count ?? 0) > 0) {
-          return { status: "succeeded", result: { table, asset_id: assetId, reason } }
+          return { status: "succeeded", result: { table: "marketing_assets", asset_id: assetId, reason } }
+        }
+      }
+      {
+        // ai_video_projects has no is_active either (live-verified) — unpublish
+        // is the retire semantics for a video project.
+        const { count } = await svc.from("ai_video_projects")
+          .update({ is_published: false }, { count: "exact" })
+          .eq("id", assetId)
+          .eq("brokerage_id", brokerageId)
+        if ((count ?? 0) > 0) {
+          return { status: "succeeded", result: { table: "ai_video_projects", asset_id: assetId, reason } }
         }
       }
       return { status: "skipped", result: { reason: "asset not found in any catalog or tenant mismatch" } }

@@ -67,7 +67,7 @@ export function ScopedExpenseEntry({ teams, canLogAgentScope }: { teams: TeamOpt
           Log Operating Expense
         </CardTitle>
         <CardDescription>
-          Brokerage and team expenses feed the monthly P&L expense lines above; agent expenses stay on the agent&apos;s own book.
+          Brokerage expenses feed the monthly P&L expense lines above. Team expenses stay on the team&apos;s own book and agent expenses on the agent&apos;s — neither rolls up.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

@@ -280,19 +280,20 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
     snap.underperformingTopicPersonaCount = underperformers.length
     snap.underperformingExamples = underperformers.slice(0, 6)
 
-    // Stale brand_asset_library entries.
+    // Stale brand assets — marketing_assets is the canonical asset store
+    // (brand_asset_library was a writer-less twin; repointed). No last_used_at
+    // exists there, so age since creation is the staleness proxy.
     const { data: staleAssets } = await svc
-      .from("brand_asset_library")
-      .select("id, display_name, asset_kind, last_used_at")
+      .from("marketing_assets")
+      .select("id, asset_name, asset_type, created_at")
       .eq("brokerage_id", brokerageId)
-      .eq("is_active", true)
-      .or(`last_used_at.is.null,last_used_at.lt.${oneYearAgo}`)
-      .order("last_used_at", { ascending: true, nullsFirst: true })
+      .lt("created_at", oneYearAgo)
+      .order("created_at", { ascending: true })
       .limit(20)
     snap.staleBrandAssetsCount = staleAssets?.length ?? 0
-    snap.staleBrandAssetExamples = (staleAssets ?? []) as Array<{
-      id: string; display_name: string; asset_kind: string; last_used_at: string | null
-    }>
+    snap.staleBrandAssetExamples = ((staleAssets ?? []) as Array<{
+      id: string; asset_name: string | null; asset_type: string | null; created_at: string | null
+    }>).map((a) => ({ id: a.id, display_name: a.asset_name ?? "", asset_kind: a.asset_type ?? "", last_used_at: a.created_at }))
 
     // Recent activity.
     const { count: rendersCount } = await svc

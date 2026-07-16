@@ -45,13 +45,18 @@ export async function generateAIForecast(params: {
   }
 
   try {
-    // Fetch last 3 years of earnings for trend analysis
-    const { data: history } = await supabase
-      .from("earnings_history")
-      .select("paid_date, gross_commission, agent_net")
+    // Fetch last 3 years of earnings for trend analysis — agent_monthly_earnings
+    // is the canonical rollup (written by the earnings-rollup cron from
+    // agent_commissions); earnings_history was a writer-less twin (repointed).
+    const { data: monthly } = await supabase
+      .from("agent_monthly_earnings")
+      .select("month_year, gross_total, net_total")
       .eq("agent_id", targetAgentId)
-      .order("paid_date", { ascending: false })
+      .order("month_year", { ascending: false })
       .limit(36)
+    const history = (monthly ?? []).map((m: any) => ({
+      paid_date: m.month_year, gross_commission: m.gross_total, agent_net: m.net_total,
+    }))
 
     const avgMonthlyGCI =
       params.monthsElapsed > 0 ? params.ytdGCI / params.monthsElapsed : 0
@@ -489,6 +494,23 @@ export async function logScopedExpense(input: {
 
   const { data, error } = await svc.from("business_expenses").insert(row).select("id").single()
   if (error) return { success: false, error: error.message }
+
+  // Brokerage-scoped expenses post to the brokerage's QuickBooks (when connected)
+  // through the ONE accounting egress — best-effort: a sync failure lands in the
+  // sync-errors UI, never blocks the local ledger entry. Agent/team expenses
+  // stay off the brokerage books (owner rule: no cross-book rollup).
+  if (input.scope === "brokerage") {
+    try {
+      const { pushExpenseToAccounting } = await import("@/lib/finance/accounting-egress")
+      await pushExpenseToAccounting(svc, {
+        brokerageId: ctx.brokerageId,
+        amount,
+        category: String(row.category),
+        description: String(row.description),
+        expenseDate: input.expenseDate,
+      })
+    } catch { /* egress is best-effort; the expense row is already committed */ }
+  }
 
   revalidatePath("/dashboard/financials/brokerage")
   revalidatePath("/dashboard/financials/expenses")
