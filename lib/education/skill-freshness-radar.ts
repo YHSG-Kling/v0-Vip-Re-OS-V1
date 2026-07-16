@@ -43,6 +43,16 @@ async function gatherSkillSignals(svc: Svc, agent: { id: string; user_id: string
   ]
 }
 
+/** ACADEMY → BRIEFING LOOP: one agent's freshness report, for the morning
+ *  briefing's skill line. Same signals the radar uses (objection drills,
+ *  quizzes, PASSED courses) — the briefing and the radar can never disagree. */
+export async function loadAgentSkillFreshness(
+  svc: Svc, agent: { id: string; user_id: string | null }, now: Date = new Date(),
+) {
+  const { computeSkillFreshness } = await import("./skill-freshness")
+  return computeSkillFreshness(await gatherSkillSignals(svc, agent, now))
+}
+
 export interface SkillRadarResult { scanned: number; nudged: number; staleSkills: number }
 
 /** Score a brokerage's active agents' skill freshness and propose gated refreshers on decayed skills. */

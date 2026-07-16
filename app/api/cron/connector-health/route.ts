@@ -22,7 +22,7 @@ import { probeConnector, PROBE_SPECS } from "@/lib/agentic-os/connector-probe"
 // mid-Anthropic-call and the connector_health_log batch insert at the end would never run.
 export const maxDuration = 300
 
-const ATTENTION = new Set(["expired", "expiring_soon", "auth_failed", "shape_drift"])
+const ATTENTION = new Set(["expired", "expiring_soon", "auth_failed", "shape_drift", "silent_gap"])
 
 export async function GET(req: Request) {
   const unauthorized = verifyCronAuth(req)
@@ -128,6 +128,79 @@ export async function GET(req: Request) {
           error: err instanceof Error ? err.message : String(err), checked_at: now.toISOString(),
         })
       }
+    }
+  }
+
+  // ── PLATFORM-KEYED PROVIDER PROBES (Integration Guardian coverage audit) ────
+  // Lob / ElevenLabs / D-ID / RentCast serve every tenant from platform env keys —
+  // no per-brokerage credential row, so the loops above never probed them and an
+  // expired platform key was invisible until a tenant's send/render failed. Probe
+  // each once per run; failures ledger PLATFORM-scoped on self_heal_events (the
+  // repair digest + Continuity Board already read that rail).
+  let platformProbed = 0
+  let platformFailures = 0
+  if (probeLive) {
+    const { PLATFORM_PROVIDER_KEYS } = await import("@/lib/agentic-os/connector-probe")
+    for (const [provider, envVar] of Object.entries(PLATFORM_PROVIDER_KEYS)) {
+      const key = process.env[envVar]
+      if (!key) continue // not configured on this deployment — no signal, no noise
+      platformProbed++
+      try {
+        const probe = await probeConnector(provider, { apiKey: key })
+        if (probe && probe.status !== "ok") {
+          platformFailures++
+          attention++
+          await svc.from("self_heal_events").insert({
+            brokerage_id: null,
+            domain: "data_flow",
+            subject: `platform_provider:${provider}`,
+            action: "provider_probe",
+            outcome: "failed",
+            detail: { provider, status: probe.status, http_status: probe.httpStatus, drifted: probe.drifted, message: probe.error ?? probe.status },
+          })
+        }
+      } catch (err) {
+        platformFailures++
+        await svc.from("self_heal_events").insert({
+          brokerage_id: null,
+          domain: "data_flow",
+          subject: `platform_provider:${provider}`,
+          action: "provider_probe",
+          outcome: "failed",
+          detail: { provider, status: "unreachable", message: err instanceof Error ? err.message : String(err) },
+        })
+      }
+    }
+  }
+
+  // ── QUICKBOOKS SILENT-GAP WATCH (the spec's 'silent gap' failure class) ─────
+  // quickbooks_sync_log rows are written 'in_progress' at dispatch and completed
+  // by the sync worker — a row stuck >24h means the sync died with NO error
+  // anywhere. Surface each affected tenant on the health log ('silent_gap' is in
+  // the ATTENTION set) so the healer + superadmin board see it.
+  {
+    const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
+    const { data: stuck } = await svc
+      .from("quickbooks_sync_log")
+      .select("brokerage_id, sync_type, started_at")
+      .eq("status", "in_progress")
+      .lt("started_at", dayAgo)
+      .limit(200)
+    const byBrokerage = new Map<string, { count: number; oldest: string }>()
+    for (const s of ((stuck ?? []) as Array<{ brokerage_id: string; started_at: string }>)) {
+      const g = byBrokerage.get(s.brokerage_id) ?? { count: 0, oldest: s.started_at }
+      g.count++
+      if (s.started_at < g.oldest) g.oldest = s.started_at
+      byBrokerage.set(s.brokerage_id, g)
+    }
+    for (const [brokerageId, g] of byBrokerage) {
+      attention++
+      rows.push({
+        brokerage_id: brokerageId, provider: "quickbooks", transport: "brokerage",
+        status: "silent_gap", drifted: false, http_status: null,
+        detail: { stuck_syncs: g.count, oldest_started_at: g.oldest, hint: "sync rows stuck in_progress >24h — the worker died without an error" },
+        error: null, checked_at: now.toISOString(),
+      })
     }
   }
 

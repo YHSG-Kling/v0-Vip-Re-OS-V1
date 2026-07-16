@@ -23,6 +23,10 @@ export type ProbeStatus =
 export type AuthStyle =
   | "bearer_access_token" // Authorization: Bearer <accessToken>
   | "bearer_api_key"      // Authorization: Bearer <apiKey>
+  | "basic_key_only"      // Authorization: Basic base64(apiKey:)   (Lob)
+  | "basic_raw_key"       // Authorization: Basic <apiKey>          (D-ID, key is pre-encoded)
+  | "header_xi_api_key"   // xi-api-key: <apiKey>                   (ElevenLabs)
+  | "header_x_api_key"    // X-Api-Key: <apiKey>                    (RentCast)
   | "header_accesskey"    // accesskey: <apiKey>  (IDX Broker)
   | "query_access_token"  // ?access_token=<accessToken>  (Meta Graph)
   | "basic_sid_token"     // Authorization: Basic base64(apiKey:apiSecret)  (Twilio)
@@ -91,6 +95,45 @@ export const PROBE_SPECS: Record<string, ProbeSpec> = {
     auth: "bearer_access_token",
     shape: { connector: "quickbooks", fields: [{ canonical: "CompanyInfo", aliases: ["companyInfo", "company"], required: true }] },
   },
+  // ── PLATFORM-KEYED PROVIDERS (Integration Guardian coverage audit) ─────────
+  // These serve every tenant from platform env keys — probed once per guardian
+  // run, failures ledgered platform-scoped. BatchData is intentionally absent:
+  // its APIs are POST-only (no cheap liveness read) and its shape drift is
+  // already watched by the pull-drift sentinel.
+  lob: {
+    provider: "lob",
+    url: "https://api.lob.com/v1/addresses?limit=1",
+    auth: "basic_key_only",
+    shape: { connector: "lob", fields: [{ canonical: "data", aliases: ["addresses"], required: true }] },
+  },
+  elevenlabs: {
+    provider: "elevenlabs",
+    url: "https://api.elevenlabs.io/v1/user",
+    auth: "header_xi_api_key",
+    shape: { connector: "elevenlabs", fields: [{ canonical: "subscription", aliases: ["subscription_info", "plan"], required: true }] },
+  },
+  did: {
+    provider: "did",
+    url: "https://api.d-id.com/credits",
+    auth: "basic_raw_key",
+    shape: { connector: "did", fields: [{ canonical: "remaining", aliases: ["credits", "balance"], required: true }] },
+  },
+  rentcast: {
+    provider: "rentcast",
+    url: "https://api.rentcast.io/v1/markets?zipCode=78701",
+    auth: "header_x_api_key",
+    shape: { connector: "rentcast", fields: [{ canonical: "saleData", aliases: ["sale_data", "rentalData", "id"], required: false }] },
+  },
+}
+
+/** The platform-keyed providers the guardian probes once per run (not per tenant),
+ *  paired with the env var carrying the key. Exported so the guardian cron and the
+ *  simulator share ONE list — a new platform provider is added here or CI can ask why. */
+export const PLATFORM_PROVIDER_KEYS: Record<string, string> = {
+  lob: "LOB_API_KEY",
+  elevenlabs: "ELEVENLABS_API_KEY",
+  did: "DID_API_KEY",
+  rentcast: "RENTCAST_API_KEY",
 }
 
 export interface ProbeResult {
@@ -137,6 +180,22 @@ function buildRequest(spec: ProbeSpec, conn: ResolvedConn): { url: string; heade
     case "header_accesskey":
       if (!conn.apiKey) return null
       headers.accesskey = conn.apiKey
+      break
+    case "basic_key_only":
+      if (!conn.apiKey) return null
+      headers.Authorization = `Basic ${Buffer.from(`${conn.apiKey}:`).toString("base64")}`
+      break
+    case "basic_raw_key":
+      if (!conn.apiKey) return null
+      headers.Authorization = `Basic ${conn.apiKey}`
+      break
+    case "header_xi_api_key":
+      if (!conn.apiKey) return null
+      headers["xi-api-key"] = conn.apiKey
+      break
+    case "header_x_api_key":
+      if (!conn.apiKey) return null
+      headers["X-Api-Key"] = conn.apiKey
       break
     case "query_access_token": {
       if (!conn.accessToken) return null

@@ -1756,7 +1756,7 @@ async function main() {
           && src("app/actions/social/generate-social-post.ts").includes("bvpAgentRow")
           && src("app/actions/ai-financial-management.ts").includes("agent_cap_tracking")
           && !src("app/actions/ai-financial-management.ts").includes("cap_progress")
-          && src("package.json").includes("npm run test:e2e-lifecycle\","))
+          && src("package.json").includes("npm run test:e2e-lifecycle"))
       }
 
       // ── PASS 14: PHANTOM-COLUMN + PHANTOM-TABLE ZERO-ZERO (approved item 4) ──
@@ -1849,6 +1849,22 @@ async function main() {
           && src("app/actions/video/generate-script.ts").includes("toLibraryScriptType(params.videoType)")
           && src("app/actions/video-content.ts").includes("toLibraryScriptType(params.video_type)")
           && !src("app/actions/video-generation.ts").includes('script_type: "video"'))
+      }
+
+      // ── INTEGRATION GUARDIAN COVERAGE (owner's spec) + PASS 16 + ACADEMY→BRIEFING LOOP ──
+      {
+        const { PLATFORM_PROVIDER_KEYS, PROBE_SPECS } = await import("../lib/agentic-os/connector-probe")
+        check("INTEGRATION GUARDIAN COVERAGE AUDIT (owner's Integration-Guardian/Provider-Specialist spec) + PASS 16 + ACADEMY→BRIEFING. AUDIT VERDICT: the spec's architecture ALREADY EXISTS — connector_health_log (DriftIncident), connector_healing_proposals (RepairProposal, AI healer w/ doc search = the Provider Specialist), connector_shape_memory (schema history), ingress_dead_letters (replay), probeConnector (canary probes), pending-proposal dedup + starvation-fair healing. Stripe AND QuickBooks were already probed (PROBE_SPECS). THE GAPS, NOW CLOSED: (1) platform-keyed providers (Lob, ElevenLabs, D-ID, RentCast — env keys serving EVERY tenant) had no probe and an expired platform key was invisible until a tenant's send/render failed → four new probes + four auth styles (basic_key_only/basic_raw_key/xi-api-key/X-Api-Key) + PLATFORM_PROVIDER_KEYS probed once per guardian run, failures ledgered platform-scoped on self_heal_events (the digest's rail); BatchData intentionally exempt (POST-only, pull-drift sentinel covers it). (2) quickbooks_sync_log rows stuck 'in_progress' >24h were an UNWATCHED silent-gap (the spec's headline failure class) → the guardian cron now sweeps them per tenant onto the health log as 'silent_gap' (added to the ATTENTION set → feeds the AI healer + superadmin board); predicate live-proven on a seeded 30h-stuck row, residue 0. PASS 16 (approved item 1): the writer-less read sweep — RIGHT queries over data that can NEVER exist (the skill-freshness/neighborhood_guides class) — ships as scripts/writerless-read-sweep.ts on the guard chain: 642 read tables, 632 with runtime writers, 66 writer-less reads baselined as a burn-down; NEW ones fail CI. ACADEMY→BRIEFING (approved item 3): a stale skill (same signals as the radar — objection drills, quizzes, PASSED courses via loadAgentSkillFreshness) surfaces as a low-priority 'sharpen' action in the morning briefing pointing at the on-demand academy; honest-quiet when sharp or unproven",
+          Object.keys(PLATFORM_PROVIDER_KEYS).sort().join(",") === "did,elevenlabs,lob,rentcast"
+          && !!PROBE_SPECS.lob && !!PROBE_SPECS.elevenlabs && !!PROBE_SPECS.did && !!PROBE_SPECS.rentcast
+          && !!PROBE_SPECS.stripe && !!PROBE_SPECS.quickbooks
+          && src("app/api/cron/connector-health/route.ts").includes("PLATFORM_PROVIDER_KEYS")
+          && src("app/api/cron/connector-health/route.ts").includes('"silent_gap"')
+          && src("app/api/cron/connector-health/route.ts").includes("QUICKBOOKS SILENT-GAP WATCH")
+          && src("scripts/writerless-read-sweep.ts").includes("GUARD_WRITE_BASELINE")
+          && src("package.json").includes("test:writerless-reads")
+          && src("lib/education/skill-freshness-radar.ts").includes("loadAgentSkillFreshness")
+          && src("lib/intelligence/daily-briefing-generator.ts").includes("Sharpen a stale skill"))
       }
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──

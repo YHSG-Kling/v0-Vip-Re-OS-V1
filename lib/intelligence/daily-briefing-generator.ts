@@ -366,6 +366,29 @@ export async function generateDailyBriefing(
     console.error("[DailyBriefing] ISA-overnight fetch failed:", err)
   }
 
+  // 2a-bis. ACADEMY → BRIEFING LOOP: a stale skill surfaces as a low-priority
+  // sharpen nudge with the on-demand academy as the fix. Same signals as the
+  // skill-freshness radar (objection drills, quizzes, PASSED courses) — the
+  // briefing and the radar can never disagree. Honest-quiet when sharp/unproven.
+  let skillActions: PriorityAction[] = []
+  try {
+    const { loadAgentSkillFreshness } = await import("@/lib/education/skill-freshness-radar")
+    const freshness = await loadAgentSkillFreshness(supabase as any, { id: agentsId, user_id: briefingUserId })
+    if (freshness.overall === "needs_refresh") {
+      const stale = freshness.skills.find((s) => s.status === "stale")
+      if (stale) {
+        skillActions.push({
+          priority: "low",
+          action: `Sharpen a stale skill: ${stale.area.replace(/_/g, " ")}`,
+          context: `${stale.reason} The academy has an on-demand refresher — 15 minutes keeps the edge you use on live clients.`,
+          manager: "recruiting_manager",
+          entity_type: null,
+          entity_id: null,
+        })
+      }
+    }
+  } catch { /* the briefing stands without the skill line */ }
+
   // 2b. "What the AI team did while you slept" — the newest autonomous systems.
   //     Deterministic, brokerage-scoped + agent-scoped; honest empty. Never blocks.
   let overnightAiWork: import("./overnight-ai-work").OvernightAiWorkSection | null = null
@@ -735,7 +758,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
   // qualified lead is never left to the model's judgment. "I saw you" recognition
   // notes ride next (same rule: a heavy client evening is a fact, not a model call).
   // AI items fill the rest.
-  const deterministicActions = [...promiseActions, ...coverageActions, ...recoveryActions, ...isaActions, ...iSawYouActions, ...smallWinActions]
+  const deterministicActions = [...promiseActions, ...coverageActions, ...recoveryActions, ...isaActions, ...iSawYouActions, ...smallWinActions, ...skillActions]
   const finalPriorityActions = [
     ...deterministicActions,
     ...(aiResponse.top_priority_actions ?? []).filter(
