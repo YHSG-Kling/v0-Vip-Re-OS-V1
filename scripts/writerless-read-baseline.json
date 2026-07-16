@@ -1,5 +1,4 @@
 [
-  "ad_retarget_presets",
   "agent_relationships",
   "ai_content_outputs",
   "ai_isa_settings",
@@ -8,9 +7,7 @@
   "appointments",
   "behavioral_patterns",
   "brand_asset_library",
-  "brokerage_earnings",
   "brokerage_forms",
-  "brokerage_p_l",
   "client_detailed_personas",
   "closing_disclosure",
   "commission_splits",
@@ -23,7 +20,6 @@
   "document_classifications",
   "document_requests",
   "earnings_history",
-  "email_presets",
   "email_tracking",
   "form_field_maps",
   "keyword_intelligence",
@@ -36,14 +32,10 @@
   "newsletter_local_content",
   "newsletters",
   "organization_members",
-  "podcast_episode_presets",
-  "portal_push_presets",
   "property_smart_insights",
   "property_upgrades",
-  "sms_presets",
   "social_accounts",
   "social_cadence_policy",
-  "social_post_presets",
   "subscriber_service_areas",
   "team_heatmap_snapshots",
   "title_orders",
@@ -51,6 +43,5 @@
   "user_brokerage_roles",
   "vendor_directory",
   "video_content",
-  "video_streaming_status",
-  "voicedrop_presets"
+  "video_streaming_status"
 ]

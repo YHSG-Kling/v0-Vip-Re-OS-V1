@@ -1878,7 +1878,19 @@ async function main() {
         && src("lib/deal-health/health-scorer.ts").includes("deal_health_snapshots")
         && src("lib/deal-health/health-scorer.ts").includes("FACTOR_TYPE")
         && src("lib/deal-health/health-scorer.ts").includes("JSON.stringify({ issues: c.issues, category: c.category })")
-        && JSON.parse(readFileSync(join(ROOT, "scripts/writerless-read-baseline.json"), "utf-8")).length === 54)
+        && JSON.parse(readFileSync(join(ROOT, "scripts/writerless-read-baseline.json"), "utf-8")).length === 45)
+
+      // ── WRITER-LESS BURN-DOWN, ROUND 2 (54 → 45): FINANCIALS + PRESETS ──
+      check("WRITER-LESS BURN-DOWN ROUND 2 (approved campaigns 1+2). FINANCIALS: the BROKER'S MONEY PAGE read brokerage_earnings (mtd/ytd KPIs, 12-month trend, forecast proxy) and brokerage_p_l — writer-less, so every broker's P&L dashboard rendered zeros forever. runBrokerageEarningsRollup now rides the nightly brokerage-pl-rollup cron, folding the SAME canonical agent_commissions source as the per-agent and team snapshots so all three altitudes reconcile exactly; operating-expense lines stay honest-NULL (no ledger source — never fabricated) and net_profit is the provable brokerage-side number. LIVE-FIRE CAUGHT A DOUBLE-SIDED VOCABULARY BUG: brokerage_earnings.period_type CHECK admits monthly/quarterly/annual, but the PAGE read 'mtd'/'ytd' — values that can never exist (the reader itself was phantom-vocabulary). Writer writes monthly/annual; all three reader files fixed to match. Delete-then-insert per tenant (pass-10 rule: no onConflict without a real unique). PRESETS: seven campaign-bundle preset shelves (email/sms/voicedrop/social/portal-push/podcast/ad-retarget) were READ by the bundle dispatcher with NO writer — upsertCampaignPreset is the ONE canonical writer for all seven channels, mirroring the direct-mail preset discipline exactly (tenant-guarded, scope-anchored — scope_id NOT-NULL live-caught, compliance-GATED at save time on every content-carrying channel via evaluateOutbound, field whitelist so caller input never spreads into rows). Sweep learns VARIABLE_TABLE_WRITERS (auditable exemptions naming the writer module). Baseline 54 → 45; remaining campaigns: legacy twins + ingress-expected",
+        src("lib/finance/brokerage-earnings-writer.ts").includes("runBrokerageEarningsRollup")
+        && src("lib/finance/brokerage-earnings-writer.ts").includes('period_type: "monthly"')
+        && !src("app/dashboard/financials/brokerage/page.tsx").includes('"mtd"')
+        && src("app/dashboard/financials/brokerage/page.tsx").includes('.eq("period_type", "monthly")')
+        && src("app/api/cron/brokerage-pl-rollup/route.ts").includes("runBrokerageEarningsRollup")
+        && src("app/actions/campaign-presets.ts").includes("CHANNEL_TABLE")
+        && src("app/actions/campaign-presets.ts").includes("evaluateOutbound")
+        && src("app/actions/campaign-presets.ts").includes("input.scopeId ?? ctx.brokerageId")
+        && src("scripts/writerless-read-sweep.ts").includes("VARIABLE_TABLE_WRITERS"))
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

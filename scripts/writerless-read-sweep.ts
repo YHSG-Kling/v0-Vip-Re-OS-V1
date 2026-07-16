@@ -48,6 +48,18 @@ const DB_VIEWS = new Set([
   "v_brokerage_ai_quota", "v_brokerage_onboarding_progress", "v_platform_margin",
 ])
 
+/** Tables written through a VARIABLE table name the static scan can't see —
+ *  each entry names its canonical writer so the exemption stays auditable. */
+const VARIABLE_TABLE_WRITERS: Record<string, string> = {
+  email_presets: "app/actions/campaign-presets.ts (CHANNEL_TABLE)",
+  sms_presets: "app/actions/campaign-presets.ts (CHANNEL_TABLE)",
+  voicedrop_presets: "app/actions/campaign-presets.ts (CHANNEL_TABLE)",
+  social_post_presets: "app/actions/campaign-presets.ts (CHANNEL_TABLE)",
+  portal_push_presets: "app/actions/campaign-presets.ts (CHANNEL_TABLE)",
+  podcast_episode_presets: "app/actions/campaign-presets.ts (CHANNEL_TABLE)",
+  ad_retarget_presets: "app/actions/campaign-presets.ts (CHANNEL_TABLE)",
+}
+
 function walk(dir: string, acc: string[]) {
   for (const name of readdirSync(dir)) {
     if (name === "node_modules" || name === ".next" || name === ".git") continue
@@ -82,7 +94,7 @@ function main() {
   }
 
   const offenders = [...readers.keys()]
-    .filter((t) => !writers.has(t) && !SEEDED_REFERENCE.has(t) && !DB_VIEWS.has(t))
+    .filter((t) => !writers.has(t) && !SEEDED_REFERENCE.has(t) && !DB_VIEWS.has(t) && !(t in VARIABLE_TABLE_WRITERS))
     .sort()
 
   if (process.env.GUARD_WRITE_BASELINE === "1") {

@@ -80,7 +80,7 @@ export default async function BrokeragePLPage() {
       .from("brokerage_earnings")
       .select("*")
       .eq("brokerage_id", profile.brokerage_id)
-      .eq("period_type", "mtd")
+      .eq("period_type", "monthly")
       .order("computed_at", { ascending: false })
       .limit(1)
       .maybeSingle()
@@ -91,7 +91,7 @@ export default async function BrokeragePLPage() {
       .from("brokerage_earnings")
       .select("*")
       .eq("brokerage_id", profile.brokerage_id)
-      .eq("period_type", "ytd")
+      .eq("period_type", "annual")
       .order("computed_at", { ascending: false })
       .limit(1)
       .maybeSingle()
@@ -121,7 +121,7 @@ export default async function BrokeragePLPage() {
         teams:team_id(id, name)
       `)
       .eq("brokerage_id", profile.brokerage_id)
-      .eq("period_type", "mtd")
+      .eq("period_type", "monthly")
       .order("gross_commission", { ascending: false })
       .then(r => r.data || []),
 

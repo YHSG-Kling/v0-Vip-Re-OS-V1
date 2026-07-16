@@ -145,6 +145,19 @@ export async function GET(req: NextRequest) {
       errors.push(`team-pl: ${err.message}`)
     }
 
+    // BROKERAGE EARNINGS + P&L — the brokerage-level mirror (writer-less
+    // burn-down): the money page read brokerage_earnings + brokerage_p_l but
+    // nothing wrote them. Same canonical agent_commissions source, so
+    // brokerage totals reconcile exactly with the agent + team snapshots.
+    let brokerageRowsWritten = 0
+    try {
+      const { runBrokerageEarningsRollup } = await import("@/lib/finance/brokerage-earnings-writer")
+      const bk = await runBrokerageEarningsRollup(supabase, now)
+      brokerageRowsWritten = bk.rowsWritten
+    } catch (err: any) {
+      errors.push(`brokerage-earnings: ${err.message}`)
+    }
+
     // SUBSCRIPTION WATCH — the platform's dunning/renewal engine: alert platform staff on every tenant
     // whose subscription needs a human (payment past due / trial expiring), deduped per tenant per day.
     let subscriptionAlerts = 0
