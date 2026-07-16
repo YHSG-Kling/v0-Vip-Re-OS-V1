@@ -50,6 +50,10 @@ export interface LandingContent {
   /** true when grounded in live demand topics (vs the deterministic fallback). */
   fromTopics: boolean
   generatedAt: string
+  /** Auto-rendered avatar presentation attached to this page (playbook installs —
+   *  the poll-did-videos cron writes it here when the render completes). */
+  videoUrl?: string | null
+  videoProjectId?: string | null
 }
 
 export interface CopyContext {

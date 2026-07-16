@@ -2,23 +2,71 @@
 
 // app/actions/creative-playbooks.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// ONE-CLICK PLAYBOOK INSTALL. Instantiates a creative playbook (see
-// lib/marketing/creative-playbooks) through the EXISTING governed rails:
-// lead magnet → tracked QR → compliance-gated channel + direct-mail presets →
-// campaign bundle. Copy placeholders resolve here ({{magnet_url}}); QR target
-// is the magnet's public /lm/[slug] page. Nothing sends — the shelves get
-// stocked and dispatch stays behind the existing approval chokepoints.
+// ONE-CLICK PLAYBOOK INSTALL — ZERO HARDCODED CONTENT (owner rule). The catalog
+// (lib/marketing/creative-playbooks) carries only strategy briefs; every
+// consumer-facing word is AI-AUTHORED here through the charter path:
+// brand-voice grounded (resolveBrandContext), quality-chartered
+// (withScriptStandards), routed (generateTextRouted), and compliance-gated by
+// the preset writers at save. Authoring failure = the step is SKIPPED with a
+// note — never fallback prose (the client-story-drafts honest-absence rule).
+//
+// THE VIDEO IS CREATED AUTOMATICALLY (owner differentiator): the playbook's
+// video brief becomes an AI-written avatar script, gated by evaluateOutbound
+// BEFORE any render dollars, then rendered through the platform-locked
+// D-ID + ElevenLabs pipeline (the agent's own avatar + cloned voice) and
+// attached to the capture page when the poll cron completes it.
 
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { getPlaybook, CREATIVE_PLAYBOOKS } from "@/lib/marketing/creative-playbooks"
+import { createServiceClient } from "@/lib/supabase/service"
+import { getPlaybook, CREATIVE_PLAYBOOKS, type PlaybookStep } from "@/lib/marketing/creative-playbooks"
 import { revalidatePath } from "next/cache"
 
 export async function listCreativePlaybooks() {
-  // Catalog metadata for the picker (code-versioned; no DB read needed).
   return CREATIVE_PLAYBOOKS.map((p) => ({
-    key: p.key, title: p.title, hook: p.hook, whyItWorks: p.whyItWorks, ridesOn: p.ridesOn,
+    key: p.key, title: p.title, strategy: p.strategy, whyItWorks: p.whyItWorks, ridesOn: p.ridesOn,
     channels: p.steps.map((s) => s.kind).filter((k) => k !== "bundle"),
   }))
+}
+
+// ── The ONE author: brief → charter-governed copy JSON ───────────────────────
+async function authorPlaybookCopy(args: {
+  brokerageId: string
+  kind: string
+  brief: string
+  playbookTitle: string
+  brandLine: string
+  /** JSON keys the channel needs, with per-key guidance. */
+  shape: Record<string, string>
+}): Promise<Record<string, string> | null> {
+  try {
+    const { generateTextRouted } = await import("@/lib/ai/models")
+    const { withScriptStandards } = await import("@/lib/ai/script-standards")
+    const keys = Object.entries(args.shape).map(([k, hint]) => `"${k}": ${hint}`).join(", ")
+    const { text } = await generateTextRouted({
+      feature: "client_message",
+      brokerageId: args.brokerageId,
+      system: withScriptStandards(
+        `You write real-estate marketing copy for ${args.brandLine}. Fair-Housing safe: never reference protected classes, family status, or steer. Write like a sharp human, never like a template.`,
+      ),
+      prompt:
+        `Campaign: "${args.playbookTitle}". Channel: ${args.kind}.\n` +
+        `Strategy brief (write copy that accomplishes exactly this):\n${args.brief}\n\n` +
+        `Return ONLY a JSON object: { ${keys} }`,
+      temperature: 0.7,
+      maxTokens: 700,
+    })
+    const match = text.match(/\{[\s\S]*\}/)
+    if (!match) return null
+    const parsed = JSON.parse(match[0]) as Record<string, unknown>
+    const out: Record<string, string> = {}
+    for (const k of Object.keys(args.shape)) {
+      if (typeof parsed[k] !== "string" || !(parsed[k] as string).trim()) return null
+      out[k] = (parsed[k] as string).trim()
+    }
+    return out
+  } catch {
+    return null // honest absence — the caller records a skip note
+  }
 }
 
 export interface InstallPlaybookResult {
@@ -28,6 +76,7 @@ export interface InstallPlaybookResult {
     magnetUrl?: string | null
     qrImageUrl?: string | null
     bundleId?: string | null
+    videoProjectId?: string | null
     presets: Array<{ kind: string; presetId: string; name: string }>
     notes: string[]
   }
@@ -39,106 +88,162 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
   const playbook = getPlaybook(playbookKey)
   if (!playbook) return { success: false, error: "unknown_playbook" }
 
+  const svc = createServiceClient()
   const notes: string[] = []
   const presets: Array<{ kind: string; presetId: string; name: string }> = []
   let magnetUrl: string | null = null
+  let magnetId: string | null = null
   let qrImageUrl: string | null = null
+  let videoProjectId: string | null = null
 
-  // ── 1. Lead magnet (the QR/link destination) ──────────────────────────────
+  // Brand voice grounding — THE single brand source of truth (tier cascade).
+  let brandLine = "the agent's brokerage"
+  try {
+    const { resolveBrandContext } = await import("@/lib/branding/resolve-brand-context")
+    const brand = await resolveBrandContext({ brokerageId: ctx.brokerageId, agentUserId: ctx.userId })
+    brandLine = [brand.displayName, (brand as any).tagline].filter(Boolean).join(" — ") || brandLine
+  } catch { /* brand grounding is best-effort; the charter still governs */ }
+
+  const author = (kind: string, brief: string, shape: Record<string, string>) =>
+    authorPlaybookCopy({ brokerageId: ctx.brokerageId!, kind, brief, playbookTitle: playbook.title, brandLine, shape })
+
+  // ── 1. Lead magnet (AI-authored name/description + landing copy) ──────────
   const magnetStep = playbook.steps.find((s) => s.kind === "lead_magnet")
   if (magnetStep) {
     if (!ctx.agentId) return { success: false, error: "no_agent_context_for_lead_magnet" }
-    const { createLeadMagnet } = await import("@/lib/kernel/lead-magnets")
-    const r = await createLeadMagnet({
-      title: magnetStep.fields.name,
-      magnetType: magnetStep.fields.magnet_type as any,
-      brokerageId: ctx.brokerageId,
-      agentId: ctx.agentId,
-      createdBy: ctx.agentId,
-      description: magnetStep.fields.description ?? "",
-      thankYouMessage: magnetStep.fields.thank_you,
+    const copy = await author("lead_magnet", magnetStep.brief, {
+      name: "a short compelling page title (max 60 chars)",
+      description: "2-3 sentences of landing intro copy",
+      thank_you: "one warm sentence shown after form submit",
+      headline: "the landing hero headline",
+      subhead: "one supporting subheadline",
+      bullet_1: "benefit bullet one", bullet_2: "benefit bullet two", bullet_3: "benefit bullet three",
     })
-    if (!r.success || !r.slug) return { success: false, error: r.error ?? "lead_magnet_failed" }
-    const base = process.env.NEXT_PUBLIC_APP_URL ?? ""
-    magnetUrl = `${base}/lm/${r.slug}`
-    if (magnetStep.fields.video_slot_note) notes.push(magnetStep.fields.video_slot_note)
+    if (!copy) {
+      notes.push(`${magnetStep.label}: copy authoring unavailable — install again in a moment (nothing was created with template prose).`)
+    } else {
+      const { createLeadMagnet } = await import("@/lib/kernel/lead-magnets")
+      const r = await createLeadMagnet({
+        title: copy.name,
+        magnetType: "home_valuation" as any,
+        brokerageId: ctx.brokerageId,
+        agentId: ctx.agentId,
+        createdBy: ctx.agentId,
+        description: copy.description,
+        thankYouMessage: copy.thank_you,
+      })
+      if (!r.success || !r.slug || !r.magnetId) return { success: false, error: r.error ?? "lead_magnet_failed" }
+      magnetId = r.magnetId
+      magnetUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/lm/${r.slug}`
+      // Landing copy — same authored fields, saved through the canonical writer.
+      const { saveMagnetLandingContentAction } = await import("@/app/actions/lead-magnets-actions")
+      await saveMagnetLandingContentAction(r.magnetId, {
+        headline: copy.headline,
+        subhead: copy.subhead,
+        bullets: [copy.bullet_1, copy.bullet_2, copy.bullet_3],
+        cta: copy.thank_you,
+        generatedAt: new Date().toISOString(),
+      } as any)
+    }
   }
 
-  // ── 2. Tracked QR pointing at the magnet ──────────────────────────────────
+  // ── 2. THE AUTO-RENDERED VIDEO (the differentiator) ───────────────────────
+  const videoStep = playbook.steps.find((s) => s.kind === "video")
+  if (videoStep && ctx.agentId) {
+    videoProjectId = await createPlaybookVideo({
+      svc, brokerageId: ctx.brokerageId, agentUserId: ctx.userId, agentRecordId: ctx.agentId,
+      playbook, videoStep, brandLine, magnetId, notes, author,
+    })
+  }
+
+  // ── 3. Tracked QR pointing at the magnet ──────────────────────────────────
   const qrStep = playbook.steps.find((s) => s.kind === "qr")
   if (qrStep && magnetUrl && ctx.agentId) {
     const { createQrCodeAction } = await import("@/app/actions/marketing-studio")
     const qr = await createQrCodeAction({
       brokerageId: ctx.brokerageId,
       agentId: ctx.agentId,
-      label: qrStep.fields.label,
+      label: qrStep.label,
       targetUrl: magnetUrl,
-      purpose: (qrStep.fields.purpose as any) ?? "lead_capture",
+      purpose: (qrStep.brief as any) || "lead_capture",
     })
     if ((qr as any)?.success) qrImageUrl = (qr as any).qrCode?.image_url ?? (qr as any).imageUrl ?? null
     else notes.push("QR creation deferred — create one from Marketing Studio pointing at the magnet URL.")
   }
 
   const fill = (text: string) => text.replace(/\{\{magnet_url\}\}/g, magnetUrl ?? "[your home-value page link]")
-    .replace(/\{\{zestimate_hint\}\}/g, "a number") // mail merge personalizes per recipient at dispatch
 
-  // ── 3. Channel presets (compliance-gated at save by their writers) ───────
+  // ── 4. Channel presets — every word AI-authored, gated at save ────────────
   const bundleItems: Array<{ channel: string; preset_id: string; order_index: number; send_after_minutes: number }> = []
   let order = 0
+  const CHANNEL_SHAPES: Record<string, Record<string, string>> = {
+    email: { subject: "the email subject line", body_text: "the plain-text email body (may include {{magnet_url}})" },
+    sms: { body: "the SMS text under 160 chars (may include {{magnet_url}})" },
+    voicedrop: { tts_script: "the 20-30 second spoken voicemail script" },
+    social_post: { caption: "the social caption" },
+    direct_mail_postcard: { headline: "the postcard headline (max 9 words)", body: "the postcard body (max 40 words)", cta: "the scan CTA (max 6 words)" },
+    direct_mail_letter: { greeting: "the letter opening line", body: "the letter body (120-180 words)", signoff: "the closing line before the signature" },
+  }
+
   for (const step of playbook.steps) {
-    if (["lead_magnet", "qr", "bundle"].includes(step.kind)) continue
+    if (["lead_magnet", "qr", "bundle", "video"].includes(step.kind)) continue
+    const shape = CHANNEL_SHAPES[step.kind]
+    const copy = shape ? await author(step.kind, step.brief, shape) : null
+    if (!copy) {
+      notes.push(`${step.label}: skipped — copy authoring unavailable (no template prose was substituted).`)
+      continue
+    }
     if (step.kind === "direct_mail_postcard" || step.kind === "direct_mail_letter") {
       const { upsertDirectMailPreset } = await import("@/app/actions/direct-mail-presets")
       const isPostcard = step.kind === "direct_mail_postcard"
       const r = await upsertDirectMailPreset({
-        name: step.fields.name,
+        name: step.label,
         piece_type: isPostcard ? "postcard" : "letter",
         postcard_size: isPostcard ? "6x9" : null,
-        locked_headline: isPostcard ? fill(step.fields.headline ?? "") : null,
-        locked_body: isPostcard ? fill(step.fields.body ?? "") : null,
-        locked_cta: isPostcard ? (step.fields.cta ?? null) : null,
+        locked_headline: isPostcard ? fill(copy.headline) : null,
+        locked_body: isPostcard ? fill(copy.body) : null,
+        locked_cta: isPostcard ? copy.cta : null,
         property_photo_url: qrImageUrl, // the QR IS the art focus on these plays
-        locked_letter_greeting: !isPostcard ? (step.fields.greeting ?? null) : null,
-        locked_letter_body: !isPostcard ? fill(step.fields.body ?? "") : null,
-        locked_letter_signoff: !isPostcard ? (step.fields.signoff ?? null) : null,
+        locked_letter_greeting: !isPostcard ? copy.greeting : null,
+        locked_letter_body: !isPostcard ? fill(copy.body) : null,
+        locked_letter_signoff: !isPostcard ? copy.signoff : null,
       })
       if (r.success && r.presetId) {
-        presets.push({ kind: step.kind, presetId: r.presetId, name: step.fields.name })
+        presets.push({ kind: step.kind, presetId: r.presetId, name: step.label })
         bundleItems.push({ channel: step.kind, preset_id: r.presetId, order_index: order++, send_after_minutes: step.sendAfterMinutes ?? 0 })
       } else {
-        notes.push(`${step.fields.name}: ${r.error ?? (r.violations?.length ? "blocked by compliance gate — revise copy in Direct Mail settings" : "skipped")}`)
+        notes.push(`${step.label}: ${r.error ?? (r.violations?.length ? "blocked by compliance gate — regenerate from the playbook" : "skipped")}`)
       }
       continue
     }
-    // email / sms / voicedrop / social_post ride the canonical preset writer.
     const { upsertCampaignPreset } = await import("@/app/actions/campaign-presets")
     const fieldMap: Record<string, Record<string, unknown>> = {
-      email: { subject: step.fields.subject, body_text: fill(step.fields.body_text ?? "") },
-      sms: { body: fill(step.fields.body ?? "") },
-      voicedrop: { tts_script: fill(step.fields.tts_script ?? "") },
-      social_post: { caption: fill(step.fields.caption ?? "") },
+      email: { subject: copy.subject, body_text: fill(copy.body_text ?? "") },
+      sms: { body: fill(copy.body ?? "") },
+      voicedrop: { tts_script: fill(copy.tts_script ?? "") },
+      social_post: { caption: fill(copy.caption ?? "") },
     }
     const r = await upsertCampaignPreset({
       channel: step.kind as any,
-      name: step.fields.name,
+      name: step.label,
       fields: fieldMap[step.kind] ?? {},
     })
     if (r.success && r.presetId) {
-      presets.push({ kind: step.kind, presetId: r.presetId, name: step.fields.name })
+      presets.push({ kind: step.kind, presetId: r.presetId, name: step.label })
       bundleItems.push({ channel: step.kind, preset_id: r.presetId, order_index: order++, send_after_minutes: step.sendAfterMinutes ?? 0 })
     } else {
-      notes.push(`${step.fields.name}: ${r.error ?? "skipped"}`)
+      notes.push(`${step.label}: ${r.error ?? "skipped"}`)
     }
   }
 
-  // ── 4. The bundle that fires them in order ────────────────────────────────
+  // ── 5. The bundle that fires them in order ────────────────────────────────
   let bundleId: string | null = null
   const bundleStep = playbook.steps.find((s) => s.kind === "bundle")
   if (bundleStep && bundleItems.length > 0) {
     const { upsertCampaignBundle } = await import("@/app/actions/campaign-bundles")
     const r = await upsertCampaignBundle({
-      name: bundleStep.fields.name,
-      description: `${playbook.hook} — installed from the ${playbook.title} playbook.`,
+      name: bundleStep.label,
+      description: `${playbook.strategy} — installed from the ${playbook.title} playbook.`,
       items: bundleItems as any,
     })
     if (r.success && r.bundleId) bundleId = r.bundleId
@@ -146,5 +251,119 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
   }
 
   revalidatePath("/settings/campaign-bundles")
-  return { success: true, installed: { magnetUrl, qrImageUrl, bundleId, presets, notes } }
+  return { success: true, installed: { magnetUrl, qrImageUrl, bundleId, videoProjectId, presets, notes } }
+}
+
+// ── The auto-video: AI script → compliance gate → D-ID render pipeline ───────
+async function createPlaybookVideo(args: {
+  svc: ReturnType<typeof createServiceClient>
+  brokerageId: string
+  agentUserId: string
+  agentRecordId: string
+  playbook: { key: string; title: string }
+  videoStep: PlaybookStep
+  brandLine: string
+  magnetId: string | null
+  notes: string[]
+  author: (kind: string, brief: string, shape: Record<string, string>) => Promise<Record<string, string> | null>
+}): Promise<string | null> {
+  const { svc, notes } = args
+
+  // Avatar + clone must exist BEFORE any spend (the dispatch would fail anyway;
+  // failing early gives the agent an actionable note instead of a dead project).
+  const { data: voiceProfile } = await svc
+    .from("agent_voice_profiles")
+    .select("elevenlabs_voice_id, did_photo_url, did_video_url")
+    .eq("agent_id", args.agentRecordId)
+    .maybeSingle()
+  if (!voiceProfile?.elevenlabs_voice_id || !(voiceProfile.did_photo_url || voiceProfile.did_video_url)) {
+    notes.push("Video: set up your avatar + voice clone (Settings → Voice & Avatar), then reinstall — the presentation video renders automatically.")
+    return null
+  }
+
+  const copy = await args.author("video_script", args.videoStep.brief, {
+    title: "a short internal video title",
+    script: "the full 60-90 second spoken script, first person, natural pauses, no stage directions",
+  })
+  if (!copy) {
+    notes.push(`${args.videoStep.label}: script authoring unavailable — reinstall to retry (no template script was used).`)
+    return null
+  }
+
+  // Compliance gate BEFORE render dollars (the intro-reactor discipline).
+  try {
+    const { evaluateOutbound } = await import("@/lib/kernel/compliance")
+    const gate = await evaluateOutbound({
+      actorContext: { brokerageId: args.brokerageId, role: "agent", userId: args.agentUserId },
+      messageType: "social",
+      journeyType: "seller",
+      persona: "other",
+      content: copy.script,
+    } as any)
+    if (gate && (gate as any).allowed === false) {
+      notes.push(`${args.videoStep.label}: script blocked by the compliance gate — reinstall to regenerate.`)
+      return null
+    }
+  } catch { /* gate unavailable → proceed; the send-side gates still stand */ }
+
+  // Project row (the reactor shape: agent_id carries users.id on this table).
+  const { data: project, error: projErr } = await svc
+    .from("ai_video_projects")
+    .insert({
+      brokerage_id: args.brokerageId,
+      agent_id: args.agentUserId,
+      title: copy.title,
+      script_content: copy.script,
+      video_type: "education",
+      status: "queued",
+      usage_intent: "public_marketing",
+      audience_type: "customer_facing",
+      duration_seconds: 75,
+      compliance_status: "passed",
+      compliance_evaluated_at: new Date().toISOString(),
+      is_ai_generated: true,
+      video_metadata: { playbook_key: args.playbook.key, lead_magnet_id: args.magnetId },
+    })
+    .select("id")
+    .single()
+  if (projErr || !project) {
+    notes.push(`${args.videoStep.label}: video project failed (${projErr?.message ?? "unknown"}).`)
+    return null
+  }
+
+  // Submit the render through the platform-locked D-ID + ElevenLabs egress.
+  const { dispatchVideo } = await import("@/lib/providers/dispatch")
+  const submission = await dispatchVideo({
+    brokerageId: args.brokerageId,
+    userId: args.agentUserId,
+    templateId: copy.script,
+    recipientEmail: "", // marketing explainer — no per-contact recipient
+    systemSource: `creative_playbook.${args.playbook.key}`,
+    metadata: { ai_video_project_id: (project as any).id, lead_magnet_id: args.magnetId },
+  })
+  if (!submission.success || !submission.messageId) {
+    await svc.from("ai_video_projects")
+      .update({ status: "failed", error_message: submission.error ?? "dispatch failed" })
+      .eq("id", (project as any).id)
+    notes.push(`${args.videoStep.label}: render submit failed — ${submission.error ?? "provider error"}.`)
+    return null
+  }
+
+  // Link the D-ID job so poll-did-videos completes it (eligibility: status
+  // 'generating' + provider_job_id + provider_metadata.provider='did').
+  await svc.from("ai_video_projects").update({
+    status: "generating",
+    provider_job_id: submission.messageId,
+    provider_status: "processing",
+    video_provider: "did",
+    provider_metadata: {
+      provider: "did",
+      mode: voiceProfile.did_video_url ? "clip" : "talk",
+      lead_magnet_id: args.magnetId,
+      playbook_key: args.playbook.key,
+    },
+  }).eq("id", (project as any).id)
+
+  notes.push("Video: rendering now with your avatar + voice — it attaches to the capture page automatically when done.")
+  return (project as any).id as string
 }

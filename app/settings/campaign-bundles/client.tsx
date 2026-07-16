@@ -257,7 +257,7 @@ export function CampaignBundlesClient({
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <h3 className="text-sm font-semibold text-gray-900">{p.title}</h3>
-                    <p className="text-sm text-purple-800 italic mt-0.5">{p.hook}</p>
+                    <p className="text-sm text-purple-800 italic mt-0.5">{p.strategy}</p>
                   </div>
                   <button
                     onClick={() => {

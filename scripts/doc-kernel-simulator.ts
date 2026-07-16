@@ -1995,7 +1995,8 @@ async function main() {
         && src("lib/competitive-intel/content-intel-scan.ts").includes("search_volume_monthly: interestIndex")
         && src("app/api/cron/content-intel-scan/route.ts").includes("runContentIntelScan")
         && src("app/actions/newsletter/fetch-local-news.ts").includes("recordNewsletterLocalContent")
-        && src("app/actions/newsletter/fetch-local-news.ts").includes("callConnector")
+        // (round 7: the gateway egress moved into the newsapi-ai adapter.)
+        && src("lib/content-intel/newsapi-ai.ts").includes("callConnector")
         && src("app/newsletters/newsletters-client.tsx").includes("recordNewsletterLocalContent")
         && src("app/actions/partner-orders.ts").includes("createLenderApplication")
         && src("app/actions/partner-orders.ts").includes("application_url")
@@ -2019,10 +2020,12 @@ async function main() {
         && src("lib/competitive-intel/content-intel-scan.ts").includes("interestIndex")
         && src("lib/competitive-intel/content-intel-scan.ts").includes("withinDays: 180")
         && src("lib/competitive-intel/content-intel-scan.ts").includes("distinctDomains")
-        && src("app/actions/newsletter/fetch-local-news.ts").includes("resolveNewsApiKey")
-        && src("app/actions/newsletter/fetch-local-news.ts").includes("'newsapi'")
+        // (round 7 evolved these: news moved to newsapi.ai and ALL playbook copy
+        // became AI-authored — the literal copy assertion died with the copy.)
+        && src("app/actions/newsletter/fetch-local-news.ts").includes("resolveNewsApiAiKey")
+        && src("lib/content-intel/newsapi-ai.ts").includes("newsapi_ai")
         && src("lib/marketing/creative-playbooks.ts").includes("zestimate_challenge")
-        && src("lib/marketing/creative-playbooks.ts").includes("Do you agree with what Zillow says your home is worth?")
+        && src("lib/marketing/creative-playbooks.ts").includes("NO HARDCODED CONTENT")
         && src("app/actions/creative-playbooks.ts").includes("installCreativePlaybook")
         && src("app/actions/creative-playbooks.ts").includes("createLeadMagnet")
         && src("app/actions/creative-playbooks.ts").includes("createQrCodeAction")
@@ -2039,6 +2042,28 @@ async function main() {
         && !src("app/dashboard/videos/board/page.tsx").includes('from("video_streaming_status")')
         && src("app/actions/ai-chat.ts").includes('from("messages")')
         && src("app/actions/link-to-video.ts").includes("team_members"))
+    }
+    // ── ROUND 7: ZERO HARDCODED CONTENT + AUTO-RENDERED PLAYBOOK VIDEO + NEWSAPI.AI ──
+    {
+      check("ROUND 7 — OWNER DIRECTIVES: NO HARDCODED CONTENT + THE VIDEO RENDERS ITSELF + NEWSAPI.AI. PLAYBOOKS DE-HARDCODED: the catalog now carries ONLY strategy briefs (what the copy must accomplish); EVERY consumer-facing word — postcard, letter, email, SMS, voicedrop, social caption, capture-page landing copy, and the VIDEO SCRIPT — is AI-authored at install through the charter path (resolveBrandContext brand grounding + withScriptStandards + generateTextRouted), still compliance-gated by the preset writers at save; authoring failure = the step is SKIPPED with a note (client-story-drafts honest-absence rule — never fallback prose). THE AUTO-RENDERED VIDEO (the differentiator): the playbook's video brief becomes an AI-written 60-90s avatar script, gated by evaluateOutbound BEFORE any render dollars (the intro-reactor discipline), pre-flight checks the agent's voice clone + avatar exist (actionable note instead of a dead project), inserts the ai_video_projects row (education / public_marketing / customer_facing), submits through the platform-locked D-ID + ElevenLabs dispatch, then LINKS provider_job_id + provider_metadata{provider:'did', mode, lead_magnet_id} so poll-did-videos completes it — and the poll cron's completion block now ATTACHES the finished render to the capture page (landing_content.videoUrl; the /lm page renders the <video> block), so the Zestimate-challenge visitor scans the postcard and watches the agent's own cloned voice explain why the online number can't be trusted, end to end with ZERO human production steps. NEWSAPI.AI (owner-selected provider): lib/content-intel/newsapi-ai.ts is the one Event Registry adapter (gateway egress, tenant-key cascade with the SaaS-license rule on the platform env key) — local newsletter blocks now carry REAL social scores/sentiment/semantic concepts (relevance_score = actual share-based popularity, not positional guessing), and keyword_intelligence gains the newsapi_ai_social lane (socialScore-ranked = what people actually shared) beside the Exa citation lane. All new shapes live-fired, residue 0",
+        src("lib/marketing/creative-playbooks.ts").includes("brief:")
+        && !src("lib/marketing/creative-playbooks.ts").includes("tts_script:")
+        && src("app/actions/creative-playbooks.ts").includes("authorPlaybookCopy")
+        && src("app/actions/creative-playbooks.ts").includes("resolveBrandContext")
+        && src("app/actions/creative-playbooks.ts").includes("withScriptStandards")
+        && src("app/actions/creative-playbooks.ts").includes("createPlaybookVideo")
+        && src("app/actions/creative-playbooks.ts").includes("dispatchVideo")
+        && src("app/actions/creative-playbooks.ts").includes("evaluateOutbound")
+        && src("app/actions/creative-playbooks.ts").includes("agent_voice_profiles")
+        && src("app/actions/creative-playbooks.ts").includes("saveMagnetLandingContentAction")
+        && src("app/api/cron/poll-did-videos/route.ts").includes("lead_magnet_id")
+        && src("app/api/cron/poll-did-videos/route.ts").includes("videoUrl: finalVideoUrl")
+        && src("app/lm/[slug]/page.tsx").includes("landing.videoUrl")
+        && src("lib/marketing/lead-magnet-copy.ts").includes("videoUrl?")
+        && src("lib/content-intel/newsapi-ai.ts").includes("searchNewsApiAiArticles")
+        && src("lib/content-intel/newsapi-ai.ts").includes("socialScore")
+        && src("app/actions/newsletter/fetch-local-news.ts").includes("searchNewsApiAiArticles")
+        && src("lib/competitive-intel/content-intel-scan.ts").includes("newsapi_ai_social"))
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

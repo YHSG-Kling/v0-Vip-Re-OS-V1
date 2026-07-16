@@ -2,26 +2,11 @@
 
 import { createClient } from '@/lib/supabase/server'
 
-const NEWSAPI_KEY = process.env.NEWSAPI_KEY
-
-/**
- * NewsAPI key cascade (owner directive): the tenant's OWN connected key wins
- * (integration_credentials provider 'newsapi' — free/dev keys are licensed to
- * the tenant themselves), falling back to the PLATFORM key only when one is
- * configured — which requires a NewsAPI plan that permits SaaS redistribution
- * (their Business tier); the free tier does NOT, so the platform env key must
- * only ever hold a commercially-licensed key.
- */
-async function resolveNewsApiKey(supabase: Awaited<ReturnType<typeof createClient>>, brokerageId: string): Promise<string | null> {
-  const { data: cred } = await supabase
-    .from('integration_credentials')
-    .select('api_key')
-    .eq('brokerage_id', brokerageId)
-    .eq('provider_name', 'newsapi')
-    .eq('is_active', true)
-    .maybeSingle()
-  return (cred?.api_key as string | undefined) || NEWSAPI_KEY || null
-}
+// NEWSAPI.AI (Event Registry) is the news provider (owner directive) — richer
+// than plain headlines: social scores, sentiment, semantic concepts. Key
+// cascade + licensing rule live in lib/content-intel/newsapi-ai.ts (tenant key
+// wins; the platform env key must hold a SaaS-licensed plan).
+import { resolveNewsApiAiKey, searchNewsApiAiArticles } from '@/lib/content-intel/newsapi-ai'
 
 export async function fetchLocalNews(zipCodes: string[], limit: number = 10) {
   const supabase = await createClient()
@@ -41,7 +26,7 @@ export async function fetchLocalNews(zipCodes: string[], limit: number = 10) {
 
   // Tenant key first, licensed platform key as fallback. No key at all →
   // the pool still works (honest degradation, no hard error at page load).
-  const apiKey = await resolveNewsApiKey(supabase, userData.brokerage_id)
+  const apiKey = await resolveNewsApiAiKey(supabase, userData.brokerage_id)
 
   // Fetch existing local content
   const { data: existingContent, error: fetchError } = await supabase
@@ -58,12 +43,12 @@ export async function fetchLocalNews(zipCodes: string[], limit: number = 10) {
   const pool = existingContent || []
   if (pool.length >= limit) return pool
 
-  // LIVE NEWSAPI FETCH (burn-down round 5): the pool used to be the only
-  // source and NOTHING filled it — this fetches real local headlines through
-  // the connector gateway (the one egress choke) when the pool runs thin.
-  // Live rows are returned UNPERSISTED (newsletter_local_content.newsletter_id
-  // is NOT NULL — rows are recorded when the newsletter that USES them is
-  // created, via recordNewsletterLocalContent below).
+  // LIVE NEWSAPI.AI FETCH: real local coverage with Event Registry's semantic
+  // layer — relevance_score comes from the article's REAL cross-network social
+  // score (what locals actually shared), not a positional guess. Live rows are
+  // returned UNPERSISTED (newsletter_local_content.newsletter_id is NOT NULL —
+  // rows are recorded when the newsletter that USES them is created, via
+  // recordNewsletterLocalContent below).
   if (!apiKey) return pool // no tenant key + no licensed platform key — pool only
   try {
     const { data: source } = await supabase
@@ -76,17 +61,16 @@ export async function fetchLocalNews(zipCodes: string[], limit: number = 10) {
       .maybeSingle()
     const market = source?.market_name || zipCodes[0]
 
-    const { callConnector } = await import('@/lib/agentic-os/connector-gateway')
-    const res = await callConnector<{ articles?: Array<{ title?: string; description?: string; url?: string; publishedAt?: string }> }>({
-      connector: 'newsapi',
-      baseUrl: 'https://newsapi.org',
-      path: `/v2/everything?q=${encodeURIComponent(`"${market}" AND (real estate OR housing OR home prices)`)}&language=en&sortBy=publishedAt&pageSize=${Math.min(limit, 20)}`,
-      method: 'GET',
-      auth: { style: 'header', name: 'X-Api-Key', value: apiKey },
+    const articles = await searchNewsApiAiArticles({
+      apiKey,
+      keyword: 'real estate housing',
+      locationKeyword: market,
+      sortBy: 'date',
+      count: Math.min(limit, 20),
+      sinceDays: 14,
     })
-    const articles = res.ok ? (res.data?.articles ?? []) : []
+    const maxSocial = Math.max(1, ...articles.map((a) => a.socialScore))
     const live = articles
-      .filter((a) => a.title && a.url)
       .slice(0, limit - pool.length)
       .map((a, i) => ({
         id: `live:${i}`,
@@ -94,8 +78,16 @@ export async function fetchLocalNews(zipCodes: string[], limit: number = 10) {
         newsletter_id: null, // persisted only when a newsletter uses it
         local_news_source_id: null,
         zip_code: zipCodes[0],
-        content: JSON.stringify({ title: a.title, summary: a.description ?? '', url: a.url, published_at: a.publishedAt ?? null }),
-        relevance_score: Math.max(1, 100 - i * 5),
+        content: JSON.stringify({
+          title: a.title,
+          summary: (a.body ?? '').slice(0, 280),
+          url: a.url,
+          published_at: a.dateTimePub,
+          source: a.source,
+          concepts: a.concepts, // Event Registry semantics ride along for the newsletter AI
+          sentiment: a.sentiment,
+        }),
+        relevance_score: Math.max(1, Math.round((a.socialScore / maxSocial) * 100)),
         included_in_last_newsletter: false,
         created_at: new Date().toISOString(),
       }))

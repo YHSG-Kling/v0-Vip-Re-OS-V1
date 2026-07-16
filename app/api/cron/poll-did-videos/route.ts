@@ -326,6 +326,30 @@ export async function GET(request: NextRequest) {
             })
             .eq("id", video.id)
 
+          // ─── Playbook → capture-page attach ─────────────────────────────
+          // Playbook-installed presentation videos carry lead_magnet_id in
+          // provider_metadata — the finished render lands on the magnet's
+          // public /lm page (landing_content.videoUrl). Best-effort.
+          try {
+            const magnetId = (video as any).provider_metadata?.lead_magnet_id
+            if (magnetId && finalVideoUrl) {
+              const { data: magnet } = await supabase
+                .from("lead_capture_forms").select("id, landing_content").eq("id", magnetId).maybeSingle()
+              if (magnet) {
+                await supabase.from("lead_capture_forms").update({
+                  landing_content: {
+                    ...((magnet as any).landing_content ?? {}),
+                    videoUrl: finalVideoUrl,
+                    videoProjectId: video.id,
+                  },
+                }).eq("id", magnetId)
+                console.log(`[poll-did-videos] playbook video attached to magnet ${magnetId}`)
+              }
+            }
+          } catch (e) {
+            console.error("[poll-did-videos] magnet attach failed:", (e as Error).message)
+          }
+
           // ─── Avatar → Remotion handoff ──────────────────────────────────
           // If this D-ID video was requested as the avatar track for a Remotion
           // composition (provider_metadata.target_composition_id), enqueue that

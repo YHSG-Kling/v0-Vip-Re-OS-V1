@@ -99,6 +99,17 @@ export default async function LeadMagnetLandingPage({ params }: PageProps) {
           <header className="mb-6 text-center">
             <h1 className="text-2xl font-semibold tracking-tight">{landing.headline}</h1>
             {landing.subhead && <p className="mt-2 text-muted-foreground">{landing.subhead}</p>}
+            {/* Auto-rendered avatar presentation (playbook installs) — the agent
+                explains, in their own cloned voice, why the visitor should care. */}
+            {landing.videoUrl && (
+              <video
+                controls
+                playsInline
+                preload="metadata"
+                className="mt-4 w-full rounded-xl border shadow-sm"
+                src={landing.videoUrl}
+              />
+            )}
             {landing.bullets.length > 0 && (
               <ul className="mt-4 space-y-1 text-left text-sm text-muted-foreground inline-block">
                 {landing.bullets.map((b, i) => (

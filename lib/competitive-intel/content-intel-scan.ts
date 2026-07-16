@@ -205,6 +205,47 @@ async function scanKeywordsForBrokerage(
     const { error } = await svc.from("keyword_intelligence").insert(rows)
     if (!error) written += rows.length
   }
+
+  // NEWSAPI.AI TRENDING LANE (owner directive): Event Registry's per-article
+  // SOCIAL SCORES are a real "what people actually shared" popularity signal —
+  // a second, independent source next to the Exa citation lane. Tenant/platform
+  // key cascade; no key → this lane just doesn't write (never fabricated).
+  try {
+    const { resolveNewsApiAiKey, searchNewsApiAiArticles } = await import("@/lib/content-intel/newsapi-ai")
+    const key = await resolveNewsApiAiKey(svc, b.id)
+    if (key) {
+      await svc.from("keyword_intelligence").delete().eq("brokerage_id", b.id).eq("source", "newsapi_ai_social")
+      for (const niche of NICHES) {
+        const arts = await searchNewsApiAiArticles({
+          apiKey: key,
+          keyword: `${niche.replace(/_/g, " ")} real estate`,
+          locationKeyword: market || null,
+          sortBy: "socialScore",
+          count: 5,
+          sinceDays: 30,
+        }).catch(() => [])
+        if (arts.length === 0) continue
+        const maxSocial = Math.max(1, ...arts.map((a) => a.socialScore))
+        const socialRows = arts.slice(0, 3).map((a) => ({
+          brokerage_id: b.id,
+          city: b.city, state: b.state, zip_code: null,
+          keyword: a.title.slice(0, 200),
+          // Social-interest index 0-100 from REAL share counts.
+          search_volume_monthly: Math.round((a.socialScore / maxSocial) * 100),
+          competition_score: null,
+          trend_direction: "rising", // socialScore-sorted top of the last 30d IS what's trending
+          trend_change_pct: Math.round((a.socialScore / maxSocial) * 100),
+          source: "newsapi_ai_social",
+          related_keywords: a.concepts.slice(0, 10),
+          intent_category: niche,
+          captured_at: now.toISOString(),
+          expires_at: expiresAt,
+        }))
+        const { error } = await svc.from("keyword_intelligence").insert(socialRows)
+        if (!error) written += socialRows.length
+      }
+    }
+  } catch { /* the Exa lane above already wrote — this lane is additive */ }
   return written
 }
 
