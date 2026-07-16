@@ -1035,6 +1035,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   recruiting_costs: "recruiting_manager",
   recruiting_roi: "recruiting_manager",
   recruits: "recruiting_manager",
+  team_activity_snapshots: "recruiting_manager",
   team_earnings: "recruiting_manager",
   team_heatmap_snapshots: "recruiting_manager",
   team_members: "recruiting_manager",
