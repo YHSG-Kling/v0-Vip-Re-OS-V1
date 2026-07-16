@@ -170,14 +170,17 @@ ${params.channel === 'text' ? 'Keep under 300 characters.' : ''}
 ${params.channel === 'call_script' ? 'Include talking points and responses to common objections.' : ''}`,
     })
 
-    // Log the referral request
-    await supabase.from("referral_requests").insert({
+    // Log the referral request. pass 14: referral_requests was a PHANTOM table —
+    // the draft rides the canonical activities ledger (brokerage from the contact).
+    await supabase.from("activities").insert({
+      brokerage_id: contact.brokerage_id,
       contact_id: params.contactId,
-      agent_id: params.agentId,
+      activity_type: "referral_request_draft",
       channel: params.channel,
-      message_content: referralRequest,
-      ai_generated: true,
-      status: "draft",
+      title: `Referral ask drafted (${params.channel})`,
+      description: referralRequest.slice(0, 2000),
+      status: "pending",
+      metadata: { ai_generated: true, requested_by: params.agentId },
     })
 
     return { success: true, referralRequest }

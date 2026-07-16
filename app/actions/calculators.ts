@@ -229,12 +229,10 @@ export async function compareNeighborhoods(neighborhoods: string[], city: string
         status: "sold",
       })
 
-      // Get neighborhood guide data if exists
-      const { data: guideData } = await supabase
-        .from("neighborhood_guides")
-        .select("*")
-        .eq("neighborhood_name", neighborhood)
-        .maybeSingle()
+      // pass 14: neighborhood_guides was a PHANTOM table with no writer anywhere —
+      // the read always errored and every branch below already carries honest
+      // defaults. The dead read is removed; guideData stays null by construction.
+      const guideData: any = null
 
       const soldProperties = marketStats || []
       const medianPrice =

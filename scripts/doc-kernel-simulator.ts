@@ -1758,6 +1758,23 @@ async function main() {
           && !src("app/actions/ai-financial-management.ts").includes("cap_progress")
           && src("package.json").includes("npm run test:e2e-lifecycle\","))
       }
+
+      // ── PASS 14: PHANTOM-COLUMN + PHANTOM-TABLE ZERO-ZERO (approved item 4) ──
+      check("PASS 14 — PHANTOM-COLUMN SWEEP TO ZERO-ZERO. The closing-checklist escape route was the schema-drift guard's blind spot: `.insert(rows)` where rows is a VARIABLE (const rows = items.map(item => ({…}))) and `.insert([{…}])` array literals were never key-checked. The guard now resolves BOTH shapes (resolveVariableInsertKeys: const-object / const-array / .map+.flatMap arrow-object / .push — nearest same-named definition wins so cross-function bleed can't false-positive) and the FIRST run caught 18 real violations in 8 files: assistant.ts suggestions wrote user_id/context_id/action_payload (live: agent_id/metadata/action_payload_json — every smart suggestion insert errored); blog drafts wrote compliance_approved (live: approval_status); the knowledge-base client wrote+rendered topic_category (live: category); ai-contract-review wrote transaction_tasks.agent_id/source (live: assigned_user_id/category — critical-issue tasks never landed); ai-voice-transcription wrote tasks.agent_id/source_id with NO brokerage_id (live: assigned_to_agent_id, NOT-NULL brokerage — call-analysis tasks never landed); the podcast preset publisher wrote episode_id/status (live: podcast_episode_id/channel_name/distribution_status — every preset publish errored); and the daily briefing wrote overnight_ai_work which NEVER EXISTED — the pass-12 save fix was still dead; l72_s08 adds the column the feature was written for. PHANTOM TABLES: 13 of 14 acknowledged-unguarded tables DON'T EXIST in the live schema — every consumer repointed to its canonical home or deleted after dependency investigation: compliance audits page → audit_log (real ledger, same fields); partner referral panel → referrals+referral_partners; guardContent → approval_items; voice property-share + referral-ask drafts → activities; journey task submissions → client_portal_activity (its own former 'fallback' was the only path that ever worked — promoted, keep-one); market-shift predictions → trend_alerts; education downloads metric → document_downloads; suggestion outcomes fold onto smart_assistant_suggestions; market_reports/neighborhood_guides dead writes/reads removed; deprecated _legacyGenerateAICMA + orphan logCreditConversation deleted. RATCHET AT ZERO-ZERO: schema-drift baseline = 0 violations AND unguarded baseline = 0 tables — every table the code touches is column-guarded against the live snapshot, and any new phantom column OR unguarded table fails CI",
+        src("scripts/schema-drift-guard.ts").includes("resolveVariableInsertKeys")
+        && src("scripts/schema-drift-guard.ts").includes("flatMap")
+        && src("scripts/schema-drift-guard.ts").includes("NEAREST same-named definition wins")
+        && readFileSync(join(ROOT, "scripts/schema-drift-baseline.json"), "utf-8").trim() === "[]"
+        && readFileSync(join(ROOT, "scripts/schema-drift-unguarded-baseline.json"), "utf-8").trim() === "[]"
+        && src("app/compliance/audits/page.tsx").includes("from('audit_log')")
+        && src("app/dashboard/partners/components/os/referral-tracking-panel.tsx").includes('from("referrals")')
+        && src("lib/content-guardian/index.ts").includes('from("approval_items")')
+        && src("app/actions/journey-tasks.ts").includes("client_portal_activity")
+        && !src("app/actions/journey-tasks.ts").includes('from("task_submissions")')
+        && src("app/actions/assistant.ts").includes("action_payload_json")
+        && src("app/actions/ai-voice-transcription.ts").includes("assigned_to_agent_id")
+        && src("lib/podcast/orchestrate-podcast-preset-publish.ts").includes("podcast_episode_id:")
+        && src("lib/intelligence/daily-briefing-generator.ts").includes("overnight_ai_work"))
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

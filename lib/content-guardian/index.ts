@@ -85,13 +85,15 @@ export async function guardContent(params: GuardContentParams): Promise<GuardCon
   if (flagged) {
     try {
       const supabase = createServiceClient()
-      const { error: insertError } = await supabase.from("content_approvals").insert({
+      const { error: insertError } = await supabase.from("approval_items").insert({
         brokerage_id: brokerageId,
         agent_id: agentId,
-        content_type: contentType,
-        original_content: content,
-        violations: violations,
+        item_type: contentType,
         status: "pending",
+        // pass 14: content_approvals was a PHANTOM table — flagged content rides
+        // the real approval_items queue; the violations + excerpt live in
+        // review_notes for the reviewer.
+        review_notes: JSON.stringify({ violations, excerpt: content.slice(0, 500) }),
       })
       if (insertError) {
         console.error("[ContentGuardian] content_approvals insert failed:", insertError)

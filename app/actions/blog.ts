@@ -1037,7 +1037,9 @@ export async function saveBlogPost(
     featured_image_url: params.featuredImageUrl || null,
     publish_status: params.publishStatus ?? "draft",
     visibility_scope: "agent",
-    compliance_approved: false,
+    // pass 14: compliance_approved is a phantom key — the live gate column is
+    // approval_status (starts pending until compliance review).
+    approval_status: "pending",
   }
 
   // Store category and call_to_action in content_metadata JSON column if it exists,

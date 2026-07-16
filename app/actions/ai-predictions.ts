@@ -1373,166 +1373,9 @@ async function getStateAppraisalGuidelines(state: string) {
   return guidelines[state] || guidelines.TX
 }
 
-// DEPRECATED: use generateAICMA from ./ai-cma instead — this version saves to a non-existent table and is not used.
-async function _legacyGenerateAICMA(data: {
-  propertyAddress: string
-  leadId: string
-  purpose: "listing" | "buyer_offer" | "seller_consultation"
-  state: string
-}) {
-  const supabase = await createClient()
-  const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
-  const { BatchDataClient } = await import("@/lib/batchdata-client")
-
-  const idxClient = new IDXBrokerClient()
-  const batchData = new BatchDataClient()
-
-  // Get property details from BatchData
-  const propertyDetails = await batchData.searchByAddress(data.propertyAddress, "", data.state)
-
-  // Get comparables from IDX
-  const comparables = await idxClient.getProperties({
-    city: propertyDetails[0]?.city,
-    status: "sold",
-  })
-
-  // Get state appraiser guidelines
-  const stateGuidelines = await getStateAppraisalGuidelines(data.state)
-
-  // AI CMA generation
-  const prompt = `You are a licensed real estate appraiser AI. Generate a comprehensive CMA following ${data.state} appraiser guidelines:
-
-Subject Property: ${data.propertyAddress}
-${JSON.stringify(propertyDetails[0], null, 2)}
-
-Comparable Sales (MUST use properties sold within ${stateGuidelines.maxDaysSold} days, within ${stateGuidelines.maxDistanceMiles} miles):
-${comparables
-  .slice(0, 10)
-  .map(
-    (comp: any) => `
-Address: ${comp.address}
-Sold: $${comp.soldPrice?.toLocaleString()} on ${comp.soldDate}
-List: $${comp.listPrice?.toLocaleString()}
-Beds/Baths: ${comp.bedrooms}/${comp.bathrooms}
-Sqft: ${comp.sqft}
-DOM: ${comp.daysOnMarket}
-`,
-  )
-  .join("\n")}
-
-State Guidelines (${data.state}):
-- ${stateGuidelines.requirements.join("\n- ")}
-
-Generate CMA with:
-1. Property valuation using sales comparison approach
-2. Adjustments for differences (documented)
-3. Market conditions analysis
-4. Days on market estimate
-5. Pricing recommendation
-6. Required state disclaimers
-
-CRITICAL: Include disclaimer that this is a CMA (Comparative Market Analysis), NOT an appraisal. Only licensed appraisers can provide official appraisals.
-
-Response JSON structure:
-{
-  "subjectProperty": {
-    "address": "${data.propertyAddress}",
-    "details": {}
-  },
-  "comparableAnalysis": [
-    {
-      "address": "...",
-      "soldPrice": 450000,
-      "adjustments": {
-        "sqft_difference": "+5000 (250 sqft larger)",
-        "condition": "-8000 (needs updates)",
-        "lot_size": "+3000 (larger lot)",
-        "total_adjustment": "+0"
-      },
-      "adjusted_value": 450000,
-      "weight": 0.30
-    }
-  ],
-  "valuationConclusion": {
-    "estimatedValue": 465000,
-    "valuationRange": {
-      "low": 455000,
-      "high": 475000
-    },
-    "confidence": "high",
-    "methodology": "Sales Comparison Approach per ${data.state} USPAP guidelines"
-  },
-  "marketAnalysis": {
-    "absorption_rate": "2.8 months inventory",
-    "market_trend": "balanced",
-    "days_on_market_average": 32,
-    "sold_to_list_ratio": 98.2
-  },
-  "pricingRecommendation": {
-    "suggested_list_price": 469900,
-    "reasoning": "Price just below estimated value to attract multiple offers while maximizing return",
-    "predicted_sale_price": 467500,
-    "predicted_days_to_sell": 28
-  },
-  "requiredDisclosures": [
-    "This is a Comparative Market Analysis (CMA) prepared by a licensed real estate agent, not an appraisal.",
-    "Only a licensed appraiser can provide an official property appraisal.",
-    "All data deemed reliable but not guaranteed.",
-    "Market conditions subject to change."
-  ],
-  "stateCompliance": {
-    "state": "${data.state}",
-    "guidelines_followed": "${stateGuidelines.name}",
-    "appraiser_review_required": false
-  }
-}`
-
-  try {
-    const cmaData = await generateAIJSON(prompt)
-
-    if (!cmaData.data) {
-      throw new Error("Failed to generate CMA")
-    }
-
-    const cma = cmaData.data
-
-    // Save CMA to database
-    const { data: savedCMA, error: saveError } = await supabase
-      .from("ai_generated_cmas")
-      .insert({
-        lead_id: data.leadId,
-        property_address: data.propertyAddress,
-        generated_for: data.purpose,
-        estimated_value: cma.valuationConclusion?.estimatedValue,
-        value_range_low: cma.valuationConclusion?.valuationRange?.low,
-        value_range_high: cma.valuationConclusion?.valuationRange?.high,
-        confidence_level: cma.valuationConclusion?.confidence,
-        comparable_properties: cma.comparableAnalysis,
-        market_trends: cma.marketAnalysis,
-        optimal_list_price: cma.pricingRecommendation?.suggested_list_price,
-        days_on_market_estimate: cma.pricingRecommendation?.predicted_days_to_sell,
-        state: data.state,
-        appraiser_guidelines_used: stateGuidelines.name,
-        compliance_disclaimers: cma.requiredDisclosures,
-      })
-      .select()
-      .maybeSingle()
-
-    if (saveError) {
-      console.error("[v0] Error saving CMA:", saveError)
-    }
-
-    return {
-      success: true,
-      cma,
-      cmaId: savedCMA?.id,
-      message: "State-compliant CMA generated! Ready to share with client.",
-    }
-  } catch (error) {
-    console.error("[v0] Error in generateAICMA:", error)
-    throw new Error("CMA generation failed")
-  }
-}
+// pass 14: the deprecated _legacyGenerateAICMA (wrote the phantom ai_generated_cmas
+// table, zero callers) was REMOVED — the canonical generateAICMA in ./ai-cma saves
+// to the real cma_reports.
 
 // Mass generate CMAs for all property owners
 // The agentId parameter is intentionally ignored; identity is always resolved
@@ -1926,16 +1769,21 @@ Predict for next 90 days:
       throw new Error("Market prediction failed")
     }
 
-    // Save prediction
-    await supabase.from("predictive_market_alerts").insert({
-      alert_type: "market_shift_prediction",
-      market_area: data.city,
-      prediction: prediction.data.prediction,
-      confidence: prediction.data.prediction?.confidence || 0.5,
-      predicted_timeframe: prediction.data.prediction?.timeframe,
-      opportunity_type: prediction.data.prediction?.direction,
-      recommended_actions: prediction.data.actionableIntelligence,
-    })
+    // Save prediction. pass 14: predictive_market_alerts was a PHANTOM table —
+    // consolidated onto the real trend_alerts ledger (brokerage-scoped).
+    const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+    const shiftCtx = await getAgentContext()
+    if (shiftCtx.brokerageId) {
+      const conf = prediction.data.prediction?.confidence || 0.5
+      await supabase.from("trend_alerts").insert({
+        brokerage_id: shiftCtx.brokerageId,
+        alert_type: "market_shift_prediction",
+        alert_message: `${data.city}, ${data.state}: ${prediction.data.prediction?.direction ?? "shift"} predicted (${prediction.data.prediction?.timeframe ?? "near term"}, confidence ${(conf * 100).toFixed(0)}%)`,
+        severity: conf >= 0.7 ? "high" : "medium",
+        source_table: "ai_market_prediction",
+        is_resolved: false,
+      })
+    }
 
     // Create insights for affected leads
     const { data: leads } = await supabase

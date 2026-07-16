@@ -128,16 +128,19 @@ interface SuggestionInput {
 export async function generateSmartSuggestion(input: SuggestionInput): Promise<void> {
   const supabase = await createServerClient()
 
+  // pass 14 (array-literal sweep): the live columns are agent_id /
+  // action_payload_json, and context_id rides metadata (no such column) —
+  // the old user_id/context_id/action_payload keys errored every insert.
   const { error } = await supabase.from("smart_assistant_suggestions").insert([
     {
       brokerage_id: input.brokerage_id,
-      user_id: input.user_id,
+      agent_id: input.user_id,
       context_type: input.context_type,
-      context_id: input.context_id,
       suggestion_type: input.suggestion_type,
       title: input.title,
       description: input.description,
-      action_payload: input.action_payload,
+      action_payload_json: input.action_payload,
+      metadata: { context_id: input.context_id },
       status: "pending",
     },
   ])

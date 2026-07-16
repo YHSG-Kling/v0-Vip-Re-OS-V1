@@ -65,39 +65,8 @@ export async function updateContactCreditStatus(params: {
   return { success: true, contact: data }
 }
 
-export async function logCreditConversation(params: {
-  contact_id: string
-  agent_id: string
-  conversation_type: string
-  summary: string
-  recommendations?: string[]
-  next_steps?: string
-}) {
-  const supabase = await createServerClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  // Insert credit conversation log
-  const { data, error } = await supabase
-    .from("credit_conversation_log")
-    .insert({
-      contact_id: params.contact_id,
-      agent_id: params.agent_id,
-      conversation_type: params.conversation_type,
-      summary: params.summary,
-      recommendations: params.recommendations,
-      next_steps: params.next_steps,
-    })
-    .select()
-    .single()
-
-  if (error) throw error
-
-  return { success: true, log: data }
-}
+// pass 14: logCreditConversation removed — zero callers and it wrote the phantom
+// credit_conversation_log table. Credit conversations ride conversation_logs.
 
 export async function referToCreditPartner(params: {
   contact_id: string

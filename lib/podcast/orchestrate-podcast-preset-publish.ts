@@ -73,12 +73,15 @@ export async function orchestratePodcastPresetPublish(
 
   // Stage distribution log rows. The existing publish-podcast cron
   // walks pending entries here and dispatches per platform.
+  // pass 14 (variable-insert sweep): the live columns are podcast_episode_id /
+  // channel_name / distribution_status — the old episode_id/status keys were
+  // phantom and every preset publish errored.
   const rows = channels.map((channel) => ({
-    brokerage_id:  args.brokerageId,
-    episode_id:    ep.id,
-    channel,
-    status:        "pending",
-    created_at:    new Date().toISOString(),
+    brokerage_id:        args.brokerageId,
+    podcast_episode_id:  ep.id,
+    channel_name:        channel,
+    distribution_status: "pending",
+    created_at:          new Date().toISOString(),
   }))
 
   const { data: inserted, error } = await svc.from("podcast_distribution_log")

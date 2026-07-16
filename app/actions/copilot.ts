@@ -20,13 +20,13 @@ export async function handleSuggestionAccepted(payload: any) {
     .update({ status: "accepted" })
     .eq("id", suggestion_id)
 
-  // Log the acceptance for learning
-  await supabase.from("suggestion_outcomes").insert({
-    suggestion_id,
-    user_id,
-    outcome: "accepted",
-    action_taken: action_type,
-  })
+  // pass 14: suggestion_outcomes was a PHANTOM table — the acceptance already
+  // lands on the canonical smart_assistant_suggestions row above (status +
+  // metadata carry the outcome); the dead second write is removed.
+  await supabase
+    .from("smart_assistant_suggestions")
+    .update({ metadata: { outcome: "accepted", action_taken: action_type, acted_by: user_id } })
+    .eq("id", suggestion_id)
 
   return { success: true }
 }

@@ -23,7 +23,9 @@ export async function aggregateValueDelivered(agentId: string, date: Date) {
       .lt("created_at", new Date(new Date(dateStr).getTime() + 86400000).toISOString().slice(0, 10)),
 
     // Educational content downloads
-    supabase.from("educational_content_downloads").select("*").eq("downloaded_date", dateStr),
+    // pass 14: educational_content_downloads was a PHANTOM table — the real
+    // download ledger is document_downloads (downloaded_at timestamptz).
+    supabase.from("document_downloads").select("*").gte("downloaded_at", dateStr).lt("downloaded_at", new Date(new Date(dateStr).getTime() + 86400000).toISOString().slice(0, 10)),
 
     // Helpful AI responses (from messages)
     supabase

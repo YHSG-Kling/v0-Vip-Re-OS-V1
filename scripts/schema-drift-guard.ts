@@ -200,6 +200,67 @@ export function contiguousChain(src: string, startIdx: number): string {
   return src.slice(startIdx, i)
 }
 
+/** PASS 14 — resolve `.insert(VAR)` to column keys by finding VAR's definition in
+ *  the same file. Handles: `const VAR = {…}`, `const VAR = […]` (each object),
+ *  `const VAR = xs.map(x => ({…}))` (the mapped object), and `VAR.push({…})`.
+ *  Only shapes we can statically prove contribute keys — anything else is skipped
+ *  (never a false positive on spread-through helpers). */
+export function resolveVariableInsertKeys(src: string, varName: string, beforeIdx: number = src.length): string[] {
+  const keys: string[] = []
+  const addObj = (openIdx: number) => {
+    const close = matchBrace(src, openIdx)
+    if (close > openIdx) for (const k of parseObjectTopLevelKeys(src.slice(openIdx, close + 1))) if (!keys.includes(k)) keys.push(k)
+  }
+  // A file may declare the SAME variable name in several functions — only the
+  // NEAREST definition before the .insert() call is the one being inserted
+  // (a whole-file scan false-positived lifetime_customer_touchpoints with keys
+  // from an unrelated `rows` two functions away).
+  const nearest = (re: RegExp): RegExpMatchArray | null => {
+    let best: RegExpMatchArray | null = null
+    for (const m of src.matchAll(re)) {
+      if (m.index! >= beforeIdx) break
+      best = m
+    }
+    return best
+  }
+  // const VAR = {…}   |   const VAR: T = {…}
+  const objDef = nearest(new RegExp(`(?:const|let|var)\\s+${varName}\\s*(?::[^=]+)?=\\s*\\{`, "g"))
+  // const VAR = […]
+  const arrDef = nearest(new RegExp(`(?:const|let|var)\\s+${varName}\\s*(?::[^=]+)?=\\s*\\[`, "g"))
+  // const VAR = xs.map(x => ({…}))  — flatMap too (the touchpoints shape)
+  const mapDef = nearest(new RegExp(`(?:const|let|var)\\s+${varName}\\s*(?::[^=]+)?=\\s*[\\w.?!()\\[\\]]+\\.(?:map|flatMap)\\(`, "g"))
+  const candidates = [objDef, arrDef, mapDef].filter((m): m is RegExpMatchArray => !!m)
+  if (candidates.length === 0) return keys
+  const def = candidates.sort((a, b) => b.index! - a.index!)[0]
+  if (def === objDef) {
+    addObj(def.index! + def[0].length - 1)
+  } else if (def === arrDef) {
+    let d = 0
+    for (let i = def.index! + def[0].length - 1; i < src.length; i++) {
+      const ch = src[i]
+      if (ch === "[") d++
+      else if (ch === "]") { d--; if (d === 0) break }
+      else if (ch === "{" && d === 1) { const bc = matchBrace(src, i); if (bc > i) { addObj(i); i = bc } }
+    }
+  } else {
+    const parenOpen = def.index! + def[0].length - 1
+    const close = matchParen(src, parenOpen)
+    if (close >= 0) {
+      const body = src.slice(parenOpen, close + 1)
+      // arrow returning an object literal: `=> ({` — or an explicit `return {`
+      const arrow = body.search(/=>\s*\(\s*\{/)
+      const ret = body.search(/return\s*\{/)
+      const at = arrow >= 0 ? body.indexOf("{", arrow) : ret >= 0 ? body.indexOf("{", ret) : -1
+      if (at >= 0) addObj(parenOpen + at)
+    }
+  }
+  // VAR.push({…}) — only pushes between the chosen definition and the insert
+  for (const m of src.matchAll(new RegExp(`${varName}\\.push\\(\\s*\\{`, "g"))) {
+    if (m.index! > def.index! && m.index! < beforeIdx) addObj(m.index! + m[0].length - 1)
+  }
+  return keys
+}
+
 function matchParen(s: string, open: number): number {
   let d = 0
   for (let i = open; i < s.length; i++) {
@@ -248,6 +309,31 @@ function testPure() {
     check("contiguousChain: excludes reassigned-variable filter (query = query.eq(...))",
       ch.includes('eq("user_id"') && !ch.includes('eq("agent_id"'))
   }
+  // PASS 14 — variable-shaped insert resolution (the closing-checklist escape route):
+  {
+    const snippet = `const rows = checklist.items.map((item) => ({ transaction_id: t, item_label: item.name, phase: item.cat }))\n  await supabase.from("closing_checklist_items").insert(rows)`
+    const keys = resolveVariableInsertKeys(snippet, "rows")
+    check("resolveVariableInsertKeys: catches keys inside a .map(() => ({…})) variable (the closing-checklist shape)",
+      keys.includes("item_label") && keys.includes("phase") && keys.includes("transaction_id"))
+  }
+  check("resolveVariableInsertKeys: const object literal",
+    JSON.stringify(resolveVariableInsertKeys(`const row = { a_col: 1, b_col: 2 }`, "row")) === JSON.stringify(["a_col", "b_col"]))
+  check("resolveVariableInsertKeys: array literal parses every object",
+    resolveVariableInsertKeys(`const rows = [{ x_col: 1 }, { y_col: 2 }]`, "rows").join() === "x_col,y_col")
+  check("resolveVariableInsertKeys: .push({…}) contributes keys",
+    resolveVariableInsertKeys(`const rows: any[] = []\nrows.push({ pushed_col: 1 })`, "rows").includes("pushed_col"))
+  check("resolveVariableInsertKeys: opaque helper result contributes NOTHING (no false positives)",
+    resolveVariableInsertKeys(`const rows = buildRows(payload)`, "rows").length === 0)
+  {
+    // Two same-named variables in one file: only the NEAREST definition before
+    // the insert counts (the lifetime_customer_touchpoints false-positive shape).
+    const twoScopes = `function a(){ const rows = xs.map(x => ({ wrong_col: 1 })) }\nfunction b(){ const rows = ys.map(y => ({ right_col: 2 }))\n  supabase.from("t").insert(rows) }`
+    const at = twoScopes.indexOf(".insert(rows)")
+    const near = resolveVariableInsertKeys(twoScopes, "rows", at)
+    check("resolveVariableInsertKeys: NEAREST same-named definition wins (no cross-function bleed)",
+      near.includes("right_col") && !near.includes("wrong_col"))
+  }
+
   // The exact bug we fixed must be caught:
   const badSel = parseSelectColumns("preferred_price_max, preferred_features, inferred_max_price")
   check("catches the legacy phantom column (preferred_features ∉ property_preferences)",
@@ -291,6 +377,32 @@ function scanFile(file: string, src: string): Violation[] {
         const obj = src.slice(braceOpen, braceClose + 1)
         for (const k of parseObjectTopLevelKeys(obj)) if (!set.has(k)) v.push({ file, table, op: opM[1], column: k })
       }
+    }
+    // PASS 14 — the closing-checklist blind spot: `.insert(rows)` where `rows` is a
+    // VARIABLE built earlier (`const rows = items.map(item => ({...}))` or a plain
+    // `const rows = {...}` / `[{...}]`), and `.insert([{...}, {...}])` array literals.
+    // Both shapes wrote five phantom columns for months without tripping the guard.
+    const arrM = chain.match(/\.(insert|upsert)\(\s*\[/)
+    if (arrM && arrM.index != null) {
+      const bracketOpen = m.index + (arrM.index + arrM[0].length - 1)
+      // walk the array literal, parsing each top-level object
+      let d = 0
+      for (let i = bracketOpen; i < src.length; i++) {
+        const ch = src[i]
+        if (ch === "[") d++
+        else if (ch === "]") { d--; if (d === 0) break }
+        else if (ch === "{" && d === 1) {
+          const bc = matchBrace(src, i)
+          if (bc > i) {
+            for (const k of parseObjectTopLevelKeys(src.slice(i, bc + 1))) if (!set.has(k)) v.push({ file, table, op: arrM[1], column: k })
+            i = bc
+          }
+        }
+      }
+    }
+    const varM = chain.match(/\.(insert|upsert)\(\s*([a-zA-Z_$][\w$]*)\s*\)/)
+    if (varM && varM.index != null && !["true", "false", "null"].includes(varM[2])) {
+      for (const k of resolveVariableInsertKeys(src, varM[2], m.index + varM.index)) if (!set.has(k)) v.push({ file, table, op: `${varM[1]}(var)`, column: k })
     }
     // FILTER / order column args (the first string arg is a real column). A filter on a
     // phantom column errors the query the same way a select does. Scope to the CONTIGUOUS

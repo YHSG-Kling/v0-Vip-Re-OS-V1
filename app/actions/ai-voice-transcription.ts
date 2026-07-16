@@ -150,15 +150,19 @@ Extract:
     // Create tasks from action items
     const agentTasks = analysis.actionItems.filter(a => a.assignedTo === "agent")
     if (agentTasks.length > 0) {
+      // pass 14 (variable-insert sweep): tasks assignment keys on
+      // assigned_to_agent_id (agents class), brokerage_id is NOT NULL, and
+      // source_id doesn't exist — the analysis id rides the description.
       const tasks = agentTasks.map(item => ({
-        agent_id: params.agentId,
+        brokerage_id: contact?.brokerage_id,
+        assigned_to_agent_id: params.agentId,
         contact_id: params.contactId,
         title: item.action,
+        description: savedAnalysis?.id ? `From call analysis ${savedAnalysis.id}` : null,
         priority: item.priority,
         status: "pending",
         due_date: item.dueDate || null,
         source: "call_analysis",
-        source_id: savedAnalysis?.id,
       }))
 
       await supabase.from("tasks").insert(tasks)

@@ -28,11 +28,14 @@ export function ReferralTrackingPanel({ brokerageId }: ReferralTrackingPanelProp
     async function loadStats() {
       const supabase = createClient()
 
-      // Get referrals from vendor_referrals table
+      // pass 14: vendor_referrals was a PHANTOM table — partner referral
+      // performance lives on the real referrals ledger, keyed by partner_id
+      // with the partner name coming from referral_partners.
       const { data: referrals } = await supabase
-        .from("vendor_referrals")
-        .select("id, vendor_id, status, vendors(name)")
+        .from("referrals")
+        .select("id, partner_id, status, converted_at, referral_partners(partner_name)")
         .eq("brokerage_id", brokerageId)
+        .not("partner_id", "is", null)
 
       if (!referrals || referrals.length === 0) {
         setStats({
@@ -47,21 +50,22 @@ export function ReferralTrackingPanel({ brokerageId }: ReferralTrackingPanelProp
       }
 
       const totalReferrals = referrals.length
-      const pendingReferrals = referrals.filter((r: any) => r.status === "pending").length
-      const convertedReferrals = referrals.filter((r: any) => r.status === "converted").length
+      // referrals.status vocabulary: received → contacted/working → converted/closed.
+      const convertedReferrals = referrals.filter((r: any) => r.converted_at || r.status === "converted" || r.status === "closed").length
+      const pendingReferrals = totalReferrals - convertedReferrals
       const conversionRate = totalReferrals > 0 ? (convertedReferrals / totalReferrals) * 100 : 0
 
-      // Calculate top referrers
+      // Calculate top referrers (by referral partner)
       const referrerMap = new Map<string, { name: string; count: number }>()
       referrals.forEach((r: any) => {
-        if (!r.vendor_id) return
-        const existing = referrerMap.get(r.vendor_id) || { 
-          name: (r.vendors as any)?.name || "Unknown", 
-          count: 0 
+        if (!r.partner_id) return
+        const existing = referrerMap.get(r.partner_id) || {
+          name: (r.referral_partners as any)?.partner_name || "Unknown",
+          count: 0
         }
-        referrerMap.set(r.vendor_id, { 
-          name: existing.name, 
-          count: existing.count + 1 
+        referrerMap.set(r.partner_id, {
+          name: existing.name,
+          count: existing.count + 1
         })
       })
 

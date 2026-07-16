@@ -149,7 +149,7 @@ export async function processVoiceCommand(params: {
         const propertyContact = await lookupContact(intent.entities.contact_name, agentId)
         if (propertyContact) {
           relatedContactId = propertyContact.id
-          await sendPropertyToContact(intent.entities.property_address, propertyContact.id, agentId)
+          await sendPropertyToContact(intent.entities.property_address, propertyContact.id, agentId, caller.brokerageId)
           response = `Sent property ${intent.entities.property_address} to ${propertyContact.first_name}.`
         } else {
           response = `I couldn't find ${intent.entities.contact_name}.`
@@ -527,7 +527,7 @@ async function addContactNote(contactId: string, _noteText: string, _agentId: st
   })
 }
 
-async function sendPropertyToContact(address: string, contactId: string, agentId: string) {
+async function sendPropertyToContact(address: string, contactId: string, agentId: string, brokerageId: string | null) {
   const supabase = await createClient()
   // Find property by address
   const { data: property } = await supabase
@@ -538,12 +538,17 @@ async function sendPropertyToContact(address: string, contactId: string, agentId
     .single()
 
   if (property) {
-    // Create property share record
-    return await supabase.from("property_shares").insert({
-      property_id: property.id,
+    // pass 14: property_shares was a PHANTOM table — the share rides the
+    // canonical activities ledger (listing_id + contact + agents-class agent_id).
+    return await supabase.from("activities").insert({
+      brokerage_id: brokerageId,
+      listing_id: property.id,
       contact_id: contactId,
       agent_id: agentId,
-      share_method: "voice_command",
+      activity_type: "property_shared",
+      channel: "voice",
+      title: "Property shared by voice command",
+      status: "completed",
     })
   }
 }

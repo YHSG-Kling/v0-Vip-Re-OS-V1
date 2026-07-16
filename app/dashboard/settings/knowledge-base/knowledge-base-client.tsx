@@ -48,7 +48,7 @@ interface KBArticle {
   id: string
   title: string
   content: string
-  topic_category: string
+  category: string
   tags: string[]
   is_active: boolean
   brokerage_id: string | null
@@ -104,7 +104,7 @@ export function KnowledgeBaseClient({
 
   const filteredArticles = (articles || []).filter((article: any) => {
     if (selectedCategory === 'all') return true
-    return article.topic_category === selectedCategory
+    return article.category === selectedCategory
   })
 
   const openNewArticle = () => {
@@ -121,7 +121,7 @@ export function KnowledgeBaseClient({
     setEditingArticle(article)
     setFormTitle(article.title)
     setFormContent(article.content)
-    setFormCategory(article.topic_category)
+    setFormCategory(article.category)
     setFormTags(article.tags?.join(', ') || '')
     setFormBrokerageScope(article.brokerage_id ? 'brokerage' : 'platform')
     setIsSheetOpen(true)
@@ -140,7 +140,7 @@ export function KnowledgeBaseClient({
       const articleData = {
         title: formTitle.trim(),
         content: formContent.trim(),
-        topic_category: formCategory,
+        category: formCategory,
         tags: formTags.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean),
         brokerage_id: formBrokerageScope === 'brokerage' ? brokerageId : null,
         is_active: true,
@@ -399,7 +399,7 @@ export function KnowledgeBaseClient({
                       <div className="flex items-center gap-2">
                         <h3 className="font-medium">{article.title}</h3>
                         <Badge variant="outline" className="text-xs">
-                          {article.topic_category.replace(/_/g, ' ')}
+                          {article.category.replace(/_/g, ' ')}
                         </Badge>
                         <div className={`flex items-center gap-1 text-xs ${status.color}`}>
                           <StatusIcon className="h-3 w-3" />

@@ -110,25 +110,14 @@ Provide actionable market intelligence including:
 8. Competitor analysis`
     })
 
-    // Save the report
-    const { data: report, error } = await supabase
-      .from("market_reports")
-      .insert({
-        agent_id: params.agentId,
-        report_type: "ai_market_intelligence",
-        area: params.zipCode || params.city || params.county,
-        property_type: params.propertyType,
-        timeframe: params.timeframe,
-        analysis: analysis,
-        generated_at: new Date().toISOString()
-      })
-      .select()
-      .single()
+    // pass 14: market_reports was a PHANTOM table (insert errored on every run;
+    // no reader anywhere — the adapters consume the returned analysis directly and
+    // persist it onto the documents record they own). The dead write is removed.
 
     return {
       success: true,
       report: analysis,
-      reportId: report?.id
+      reportId: undefined
     }
   } catch (error) {
     console.error("[v0] Generate market report error:", error)

@@ -177,19 +177,25 @@ Be thorough but practical. Focus on actionable issues.`,
       .select()
       .single()
 
-    // Create tasks for critical issues
+    // Create tasks for critical issues. pass 14 (variable-insert sweep):
+    // transaction_tasks has NO agent_id/source columns — assignment keys on
+    // assigned_user_id (users class) with category carrying the origin.
     const criticalIssues = review.issues.filter(i => i.severity === "critical")
     if (criticalIssues.length > 0) {
+      const { data: reviewerRow } = ctx.agentId
+        ? await supabase.from("agents").select("user_id").eq("id", ctx.agentId).maybeSingle()
+        : { data: null as { user_id: string } | null }
       const tasks = criticalIssues.map(issue => ({
         transaction_id: params.transactionId,
         brokerage_id: brokerageId,
-        agent_id: agentId,
+        assigned_user_id: reviewerRow?.user_id ?? ctx.userId,
         title: `CRITICAL: ${issue.category}`,
         description: `${issue.description}\n\nRecommendation: ${issue.recommendation}`,
         priority: "urgent",
         status: "pending",
         due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24 hours
-        source: "ai_contract_review",
+        category: "ai_contract_review",
+        ai_generated: true,
       }))
 
       await supabase.from("transaction_tasks").insert(tasks)

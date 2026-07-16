@@ -123,21 +123,11 @@ export async function submitTaskForm(data: {
   try {
     const supabase = await createClient()
 
-    // Store the form submission
-    const { data: submission, error } = await supabase
-      .from("task_submissions")
-      .insert({
-        contact_id: data.contactId,
-        transaction_id: data.transactionId,
-        task_id: data.taskId,
-        task_name: data.taskName,
-        task_type: data.taskType,
-        form_data: data.formData,
-        status: "submitted",
-        submitted_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
+    // pass 14: task_submissions was a PHANTOM table — the "fallback"
+    // client_portal_activity write below was the only path that ever worked, so
+    // it is now the PRIMARY (keep-one). The submission payload rides metadata.
+    const submission: { id: string } | null = null
+    const error = { message: "consolidated" } as const
 
     // Also mark the task as complete
     await completeTask({

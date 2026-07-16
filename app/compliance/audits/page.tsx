@@ -13,8 +13,10 @@ export default async function ComplianceAuditsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
+  // pass 14: unified_audit_events was a PHANTOM table — the page now reads the
+  // real audit_log ledger (action / entity_type / user_id / created_at).
   const { data: auditEvents } = await supabase
-    .from('unified_audit_events')
+    .from('audit_log')
     .select('*')
     .order('created_at', { ascending: false })
     .limit(100)
