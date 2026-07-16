@@ -33,14 +33,26 @@ interface Props {
   brokerageId: string
 }
 
+// pass 13: the live closing_checklist_items columns are item_name/category/
+// notes — the old item_label/phase/owner/due_date fields never existed and the
+// whole tab rendered blanks. Owner + due date ride in notes ("owner: x · due: y").
 interface ChecklistItem {
   id: string
-  item_label: string
-  phase: string
-  owner: string
-  due_date: string | null
+  item_name: string
+  category: string
+  notes: string | null
   completed: boolean
   completed_at: string | null
+}
+
+function ownerFromNotes(notes: string | null): string {
+  const m = /owner:\s*([\w-]+)/i.exec(notes ?? "")
+  return m?.[1] ?? "agent"
+}
+
+function dueFromNotes(notes: string | null): string | null {
+  const m = /due:\s*(\d{4}-\d{2}-\d{2})/i.exec(notes ?? "")
+  return m?.[1] ?? null
 }
 
 interface Transaction {
@@ -218,15 +230,15 @@ export function ClosingWorkflowTab({ contactId, agentId, brokerageId }: Props) {
   const completedItems  = items.filter((i) => i.completed).length
   const percentComplete = totalItems === 0 ? 0 : Math.round((completedItems / totalItems) * 100)
 
-  // Split into buyer / seller / agent sections
-  const buyerItems  = items.filter((i) => BUYER_PHASES.has(i.phase?.toLowerCase()))
-  const sellerItems = items.filter((i) => SELLER_PHASES.has(i.phase?.toLowerCase()) && !AGENT_PHASES.has(i.phase?.toLowerCase()))
-  const agentItems  = items.filter((i) => AGENT_PHASES.has(i.phase?.toLowerCase()))
+  // Split into buyer / seller / agent sections (live column: category)
+  const buyerItems  = items.filter((i) => BUYER_PHASES.has(i.category?.toLowerCase()))
+  const sellerItems = items.filter((i) => SELLER_PHASES.has(i.category?.toLowerCase()) && !AGENT_PHASES.has(i.category?.toLowerCase()))
+  const agentItems  = items.filter((i) => AGENT_PHASES.has(i.category?.toLowerCase()))
   // Any items that don't fit neatly into either bucket
   const otherItems  = items.filter(
-    (i) => !BUYER_PHASES.has(i.phase?.toLowerCase()) &&
-           !SELLER_PHASES.has(i.phase?.toLowerCase()) &&
-           !AGENT_PHASES.has(i.phase?.toLowerCase())
+    (i) => !BUYER_PHASES.has(i.category?.toLowerCase()) &&
+           !SELLER_PHASES.has(i.category?.toLowerCase()) &&
+           !AGENT_PHASES.has(i.category?.toLowerCase())
   )
 
   const cdaStatus = cda?.status ?? "not_started"
@@ -269,13 +281,13 @@ export function ClosingWorkflowTab({ contactId, agentId, brokerageId }: Props) {
                   </button>
                   <div className="flex-1 min-w-0">
                     <p className={`text-sm leading-snug ${item.completed ? "line-through text-muted-foreground" : "font-medium"}`}>
-                      {item.item_label}
+                      {item.item_name}
                     </p>
                     <div className="flex items-center gap-2 mt-1 flex-wrap">
-                      <OwnerBadge owner={item.owner} />
-                      {item.due_date && !item.completed && (
+                      <OwnerBadge owner={ownerFromNotes(item.notes)} />
+                      {dueFromNotes(item.notes) && !item.completed && (
                         <span className="text-[10px] text-muted-foreground">
-                          Due {new Date(item.due_date).toLocaleDateString()}
+                          Due {new Date(dueFromNotes(item.notes) as string).toLocaleDateString()}
                         </span>
                       )}
                       {item.completed && item.completed_at && (

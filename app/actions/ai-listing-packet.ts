@@ -134,13 +134,24 @@ export async function generateListingPacket(config: ListingPacketConfig) {
       return { success: false, error: "Listing must be live on MLS before generating packet" }
     }
 
-    // Create packet job record — brokerage from session, never params
+    // Create packet job record — brokerage from session, never params.
+    // pass 13: listing_packet_jobs.agent_user_id FKs users(id) but callers pass
+    // MIXED classes (the panel sends user.id; the auto-on-live path sends
+    // listing.agent_id = agents.id, which FK-threw). Resolve tolerantly.
+    let packetAgentUserId: string | null = config.agentId ?? null
+    if (packetAgentUserId && isValidUUID(packetAgentUserId)) {
+      const { data: pktIdRow } = await supabase
+        .from("agents").select("user_id")
+        .or(`id.eq.${packetAgentUserId},user_id.eq.${packetAgentUserId}`)
+        .maybeSingle()
+      packetAgentUserId = pktIdRow?.user_id ?? packetAgentUserId
+    }
     const { data: packet, error: packetError } = await supabase
       .from("listing_packet_jobs")
       .insert({
         listing_id: config.listingId,
         brokerage_id: auth.brokerageId,
-        agent_user_id: config.agentId,
+        agent_user_id: packetAgentUserId,
         job_type: "full_packet",
         status: "queued",
         config: { ...config, sections: [], content: null },

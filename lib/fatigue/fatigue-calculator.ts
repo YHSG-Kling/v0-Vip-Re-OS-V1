@@ -227,13 +227,21 @@ export async function calculateFatigue(
         // Keep fallback message
       }
 
-      // Insert fatigue_alert
+      // Insert fatigue_alert. pass 13: fatigue_alerts.agent_user_id FKs users(id)
+      // but contacts.agent_id is agents.id — the raw stamp FK-threw and every
+      // fatigue alert died unnoticed. Resolve to the owning agent's auth user id.
+      let fatigueAgentUserId: string | null = null
+      if (contact?.agent_id) {
+        const { data: owningAgent } = await supabase
+          .from("agents").select("user_id").eq("id", contact.agent_id).maybeSingle()
+        fatigueAgentUserId = owningAgent?.user_id ?? null
+      }
       const { data: alert } = await supabase
         .from("fatigue_alerts")
         .insert({
           contact_id:               contactId,
           brokerage_id:             brokerageId,
-          agent_user_id:            contact?.agent_id ?? null,
+          agent_user_id:            fatigueAgentUserId,
           alert_type:               "fatigue_threshold_crossed",
           fatigue_score_at_trigger: score,
           risk_level:               riskLevel,

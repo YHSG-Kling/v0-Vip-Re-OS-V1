@@ -241,11 +241,23 @@ export async function aiCalculateCommission(params: CommissionEntry) {
     // pass 12: params.agentId is agents.id (every caller resolves via
     // getAgentContext), so match the agents PK — the old user_id lookup
     // silently returned null and the cap logic never engaged.
-    const { data: agentProfile } = await supabase
-      .from("agents")
-      .select("commission_split, brokerage_id, cap_amount, cap_progress")
-      .eq("id", params.agentId)
-      .maybeSingle()
+    // pass 13 CONSOLIDATION: cap state is owned by agent_cap_tracking (the
+    // CapProgressBar, CDA portal, commission waterfall and kernel all key on
+    // it) — the agents cap-progress column was a second drifting ledger; read the
+    // canonical row here and let the kernel's createCommissionRecord own the
+    // ratchet (it already updates cap_paid_to_date).
+    const [{ data: agentProfile }, { data: capRow }] = await Promise.all([
+      supabase
+        .from("agents")
+        .select("commission_split, brokerage_id")
+        .eq("id", params.agentId)
+        .maybeSingle(),
+      supabase
+        .from("agent_cap_tracking")
+        .select("cap_amount, cap_paid_to_date")
+        .eq("agent_id", params.agentId)
+        .maybeSingle(),
+    ])
 
     // Calculate commission breakdown
     const grossCommission = params.grossCommission
@@ -287,10 +299,10 @@ export async function aiCalculateCommission(params: CommissionEntry) {
     const agentGross = grossCommission * (agentSplit / 100)
     const agentNet = agentGross - additionalFeesTotal
 
-    // Check cap status
+    // Check cap status (canonical agent_cap_tracking ledger)
     let cappedAmount = 0
-    if (agentProfile?.cap_amount && agentProfile?.cap_progress) {
-      const remainingToCap = agentProfile.cap_amount - agentProfile.cap_progress
+    if (capRow?.cap_amount && capRow?.cap_paid_to_date != null) {
+      const remainingToCap = capRow.cap_amount - capRow.cap_paid_to_date
       if (remainingToCap <= 0) {
         // Agent is capped, gets 100%
         cappedAmount = brokerageShare
@@ -345,17 +357,10 @@ Provide JSON with tax estimates:
 
     const commission = commissionResult.data
 
-    // Update agent's cap tracking (pass 12: match the agents PK — params.agentId
-    // is agents.id; the old user_id filter matched zero rows so cap_progress
-    // never advanced and the CapProgressBar stayed frozen at onboarding value).
-    if (agentProfile && !cappedAmount) {
-      await supabase
-        .from("agents")
-        .update({
-          cap_progress: (agentProfile.cap_progress || 0) + brokerageShare,
-        })
-        .eq("id", params.agentId)
-    }
+    // pass 13 CONSOLIDATION: the cap ratchet is OWNED by the kernel's
+    // createCommissionRecord (agent_cap_tracking.cap_paid_to_date, updated in
+    // the call above) — the old agents cap-progress update here was a second
+    // ledger advancing in parallel and has been removed (keep-one verdict).
 
     // Sync to QuickBooks. pass 12: `commission` is the kernel's camelCase result
     // (id/grossCommission/agentNet…), NOT a DB row — the old call passed it raw so

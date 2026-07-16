@@ -246,7 +246,9 @@ export async function registerCampaignSource(params: {
     .from("marketing_assets")
     .insert({
       brokerage_id: brokerageId,
-      agent_user_id: agentId,
+      // pass 13: marketing_assets.agent_user_id FKs users(id) — getAgentContext's
+      // agentId is agents.id and FK-threw here, killing promote-to-asset.
+      agent_user_id: userId,
       created_by: userId,
       campaign_id: params.campaignId,
       asset_type: assetTypeMap[params.sourceTable],

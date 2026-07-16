@@ -597,9 +597,13 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
       transactionId: transaction.id,
     })
 
-    // Notify listing agent
+    // Notify listing agent. pass 13: activities.agent_user_id FKs users(id) but
+    // listing.agent_id is agents.id — the raw stamp FK-threw and the "offer
+    // received" activity never landed. Resolve to the agent's auth user id.
+    const { data: listingAgentRow } = await supabase
+      .from("agents").select("user_id").eq("id", listing.agent_id).maybeSingle()
     await supabase.from("activities").insert({
-      agent_user_id: listing.agent_id,
+      agent_user_id: listingAgentRow?.user_id ?? null,
       activity_type: "offer_received",
       entity_type: "offer",
       entity_id: offer.id,

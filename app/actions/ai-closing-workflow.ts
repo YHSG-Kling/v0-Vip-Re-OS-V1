@@ -87,24 +87,34 @@ Generate a comprehensive, ordered closing checklist covering:
 - Compliance items`,
     })
 
-    // Map AI output to actual DB columns (closing_checklist_items schema)
+    // Map AI output to the LIVE closing_checklist_items schema (pass 13: the old
+    // shape wrote five phantom columns that don't exist on this table, so EVERY
+    // generate threw and the checklist feature was dead).
+    // Real columns: item_name, category, sequence, required, completed, notes.
+    // Owner + due date ride in notes (no dedicated columns; the deadline rail is
+    // transaction_deadlines/calendar_events, not this table).
     const closeDate = transaction.close_date ? new Date(transaction.close_date) : null
-    const rows = checklist.items.map((item) => {
+    const rows = checklist.items.map((item, idx) => {
       let dueDate: string | null = null
       if (closeDate && item.due_offset_days) {
         const d = new Date(closeDate)
         d.setDate(d.getDate() + item.due_offset_days)
         dueDate = d.toISOString().split("T")[0]
       }
+      const noteBits = [
+        `owner: ${item.owner}`,
+        dueDate ? `due: ${dueDate}` : null,
+        item.notes || null,
+      ].filter(Boolean)
       return {
         transaction_id:  params.transactionId,
         brokerage_id:    params.brokerageId,
-        agent_user_id:   params.agentId,
-        phase:           item.category,
-        item_label:      item.item_name,
-        owner:           item.owner,
-        due_date:        dueDate,
+        item_name:       item.item_name,
+        category:        item.category,
+        sequence:        Number.isFinite(item.sequence) ? item.sequence : idx,
+        required:        item.required,
         completed:       false,
+        notes:           noteBits.join(" · "),
       }
     })
 

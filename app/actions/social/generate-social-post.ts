@@ -110,12 +110,18 @@ async function resolveBrandVoice(
     if (teamProfile) resolved = mergeBrandVoice(resolved, teamProfile as BrandVoiceRow)
   }
 
-  // 3. Agent-level profile (most specific — overrides all)
+  // 3. Agent-level profile (most specific — overrides all).
+  // pass 13: brand_voice_profile.agent_id FKs agents(id) but callers pass the
+  // auth users.id (SequenceBuilder → assist bar) — resolve tolerantly.
   if (agentId) {
+    const { data: bvpAgentRow } = await supabase
+      .from("agents").select("id")
+      .or(`id.eq.${agentId},user_id.eq.${agentId}`)
+      .maybeSingle()
     const { data: agentProfile } = await supabase
       .from("brand_voice_profile")
       .select(SELECT)
-      .eq("agent_id", agentId)
+      .eq("agent_id", bvpAgentRow?.id ?? agentId)
       .eq("is_active", true)
       .maybeSingle()
 

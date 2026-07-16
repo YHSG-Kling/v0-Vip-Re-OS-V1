@@ -93,14 +93,24 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
 
     const supabase = await createClient()
 
+    // pass 13: callers pass MIXED id classes (the presentation tab sends
+    // listing.agent_id = agents.id; direct actions send users.id). Resolve both
+    // once — the users lookup below and the activities.agent_user_id stamps
+    // (users FK) need the auth users.id or they fail outright.
+    const { data: nsIdRow } = await supabase
+      .from("agents").select("user_id, brokerage_id")
+      .or(`id.eq.${input.agentId},user_id.eq.${input.agentId}`)
+      .maybeSingle()
+    const nsAgentUserId = nsIdRow?.user_id ?? input.agentId
+
     // Get agent's brokerage for commission structure
     const { data: profile } = await supabase
       .from("users")
       .select("brokerage_id")
-      .eq("id", input.agentId)
-      .single()
+      .eq("id", nsAgentUserId)
+      .maybeSingle()
 
-    const brokerageId = profile?.brokerage_id
+    const brokerageId = profile?.brokerage_id ?? nsIdRow?.brokerage_id
     if (!brokerageId) {
       return { success: false, error: "Agent brokerage not found" }
     }
@@ -118,7 +128,7 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
       activity_type: "seller.net_sheet.started",
       listing_id: input.listingId,
       contact_id: input.contactId,
-      agent_user_id: input.agentId,
+      agent_user_id: nsAgentUserId,
       metadata: {
         sale_price: input.salePrice,
         alternate_price: input.alternatePrice
@@ -153,7 +163,7 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
       activity_type: "seller.net_sheet.completed",
       listing_id: input.listingId,
       contact_id: input.contactId,
-      agent_user_id: input.agentId,
+      agent_user_id: nsAgentUserId,
       metadata: {
         net_sheet_id: netSheetId,
         scenario_count: scenarios.length,

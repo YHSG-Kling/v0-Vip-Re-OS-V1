@@ -1717,6 +1717,47 @@ async function main() {
         && src("lib/intelligence/daily-briefing-generator.ts").includes("user_id: briefingUserId")
         && src("app/actions/copilot.ts").includes("gameplanAgentId")
         && src("app/actions/buyer-financial.ts").includes('.eq("agent_id", ctx.agentId ?? ctx.userId)'))
+
+      // ── PASS 13: GLOBAL agent_user_id CLASS AUDIT + CAP-LEDGER CONSOLIDATION + E2E-IN-GUARD ──
+      {
+        const { readdirSync, statSync } = await import("fs")
+        // The class-crossing shape: an agents-FK row field stamped straight into a
+        // users-class agent_user_id column. Live DB proof: ALL 36 agent_user_id
+        // columns are users-class. Zero of these may exist anywhere in app/ or lib/.
+        const crossers: string[] = []
+        const scan13 = (rel: string) => {
+          const text = readFileSync(join(ROOT, rel), "utf-8")
+          for (const m of text.matchAll(/agent_user_id:\s*(listing|contact|lead|txn|transaction)(\??)\.agent_id/g)) {
+            crossers.push(`${rel}: agent_user_id ← ${m[1]}.agent_id`)
+          }
+        }
+        const walk13 = (dir: string) => {
+          for (const name of readdirSync(join(ROOT, dir))) {
+            const rel = `${dir}/${name}`
+            if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walk13(rel) }
+            else if (/\.(ts|tsx)$/.test(name)) scan13(rel)
+          }
+        }
+        walk13("lib"); walk13("app")
+        check(`PASS 13 — GLOBAL agent_user_id CLASS AUDIT (items 1-3 approved after pass 12). Live census: ALL 36 agent_user_id columns are USERS-class (30 FK users, 6 no-FK same convention) — so the global rule is simple: agent_user_id never meets an agents.id. The sweep found the filters CLEAN (50/50 users-class) and SIX class-crossing STAMPS, each FK-throwing in production: the 'offer received' activity (listing.agent_id), EVERY buyer fatigue alert (contact.agent_id), promote-to-asset in the campaign registry (getAgentContext agents.id), the CMA presentation + net-sheet events AND the net-sheet's users-table brokerage lookup (presentation tab passes listing.agent_id — net sheets errored outright), the auto-on-live listing packet job, and the brand-voice agent profile read (agents-FK filtered by users.id). BONUS CATCH: aiGenerateClosingChecklist wrote FIVE PHANTOM COLUMNS (agent_user_id/phase/item_label/owner/due_date don't exist on closing_checklist_items) — every checklist generate THREW and the tab rendered the same phantom fields; both now speak the live schema (item_name/category/notes with owner+due embedded). CONSOLIDATION (item 2): agent_cap_tracking is the ONE cap ledger (CapProgressBar, CDA portal, waterfall, kernel) — aiCalculateCommission now reads it and its parallel agents.cap_progress ratchet is REMOVED (the kernel owns the ratchet). E2E-IN-GUARD (item 3): the lifecycle harness rides the guard chain, credential-gated. MANAGER COVERAGE: all 14 managers own ≥1 maintenance domain, zero domains point at unknown managers. In-code sweep offenders now: [${crossers.join("; ") || "none"}]`,
+          crossers.length === 0
+          && src("app/actions/ai-offer-creation.ts").includes("listingAgentRow?.user_id ?? null")
+          && src("lib/fatigue/fatigue-calculator.ts").includes("fatigueAgentUserId")
+          && src("lib/marketing/campaign-registry.ts").includes("agent_user_id: userId")
+          && src("app/actions/cma-presentation/presentation-assembler.ts").includes("presAgentUserId")
+          && !src("app/actions/cma-presentation/presentation-assembler.ts").includes("agent_user_id: input.agentId")
+          && src("app/actions/cma-presentation/net-sheet-calculator.ts").includes("nsAgentUserId")
+          && !src("app/actions/cma-presentation/net-sheet-calculator.ts").includes("agent_user_id: input.agentId")
+          && src("app/actions/ai-listing-packet.ts").includes("packetAgentUserId")
+          && src("app/actions/ai-closing-workflow.ts").includes("item_name:")
+          && !src("app/actions/ai-closing-workflow.ts").includes("agent_user_id:")
+          && !src("app/actions/ai-closing-workflow.ts").includes("item_label")
+          && src("app/crm/components/closing-workflow-tab.tsx").includes("ownerFromNotes")
+          && src("app/actions/social/generate-social-post.ts").includes("bvpAgentRow")
+          && src("app/actions/ai-financial-management.ts").includes("agent_cap_tracking")
+          && !src("app/actions/ai-financial-management.ts").includes("cap_progress")
+          && src("package.json").includes("npm run test:e2e-lifecycle\","))
+      }
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

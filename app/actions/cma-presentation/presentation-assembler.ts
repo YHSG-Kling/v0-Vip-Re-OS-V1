@@ -57,6 +57,15 @@ export async function assemblePresentation(input: PresentationInput): Promise<Pr
     const supabase = await createClient()
     const warnings: string[] = []
 
+    // pass 13: activities.agent_user_id FKs users(id) but callers pass MIXED
+    // classes (the presentation tab passes listing.agent_id = agents.id).
+    // Resolve tolerantly so both classes land the users.id.
+    const { data: presIdRow } = await supabase
+      .from("agents").select("user_id")
+      .or(`id.eq.${input.agentId},user_id.eq.${input.agentId}`)
+      .maybeSingle()
+    const presAgentUserId = presIdRow?.user_id ?? input.agentId
+
     // Get listing and contact data for personalization
     const { data: listing } = await supabase
       .from("listings")
@@ -104,7 +113,7 @@ export async function assemblePresentation(input: PresentationInput): Promise<Pr
       activity_type: "seller.presentation.created",
       listing_id: input.listingId,
       contact_id: input.contactId,
-      agent_user_id: input.agentId,
+      agent_user_id: presAgentUserId,
       metadata: {
         presentation_id: presentationId,
         has_cma: hasCMA,
@@ -120,7 +129,9 @@ export async function assemblePresentation(input: PresentationInput): Promise<Pr
       const videoResult = await generatePresentationVideo({
         listingId: input.listingId,
         contactId: input.contactId,
-        agentId: input.agentId,
+        // resolved users.id — ai_video_projects.agent_id and
+        // activities.agent_user_id are both USERS-class
+        agentId: presAgentUserId,
         presentationContent
       })
       
@@ -140,7 +151,7 @@ export async function assemblePresentation(input: PresentationInput): Promise<Pr
         activity_type: "seller.decision.ready",
         listing_id: input.listingId,
         contact_id: input.contactId,
-        agent_user_id: input.agentId,
+        agent_user_id: presAgentUserId,
         metadata: {
           presentation_id: presentationId,
           video_project_id: videoProjectId,
