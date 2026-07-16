@@ -78,22 +78,30 @@ async function loadAssistantIdentity(svc: any, brokerageId: string, agentUserId:
 async function loadHumanIdentity(svc: any, agentUserId: string): Promise<{
   name: string | null; photo: string | null; voiceId: string | null
 }> {
-  const [{ data: u }, { data: cfg }] = await Promise.all([
+  // pass 12: voice_assistant_config.agent_id and agent_voice_profiles.agent_id
+  // are AGENTS-class (agent_voice_profiles.agent_id FKs agents; voice-assistant
+  // getVoiceConfig keys config on agents.id) — resolve from the users.id first.
+  const [{ data: u }, { data: agentRow }] = await Promise.all([
     svc.from("users").select("first_name, last_name").eq("id", agentUserId).maybeSingle(),
-    svc.from("voice_assistant_config").select("voice_profile_id").eq("agent_id", agentUserId).maybeSingle(),
+    svc.from("agents").select("id").eq("user_id", agentUserId).maybeSingle(),
   ])
   const name = u ? [(u as any).first_name, (u as any).last_name].filter(Boolean).join(" ") || null : null
+  const agentRecordId = (agentRow as any)?.id ?? null
   let vp: any = null
-  if ((cfg as any)?.voice_profile_id) {
-    const { data } = await svc.from("agent_voice_profiles")
-      .select("did_photo_url, elevenlabs_voice_id").eq("id", (cfg as any).voice_profile_id).maybeSingle()
-    vp = data
-  }
-  if (!vp) {
-    const { data } = await svc.from("agent_voice_profiles")
-      .select("did_photo_url, elevenlabs_voice_id")
-      .eq("agent_id", agentUserId).eq("is_default", true).limit(1).maybeSingle()
-    vp = data
+  if (agentRecordId) {
+    const { data: cfg } = await svc.from("voice_assistant_config")
+      .select("voice_profile_id").eq("agent_id", agentRecordId).maybeSingle()
+    if ((cfg as any)?.voice_profile_id) {
+      const { data } = await svc.from("agent_voice_profiles")
+        .select("did_photo_url, elevenlabs_voice_id").eq("id", (cfg as any).voice_profile_id).maybeSingle()
+      vp = data
+    }
+    if (!vp) {
+      const { data } = await svc.from("agent_voice_profiles")
+        .select("did_photo_url, elevenlabs_voice_id")
+        .eq("agent_id", agentRecordId).eq("is_default", true).limit(1).maybeSingle()
+      vp = data
+    }
   }
   return { name, photo: vp?.did_photo_url ?? null, voiceId: vp?.elevenlabs_voice_id ?? null }
 }

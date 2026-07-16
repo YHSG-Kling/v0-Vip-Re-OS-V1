@@ -268,11 +268,15 @@ export async function generateDailyGameplan(userId: string) {
     }
   }
 
+  // pass 12: contacts.agent_id and video_scripts_library.agent_id FK agents(id);
+  // the dashboard calls this with users.id — resolve once (tasks below already did).
+  const gameplanAgentId = (await agentIdForUser(supabase, userId)) ?? userId
+
   // Get hot leads (score > 70)
   const { data: hotLeads } = await supabase
     .from("contacts")
     .select("*, property_interactions(*), communications(*)")
-    .eq("agent_id", userId)
+    .eq("agent_id", gameplanAgentId)
     .eq("brokerage_id", profile.brokerage_id)
     .gte("lead_score", 70)
     .order("lead_score", { ascending: false })
@@ -292,7 +296,7 @@ export async function generateDailyGameplan(userId: string) {
   const { data: overdueTasks } = await supabase
     .from("tasks")
     .select("*, contacts(*)")
-    .eq("assigned_to_agent_id", await agentIdForUser(supabase, userId))
+    .eq("assigned_to_agent_id", gameplanAgentId)
     .eq("status", "pending")
     .lt("due_date", new Date().toISOString())
     .order("priority", { ascending: false })
@@ -302,7 +306,7 @@ export async function generateDailyGameplan(userId: string) {
   const { data: contentReady } = await supabase
     .from("video_scripts_library")
     .select("*, generated_videos(*), contacts(*)")
-    .eq("agent_id", userId)
+    .eq("agent_id", gameplanAgentId)
     .eq("brokerage_id", profile.brokerage_id)
     .eq("approval_status", "approved")
     .is("generated_videos.published_at", null)

@@ -1027,7 +1027,10 @@ export async function createQrCodeAction(params: {
 
 export async function getMarketingStudioDashboard() {
   try {
-    const { agentId, brokerageId } = await getAgentContext()
+    // pass 12: marketing_campaigns/marketing_assets.agent_user_id stores the auth
+    // users.id (that's how every insert in this file stamps it) — filter with
+    // userId, not agents.id, or the "yours" buckets come back empty.
+    const { userId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
 
     // Run two separate campaign queries (agent-owned + brokerage-visible) to
@@ -1048,27 +1051,27 @@ export async function getMarketingStudioDashboard() {
         .from("marketing_campaigns")
         .select("status")
         .eq("brokerage_id", brokerageId)
-        .eq("agent_user_id", agentId),
+        .eq("agent_user_id", userId),
       // Brokerage-scoped campaigns (visible to all agents in brokerage)
       supabase
         .from("marketing_campaigns")
         .select("status")
         .eq("brokerage_id", brokerageId)
         .eq("visibility_scope", "brokerage")
-        .or(`agent_user_id.neq.${agentId},agent_user_id.is.null`), // exclude agent's own brokerage campaigns; include null-owner brokerage assets
+        .or(`agent_user_id.neq.${userId},agent_user_id.is.null`), // exclude agent's own brokerage campaigns; include null-owner brokerage assets
       // Assets owned by this agent
       supabase
         .from("marketing_assets")
         .select("approval_status")
         .eq("brokerage_id", brokerageId)
-        .eq("agent_user_id", agentId),
+        .eq("agent_user_id", userId),
       // Brokerage-scoped assets
       supabase
         .from("marketing_assets")
         .select("approval_status")
         .eq("brokerage_id", brokerageId)
         .eq("visibility_scope", "brokerage")
-        .or(`agent_user_id.neq.${agentId},agent_user_id.is.null`),
+        .or(`agent_user_id.neq.${userId},agent_user_id.is.null`),
       // Upcoming calendar events (next 7 days)
       supabase
         .from("campaign_calendar")

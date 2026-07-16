@@ -104,12 +104,25 @@ export async function generateDailyBriefing(
   const supabase = createServiceClient()
   const today = new Date().toISOString().split("T")[0]
 
+  // pass 12: callers pass MIXED id classes — briefing-actions + the cron pass
+  // agents.id, user-type-briefs passes users.id. ai_daily_briefings.user_id FKs
+  // users(id) while tasks/deals/leads/listings key on agents(id), so a single
+  // unresolved id breaks one side or the other (the agents.id save FK-THREW and
+  // briefings never cached for dashboard callers). Resolve BOTH classes once.
+  const { data: identityRow } = await supabase
+    .from("agents")
+    .select("id, user_id")
+    .or(`user_id.eq.${agentId},id.eq.${agentId}`)
+    .maybeSingle()
+  const agentsId = identityRow?.id ?? agentId
+  const briefingUserId = identityRow?.user_id ?? agentId
+
   // 1. Check for existing briefing today
   if (!forceRegenerate) {
     const { data: existing } = await supabase
       .from("ai_daily_briefings")
       .select("*")
-      .eq("user_id", agentId)
+      .eq("user_id", briefingUserId)
       .eq("briefing_date", today)
       .maybeSingle()
 
@@ -138,7 +151,7 @@ export async function generateDailyBriefing(
     supabase
       .from("tasks")
       .select("id, title, description, due_date, priority, status")
-      .eq("assigned_to_agent_id", agentId)
+      .eq("assigned_to_agent_id", agentsId)
       .neq("status", "completed")
       .lte("due_date", tomorrowStr)
       .order("due_date", { ascending: true })
@@ -148,7 +161,7 @@ export async function generateDailyBriefing(
     supabase
       .from("transactions")
       .select("id, deal_name, property_address, stage, purchase_price, close_date, health_score")
-      .eq("agent_id", agentId)
+      .eq("agent_id", agentsId)
       .not("stage", "in", '("closed","cancelled")')
       .limit(10),
 
@@ -156,7 +169,7 @@ export async function generateDailyBriefing(
     supabase
       .from("leads")
       .select("id, first_name, last_name, lead_score, lead_stage, source, last_contacted_at")
-      .eq("agent_id", agentId)
+      .eq("agent_id", agentsId)
       .eq("lead_stage", "new")
       .order("lead_score", { ascending: false })
       .limit(5),
@@ -165,17 +178,19 @@ export async function generateDailyBriefing(
     supabase
       .from("showings")
       .select("id, listing_id, contact_id, scheduled_at, status, notes")
-      .eq("agent_id", agentId)
+      .eq("agent_id", agentsId)
       .gte("scheduled_at", new Date().toISOString())
       .lte("scheduled_at", twoDaysOut.toISOString())
       .order("scheduled_at", { ascending: true })
       .limit(10),
 
-    // Calendar events: today
+    // Calendar events: today. pass 12: the person-day column is agent_user_id
+    // (USERS class) — entity_id holds lead/contact/transaction ids, so the old
+    // filter never matched an agent's own day.
     supabase
       .from("calendar_events")
       .select("id, event_type, start_at, end_at, metadata")
-      .eq("entity_id", agentId)
+      .eq("agent_user_id", briefingUserId)
       .gte("start_at", today)
       .lt("start_at", tomorrowStr)
       .order("start_at", { ascending: true })
@@ -185,7 +200,7 @@ export async function generateDailyBriefing(
     supabase
       .from("contacts")
       .select("id, first_name, last_name, status, intent_score, last_scored_at")
-      .eq("agent_id", agentId)
+      .eq("agent_id", agentsId)
       .eq("status", "hot")
       .limit(5),
   ])
@@ -236,7 +251,7 @@ export async function generateDailyBriefing(
     const { data: agentListings } = await supabase
       .from("listings")
       .select("id, address, status")
-      .eq("agent_id", agentId)
+      .eq("agent_id", agentsId)
       .in("status", ["active", "coming_soon"])
 
     const listingIds = (agentListings ?? []).map((l) => l.id)
@@ -287,26 +302,20 @@ export async function generateDailyBriefing(
   let isaActions: PriorityAction[] = []
   try {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-    // ai_daily_briefings keys briefings by users.id; assignment_log.agent_id is
-    // agents.id — resolve the mapping (and tolerate agentId already being agents.id).
-    const { data: agentRow } = await supabase
-      .from("agents").select("id").or(`user_id.eq.${agentId},id.eq.${agentId}`).maybeSingle()
-    const agentsId = agentRow?.id ?? null
-
+    // assignment_log.agent_id is agents.id; notifications.user_id is users.id —
+    // both resolved once at the top of this function (pass 12).
     const [handoffLogs, escalationRows, hotIsaCount] = await Promise.all([
-      agentsId
-        ? supabase
-            .from("assignment_log")
-            .select("lead_id, claimed, assignment_method, created_at")
-            .eq("agent_id", agentsId)
-            .gte("created_at", since)
-            .order("created_at", { ascending: true })
-            .limit(20)
-        : Promise.resolve({ data: [] as any[] }),
+      supabase
+        .from("assignment_log")
+        .select("lead_id, claimed, assignment_method, created_at")
+        .eq("agent_id", agentsId)
+        .gte("created_at", since)
+        .order("created_at", { ascending: true })
+        .limit(20),
       supabase
         .from("notifications")
         .select("body, entity_id, priority")
-        .eq("user_id", agentId)
+        .eq("user_id", briefingUserId)
         .eq("type", "isa_escalation")
         .is("read_at", null)
         .gte("created_at", since)
@@ -364,7 +373,7 @@ export async function generateDailyBriefing(
     const { buildOvernightAiWork } = await import("./overnight-ai-work")
     const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
     overnightAiWork = await buildOvernightAiWork(supabase, {
-      agentUserId: agentId, brokerageId, since: since24h,
+      agentUserId: briefingUserId, brokerageId, since: since24h,
     })
   } catch (err) {
     console.error("[DailyBriefing] overnight-AI-work fetch failed:", err)
@@ -382,9 +391,7 @@ export async function generateDailyBriefing(
     const { composeISawYouActions, humanizePortalActivity } = await import("./i-saw-you")
     const { resolveAddressing } = await import("@/lib/kernel/addressing")
     const since24 = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-    const { data: agentRow2 } = await supabase
-      .from("agents").select("id").or(`user_id.eq.${agentId},id.eq.${agentId}`).maybeSingle()
-    const owningAgentId = agentRow2?.id ?? agentId
+    const owningAgentId = agentsId
 
     const { data: acts } = await supabase
       .from("client_portal_activity")
@@ -448,11 +455,8 @@ export async function generateDailyBriefing(
     const { composeSmallWinActions } = await import("./small-wins")
     const { resolveAddressing } = await import("@/lib/kernel/addressing")
     const since24 = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-    // portal_event_stream.agent_user_id is users.id — resolve tolerantly
-    // (agentId may be either users.id or agents.id depending on the caller).
-    const { data: agentRow3 } = await supabase
-      .from("agents").select("id, user_id").or(`user_id.eq.${agentId},id.eq.${agentId}`).maybeSingle()
-    const agentUserIds = Array.from(new Set([agentId, agentRow3?.user_id].filter(Boolean))) as string[]
+    // portal_event_stream.agent_user_id is users.id — resolved once up top (pass 12).
+    const agentUserIds = [briefingUserId]
 
     const { data: wins } = await supabase
       .from("portal_event_stream")
@@ -508,13 +512,11 @@ export async function generateDailyBriefing(
       .filter((f) => f.recipient_contact_id)
     const failIds = Array.from(new Set(failRows.map((f) => f.recipient_contact_id as string)))
     if (failIds.length > 0) {
-      const { data: agentRow4 } = await supabase
-        .from("agents").select("id").or(`user_id.eq.${agentId},id.eq.${agentId}`).maybeSingle()
       const { data: mine } = await supabase
         .from("contacts")
         .select("id, first_name, last_name, preferred_name, salutation_style")
         .in("id", failIds)
-        .eq("agent_id", agentRow4?.id ?? agentId)
+        .eq("agent_id", agentsId)
       const nameById = new Map(((mine ?? []) as any[]).map((c) => [c.id, resolveAddressing({
         firstName: c.first_name, lastName: c.last_name,
         preferredName: c.preferred_name, namePronunciation: null, salutationStyle: c.salutation_style,
@@ -540,13 +542,11 @@ export async function generateDailyBriefing(
   let promiseActions: PriorityAction[] = []
   try {
     const { resolveAddressing } = await import("@/lib/kernel/addressing")
-    const { data: agentRow5 } = await supabase
-      .from("agents").select("id").or(`user_id.eq.${agentId},id.eq.${agentId}`).maybeSingle()
     const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
     const { data: aging } = await supabase
       .from("contacts")
       .select("id, first_name, last_name, preferred_name, salutation_style, last_promise, last_promise_at")
-      .eq("agent_id", agentRow5?.id ?? agentId)
+      .eq("agent_id", agentsId)
       .not("last_promise", "is", null)
       .lt("last_promise_at", threeDaysAgo)
       .order("last_promise_at", { ascending: true })
@@ -578,9 +578,7 @@ export async function generateDailyBriefing(
   let coverageActions: PriorityAction[] = []
   try {
     const { resolveAddressing } = await import("@/lib/kernel/addressing")
-    const { data: myAgentRow } = await supabase
-      .from("agents").select("id").or(`user_id.eq.${agentId},id.eq.${agentId}`).maybeSingle()
-    const myAgentsId = myAgentRow?.id ?? null
+    const myAgentsId = agentsId
     if (myAgentsId) {
       const { data: covered } = await supabase
         .from("agents")
@@ -750,7 +748,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
     // user_id (FK→users.id) is the briefing key. The legacy agent_id column has
     // FK→agents.id — writing users.id there violated the FK, the upsert THREW, and
     // briefings never cached (full regeneration + AI spend on every page view).
-    user_id: agentId,
+    user_id: briefingUserId,
     brokerage_id: brokerageId,
     briefing_date: today,
     summary: aiResponse.summary,
@@ -773,7 +771,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
   const { data: existingForUpsert } = await supabase
     .from("ai_daily_briefings")
     .select("id")
-    .eq("user_id", agentId)
+    .eq("user_id", briefingUserId)
     .eq("briefing_date", today)
     .maybeSingle()
 
@@ -813,7 +811,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
       entity_id: upsertedBriefing.id,
       event_type: KernelEvent.DAILY_BRIEFING_GENERATED,
       metadata: {
-        agent_id: agentId,
+        agent_id: agentsId,
         briefing_date: today,
         tasks_count: tasks.length,
         transactions_count: transactions.length,
@@ -832,10 +830,16 @@ export async function markBriefingOpened(agentId: string): Promise<void> {
   const supabase = createServiceClient()
   const today = new Date().toISOString().split("T")[0]
 
+  // pass 12: callers pass agents.id (briefing-actions) — resolve to the users.id
+  // key the briefing rows are stored under, tolerating either class.
+  const { data: idRow } = await supabase
+    .from("agents").select("user_id").or(`user_id.eq.${agentId},id.eq.${agentId}`).maybeSingle()
+  const briefingUserId = idRow?.user_id ?? agentId
+
   await supabase
     .from("ai_daily_briefings")
     .update({ opened_at: new Date().toISOString() })
-    .eq("user_id", agentId)
+    .eq("user_id", briefingUserId)
     .eq("briefing_date", today)
     .is("opened_at", null)
 }

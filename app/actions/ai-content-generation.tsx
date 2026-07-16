@@ -237,6 +237,8 @@ export async function updateContentStatus(contentId: string, status: string, pub
 // SEO KEYWORDS
 // ============================================
 
+// pass 12: agentId here must be the auth users.id — seo_keywords.agent_user_id
+// FKs users(id) (verified live). No current callers; contract noted for future wiring.
 export async function getSEOKeywords(agentId: string) {
   if (!isValidUUID(agentId)) {
     return [

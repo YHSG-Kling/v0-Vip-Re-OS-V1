@@ -237,11 +237,14 @@ export async function aiCalculateCommission(params: CommissionEntry) {
       .eq("id", params.transactionId)
       .maybeSingle()
 
-    // Get agent's commission structure
+    // Get agent's commission structure.
+    // pass 12: params.agentId is agents.id (every caller resolves via
+    // getAgentContext), so match the agents PK — the old user_id lookup
+    // silently returned null and the cap logic never engaged.
     const { data: agentProfile } = await supabase
       .from("agents")
       .select("commission_split, brokerage_id, cap_amount, cap_progress")
-      .eq("user_id", params.agentId)
+      .eq("id", params.agentId)
       .maybeSingle()
 
     // Calculate commission breakdown
@@ -342,18 +345,27 @@ Provide JSON with tax estimates:
 
     const commission = commissionResult.data
 
-    // Update agent's cap tracking
+    // Update agent's cap tracking (pass 12: match the agents PK — params.agentId
+    // is agents.id; the old user_id filter matched zero rows so cap_progress
+    // never advanced and the CapProgressBar stayed frozen at onboarding value).
     if (agentProfile && !cappedAmount) {
       await supabase
         .from("agents")
         .update({
           cap_progress: (agentProfile.cap_progress || 0) + brokerageShare,
         })
-        .eq("user_id", params.agentId)
+        .eq("id", params.agentId)
     }
 
-    // Sync to QuickBooks
-    await syncCommissionToQuickBooks(commission)
+    // Sync to QuickBooks. pass 12: `commission` is the kernel's camelCase result
+    // (id/grossCommission/agentNet…), NOT a DB row — the old call passed it raw so
+    // agent_id/gross_commission/agent_net were all undefined and the sync was dead.
+    await syncCommissionToQuickBooks({
+      id: commission.id,
+      agent_id: params.agentId,
+      gross_commission: grossCommission,
+      agent_net: finalAgentNet,
+    })
 
     revalidatePath("/financials")
 
@@ -551,12 +563,13 @@ Provide comprehensive analysis:
 async function syncExpenseToQuickBooks(expense: any) {
   const supabase = await createClient()
 
-  // Resolve agent_id to brokerage_id
+  // Resolve agent_id to brokerage_id. pass 12: business_expenses.agent_id is
+  // agents.id — resolve via the agents table (the old users lookup never matched).
   const { data: agent } = await supabase
-    .from("users")
+    .from("agents")
     .select("brokerage_id")
     .eq("id", expense.agent_id)
-    .single()
+    .maybeSingle()
 
   if (!agent?.brokerage_id) {
     console.log("[v0] Agent brokerage not found, skipping sync")
@@ -596,9 +609,11 @@ async function syncExpenseToQuickBooks(expense: any) {
       ],
     }
 
-    // Log sync attempt (actual API call would go here)
+    // Log sync attempt (actual API call would go here).
+    // pass 12: quickbooks_sync_log.brokerage_id is NOT NULL and the kernel does
+    // not stamp brokerage_id on business_expenses — use the resolved agent's.
     await supabase.from("quickbooks_sync_log").insert({
-      brokerage_id: expense.brokerage_id,
+      brokerage_id: agent.brokerage_id,
       agent_id: expense.agent_id,
       sync_type: "expense",
       direction: "push",
@@ -617,9 +632,10 @@ async function syncExpenseToQuickBooks(expense: any) {
 async function syncCommissionToQuickBooks(commission: any) {
   const supabase = await createClient()
 
-  // Resolve agent_id to brokerage_id
+  // Resolve agent_id to brokerage_id. pass 12: commission.agent_id is agents.id
+  // (agent_commissions.agent_id → agents) — resolve via the agents table.
   const { data: agent } = await supabase
-    .from("users")
+    .from("agents")
     .select("brokerage_id")
     .eq("id", commission.agent_id)
     .maybeSingle()
@@ -663,9 +679,10 @@ async function syncCommissionToQuickBooks(commission: any) {
       ],
     }
 
-    // Log sync attempt
+    // Log sync attempt. pass 12: use the resolved brokerage — the payload built
+    // in aiCalculateCommission carries no brokerage_id, and the column is NOT NULL.
     await supabase.from("quickbooks_sync_log").insert({
-      brokerage_id: commission.brokerage_id,
+      brokerage_id: agent.brokerage_id,
       agent_id: commission.agent_id,
       sync_type: "commission",
       direction: "push",

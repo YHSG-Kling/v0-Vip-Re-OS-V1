@@ -1696,6 +1696,27 @@ async function main() {
         && src("lib/kernel/morning-standup.ts").includes("standupAgentId")
         && src("app/dashboard/financials/expenses/page.tsx").includes("expenseAgentId")
         && src("app/api/chat/stream/route.ts").includes("streamAgentId"))
+
+      // ── PASS 12: OWNER-CHALLENGED FINANCE + MARKETING IDENTITY DOUBLE-CHECK ──
+      check("PASS 12 — FINANCE + MARKETING identity double-check (owner challenged pass 11: 'the user logs in by users.id and user_type routes the dashboard — are you sure?'). The login model was CONFIRMED (getAgentContext: auth.uid()=users.id → user_type routes → agents.id resolved via agents.user_id) and the double-check found NINE more genuine class bugs, all live-FK-verified. FINANCE: aiCalculateCommission looked up agents by user_id with an agents.id in hand (profile null → cap tracking NEVER engaged, cap_progress frozen) — now .eq('id', …); BOTH QuickBooks syncs resolved brokerage via users-by-agents.id (always null → sync permanently dead) — now via agents, and the commission sync was handed the kernel's camelCase result so every column read was undefined — now a real payload; the expenses page passed raw user.id into AddExpenseDialog + ExportCSVButton (kernel write gate ctx.agentId!==agentId REJECTED every agent's own expense; CSV exported empty) — now expenseAgentId; the brokerage P&L panel got users.id (financial_reports.agent_id FKs agents → insert FK-THREW) — now resolved+conditional. MARKETING: getMarketingStudioDashboard filtered marketing_campaigns/assets.agent_user_id (a USERS-class column, every insert stamps userId) with agents.id → 'yours' KPIs always empty — now userId; section-narration-orchestrator queried agent_voice_profiles/agent_avatar_assets (agents-FK) by pres.agent_user_id → every presentation lost its voice clone + avatar — now resolves like intro-video-reactor; video-identity loadHumanIdentity same class miss → resolves agents.id first; book-seller-appointment stamped calendar_events.agent_user_id (USERS-class: coaching + no-show autopilot key it on users) with agents.id — resolves before scheduling, and voice-assistant's get_schedule read the same column with agents.id → 'no appointments' every time — now caller.userId. CROSS: generateDailyBriefing receives MIXED classes from its 3 callers (agents.id from dashboard+cron, users.id from user-type-briefs) while writing ai_daily_briefings.user_id (users FK) and reading tasks/deals/leads/listings (agents FKs) — one tolerant resolve at the top now feeds each column its own class (the agents.id save path FK-THREW before: briefings regenerated + re-billed AI on every view); generateDailyGameplan filtered contacts + video_scripts_library (agents FKs) by users.id — now agentIdForUser; loadMortgageBrokers filtered referral_partners.agent_id (agents FK) by ctx.userId — now ctx.agentId",
+        src("app/actions/ai-financial-management.ts").includes('.eq("id", params.agentId)')
+        && !src("app/actions/ai-financial-management.ts").includes('.eq("user_id", params.agentId)')
+        && src("app/actions/ai-financial-management.ts").includes('agent_id: params.agentId')
+        && !src("app/actions/ai-financial-management.ts").includes('brokerage_id: expense.brokerage_id')
+        && !src("app/actions/ai-financial-management.ts").includes('brokerage_id: commission.brokerage_id')
+        && src("app/dashboard/financials/expenses/page.tsx").includes("<AddExpenseDialog agentId={expenseAgentId}")
+        && src("app/dashboard/financials/expenses/page.tsx").includes("<ExportCSVButton agentId={expenseAgentId}")
+        && src("app/dashboard/financials/brokerage/page.tsx").includes("brokerAgentId && <ProfitLossReportPanel")
+        && src("app/actions/marketing-studio.ts").includes('.eq("agent_user_id", userId)')
+        && !src("app/actions/marketing-studio.ts").includes('.eq("agent_user_id", agentId)')
+        && src("lib/listing-presentation/section-narration-orchestrator.ts").includes('eq("user_id", pres.agent_user_id)')
+        && src("lib/video/video-identity.ts").includes("agentRecordId")
+        && src("lib/ai-isa/book-seller-appointment.ts").includes("agentId: agentUserId ?? params.agentId")
+        && src("app/actions/voice-assistant.ts").includes("getTodayAppointments(caller.userId)")
+        && src("lib/intelligence/daily-briefing-generator.ts").includes("const briefingUserId = identityRow?.user_id ?? agentId")
+        && src("lib/intelligence/daily-briefing-generator.ts").includes("user_id: briefingUserId")
+        && src("app/actions/copilot.ts").includes("gameplanAgentId")
+        && src("app/actions/buyer-financial.ts").includes('.eq("agent_id", ctx.agentId ?? ctx.userId)'))
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

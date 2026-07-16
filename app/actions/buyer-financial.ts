@@ -362,11 +362,13 @@ export async function loadMortgageBrokers(params: {
   const supabase = createServiceClient()
 
   // Scope by session brokerage; agent_id pulled from session, not caller.
+  // pass 12: referral_partners.agent_id FKs agents(id) (referral-actions stamps
+  // agents.id) — the old users.id filter always returned zero partners.
   const { data, error } = await supabase
     .from("referral_partners")
     .select("id, partner_name, company_name, phone, email")
     .eq("brokerage_id", ctx.brokerageId)
-    .eq("agent_id", ctx.userId)
+    .eq("agent_id", ctx.agentId ?? ctx.userId)
     .eq("partner_type", "mortgage_broker")
     .eq("active", true)
     .limit(3)

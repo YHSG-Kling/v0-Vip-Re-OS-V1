@@ -137,12 +137,16 @@ export async function bookSellerListingAppointment(
   // Book on the CONTACT once it exists (post-conversion the lead is inactive and the
   // appointment belongs to the relationship). scheduleISAAppointment emits
   // ISA_APPOINTMENT_SCHEDULED and logs the ISA activity.
+  // pass 12: the scheduler stamps calendar_events.agent_user_id, a USERS-class
+  // column (agent-coaching/no-show autopilot key on it, and the direct schedule
+  // action passes users.id). params.agentId here is agents.id — resolve first.
+  const agentUserId = await resolveAgentRecordToUserId(params.agentId)
   let calendarEventId: string
   try {
     calendarEventId = await scheduleISAAppointment({
       brokerageId: params.brokerageId,
       contactId,
-      agentId: params.agentId,
+      agentId: agentUserId ?? params.agentId,
       startAt: params.startAt,
       endAt: params.endAt,
       timezoneName: params.timezoneName,
@@ -162,7 +166,7 @@ export async function bookSellerListingAppointment(
   // The contact exists, so the chain's prep_seller_portal + CMA steps have a target.
   // The engine's run-dedupe keyed on (chain, entity, trigger) makes a rerun reuse the
   // same run instead of double-rendering the (expensive) D-ID chapter videos.
-  const agentUserId = await resolveAgentRecordToUserId(params.agentId)
+  // (agentUserId resolved above, before the schedule step.)
   const propertyData =
     params.propertyData ??
     (params.location ? { address: params.location } : {})

@@ -226,7 +226,9 @@ export default function AgentDashboard() {
           getActiveTransactions(),
           getUpcomingAnniversaries(),
           getCommissionRecords({ status: 'pending' }),
-          getExpenses({ startDate: monthStart }),
+          // pass 12: scope to this agent's book — business_expenses.agent_id is
+          // agents.id; unscoped, the read leaned on RLS breadth instead of intent.
+          getExpenses({ agentId: agentRow?.id, startDate: monthStart }),
           getHotLeads(10),
           getRecentLifeChanges(agentRow?.id, 7).catch(() => []),
           getMotivatedSellers({ min_score: 60 }).catch(() => null),

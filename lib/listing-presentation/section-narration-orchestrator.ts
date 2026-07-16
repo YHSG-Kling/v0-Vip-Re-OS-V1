@@ -70,15 +70,24 @@ export async function narratePresentationSections(
   if (!pres?.brokerage_id) return empty
 
   // Resolve the agent's voice clone + avatar source (both optional).
+  // pass 12: agent_voice_profiles.agent_id and agent_avatar_assets.agent_id FK
+  // agents(id), but listing_presentations.agent_user_id is the USERS class —
+  // resolve to agents.id first (as intro-video-reactor / did/index already do);
+  // the raw filter matched nothing, silently degrading every section to on-screen.
   let voiceId: string | null = null
   let avatarSource: string | null = null
   if (pres.agent_user_id) {
-    const { data: vp } = await supabase.from("agent_voice_profiles")
-      .select("elevenlabs_voice_id").eq("agent_id", pres.agent_user_id).maybeSingle()
-    voiceId = (vp as { elevenlabs_voice_id?: string | null } | null)?.elevenlabs_voice_id ?? null
-    const { data: av } = await supabase.from("agent_avatar_assets")
-      .select("did_avatar_id").eq("agent_id", pres.agent_user_id).eq("status", "ready").eq("is_default", true).maybeSingle()
-    avatarSource = (av as { did_avatar_id?: string | null } | null)?.did_avatar_id ?? null
+    const { data: agentRow } = await supabase.from("agents")
+      .select("id").eq("user_id", pres.agent_user_id).maybeSingle()
+    const voiceAgentId = (agentRow as { id?: string } | null)?.id ?? null
+    if (voiceAgentId) {
+      const { data: vp } = await supabase.from("agent_voice_profiles")
+        .select("elevenlabs_voice_id").eq("agent_id", voiceAgentId).maybeSingle()
+      voiceId = (vp as { elevenlabs_voice_id?: string | null } | null)?.elevenlabs_voice_id ?? null
+      const { data: av } = await supabase.from("agent_avatar_assets")
+        .select("did_avatar_id").eq("agent_id", voiceAgentId).eq("status", "ready").eq("is_default", true).maybeSingle()
+      avatarSource = (av as { did_avatar_id?: string | null } | null)?.did_avatar_id ?? null
+    }
   }
 
   // Queued section renders carry the narration script in input_props.

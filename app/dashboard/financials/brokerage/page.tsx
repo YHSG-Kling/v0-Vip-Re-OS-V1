@@ -60,6 +60,11 @@ export default async function BrokeragePLPage() {
 
   if (!profile.brokerage_id) redirect("/dashboard/onboarding")
 
+  // pass 12: the P&L report panel needs the broker's agents.id (financial tables
+  // key on agents, not users). Brokers who also produce have an agents row.
+  const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
+  const brokerAgentId = await resolveAgentId(supabase as any, user.id)
+
   // ─── PARALLEL DATA FETCHING ────────────────────────────────────────────────
   const [
     mtdEarnings,
@@ -655,7 +660,11 @@ export default async function BrokeragePLPage() {
       </div>
 
       {/* ─── SECTION 8: P&L REPORT GENERATOR ──────────────────────────────────── */}
-      <ProfitLossReportPanel agentId={profile.id} />
+      {/* pass 12: the panel's report reads business_expenses.agent_id and inserts
+          financial_reports.agent_id — both agents.id FKs. profile.id is users.id,
+          which read empty and FK-failed the insert. Resolve the broker's agents
+          row; brokers without one get the brokerage-wide truth section below. */}
+      {brokerAgentId && <ProfitLossReportPanel agentId={brokerAgentId} />}
 
       {/* ─── SECTION 9: AGENT P&L TRUTH ENGINE ────────────────────────────────── */}
       {/* Per-agent net ROI: GCI – agent_payout – AI costs – fees = true brokerage margin */}

@@ -12,6 +12,9 @@ export async function scheduleISAAppointment(params: {
   brokerageId: string
   leadId?: string
   contactId?: string
+  /** The auth users.id — stamps calendar_events.agent_user_id (a USERS-class
+   *  column: agent-coaching + no-show autopilot key it against users). Callers
+   *  holding agents.id must resolve via resolveAgentRecordToUserId first. */
   agentId: string
   startAt: Date
   endAt: Date

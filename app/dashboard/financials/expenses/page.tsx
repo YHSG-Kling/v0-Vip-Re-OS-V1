@@ -96,8 +96,11 @@ export default async function ExpensesPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <ExportCSVButton agentId={user.id} type="expenses" />
-          <AddExpenseDialog agentId={user.id} />
+          {/* pass 12: both take agents.id — the CSV export filters
+              business_expenses.agent_id and the dialog's kernel write is
+              permission-gated on ctx.agentId; raw user.id broke both. */}
+          <ExportCSVButton agentId={expenseAgentId} type="expenses" />
+          <AddExpenseDialog agentId={expenseAgentId} />
         </div>
       </div>
 

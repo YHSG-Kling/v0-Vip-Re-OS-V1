@@ -120,7 +120,9 @@ export async function processVoiceCommand(params: {
         break
 
       case "get_schedule":
-        const appointments = await getTodayAppointments(agentId)
+        // pass 12: calendar_events.agent_user_id is the USERS class — pass the
+        // auth user id, not agents.id (the old filter always returned empty).
+        const appointments = await getTodayAppointments(caller.userId)
         if (appointments.length === 0) {
           response = "You have no appointments scheduled for today."
         } else {
@@ -496,14 +498,15 @@ async function lookupContact(name: string, agentId: string) {
   return data
 }
 
-async function getTodayAppointments(agentId: string) {
+// pass 12: takes the auth users.id — calendar_events.agent_user_id is USERS-class.
+async function getTodayAppointments(agentUserId: string) {
   const supabase = await createClient()
   const today = new Date().toISOString().split("T")[0]
 
   const { data } = await supabase
     .from("calendar_events")
     .select("*")
-    .eq("agent_user_id", agentId)
+    .eq("agent_user_id", agentUserId)
     .gte("start_at", `${today}T00:00:00`)
     .lte("start_at", `${today}T23:59:59`)
     .order("start_at", { ascending: true })
