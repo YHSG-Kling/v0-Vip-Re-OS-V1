@@ -1892,6 +1892,25 @@ async function main() {
         && src("app/actions/campaign-presets.ts").includes("input.scopeId ?? ctx.brokerageId")
         && src("scripts/writerless-read-sweep.ts").includes("VARIABLE_TABLE_WRITERS"))
     }
+    // ── SCOPED EXPENSES + PRESET EXPANSION (owner directive) ──
+    {
+      check("ALL-SCOPE EXPENSE ENTRY + CAMPAIGN PRESET EXPANSION (owner directive). EXPENSES: business_expenses gains team_id (l72_s10) with scope semantics agent_id=agent / team_id=team / neither=brokerage; logScopedExpense is the ONE writer for all three scopes (tenant-anchored, team verified against the brokerage, brokerage scope admin-gated) and the broker money page gains the entry section + recent-operating-expenses list. The monthly P&L rollup now FOLDS the month's non-agent expenses into brokerage_p_l buckets by category (marketing/office/technology→tech, rest→operating) and subtracts from net_profit — a tenant with zero logged rows keeps honest-NULL buckets (untracked ≠ $0), so the Margin Breakdown expense lines are finally real without ever being fabricated. PRESETS: the canonical preset writer gains blog_post + facebook_audience channels writing their CANONICAL homes (blog_posts / facebook_custom_audiences — keep-one, never parallel preset tables), podcast presets carry tts_script + voice_id_override (gated like voicedrop), ads carry ad_video_url, email + sms carry video_url — all five columns live-fired and snapshot-guarded. LIVE-FIRE CAUGHT: email_presets.body_html is NOT NULL — plain-text callers (the quick-preset UI) now get a derived HTML twin instead of a day-1 insert failure",
+        src("app/actions/financials.ts").includes("logScopedExpense")
+        && src("app/actions/financials.ts").includes("forbidden_brokerage_scope")
+        && src("app/actions/financials.ts").includes("team_not_in_brokerage")
+        && src("app/dashboard/financials/brokerage/page.tsx").includes("ScopedExpenseEntry")
+        && src("app/dashboard/financials/brokerage/scoped-expense-entry.tsx").includes("logScopedExpense")
+        && src("lib/finance/brokerage-earnings-writer.ts").includes('.is("agent_id", null)')
+        && src("lib/finance/brokerage-earnings-writer.ts").includes("tracked ? bucket.marketing : null")
+        && src("app/actions/campaign-presets.ts").includes('"blog_post" | "facebook_audience"')
+        && src("app/actions/campaign-presets.ts").includes("facebook_custom_audiences")
+        && src("app/actions/campaign-presets.ts").includes("tts_script")
+        && src("app/actions/campaign-presets.ts").includes("ad_video_url")
+        && src("app/actions/campaign-presets.ts").includes("content.body_html")
+        && src("app/settings/campaign-bundles/client.tsx").includes("QP_MEDIA_FIELD")
+        && src("app/settings/campaign-bundles/client.tsx").includes("facebook_audience")
+        && src("scripts/schema-snapshot.ts").includes('"receipt_url", "team_id"'))
+    }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {
       const { readdirSync, statSync } = await import("fs")

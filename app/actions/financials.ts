@@ -424,3 +424,73 @@ export async function updateCommissionStatus(
   revalidatePath("/dashboard/financials/payouts")
   return { success: true }
 }
+
+// ─── SCOPED EXPENSE ENTRY (agent / team / brokerage) ──────────────────────────
+// Owner spec: every principal level logs expenses in financials. Scope semantics
+// on business_expenses (l72_s10 added team_id): agent_id set = agent expense;
+// team_id set = team expense; neither = brokerage-level operating expense.
+// The monthly P&L rollup folds team+brokerage rows into brokerage_p_l buckets.
+
+export type ExpenseScope = "agent" | "team" | "brokerage"
+
+export async function logScopedExpense(input: {
+  scope: ExpenseScope
+  category: string
+  description: string
+  amount: number
+  expenseDate: string // YYYY-MM-DD
+  teamId?: string | null
+  receiptUrl?: string | null
+}): Promise<{ success: boolean; expenseId?: string; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  if (!input.description?.trim()) return { success: false, error: "description_required" }
+  const amount = Number(input.amount)
+  if (!Number.isFinite(amount) || amount <= 0) return { success: false, error: "amount_invalid" }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.expenseDate ?? "")) return { success: false, error: "date_invalid" }
+
+  const svc = createServiceClient()
+  const row: Record<string, unknown> = {
+    brokerage_id: ctx.brokerageId,
+    category: input.category?.trim() || "other",
+    description: input.description.trim(),
+    amount,
+    expense_date: input.expenseDate,
+    receipt_url: input.receiptUrl?.trim() || null,
+  }
+
+  if (input.scope === "agent") {
+    // business_expenses.agent_id FKs agents(id) — pass-11 identity rule.
+    if (!ctx.agentId) return { success: false, error: "no_agent_context" }
+    row.agent_id = ctx.agentId
+  } else if (input.scope === "team") {
+    // Team leads log against their own team; brokers/admins may pick any team
+    // in the tenant. Always verify the team belongs to this brokerage.
+    let teamId = input.teamId ?? null
+    if (!teamId) {
+      const { data: u } = await svc.from("users").select("team_id").eq("id", ctx.userId).maybeSingle()
+      teamId = (u?.team_id as string | null) ?? null
+    }
+    if (!teamId) return { success: false, error: "no_team_context" }
+    const { data: team } = await svc.from("teams").select("id, brokerage_id").eq("id", teamId).maybeSingle()
+    if (!team || (team.brokerage_id as string) !== ctx.brokerageId) return { success: false, error: "team_not_in_brokerage" }
+    if (!ADMIN_ROLES.has(ctx.userType) && ctx.userType !== "team_lead") {
+      // Non-lead agents may still log against THEIR OWN team (split dues etc.).
+      const { data: self } = await svc.from("users").select("team_id").eq("id", ctx.userId).maybeSingle()
+      if ((self?.team_id as string | null) !== teamId) return { success: false, error: "forbidden_team_scope" }
+    }
+    row.team_id = teamId
+  } else if (input.scope === "brokerage") {
+    if (!ADMIN_ROLES.has(ctx.userType)) return { success: false, error: "forbidden_brokerage_scope" }
+    // agent_id and team_id stay NULL — that IS the brokerage-scope marker.
+  } else {
+    return { success: false, error: "unknown_scope" }
+  }
+
+  const { data, error } = await svc.from("business_expenses").insert(row).select("id").single()
+  if (error) return { success: false, error: error.message }
+
+  revalidatePath("/dashboard/financials/brokerage")
+  revalidatePath("/dashboard/financials/expenses")
+  return { success: true, expenseId: data.id as string }
+}

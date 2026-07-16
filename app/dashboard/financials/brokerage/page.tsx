@@ -32,6 +32,7 @@ import {
   type FinancialAction,
 } from "../components/os"
 import { getAgentPLSummary } from "@/app/actions/pl-truth-engine"
+import { ScopedExpenseEntry } from "./scoped-expense-entry"
 
 export const dynamic = "force-dynamic"
 
@@ -152,6 +153,19 @@ export default async function BrokeragePLPage() {
       .order("period_label", { ascending: false })
       .limit(6)
       .then(r => r.data || []),
+  ])
+
+  // Teams for the scoped expense entry (team-scope option) + the most recent
+  // brokerage/team-scoped expense rows (agent_id NULL = not an agent's book).
+  const [{ data: teamOptions }, { data: recentOpExpenses }] = await Promise.all([
+    supabase.from("teams").select("id, name").eq("brokerage_id", profile.brokerage_id).order("name").limit(100),
+    supabase
+      .from("business_expenses")
+      .select("id, category, description, amount, expense_date, team_id")
+      .eq("brokerage_id", profile.brokerage_id)
+      .is("agent_id", null)
+      .order("expense_date", { ascending: false })
+      .limit(8),
   ])
 
   // ─── COMPUTE CAP SUMMARY ───────────────────────────────────────────────────
@@ -657,6 +671,42 @@ export default async function BrokeragePLPage() {
         />
         
         <FinancialActionStack actions={brokerActions} />
+      </div>
+
+      {/* ─── SECTION 7.5: SCOPED EXPENSE ENTRY (brokerage / team / agent) ─────── */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        <ScopedExpenseEntry
+          teams={(teamOptions ?? []).map((t) => ({ id: t.id as string, name: (t.name as string) ?? "Team" }))}
+          canLogAgentScope={Boolean(brokerAgentId)}
+        />
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <PieChart className="w-5 h-5 text-orange-600" />
+              Recent Operating Expenses
+            </CardTitle>
+            <CardDescription>Brokerage + team scoped (agent expenses live on each agent&apos;s book)</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {(recentOpExpenses ?? []).length === 0 ? (
+              <p className="text-sm text-muted-foreground py-4">No brokerage or team expenses logged yet — the P&amp;L expense lines stay empty until the first entry.</p>
+            ) : (
+              <div className="space-y-2">
+                {(recentOpExpenses ?? []).map((e: any) => (
+                  <div key={e.id} className="flex items-center justify-between border-b last:border-0 pb-2 last:pb-0">
+                    <div className="min-w-0">
+                      <p className="text-sm truncate">{e.description || "Expense"}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {new Date(e.expense_date).toLocaleDateString()} · <Badge variant="outline" className="text-[10px]">{e.category || "other"}</Badge> · {e.team_id ? "Team" : "Brokerage"}
+                      </p>
+                    </div>
+                    <p className="text-sm font-semibold text-orange-600 shrink-0 ml-3">{formatCurrency(e.amount)}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       {/* ─── SECTION 8: P&L REPORT GENERATOR ──────────────────────────────────── */}

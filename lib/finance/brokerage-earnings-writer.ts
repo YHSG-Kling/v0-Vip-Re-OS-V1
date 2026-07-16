@@ -7,9 +7,13 @@
 // per-agent and team snapshots (agent_commissions, never transactions math)
 // so brokerage totals reconcile EXACTLY with agent and team numbers.
 //
-// HONEST NULLS: office/tech/marketing operating expenses have no ledger source
-// yet — they stay NULL and net_profit is GCI minus agent splits (the true
-// brokerage-side number the ledger can prove), never a fabricated expense line.
+// EXPENSE FOLD (l72_s10): business_expenses now carries brokerage- and
+// team-scoped rows (agent_id NULL — logged via logScopedExpense on the
+// brokerage money page). The month's non-agent expenses fold into the P&L
+// buckets by category (marketing/office/technology→tech, rest→operating) and
+// subtract from net_profit. When a tenant has logged NOTHING, the buckets stay
+// honest-NULL and net_profit remains GCI minus splits — never a fabricated 0
+// pretending expenses were tracked.
 
 import "server-only"
 
@@ -80,21 +84,42 @@ export async function runBrokerageEarningsRollup(svc: Svc, now: Date = new Date(
       })))
       if (!earnErr) out.rowsWritten += periods.length
 
-      // brokerage_p_l — one row per month; expenses stay NULL until a ledger
-      // source exists (never fabricated), so net_profit = brokerage-side net.
+      // brokerage_p_l — one row per month. Fold the month's brokerage/team
+      // scoped expenses (agent_id NULL) into the category buckets; a tenant
+      // with zero logged rows keeps honest-NULL buckets (untracked ≠ $0).
       const m = periods[0].f
+      const { data: expRows } = await svc
+        .from("business_expenses")
+        .select("category, amount")
+        .eq("brokerage_id", b.id)
+        .is("agent_id", null)
+        .gte("expense_date", monthStart.slice(0, 10))
+        .limit(5000)
+      const exp = (expRows ?? []) as Array<{ category: string | null; amount: number | null }>
+      const bucket = { marketing: 0, office: 0, tech: 0, operating: 0 }
+      for (const e of exp) {
+        const amt = Number(e.amount) || 0
+        const cat = (e.category ?? "").toLowerCase()
+        if (cat === "marketing" || cat === "advertising") bucket.marketing += amt
+        else if (cat === "office") bucket.office += amt
+        else if (cat === "technology" || cat === "tech") bucket.tech += amt
+        else bucket.operating += amt // education / transportation / other → operating
+      }
+      const totalExpenses = bucket.marketing + bucket.office + bucket.tech + bucket.operating
+      const tracked = exp.length > 0
+      const netProfit = m.net - (tracked ? totalExpenses : 0)
       await svc.from("brokerage_p_l").delete().eq("brokerage_id", b.id).eq("period_label", monthLabel)
       const { error: plErr } = await svc.from("brokerage_p_l").insert({
         brokerage_id: b.id,
         period_label: monthLabel,
         gross_commission_income: m.gci,
         agent_splits_paid: m.splits,
-        net_profit: m.net,
-        profit_margin_pct: m.gci > 0 ? Math.round((m.net / m.gci) * 1000) / 10 : null,
-        marketing_expenses: null,
-        office_expenses: null,
-        operating_expenses: null,
-        tech_expenses: null,
+        net_profit: netProfit,
+        profit_margin_pct: m.gci > 0 ? Math.round((netProfit / m.gci) * 1000) / 10 : null,
+        marketing_expenses: tracked ? bucket.marketing : null,
+        office_expenses: tracked ? bucket.office : null,
+        operating_expenses: tracked ? bucket.operating : null,
+        tech_expenses: tracked ? bucket.tech : null,
         computed_at: now.toISOString(),
       })
       if (!plErr) out.rowsWritten++

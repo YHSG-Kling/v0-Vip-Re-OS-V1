@@ -76,6 +76,7 @@ export function CampaignBundlesClient({
   const [qpChannel, setQpChannel] = useState<PresetChannel>("sms")
   const [qpName, setQpName] = useState("")
   const [qpContent, setQpContent] = useState("")
+  const [qpMedia, setQpMedia] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
   const router = useRouter()
@@ -111,18 +112,33 @@ export function CampaignBundlesClient({
   const QP_FIELD: Record<PresetChannel, string> = {
     email: "body_text", sms: "body", voicedrop: "tts_script",
     social_post: "caption", portal_push: "body_md",
-    podcast_episode: "podcast_episode_id", ad_retarget: "ad_body",
+    podcast_episode: "tts_script", ad_retarget: "ad_body",
+    blog_post: "content", facebook_audience: "audience_type",
+  }
+  // Channels that carry a media/video attachment (owner spec: ads carry video,
+  // social carries media, email/SMS carry a video link, voicedrop carries audio).
+  const QP_MEDIA_FIELD: Partial<Record<PresetChannel, { key: string; label: string; asArray?: boolean }>> = {
+    email: { key: "video_url", label: "Video URL (optional)" },
+    sms: { key: "video_url", label: "Video link (optional)" },
+    social_post: { key: "media_urls", label: "Media URL (optional)", asArray: true },
+    ad_retarget: { key: "ad_video_url", label: "Video creative URL (optional)" },
+    voicedrop: { key: "audio_url", label: "Audio URL (optional — else the script is voiced)" },
+    podcast_episode: { key: "voice_id_override", label: "Voice ID (optional — else the agent's clone)" },
+    blog_post: { key: "featured_image_url", label: "Featured image URL (optional)" },
   }
   function handleQuickPreset() {
     setError(null)
     startTransition(async () => {
+      const media = QP_MEDIA_FIELD[qpChannel]
+      const fields: Record<string, unknown> = { [QP_FIELD[qpChannel]]: qpContent }
+      if (media && qpMedia.trim()) fields[media.key] = media.asArray ? [qpMedia.trim()] : qpMedia.trim()
       const r = await upsertCampaignPreset({
         channel: qpChannel,
         name: qpName,
-        fields: { [QP_FIELD[qpChannel]]: qpContent },
+        fields,
       })
       if (!r.success) { setError(r.error === "compliance_gate_blocked" ? "Blocked by the compliance gate — revise the copy." : (r.error ?? "Save failed")); return }
-      setShowQuickPreset(false); setQpName(""); setQpContent("")
+      setShowQuickPreset(false); setQpName(""); setQpContent(""); setQpMedia("")
       router.refresh()
     })
   }
@@ -169,6 +185,9 @@ export function CampaignBundlesClient({
               <option value="social_post">Social post</option>
               <option value="portal_push">Portal push</option>
               <option value="ad_retarget">Ad retarget</option>
+              <option value="podcast_episode">Podcast episode</option>
+              <option value="blog_post">Blog post</option>
+              <option value="facebook_audience">Facebook audience</option>
             </select>
             <input
               value={qpName}
@@ -184,6 +203,14 @@ export function CampaignBundlesClient({
             rows={3}
             className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
           />
+          {QP_MEDIA_FIELD[qpChannel] && (
+            <input
+              value={qpMedia}
+              onChange={(e) => setQpMedia(e.target.value)}
+              placeholder={QP_MEDIA_FIELD[qpChannel]!.label}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+            />
+          )}
           <div className="flex gap-2">
             <button
               onClick={handleQuickPreset}
