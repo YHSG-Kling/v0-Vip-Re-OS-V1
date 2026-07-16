@@ -74,6 +74,62 @@ export function composeLifetimeValueReceipt(f: ProvenanceFacts, now: Date = new 
 
 type Svc = { from: (table: string) => any }
 
+// ── THE BROKERAGE ROLLUP (approved item 2) — the same provenance fold, aggregated
+// to the number the recruiting pitch and the QBR sell with: "the AI pipeline
+// sourced N relationships that closed M deals worth $X GCI this window."
+
+export interface BrokerageProvenanceRollup {
+  /** Relationships the OS originated (leads that converted to contacts). */
+  osFoundRelationships: number
+  /** Closed deals in the window on those OS-found relationships. */
+  closedDeals: number
+  /** Σ gross commission on those deals (agent_commissions ledger); null when none. */
+  aiSourcedGci: number | null
+}
+
+/** PURE: one selling sentence — honest null when the pipeline hasn't produced yet. */
+export function composeAgentValueRollup(r: BrokerageProvenanceRollup, windowLabel: string): string | null {
+  if (r.osFoundRelationships === 0) return null
+  const bits = [`The AI pipeline sourced ${r.osFoundRelationships} relationship${r.osFoundRelationships === 1 ? "" : "s"}`]
+  if (r.closedDeals > 0) {
+    bits.push(`that closed ${r.closedDeals} deal${r.closedDeals === 1 ? "" : "s"}`)
+    if (r.aiSourcedGci != null && r.aiSourcedGci > 0) {
+      bits.push(`worth $${Math.round(r.aiSourcedGci).toLocaleString("en-US")} GCI`)
+    }
+  }
+  return `${bits.join(" ")} ${windowLabel} — measured on the operating ledger, not estimated.`
+}
+
+/** Fold the whole brokerage: OS-found contacts (converted leads) → their closed
+ *  deals in the window → ledgered GCI. Same tables as the per-contact receipt. */
+export async function loadBrokerageProvenanceRollup(
+  svc: Svc, brokerageId: string, sinceIso: string,
+): Promise<BrokerageProvenanceRollup> {
+  const { data: convertedLeads } = await svc
+    .from("leads").select("contact_id").eq("brokerage_id", brokerageId)
+    .not("contact_id", "is", null).limit(2000)
+  const osContactIds = new Set(((convertedLeads ?? []) as Array<{ contact_id: string }>).map((l) => l.contact_id))
+  if (osContactIds.size === 0) return { osFoundRelationships: 0, closedDeals: 0, aiSourcedGci: null }
+
+  const { data: closed } = await svc
+    .from("transactions").select("id, contact_id, buyer_contact_id, seller_contact_id")
+    .eq("brokerage_id", brokerageId).eq("status", "closed")
+    .gte("close_date", sinceIso.slice(0, 10)).limit(1000)
+  const osDealIds = ((closed ?? []) as Array<{ id: string; contact_id: string | null; buyer_contact_id: string | null; seller_contact_id: string | null }>)
+    .filter((t) => [t.contact_id, t.buyer_contact_id, t.seller_contact_id].some((c) => c && osContactIds.has(c)))
+    .map((t) => t.id)
+
+  let aiSourcedGci: number | null = null
+  if (osDealIds.length > 0) {
+    const { data: commissions } = await svc
+      .from("agent_commissions").select("gross_commission").in("transaction_id", osDealIds)
+    const rows = (commissions ?? []) as Array<{ gross_commission: number | null }>
+    if (rows.length > 0) aiSourcedGci = rows.reduce((s, r) => s + (Number(r.gross_commission) || 0), 0)
+  }
+
+  return { osFoundRelationships: osContactIds.size, closedDeals: osDealIds.length, aiSourcedGci }
+}
+
 /** Load the provenance facts from the real ledgers. Every count is a cheap
  *  head-count query; the GCI fold reads agent_commissions on the contact's
  *  closed deals (the canonical commission ledger — never transactions math). */

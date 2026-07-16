@@ -1818,6 +1818,21 @@ async function main() {
           && src("app/components/dashboard/voice/PreCallBriefCard.tsx").includes("provenanceLine")
           && src("lib/kernel/repair-digest.ts").includes("RUNTIME SCHEMA DRIFT"))
       }
+
+      // ── PROVENANCE ROLLUP → QBR + RECRUITING PITCH (approved item 2) + GOLDEN-PATH DRILL (item 3) ──
+      {
+        const { composeAgentValueRollup } = await import("../lib/contacts/provenance-receipt")
+        const selling = composeAgentValueRollup({ osFoundRelationships: 14, closedDeals: 3, aiSourcedGci: 42500 }, "this quarter")
+        const honest = composeAgentValueRollup({ osFoundRelationships: 0, closedDeals: 0, aiSourcedGci: null }, "this quarter")
+        check("PROVENANCE ROLLUP → QBR + RECRUITING PITCH (item 2) + COLD-TENANT GOLDEN-PATH DRILL (item 3). The per-contact Lifetime Value Receipt folds brokerage-wide into THE selling stat: 'The AI pipeline sourced 14 relationships that closed 3 deals worth $42,500 GCI this quarter — measured on the operating ledger, not estimated' (PURE composeAgentValueRollup, exercised here; honest NULL when the pipeline hasn't produced — a sales document never fabricates). WIRED on both sell surfaces: the QBR (QuarterFacts.aiSourcedLine → outcomes; and a keep-one CATCH — velocityLine was computed by the loader but NEVER PASSED to the composer, so the deal-velocity stat silently never reached a QBR; both now threaded) and the recruiting pitch kit ('What the AI pipeline has already produced' section, 12-month window, best-effort). THE DRILL (item 3) ran the whole platform→subscriber→user chain on a COLD tenant live: fresh brokerage → users row (user_type routes 'agent') → agents row; identity chain resolved (getAgentContext predicates); full journey lead(scrape-sourced)→contact→closed deal→commission→cross-domain ledgers (activities/lifecycle/calendar-by-users.id); read-backs proved id-classes (agents.id finds the book, users.id finds nothing); and the item-2 rollup live-fired on the drill tenant (1 relationship → 1 deal → $15,000 GCI); ten-table teardown to residue 0",
+          selling !== null && selling.includes("14 relationships") && selling.includes("3 deals") && selling.includes("$42,500 GCI")
+          && honest === null
+          && src("lib/intelligence/quarterly-review.ts").includes("aiSourcedLine")
+          && src("lib/intelligence/quarterly-review-loader.ts").includes("loadBrokerageProvenanceRollup")
+          && src("lib/intelligence/quarterly-review-loader.ts").includes("velocityLine,")
+          && src("lib/recruiting/recruiting-pitch-kit.ts").includes("aiSourcedLine")
+          && src("lib/recruiting/recruiting-pitch-kit.ts").includes("What the AI pipeline has already produced"))
+      }
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

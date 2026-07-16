@@ -41,6 +41,10 @@ export interface QuarterFacts {
   /** DEAL VELOCITY — the pre-composed decision→execution line (null when the
    *  sample is too thin to claim honestly; see decision-velocity). */
   velocityLine?: string | null
+  /** AI-SOURCED VALUE — the provenance rollup line ("the AI pipeline sourced N
+   *  relationships that closed M deals worth $X GCI"); null when the pipeline
+   *  hasn't produced yet — never fabricated. */
+  aiSourcedLine?: string | null
 }
 
 export interface QuarterlyReview {
@@ -61,6 +65,7 @@ export function composeQuarterlyReview(f: QuarterFacts): QuarterlyReview {
     `${f.newContacts} new contact${f.newContacts === 1 ? "" : "s"} entered the book.`,
   ]
   if (f.giftsOrdered > 0) outcomes.push(`${f.giftsOrdered} client gift${f.giftsOrdered === 1 ? "" : "s"} ordered through the Gift Studio.`)
+  if (f.aiSourcedLine) outcomes.push(f.aiSourcedLine)
 
   const trust: string[] = [
     f.approvals > 0

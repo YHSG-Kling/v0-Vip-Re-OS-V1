@@ -90,6 +90,16 @@ export async function loadQuarterlyReview(svc: Svc, brokerageId: string): Promis
     velocityLine = composeVelocityLine(await loadDecisionVelocity(svc, brokerageId, now))
   } catch { /* the QBR stands without it */ }
 
+  // AI-SOURCED VALUE — the provenance rollup ("the AI pipeline sourced N
+  // relationships that closed M deals worth $X GCI this quarter"). Same
+  // ledgers as the per-contact Lifetime Value Receipt, folded brokerage-wide.
+  let aiSourcedLine: string | null = null
+  try {
+    const { loadBrokerageProvenanceRollup, composeAgentValueRollup } = await import("@/lib/contacts/provenance-receipt")
+    aiSourcedLine = composeAgentValueRollup(
+      await loadBrokerageProvenanceRollup(svc, brokerageId, sinceIso), "this quarter")
+  } catch { /* the QBR stands without it */ }
+
   const review = composeQuarterlyReview({
     windowLabel: `${since.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${now.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
     planTier: (brk as any)?.plan_tier ?? null,
@@ -106,6 +116,10 @@ export async function loadQuarterlyReview(svc: Svc, brokerageId: string): Promis
     unusedRails,
     trustIncidents,
     expansion,
+    // item-2 wiring — and a keep-one catch: velocityLine was computed above but
+    // never passed in, so the deal-velocity stat silently never reached a QBR.
+    velocityLine,
+    aiSourcedLine,
   })
 
   // ADOPTION PULSE — who needs a hand (per-agent, capped, thresholded).
