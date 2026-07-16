@@ -233,6 +233,7 @@ async function selectOptimalVendor(serviceType: string, transactionId: string) {
     const { data: vendors } = await supabase
       .from("vendors")
       .select("*")
+      .eq("brokerage_id", transaction.brokerage_id) // tenant anchor — never rank another brokerage's bench
       .eq("category", serviceType)
       .eq("status", "active")
       .gte("rating", 3.75) // rescaled from quality_score>=75 (0-100) → rating>=3.75 (0-5)
@@ -295,6 +296,7 @@ export async function getVendorRecommendations(serviceType: string, transactionI
   const { data: vendors } = await supabase
     .from("vendors")
     .select("*")
+    .eq("brokerage_id", auth.brokerageId) // tenant anchor — caller's brokerage only
     .eq("category", serviceType)
     .eq("status", "active") // visible_in_portal→status='active' (broker approval, the real surfacing flag)
     .order("rating", { ascending: false, nullsFirst: false })

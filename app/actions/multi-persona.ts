@@ -179,9 +179,14 @@ export async function getVendorDirectory(filters?: {
 }) {
   const supabase = await createClient()
 
+  // Tenant anchor — the directory is the CALLER'S brokerage bench, never global.
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
+
   // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
   // vendors schema: id, brokerage_id, name, category, phone, email, website, rating, notes, status, created_at
-  let query = supabase.from("vendors").select("*")
+  let query = supabase.from("vendors").select("*").eq("brokerage_id", ctx.brokerageId)
 
   if (filters?.vendorType) {
     query = query.eq("category", filters.vendorType)

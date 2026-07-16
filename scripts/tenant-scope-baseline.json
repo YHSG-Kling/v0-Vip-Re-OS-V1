@@ -46,8 +46,6 @@
   "lib/application/transactions.ts :: transactions": 1,
   "lib/contact-promotion/contact-creator.ts :: contacts": 1,
   "lib/contact-promotion/promote-lead-to-contact.ts :: contacts": 1,
-  "lib/esign-webhooks/finalize-packet.ts :: offers": 1,
-  "lib/intelligence/offer-doc-completeness-runner.ts :: documents": 1,
   "lib/kernel/appointment-noshow-autopilot.ts :: agent_client_messages": 1,
   "lib/kernel/crm.ts :: contacts": 1,
   "lib/kernel/crm.ts :: leads": 1,
