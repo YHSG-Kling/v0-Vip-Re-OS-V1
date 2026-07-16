@@ -338,14 +338,11 @@ export default function VideoCreatePage() {
           }
         }
 
-        // Load branding presets — use agents.id (FK), not auth user id
-        const { data: brandingData } = await supabase
-          .from("video_branding_presets")
-          .select("*")
-          .or(`agent_id.eq.${agentData?.id ?? user?.id},is_default.eq.true`)
-          .order("is_default", { ascending: false })
-
-        setBrandingPresets(brandingData || [])
+        // video_branding_presets was DROPPED live (l38-s01, HeyGen purge) but this
+        // read survived and errored on every page load. resolveReelBrand is the ONE
+        // brand source (manager-registry: assistant_wardrobe); the legacy preset
+        // picker renders empty honestly.
+        setBrandingPresets([])
 
         // Load per-user voice configured during onboarding + social platforms.
         // Avatar selection for the D-ID engine is driven by didAvatarAssets below;

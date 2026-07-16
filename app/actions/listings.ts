@@ -119,7 +119,7 @@ export async function updateListing(listingId: string, updates: any, _actorUserI
     // Load current listing to verify ownership + capture pre-update price
     const { data: currentListing } = await supabase
       .from("listings")
-      .select("brokerage_id, list_price")
+      .select("brokerage_id, list_price, agent_id")
       .eq("id", listingId)
       .maybeSingle()
     if (!currentListing) return { success: false, error: "Listing not found" }
@@ -152,6 +152,18 @@ export async function updateListing(listingId: string, updates: any, _actorUserI
       await assignTierToListing(listingId, brokerageId, actorUserId).catch((err) => {
         console.error("[updateListing] Tier assignment failed (non-blocking):", err)
       })
+      // PRICE-CHANGE LEDGER (writer-less burn-down): the seller portal's price
+      // history read had NO writer — every price change now lands the ledger row
+      // the portal renders. Best-effort; the update itself never fails on it.
+      await supabase.from("listing_price_changes").insert({
+        brokerage_id: brokerageId,
+        listing_id: listingId,
+        agent_id: (currentListing as any).agent_id ?? null,
+        old_price: currentPrice,
+        new_price: newPrice,
+        change_reason: "manual_update",
+        effective_date: new Date().toISOString().split("T")[0],
+      }).then(() => undefined, (e: unknown) => console.error("[updateListing] price-change ledger:", e))
     }
 
     revalidatePath("/listings")

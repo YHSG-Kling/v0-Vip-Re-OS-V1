@@ -37,6 +37,15 @@ const SEEDED_REFERENCE = new Set([
   "ai_agent_templates", "template_marketplace", "vendor_plans", "journey_tools",
   "local_news_sources", "neighborhood_data_sources", "market_data_sources",
   "content_topic_sources",
+  // Live-verified seeded config (rows exist, written by migration/superadmin):
+  "plan_limits", "state_compliance_requirements",
+])
+
+/** Database VIEWS — written through their base tables by definition; a read
+ *  against a view is never writer-less. Live-verified relkind='v'. */
+const DB_VIEWS = new Set([
+  "contact_lead_history", "social_post_baselines_28d", "sphere_engagement_scores",
+  "v_brokerage_ai_quota", "v_brokerage_onboarding_progress", "v_platform_margin",
 ])
 
 function walk(dir: string, acc: string[]) {
@@ -73,7 +82,7 @@ function main() {
   }
 
   const offenders = [...readers.keys()]
-    .filter((t) => !writers.has(t) && !SEEDED_REFERENCE.has(t))
+    .filter((t) => !writers.has(t) && !SEEDED_REFERENCE.has(t) && !DB_VIEWS.has(t))
     .sort()
 
   if (process.env.GUARD_WRITE_BASELINE === "1") {

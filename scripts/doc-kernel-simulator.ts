@@ -1866,6 +1866,19 @@ async function main() {
           && src("lib/education/skill-freshness-radar.ts").includes("loadAgentSkillFreshness")
           && src("lib/intelligence/daily-briefing-generator.ts").includes("Sharpen a stale skill"))
       }
+
+      // ── WRITER-LESS BURN-DOWN, ROUND 1 (66 → 54) ──
+      check("WRITER-LESS BURN-DOWN ROUND 1 (owner: 'if the feature isn't built, finish the build'). Deep writer-hunt across app+lib+supabase confirmed 65 of 66 truly writer-less; live classification split them honestly: SIX are DB VIEWS (written through base tables — new DB_VIEWS exempt category), TWO are live-seeded config (plan_limits 68 rows, state_compliance_requirements 76 — added to SEEDED_REFERENCE), and ONE was a pass-14-class phantom: video_branding_presets was DROPPED live in l38-s01 (HeyGen purge) yet the video-create client still queried it (erroring on every page load) AND the schema snapshot still listed it — dead read removed (resolveReelBrand is the one brand source per the registry), snapshot entry dropped. THREE FEATURES FINISHED (the builds): (1) listing_price_changes — the seller portal's price-history read had NO writer; updateListing now ledgers every price change (old/new/reason/effective date, best-effort, listing_id NOT-NULL respected); (2)+(3) the DEAL-HEALTH PAGE charted nothing forever — deal_health_factors + deal_health_snapshots were read-only; the health scorer now persists per-component factor rows (live-fire caught that the factor_type CHECK speaks a DIFFERENT vocabulary than the scorer's categories — canonical FACTOR_TYPE map added BEFORE the write ever shipped, original category kept in detail, which live-fire also proved is a TEXT column needing explicit stringify) and snapshots the time-series point when the score moves or the last point is >20h stale. Baseline 66 → 54; every remaining entry is a recorded burn-down item",
+        src("scripts/writerless-read-sweep.ts").includes("DB_VIEWS")
+        && src("scripts/writerless-read-sweep.ts").includes('"plan_limits"')
+        && !src("app/dashboard/videos/create/video-create-client.tsx").includes('from("video_branding_presets")')
+        && !src("scripts/schema-snapshot.ts").includes("video_branding_presets")
+        && src("app/actions/listings.ts").includes('from("listing_price_changes")')
+        && src("lib/deal-health/health-scorer.ts").includes("deal_health_factors")
+        && src("lib/deal-health/health-scorer.ts").includes("deal_health_snapshots")
+        && src("lib/deal-health/health-scorer.ts").includes("FACTOR_TYPE")
+        && src("lib/deal-health/health-scorer.ts").includes("JSON.stringify({ issues: c.issues, category: c.category })")
+        && JSON.parse(readFileSync(join(ROOT, "scripts/writerless-read-baseline.json"), "utf-8")).length === 54)
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

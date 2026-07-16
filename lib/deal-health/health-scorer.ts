@@ -873,6 +873,63 @@ export async function calculateDealHealth(params: {
     .update({ health_score: overallScore })
     .eq("id", transactionId)
 
+  // 2b. WRITER-LESS BURN-DOWN: the deal-health PAGE renders per-factor rows and
+  // a score time-series from deal_health_factors + deal_health_snapshots — both
+  // read-only until now (the page charted nothing, forever). The scorer already
+  // computes everything; persist it. Best-effort: the score write above is the
+  // contract, these enrich the page.
+  try {
+    // The live factor_type CHECK speaks a different vocabulary than the scorer's
+    // component categories — map each component to its canonical factor kind
+    // (caught by live-fire before this write ever shipped; detail keeps the
+    // original category for fidelity).
+    const FACTOR_TYPE: Record<string, string> = {
+      EARNEST_MONEY: "financing_status",
+      LENDER:        "financing_status",
+      INSPECTION:    "deadline_proximity",
+      DEADLINES:     "deadline_proximity",
+      MILESTONES:    "timeline_adherence",
+      TITLE:         "document_completeness",
+      COMPLIANCE:    "document_completeness",
+    }
+    await supabase.from("deal_health_factors").delete().eq("transaction_id", transactionId)
+    if (components.length > 0) {
+      await supabase.from("deal_health_factors").insert(components.map((c) => ({
+        brokerage_id:      brokerageId,
+        transaction_id:    transactionId,
+        factor_type:       FACTOR_TYPE[c.category] ?? "timeline_adherence",
+        factor_value:      c.score,
+        // higher contribution = more risk pulled into the overall score
+        risk_contribution: Math.max(0, 100 - c.score),
+        // detail is a TEXT column (live-verified — not jsonb): stringify explicitly
+        // or supabase-js would land "[object Object]".
+        detail:            JSON.stringify({ issues: c.issues, category: c.category }),
+        scored_at:         calculatedAt,
+      })))
+    }
+    // Snapshot the time-series point when the score moved or the last point is stale (>20h)
+    const { data: lastSnap } = await supabase
+      .from("deal_health_snapshots")
+      .select("created_at, score")
+      .eq("transaction_id", transactionId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    const lastAt = lastSnap?.created_at ? new Date(lastSnap.created_at as string).getTime() : 0
+    const stale = Date.now() - lastAt > 20 * 60 * 60 * 1000
+    if (stale || (lastSnap && lastSnap.score !== overallScore)) {
+      await supabase.from("deal_health_snapshots").insert({
+        brokerage_id:   brokerageId,
+        transaction_id: transactionId,
+        score:          overallScore,
+        risk_level:     riskLevel,
+        factors:        scoreComponents,
+      })
+    }
+  } catch (err) {
+    console.error("[health-scorer] factors/snapshot persist failed (non-blocking):", err)
+  }
+
   // 3. deal_health_components: delete old rows, insert new run consistently
   // Generate a unique score_run_id for this scoring run
   const scoreRunId = crypto.randomUUID()
