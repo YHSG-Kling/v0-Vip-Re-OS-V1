@@ -30,7 +30,7 @@ export async function POST(req: Request) {
     // platform admin may provision across brokerages.
     let recruitQuery = service
       .from("recruits")
-      .select("id, first_name, last_name, email, brokerage_id, status, provisioned, years_experience, license_state")
+      .select("id, first_name, last_name, email, brokerage_id, status, provisioned, years_experience, license_state, recruiter_agent_id")
       .eq("id", recruitId)
 
     if (!isPlatformAdmin) {
@@ -158,6 +158,42 @@ export async function POST(req: Request) {
           },
           { onConflict: "agent_id" }
         ).then(() => {}, () => {})
+
+        // REVENUE-SHARE TREE (burn-down round 5, owner spec): when the recruit
+        // was referred by a sponsoring agent, plant the downline edge — the
+        // revenue-share leaderboard and the commission waterfall's residual
+        // step read agent_relationships, which had NO writer until now.
+        // Live rules: UNIQUE(agent_id, brokerage_id, relationship_type),
+        // agent ≠ sponsor, depth_level = sponsor's depth + 1 (root sponsor = 1).
+        if ((recruit as any).recruiter_agent_id && (recruit as any).recruiter_agent_id !== agentId) {
+          const sponsorId = (recruit as any).recruiter_agent_id as string
+          const { data: sponsorEdge } = await service
+            .from("agent_relationships")
+            .select("depth_level")
+            .eq("agent_id", sponsorId)
+            .eq("brokerage_id", recruit.brokerage_id)
+            .eq("relationship_type", "sponsor")
+            .eq("is_active", true)
+            .maybeSingle()
+          // Plain await (supabase-js resolves with {error}, never throws) —
+          // the pass-4 silencer ratchet forbids new '.then(noop,noop)' writes.
+          await service.from("agent_relationships").upsert(
+            {
+              brokerage_id: recruit.brokerage_id,
+              agent_id: agentId,
+              sponsor_agent_id: sponsorId,
+              relationship_type: "sponsor",
+              // m264's default residual — brokerage-funded so the downline
+              // never dilutes the producing agent's own split.
+              revenue_share_percent: 5,
+              source_of_funds: "brokerage",
+              depth_level: ((sponsorEdge as any)?.depth_level ?? 0) + 1,
+              effective_from: new Date().toISOString().slice(0, 10),
+              is_active: true,
+            },
+            { onConflict: "agent_id,brokerage_id,relationship_type" }
+          )
+        }
       }
     }
 

@@ -1146,6 +1146,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   brokerage_brand_settings: "marketing_agent",
   competitor_brokerages: "marketing_agent",
   competitor_content: "marketing_agent",
+  competitor_profiles: "marketing_agent",
   competitor_posts: "marketing_agent",
   competitors: "marketing_agent",
   direct_mail_presets: "marketing_agent",

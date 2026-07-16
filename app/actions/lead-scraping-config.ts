@@ -7,6 +7,47 @@ import { revalidatePath } from "next/cache"
 // MARKET CONFIGURATION
 // ============================================
 
+/**
+ * SUBSCRIBER SERVICE AREAS SYNC (burn-down round 5, owner spec): subscriber_
+ * service_areas is the per-zip roster of ACTIVE SUBSCRIBER TERRITORIES — it
+ * feeds the platform's global lead-distribution rotation AND mirrors the
+ * scraper work-list. A market's zips ARE the subscriber's claimed territory,
+ * so every market create/update syncs one row per zip (no unique index —
+ * check-then-insert) and a market delete deactivates them (history kept).
+ */
+async function syncServiceAreasForMarket(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  market: { brokerage_id: string; team_id?: string | null; agent_id?: string | null; zip_codes?: string[] | null; city?: string | null; state?: string | null },
+) {
+  const zips = Array.from(new Set((market.zip_codes ?? []).filter((z) => /^\d{5}$/.test(z))))
+  if (!market.brokerage_id) return
+  for (const zip of zips) {
+    const { data: existing } = await supabase
+      .from("subscriber_service_areas")
+      .select("id, active")
+      .eq("brokerage_id", market.brokerage_id)
+      .eq("zip_code", zip)
+      .maybeSingle()
+    if (existing) {
+      if (!(existing as any).active) {
+        await supabase.from("subscriber_service_areas").update({ active: true }).eq("id", (existing as any).id)
+      }
+    } else {
+      await supabase.from("subscriber_service_areas").insert({
+        brokerage_id: market.brokerage_id,
+        team_id: market.team_id ?? null,
+        agent_user_id: null, // brokerage-level territory claim; agent claims come later
+        zip_code: zip,
+        city: market.city ?? null,
+        state: market.state ?? null,
+        is_primary: false,
+        active: true,
+        joined_at: new Date().toISOString(),
+      })
+    }
+  }
+}
+
 export async function getScrapingMarkets() {
   try {
     const supabase = await createClient()
@@ -41,6 +82,9 @@ export async function createScrapingMarket(marketData: {
     const { data, error } = await supabase.from("lead_scraping_markets").insert(marketData).select().single()
 
     if (error) throw error
+    // Territory enrollment: the market's zips become active subscriber
+    // service areas (distribution rotation + scraper territory roster).
+    await syncServiceAreasForMarket(supabase, data as any).catch(() => {})
     revalidatePath("/admin/lead-scraping")
     return { success: true, market: data }
   } catch (error) {
@@ -72,6 +116,7 @@ export async function updateScrapingMarket(
       .single()
 
     if (error) throw error
+    await syncServiceAreasForMarket(supabase, data as any).catch(() => {})
     revalidatePath("/admin/lead-scraping")
     return { success: true, market: data }
   } catch (error) {
@@ -83,6 +128,16 @@ export async function updateScrapingMarket(
 export async function deleteScrapingMarket(id: string) {
   try {
     const supabase = await createClient()
+    // Deactivate the territory claims BEFORE the market goes (history kept —
+    // the distribution engine only rotates active=true rows).
+    const { data: market } = await supabase
+      .from("lead_scraping_markets").select("brokerage_id, zip_codes").eq("id", id).maybeSingle()
+    if (market?.brokerage_id && Array.isArray((market as any).zip_codes)) {
+      await supabase.from("subscriber_service_areas")
+        .update({ active: false })
+        .eq("brokerage_id", (market as any).brokerage_id)
+        .in("zip_code", (market as any).zip_codes)
+    }
     const { error } = await supabase.from("lead_scraping_markets").delete().eq("id", id)
 
     if (error) throw error

@@ -73,7 +73,7 @@ import {
   scheduleEmailCampaign,
   deleteEmailCampaign,
 } from "@/app/actions/email-campaigns"
-import { fetchLocalNews, setupLocalNewsSource } from "@/app/actions/newsletter/fetch-local-news"
+import { fetchLocalNews, setupLocalNewsSource, recordNewsletterLocalContent } from "@/app/actions/newsletter/fetch-local-news"
 import { scheduleNewsletter } from "@/app/actions/newsletter/schedule-newsletter"
 import { listTemplates } from "@/app/actions/newsletter/list-templates"
 import { computeSeoScore } from "@/lib/newsletter/seo-score"
@@ -794,6 +794,16 @@ export function NewslettersClient({
         seedTopicIds: wizard.seedTopicIds,
       })
       if (result.success && result.newsletter) {
+        // Record which LOCAL headlines this campaign used — newsletter_local_content
+        // rows attach to the created campaign (NOT NULL FK), keeping the
+        // "included_in_last_newsletter" ledger honest. Best-effort.
+        const localSections = wizard.generatedSections.filter((s) => s.type === "Local News")
+        if (localSections.length > 0) {
+          recordNewsletterLocalContent(
+            result.newsletter.id,
+            localSections.map((s) => ({ title: s.title, content: s.content, ctaUrl: s.ctaUrl, zipCode: parseZips(localNewsZips)[0] })),
+          ).catch(() => {})
+        }
         const newCampaign: Campaign = {
           id: result.newsletter.id,
           campaign_name: wizard.campaignName,

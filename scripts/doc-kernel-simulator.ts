@@ -1982,6 +1982,32 @@ async function main() {
         && src("lib/data/brokerKPIs.ts").includes('from("agents")')
         && baseline4.length <= 20)
     }
+    // ── BURN-DOWN ROUND 5: INTELLIGENCE INGRESS + REVENUE-SHARE TREE + PERSONA-AT-ENRICHMENT ──
+    {
+      const baseline5 = JSON.parse(src("scripts/writerless-read-baseline.json")) as string[]
+      check("BURN-DOWN ROUND 5 (18 → 10) — approved 1 (with owner semantics), 2, 3. INTELLIGENCE INGRESS: runContentIntelScan (daily cron, EXA_API_KEY-gated) walks the competitor_brokerages watchlist and writes competitor_content — ORGANIC facebook/instagram posts AND Facebook Ad Library rows (content_type 'ad') per the owner's 'what content is getting the most interaction' (Exa citation ranking IS the interaction proxy; hard like counts stay honest-NULL — no platform auth, never invented); each watchlist entry ensures its competitor_profiles twin (ALSO writer-less — the reader INNER-joins it, so content rows without profiles were silently dropped). keyword_intelligence = 'popular content search for a niche': per content-category niche + brokerage market, Exa's popular-now results land as 'rising' keywords (the reader's filter) with 7-day TTL; search_volume_monthly honest-NULL (no SEO provider). newsletter_local_content: fetchLocalNews now LIVE-fetches NewsAPI through the connector gateway when the pool runs thin; rows persist ONLY attached to the campaign that used them (newsletter_id NOT NULL, live FK → newsletter_campaigns) via recordNewsletterLocalContent at wizard submit. lender_applications = THE LENDER'S APPLICATION LINK (l72_s12 application_url) recorded from the lender portal with the live 11-status lifecycle; title_orders = THE TITLE SEARCH RESULTS (l72_s12 search_result jsonb; clear/issue statuses) — and the /title/orders/new page was a setTimeout STUB pretending to save, now a real writer. subscriber_service_areas = ACTIVE SUBSCRIBER TERRITORIES FEEDING THE SCRAPERS: every lead_scraping_markets create/update syncs a per-zip territory claim (delete deactivates, history kept) — the platform lead-distribution rotation and the scraper work-list share one enrollment. REVENUE-SHARE TREE (2): provisioning a 'joined' recruit with a recruiter_agent_id plants the agent_relationships sponsor edge (UNIQUE(agent,brokerage,type) upsert, depth = sponsor's depth + 1, brokerage-funded 5%) — the waterfall's residual step and the revenue-share board finally have a tree. PERSONA-AT-ENRICHMENT (3): the enrichment orchestrator's post-enrichment hook builds client_detailed_personas from VERIFIED PeopleData facts only (demographics/psychographics/triggers/pains + a routed-AI summary grounded in those facts with a deterministic fallback; check-then-update, one persona per contact) — lead scoring, open-house follow-up and persona-aware content stop reading empty. All shapes live-fired (jsonb trigger arrays, sponsor chain depth, reader predicates), residue 0",
+        src("lib/competitive-intel/content-intel-scan.ts").includes("runContentIntelScan")
+        && src("lib/competitive-intel/content-intel-scan.ts").includes("ensureCompetitorProfile")
+        && src("lib/competitive-intel/content-intel-scan.ts").includes('trend_direction: "rising"')
+        && src("lib/competitive-intel/content-intel-scan.ts").includes("search_volume_monthly: null")
+        && src("app/api/cron/content-intel-scan/route.ts").includes("runContentIntelScan")
+        && src("app/actions/newsletter/fetch-local-news.ts").includes("recordNewsletterLocalContent")
+        && src("app/actions/newsletter/fetch-local-news.ts").includes("callConnector")
+        && src("app/newsletters/newsletters-client.tsx").includes("recordNewsletterLocalContent")
+        && src("app/actions/partner-orders.ts").includes("createLenderApplication")
+        && src("app/actions/partner-orders.ts").includes("application_url")
+        && src("app/actions/partner-orders.ts").includes("createTitleOrder")
+        && src("app/actions/partner-orders.ts").includes("search_result")
+        && !src("app/title/orders/new/page.tsx").includes("setTimeout")
+        && src("app/title/orders/new/page.tsx").includes("createTitleOrder")
+        && src("app/portal/lender/[transactionId]/lender-actions.tsx").includes("createLenderApplication")
+        && src("app/actions/lead-scraping-config.ts").includes("syncServiceAreasForMarket")
+        && src("app/api/recruiting/provision-agent/route.ts").includes("agent_relationships")
+        && src("app/api/recruiting/provision-agent/route.ts").includes("recruiter_agent_id")
+        && src("lib/contacts/persona-builder.ts").includes("buildContactPersona")
+        && src("lib/lead-pipeline/enrichment-orchestrator.ts").includes("buildContactPersona")
+        && baseline5.length <= 10)
+    }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {
       const { readdirSync, statSync } = await import("fs")

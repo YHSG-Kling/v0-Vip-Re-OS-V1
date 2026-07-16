@@ -1,20 +1,12 @@
 [
-  "agent_relationships",
   "ai_subscription_tier",
   "api_response_logs",
-  "client_detailed_personas",
   "communications",
-  "competitor_content",
   "document_checklist",
-  "keyword_intelligence",
   "lead_conversation_history",
-  "lender_applications",
   "listing_engagement",
-  "newsletter_local_content",
   "organization_members",
   "property_smart_insights",
-  "subscriber_service_areas",
   "team_heatmap_snapshots",
-  "title_orders",
   "video_streaming_status"
 ]

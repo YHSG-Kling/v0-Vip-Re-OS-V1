@@ -36,9 +36,88 @@ export async function fetchLocalNews(zipCodes: string[], limit: number = 10) {
 
   if (fetchError) throw new Error(`Failed to fetch local content: ${fetchError.message}`)
 
-  // If no local content in DB, could fetch from NewsAPI here
-  // For now, return what we have
-  return existingContent || []
+  const pool = existingContent || []
+  if (pool.length >= limit) return pool
+
+  // LIVE NEWSAPI FETCH (burn-down round 5): the pool used to be the only
+  // source and NOTHING filled it — this fetches real local headlines through
+  // the connector gateway (the one egress choke) when the pool runs thin.
+  // Live rows are returned UNPERSISTED (newsletter_local_content.newsletter_id
+  // is NOT NULL — rows are recorded when the newsletter that USES them is
+  // created, via recordNewsletterLocalContent below).
+  try {
+    const { data: source } = await supabase
+      .from('local_news_sources')
+      .select('market_name, market_zip_codes')
+      .eq('brokerage_id', userData.brokerage_id)
+      .eq('enabled', true)
+      .overlaps('market_zip_codes', zipCodes)
+      .limit(1)
+      .maybeSingle()
+    const market = source?.market_name || zipCodes[0]
+
+    const { callConnector } = await import('@/lib/agentic-os/connector-gateway')
+    const res = await callConnector<{ articles?: Array<{ title?: string; description?: string; url?: string; publishedAt?: string }> }>({
+      connector: 'newsapi',
+      baseUrl: 'https://newsapi.org',
+      path: `/v2/everything?q=${encodeURIComponent(`"${market}" AND (real estate OR housing OR home prices)`)}&language=en&sortBy=publishedAt&pageSize=${Math.min(limit, 20)}`,
+      method: 'GET',
+      auth: { style: 'header', name: 'X-Api-Key', value: NEWSAPI_KEY },
+    })
+    const articles = res.ok ? (res.data?.articles ?? []) : []
+    const live = articles
+      .filter((a) => a.title && a.url)
+      .slice(0, limit - pool.length)
+      .map((a, i) => ({
+        id: `live:${i}`,
+        brokerage_id: userData.brokerage_id,
+        newsletter_id: null, // persisted only when a newsletter uses it
+        local_news_source_id: null,
+        zip_code: zipCodes[0],
+        content: JSON.stringify({ title: a.title, summary: a.description ?? '', url: a.url, published_at: a.publishedAt ?? null }),
+        relevance_score: Math.max(1, 100 - i * 5),
+        included_in_last_newsletter: false,
+        created_at: new Date().toISOString(),
+      }))
+    return [...pool, ...live]
+  } catch {
+    return pool // live fetch is best-effort — the pool is still honest
+  }
+}
+
+/**
+ * Persist the local headlines a CREATED newsletter actually used.
+ * newsletter_local_content.newsletter_id is NOT NULL (live FK →
+ * newsletter_campaigns) — content rows exist only attached to the campaign
+ * that ran them, which is also what makes included_in_last_newsletter honest.
+ */
+export async function recordNewsletterLocalContent(
+  newsletterId: string,
+  items: Array<{ title: string; content: string; ctaUrl?: string; zipCode?: string }>,
+) {
+  if (!newsletterId || items.length === 0) return { success: true, recorded: 0 }
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error('Not authenticated')
+  const { data: userData } = await supabase.from('users').select('brokerage_id').eq('id', user.id).single()
+  if (!userData?.brokerage_id) throw new Error('User has no brokerage assigned')
+
+  // Tenant check on the campaign the rows attach to.
+  const { data: campaign } = await supabase
+    .from('newsletter_campaigns').select('id, brokerage_id').eq('id', newsletterId).maybeSingle()
+  if (!campaign || campaign.brokerage_id !== userData.brokerage_id) throw new Error('Campaign not in your brokerage')
+
+  const rows = items.map((it) => ({
+    newsletter_id: newsletterId,
+    brokerage_id: userData.brokerage_id,
+    zip_code: it.zipCode ?? null,
+    content: JSON.stringify({ title: it.title, summary: it.content, url: it.ctaUrl ?? null }),
+    relevance_score: null,
+    included_in_last_newsletter: true,
+  }))
+  const { error } = await supabase.from('newsletter_local_content').insert(rows)
+  if (error) throw new Error(`Failed to record local content: ${error.message}`)
+  return { success: true, recorded: rows.length }
 }
 
 export async function setupLocalNewsSource(

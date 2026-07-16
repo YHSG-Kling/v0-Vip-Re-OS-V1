@@ -374,6 +374,45 @@ export async function processEnrichmentQueue(
               metadata: { score: scoreResult.finalScore },
               created_at: new Date().toISOString(),
             })
+
+            // PERSONA-AT-ENRICHMENT (burn-down round 5): the moment verified
+            // demographics land, the contact's detailed persona is built from
+            // them — lead scoring, open-house follow-up and persona-aware
+            // content all read client_detailed_personas (empty until now).
+            // Best-effort; the routed-AI summary falls back deterministically.
+            try {
+              const { buildContactPersona } = await import('@/lib/contacts/persona-builder')
+              const { generateTextRouted } = await import('@/lib/ai/models')
+              await buildContactPersona(supabase as any, {
+                contactId: entityId,
+                brokerageId,
+                agentId: (contact as any).agent_id ?? null, // contacts.agent_id is agents-class
+                facts: {
+                  ageRange: enriched.ageRange ?? (enriched.age ? String(enriched.age) : null),
+                  maritalStatus: enriched.maritalStatus ?? null,
+                  childrenCount: enriched.childrenCount ?? null,
+                  householdSize: enriched.householdSize ?? null,
+                  householdIncome: enriched.householdIncome ?? null,
+                  homeOwnerStatus: enriched.homeOwnerStatus ?? null,
+                  homeValue: enriched.homeValue ?? null,
+                  occupation: enriched.currentTitle ?? null,
+                  industry: enriched.currentIndustry ?? null,
+                  // education is a structured array from the provider — persona
+                  // psychographics wants the strongest single line.
+                  education: Array.isArray(enriched.education)
+                    ? (enriched.education[0]?.degree ?? enriched.education[0]?.school ?? null)
+                    : ((enriched.education as string | undefined) ?? null),
+                  lifeEvents: ((enriched as any).life_events ?? (enriched as any).lifeEvents ?? null) as string[] | null,
+                  contactType: (contact as any).contact_type ?? null,
+                },
+                summarize: async (prompt) => {
+                  const { text } = await generateTextRouted({
+                    feature: 'client_message', brokerageId, prompt, temperature: 0.3, maxTokens: 180,
+                  })
+                  return text
+                },
+              })
+            } catch { /* persona is additive — never blocks the enrichment ledger */ }
           }
         }
 

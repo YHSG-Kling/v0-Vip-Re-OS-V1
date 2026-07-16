@@ -18,6 +18,8 @@ import {
 } from "@/components/ui/alert-dialog"
 import { CheckCircle2, AlertTriangle, Loader2, PartyPopper } from "lucide-react"
 import { issueClearToClose, flagLenderIssue, updateLenderLoanStatus } from "@/app/actions/lender-portal-actions"
+import { createLenderApplication, updateLenderApplicationStatus } from "@/app/actions/partner-orders"
+import { Input } from "@/components/ui/input"
 import { useRouter } from "next/navigation"
 
 const LOAN_STATUSES = [
@@ -47,6 +49,9 @@ export function LenderActions({
   const [flagSuccess, setFlagSuccess] = useState(false)
   const [updatingStatus, setUpdatingStatus] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [appUrl, setAppUrl] = useState("")
+  const [savingApp, setSavingApp] = useState(false)
+  const [appId, setAppId] = useState<string | null>(null)
 
   const handleIssueCTC = async () => {
     setIssuingCTC(true)
@@ -109,6 +114,55 @@ export function LenderActions({
         <CardTitle className="text-base">Actions</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Application link — records a lender_applications row the lender
+            pipeline panels track (owner spec: the lender's own application URL). */}
+        <div className="space-y-2">
+          <label className="text-sm font-medium">Loan Application Link</label>
+          <div className="flex gap-2">
+            <Input
+              value={appUrl}
+              onChange={(e) => setAppUrl(e.target.value)}
+              placeholder="https://your-lender-portal.com/apply/…"
+              disabled={savingApp}
+            />
+            <Button
+              variant="outline"
+              disabled={savingApp || !/^https?:\/\//.test(appUrl.trim())}
+              onClick={async () => {
+                setSavingApp(true)
+                setError(null)
+                const r = await createLenderApplication({
+                  applicationUrl: appUrl.trim(),
+                  lenderVendorId: lenderId,
+                  transactionId,
+                })
+                setSavingApp(false)
+                if (r.success && r.applicationId) {
+                  setAppId(r.applicationId)
+                  setAppUrl("")
+                  router.refresh()
+                } else if (!r.success) {
+                  setError(r.error ?? "Failed to record application")
+                }
+              }}
+            >
+              {savingApp ? <Loader2 className="h-4 w-4 animate-spin" /> : "Record"}
+            </Button>
+          </div>
+          {appId && (
+            <div className="flex items-center gap-2 text-xs text-emerald-700">
+              <CheckCircle2 className="h-3.5 w-3.5" /> Application on the pipeline
+              <button
+                className="underline text-emerald-800"
+                onClick={async () => {
+                  await updateLenderApplicationStatus(appId, "processing")
+                  router.refresh()
+                }}
+              >mark processing</button>
+            </div>
+          )}
+        </div>
+
         {/* Status Update */}
         <div className="space-y-2">
           <label className="text-sm font-medium">Update Loan Status</label>
