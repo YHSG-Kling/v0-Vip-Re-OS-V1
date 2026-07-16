@@ -9,6 +9,34 @@ export type ScriptType =
   | "agent_intro"
   | "listing_presentation"
 
+/** KEEP-ONE: the canonical videoType → video_scripts_library.script_type map.
+ * The live CHECK admits ONLY the five ScriptType values — every writer must
+ * map through here (raw videoType strings like "listing_tour"/"custom"/"video"
+ * violated the CHECK and the library save silently never persisted). */
+export function toLibraryScriptType(videoType: string): ScriptType {
+  const map: Record<string, ScriptType> = {
+    full_tour: "property_tour",
+    listing_tour: "property_tour",
+    just_listed: "property_tour",
+    listing_promo: "property_tour",
+    open_house_promo: "property_tour",
+    social_snippet: "property_tour",
+    instagram_story: "property_tour",
+    reel: "property_tour",
+    buyer_education: "buyer_education",
+    education: "buyer_education",
+    market_update: "market_update",
+    agent_intro: "agent_intro",
+    welcome: "agent_intro",
+    testimonial: "agent_intro",
+    presentation: "listing_presentation",
+    listing_presentation: "listing_presentation",
+    presentation_chapter: "listing_presentation",
+    property_tour: "property_tour",
+  }
+  return map[videoType] ?? "property_tour"
+}
+
 export type ApprovalStatus = 
   | "draft"
   | "pending_review"

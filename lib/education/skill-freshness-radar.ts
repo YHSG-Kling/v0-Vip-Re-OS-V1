@@ -30,7 +30,7 @@ async function gatherSkillSignals(svc: Svc, agent: { id: string; user_id: string
       ? svc.from("objection_training_sessions").select("completed_at, total_score").eq("agent_user_id", agent.user_id).not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1).maybeSingle()
       : Promise.resolve({ data: null }),
     svc.from("agent_quiz_attempts").select("created_at, score, passed").eq("agent_id", agent.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    svc.from("agent_courses").select("completed_at, score").eq("agent_id", agent.id).eq("status", "completed").not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1).maybeSingle(),
+    svc.from("agent_courses").select("completed_at, score").eq("agent_id", agent.id).eq("status", "passed").not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1).maybeSingle(),
   ])
   const objData = (obj as any).data
   const quizData = (quiz as any).data

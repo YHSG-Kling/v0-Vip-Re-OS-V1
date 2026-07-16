@@ -2,6 +2,7 @@
 
 import { createServerClient } from "@/lib/supabase/server"
 import { agentIdForUser } from "@/lib/agents/agent-for-user"
+import { toLibraryScriptType } from "@/app/types/video-generation"
 import { logVideoGenerated } from "@/lib/events"
 import { generateAIResponse } from "@/lib/ai"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
@@ -17,28 +18,8 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
 // Map a free-form video_type onto the video_scripts_library.script_type CHECK
 // (property_tour|buyer_education|market_update|agent_intro|listing_presentation).
-function mapScriptType(videoType: string): string {
-  const map: Record<string, string> = {
-    full_tour: "property_tour",
-    listing_tour: "property_tour",
-    just_listed: "property_tour",
-    listing_promo: "property_tour",
-    open_house_promo: "property_tour",
-    social_snippet: "property_tour",
-    instagram_story: "property_tour",
-    reel: "property_tour",
-    buyer_education: "buyer_education",
-    education: "buyer_education",
-    market_update: "market_update",
-    agent_intro: "agent_intro",
-    welcome: "agent_intro",
-    testimonial: "agent_intro",
-    presentation: "listing_presentation",
-    listing_presentation: "listing_presentation",
-    presentation_chapter: "listing_presentation",
-  }
-  return map[videoType] || "property_tour"
-}
+// KEEP-ONE: mapScriptType moved to @/app/types/video-generation (toLibraryScriptType)
+// so every video_scripts_library writer shares ONE vocabulary map.
 
 export async function generateVideoScript(params: {
   video_type: string
@@ -88,7 +69,7 @@ Make it conversational, engaging, and authentic. Keep it under 90 seconds.`,
     .insert({
       brokerage_id: profile.brokerage_id,
       agent_id: agentId,
-      script_type: mapScriptType(params.video_type),
+      script_type: toLibraryScriptType(params.video_type),
       title: `${params.video_type} script${params.context_type ? ` (${params.context_type})` : ""}`,
       script_content: script,
       listing_id: params.context_type === "listing" ? params.context_id : null,

@@ -83,7 +83,7 @@ export async function generateSkillFreshnessBoard(
       const [obj, quiz, course] = await Promise.all([
         a.user_id ? supabase.from("objection_training_sessions").select("completed_at, total_score").eq("agent_user_id", a.user_id).not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1).maybeSingle() : Promise.resolve({ data: null }),
         supabase.from("agent_quiz_attempts").select("created_at, score, passed").eq("agent_id", a.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
-        supabase.from("agent_courses").select("completed_at, score").eq("agent_id", a.id).eq("status", "completed").not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1).maybeSingle(),
+        supabase.from("agent_courses").select("completed_at, score").eq("agent_id", a.id).eq("status", "passed").not("completed_at", "is", null).order("completed_at", { ascending: false }).limit(1).maybeSingle(),
       ])
       const o = (obj as any).data, q = (quiz as any).data, c = (course as any).data
       const signals: SkillSignal[] = [

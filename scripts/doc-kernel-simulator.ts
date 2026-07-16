@@ -1833,6 +1833,23 @@ async function main() {
           && src("lib/recruiting/recruiting-pitch-kit.ts").includes("aiSourcedLine")
           && src("lib/recruiting/recruiting-pitch-kit.ts").includes("What the AI pipeline has already produced"))
       }
+
+      // ── PASS 15: ASSET + RECRUITING + ACADEMY DOMAIN DRILL (owner-directed) ──
+      {
+        const { toLibraryScriptType } = await import("../app/types/video-generation")
+        check("PASS 15 — ASSET / RECRUITING / ACADEMY DOMAIN DRILL (owner: 'identities and data flow correctly; academy on-demand works'). METHOD: manager table inventory (34 asset + 61 recruiting tables from TABLE_MANAGER) → live FK census → code sweep → seeded live-fire of each COMPLETE flow → residue 0. FK census: academy (agent_courses/quiz_attempts/step_completions/ce_completions → agents; learning_assignments.agent_user_id → users) · recruiting (mentor/mentee/recruited_agent_id/leaderboard/points → agents) · assets (video_assets/content/scripts/completion_tracking → agents; studio_sessions + created_by → users). CODE SWEEP verdicts: recruiting CLEAN (zero class-crossings); assets + academy writers use getAgentContext/resolveAgentId correctly — THREE genuine bugs found and fixed: (1) the onboarding PERFORMANCE REPORT route filtered agent_onboarding + video_completion_tracking + agent_quiz_attempts (all agents-FK) with raw user.id — every agent's report read zeros → resolveAgentId; (2) skill-freshness radar AND board filtered agent_courses.status='completed' — a value the live CHECK FORBIDS (vocabulary is not_started/in_progress/passed/failed; the certification engine gates on 'passed') → both read empty forever → 'passed'; (3) video_scripts_library.script_type CHECK admits ONLY five canonical types but THREE writers bypassed the one mapper — generateVideoFromScript wrote literal 'video' (every script record silently unpersisted, error only console.warned), generate-script wrote raw videoType ('listing_tour'/'custom' → 23514, saveToLibrary silently dead), and the mapper itself was file-local in video-content — KEEP-ONE: toLibraryScriptType exported from the types module, all three writers ride it. LIVE-FIRE (residue 0): academy on-demand (course→module→assignment-by-users.id→PASSED completion; fixed read=1, phantom 'completed' read=0), recruiting (recruit→hired analytics; pitch-kit ROI predicate found 1 agent/$18,500), assets (training video→canonical script→asset→100% completion; /api/videos agents.id predicate=1; fixed report read=1, old users.id read=0)",
+          toLibraryScriptType("listing_tour") === "property_tour"
+          && toLibraryScriptType("custom") === "property_tour"
+          && toLibraryScriptType("presentation_chapter") === "listing_presentation"
+          && src("app/api/onboarding/performance-report/route.ts").includes("resolveAgentId")
+          && src("lib/education/skill-freshness-radar.ts").includes('.eq("status", "passed")')
+          && src("lib/intelligence/skill-freshness-board.ts").includes('.eq("status", "passed")')
+          && !src("lib/education/skill-freshness-radar.ts").includes('"completed"')
+          && src("app/actions/video-generation.ts").includes('toLibraryScriptType("custom")')
+          && src("app/actions/video/generate-script.ts").includes("toLibraryScriptType(params.videoType)")
+          && src("app/actions/video-content.ts").includes("toLibraryScriptType(params.video_type)")
+          && !src("app/actions/video-generation.ts").includes('script_type: "video"'))
+      }
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

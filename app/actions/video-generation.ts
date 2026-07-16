@@ -1,5 +1,6 @@
 "use server"
 
+import { toLibraryScriptType } from "@/app/types/video-generation"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
@@ -1200,7 +1201,9 @@ export async function generateVideoFromScript(params: {
         script_content: params.script,
         title: params.title,
         created_by: auth.userId,
-        script_type: "video",
+        // "video" violated the script_type CHECK — every script record from this
+        // path silently never persisted (error only console.warned).
+        script_type: toLibraryScriptType("custom"),
         is_active: true,
       })
       .select()

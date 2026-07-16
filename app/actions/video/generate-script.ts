@@ -1,5 +1,6 @@
 "use server"
 
+import { toLibraryScriptType } from "@/app/types/video-generation"
 import { createClient } from "@/lib/supabase/server"
 import { generateAIResponse } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
@@ -250,7 +251,10 @@ Fair Housing compliance (Gate 4 — mandatory):
       .insert({
         brokerage_id: params.brokerageId,
         agent_id: params.agentId,
-        script_type: params.videoType,
+        // live CHECK admits only the five canonical script types — the raw
+        // videoType ("listing_tour"/"custom"/…) violated it and saveToLibrary
+        // silently never saved. Map through the canonical vocabulary.
+        script_type: toLibraryScriptType(params.videoType),
         title: `AI Script — ${params.videoType.replace(/_/g, " ")} — ${new Date().toLocaleDateString()}`,
         script_content: script,
         duration_target_seconds: estimatedDurationSeconds,

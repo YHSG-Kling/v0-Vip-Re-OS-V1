@@ -28,7 +28,11 @@ export async function POST(request: NextRequest) {
   }
 
   const brokerageId = userData.brokerage_id
-  const agentId = user.id
+  // domain drill: agent_onboarding / video_completion_tracking /
+  // agent_quiz_attempts all FK agents(id) — the raw user.id filter read EMPTY
+  // for every agent and the performance report showed zeros. Resolve it.
+  const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
+  const agentId = (await resolveAgentId(supabase as any, user.id)) ?? user.id
 
   // Gather metrics
   const progressResult = await getAgentProgress(agentId, brokerageId)
