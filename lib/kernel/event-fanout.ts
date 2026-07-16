@@ -28,6 +28,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
 import { renderTemplateText } from "./portal-template-render"
+import { sentinelWrite } from "./write-sentinel"
 
 export interface KernelEventContext {
   event:          KernelEvent
@@ -119,7 +120,7 @@ export async function enrollMatchingSequences(
       // Schedule the first step at next_step_at = now (worker picks it up
       // immediately; subsequent steps are scheduled by the worker using
       // delay_days/delay_hours from campaign_sequence_steps).
-      await supabase.from("sequence_enrollments").insert({
+      await sentinelWrite(supabase, supabase.from("sequence_enrollments").insert({
         sequence_id:  seq.id,
         contact_id:   contactId,
         brokerage_id: brokerageId,
@@ -128,7 +129,7 @@ export async function enrollMatchingSequences(
         status:       "active",
         enrolled_at:  new Date().toISOString(),
         next_step_at: new Date().toISOString(),
-      }).then(() => null, () => null)
+      }), { table: "sequence_enrollments", flow: "sequence_auto_enroll", brokerageId })
 
       // Bump the sequence's enrollments_total counter (best-effort).
       await supabase.rpc("increment_sequence_enrollments", { seq_id: seq.id })
@@ -612,7 +613,7 @@ export async function writePortalUpdate(
     // violation is absorbed by the swallowing `.then(ok, ignore)`. (The earlier code targeted a
     // dedupe_key column + onConflict that was never deployed, so this write silently failed and NO
     // portal card was ever written — the bug this restores.)
-    await supabase.from("transparency_updates").insert(
+    await sentinelWrite(supabase, supabase.from("transparency_updates").insert(
       {
         brokerage_id:             ctx.brokerageId,
         contact_id:               contactId,
@@ -633,7 +634,7 @@ export async function writePortalUpdate(
         metadata:                 ctx.metadata ?? {},
         created_at:               new Date().toISOString(),
       },
-    ).then(() => null, () => null)
+    ), { table: "transparency_updates", flow: "deal_transparency_card", brokerageId: ctx.brokerageId })
 
     // 3a-bis. Embed into contact_memory so the per-buyer/seller Managed Agents AND the
     // portal AI chat can recall what happened on this deal. Fire-and-forget, never
@@ -658,7 +659,7 @@ export async function writePortalUpdate(
     // 3b. Companion portal chat message (only when template provides one AND an agent is resolvable
     //     — client_portal_messages.agent_id is NOT NULL).
     if (chatBody && chatAgentId) {
-      await supabase.from("client_portal_messages").insert({
+      await sentinelWrite(supabase, supabase.from("client_portal_messages").insert({
         brokerage_id:   ctx.brokerageId,
         contact_id:     contactId,
         agent_id:       chatAgentId,
@@ -668,13 +669,13 @@ export async function writePortalUpdate(
         channel:        "portal",
         read:           false,
         created_at:     new Date().toISOString(),
-      }).then(() => null, () => null)
+      }), { table: "client_portal_messages", flow: "deal_transparency_chat", brokerageId: ctx.brokerageId })
     }
 
     // 3c. Notification on the contact's portal bell. entity_id is a uuid column — only set it when
     //     ctx.entityId is actually a uuid (some emitters pass composite/string ids), else the whole
     //     bell insert fails the uuid cast (silently, via the swallow) and the client gets no ping.
-    await supabase.from("notifications").insert({
+    await sentinelWrite(supabase, supabase.from("notifications").insert({
       contact_id:   contactId,
       brokerage_id: ctx.brokerageId,
       type:         ctx.event,
@@ -685,7 +686,7 @@ export async function writePortalUpdate(
       priority:     "high",
       channel:      "in_app",
       is_read:      false,
-    }).then(() => null, () => null)
+    }), { table: "notifications", flow: "deal_transparency_bell", brokerageId: ctx.brokerageId })
   }
 
   return wrote

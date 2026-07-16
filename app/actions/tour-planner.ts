@@ -628,7 +628,7 @@ export async function finalizeTour(params: {
   if (reportChannels.includes('portal') && tour.contact_id) {
     await supabase.from('client_portal_messages').insert({
       contact_id: tour.contact_id,
-      direction:  'outbound',
+      direction:  "agent_to_client",
       body:       'Your tour is confirmed. Tap to view the itinerary, route, and per-property details.',
       created_at: nowIso,
     }).then(() => null, () => null)

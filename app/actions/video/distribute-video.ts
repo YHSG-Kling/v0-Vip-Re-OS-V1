@@ -190,7 +190,7 @@ export async function distributeVideo(
         brokerage_id: params.brokerageId,
         agent_id: params.userId,
         contact_id: params.contactId,
-        direction: "outbound",
+        direction: "agent_to_client",
         body: `${subject}\n\n${body}`,
         created_at: new Date().toISOString(),
       })

@@ -1644,7 +1644,7 @@ async function main() {
       // RATCHET: 195 is the frozen baseline. New best-effort writes must use
       // sentinelWrite (which ledgers every loss) — this check FAILS if the
       // silencer population GROWS. Converting old sites only shrinks it.
-      const SILENCER_BASELINE = 195
+      const SILENCER_BASELINE = 191
       check(`PASS 4 — WRITE SENTINEL + SILENCER RATCHET (the bug class that hid passes 1–3's defects becomes SELF-REPORTING): supabase-js resolves with { error } instead of throwing, so '.then(()=>{},()=>{})' silencers and unchecked awaits hid FK/CHECK/NOT-NULL row loss for months; sentinelWrite keeps the best-effort contract (never throws, never 500s a webhook) but ledgers every loss to self_heal_events (action 'best_effort_write', outcome 'failed') — the repair digest ranks the losses and the Exception Center sees them; converted first: the ISA outreach logger's four record writes (the EXACT writes pass 3 found silently failing) + the voice call ledger (open + close); the ISA's inbound-email reply now carries REAL conversation memory (the old context read messages by contact_id=leadId — always empty; it now merges isa_outreach_log sends + replied activities chronologically); the silencer population is FROZEN at ${SILENCER_BASELINE} (currently ${silencerCount}) — growth fails this check`,
         silencerCount <= SILENCER_BASELINE
         && src("lib/kernel/write-sentinel.ts").includes("best_effort_write")
@@ -1655,6 +1655,63 @@ async function main() {
         && src("app/api/voice/twilio/turn/route.ts").includes('flow: "voice_call_ledger"')
         && src("app/actions/ai-isa/handle-inbound-email.ts").includes("DEAD READ REPLACED")
         && !src("app/actions/ai-isa/handle-inbound-email.ts").includes(".eq('contact_id', params.leadId)"))
+      // ── SENTINEL OBSERVATION SURFACE + high-traffic conversions (the sentinel made watchable) ──
+      const { composeSentinelLossReport } = await import("../lib/kernel/write-sentinel")
+      const lossRpt = composeSentinelLossReport([
+        { brokerage_id: "b1", detail: { flow: "deal_transparency_card", table: "transparency_updates", code: "23503", message: "fk" } },
+        { brokerage_id: "b2", detail: { flow: "deal_transparency_card", table: "transparency_updates", code: "23503", message: "fk" } },
+        { brokerage_id: "b1", detail: { flow: "isa_outreach_record", table: "isa_outreach_log", code: "23514", message: "check" } },
+      ])
+      check("SENTINEL OBSERVATION SURFACE (the write sentinel made watchable — a raw 'N failed' count is useless; the point is naming WHICH write rail loses rows and WHY): composeSentinelLossReport folds best_effort_write failures into ranked (flow, table, code) groups with a plain-language cause hint from the pg error code (23502 NOT NULL / 23503 FK / 23505 unique / 23514 CHECK), distinct-tenant counts, and a one-line headline; loadSentinelLosses reads the window; the weekly repair digest now speaks the top 3 write losses by rail+cause (not an anonymous veto count) and the superadmin Continuity Board renders a 'Silent write losses (7d)' card; the highest-traffic deal-VISIBILITY writes were converted to the sentinel so the observation is meaningful the moment traffic flows — the transparency card, portal chat and bell (whose own comments admit prior silent losses) plus the auto-enroll — and the silencer ratchet dropped 195→191",
+        lossRpt.totalLosses === 3
+        && lossRpt.distinctPaths === 2
+        && lossRpt.groups[0].flow === "deal_transparency_card" && lossRpt.groups[0].count === 2 && lossRpt.groups[0].tenants === 2
+        && lossRpt.groups[0].hint.includes("foreign key")
+        && lossRpt.groups[1].hint.includes("CHECK")
+        && lossRpt.headline.includes("worst: deal_transparency_card")
+        && src("lib/kernel/repair-digest.ts").includes("loadSentinelLosses")
+        && src("app/dashboard/superadmin/continuity/page.tsx").includes("Silent write losses")
+        && src("lib/kernel/event-fanout.ts").includes('flow: "deal_transparency_card"')
+        && src("lib/kernel/event-fanout.ts").includes('flow: "deal_transparency_bell"'))
+    }
+    // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
+    {
+      const { readdirSync, statSync } = await import("fs")
+      const NS_VOCAB: Record<string, string[]> = {
+        "client_portal_messages.direction": ["agent_to_client","client_to_agent"],
+        "message_provider_logs.direction": ["inbound","outbound"],
+        "voice_calls.direction": ["inbound","outbound"],
+        "voice_calls.call_type": ["agent_call","ai_isa_call","vapi_inbound","warm_transfer"],
+        "notifications.priority": ["low","medium","high","critical"],
+        "smart_assistant_suggestions.priority": ["low","medium","high"],
+        "vendor_messages.sender_type": ["vendor","contact","agent"],
+        "contacts.contact_type": ["lead","prospect","client","lifetime","lifetime_customer","past_client","sphere","vendor","referral_partner","investor","buyer","seller","both","other"],
+      }
+      const nsOffenders: string[] = []
+      const scanNs = (rel: string) => {
+        const text = readFileSync(join(ROOT, rel), "utf-8")
+        for (const m of text.matchAll(/from\(['"](\w+)['"]\)\s*(?:\.\w+\([^)]*\)\s*)*\.(?:update|insert)\(\{([\s\S]{0,900}?)\}\)/g)) {
+          const tbl = m[1]
+          for (const cm of m[2].matchAll(/(direction|priority|call_type|sender_type|contact_type)\s*:\s*['"]([\w./-]+)['"]/g)) {
+            const allowed = NS_VOCAB[`${tbl}.${cm[1]}`]
+            if (allowed && !allowed.includes(cm[2])) nsOffenders.push(`${rel}:${tbl}.${cm[1]}='${cm[2]}'`)
+          }
+        }
+      }
+      const walk9 = (dir: string) => {
+        for (const name of readdirSync(join(ROOT, dir))) {
+          const rel = `${dir}/${name}`
+          if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walk9(rel) }
+          else if (/\.(ts|tsx)$/.test(name)) scanNs(rel)
+        }
+      }
+      walk9("lib"); walk9("app")
+      check(`PASS 9 — NON-STATUS ENUM CHECK SWEEP (the columns passes 3/6 didn't cover: direction / priority / call_type / sender_type / contact_type; live pg_constraint map × every write literal): the headline catch — client_portal_messages.direction admits ONLY 'agent_to_client'/'client_to_agent', but TEN portal-message writes across the seller-update, listing-lifecycle, tour, title, lender, vendor, ISA and video-distribution rails wrote 'outbound'/'inbound' — every client-facing portal message was SILENTLY REJECTED and never reached the client's portal thread; all ten mapped to the real vocabulary (outbound→agent_to_client, inbound→client_to_agent) WITH the one reader that filtered the old value; notifications.priority rejected 'normal' (widget intake) → 'medium'. Re-runs the sweep in-code — offenders now: [${nsOffenders.join(", ") || "none"}]`,
+        nsOffenders.length === 0
+        && src("app/actions/seller-updates.ts").includes('direction: "agent_to_client"')
+        && src("app/actions/vendor-portal.ts").includes('direction: "client_to_agent"')
+        && src("app/actions/ai-isa/engage-contact.ts").includes(".eq('direction', 'agent_to_client')")
+        && !src("app/api/widget/intake/route.ts").includes("priority: 'normal'"))
     }
     // ── PASS 5: NOT-NULL-WITHOUT-DEFAULT CONTRACTS (live information_schema dump cross-checked against inserts) ──
     {

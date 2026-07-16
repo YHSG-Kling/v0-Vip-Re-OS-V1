@@ -493,7 +493,7 @@ async function handleSellerToLifetimeTransition(
       brokerage_id: brokerageId,
       agent_id: agentId,
       body: closingCopy.body,
-      direction: "outbound",
+      direction: "agent_to_client",
     })
     .then(() => {})
 

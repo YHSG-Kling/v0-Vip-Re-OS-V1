@@ -419,7 +419,7 @@ export async function shareDocumentAnalysisWithClient(params: {
     contact_id: params.contactId,
     agent_id: params.agentId,
     brokerage_id: params.brokerageId,
-    direction: "outbound",
+    direction: "agent_to_client",
     body: `AI Document Review — ${params.documentLabel}\n\n${params.analysisText}`,
     created_at: new Date().toISOString(),
   })

@@ -84,3 +84,94 @@ export async function sentinelWrite(
     return false
   }
 }
+
+// ─── THE OBSERVATION SURFACE ─────────────────────────────────────────────────
+//
+// The sentinel WRITES losses; these read them back. A raw "N failed" count is
+// useless — the point of the sentinel is to name WHICH write path is losing
+// rows and WHY, so a human (or the digest) fixes the rail, not the symptom.
+//
+// PostgreSQL error codes the report translates to plain hints:
+//   23502 NOT NULL · 23503 FK violation · 23505 unique violation · 23514 CHECK
+
+const PG_CODE_HINT: Record<string, string> = {
+  "23502": "a required column is missing (NOT NULL)",
+  "23503": "a foreign key points at a row that isn't there (wrong id-class?)",
+  "23505": "a unique/onConflict collision",
+  "23514": "a value the column's CHECK rejects (drifted vocabulary?)",
+  "22P02": "a malformed value (bad uuid / number / enum text)",
+}
+
+export interface SentinelLossRow {
+  flow: string
+  table: string
+  code: string | null
+  count: number
+  /** Distinct tenants affected (platform-scoped rows count as one). */
+  tenants: number
+  /** A representative error message from the group. */
+  sampleMessage: string
+  /** Plain-language cause hint derived from the pg code. */
+  hint: string
+}
+
+export interface SentinelLossReport {
+  totalLosses: number
+  distinctPaths: number
+  /** Loss groups, worst-first — the write-rail repair priority list. */
+  groups: SentinelLossRow[]
+  /** One-line human summary; "" when the week was clean. */
+  headline: string
+}
+
+/**
+ * PURE: fold a window of best_effort_write failure rows into a ranked report.
+ * Input rows are the self_heal_events shape (detail carries flow/table/code).
+ */
+export function composeSentinelLossReport(
+  rows: Array<{ brokerage_id?: string | null; detail?: unknown }>,
+): SentinelLossReport {
+  const byKey = new Map<string, { flow: string; table: string; code: string | null; count: number; tenants: Set<string>; sampleMessage: string }>()
+  for (const r of rows) {
+    const d = (r.detail ?? {}) as { flow?: string; table?: string; code?: string | null; message?: string }
+    const flow = d.flow ?? "unknown"
+    const table = d.table ?? "unknown"
+    const code = d.code ?? null
+    const key = `${flow}::${table}::${code ?? "none"}`
+    const g = byKey.get(key) ?? { flow, table, code, count: 0, tenants: new Set<string>(), sampleMessage: d.message ?? "" }
+    g.count++
+    g.tenants.add(r.brokerage_id ?? "platform")
+    if (!g.sampleMessage && d.message) g.sampleMessage = d.message
+    byKey.set(key, g)
+  }
+
+  const groups: SentinelLossRow[] = [...byKey.values()]
+    .map((g) => ({
+      flow: g.flow, table: g.table, code: g.code, count: g.count, tenants: g.tenants.size,
+      sampleMessage: g.sampleMessage,
+      hint: (g.code && PG_CODE_HINT[g.code]) ? PG_CODE_HINT[g.code] : "an unexpected write rejection",
+    }))
+    .sort((a, b) => b.count - a.count)
+
+  const totalLosses = groups.reduce((s, g) => s + g.count, 0)
+  const headline = totalLosses === 0
+    ? ""
+    : `${totalLosses} silent write loss${totalLosses === 1 ? "" : "es"} across ${groups.length} rail${groups.length === 1 ? "" : "s"}` +
+      (groups[0] ? ` — worst: ${groups[0].flow} → ${groups[0].table} (${groups[0].count}×, ${groups[0].hint}).` : ".")
+
+  return { totalLosses, distinctPaths: groups.length, groups, headline }
+}
+
+/** Read the best_effort_write losses over a window and rank them. */
+export async function loadSentinelLosses(svc: any, sinceIso: string, brokerageId?: string | null): Promise<SentinelLossReport> {
+  let q = svc.from("self_heal_events")
+    .select("brokerage_id, detail")
+    .eq("domain", "data_flow")
+    .eq("action", "best_effort_write")
+    .eq("outcome", "failed")
+    .gte("created_at", sinceIso)
+    .limit(5000)
+  if (brokerageId) q = q.eq("brokerage_id", brokerageId)
+  const { data } = await q
+  return composeSentinelLossReport((data ?? []) as any[])
+}

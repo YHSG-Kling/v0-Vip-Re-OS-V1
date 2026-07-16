@@ -135,6 +135,17 @@ export async function runRepairPatternDigest(svc: Svc, now: Date = new Date()): 
     if ((quarantined ?? 0) > 0) extraLines.push(`${quarantined} payload(s) waiting in quarantine for a contract fix.`)
   } catch { /* the core digest still sends */ }
 
+  // SENTINEL LOSS REPORT (write-layer observation): best_effort_write failures
+  // named by rail + cause, so a repair that fires because a WRITE is silently
+  // losing rows points at the exact table/code to fix — not an anonymous count.
+  try {
+    const { loadSentinelLosses } = await import("@/lib/kernel/write-sentinel")
+    const losses = await loadSentinelLosses(svc, since)
+    for (const g of losses.groups.slice(0, 3)) {
+      extraLines.push(`WRITE LOSS: ${g.flow} → ${g.table} lost ${g.count} row${g.count === 1 ? "" : "s"} (${g.hint}${g.tenants > 1 ? `, ${g.tenants} tenants` : ""}).`)
+    }
+  } catch { /* the core digest still sends */ }
+
   const { notifyPlatformStaff } = await import("@/lib/notifications/platform-staff")
   await notifyPlatformStaff(svc as any, {
     type: "repair_pattern_digest",

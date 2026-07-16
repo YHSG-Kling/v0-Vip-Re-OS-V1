@@ -470,7 +470,7 @@ export async function sendTitleMessageToAgent(data: {
   const { error } = await supabase.from("client_portal_messages").insert({
     brokerage_id: actor.brokerageId,
     contact_id: tx.agent_id,
-    direction: "outbound",
+    direction: "agent_to_client",
     channel: "portal",
     body: `[TITLE/ESCROW] ${titleUser?.company_name || "Title Company"} re: ${tx.property_address || "Transaction"}:\n\n${data.message}`,
     metadata: {

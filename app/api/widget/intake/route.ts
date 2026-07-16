@@ -225,7 +225,7 @@ export async function POST(req: NextRequest) {
         body: `${first_name ?? 'Someone'} ${last_name ?? ''} reached out via the website widget${message ? `: "${message.substring(0, 100)}"` : '.'}`,
         entity_type: 'contact',
         entity_id: contactId,
-        priority: 'normal',
+        priority: 'medium', // CHECK vocabulary (pass 9): 'normal' was silently rejected
         channel: 'in_app',
       })
     }

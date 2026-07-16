@@ -12,6 +12,7 @@ import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { createServiceClient } from "@/lib/supabase/service"
 import { loadFlowActionStats, composeRepairAutonomy, EARNED_AUTONOMY_HEALS } from "@/lib/kernel/self-heal-ledger"
 import { loadRecentShapeChanges } from "@/lib/kernel/schema-memory"
+import { loadSentinelLosses } from "@/lib/kernel/write-sentinel"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 
@@ -26,7 +27,7 @@ export default async function PlatformContinuityPage() {
   const svc = createServiceClient()
   const since = new Date(Date.now() - 7 * 86_400_000).toISOString()
 
-  const [{ data: ledger }, { data: quarantine }, stats, shapeChanges] = await Promise.all([
+  const [{ data: ledger }, { data: quarantine }, stats, shapeChanges, sentinelLosses] = await Promise.all([
     svc.from("self_heal_events")
       .select("brokerage_id, domain, outcome")
       .gte("created_at", since).limit(5000),
@@ -35,6 +36,7 @@ export default async function PlatformContinuityPage() {
       .eq("status", "pending").order("created_at", { ascending: true }).limit(50),
     loadFlowActionStats(svc),
     loadRecentShapeChanges(svc as any, since),
+    loadSentinelLosses(svc, since),
   ])
 
   // Fold the week's ledger per tenant (platform-scoped rows fold under "platform").
@@ -132,6 +134,31 @@ export default async function PlatformContinuityPage() {
                   <li key={`${q.provider}:${q.external_ref}`} className="flex items-center justify-between gap-2 text-xs">
                     <span className="truncate text-muted-foreground">{q.provider} · {q.event_kind} · {q.external_ref}</span>
                     <Badge variant="outline" className="shrink-0">{q.attempts ?? 0} tick{(q.attempts ?? 0) === 1 ? "" : "s"}</Badge>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Silent write losses (7d)</CardTitle>
+            <p className="text-xs text-muted-foreground">The write sentinel: best-effort DB writes that were REJECTED and would have vanished silently. Each names the rail + cause so you fix the write, not the symptom.</p>
+          </CardHeader>
+          <CardContent>
+            {sentinelLosses.groups.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Clean — every tracked best-effort write landed this week.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {sentinelLosses.groups.slice(0, 12).map((g) => (
+                  <li key={`${g.flow}:${g.table}:${g.code}`} className="flex items-start justify-between gap-2 text-xs">
+                    <span className="min-w-0">
+                      <span className="font-medium text-foreground">{g.flow}</span>
+                      <span className="text-muted-foreground"> → {g.table}</span>
+                      <span className="block text-[11px] text-muted-foreground">{g.hint}{g.tenants > 1 ? ` · ${g.tenants} tenants` : ""}</span>
+                    </span>
+                    <Badge variant="outline" className="shrink-0 border-red-300 text-red-700">{g.count}× {g.code ?? "err"}</Badge>
                   </li>
                 ))}
               </ul>

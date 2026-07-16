@@ -422,7 +422,7 @@ export async function sendVendorMessageToAgent(data: {
     .insert({
       brokerage_id: gate.brokerageId,
       transaction_id: data.transactionId,
-      direction: "inbound",
+      direction: "client_to_agent",
       body: `[Vendor Message] ${data.message}`,
       created_at: new Date().toISOString(),
       metadata: {

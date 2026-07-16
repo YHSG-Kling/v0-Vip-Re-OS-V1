@@ -216,7 +216,7 @@ export async function sendSellerUpdate({ listingId, agentId, messageBody, approv
       agent_id: agentId,
       brokerage_id: brokerageId,
       body: messageBody,
-      direction: "outbound",
+      direction: "agent_to_client",
       read_at: null,
     })
     .select()

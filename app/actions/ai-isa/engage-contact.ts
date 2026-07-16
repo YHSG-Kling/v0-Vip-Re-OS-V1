@@ -170,7 +170,7 @@ export async function engageContact(
       try {
         const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString()
         const { data: recent } = await supabase.from('client_portal_messages')
-          .select('id').eq('contact_id', contact.id).eq('direction', 'outbound')
+          .select('id').eq('contact_id', contact.id).eq('direction', 'agent_to_client')
           .contains('metadata', { source: 'ai_isa_situational' }).gte('created_at', weekAgo).limit(1).maybeSingle()
         if (!recent) {
           const { buildSituationalPortalMessage } = await import('@/lib/ai-isa/situational-portal-message')
@@ -196,7 +196,7 @@ export async function engageContact(
           } catch { /* gateway down → the deterministic them-first fallback stands */ }
           await supabase.from('client_portal_messages').insert({
             brokerage_id: brokerageId, contact_id: contact.id, agent_id: contact.agent_id,
-            direction: 'outbound', channel: 'portal', body: portalBody,
+            direction: "agent_to_client", channel: 'portal', body: portalBody,
             metadata: { source: 'ai_isa_situational', persona: portalPersona, reason },
           })
         }

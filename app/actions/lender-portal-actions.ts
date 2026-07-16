@@ -191,7 +191,7 @@ export async function issueClearToClose(data: {
     await supabase.from("client_portal_messages").insert({
       brokerage_id: actor.brokerageId,
       contact_id: transaction.buyer_contact_id,
-      direction: "outbound",
+      direction: "agent_to_client",
       channel: "portal",
       body: `Great news! ${actor.lenderCompany || "Your lender"} has issued Clear to Close for ${transaction.property_address || "your property"}. You are one step closer to closing!`,
       created_at: new Date().toISOString(),
@@ -247,7 +247,7 @@ export async function flagLenderIssue(data: {
 
   const { error: messageError } = await supabase.from("client_portal_messages").insert({
     contact_id: transaction.agent_id,
-    direction: "outbound",
+    direction: "agent_to_client",
     channel: "portal",
     body: `[LENDER ISSUE] ${actor.lenderCompany ?? "Lender"} has flagged an issue for ${transaction.property_address ?? "transaction"}:\n\n${data.issueDescription}`,
     metadata: {
