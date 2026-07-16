@@ -489,7 +489,8 @@
     "test:transaction-stage-status": "tsx scripts/transaction-stage-status-simulator.ts",
     "test:asset-production": "tsx scripts/asset-production-simulator.ts",
     "test:autonomy-report": "tsx scripts/autonomy-report-simulator.ts",
-    "test:doc-kernel": "tsx scripts/doc-kernel-simulator.ts"
+    "test:doc-kernel": "tsx scripts/doc-kernel-simulator.ts",
+    "test:e2e-lifecycle": "tsx scripts/e2e-lifecycle-harness.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
