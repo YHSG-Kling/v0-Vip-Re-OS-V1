@@ -1685,6 +1685,17 @@ async function main() {
         && src("lib/kernel/calendar-sync.ts").includes('onConflict: "brokerage_id,provider_type,provider_account_id,user_id"')
         && src("lib/kernel/users.ts").includes("find-pending")
         && !src("lib/kernel/users.ts").includes('onConflict: "brokerage_id,email"'))
+      // ── PASS 11: READ-FILTER id-CLASS (agents-FK column filtered by a users.id → silent EMPTY) ──
+      check("PASS 11 — READ-FILTER id-CLASS (the silent-WRONG-RESULT class: a .eq('agent_id', userId) on a column that FKs agents(id) returns EMPTY, never errors — the query 'succeeds' with nothing). Live data settled the split-brain empirically: 100% of contacts.agent_id values are agents.id, 0% users.id (a stale code comment claimed the opposite). SEVEN flagship agent-facing surfaces were filtering agent-FK tables by the raw user.id and showing every agent ZERO of their own data: the AI chat context loader (contacts/transactions/leads/tasks) + its today's-appointments tool (showings/activities), the whole analytics dashboard (6 filters), the voice-admin command router (showings/contacts/transactions/tasks — the flagship 'what's on my plate' voice feature found nothing), the morning-standup 'what's my day' (contacts), the expenses page, and the chat-stream session access check (which 403'd users out of their OWN chat). All resolve users.id→agents.id via the canonical resolveAgentId with an honest fallback. VERDICT on the ~20 split-brain tables whose agent_id FKs users(id): those modules WRITE and READ the same class (e.g. the NPV scorer stores contact.agent_id and filters by it) — internally consistent, NOT read-filter bugs; the canonical .from('agents').eq('user_id', x) resolves are correct despite misleading param names",
+        src("app/api/internal/ai-chat/route.ts").includes("resolveAgentId") && src("app/api/internal/ai-chat/route.ts").includes('.eq("agent_id", agentId)')
+        && !src("app/api/internal/ai-chat/route.ts").includes('.eq("agent_id", userId)')
+        && src("app/dashboard/analytics/page.tsx").includes('.eq("agent_id", agentId)')
+        && !src("app/dashboard/analytics/page.tsx").includes('.eq("agent_id", user.id)')
+        && src("app/api/internal/voice-command/route.ts").includes("voiceAgentId")
+        && !src("app/api/internal/voice-command/route.ts").includes('.eq("agent_id", user.id)')
+        && src("lib/kernel/morning-standup.ts").includes("standupAgentId")
+        && src("app/dashboard/financials/expenses/page.tsx").includes("expenseAgentId")
+        && src("app/api/chat/stream/route.ts").includes("streamAgentId"))
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

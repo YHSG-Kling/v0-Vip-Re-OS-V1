@@ -73,6 +73,11 @@ export async function POST(req: NextRequest) {
   if (!profile) return NextResponse.json({ error: "User not found" }, { status: 404 })
 
   const brokerageId = profile.brokerage_id
+  // pass 11: showings/contacts/transactions.agent_id + tasks.assigned_to_agent_id
+  // FK agents(id), NOT users(id) — filtering by the raw user.id returned EMPTY,
+  // so the voice admin found none of the agent's own showings/contacts/deals.
+  const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
+  const voiceAgentId = (await resolveAgentId(service as any, user.id)) ?? user.id
   const today = new Date().toISOString().slice(0, 10)
   const startOfWeek = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
@@ -126,7 +131,7 @@ Respond with ONLY the intent string, nothing else.`,
       const { data: showings } = await service
         .from("showings")
         .select("id, scheduled_at, scheduled_date, scheduled_time, status, contacts(first_name, last_name), listings(address, city)")
-        .eq("agent_id", user.id)
+        .eq("agent_id", voiceAgentId)
         .gte("scheduled_date", today)
         .lte("scheduled_date", new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10))
         .order("scheduled_date", { ascending: true })
@@ -155,7 +160,7 @@ Respond with ONLY the intent string, nothing else.`,
       const { data: contacts } = await service
         .from("contacts")
         .select("id, first_name, last_name, phone, intent_score, engagement_score, buyer_stage, status")
-        .eq("agent_id", user.id)
+        .eq("agent_id", voiceAgentId)
         .eq("brokerage_id", brokerageId)
         .neq("phone", null)
         .neq("call_stop_flag", true)
@@ -185,7 +190,7 @@ Respond with ONLY the intent string, nothing else.`,
       const { data: tasks } = await service
         .from("tasks")
         .select("id, title, due_date, priority, status, contacts(first_name, last_name)")
-        .eq("assigned_to_agent_id", user.id)
+        .eq("assigned_to_agent_id", voiceAgentId)
         .eq("brokerage_id", brokerageId)
         .neq("status", "completed")
         .order("due_date", { ascending: true, nullsFirst: false })
@@ -208,7 +213,7 @@ Respond with ONLY the intent string, nothing else.`,
       const { data: transactions } = await service
         .from("transactions")
         .select("id, deal_name, status, stage, close_date, purchase_price, contacts(first_name, last_name)")
-        .eq("agent_id", user.id)
+        .eq("agent_id", voiceAgentId)
         .eq("brokerage_id", brokerageId)
         .not("status", "eq", "closed")
         .order("close_date", { ascending: true, nullsFirst: false })
@@ -225,7 +230,7 @@ Respond with ONLY the intent string, nothing else.`,
       const { data: leads } = await service
         .from("contacts")
         .select("id, first_name, last_name, intent_score, buyer_stage, last_contacted_at")
-        .eq("agent_id", user.id)
+        .eq("agent_id", voiceAgentId)
         .eq("brokerage_id", brokerageId)
         .not("buyer_stage", "is", null)
         .order("intent_score", { ascending: false, nullsFirst: false })

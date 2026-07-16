@@ -35,6 +35,12 @@ export default async function AnalyticsPage() {
     .eq("id", user.id)
     .maybeSingle()
 
+  // pass 11: contacts/listings/transactions/activities.agent_id FK agents(id),
+  // NOT users(id) — every filter below used user.id and returned ZERO for every
+  // agent (the whole analytics page rendered empty). Resolve the agents.id once.
+  const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
+  const agentId = (await resolveAgentId(supabase as any, user.id)) ?? user.id
+
   // Fetch comprehensive stats
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
   const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
@@ -47,25 +53,25 @@ export default async function AnalyticsPage() {
     leadSourcesResult,
     recentActivityResult
   ] = await Promise.all([
-    supabase.from("contacts").select("id", { count: "exact", head: true }).eq("agent_id", user.id),
-    supabase.from("listings").select("id, status", { count: "exact" }).eq("agent_id", user.id),
+    supabase.from("contacts").select("id", { count: "exact", head: true }).eq("agent_id", agentId),
+    supabase.from("listings").select("id, status", { count: "exact" }).eq("agent_id", agentId),
     supabase.from("transactions")
       .select("id, contract_price:purchase_price, status, close_date")
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
       .gte("created_at", thirtyDaysAgo),
     supabase.from("transactions")
       .select("id, contract_price:purchase_price")
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
       .gte("created_at", sixtyDaysAgo)
       .lt("created_at", thirtyDaysAgo)
       .eq("status", "closed"),
     supabase.from("contacts")
       .select("source")
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
       .not("source", "is", null),
     supabase.from("activities")
       .select("id, title, activity_type, created_at")
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
       .order("created_at", { ascending: false })
       .limit(10)
   ])

@@ -13,12 +13,16 @@ export async function POST(req: NextRequest) {
 
     const supabase = createServiceClient()
 
-    // Verify user has access to this session
+    // Verify user has access to this session. pass 11: conversations.agent_id
+    // FKs agents(id), not users(id) — filtering by the raw userId matched no
+    // row so the user could never access their own chat session (always 403).
+    const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
+    const streamAgentId = (await resolveAgentId(supabase as any, userId)) ?? userId
     const { data: session, error: sessionError } = await supabase
       .from("conversations")
       .select("*")
       .eq("id", sessionId)
-      .eq("agent_id", userId)
+      .eq("agent_id", streamAgentId)
       .single()
 
     if (sessionError || !session) {

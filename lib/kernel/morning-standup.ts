@@ -112,10 +112,14 @@ export async function runMorningStandup(
     .gte("created_at", new Date(now.getTime() - 24 * 3_600_000).toISOString())
     .order("created_at", { ascending: false }).limit(2)
 
-  // The agent's own contacts (agent_id = users.id on the live schema).
+  // pass 11: contacts.agent_id FKs agents(id) — live data confirmed 100% of
+  // values are agents.id, NOT users.id (the old comment was wrong). Filtering
+  // by the raw agentUserId returned ZERO, so the standup showed no contacts.
+  const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
+  const standupAgentId = (await resolveAgentId(supabase as any, agentUserId)) ?? agentUserId
   const { data: myContacts } = await supabase.from("contacts")
     .select("id, first_name, last_name, intent_score, engagement_score, last_contacted_at, nurture_status")
-    .eq("brokerage_id", brokerageId).eq("agent_id", agentUserId).limit(1000)
+    .eq("brokerage_id", brokerageId).eq("agent_id", standupAgentId).limit(1000)
   const contactRows = ((myContacts ?? []) as any[]).filter((c) => c.nurture_status !== "withdrawn")
   const myIds = new Set(contactRows.map((c) => c.id))
 

@@ -23,11 +23,14 @@ export default async function ExpensesPage() {
   const currentYear = new Date().getFullYear()
   const currentMonth = new Date().getMonth() + 1
 
-  // business_expenses uses agent_id and expense_date (not date)
+  // pass 11: business_expenses.agent_id FKs agents(id), not users(id) — the
+  // old user.id filter returned zero for every agent. Resolve the agents.id.
+  const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
+  const expenseAgentId = (await resolveAgentId(supabase as any, user.id)) ?? user.id
   const { data: expenses } = await supabase
     .from('business_expenses')
     .select('id, category, amount, description, expense_date, receipt_url')
-    .eq('agent_id', user.id)
+    .eq('agent_id', expenseAgentId)
     .gte('expense_date', `${currentYear}-01-01`)
     .order('expense_date', { ascending: false })
     .limit(100)

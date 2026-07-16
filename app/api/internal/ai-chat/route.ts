@@ -22,23 +22,31 @@ const PERMITTED_ROLES = new Set([
 async function loadAgentContext(service: ReturnType<typeof createServiceClient>, userId: string, brokerageId: string) {
   const today = new Date().toISOString().split("T")[0]
 
+  // pass 11: contacts/transactions/leads.agent_id + tasks.assigned_to_agent_id
+  // FK agents(id), NOT users(id) — filtering by the raw userId returned EMPTY
+  // for every agent, so the AI chat saw no book of business. Resolve the
+  // agents.id first (honest empty when the user has no agent profile).
+  const { resolveAgentId } = await import("@/lib/kernel/agent-identity")
+  const agentId = await resolveAgentId(service as any, userId)
+  if (!agentId) return { contacts: [], transactions: [], tasks: [], leads: [], today }
+
   const [{ data: contacts }, { data: transactions }, { data: tasks }, { data: leads }] = await Promise.all([
     service.from("contacts")
       .select("id, first_name, last_name, email, phone, contact_persona, status, buyer_stage, engagement_score, intent_score")
-      .eq("agent_id", userId).eq("brokerage_id", brokerageId)
+      .eq("agent_id", agentId).eq("brokerage_id", brokerageId)
       .order("updated_at", { ascending: false }).limit(20),
     service.from("transactions")
       .select("id, deal_name, property_address, status, stage, close_date, purchase_price, health_score")
-      .eq("agent_id", userId).eq("brokerage_id", brokerageId)
+      .eq("agent_id", agentId).eq("brokerage_id", brokerageId)
       .not("status", "eq", "closed").limit(10),
     service.from("tasks")
       .select("id, title, status, priority, due_date, transaction_id, contact_id")
-      .eq("assigned_to_agent_id", userId)
+      .eq("assigned_to_agent_id", agentId)
       .lte("due_date", new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0])
       .neq("status", "completed").limit(15),
     service.from("leads")
       .select("id, first_name, last_name, lead_stage, lead_score, lifecycle_state, created_at")
-      .eq("agent_id", userId).eq("brokerage_id", brokerageId)
+      .eq("agent_id", agentId).eq("brokerage_id", brokerageId)
       .order("created_at", { ascending: false }).limit(10),
   ])
 
@@ -642,18 +650,21 @@ export async function POST(req: NextRequest) {
         const startIso = startOfDay.toISOString()
         const endIso = endOfDay.toISOString()
 
+        // pass 11: showings/activities.agent_id FK agents(id) — resolve first.
+        const { resolveAgentId: _resolveAgentId } = await import("@/lib/kernel/agent-identity")
+        const toolAgentId = (await _resolveAgentId(service as any, user.id)) ?? user.id
         const [showings, activities] = await Promise.all([
           service
             .from("showings")
             .select("id, scheduled_at, listing_id, contact_id, notes, status")
-            .eq("agent_id", user.id)
+            .eq("agent_id", toolAgentId)
             .gte("scheduled_at", startIso)
             .lt("scheduled_at", endIso)
             .order("scheduled_at", { ascending: true }),
           service
             .from("activities")
             .select("id, scheduled_at, activity_type, title, contact_id, transaction_id")
-            .eq("agent_id", user.id)
+            .eq("agent_id", toolAgentId)
             .eq("status", "scheduled")
             .gte("scheduled_at", startIso)
             .lt("scheduled_at", endIso)
