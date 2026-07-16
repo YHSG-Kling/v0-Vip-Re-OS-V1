@@ -159,20 +159,21 @@ export default function VideoKanbanBoard() {
       if (data && !error) {
         setVideos(data)
 
-        // Load streaming statuses for all videos
-        const videoIds = data.map((v: any) => v.id)
-        const { data: statusData } = await supabase
-          .from("video_streaming_status")
-          .select("*")
-          .in("video_project_id", videoIds)
-
-        if (statusData) {
-          const statusMap: Record<string, StreamingStatus> = {}
-          statusData.forEach((s: any) => {
-            statusMap[s.video_project_id] = s
-          })
-          setStreamingStatuses(statusMap)
-        }
+        // Streaming state derives from the project rows themselves —
+        // video_streaming_status was a writer-less companion table
+        // (ai_video_projects.provider_status/video_url/error_message already
+        // carry the truth; keep-one consolidation, burn-down round 6).
+        const statusMap: Record<string, StreamingStatus> = {}
+        data.forEach((v: any) => {
+          statusMap[v.id] = {
+            video_project_id: v.id,
+            stream_status: v.provider_status || v.status || "pending",
+            preview_url: v.thumbnail_url ?? undefined,
+            stream_url: v.video_url ?? undefined,
+            error_message: v.error_message ?? undefined,
+          }
+        })
+        setStreamingStatuses(statusMap)
 
         // Identify videos that need polling
         const needsPolling = data
@@ -211,12 +212,20 @@ export default function VideoKanbanBoard() {
       )
       .on(
         "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "video_streaming_status" },
+        // Streaming overlay rides the SAME project-row updates (keep-one —
+        // the retired video_streaming_status channel could never fire).
+        { event: "UPDATE", schema: "public", table: "ai_video_projects" },
         (payload: any) => {
-          const newStatus = payload.new as StreamingStatus
+          const v = payload.new as any
           setStreamingStatuses((prev) => ({
             ...prev,
-            [newStatus.video_project_id]: newStatus,
+            [v.id]: {
+              video_project_id: v.id,
+              stream_status: v.provider_status || v.status || "pending",
+              preview_url: v.thumbnail_url ?? undefined,
+              stream_url: v.video_url ?? undefined,
+              error_message: v.error_message ?? undefined,
+            },
           }))
         }
       )

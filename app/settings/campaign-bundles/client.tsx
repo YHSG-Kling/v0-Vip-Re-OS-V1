@@ -28,6 +28,8 @@ import {
   type UpsertBundleInput,
 } from "@/app/actions/campaign-bundles"
 import { upsertCampaignPreset, deactivateCampaignPreset, type PresetChannel } from "@/app/actions/campaign-presets"
+import { installCreativePlaybook } from "@/app/actions/creative-playbooks"
+import { CREATIVE_PLAYBOOKS } from "@/lib/marketing/creative-playbooks"
 
 interface AccessProp {
   canEditAgent:     boolean
@@ -74,6 +76,9 @@ export function CampaignBundlesClient({
   const [showCreate, setShowCreate] = useState(false)
   const [showQuickPreset, setShowQuickPreset] = useState(false)
   const [showShelves, setShowShelves] = useState(false)
+  const [showPlaybooks, setShowPlaybooks] = useState(false)
+  const [installingKey, setInstallingKey] = useState<string | null>(null)
+  const [installResult, setInstallResult] = useState<{ key: string; magnetUrl?: string | null; notes: string[] } | null>(null)
   const [qpChannel, setQpChannel] = useState<PresetChannel>("sms")
   const [qpName, setQpName] = useState("")
   const [qpContent, setQpContent] = useState("")
@@ -163,6 +168,10 @@ export function CampaignBundlesClient({
         </div>
         <div className="flex gap-2">
           <button
+            onClick={() => setShowPlaybooks((v) => !v)}
+            className="px-4 py-2 bg-purple-600 text-white text-sm font-medium rounded hover:bg-purple-700 whitespace-nowrap"
+          >{showPlaybooks ? "Hide playbooks" : "✦ Strategy playbooks"}</button>
+          <button
             onClick={() => setShowShelves((v) => !v)}
             className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded hover:bg-gray-50 whitespace-nowrap"
           >{showShelves ? "Hide shelves" : "Preset shelves"}</button>
@@ -232,6 +241,57 @@ export function CampaignBundlesClient({
 
       {error && (
         <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded text-sm">{error}</div>
+      )}
+
+      {showPlaybooks && (
+        <section className="p-4 border-2 border-purple-200 rounded-lg bg-purple-50/40 space-y-4">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">Strategy Playbooks — creative campaigns that ride the sites your clients already watch</h2>
+            <p className="text-xs text-gray-600 mt-1">
+              One click installs the whole play: capture page + tracked QR + every channel preset (compliance-gated on save) + the ordered bundle. Nothing sends until you dispatch it.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {CREATIVE_PLAYBOOKS.map((p) => (
+              <div key={p.key} className="border border-purple-200 bg-white rounded-lg p-4 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900">{p.title}</h3>
+                    <p className="text-sm text-purple-800 italic mt-0.5">{p.hook}</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setError(null); setInstallResult(null); setInstallingKey(p.key)
+                      startTransition(async () => {
+                        const r = await installCreativePlaybook(p.key)
+                        setInstallingKey(null)
+                        if (r.success && r.installed) {
+                          setInstallResult({ key: p.key, magnetUrl: r.installed.magnetUrl, notes: r.installed.notes })
+                          router.refresh()
+                        } else {
+                          setError(r.error ?? "Install failed")
+                        }
+                      })
+                    }}
+                    disabled={pending}
+                    className="px-3 py-1.5 bg-purple-600 text-white text-xs font-medium rounded hover:bg-purple-700 disabled:opacity-50 shrink-0"
+                  >{installingKey === p.key ? "Installing…" : "Install"}</button>
+                </div>
+                <p className="text-xs text-gray-600">{p.whyItWorks}</p>
+                <p className="text-xs text-gray-500">
+                  <span className="font-medium">Rides on:</span> {p.ridesOn} · <span className="font-medium">Channels:</span> {p.steps.filter((s) => !["bundle","lead_magnet","qr"].includes(s.kind)).map((s) => s.kind.replace(/_/g, " ")).join(", ")}
+                </p>
+                {installResult?.key === p.key && (
+                  <div className="text-xs bg-emerald-50 border border-emerald-200 rounded p-2 space-y-1">
+                    <p className="text-emerald-800 font-medium">Installed — presets + bundle are on your shelves below.</p>
+                    {installResult.magnetUrl && <p className="text-emerald-700 break-all">Capture page: {installResult.magnetUrl}</p>}
+                    {installResult.notes.map((n, i) => <p key={i} className="text-amber-700">• {n}</p>)}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
       {showShelves && (

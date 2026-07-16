@@ -248,11 +248,19 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
       .data?.map((c: any) => c.id) ?? []
   const idsOrNone = subjectContactIds.length > 0 ? subjectContactIds : ["00000000-0000-0000-0000-000000000000"]
   const idList = idsOrNone.join(",")
-  const [user, contacts, communications, transactions, offers, showings, consents] = await Promise.all([
+  // communications was a writer-less legacy table (burn-down round 6 repoint) — export the WRITTEN
+  // stores instead: messages (contact-scoped) + isa_outreach_log (lead-scoped; leads.contact_id).
+  const subjectLeadIds: string[] =
+    (await svc.from("leads").select("id").in("contact_id", idsOrNone)).data?.map((l: any) => l.id) ?? []
+  const leadIdsOrNone = subjectLeadIds.length > 0 ? subjectLeadIds : ["00000000-0000-0000-0000-000000000000"]
+  const [user, contacts, messages, isaOutreach, transactions, offers, showings, consents] = await Promise.all([
     svc.from("users").select("*").eq("email", email).eq("brokerage_id", req.brokerage_id).maybeSingle(),
     svc.from("contacts").select("*").eq("email", email).eq("brokerage_id", req.brokerage_id),
-    svc.from("communications").select("id, channel, direction, content_preview, sent_at, contact_id")
-       .or(`contact_email.eq.${email},to_email.eq.${email}`)
+    svc.from("messages").select("id, type, direction, subject, body, status, created_at, contact_id")
+       .in("contact_id", idsOrNone)
+       .limit(500),
+    svc.from("isa_outreach_log").select("id, channel, subject, body_snippet, status, sent_at, created_at, lead_id")
+       .in("lead_id", leadIdsOrNone)
        .limit(500),
     svc.from("transactions").select("id, property_address, status, created_at, buyer_contact_id, seller_contact_id")
        .eq("brokerage_id", req.brokerage_id)
@@ -270,7 +278,10 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
     brokerage_id:        req.brokerage_id,
     user_record:         user.data,
     contact_records:     contacts.data ?? [],
-    communications:      communications.data ?? [],
+    communications:      [
+      ...(messages.data ?? []).map((m: any) => ({ source: "messages", ...m })),
+      ...(isaOutreach.data ?? []).map((o: any) => ({ source: "isa_outreach_log", ...o })),
+    ],
     transactions:        transactions.data ?? [],
     offers:              offers.data ?? [],
     showings:            showings.data ?? [],

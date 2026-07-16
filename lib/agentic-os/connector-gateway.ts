@@ -103,8 +103,40 @@ export function buildAuthedRequest(req: GatewayRequest): { url: string; headers:
  * The one outbound call. Real fetch → adapt the response shape → structured result. Never
  * throws: a thrown fetch / timeout returns ok:false with status null. This is the only place
  * feature code should reach an external HTTP vendor.
+ *
+ * TELEMETRY (burn-down round 6): because this IS the single egress choke, it is
+ * also the one honest source of per-call latency/status — every call lands a
+ * best-effort api_response_logs row (the System Health SLA panel read that
+ * table for months with no writer). Fire-and-forget; telemetry never delays or
+ * fails a vendor call.
  */
 export async function callConnector<T = any>(req: GatewayRequest): Promise<GatewayResponse<T>> {
+  const startedAt = Date.now()
+  const result = await executeConnector<T>(req)
+  void logApiResponse(req, result, Date.now() - startedAt)
+  return result
+}
+
+async function logApiResponse(req: GatewayRequest, result: GatewayResponse<any>, elapsedMs: number): Promise<void> {
+  try {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+    const endpoint = (req.path ?? "").split("?")[0].slice(0, 300) // never log query strings (keys/PII)
+    await svc.from("api_response_logs").insert({
+      brokerage_id: null, // gateway calls are provider-scoped; tenant attribution lives in vendor_usage metering
+      service_key: req.connector,
+      endpoint,
+      method: req.method ?? (req.body !== undefined ? "POST" : "GET"),
+      response_time_ms: elapsedMs,
+      status_code: result.status,
+      is_error: !result.ok,
+      error_type: result.ok ? null : (result.status == null ? "network_or_timeout" : result.status === 429 ? "rate_limited" : result.status >= 500 ? "provider_error" : "request_rejected"),
+      recorded_at: new Date().toISOString(),
+    })
+  } catch { /* telemetry is best-effort by contract */ }
+}
+
+async function executeConnector<T = any>(req: GatewayRequest): Promise<GatewayResponse<T>> {
   // buildAuthedRequest can throw on malformed baseUrl/path (new URL) — honor the "never throws"
   // contract by surfacing the failure as a structured ok:false instead.
   let url: string, headers: Record<string, string>

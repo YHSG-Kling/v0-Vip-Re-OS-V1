@@ -151,15 +151,40 @@ export async function getListingDetails(contactId: string) {
   }
 
   // Parallel fetches
-  const [metricsResult, engagementResult, priceHistoryResult] = await Promise.all([
+  // listing_engagement was a writer-less legacy table (burn-down round 6 repoint) — the feed is
+  // assembled from the WRITTEN engagement primitives (column usage mirrors lib/listings/listing-metrics-rollup.ts).
+  const [metricsResult, viewsResult, savesResult, inquiriesResult, showingsResult, priceHistoryResult] = await Promise.all([
     supabase
       .from("listing_metrics")
       .select("*")
       .eq("listing_id", listing.id)
       .maybeSingle(),
     supabase
-      .from("listing_engagement")
-      .select("id, event_type:engagement_type, event_date:created_at")
+      .from("property_views")
+      .select("id, first_viewed_at, last_viewed_at")
+      .eq("brokerage_id", access.brokerageId)
+      .eq("property_id", listing.id)
+      .order("last_viewed_at", { ascending: false })
+      .limit(100),
+    supabase
+      .from("saved_properties")
+      .select("id, saved_at")
+      .eq("brokerage_id", access.brokerageId)
+      .eq("listing_id", listing.id)
+      .eq("dismissed", false)
+      .order("saved_at", { ascending: false })
+      .limit(100),
+    supabase
+      .from("listing_inquiries")
+      .select("id, created_at")
+      .eq("brokerage_id", access.brokerageId)
+      .eq("listing_id", listing.id)
+      .order("created_at", { ascending: false })
+      .limit(100),
+    supabase
+      .from("showings")
+      .select("id, created_at, scheduled_at")
+      .eq("brokerage_id", access.brokerageId)
       .eq("listing_id", listing.id)
       .order("created_at", { ascending: false })
       .limit(100),
@@ -170,10 +195,20 @@ export async function getListingDetails(contactId: string) {
       .order("created_at", { ascending: false }),
   ])
 
+  // Merged chronological feed in the legacy {id, event_type, event_date} shape.
+  const engagement = [
+    ...(viewsResult.data ?? []).map((v: any) => ({ id: v.id, event_type: "view", event_date: v.last_viewed_at ?? v.first_viewed_at })),
+    ...(savesResult.data ?? []).map((s: any) => ({ id: s.id, event_type: "save", event_date: s.saved_at })),
+    ...(inquiriesResult.data ?? []).map((i: any) => ({ id: i.id, event_type: "inquiry", event_date: i.created_at })),
+    ...(showingsResult.data ?? []).map((s: any) => ({ id: s.id, event_type: "showing", event_date: s.scheduled_at ?? s.created_at })),
+  ]
+    .sort((a, b) => new Date(b.event_date ?? 0).getTime() - new Date(a.event_date ?? 0).getTime())
+    .slice(0, 100)
+
   return {
     listing,
     metrics: metricsResult.data,
-    engagement: engagementResult.data ?? [],
+    engagement,
     priceHistory: priceHistoryResult.data ?? [],
   }
 }

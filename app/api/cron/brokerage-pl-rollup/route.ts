@@ -171,6 +171,19 @@ export async function GET(req: NextRequest) {
       errors.push(`usage-metering: ${err.message}`)
     }
 
+    // DERIVED INTELLIGENCE SNAPSHOTS — property_smart_insights (DOM/price-cut/
+    // market-position for the winning-offer AI) + team_heatmap_snapshots (geo
+    // activity/revenue for the team heatmap) — both derive from tables this
+    // wagon's sources already write (burn-down round 6).
+    let snapshotRows = 0
+    try {
+      const { runDerivedSnapshots } = await import("@/lib/intelligence/derived-snapshots")
+      const ds = await runDerivedSnapshots(supabase, now)
+      snapshotRows = ds.insightsRows + ds.heatmapRows
+    } catch (err: any) {
+      errors.push(`derived-snapshots: ${err.message}`)
+    }
+
     // SUBSCRIPTION WATCH — the platform's dunning/renewal engine: alert platform staff on every tenant
     // whose subscription needs a human (payment past due / trial expiring), deduped per tenant per day.
     let subscriptionAlerts = 0
@@ -185,10 +198,10 @@ export async function GET(req: NextRequest) {
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: processed,
-      metadata: { month_year: monthYear, teamsWritten, meterRows, subscriptionAlerts, errors: errors.slice(0, 10) },
+      metadata: { month_year: monthYear, teamsWritten, meterRows, snapshotRows, subscriptionAlerts, errors: errors.slice(0, 10) },
     })
 
-    return NextResponse.json({ ok: true, monthYear, processed, teamsWritten, brokerageRowsWritten, meterRows, subscriptionAlerts, errors })
+    return NextResponse.json({ ok: true, monthYear, processed, teamsWritten, brokerageRowsWritten, meterRows, snapshotRows, subscriptionAlerts, errors })
   } catch (err: any) {
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 })

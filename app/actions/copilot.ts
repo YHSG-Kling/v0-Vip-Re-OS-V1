@@ -273,14 +273,28 @@ export async function generateDailyGameplan(userId: string) {
   const gameplanAgentId = (await agentIdForUser(supabase, userId)) ?? userId
 
   // Get hot leads (score > 70)
-  const { data: hotLeads } = await supabase
+  // communications was a writer-less legacy table (burn-down round 6 repoint) — recent replies now read from messages (direction='inbound')
+  const { data: hotLeadRows } = await supabase
     .from("contacts")
-    .select("*, property_interactions(*), communications(*)")
+    .select("*, property_interactions(*)")
     .eq("agent_id", gameplanAgentId)
     .eq("brokerage_id", profile.brokerage_id)
     .gte("lead_score", 70)
     .order("lead_score", { ascending: false })
     .limit(10)
+
+  const hotLeadIds = (hotLeadRows ?? []).map((l: any) => l.id)
+  const { data: hotLeadReplies } = hotLeadIds.length
+    ? await supabase
+        .from("messages")
+        .select("id, contact_id, direction, type, body, created_at")
+        .in("contact_id", hotLeadIds)
+        .eq("direction", "inbound")
+    : { data: [] as any[] }
+  const hotLeads = (hotLeadRows ?? []).map((l: any) => ({
+    ...l,
+    communications: (hotLeadReplies ?? []).filter((m: any) => m.contact_id === l.id),
+  }))
 
   // Get at-risk transactions (overdue or due soon)
   const { data: atRiskDeals } = await supabase
@@ -382,11 +396,18 @@ export async function analyzeContactPriority(contactId: string) {
 
   const { data: contact } = await supabase
     .from("contacts")
-    .select("*, property_interactions(*), communications(*)")
+    .select("*, property_interactions(*)")
     .eq("id", contactId)
     .single()
 
   if (!contact) return { priority: "low", score: 0, factors: [], recommended_action: "Continue nurture" }
+
+  // communications was a writer-less legacy table (burn-down round 6 repoint) — recent replies now read from messages (direction='inbound')
+  const { data: inboundMessages } = await supabase
+    .from("messages")
+    .select("id, direction, created_at")
+    .eq("contact_id", contactId)
+    .eq("direction", "inbound")
 
   let score = contact.lead_score || 0
   const factors = []
@@ -402,8 +423,8 @@ export async function analyzeContactPriority(contactId: string) {
   }
 
   // Responded to agent recently
-  const recentReplies = contact.communications?.filter(
-    (c: any) => c.direction === "inbound" && new Date(c.created_at) > new Date(Date.now() - 3 * 24 * 60 * 60 * 1000),
+  const recentReplies = inboundMessages?.filter(
+    (c: any) => new Date(c.created_at) > new Date(Date.now() - 3 * 24 * 60 * 60 * 1000),
   )
 
   if (recentReplies && recentReplies.length > 0) {

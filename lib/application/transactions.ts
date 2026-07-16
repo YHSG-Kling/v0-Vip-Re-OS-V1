@@ -1673,14 +1673,15 @@ export async function monitorTransactionHealth(transactionId: string) {
   const supabase = await createClient()
   const { data: transaction } = await supabase
     .from("transactions")
-    .select(`*, transaction_milestones(*), communications(*)`)
+    // communications was a writer-less legacy table (burn-down round 6 repoint) — transaction_communications is the WRITTEN per-deal comms log
+    .select(`*, transaction_milestones(*), transaction_communications(*)`)
     .eq("id", transactionId)
     .maybeSingle()
 
   if (!transaction) throw new Error("Transaction not found")
 
   const milestones = transaction.transaction_milestones || []
-  const communications = transaction.communications || []
+  const communications = transaction.transaction_communications || []
 
   const onTrackCount = milestones.filter(
     (m: any) => m.status === "completed" || new Date(m.target_date) > new Date(),
@@ -1689,8 +1690,10 @@ export async function monitorTransactionHealth(transactionId: string) {
     (m: any) => m.status !== "completed" && new Date(m.target_date) < new Date(),
   ).length
 
+  // transaction_communications has no direction column (writer logs agent→client drafts/sends) —
+  // the most recent logged comm stands in for the last client touch.
   const lastClientComm = communications
-    .filter((c: any) => c.direction === "inbound")
+    .slice()
     .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
 
   const daysUntilClose = transaction.close_date

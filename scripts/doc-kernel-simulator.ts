@@ -1988,8 +1988,11 @@ async function main() {
       check("BURN-DOWN ROUND 5 (18 → 10) — approved 1 (with owner semantics), 2, 3. INTELLIGENCE INGRESS: runContentIntelScan (daily cron, EXA_API_KEY-gated) walks the competitor_brokerages watchlist and writes competitor_content — ORGANIC facebook/instagram posts AND Facebook Ad Library rows (content_type 'ad') per the owner's 'what content is getting the most interaction' (Exa citation ranking IS the interaction proxy; hard like counts stay honest-NULL — no platform auth, never invented); each watchlist entry ensures its competitor_profiles twin (ALSO writer-less — the reader INNER-joins it, so content rows without profiles were silently dropped). keyword_intelligence = 'popular content search for a niche': per content-category niche + brokerage market, Exa's popular-now results land as 'rising' keywords (the reader's filter) with 7-day TTL; search_volume_monthly honest-NULL (no SEO provider). newsletter_local_content: fetchLocalNews now LIVE-fetches NewsAPI through the connector gateway when the pool runs thin; rows persist ONLY attached to the campaign that used them (newsletter_id NOT NULL, live FK → newsletter_campaigns) via recordNewsletterLocalContent at wizard submit. lender_applications = THE LENDER'S APPLICATION LINK (l72_s12 application_url) recorded from the lender portal with the live 11-status lifecycle; title_orders = THE TITLE SEARCH RESULTS (l72_s12 search_result jsonb; clear/issue statuses) — and the /title/orders/new page was a setTimeout STUB pretending to save, now a real writer. subscriber_service_areas = ACTIVE SUBSCRIBER TERRITORIES FEEDING THE SCRAPERS: every lead_scraping_markets create/update syncs a per-zip territory claim (delete deactivates, history kept) — the platform lead-distribution rotation and the scraper work-list share one enrollment. REVENUE-SHARE TREE (2): provisioning a 'joined' recruit with a recruiter_agent_id plants the agent_relationships sponsor edge (UNIQUE(agent,brokerage,type) upsert, depth = sponsor's depth + 1, brokerage-funded 5%) — the waterfall's residual step and the revenue-share board finally have a tree. PERSONA-AT-ENRICHMENT (3): the enrichment orchestrator's post-enrichment hook builds client_detailed_personas from VERIFIED PeopleData facts only (demographics/psychographics/triggers/pains + a routed-AI summary grounded in those facts with a deterministic fallback; check-then-update, one persona per contact) — lead scoring, open-house follow-up and persona-aware content stop reading empty. All shapes live-fired (jsonb trigger arrays, sponsor chain depth, reader predicates), residue 0",
         src("lib/competitive-intel/content-intel-scan.ts").includes("runContentIntelScan")
         && src("lib/competitive-intel/content-intel-scan.ts").includes("ensureCompetitorProfile")
-        && src("lib/competitive-intel/content-intel-scan.ts").includes('trend_direction: "rising"')
-        && src("lib/competitive-intel/content-intel-scan.ts").includes("search_volume_monthly: null")
+        // (round 6 evolved the keyword lane: trend now DERIVES from two-window
+        // publish-rate acceleration and volume carries the documented platform
+        // interest index — the round-6 lock asserts the new shape.)
+        && src("lib/competitive-intel/content-intel-scan.ts").includes("trend_direction: direction")
+        && src("lib/competitive-intel/content-intel-scan.ts").includes("search_volume_monthly: interestIndex")
         && src("app/api/cron/content-intel-scan/route.ts").includes("runContentIntelScan")
         && src("app/actions/newsletter/fetch-local-news.ts").includes("recordNewsletterLocalContent")
         && src("app/actions/newsletter/fetch-local-news.ts").includes("callConnector")
@@ -2007,6 +2010,35 @@ async function main() {
         && src("lib/contacts/persona-builder.ts").includes("buildContactPersona")
         && src("lib/lead-pipeline/enrichment-orchestrator.ts").includes("buildContactPersona")
         && baseline5.length <= 10)
+    }
+    // ── BURN-DOWN ROUND 6 (10 → 0): THE BURN IS FINISHED + DAY-ONE INTELLIGENCE + CREATIVE PLAYBOOKS ──
+    {
+      const baseline6 = JSON.parse(src("scripts/writerless-read-baseline.json")) as string[]
+      check("BURN-DOWN COMPLETE (10 → 0) + OWNER DIRECTIVES. Every table the app reads now has a runtime writer or a recorded keep-one verdict — the drift class that started this campaign is EXTINCT and the sweep guards it at zero forever. DAY-ONE KEYWORD INTELLIGENCE (owner: 'use a search provider we already have'): no new SEO vendor — the SAME Exa key runs each niche query over TWO windows (30d vs 180d); publish-rate acceleration derives trend_direction/trend_change_pct honestly, distinct publishing domains derive competition_score, and search_volume_monthly carries a documented PLATFORM INTEREST INDEX (0-100 from citation scores) — real provider data, never claimed to be Google volume. LOCAL NEWS KEY CASCADE (owner: user-connected unless platform-licensed): tenant integration_credentials 'newsapi' key wins; the platform env key is the fallback and the code documents it must hold a SaaS-licensed (Business-tier) key; no key at all degrades honestly to the pool. CREATIVE CAMPAIGN PLAYBOOKS (owner's Zestimate flagship): a CODE-VERSIONED catalog (lib/marketing/creative-playbooks — reviewed like code, no parallel table to drift) of SIX strategic plays that ride popular consumer surfaces — THE ZESTIMATE CHALLENGE ('Do you agree with what Zillow gave you?' postcard + tracked QR → the agent's home-value capture page with the video slot for the 'why you can't trust the online number' presentation), Neighbor Brag, Rate-Drop Wake-Up, Anniversary Equity Reveal, Neighbor-First Open House, Expired Second Opinion; ONE CLICK instantiates through the EXISTING governed rails (createLeadMagnet → /lm/slug, createQrCodeAction, upsertCampaignPreset + upsertDirectMailPreset — both compliance-gated at save — upsertCampaignBundle) and NOTHING sends without the existing dispatch gates; installed from a Strategy Playbooks section on the bundle builder. FINAL BURN BUILDS: api_response_logs writes from THE gateway itself (the single egress choke measures every call's latency/status; query strings never logged), ai_subscription_tier syncs on tier change (the admin AI entitlement gate could never pass before), property_smart_insights + team_heatmap_snapshots derive nightly from tables we already write (TWO more live CHECK vocabularies caught by fire: market_position speaks hot/…/slow from DOM pace; heatmap activity_type speaks listing/buyer/closed/lead), document_checklist recomputes at the auto-filer choke, video_streaming_status reads consolidated onto ai_video_projects.provider_status (keep-one), and the four last repoints landed (communications→messages+isa_outreach_log+transaction_communications, lead_conversation_history→messages, listing_engagement→the four written engagement primitives, organization_members→team_members+users). All new shapes live-fired, residue 0",
+        baseline6.length === 0
+        && src("lib/competitive-intel/content-intel-scan.ts").includes("interestIndex")
+        && src("lib/competitive-intel/content-intel-scan.ts").includes("withinDays: 180")
+        && src("lib/competitive-intel/content-intel-scan.ts").includes("distinctDomains")
+        && src("app/actions/newsletter/fetch-local-news.ts").includes("resolveNewsApiKey")
+        && src("app/actions/newsletter/fetch-local-news.ts").includes("'newsapi'")
+        && src("lib/marketing/creative-playbooks.ts").includes("zestimate_challenge")
+        && src("lib/marketing/creative-playbooks.ts").includes("Do you agree with what Zillow says your home is worth?")
+        && src("app/actions/creative-playbooks.ts").includes("installCreativePlaybook")
+        && src("app/actions/creative-playbooks.ts").includes("createLeadMagnet")
+        && src("app/actions/creative-playbooks.ts").includes("createQrCodeAction")
+        && src("app/actions/creative-playbooks.ts").includes("upsertDirectMailPreset")
+        && src("app/settings/campaign-bundles/client.tsx").includes("Strategy playbooks")
+        && src("lib/agentic-os/connector-gateway.ts").includes("logApiResponse")
+        && src("lib/agentic-os/connector-gateway.ts").includes('from("api_response_logs")')
+        && src("app/actions/superadmin/brokerage-management.ts").includes("ai_subscription_tier")
+        && src("lib/intelligence/derived-snapshots.ts").includes("runDerivedSnapshots")
+        && src("lib/intelligence/derived-snapshots.ts").includes('"hot"')
+        && src("lib/intelligence/derived-snapshots.ts").includes('"closed"')
+        && src("app/api/cron/brokerage-pl-rollup/route.ts").includes("runDerivedSnapshots")
+        && src("lib/documents/auto-filer.ts").includes("recomputeDocumentChecklist")
+        && !src("app/dashboard/videos/board/page.tsx").includes('from("video_streaming_status")')
+        && src("app/actions/ai-chat.ts").includes('from("messages")')
+        && src("app/actions/link-to-video.ts").includes("team_members"))
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

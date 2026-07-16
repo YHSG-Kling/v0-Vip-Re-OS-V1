@@ -414,18 +414,42 @@ export async function getUserOrganizations(_userId?: string) {
   const supabase = createServiceClient()
 
   try {
-    const { data, error } = await supabase
-      .from("organization_members")
-      .select("organization_id, organization_type, brokerages(id, name), teams(id, name)")
+    // organization_members was a writer-less legacy table (burn-down round 6 repoint) — orgs are
+    // rebuilt from users.brokerage_id (brokerage org) + team_members via the user's agents row (team orgs).
+    const orgs: Array<{ id: string; name: string; type: "brokerage" | "team" }> = []
+
+    const { data: brokerage } = await supabase
+      .from("brokerages")
+      .select("id, name")
+      .eq("id", auth.brokerageId)
+      .maybeSingle()
+    if (brokerage) orgs.push({ id: brokerage.id as string, name: (brokerage.name as string) ?? "Unknown", type: "brokerage" })
+
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("id")
       .eq("user_id", auth.userId)
+      .maybeSingle()
+    if (agentRow?.id) {
+      const { data: memberships } = await supabase
+        .from("team_members")
+        .select("team_id")
+        .eq("agent_id", agentRow.id)
+        .eq("is_active", true)
+      const teamIds = [...new Set((memberships ?? []).map((m: any) => m.team_id).filter(Boolean))]
+      if (teamIds.length) {
+        const { data: teams } = await supabase
+          .from("teams")
+          .select("id, name")
+          .in("id", teamIds)
+          .is("deleted_at", null)
+        for (const t of teams ?? []) {
+          orgs.push({ id: t.id as string, name: (t.name as string) ?? "Unknown", type: "team" })
+        }
+      }
+    }
 
-    if (error) throw error
-
-    return (data || []).map((item) => ({
-      id: item.organization_id,
-      name: (item.brokerages as any)?.[0]?.name ?? (item.brokerages as any)?.name ?? (item.teams as any)?.[0]?.name ?? (item.teams as any)?.name ?? "Unknown",
-      type: item.organization_type,
-    }))
+    return orgs
   } catch (error) {
     console.error("[link-to-video] Get user organizations error:", error)
     return []

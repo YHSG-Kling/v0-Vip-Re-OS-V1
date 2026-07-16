@@ -694,14 +694,17 @@ export async function endChatSession(sessionId: string) {
 export async function searchConversationHistory(leadId: string, searchTerm?: string) {
   const supabase = await createClient()
 
+  // lead_conversation_history was a writer-less legacy table (burn-down round 6 repoint) — messages
+  // is the written store. In this file the "lead id" IS the contacts.id (see createChatSession which
+  // does contacts.eq("id", data.leadId)); occurred_at→created_at, message_content→body.
   let query = supabase
-    .from("lead_conversation_history")
+    .from("messages")
     .select("*")
-    .eq("lead_id", leadId)
-    .order("occurred_at", { ascending: false })
+    .eq("contact_id", leadId)
+    .order("created_at", { ascending: false })
 
   if (searchTerm) {
-    query = query.ilike("message_content", `%${searchTerm}%`)
+    query = query.ilike("body", `%${searchTerm}%`)
   }
 
   const { data, error } = await query.limit(50)

@@ -79,6 +79,7 @@ export async function autoFileDocument(
       }
     }
 
+    if (doc.transaction_id) await recomputeDocumentChecklist(supabase, doc.transaction_id, brokerageId)
     return { success: true, routed: true, docType: bestMatch.doc_type }
   }
 
@@ -87,7 +88,49 @@ export async function autoFileDocument(
     .update({ status: "under_review" })
     .eq("id", transactionDocId)
 
+  if (doc.transaction_id) await recomputeDocumentChecklist(supabase, doc.transaction_id, brokerageId)
   return { success: true, routed: false }
+}
+
+/**
+ * DOCUMENT CHECKLIST AGGREGATE (burn-down round 6): the client portal's
+ * documents view reads document_checklist — a per-transaction rollup nothing
+ * maintained. The auto-filer is where every document's status lands, so the
+ * rollup recomputes here from the SAME transaction_documents truth: total,
+ * approved count, and overall status. Check-then-update (no unique index on
+ * transaction_id, live pattern); best-effort — never blocks filing.
+ */
+export async function recomputeDocumentChecklist(
+  supabase: { from: (t: string) => any },
+  transactionId: string,
+  brokerageId: string | null,
+): Promise<void> {
+  try {
+    const { data: docs } = await supabase
+      .from("transaction_documents")
+      .select("id, doc_type, status")
+      .eq("transaction_id", transactionId)
+      .limit(500)
+    const all = (docs ?? []) as Array<{ doc_type: string | null; status: string | null }>
+    const total = all.length
+    const verified = all.filter((d) => d.status === "approved").length
+    const required = Array.from(new Set(all.map((d) => d.doc_type).filter(Boolean)))
+    const status = total === 0 ? "pending" : verified === total ? "complete" : "in_progress"
+
+    const { data: existing } = await supabase
+      .from("document_checklist").select("id").eq("transaction_id", transactionId).maybeSingle()
+    const row = {
+      transaction_id: transactionId,
+      brokerage_id: brokerageId,
+      required_documents: required,
+      verified_count: verified,
+      total_count: total,
+      status,
+      updated_at: new Date().toISOString(),
+    }
+    if (existing) await supabase.from("document_checklist").update(row).eq("id", (existing as any).id)
+    else await supabase.from("document_checklist").insert(row)
+  } catch { /* the checklist is an aggregate — filing already succeeded */ }
 }
 
 /**

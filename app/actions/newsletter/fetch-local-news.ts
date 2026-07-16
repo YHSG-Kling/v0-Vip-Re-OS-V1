@@ -4,11 +4,26 @@ import { createClient } from '@/lib/supabase/server'
 
 const NEWSAPI_KEY = process.env.NEWSAPI_KEY
 
-export async function fetchLocalNews(zipCodes: string[], limit: number = 10) {
-  if (!NEWSAPI_KEY) {
-    throw new Error('NewsAPI key not configured')
-  }
+/**
+ * NewsAPI key cascade (owner directive): the tenant's OWN connected key wins
+ * (integration_credentials provider 'newsapi' — free/dev keys are licensed to
+ * the tenant themselves), falling back to the PLATFORM key only when one is
+ * configured — which requires a NewsAPI plan that permits SaaS redistribution
+ * (their Business tier); the free tier does NOT, so the platform env key must
+ * only ever hold a commercially-licensed key.
+ */
+async function resolveNewsApiKey(supabase: Awaited<ReturnType<typeof createClient>>, brokerageId: string): Promise<string | null> {
+  const { data: cred } = await supabase
+    .from('integration_credentials')
+    .select('api_key')
+    .eq('brokerage_id', brokerageId)
+    .eq('provider_name', 'newsapi')
+    .eq('is_active', true)
+    .maybeSingle()
+  return (cred?.api_key as string | undefined) || NEWSAPI_KEY || null
+}
 
+export async function fetchLocalNews(zipCodes: string[], limit: number = 10) {
   const supabase = await createClient()
 
   const {
@@ -23,6 +38,10 @@ export async function fetchLocalNews(zipCodes: string[], limit: number = 10) {
     .single()
 
   if (!userData?.brokerage_id) throw new Error('User has no brokerage assigned')
+
+  // Tenant key first, licensed platform key as fallback. No key at all →
+  // the pool still works (honest degradation, no hard error at page load).
+  const apiKey = await resolveNewsApiKey(supabase, userData.brokerage_id)
 
   // Fetch existing local content
   const { data: existingContent, error: fetchError } = await supabase
@@ -45,6 +64,7 @@ export async function fetchLocalNews(zipCodes: string[], limit: number = 10) {
   // Live rows are returned UNPERSISTED (newsletter_local_content.newsletter_id
   // is NOT NULL — rows are recorded when the newsletter that USES them is
   // created, via recordNewsletterLocalContent below).
+  if (!apiKey) return pool // no tenant key + no licensed platform key — pool only
   try {
     const { data: source } = await supabase
       .from('local_news_sources')
@@ -62,7 +82,7 @@ export async function fetchLocalNews(zipCodes: string[], limit: number = 10) {
       baseUrl: 'https://newsapi.org',
       path: `/v2/everything?q=${encodeURIComponent(`"${market}" AND (real estate OR housing OR home prices)`)}&language=en&sortBy=publishedAt&pageSize=${Math.min(limit, 20)}`,
       method: 'GET',
-      auth: { style: 'header', name: 'X-Api-Key', value: NEWSAPI_KEY },
+      auth: { style: 'header', name: 'X-Api-Key', value: apiKey },
     })
     const articles = res.ok ? (res.data?.articles ?? []) : []
     const live = articles

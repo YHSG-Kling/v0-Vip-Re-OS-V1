@@ -1,12 +1,1 @@
-[
-  "ai_subscription_tier",
-  "api_response_logs",
-  "communications",
-  "document_checklist",
-  "lead_conversation_history",
-  "listing_engagement",
-  "organization_members",
-  "property_smart_insights",
-  "team_heatmap_snapshots",
-  "video_streaming_status"
-]
+[]

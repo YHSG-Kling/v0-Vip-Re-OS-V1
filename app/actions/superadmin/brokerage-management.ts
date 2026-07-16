@@ -239,6 +239,31 @@ export async function changeBrokerageTierAction(params: {
     stripeApplied = r.applied
   }
 
+  // AI ENTITLEMENT ROW (burn-down round 6): lib/security/authorization.ts gates
+  // admin AI operations on ai_subscription_tier — writer-less, so NO admin
+  // could ever pass the entitlement check. Tier changes keep it in lockstep:
+  // one active row per brokerage, admin_user_id = the brokerage's admin/broker.
+  try {
+    const { data: adminUser } = await svc
+      .from("users").select("id").eq("brokerage_id", params.brokerageId)
+      .in("user_type", ["broker", "admin", "broker_owner"])
+      .order("created_at", { ascending: true }).limit(1).maybeSingle()
+    if (adminUser) {
+      const { data: existingTier } = await svc
+        .from("ai_subscription_tier").select("id").eq("brokerage_id", params.brokerageId).maybeSingle()
+      const tierRowPayload = {
+        brokerage_id: params.brokerageId,
+        tier_name: params.newTier,
+        is_active: true,
+        admin_user_id: (adminUser as any).id,
+        subscribed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+      if (existingTier) await svc.from("ai_subscription_tier").update(tierRowPayload).eq("id", (existingTier as any).id)
+      else await svc.from("ai_subscription_tier").insert(tierRowPayload)
+    }
+  } catch { /* entitlement sync is best-effort — the audit log below is the record */ }
+
   await writeAuditLog({
     actorUserId: auth.userId,
     actorEmail:  auth.email,

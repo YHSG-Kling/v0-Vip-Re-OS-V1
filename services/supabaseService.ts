@@ -1159,14 +1159,29 @@ export const supabaseService = {
   async getListingEngagement(listingId: string) {
     try {
       const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase
-        .from("listing_engagement")
-        .select("*, contacts(*)")
-        .eq("listing_id", listingId)
-        .order("created_at", { ascending: false })
+      // listing_engagement was a writer-less legacy table (burn-down round 6 repoint) — the feed is
+      // assembled from the WRITTEN engagement primitives (column usage mirrors lib/listings/listing-metrics-rollup.ts).
+      const [views, saves, inquiries, showings] = await Promise.all([
+        supabase.from("property_views").select("*").eq("property_id", listingId),
+        supabase.from("saved_properties").select("*").eq("listing_id", listingId).eq("dismissed", false),
+        supabase.from("listing_inquiries").select("*").eq("listing_id", listingId),
+        supabase.from("showings").select("*").eq("listing_id", listingId),
+      ])
 
-      if (error) throw error
-      return data || []
+      const rows = [
+        ...(views.data ?? []).map((r: any) => ({ ...r, engagement_type: "view", created_at: r.last_viewed_at ?? r.first_viewed_at ?? null })),
+        ...(saves.data ?? []).map((r: any) => ({ ...r, engagement_type: "save", created_at: r.saved_at ?? null })),
+        ...(inquiries.data ?? []).map((r: any) => ({ ...r, engagement_type: "inquiry" })),
+        ...(showings.data ?? []).map((r: any) => ({ ...r, engagement_type: "showing" })),
+      ].sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime())
+
+      // Preserve the old "*, contacts(*)" shape: attach the contact row where the primitive carries contact_id.
+      const contactIds = [...new Set(rows.map((r: any) => r.contact_id).filter(Boolean))]
+      const { data: contactRows } = contactIds.length
+        ? await supabase.from("contacts").select("*").in("id", contactIds)
+        : { data: [] as any[] }
+      const contactById = new Map((contactRows ?? []).map((c: any) => [c.id, c]))
+      return rows.map((r: any) => ({ ...r, contacts: r.contact_id ? (contactById.get(r.contact_id) ?? null) : null }))
     } catch (error) {
       console.error("[Supabase Service] Error fetching listing engagement:", error)
       return []
