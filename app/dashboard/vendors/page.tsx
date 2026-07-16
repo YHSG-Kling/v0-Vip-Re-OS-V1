@@ -62,9 +62,9 @@ export default async function VendorsPage() {
       .limit(50)
       .then(r => r.data || []),
     getAgentAssignedVendors(50),
-    // vendor_directory has: id, brokerage_id, name, phone, email, website, category, notes, rating
+    // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
     supabase
-      .from("vendor_directory")
+      .from("vendors")
       .select("id, name, phone, email, website, category, notes, rating, brokerage_id")
       .eq("brokerage_id", profile.brokerage_id)
       .order("rating", { ascending: false, nullsFirst: false })

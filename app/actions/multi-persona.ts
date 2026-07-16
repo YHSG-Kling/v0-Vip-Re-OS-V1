@@ -179,10 +179,9 @@ export async function getVendorDirectory(filters?: {
 }) {
   const supabase = await createClient()
 
-  // vendor_directory schema: id, brokerage_id, name, category, phone, email, website,
-  // rating, preferred, notes, created_at
-  // No vendor_type or service_areas columns — use category and preferred instead
-  let query = supabase.from("vendor_directory").select("*")
+  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
+  // vendors schema: id, brokerage_id, name, category, phone, email, website, rating, notes, status, created_at
+  let query = supabase.from("vendors").select("*")
 
   if (filters?.vendorType) {
     query = query.eq("category", filters.vendorType)
@@ -1425,25 +1424,16 @@ export async function matchVendorToTransaction(data: {
 }) {
   const supabase = await createClient()
 
-  // vendor_directory schema: id, brokerage_id, name, category, phone, email,
-  // website, rating, preferred, notes, created_at
-  // No service_areas or vendor_type columns — use category and brokerage_id
+  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
+  // No `preferred` column on vendors — rating is the only real ranking signal.
   const { data: vendors } = await supabase
-    .from("vendor_directory")
+    .from("vendors")
     .select("*")
     .eq("brokerage_id", data.brokerageId)
     .eq("category", data.serviceType)
     .gte("rating", 4.0)
 
-  const sorted = vendors?.sort((a, b) => {
-    if (data.urgency === "urgent") {
-      // Prefer preferred vendors first, then by rating
-      if (a.preferred !== b.preferred)
-        return a.preferred ? -1 : 1
-      return (b.rating || 0) - (a.rating || 0)
-    }
-    return (b.rating || 0) - (a.rating || 0)
-  })
+  const sorted = vendors?.sort((a, b) => (b.rating || 0) - (a.rating || 0))
 
   return sorted?.[0] || null
 }
@@ -1455,8 +1445,9 @@ export async function checkVendorAvailability(data: {
 }) {
   const supabase = await createClient()
 
+  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
   const { data: vendors } = await supabase
-    .from("vendor_directory")
+    .from("vendors")
     .select("*")
     .eq("brokerage_id", data.brokerageId)
     .eq("category", data.vendorType)

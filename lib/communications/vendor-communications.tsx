@@ -22,9 +22,10 @@ export async function sendVendorBookingConfirmation(params: {
 
     const supabase = await createClient()
 
-    // Get vendor and property details
+    // Get vendor and property details — vendors replaced vendor_directory — vendor_directory
+    // was a writer-less legacy twin (burn-down round 4 repoint); bookings' vendor_id FKs vendors.id
     const { data: vendor } = await supabase
-      .from("vendor_directory")
+      .from("vendors")
       .select("name")
       .eq("id", params.vendorId)
       .single()
@@ -102,9 +103,12 @@ export async function sendVendorServiceReminder(params: {
 
     const supabase = await createClient()
 
+    // Live FK: listing_marketing_services.vendor_id → vendors(id) — the old
+    // vendor_directory embed had no FK to resolve, so PostgREST errored this
+    // whole select and the reminder could never send (round-4 repoint).
     const { data: service } = await supabase
       .from("listing_marketing_services")
-      .select("*, vendor_directory(*), transactions(*, listings(*))")
+      .select("*, vendors(*), transactions(*, listings(*))")
       .eq("id", params.serviceId)
       .single()
 
@@ -112,7 +116,7 @@ export async function sendVendorServiceReminder(params: {
       return { success: false, error: "Service not found" }
     }
 
-    const vendor = service.vendor_directory
+    const vendor = service.vendors
     const property = service.transactions?.listings
 
     const emailHtml = `

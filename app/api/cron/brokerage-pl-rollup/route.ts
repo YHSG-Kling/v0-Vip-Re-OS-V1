@@ -158,6 +158,19 @@ export async function GET(req: NextRequest) {
       errors.push(`brokerage-earnings: ${err.message}`)
     }
 
+    // USAGE METERING — folds the raw usage streams (usage_events / usage_logs /
+    // ai_tool_usage) into meter_readings + cost_allocation, the two derived
+    // tables the Billing Admin usage dashboard reads (writer-less until now —
+    // the meter cards and 6-month trend chart rendered empty forever).
+    let meterRows = 0
+    try {
+      const { runUsageMeteringRollup } = await import("@/lib/finance/usage-metering")
+      const um = await runUsageMeteringRollup(supabase, now)
+      meterRows = um.meterRows + um.allocationRows
+    } catch (err: any) {
+      errors.push(`usage-metering: ${err.message}`)
+    }
+
     // SUBSCRIPTION WATCH — the platform's dunning/renewal engine: alert platform staff on every tenant
     // whose subscription needs a human (payment past due / trial expiring), deduped per tenant per day.
     let subscriptionAlerts = 0
@@ -172,10 +185,10 @@ export async function GET(req: NextRequest) {
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: processed,
-      metadata: { month_year: monthYear, teamsWritten, subscriptionAlerts, errors: errors.slice(0, 10) },
+      metadata: { month_year: monthYear, teamsWritten, meterRows, subscriptionAlerts, errors: errors.slice(0, 10) },
     })
 
-    return NextResponse.json({ ok: true, monthYear, processed, teamsWritten, subscriptionAlerts, errors })
+    return NextResponse.json({ ok: true, monthYear, processed, teamsWritten, brokerageRowsWritten, meterRows, subscriptionAlerts, errors })
   } catch (err: any) {
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 })

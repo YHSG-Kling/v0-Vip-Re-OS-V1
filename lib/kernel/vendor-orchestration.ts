@@ -271,13 +271,13 @@ export async function runVendorOrchestration(
     .not("status", "in", "(pending,inactive,archived)").limit(500)
   const bench: BenchVendor[] = (benchRows ?? []) as BenchVendor[]
 
-  // PREFERENCE SOURCE OF TRUTH — the broker's `preferred` choices live in vendor_directory, not on the
-  // `vendors` bench. Resolve them to bench ids so ranking is genuinely preference-first (closes the
-  // drift where the orchestrator's documented promise was inert because it read the wrong table).
-  const { data: dirRows } = await supabase.from("vendor_directory")
-    .select("name, category, preferred")
-    .eq("brokerage_id", brokerageId).eq("preferred", true).limit(500)
-  const preferredVendorIds = resolvePreferredVendorIds(bench, (dirRows ?? []) as DirectoryPref[])
+  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
+  // vendors has no `preferred` flag; explicit broker approval (status='active', set only by approveVendor) is the
+  // closest real flag, so explicitly-approved vendors rank ahead of legacy null-status bench rows.
+  const { data: dirRows } = await supabase.from("vendors")
+    .select("id")
+    .eq("brokerage_id", brokerageId).eq("status", "active").limit(500)
+  const preferredVendorIds = new Set<string>(((dirRows ?? []) as Array<{ id: string }>).map((r) => r.id))
 
   // OUTCOME AWARENESS — a proven SLA breacher (repeatedly late or a no-show) is auto-demoted so the
   // orchestrator stops auto-picking someone who keeps failing. Reliability = on-time completions +

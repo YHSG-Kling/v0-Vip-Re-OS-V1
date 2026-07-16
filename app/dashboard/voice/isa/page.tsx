@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { getAIISASettings } from "@/app/actions/ai-isa-settings"
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -211,16 +212,23 @@ export default async function VoiceISAPage() {
     .eq("agent_id", agentId)
     .maybeSingle()
 
-  // Fetch AI-ISA settings to determine VAPI configuration state and broker approval
-  const { data: isaSettings } = await supabase
-    .from("ai_isa_settings")
-    .select("vapi_assistant_id, is_active, require_broker_approval")
+  // ai_isa_settings was a writer-less legacy twin (burn-down round 4 repoint):
+  // vapi_assistant_id lives on ai_identity_profiles (written by lib/voice/vapi-numbers.ts,
+  // read back by lib/ai-isa/build-call-context.ts) and the ISA enabled toggle lives in
+  // global_settings.additional_settings->ai_isa_settings (app/actions/ai-isa-settings.ts).
+  const { data: identityProfiles } = await supabase
+    .from("ai_identity_profiles")
+    .select("vapi_assistant_id")
     .eq("brokerage_id", brokerageId)
-    .maybeSingle()
+    .eq("active", true)
+    .not("vapi_assistant_id", "is", null)
+    .limit(1)
 
-  const vapiConfigured = !!isaSettings?.vapi_assistant_id
-  const isaActive      = isaSettings?.is_active ?? false
-  const requiresBrokerApproval = isaSettings?.require_broker_approval ?? false
+  const vapiConfigured = !!identityProfiles?.[0]?.vapi_assistant_id
+  const isaActive      = brokerageId ? (await getAIISASettings(brokerageId)).enabled : false
+  // require_broker_approval has no real store (it existed only on the phantom ai_isa_settings
+  // table, which was never written) — its effective value was always the `?? false` fallback.
+  const requiresBrokerApproval = false
 
   return (
     <div className="flex flex-col gap-4 sm:gap-6 p-4 sm:p-6">

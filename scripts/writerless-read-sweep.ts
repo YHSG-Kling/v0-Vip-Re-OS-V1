@@ -64,6 +64,8 @@ const VARIABLE_TABLE_WRITERS: Record<string, string> = {
   portal_push_presets: "app/actions/campaign-presets.ts (CHANNEL_TABLE)",
   podcast_episode_presets: "app/actions/campaign-presets.ts (CHANNEL_TABLE)",
   ad_retarget_presets: "app/actions/campaign-presets.ts (CHANNEL_TABLE)",
+  newsletter_cadence_policy: "app/actions/marketing-cadence-policy.ts (CHANNEL_TABLE upsert)",
+  social_cadence_policy: "app/actions/marketing-cadence-policy.ts (CHANNEL_TABLE upsert)",
 }
 
 function walk(dir: string, acc: string[]) {

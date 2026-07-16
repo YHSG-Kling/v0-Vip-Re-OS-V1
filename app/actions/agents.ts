@@ -335,6 +335,21 @@ export async function addAgentCommission(commissionData: {
     return { error: error.message }
   }
 
+  // Splits ledger row alongside the commission (burn-down round 4 — the agent
+  // financials page reads commission_splits). Same numbers, same lifecycle.
+  const { data: agentRow } = await supabase
+    .from("agents").select("brokerage_id").eq("id", commissionData.agent_id).maybeSingle()
+  await supabase.from("commission_splits").insert({
+    agent_id: commissionData.agent_id,
+    brokerage_id: agentRow?.brokerage_id ?? null,
+    transaction_id: commissionData.transaction_id,
+    commission_id: data.id,
+    agent_amount: agentCommission,
+    brokerage_amount: brokerageCommission,
+    status: "pending",
+    metadata: { agent_split_percent: commissionData.agent_split_percent, side: commissionData.side },
+  })
+
   // Update agent YTD stats
   await updateAgentYTDStats(commissionData.agent_id)
 

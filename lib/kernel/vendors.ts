@@ -319,8 +319,9 @@ export async function loadVendorWorkspace(
       .eq("brokerage_id", brokerageId)
       .order("booked_at", { ascending: false })
       .limit(50),
+    // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
     supabase
-      .from("vendor_directory")
+      .from("vendors")
       .select("id, name, category, phone, email, website, notes, rating, brokerage_id")
       .eq("brokerage_id", brokerageId)
       .order("rating", { ascending: false, nullsFirst: false }),
@@ -848,8 +849,9 @@ export async function loadPartnerDirectory(
   const supabase = createServiceClient()
 
   const [directoryRes, preferredRes, referralRes] = await Promise.all([
+    // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
     supabase
-      .from("vendor_directory")
+      .from("vendors")
       .select("id, name, category, phone, email, website, notes, rating, brokerage_id")
       .eq("brokerage_id", brokerageId)
       .order("rating", { ascending: false, nullsFirst: false }),

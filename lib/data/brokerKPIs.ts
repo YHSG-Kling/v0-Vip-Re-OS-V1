@@ -101,12 +101,15 @@ export async function getAgentPerformance(brokerageId: string, timeRange = "30d"
   else if (timeRange === "30d") startDate.setDate(now.getDate() - 30)
   else if (timeRange === "90d") startDate.setDate(now.getDate() - 90)
 
-  // Get all agents in the brokerage
+  // Get all agents in the brokerage — agents table replaced user_brokerage_roles —
+  // user_brokerage_roles was a writer-less legacy twin (burn-down round 4 repoint).
+  // contacts.agent_id / listings.agent_id key on agents.id, so the canonical agents
+  // roster (the same pattern other broker dashboards use) is the clean 1:1 here.
   const { data: agents, error: agentsError } = await supabase
-    .from("user_brokerage_roles")
-    .select("user_id")
+    .from("agents")
+    .select("id, user_id, users(first_name, last_name, email)")
     .eq("brokerage_id", brokerageId)
-    .eq("roles.name", "Agent")
+    .eq("is_active", true)
 
   if (agentsError || !agents) {
     console.error("Error fetching agents:", agentsError)
@@ -117,7 +120,7 @@ export async function getAgentPerformance(brokerageId: string, timeRange = "30d"
   const performance: AgentPerformance[] = []
 
   for (const agent of agents) {
-    const agentId = agent.user_id
+    const agentId = agent.id
 
     // New leads
     const { data: leads } = await supabase
@@ -156,9 +159,10 @@ export async function getAgentPerformance(brokerageId: string, timeRange = "30d"
         return sum + listing.list_price * (listing.commission_rate || 0.03)
       }, 0) || 0
 
+    const agentUser = Array.isArray((agent as any).users) ? (agent as any).users[0] : (agent as any).users
     const agentName =
-      (agent as any).users?.raw_user_meta_data?.full_name ||
-      (agent as any).users?.email?.split("@")[0] ||
+      [agentUser?.first_name, agentUser?.last_name].filter(Boolean).join(" ") ||
+      agentUser?.email?.split("@")[0] ||
       "Unknown Agent"
 
     performance.push({

@@ -711,6 +711,9 @@ export async function markCommissionApproved(
       .update({ status: newStatus, approved_at: approvedAt, approved_by: approvedBy })
       .eq("id", commissionId)
 
+    // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
+    await supabase.from("commission_splits").update({ status: "approved", updated_at: approvedAt }).eq("commission_id", commissionId)
+
     // Emit lifecycle event
     await supabase
       .from("lifecycle_events")
@@ -774,6 +777,9 @@ export async function markCommissionPaid(
       .from("agent_commissions")
       .update({ status: newStatus, paid_at: paidAt, payment_method: method ?? null })
       .eq("id", commissionId)
+
+    // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
+    await supabase.from("commission_splits").update({ status: "paid", paid_at: paidAt, updated_at: paidAt }).eq("commission_id", commissionId)
 
     // Emit lifecycle event
     await supabase
@@ -880,6 +886,9 @@ export async function markCommissionDisputed(input: {
       .update({ status: "disputed", dispute_reason: trimmed, disputed_at: now, disputed_by: ctx.userId, dispute_resolution: null, dispute_resolved_at: null, updated_at: now })
       .eq("id", commissionId)
 
+    // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
+    await supabase.from("commission_splits").update({ status: "disputed", updated_at: now }).eq("commission_id", commissionId)
+
     await supabase.from("lifecycle_events").insert({
       brokerage_id: brokerageId, // NOT NULL (pass 5)
       entity_type: "agent_commission", entity_id: commissionId,
@@ -936,6 +945,9 @@ export async function resolveCommissionDispute(input: {
         updated_at: now,
       })
       .eq("id", commissionId)
+
+    // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
+    await supabase.from("commission_splits").update({ status: nextStatus, updated_at: now }).eq("commission_id", commissionId)
 
     await supabase.from("lifecycle_events").insert({
       brokerage_id: brokerageId, // NOT NULL (pass 5)
@@ -1104,6 +1116,24 @@ export async function createCommissionRecord(
     if (error || !commission) {
       return { success: false, error: error?.message || "Failed to create commission record" }
     }
+
+    // COMMISSION SPLITS LEDGER (burn-down round 4): the agent financials page
+    // and brokerage-P&L intelligence read commission_splits — writer-less until
+    // now, so both rendered empty forever. One split row per commission with
+    // the SAME numbers the waterfall computed (fees + cap credit in metadata);
+    // status mirrors the commission lifecycle (live CHECK: pending/approved/
+    // paid/disputed/cancelled). Best-effort: the commission is already the
+    // source of truth — a split-ledger failure never blocks the close.
+    await supabase.from("commission_splits").insert({
+      agent_id: agentId,
+      brokerage_id: ctx.brokerageId,
+      transaction_id: transactionId,
+      commission_id: commission.id,
+      agent_amount: agentNet,
+      brokerage_amount: grossCommission - agentNet,
+      status: "pending",
+      metadata: { fee_breakdown: feeBreakdown, capped_amount: cappedAmount, agent_split_percent: agentSplit },
+    })
 
     if (capRow && !cappedAmount) {
       await supabase

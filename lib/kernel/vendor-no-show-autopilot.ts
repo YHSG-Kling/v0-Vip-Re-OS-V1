@@ -89,8 +89,10 @@ export async function runVendorNoShowAutopilot(
   // Bench + preference source of truth (vendor_directory), loaded once for backup ranking.
   const { data: benchRows } = await svc.from("vendors").select("id, name, category, email, rating").eq("brokerage_id", params.brokerageId).limit(500)
   const bench: BenchVendor[] = (benchRows ?? []) as BenchVendor[]
-  const { data: dirRows } = await svc.from("vendor_directory").select("name, category, preferred").eq("brokerage_id", params.brokerageId).eq("preferred", true).limit(500)
-  const preferredVendorIds = resolvePreferredVendorIds(bench, (dirRows ?? []) as DirectoryPref[])
+  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
+  // vendors has no `preferred` flag; explicit broker approval (status='active', set only by approveVendor) is the closest real flag.
+  const { data: dirRows } = await svc.from("vendors").select("id").eq("brokerage_id", params.brokerageId).eq("status", "active").limit(500)
+  const preferredVendorIds = new Set<string>(((dirRows ?? []) as Array<{ id: string }>).map((r) => r.id))
   const vendorById = new Map(bench.map((v) => [v.id, v]))
 
   for (const b of noShows) {

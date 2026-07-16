@@ -1940,7 +1940,47 @@ async function main() {
         && src("app/actions/marketing-cadence-policy.ts").includes("upsertMarketingCadencePolicy")
         && src("app/settings/blog-cadence/client.tsx").includes("ChannelCadenceCard")
         && src("app/api/webhooks/sendgrid-events/route.ts").includes('from("email_tracking")')
-        && baseline3.length === 32)
+        // Monotone burn-down: later rounds only ever shrink the baseline.
+        && baseline3.length <= 32)
+    }
+    // ── BURN-DOWN ROUND 4: MONEY-TRUTH SPINE + VOICE-ADMIN WRITERS + HEAVY REPOINTS ──
+    {
+      const baseline4 = JSON.parse(src("scripts/writerless-read-baseline.json")) as string[]
+      check("BURN-DOWN ROUND 4 (32 → 18) — approved items 1, 3, 4. MONEY-TRUTH SPINE (item 1): commission_splits finally has its writer — the kernel commission creation persists one split row per commission with the SAME waterfall numbers (fees + cap credit in metadata) and the approve/pay/dispute/resolve transitions MIRROR onto the ledger by commission_id (live CHECK pending/approved/paid/disputed/cancelled), so the agent money page and brokerage-P&L intelligence read real rows; addAgentCommission writes the twin row too. transaction_cost_breakdown persists at the offer→deal bridge (UNIQUE(transaction_id) live-verified → upsert): buyer side carries CONTRACT facts, seller side rides the SAME net-sheet math as the offer comparison with every line marked default_estimate (provenance discipline — never an estimate dressed as a fact). runUsageMeteringRollup folds the raw usage streams (usage_events/usage_logs/ai_tool_usage) into meter_readings + cost_allocation per brokerage per month on the nightly finance cron (no unique indexes — pass-10 delete-then-insert; agent and team allocations are SEPARATE rows, books never cross-roll). VOICE-ADMIN WRITERS (item 3): four 'tell the admin and it's done' tables get their ONE writer (app/actions/intent-writers.ts) dispatched by voice — request_document (document_requests, the assistant's overdue alert can finally fire), assign_vendor (contact_vendors — the vendor-messaging gate can finally pass; NULL-transaction dedupe via check-then-update because Postgres unique treats NULLs as distinct), log_upgrade (property_upgrades → seller CMA valuation), set_portal_milestones (contact_portal_preferences UNIQUE(contact_id) upsert). LIVE-FIRE CAUGHT: vendors.name is the live column (NOT business_name) and vendors.category is CHECK'd (Lender/Inspector/Title Company/Contractor/Stager/Other). All shapes live-fired, residue 0",
+        src("lib/kernel/financial.ts").includes('from("commission_splits")')
+        && src("lib/kernel/financial.ts").includes('.eq("commission_id", commissionId)')
+        && src("app/actions/agents.ts").includes("commission_splits")
+        && src("lib/transactions/offer-bridge.ts").includes("transaction_cost_breakdown")
+        && src("lib/transactions/offer-bridge.ts").includes('{ onConflict: "transaction_id" }')
+        && src("lib/finance/usage-metering.ts").includes("runUsageMeteringRollup")
+        && src("app/api/cron/brokerage-pl-rollup/route.ts").includes("runUsageMeteringRollup")
+        && src("app/actions/intent-writers.ts").includes("requestDocument")
+        && src("app/actions/intent-writers.ts").includes("assignVendorToContact")
+        && src("app/actions/intent-writers.ts").includes("logPropertyUpgrade")
+        && src("app/actions/intent-writers.ts").includes("setPortalMilestonePreferences")
+        && src("app/actions/intent-writers.ts").includes('.is("transaction_id", null)')
+        && src("app/actions/voice-assistant.ts").includes('"request_document"')
+        && src("app/actions/voice-assistant.ts").includes('"assign_vendor"')
+        && src("app/actions/voice-assistant.ts").includes('"log_upgrade"')
+        && src("app/actions/voice-assistant.ts").includes('"set_portal_milestones"')
+        && src("app/actions/voice-assistant.ts").includes('ilike("name"')
+        // HEAVY REPOINTS (item 4, delegated + reviewed): appointments→calendar_events
+        // (event_type 'listing_appointment' is what the real writer inserts; the
+        // listing's address resolves via entity_id), vendor_directory→vendors across
+        // every reader incl. TWO PostgREST embeds whose FK targets vendors(id) — the
+        // old embeds could never resolve (live 400s), ai_isa_settings→
+        // ai_identity_profiles + global_settings JSONB (vapiConfigured could never be
+        // true), user_brokerage_roles→user_role_assignments + permission-matrix
+        // capabilities + the agents roster (also fixed an id-class mismatch).
+        && src("app/api/cron/listing-presentation-prep/route.ts").includes('from("calendar_events")')
+        && src("app/api/cron/listing-presentation-prep/route.ts").includes('"listing_appointment"')
+        && src("app/dashboard/vendors/page.tsx").includes('from("vendors")')
+        && src("app/actions/marketing-package-automation.ts").includes("vendor:vendors(*)")
+        && src("lib/communications/vendor-communications.tsx").includes("vendors(*)")
+        && src("app/dashboard/isa/calling/page.tsx").includes("ai_identity_profiles")
+        && src("lib/auth/permissions-client.ts").includes("user_role_assignments")
+        && src("lib/data/brokerKPIs.ts").includes('from("agents")')
+        && baseline4.length <= 20)
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

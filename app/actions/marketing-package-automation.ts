@@ -227,14 +227,14 @@ async function selectOptimalVendor(serviceType: string, transactionId: string) {
 
     const listing = transaction.listings
 
-    // Find vendors for this service type
+    // Find vendors for this service type — vendors replaced vendor_directory —
+    // vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
+    // visible_in_portal→status='active' (broker approval, the real surfacing flag on vendors).
     const { data: vendors } = await supabase
-      .from("vendor_directory")
+      .from("vendors")
       .select("*")
-      // vendor_directory real cols: category (single), visible_in_portal (active flag),
-      // rating (0-5). services_offered/status/quality_score were phantom.
       .eq("category", serviceType)
-      .eq("visible_in_portal", true)
+      .eq("status", "active")
       .gte("rating", 3.75) // rescaled from quality_score>=75 (0-100) → rating>=3.75 (0-5)
 
     if (!vendors || vendors.length === 0) return null
@@ -291,11 +291,12 @@ export async function getVendorRecommendations(serviceType: string, transactionI
 
   const supabase = await createClient()
 
+  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
   const { data: vendors } = await supabase
-    .from("vendor_directory")
+    .from("vendors")
     .select("*")
     .eq("category", serviceType)
-    .eq("visible_in_portal", true)
+    .eq("status", "active") // visible_in_portal→status='active' (broker approval, the real surfacing flag)
     .order("rating", { ascending: false, nullsFirst: false })
     .limit(5)
 
@@ -574,7 +575,10 @@ export async function getMarketingPackageServices(packageId: string) {
 
   const { data } = await supabase
     .from("listing_marketing_services")
-    .select("*, vendor:vendor_directory(*)")
+    // Live FK: listing_marketing_services.vendor_id → vendors(id). The old
+    // vendor_directory embed could never resolve (no FK to that legacy twin) —
+    // PostgREST errored the whole select. Burn-down round 4 repoint.
+    .select("*, vendor:vendors(*)")
     .eq("package_id", packageId)
     .order("scheduled_date")
 

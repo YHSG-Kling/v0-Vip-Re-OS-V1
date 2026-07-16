@@ -37,13 +37,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const now = new Date().toISOString()
   const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
 
-  // appointments table is conventional but field names vary — pull liberally
+  // calendar_events replaced appointments — appointments was a writer-less legacy twin (burn-down round 4 repoint).
+  // Mapping: scheduled_at→start_at, appointment_type→event_type ('listing_appointment' is the value
+  // lib/application/listing-lifecycle.ts writes for listing consults; entity_id is the listing,
+  // metadata carries contact_id + agent_id [a users.id], and the address lives on the listing row).
   const { data: appointments } = await svc
-    .from("appointments")
-    .select("id, agent_id, contact_id, scheduled_at, appointment_type, property_address, property_state, property_city, property_zip, brokerage_id")
-    .gte("scheduled_at", now)
-    .lte("scheduled_at", tomorrow)
-    .or("appointment_type.eq.listing_consultation,appointment_type.eq.listing_appointment,appointment_type.ilike.%listing%")
+    .from("calendar_events")
+    .select("id, brokerage_id, entity_type, entity_id, start_at, event_type, metadata")
+    .gte("start_at", now)
+    .lte("start_at", tomorrow)
+    .eq("event_type", "listing_appointment")
 
   if (!appointments || appointments.length === 0) {
     return NextResponse.json({ scanned: 0, built: 0, skipped: 0 })
@@ -67,32 +70,38 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       continue
     }
 
-    // Need a property address + state to run the CMA
-    const propertyAddress = apptAny.property_address
-    const state = apptAny.property_state
+    // Need a property address + state to run the CMA — listing_appointment events carry
+    // the listing as entity_id; the address lives on the listings row.
+    let propertyAddress: string | null = null
+    let state: string | null = null
+    let city: string | null = null
+    let zip: string | null = null
+    if (apptAny.entity_type === "listing" && apptAny.entity_id) {
+      const { data: listing } = await svc
+        .from("listings").select("address, city, state, zip").eq("id", apptAny.entity_id).maybeSingle()
+      propertyAddress = (listing as any)?.address ?? null
+      state = (listing as any)?.state ?? null
+      city = (listing as any)?.city ?? null
+      zip = (listing as any)?.zip ?? null
+    }
     if (!propertyAddress || !state) {
       skipped++
       continue
     }
 
-    // Resolve agent user_id (appointments.agent_id is agents.id)
-    let agentUserId: string | null = null
-    if (apptAny.agent_id) {
-      const { data: agentRow } = await svc
-        .from("agents").select("user_id").eq("id", apptAny.agent_id).maybeSingle()
-      agentUserId = agentRow?.user_id ?? null
-    }
+    // metadata.agent_id is already the auth users.id (see scheduleListingAppointmentService)
+    const agentUserId: string | null = apptAny.metadata?.agent_id ?? null
 
     const result = await buildListingPresentation({
       brokerageId:     apptAny.brokerage_id,
       agentUserId,
-      contactId:       apptAny.contact_id ?? null,
+      contactId:       apptAny.metadata?.contact_id ?? null,
       appointmentId:   appt.id,
-      appointmentAt:   apptAny.scheduled_at,
+      appointmentAt:   apptAny.start_at,
       propertyAddress,
       state,
-      city:            apptAny.property_city ?? null,
-      zip:             apptAny.property_zip ?? null,
+      city,
+      zip,
     })
 
     if (result.success) {

@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { getAIISASettings } from '@/app/actions/ai-isa-settings'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -56,17 +57,24 @@ export default async function ISACallingPage() {
     .eq('id', user.id)
     .single()
 
-  // Check VAPI configuration via ai_isa_settings (brokerage-level)
-  const { data: isaSettings } = profile?.brokerage_id
+  // ai_isa_settings was a writer-less legacy twin (burn-down round 4 repoint):
+  // vapi_assistant_id lives on ai_identity_profiles (written by lib/voice/vapi-numbers.ts,
+  // read back by lib/ai-isa/build-call-context.ts) and the ISA enabled toggle lives in
+  // global_settings.additional_settings->ai_isa_settings (app/actions/ai-isa-settings.ts).
+  const { data: identityProfiles } = profile?.brokerage_id
     ? await supabase
-        .from('ai_isa_settings')
-        .select('vapi_assistant_id, is_active')
+        .from('ai_identity_profiles')
+        .select('vapi_assistant_id')
         .eq('brokerage_id', profile.brokerage_id)
-        .maybeSingle()
+        .eq('active', true)
+        .not('vapi_assistant_id', 'is', null)
+        .limit(1)
     : { data: null }
 
-  const vapiConfigured = !!isaSettings?.vapi_assistant_id
-  const isaActive = isaSettings?.is_active ?? false
+  const vapiConfigured = !!identityProfiles?.[0]?.vapi_assistant_id
+  const isaActive = profile?.brokerage_id
+    ? (await getAIISASettings(profile.brokerage_id)).enabled
+    : false
 
   // Fetch contacts sorted by urgency (lead_score DESC, then recently added)
   const { data: contacts } = profile?.brokerage_id

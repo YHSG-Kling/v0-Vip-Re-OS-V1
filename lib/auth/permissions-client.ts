@@ -1,6 +1,8 @@
 "use client"
 
 import { createClient } from "@/lib/supabase/client"
+import { ROLE_PERMISSIONS } from "@/lib/security/permission-matrix"
+import { toCanonicalRole } from "@/lib/security/types"
 
 /**
  * Client-side permission utilities
@@ -30,30 +32,24 @@ export async function getClientUserRole(): Promise<UserRole | null> {
     return null
   }
 
-  const { data: userBrokerageRole } = await supabase
-    .from("user_brokerage_roles")
-    .select(`
-      roles (
-        name,
-        role_capabilities (
-          capability
-        )
-      )
-    `)
+  // user_role_assignments replaced user_brokerage_roles — user_brokerage_roles was a writer-less
+  // legacy twin (burn-down round 4 repoint). The canonical table carries a flat `role` column
+  // (no roles/role_capabilities join); capabilities derive from the permission matrix instead.
+  const { data: roleRow } = await supabase
+    .from("user_role_assignments")
+    .select("role")
     .eq("user_id", user.id)
-    .eq("is_primary", true)
-    .single()
+    .maybeSingle()
 
-  if (!userBrokerageRole) {
+  if (!roleRow?.role) {
     return null
   }
 
-  const role = Array.isArray(userBrokerageRole.roles) ? userBrokerageRole.roles[0] : userBrokerageRole.roles
-
-  const capabilities = role?.role_capabilities?.map((rc: any) => rc.capability) || []
+  const canonical = toCanonicalRole(roleRow.role)
+  const capabilities: string[] = canonical ? [...(ROLE_PERMISSIONS[canonical]?.permissions ?? [])] : []
 
   return {
-    roleName: role?.name as Role,
+    roleName: roleRow.role as Role,
     capabilities,
   }
 }

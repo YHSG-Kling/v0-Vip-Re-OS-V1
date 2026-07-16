@@ -220,6 +220,128 @@ export async function processVoiceCommand(params: {
         actionTaken = "task_created"
         break
 
+      // ── VOICE-ADMIN INTENT WRITERS (burn-down round 4) — "tell the admin and
+      // it's done": these dispatch the intent-writers actions, which are the
+      // ONE writers for document_requests / contact_vendors / property_upgrades.
+      case "request_document": {
+        const docContact = intent.entities.contact_name
+          ? await lookupContact(intent.entities.contact_name, agentId)
+          : null
+        if (docContact) relatedContactId = docContact.id
+        const docName = intent.entities.document_name || intent.entities.task_title
+        if (!docName) {
+          response = "Which document should I request?"
+          success = false
+        } else {
+          const { requestDocument } = await import("@/app/actions/intent-writers")
+          const r = await requestDocument({
+            documentName: docName,
+            contactId: docContact?.id ?? relatedContactId ?? null,
+            transactionId: context?.active_transaction ?? null,
+            dueDate: intent.entities.due_date ?? null,
+          })
+          if (r.success) {
+            response = docContact
+              ? `Requested "${docName}" from ${docContact.first_name}. It's on the tracked list — I'll flag it if it goes overdue.`
+              : `Requested "${docName}". It's on the tracked list — I'll flag it if it goes overdue.`
+          } else {
+            response = "I couldn't file that document request."
+            success = false
+          }
+        }
+        actionTaken = "document_requested"
+        break
+      }
+
+      case "assign_vendor": {
+        const vContact = await lookupContact(intent.entities.contact_name, agentId)
+        if (!vContact) {
+          response = `I couldn't find ${intent.entities.contact_name}.`
+          success = false
+          actionTaken = "vendor_assigned"
+          break
+        }
+        relatedContactId = vContact.id
+        // Resolve the vendor by name within the tenant (vendors is canonical).
+        const svcV = createServiceClient()
+        const vendorName = String(intent.entities.vendor_name ?? "").trim()
+        // vendors.name is the live column (NOT business_name — live-verified).
+        const { data: vendorRows } = vendorName
+          ? await svcV.from("vendors").select("id, name").eq("brokerage_id", caller.brokerageId).ilike("name", `%${vendorName}%`).limit(1)
+          : { data: null }
+        const vendor = (vendorRows ?? [])[0] ?? null
+        if (!vendor) {
+          response = vendorName
+            ? `I couldn't find a vendor named ${vendorName} in your directory.`
+            : "Which vendor should I introduce?"
+          success = false
+        } else {
+          const { assignVendorToContact } = await import("@/app/actions/intent-writers")
+          const r = await assignVendorToContact({
+            contactId: vContact.id,
+            vendorId: vendor.id as string,
+            role: intent.entities.vendor_role ?? null,
+          })
+          response = r.success
+            ? `Linked ${vendor.name} to ${vContact.first_name} — the vendor can now message them and it shows on the contact's profile.`
+            : "I couldn't link that vendor."
+          success = r.success
+        }
+        actionTaken = "vendor_assigned"
+        break
+      }
+
+      case "set_portal_milestones": {
+        const pContact = await lookupContact(intent.entities.contact_name, agentId)
+        const milestoneKey = String(intent.entities.milestone_name ?? "").trim().toLowerCase().replace(/\s+/g, "_")
+        if (!pContact || !milestoneKey) {
+          response = !pContact ? `I couldn't find ${intent.entities.contact_name}.` : "Which milestone should I change?"
+          success = false
+        } else {
+          relatedContactId = pContact.id
+          const visible = !/hide|remove|off/.test(commandText.toLowerCase())
+          const { setPortalMilestonePreferences } = await import("@/app/actions/intent-writers")
+          const r = await setPortalMilestonePreferences({
+            contactId: pContact.id,
+            milestoneOverrides: { [milestoneKey]: visible },
+          })
+          response = r.success
+            ? `${visible ? "Showing" : "Hiding"} the ${milestoneKey.replace(/_/g, " ")} milestone on ${pContact.first_name}'s portal.`
+            : "I couldn't update that portal preference."
+          success = r.success
+        }
+        actionTaken = "portal_milestones_updated"
+        break
+      }
+
+      case "log_upgrade": {
+        // Resolve the listing by address within the agent's book.
+        const svcU = createServiceClient()
+        const addr = String(intent.entities.property_address ?? "").trim()
+        const { data: listingRows } = addr
+          ? await svcU.from("listings").select("id, address").eq("brokerage_id", caller.brokerageId).ilike("address", `%${addr}%`).limit(1)
+          : { data: null }
+        const listing = (listingRows ?? [])[0] ?? null
+        const upgradeText = intent.entities.note_text || intent.entities.task_title
+        if (!listing || !upgradeText) {
+          response = !listing ? "Which listing is the upgrade for?" : "What was the upgrade?"
+          success = false
+        } else {
+          const { logPropertyUpgrade } = await import("@/app/actions/intent-writers")
+          const r = await logPropertyUpgrade({
+            listingId: listing.id as string,
+            description: upgradeText,
+            estimatedCost: intent.entities.amount ? Number(intent.entities.amount) : null,
+          })
+          response = r.success
+            ? `Logged the upgrade on ${listing.address} — it'll show in the seller's CMA valuation.`
+            : "I couldn't log that upgrade."
+          success = r.success
+        }
+        actionTaken = "upgrade_logged"
+        break
+      }
+
       default:
         response = "I didn't understand that command. Try 'What's my schedule' or 'Who are my hot leads?'"
         success = false
@@ -464,6 +586,10 @@ Detect Intent (one of):
 - deals_at_risk: Check deal health
 - create_task: Create a task
 - call_contact: Initiate call
+- request_document: Ask a client for a document ("request the pre-approval letter from Jane")
+- assign_vendor: Introduce/link a vendor to a contact ("assign my stager to the Hendersons")
+- log_upgrade: Record a property upgrade/renovation on a listing ("they added a new roof at 12 Oak St")
+- set_portal_milestones: Show/hide a milestone on a client's portal ("hide the inspection milestone from Jane's portal")
 
 Extract Entities:
 - contact_name: Person's name mentioned
@@ -472,6 +598,11 @@ Extract Entities:
 - task_title: Task title
 - task_description: Task description
 - due_date: Any time/date mentioned
+- document_name: Document being requested
+- vendor_name: Vendor/business name mentioned
+- vendor_role: The vendor's role (stager, inspector, lender, …)
+- amount: Any dollar amount mentioned (number only)
+- milestone_name: Portal milestone mentioned (inspection, appraisal, …)
 
 Return JSON:
 {
@@ -510,6 +641,15 @@ function simpleIntentParsing(text: string): VoiceIntent {
   }
   if (lower.includes("add note") || lower.includes("make note")) {
     return { type: "add_note", entities: { note_text: text }, confidence: 0.7 }
+  }
+  if (lower.includes("request") && (lower.includes("document") || lower.includes("letter") || lower.includes("pre-approval") || lower.includes("preapproval"))) {
+    return { type: "request_document", entities: { document_name: text }, confidence: 0.6 }
+  }
+  if ((lower.includes("assign") || lower.includes("introduce") || lower.includes("connect")) && (lower.includes("vendor") || lower.includes("stager") || lower.includes("inspector") || lower.includes("photographer"))) {
+    return { type: "assign_vendor", entities: {}, confidence: 0.6 }
+  }
+  if (lower.includes("upgrade") || lower.includes("renovation") || lower.includes("remodel")) {
+    return { type: "log_upgrade", entities: { note_text: text }, confidence: 0.6 }
   }
   // The spoken action receipt — "what did you (all) do", "daily receipt",
   // "while I was out/asleep", "AI report".

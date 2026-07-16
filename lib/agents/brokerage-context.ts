@@ -106,22 +106,22 @@ export async function resolveBrokerageContext(params: {
     "Brand voice — match the brokerage's resolved tone + prohibited-word list (see brandVoice block).",
   ]
 
-  // 4. Preferred lender — read from the canonical vendor_directory (NOT a separate
-  //    "preferred_vendors" table — that doesn't exist; the directory itself carries a
-  //    `preferred` flag and a `display_priority`). Filter by category='lender' and
-  //    preferred=true; tie-break by display_priority ASC.
+  // 4. Preferred lender — vendors replaced vendor_directory — vendor_directory was a
+  //    writer-less legacy twin (burn-down round 4 repoint). vendors has no `preferred` /
+  //    `display_priority`; closest real flags: category='Lender' (the vendors CHECK
+  //    vocabulary is capitalized) + broker approval (status='active'), ranked by rating.
   let preferredLender: BrokerageContext["preferredLender"] = null
   try {
     const { data: lender } = await svc
-      .from("vendor_directory")
-      .select("id, name, email, phone, preferred, display_priority")
+      .from("vendors")
+      .select("id, name, email, phone, rating")
       .eq("brokerage_id", params.brokerageId)
-      .eq("category", "lender")
-      .eq("preferred", true)
-      // Stable, deterministic tie-break: display_priority ASC (nulls last), then id
-      // so a brokerage with multiple equally-prioritized preferred lenders sees the
+      .eq("category", "Lender")
+      .eq("status", "active")
+      // Stable, deterministic tie-break: rating DESC (nulls last), then id
+      // so a brokerage with multiple equally-rated approved lenders sees the
       // same lender on every spawn instead of a non-deterministic Postgres pick.
-      .order("display_priority", { ascending: true, nullsFirst: false })
+      .order("rating", { ascending: false, nullsFirst: false })
       .order("id", { ascending: true })
       .limit(1)
       .maybeSingle()

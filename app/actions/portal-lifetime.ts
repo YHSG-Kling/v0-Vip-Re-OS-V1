@@ -539,20 +539,23 @@ export async function getLifetimeContext(contactId: string) {
     .eq("brokerage_id", access.brokerageId)
     .order("created_at", { ascending: false })
 
-  // Vendors from caller's brokerage (already auth-scoped)
+  // Vendors from caller's brokerage (already auth-scoped) — vendors replaced vendor_directory —
+  // vendor_directory was a writer-less legacy twin (burn-down round 4 repoint). No `preferred`
+  // column on vendors; broker approval (status='active') is the closest real flag, ranked by rating.
   const { data: vendors } = await supabase
-    .from("vendor_directory")
-    .select("id, name, category, phone, email, website, rating, preferred")
+    .from("vendors")
+    .select("id, name, category, phone, email, website, rating")
     .eq("brokerage_id", access.brokerageId)
-    .eq("preferred", true)
+    .eq("status", "active")
     .order("rating", { ascending: false })
     .limit(3)
   const preferredVendors = vendors || []
 
   // All vendor categories the brokerage marketplace carries (not just preferred) —
   // lets the maintenance card decide "request an intro" vs "browse pros".
+  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint)
   const { data: allVendorCats } = await supabase
-    .from("vendor_directory")
+    .from("vendors")
     .select("category")
     .eq("brokerage_id", access.brokerageId)
     .not("category", "is", null)
@@ -819,14 +822,15 @@ export async function getVendorResources(contactId: string) {
 
   const supabase = createServiceClient()
 
-  // vendor_directory is a flat table (no vendor_id FK / vendors embed; no is_featured).
-  // Real ranking column is display_priority; portal visibility via visible_in_portal.
+  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
+  // No preferred/display_priority/visible_in_portal on vendors: portal visibility → broker approval
+  // (status='active'), ranking → rating.
   const { data: vendors } = await supabase
-    .from("vendor_directory")
-    .select("id, category, name, phone, email, website, rating, preferred, display_priority, visible_in_portal")
+    .from("vendors")
+    .select("id, category, name, phone, email, website, rating")
     .eq("brokerage_id", access.brokerageId)
-    .eq("visible_in_portal", true)
-    .order("display_priority", { ascending: false })
+    .eq("status", "active")
+    .order("rating", { ascending: false, nullsFirst: false })
 
   return vendors || []
 }

@@ -69,29 +69,31 @@ export async function resolveContactVendors(
 ): Promise<VendorDirectoryEntry[]> {
   if (!ctx.brokerageId) return []
 
-  // Pull the candidate set: brokerage entries + team entries (when contact's
-  // agent is on a team). visible_in_portal=true required.
-  let query = supabase
-    .from("vendor_directory")
-    .select("id, name, category, phone, email, website, rating, notes, preferred, brokerage_id, team_id, audience_tags, stage_tags, display_priority, visible_in_portal")
-    .eq("visible_in_portal", true)
+  // vendors replaced vendor_directory — vendor_directory was a writer-less legacy twin (burn-down round 4 repoint).
+  // vendors has no preferred/team_id/audience_tags/stage_tags/display_priority/visible_in_portal columns;
+  // broker approval (status='active', the closest real portal-visibility flag) gates surfacing, and the
+  // missing curation columns are filled with their "show to everyone" defaults below.
+  const query = supabase
+    .from("vendors")
+    .select("id, name, category, phone, email, website, rating, notes, brokerage_id")
+    .eq("status", "active")
     .eq("brokerage_id", ctx.brokerageId)
-
-  // When the contact's agent is on a team, include team-level overrides too.
-  // We can't filter by an OR-of-two-conditions in the JS client cleanly
-  // without `.or()` — and we want (brokerage AND (team_id IS NULL OR
-  // team_id = ctx.teamId)). Postgrest expression:
-  if (ctx.teamId) {
-    query = query.or(`team_id.is.null,team_id.eq.${ctx.teamId}`)
-  } else {
-    query = query.is("team_id", null)
-  }
 
   const { data, error } = await query
   if (error || !data) return []
 
   // In-process audience + stage filter. Empty arrays = show-to-everyone.
-  const rows = data as VendorDirectoryEntry[]
+  const rows = (data as Array<Omit<VendorDirectoryEntry, "preferred" | "team_id" | "audience_tags" | "stage_tags" | "display_priority" | "visible_in_portal">>).map(
+    (r): VendorDirectoryEntry => ({
+      ...r,
+      preferred: null,
+      team_id: null,
+      audience_tags: [],
+      stage_tags: [],
+      display_priority: null,
+      visible_in_portal: true,
+    }),
+  )
   const audienceSet = new Set(ctx.audienceTags.filter(Boolean))
   const stageTag    = ctx.stage ?? null
 

@@ -286,6 +286,42 @@ export async function createTransactionFromOffer(params: {
     .update({ transaction_id: transaction.id, updated_at: new Date().toISOString() })
     .eq("id", params.offerId)
 
+  // TRANSACTION COST BREAKDOWN (burn-down round 4): the client portal's
+  // transaction detail reads transaction_cost_breakdown — writer-less until
+  // now, so every client's cost panel rendered empty. Persist the accepted
+  // offer's numbers at the moment the deal is born: seller side rides the SAME
+  // net-sheet math the offer comparison used (defaultSellerCosts marks every
+  // line an ESTIMATE — provenance discipline, agents refine later); buyer side
+  // carries the contract facts we actually have (price, earnest money, credit).
+  // UNIQUE(transaction_id) live-verified → upsert is pass-10 safe. Best-effort.
+  try {
+    const { computeNetProceeds, defaultSellerCosts } = await import("@/lib/offers/net-sheet-calc")
+    const offerPrice = Number((offer as any).offer_price) || 0
+    const buyerCredit = 0 // closing_cost_contribution is not on this offer select — estimate lines say so
+    const costs = defaultSellerCosts({ listPrice: offerPrice, commissionRateDecimal: 0.06, hoaDuesMonthly: null })
+    await supabase.from("transaction_cost_breakdown").upsert({
+      transaction_id: transaction.id,
+      brokerage_id: params.brokerageId,
+      buyer_costs: {
+        offer_price: offerPrice,
+        earnest_money: Number((offer as any).earnest_money) || 0,
+        seller_closing_credit: buyerCredit,
+        provenance: "contract",
+      },
+      seller_costs: {
+        commission_rate: costs.commissionRate,
+        estimated_commission: Math.round(offerPrice * costs.commissionRate),
+        county_city_taxes: costs.countyCityTaxes,
+        hoa_dues_proration: costs.hoaDuesProration,
+        other_prorated_fees: costs.otherProratedFees,
+        mortgage_payoff: costs.mortgagePayoff,
+        provenance: "default_estimate", // every line an estimate until confirmed
+      },
+      net_proceeds: computeNetProceeds({ offerPrice, buyerClosingCredit: buyerCredit }, costs),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "transaction_id" })
+  } catch { /* best-effort — never blocks the offer→deal bridge */ }
+
   // CONTINGENCY DEADLINES — the offer's NON-STANDARD contingencies (home-sale, HOA, title, insurance,
   // survey, attorney review) become watched deadlines in transaction_deadlines so none passes silently
   // (the standard inspection/financing/appraisal ones are already milestone-tracked above). Reuses the
