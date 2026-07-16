@@ -27,6 +27,7 @@ import {
   type PresetCatalog,
   type UpsertBundleInput,
 } from "@/app/actions/campaign-bundles"
+import { upsertCampaignPreset, type PresetChannel } from "@/app/actions/campaign-presets"
 
 interface AccessProp {
   canEditAgent:     boolean
@@ -71,6 +72,10 @@ export function CampaignBundlesClient({
   const [bundles, setBundles] = useState(initialBundles)
   const [editing, setEditing] = useState<BundleRow | null>(null)
   const [showCreate, setShowCreate] = useState(false)
+  const [showQuickPreset, setShowQuickPreset] = useState(false)
+  const [qpChannel, setQpChannel] = useState<PresetChannel>("sms")
+  const [qpName, setQpName] = useState("")
+  const [qpContent, setQpContent] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
   const router = useRouter()
@@ -100,6 +105,28 @@ export function CampaignBundlesClient({
     })
   }
 
+  // QUICK PRESET — the canonical writer for the seven preset shelves this
+  // builder composes from (writer-less burn-down: the shelves were read-only).
+  // One primary content field per channel; the action compliance-gates at save.
+  const QP_FIELD: Record<PresetChannel, string> = {
+    email: "body_text", sms: "body", voicedrop: "tts_script",
+    social_post: "caption", portal_push: "body_md",
+    podcast_episode: "podcast_episode_id", ad_retarget: "ad_body",
+  }
+  function handleQuickPreset() {
+    setError(null)
+    startTransition(async () => {
+      const r = await upsertCampaignPreset({
+        channel: qpChannel,
+        name: qpName,
+        fields: { [QP_FIELD[qpChannel]]: qpContent },
+      })
+      if (!r.success) { setError(r.error === "compliance_gate_blocked" ? "Blocked by the compliance gate — revise the copy." : (r.error ?? "Save failed")); return }
+      setShowQuickPreset(false); setQpName(""); setQpContent("")
+      router.refresh()
+    })
+  }
+
   const active   = bundles.filter((b) => b.is_active)
   const inactive = bundles.filter((b) => !b.is_active)
 
@@ -115,11 +142,58 @@ export function CampaignBundlesClient({
             cross-channel attribution rolls up automatically.
           </p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded hover:bg-blue-700 whitespace-nowrap"
-        >+ New bundle</button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowQuickPreset((v) => !v)}
+            className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded hover:bg-gray-50 whitespace-nowrap"
+          >+ Quick preset</button>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded hover:bg-blue-700 whitespace-nowrap"
+          >+ New bundle</button>
+        </div>
       </header>
+
+      {showQuickPreset && (
+        <section className="p-4 border border-gray-200 rounded-lg bg-gray-50 space-y-3">
+          <h2 className="text-sm font-semibold text-gray-900">New preset — saved to the shelf this builder composes from (compliance-gated on save)</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <select
+              value={qpChannel}
+              onChange={(e) => setQpChannel(e.target.value as PresetChannel)}
+              className="border border-gray-300 rounded px-2 py-1.5 text-sm bg-white"
+            >
+              <option value="sms">SMS</option>
+              <option value="email">Email</option>
+              <option value="voicedrop">Voicedrop</option>
+              <option value="social_post">Social post</option>
+              <option value="portal_push">Portal push</option>
+              <option value="ad_retarget">Ad retarget</option>
+            </select>
+            <input
+              value={qpName}
+              onChange={(e) => setQpName(e.target.value)}
+              placeholder="Preset name"
+              className="border border-gray-300 rounded px-2 py-1.5 text-sm sm:col-span-2"
+            />
+          </div>
+          <textarea
+            value={qpContent}
+            onChange={(e) => setQpContent(e.target.value)}
+            placeholder="The copy this preset sends (gated by Fair Housing + brand rules on save)"
+            rows={3}
+            className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={handleQuickPreset}
+              disabled={pending || !qpName.trim() || !qpContent.trim()}
+              className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded disabled:opacity-50"
+            >{pending ? "Saving…" : "Save preset"}</button>
+            <button onClick={() => setShowQuickPreset(false)} className="px-3 py-1.5 text-sm text-gray-600">Cancel</button>
+          </div>
+        </section>
+      )}
 
       {error && (
         <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded text-sm">{error}</div>
