@@ -29,6 +29,7 @@ interface ContactBrief {
   openTaskCount: number
   recentActivities: Array<{ type: string; description: string | null; occurredAt: string }>
   talkingPoints: string[]
+  provenanceLine: string | null
 }
 
 const TREND_STYLES: Record<ContactBrief["momentumTrend"], string> = {
@@ -127,6 +128,13 @@ export function PreCallBriefCard({ contactId, channel = "phone" }: Props) {
           </li>
         ))}
       </ul>
+
+      {/* THE LIFETIME VALUE RECEIPT — origin → touches → earned GCI, from the ledgers */}
+      {brief.provenanceLine && (
+        <p className="text-[11px] text-muted-foreground italic border-t pt-1.5">
+          {brief.provenanceLine}
+        </p>
+      )}
 
       <div className="flex items-center gap-3 pt-1 border-t text-muted-foreground">
         <span className="flex items-center gap-1">

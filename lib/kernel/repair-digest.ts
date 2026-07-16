@@ -141,7 +141,13 @@ export async function runRepairPatternDigest(svc: Svc, now: Date = new Date()): 
   try {
     const { loadSentinelLosses } = await import("@/lib/kernel/write-sentinel")
     const losses = await loadSentinelLosses(svc, since)
-    for (const g of losses.groups.slice(0, 3)) {
+    // RUNTIME DRIFT TWIN leads: a 42703/42P01/PGRST204/205 loss means the LIVE
+    // schema no longer matches the code — the CI drift guard holds code at
+    // zero, this holds the database (hotfix migrations, manual DDL).
+    for (const g of losses.runtimeDriftGroups.slice(0, 2)) {
+      extraLines.push(`⚠ RUNTIME SCHEMA DRIFT: ${g.flow} → ${g.table} (${g.count}×, ${g.hint}) — regenerate the snapshot + reconcile.`)
+    }
+    for (const g of losses.groups.filter((x) => !losses.runtimeDriftGroups.includes(x)).slice(0, 3)) {
       extraLines.push(`WRITE LOSS: ${g.flow} → ${g.table} lost ${g.count} row${g.count === 1 ? "" : "s"} (${g.hint}${g.tenants > 1 ? `, ${g.tenants} tenants` : ""}).`)
     }
   } catch { /* the core digest still sends */ }

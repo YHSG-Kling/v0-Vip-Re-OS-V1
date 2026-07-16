@@ -100,6 +100,17 @@ const PG_CODE_HINT: Record<string, string> = {
   "23505": "a unique/onConflict collision",
   "23514": "a value the column's CHECK rejects (drifted vocabulary?)",
   "22P02": "a malformed value (bad uuid / number / enum text)",
+  "42703": "SCHEMA DRIFT AT RUNTIME — the column doesn't exist on the live table",
+  "42P01": "SCHEMA DRIFT AT RUNTIME — the table doesn't exist in the live schema",
+  PGRST204: "SCHEMA DRIFT AT RUNTIME — PostgREST can't find the column (phantom key)",
+  PGRST205: "SCHEMA DRIFT AT RUNTIME — PostgREST can't find the table (phantom table)",
+}
+
+/** PURE: the RUNTIME TWIN of the CI schema-drift guard — drift the guard can't
+ *  see because it arrived via a hotfix migration (not code) still shows up here
+ *  as these error codes on the sentinel ledger. */
+export function isRuntimeDriftLoss(code: string | null | undefined): boolean {
+  return code === "42703" || code === "42P01" || code === "PGRST204" || code === "PGRST205"
 }
 
 export interface SentinelLossRow {
@@ -122,6 +133,11 @@ export interface SentinelLossReport {
   groups: SentinelLossRow[]
   /** One-line human summary; "" when the week was clean. */
   headline: string
+  /** RUNTIME DRIFT TWIN: losses whose pg code proves live-schema drift
+   *  (42703/42P01/PGRST204/PGRST205) — the CI guard's zero baseline holds for
+   *  CODE, this holds for the DATABASE (hotfix migrations, manual DDL). */
+  runtimeDriftLosses: number
+  runtimeDriftGroups: SentinelLossRow[]
 }
 
 /**
@@ -154,12 +170,17 @@ export function composeSentinelLossReport(
     .sort((a, b) => b.count - a.count)
 
   const totalLosses = groups.reduce((s, g) => s + g.count, 0)
-  const headline = totalLosses === 0
+  const runtimeDriftGroups = groups.filter((g) => isRuntimeDriftLoss(g.code))
+  const runtimeDriftLosses = runtimeDriftGroups.reduce((s, g) => s + g.count, 0)
+  let headline = totalLosses === 0
     ? ""
     : `${totalLosses} silent write loss${totalLosses === 1 ? "" : "es"} across ${groups.length} rail${groups.length === 1 ? "" : "s"}` +
       (groups[0] ? ` — worst: ${groups[0].flow} → ${groups[0].table} (${groups[0].count}×, ${groups[0].hint}).` : ".")
+  if (runtimeDriftLosses > 0) {
+    headline += ` ⚠ ${runtimeDriftLosses} of these are RUNTIME SCHEMA DRIFT (live schema no longer matches the code) — regenerate the snapshot and reconcile.`
+  }
 
-  return { totalLosses, distinctPaths: groups.length, groups, headline }
+  return { totalLosses, distinctPaths: groups.length, groups, headline, runtimeDriftLosses, runtimeDriftGroups }
 }
 
 /** Read the best_effort_write losses over a window and rank them. */

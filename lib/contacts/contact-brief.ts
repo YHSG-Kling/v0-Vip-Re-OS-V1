@@ -48,6 +48,9 @@ export interface ContactBrief {
     occurredAt: string
   }>
   talkingPoints: string[]
+  /** THE LIFETIME VALUE RECEIPT — how the OS found them, every touch since,
+   *  and the GCI it earned. One honest sentence from the real ledgers. */
+  provenanceLine: string | null
 }
 
 /**
@@ -220,6 +223,15 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
     if (provenanceNote) talkingPoints.push(provenanceNote)
   } catch { /* provenance is additive — the brief stands without it */ }
 
+  // THE LIFETIME VALUE RECEIPT — scrape-to-lifetime provenance from the real
+  // ledgers: origin → ISA outreach → frontier stories → closed GCI.
+  let provenanceLine: string | null = null
+  try {
+    const { loadContactProvenanceFacts, composeLifetimeValueReceipt } = await import("@/lib/contacts/provenance-receipt")
+    const facts = await loadContactProvenanceFacts(supabase as any, contactId)
+    provenanceLine = composeLifetimeValueReceipt(facts).line
+  } catch { /* additive — the brief stands without it */ }
+
   return {
     contactId: contact.id,
     fullName,
@@ -243,5 +255,6 @@ export async function getContactBrief(contactId: string): Promise<ContactBrief |
     openTaskCount: (openTasks as any)?.length ?? 0,
     recentActivities,
     talkingPoints,
+    provenanceLine,
   }
 }

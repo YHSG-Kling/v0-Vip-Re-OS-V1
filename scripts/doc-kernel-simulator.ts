@@ -1790,6 +1790,34 @@ async function main() {
           && src("app/actions/voice-assistant.ts").includes('"ai_work_receipt"')
           && src("app/actions/voice-assistant.ts").includes("composeSpokenAiReceipt"))
       }
+
+      // ── THE LIFETIME VALUE RECEIPT (approved item 1) + RUNTIME DRIFT TWIN (approved item 3) ──
+      {
+        const { composeLifetimeValueReceipt } = await import("../lib/contacts/provenance-receipt")
+        const rich = composeLifetimeValueReceipt({
+          originSource: "expired_listing_scrape", originAt: new Date(Date.now() - 400 * 86_400_000).toISOString(),
+          loggedTouches: 42, isaOutreach: 11, frontierStories: 9, closedDeals: 2, earnedGci: 21400,
+        })
+        const empty = composeLifetimeValueReceipt({
+          originSource: null, originAt: null, loggedTouches: 0, isaOutreach: 0, frontierStories: 0, closedDeals: 0, earnedGci: null,
+        })
+        const { composeSentinelLossReport, isRuntimeDriftLoss } = await import("../lib/kernel/write-sentinel")
+        const driftReport = composeSentinelLossReport([
+          { brokerage_id: "b1", detail: { flow: "hotfix_flow", table: "some_table", code: "42703", message: "column x does not exist" } },
+          { brokerage_id: "b1", detail: { flow: "hotfix_flow", table: "some_table", code: "42703", message: "column x does not exist" } },
+          { brokerage_id: "b2", detail: { flow: "other_flow", table: "other_table", code: "23505", message: "duplicate" } },
+        ] as any)
+        check("LIFETIME VALUE RECEIPT (item 1) + RUNTIME DRIFT TWIN (item 3) — scrape-to-lifetime provenance every point-solution CRM structurally lacks: one honest sentence per contact ('Found via expired listing scrape 13 months ago — the OS has logged 42 touches… producing 2 closed deals and $21,400 GCI') composed by a PURE fold over the REAL ledgers (contacts/leads origin, activities, isa_outreach_log, frontier-story rationale tags, agent_commissions on closed deals — never transactions math, never invented dollars: unknown origin stays 'Origin unrecorded', zero history stays 'no AI touch history recorded yet'). WIRED end-to-end: loadContactProvenanceFacts → getContactBrief.provenanceLine → the /api/contacts/[id]/brief route → PreCallBriefCard renders it before every call. THE RUNTIME DRIFT TWIN closes the last unwatched drift direction: CI holds CODE at the zero-zero baseline, but a hotfix migration can drift the DATABASE — those failures land on the write-sentinel ledger as 42703/42P01/PGRST204/205, which composeSentinelLossReport now classifies as RUNTIME SCHEMA DRIFT (isRuntimeDriftLoss), leads the repair digest with a regenerate-the-snapshot instruction, and flags the headline",
+          rich.line.includes("Found via expired listing scrape") && rich.line.includes("42 logged touches")
+          && rich.line.includes("$21,400 GCI") && rich.line.includes("2 closed deals")
+          && empty.line.startsWith("Origin unrecorded") && empty.line.includes("no AI touch history")
+          && isRuntimeDriftLoss("42703") && isRuntimeDriftLoss("PGRST204") && !isRuntimeDriftLoss("23505")
+          && driftReport.runtimeDriftLosses === 2 && driftReport.runtimeDriftGroups.length === 1
+          && driftReport.headline.includes("RUNTIME SCHEMA DRIFT")
+          && src("lib/contacts/contact-brief.ts").includes("provenanceLine")
+          && src("app/components/dashboard/voice/PreCallBriefCard.tsx").includes("provenanceLine")
+          && src("lib/kernel/repair-digest.ts").includes("RUNTIME SCHEMA DRIFT"))
+      }
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {
