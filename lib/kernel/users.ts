@@ -721,11 +721,20 @@ export async function inviteTenantMember(params: TenantMemberParams): Promise<Te
   )
 
   try {
-    await service.from("user_invitations").upsert(
-      { brokerage_id: brokerageId, team_id: teamId, invited_by: callerUserId, email, user_type: userType, first_name: firstName, last_name: lastName, status: "pending" },
-      { onConflict: "brokerage_id,email", ignoreDuplicates: false }
-    )
-  } catch (err) { console.warn("[inviteTenantMember] invitation upsert failed:", (err as any)?.message) }
+    // pass 10: the only unique on user_invitations is a PARTIAL EXPRESSION
+    // index — (brokerage_id, lower(email)) WHERE status='pending' — which a
+    // plain onConflict string cannot target, so the old upsert errored every
+    // time. The rule it encodes (one PENDING invite per brokerage+email) is
+    // enforced with an explicit find-pending → update-or-insert.
+    const invitePayload = { brokerage_id: brokerageId, team_id: teamId, invited_by: callerUserId, email, user_type: userType, first_name: firstName, last_name: lastName, status: "pending" }
+    const { data: pending } = await service.from("user_invitations")
+      .select("id").eq("brokerage_id", brokerageId).ilike("email", email).eq("status", "pending").maybeSingle()
+    if (pending) {
+      await service.from("user_invitations").update({ ...invitePayload, updated_at: new Date().toISOString() }).eq("id", pending.id)
+    } else {
+      await service.from("user_invitations").insert(invitePayload)
+    }
+  } catch (err) { console.warn("[inviteTenantMember] invitation write failed:", (err as any)?.message) }
 
   await mergeOrphan(service, orphanToMerge, authUserId)
 

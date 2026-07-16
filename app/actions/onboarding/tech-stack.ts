@@ -310,7 +310,7 @@ export async function markTechStackComplete(
         completed_at: new Date().toISOString(),
         notes: "tech_stack_configured",
       }, {
-        onConflict: "brokerage_id,agent_id,step_id",
+        onConflict: "agent_id,step_id",
       })
 
     if (stepError) {

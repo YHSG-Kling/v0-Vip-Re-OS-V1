@@ -480,7 +480,7 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
 
     const { error: upsertError } = await service
       .from("open_house_invitations")
-      .upsert(invitations, { onConflict: "event_id,contact_id", ignoreDuplicates: true })
+      .upsert(invitations, { onConflict: "event_id,contact_id,channel", ignoreDuplicates: true })
     if (upsertError) {
       console.error("[sendOpenHouseInvites] upsert failed:", upsertError.message)
       return { success: false, error: upsertError.message }

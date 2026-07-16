@@ -91,7 +91,7 @@ export async function upsertAgentGoal(params: {
           notes:         params.notes ?? null,
           updated_at:    new Date().toISOString(),
         },
-        { onConflict: "agent_id,brokerage_id,year,goal_type" }
+        { onConflict: "agent_id,year,goal_type" }
       )
       .select()
       .single()

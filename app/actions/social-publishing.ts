@@ -243,6 +243,10 @@ export async function connectSocialAccount(params: {
     .from("social_media_accounts")
     .upsert(
       {
+        // pass 10: the live unique is (brokerage_id, platform, account_id) —
+        // the old onConflict "user_id,platform,account_id" matched no index
+        // and errored on every call.
+        brokerage_id: caller.brokerageId,
         user_id: caller.userId,
         platform: params.platform,
         account_id: params.accountId,
@@ -255,7 +259,7 @@ export async function connectSocialAccount(params: {
         updated_at: new Date().toISOString(),
       },
       {
-        onConflict: "user_id,platform,account_id",
+        onConflict: "brokerage_id,platform,account_id",
       },
     )
     .select()

@@ -243,11 +243,20 @@ export async function GET(
 
     const tokens = await tokenResponse.json()
 
+    // pass 10: the live unique is (brokerage_id, platform, account_id) — the
+    // old onConflict "user_id,platform" matched no index and errored on every
+    // callback. Resolve the connecting user's brokerage; account_id keeps the
+    // userId placeholder (the publisher fills the real one on first use), so
+    // (brokerage_id, platform, account_id=userId) is unique per user.
+    const { data: connectingUser } = await supabase
+      .from("users").select("brokerage_id").eq("id", stateData.userId).maybeSingle()
+
     // Upsert into social_media_accounts
     const { error: upsertError } = await supabase
       .from("social_media_accounts")
       .upsert(
         {
+          brokerage_id: (connectingUser as any)?.brokerage_id ?? null,
           user_id: stateData.userId,
           platform,
           access_token: tokens.access_token,
@@ -260,7 +269,7 @@ export async function GET(
           is_active: true,
           updated_at: new Date().toISOString(),
         },
-        { onConflict: "user_id,platform" }
+        { onConflict: "brokerage_id,platform,account_id" }
       )
 
     if (upsertError) {

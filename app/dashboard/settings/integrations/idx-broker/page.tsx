@@ -165,6 +165,11 @@ export default function IDXBrokerSettingsPage() {
 
     await supabase.from("platform_credentials").upsert(
       {
+        // pass 10: the live unique is (owner_id, owner_type, platform) — the
+        // legacy brokerage_id/scope columns had no matching unique, so this
+        // upsert errored on every save. owner_type/owner_id ARE the identity.
+        owner_type:   "brokerage",
+        owner_id:     brokerageId,
         brokerage_id: brokerageId,
         platform:     "idxbroker",
         scope:        "brokerage",
@@ -174,7 +179,7 @@ export default function IDXBrokerSettingsPage() {
         is_active:    true,
         updated_at:   new Date().toISOString(),
       },
-      { onConflict: "brokerage_id,platform" }
+      { onConflict: "owner_id,owner_type,platform" }
     )
     setSaving(false)
     setTestResult(null)

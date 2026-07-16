@@ -1673,6 +1673,18 @@ async function main() {
         && src("app/dashboard/superadmin/continuity/page.tsx").includes("Silent write losses")
         && src("lib/kernel/event-fanout.ts").includes('flow: "deal_transparency_card"')
         && src("lib/kernel/event-fanout.ts").includes('flow: "deal_transparency_bell"'))
+      // ── PASS 10: UPSERT onConflict INTEGRITY + rpc EXISTENCE + phantom table ──
+      check("PASS 10 — UPSERT onConflict INTEGRITY (every .upsert onConflict target must match a UNIQUE index or the write ERRORS on EVERY call — 'no unique or exclusion constraint matching the ON CONFLICT specification'): the live pg_index map cross-checked against every onConflict target found 21 broken upserts across the codebase, each erroring on 100% of calls. TWO fix classes: onConflict CORRECTED to an existing unique (agent_goals dropped the redundant brokerage_id; buyer_fatigue_scores → contact_id; calendar_provider_accounts added brokerage_id; vendor_ratings → vendor_id; social_media_accounts both callers + platform_credentials idx-broker → their real owner/account-scoped uniques; open_house_invitations → event_id,contact_id,channel; agent_step_completions → agent_id,step_id) and UNIQUE INDEX CREATED where the onConflict cols ARE the business identity but the index was never migrated (call_analyses/call_transcriptions on voice_call_id, fatigue_alerts, market_data, neighborhood_reports, property_interests, timeline_transparency, transaction_milestones, website_visitors — l72-s07, zero live dupes). PHANTOM TABLE: the team-heatmap cron upserted to team_activity_snapshots — a table the code AND the schema-readiness route reference but that was never created (team_heatmap_snapshots is a different per-agent-per-zip shape) — created with its real (brokerage_id, snapshot_date) rollup shape + unique + RLS. user_invitations' only unique is a PARTIAL EXPRESSION index that a plain onConflict can't target → converted to an explicit find-pending→update-or-insert. RPC EXISTENCE: 22/23 rpc() names verified live; increment_knowledge_article_view was missing → created (SECURITY DEFINER, bumps knowledge_articles.view_count)",
+        src("app/actions/ai-agent-goals.ts").includes('onConflict: "agent_id,year,goal_type"')
+        && src("lib/fatigue/fatigue-scorer.ts").includes('onConflict: "contact_id"')
+        && src("app/actions/vendor-marketplace.ts").includes('onConflict: "vendor_id"')
+        && src("app/actions/social-publishing.ts").includes('onConflict: "brokerage_id,platform,account_id"')
+        && src("app/api/social/oauth/[platform]/route.ts").includes('onConflict: "brokerage_id,platform,account_id"')
+        && src("app/dashboard/settings/integrations/idx-broker/page.tsx").includes('onConflict: "owner_id,owner_type,platform"')
+        && src("app/actions/open-house.ts").includes('onConflict: "event_id,contact_id,channel"')
+        && src("lib/kernel/calendar-sync.ts").includes('onConflict: "brokerage_id,provider_type,provider_account_id,user_id"')
+        && src("lib/kernel/users.ts").includes("find-pending")
+        && !src("lib/kernel/users.ts").includes('onConflict: "brokerage_id,email"'))
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

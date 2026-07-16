@@ -128,7 +128,7 @@ export async function linkCalendarProvider(params: {
         token_expires_at: null,
       },
       {
-        onConflict: "user_id,provider_type,provider_account_id",
+        onConflict: "brokerage_id,provider_type,provider_account_id,user_id",
         ignoreDuplicates: false,
       }
     )

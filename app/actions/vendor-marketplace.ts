@@ -444,7 +444,7 @@ export async function recalculateVendorRatings(vendorId: string, brokerageId: st
       five_star_count: fiveStars,
       one_star_count: oneStars,
       last_updated: new Date().toISOString(),
-    }, { onConflict: "vendor_id,brokerage_id" })
+    }, { onConflict: "vendor_id" })
 
   if (error) {
     // If unique constraint doesn't exist, insert new record

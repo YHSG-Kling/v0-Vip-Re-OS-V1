@@ -136,7 +136,7 @@ export async function calculateBuyerFatigue(
         contributing_factors:  factors,
         last_calculated_at:    now.toISOString(),
       },
-      { onConflict: "brokerage_id,contact_id" }
+      { onConflict: "contact_id" }
     )
 
   if (upsertErr) return { success: false, error: upsertErr.message }
