@@ -1775,6 +1775,21 @@ async function main() {
         && src("app/actions/ai-voice-transcription.ts").includes("assigned_to_agent_id")
         && src("lib/podcast/orchestrate-podcast-preset-publish.ts").includes("podcast_episode_id:")
         && src("lib/intelligence/daily-briefing-generator.ts").includes("overnight_ai_work"))
+
+      // ── THE SPOKEN ACTION RECEIPT (approved item 2) ──
+      {
+        const { composeSpokenAiReceipt } = await import("../lib/intelligence/spoken-ai-receipt")
+        const spoken = composeSpokenAiReceipt({
+          overnight: { noshows_to_rebook: 1, reels_awaiting_approval: 2, sentinel_escalations: 0, summary_line: "" },
+          isaHandoffs: 2, isaOutreach: 5, draftsStaged: 3, windowLabel: "the last 24 hours",
+        })
+        const empty = composeSpokenAiReceipt({ overnight: null, isaHandoffs: 0, isaOutreach: 0, draftsStaged: 0, windowLabel: "the last 24 hours" })
+        check("SPOKEN ACTION RECEIPT (item 2) — the voice admin answers 'what did you do?' from the REAL ledgers (overnight autonomous systems + ISA handoffs + outreach + staged drafts — the same rows the morning briefing reads), composed by a PURE fold the sim exercises directly: a busy day speaks handoffs-first with drafts and re-books in one natural sentence; a quiet day is an HONEST 'nothing to report', never invented work. Wired as a first-class voice intent ('what did you do' / 'daily receipt' / 'while I was out' / 'AI report') in the voice admin's command router",
+          spoken.includes("2 leads") && spoken.includes("3 message drafts") && spoken.includes("1 missed appointment")
+          && empty.startsWith("Nothing to report")
+          && src("app/actions/voice-assistant.ts").includes('"ai_work_receipt"')
+          && src("app/actions/voice-assistant.ts").includes("composeSpokenAiReceipt"))
+      }
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

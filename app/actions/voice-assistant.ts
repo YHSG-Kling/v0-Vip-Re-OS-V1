@@ -168,6 +168,36 @@ export async function processVoiceCommand(params: {
         actionTaken = "hot_leads_query"
         break
 
+      case "ai_work_receipt": {
+        // THE SPOKEN ACTION RECEIPT (item 2) — answer "what did you do?" from
+        // the real ledgers: overnight autonomous systems + ISA handoffs +
+        // outreach + staged drafts. Same sources as the morning briefing.
+        const { buildOvernightAiWork } = await import("@/lib/intelligence/overnight-ai-work")
+        const { composeSpokenAiReceipt } = await import("@/lib/intelligence/spoken-ai-receipt")
+        const svcR = createServiceClient()
+        const sinceR = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+        const [overnight, handoffs, outreach, drafts] = await Promise.all([
+          caller.brokerageId
+            ? buildOvernightAiWork(svcR as any, { agentUserId: caller.userId, brokerageId: caller.brokerageId, since: sinceR }).catch(() => null)
+            : Promise.resolve(null),
+          svcR.from("assignment_log").select("id", { count: "exact", head: true })
+            .eq("agent_id", agentId).gte("created_at", sinceR),
+          svcR.from("isa_outreach_log").select("id", { count: "exact", head: true })
+            .eq("brokerage_id", caller.brokerageId).gte("created_at", sinceR),
+          svcR.from("ai_message_drafts").select("id", { count: "exact", head: true })
+            .eq("agent_user_id", caller.userId).gte("created_at", sinceR),
+        ])
+        response = composeSpokenAiReceipt({
+          overnight,
+          isaHandoffs: handoffs.count ?? 0,
+          isaOutreach: outreach.count ?? 0,
+          draftsStaged: drafts.count ?? 0,
+          windowLabel: "the last 24 hours",
+        })
+        actionTaken = "ai_work_receipt"
+        break
+      }
+
       case "deals_at_risk":
         const atRisk = await getAtRiskDeals(agentId)
         if (atRisk.length === 0) {
@@ -480,6 +510,15 @@ function simpleIntentParsing(text: string): VoiceIntent {
   }
   if (lower.includes("add note") || lower.includes("make note")) {
     return { type: "add_note", entities: { note_text: text }, confidence: 0.7 }
+  }
+  // The spoken action receipt — "what did you (all) do", "daily receipt",
+  // "while I was out/asleep", "AI report".
+  if (
+    lower.includes("what did you do") || lower.includes("what did the team do") ||
+    lower.includes("daily receipt") || lower.includes("ai report") ||
+    lower.includes("while i was")
+  ) {
+    return { type: "ai_work_receipt", entities: {}, confidence: 0.85 }
   }
 
   return { type: "unknown", entities: {}, confidence: 0.5 }
