@@ -1856,8 +1856,10 @@ async function main() {
       {
         const { PLATFORM_PROVIDER_KEYS, PROBE_SPECS } = await import("../lib/agentic-os/connector-probe")
         check("INTEGRATION GUARDIAN COVERAGE AUDIT (owner's Integration-Guardian/Provider-Specialist spec) + PASS 16 + ACADEMY→BRIEFING. AUDIT VERDICT: the spec's architecture ALREADY EXISTS — connector_health_log (DriftIncident), connector_healing_proposals (RepairProposal, AI healer w/ doc search = the Provider Specialist), connector_shape_memory (schema history), ingress_dead_letters (replay), probeConnector (canary probes), pending-proposal dedup + starvation-fair healing. Stripe AND QuickBooks were already probed (PROBE_SPECS). THE GAPS, NOW CLOSED: (1) platform-keyed providers (Lob, ElevenLabs, D-ID, RentCast — env keys serving EVERY tenant) had no probe and an expired platform key was invisible until a tenant's send/render failed → four new probes + four auth styles (basic_key_only/basic_raw_key/xi-api-key/X-Api-Key) + PLATFORM_PROVIDER_KEYS probed once per guardian run, failures ledgered platform-scoped on self_heal_events (the digest's rail); BatchData intentionally exempt (POST-only, pull-drift sentinel covers it). (2) quickbooks_sync_log rows stuck 'in_progress' >24h were an UNWATCHED silent-gap (the spec's headline failure class) → the guardian cron now sweeps them per tenant onto the health log as 'silent_gap' (added to the ATTENTION set → feeds the AI healer + superadmin board); predicate live-proven on a seeded 30h-stuck row, residue 0. PASS 16 (approved item 1): the writer-less read sweep — RIGHT queries over data that can NEVER exist (the skill-freshness/neighborhood_guides class) — ships as scripts/writerless-read-sweep.ts on the guard chain: 642 read tables, 632 with runtime writers, 66 writer-less reads baselined as a burn-down; NEW ones fail CI. ACADEMY→BRIEFING (approved item 3): a stale skill (same signals as the radar — objection drills, quizzes, PASSED courses via loadAgentSkillFreshness) surfaces as a low-priority 'sharpen' action in the morning briefing pointing at the on-demand academy; honest-quiet when sharp or unproven",
-          // (round 9 added newsapi_ai — the news/semantics platform key gets a canary.)
-          Object.keys(PLATFORM_PROVIDER_KEYS).sort().join(",") === "did,elevenlabs,lob,newsapi_ai,rentcast"
+          // (round 9 added newsapi_ai — the news/semantics platform key gets a canary.
+          //  round 12 added web_push — VAPID keys registered, no GET probe: like
+          //  Exa/BatchData it has no probeable endpoint, covered by delivery telemetry.)
+          Object.keys(PLATFORM_PROVIDER_KEYS).sort().join(",") === "did,elevenlabs,lob,newsapi_ai,rentcast,web_push"
           && !!PROBE_SPECS.lob && !!PROBE_SPECS.elevenlabs && !!PROBE_SPECS.did && !!PROBE_SPECS.rentcast
           && !!PROBE_SPECS.stripe && !!PROBE_SPECS.quickbooks
           && src("app/api/cron/connector-health/route.ts").includes("PLATFORM_PROVIDER_KEYS")
@@ -2138,6 +2140,23 @@ async function main() {
         && src("app/actions/listing-landing.ts").includes("getLandingPageBySlug")
         && src("lib/marketing/email-campaign-sender.ts").includes("contact_segments")
         && src("lib/communications/vendor-communications.tsx").includes("dispatchEmail"))
+    }
+    // ── ROUND 12: ALL LOOPS CLOSED — PUSH CONNECTOR + QR VOCAB CATCH + LAST STUBS ──
+    {
+      check("ROUND 12 — THE OPEN-LOOP LEDGER CLOSES. WAR-ROOM DRILL CATCH (the round's headline): live-firing all seven Launch War Room lanes against production constraints exposed that qr_codes.purpose's CHECK admitted NONE of the values the writers use (lead_magnet / lead_capture / campaign / listing_inquiry) — production qr_codes was EMPTY because every QR the platform ever tried to mint silently failed; migration l72_s13 widened the vocabulary, and the playbook installer's brief-as-purpose bug died with it. PUSH CONNECTOR: the drain's honest no_push_provider_configured gap is now REAL egress — push_subscriptions registry (l72_s12, RLS own-rows, data_steward owner) + VAPID web-push adapter that soft-disables gone endpoints, service worker + permission toggle on the notification settings, and the drain marks real deliveries 'delivered' (the live CHECK vocabulary — 'sent' would have violated it). STALENESS RULE: pending emails older than 7 days expire at drain time, so a drain outage can never end in a backlog blast of weeks-late mail. LAST STUBS: the workflow engine's appointment + document steps write REAL calendar_events / document_requests rows (requested_by resolved agents→users class, the identity census); neighborhood data rides the AI rail labeled ai_estimated (never mock); open-house weather is a REAL Open-Meteo forecast scored + stored; certificates render actual PDFs through the board-packet rail into storage (null + honest copy when rendering fails — never a dead link); the SkySlope webhook comment was stale (provider fully implemented) and now says so",
+        src("lib/providers/web-push.ts").includes("endpoint_gone")
+        && src("app/actions/push-subscriptions.ts").includes("subscribePush")
+        && src("app/components/shared/push-permission-toggle.tsx").includes("urlBase64ToUint8Array")
+        && src("app/api/cron/queue-drain/route.ts").includes("expired_in_queue")
+        && src("app/api/cron/queue-drain/route.ts").includes("isWebPushConfigured")
+        && src("lib/agentic-os/connector-probe.ts").includes("web_push")
+        && src("lib/kernel/manager-registry.ts").includes("push_subscriptions")
+        && src("app/actions/creative-playbooks.ts").includes('purpose: "lead_capture"')
+        && src("lib/orchestrator/workflow-engine.ts").includes("requestedByUserId")
+        && src("lib/orchestrator/workflow-engine.ts").includes('from("calendar_events")')
+        && src("lib/onboarding/certificate-pdf.ts").includes("renderCertificatePdf")
+        && src("app/actions/open-house-automation.ts").includes("open-meteo")
+        && !src("app/actions/ai-content-generation.tsx").includes("returning structured mock data"))
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

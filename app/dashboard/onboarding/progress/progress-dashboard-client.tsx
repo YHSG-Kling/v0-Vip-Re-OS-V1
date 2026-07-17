@@ -577,12 +577,20 @@ export function ProgressDashboardClient({
                     </div>
 
                     {cert.awarded ? (
-                      <Button variant="outline" size="sm" asChild>
-                        <a href={cert.certificateUrl} target="_blank" rel="noopener noreferrer">
-                          <Download className="h-4 w-4 mr-2" />
-                          Download
-                        </a>
-                      </Button>
+                      cert.certificateUrl ? (
+                        <Button variant="outline" size="sm" asChild>
+                          <a href={cert.certificateUrl} target="_blank" rel="noopener noreferrer">
+                            <Download className="h-4 w-4 mr-2" />
+                            Download
+                          </a>
+                        </Button>
+                      ) : (
+                        // Older awards (or a storage hiccup at issue time) have no
+                        // stored PDF — the award itself is still on the ledger.
+                        <p className="text-xs text-muted-foreground">
+                          Certificate on record — no PDF available
+                        </p>
+                      )
                     ) : cert.eligible ? (
                       <Button
                         size="sm"

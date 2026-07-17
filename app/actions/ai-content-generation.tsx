@@ -2272,15 +2272,45 @@ export async function generateSEOKeywords(property: any, neighborhoodData?: any)
 }
 
 export async function getNeighborhoodData(city: string, zip?: string) {
-  // In production, this would integrate with APIs like Walk Score, GreatSchools, etc.
-  // For now, returning structured mock data
-  return {
-    neighborhood: 'Downtown District',
-    schools: 'Highly rated schools nearby',
-    walk_score: 75,
-    amenities: 'Parks, restaurants, shopping within walking distance',
-    school_district: 'Lincoln Unified',
-    nearby_attractions: ['City Park', 'Shopping Center', 'Community Center'],
+  // Routed through the platform AI rail (same generateAIResponse + JSON parse
+  // pattern as every other generator in this file). The result is AI-estimated
+  // and labeled as such — on failure this returns an honest error, never mock data.
+  if (!city?.trim()) {
+    return { success: false as const, error: "City is required for neighborhood data" }
+  }
+
+  try {
+    const agentContext = await getAgentContext()
+
+    const prompt = `You are a real estate data assistant. Provide a realistic neighborhood profile for the location below, for use in a listing description. Return ONLY valid JSON — no markdown, no explanation.
+
+LOCATION: ${city.trim()}${zip ? ` (ZIP ${zip})` : ""}
+
+Return this exact JSON structure:
+{
+  "neighborhood": "name of a prominent neighborhood/district in this city",
+  "schools": "one-sentence summary of local school quality",
+  "walk_score": 0-100 number (typical walkability for this area),
+  "amenities": "one-sentence summary of nearby amenities",
+  "school_district": "name of the local school district",
+  "nearby_attractions": ["attraction1", "attraction2", "attraction3"]
+}`
+
+    const response = await generateAIResponse({
+      prompt,
+      metadata: {
+        userId: agentContext.userId,
+        brokerageId: agentContext.brokerageId,
+        agentId: agentContext.agentId,
+        feature: "listing_description",
+      },
+    })
+
+    const result = parseAIJsonResponse(response.text)
+    return { ...result, data_source: "ai_estimated" }
+  } catch (error) {
+    console.error("Get neighborhood data error:", error)
+    return { success: false as const, error: "Failed to generate neighborhood data" }
   }
 }
 
@@ -2405,8 +2435,10 @@ export async function enhancedGenerateListingDescription(params: {
       return { success: false, error: 'Property not found' }
     }
 
-    // Get neighborhood data
-    const neighborhoodData = await getNeighborhoodData(property.city, property.zip)
+    // Get neighborhood data (AI-estimated; null when the AI rail fails —
+    // downstream consumers all optional-chain into it)
+    const neighborhoodResult = await getNeighborhoodData(property.city, property.zip)
+    const neighborhoodData = (neighborhoodResult as any)?.success === false ? null : neighborhoodResult
 
     // Get comparable properties
     const comps = await getComparableProperties(property)

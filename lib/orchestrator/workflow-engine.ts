@@ -32,7 +32,7 @@ async function createTask(params: {
   const supabase = await createClient()
   // tasks.brokerage_id and tasks.assigned_to_agent_id are both NOT NULL.
   // Live column is assigned_to_agent_id (not assigned_to).
-  const { data } = await supabase.from("tasks").insert({
+  const { data, error } = await supabase.from("tasks").insert({
     brokerage_id: params.brokerageId,
     title: params.title,
     description: params.description,
@@ -43,6 +43,9 @@ async function createTask(params: {
     priority: params.priority || "medium",
     status: "pending",
   }).select().single()
+  if (error) {
+    return { success: false, error: error.message }
+  }
   return { success: true, task: data }
 }
 
@@ -278,13 +281,124 @@ export class WorkflowOrchestrator {
       case "advance_stage":
         return await advanceListingStage(context.listingId, params.stage)
 
-      case "schedule_appointment":
-        // Placeholder for appointment scheduling
-        return { success: true, message: "Appointment scheduled" }
+      case "schedule_appointment": {
+        // Real scheduling through the canonical calendar rail (calendar_events —
+        // same row shape as createAppointment in app/actions/ai-calendar-management.ts).
+        // Without a concrete date/time, the honest actionable outcome is a pending
+        // task assigned to the agent to schedule it — never a fake "scheduled".
+        if (!context.brokerageId) {
+          return { success: false, error: "schedule_appointment: workflow context missing brokerageId" }
+        }
+        const startRaw = params.startTime ?? params.start_at ?? params.date ?? null
+        const startMs = startRaw ? Date.parse(String(startRaw)) : NaN
+        const entityId = context.contactId ?? context.listingId ?? null
 
-      case "request_document":
-        // Placeholder for document request
-        return { success: true, message: "Document requested" }
+        if (entityId && Number.isFinite(startMs)) {
+          const supabase = await this.getSupabase()
+          const durationMinutes = Number(params.durationMinutes ?? params.duration_minutes ?? 60)
+          const endRaw = params.endTime ?? params.end_at ?? null
+          const endMs = endRaw ? Date.parse(String(endRaw)) : NaN
+          const endAt = Number.isFinite(endMs)
+            ? new Date(endMs).toISOString()
+            : new Date(startMs + durationMinutes * 60 * 1000).toISOString()
+
+          const { data: appointment, error } = await supabase
+            .from("calendar_events")
+            .insert({
+              entity_id: entityId,
+              entity_type: context.contactId ? "contact" : "listing",
+              start_at: new Date(startMs).toISOString(),
+              end_at: endAt,
+              event_type: params.type ?? params.eventType ?? "showing",
+              brokerage_id: context.brokerageId,
+              metadata: {
+                title: params.title ?? "Appointment",
+                location: params.location,
+                notes: params.notes,
+                agentId: context.agentId ?? null,
+                source: "workflow_engine",
+              },
+            })
+            .select("id, start_at")
+            .single()
+          if (error) {
+            return { success: false, error: `schedule_appointment: ${error.message}` }
+          }
+          return {
+            success: true,
+            appointmentId: appointment.id,
+            message: `Appointment scheduled for ${appointment.start_at}`,
+          }
+        }
+
+        // No concrete date/time (or no contact/listing to anchor the event) →
+        // stage a pending scheduling task on the tasks rail instead of a no-op.
+        if (!context.agentId) {
+          return {
+            success: false,
+            error: "schedule_appointment: no concrete date/time and workflow context missing agentId (tasks.assigned_to_agent_id is NOT NULL)",
+          }
+        }
+        return await createTask({
+          brokerageId: context.brokerageId,
+          title: params.title ? `Schedule appointment: ${params.title}` : "Schedule appointment",
+          description:
+            params.notes ??
+            params.description ??
+            "Workflow requested an appointment but no date/time was provided — pick a time and put it on the calendar.",
+          dueDate: this.addDays(new Date(), params.due_days || 1),
+          assignedTo: context.agentId,
+          contactId: context.contactId,
+          listingId: context.listingId,
+          priority: params.priority || "high",
+        })
+      }
+
+      case "request_document": {
+        // Real document_requests row — same columns as the canonical writer
+        // (app/actions/intent-writers.ts requestDocument). The engine runs in
+        // service context (no session), so the row is staged directly with the
+        // workflow's own brokerage/agent identities.
+        if (!context.brokerageId) {
+          return { success: false, error: "request_document: workflow context missing brokerageId" }
+        }
+        if (!context.agentId) {
+          return { success: false, error: "request_document: workflow context missing agentId (document_requests.requested_by)" }
+        }
+        const documentName = String(params.documentName ?? params.document_name ?? params.title ?? "").trim()
+        if (!documentName) {
+          return { success: false, error: "request_document: params.documentName is required" }
+        }
+        const supabase = await this.getSupabase()
+        // IDENTITY CENSUS: context.agentId is AGENTS-class (it feeds
+        // tasks.assigned_to_agent_id), but requested_by is USERS-class in the
+        // canonical writer (intent-writers stamps ctx.userId) — resolve it.
+        const { data: agentRow } = await supabase
+          .from("agents").select("user_id").eq("id", context.agentId).maybeSingle()
+        const requestedByUserId = (agentRow as { user_id?: string } | null)?.user_id ?? null
+        if (!requestedByUserId) {
+          return { success: false, error: "request_document: could not resolve the workflow agent to a user (agents.user_id)" }
+        }
+        const { data: docRequest, error } = await supabase
+          .from("document_requests")
+          .insert({
+            brokerage_id: context.brokerageId,
+            transaction_id: context.transactionId ?? null,
+            contact_id: context.contactId ?? null,
+            document_name: documentName,
+            document_type: params.documentType ?? params.document_type ?? null,
+            status: "pending",
+            due_date: params.dueDate ?? params.due_date ?? null,
+            requested_by: requestedByUserId, // users-class (resolved)
+            metadata: { source: "workflow_engine" },
+          })
+          .select("id")
+          .single()
+        if (error) {
+          return { success: false, error: `request_document: ${error.message}` }
+        }
+        return { success: true, requestId: docRequest.id, message: `Document requested: ${documentName}` }
+      }
 
       case "delay":
         await this.sleep(params.milliseconds || 1000)

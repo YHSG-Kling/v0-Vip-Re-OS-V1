@@ -914,15 +914,23 @@ export async function getOpenHouseEvents(agentId: string) {
 // WEATHER INTEGRATION
 // ============================================
 
+/** WMO weather interpretation codes (Open-Meteo `weather_code`) → readable conditions. */
+function describeWeatherCode(code: number): string {
+  if (code === 0) return "clear sky"
+  if (code === 1) return "mostly clear"
+  if (code === 2) return "partly cloudy"
+  if (code === 3) return "overcast"
+  if (code === 45 || code === 48) return "fog"
+  if (code >= 51 && code <= 57) return "drizzle"
+  if ((code >= 61 && code <= 67) || (code >= 80 && code <= 82)) return "rain"
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "snow"
+  if (code >= 95) return "thunderstorm"
+  return "unknown"
+}
+
 export async function fetchWeatherForEvent(eventId: string) {
   if (!isValidUUID(eventId)) {
-    return {
-      temperature: 72,
-      conditions: "partly cloudy",
-      precip_chance: 10,
-      wind_speed: 8,
-      quality_score: 85,
-    }
+    return { error: "Invalid event ID" }
   }
 
   const supabase = await createClient()
@@ -938,45 +946,64 @@ export async function fetchWeatherForEvent(eventId: string) {
       return { error: "Property location not found" }
     }
 
-    // Note: This would integrate with OpenWeatherMap or similar API
-    // For demo purposes, returning mock data structure
+    // Real forecast from Open-Meteo (keyless public API) for the event date at
+    // the property's coordinates. Honest failure when the date is outside the
+    // provider's ~16-day forecast window or the fetch fails — never mock data.
+    const eventDate = String(event.event_date ?? new Date().toISOString()).slice(0, 10)
+    const url =
+      `https://api.open-meteo.com/v1/forecast` +
+      `?latitude=${encodeURIComponent(event.property.latitude)}` +
+      `&longitude=${encodeURIComponent(event.property.longitude)}` +
+      `&daily=weather_code,temperature_2m_max,precipitation_probability_max,wind_speed_10m_max` +
+      `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto` +
+      `&start_date=${eventDate}&end_date=${eventDate}`
+
+    const res = await fetch(url, { cache: "no-store" })
+    if (!res.ok) {
+      return { error: `Weather provider error (${res.status}) — forecast unavailable for ${eventDate}` }
+    }
+    const forecast = await res.json()
+    const daily = forecast?.daily
+    const temperature = Number(daily?.temperature_2m_max?.[0])
+    if (!daily || !Number.isFinite(temperature)) {
+      return { error: `No forecast available for ${eventDate} (may be outside the 16-day forecast window)` }
+    }
+
+    const precipChance = Number(daily.precipitation_probability_max?.[0] ?? 0)
+    const conditions = describeWeatherCode(Number(daily.weather_code?.[0] ?? -1))
     const weather = {
-      temperature: 72,
-      conditions: "partly cloudy",
-      precip_chance: 10,
-      wind_speed: 8,
-      humidity: 55,
-      quality_score: calculateWeatherScore({ temperature: 72, precip_chance: 10, conditions: "partly cloudy" }),
+      temperature: Math.round(temperature),
+      conditions,
+      precip_chance: Math.round(precipChance),
+      wind_speed: Math.round(Number(daily.wind_speed_10m_max?.[0] ?? 0)),
+      quality_score: calculateWeatherScore({ temperature, precip_chance: precipChance, conditions }),
+      source: "open-meteo",
       fetched_at: new Date().toISOString(),
     }
 
     // Store weather forecast
-    await supabase
+    const { error: storeError } = await supabase
       .from("open_house_events")
       .update({
         weather_forecast: weather,
       })
       .eq("id", eventId)
-
-  // Alert if poor weather
-  if (weather.quality_score < 50) {
-    console.log(`[v0] Weather warning for event ${eventId}: score ${weather.quality_score}`)
-    
-    // Send weather alert to agent
-    const { data: event } = await supabase
-      .from("open_house_events")
-      .select("agent_id")
-      .eq("id", eventId)
-      .maybeSingle()
-    
-    if (event?.agent_id) {
-      await sendWeatherAlertToAgent({
-        eventId,
-        agentId: event.agent_id,
-        weatherData: weather
-      })
+    if (storeError) {
+      // Non-fatal — the live forecast is still returned to the caller.
+      console.error(`[open-house] Failed to store weather forecast for event ${eventId}:`, storeError)
     }
-  }
+
+    // Alert the agent on poor weather
+    if (weather.quality_score < 50) {
+      console.log(`[v0] Weather warning for event ${eventId}: score ${weather.quality_score}`)
+      if (event.agent_id) {
+        await sendWeatherAlertToAgent({
+          eventId,
+          agentId: event.agent_id,
+          weatherData: weather
+        })
+      }
+    }
 
     return weather
   } catch (error) {

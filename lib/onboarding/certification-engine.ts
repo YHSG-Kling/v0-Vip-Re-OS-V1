@@ -275,7 +275,46 @@ export async function awardCertification(
     }
   }
 
-  // 2. Insert certification record
+  // 2. Render + store the certificate PDF through the real document rail
+  // (pdf-lib composition → `documents` storage bucket → public URL — same rail
+  // as board packets in lib/kernel/board-packet.ts). A render/upload failure
+  // stores certificate_url = null (readers render "awarded, no download") —
+  // an honest gap, never a dead link.
+  const issuedAt = new Date()
+  let certificateUrl: string | null = null
+  try {
+    const [{ data: agentUser }, { data: brokerage }] = await Promise.all([
+      supabase.from('users').select('first_name, last_name').eq('id', agentId).maybeSingle(),
+      supabase.from('brokerages').select('name').eq('id', brokerageId).maybeSingle(),
+    ])
+    const agentName = agentUser
+      ? `${agentUser.first_name ?? ''} ${agentUser.last_name ?? ''}`.trim() || 'Agent'
+      : 'Agent'
+
+    const { renderCertificatePdf } = await import('./certificate-pdf')
+    const pdf = await renderCertificatePdf({
+      agentName,
+      certName,
+      brokerageName: brokerage?.name ?? 'Brokerage',
+      issuedAt,
+    })
+
+    const slug = certName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    const path = `certificates/${brokerageId}/${agentId}/${slug}-${issuedAt.getTime()}.pdf`
+    const { error: uploadError } = await supabase.storage
+      .from('documents')
+      .upload(path, Buffer.from(pdf), { contentType: 'application/pdf', upsert: true })
+    if (uploadError) {
+      console.error('[CertificationEngine] Certificate PDF upload failed (certificate_url will be null):', uploadError)
+    } else {
+      const { data: pub } = supabase.storage.from('documents').getPublicUrl(path)
+      certificateUrl = pub?.publicUrl ?? null
+    }
+  } catch (err) {
+    console.error('[CertificationEngine] Certificate PDF generation failed (certificate_url will be null):', err)
+  }
+
+  // 3. Insert certification record
   const { data: cert, error: insertError } = await supabase
     .from('agent_certifications')
     .insert({
@@ -283,9 +322,9 @@ export async function awardCertification(
       brokerage_id: brokerageId,
       certification_name: certName,
       cert_type: 'onboarding',
-      issued_at: new Date().toISOString(),
+      issued_at: issuedAt.toISOString(),
       issued_by: issuedBy || null,
-      certificate_url: `/api/certificates/${agentId}/${encodeURIComponent(certName)}`, // Placeholder path for L12
+      certificate_url: certificateUrl,
     })
     .select('id')
     .single()
@@ -295,7 +334,7 @@ export async function awardCertification(
     return { success: false, error: insertError.message }
   }
 
-  // 3. Fire kernel event
+  // 4. Fire kernel event
   await processKernelEvent({
     event: KernelEvent.CERTIFICATION_AWARDED,
     brokerageId,
@@ -305,7 +344,7 @@ export async function awardCertification(
     console.error('[CertificationEngine] Notification processing failed (non-blocking):', err)
   })
 
-  // 3b. MULTI-MANAGER HANDOFF — a newly-earned credential is marketable social proof. The Recruiting
+  // 4b. MULTI-MANAGER HANDOFF — a newly-earned credential is marketable social proof. The Recruiting
   // Manager (owns certifications) hands it to the Campaign Orchestrator (content/social owner), who
   // proposes a GATED "congrats on your certification" social post. entityId = certId so each award is a
   // distinct signal; nothing auto-publishes. Best-effort — the cert award never fails on the handoff.
@@ -322,7 +361,7 @@ export async function awardCertification(
     console.error("[CertificationEngine] certification_issued handoff failed (non-blocking):", err)
   }
 
-  // 4. Check if all required onboarding certs are now awarded
+  // 5. Check if all required onboarding certs are now awarded
   const { data: allCerts } = await supabase
     .from('agent_certifications')
     .select('certification_name')
@@ -332,7 +371,7 @@ export async function awardCertification(
   const awardedCertNames = new Set((allCerts || []).map(c => c.certification_name))
   const allRequiredAwarded = REQUIRED_ONBOARDING_CERTS.every(name => awardedCertNames.has(name))
 
-  // 5. If all required certs earned, complete onboarding
+  // 6. If all required certs earned, complete onboarding
   if (allRequiredAwarded) {
     await completeOnboarding(agentId, brokerageId)
   }

@@ -17,15 +17,16 @@ import {
 //
 // Active dependencies:
 //   - SKYSLOPE_WEBHOOK_SECRET env var must be set, OR the handler rejects with 401.
-//   - lib/integrations/providers/provider-resolver.ts must implement
-//     SkySlopeProvider (currently throws "not yet implemented") before
-//     dispatch_transaction_packet can send envelopes via SkySlope. Until
-//     then, no envelope IDs get stamped onto our documents/buyer_broker_agreements
-//     and this webhook will match zero rows — the handler is a no-op safely.
+//   - lib/integrations/providers/skyslope-provider.ts implements the SkySlope
+//     API (createTransaction/sendForSignature/getSignatureStatus/... through the
+//     connector-gateway) and is registered in provider-resolver.ts, so
+//     dispatch_transaction_packet can send envelopes via SkySlope and stamp
+//     envelope IDs onto our documents/buyer_broker_agreements rows for this
+//     webhook to match.
 //
-// Once both are wired, the webhook flips voice-cockpit packets +
-// legacy offers/listing_agreements in the same shape as the Dotloop +
-// DocuSign handlers (via the shared finalize-packet helper).
+// The webhook flips voice-cockpit packets + legacy offers/listing_agreements
+// in the same shape as the Dotloop + DocuSign handlers (via the shared
+// finalize-packet helper).
 // ─────────────────────────────────────────────────────────────────────────────
 
 function verifySkyslopeSignature(rawBody: string, signatureHeader: string | null): boolean {
