@@ -2176,6 +2176,23 @@ async function main() {
         && src("app/admin/usage/page.tsx").includes("redirect(")
         && src("app/dashboard/recruiting-roi/page.tsx").includes("RecruitingPipelineClient"))
     }
+    // ── ROUND 14: EVERY ROLE ITS COCKPIT + ALL STATES + CTV LANE + MLS B-ROLL RULE ──
+    {
+      check("ROUND 14 — EVERY ROLE GETS ITS COCKPIT, EVERY STATE ITS REGULATOR, AND TV. LICENSE REGISTRY: full 50-state + DC coverage (51), every entry the REAL regulator (LARA/DBPR/IDFPR/PALS/DIAL/DELPROS/DPOR/DSPS…) — no invented scrape patterns; unconfident portals are manual_portal landing links feeding the reviewer's one-click. PLATFORM STAFF COMMAND HOME: one role-aware hub driven from the SAME platformStaffCan map the page gates use (home and gates cannot disagree), staff land there after login (fixing brokerage-less staff mis-routed to onboarding); create-user-in-any-tenant carded (the audited rail already existed); SUBSCRIBER REFERRAL FEES ride the growth-funnel rail (platform_prospects source 'referral:<who>' + the previously-dormant converted_brokerage_id link; mark-paid writes AND reads the append-only superadmin audit ledger — the audit table IS the payment ledger); staff ANNOUNCEMENTS ride the existing notifyPlatformStaff fan-out behind a new 'announcements' capability. TENANT STAFF COMPLETENESS: admins/brokers grant admin/broker (superadmin-only list narrowed to superadmin itself), the unanchored-caller scope hole is closed, and THE CATCH — users.status='suspended' had two writers and zero readers, deactivation was a NO-OP until rejectIfSuspended gated both login paths; tenant admins get ticket threads + replies on the existing support rail; the admin hub links Users/Support/Reports/P&L/Usage/Recruiting. MLS RULE: b-roll never rides a walkthrough (cutaways would cover the very footage being toured) — explicit video_type guard atop the structural usage_intent gate. CTV (vibe.co): the streaming-TV lane stages REAL launch packages (spec-checked creative, targeting, budget, checklist, deep link) as ad_campaigns platform 'vibe_ctv' (CHECK widened by m271 — live-fired; its constraint sweep matches ONLY the platform column, sparing visibility_scope whose array contains the word 'platform'); dispatch is HONESTLY not-configured until Vibe API access exists — never a simulated launch",
+        src("lib/onboarding/state-license-registry.ts").split("state:").length > 51
+        && src("app/dashboard/superadmin/home/page.tsx").includes("platformStaffCan")
+        && src("lib/kernel/role-routes.ts").includes("/dashboard/superadmin/home")
+        && src("lib/platform/subscriber-referrals.ts").includes("REFERRAL_FEE_PERCENT")
+        && src("app/actions/superadmin/platform-announcements.ts").includes("platform_announcement")
+        && src("lib/platform/platform-staff-roster.ts").includes("announcements")
+        && src("app/actions/auth.ts").includes("rejectIfSuspended")
+        && src("app/actions/support.ts").includes("replyToBrokerageTicket")
+        && src("app/api/cron/poll-did-videos/route.ts").includes("isWalkthrough")
+        && src("lib/ads/ctv-campaign.ts").includes('"vibe_ctv"')
+        && src("lib/providers/vibe.ts").includes("vibe_api_dispatch_pending_vendor_contract")
+        && src("app/dashboard/campaigns/ads/ctv-lane.tsx").length > 0
+        && src("supabase/migrations/m271-ad-campaigns-vibe-ctv-platform.sql").includes("platform = ANY"))
+    }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {
       const { readdirSync, statSync } = await import("fs")

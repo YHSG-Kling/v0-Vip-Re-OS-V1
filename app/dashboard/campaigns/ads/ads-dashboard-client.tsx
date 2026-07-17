@@ -60,6 +60,7 @@ import {
   Loader2,
   Rocket,
   LayoutTemplate,
+  Tv,
 } from "lucide-react"
 import { predictPerformanceAction } from "@/app/actions/content-prediction"
 import { PredictionWidget, type PredictionData } from "@/app/components/prediction-widget"
@@ -81,6 +82,7 @@ import {
 } from "@/lib/ads/facebook-audience-sync"
 import type { AudienceType, SourceRule } from "@/lib/ads/facebook-audience-sync-types"
 import type { AudienceTemplate } from "@/lib/ads/fb-audience-templates"
+import { CtvLane, type CtvEligibleVideo, type CtvCampaignRow } from "./ctv-lane"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -155,6 +157,9 @@ interface AdsDashboardClientProps {
   audiences: Audience[]
   adConnections?: Array<{ platform: string; connected: boolean; accountId: string | null }>
   audienceTemplates?: AudienceTemplate[]
+  /** Streaming-TV lane (Vibe.co): honest connector posture + TV-eligible creative. */
+  vibeConnected?: boolean
+  ctvEligibleVideos?: CtvEligibleVideo[]
 }
 
 // ─── AUDIENCE-TEMPLATE CATEGORY STYLING ─────────────────────────────────────
@@ -183,6 +188,9 @@ const STATUS_CONFIG: Record<string, { icon: React.ReactNode; color: string; bgCo
   error: { icon: <AlertCircle className="h-3 w-3" />, color: "text-red-600", bgColor: "bg-red-100" },
   synced: { icon: <CheckCircle className="h-3 w-3" />, color: "text-green-600", bgColor: "bg-green-100" },
   running: { icon: <Loader2 className="h-3 w-3 animate-spin" />, color: "text-blue-600", bgColor: "bg-blue-100" },
+  // 'live' = human-confirmed launched on the provider (CTV lane; also the
+  // social publisher's post-provider-success status in launch-assembler).
+  live: { icon: <Play className="h-3 w-3" />, color: "text-green-600", bgColor: "bg-green-100" },
 }
 
 const PLATFORM_COLORS: Record<string, string> = {
@@ -191,6 +199,7 @@ const PLATFORM_COLORS: Record<string, string> = {
   google: "bg-green-100 text-green-700",
   linkedin: "bg-blue-100 text-blue-800",
   tiktok: "bg-gray-100 text-gray-800",
+  vibe_ctv: "bg-violet-100 text-violet-700",
 }
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
@@ -245,6 +254,8 @@ export function AdsDashboardClient({
   audiences: initialAudiences,
   adConnections = [],
   audienceTemplates = [],
+  vibeConnected = false,
+  ctvEligibleVideos = [],
 }: AdsDashboardClientProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -673,6 +684,10 @@ export function AdsDashboardClient({
               <Megaphone className="h-4 w-4 mr-2" />
               Ad Campaigns ({campaigns.length})
             </TabsTrigger>
+            <TabsTrigger value="streaming-tv">
+              <Tv className="h-4 w-4 mr-2" />
+              Streaming TV ({campaigns.filter((c) => c.platform === "vibe_ctv").length})
+            </TabsTrigger>
             <TabsTrigger value="audiences">
               <Users className="h-4 w-4 mr-2" />
               Audiences ({audiences.length})
@@ -924,6 +939,28 @@ export function AdsDashboardClient({
                 )}
               </TabsContent>
             </Tabs>
+          </TabsContent>
+
+          {/* ═══════════════════════════════════════════════════════════════════ */}
+          {/* STREAMING TV TAB — Vibe.co CTV lane (staged launch packages) */}
+          {/* ═══════════════════════════════════════════════════════════════════ */}
+          <TabsContent value="streaming-tv" className="space-y-4">
+            <CtvLane
+              vibeConnected={vibeConnected}
+              eligibleVideos={ctvEligibleVideos}
+              ctvCampaigns={campaigns
+                .filter((c) => c.platform === "vibe_ctv")
+                .map(
+                  (c): CtvCampaignRow => ({
+                    id: c.id,
+                    campaign_name: c.campaign_name,
+                    status: c.status,
+                    daily_budget: c.daily_budget,
+                    targeting_config: (c.targeting_config ?? null) as unknown as Record<string, unknown> | null,
+                    created_at: c.created_at,
+                  }),
+                )}
+            />
           </TabsContent>
 
           {/* ═══════════════════════════════════════════════════════════════════ */}

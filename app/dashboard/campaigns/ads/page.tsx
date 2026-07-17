@@ -6,6 +6,8 @@ import { redirect } from "next/navigation"
 import { AdsDashboardClient } from "./ads-dashboard-client"
 import { getAdConnections } from "@/lib/ads/connection-status"
 import { listAudienceTemplates } from "@/app/actions/fb-audience-templates"
+import { isVibeConfigured } from "@/lib/providers/vibe"
+import type { CtvEligibleVideo } from "./ctv-lane"
 
 export const dynamic = "force-dynamic"
 
@@ -91,6 +93,23 @@ export default async function AdsCampaignsPage() {
   // Create Audience dialog.
   const audienceTemplates = await listAudienceTemplates()
 
+  // ── Streaming-TV lane (Vibe.co) ──────────────────────────────────────────
+  // TV-eligible creative: completed videos, 15-35s, with a rendered URL. The
+  // stage action re-validates (incl. 16:9) — this is the picker's shortlist.
+  const { data: ctvVideos } = await supabase
+    .from("ai_video_projects")
+    .select("id, title, video_url, duration_seconds, format, thumbnail_url, listing_id, created_at")
+    .eq("brokerage_id", profile.brokerage_id)
+    .eq("status", "completed")
+    .not("video_url", "is", null)
+    .gte("duration_seconds", 15)
+    .lte("duration_seconds", 35)
+    .order("created_at", { ascending: false })
+    .limit(24)
+
+  // Honest connection posture for the Vibe connector slot (never throws).
+  const vibeConnected = await isVibeConfigured(profile.brokerage_id)
+
   return (
     <AdsDashboardClient
       userId={user.id}
@@ -102,6 +121,8 @@ export default async function AdsCampaignsPage() {
       audiences={audiences || []}
       adConnections={adConnections}
       audienceTemplates={audienceTemplates}
+      vibeConnected={vibeConnected}
+      ctvEligibleVideos={(ctvVideos || []) as CtvEligibleVideo[]}
     />
   )
 }

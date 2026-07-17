@@ -132,7 +132,11 @@ export const PROBE_SPECS: Record<string, ProbeSpec> = {
   // Minimal 1-article GET is the cheapest authenticated call; an expired or
   // over-quota key surfaces here BEFORE a tenant's newsletter block goes dark.
   // (Exa is POST-only like BatchData — both covered by their pull-drift
-  // sentinels + the gateway telemetry, intentionally not GET-probed.)
+  // sentinels + the gateway telemetry, intentionally not GET-probed.
+  // Vibe ('vibe', the streaming-TV/CTV connector slot in lib/providers/vibe.ts)
+  // is intentionally not probed either: no documented public health endpoint
+  // exists, so credential presence in integration_credentials is the only
+  // honest signal — same exemption class as Exa/BatchData.)
   newsapi_ai: {
     provider: "newsapi_ai",
     url: "https://eventregistry.org/api/v1/article/getArticles?resultType=articles&articlesCount=1&keyword=housing",
