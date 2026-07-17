@@ -50,9 +50,18 @@ export default async function ScrapeDiagnosticsPage() {
     limit:       100,
   })
 
+  // Per-actor Apify health written by /api/cron/actor-health (platform-owned;
+  // RLS limits reads to platform admins — non-platform callers just see an empty list)
+  const { data: actorHealth } = await supabase
+    .from("scraper_actor_health")
+    .select("id, task, actor_id, alive, last_checked, last_error")
+    .order("task", { ascending: true })
+    .order("actor_id", { ascending: true })
+
   return (
     <ScrapeDiagnosticsClient
       data={diagnostics}
+      actorHealth={actorHealth ?? []}
       isSuperadmin={userType === "superadmin"}
       currentUserId={user.id}
     />

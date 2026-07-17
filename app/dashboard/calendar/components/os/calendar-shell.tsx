@@ -25,8 +25,8 @@ export type UnifiedCalendarEvent = {
   title: string
   startAt: string
   endAt: string
-  eventType: "showing" | "tour" | "open_house" | "inspection" | "appraisal" | "closing" | "appointment" | "task" | "follow_up" | "isa_appointment"
-  source: "showings" | "calendar_events" | "open_houses" | "transactions" | "tasks" | "scheduled_touchpoints" | "buyer_tours"
+  eventType: "showing" | "tour" | "open_house" | "inspection" | "appraisal" | "closing" | "appointment" | "task" | "follow_up" | "isa_appointment" | "time_block"
+  source: "showings" | "calendar_events" | "open_houses" | "transactions" | "tasks" | "scheduled_touchpoints" | "buyer_tours" | "calendar_blocks"
   location?: string
   contactId?: string
   contactName?: string
@@ -88,6 +88,7 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         tasksRes,
         touchpointsRes,
         toursRes,
+        blocksRes,
       ] = await Promise.all([
         // 1. Showings (main appointment source)
         supabase
@@ -170,6 +171,14 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           .eq("agent_id", agentId)
           .gte("tour_date", start.toISOString().split("T")[0])
           .lte("tour_date", end.toISOString().split("T")[0]),
+
+        // 8. Calendar blocks (prospecting/admin/personal/buffer time blocked via blockCalendarTime)
+        supabase
+          .from("calendar_blocks")
+          .select("id, agent_id, starts_at, ends_at, block_type, metadata")
+          .eq("agent_id", agentId)
+          .gte("starts_at", startISO)
+          .lt("starts_at", endISO),
       ])
 
       const unified: UnifiedCalendarEvent[] = []
@@ -305,6 +314,21 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           contactId: tour.contact_id,
           contactName: tour.contacts ? `${tour.contacts.first_name || ""} ${tour.contacts.last_name || ""}`.trim() : undefined,
           status: tour.status,
+        })
+      })
+
+      // Transform calendar blocks (no title column — derive from metadata.title or block_type)
+      blocksRes.data?.forEach((b: any) => {
+        const meta = (b.metadata as Record<string, unknown>) || {}
+        unified.push({
+          id: b.id,
+          title: (meta.title as string) || b.block_type?.replace(/_/g, " ") || "Blocked Time",
+          startAt: b.starts_at,
+          endAt: b.ends_at ?? new Date(new Date(b.starts_at).getTime() + 30 * 60000).toISOString(),
+          eventType: "time_block",
+          source: "calendar_blocks",
+          agentId: b.agent_id,
+          metadata: meta,
         })
       })
 

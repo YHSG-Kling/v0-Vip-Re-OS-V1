@@ -39,6 +39,27 @@ export default async function IntelligenceMeshPage() {
     agents = (agentRows ?? []) as typeof agents
   }
 
+  // Adoption log — every pattern pushed via adoptInsightAction, with the
+  // +30d outcome-tracking columns (baseline/follow-up/lift) when populated.
+  let adoptions: Array<Record<string, any>> = []
+  if (profile?.brokerage_id) {
+    const { data: adoptionRows } = await supabase
+      .from("pattern_adoptions")
+      .select(`
+        id, applied_actions, baseline_metric, followup_metric, observed_lift_pct, status, created_at,
+        insight:brokerage_intelligence_insights(headline, pattern_key),
+        agent:users!pattern_adoptions_agent_id_fkey(first_name, last_name),
+        adopter:users!pattern_adoptions_adopted_by_fkey(first_name, last_name)
+      `)
+      .eq("brokerage_id", profile.brokerage_id)
+      .order("created_at", { ascending: false })
+      .limit(50)
+    adoptions = (adoptionRows ?? []) as typeof adoptions
+  }
+
+  const fmtName = (u: { first_name: string | null; last_name: string | null } | null) =>
+    u ? `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || "—" : "—"
+
   return (
     <div className="flex flex-col h-full overflow-auto">
       <div className="flex items-center gap-2 px-6 py-4 border-b border-border bg-background sticky top-0 z-10">
@@ -72,6 +93,83 @@ export default async function IntelligenceMeshPage() {
             name: `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim() || "Unnamed agent",
           }))}
         />
+
+        {/* Adopted patterns — audit log of every playbook push with observed lift */}
+        <div className="space-y-2 pt-2">
+          <h2 className="text-base font-semibold">Adopted patterns</h2>
+          <p className="text-sm text-muted-foreground">
+            Every pattern pushed to an agent, with baseline vs. follow-up metrics once the 30-day outcome check runs.
+          </p>
+          {adoptions.length === 0 ? (
+            <p className="text-sm text-muted-foreground border border-border rounded-lg p-4">
+              No patterns adopted yet. Adopt an insight above to start tracking outcomes.
+            </p>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/40 text-left text-xs text-muted-foreground">
+                    <th className="px-4 py-2.5 font-medium">Pattern</th>
+                    <th className="px-4 py-2.5 font-medium">Agent</th>
+                    <th className="px-4 py-2.5 font-medium">Adopted by</th>
+                    <th className="px-4 py-2.5 font-medium text-right">Baseline</th>
+                    <th className="px-4 py-2.5 font-medium text-right">Follow-up</th>
+                    <th className="px-4 py-2.5 font-medium text-right">Lift</th>
+                    <th className="px-4 py-2.5 font-medium">Status</th>
+                    <th className="px-4 py-2.5 font-medium">Adopted</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {adoptions.map((adoption) => (
+                    <tr key={adoption.id} className="border-b border-border/50 last:border-0">
+                      <td className="px-4 py-2.5">
+                        <span className="font-medium">{adoption.insight?.headline ?? adoption.insight?.pattern_key ?? "—"}</span>
+                        {Array.isArray(adoption.applied_actions) && (
+                          <span className="ml-2 text-xs text-muted-foreground">
+                            {adoption.applied_actions.length} action{adoption.applied_actions.length !== 1 ? "s" : ""}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5">{fmtName(adoption.agent)}</td>
+                      <td className="px-4 py-2.5">{fmtName(adoption.adopter)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">
+                        {adoption.baseline_metric != null ? Number(adoption.baseline_metric).toLocaleString() : "—"}
+                      </td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">
+                        {adoption.followup_metric != null ? Number(adoption.followup_metric).toLocaleString() : "—"}
+                      </td>
+                      <td className={`px-4 py-2.5 text-right tabular-nums font-medium ${
+                        adoption.observed_lift_pct == null
+                          ? "text-muted-foreground"
+                          : Number(adoption.observed_lift_pct) >= 0
+                            ? "text-emerald-600"
+                            : "text-red-600"
+                      }`}>
+                        {adoption.observed_lift_pct != null
+                          ? `${Number(adoption.observed_lift_pct) >= 0 ? "+" : ""}${Number(adoption.observed_lift_pct).toFixed(1)}%`
+                          : "pending"}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs capitalize ${
+                          adoption.status === "applied"
+                            ? "bg-emerald-100 text-emerald-700"
+                            : adoption.status === "reverted"
+                              ? "bg-amber-100 text-amber-700"
+                              : "bg-red-100 text-red-700"
+                        }`}>
+                          {adoption.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 text-muted-foreground">
+                        {adoption.created_at ? new Date(adoption.created_at).toLocaleDateString() : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

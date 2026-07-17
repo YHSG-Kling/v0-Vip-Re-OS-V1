@@ -52,6 +52,9 @@ export default function AgentTransactionDetailPage() {
   const [commsItems, setCommsItems] = useState<any[]>([])
   const [commsLoading, setCommsLoading] = useState(false)
 
+  // Health factor breakdown — latest AI-scored factors persisted to transaction_health_factors
+  const [healthFactors, setHealthFactors] = useState<any[]>([])
+
   useEffect(() => {
     async function loadData() {
       try {
@@ -64,6 +67,25 @@ export default function AgentTransactionDetailPage() {
       }
     }
     loadData()
+  }, [transactionId])
+
+  // Load the latest health factor per factor_type for the breakdown list
+  useEffect(() => {
+    const supabase = createClient()
+    supabase
+      .from("transaction_health_factors")
+      .select("id, factor_type, factor_score, red_flags, warning_signs, recommendations, ai_narrative, scored_at")
+      .eq("transaction_id", transactionId)
+      .order("scored_at", { ascending: false })
+      .limit(20)
+      .then(({ data: rows }: { data: any[] | null }) => {
+        // Keep only the newest row per factor_type
+        const latestByType = new Map<string, any>()
+        for (const row of rows ?? []) {
+          if (!latestByType.has(row.factor_type)) latestByType.set(row.factor_type, row)
+        }
+        setHealthFactors([...latestByType.values()])
+      })
   }, [transactionId])
 
   // Lazy-load documents when the Documents tab is first opened
@@ -365,6 +387,45 @@ export default function AgentTransactionDetailPage() {
                     <span className="font-medium">78%</span>
                   </div>
                 </div>
+                {healthFactors.length > 0 && (
+                  <>
+                    <Separator />
+                    <div className="space-y-3">
+                      {healthFactors.map((factor) => (
+                        <div key={factor.id} className="space-y-1">
+                          <div className="flex justify-between text-sm">
+                            <span className="capitalize">{(factor.factor_type ?? "").replace(/_/g, " ")}</span>
+                            <span className="font-medium">{factor.factor_score}/100</span>
+                          </div>
+                          {Array.isArray(factor.red_flags) && factor.red_flags.length > 0 && (
+                            <div className="space-y-0.5">
+                              {factor.red_flags.slice(0, 2).map((flag: any, i: number) => (
+                                <p key={i} className="text-xs text-red-600 flex items-start gap-1">
+                                  <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                                  {typeof flag === "string" ? flag : JSON.stringify(flag)}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                          {Array.isArray(factor.recommendations) && factor.recommendations.length > 0 && (
+                            <div className="space-y-0.5">
+                              {factor.recommendations.slice(0, 2).map((rec: any, i: number) => (
+                                <p key={i} className="text-xs text-muted-foreground">
+                                  {typeof rec === "string" ? rec : JSON.stringify(rec)}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                          {factor.scored_at && (
+                            <p className="text-[10px] text-muted-foreground">
+                              Scored {new Date(factor.scored_at).toLocaleDateString()}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           </div>

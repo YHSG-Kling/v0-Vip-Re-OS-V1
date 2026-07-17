@@ -45,7 +45,7 @@ export function MeetingBriefCard({ event, agentId, onClose }: MeetingBriefCardPr
   const [brief, setBrief] = useState<MeetingBrief | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const handleGenerateBrief = () => {
+  const handleGenerateBrief = (forceRegenerate = false) => {
     if (event.source !== "showings" && event.source !== "calendar_events") {
       setError("Meeting briefs available for appointments and showings only")
       return
@@ -53,7 +53,7 @@ export function MeetingBriefCard({ event, agentId, onClose }: MeetingBriefCardPr
 
     setError(null)
     startTransition(async () => {
-      const res = await prepareMeetingBrief({ appointmentId: event.id, agentId })
+      const res = await prepareMeetingBrief({ appointmentId: event.id, agentId, forceRegenerate })
       if (res.success && res.meetingBrief) {
         setBrief(res.meetingBrief as MeetingBrief)
       } else {
@@ -107,7 +107,7 @@ export function MeetingBriefCard({ event, agentId, onClose }: MeetingBriefCardPr
                   size="sm"
                   variant="outline"
                   className="w-full"
-                  onClick={handleGenerateBrief}
+                  onClick={() => handleGenerateBrief()}
                   disabled={isPending}
                 >
                   <Sparkles className="h-3.5 w-3.5 mr-1.5" />
@@ -226,9 +226,10 @@ export function MeetingBriefCard({ event, agentId, onClose }: MeetingBriefCardPr
                   size="sm"
                   variant="ghost"
                   className="w-full text-xs"
-                  onClick={() => setBrief(null)}
+                  onClick={() => handleGenerateBrief(true)}
+                  disabled={isPending}
                 >
-                  Regenerate Brief
+                  {isPending ? "Regenerating..." : "Regenerate Brief"}
                 </Button>
               </>
             )}

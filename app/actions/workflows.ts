@@ -342,18 +342,11 @@ export async function triggerCMAPackage(
     const own = await assertOwnership("listings", propertyId, brokerageId)
     if (!own.ok) return { success: false, error: own.error }
 
-    const { data: pkg } = await supabase
-      .from("cma_packages")
-      .insert({
-        property_id: propertyId,
-        agent_id: agentId,
-        brokerage_id: brokerageId,
-        status: "generating",
-      })
-      .select()
-      .single()
+    // NOTE: cma_reports is the canonical CMA content table (read across the app).
+    // The old cma_packages insert here created a status:'generating' row that was
+    // never updated or read anywhere — dead write removed (keep-one sweep).
 
-    return { success: true, packageId: pkg?.id }
+    return { success: true }
   } catch (error: any) {
     return { success: false, error: error?.message ?? "Failed to trigger CMA" }
   }

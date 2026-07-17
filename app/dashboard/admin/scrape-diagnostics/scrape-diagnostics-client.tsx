@@ -39,6 +39,8 @@ function StatusBadge({ status }: { status: string }) {
     merged:                               "bg-blue-950 text-blue-400 border border-blue-800",
     active:                               "bg-emerald-950 text-emerald-400 border border-emerald-800",
     inactive:                             "bg-zinc-800 text-zinc-400 border border-zinc-700",
+    alive:                                "bg-emerald-950 text-emerald-400 border border-emerald-800",
+    dead:                                 "bg-red-950 text-red-400 border border-red-800",
     buyer:                                "bg-blue-950 text-blue-400 border border-blue-800",
     seller:                               "bg-amber-950 text-amber-400 border border-amber-800",
     unknown:                              "bg-zinc-800 text-zinc-400 border border-zinc-700",
@@ -111,10 +113,12 @@ const TABS: { id: Tab; label: string }[] = [
 // ─── Main client component ────────────────────────────────────────────────────
 export function ScrapeDiagnosticsClient({
   data,
+  actorHealth,
   isSuperadmin,
   currentUserId,
 }: {
   data: ScrapingDiagnosticsData
+  actorHealth: Array<{ id: string; task: string; actor_id: string; alive: boolean; last_checked: string | null; last_error: string | null }>
   isSuperadmin: boolean
   currentUserId: string
 }) {
@@ -323,6 +327,38 @@ export function ScrapeDiagnosticsClient({
                     ))}
                     {data.executions.length === 0 && (
                       <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-zinc-600">No executions recorded yet</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </TableContainer>
+            </div>
+
+            {/* Apify actor health — written by /api/cron/actor-health */}
+            <div className="mt-8">
+              <SectionHeader title="Actor Health" count={actorHealth.length} />
+              <TableContainer>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-zinc-800">
+                      <TH>Actor</TH>
+                      <TH>Task</TH>
+                      <TH>Status</TH>
+                      <TH>Last Checked</TH>
+                      <TH>Last Error</TH>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-800/60">
+                    {actorHealth.map(a => (
+                      <tr key={a.id} className="hover:bg-zinc-900/40 transition-colors">
+                        <TD mono>{a.actor_id}</TD>
+                        <TD mono>{a.task}</TD>
+                        <td className="px-4 py-3"><StatusBadge status={a.alive ? "alive" : "dead"} /></td>
+                        <TD mono>{a.last_checked ? new Date(a.last_checked).toLocaleString() : "—"}</TD>
+                        <td className="px-4 py-3 text-xs text-zinc-500 max-w-xs truncate">{a.last_error ?? "—"}</td>
+                      </tr>
+                    ))}
+                    {actorHealth.length === 0 && (
+                      <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-zinc-600">No actor health checks recorded yet</td></tr>
                     )}
                   </tbody>
                 </table>

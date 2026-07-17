@@ -640,9 +640,25 @@ export async function syncCalendar(params: {
 export async function prepareMeetingBrief(params: {
   appointmentId: string
   agentId: string
+  forceRegenerate?: boolean
 }) {
   try {
     const supabase = await createClient()
+
+    // Cache-first: return the persisted brief for this appointment+agent unless
+    // the caller explicitly asks to regenerate (mirrors the upsert key below).
+    if (!params.forceRegenerate) {
+      const { data: cachedBrief, error: cacheError } = await supabase
+        .from("meeting_briefs")
+        .select("brief_content, generated_at")
+        .eq("appointment_id", params.appointmentId)
+        .eq("agent_id", params.agentId)
+        .maybeSingle()
+
+      if (!cacheError && cachedBrief?.brief_content) {
+        return { success: true, meetingBrief: cachedBrief.brief_content, cached: true, generatedAt: cachedBrief.generated_at }
+      }
+    }
 
     const { data: appointment } = await supabase
       .from("showings")
@@ -751,9 +767,26 @@ Create a brief including:
 export async function generateWeeklyPlan(params: {
   agentId: string
   weekStartDate: string
+  forceRegenerate?: boolean
 }) {
   try {
     const supabase = await createClient()
+
+    // Cache-first: return the persisted plan for this agent+week unless the
+    // caller explicitly asks to regenerate (mirrors the upsert key below).
+    if (!params.forceRegenerate) {
+      const { data: cachedPlan, error: cacheError } = await supabase
+        .from("weekly_plans")
+        .select("plan_content, generated_at")
+        .eq("agent_id", params.agentId)
+        .eq("week_start", params.weekStartDate)
+        .maybeSingle()
+
+      if (!cacheError && cachedPlan?.plan_content) {
+        return { success: true, weeklyPlan: cachedPlan.plan_content, cached: true, generatedAt: cachedPlan.generated_at }
+      }
+    }
+
     const startDate = new Date(params.weekStartDate)
     const endDate = new Date(startDate.getTime() + 7 * 24 * 60 * 60 * 1000)
 

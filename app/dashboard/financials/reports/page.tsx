@@ -22,7 +22,7 @@ export default async function FinancialReportsPage() {
   const currentYear = new Date().getFullYear()
 
   // Fetch real transaction and commission data in parallel
-  const [earningsResult, commissionsResult, expensesResult] = await Promise.all([
+  const [earningsResult, commissionsResult, expensesResult, savedReportsResult] = await Promise.all([
     // Agent YTD earnings
     supabase
       .from("agent_earnings")
@@ -51,6 +51,15 @@ export default async function FinancialReportsPage() {
       .select("amount, category, expense_date")
       .eq("agent_id", agentId)
       .gte("expense_date", `${currentYear}-01-01`)
+      .then(r => r.data ?? []),
+
+    // Saved P&L snapshots persisted by aiGenerateProfitLossReport (financial_reports.agent_id is agents.id)
+    supabase
+      .from("financial_reports")
+      .select("id, report_type, period_start, period_end, total_income, total_expenses, net_profit, generated_at")
+      .eq("agent_id", agentId)
+      .order("generated_at", { ascending: false })
+      .limit(12)
       .then(r => r.data ?? []),
   ])
 
@@ -139,6 +148,58 @@ export default async function FinancialReportsPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* Saved reports — P&L snapshots persisted by the AI report generator */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Saved Reports</CardTitle>
+            <CardDescription>Previously generated P&amp;L snapshots for this agent</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {savedReportsResult.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No saved reports yet. Generate a P&amp;L report to create one.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                      <th className="py-2 pr-4 font-medium">Period</th>
+                      <th className="py-2 pr-4 font-medium">Type</th>
+                      <th className="py-2 pr-4 font-medium text-right">Income</th>
+                      <th className="py-2 pr-4 font-medium text-right">Expenses</th>
+                      <th className="py-2 pr-4 font-medium text-right">Net</th>
+                      <th className="py-2 font-medium">Generated</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {savedReportsResult.map((report: any) => (
+                      <tr key={report.id} className="border-b border-border/50 last:border-0">
+                        <td className="py-2 pr-4">
+                          {report.period_start && report.period_end
+                            ? `${new Date(report.period_start).toLocaleDateString()} – ${new Date(report.period_end).toLocaleDateString()}`
+                            : "—"}
+                        </td>
+                        <td className="py-2 pr-4 capitalize">{(report.report_type ?? "").replace(/_/g, " ") || "—"}</td>
+                        <td className="py-2 pr-4 text-right">
+                          {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(report.total_income ?? 0)}
+                        </td>
+                        <td className="py-2 pr-4 text-right">
+                          {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(report.total_expenses ?? 0)}
+                        </td>
+                        <td className={`py-2 pr-4 text-right font-medium ${(report.net_profit ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                          {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(report.net_profit ?? 0)}
+                        </td>
+                        <td className="py-2 text-muted-foreground">
+                          {report.generated_at ? new Date(report.generated_at).toLocaleDateString() : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Client component handles export/download actions */}
         <ReportsClient

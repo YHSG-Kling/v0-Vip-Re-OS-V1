@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -27,6 +27,7 @@ import {
 // SellerNetSheetCard is also used in the overview tab per-offer — same import above
 import {
   triggerOfferComparison,
+  loadLatestOfferComparison,
   generateSellerPortalLink,
   acceptOffer,
   rejectOffer,
@@ -143,6 +144,31 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
   const [reversalLoading, setReversalLoading] = useState(false)
 
   const selectedOffer = selectedOfferId ? offers.find(o => o.id === selectedOfferId) ?? null : null
+
+  // Hydrate the AI comparison from the latest persisted offer_comparison row so a
+  // previously generated comparison survives refresh instead of requiring a re-run.
+  useEffect(() => {
+    let cancelled = false
+    loadLatestOfferComparison(listing.id).then((res) => {
+      if (cancelled || !res.success || !res.comparison) return
+      const comparison = res.comparison as Record<string, any>
+      const matrix = Array.isArray(comparison.comparison_matrix) ? comparison.comparison_matrix : []
+      // comparison_matrix is persisted sorted best → worst by net_to_seller,
+      // so its order doubles as the ranking the matrix badges expect.
+      setAiResult((prev) =>
+        prev ?? {
+          recommendation: comparison.ai_recommendation ?? undefined,
+          comparison_summary: comparison.ai_analysis_notes ?? undefined,
+          ranked_offer_ids: matrix.map((m: any) => m.offer_id).filter(Boolean),
+          recommended_offer_id: comparison.recommended_offer_id ?? undefined,
+          net_to_seller_by_offer: comparison.net_to_seller_by_offer ?? undefined,
+        }
+      )
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [listing.id])
 
   const activeOffers = offers.filter((o) => o.status !== "rejected")
   const canApprove = ["admin", "broker", "owner"].includes(userRole)

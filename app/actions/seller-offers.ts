@@ -582,6 +582,36 @@ export async function triggerOfferComparison(params: {
   return result
 }
 
+// ── LOAD LATEST PERSISTED OFFER COMPARISON ────────────────────────────────────
+// analyzeMultipleOffers / kernel compareOffers persist comparison rows to
+// offer_comparison — this reads the latest one back so a generated comparison
+// survives page refresh instead of re-burning AI inference.
+export async function loadLatestOfferComparison(listingId: string) {
+  if (!isValidUUID(listingId)) return { success: false, error: "Invalid listing ID" }
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!await verifyListingInCallerBrokerage(listingId, auth.brokerageId)) {
+    return { success: false, error: "Forbidden" }
+  }
+
+  const supabase = createServiceClient()
+
+  const { data: comparison, error } = await supabase
+    .from("offer_comparison")
+    .select("id, offer_ids, comparison_matrix, net_to_seller_by_offer, ai_recommendation, ai_analysis_notes, recommended_offer_id, created_at")
+    .eq("listing_id", listingId)
+    // tenant anchor (scope burn-down)
+    .eq("brokerage_id", auth.brokerageId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) return { success: false, error: error.message }
+  return { success: true, comparison }
+}
+
 // ── FETCH LINKED TRANSACTION FOR A LISTING ────────────────────────────────────
 export async function getTransactionByListingId(listingId: string): Promise<{
   id: string

@@ -32,12 +32,13 @@ export function WeeklyPlanWidget({ agentId }: Props) {
   const [loading, setLoading] = useState(true)
   const [, startTransition] = useTransition()
 
-  async function load() {
+  async function load(forceRegenerate = false) {
     setLoading(true)
     try {
       const result = await generateWeeklyPlan({
         agentId,
         weekStartDate: weekStart.toISOString(),
+        forceRegenerate,
       })
       if ((result as any).success) {
         setPlan((result as any).weeklyPlan ?? null)
@@ -101,7 +102,7 @@ export function WeeklyPlanWidget({ agentId }: Props) {
           <div className="text-sm text-muted-foreground text-center py-4 space-y-2">
             <Sparkles className="h-5 w-5 mx-auto opacity-50" />
             <p>No plan generated for this week yet.</p>
-            <Button size="sm" variant="outline" onClick={load}>
+            <Button size="sm" variant="outline" onClick={() => load()}>
               <Sparkles className="h-3.5 w-3.5 mr-1.5" />
               Generate plan
             </Button>
@@ -144,6 +145,10 @@ export function WeeklyPlanWidget({ agentId }: Props) {
                 </div>
               </div>
             )}
+            <Button size="sm" variant="ghost" className="w-full text-xs" onClick={() => load(true)}>
+              <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+              Regenerate plan
+            </Button>
           </>
         )}
       </CardContent>

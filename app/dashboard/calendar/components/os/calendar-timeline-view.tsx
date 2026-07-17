@@ -24,6 +24,7 @@ const EVENT_COLORS: Record<UnifiedCalendarEvent["eventType"], string> = {
   task: "bg-slate-500/20 border-slate-500 text-slate-700 dark:text-slate-300",
   follow_up: "bg-teal-500/20 border-teal-500 text-teal-700 dark:text-teal-300",
   isa_appointment: "bg-violet-500/20 border-violet-500 text-violet-700 dark:text-violet-300",
+  time_block: "bg-zinc-500/20 border-zinc-500 text-zinc-700 dark:text-zinc-300",
 }
 
 function getEventPosition(event: UnifiedCalendarEvent, dayStart: Date) {
