@@ -94,6 +94,7 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
   let magnetUrl: string | null = null
   let magnetId: string | null = null
   let qrImageUrl: string | null = null
+  let qrCodeId: string | null = null
   let videoProjectId: string | null = null
 
   // Brand voice grounding — THE single brand source of truth (tier cascade).
@@ -167,8 +168,12 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
       targetUrl: magnetUrl,
       purpose: (qrStep.brief as any) || "lead_capture",
     })
-    if ((qr as any)?.success) qrImageUrl = (qr as any).qrCode?.image_url ?? (qr as any).imageUrl ?? null
-    else notes.push("QR creation deferred — create one from Marketing Studio pointing at the magnet URL.")
+    if ((qr as any)?.success) {
+      qrImageUrl = (qr as any).qrCode?.image_url ?? (qr as any).imageUrl ?? null
+      qrCodeId = (qr as any).qrCode?.id ?? null
+    } else {
+      notes.push("QR creation deferred — create one from Marketing Studio pointing at the magnet URL.")
+    }
   }
 
   const fill = (text: string) => text.replace(/\{\{magnet_url\}\}/g, magnetUrl ?? "[your home-value page link]")
@@ -250,8 +255,83 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
     else notes.push(`Bundle: ${r.error ?? "not created — compose it from the installed presets"}`)
   }
 
+  // OUTCOME LINKAGE (the scoreboard's anchor): the magnet's landing_content
+  // carries the playbook key + the ids of every asset whose LEDGERS score it
+  // (qr_codes scan/lead counts, ai_video_projects render state, the bundle).
+  if (magnetId) {
+    const { data: magnetRow } = await svc
+      .from("lead_capture_forms").select("landing_content").eq("id", magnetId).maybeSingle()
+    await svc.from("lead_capture_forms").update({
+      landing_content: {
+        ...(((magnetRow as any)?.landing_content as Record<string, unknown>) ?? {}),
+        playbookKey: playbook.key,
+        qrCodeId,
+        bundleId,
+        videoProjectId,
+        installedAt: new Date().toISOString(),
+      },
+    }).eq("id", magnetId)
+  }
+
   revalidatePath("/settings/campaign-bundles")
   return { success: true, installed: { magnetUrl, qrImageUrl, bundleId, videoProjectId, presets, notes } }
+}
+
+// ── THE PLAYBOOK SCOREBOARD (outcome learning) ───────────────────────────────
+// Every number comes from a ledger that already exists: qr_codes.scan_count /
+// lead_count (the tracked QR), lead_capture_forms.submission_count (the
+// capture page), ai_video_projects.status (the auto-render). Nothing modeled,
+// nothing estimated — "Zestimate Challenge: 214 scans, 31 valuations" is read
+// straight off the tables the flows write.
+
+export interface PlaybookScore {
+  playbookKey: string
+  installs: number
+  qrScans: number
+  qrLeads: number
+  submissions: number
+  videoStatus: string | null
+  lastInstalledAt: string | null
+}
+
+export async function loadPlaybookScoreboard(): Promise<PlaybookScore[]> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
+  const svc = createServiceClient()
+
+  const { data: magnets } = await svc
+    .from("lead_capture_forms")
+    .select("id, submission_count, landing_content")
+    .eq("brokerage_id", ctx.brokerageId)
+    .not("landing_content->>playbookKey", "is", null)
+    .limit(200)
+  const rows = (magnets ?? []) as Array<{ id: string; submission_count: number | null; landing_content: any }>
+  if (rows.length === 0) return []
+
+  const qrIds = rows.map((r) => r.landing_content?.qrCodeId).filter(Boolean) as string[]
+  const videoIds = rows.map((r) => r.landing_content?.videoProjectId).filter(Boolean) as string[]
+  const [{ data: qrs }, { data: videos }] = await Promise.all([
+    qrIds.length ? svc.from("qr_codes").select("id, scan_count, lead_count").in("id", qrIds) : Promise.resolve({ data: [] }),
+    videoIds.length ? svc.from("ai_video_projects").select("id, status").in("id", videoIds) : Promise.resolve({ data: [] }),
+  ])
+  const qrById = new Map(((qrs ?? []) as any[]).map((q) => [q.id, q]))
+  const videoById = new Map(((videos ?? []) as any[]).map((v) => [v.id, v]))
+
+  const byKey = new Map<string, PlaybookScore>()
+  for (const r of rows) {
+    const key = r.landing_content?.playbookKey as string
+    const s = byKey.get(key) ?? { playbookKey: key, installs: 0, qrScans: 0, qrLeads: 0, submissions: 0, videoStatus: null, lastInstalledAt: null }
+    s.installs++
+    s.submissions += r.submission_count ?? 0
+    const qr = qrById.get(r.landing_content?.qrCodeId)
+    if (qr) { s.qrScans += qr.scan_count ?? 0; s.qrLeads += qr.lead_count ?? 0 }
+    const video = videoById.get(r.landing_content?.videoProjectId)
+    if (video) s.videoStatus = video.status
+    const at = r.landing_content?.installedAt as string | undefined
+    if (at && (!s.lastInstalledAt || at > s.lastInstalledAt)) s.lastInstalledAt = at
+    byKey.set(key, s)
+  }
+  return [...byKey.values()]
 }
 
 // ── The auto-video: AI script → compliance gate → D-ID render pipeline ───────

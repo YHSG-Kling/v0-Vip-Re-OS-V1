@@ -179,9 +179,20 @@ export async function runGoLiveReadiness(svc: any): Promise<GoLiveReadiness> {
       if (!url) return r("not_configured", "BATCHDATA_MCP_URL unset — phone scrub falls back to REST and the seller net-sheet tax preload skips (template defaults stand, honestly labeled)")
       const { callBatchDataMcp } = await import("@/lib/external/batchdata-mcp")
       // Cheap contract probe — a tools/list-shaped no-op is not exposed, so use
-      // an address-free call that fails FAST with the account's real state
+      // an address call that fails FAST with the account's real state
       // (insufficient balance reads as broken-with-reason, not silently ready).
-      const probe = await callBatchDataMcp("verify_address", { street: "1 Main St", city: "Austin", state: "TX", zip: "78701" })
+      // Geo comes from a REAL enrolled subscriber territory (owner rule: no
+      // hardcoded ZIP), falling back to a neutral canary only pre-enrollment.
+      const { data: territory } = await svc
+        .from("subscriber_service_areas")
+        .select("zip_code, city, state")
+        .eq("active", true).limit(1).maybeSingle()
+      const probe = await callBatchDataMcp("verify_address", {
+        street: "1 Main St",
+        city: (territory as any)?.city ?? "Austin",
+        state: (territory as any)?.state ?? "TX",
+        zip: (territory as any)?.zip_code ?? "78701",
+      })
       if (probe.ok) return r("ready", "BatchData MCP reachable and funded")
       const reason = probe.error ?? "unreachable"
       return /balance/i.test(reason)

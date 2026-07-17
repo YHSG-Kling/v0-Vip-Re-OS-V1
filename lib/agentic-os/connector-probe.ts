@@ -120,10 +120,22 @@ export const PROBE_SPECS: Record<string, ProbeSpec> = {
   },
   rentcast: {
     provider: "rentcast",
-    url: "https://api.rentcast.io/v1/markets?zipCode=78701",
+    // {{zip}} placeholder (owner rule: never a hardcoded ZIP in a provider URL)
+    // — resolved at probe time from a REAL active subscriber territory, with a
+    // neutral default only when no territory is enrolled yet.
+    url: "https://api.rentcast.io/v1/markets?zipCode={{zip}}",
     auth: "header_x_api_key",
     shape: { connector: "rentcast", fields: [{ canonical: "saleData", aliases: ["sale_data", "rentalData", "id"], required: false }] },
   },
+}
+
+/** Default probe params when the caller has no live context to pass. */
+const DEFAULT_PROBE_PARAMS: Record<string, string> = { zip: "78701" }
+
+/** Substitute {{param}} placeholders in a probe URL. Unknown placeholders fall
+ *  back to DEFAULT_PROBE_PARAMS so a probe never fires with a literal brace. */
+export function resolveProbeUrl(url: string, params?: Record<string, string>): string {
+  return url.replace(/\{\{(\w+)\}\}/g, (_, key: string) => params?.[key] ?? DEFAULT_PROBE_PARAMS[key] ?? "")
 }
 
 /** The platform-keyed providers the guardian probes once per run (not per tenant),
@@ -163,10 +175,10 @@ export function classifyProbe(input: {
   return "ok"
 }
 
-function buildRequest(spec: ProbeSpec, conn: ResolvedConn): { url: string; headers: Record<string, string> } | null {
+function buildRequest(spec: ProbeSpec, conn: ResolvedConn, params?: Record<string, string>): { url: string; headers: Record<string, string> } | null {
   const rawUrl = typeof spec.url === "function" ? spec.url(conn) : spec.url
   if (!rawUrl) return null
-  let url = rawUrl
+  let url = resolveProbeUrl(rawUrl, params)
   const headers: Record<string, string> = { Accept: "application/json" }
   switch (spec.auth) {
     case "bearer_access_token":
@@ -217,12 +229,16 @@ function buildRequest(spec: ProbeSpec, conn: ResolvedConn): { url: string; heade
  * Never throws: a thrown fetch becomes status "unreachable". Connectors with no PROBE_SPEC
  * return null (the caller falls back to credential-posture health, not a fabricated "ok").
  */
-export async function probeConnector(provider: string, conn: ResolvedConn): Promise<ProbeResult | null> {
+export async function probeConnector(
+  provider: string,
+  conn: ResolvedConn,
+  params?: Record<string, string>,
+): Promise<ProbeResult | null> {
   const spec = PROBE_SPECS[provider]
   if (!spec) return null
   const checkedAt = new Date().toISOString()
 
-  const req = buildRequest(spec, conn)
+  const req = buildRequest(spec, conn, params)
   if (!req) {
     return { provider, status: "not_configured", httpStatus: null, drifted: false, drift: null, checkedAt, error: "Missing credential fields for probe" }
   }

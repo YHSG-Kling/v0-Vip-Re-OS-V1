@@ -141,12 +141,18 @@ export async function GET(req: Request) {
   let platformFailures = 0
   if (probeLive) {
     const { PLATFORM_PROVIDER_KEYS } = await import("@/lib/agentic-os/connector-probe")
+    // Geo-parameterized probes (owner rule: no hardcoded ZIP in provider URLs)
+    // fire against a REAL enrolled subscriber territory — the probe then tests
+    // the exact market the platform actually serves.
+    const { data: territory } = await svc
+      .from("subscriber_service_areas").select("zip_code").eq("active", true).limit(1).maybeSingle()
+    const probeParams = territory?.zip_code ? { zip: territory.zip_code as string } : undefined
     for (const [provider, envVar] of Object.entries(PLATFORM_PROVIDER_KEYS)) {
       const key = process.env[envVar]
       if (!key) continue // not configured on this deployment — no signal, no noise
       platformProbed++
       try {
-        const probe = await probeConnector(provider, { apiKey: key })
+        const probe = await probeConnector(provider, { apiKey: key }, probeParams)
         if (probe && probe.status !== "ok") {
           platformFailures++
           attention++

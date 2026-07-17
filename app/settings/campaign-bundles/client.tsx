@@ -28,6 +28,7 @@ import {
   type UpsertBundleInput,
 } from "@/app/actions/campaign-bundles"
 import { upsertCampaignPreset, deactivateCampaignPreset, type PresetChannel } from "@/app/actions/campaign-presets"
+import type { PlaybookScore } from "@/app/actions/creative-playbooks"
 import { installCreativePlaybook } from "@/app/actions/creative-playbooks"
 import { CREATIVE_PLAYBOOKS } from "@/lib/marketing/creative-playbooks"
 
@@ -65,11 +66,12 @@ const CHANNEL_ORDER: BundleChannel[] = [
 ]
 
 export function CampaignBundlesClient({
-  initialBundles, catalog, access,
+  initialBundles, catalog, access, playbookScores = [],
 }: {
   initialBundles: BundleRow[]
   catalog:        PresetCatalog
   access:         AccessProp
+  playbookScores?: PlaybookScore[]
 }) {
   const [bundles, setBundles] = useState(initialBundles)
   const [editing, setEditing] = useState<BundleRow | null>(null)
@@ -279,8 +281,24 @@ export function CampaignBundlesClient({
                 </div>
                 <p className="text-xs text-gray-600">{p.whyItWorks}</p>
                 <p className="text-xs text-gray-500">
-                  <span className="font-medium">Rides on:</span> {p.ridesOn} · <span className="font-medium">Channels:</span> {p.steps.filter((s) => !["bundle","lead_magnet","qr"].includes(s.kind)).map((s) => s.kind.replace(/_/g, " ")).join(", ")}
+                  <span className="font-medium">Rides on:</span> {p.ridesOn} · <span className="font-medium">Channels:</span> {p.steps.filter((s) => !["bundle","lead_magnet","qr","video"].includes(s.kind)).map((s) => s.kind.replace(/_/g, " ")).join(", ")}
                 </p>
+                {(() => {
+                  // OUTCOME SCOREBOARD — real ledger numbers (QR scans, capture
+                  // submissions, video render state), never modeled.
+                  const score = playbookScores.find((s) => s.playbookKey === p.key)
+                  if (!score) return null
+                  return (
+                    <div className="flex flex-wrap gap-3 text-xs bg-purple-50 border border-purple-100 rounded px-2.5 py-1.5">
+                      <span className="font-semibold text-purple-900">Live results:</span>
+                      <span className="text-gray-700">{score.qrScans} scans</span>
+                      <span className="text-gray-700">{score.qrLeads} QR leads</span>
+                      <span className="text-gray-700">{score.submissions} submissions</span>
+                      {score.videoStatus && <span className="text-gray-700">video: {score.videoStatus}</span>}
+                      <span className="text-gray-500">({score.installs} install{score.installs === 1 ? "" : "s"})</span>
+                    </div>
+                  )
+                })()}
                 {installResult?.key === p.key && (
                   <div className="text-xs bg-emerald-50 border border-emerald-200 rounded p-2 space-y-1">
                     <p className="text-emerald-800 font-medium">Installed — presets + bundle are on your shelves below.</p>

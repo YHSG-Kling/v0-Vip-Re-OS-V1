@@ -1,14 +1,16 @@
 import { listCampaignBundles, listAvailablePresets } from "@/app/actions/campaign-bundles"
+import { loadPlaybookScoreboard } from "@/app/actions/creative-playbooks"
 import { resolvePolicyScopeAccess } from "@/lib/identity/policy-scope"
 import { CampaignBundlesClient } from "./client"
 
 export const dynamic = "force-dynamic"
 
 export default async function CampaignBundlesPage() {
-  const [bundlesR, catalogR, access] = await Promise.all([
+  const [bundlesR, catalogR, access, scoreboard] = await Promise.all([
     listCampaignBundles(),
     listAvailablePresets(),
     resolvePolicyScopeAccess(),
+    loadPlaybookScoreboard().catch(() => []),
   ])
   if (!bundlesR.success) {
     return (
@@ -29,6 +31,7 @@ export default async function CampaignBundlesPage() {
   return (
     <CampaignBundlesClient
       initialBundles={bundlesR.bundles}
+      playbookScores={scoreboard}
       catalog={catalogR.catalog}
       access={{
         canEditAgent:     access.canEditAgent,
