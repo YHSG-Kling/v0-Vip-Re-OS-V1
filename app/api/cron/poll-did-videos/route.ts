@@ -237,7 +237,13 @@ export async function GET(request: NextRequest) {
               // compositing step.
               let brolledBuffer: Buffer | null = null
               const brollUrls = ((video as any).b_roll_urls as string[] | null) ?? []
-              if (!isExplainer && brollUrls.length > 0) {
+              // OWNER RULE: b-roll must NEVER ride an MLS walkthrough. The
+              // usage_intent==='mls' gate above already excludes MLS renders
+              // from ALL compositing; this adds the explicit walkthrough guard
+              // (defense in depth — a walkthrough IS the property footage, a
+              // cutaway would cover the very thing being toured).
+              const isWalkthrough = String((video as any).video_type ?? "").includes("walkthrough")
+              if (!isExplainer && !isWalkthrough && brollUrls.length > 0) {
                 const raw = await fetch(persistedVideoUrl).then(async (r) => (r.ok ? Buffer.from(await r.arrayBuffer()) : null)).catch(() => null)
                 if (raw) {
                   const brolled = await compositeBrollCutaways({ mainVideoBuffer: raw, brollUrls })
