@@ -38,7 +38,11 @@ function pureLayer(): void {
   check("CA URL fills {{license}} encoded", !!ca && resolveLookupUrl(ca.lookupUrl, { license: "0131 7331" }).includes("0131%207331"))
   check("TX resolves as scrape", getStateLicenseSource("TX")?.method === "scrape")
   check("FL is manual_portal (session-gated)", getStateLicenseSource("FL")?.method === "manual_portal")
-  check("unknown state ⇒ null (falls to review, no link)", getStateLicenseSource("IA") === null && getStateLicenseSource("ZZ") === null)
+  // Registry now covers all 50 states + DC, so IA (formerly omitted) resolves;
+  // "unknown" must be tested with a non-jurisdiction code.
+  check("IA resolves (registry covers all states)", getStateLicenseSource("IA")?.method === "manual_portal")
+  check("unknown code ⇒ null (falls to review, no link)", getStateLicenseSource("ZZ") === null)
+  check("registry covers all 50 states + DC (51 entries)", listStateLicenseSources().length === 51)
   check("every registry URL is https", listStateLicenseSources().every((s) => s.lookupUrl.startsWith("https://")))
 
   console.log("\n[license ladder · pure — verdict mapping (never auto-fail)]")

@@ -15,8 +15,8 @@
 //                            license goes to the human review queue (the floor of
 //                            the ladder).
 //
-// States without a known public portal are simply absent — the ladder falls to
-// manual review with no link. NO network, NO db in this module.
+// All 50 states + DC are covered. Jurisdictions not listed (e.g. territories)
+// fall to manual review with no link. NO network, NO db in this module.
 
 export interface StateLicenseSource {
   /** Two-letter USPS state code, uppercase. */
@@ -150,6 +150,14 @@ const SOURCES: StateLicenseSource[] = [
     method: "manual_portal",
   },
   {
+    state: "IA",
+    boardName: "Iowa Real Estate Commission (Dept. of Inspections, Appeals & Licensing — Professional Licensing)",
+    // DIAL absorbed the Professional Licensing Bureau (incl. real estate) in 2023;
+    // its license search is a JS app, so the reviewer gets the agency landing page.
+    lookupUrl: "https://dial.iowa.gov/",
+    method: "manual_portal",
+  },
+  {
     state: "KS",
     boardName: "Kansas Real Estate Commission",
     lookupUrl: "https://krec.ks.gov/",
@@ -183,6 +191,13 @@ const SOURCES: StateLicenseSource[] = [
     state: "MA",
     boardName: "Massachusetts Board of Registration of Real Estate Brokers & Salespersons",
     lookupUrl: "https://elicensing21.mass.gov/CitizenAccess/",
+    method: "manual_portal",
+  },
+  {
+    state: "MI",
+    boardName: "Michigan Department of Licensing and Regulatory Affairs (LARA) — Real Estate Brokers & Salespersons",
+    // LARA license verification runs on an Accela citizen portal (JS/session app).
+    lookupUrl: "https://aca-prod.accela.com/LARA/",
     method: "manual_portal",
   },
   {
@@ -324,14 +339,20 @@ const SOURCES: StateLicenseSource[] = [
     method: "manual_portal",
   },
   {
+    state: "WY",
+    boardName: "Wyoming Real Estate Commission",
+    // The commission's licensee search has no stable GET contract — landing page only.
+    lookupUrl: "https://realestate.wyo.gov/",
+    method: "manual_portal",
+  },
+  {
     state: "DC",
     boardName: "DC Real Estate Commission (DLCP)",
     lookupUrl: "https://dlcp.dc.gov/page/real-estate-commission",
     method: "manual_portal",
   },
-  // Iowa + Wyoming: no stable public portal URL known with confidence — omitted
-  // on purpose so the ladder falls to manual review with no link rather than a
-  // wrong one.
+  // Coverage: all 50 states + DC (51 entries). If a future state portal breaks,
+  // prefer flipping it to manual_portal over guessing a new GET pattern.
 ]
 
 const BY_STATE: ReadonlyMap<string, StateLicenseSource> = new Map(
