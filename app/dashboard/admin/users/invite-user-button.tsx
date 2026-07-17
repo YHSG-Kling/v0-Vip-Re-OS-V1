@@ -39,18 +39,19 @@ const ROLE_LABELS: Record<string, string> = {
   team_lead: "Team Lead",
   compliance_officer: "Compliance Officer",
   vendor: "Vendor",
-  lender: "Lender",
+  // (No lender label — lenders are vendors: invite them through the vendor
+  // flow with a lender category. Owner model, round 16.)
 }
 
-// Which roles a tenant may seat is decided by its plan tier — the canonical
-// matrix in lib/kernel/tier-role-matrix.ts (the server action enforces the same
-// matrix, so this list is honest, not just cosmetic). Tier-locked roles get a
-// short upgrade note instead of silently failing at submit.
+// Roles are OPEN on every tier (solo just has no broker) — SEATS are the
+// constraint: Solo 2 · Team 5 · Brokerage/Multi unlimited. The canonical
+// matrix + seat caps live in lib/kernel/tier-role-matrix.ts and the server
+// action enforces both, so these notes are honest, not just cosmetic.
 const TIER_LOCK_NOTES: Record<string, string> = {
   solo_agent:
-    "Your Solo plan is a single seat — you can invite vendor and lender partners. Upgrade to Team to add team members.",
+    "Your Solo plan includes 2 seats (no broker role). Vendors never use a seat. Upgrade to Team for 5 seats.",
   team:
-    "Upgrade to Brokerage to add governance roles (broker, transaction coordinator, compliance officer).",
+    "Your Team plan includes 5 seats. Vendors never use a seat. Upgrade to Brokerage for unlimited seats.",
 }
 
 export function InviteUserButton({ callerRole, brokerageId, tier }: InviteUserButtonProps) {

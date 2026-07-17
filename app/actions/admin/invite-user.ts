@@ -7,7 +7,7 @@ import { inviteTenantMember } from "@/lib/kernel/users"
 import { emitUserProvisionedEvent } from "@/lib/kernel/users"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { UserDomainRole } from "@/lib/kernel/users"
-import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
+import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatCheck, SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
 
 export interface InviteUserParams {
   email: string
@@ -113,6 +113,30 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
         (minTier ? ` Upgrade to ${TIER_LABELS[minTier]} to invite this role.` : ""),
     }
   }
+
+  // ── Gate 4c: SEATS (owner-corrected model — roles are open, seats are the
+  // constraint: Solo 2 · Team 5 · Brokerage/Multi unlimited). A seat is a
+  // working staff user; partners (vendor) never consume one. Suspended users
+  // don't hold a seat — deactivate one to free it.
+  if (roleConsumesSeat(requestedRole)) {
+    const { count: seatCount, error: seatErr } = await service
+      .from("users")
+      .select("id", { count: "exact", head: true })
+      .eq("brokerage_id", resolvedBrokerageId)
+      .in("user_type", SEAT_ROLES as unknown as string[])
+      .neq("status", "suspended")
+    if (seatErr) return { success: false, error: seatErr.message }
+    const seats = seatCheck(tenantTier, seatCount ?? 0)
+    if (!seats.allowed) {
+      return {
+        success: false,
+        error:
+          `The ${tierLabel(tenantTier)} plan includes ${seats.limit} seat${seats.limit === 1 ? "" : "s"} and all are in use. ` +
+          `Deactivate a user to free a seat, or upgrade the plan.`,
+      }
+    }
+  }
+
   const provisioned = await inviteTenantMember({
     brokerageId:  resolvedBrokerageId,
     teamId:       resolvedTeamId,

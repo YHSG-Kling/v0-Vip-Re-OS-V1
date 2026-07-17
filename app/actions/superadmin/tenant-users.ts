@@ -10,7 +10,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { inviteTenantMember, type UserDomainRole } from "@/lib/kernel/users"
-import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
+import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatCheck, SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
@@ -102,6 +102,28 @@ export async function createTenantUserAction(params: {
     }
   }
 
+  // SEATS (owner model: Solo 2 · Team 5 · Brokerage/Multi unlimited — a seat is
+  // a working staff user; partners never consume one). The same override that
+  // bypasses the role matrix bypasses the seat cap, with the same audit trail.
+  let seatOverLimit = false
+  if (roleConsumesSeat(params.userType as UserDomainRole)) {
+    const { count: seatCount, error: seatErr } = await svc
+      .from("users")
+      .select("id", { count: "exact", head: true })
+      .eq("brokerage_id", params.brokerageId)
+      .in("user_type", SEAT_ROLES as unknown as string[])
+      .neq("status", "suspended")
+    if (seatErr) return { ok: false, error: seatErr.message }
+    const seats = seatCheck(targetTier, seatCount ?? 0)
+    seatOverLimit = !seats.allowed
+    if (seatOverLimit && !params.superadminOverride) {
+      return {
+        ok: false,
+        error: `The ${tierLabel(targetTier)} plan includes ${seats.limit} seats and all are in use. Deactivate a user, upgrade the tenant, or pass superadminOverride.`,
+      }
+    }
+  }
+
   const res = await inviteTenantMember({
     brokerageId:  params.brokerageId,
     teamId:       params.teamId ?? null,
@@ -114,11 +136,12 @@ export async function createTenantUserAction(params: {
   })
   if (!res.success || !res.userId) return { ok: false, error: res.error ?? "Failed to create user" }
 
-  // The override actually bypassed the matrix → ledger entry (accountability for
-  // the one sanctioned bypass; same superadmin_audit_log shape as every audit here).
-  if (roleOutsideTier && params.superadminOverride) {
+  // The override actually bypassed the matrix or the seat cap → ledger entry
+  // (accountability for the one sanctioned bypass).
+  if ((roleOutsideTier || seatOverLimit) && params.superadminOverride) {
     await audit(auth.userId, auth.email, "user.tier_matrix_override", res.userId, {
       brokerage_id: params.brokerageId, role: params.userType, tenant_tier: targetTier, email,
+      bypassed: { role_matrix: roleOutsideTier, seat_cap: seatOverLimit },
     })
   }
   await audit(auth.userId, auth.email, "user.created", res.userId, { brokerage_id: params.brokerageId, role: params.userType, email })
