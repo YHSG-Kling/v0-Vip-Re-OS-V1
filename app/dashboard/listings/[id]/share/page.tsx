@@ -46,7 +46,7 @@ interface MarketingContentRow {
   id: string
   content_type: string
   content: unknown
-  created_at: string | null
+  generated_at: string | null
 }
 
 // Flatten a listing_marketing_content jsonb blob into copyable text pieces.
@@ -122,9 +122,10 @@ export default function ListingSharePage() {
       // AI-generated marketing pieces for this listing (listing_marketing_content)
       const { data: marketing } = await supabase
         .from("listing_marketing_content")
-        .select("id, content_type, content, created_at")
+        // generated_at is the live timestamp column (no created_at — drift guard)
+        .select("id, content_type, content, generated_at")
         .eq("listing_id", listingId)
-        .order("created_at", { ascending: false })
+        .order("generated_at", { ascending: false })
 
       setMarketingContent((marketing as MarketingContentRow[] | null) ?? [])
     }
@@ -374,9 +375,9 @@ export default function ListingSharePage() {
                         <Badge variant="outline" className="text-xs capitalize">
                           {row.content_type.replace(/_/g, " ")}
                         </Badge>
-                        {row.created_at && (
+                        {row.generated_at && (
                           <span className="text-xs text-muted-foreground">
-                            {new Date(row.created_at).toLocaleDateString()}
+                            {new Date(row.generated_at).toLocaleDateString()}
                           </span>
                         )}
                       </div>
