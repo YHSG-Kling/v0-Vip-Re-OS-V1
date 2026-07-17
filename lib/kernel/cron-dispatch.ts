@@ -114,6 +114,9 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/fire-drill"                          , schedule: "*/30 * * * *" },
   { path: "/api/cron/manager-signals"                     , schedule: "*/30 * * * *" },
   { path: "/api/cron/campaign-sequence-steps"             , schedule: "*/5 * * * *" },
+  // Unified queue drain — email_queue / push_notification_queue / orchestrator_tasks /
+  // drip_campaigns (write-only-ledger burn-down: queues finally get a consumer).
+  { path: "/api/cron/queue-drain"                         , schedule: "*/5 * * * *" },
   { path: "/api/cron/composition-render-queue"            , schedule: "*/5 * * * *" },
   { path: "/api/cron/director-reel-render"                , schedule: "*/5 * * * *" },
   { path: "/api/cron/listing-promo-render"                , schedule: "*/5 * * * *" },

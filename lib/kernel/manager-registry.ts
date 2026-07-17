@@ -1461,6 +1461,7 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/automation-error-monitor": "cron_manager",
   "/api/cron/retry-errors": "cron_manager",
   "/api/cron/workflow-retries": "cron_manager",
+  "/api/cron/queue-drain": "cron_manager",
   "/api/cron/tenant-safety-scan": "data_steward",
   "/api/cron/support-sla": "data_steward",
   "/api/cron/manager-eval": "data_steward",

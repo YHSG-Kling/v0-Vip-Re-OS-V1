@@ -596,14 +596,9 @@ export async function attachLeadOriginHistoryToContact(params: {
     .eq("id", params.contactId)
     .eq("brokerage_id", params.brokerageId)
 
-  // Write referral_sources row for audit
-  await supabase.from("referral_sources").insert({
-    brokerage_id: params.brokerageId,
-    contact_id:   params.contactId,
-    source_type:  lead.source ?? "lead",
-    source_label: lead.source_family ?? "acquisition",
-    created_at:   new Date().toISOString(),
-  })
+  // Keep-one: the same values already land on contacts.source/source_family above,
+  // which is the read surface for attribution — the referral_sources insert was a
+  // redundant write-only ledger and has been removed.
 
   return { success: true }
 }

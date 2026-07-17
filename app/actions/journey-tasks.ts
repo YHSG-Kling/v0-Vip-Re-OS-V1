@@ -216,14 +216,28 @@ export async function handleTaskCompletedEvent(payload: any) {
       .eq("id", payload.contact_id)
       .maybeSingle()
     if (contact?.agent_id) {
-      await supabase.from("agent_notifications").insert({
-        agent_id: contact.agent_id,
-        brokerage_id: contact.brokerage_id,
-        type: "task_completed",
-        title: `Client completed: ${payload.task_name}`,
-        body: `${payload.task_name} completed in the ${payload.stage_name} stage.`,
-        data: { contact_id: payload.contact_id, task_name: payload.task_name, stage_name: payload.stage_name },
-      })
+      // Keep-one: `notifications` is the canonical in-app alert table (the bell
+      // reads it) — agent_notifications was a write-only ledger. contacts.agent_id
+      // is agents.id; notifications.user_id is users-class, so resolve through the
+      // canonical identity helper.
+      const { resolveAgentRecordToUserId } = await import("@/lib/kernel/agent-identity-resolver")
+      const userId = await resolveAgentRecordToUserId(contact.agent_id)
+      if (userId) {
+        const { error: notifErr } = await supabase.from("notifications").insert({
+          user_id: userId,
+          brokerage_id: contact.brokerage_id,
+          type: "task_completed",
+          title: `Client completed: ${payload.task_name}`,
+          body: `${payload.task_name} completed in the ${payload.stage_name} stage.`,
+          entity_type: "contact",
+          entity_id: payload.contact_id,
+          priority: "medium",
+          channel: "in_app",
+          is_read: false,
+          created_at: new Date().toISOString(),
+        })
+        if (notifErr) console.error("[journey-tasks] task-completed notification insert failed:", notifErr.message)
+      }
     }
   } catch { /* non-critical */ }
   

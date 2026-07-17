@@ -9,7 +9,7 @@
  *   │ 1. TC or Title/Closing Attorney uploads PRELIMINARY CD to portal      │
  *   │    → notifyAgentOfPreliminaryCdAction                                 │
  *   │    → CDA row created with status = 'pending' (drafting)               │
- *   │    → closing_notifications + activity to agent                        │
+ *   │    → notification (canonical `notifications`) + activity to agent     │
  *   │                                                                       │
  *   │ 2. Agent fills out the CDA in the portal                              │
  *   │    → draftOrUpdateCdaAction (writes commission_breakdown + notes)     │
@@ -44,7 +44,7 @@
  *
  * Tables used (all already in DB — no new tables introduced here):
  *   closing_disclosure_agreement, closing_disclosure_agreement_revisions,
- *   closing_notifications, transaction_documents, activities, transactions
+ *   notifications, transaction_documents, activities, transactions
  */
 
 import { createClient } from "@/lib/supabase/server"
@@ -257,13 +257,9 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
     cdaId = created.id
   }
 
-  // closing_notifications row (existing table — used by the closing UI).
-  await supabase.from("closing_notifications").insert({
-    transaction_id: input.transactionId,
-    notification_type: "preliminary_cd_received",
-    sent_to_user_id: agent.user_id,
-    message: `Preliminary CD has been uploaded for ${txn.property_address ?? "the transaction"}. Please draft the CDA in the portal.`,
-  })
+  // Keep-one: closing_notifications was a write-only ledger (nothing reads it);
+  // `notifications` below is the canonical in-app surface and already carries
+  // this exact closing event to the same agent — repointed, duplicate removed.
 
   // In-app notification + activity (existing tables).
   await supabase.from("notifications").insert({
@@ -610,11 +606,10 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
     }
   }
 
-  await supabase.from("closing_notifications").insert({
-    transaction_id: cda.transaction_id,
-    notification_type: "cda_submitted",
-    message: "Agent submitted CDA for compliance approval.",
-  })
+  // Keep-one: closing_notifications was a write-only ledger (nothing reads it,
+  // and this row carried no recipient). The canonical `notifications` inserts
+  // above already deliver cda_submitted to the real audience (compliance users,
+  // or the solo agent on the external route) — repointed, duplicate removed.
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   revalidatePath(`/dashboard/compliance`)
@@ -909,11 +904,10 @@ export async function requestCdaChangesAction(input: { cdaId: string; reason: st
     })
   }
 
-  await supabase.from("closing_notifications").insert({
-    transaction_id: cda.transaction_id,
-    notification_type: "cda_changes_requested",
-    message: `Compliance returned CDA with changes: ${input.reason.trim().slice(0, 280)}`,
-  })
+  // Keep-one: closing_notifications was a write-only ledger (nothing reads it,
+  // and this row carried no recipient). The canonical `notifications` insert
+  // above already delivers cda_changes_requested to the agent — repointed,
+  // duplicate removed.
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   revalidatePath(`/dashboard/compliance`)
