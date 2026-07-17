@@ -39,11 +39,15 @@ export default async function VendorPortalDashboard({ searchParams }: { searchPa
         .maybeSingle()
 
       if (userRow?.email) {
-        const { data: vendor } = await supabase
+        // tenant anchor (scope burn-down): the email identity match is pinned
+        // to the caller's own brokerage when their profile carries one.
+        let vendorQuery = supabase
           .from("vendors")
           .select("id")
           .eq("email", userRow.email)
-          .maybeSingle()
+          .limit(1)
+        if (userRow.brokerage_id) vendorQuery = vendorQuery.eq("brokerage_id", userRow.brokerage_id)
+        const { data: vendor } = await vendorQuery.maybeSingle()
         vendorId = vendor?.id
       }
     }

@@ -65,9 +65,17 @@ export default async function AdminUsersPage() {
   // agents rows and TC rows in a single query each
   const userIds = userList.map(u => u.id)
 
+  // tenant anchor (scope burn-down): userIds come from the brokerage-scoped users
+  // query above; additionally pin the agents lookup to the caller's brokerage for
+  // non-superadmin callers (superadmin is platform-wide by design).
+  let agentsQuery = service.from("agents").select("user_id").in("user_id", userIds)
+  if (callerType !== "superadmin" && profile?.brokerage_id) {
+    agentsQuery = agentsQuery.eq("brokerage_id", profile.brokerage_id) as typeof agentsQuery
+  }
+
   const [{ data: agentRows }, { data: tcRows }] = await Promise.all([
     userIds.length
-      ? service.from("agents").select("user_id").in("user_id", userIds)
+      ? agentsQuery
       : Promise.resolve({ data: [] }),
     userIds.length
       ? service.from("transaction_coordinators").select("user_id").in("user_id", userIds)

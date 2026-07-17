@@ -34,10 +34,13 @@ export async function promoteLeadToContactService(
     }
 
     // Step 2: Idempotency check
+    // tenant anchor (scope burn-down): the probe is pinned to the validated
+    // lead's brokerage — the notes marker alone must never match cross-tenant.
     if (lead.is_active === false) {
       const { data: existingContact } = await supabase
         .from("contacts")
         .select("id")
+        .eq("brokerage_id", lead.brokerage_id)
         .eq("notes", `Promoted from lead ${leadId}`)
         .limit(1)
         .single()

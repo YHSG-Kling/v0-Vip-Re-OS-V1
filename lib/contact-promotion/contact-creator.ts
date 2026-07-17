@@ -211,9 +211,11 @@ export async function createContactFromLead(
       updated_at: new Date().toISOString()
     }
 
+    // tenant anchor (scope burn-down): pin the insert to the promoting lead's
+    // brokerage at the call site (contactData carries the same value).
     const { data: contact, error } = await supabase
       .from("contacts")
-      .insert(contactData)
+      .insert({ ...contactData, brokerage_id: data.brokerageId })
       .select()
       .single()
 

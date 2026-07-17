@@ -13,6 +13,24 @@ import { z } from "zod"
 // Real-time market trends, predictions, and actionable insights
 // ============================================================================
 
+// Auth gate — same pattern as ai-lead-nurturing / ai-listing-presentation.
+// Resolves the caller's brokerage so listings reads stay tenant-scoped.
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
+
 /**
  * Generate comprehensive market report with AI analysis
  */
@@ -27,6 +45,9 @@ export async function generateMarketReport(params: {
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
   }
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = await createClient()
 
@@ -43,6 +64,8 @@ export async function generateMarketReport(params: {
     const { data: recentSales } = await supabase
       .from("listings")
       .select("*")
+      // tenant anchor (scope burn-down): sales history from the caller's own brokerage
+      .eq("brokerage_id", auth.brokerageId)
       .eq("status", "sold")
       .order("go_live_date", { ascending: false })
       .limit(50)
@@ -149,6 +172,9 @@ export async function predictPropertyPrice(params: {
     return { success: false, error: "Invalid agent ID" }
   }
 
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = await createClient()
 
   try {
@@ -156,6 +182,8 @@ export async function predictPropertyPrice(params: {
     const { data: comps } = await supabase
       .from("listings")
       .select("*")
+      // tenant anchor (scope burn-down): comps from the caller's own brokerage inventory
+      .eq("brokerage_id", auth.brokerageId)
       .eq("zip", params.propertyData.zipCode)
       .eq("status", "sold")
       .gte("bedrooms", params.propertyData.bedrooms - 1)
@@ -301,6 +329,9 @@ export async function analyzeNeighborhood(params: {
     return { success: false, error: "Invalid agent ID" }
   }
 
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
   const supabase = await createClient()
 
   try {
@@ -308,6 +339,8 @@ export async function analyzeNeighborhood(params: {
     const { data: areaListings } = await supabase
       .from("listings")
       .select("*")
+      // tenant anchor (scope burn-down): area sample limited to the caller's brokerage
+      .eq("brokerage_id", auth.brokerageId)
       .ilike("city", `%${params.city}%`)
       .order("created_at", { ascending: false })
       .limit(50)

@@ -31,6 +31,9 @@ export async function aggregateValueDelivered(agentId: string, date: Date) {
     supabase
       .from("messages")
       .select("*")
+      // tenant anchor (scope burn-down): this is a per-agent value metric —
+      // count only the AI responses sent on this agent's conversations.
+      .eq("agent_id", agentId)
       .eq("sender_type", "ai")
       .gte("created_at", dateStr)
       .lt("created_at", new Date(date.getTime() + 86400000).toISOString()),

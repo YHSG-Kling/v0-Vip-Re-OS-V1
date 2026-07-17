@@ -456,11 +456,19 @@ export async function createAIListing(params: ListingCreationParams): Promise<Li
     const supabase = await createClient()
     const { propertyData } = params
 
+    // brokerage_id is NOT NULL on listings — resolve it from the agent up front
+    // (also anchors the comps read below to the agent's own brokerage).
+    const { data: agentRow } = await supabase.from("users").select("brokerage_id").eq("id", params.agentId).maybeSingle()
+    const brokerageId = (agentRow as { brokerage_id: string | null } | null)?.brokerage_id ?? null
+    if (!brokerageId) return { success: false, error: "Could not resolve brokerage for the agent" }
+
     // Get comparable sales for pricing
     const { data: comps } = await supabase
       .from("listings")
       // listings has no sold_price/sold_date/price columns — use list_price + go_live_date.
       .select("list_price, sqft, bedrooms, bathrooms")
+      // tenant anchor (scope burn-down): comps from the agent's own brokerage inventory
+      .eq("brokerage_id", brokerageId)
       .eq("city", propertyData.city)
       .eq("status", "sold")
       .order("go_live_date", { ascending: false })
@@ -526,11 +534,6 @@ Return JSON:
     } catch {
       return { success: false, error: "Failed to parse listing content" }
     }
-
-    // brokerage_id is NOT NULL on listings — resolve it from the agent (Marketing Manager's listing).
-    const { data: agentRow } = await supabase.from("users").select("brokerage_id").eq("id", params.agentId).maybeSingle()
-    const brokerageId = (agentRow as { brokerage_id: string | null } | null)?.brokerage_id ?? null
-    if (!brokerageId) return { success: false, error: "Could not resolve brokerage for the agent" }
 
     // Create the listing with ONLY valid columns. The MLS description is the public remarks;
     // the marketing analysis (description/strategy/personas/suggested price) is AI-generated

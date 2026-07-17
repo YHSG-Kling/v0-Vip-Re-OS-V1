@@ -84,6 +84,8 @@ export async function generateListingPresentation(params: {
     const { data: comps } = await supabase
       .from("listings")
       .select("*")
+      // tenant anchor (scope burn-down): comps come from the caller's own brokerage inventory
+      .eq("brokerage_id", auth.brokerageId)
       .eq("zip", params.propertyData.zipCode)
       .eq("status", "sold")
       .order("go_live_date", { ascending: false })

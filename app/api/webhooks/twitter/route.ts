@@ -74,6 +74,7 @@ export async function POST(req: NextRequest) {
 
     await handleInboundDm({
       senderId,
+      recipientId,
       messageText,
       timestamp: timestamp ? new Date(timestamp) : new Date(),
     })
@@ -86,26 +87,50 @@ export async function POST(req: NextRequest) {
 
 async function handleInboundDm(params: {
   senderId: string
+  /** payload.for_user_id — the connected account this event was delivered for. */
+  recipientId?: string
   messageText: string
   timestamp: Date
 }) {
   const svc = createServiceClient()
 
-  // Look up existing contact by Twitter user ID stored in metadata
-  const { data: contacts } = await svc
+  // tenant anchor (scope burn-down): resolve which brokerage connected the
+  // receiving Twitter/X account so the identity match + insert are tenant-stamped.
+  let brokerageId: string | null = null
+  if (params.recipientId) {
+    const { data: acct } = await svc
+      .from("social_media_accounts")
+      .select("brokerage_id")
+      .eq("platform", "twitter")
+      .eq("account_id", params.recipientId)
+      .eq("is_active", true)
+      .limit(1)
+      .maybeSingle()
+    brokerageId = (acct as { brokerage_id: string | null } | null)?.brokerage_id ?? null
+  }
+
+  // Look up existing contact by Twitter user ID stored in metadata — scoped to
+  // the resolved brokerage when the account could be mapped; the user id is a
+  // unique-ish identity so the unresolved path stays a limit(1) match.
+  let contactQuery = svc
     .from("contacts")
     .select("id, brokerage_id")
     .contains("metadata", { twitter_user_id: params.senderId })
     .limit(1)
+  if (brokerageId) contactQuery = contactQuery.eq("brokerage_id", brokerageId)
+  const { data: contacts } = await contactQuery
 
   let contactId: string
 
   if (contacts && contacts.length > 0) {
     contactId = contacts[0].id
   } else {
+    // tenant anchor (scope burn-down): stamp the resolved brokerage; unresolved
+    // events stay in staging (null tenant) for an admin to assign.
     const { data: newContact, error } = await svc
       .from("contacts")
       .insert({
+        brokerage_id: brokerageId,
         first_name: "Twitter",
         last_name: "Lead",
         contact_type: "lead",

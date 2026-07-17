@@ -41,9 +41,12 @@ export async function GET(request: NextRequest) {
   const results: Array<{ listingId: string; score?: number; riskLevel?: string; error?: string }> = []
 
   try {
+    // tenant anchor (scope burn-down): platform sweep carries each row's
+    // brokerage — rows without a tenant are excluded from processing.
     const { data: listings, error } = await supabase
       .from("listings")
-      .select("id")
+      .select("id, brokerage_id")
+      .not("brokerage_id", "is", null)
       .in("status", ["active", "coming_soon"])
 
     if (error) throw new Error(`Failed to fetch listings: ${error.message}`)

@@ -49,6 +49,20 @@ async function verifyListingInCallerBrokerage(
 }
 
 // ── LOAD OFFERS FOR LISTING ───────────────────────────────────────────────────
+
+// Column list kept out of the query chain so the tenant filters on the query
+// itself stay auditable.
+const OFFER_LIST_COLUMNS =
+  "id, offer_number, offer_price, earnest_money, closing_date, financing_type, " +
+  "down_payment_amount, down_payment_percent, appraisal_contingency_days, " +
+  "financing_contingency_days, inspection_period_days, escalation_clause, " +
+  "escalation_cap, appraisal_gap, closing_cost_contribution, due_diligence_fee, " +
+  "possession_terms, contingencies, buyer_notes, seller_net_estimate, " +
+  "ai_recommendation, ai_analysis, ai_extraction_status, ai_extracted_data, " +
+  "offer_document_url, offer_document_name, status, offer_type, parent_offer_id, " +
+  "current_round, is_winning_offer, submitted_at, response_deadline, " +
+  "seller_viewed_at, contact_id, agent_id, brokerage_id"
+
 export async function getOffersForListing(listingId: string) {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error, offers: [] }
@@ -60,46 +74,9 @@ export async function getOffersForListing(listingId: string) {
 
   const { data: offers, error } = await supabase
     .from("offers")
-    .select(`
-      id,
-      offer_number,
-      offer_price,
-      earnest_money,
-      closing_date,
-      financing_type,
-      down_payment_amount,
-      down_payment_percent,
-      appraisal_contingency_days,
-      financing_contingency_days,
-      inspection_period_days,
-      escalation_clause,
-      escalation_cap,
-      appraisal_gap,
-      closing_cost_contribution,
-      due_diligence_fee,
-      possession_terms,
-      contingencies,
-      buyer_notes,
-      seller_net_estimate,
-      ai_recommendation,
-      ai_analysis,
-      ai_extraction_status,
-      ai_extracted_data,
-      offer_document_url,
-      offer_document_name,
-      status,
-      offer_type,
-      parent_offer_id,
-      current_round,
-      is_winning_offer,
-      submitted_at,
-      response_deadline,
-      seller_viewed_at,
-      contact_id,
-      agent_id,
-      brokerage_id
-    `)
+    .select(OFFER_LIST_COLUMNS)
     .eq("listing_id", listingId)
+    // tenant anchor (scope burn-down)
     .eq("brokerage_id", auth.brokerageId)
     .not("status", "in", '("rejected")')
     .order("submitted_at", { ascending: false })

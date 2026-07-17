@@ -139,19 +139,22 @@ export async function acknowledgeBuyerCommissionAction(
     }
   }
 
+  const ackUpdate = {
+    buyer_commission_acknowledged_at:  new Date().toISOString(),
+    buyer_commission_acknowledged_ip:  isBuyer ? (hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip")) : null,
+    buyer_commission_acknowledged_ua:  isBuyer ? hdrs.get("user-agent") : null,
+    disclosed_buyer_commission_pct:    input.disclosedBuyerCommissionPct ?? null,
+    disclosed_buyer_commission_flat:   input.disclosedBuyerCommissionFlat ?? null,
+    disclosed_commission_payer:        input.disclosedCommissionPayer,
+    disclosed_commission_notes:        input.disclosedCommissionNotes ?? null,
+    commission_disclosure_method:      method,
+  }
   const { error } = await svc
     .from("offers")
-    .update({
-      buyer_commission_acknowledged_at:  new Date().toISOString(),
-      buyer_commission_acknowledged_ip:  isBuyer ? (hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip")) : null,
-      buyer_commission_acknowledged_ua:  isBuyer ? hdrs.get("user-agent") : null,
-      disclosed_buyer_commission_pct:    input.disclosedBuyerCommissionPct ?? null,
-      disclosed_buyer_commission_flat:   input.disclosedBuyerCommissionFlat ?? null,
-      disclosed_commission_payer:        input.disclosedCommissionPayer,
-      disclosed_commission_notes:        input.disclosedCommissionNotes ?? null,
-      commission_disclosure_method:      method,
-    })
+    .update(ackUpdate)
     .eq("id", input.offerId)
+    // tenant anchor (scope burn-down): write pinned to the validated offer's brokerage
+    .eq("brokerage_id", offer.brokerage_id)
 
   if (error) return { ok: false, error: error.message }
 

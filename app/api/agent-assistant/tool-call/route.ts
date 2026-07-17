@@ -740,6 +740,21 @@ async function stageOfferPacket(
       brokerageId: session.brokerage_id,
     })
 
+    const docMetadata = {
+      packet_type: "offer",
+      state,
+      forms_count: filledPacket.forms.length,
+      brokerage_forms_count: filledPacket.brokerageForms.length,
+      agent_must_complete: filledPacket.agentMustComplete,
+      audit: filledPacket.audit,
+      source: "voice_intake_elevenlabs",
+      // BBA dependency tracking — submit-for-signature gate (Commit L)
+      // refuses to dispatch when this flag is set and no active BBA exists.
+      requires_bba_first:      activeBBAId === null,
+      linked_bba_id:           activeBBAId,
+      needs_bba_intake_first:  needsBBAIntake,
+    }
+
     const { data: doc, error } = await supabase
       .from("documents")
       .insert({
@@ -748,20 +763,7 @@ async function stageOfferPacket(
         document_type: "offer",
         status: "needs_agent_input",
         state_code: state,
-        metadata: {
-          packet_type: "offer",
-          state,
-          forms_count: filledPacket.forms.length,
-          brokerage_forms_count: filledPacket.brokerageForms.length,
-          agent_must_complete: filledPacket.agentMustComplete,
-          audit: filledPacket.audit,
-          source: "voice_intake_elevenlabs",
-          // BBA dependency tracking — submit-for-signature gate (Commit L)
-          // refuses to dispatch when this flag is set and no active BBA exists.
-          requires_bba_first:      activeBBAId === null,
-          linked_bba_id:           activeBBAId,
-          needs_bba_intake_first:  needsBBAIntake,
-        },
+        metadata: docMetadata,
         content: JSON.stringify({ filledPacket, intake: extracted.intake }, null, 2),
       })
       .select("id")
@@ -797,9 +799,10 @@ async function stageOfferPacket(
       ai_extracted_data: { intake_snapshot: intake, source: "voice_intake_elevenlabs" },
       ai_extraction_status: "completed",
     }
+    // tenant anchor (scope burn-down): pin the insert to the voice session's brokerage
     const { data: offerRow, error: offerInsertErr } = await supabase
       .from("offers")
-      .insert(offerInsert)
+      .insert({ ...offerInsert, brokerage_id: session.brokerage_id })
       .select("id")
       .maybeSingle()
     if (offerInsertErr) {
@@ -810,25 +813,13 @@ async function stageOfferPacket(
     // documents row at signature time + the FormWizard can find the offer
     // from the documents row at review time.
     if (offerRow?.id) {
+      // tenant anchor (scope burn-down): update pinned to the just-created doc id
+      // AND the session's brokerage.
       await supabase
         .from("documents")
-        .update({
-          metadata: {
-            ...{
-              packet_type: "offer", state,
-              forms_count: filledPacket.forms.length,
-              brokerage_forms_count: filledPacket.brokerageForms.length,
-              agent_must_complete: filledPacket.agentMustComplete,
-              audit: filledPacket.audit,
-              source: "voice_intake_elevenlabs",
-              requires_bba_first:     activeBBAId === null,
-              linked_bba_id:          activeBBAId,
-              needs_bba_intake_first: needsBBAIntake,
-            },
-            linked_offer_id: offerRow.id,
-          },
-        })
+        .update({ metadata: { ...docMetadata, linked_offer_id: offerRow.id } })
         .eq("id", doc.id)
+        .eq("brokerage_id", session.brokerage_id)
     }
 
     const contactName = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()

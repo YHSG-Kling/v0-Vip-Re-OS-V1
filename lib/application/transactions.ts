@@ -1223,11 +1223,25 @@ export async function finalizeRepairNegotiation(
 export async function getTransactionStats(agentId?: string) {
   const supabase = await createClient()
 
+  // tenant anchor (scope burn-down): resolve the caller's brokerage and scope
+  // every dashboard count to it (RLS remains the backstop).
+  const { data: { user } } = await supabase.auth.getUser()
+  let brokerageId: string | null = null
+  if (user) {
+    const { data: profile } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", user.id)
+      .maybeSingle()
+    brokerageId = profile?.brokerage_id ?? null
+  }
+
   let activeQuery = supabase
     .from("transactions")
     .select("id", { count: "exact", head: true })
     .in("status", ["new", "negotiation", "under_contract", "inspection", "financing"])
   if (agentId) activeQuery = activeQuery.eq("agent_id", agentId)
+  if (brokerageId) activeQuery = activeQuery.eq("brokerage_id", brokerageId)
   const { count: activeCount } = await activeQuery
 
   const { count: pendingDocsCount } = await supabase
@@ -1236,23 +1250,27 @@ export async function getTransactionStats(agentId?: string) {
     .eq("status", "pending")
 
   const today = new Date().toISOString().split("T")[0]
-  const { count: tasksToday } = await supabase
+  let tasksQuery = supabase
     .from("tasks")
     .select("id", { count: "exact", head: true })
     .eq("due_date", today)
     .eq("status", "pending")
+  if (brokerageId) tasksQuery = tasksQuery.eq("brokerage_id", brokerageId)
+  const { count: tasksToday } = await tasksQuery
 
   const startOfMonth = new Date()
   startOfMonth.setDate(1)
   const endOfMonth = new Date(startOfMonth)
   endOfMonth.setMonth(endOfMonth.getMonth() + 1)
 
-  const { count: closingThisMonth } = await supabase
+  let closingQuery = supabase
     .from("transactions")
     .select("id", { count: "exact", head: true })
     .eq("status", "closing")
     .gte("close_date", startOfMonth.toISOString())
     .lt("close_date", endOfMonth.toISOString())
+  if (brokerageId) closingQuery = closingQuery.eq("brokerage_id", brokerageId)
+  const { count: closingThisMonth } = await closingQuery
 
   return {
     activeCount: activeCount || 0,

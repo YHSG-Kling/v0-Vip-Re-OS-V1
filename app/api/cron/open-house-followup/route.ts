@@ -39,8 +39,11 @@ export async function GET(request: NextRequest) {
     const dayAgo = new Date(now.getTime() - 25 * 3_600_000).toISOString().slice(0, 10)
     // Events dated today or yesterday, not yet completed — end-time checked in JS
     // (event_date is a date + end_time a time; keep the query coarse, filter exact).
+    // tenant anchor (scope burn-down): platform sweep carries each row's
+    // brokerage — rows without a tenant are excluded from processing.
     const { data: events } = await svc.from("open_house_events")
-      .select("id, event_date, end_time, status")
+      .select("id, brokerage_id, event_date, end_time, status")
+      .not("brokerage_id", "is", null)
       .gte("event_date", dayAgo).lte("event_date", now.toISOString().slice(0, 10))
       .neq("status", "completed").limit(100)
 

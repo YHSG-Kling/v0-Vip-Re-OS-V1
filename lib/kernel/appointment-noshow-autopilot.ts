@@ -324,7 +324,7 @@ export async function runAppointmentNoShowAutopilot(
 
       if (klass === "upcoming_reminder_due") {
         // Idempotency — one reminder per appointment (rationale tag + entity id).
-        if (await alreadyProposed(supabase, r.id, REMINDER_TAG)) { result.skipped += 1; continue }
+        if (await alreadyProposed(supabase, brokerageId, r.id, REMINDER_TAG)) { result.skipped += 1; continue }
         const plan = reminderPlan(r, contact, {
           firstName: contact.first_name, title: r.title, startAt: r.start_at,
         })
@@ -383,10 +383,13 @@ export async function runAppointmentNoShowAutopilot(
 }
 
 /** True when a proposal with this rationale tag already exists for this appointment. */
-async function alreadyProposed(supabase: Svc, calendarEventId: string, tag: string): Promise<boolean> {
+async function alreadyProposed(supabase: Svc, brokerageId: string, calendarEventId: string, tag: string): Promise<boolean> {
+  // tenant anchor (scope burn-down): the appointment row came from a
+  // brokerage-scoped sweep — pin the idempotency probe to the same tenant.
   const { data } = await supabase
     .from("agent_client_messages")
     .select("id")
+    .eq("brokerage_id", brokerageId)
     .eq("entity_type", "calendar_event")
     .eq("entity_id", calendarEventId)
     .ilike("rationale", `${tag}%`)

@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ==================== AGENT CRUD ====================
 
@@ -68,10 +69,19 @@ export async function createAgent(agentData: {
 }) {
   const supabase = await createClient()
 
+  // tenant anchor (scope burn-down): every agent row must carry a brokerage —
+  // fall back to the caller's own brokerage when none is supplied explicitly.
+  const ctx = await getAgentContext()
+  const brokerageId = agentData.brokerage_id ?? ctx.brokerageId
+  if (!brokerageId) {
+    return { error: "Could not resolve a brokerage for the new agent" }
+  }
+
   const { data, error } = await supabase
     .from("agents")
     .insert({
       ...agentData,
+      brokerage_id: brokerageId,
       gamification_points: 0,
       ytd_gci: 0,
       ytd_transactions: 0,

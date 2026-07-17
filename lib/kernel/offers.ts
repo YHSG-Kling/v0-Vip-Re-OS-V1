@@ -615,17 +615,21 @@ export async function getOfferNegotiationHistory(offerId: string): Promise<Kerne
   // Fetch the root offer (could be the original or any counter in the chain)
   const { data: root } = await supabase
     .from("offers")
-    .select("id, parent_offer_id")
+    .select("id, parent_offer_id, brokerage_id")
     .eq("id", offerId)
     .single()
 
   const rootId = (root as any)?.parent_offer_id ?? offerId
 
-  const { data, error } = await supabase
+  // tenant anchor (scope burn-down): the chain query is pinned to the validated
+  // root offer's brokerage — a counter chain never spans tenants.
+  let chainQuery = supabase
     .from("offers")
     .select("*")
     .or(`id.eq.${rootId},parent_offer_id.eq.${rootId}`)
     .order("current_round", { ascending: true })
+  if ((root as any)?.brokerage_id) chainQuery = chainQuery.eq("brokerage_id", (root as any).brokerage_id)
+  const { data, error } = await chainQuery
 
   if (error) return { success: false, error: error.message }
   return { success: true, data: (data ?? []) as unknown as OfferRow[] }

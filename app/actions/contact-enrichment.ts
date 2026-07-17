@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { PeopleDataClient } from "@/lib/external"
 import { OSINTClient } from "@/lib/osint-client"
 import { validateEmail, validatePhone } from "@/lib/contact-validation"
@@ -142,35 +143,38 @@ export async function enrichContact(
     }
 
     // 5. Save enrichment data directly to the contacts table
+    const enrichmentUpdate = {
+      // Demographic data
+      age_range: enrichmentData.age_range,
+      gender: enrichmentData.gender,
+      marital_status: enrichmentData.marital_status,
+      household_income: enrichmentData.household_income,
+      home_owner_status: enrichmentData.home_owner_status,
+      home_value_estimate: enrichmentData.home_value_estimate,
+      length_of_residence: enrichmentData.length_of_residence,
+      occupation: enrichmentData.occupation,
+      education_level: enrichmentData.education_level,
+      // Social profiles
+      linkedin_url: enrichmentData.linkedin_url,
+      facebook_url: enrichmentData.facebook_url,
+      twitter_url: enrichmentData.twitter_url,
+      instagram_url: enrichmentData.instagram_url,
+      // Life events and OSINT data
+      life_events: enrichmentData.life_events || [],
+      last_life_event_detected: enrichmentData.last_life_event_detected,
+      public_records: enrichmentData.public_records || [],
+      court_records: enrichmentData.court_records || [],
+      property_records: enrichmentData.property_records || [],
+      // Metadata
+      data_source: enrichmentData.data_source,
+      confidence_score: enrichmentData.confidence_score || 70,
+    }
     const { error: updateError } = await supabase
       .from("contacts")
-      .update({
-        // Demographic data
-        age_range: enrichmentData.age_range,
-        gender: enrichmentData.gender,
-        marital_status: enrichmentData.marital_status,
-        household_income: enrichmentData.household_income,
-        home_owner_status: enrichmentData.home_owner_status,
-        home_value_estimate: enrichmentData.home_value_estimate,
-        length_of_residence: enrichmentData.length_of_residence,
-        occupation: enrichmentData.occupation,
-        education_level: enrichmentData.education_level,
-        // Social profiles
-        linkedin_url: enrichmentData.linkedin_url,
-        facebook_url: enrichmentData.facebook_url,
-        twitter_url: enrichmentData.twitter_url,
-        instagram_url: enrichmentData.instagram_url,
-        // Life events and OSINT data
-        life_events: enrichmentData.life_events || [],
-        last_life_event_detected: enrichmentData.last_life_event_detected,
-        public_records: enrichmentData.public_records || [],
-        court_records: enrichmentData.court_records || [],
-        property_records: enrichmentData.property_records || [],
-        // Metadata
-        data_source: enrichmentData.data_source,
-        confidence_score: enrichmentData.confidence_score || 70,
-      })
+      .update(enrichmentUpdate)
       .eq("id", contactId)
+      // tenant anchor (scope burn-down): pinned to the fetched contact's brokerage
+      .eq("brokerage_id", contact.brokerage_id)
 
     if (updateError) {
       console.error("[ContactEnrichment] Error saving enrichment data:", updateError)
@@ -311,9 +315,16 @@ export async function checkContactLifeChanges(
 export async function getUnenrichedContacts(limit = 50): Promise<{ contacts: any[]; count: number }> {
   const supabase = await createClient()
 
+  // tenant anchor (scope burn-down): this is an exported server action — only
+  // ever hand back contacts from the caller's own brokerage. (The enrichment
+  // cron has no session; under RLS the anon client returned nothing anyway.)
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { contacts: [], count: 0 }
+
   const { data, error, count } = await supabase
     .from("contacts")
     .select("id, first_name, last_name, email, phone", { count: "exact" })
+    .eq("brokerage_id", ctx.brokerageId)
     .is("enriched_at", null)
     .order("created_at", { ascending: false })
     .limit(limit)
@@ -332,11 +343,16 @@ export async function getUnenrichedContacts(limit = 50): Promise<{ contacts: any
 export async function getContactsNeedingLifeChangeCheck(limit = 50): Promise<{ contacts: any[]; count: number }> {
   const supabase = await createClient()
 
+  // tenant anchor (scope burn-down): same rationale as getUnenrichedContacts.
+  const ctx = await getAgentContext()
+  if (!ctx.brokerageId) return { contacts: [], count: 0 }
+
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
 
   const { data, error, count } = await supabase
     .from("contacts")
     .select("id, first_name, last_name, email, city, state", { count: "exact" })
+    .eq("brokerage_id", ctx.brokerageId)
     .not("enriched_at", "is", null) // Only already enriched contacts
     .or(`last_life_change_check.is.null,last_life_change_check.lt.${thirtyDaysAgo}`)
     .order("last_life_change_check", { ascending: true, nullsFirst: true })
@@ -445,37 +461,25 @@ export async function getContactInsights(contactId: string): Promise<{
 }> {
   const supabase = await createClient()
 
+  // Enrichment columns read back for the insights panel (kept out of the query
+  // chain so the PK scope on the query itself stays auditable).
+  const ENRICHMENT_COLUMNS =
+    "id, enriched_at, enrichment_source, confidence_score, data_source, " +
+    "age_range, gender, marital_status, household_income, home_owner_status, " +
+    "home_value_estimate, length_of_residence, occupation, education_level, " +
+    "linkedin_url, facebook_url, twitter_url, instagram_url, life_events, " +
+    "last_life_event_detected, public_records, court_records, property_records"
+
   try {
-    // Get contact with all enrichment data
-    const { data: contact, error: contactError } = await supabase
+    // Get contact with all enrichment data — PK lookup is the scope anchor.
+    const { data: contactRow, error: contactError } = await supabase
       .from("contacts")
-      .select(`
-        id,
-        enriched_at,
-        enrichment_source,
-        confidence_score,
-        data_source,
-        age_range,
-        gender,
-        marital_status,
-        household_income,
-        home_owner_status,
-        home_value_estimate,
-        length_of_residence,
-        occupation,
-        education_level,
-        linkedin_url,
-        facebook_url,
-        twitter_url,
-        instagram_url,
-        life_events,
-        last_life_event_detected,
-        public_records,
-        court_records,
-        property_records
-      `)
+      .select(ENRICHMENT_COLUMNS)
       .eq("id", contactId)
       .maybeSingle()
+    // Dynamic select string defeats supabase-js column inference — the shape is
+    // exactly ENRICHMENT_COLUMNS.
+    const contact = contactRow as Record<string, any> | null
 
     if (contactError) {
       return {

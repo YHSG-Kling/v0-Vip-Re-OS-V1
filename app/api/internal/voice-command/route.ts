@@ -569,7 +569,8 @@ Respond with ONLY the intent string, nothing else.`,
         spokenResponse = "I can only file tasks for agent accounts — yours isn't linked to an agent profile."
       } else {
         const row = buildVoiceTaskRow({ title, dueDate, contactId, brokerageId, agentId, isFollowUp })
-        const { data: created, error: taskErr } = await service.from("tasks").insert(row).select("id, title, due_date").maybeSingle()
+        // tenant anchor (scope burn-down): pin the insert to the caller's resolved brokerage
+        const { data: created, error: taskErr } = await service.from("tasks").insert({ ...row, brokerage_id: brokerageId }).select("id, title, due_date").maybeSingle()
         if (taskErr || !created) {
           spokenResponse = "I couldn't save that task — please try again."
         } else {

@@ -50,6 +50,11 @@ export async function POST(req: NextRequest) {
       // Status updates (delivered/read receipts) — skip
       if (value?.statuses) continue
 
+      // The receiving business number — the key that maps this event to the
+      // brokerage that connected the WhatsApp Business account.
+      const businessNumberId: string | undefined =
+        value?.metadata?.phone_number_id ?? value?.metadata?.display_phone_number
+
       const messages: any[] = value?.messages ?? []
       for (const msg of messages) {
         const senderWaId: string | undefined = msg?.from
@@ -68,6 +73,7 @@ export async function POST(req: NextRequest) {
 
         await handleInboundWhatsapp({
           senderWaId,
+          businessNumberId,
           messageText,
           timestamp: timestamp ? new Date(timestamp) : new Date(),
         })
@@ -82,10 +88,28 @@ export async function POST(req: NextRequest) {
 
 async function handleInboundWhatsapp(params: {
   senderWaId: string  // E.164 phone digits without + (e.g. "14155551234")
+  /** value.metadata.phone_number_id — the receiving business number. */
+  businessNumberId?: string
   messageText: string
   timestamp: Date
 }) {
   const svc = createServiceClient()
+
+  // tenant anchor (scope burn-down): resolve which brokerage connected the
+  // receiving WhatsApp Business number so identity matches + the insert are
+  // tenant-stamped.
+  let brokerageId: string | null = null
+  if (params.businessNumberId) {
+    const { data: acct } = await svc
+      .from("social_media_accounts")
+      .select("brokerage_id")
+      .eq("platform", "whatsapp")
+      .eq("account_id", params.businessNumberId)
+      .eq("is_active", true)
+      .limit(1)
+      .maybeSingle()
+    brokerageId = (acct as { brokerage_id: string | null } | null)?.brokerage_id ?? null
+  }
 
   // WhatsApp ID is the recipient's phone number — we can match against
   // contacts.phone (digits-only comparison) OR metadata.whatsapp_id
@@ -93,24 +117,31 @@ async function handleInboundWhatsapp(params: {
 
   let contactId: string | null = null
 
-  // Try metadata match first
-  const { data: byMeta } = await svc
+  // Try metadata match first — scoped to the resolved brokerage when the
+  // business number could be mapped; the WhatsApp ID is a unique-ish identity
+  // (E.164 phone) so the unresolved path stays a limit(1) match.
+  let metaQuery = svc
     .from("contacts")
     .select("id")
     .contains("metadata", { whatsapp_id: params.senderWaId })
     .limit(1)
+  if (brokerageId) metaQuery = metaQuery.eq("brokerage_id", brokerageId)
+  const { data: byMeta } = await metaQuery
   if (byMeta && byMeta.length > 0) {
     contactId = byMeta[0].id
   }
 
-  // Fallback: phone-digits match (strip + and non-digits, compare last 10)
+  // Fallback: phone-digits match (strip + and non-digits, compare last 10) —
+  // same brokerage scoping as the metadata match above.
   if (!contactId && phoneDigits.length >= 10) {
     const last10 = phoneDigits.slice(-10)
-    const { data: byPhone } = await svc
+    let phoneQuery = svc
       .from("contacts")
       .select("id, phone")
       .ilike("phone", `%${last10}%`)
       .limit(1)
+    if (brokerageId) phoneQuery = phoneQuery.eq("brokerage_id", brokerageId)
+    const { data: byPhone } = await phoneQuery
     if (byPhone && byPhone.length > 0) {
       contactId = byPhone[0].id
       // Backfill the WhatsApp ID into metadata for future direct matching
@@ -123,11 +154,14 @@ async function handleInboundWhatsapp(params: {
     }
   }
 
-  // Create new contact if none matched
+  // Create new contact if none matched.
+  // tenant anchor (scope burn-down): stamp the resolved brokerage; unresolved
+  // events stay in staging (null tenant) for an admin to assign.
   if (!contactId) {
     const { data: newContact, error } = await svc
       .from("contacts")
       .insert({
+        brokerage_id: brokerageId,
         first_name: "WhatsApp",
         last_name: "Lead",
         contact_type: "lead",

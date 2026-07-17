@@ -241,6 +241,8 @@ export async function optimizeDailySchedule(params: {
     const { data: tasks } = await supabase
       .from("tasks")
       .select("*")
+      // tenant anchor (scope burn-down): only the (validated) agent's own tasks
+      .eq("assigned_to_agent_id", params.agentId)
       .eq("due_date", params.date)
       .eq("status", "pending")
 

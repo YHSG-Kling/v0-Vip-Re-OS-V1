@@ -455,6 +455,9 @@ async function resolveAgentsForFeeType(ft: any, svc: ReturnType<typeof createSer
     const { data: agents } = await svc
       .from("agents")
       .select("id")
+      // tenant anchor (scope burn-down): userIds already came from this brokerage's
+      // users, but the agents rows themselves must also belong to the fee's brokerage.
+      .eq("brokerage_id", ft.brokerage_id)
       .in("user_id", userIds)
     return (agents ?? []).map((a: any) => a.id)
   }

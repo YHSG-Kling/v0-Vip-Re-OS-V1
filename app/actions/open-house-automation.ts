@@ -221,11 +221,16 @@ export async function optimizeOpenHouseTiming(params: { propertyId: string; agen
 
   try {
     const { data: property } = await supabase.from("listings").select("*").eq("id", params.propertyId).maybeSingle()
+    if (!property) {
+      return { success: false, error: "Property not found" }
+    }
 
     // Get historical data
     const { data: historical } = await supabase
       .from("open_house_events")
       .select("*, listing:listings!inner(property_type), open_house_analytics(*)")
+      // tenant anchor (scope burn-down): history from the property's own brokerage
+      .eq("brokerage_id", property.brokerage_id)
       .eq("listing.property_type", property?.property_type)
       .order("event_date", { ascending: false })
       .limit(20)
@@ -609,11 +614,17 @@ export async function predictAttendance(eventId: string) {
       .eq("id", eventId)
       .maybeSingle()
 
+    if (!event) {
+      return { success: false, error: "Event not found" }
+    }
+
     const { data: invitations } = await supabase.from("open_house_invitations").select("*").eq("event_id", eventId)
 
     const { data: historical } = await supabase
       .from("open_house_events")
       .select("*, listing:listings!inner(property_type), open_house_analytics(*)")
+      // tenant anchor (scope burn-down): history from the event's own brokerage
+      .eq("brokerage_id", event.brokerage_id)
       .eq("listing.property_type", event?.property?.property_type)
       .limit(10)
 
@@ -1211,6 +1222,8 @@ export async function monitorCompetingEvents(eventId: string) {
     const { data: competingEvents } = await supabase
       .from("open_house_events")
       .select("*, property:listings(*)")
+      // tenant anchor (scope burn-down): competition scan stays inside the event's brokerage
+      .eq("brokerage_id", event.brokerage_id)
       .eq("event_date", event.event_date)
       .neq("id", eventId)
       .limit(20)

@@ -57,8 +57,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Token expired" }, { status: 410 })
   }
 
-  // Update the contact record
-  const { error: contactErr } = await svc.from("contacts").update({
+  // Update the contact record.
+  // tenant anchor (scope burn-down): pinned to the token-validated contact AND
+  // the token's brokerage so a stale/foreign contact_id can never cross tenants.
+  const contactUpdate = {
     legal_first_name:        body.legalFirstName,
     legal_middle_name:       body.legalMiddleName ?? null,
     legal_last_name:         body.legalLastName,
@@ -68,7 +70,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     funds_source_type:       body.fundsSourceType ?? null,
     funds_max_purchase:      body.fundsMaxPurchase ?? null,
     updated_at:              new Date().toISOString(),
-  }).eq("id", tokenRow.contact_id)
+  }
+  const { error: contactErr } = await svc.from("contacts")
+    .update(contactUpdate)
+    .eq("id", tokenRow.contact_id)
+    .eq("brokerage_id", tokenRow.brokerage_id)
 
   if (contactErr) return NextResponse.json({ error: contactErr.message }, { status: 500 })
 

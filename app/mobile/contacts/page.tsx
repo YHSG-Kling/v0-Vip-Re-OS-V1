@@ -31,11 +31,27 @@ export default function MobileContactsPage() {
   const loadContacts = async () => {
     try {
       const supabase = createClient()
-      const { data, error } = await supabase
+
+      // tenant anchor (scope burn-down): resolve the signed-in user's brokerage
+      // and scope the contact list to it (RLS remains the backstop).
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) {
+        setLoading(false)
+        return
+      }
+      const { data: profile } = await supabase
+        .from("users")
+        .select("brokerage_id")
+        .eq("id", user.id)
+        .maybeSingle()
+
+      let query = supabase
         .from("contacts")
         .select("id, first_name, last_name, email, phone, contact_type, lifecycle_state")
         .order("last_contacted_at", { ascending: false })
         .limit(50)
+      if (profile?.brokerage_id) query = query.eq("brokerage_id", profile.brokerage_id)
+      const { data, error } = await query
 
       if (!error && data) {
         setContacts(data)

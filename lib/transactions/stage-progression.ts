@@ -202,18 +202,20 @@ export async function advanceStage(params: {
     }
   }
 
-  // 3. Update stage and status
+  // 3. Update stage and status.
+  // stage holds the UPPERCASE state-machine value (transactions_stage_check); status holds the
+  // LOWERCASE coarse status (transactions_status_check). Writing the UPPERCASE stage straight into
+  // status violated the status CHECK, so Postgres rejected the WHOLE row and no advance past
+  // UNDER_CONTRACT ever persisted. Map stage → the valid status value instead.
+  const stageUpdate = {
+    stage: params.targetStage,
+    status: STAGE_TO_STATUS_MAP[params.targetStage],
+    updated_at: new Date().toISOString()
+  }
+  // tenant anchor (scope burn-down): pinned to the caller's transaction + brokerage
   const { error: updateError } = await supabase
     .from("transactions")
-    .update({
-      // stage holds the UPPERCASE state-machine value (transactions_stage_check); status holds the
-      // LOWERCASE coarse status (transactions_status_check). Writing the UPPERCASE stage straight into
-      // status violated the status CHECK, so Postgres rejected the WHOLE row and no advance past
-      // UNDER_CONTRACT ever persisted. Map stage → the valid status value instead.
-      stage: params.targetStage,
-      status: STAGE_TO_STATUS_MAP[params.targetStage],
-      updated_at: new Date().toISOString()
-    })
+    .update(stageUpdate)
     .eq("id", params.transactionId)
     .eq("brokerage_id", params.brokerageId)
 

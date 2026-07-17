@@ -272,7 +272,7 @@ async function scorePrice(supabase: Supa, listingId: string): Promise<ListingCom
 
   const { data: listing } = await supabase
     .from("listings")
-    .select("list_price, city, state, bedrooms, sqft")
+    .select("list_price, city, state, bedrooms, sqft, brokerage_id")
     .eq("id", listingId)
     .maybeSingle()
 
@@ -287,7 +287,9 @@ async function scorePrice(supabase: Supa, listingId: string): Promise<ListingCom
   }
 
   const ninetyDaysAgo = new Date(Date.now() - 90 * 86_400_000).toISOString()
-  const { data: comps } = await supabase
+  // tenant anchor (scope burn-down): comps come from the SAME brokerage's closed
+  // deals — one tenant's transaction rows are never read to score another's listing.
+  let compsQuery = supabase
     .from("transactions")
     .select("purchase_price, property_city, contract_date, close_date")
     .eq("property_city", listing.city)
@@ -295,6 +297,8 @@ async function scorePrice(supabase: Supa, listingId: string): Promise<ListingCom
     .gte("close_date", ninetyDaysAgo)
     .not("purchase_price", "is", null)
     .limit(20)
+  if ((listing as any).brokerage_id) compsQuery = compsQuery.eq("brokerage_id", (listing as any).brokerage_id)
+  const { data: comps } = await compsQuery
 
   const list = (comps ?? []) as Array<{ purchase_price: number | null }>
   const prices = list.map((r) => Number(r.purchase_price ?? 0)).filter((n) => n > 0)

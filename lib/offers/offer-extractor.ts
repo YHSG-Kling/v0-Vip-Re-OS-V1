@@ -102,32 +102,36 @@ Required JSON schema:
     const extracted: ExtractedOfferData = JSON.parse(cleaned)
 
     // UPDATE offers row with all extracted columns
+    const extractedUpdate = {
+      ai_extraction_status: "completed",
+      ai_extracted_data: extracted,
+      // Write individual columns from live schema
+      offer_price: extracted.offer_price,
+      earnest_money: extracted.earnest_money,
+      closing_date: extracted.closing_date,
+      financing_type: extracted.financing_type,
+      down_payment_amount: extracted.down_payment_amount,
+      down_payment_percent: extracted.down_payment_percent,
+      appraisal_contingency_days: extracted.appraisal_contingency_days,
+      financing_contingency_days: extracted.financing_contingency_days,
+      inspection_period_days: extracted.inspection_period_days,
+      escalation_clause: extracted.escalation_clause,
+      escalation_cap: extracted.escalation_cap,
+      appraisal_gap: extracted.appraisal_gap,
+      closing_cost_contribution: extracted.closing_cost_contribution,
+      due_diligence_fee: extracted.due_diligence_fee,
+      possession_terms: extracted.possession_terms,
+      contingencies: extracted.contingencies,
+      buyer_notes: extracted.buyer_notes,
+      updated_at: new Date().toISOString(),
+    }
+    // tenant anchor (scope burn-down): the update is pinned to the caller's
+    // offer id AND its brokerage.
     const { error: updateError } = await supabase
       .from("offers")
-      .update({
-        ai_extraction_status: "completed",
-        ai_extracted_data: extracted,
-        // Write individual columns from live schema
-        offer_price: extracted.offer_price,
-        earnest_money: extracted.earnest_money,
-        closing_date: extracted.closing_date,
-        financing_type: extracted.financing_type,
-        down_payment_amount: extracted.down_payment_amount,
-        down_payment_percent: extracted.down_payment_percent,
-        appraisal_contingency_days: extracted.appraisal_contingency_days,
-        financing_contingency_days: extracted.financing_contingency_days,
-        inspection_period_days: extracted.inspection_period_days,
-        escalation_clause: extracted.escalation_clause,
-        escalation_cap: extracted.escalation_cap,
-        appraisal_gap: extracted.appraisal_gap,
-        closing_cost_contribution: extracted.closing_cost_contribution,
-        due_diligence_fee: extracted.due_diligence_fee,
-        possession_terms: extracted.possession_terms,
-        contingencies: extracted.contingencies,
-        buyer_notes: extracted.buyer_notes,
-        updated_at: new Date().toISOString(),
-      })
+      .update(extractedUpdate)
       .eq("id", offerId)
+      .eq("brokerage_id", brokerageId)
 
     if (updateError) throw new Error(updateError.message)
 

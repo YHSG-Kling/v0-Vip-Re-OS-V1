@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // Get data health validation logs
 export async function getDataHealthLogs(params: { status?: string }) {
@@ -42,10 +43,12 @@ export async function getDataHealthStats() {
   const supabase = await createClient()
   
   try {
-    // Get total contacts count
+    // tenant anchor (scope burn-down): count only the caller's brokerage's contacts
+    const ctx = await getAgentContext()
     const { count: totalLeads } = await supabase
       .from("contacts")
       .select("*", { count: "exact", head: true })
+      .eq("brokerage_id", ctx.brokerageId)
     
     // Get invalid contacts count
     const { count: invalid } = await supabase

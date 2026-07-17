@@ -13,6 +13,9 @@ interface InboundSuppressionPayload {
   source: "sms" | "email" | "phone" | "webhook"
   contactId?: string
   leadId?: string
+  /** Tenant hint — callers that know which brokerage's channel received the
+   *  message pass it so identity matches never cross tenants. */
+  brokerageId?: string
   phoneNumber?: string
   emailAddress?: string
   message: string
@@ -133,22 +136,30 @@ export async function POST(request: NextRequest) {
     }
 
     if (!contactId && payload.phoneNumber) {
-      // Find contact by phone
-      const { data: contacts } = await supabase
+      // Find contact by phone.
+      // tenant anchor (scope burn-down): scope the identity match to the payload's
+      // brokerage when the caller carries one; otherwise the phone number is a
+      // unique-ish inbound identity — keep the match but cap it at one row.
+      let byPhone = supabase
         .from("contacts")
         .select("id")
         .eq("phone", payload.phoneNumber)
         .limit(1)
+      if (payload.brokerageId) byPhone = byPhone.eq("brokerage_id", payload.brokerageId)
+      const { data: contacts } = await byPhone
       contactId = contacts?.[0]?.id
     }
 
     if (!contactId && payload.emailAddress) {
-      // Find contact by email
-      const { data: contacts } = await supabase
+      // Find contact by email.
+      // tenant anchor (scope burn-down): same brokerage scoping as the phone match.
+      let byEmail = supabase
         .from("contacts")
         .select("id")
         .eq("email", payload.emailAddress)
         .limit(1)
+      if (payload.brokerageId) byEmail = byEmail.eq("brokerage_id", payload.brokerageId)
+      const { data: contacts } = await byEmail
       contactId = contacts?.[0]?.id
     }
 

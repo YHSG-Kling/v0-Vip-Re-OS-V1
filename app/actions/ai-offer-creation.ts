@@ -894,24 +894,27 @@ export async function generateOfferDraft(params: {
 
     // ── Persist packet on documents row ──────────────────────────────────
     if (params.documentId) {
+      const packetUpdate = {
+        content: JSON.stringify(packet, null, 2),
+        status: "needs_agent_input",         // NOT draft_ready — packet awaits human finalization
+        metadata: {
+          state,
+          packet_type: "offer",
+          required_forms: forms.required,
+          available_addenda: forms.addenda,
+          brokerage_representation_form: forms.brokerageRepresentation,
+          prefilled: packet.prefilled,
+          unknown_fields: packet.needs_agent_input.map(f => f.field),
+          formwizard_url: packet.formwizard_url,
+        },
+        updated_at: new Date().toISOString(),
+      }
       await supabase
         .from("documents")
-        .update({
-          content: JSON.stringify(packet, null, 2),
-          status: "needs_agent_input",         // NOT draft_ready — packet awaits human finalization
-          metadata: {
-            state,
-            packet_type: "offer",
-            required_forms: forms.required,
-            available_addenda: forms.addenda,
-            brokerage_representation_form: forms.brokerageRepresentation,
-            prefilled: packet.prefilled,
-            unknown_fields: packet.needs_agent_input.map(f => f.field),
-            formwizard_url: packet.formwizard_url,
-          },
-          updated_at: new Date().toISOString(),
-        })
+        .update(packetUpdate)
         .eq("id", params.documentId)
+        // tenant anchor (scope burn-down): document must belong to the workflow's brokerage
+        .eq("brokerage_id", params.brokerageId)
     }
 
     // ── Notify agent that the packet is ready for review ─────────────────

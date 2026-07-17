@@ -79,16 +79,28 @@ export async function GET(request: NextRequest) {
       results.expired_certs += status.expired
     }
 
-    // Check TRID compliance for active transactions
+    // Check TRID compliance for active transactions.
+    // tenant anchor (scope burn-down): platform sweep carries each row's
+    // brokerage (orphan rows without a tenant are excluded) and processes
+    // per-tenant batches.
     const { data: transactions } = await supabase
       .from("transactions")
-      .select("id")
+      .select("id, brokerage_id")
+      .not("brokerage_id", "is", null)
       .in("status", ["under_contract", "pending"])
 
-    for (const txn of transactions || []) {
-      const compliance = await monitorTRIDComplianceService(txn.id, supabase)
-      if (!compliance.compliant) {
-        results.trid_violations += compliance.violations.length
+    const txnsByBrokerage = new Map<string, string[]>()
+    for (const txn of (transactions || []) as Array<{ id: string; brokerage_id: string }>) {
+      const list = txnsByBrokerage.get(txn.brokerage_id) ?? []
+      list.push(txn.id)
+      txnsByBrokerage.set(txn.brokerage_id, list)
+    }
+    for (const txnIds of txnsByBrokerage.values()) {
+      for (const txnId of txnIds) {
+        const compliance = await monitorTRIDComplianceService(txnId, supabase)
+        if (!compliance.compliant) {
+          results.trid_violations += compliance.violations.length
+        }
       }
     }
 

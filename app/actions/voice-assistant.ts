@@ -215,7 +215,7 @@ export async function processVoiceCommand(params: {
           title: intent.entities.task_title || commandText,
           description: intent.entities.task_description,
           due_date: intent.entities.due_date,
-        })
+        }, caller.brokerageId)
         response = `Task created: ${intent.entities.task_title || "New task"}`
         actionTaken = "task_created"
         break
@@ -757,9 +757,11 @@ async function getAtRiskDeals(agentId: string) {
   return data || []
 }
 
-async function createTask(task: any) {
+async function createTask(task: any, brokerageId: string | null) {
   const supabase = await createClient()
-  return await supabase.from("tasks").insert(task)
+  // tenant anchor (scope burn-down): every voice-created task is stamped with
+  // the calling agent's brokerage.
+  return await supabase.from("tasks").insert({ ...task, brokerage_id: brokerageId })
 }
 
 function getDaysSince(date: string | null): number {

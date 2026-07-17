@@ -112,24 +112,28 @@ export const avmCmaAdapter: ChannelAdapter = {
         })
 
         if (docId) {
+          const cmaDocUpdate = {
+            status: "complete",
+            content: result.aiNarrative,
+            metadata: {
+              mode: cmaMode,
+              data_source: dataSource,
+              estimated_value_low:  result.estimatedValueLow,
+              estimated_value_mid:  result.estimatedValueMid,
+              estimated_value_high: result.estimatedValueHigh,
+              confidence_score:     result.confidenceScore,
+              arv: result.arv ?? null,
+              comp_count: result.adjustedComps.length,
+              state_guidelines_used: result.stateGuidelinesUsed,
+              citations: result.citations,
+            },
+          }
+          // tenant anchor (scope burn-down): pinned to the doc this run created
+          // AND the workflow's brokerage.
           await supabase.from("documents")
-            .update({
-              status: "complete",
-              content: result.aiNarrative,
-              metadata: {
-                mode: cmaMode,
-                data_source: dataSource,
-                estimated_value_low:  result.estimatedValueLow,
-                estimated_value_mid:  result.estimatedValueMid,
-                estimated_value_high: result.estimatedValueHigh,
-                confidence_score:     result.confidenceScore,
-                arv: result.arv ?? null,
-                comp_count: result.adjustedComps.length,
-                state_guidelines_used: result.stateGuidelinesUsed,
-                citations: result.citations,
-              },
-            })
+            .update(cmaDocUpdate)
             .eq("id", docId)
+            .eq("brokerage_id", brokerageId)
         }
 
         return {

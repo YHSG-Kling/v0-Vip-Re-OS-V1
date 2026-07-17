@@ -135,25 +135,28 @@ Provide scores 0-100 for each category, identify positive/negative factors, and 
     //     ai_insights metadata blob only.
     //   - If you need to refresh lead_score, call the canonical orchestrator
     //     `calculateLeadScore` from `lib/services/lead-management.service`.
+    const aiScoreUpdate = {
+      engagement_score: analysis.engagementScore,
+      intent_score: analysis.intentScore,
+      ai_insights: {
+        lastScored: new Date().toISOString(),
+        aiOverallScore: analysis.overallScore,  // surfaced for agent reference, not the canonical lead_score
+        engagementScore: analysis.engagementScore,
+        intentScore: analysis.intentScore,
+        timelineScore: analysis.timelineScore,
+        financialReadinessScore: analysis.financialReadinessScore,
+        buyerPersona: analysis.buyerPersona,
+        predictedTimeline: analysis.predictedTimeline,
+        riskOfLoss: analysis.riskOfLoss,
+        nextBestAction: analysis.nextBestAction,
+      },
+    }
     await supabase
       .from("contacts")
-      .update({
-        engagement_score: analysis.engagementScore,
-        intent_score: analysis.intentScore,
-        ai_insights: {
-          lastScored: new Date().toISOString(),
-          aiOverallScore: analysis.overallScore,  // surfaced for agent reference, not the canonical lead_score
-          engagementScore: analysis.engagementScore,
-          intentScore: analysis.intentScore,
-          timelineScore: analysis.timelineScore,
-          financialReadinessScore: analysis.financialReadinessScore,
-          buyerPersona: analysis.buyerPersona,
-          predictedTimeline: analysis.predictedTimeline,
-          riskOfLoss: analysis.riskOfLoss,
-          nextBestAction: analysis.nextBestAction,
-        },
-      })
+      .update(aiScoreUpdate)
       .eq("id", params.contactId)
+      // tenant anchor (scope burn-down): write stays inside the caller's brokerage
+      .eq("brokerage_id", auth.brokerageId)
 
     revalidatePath("/dashboard/crm")
     return {

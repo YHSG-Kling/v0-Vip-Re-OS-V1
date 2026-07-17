@@ -302,7 +302,12 @@ export async function calculateEngagementScore(contactId: string) {
     .eq("status", "sent")
 
   // referrals given BY this contact: canonical column is referred_by (text).
-  const { data: referrals } = await supabase.from("referrals").select("*").eq("referred_by", contactId)
+  // tenant anchor (scope burn-down): pinned to the resolved agent's brokerage.
+  const { data: referrals } = await supabase
+    .from("referrals")
+    .select("*")
+    .eq("brokerage_id", brokerageId)
+    .eq("referred_by", contactId)
 
   const totalTouchpoints = touchpoints?.length || 0
   const respondedTouchpoints = touchpoints?.filter((t) => t.engagement_data?.replied).length || 0

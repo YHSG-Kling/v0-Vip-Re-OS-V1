@@ -1787,12 +1787,18 @@ Predict for next 90 days:
       })
     }
 
-    // Create insights for affected leads
-    const { data: leads } = await supabase
-      .from("contacts")
-      .select("id")
-      .eq("city", data.city)
-      .limit(50)
+    // Create insights for affected leads — tenant anchor (scope burn-down):
+    // only the caller's own brokerage's contacts get insights.
+    let leads: { id: string }[] | null = null
+    if (shiftCtx.brokerageId) {
+      const { data: leadRows } = await supabase
+        .from("contacts")
+        .select("id")
+        .eq("brokerage_id", shiftCtx.brokerageId)
+        .eq("city", data.city)
+        .limit(50)
+      leads = leadRows
+    }
 
     if (prediction.data.prediction?.direction?.includes("buyer") && leads) {
       for (const lead of leads) {

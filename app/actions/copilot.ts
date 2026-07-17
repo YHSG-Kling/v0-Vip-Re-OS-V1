@@ -614,7 +614,12 @@ async function sendPropertyMatches(contactId: string) {
   const criteria = await loadBuyerCriteria(supabase as unknown as Parameters<typeof loadBuyerCriteria>[0], contactId)
 
   // Find matching properties based on preferences
-  let query = supabase.from("listings").select("*").eq("status", "active")
+  // tenant anchor (scope burn-down): matches come from the contact's own brokerage
+  let query = supabase
+    .from("listings")
+    .select("*")
+    .eq("brokerage_id", contact.brokerage_id)
+    .eq("status", "active")
 
   if (criteria?.minPrice) {
     query = query.gte("list_price", criteria.minPrice)

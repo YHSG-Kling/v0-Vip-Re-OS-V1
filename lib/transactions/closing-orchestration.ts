@@ -424,9 +424,12 @@ export async function runLostTransactionAutopsies(opts?: { limit?: number; since
     ? null
     : new Date(Date.now() - (opts?.sinceHours ?? 72) * 3_600_000).toISOString()
 
+  // tenant anchor (scope burn-down): platform sweep carries each row's
+  // brokerage — rows without a tenant are excluded from processing.
   let q = svc
     .from("transactions")
-    .select("id")
+    .select("id, brokerage_id")
+    .not("brokerage_id", "is", null)
     .eq("status", "lost")
     .order("updated_at", { ascending: false })
     .limit(limit)

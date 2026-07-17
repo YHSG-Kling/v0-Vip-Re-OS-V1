@@ -2065,6 +2065,19 @@ async function main() {
         && src("app/actions/newsletter/fetch-local-news.ts").includes("searchNewsApiAiArticles")
         && src("lib/competitive-intel/content-intel-scan.ts").includes("newsapi_ai_social"))
     }
+    // ── ROUND 8: PLAYBOOK SCOREBOARD + ZIP PLACEHOLDER + TENANT-SCOPE BURN (64 → 14) ──
+    {
+      const tenantBaseline = JSON.parse(src("scripts/tenant-scope-baseline.json")) as Record<string, number>
+      check("ROUND 8 — PLAYBOOK OUTCOME LEARNING + NO HARDCODED ZIP + TENANT-SCOPE BURN. SCOREBOARD: every playbook install tags its capture page with the playbook key + the ids of the assets whose LEDGERS score it; loadPlaybookScoreboard reads straight off qr_codes.scan_count/lead_count, lead_capture_forms.submission_count and ai_video_projects.status — the Strategy Playbooks cards show a live-results row, nothing modeled. ZIP PLACEHOLDER (owner catch): the RentCast probe URL's literal zipCode=78701 became {{zip}} (resolveProbeUrl + probeConnector params); the Integration Guardian resolves a REAL enrolled subscriber territory so the canary tests the exact market the platform serves, and the go-live BatchData probe resolves city/state/zip from an active territory the same way — the neutral default exists ONLY pre-enrollment. TENANT-SCOPE BURN: 50 of the 64 frozen unscoped-query sites got REAL anchors (webhooks resolve the receiving business number → brokerage before identity matching; platform cron sweeps carry each row's brokerage and exclude orphans; actions resolve caller context the way their siblings do); the 14 survivors are VERIFIED platform-global reads (platform-admin gated verification routes) — never fake-scoped. The surface can only shrink from 14",
+        src("lib/agentic-os/connector-probe.ts").includes("{{zip}}")
+        && src("lib/agentic-os/connector-probe.ts").includes("resolveProbeUrl")
+        && src("app/api/cron/connector-health/route.ts").includes("probeParams")
+        && src("lib/platform/go-live-readiness.ts").includes("subscriber_service_areas")
+        && src("app/actions/creative-playbooks.ts").includes("loadPlaybookScoreboard")
+        && src("app/actions/creative-playbooks.ts").includes("playbookKey: playbook.key")
+        && src("app/settings/campaign-bundles/client.tsx").includes("Live results:")
+        && Object.keys(tenantBaseline).length <= 14)
+    }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {
       const { readdirSync, statSync } = await import("fs")

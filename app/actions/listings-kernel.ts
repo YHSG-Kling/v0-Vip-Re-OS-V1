@@ -437,19 +437,20 @@ export async function updateListingStatus(listingId: string, status: string) {
       return { success: false, error: "Forbidden" }
     }
 
+    // current_stage was renamed to lifecycle_stage (migration 1014) and the
+    // CHECK requires the uppercase enum (CLOSED / LISTING_CANCELLED), so the
+    // old { current_stage: "closed" | "cancelled" } update threw on both the
+    // column and the value.
     const { data, error } = await supabase
       .from("listings")
       .update({
         status,
-        // current_stage was renamed to lifecycle_stage (migration 1014) and the
-        // CHECK requires the uppercase enum (CLOSED / LISTING_CANCELLED), so the
-        // old { current_stage: "closed" | "cancelled" } update threw on both the
-        // column and the value.
         lifecycle_stage:
           status === "sold" ? "CLOSED" : status === "withdrawn" ? "LISTING_CANCELLED" : undefined,
         updated_at: new Date().toISOString(),
       })
       .eq("id", listingId)
+      // tenant anchor (scope burn-down)
       .eq("brokerage_id", callerRow.brokerage_id)
       .select()
       .single()

@@ -72,7 +72,7 @@ export async function getRecommendedProperties(params: {
     // the query errored and the portal returned no matches.
     const { data: contact } = await supabase
       .from("contacts")
-      .select("budget_min, budget_max")
+      .select("budget_min, budget_max, brokerage_id")
       .eq("id", params.contactId)
       .single()
 
@@ -87,6 +87,8 @@ export async function getRecommendedProperties(params: {
     let query = supabase
       .from("listings")
       .select("*")
+      // tenant anchor (scope burn-down): recommendations come from the contact's own brokerage
+      .eq("brokerage_id", contact.brokerage_id)
       .eq("status", "active")
       .order("created_at", { ascending: false })
       .limit(params.limit || 10)

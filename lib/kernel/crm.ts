@@ -293,6 +293,9 @@ export async function createOrUpdateContactFromDirectIntake(
   const { data, error } = await supabase
     .from("contacts")
     .insert({
+      // tenant anchor (scope burn-down): the tenant + owner stamps lead the row
+      brokerage_id:            params.brokerage_id,
+      agent_id:                params.agent_id,     // agents.id — already correct FK
       first_name:              params.first_name,
       last_name:               params.last_name,
       email:                   email_normalized,
@@ -309,8 +312,6 @@ export async function createOrUpdateContactFromDirectIntake(
       tcpa_consent:            params.tcpa_consent ?? false,
       tcpa_consent_at:         params.tcpa_consent ? now : null,
       tcpa_consent_source:     params.source?.source ?? null,
-      agent_id:                params.agent_id,     // agents.id — already correct FK
-      brokerage_id:            params.brokerage_id,
       team_id:                 params.team_id ?? null,
       source:                  params.source?.source ?? null,
       source_family:           params.source?.source_family ?? null,
@@ -425,6 +426,9 @@ export async function createLeadOnlyRecordForAcquisitionSource(params: {
   const { data, error } = await supabase
     .from("leads")
     .insert({
+      // tenant anchor (scope burn-down): the tenant + owner stamps lead the row
+      brokerage_id:     params.brokerage_id,
+      agent_id:         params.agent_id,
       first_name:       params.first_name ?? null,
       last_name:        params.last_name ?? null,
       email:            params.email ? normalizeEmail(params.email) : null,
@@ -435,8 +439,6 @@ export async function createLeadOnlyRecordForAcquisitionSource(params: {
       source_family:    params.source_family ?? "acquisition",
       source_channel:   params.source_channel ?? "digital",
       motivation_type:  params.motivation_type ?? null,
-      agent_id:         params.agent_id,
-      brokerage_id:     params.brokerage_id,
       lifecycle_state:  "raw",
       is_active:        true,
       raw_record_id:    params.raw_record_id ?? null,

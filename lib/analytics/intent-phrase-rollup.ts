@@ -39,7 +39,7 @@ export async function rollupIntentPhrases(opts?: {
   // scraping cron's per-day cap, easily fits in a single round-trip.
   const { data: rows, error } = await svc
     .from("raw_scraped_leads")
-    .select("id, lead_id, created_at, normalized_preview")
+    .select("id, lead_id, brokerage_id, created_at, normalized_preview")
     .gte("created_at", sinceIso)
     .limit(20_000)
   if (error) return { stats: [], error: error.message }
@@ -53,11 +53,18 @@ export async function rollupIntentPhrases(opts?: {
   const leadIds = new Set<string>(
     (rows ?? []).map(r => r.lead_id as string | null).filter((x): x is string => !!x),
   )
+  // tenant anchor (scope burn-down): the contact probe is limited to the
+  // brokerages that own the raw rows we're rolling up — never a platform-wide
+  // contacts scan. Raw rows without a tenant can't have promoted contacts.
+  const brokerageIds = [...new Set(
+    (rows ?? []).map(r => (r as { brokerage_id?: string | null }).brokerage_id ?? null).filter((x): x is string => !!x),
+  )]
   const contactByLeadId = new Map<string, boolean>()
-  if (leadIds.size > 0) {
+  if (leadIds.size > 0 && brokerageIds.length > 0) {
     const { data: contacts } = await svc
       .from("contacts")
       .select("id, source, notes, created_at")
+      .in("brokerage_id", brokerageIds)
       .in("source", ["lead_promotion", "lead_import", "lead_conversion", "crm_import"])
       .gte("created_at", sinceIso)
       .limit(20_000)
