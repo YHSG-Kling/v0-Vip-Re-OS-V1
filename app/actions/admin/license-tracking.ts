@@ -34,6 +34,23 @@ async function requireAdminInBrokerage(): Promise<
   }
 }
 
+/** The latest automated verification attempt — what the reviewer needs to decide. */
+export interface LicenseVerificationAttempt {
+  /** license_verifications.verification_method (state_registry_scrape | state_portal_manual | document_ai | manual | nipr_api). */
+  method: string
+  /** passed | failed | inconclusive. */
+  result: string
+  /** 0-1 extraction confidence when a state-registry scrape ran. */
+  confidence: number | null
+  /** Human-readable reason/detail from the attempt. */
+  detail: string | null
+  /** One-click state-portal link so the reviewer can check the registry themselves. */
+  portalUrl: string | null
+  /** Extracted registry/document evidence (licenseeName, licenseStatus, expirationDate, sourceUrl, …). */
+  evidence: Record<string, unknown> | null
+  attemptedAt: string | null
+}
+
 export interface AgentLicenseStatus {
   userId: string
   fullName: string
@@ -50,6 +67,8 @@ export interface AgentLicenseStatus {
   verificationStatus: string | null
   /** true when auto-verification couldn't clear the license (pending/failed) → needs a human decision. */
   needsManualReview: boolean
+  /** Latest automated attempt (method, evidence, confidence, portal link) — null when never attempted. */
+  lastVerification: LicenseVerificationAttempt | null
 }
 
 export async function getBrokerageAgentLicenseStatuses(
@@ -92,6 +111,41 @@ export async function getBrokerageAgentLicenseStatuses(
 
   if (error) return { agents: [], error: error.message }
 
+  // Latest automated verification attempt per license — gives the reviewer the
+  // attempted method, extracted evidence, confidence, and the one-click state-
+  // portal link the License Verifier recorded.
+  const licenseIds: string[] = []
+  for (const a of agents ?? []) {
+    const agentRow = Array.isArray((a as any).agents) ? (a as any).agents[0] : (a as any).agents
+    const license = Array.isArray(agentRow?.agent_licenses) ? agentRow.agent_licenses[0] : agentRow?.agent_licenses
+    if (license?.id) licenseIds.push(license.id)
+  }
+  const latestAttemptByLicense = new Map<string, LicenseVerificationAttempt>()
+  if (licenseIds.length > 0) {
+    const { data: verifications, error: vError } = await service
+      .from("license_verifications")
+      .select("license_id, verification_method, verification_result, confidence_score, failure_reasons, raw_response, created_at")
+      .in("license_id", licenseIds)
+      .order("created_at", { ascending: false })
+    if (vError) {
+      console.error("[license-tracking] license_verifications fetch failed:", vError.message)
+    } else {
+      for (const v of verifications ?? []) {
+        if (!v.license_id || latestAttemptByLicense.has(v.license_id)) continue
+        const raw = (v.raw_response ?? {}) as Record<string, any>
+        latestAttemptByLicense.set(v.license_id, {
+          method: v.verification_method ?? "unknown",
+          result: v.verification_result ?? "unknown",
+          confidence: v.confidence_score !== null && v.confidence_score !== undefined ? Number(v.confidence_score) : null,
+          detail: typeof raw.detail === "string" ? raw.detail : (v.failure_reasons?.[0] ?? null),
+          portalUrl: typeof raw.portal_url === "string" ? raw.portal_url : null,
+          evidence: raw.evidence && typeof raw.evidence === "object" ? raw.evidence : null,
+          attemptedAt: v.created_at ?? null,
+        })
+      }
+    }
+  }
+
   const now = Date.now()
 
   const statuses: AgentLicenseStatus[] = (agents ?? []).map((a: any) => {
@@ -125,6 +179,7 @@ export async function getBrokerageAgentLicenseStatuses(
       ceHoursRequired: Number(agentRow?.ce_hours_required ?? 0),
       verificationStatus,
       needsManualReview: licenseNeedsManualReview(verificationStatus, !!license?.license_number),
+      lastVerification: license?.id ? latestAttemptByLicense.get(license.id) ?? null : null,
     }
   })
 

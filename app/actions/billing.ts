@@ -387,7 +387,7 @@ export async function manualTierOverride(
 
   // Revalidate inside function to avoid module-level server dependency
   const { revalidatePath } = await import("next/cache")
-  revalidatePath("/admin/billing")
+  revalidatePath("/dashboard/superadmin/subscriptions")
 
   return { success: true }
 }

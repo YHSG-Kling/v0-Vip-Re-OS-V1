@@ -1935,7 +1935,7 @@ async function main() {
         && src("app/actions/financials.ts").includes("pushExpenseToAccounting")
         && src("app/actions/copilot.ts").includes('from("video_assets")')
         && src("app/actions/video-repurposing.ts").includes('from("social_media_accounts")')
-        && src("app/admin/ai-audit/page.tsx").includes("ai_generated_content")
+        && src("app/dashboard/admin/ai-audit/page.tsx").includes("ai_generated_content")
         && src("app/actions/ai-predictions.ts").includes('from("motivated_seller_signals")')
         && src("lib/listing-lifecycle/readiness-checker.ts").includes('.eq("doc_type", "closing_disclosure")')
         && src("app/actions/financials.ts").includes("agent_monthly_earnings")
@@ -2157,6 +2157,24 @@ async function main() {
         && src("lib/onboarding/certificate-pdf.ts").includes("renderCertificatePdf")
         && src("app/actions/open-house-automation.ts").includes("open-meteo")
         && !src("app/actions/ai-content-generation.tsx").includes("returning structured mock data"))
+    }
+    // ── ROUND 13: LICENSE LADDER + B-ROLL + ONE CONSOLE (PHASE 2) + PLATFORM BOARDS ──
+    {
+      check("ROUND 13 — THE BACKLOG THE OWNER NAMED, CLOSED. RE-LICENSE LADDER (NIPR was insurance — wrong vendor; no free national RE-license API exists): verification now rides what the platform already owns — a PURE per-state registry of regulator lookup portals, ZenRows scrape (platform key) + AI extraction (feature license_verification, extract-only prompt), confidence-mapped verdicts where verified requires found+active+conf≥0.8, and EVERYTHING else routes to the EXISTING human-review queue with a one-click state-portal link — scrapes never auto-reject an agent; only humans do. B-ROLL: cutaways are real on the same ffmpeg rail as the attribution band (planBrollCutaways is pure and drill-proven: protected open/close, ≤4 non-overlapping ≤4s windows, short mains get none); pipeline order is compliance-first (b-roll → BRAND band on top → bookends) and visualOverlayApplied means the band, never b-roll alone; intro/outro concat was ALREADY live — only its note was stale. ONE CONSOLE, PHASE 2: every tenant-facing /admin surface moved under /dashboard/admin (usage, ai-audit — the only compliance-officer-admitting ai_generated_content viewer, error-handler, brokerage-scoped users directory with the unscoped superadmin branch REMOVED — the god console owns cross-tenant) and app/admin is now NOTHING but thin redirects; retiring the hub orphaned the recruits pipeline manager, so it was RECOVERED from git onto the canonical recruiting surface as a Pipeline tab (stage-advance + provision APIs have their UI again). PLATFORM BOARDS: A2P posture across every tenant (real twilio_a2p state machine, messaging-ready derived exactly as describeA2pState does) and rollout cohorts recomputed with the SAME FNV-1a bucket the entitlement resolver uses, wiring only the existing audited override action",
+        src("lib/onboarding/state-license-registry.ts").includes("manual_portal")
+        && src("lib/onboarding/license-lookup.ts").includes("verifyRealEstateLicense")
+        && src("lib/onboarding/license-verifier.ts").includes("verifyRealEstateLicense")
+        && !src("lib/onboarding/license-verifier.ts").includes("NIPR integration not yet configured")
+        && src("lib/video/composite-attribution.ts").includes("planBrollCutaways")
+        && src("lib/video/composite-attribution.ts").includes("compositeBrollCutaways")
+        && src("app/api/cron/poll-did-videos/route.ts").includes("b_roll_urls")
+        && src("app/api/cron/poll-did-videos/route.ts").includes("brandOverlayApplied")
+        && src("app/dashboard/superadmin/a2p/page.tsx").includes('requirePlatformCapability("providers")')
+        && src("app/dashboard/superadmin/rollout/page.tsx").includes("rolloutBucket")
+        && src("app/dashboard/admin/usage/page.tsx").length > 0
+        && src("app/dashboard/admin/ai-audit/page.tsx").includes("ai_generated_content")
+        && src("app/admin/usage/page.tsx").includes("redirect(")
+        && src("app/dashboard/recruiting-roi/page.tsx").includes("RecruitingPipelineClient"))
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {
@@ -2549,7 +2567,7 @@ async function main() {
     check("ACTING-AS is VISIBLE governance — the Command Center renders the assumed-view log (honest empty state), and card-scanned agent prospects surface in the recruiting hub BY CONSTRUCTION (it reads the recruits table the scanner writes)",
       src("app/dashboard/admin/command-center/acting-as-log.tsx").includes("Assumed views")
       && src("app/dashboard/admin/command-center/page.tsx").includes("ActingAsLog")
-      && src("app/admin/recruiting-hub/page.tsx").includes('from("recruits")'))
+      && src("app/dashboard/recruiting-roi/page.tsx").includes('from("recruits")'))
     const { composeWalkthroughFollowUp } = await import("../lib/transactions/walkthrough-outcome")
     const wtGood = composeWalkthroughFollowUp("all_good", "Bill")
     const wtMajor = composeWalkthroughFollowUp("major_issues", "Bill")

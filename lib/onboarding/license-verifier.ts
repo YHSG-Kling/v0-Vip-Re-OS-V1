@@ -3,7 +3,13 @@
 // SYSTEM: L11-S01 — License Verification Engine
 // VIP Real Estate AI OS — Layer 11
 // ============================================================
-// Handles NIPR API lookup with AI document analysis fallback.
+// Real-estate licenses are verified against the STATE regulator registry
+// (there is no national real-estate license API — NIPR is insurance):
+//   1. State registry ladder (lib/onboarding/license-lookup.ts)
+//        scrape + AI-extract where the portal allows it, honest confidence.
+//   2. AI document analysis fallback (uploaded license document).
+//   3. Human review queue — the FLOOR. 'flagged' and 'needs_manual_review'
+//      both land here; this engine never rejects an agent, only humans do.
 // Non-blocking — called async after license submission.
 
 import { createServiceClient } from "@/lib/supabase/service"
@@ -13,6 +19,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import type { EntityType } from "@/lib/kernel/types"
 import { guardedGenerateText } from "@/lib/data-guard/guarded-generate"
 import { gateway } from "@ai-sdk/gateway"
+import { verifyRealEstateLicense } from "@/lib/onboarding/license-lookup"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -28,8 +35,18 @@ interface LicenseVerificationParams {
 
 interface VerificationResult {
   verified: boolean
-  method: "nipr" | "ai_document_analysis" | "manual"
+  method: "state_registry" | "ai_document_analysis" | "manual"
+  /** canonical license_verifications.verification_method (CHECK-valid). */
+  dbMethod: "state_registry_scrape" | "state_portal_manual" | "document_ai" | "manual"
   resultDetail: string
+  /** 0-1 extraction confidence when a state-registry scrape ran. */
+  confidence?: number
+  /** Extracted registry evidence (goes into license_verifications.raw_response). */
+  evidence?: Record<string, unknown>
+  /** One-click state-portal link for the human reviewer. */
+  portalUrl?: string
+  /** Registry showed an adverse status (expired/revoked/…) — a real finding, humans decide. */
+  flagged?: boolean
 }
 
 // ─── MAIN VERIFICATION FUNCTION ───────────────────────────────────────────────
@@ -40,23 +57,39 @@ export async function runLicenseVerification(
   const supabase = createServiceClient()
 
   try {
-    // Attempt 1: NIPR API lookup
-    const niprResult = await attemptNiprVerification(params)
-    if (niprResult.verified) {
-      await handleVerificationSuccess(supabase, params, niprResult)
-      return niprResult
+    // Attempt 1: state regulator registry (the real-estate license source of truth)
+    const registryResult = await attemptStateRegistryVerification(supabase, params)
+    if (registryResult.verified) {
+      await handleVerificationSuccess(supabase, params, registryResult)
+      return registryResult
     }
+
+    if (registryResult.flagged) {
+      // Adverse registry finding (expired/revoked/…): straight to the human
+      // queue with the evidence — a document upload cannot override the state
+      // registry, and this engine never rejects on its own.
+      await handleVerificationFailure(supabase, params, registryResult, "failed")
+      return registryResult
+    }
+
+    // Registry inconclusive (portal not scrapeable / not found / low confidence /
+    // scrape or AI failure) — keep an honest audit row of the attempt, then fall
+    // through to document analysis.
+    await recordVerificationAttempt(supabase, params, registryResult, "inconclusive")
 
     // Attempt 2: AI document analysis fallback
     if (params.documentUrl) {
       const aiResult = await attemptAiDocumentAnalysis(params)
+      // Carry the portal link forward so the reviewer always gets the one-click
+      // state-portal link, whatever attempt escalated.
+      aiResult.portalUrl = aiResult.portalUrl ?? registryResult.portalUrl
       if (aiResult.verified) {
         await handleVerificationSuccess(supabase, params, aiResult)
         return aiResult
       }
 
-      // AI analysis failed — log and mark for manual review
-      await handleVerificationFailure(supabase, params, aiResult)
+      // AI analysis inconclusive — mark for manual review
+      await handleVerificationFailure(supabase, params, aiResult, "inconclusive")
       return aiResult
     }
 
@@ -64,38 +97,104 @@ export async function runLicenseVerification(
     const manualResult: VerificationResult = {
       verified: false,
       method: "manual",
-      resultDetail: "No document uploaded for AI analysis. Manual review required.",
+      dbMethod: "manual",
+      resultDetail: `${registryResult.resultDetail} No document uploaded for AI analysis. Manual review required.`,
+      portalUrl: registryResult.portalUrl,
+      confidence: registryResult.confidence,
+      evidence: registryResult.evidence,
     }
-    await handleVerificationFailure(supabase, params, manualResult)
+    await handleVerificationFailure(supabase, params, manualResult, "inconclusive")
     return manualResult
   } catch (error) {
     console.error("[L11-License] Verification error:", error)
     const errorResult: VerificationResult = {
       verified: false,
       method: "manual",
+      dbMethod: "manual",
       resultDetail: `System error during verification: ${error instanceof Error ? error.message : "Unknown error"}`,
     }
-    await handleVerificationFailure(supabase, params, errorResult)
+    await handleVerificationFailure(supabase, params, errorResult, "inconclusive")
     return errorResult
   }
 }
 
-// ─── NIPR API VERIFICATION ────────────────────────────────────────────────────
+// ─── STATE REGISTRY VERIFICATION ──────────────────────────────────────────────
 
-async function attemptNiprVerification(
+async function attemptStateRegistryVerification(
+  supabase: ReturnType<typeof createServiceClient>,
   params: LicenseVerificationParams
 ): Promise<VerificationResult> {
-  // TODO: Integrate with actual NIPR API when credentials are available
-  // NIPR API requires organization registration and API key
-  // For now, return unverified to trigger AI fallback
+  console.log(
+    `[L11-License] State-registry lookup for ${params.licenseNumber} in ${params.licenseState}`
+  )
 
-  console.log(`[L11-License] NIPR lookup for ${params.licenseNumber} in ${params.licenseState}`)
+  // Best-effort last name (some state portals search by name) — never blocking.
+  let lastName: string | undefined
+  {
+    const { data: agentRow, error } = await supabase
+      .from("agents")
+      .select("user_id, users ( last_name )")
+      .eq("id", params.agentId)
+      .maybeSingle()
+    if (error) {
+      console.warn("[L11-License] lastName lookup failed (non-blocking):", error.message)
+    } else {
+      const usersRel = (agentRow as any)?.users
+      const userRow = Array.isArray(usersRel) ? usersRel[0] : usersRel
+      lastName = userRow?.last_name ?? undefined
+    }
+  }
 
-  // Placeholder: NIPR integration not yet configured
+  const verdict = await verifyRealEstateLicense({
+    state: params.licenseState,
+    licenseNumber: params.licenseNumber,
+    lastName,
+    brokerageId: params.brokerageId,
+  })
+
+  if (verdict.status === "verified") {
+    return {
+      verified: true,
+      method: "state_registry",
+      dbMethod: "state_registry_scrape",
+      resultDetail:
+        `Verified against ${verdict.evidence.boardName}: status "${verdict.evidence.licenseStatus}"` +
+        (verdict.evidence.expirationDate ? `, expires ${verdict.evidence.expirationDate}` : "") +
+        `. Confidence ${(verdict.evidence.confidence * 100).toFixed(0)}%.`,
+      confidence: verdict.evidence.confidence,
+      evidence: { ...verdict.evidence },
+      portalUrl: verdict.evidence.sourceUrl,
+    }
+  }
+
+  if (verdict.status === "flagged") {
+    return {
+      verified: false,
+      flagged: true,
+      method: "state_registry",
+      dbMethod: "state_registry_scrape",
+      resultDetail:
+        `State registry (${verdict.evidence.boardName}) shows status ` +
+        `"${verdict.evidence.licenseStatus}" for this license (${verdict.reason}). ` +
+        `Human review required — not auto-rejected.`,
+      confidence: verdict.evidence.confidence,
+      evidence: { ...verdict.evidence },
+      portalUrl: verdict.portalUrl,
+    }
+  }
+
+  // needs_manual_review
   return {
     verified: false,
-    method: "nipr",
-    resultDetail: "NIPR API integration pending. Falling back to document analysis.",
+    method: "state_registry",
+    dbMethod: verdict.method === "state_portal_manual" ? "state_portal_manual" : "state_registry_scrape",
+    resultDetail:
+      verdict.method === "state_portal_manual"
+        ? `The ${params.licenseState} portal cannot be verified automatically (${verdict.reason}).`
+        : `State-registry lookup inconclusive (${verdict.reason}).`,
+    confidence: verdict.evidence?.confidence,
+    evidence: verdict.evidence ? { ...verdict.evidence } : undefined,
+    portalUrl: verdict.portalUrl,
   }
 }
 
@@ -108,6 +207,7 @@ async function attemptAiDocumentAnalysis(
     return {
       verified: false,
       method: "ai_document_analysis",
+      dbMethod: "document_ai",
       resultDetail: "No document URL provided for analysis.",
     }
   }
@@ -155,6 +255,7 @@ Be conservative — if you cannot clearly read or verify information, mark it as
       return {
         verified: false,
         method: "ai_document_analysis",
+        dbMethod: "document_ai",
         resultDetail: "AI response did not contain valid JSON. Manual review required.",
       }
     }
@@ -171,6 +272,9 @@ Be conservative — if you cannot clearly read or verify information, mark it as
     return {
       verified: isValid,
       method: "ai_document_analysis",
+      dbMethod: "document_ai",
+      confidence: typeof analysis.confidence_score === "number" ? analysis.confidence_score : undefined,
+      evidence: analysis,
       resultDetail: isValid
         ? `License verified via AI analysis. Confidence: ${(analysis.confidence_score * 100).toFixed(0)}%. ${analysis.verification_notes}`
         : `AI analysis inconclusive. ${analysis.verification_notes}. Manual review recommended.`,
@@ -180,8 +284,39 @@ Be conservative — if you cannot clearly read or verify information, mark it as
     return {
       verified: false,
       method: "ai_document_analysis",
+      dbMethod: "document_ai",
       resultDetail: `AI analysis failed: ${error instanceof Error ? error.message : "Unknown error"}`,
     }
+  }
+}
+
+// ─── AUDIT ROW FOR A NON-TERMINAL ATTEMPT ─────────────────────────────────────
+
+/**
+ * Record an attempt that did not settle the verification (registry inconclusive
+ * before the document fallback runs) so the reviewer sees the full ladder.
+ */
+async function recordVerificationAttempt(
+  supabase: ReturnType<typeof createServiceClient>,
+  params: LicenseVerificationParams,
+  result: VerificationResult,
+  verificationResult: "inconclusive" | "failed"
+) {
+  const { error } = await supabase.from("license_verifications").insert({
+    brokerage_id: params.brokerageId,
+    license_id: params.agentLicenseId,
+    verification_method: result.dbMethod,
+    verification_result: verificationResult,
+    confidence_score: result.confidence ?? null,
+    failure_reasons: [result.resultDetail],
+    raw_response: {
+      detail: result.resultDetail,
+      evidence: result.evidence ?? null,
+      portal_url: result.portalUrl ?? null,
+    },
+  })
+  if (error) {
+    console.error("[L11-License] failed to record verification attempt:", error.message)
   }
 }
 
@@ -195,23 +330,34 @@ async function handleVerificationSuccess(
   const now = new Date().toISOString()
 
   // Update agent_licenses record
-  await supabase
-    .from("agent_licenses")
-    .update({
-      verification_status: "verified",
-      verified_at: now,
-      updated_at: now,
-    })
-    .eq("id", params.agentLicenseId)
+  {
+    const { error } = await supabase
+      .from("agent_licenses")
+      .update({
+        verification_status: "verified",
+        verified_at: now,
+        updated_at: now,
+      })
+      .eq("id", params.agentLicenseId)
+    if (error) console.error("[L11-License] agent_licenses update failed:", error.message)
+  }
 
   // Insert license_verifications record (canonical columns + CHECK-valid values)
-  await supabase.from("license_verifications").insert({
-    brokerage_id: params.brokerageId,
-    license_id: params.agentLicenseId,
-    verification_method: result.method === "nipr" ? "nipr_api" : result.method === "ai_document_analysis" ? "document_ai" : "manual",
-    verification_result: "passed",
-    raw_response: { detail: result.resultDetail },
-  })
+  {
+    const { error } = await supabase.from("license_verifications").insert({
+      brokerage_id: params.brokerageId,
+      license_id: params.agentLicenseId,
+      verification_method: result.dbMethod,
+      verification_result: "passed",
+      confidence_score: result.confidence ?? null,
+      raw_response: {
+        detail: result.resultDetail,
+        evidence: result.evidence ?? null,
+        portal_url: result.portalUrl ?? null,
+      },
+    })
+    if (error) console.error("[L11-License] license_verifications insert failed:", error.message)
+  }
 
   // Fire kernel event
   await processKernelEvent({
@@ -232,40 +378,55 @@ async function handleVerificationSuccess(
     eventType: "license_verified",
     metadata: {
       license_id: params.agentLicenseId,
-      verification_method: result.method,
+      verification_method: result.dbMethod,
     },
   })
 
-  console.log(`[L11-License] License ${params.licenseNumber} verified successfully via ${result.method}`)
+  console.log(`[L11-License] License ${params.licenseNumber} verified successfully via ${result.dbMethod}`)
 }
 
-// ─── FAILURE HANDLER ──────────────────────────────────────────────────────────
+// ─── FAILURE / ESCALATION HANDLER ─────────────────────────────────────────────
 
 async function handleVerificationFailure(
   supabase: ReturnType<typeof createServiceClient>,
   params: LicenseVerificationParams,
-  result: VerificationResult
+  result: VerificationResult,
+  verificationResult: "failed" | "inconclusive"
 ) {
   const now = new Date().toISOString()
 
   // Update agent_licenses record — mark as pending_review, NOT rejected
-  await supabase
-    .from("agent_licenses")
-    .update({
-      verification_status: "pending", // CHECK: unverified|pending|verified|failed (no pending_review)
-      updated_at: now,
-    })
-    .eq("id", params.agentLicenseId)
+  {
+    const { error } = await supabase
+      .from("agent_licenses")
+      .update({
+        verification_status: "pending", // CHECK: unverified|pending|verified|failed (no pending_review)
+        updated_at: now,
+      })
+      .eq("id", params.agentLicenseId)
+    if (error) console.error("[L11-License] agent_licenses update failed:", error.message)
+  }
 
-  // Insert license_verifications record (canonical columns + CHECK-valid values)
-  await supabase.from("license_verifications").insert({
-    brokerage_id: params.brokerageId,
-    license_id: params.agentLicenseId,
-    verification_method: result.method === "nipr" ? "nipr_api" : result.method === "ai_document_analysis" ? "document_ai" : "manual",
-    verification_result: "failed",
-    failure_reasons: [result.resultDetail],
-    raw_response: { detail: result.resultDetail },
-  })
+  // Insert license_verifications record (canonical columns + CHECK-valid values).
+  // 'failed' is reserved for a real adverse registry finding ('flagged');
+  // everything the ladder couldn't settle is honestly 'inconclusive'.
+  {
+    const { error } = await supabase.from("license_verifications").insert({
+      brokerage_id: params.brokerageId,
+      license_id: params.agentLicenseId,
+      verification_method: result.dbMethod,
+      verification_result: verificationResult,
+      confidence_score: result.confidence ?? null,
+      failure_reasons: [result.resultDetail],
+      raw_response: {
+        detail: result.resultDetail,
+        evidence: result.evidence ?? null,
+        portal_url: result.portalUrl ?? null,
+        flagged: result.flagged === true,
+      },
+    })
+    if (error) console.error("[L11-License] license_verifications insert failed:", error.message)
+  }
 
   // Fire kernel event for failed verification
   await processKernelEvent({
@@ -278,29 +439,33 @@ async function handleVerificationFailure(
   // Hand the un-clearable verification to the humans who CAN clear it — the brokerage's compliance
   // officers + admins. Without this the license sat in "pending" with a failed record and nobody was
   // told, so the agent's onboarding silently stalled. Managers working together: the License Verifier
-  // escalates to Compliance/Admin for manual review instead of dropping it. Best-effort.
+  // escalates to Compliance/Admin for manual review instead of dropping it. The body carries the
+  // one-click state-portal link so the reviewer can check the registry themselves. Best-effort.
   try {
-    const { data: reviewers } = await supabase
+    const { data: reviewers, error } = await supabase
       .from("users")
       .select("id")
       .eq("brokerage_id", params.brokerageId)
       .in("user_type", ["compliance_officer", "admin", "broker", "broker_admin"])
+    if (error) throw error
+    const portalLine = result.portalUrl ? ` Check the state portal: ${result.portalUrl}` : ""
     for (const r of reviewers ?? []) {
-      await supabase.from("notifications").insert({
+      const { error: notifError } = await supabase.from("notifications").insert({
         user_id:     r.id,
         brokerage_id: params.brokerageId,
         type:        "license_manual_review_required",
-        title:       "License needs manual review",
-        body:        `Auto-verification couldn't clear a ${params.licenseState} license (#${params.licenseNumber}). ${result.resultDetail}`,
+        title:       result.flagged ? "License flagged by state registry" : "License needs manual review",
+        body:        `Auto-verification couldn't clear a ${params.licenseState} license (#${params.licenseNumber}). ${result.resultDetail}${portalLine}`,
         entity_type: "agent_license",
         entity_id:   params.agentLicenseId,
         priority:    "high",
         channel:     "in_app",
       })
+      if (notifError) console.error("[L11-License] reviewer notification failed:", notifError.message)
     }
   } catch (e) {
     console.error("[L11-License] failed to notify reviewers:", e)
   }
 
-  console.log(`[L11-License] License ${params.licenseNumber} verification failed: ${result.resultDetail}`)
+  console.log(`[L11-License] License ${params.licenseNumber} escalated to manual review: ${result.resultDetail}`)
 }

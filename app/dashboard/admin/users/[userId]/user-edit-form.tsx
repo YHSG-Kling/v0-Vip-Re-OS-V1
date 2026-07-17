@@ -249,7 +249,7 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages }
           Joined {new Date(user.created_at).toLocaleDateString()}
         </p>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => router.push("/admin/users")}>
+          <Button variant="outline" onClick={() => router.push("/dashboard/admin/users")}>
             Cancel
           </Button>
           <Button onClick={handleSave} disabled={saving}>

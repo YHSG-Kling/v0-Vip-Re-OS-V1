@@ -85,7 +85,7 @@ export async function createScrapingMarket(marketData: {
     // Territory enrollment: the market's zips become active subscriber
     // service areas (distribution rotation + scraper territory roster).
     await syncServiceAreasForMarket(supabase, data as any).catch(() => {})
-    revalidatePath("/admin/lead-scraping")
+    revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true, market: data }
   } catch (error) {
     console.error("[v0] Error creating scraping market:", error)
@@ -117,7 +117,7 @@ export async function updateScrapingMarket(
 
     if (error) throw error
     await syncServiceAreasForMarket(supabase, data as any).catch(() => {})
-    revalidatePath("/admin/lead-scraping")
+    revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true, market: data }
   } catch (error) {
     console.error("[v0] Error updating scraping market:", error)
@@ -141,7 +141,7 @@ export async function deleteScrapingMarket(id: string) {
     const { error } = await supabase.from("lead_scraping_markets").delete().eq("id", id)
 
     if (error) throw error
-    revalidatePath("/admin/lead-scraping")
+    revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true }
   } catch (error) {
     console.error("[v0] Error deleting scraping market:", error)
@@ -187,7 +187,7 @@ export async function createScrapingKeyword(keywordData: {
       .single()
 
     if (error) throw error
-    revalidatePath("/admin/lead-scraping")
+    revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true, keyword: data }
   } catch (error) {
     console.error("[v0] Error creating keyword:", error)
@@ -213,7 +213,7 @@ export async function updateScrapingKeyword(
     const { data, error } = await supabase.from("lead_scraping_keywords").update(dbUpdates).eq("id", id).select().single()
 
     if (error) throw error
-    revalidatePath("/admin/lead-scraping")
+    revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true, keyword: data }
   } catch (error) {
     console.error("[v0] Error updating keyword:", error)
@@ -227,7 +227,7 @@ export async function deleteScrapingKeyword(id: string) {
     const { error } = await supabase.from("lead_scraping_keywords").delete().eq("id", id)
 
     if (error) throw error
-    revalidatePath("/admin/lead-scraping")
+    revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true }
   } catch (error) {
     console.error("[v0] Error deleting keyword:", error)
@@ -261,7 +261,7 @@ export async function createPropertyParams(
       .single()
 
     if (error) throw error
-    revalidatePath("/admin/lead-scraping")
+    revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true, params: data }
   } catch (error) {
     console.error("[v0] Error creating property params:", error)
@@ -293,7 +293,7 @@ export async function updatePropertyParams(
       .single()
 
     if (error) throw error
-    revalidatePath("/admin/lead-scraping")
+    revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true, params: data }
   } catch (error) {
     console.error("[v0] Error updating property params:", error)
@@ -324,7 +324,7 @@ export async function createMotivatedParams(
       .single()
 
     if (error) throw error
-    revalidatePath("/admin/lead-scraping")
+    revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true, params: data }
   } catch (error) {
     console.error("[v0] Error creating motivated params:", error)
@@ -353,7 +353,7 @@ export async function updateMotivatedParams(
       .single()
 
     if (error) throw error
-    revalidatePath("/admin/lead-scraping")
+    revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true, params: data }
   } catch (error) {
     console.error("[v0] Error updating motivated params:", error)

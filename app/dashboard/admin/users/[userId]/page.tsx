@@ -39,7 +39,7 @@ export default async function UserEditPage({ params }: Props) {
 
   // Non-superadmin admin scoped to own brokerage
   if (callerRole === "admin" && caller?.brokerage_id && target.brokerage_id !== caller.brokerage_id) {
-    redirect("/admin/users")
+    redirect("/dashboard/admin/users")
   }
 
   // Load brokerages for superadmin dropdown
@@ -56,7 +56,7 @@ export default async function UserEditPage({ params }: Props) {
     <div className="p-6 max-w-2xl mx-auto space-y-6">
       <div className="flex items-center gap-3">
         <Link
-          href="/admin/users"
+          href="/dashboard/admin/users"
           className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
           <ArrowLeft className="h-4 w-4" />

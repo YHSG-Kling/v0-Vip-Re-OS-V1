@@ -1,9 +1,10 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import Link from "next/link"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Users, AlertTriangle, CheckCircle2 } from "lucide-react"
+import { Users, AlertTriangle, CheckCircle2, Building2, ArrowRight } from "lucide-react"
 import { InviteUserButton } from "./invite-user-button"
 import { EditUserButton } from "./edit-user-button"
 
@@ -45,20 +46,47 @@ export default async function AdminUsersPage() {
     redirect("/dashboard")
   }
 
-  // Load users — scoped to brokerage for non-superadmin callers
+  // SPLIT (console consolidation): the cross-tenant user listing belongs to the
+  // god console. Platform staff get a link-out to the per-tenant user panels
+  // instead of a cross-tenant directory here.
+  if (callerType === "superadmin") {
+    return (
+      <div className="p-6 max-w-2xl mx-auto">
+        <Card>
+          <CardContent className="p-8 text-center space-y-4">
+            <Building2 className="w-10 h-10 mx-auto text-muted-foreground" />
+            <div>
+              <h1 className="text-xl font-bold">Cross-tenant user management lives in the platform console</h1>
+              <p className="text-sm text-muted-foreground mt-2">
+                This page is the brokerage-scoped user directory for tenant admins.
+                As platform staff, manage users per brokerage from the god console.
+              </p>
+            </div>
+            <Link
+              href="/dashboard/superadmin/brokerages"
+              className="inline-flex items-center gap-2 text-sm font-medium text-blue-600 hover:underline"
+            >
+              Open Brokerages console
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  // Kernel guard: tenant admins must be anchored to a brokerage.
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
+
+  // Load users — always scoped to the caller's brokerage (tenant anchor)
   const service = createServiceClient()
-  let query = service
+  const { data: users } = await service
     .from("users")
     .select("id, first_name, last_name, email, user_type, brokerage_id, created_at")
     .is("deleted_at", null)
+    .eq("brokerage_id", profile.brokerage_id)
     .order("created_at", { ascending: false })
     .limit(200)
-
-  if (callerType !== "superadmin" && profile?.brokerage_id) {
-    query = query.eq("brokerage_id", profile.brokerage_id) as typeof query
-  }
-
-  const { data: users } = await query
   const userList = users ?? []
 
   // Load domain record status for quick health check
@@ -66,12 +94,13 @@ export default async function AdminUsersPage() {
   const userIds = userList.map(u => u.id)
 
   // tenant anchor (scope burn-down): userIds come from the brokerage-scoped users
-  // query above; additionally pin the agents lookup to the caller's brokerage for
-  // non-superadmin callers (superadmin is platform-wide by design).
-  let agentsQuery = service.from("agents").select("user_id").in("user_id", userIds)
-  if (callerType !== "superadmin" && profile?.brokerage_id) {
-    agentsQuery = agentsQuery.eq("brokerage_id", profile.brokerage_id) as typeof agentsQuery
-  }
+  // query above; additionally pin the agents lookup to the caller's brokerage
+  // (superadmin never reaches this listing — it links out to the god console).
+  const agentsQuery = service
+    .from("agents")
+    .select("user_id")
+    .in("user_id", userIds)
+    .eq("brokerage_id", profile.brokerage_id)
 
   const [{ data: agentRows }, { data: tcRows }] = await Promise.all([
     userIds.length

@@ -96,7 +96,7 @@ export async function createAgent(agentData: {
     return { error: error.message }
   }
 
-  revalidatePath("/admin/agent-roster")
+  revalidatePath("/dashboard/admin/users")
   return { data }
 }
 
@@ -128,7 +128,7 @@ export async function updateAgent(
     return { error: error.message }
   }
 
-  revalidatePath("/admin/agent-roster")
+  revalidatePath("/dashboard/admin/users")
   return { data }
 }
 
@@ -172,7 +172,7 @@ export async function awardPoints(agentId: string, points: number, reason: strin
   // Check for new achievements
   await checkAndAwardAchievements(agentId, newPoints)
 
-  revalidatePath("/admin/agent-roster")
+  revalidatePath("/dashboard/admin/users")
   return { data: { newPoints } }
 }
 
@@ -366,7 +366,7 @@ export async function addAgentCommission(commissionData: {
   // Award points for closing
   await awardPoints(commissionData.agent_id, 100, "Closed transaction", "transaction")
 
-  revalidatePath("/admin/agent-roster")
+  revalidatePath("/dashboard/admin/users")
   return { data }
 }
 
@@ -394,7 +394,7 @@ export async function updateCommissionStatus(
     return { error: error.message }
   }
 
-  revalidatePath("/admin/agent-roster")
+  revalidatePath("/dashboard/admin/users")
   return { data }
 }
 
@@ -480,7 +480,7 @@ export async function addAgentExpense(expenseData: {
     return { error: error.message }
   }
 
-  revalidatePath("/admin/agent-roster")
+  revalidatePath("/dashboard/admin/users")
   return { data }
 }
 
@@ -581,7 +581,7 @@ export async function setAgentGoal(goalData: {
     return { error: error.message }
   }
 
-  revalidatePath("/admin/agent-roster")
+  revalidatePath("/dashboard/admin/users")
   return { data }
 }
 
@@ -600,7 +600,7 @@ export async function updateGoalProgress(goalId: string, currentValue: number) {
     return { error: error.message }
   }
 
-  revalidatePath("/admin/agent-roster")
+  revalidatePath("/dashboard/admin/users")
   return { data }
 }
 

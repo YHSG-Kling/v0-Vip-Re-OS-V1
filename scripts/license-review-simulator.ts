@@ -12,6 +12,8 @@
  */
 import { randomUUID } from "node:crypto"
 import { licenseNeedsManualReview, manualReviewOutcome } from "../lib/onboarding/license-review"
+import { getStateLicenseSource, resolveLookupUrl, listStateLicenseSources } from "../lib/onboarding/state-license-registry"
+import { classifyLicenseStatus, mapRegistryVerdict, type RegistryEvidence } from "../lib/onboarding/license-lookup"
 
 let pass = 0, fail = 0
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; console.log(`  ✗ ${n}`) } }
@@ -29,6 +31,30 @@ function pureLayer(): void {
   check("approve ⇒ verified / passed", approve.verificationStatus === "verified" && approve.verificationResult === "passed" && approve.verified)
   const reject = manualReviewOutcome("reject")
   check("reject ⇒ failed / failed", reject.verificationStatus === "failed" && reject.verificationResult === "failed" && !reject.verified)
+
+  console.log("\n[license ladder · pure — state registry resolution]")
+  const ca = getStateLicenseSource("ca")
+  check("CA resolves (case-insensitive) as scrape", ca?.state === "CA" && ca.method === "scrape")
+  check("CA URL fills {{license}} encoded", !!ca && resolveLookupUrl(ca.lookupUrl, { license: "0131 7331" }).includes("0131%207331"))
+  check("TX resolves as scrape", getStateLicenseSource("TX")?.method === "scrape")
+  check("FL is manual_portal (session-gated)", getStateLicenseSource("FL")?.method === "manual_portal")
+  check("unknown state ⇒ null (falls to review, no link)", getStateLicenseSource("IA") === null && getStateLicenseSource("ZZ") === null)
+  check("every registry URL is https", listStateLicenseSources().every((s) => s.lookupUrl.startsWith("https://")))
+
+  console.log("\n[license ladder · pure — verdict mapping (never auto-fail)]")
+  const ev = (over: Partial<RegistryEvidence>): RegistryEvidence => ({
+    found: true, licenseeName: "Jane Agent", licenseStatus: "Active", licenseType: "Salesperson",
+    expirationDate: "2027-01-31", confidence: 0.95, sourceUrl: "https://example-state.gov/x", boardName: "Test Board", ...over,
+  })
+  check("active + high confidence ⇒ verified", mapRegistryVerdict(ev({}), "u").status === "verified")
+  check("active + low confidence ⇒ needs review", mapRegistryVerdict(ev({ confidence: 0.6 }), "u").status === "needs_manual_review")
+  check("Expired ⇒ flagged (human decides, not rejected)", mapRegistryVerdict(ev({ licenseStatus: "Expired" }), "u").status === "flagged")
+  check("Revoked ⇒ flagged", mapRegistryVerdict(ev({ licenseStatus: "Revoked" }), "u").status === "flagged")
+  check("'Inactive' never reads as active", classifyLicenseStatus("Inactive") === "adverse")
+  check("not found ⇒ needs review", mapRegistryVerdict(ev({ found: false }), "u").status === "needs_manual_review")
+  check("weird status ⇒ ambiguous ⇒ needs review", mapRegistryVerdict(ev({ licenseStatus: "Pending Audit" }), "u").status === "needs_manual_review")
+  check("no verdict path auto-fails the agent", (["Expired", "Revoked", "Suspended", "??", ""] as const)
+    .every((s) => { const v = mapRegistryVerdict(ev({ licenseStatus: s }), "u"); return v.status === "flagged" || v.status === "needs_manual_review" }))
 }
 
 async function liveLayer(): Promise<void> {

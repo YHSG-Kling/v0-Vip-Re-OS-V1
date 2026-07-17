@@ -9,7 +9,7 @@ export function EditUserButton({ userId }: { userId: string }) {
     <Button
       size="sm"
       variant="ghost"
-      onClick={() => router.push(`/admin/users/${userId}`)}
+      onClick={() => router.push(`/dashboard/admin/users/${userId}`)}
     >
       Edit
     </Button>

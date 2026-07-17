@@ -109,6 +109,7 @@ export const AI_TASK_ROUTING: Record<string, {
   document_parsing:          { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Parse contracts/forms into structured data" },
   lead_data_extraction:      { model: "gpt-4o", fallback: "claude-haiku",   reason: "Extract contact fields from raw lead payloads" },
   generate_json:             { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Any task requiring strict JSON schema output" },
+  license_verification:      { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Extract license record fields from state regulator registry pages — extraction only, schema strict" },
   copilot_plan_generation:   { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Structured daily plan with typed task objects" },
   transaction_coordinator:   { model: "gpt-4o", fallback: "claude-sonnet",  reason: "TC task list generation — structured milestone output" },
 

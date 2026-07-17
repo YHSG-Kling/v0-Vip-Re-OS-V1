@@ -239,8 +239,8 @@ Provide actionable recommendations.`,
         .eq("id", params.recruitId)
     }
 
-    revalidatePath("/admin/agent-roster")
-    revalidatePath("/admin/recruiting-hub")
+    revalidatePath("/dashboard/admin/users")
+    revalidatePath("/dashboard/recruiting-roi")
 
     return {
       success: true,
@@ -426,7 +426,7 @@ export async function completeAISessionStep(params: {
         .eq("id", session.agent_id)
     }
 
-    revalidatePath("/admin/agent-roster")
+    revalidatePath("/dashboard/admin/users")
 
     return {
       success: true,
@@ -798,7 +798,7 @@ export async function certifyAgent(params: {
       created_at: new Date().toISOString(),
     })
 
-    revalidatePath("/admin/agent-roster")
+    revalidatePath("/dashboard/admin/users")
 
     return {
       success: true,

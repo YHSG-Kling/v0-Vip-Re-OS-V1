@@ -16,6 +16,7 @@ import { BreakEvenChart } from "./breakeven-chart"
 import { LTVScatterChart } from "./ltv-scatter-chart"
 import { RecruitROITable } from "./recruit-roi-table"
 import { CostEntryPanel } from "./cost-entry-panel"
+import { RecruitingPipelineClient } from "./recruiting-pipeline-client"
 
 export const dynamic = "force-dynamic"
 
@@ -60,6 +61,15 @@ export default async function RecruitingROIPage() {
   const avgBreakEven = breakEvenAnalysis?.avgBreakEvenMonth || 0
   const activeRecruits = roiSummary?.activeRecruits || 0
   const profitableRecruits = roiSummary?.profitableRecruits || 0
+
+  // Recruit pipeline rows (stage advance / provision live here now — the old
+  // /admin/recruiting-hub was retired into this canonical recruiting surface).
+  const { data: recruitRows } = await supabase
+    .from("recruits")
+    .select("*")
+    .eq("brokerage_id", profile.brokerage_id)
+    .order("created_at", { ascending: false })
+    .limit(100)
 
   return (
     <div className="container mx-auto p-6 space-y-6">
@@ -154,7 +164,8 @@ export default async function RecruitingROIPage() {
       </div>
 
       <Tabs defaultValue="analysis" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-5">
+          <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
           <TabsTrigger value="analysis">Analysis</TabsTrigger>
           <TabsTrigger value="timeline">Timeline</TabsTrigger>
           <TabsTrigger value="cohorts">By Recruit</TabsTrigger>
@@ -162,6 +173,10 @@ export default async function RecruitingROIPage() {
         </TabsList>
 
         {/* Tab 1: Analysis */}
+        <TabsContent value="pipeline" className="space-y-4">
+          <RecruitingPipelineClient recruits={(recruitRows as any[]) ?? []} brokerageId={profile.brokerage_id} />
+        </TabsContent>
+
         <TabsContent value="analysis" className="space-y-4">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Card>
