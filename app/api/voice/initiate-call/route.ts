@@ -173,7 +173,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         error: "VAPI not configured",
         vapiNotConfigured: true,
         ctaMessage: "Configure VAPI to enable AI calling",
-        ctaLink: "/admin/integrations",
+        ctaLink: "/settings/integrations",
       },
       { status: 503 }
     )

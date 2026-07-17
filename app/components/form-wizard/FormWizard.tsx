@@ -723,7 +723,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>
                 No transaction provider configured.{" "}
-                <a href="/admin/integrations" className="underline">Set one up in Integrations.</a>
+                <a href="/settings/integrations" className="underline">Set one up in Integrations.</a>
               </AlertDescription>
             </Alert>
           )}
@@ -1102,7 +1102,7 @@ function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
             <AlertCircle className="h-3 w-3" />
             <AlertDescription className="text-xs">
               No e-sign provider configured.{" "}
-              <a href="/admin/integrations" className="underline">Set one up in Integrations.</a>
+              <a href="/settings/integrations" className="underline">Set one up in Integrations.</a>
             </AlertDescription>
           </Alert>
         )}

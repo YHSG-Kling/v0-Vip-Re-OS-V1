@@ -29,7 +29,10 @@ export default async function SuperadminAuditPage() {
             impersonation, suppression edits. Most recent 200 entries.
           </p>
         </div>
-        <Link href="/dashboard/superadmin/platform" className="rounded-md border px-3 py-1 text-sm">Platform</Link>
+        <div className="flex items-center gap-2">
+          <Link href="/dashboard/superadmin/audit-trail" className="rounded-md border px-3 py-1 text-sm">Event audit trail</Link>
+          <Link href="/dashboard/superadmin/platform" className="rounded-md border px-3 py-1 text-sm">Platform</Link>
+        </div>
       </div>
 
       {!res.ok && <div className="rounded border p-4 text-sm text-red-600">Failed to load ledger: {res.error}</div>}

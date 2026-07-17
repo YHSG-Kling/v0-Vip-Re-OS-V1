@@ -13,7 +13,7 @@ const COMPLIANCE_NAV = [
   { label: 'Comm Intelligence', href: '/dashboard/communications/intelligence', icon: Eye },
   { label: 'Approvals Queue', href: '/approvals', icon: CheckSquare },
   { label: 'AI Quality', href: '/dashboard/ai-quality', icon: Sparkles },
-  { label: 'Platform Audit Trail', href: '/admin/audit-trail', icon: Eye },
+  { label: 'Platform Audit Trail', href: '/dashboard/superadmin/audit-trail', icon: Eye },
   { label: 'Settings', href: '/compliance/settings', icon: Settings },
 ]
 

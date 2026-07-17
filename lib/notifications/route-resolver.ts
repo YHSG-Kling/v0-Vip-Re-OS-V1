@@ -65,7 +65,7 @@ export function resolveNotificationHref(input: {
       return entityId ? `/dashboard/listings/presentations/${entityId}` : "/dashboard/listings"
     }
     if (type === "esign_provider_not_configured" || type === "esign_provider_manual_send") {
-      return "/admin/integrations"
+      return "/settings/integrations"
     }
     if (type === "showing_manual_contact_required" && entityId) {
       return `/dashboard/showings/${entityId}`

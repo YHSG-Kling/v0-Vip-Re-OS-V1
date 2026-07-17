@@ -1444,7 +1444,8 @@ async function main() {
       && src("app/dashboard/superadmin/continuity/page.tsx").includes("composeRepairAutonomy")
       && src("app/dashboard/superadmin/continuity/page.tsx").includes("loadRecentShapeChanges")
       && src("app/dashboard/superadmin/continuity/page.tsx").includes("ingress_dead_letters")
-      && src("app/admin/components/os/platform-owner-command-strip.tsx").includes("/dashboard/superadmin/continuity")
+      // legacy /admin command strip retired (keep-one consolidation) — the canonical superadmin platform console now carries the continuity-board link
+      && src("app/dashboard/superadmin/platform/page.tsx").includes("/dashboard/superadmin/continuity")
       && src("lib/kernel/manager-registry.ts").includes("principal_scoping_and_continuity_board:"))
     // ── THE THREE JOBS-COMPLETION DRAFTS (owner: NO hardcoded content — pure BRIEFS authored by the charter-governed model) ──
     const csd = await import("../lib/kernel/client-story-drafts")
@@ -2099,6 +2100,25 @@ async function main() {
         && src("app/dashboard/superadmin/suppression/suppression-manager.tsx").includes("addSuppressionEntryAction")
         && src("app/dashboard/superadmin/platform/page.tsx").includes("/dashboard/superadmin/suppression")
         && src("app/dashboard/superadmin/platform/page.tsx").includes("/dashboard/superadmin/audit"))
+    }
+    // ── ROUND 10: STUB BURN + WRITE-ONLY READERS + CONSOLE CONSOLIDATION ──
+    {
+      const writeBaseline10 = JSON.parse(src("scripts/orphan-write-baseline.json")) as string[]
+      check("ROUND 10 — THE STUB BURN + READER BATCH + ONE GOD CONSOLE. STUBS: the send_for_esign adapter's createTransaction→attachForms→sendForSignature flow is provider-AGNOSTIC via the registry — DocuSign/SkySlope/FormSimplicity/Authentisign auto-send exactly like Dotloop (all five classes implement ITransactionProvider); Brokermint (no native e-sign API) takes the manual-task path which now reports 'skipped', never a false 'sent'. Live-avatar MINUTES are metered: the portal widget tracks LIVE-mode elapsed time and beacons it to /api/did/agents/session/end (same portal-access gate as session-start, server-side clamp; the per-session counter stays the abuse hard-cap). DEAD CODE DELETED after zero-caller verification: the lib/ai-isa-contact module (its 'AI' response was a hardcoded '[Brokerage Name]' template), the never-called enhanced-readiness evaluator (default case silently failed 5 of 13 checks), the buyer-preferences stub, and sendOfferToDotloop (returned success without calling Dotloop). READERS: 8 write-only ledgers got their consumers — meeting briefs + weekly plans are cache-first (stored row serves before the LLM respends), calendar_blocks is the 8th unified-calendar source, offer comparisons + P&L snapshots + health-factor breakdowns survive refresh, actor health + pattern adoptions render on their admin pages; cma_packages' dead job-stub write deleted (cma_reports is canonical). Baseline 63 → 53, monotone. CONSOLE: the legacy app/admin mega-console is RETIRED — duplicates redirect into the capability-gated superadmin subtree, the UNGATED /admin/audit-trail hole is closed behind requirePlatformCapability('staff'), env-provider status moved behind 'providers', and tenant-facing /admin/integrations prompts point at /settings/integrations",
+        src("lib/workflow/adapters/send-for-esign.ts").includes("getTransactionProviderByName")
+        && src("lib/workflow/adapters/send-for-esign.ts").includes('status: "skipped"')
+        && src("app/api/did/agents/session/end/route.ts").includes("live_avatar_minutes")
+        && src("app/components/features/ai-avatar-chat/AgentsWidget.tsx").includes("sendBeacon")
+        && src("lib/ai-isa-contact/response-generator.ts") === ""
+        && src("lib/listing-lifecycle/readiness-evaluation-enhanced.ts") === ""
+        && src("app/actions/ai-calendar-management.ts").includes("forceRegenerate")
+        && src("app/dashboard/calendar/components/os/calendar-shell.tsx").includes("calendar_blocks")
+        && src("app/actions/seller-offers.ts").includes("loadLatestOfferComparison")
+        && writeBaseline10.length <= 53
+        && src("app/dashboard/superadmin/audit-trail/page.tsx").includes('requirePlatformCapability("staff")')
+        && src("app/dashboard/superadmin/env-providers/page.tsx").includes('requirePlatformCapability("providers")')
+        && src("app/admin/page.tsx").includes("redirect(")
+        && src("lib/notifications/route-resolver.ts").includes("/settings/integrations"))
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

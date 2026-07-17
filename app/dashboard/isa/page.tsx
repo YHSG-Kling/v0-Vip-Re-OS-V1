@@ -390,7 +390,7 @@ export default async function AIISAOperationsConsolePage() {
           <AlertTitle>AI Calling Not Configured</AlertTitle>
           <AlertDescription>
             VAPI is not configured. AI outbound calls will not execute.{' '}
-            <Link href="/admin/integrations" className="underline font-medium ml-1">
+            <Link href="/settings/integrations" className="underline font-medium ml-1">
               Configure in Admin Integrations →
             </Link>
           </AlertDescription>
@@ -505,7 +505,7 @@ export default async function AIISAOperationsConsolePage() {
                   <Mic className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
                   <p className="text-sm text-muted-foreground">No AI voice calls recorded yet.</p>
                   {!vapiConfigured && (
-                    <Link href="/admin/integrations" className="text-xs text-indigo-600 underline mt-1 block">
+                    <Link href="/settings/integrations" className="text-xs text-indigo-600 underline mt-1 block">
                       Configure VAPI to enable AI calling
                     </Link>
                   )}
