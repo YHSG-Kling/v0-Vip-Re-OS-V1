@@ -298,19 +298,3 @@ export async function getListingMatchHistory(params: {
     return handleError(error, 'getListingMatchHistory')
   }
 }
-
-/**
- * Future Enhancement: Infer buyer preferences from conversation patterns
- * NOT IMPLEMENTED - flagged for future system expansion
- */
-export async function inferBuyerPreferencesFromConversations(params: {
-  contactId: string
-}) {
-  // Future Schema Enhancement: Dedicated buyer_preferences table
-  // For now, log as activity only
-  return {
-    success: false,
-    error: 'Not implemented - requires future schema enhancement',
-    note: 'See System 5.1A prompt for future buyer_preferences table design',
-  }
-}

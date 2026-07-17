@@ -16,7 +16,6 @@ import type {
   OfferVersion,
   LeadPromotionResult,
   OfferCreationResult,
-  DotloopSyncResult,
   ContactType,
   ContactPersona,
   ContactStatus,
@@ -392,20 +391,20 @@ export function createOfferDraft(params: CreateOfferDraftParams): OfferCreationR
 }
 
 /**
- * Creates the initial OfferVersion for a new offer
- * 
- * @param offer - The offer to create version for
- * @returns OfferVersion data ready to be persisted
+ * Creates the initial offer version (version 1) for a new offer
+ *
+ * @param offer - The offer to version
+ * @returns The initial OfferVersion
  */
 export function createInitialOfferVersion(offer: Offer): OfferVersion {
   return {
     id: "", // Will be set by database
     offer_id: offer.id,
-    
+
     version_number: 1,
     version_type: "initial",
     created_by_party: "buyer", // Assuming buyer initiates
-    
+
     offer_price: offer.offer_price,
     earnest_money: offer.earnest_money,
     down_payment_percent: offer.down_payment_percent,
@@ -413,151 +412,15 @@ export function createInitialOfferVersion(offer: Offer): OfferVersion {
     contingencies: offer.contingencies,
     closing_date: offer.closing_date,
     possession_date: offer.possession_date,
-    
+
     status: "active",
-    
+
     notes: "Initial offer",
     created_at: new Date().toISOString(),
   }
 }
 
-// ============================================
-// DOTLOOP INTEGRATION
-// ============================================
-
-export interface SendOfferToDotloopParams {
-  offer: Offer
-  agent_id: string
-  
-  // Dotloop-specific fields (would come from integration config)
-  dotloop_profile_id?: string
-  template_id?: string
-}
-
-/**
- * Prepares offer data for sending to Dotloop
- * 
- * This function formats the offer data for Dotloop API integration.
- * The caller is responsible for:
- * 1. Making the actual API call to Dotloop
- * 2. Updating the offer with dotloop_loop_id
- * 3. Handling any sync errors or retries
- * 
- * @param params - Dotloop sync parameters
- * @returns Formatted data for Dotloop API
- */
-export function sendOfferToDotloop(params: SendOfferToDotloopParams): DotloopSyncResult {
-  const { offer, agent_id } = params
-
-  // Validation
-  if (offer.agent_id !== agent_id) {
-    return {
-      success: false,
-      error: "Cannot send offer to Dotloop - agent mismatch",
-    }
-  }
-
-  if (offer.status === "draft") {
-    return {
-      success: false,
-      error: "Cannot send draft offer to Dotloop. Mark as ready first.",
-    }
-  }
-
-  if (offer.dotloop_loop_id) {
-    return {
-      success: false,
-      error: "Offer already synced to Dotloop",
-    }
-  }
-
-  // Format data for Dotloop API
-  const dotloopData = {
-    loop_name: `${offer.property_address} - Offer`,
-    status: "Active",
-    transaction_type: offer.offer_type === "purchase" ? "Purchase" : "Lease",
-    
-    // Property details
-    property: {
-      address: offer.property_address,
-      list_price: offer.offer_price,
-    },
-    
-    // Participants
-    participants: buildDotloopParticipants(offer),
-    
-    // Contract details
-    contract: {
-      purchase_price: offer.offer_price,
-      earnest_money: offer.earnest_money,
-      down_payment_percent: offer.down_payment_percent,
-      financing_type: offer.financing_type,
-      closing_date: offer.closing_date,
-      possession_date: offer.possession_date,
-      contingencies: offer.contingencies,
-    },
-    
-    // Metadata
-    custom_fields: {
-      internal_offer_id: offer.id,
-      created_at: offer.created_at,
-    },
-  }
-
-  // In a real implementation, this would make the API call
-  // For now, we return success with mock data
-  return {
-    success: true,
-    dotloop_status: "active",
-    // dotloop_loop_id would be set by the actual API response
-  }
-}
-
-/**
- * Helper: Build Dotloop participants from offer data
- */
-function buildDotloopParticipants(offer: Offer) {
-  const participants: any[] = []
-
-  if (offer.buyer_name) {
-    participants.push({
-      role: "Buyer",
-      full_name: offer.buyer_name,
-      email: offer.buyer_email,
-    })
-  }
-
-  if (offer.seller_name) {
-    participants.push({
-      role: "Seller",
-      full_name: offer.seller_name,
-      email: offer.seller_email,
-    })
-  }
-
-  return participants
-}
-
-/**
- * Updates offer status after Dotloop sync
- * 
- * @param offer - The offer to update
- * @param dotloop_loop_id - The Dotloop loop ID
- * @param dotloop_status - The Dotloop status
- * @returns Updated offer
- */
-export function updateOfferAfterDotloopSync(
-  offer: Offer,
-  dotloop_loop_id: string,
-  dotloop_status: string
-): Offer {
-  return {
-    ...offer,
-    dotloop_loop_id,
-    dotloop_status,
-    last_synced_with_dotloop: new Date().toISOString(),
-    status: offer.status === "ready_to_send" ? "sent_for_signature" : offer.status,
-    sent_for_signature_at: offer.sent_for_signature_at || new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  }
-}
+// (sendOfferToDotloop / updateOfferAfterDotloopSync were retired: a caller-less
+// formatter that returned success WITHOUT calling Dotloop. The live rail is
+// createOfferDotloop (app/actions/ai-offer-creation) via the send_for_esign
+// adapter. Keep-one, open-loop sweep.)

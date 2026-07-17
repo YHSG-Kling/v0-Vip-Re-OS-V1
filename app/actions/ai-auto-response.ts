@@ -124,7 +124,8 @@ export async function generateAIResponse(params: {
     agentName: user.user_metadata?.full_name || "our team",
   }
 
-  // Generate AI response (placeholder - integrate with AI SDK)
+  // Generate AI response — real call: generateSmartReply rides generateTextRouted
+  // (routed model + fair-use quota + usage log), compliance-constrained prompt.
   const aiResponse = await generateSmartReply(context)
 
   // Log the AI response

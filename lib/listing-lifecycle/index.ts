@@ -30,19 +30,10 @@ export {
 export type { ReadinessCheckResult, ReadinessEvaluation } from "./readiness-checker"
 export { evaluateReadinessChecks } from "./readiness-checker"
 
-// ─── READINESS EVALUATION (enhanced / event-sourced) ─────────────────────────
-export {
-  evaluateMediaReadinessFromEvents,
-  evaluateDocumentReadinessFromEvents,
-  evaluateSignatureReadinessFromEvents,
-  evaluateMLSReadinessFromEvents,
-  evaluateRepairReadinessFromEvents,
-  evaluateShowingReadinessFromEvents,
-  evaluateOfferReadinessFromEvents,
-  evaluateTransactionReadinessFromEvents,
-  evaluateCompositeReadiness,
-  evaluateAllReadinessComposite,
-} from "./readiness-evaluation-enhanced"
+// (The "enhanced / event-sourced" readiness evaluator was retired — nothing
+// ever called it, its default case silently failed 5 of 13 check types, and
+// evaluateReadinessChecks above is the ONE live readiness rail. Keep-one,
+// open-loop sweep.)
 
 // ─── LIFECYCLE LOGGER ─────────────────────────────────────────────────────────
 export type { LifecycleEventData } from "./lifecycle-logger"

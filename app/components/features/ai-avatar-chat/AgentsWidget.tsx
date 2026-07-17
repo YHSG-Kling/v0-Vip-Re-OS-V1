@@ -45,6 +45,14 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
   const videoRef = useRef<HTMLVideoElement>(null)
   const managerRef = useRef<didSdk.AgentManager | null>(null)
   const ctxMarkerSentRef = useRef(false)
+  // Minute metering: avatar minutes only burn in LIVE mode. Track when live
+  // mode started + accumulate elapsed seconds; report once on teardown via
+  // sendBeacon so the server can log live_avatar_minutes (the session-start
+  // route's per-session counter stays the abuse hard-cap).
+  const liveSinceRef = useRef<number | null>(null)
+  const liveSecondsRef = useRef(0)
+  const didAgentIdRef = useRef<string | null>(null)
+  const usageReportedRef = useRef(false)
 
   const [status, setStatus] = useState<Status>("connecting")
   const [mode, setMode] = useState<Mode>("text")
@@ -75,6 +83,7 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
         }
 
         if (cancelled) return
+        didAgentIdRef.current = didAgentId
 
         // 2. Build the manager with our callbacks
         const manager = await didSdk.createAgentManager(didAgentId, {
@@ -138,12 +147,48 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
 
     return () => {
       cancelled = true
+      reportLiveUsage()
       managerRef.current?.disconnect().catch(() => {})
       managerRef.current = null
       ctxMarkerSentRef.current = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contactId])
+
+  // Flush the live-minute report if the tab closes mid-session.
+  useEffect(() => {
+    const flush = () => reportLiveUsage()
+    window.addEventListener("pagehide", flush)
+    return () => window.removeEventListener("pagehide", flush)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  /** Accumulate any open live window and beacon total live seconds once. */
+  function reportLiveUsage() {
+    if (liveSinceRef.current !== null) {
+      liveSecondsRef.current += (Date.now() - liveSinceRef.current) / 1000
+      liveSinceRef.current = null
+    }
+    const seconds = Math.round(liveSecondsRef.current)
+    if (seconds <= 0 || usageReportedRef.current) return
+    usageReportedRef.current = true
+    const payload = new Blob(
+      [JSON.stringify({ contactId, didAgentId: didAgentIdRef.current, seconds })],
+      { type: "application/json" },
+    )
+    try {
+      if (!navigator.sendBeacon("/api/did/agents/session/end", payload)) {
+        void fetch("/api/did/agents/session/end", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contactId, didAgentId: didAgentIdRef.current, seconds }),
+          keepalive: true,
+        }).catch(() => {})
+      }
+    } catch {
+      /* metering must never break the widget */
+    }
+  }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -184,6 +229,13 @@ export function AgentsWidget({ contactId, agentFirstName, onFallbackToText }: Ag
       managerRef.current.changeMode(
         next === "live" ? didSdk.ChatMode.Functional : didSdk.ChatMode.TextOnly,
       )
+      // Meter live-mode time: open the window entering live, close it leaving.
+      if (next === "live") {
+        liveSinceRef.current = Date.now()
+      } else if (liveSinceRef.current !== null) {
+        liveSecondsRef.current += (Date.now() - liveSinceRef.current) / 1000
+        liveSinceRef.current = null
+      }
       setMode(next)
     } catch (e) {
       console.error("changeMode failed", e)

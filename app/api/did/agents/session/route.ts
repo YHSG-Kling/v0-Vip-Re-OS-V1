@@ -152,9 +152,10 @@ export async function POST(request: NextRequest) {
   }
 
   // ── Usage cap — hard-block live avatar sessions when brokerage is over ───
-  // Sessions are the cheap pre-flight check; minute consumption is metered as
-  // the conversation actually happens (not implemented yet — needs a D-ID
-  // session-end webhook). Sessions cap is the safety net until then.
+  // Sessions are the cheap pre-flight check; LIVE-mode minute consumption is
+  // metered by /api/did/agents/session/end (widget beacons elapsed live
+  // seconds on teardown — D-ID's Agents SDK has no server-side end webhook).
+  // The sessions cap stays as the abuse hard-cap floor.
   const cap = await checkUsageCap({
     brokerageId: contact.brokerage_id!,
     metric: "live_avatar_sessions",
@@ -208,8 +209,8 @@ export async function POST(request: NextRequest) {
   }
 
   // ── Log the session start ────────────────────────────────────────────────
-  // Minute-level consumption needs a D-ID session-end webhook (TODO); this
-  // session counter is what hard-caps abusive use until that's wired.
+  // Per-session counter (abuse hard-cap). Minute-level consumption lands via
+  // /api/did/agents/session/end as live_avatar_minutes.
   logMediaUsage({
     brokerageId: contact.brokerage_id!,
     metric: "live_avatar_sessions",

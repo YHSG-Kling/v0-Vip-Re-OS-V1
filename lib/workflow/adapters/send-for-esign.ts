@@ -168,7 +168,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
       }
     }
 
-    // ── Dotloop path ──────────────────────────────────────────────────────
+    // ── Dotloop-specific document-type integrations (offer / listing) ────
     if (provider === "dotloop") {
       try {
         // Existing offer integration
@@ -241,16 +241,38 @@ export const sendForEsignAdapter: ChannelAdapter = {
           }
         }
 
-        // Generic Dotloop path for brokerage representation / invoice / custom doc.
-        // Uses the canonical createTransaction → attachForms → sendForSignature flow
-        // that DotloopProvider already implements.
-        const { DotloopProvider } = await import("@/lib/integrations/providers/dotloop-provider")
-        const dotloopProv = new DotloopProvider(
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { status: "error", providerKey: "dotloop", error: msg }
+      }
+    }
+
+    // ── Generic provider path — EVERY implemented e-sign provider ────────
+    // The canonical createTransaction → attachForms → sendForSignature flow.
+    // All provider classes implement the same ITransactionProvider interface
+    // (dotloop, docusign, skyslope, formsimplicity, authentisign), so the
+    // flow that used to be Dotloop-only is provider-agnostic — resolved via
+    // the same registry the FormWizard's submitForSignature uses. Brokermint
+    // is the one provider with NO native e-sign (its class honestly returns
+    // ESIGN_UNSUPPORTED) — it goes straight to the manual-send path below.
+    let esignProv: import("@/lib/integrations/providers/transaction-provider.interface").ITransactionProvider | null = null
+    if (provider !== "brokermint") {
+      try {
+        const { getTransactionProviderByName } = await import("@/lib/integrations/providers/provider-resolver")
+        esignProv = getTransactionProviderByName(
+          provider,
           providerCredentials?.access_token && providerCredentials?.account_id
             ? { apiKey: providerCredentials.access_token, profileId: providerCredentials.account_id }
             : undefined
         )
+      } catch {
+        // Unknown / not-yet-implemented provider name — fall to the manual path.
+        esignProv = null
+      }
+    }
 
+    if (esignProv) {
+      try {
         // Resolve property address (best-effort)
         let propertyAddress = "Document"
         if ((document as any).listing_id) {
@@ -264,8 +286,8 @@ export const sendForEsignAdapter: ChannelAdapter = {
           if (t?.property_address) propertyAddress = t.property_address
         }
 
-        // 1. Create transaction loop in Dotloop
-        const txResult = await dotloopProv.createTransaction({
+        // 1. Create the transaction container (loop / envelope / file)
+        const txResult = await esignProv.createTransaction({
           propertyAddress,
           transactionType: document.document_type === "listing_agreement" ? "listing" : "purchase",
           agentId: agentUserId ?? "",
@@ -274,11 +296,11 @@ export const sendForEsignAdapter: ChannelAdapter = {
           transactionId: (document as any).transaction_id ?? undefined,
         })
         if (!txResult.success || !txResult.externalTransactionId) {
-          return { status: "error", providerKey: "dotloop", error: txResult.error ?? "Dotloop createTransaction failed" }
+          return { status: "error", providerKey: provider, error: txResult.error ?? `${provider} createTransaction failed` }
         }
 
         // 2. Attach the document
-        const attachResult = await dotloopProv.attachForms({
+        const attachResult = await esignProv.attachForms({
           externalTransactionId: txResult.externalTransactionId,
           forms: [{
             formName: `${document.document_type} — ${propertyAddress}`,
@@ -287,7 +309,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
           }],
         })
         if (!attachResult.success) {
-          return { status: "error", providerKey: "dotloop", error: attachResult.error ?? "Dotloop attachForms failed" }
+          return { status: "error", providerKey: provider, error: attachResult.error ?? `${provider} attachForms failed` }
         }
 
         // 3. Send for signature
@@ -300,12 +322,15 @@ export const sendForEsignAdapter: ChannelAdapter = {
           })
         }
         if (signers.length > 0) {
-          await dotloopProv.sendForSignature({
+          const sendResult = await esignProv.sendForSignature({
             externalTransactionId: txResult.externalTransactionId,
             documentId,
             signers,
             message: (step as any).esign_message ?? undefined,
           })
+          if (!sendResult.success) {
+            return { status: "error", providerKey: provider, error: sendResult.error ?? `${provider} sendForSignature failed` }
+          }
         }
 
         await supabase.from("documents")
@@ -314,7 +339,7 @@ export const sendForEsignAdapter: ChannelAdapter = {
             metadata: {
               ...(document.metadata as Record<string, unknown>),
               esign_loop_id: txResult.externalTransactionId,
-              esign_provider: "dotloop",
+              esign_provider: provider,
             },
           })
           .eq("id", documentId)
@@ -324,14 +349,14 @@ export const sendForEsignAdapter: ChannelAdapter = {
             brokerageId, documentId,
             contactId: contact?.id ?? null,
             transactionId: (document as any).transaction_id ?? null,
-            signingUrl: null, // Dotloop invites ride email; the portal card says so
+            signingUrl: null, // provider invites ride email; the portal card says so
             envelopeId: txResult.externalTransactionId,
           })
         }
 
         return {
           status: "sent",
-          providerKey: "dotloop",
+          providerKey: provider,
           messageId: txResult.externalTransactionId,
           output: {
             document_id: documentId,
@@ -343,22 +368,21 @@ export const sendForEsignAdapter: ChannelAdapter = {
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
-        return { status: "error", providerKey: "dotloop", error: msg }
+        return { status: "error", providerKey: provider, error: msg }
       }
     }
 
-    // ── DocuSign / Skyslope / FormSimplicity / Brokermint / Authentisign ─
-    // For non-Dotloop providers we don't yet have an inline integration —
-    // create a task for the agent to send manually using their connected
-    // provider's UI. This is a degraded but explicit path; users get a
-    // notification so they don't silently miss the signature flow.
+    // ── Manual-send path — Brokermint (no native e-sign) / unresolvable ──
+    // Explicit degraded path: task the agent to send from their provider's
+    // UI, and report the step honestly as SKIPPED (nothing was sent) so the
+    // workflow ledger never claims a signature request that didn't happen.
     if (agentUserId) {
       void Promise.resolve(supabase.from("notifications").insert({
         user_id: agentUserId,
         brokerage_id: brokerageId,
         type: "esign_provider_manual_send",
         title: `Send for signature via ${provider}`,
-        body: `Workflow staged a ${document.document_type} for ${contact?.first_name ?? "the contact"}. Open ${provider} and send manually — auto-send for ${provider} is not yet wired (only Dotloop is auto-routable today).`,
+        body: `Workflow staged a ${document.document_type} for ${contact?.first_name ?? "the contact"}. Open ${provider} and send manually — ${provider === "brokermint" ? "Brokermint has no native e-signature API" : `auto-send is not available for ${provider}`}.`,
         priority: "high",
         entity_type: "document",
         entity_id: documentId,
@@ -373,13 +397,13 @@ export const sendForEsignAdapter: ChannelAdapter = {
       .eq("id", documentId)
 
     return {
-      status: "sent",
+      status: "skipped",
       providerKey: provider,
       output: {
         document_id: documentId,
         provider,
         status: "manual_send_required",
-        note: `Auto-send not implemented for ${provider} — agent notified to send manually.`,
+        note: `No auto-send lane for ${provider} — agent notified to send manually.`,
       },
     }
   },
