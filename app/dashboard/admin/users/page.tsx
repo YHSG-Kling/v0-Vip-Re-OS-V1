@@ -82,7 +82,7 @@ export default async function AdminUsersPage() {
   const service = createServiceClient()
   const { data: users } = await service
     .from("users")
-    .select("id, first_name, last_name, email, user_type, brokerage_id, created_at")
+    .select("id, first_name, last_name, email, user_type, status, brokerage_id, created_at")
     .is("deleted_at", null)
     .eq("brokerage_id", profile.brokerage_id)
     .order("created_at", { ascending: false })
@@ -185,6 +185,11 @@ export default async function AdminUsersPage() {
                         <span className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
                           <AlertTriangle className="w-3 h-3" />
                           Domain record missing
+                        </span>
+                      )}
+                      {u.status === "suspended" && (
+                        <span className="inline-flex items-center text-xs text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-0.5">
+                          Deactivated
                         </span>
                       )}
                     </div>

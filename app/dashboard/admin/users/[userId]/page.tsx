@@ -26,7 +26,8 @@ export default async function UserEditPage({ params }: Props) {
     .single()
 
   const callerRole = caller?.user_type ?? caller?.role ?? ""
-  if (!["admin", "superadmin"].includes(callerRole)) redirect("/dashboard")
+  // Same triad as the list page + updateUser action: admin, broker, superadmin.
+  if (!["admin", "broker", "superadmin"].includes(callerRole)) redirect("/dashboard")
 
   // Load target user
   const { data: target } = await supabase
@@ -37,8 +38,9 @@ export default async function UserEditPage({ params }: Props) {
 
   if (!target) notFound()
 
-  // Non-superadmin admin scoped to own brokerage
-  if (callerRole === "admin" && caller?.brokerage_id && target.brokerage_id !== caller.brokerage_id) {
+  // Non-superadmin callers scoped to own brokerage — an unanchored tenant
+  // admin gets no cross-tenant reach.
+  if (callerRole !== "superadmin" && (!caller?.brokerage_id || target.brokerage_id !== caller.brokerage_id)) {
     redirect("/dashboard/admin/users")
   }
 

@@ -23,13 +23,15 @@ export interface InviteUserResult {
   error?: string
 }
 
-// Roles that non-superadmin callers are allowed to assign
+// Roles a team lead is allowed to assign (never admin/broker)
 const BROKERAGE_ASSIGNABLE_ROLES = new Set([
   "agent", "tc", "isa", "team_lead", "compliance_officer", "lender", "vendor",
 ])
 
-// Roles only a superadmin can assign
-const SUPERADMIN_ONLY_ROLES = new Set(["superadmin", "admin", "broker"])
+// Roles only platform staff can assign. Tenant admins/brokers CAN invite
+// admin/broker peers — always pinned to their OWN brokerage (see scope
+// resolution below), so this is intra-tenant delegation, not escalation.
+const SUPERADMIN_ONLY_ROLES = new Set(["superadmin"])
 
 export async function inviteUser(params: InviteUserParams): Promise<InviteUserResult> {
   // ── 1. Authenticate caller ────────────────────────────────────────────────
@@ -54,7 +56,7 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   // ── 3. Role boundary checks ───────────────────────────────────────────────
   const requestedRole = params.userType as UserDomainRole
 
-  // Prevent non-superadmins from granting superadmin/admin/broker roles
+  // Prevent non-superadmins from granting the platform-staff role
   if (callerType !== "superadmin" && SUPERADMIN_ONLY_ROLES.has(requestedRole)) {
     return { success: false, error: `Forbidden: cannot assign role '${requestedRole}'` }
   }

@@ -1,14 +1,15 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { LifeBuoy, Clock } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { updateTicketStatus } from "@/app/actions/support"
+import { updateTicketStatus, getBrokerageTicketThread, replyToBrokerageTicket } from "@/app/actions/support"
 import { TICKET_STATUSES, type SupportTicket, type TicketStatus } from "@/lib/support/ticket-constants"
+import type { TicketThread as Thread } from "@/lib/support/support-thread"
 
 const STATUS_BADGE: Record<string, string> = {
   open: "bg-blue-100 text-blue-700 border-blue-200",
@@ -17,6 +18,82 @@ const STATUS_BADGE: Record<string, string> = {
   closed: "bg-gray-100 text-gray-600 border-gray-200",
 }
 const PRIORITY_RANK: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
+
+/** Inline thread for a ticket — view the conversation + reply on the tenant side.
+ *  Mirrors the agent-facing thread in dashboard/help/ticket-thread.tsx, on the
+ *  brokerage-scoped admin actions. */
+function AdminTicketThread({ ticketId }: { ticketId: string }) {
+  const [open, setOpen] = useState(false)
+  const [thread, setThread] = useState<Thread | null>(null)
+  const [body, setBody] = useState("")
+  const [err, setErr] = useState<string | null>(null)
+  const [pending, start] = useTransition()
+
+  function toggle() {
+    const next = !open
+    setOpen(next)
+    if (next && !thread) getBrokerageTicketThread(ticketId).then(setThread)
+  }
+  function reply() {
+    if (!body.trim()) return
+    setErr(null)
+    start(async () => {
+      const r = await replyToBrokerageTicket({ ticketId, body })
+      if (!r.ok) { setErr(r.error ?? "Failed"); return }
+      setBody("")
+      const t = await getBrokerageTicketThread(ticketId)
+      setThread(t)
+    })
+  }
+
+  return (
+    <div className="mt-2">
+      <button onClick={toggle} className="text-xs font-medium text-indigo-600 hover:underline">
+        {open ? "Hide conversation" : "View conversation & reply"}
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2">
+          {thread === null ? (
+            <p className="text-xs text-muted-foreground">Loading…</p>
+          ) : (
+            <>
+              {thread.requesterName && (
+                <p className="text-xs text-muted-foreground">Raised by {thread.requesterName}</p>
+              )}
+              {thread.messages.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No replies yet.</p>
+              ) : thread.messages.map((m) => (
+                <div key={m.id} className={"rounded border p-2 text-sm " + (m.authorKind === "staff" ? "bg-indigo-50/60 border-indigo-200" : "bg-white")}>
+                  <p className="text-[11px] font-medium text-muted-foreground mb-0.5">
+                    {m.authorKind === "staff" ? "Platform Support" : "Brokerage"} · {new Date(m.createdAt).toLocaleString()}
+                  </p>
+                  <p className="whitespace-pre-wrap">{m.body}</p>
+                </div>
+              ))}
+            </>
+          )}
+          <div className="flex items-start gap-2">
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              rows={2}
+              placeholder="Reply on this ticket…"
+              className="flex-1 rounded-md border p-2 text-sm"
+            />
+            <button
+              onClick={reply}
+              disabled={pending || !body.trim()}
+              className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            >
+              Send
+            </button>
+          </div>
+          {err && <p className="text-xs text-red-600">{err}</p>}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export function SupportQueueClient({ initialTickets, loadError }: { initialTickets: SupportTicket[]; loadError: string | null }) {
   const { toast } = useToast()
@@ -86,11 +163,12 @@ export function SupportQueueClient({ initialTickets, loadError }: { initialTicke
                     </div>
                   </CardHeader>
                   <CardContent className="flex items-end justify-between gap-4">
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       {t.description && <p className="text-sm text-muted-foreground whitespace-pre-wrap">{t.description}</p>}
                       <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1">
                         <Clock className="h-3 w-3" />{new Date(t.createdAt).toLocaleString()}
                       </p>
+                      <AdminTicketThread ticketId={t.id} />
                     </div>
                     <Select value={t.status} onValueChange={(v) => setStatus(t.id, v as TicketStatus)}>
                       <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>

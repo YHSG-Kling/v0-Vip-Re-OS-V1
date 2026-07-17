@@ -26,8 +26,10 @@ export interface UpdateUserResult {
   error?: string
 }
 
-// Only superadmins can assign these roles
-const SUPERADMIN_ONLY_ROLES = new Set(["superadmin", "admin", "broker"])
+// Only platform staff can assign this role. Tenant admins/brokers may promote
+// users to admin/broker WITHIN their own brokerage (the scope guard below
+// rejects any cross-brokerage target), matching the invite path.
+const SUPERADMIN_ONLY_ROLES = new Set(["superadmin"])
 
 export async function updateUser({ userId, updates }: UpdateUserParams): Promise<UpdateUserResult> {
   // ── 1. Auth gate ──────────────────────────────────────────────────────────
@@ -48,6 +50,11 @@ export async function updateUser({ userId, updates }: UpdateUserParams): Promise
   }
 
   // ── 3. Scope guard for non-superadmin callers ─────────────────────────────
+  // Tenant admins/brokers MUST be anchored to a brokerage — an unanchored
+  // caller gets no cross-tenant reach.
+  if (callerRole !== "superadmin" && !caller?.brokerage_id) {
+    return { success: false, error: "Forbidden: no brokerage scope" }
+  }
   if (callerRole !== "superadmin" && caller?.brokerage_id) {
     const { data: target } = await supabase
       .from("users")

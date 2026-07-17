@@ -211,6 +211,63 @@ export async function updateTicketStatus(
   return { ok: true }
 }
 
+// ─── Admin/support: brokerage ticket thread (view + reply) ───────────────────
+// Same postTicketReply/loadTicketThread rail the platform console and the
+// tenant help UI use — here gated to admin roles and pinned to the caller's
+// brokerage (tenant anchor) unless the caller is platform staff.
+
+/** Resolve a ticket the caller is allowed to touch, or null. */
+async function resolveAdminTicketScope(ticketId: string): Promise<
+  | { ok: true; svc: ReturnType<typeof createServiceClient>; userId: string }
+  | { ok: false }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ADMIN_ROLES.has(ctx.userType)) return { ok: false }
+  const svc = createServiceClient()
+  const { data: t, error } = await svc
+    .from("support_tickets")
+    .select("id, brokerage_id")
+    .eq("id", ticketId)
+    .maybeSingle()
+  if (error || !t) return { ok: false }
+  // Non-platform admins may only touch their own brokerage's tickets.
+  if (ctx.userType !== "superadmin" && ctx.userType !== "support") {
+    if (!ctx.brokerageId || (t as { brokerage_id: string | null }).brokerage_id !== ctx.brokerageId) {
+      return { ok: false }
+    }
+  }
+  return { ok: true, svc, userId: ctx.userId }
+}
+
+export async function getBrokerageTicketThread(
+  ticketId: string,
+): Promise<import("@/lib/support/support-thread").TicketThread | null> {
+  const scope = await resolveAdminTicketScope(ticketId)
+  if (!scope.ok) return null
+  const { loadTicketThread } = await import("@/lib/support/support-thread")
+  return loadTicketThread(scope.svc, ticketId)
+}
+
+export async function replyToBrokerageTicket(input: {
+  ticketId: string
+  body: string
+}): Promise<{ ok: boolean; error?: string }> {
+  const scope = await resolveAdminTicketScope(input.ticketId)
+  if (!scope.ok) return { ok: false, error: "Ticket not found" }
+  const { postTicketReply } = await import("@/lib/support/support-thread")
+  // Tenant admins are the tenant side of the thread — same authorKind the
+  // ticket's own agent uses; platform staff replies stay on the console rail.
+  const r = await postTicketReply(scope.svc, {
+    ticketId: input.ticketId,
+    authorUserId: scope.userId,
+    authorKind: "tenant",
+    body: input.body,
+  })
+  if (!r.ok) return { ok: false, error: r.error }
+  revalidatePath("/dashboard/admin/support-tickets")
+  return { ok: true }
+}
+
 // ─── Help center: knowledge articles + KB topics ─────────────────────────────
 export async function searchHelp(query?: string): Promise<HelpArticle[]> {
   const ctx = await getAgentContext()

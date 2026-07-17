@@ -1,6 +1,35 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
+
+/**
+ * Deactivation gate — reads the SAME users.status flag that the tenant admin
+ * edit form (updateUser) and the superadmin suspend action
+ * (setTenantUserStatusAction) write. A 'suspended' user is signed back out and
+ * denied a session. Row is keyed by the just-authenticated auth uid.
+ */
+async function rejectIfSuspended(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string
+): Promise<boolean> {
+  const svc = createServiceClient()
+  const { data: row, error } = await svc
+    .from('users')
+    .select('status')
+    .eq('id', userId)
+    .maybeSingle()
+  if (error) {
+    // Read failure is logged, not fatal — matches existing login resilience.
+    console.error('[auth.rejectIfSuspended] status read failed:', error.message)
+    return false
+  }
+  if (row?.status === 'suspended') {
+    await supabase.auth.signOut()
+    return true
+  }
+  return false
+}
 
 type AuthUserSummary = {
   id: string
@@ -58,6 +87,13 @@ export async function loginUser(
       }
     }
 
+    if (await rejectIfSuspended(supabase, data.user.id)) {
+      return {
+        success: false,
+        error: 'This account has been deactivated. Contact your brokerage administrator.',
+      }
+    }
+
     return {
       success: true,
       user: {
@@ -98,6 +134,16 @@ export async function handleAuthCallback(
         error: {
           code: 'auth_callback_no_user',
           message: 'No user was returned after exchanging the auth code.',
+        },
+      }
+    }
+
+    if (await rejectIfSuspended(supabase, data.user.id)) {
+      return {
+        success: false,
+        error: {
+          code: 'account_suspended',
+          message: 'This account has been deactivated. Contact your brokerage administrator.',
         },
       }
     }

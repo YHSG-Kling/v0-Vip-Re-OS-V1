@@ -33,6 +33,7 @@ import {
   Megaphone,
   Plug,
   ArrowRight,
+  LifeBuoy,
   BarChart3,
   Database,
   GitMerge,
@@ -237,6 +238,33 @@ export function AdminDashboardClient({ brokerageId, operationalSnapshot }: Admin
 
         {/* OS Command Strip */}
         <AdminCommandStrip brokerageId={brokerageId} />
+
+        {/* Brokerage administration quick links — Users, Support, Income, Usage, Recruiting */}
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+          {[
+            { label: 'Users & Roles',      hint: 'Invite, edit roles, deactivate',        href: '/dashboard/admin/users',           icon: Users },
+            { label: 'Support Tickets',    hint: 'Triage & reply to your agents',         href: '/dashboard/admin/support-tickets', icon: LifeBuoy },
+            { label: 'Financial Reports',  hint: 'Income reporting & report history',     href: '/dashboard/financials/reports',    icon: FileText },
+            { label: 'Brokerage P&L',      hint: 'Profit & loss statement',               href: '/dashboard/admin/brokerage-pnl',   icon: DollarSign },
+            { label: 'Usage',              hint: 'Platform usage across the brokerage',   href: '/dashboard/admin/usage',           icon: BarChart3 },
+            { label: 'Recruiting',         hint: 'Pipeline & recruiting ROI',             href: '/dashboard/recruiting-roi',        icon: Target },
+          ].map(({ label, hint, href, icon: Icon }) => (
+            <Link key={href} href={href}>
+              <Card className="h-full border-foreground/10 bg-muted/30 hover:bg-muted/50 transition-colors cursor-pointer">
+                <CardContent className="p-4 flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <Icon className="h-4 w-4 text-muted-foreground" />
+                    <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold leading-snug">{label}</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground leading-snug line-clamp-2">{hint}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            </Link>
+          ))}
+        </div>
 
         {/* OS Panels - First Row (3 columns) */}
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">

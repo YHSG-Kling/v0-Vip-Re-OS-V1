@@ -38,9 +38,9 @@ const ALL_ROLES = [
   { value: "lender", label: "Lender" },
 ]
 
-const RESTRICTED_ROLES = ALL_ROLES.filter((r) =>
-  ["agent", "tc", "isa", "team_lead"].includes(r.value)
-)
+// Tenant admins/brokers may now invite admin/broker peers into their own
+// brokerage (the server action pins the invite to the caller's brokerage), so
+// the full role list is offered to everyone who can see this button.
 
 export function InviteUserButton({ callerRole, brokerageId }: InviteUserButtonProps) {
   const router = useRouter()
@@ -57,7 +57,7 @@ export function InviteUserButton({ callerRole, brokerageId }: InviteUserButtonPr
   })
 
   const isSuperadmin = callerRole === "superadmin"
-  const availableRoles = isSuperadmin ? ALL_ROLES : RESTRICTED_ROLES
+  const availableRoles = ALL_ROLES
 
   function updateForm(field: keyof typeof form, value: string) {
     setForm((f) => ({ ...f, [field]: value }))
