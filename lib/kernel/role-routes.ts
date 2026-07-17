@@ -7,7 +7,7 @@
 // resolver (pure UI); routes + labels live here so they can never drift again.
 
 export const ROLE_DASHBOARD_ROUTES: Record<string, string> = {
-  superadmin:         "/dashboard/admin",
+  superadmin:         "/dashboard/superadmin/home", // platform staff land on the command home
   support:            "/dashboard/support",
   admin:              "/dashboard/admin",
   broker:             "/dashboard/brokerage",
