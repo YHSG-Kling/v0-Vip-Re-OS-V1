@@ -166,7 +166,9 @@ export async function installCreativePlaybook(playbookKey: string): Promise<Inst
       agentId: ctx.agentId,
       label: qrStep.label,
       targetUrl: magnetUrl,
-      purpose: (qrStep.brief as any) || "lead_capture",
+      // purpose is a CHECK-constrained vocabulary — the step BRIEF is prose,
+      // never a purpose value (live-fire catch: it made every insert fail).
+      purpose: "lead_capture",
     })
     if ((qr as any)?.success) {
       qrImageUrl = (qr as any).qrCode?.image_url ?? (qr as any).imageUrl ?? null

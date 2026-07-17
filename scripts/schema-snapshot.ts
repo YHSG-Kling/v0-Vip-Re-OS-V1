@@ -532,6 +532,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   prospects: ["agent_id", "brokerage_id", "created_at", "email", "id", "metadata", "name", "phone", "source", "updated_at"],
   provider_overrides: ["config", "created_at", "enabled", "id", "provider_key", "provider_type", "scope_id", "scope_type", "updated_at"],
   push_notification_queue: ["body", "brokerage_id", "created_at", "data", "delivered_at", "error_message", "failed_at", "id", "status", "title", "user_id"],
+  push_subscriptions: ["auth", "brokerage_id", "created_at", "disabled_at", "disabled_reason", "endpoint", "id", "last_seen_at", "p256dh", "user_agent", "user_id"],
   qr_codes: ["agent_id", "brokerage_id", "created_at", "destination_type", "expires_at", "id", "is_active", "label", "lead_count", "listing_id", "marketing_campaign_id", "purpose", "scan_count", "slug", "target_url"],
   qr_scan_events: ["brokerage_id", "campaign_id", "contact_id", "id", "ip_address", "is_first_scan", "qr_code_id", "referrer", "scanned_at", "user_agent"],
   raw_recruit_prospects: ["brokerage_id", "created_at", "id", "market_id", "normalized_preview", "processed_at", "processing_status", "raw_data", "recruit_id", "scraper_execution_id", "source", "source_record_id"],
