@@ -159,6 +159,9 @@ export const PLATFORM_PROVIDER_KEYS: Record<string, string> = {
   did: "DID_API_KEY",
   rentcast: "RENTCAST_API_KEY",
   newsapi_ai: "NEWSAPI_AI_KEY",
+  // web-push (VAPID browser push) has no GET-probeable endpoint — like the
+  // Exa/BatchData POST-only exemption above, it is key-presence-audited only.
+  web_push: "VAPID_PRIVATE_KEY",
 }
 
 export interface ProbeResult {

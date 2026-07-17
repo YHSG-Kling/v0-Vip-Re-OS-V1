@@ -3,6 +3,8 @@
 import React, { useEffect, useState } from 'react';
 import { listNotificationRules } from '@/app/actions/settings/list-notification-rules';
 import { NotificationRulesForm } from '@/app/components/settings/NotificationRulesForm';
+import { SettingsCard } from '@/app/components/settings/SettingsCard';
+import { PushPermissionToggle } from '@/app/components/shared/push-permission-toggle';
 import type { NotificationRuleRow } from "@/lib/kernel"
 
 export default function NotificationsPage() {
@@ -39,6 +41,13 @@ export default function NotificationsPage() {
         <h1 className="text-3xl font-bold text-gray-900">Notification Rules</h1>
         <p className="text-gray-600 mt-2">Configure when notifications are sent</p>
       </div>
+
+      <SettingsCard
+        title="Push Notifications"
+        description="Deliver alerts to this browser even when the app is closed"
+      >
+        <PushPermissionToggle />
+      </SettingsCard>
 
       {!loading && <NotificationRulesForm rules={rules} onRefresh={loadRules} />}
     </div>

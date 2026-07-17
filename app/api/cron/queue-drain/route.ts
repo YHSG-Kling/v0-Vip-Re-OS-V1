@@ -11,12 +11,14 @@
 //                               (dispatchEmail), which already runs the platform
 //                               suppression list + compliance/de-conflict gates.
 //   2. push_notification_queue — queued by the transaction NotificationService.
-//                               NO push provider rail exists in this repo (no
-//                               web-push / FCM / OneSignal / Expo) — rows are
-//                               drained HONESTLY: marked failed with the reason
-//                               and re-delivered in-app via the canonical
-//                               `notifications` table so the user still sees the
-//                               alert. Push-provider egress is a future connector.
+//                               Real egress via the web-push rail
+//                               (lib/providers/web-push.ts + push_subscriptions,
+//                               platform VAPID keys). When the provider is not
+//                               configured or the user has no active browser
+//                               subscription, rows are drained HONESTLY: marked
+//                               failed with the reason and re-delivered in-app
+//                               via the canonical `notifications` table so the
+//                               user still sees the alert.
 //   3. orchestrator_tasks     — 'publish_scheduled_post' rows queued by
 //                               lib/services/social-publishing.service.ts.
 //                               The actual publish is owned by the canonical
@@ -46,6 +48,7 @@ import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { dispatchEmail } from "@/lib/providers/dispatch"
+import { isWebPushConfigured, sendWebPush } from "@/lib/providers/web-push"
 import { DECONFLICT_GATE_KEY } from "@/lib/campaign-sequences/deferral-policy"
 import { enrollContact } from "@/lib/campaign-sequences/enrollment-engine"
 import { isValidUUID } from "@/lib/validations"
@@ -85,6 +88,20 @@ const emptyCounts = (): QueueCounts => ({ processed: 0, sent: 0, failed: 0, defe
 // status('pending')/attempts. Drain vocabulary: sent (+sent_at) | failed (+error_msg).
 async function drainEmailQueue(supabase: Svc): Promise<QueueCounts> {
   const counts = emptyCounts()
+
+  // STALENESS RULE (round 12): a queued email older than 7 days must NEVER
+  // send — a "your report is ready" or "new booking" mail arriving weeks late
+  // is worse than none. Expire stale pendings in bulk before draining, so a
+  // drain outage can't end with a backlog blast when the drain returns.
+  const staleCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+  const { data: expired } = await supabase
+    .from("email_queue")
+    .update({ status: "failed", error_msg: "expired_in_queue (older than 7d at drain time — never sent)" })
+    .eq("status", "pending")
+    .lt("created_at", staleCutoff)
+    .select("id")
+  if (expired?.length) counts.errors.push(`expired ${expired.length} stale pending email(s) >7d old (never sent)`)
+
   const { data: rows, error } = await supabase
     .from("email_queue")
     .select("id, to_email, to_name, subject, body, template, metadata, brokerage_id, attempts")
@@ -189,15 +206,33 @@ async function drainEmailQueue(supabase: Svc): Promise<QueueCounts> {
 // ─── 2. push_notification_queue ──────────────────────────────────────────────
 // Writer: NotificationService.sendPushNotification (user_id/brokerage_id/title/
 // body/data/status 'pending'). Status CHECK: pending|delivering|delivered|failed|
-// cancelled. There is NO push provider anywhere in this repo (no web-push / FCM /
-// OneSignal / Expo dependency or credential), so a push can never actually leave
-// the building. Honest drain: deliver the same payload in-app through the
-// canonical `notifications` table (the bell the user actually sees), then mark
-// the queue row failed with reason 'no_push_provider_configured'. Real
-// push-provider egress is a future connector; when one lands, this is the single
-// place to wire it.
-async function drainPushQueue(supabase: Svc): Promise<QueueCounts> {
-  const counts = emptyCounts()
+// cancelled. Real egress: the web-push rail (lib/providers/web-push.ts) sends
+// to the user's ACTIVE push_subscriptions when the platform VAPID keys are
+// configured — any accepted push closes the row 'delivered' (+delivered_at; the
+// table's vocabulary — there is no 'sent'/sent_at). The in-app `notifications`
+// mirror insert is KEPT on real delivery (belt and suspenders — it was the
+// fallback design, and the bell is still the canonical in-app surface). When
+// the provider is not configured, or the user has no active subscription, or
+// every endpoint rejects the send, the row falls back to in-app delivery and is
+// closed failed with the honest reason. A push is never faked.
+
+interface PushQueueCounts extends QueueCounts {
+  /** Rows delivered via a real web-push send (provider accepted ≥1 endpoint). */
+  pushed: number
+  /** Rows whose alert reached the user via the in-app notifications fallback. */
+  delivered_in_app: number
+  /** Subscriptions soft-disabled this run because the push service said gone (404/410). */
+  pruned_subscriptions: number
+}
+
+async function drainPushQueue(supabase: Svc): Promise<PushQueueCounts> {
+  const counts: PushQueueCounts = {
+    ...emptyCounts(),
+    pushed: 0,
+    delivered_in_app: 0,
+    pruned_subscriptions: 0,
+  }
+  const webPushReady = isWebPushConfigured()
   const { data: rows, error } = await supabase
     .from("push_notification_queue")
     .select("id, user_id, brokerage_id, title, body, data")
@@ -215,8 +250,7 @@ async function drainPushQueue(supabase: Svc): Promise<QueueCounts> {
     try {
       const d = (row.data ?? {}) as Record<string, unknown>
 
-      if (row.user_id && row.brokerage_id) {
-        // In-app fallback FIRST — only close the queue row once the user has the alert.
+      const insertInAppMirror = async (): Promise<{ ok: boolean }> => {
         const { error: notifErr } = await supabase.from("notifications").insert({
           user_id: row.user_id,
           brokerage_id: row.brokerage_id,
@@ -231,16 +265,74 @@ async function drainPushQueue(supabase: Svc): Promise<QueueCounts> {
           created_at: now,
         })
         if (notifErr) {
-          // Fallback delivery failed — leave the row pending so the alert isn't lost.
-          counts.errors.push(`push ${row.id}: in-app fallback insert failed: ${notifErr.message}`)
+          counts.errors.push(`push ${row.id}: in-app insert failed: ${notifErr.message}`)
+          return { ok: false }
+        }
+        counts.delivered_in_app++
+        return { ok: true }
+      }
+
+      // ── Real web-push egress when the platform rail is configured ──────────
+      let push: Awaited<ReturnType<typeof sendWebPush>> | null = null
+      if (webPushReady && row.user_id) {
+        push = await sendWebPush({
+          userId: row.user_id,
+          title: row.title,
+          body: row.body ?? "",
+          data: d,
+        })
+        counts.pruned_subscriptions += push.pruned
+        if (push.error) {
+          // Infra error (config/lookup) — transient; leave pending for the next run.
+          counts.errors.push(`push ${row.id}: web-push error: ${push.error}`)
           counts.deferred++
           continue
         }
       }
 
-      const reason = row.user_id && row.brokerage_id
-        ? "no_push_provider_configured — delivered in-app via notifications instead"
-        : "no_push_provider_configured — and row lacks user_id/brokerage_id for the in-app fallback"
+      if (push && push.sent > 0) {
+        // At least one push service accepted the message — real delivery.
+        // Keep the in-app mirror (belt and suspenders); its failure is non-fatal
+        // here because the push actually left the building.
+        if (row.user_id && row.brokerage_id) await insertInAppMirror()
+        const { error: updErr } = await supabase
+          .from("push_notification_queue")
+          .update({ status: "delivered", delivered_at: now, error_message: null })
+          .eq("id", row.id)
+        if (updErr) {
+          counts.errors.push(`push ${row.id}: mark-delivered failed: ${updErr.message}`)
+          continue
+        }
+        counts.sent++
+        counts.pushed++
+        continue
+      }
+
+      // ── No push left the building — in-app fallback FIRST, then close the
+      //    row with the honest reason. ─────────────────────────────────────────
+      const canFallback = Boolean(row.user_id && row.brokerage_id)
+      if (canFallback) {
+        const { ok } = await insertInAppMirror()
+        if (!ok) {
+          // Fallback delivery failed — leave the row pending so the alert isn't lost.
+          counts.deferred++
+          continue
+        }
+      }
+
+      const suffix = canFallback
+        ? " — delivered in-app via notifications instead"
+        : " — and row lacks user_id/brokerage_id for the in-app fallback"
+      let reason: string
+      if (!webPushReady) {
+        reason = `no_push_provider_configured${suffix}`
+      } else if (!row.user_id) {
+        reason = `row lacks user_id — web-push has no subscriptions to target${suffix}`
+      } else if (push && push.failed > 0) {
+        reason = `web_push_delivery_failed (${push.failed} failed, ${push.pruned} pruned)${suffix}`
+      } else {
+        reason = `no_active_subscriptions${suffix}`
+      }
       const { error: updErr } = await supabase
         .from("push_notification_queue")
         .update({ status: "failed", failed_at: now, error_message: reason })
@@ -250,7 +342,7 @@ async function drainPushQueue(supabase: Svc): Promise<QueueCounts> {
         continue
       }
       counts.failed++
-      if (row.user_id && row.brokerage_id) counts.sent++ // delivered (in-app fallback)
+      if (canFallback) counts.sent++ // the user still got the alert (in-app)
     } catch (e) {
       counts.errors.push(`push ${row.id}: ${e instanceof Error ? e.message : String(e)}`)
     }
@@ -498,7 +590,8 @@ export async function GET(request: Request) {
 
     const queues = {
       email_queue: { ...email, sent: email.sent },
-      push_notification_queue: { ...push, delivered_in_app: push.sent },
+      // pushed / delivered_in_app / pruned_subscriptions ride along on the counts.
+      push_notification_queue: { ...push },
       orchestrator_tasks: { ...tasks, completed: tasks.sent },
       drip_campaigns: { ...drips, enrolled: drips.sent, paused_no_sequence: drips.failed },
     }
