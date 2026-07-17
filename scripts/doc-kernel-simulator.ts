@@ -2120,6 +2120,25 @@ async function main() {
         && src("app/admin/page.tsx").includes("redirect(")
         && src("lib/notifications/route-resolver.ts").includes("/settings/integrations"))
     }
+    // ── ROUND 11: THE SECOND BURN TO ZERO + LAUNCH CAPTURE + LEDGER RECEIPTS ──
+    {
+      const writeBaseline11 = JSON.parse(src("scripts/orphan-write-baseline.json")) as string[]
+      check("ROUND 11 — WRITE-ONLY LEDGER BURNED TO ZERO (the mirror of the writer-less-read burn, 63 → 0 in three rounds; every entry got a verdict — reader built, write repointed to the canonical twin, dead write deleted, or forensic ledger exempted WITH its named out-of-band consumer). THE FOUR QUEUE BUGS: email_queue (six writers, nothing ever sent), push_notification_queue (no provider exists — honest in-app fallback, never fake 'sent'), orchestrator_tasks (the service's own publish path was a SIMULATION — the drain reconciles against the real publish-social-posts rail instead of double-posting), drip_campaigns (no content on the rows — serviced ONLY through compliance-gated canonical sequence enrollment) — all drained by ONE queue-drain cron on the ONE dispatcher heartbeat. READERS THAT CHANGED BEHAVIOR: budgets finally hydrates the planner that could save but never load; generated listing landing pages are SERVED on the public slug route (view-tracked) instead of rotting unread; campaign audience resolution consumes contact_segments so the workflow segment step stopped being inert. LAUNCH CAPTURE LANE: every Launch War Room now also stages a QR-coded 'be first to see it' capture page through the canonical lead-magnet kernel, tagged playbookKey listing_launch so launches score on the SAME outcome scoreboard as the strategy playbooks. VOICE LEDGER RECEIPTS: the four intent writers read their row back FRESH after every write and the voice admin speaks the receipt from THAT row — 'done' always means verified on the ledger, and a write that can't be read back reports failure. AVM: the appreciation fallback applies real zip-level price_trend_pct_1yr (clamped ±25%/yr, ≤3y) instead of returning the stale value unchanged",
+        writeBaseline11.length === 0
+        && src("app/api/cron/queue-drain/route.ts").includes("email_queue")
+        && src("app/api/cron/queue-drain/route.ts").includes("no_push_provider_configured")
+        && src("lib/kernel/cron-dispatch.ts").includes("/api/cron/queue-drain")
+        && src("lib/kernel/manager-registry.ts").includes('"/api/cron/queue-drain"')
+        && src("lib/kernel/launch-war-room.ts").includes("capturePagesStaged")
+        && src("lib/kernel/launch-war-room.ts").includes('"listing_launch"')
+        && src("app/actions/intent-writers.ts").includes("LedgerReceipt")
+        && src("app/actions/intent-writers.ts").includes("write_not_verifiable")
+        && src("app/actions/voice-assistant.ts").includes("speakReceipt")
+        && src("lib/avm/provider-chain.ts").includes("price_trend_pct_1yr")
+        && src("app/actions/listing-landing.ts").includes("getLandingPageBySlug")
+        && src("lib/marketing/email-campaign-sender.ts").includes("contact_segments")
+        && src("lib/communications/vendor-communications.tsx").includes("dispatchEmail"))
+    }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {
       const { readdirSync, statSync } = await import("fs")

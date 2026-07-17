@@ -56,11 +56,20 @@ export default async function ContactDetailPage({ params }: PageProps) {
   }
 
   // Load minimal data for initial render + decide which view to mount
-  const [contactResult, profileResult, interestsResult, enabledGates] = await Promise.all([
+  const [contactResult, profileResult, interestsResult, enabledGates, segmentsResult] = await Promise.all([
     supabase.from("contacts").select("*").eq("id", contactId).single(),
     supabase.from("users").select("first_name, last_name").eq("id", user.id).maybeSingle(),
     supabase.from("property_interests").select("*").eq("contact_id", contactId).maybeSingle(),
     getBuyerEnabledGates(contactId),
+    // Segment memberships — written by the workflow "add to segment" step
+    // (lib/workflow/adapters/segment-ops.ts). Active memberships only.
+    supabase
+      .from("contact_segments")
+      .select("id, segment_id, added_at")
+      .eq("contact_id", contactId)
+      .is("removed_at", null)
+      .order("added_at", { ascending: false })
+      .limit(12),
   ])
 
   const { data: contact, error: contactError } = contactResult
@@ -76,6 +85,9 @@ export default async function ContactDetailPage({ params }: PageProps) {
   const brokerageId  = contact.brokerage_id ?? ""
   const agentProfile = profileResult.data
   const agentName    = `${agentProfile?.first_name ?? ""} ${agentProfile?.last_name ?? ""}`.trim() || "Agent"
+  const contactSegments = segmentsResult.error
+    ? []
+    : ((segmentsResult.data ?? []) as Array<{ id: string; segment_id: string; added_at: string }>)
 
   // Latest AI showing plan (smart_showing_recommendations). The writer keys on
   // lead_id (leads class) with contact_id optional, so match either the contact
@@ -129,6 +141,18 @@ export default async function ContactDetailPage({ params }: PageProps) {
           buyerStage={contact.buyer_stage ?? null}
         />
       </div>
+
+      {/* Segment memberships — added by campaign workflow "add to segment" steps */}
+      {contactSegments.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 px-4 pt-3">
+          <span className="text-xs text-muted-foreground">Segments</span>
+          {contactSegments.map((s) => (
+            <Badge key={s.id} variant="secondary" className="text-xs font-mono">
+              {s.segment_id.slice(0, 8)}
+            </Badge>
+          ))}
+        </div>
+      )}
 
       {/* Addressing memory ("call me Bill") + the auto-prepared strategy session
           for this client's current moment — the concierge pair on every contact. */}

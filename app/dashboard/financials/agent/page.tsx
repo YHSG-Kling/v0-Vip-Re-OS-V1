@@ -62,6 +62,16 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
   // Fetch accounting sync status in parallel (not in kernel scope yet)
   const syncStatus = await getProviderConnectionStatus(brokerageId!).catch(() => null)
 
+  // Load the agent's saved budget for the current year (latest if regenerated)
+  const { data: budgetRow, error: budgetError } = await supabase
+    .from("budgets")
+    .select("id, income_goal, budget_data")
+    .eq("agent_id", agentId)
+    .eq("year", currentYear)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
   // Extract data from kernel result
   const mtdEarnings = summary.mtdEarnings ?? 0
   const ytdEarnings = summary.ytdEarnings ?? 0
@@ -86,7 +96,7 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
 
   // Additional derived data
   const currentBilling = null
-  const existingBudget = null
+  const existingBudget = budgetError ? null : budgetRow
   const processedEarningsHistory = earningsHistory ?? []
 
   // Helper function to process monthly trend data

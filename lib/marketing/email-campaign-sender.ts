@@ -30,6 +30,7 @@ interface CampaignRow {
   content: string | null
   template_id: string | null
   status: string
+  audience_segment_id: string | null
 }
 
 async function resolveCampaignHtml(svc: Svc, campaign: CampaignRow): Promise<string | null> {
@@ -53,7 +54,7 @@ export interface CampaignSendResult {
  *  status claim. */
 export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<CampaignSendResult> {
   const { data: c } = await svc.from("email_campaigns")
-    .select("id, brokerage_id, agent_id, subject_line, content, template_id, status")
+    .select("id, brokerage_id, agent_id, subject_line, content, template_id, status, audience_segment_id")
     .eq("id", campaignId).maybeSingle()
   const campaign = c as CampaignRow | null
   if (!campaign) return { ok: false, sent: 0, failed: 0, recipients: 0, error: "Campaign not found" }
@@ -118,8 +119,59 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
       }).eq("id", row.id)
       if (result.success) sent++; else failed++
     }
+  } else if (campaign.audience_segment_id) {
+    // Path B — segment-targeted send: recipients resolve from contact_segments
+    // (memberships written by the workflow "add to segment" step —
+    // lib/workflow/adapters/segment-ops.ts). Active members only.
+    const { data: members, error: memberError } = await svc.from("contact_segments")
+      .select("contact_id")
+      .eq("segment_id", campaign.audience_segment_id)
+      .eq("brokerage_id", campaign.brokerage_id)
+      .is("removed_at", null)
+      .limit(2000)
+    if (memberError) {
+      await svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId)
+      return { ok: false, sent: 0, failed: 0, recipients: 0, error: `Segment resolution failed: ${memberError.message}` }
+    }
+    const memberIds = [...new Set(((members ?? []) as Array<{ contact_id: string | null }>)
+      .map((m) => m.contact_id).filter(Boolean))] as string[]
+    if (memberIds.length === 0) {
+      await svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId)
+      return { ok: false, sent: 0, failed: 0, recipients: 0, error: "No contacts in the target segment" }
+    }
+    const { data: segContacts, error: segContactsError } = await svc.from("contacts")
+      .select("id, email")
+      .in("id", memberIds)
+      .eq("brokerage_id", campaign.brokerage_id)
+    if (segContactsError) {
+      await svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId)
+      return { ok: false, sent: 0, failed: 0, recipients: 0, error: `Segment contact lookup failed: ${segContactsError.message}` }
+    }
+    const seenEmails = new Set<string>()
+    const segRecipients = ((segContacts ?? []) as Array<{ id: string; email: string | null }>)
+      .filter((r) => r.email && !seenEmails.has(r.email) && seenEmails.add(r.email))
+    if (segRecipients.length === 0) {
+      await svc.from("email_campaigns").update({ status: campaign.status }).eq("id", campaignId)
+      return { ok: false, sent: 0, failed: 0, recipients: 0, error: "No segment contacts have an email address" }
+    }
+    for (const contact of segRecipients) {
+      recipients++
+      const result = await dispatchEmail({
+        brokerageId: campaign.brokerage_id,
+        userId: campaign.agent_id ?? undefined,
+        from: fromEmail,
+        to: contact.email as string,
+        subject: campaign.subject_line,
+        html,
+        contactId: contact.id,
+        channelPurpose: "campaign",
+        systemSource: "email_campaign",
+        metadata: { campaign_id: campaignId, segment_id: campaign.audience_segment_id },
+      })
+      if (result.success) sent++; else failed++
+    }
   } else {
-    // Path B — broadcast to the subscriber list (deduped by email)
+    // Path C — broadcast to the subscriber list (deduped by email)
     let subscriberQuery = svc.from("newsletter_subscribers")
       .select("id, email, contact_id")
       .eq("brokerage_id", campaign.brokerage_id)

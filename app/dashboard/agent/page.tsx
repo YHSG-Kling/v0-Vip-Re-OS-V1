@@ -61,6 +61,7 @@ import { SphereResonanceCard } from "@/app/components/heartbeat/sphere-resonance
 import { WealthAdvisorCard } from "@/app/components/heartbeat/wealth-advisor-card"
 import { SmartQueue } from "@/app/components/heartbeat/smart-queue"
 import AgentInsightsWidget from "@/app/dashboard/agent/components/agent-insights-widget"
+import { AiInsightsFeedCard, type AiInsightRow } from "@/app/dashboard/agent/components/ai-insights-feed-card"
 import PresentationReadyBanner from "@/app/dashboard/agent/components/presentation-ready-banner"
 import { LearnThisWeekCard } from "@/app/components/learning/learn-this-week-card"
 import { NegotiationCoPilotCard } from "@/app/components/negotiation/negotiation-copilot-card"
@@ -106,6 +107,7 @@ export default function AgentDashboard() {
   const [revenueProtection, setRevenueProtection] = useState<AgentRevenueProtection | null>(null)
   const [incomeForecast, setIncomeForecast] = useState<AgentIncomeForecast | null>(null)
   const [actionPlans, setActionPlans] = useState<any[]>([])
+  const [aiInsights, setAiInsights] = useState<AiInsightRow[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
   const [motivatedSellers, setMotivatedSellers] = useState<any[]>([])
@@ -216,7 +218,48 @@ export default function AgentDashboard() {
           .order("created_at", { ascending: false })
           .limit(5)
 
-        setActionPlans(plans || [])
+        // 5b. Merge queued AI Autopilot next-actions (open-house follow-ups from
+        // lib/kernel/open-house.ts) into the same suggestions feed — labeled by
+        // source. ai_autopilot_actions.agent_id references agents.id.
+        let autopilotPlans: any[] = []
+        if (agentRow?.id) {
+          const { data: autopilotActions, error: autopilotError } = await supabase
+            .from("ai_autopilot_actions")
+            .select("id, title, description, priority, action_type, entity_type, entity_id, scheduled_for")
+            .eq("agent_id", agentRow.id)
+            .eq("status", "pending")
+            .order("scheduled_for", { ascending: true })
+            .limit(5)
+
+          if (!autopilotError && autopilotActions) {
+            autopilotPlans = autopilotActions.map((a: any) => ({
+              id: a.id,
+              title: a.title || a.action_type?.replace(/_/g, " ") || "Suggested action",
+              description: a.description || undefined,
+              priority: a.priority || undefined,
+              contact_id: a.entity_type === "contact" ? a.entity_id : null,
+              source: "AI Autopilot",
+            }))
+          }
+        }
+
+        setActionPlans([...(plans || []), ...autopilotPlans])
+
+        // 5c. AI Insights feed — writers (app/actions/ai-predictions.ts) insert
+        // insight_title/insight_description and usually leave agent_id null, so
+        // include unattributed rows; RLS scopes reads to the caller's brokerage.
+        if (agentRow?.id) {
+          const { data: insightRows, error: insightsError } = await supabase
+            .from("ai_insights")
+            .select("id, insight_type, insight_title, insight_description, priority, estimated_impact, created_at")
+            .or(`agent_id.eq.${agentRow.id},agent_id.is.null`)
+            .order("created_at", { ascending: false })
+            .limit(8)
+
+          if (!insightsError && insightRows) {
+            setAiInsights(insightRows)
+          }
+        }
 
         // 6. Load all data in parallel
         const results = await Promise.allSettled([
@@ -594,6 +637,10 @@ export default function AgentDashboard() {
 
         {/* AI Coaching Insights — auto-hides when agent has fewer than 5 deals */}
         <AgentInsightsWidget />
+
+        {/* AI Insights feed — latest predictions/opportunities/risks written by
+            app/actions/ai-predictions.ts. Hidden when empty. */}
+        {aiInsights.length > 0 && <AiInsightsFeedCard insights={aiInsights} />}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">

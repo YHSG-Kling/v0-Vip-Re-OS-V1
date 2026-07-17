@@ -15,6 +15,7 @@ interface ActionPlanCardProps {
     priority?: string
     contact_id?: string | null
     relatedLeadName?: string
+    source?: string
   }
 }
 
@@ -36,7 +37,10 @@ export function ActionPlanCard({ plan }: ActionPlanCardProps) {
             <Sparkles className="h-5 w-5 text-blue-600 flex-shrink-0" />
             <h3 className="font-medium text-sm flex-1">{plan.title}</h3>
           </div>
-          {priorityColor && <Badge className={priorityColor}>{plan.priority}</Badge>}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {plan.source && <Badge variant="outline" className="text-[10px]">{plan.source}</Badge>}
+            {priorityColor && <Badge className={priorityColor}>{plan.priority}</Badge>}
+          </div>
         </div>
 
         {truncatedDescription && <p className="text-sm text-muted-foreground">{truncatedDescription}</p>}

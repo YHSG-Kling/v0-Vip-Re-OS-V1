@@ -28,7 +28,7 @@ function fmtDate(iso: string | null | undefined): string {
 
 export async function SellerLifetimeOverview({ contactId, contact, brokerageId }: Props) {
   const svc = createServiceClient()
-  const [listingsRes, transactionsRes, activitiesRes] = await Promise.all([
+  const [listingsRes, transactionsRes, activitiesRes, callClassificationsRes] = await Promise.all([
     // Listings where this contact is the seller — recent first
     svc.from("listings")
        .select("id, address, list_price, status, lifecycle_stage, created_at, listing_date")
@@ -51,11 +51,29 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
        .eq("contact_id", contactId)
        .order("created_at", { ascending: false })
        .limit(10),
+    // Inbound call classifications — written by the voice AI when it routes a
+    // caller (lib/voice/vapi-function-tools.ts), keyed to this contact via
+    // resulting_contact_id. Merged into the activity feed as call entries.
+    svc.from("inbound_call_classifications")
+       .select("id, classification, transfer_reason, ai_handled, classified_at")
+       .eq("brokerage_id", brokerageId)
+       .eq("resulting_contact_id", contactId)
+       .order("classified_at", { ascending: false })
+       .limit(10),
   ])
 
   const listings     = listingsRes.data ?? []
   const transactions = transactionsRes.data ?? []
   const activities   = activitiesRes.data ?? []
+  const callClassifications = callClassificationsRes.error ? [] : (callClassificationsRes.data ?? [])
+
+  // Merge activities + classified inbound calls into one newest-first timeline
+  const timeline = [
+    ...activities.map((a: any) => ({ kind: "activity" as const, ts: a.created_at as string, entry: a })),
+    ...callClassifications.map((c: any) => ({ kind: "call" as const, ts: c.classified_at as string, entry: c })),
+  ]
+    .sort((x, y) => new Date(y.ts ?? 0).getTime() - new Date(x.ts ?? 0).getTime())
+    .slice(0, 10)
 
   const contactType = (contact.contact_type as string | null) ?? "contact"
   const fullName = [contact.first_name, contact.last_name].filter(Boolean).join(" ") || "(unnamed)"
@@ -133,19 +151,39 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-sm">Recent activity</CardTitle></CardHeader>
         <CardContent className="text-sm">
-          {activities.length === 0 ? (
+          {timeline.length === 0 ? (
             <p className="text-muted-foreground text-xs">No activity logged yet.</p>
           ) : (
             <ul className="divide-y">
-              {activities.map((a: any) => (
-                <li key={a.id} className="py-2 flex items-start justify-between gap-2">
-                  <div>
-                    <span className="font-medium">{a.title ?? a.activity_type}</span>
-                    {a.description && <p className="text-xs text-muted-foreground line-clamp-1">{a.description}</p>}
-                  </div>
-                  <span className="text-xs text-muted-foreground shrink-0">{fmtDate(a.created_at)}</span>
-                </li>
-              ))}
+              {timeline.map((item) =>
+                item.kind === "activity" ? (
+                  <li key={`a-${item.entry.id}`} className="py-2 flex items-start justify-between gap-2">
+                    <div>
+                      <span className="font-medium">{item.entry.title ?? item.entry.activity_type}</span>
+                      {item.entry.description && <p className="text-xs text-muted-foreground line-clamp-1">{item.entry.description}</p>}
+                    </div>
+                    <span className="text-xs text-muted-foreground shrink-0">{fmtDate(item.entry.created_at)}</span>
+                  </li>
+                ) : (
+                  <li key={`c-${item.entry.id}`} className="py-2 flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-medium">Inbound call</span>
+                      <Badge variant="outline" className="text-[10px] capitalize">
+                        {String(item.entry.classification ?? "unknown").replace(/_/g, " ")}
+                      </Badge>
+                      {item.entry.transfer_reason && (
+                        <Badge variant="secondary" className="text-[10px] capitalize">
+                          {String(item.entry.transfer_reason).replace(/_/g, " ")}
+                        </Badge>
+                      )}
+                      {item.entry.ai_handled && (
+                        <Badge variant="outline" className="text-[10px]">AI handled</Badge>
+                      )}
+                    </div>
+                    <span className="text-xs text-muted-foreground shrink-0">{fmtDate(item.entry.classified_at)}</span>
+                  </li>
+                )
+              )}
             </ul>
           )}
         </CardContent>

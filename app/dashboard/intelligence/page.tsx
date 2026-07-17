@@ -6,6 +6,7 @@ import { getActivePatterns, getPatternAccuracyStats } from "@/app/actions/patter
 import { getLeaderboard, getAgentPointsAndTier, getAgentBadges, POINT_VALUES } from "@/app/actions/gamification"
 import { getWeeklyMetrics } from "@/lib/intelligence/feedback-aggregator"
 import { IntelligenceOSClient } from "./intelligence-os-client"
+import { AiCitationVisibilityCard, type CitationObservationRow } from "./components/ai-citation-visibility-card"
 
 export const dynamic = "force-dynamic"
 
@@ -100,6 +101,21 @@ export default async function IntelligencePage() {
       .order("gamification_points", { ascending: false })
       .limit(20),
   ])
+
+  // AI-search citation observations — written daily by the citation monitor
+  // (lib/kernel/ai-search-citation-monitor.ts) for this brokerage's published
+  // reel pages. Last 30 days, newest first.
+  const citationSince = new Date(Date.now() - 30 * 86_400_000).toISOString()
+  const { data: citationRows, error: citationError } = await supabase
+    .from("ai_search_citation_observations")
+    .select("id, platform, outcome, cited_url, provider, public_slug, observed_at")
+    .eq("brokerage_id", brokerageId)
+    .gte("observed_at", citationSince)
+    .order("observed_at", { ascending: false })
+    .limit(60)
+  const citationObservations: CitationObservationRow[] = citationError
+    ? []
+    : ((citationRows ?? []) as CitationObservationRow[])
 
   // Process patterns for component props
   const highPriorityPatterns = patterns.filter(p => p.confidence >= 0.75)
@@ -211,6 +227,7 @@ export default async function IntelligencePage() {
   )
 
   return (
+    <>
     <IntelligenceOSClient
       trustCapitalScore={trustCapital.trust_capital_score}
       totalValueDelivered={valueDashboard?.valueMetrics?.total_value_delivered || 0}
@@ -232,6 +249,14 @@ export default async function IntelligencePage() {
       operationalInsights={operationalInsights}
       brokerageId={brokerageId}
     />
+    {/* GEO / AI-search visibility — citation outcomes for published pages.
+        Hidden when the citation monitor has no observations yet. */}
+    {citationObservations.length > 0 && (
+      <div className="max-w-7xl mx-auto px-4 pb-6">
+        <AiCitationVisibilityCard observations={citationObservations} />
+      </div>
+    )}
+    </>
   )
 }
 

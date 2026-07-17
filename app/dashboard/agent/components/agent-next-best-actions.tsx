@@ -15,7 +15,7 @@ interface AgentNextBestActionsProps {
     listing: { address: string } | null
     contact: { first_name: string; last_name: string } | null
   }>
-  actionPlans?: Array<{ id: string; title: string; description?: string; contact_id?: string | null }>
+  actionPlans?: Array<{ id: string; title: string; description?: string; priority?: string; contact_id?: string | null; source?: string }>
 }
 
 export function AgentNextBestActions({
