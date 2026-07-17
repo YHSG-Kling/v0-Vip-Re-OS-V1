@@ -79,3 +79,30 @@ export function computeTrialExtension(currentTrialEnd: string | null, addDays: n
   const end = base + Math.max(0, Math.floor(addDays)) * 86_400_000
   return { iso: new Date(end).toISOString(), unix: Math.floor(end / 1000) }
 }
+
+/** Refund the subscription's most recent PAID invoice (full or partial cents).
+ *  The refund lands on the invoice's charge/payment_intent — the only honest
+ *  refund target for subscription billing (never a blind charge search). */
+export async function stripeRefundLatestInvoice(
+  subscriptionId: string | null | undefined,
+  amountCents?: number | null,
+): Promise<StripeOpResult & { refundedCents?: number }> {
+  if (!isStripeConfigured() || !subscriptionId) return skip()
+  try {
+    const { stripe } = await import("@/lib/stripe")
+    const invoices = await stripe.invoices.list({ subscription: subscriptionId, status: "paid", limit: 1 })
+    const invoice = invoices?.data?.[0]
+    const paymentIntent = (invoice as any)?.payment_intent
+    const charge = (invoice as any)?.charge
+    if (!invoice || (!paymentIntent && !charge)) {
+      return { applied: false, skipped: false, error: "No paid invoice with a refundable payment found" }
+    }
+    const refund = await stripe.refunds.create({
+      ...(paymentIntent ? { payment_intent: typeof paymentIntent === "string" ? paymentIntent : paymentIntent.id } : { charge: typeof charge === "string" ? charge : charge.id }),
+      ...(amountCents && amountCents > 0 ? { amount: Math.floor(amountCents) } : {}),
+    })
+    return { applied: true, skipped: false, refundedCents: (refund as any)?.amount ?? amountCents ?? null } as any
+  } catch (err: any) {
+    return { applied: false, skipped: false, error: err?.message ?? String(err) }
+  }
+}

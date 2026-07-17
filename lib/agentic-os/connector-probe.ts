@@ -29,6 +29,7 @@ export type AuthStyle =
   | "header_x_api_key"    // X-Api-Key: <apiKey>                    (RentCast)
   | "header_accesskey"    // accesskey: <apiKey>  (IDX Broker)
   | "query_access_token"  // ?access_token=<accessToken>  (Meta Graph)
+  | "query_api_key"       // ?apiKey=<apiKey>  (newsapi.ai / Event Registry)
   | "basic_sid_token"     // Authorization: Basic base64(apiKey:apiSecret)  (Twilio)
 
 export interface ResolvedConn {
@@ -127,6 +128,17 @@ export const PROBE_SPECS: Record<string, ProbeSpec> = {
     auth: "header_x_api_key",
     shape: { connector: "rentcast", fields: [{ canonical: "saleData", aliases: ["sale_data", "rentalData", "id"], required: false }] },
   },
+  // newsapi.ai (Event Registry) — the news + semantics provider (rounds 5-7).
+  // Minimal 1-article GET is the cheapest authenticated call; an expired or
+  // over-quota key surfaces here BEFORE a tenant's newsletter block goes dark.
+  // (Exa is POST-only like BatchData — both covered by their pull-drift
+  // sentinels + the gateway telemetry, intentionally not GET-probed.)
+  newsapi_ai: {
+    provider: "newsapi_ai",
+    url: "https://eventregistry.org/api/v1/article/getArticles?resultType=articles&articlesCount=1&keyword=housing",
+    auth: "query_api_key",
+    shape: { connector: "newsapi_ai", fields: [{ canonical: "articles", aliases: ["results", "error"], required: false }] },
+  },
 }
 
 /** Default probe params when the caller has no live context to pass. */
@@ -146,6 +158,7 @@ export const PLATFORM_PROVIDER_KEYS: Record<string, string> = {
   elevenlabs: "ELEVENLABS_API_KEY",
   did: "DID_API_KEY",
   rentcast: "RENTCAST_API_KEY",
+  newsapi_ai: "NEWSAPI_AI_KEY",
 }
 
 export interface ProbeResult {
@@ -213,6 +226,13 @@ function buildRequest(spec: ProbeSpec, conn: ResolvedConn, params?: Record<strin
       if (!conn.accessToken) return null
       const u = new URL(url)
       u.searchParams.set("access_token", conn.accessToken)
+      url = u.toString()
+      break
+    }
+    case "query_api_key": {
+      if (!conn.apiKey) return null
+      const u = new URL(url)
+      u.searchParams.set("apiKey", conn.apiKey)
       url = u.toString()
       break
     }

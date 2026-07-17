@@ -197,19 +197,22 @@ Focus on detecting:
     brokerageId = fhAgent?.brokerage_id ?? null
   }
 
+  // compliance_flags is the CANONICAL compliance ledger (the compliance UI
+  // reads it and explicitly ignores fair_housing_logs — that table was a
+  // write-only twin nothing consumed; keep-one repoint, open-loop sweep).
+  const allFlagged = [...foundPhrases, ...aiAnalysis.flagged_content]
   const { error } = await supabase
-    .from("fair_housing_logs")
+    .from("compliance_flags")
     .insert({
       brokerage_id: brokerageId,
       contact_id: params.contactId,
       agent_id: params.agentId,
-      interaction_type: params.interactionType,
-      communication_text: params.communicationText,
-      protected_class_mentioned: aiAnalysis.protected_class_mentioned,
-      steering_risk_detected: aiAnalysis.steering_detected,
-      ai_analysis: aiAnalysis,
-      risk_score: aiAnalysis.risk_score,
-      flagged_phrases: [...foundPhrases, ...aiAnalysis.flagged_content],
+      violation_type: "fair_housing_violation",
+      severity: aiAnalysis.risk_score >= 75 ? "critical" : aiAnalysis.risk_score >= 40 ? "high" : "medium",
+      content_type: params.interactionType,
+      flagged_content: `${allFlagged.join("; ").slice(0, 300)} :: ${params.communicationText.slice(0, 400)}`,
+      detected_at: new Date().toISOString(),
+      status: "flagged",
     })
 
   if (error) {

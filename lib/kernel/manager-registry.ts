@@ -1416,6 +1416,7 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/sync-facebook-audiences": "ads_manager",
   "/api/cron/lookalike-audience": "ads_manager",
   "/api/cron/competitor-ads-exa": "ads_manager",
+  "/api/cron/content-intel-scan": "ads_manager", // competitor/keyword content intelligence — same lane as the ads scan
   // ── Recruiting Manager — talent in, talent kept, talent developed ──
   "/api/cron/recruit-outreach": "recruiting_manager",
   "/api/cron/agent-coaching": "recruiting_manager",

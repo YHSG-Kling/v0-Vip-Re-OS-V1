@@ -1855,7 +1855,8 @@ async function main() {
       {
         const { PLATFORM_PROVIDER_KEYS, PROBE_SPECS } = await import("../lib/agentic-os/connector-probe")
         check("INTEGRATION GUARDIAN COVERAGE AUDIT (owner's Integration-Guardian/Provider-Specialist spec) + PASS 16 + ACADEMY→BRIEFING. AUDIT VERDICT: the spec's architecture ALREADY EXISTS — connector_health_log (DriftIncident), connector_healing_proposals (RepairProposal, AI healer w/ doc search = the Provider Specialist), connector_shape_memory (schema history), ingress_dead_letters (replay), probeConnector (canary probes), pending-proposal dedup + starvation-fair healing. Stripe AND QuickBooks were already probed (PROBE_SPECS). THE GAPS, NOW CLOSED: (1) platform-keyed providers (Lob, ElevenLabs, D-ID, RentCast — env keys serving EVERY tenant) had no probe and an expired platform key was invisible until a tenant's send/render failed → four new probes + four auth styles (basic_key_only/basic_raw_key/xi-api-key/X-Api-Key) + PLATFORM_PROVIDER_KEYS probed once per guardian run, failures ledgered platform-scoped on self_heal_events (the digest's rail); BatchData intentionally exempt (POST-only, pull-drift sentinel covers it). (2) quickbooks_sync_log rows stuck 'in_progress' >24h were an UNWATCHED silent-gap (the spec's headline failure class) → the guardian cron now sweeps them per tenant onto the health log as 'silent_gap' (added to the ATTENTION set → feeds the AI healer + superadmin board); predicate live-proven on a seeded 30h-stuck row, residue 0. PASS 16 (approved item 1): the writer-less read sweep — RIGHT queries over data that can NEVER exist (the skill-freshness/neighborhood_guides class) — ships as scripts/writerless-read-sweep.ts on the guard chain: 642 read tables, 632 with runtime writers, 66 writer-less reads baselined as a burn-down; NEW ones fail CI. ACADEMY→BRIEFING (approved item 3): a stale skill (same signals as the radar — objection drills, quizzes, PASSED courses via loadAgentSkillFreshness) surfaces as a low-priority 'sharpen' action in the morning briefing pointing at the on-demand academy; honest-quiet when sharp or unproven",
-          Object.keys(PLATFORM_PROVIDER_KEYS).sort().join(",") === "did,elevenlabs,lob,rentcast"
+          // (round 9 added newsapi_ai — the news/semantics platform key gets a canary.)
+          Object.keys(PLATFORM_PROVIDER_KEYS).sort().join(",") === "did,elevenlabs,lob,newsapi_ai,rentcast"
           && !!PROBE_SPECS.lob && !!PROBE_SPECS.elevenlabs && !!PROBE_SPECS.did && !!PROBE_SPECS.rentcast
           && !!PROBE_SPECS.stripe && !!PROBE_SPECS.quickbooks
           && src("app/api/cron/connector-health/route.ts").includes("PLATFORM_PROVIDER_KEYS")
@@ -2077,6 +2078,27 @@ async function main() {
         && src("app/actions/creative-playbooks.ts").includes("playbookKey: playbook.key")
         && src("app/settings/campaign-bundles/client.tsx").includes("Live results:")
         && Object.keys(tenantBaseline).length <= 14)
+    }
+    // ── ROUND 9: OPEN-LOOP CLOSURE + PLATFORM TOOLING COMPLETENESS ──
+    {
+      const writeBaseline = JSON.parse(src("scripts/orphan-write-baseline.json")) as string[]
+      check("ROUND 9 — CLOSE THE LOOPS + GIVE THE PLATFORM ITS MISSING TOOLS. NEW GUARD (pass 17): the write-only-ledger sweep is the mirror of the burned-to-zero writer-less-read sweep — tables the code WRITES but nothing READS are compute nobody sees; report-only with a committed burn-down baseline (63, can only shrink), NEW write-only tables fail CI, and audit ledgers stay exempt ONLY by naming their out-of-band consumer. TWO KEEP-ONE REPOINTS from that ledger: fair-housing violations now land in canonical compliance_flags (the table the compliance UI actually reads — fair_housing_logs informed nobody) and the newsletter API writes ai_generated_content (the audited AI-output ledger) instead of the orphan generated_content twin. DORMANT CRON CLOSED: content-intel-scan was built but never registered — it now rides the ONE dispatcher at 10:00 daily, and test:cron-dispatch guards the registry. GUARDIAN GROWS A LANE: newsapi_ai probe (query-param apiKey auth style) so the platform news/trends provider is canaried like did/elevenlabs/lob/rentcast. PLATFORM TOOLING (the god console's missing verbs): REFUND — the one billing op that moves money back — refunds the latest PAID invoice via Stripe (full or partial), reason REQUIRED, audit-logged, wired into the tenant god console; AUDIT VIEWER — superadmin_audit_log finally has its reader page (which is what keeps its orphan-write exemption honest), superadmin-gated to match the action layer; SUPPRESSION MANAGER — the cross-tenant do-not-contact wall gets its human half (staff honoring 'stop contacting me' requests): sentinel-capability list/add, but REMOVE is superadmin-only because deletion re-exposes the person to every tenant's outreach, and both directions write the audit ledger",
+        src("lib/kernel/cron-dispatch.ts").includes("/api/cron/content-intel-scan")
+        && src("lib/agentic-os/connector-probe.ts").includes("newsapi_ai")
+        && src("lib/agentic-os/connector-probe.ts").includes("query_api_key")
+        && writeBaseline.length <= 63
+        && src("scripts/orphan-write-sweep.ts").includes("AUDIT_EXEMPT")
+        && src("lib/application/compliance-monitoring.ts").includes('"fair_housing_violation"')
+        && src("app/api/generate/newsletter/route.ts").includes('from("ai_generated_content")')
+        && src("lib/billing/stripe-subscription-ops.ts").includes("stripeRefundLatestInvoice")
+        && src("app/actions/superadmin/brokerage-management.ts").includes("issueRefundAction")
+        && src("app/dashboard/superadmin/brokerages/[id]/brokerage-actions.tsx").includes("issueRefundAction")
+        && src("app/dashboard/superadmin/audit/page.tsx").includes("listSuperadminAuditLogAction")
+        && src("app/actions/superadmin/suppression.ts").includes("removeSuppressionEntryAction")
+        && src("app/actions/superadmin/suppression.ts").includes('gate.role !== "superadmin"')
+        && src("app/dashboard/superadmin/suppression/suppression-manager.tsx").includes("addSuppressionEntryAction")
+        && src("app/dashboard/superadmin/platform/page.tsx").includes("/dashboard/superadmin/suppression")
+        && src("app/dashboard/superadmin/platform/page.tsx").includes("/dashboard/superadmin/audit"))
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {

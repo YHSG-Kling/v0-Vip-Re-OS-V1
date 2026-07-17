@@ -143,6 +143,9 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/referral-asks"                       , schedule: "0 10 * * 2" },
   { path: "/api/cron/podcast-weekly-auto"                 , schedule: "0 10 * * 3" },
   { path: "/api/cron/competitor-ads-exa"                  , schedule: "0 11 * * *" },
+  // Content-intel scan runs an hour BEFORE the ads scan so the Marketing
+  // Studio's briefs have the organic + trending picture first (round 5-7).
+  { path: "/api/cron/content-intel-scan"                  , schedule: "0 10 * * *" },
   { path: "/api/cron/stale-contact-monitor"               , schedule: "0 11 * * *" },
   { path: "/api/cron/long-term-nurture"                   , schedule: "0 11 * * 1" },
   { path: "/api/cron/recruit-outreach"                    , schedule: "0 11 * * 1" },

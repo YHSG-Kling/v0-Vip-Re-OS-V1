@@ -15,7 +15,8 @@
  *   suspendBrokerageAction({brokerageId, reason})
  *   reactivateBrokerageAction({brokerageId})
  *   cancelBrokerageAction({brokerageId, reason})
- *   listAuditLogAction(filter)
+ *   listSuperadminAuditLogAction(limit)   — read the ledger (audit viewer page)
+ *   issueRefundAction({brokerageId, reason, amountCents?})
  *
  * Lifecycle: active ⇄ suspended → cancelled → archived (terminal).
  *   active     → can do anything
@@ -459,4 +460,45 @@ export async function listSuperadminAuditLogAction(limit = 100): Promise<
     .limit(limit)
   if (error) return { ok: false, error: error.message }
   return { ok: true, rows: (data ?? []) as any[] }
+}
+
+// ── REFUND (platform tooling gap — the ONE billing op that was missing) ──────
+// Refunds the tenant's most recent PAID invoice (full, or partial cents)
+// through Stripe, reason-logged to the superadmin audit ledger like every
+// other lifecycle action. Local intent is the audit row; Stripe is the money.
+export async function issueRefundAction(params: {
+  brokerageId: string
+  reason: string
+  /** Omit for a full refund of the latest paid invoice. */
+  amountCents?: number | null
+}): Promise<{ ok: boolean; refundedCents?: number | null; error?: string }> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return { ok: false, error: auth.error }
+  if (!params.reason?.trim()) return { ok: false, error: "A reason is required for every refund" }
+
+  const svc = createServiceClient()
+  const { data: sub } = await svc
+    .from("subscriptions")
+    .select("id, stripe_subscription_id")
+    .eq("brokerage_id", params.brokerageId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (!sub?.stripe_subscription_id) return { ok: false, error: "No Stripe-linked subscription for this tenant" }
+
+  const { stripeRefundLatestInvoice } = await import("@/lib/billing/stripe-subscription-ops")
+  const r = await stripeRefundLatestInvoice((sub as any).stripe_subscription_id, params.amountCents ?? null)
+  if (!r.applied) return { ok: false, error: r.error ?? (r.skipped ? "Stripe not configured" : "Refund failed") }
+
+  await writeAuditLog({
+    actorUserId: auth.userId,
+    actorEmail: auth.email,
+    action: "brokerage.refund_issued",
+    targetType: "brokerage",
+    targetId: params.brokerageId,
+    details: { reason: params.reason.trim(), amount_cents: params.amountCents ?? "full_latest_invoice", refunded_cents: (r as any).refundedCents ?? null },
+  })
+
+  revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
+  return { ok: true, refundedCents: (r as any).refundedCents ?? null }
 }

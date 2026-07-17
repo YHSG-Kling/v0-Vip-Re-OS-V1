@@ -52,13 +52,19 @@ Generate a full newsletter with:
 
     // Save generated content — only columns that exist in the schema
     const supabase = await createClient()
+    // ai_generated_content is the CANONICAL AI-output ledger (the AI audit +
+    // content surfaces read it; plain generated_content was a write-only twin
+    // nothing consumed — keep-one repoint, open-loop sweep).
     const { data: savedContent, error: saveError } = await supabase
-      .from("generated_content")
+      .from("ai_generated_content")
       .insert({
         content_type: "newsletter",
         content: text,
-        agent_id: agentCtx?.userId ?? null,
-        metadata: { title: `Newsletter — ${topic || audienceType || 'General'}` },
+        user_id: agentCtx?.userId ?? null,          // users-class
+        agent_id: agentCtx?.agentId ?? null,        // agents-class (identity census)
+        brokerage_id: agentCtx?.brokerageId ?? null,
+        title: `Newsletter — ${topic || audienceType || 'General'}`,
+        metadata: { source: "generate_newsletter_api" },
       })
       .select("id")
       .single()

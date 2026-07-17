@@ -12,6 +12,7 @@ import {
   cancelBrokerageAction,
   extendTrialAction,
   pauseSubscriptionAction,
+  issueRefundAction,
 } from "@/app/actions/superadmin/brokerage-management"
 
 type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
@@ -21,6 +22,9 @@ export function BrokerageActions({ brokerage }: { brokerage: any }) {
   const [reason, setReason] = useState("")
   const [mode, setMode] = useState<"idle" | "suspend" | "cancel">("idle")
   const [trialDays, setTrialDays] = useState("14")
+  const [refundOpen, setRefundOpen] = useState(false)
+  const [refundReason, setRefundReason] = useState("")
+  const [refundDollars, setRefundDollars] = useState("")
   const [feedback, setFeedback] = useState<{ kind: "error" | "success"; message: string } | null>(null)
   const [isPending, startTransition] = useTransition()
 
@@ -39,6 +43,27 @@ export function BrokerageActions({ brokerage }: { brokerage: any }) {
       const r = await pauseSubscriptionAction({ brokerageId: brokerage.id, pause, reason: reason.trim() || undefined })
       if (!r.ok) { setFeedback({ kind: "error", message: r.error ?? "Failed" }); return }
       setFeedback({ kind: "success", message: `${pause ? "Paused" : "Resumed"}${r.stripeApplied ? " (pushed to Stripe)" : " (local — Stripe not configured)"}` })
+    })
+  }
+
+  function applyRefund() {
+    setFeedback(null)
+    if (refundReason.trim().length < 5) { setFeedback({ kind: "error", message: "Refund reason must be 5+ chars — refunds are audited" }); return }
+    const dollars = refundDollars.trim() ? Number(refundDollars) : null
+    if (dollars !== null && (!Number.isFinite(dollars) || dollars <= 0)) {
+      setFeedback({ kind: "error", message: "Amount must be a positive dollar figure, or blank for a full refund" })
+      return
+    }
+    if (!confirm(dollars ? `Refund $${dollars.toFixed(2)} of the latest paid invoice?` : "Refund the FULL latest paid invoice?")) return
+    startTransition(async () => {
+      const r = await issueRefundAction({
+        brokerageId: brokerage.id,
+        reason: refundReason.trim(),
+        amountCents: dollars !== null ? Math.round(dollars * 100) : null,
+      })
+      if (!r.ok) { setFeedback({ kind: "error", message: r.error ?? "Refund failed" }); return }
+      setFeedback({ kind: "success", message: `Refunded${r.refundedCents ? ` $${(r.refundedCents / 100).toFixed(2)}` : ""} — logged to the audit ledger` })
+      setRefundOpen(false); setRefundReason(""); setRefundDollars("")
     })
   }
 
@@ -124,6 +149,43 @@ export function BrokerageActions({ brokerage }: { brokerage: any }) {
             <Button size="sm" variant="outline" onClick={() => applyPause(false)} disabled={isPending}>Resume</Button>
           </div>
           <p className="text-xs text-muted-foreground mt-2">Comp free time or pause a break. Writes through to Stripe when configured, else applies locally.</p>
+        </div>
+
+        {/* Refund — the one billing remediation that moves money back */}
+        <div className="border rounded p-3">
+          <div className="text-xs text-muted-foreground mb-2">Refund</div>
+          {refundOpen ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs text-muted-foreground">$</span>
+                <input
+                  type="number" min={0.5} step="0.01" value={refundDollars}
+                  onChange={(e) => setRefundDollars(e.target.value)}
+                  placeholder="Full invoice"
+                  className="h-8 w-28 rounded-md border px-2 text-sm" aria-label="Refund amount (dollars, blank = full)"
+                />
+                <span className="text-xs text-muted-foreground">blank = full latest paid invoice</span>
+              </div>
+              <textarea
+                value={refundReason} onChange={(e) => setRefundReason(e.target.value)}
+                rows={2} placeholder="Reason (5+ chars, audited) — e.g. billing error, service outage credit"
+                className="w-full text-sm border rounded p-2"
+              />
+              <div className="flex gap-2">
+                <Button size="sm" variant="destructive" onClick={applyRefund} disabled={isPending}>
+                  {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Issue refund"}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => { setRefundOpen(false); setRefundReason(""); setRefundDollars("") }}>Cancel</Button>
+              </div>
+            </div>
+          ) : (
+            <Button size="sm" variant="outline" onClick={() => setRefundOpen(true)} disabled={isPending}>
+              Issue refund…
+            </Button>
+          )}
+          <p className="text-xs text-muted-foreground mt-2">
+            Refunds the latest PAID invoice through Stripe (full or partial). Reason required — every refund lands in the audit ledger.
+          </p>
         </div>
 
         {/* Status actions */}
