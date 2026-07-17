@@ -5,6 +5,7 @@ import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { assignUserRoleAndEntitlements, assignUserToBrokerage } from "@/lib/kernel/users"
 import type { UserDomainRole } from "@/lib/kernel/users"
+import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
 
 export interface UpdateUserParams {
   userId: string
@@ -84,6 +85,37 @@ export async function updateUser({ userId, updates }: UpdateUserParams): Promise
     .select("first_name, last_name, user_type, role, status, brokerage_id")
     .eq("id", userId)
     .maybeSingle()
+
+  // ── 5b. Tier-aware role matrix for role changes (composes with guard 4) ──
+  // A role CHANGE is a seat change: the target tenant's plan tier bounds which
+  // roles may exist there (solo = partners only, team adds team seats,
+  // brokerage/multi_location add governance roles). Applies to every caller on
+  // this tenant surface — superadmin included; the only sanctioned bypass is
+  // the platform-side createTenantUserAction. Unanchored (no-brokerage) targets
+  // are platform-level users and carry no tenant tier to enforce.
+  if (newRole) {
+    const roleTargetBrokerageId =
+      updates.brokerage_id ?? before?.brokerage_id ?? caller?.brokerage_id ?? null
+    if (roleTargetBrokerageId) {
+      const { data: tenant, error: tierErr } = await service
+        .from("brokerages")
+        .select("plan_tier")
+        .eq("id", roleTargetBrokerageId)
+        .maybeSingle()
+      if (tierErr) return { success: false, error: tierErr.message }
+
+      const tenantTier = tenant?.plan_tier ?? null
+      if (!tierAllowsRole(tenantTier, newRole as UserDomainRole)) {
+        const minTier = minimumTierForRole(newRole as UserDomainRole)
+        return {
+          success: false,
+          error:
+            `The ${tierLabel(tenantTier)} plan does not include the '${newRole}' role.` +
+            (minTier ? ` Upgrade to ${TIER_LABELS[minTier]} to assign this role.` : ""),
+        }
+      }
+    }
+  }
 
   // ── 6. Build users table patch ────────────────────────────────────────────
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }

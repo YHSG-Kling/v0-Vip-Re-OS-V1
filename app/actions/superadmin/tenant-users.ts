@@ -10,6 +10,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { inviteTenantMember, type UserDomainRole } from "@/lib/kernel/users"
+import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
@@ -57,6 +58,12 @@ const TENANT_CREATABLE_ROLES = new Set<string>([
  * canonical inviteTenantMember path, so the new user is auth-linked (users.id === auth.id)
  * and gets their role-specific domain records (agents/onboarding/role) exactly like a
  * tenant-initiated invite. A team_lead can be dropped onto an existing team via teamId.
+ *
+ * TIER MATRIX: the TARGET tenant's plan_tier bounds which roles may be seated
+ * (lib/kernel/tier-role-matrix.ts) — the god console honors tenant tiers by
+ * default, exactly like the tenant-side invite surface. `superadminOverride`
+ * is the ONLY sanctioned bypass in the whole app (platform staff may place any
+ * role anywhere); every use is written to the superadmin audit ledger.
  */
 export async function createTenantUserAction(params: {
   brokerageId: string
@@ -65,6 +72,10 @@ export async function createTenantUserAction(params: {
   lastName?: string
   userType: string
   teamId?: string | null
+  /** Platform-staff escape hatch: seat a role OUTSIDE the target tenant's tier
+   *  matrix. Default false. When it actually bypasses a matrix rejection, the
+   *  override is logged to superadmin_audit_log ("user.tier_matrix_override"). */
+  superadminOverride?: boolean
 }): Promise<{ ok: boolean; userId?: string; error?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
@@ -74,8 +85,22 @@ export async function createTenantUserAction(params: {
   if (!TENANT_CREATABLE_ROLES.has(params.userType)) return { ok: false, error: `Role not allowed: ${params.userType}` }
 
   const svc = createServiceClient()
-  const { data: brk } = await svc.from("brokerages").select("id").eq("id", params.brokerageId).maybeSingle()
+  const { data: brk, error: brkErr } = await svc.from("brokerages").select("id, plan_tier").eq("id", params.brokerageId).maybeSingle()
+  if (brkErr) return { ok: false, error: brkErr.message }
   if (!brk) return { ok: false, error: "Brokerage not found" }
+
+  // Tier-aware role matrix by the TARGET tenant's tier.
+  const targetTier: string | null = (brk as { plan_tier?: string | null }).plan_tier ?? null
+  const roleOutsideTier = !tierAllowsRole(targetTier, params.userType as UserDomainRole)
+  if (roleOutsideTier && !params.superadminOverride) {
+    const minTier = minimumTierForRole(params.userType as UserDomainRole)
+    return {
+      ok: false,
+      error:
+        `The ${tierLabel(targetTier)} plan does not include the '${params.userType}' role.` +
+        (minTier ? ` The tenant must upgrade to ${TIER_LABELS[minTier]}, or pass superadminOverride.` : ""),
+    }
+  }
 
   const res = await inviteTenantMember({
     brokerageId:  params.brokerageId,
@@ -89,6 +114,13 @@ export async function createTenantUserAction(params: {
   })
   if (!res.success || !res.userId) return { ok: false, error: res.error ?? "Failed to create user" }
 
+  // The override actually bypassed the matrix → ledger entry (accountability for
+  // the one sanctioned bypass; same superadmin_audit_log shape as every audit here).
+  if (roleOutsideTier && params.superadminOverride) {
+    await audit(auth.userId, auth.email, "user.tier_matrix_override", res.userId, {
+      brokerage_id: params.brokerageId, role: params.userType, tenant_tier: targetTier, email,
+    })
+  }
   await audit(auth.userId, auth.email, "user.created", res.userId, { brokerage_id: params.brokerageId, role: params.userType, email })
   revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
   return { ok: true, userId: res.userId }

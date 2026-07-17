@@ -8,6 +8,7 @@
 
 export const ROLE_DASHBOARD_ROUTES: Record<string, string> = {
   superadmin:         "/dashboard/superadmin/home", // platform staff land on the command home
+  marketing:          "/dashboard/superadmin/home", // platform marketing staff — same command home
   support:            "/dashboard/support",
   admin:              "/dashboard/admin",
   broker:             "/dashboard/brokerage",

@@ -7,6 +7,7 @@ import { inviteTenantMember } from "@/lib/kernel/users"
 import { emitUserProvisionedEvent } from "@/lib/kernel/users"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { UserDomainRole } from "@/lib/kernel/users"
+import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
 
 export interface InviteUserParams {
   email: string
@@ -88,6 +89,30 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
     return { success: false, error: "A brokerage is required to invite a user." }
   }
   const service = createServiceClient()
+
+  // ── 4b. Tier-aware role matrix (composes WITH the caller-role checks above) ─
+  // The tenant's plan tier bounds which roles may be seated at all: solo = one
+  // seat (partners only), team adds team structure, brokerage/multi_location add
+  // governance roles. This applies to EVERY caller on this tenant-tier surface —
+  // including superadmin acting on behalf of a tenant; the only sanctioned
+  // bypass lives in the platform-side createTenantUserAction (god console).
+  const { data: tenant, error: tierErr } = await service
+    .from("brokerages")
+    .select("plan_tier")
+    .eq("id", resolvedBrokerageId)
+    .maybeSingle()
+  if (tierErr) return { success: false, error: tierErr.message }
+
+  const tenantTier = tenant?.plan_tier ?? null
+  if (!tierAllowsRole(tenantTier, requestedRole)) {
+    const minTier = minimumTierForRole(requestedRole)
+    return {
+      success: false,
+      error:
+        `The ${tierLabel(tenantTier)} plan does not include the '${requestedRole}' role.` +
+        (minTier ? ` Upgrade to ${TIER_LABELS[minTier]} to invite this role.` : ""),
+    }
+  }
   const provisioned = await inviteTenantMember({
     brokerageId:  resolvedBrokerageId,
     teamId:       resolvedTeamId,

@@ -80,6 +80,16 @@ export default async function AdminUsersPage() {
 
   // Load users — always scoped to the caller's brokerage (tenant anchor)
   const service = createServiceClient()
+
+  // Tenant plan tier — drives the tier-aware invitable-role list (matrix in
+  // lib/kernel/tier-role-matrix.ts; the invite server action enforces the same).
+  const { data: tenant } = await service
+    .from("brokerages")
+    .select("plan_tier")
+    .eq("id", profile.brokerage_id)
+    .maybeSingle()
+  const planTier: string | null = tenant?.plan_tier ?? null
+
   const { data: users } = await service
     .from("users")
     .select("id, first_name, last_name, email, user_type, status, brokerage_id, created_at")
@@ -144,6 +154,7 @@ export default async function AdminUsersPage() {
         <InviteUserButton
           callerRole={callerType}
           brokerageId={profile?.brokerage_id}
+          tier={planTier}
         />
       </div>
 

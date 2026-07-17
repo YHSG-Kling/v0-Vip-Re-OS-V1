@@ -21,28 +21,39 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Plus, CheckCircle2 } from "lucide-react"
+import { invitableRolesForTier } from "@/lib/kernel/tier-role-matrix"
 
 interface InviteUserButtonProps {
   callerRole: string
   brokerageId?: string | null
+  /** brokerages.plan_tier of the caller's tenant — drives the invitable-role list. */
+  tier?: string | null
 }
 
-const ALL_ROLES = [
-  { value: "agent", label: "Agent" },
-  { value: "broker", label: "Broker" },
-  { value: "admin", label: "Admin" },
-  { value: "tc", label: "Transaction Coordinator" },
-  { value: "isa", label: "ISA" },
-  { value: "team_lead", label: "Team Lead" },
-  { value: "vendor", label: "Vendor" },
-  { value: "lender", label: "Lender" },
-]
+const ROLE_LABELS: Record<string, string> = {
+  agent: "Agent",
+  broker: "Broker",
+  admin: "Admin",
+  tc: "Transaction Coordinator",
+  isa: "ISA",
+  team_lead: "Team Lead",
+  compliance_officer: "Compliance Officer",
+  vendor: "Vendor",
+  lender: "Lender",
+}
 
-// Tenant admins/brokers may now invite admin/broker peers into their own
-// brokerage (the server action pins the invite to the caller's brokerage), so
-// the full role list is offered to everyone who can see this button.
+// Which roles a tenant may seat is decided by its plan tier — the canonical
+// matrix in lib/kernel/tier-role-matrix.ts (the server action enforces the same
+// matrix, so this list is honest, not just cosmetic). Tier-locked roles get a
+// short upgrade note instead of silently failing at submit.
+const TIER_LOCK_NOTES: Record<string, string> = {
+  solo_agent:
+    "Your Solo plan is a single seat — you can invite vendor and lender partners. Upgrade to Team to add team members.",
+  team:
+    "Upgrade to Brokerage to add governance roles (broker, transaction coordinator, compliance officer).",
+}
 
-export function InviteUserButton({ callerRole, brokerageId }: InviteUserButtonProps) {
+export function InviteUserButton({ callerRole, brokerageId, tier }: InviteUserButtonProps) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [inviting, setInviting] = useState(false)
@@ -57,7 +68,11 @@ export function InviteUserButton({ callerRole, brokerageId }: InviteUserButtonPr
   })
 
   const isSuperadmin = callerRole === "superadmin"
-  const availableRoles = ALL_ROLES
+  const availableRoles = invitableRolesForTier(tier).map((role) => ({
+    value: role,
+    label: ROLE_LABELS[role] ?? role,
+  }))
+  const tierLockNote = tier ? (TIER_LOCK_NOTES[tier] ?? null) : null
 
   function updateForm(field: keyof typeof form, value: string) {
     setForm((f) => ({ ...f, [field]: value }))
@@ -199,6 +214,9 @@ export function InviteUserButton({ callerRole, brokerageId }: InviteUserButtonPr
                       ))}
                     </SelectContent>
                   </Select>
+                  {tierLockNote && (
+                    <p className="text-xs text-muted-foreground mt-1">{tierLockNote}</p>
+                  )}
                 </div>
 
                 {isSuperadmin && (
