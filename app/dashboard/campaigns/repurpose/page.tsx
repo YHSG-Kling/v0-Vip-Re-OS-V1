@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { RepurposeDashboardClient } from "./repurpose-dashboard-client"
 import { VideoUrlRepurposeCard } from "./video-url-repurpose-card"
+import { NewsletterTeasersCard, type NewsletterTeaser } from "./newsletter-teasers-card"
 import { getPipelines, getRepurposeHistory } from "@/lib/repurpose/actions"
 
 export const dynamic = "force-dynamic"
@@ -37,7 +38,7 @@ export default async function RepurposePage() {
     ])
 
     // Fetch available source content + connected social channels
-    const [videoProjects, blogPosts, podcastEpisodes, scripts, socialAccounts] = await Promise.all([
+    const [videoProjects, blogPosts, podcastEpisodes, scripts, socialAccounts, newsletterTeasers] = await Promise.all([
       supabase
         .from("ai_video_projects")
         .select("id, title, video_url, status, duration_seconds, created_at")
@@ -71,6 +72,12 @@ export default async function RepurposePage() {
         .select("platform")
         .eq("brokerage_id", brokerageId ?? "")
         .eq("is_active", true),
+      supabase
+        .from("newsletter_teasers")
+        .select("id, content, source_type, source_id, status, created_at")
+        .eq("brokerage_id", brokerageId ?? "")
+        .order("created_at", { ascending: false })
+        .limit(20),
     ])
 
     const connectedPlatforms = Array.from(
@@ -86,8 +93,9 @@ export default async function RepurposePage() {
 
     return (
       <Suspense fallback={<div>Loading...</div>}>
-        <div className="p-6 pb-0">
+        <div className="p-6 pb-0 space-y-6">
           <VideoUrlRepurposeCard connectedPlatforms={connectedPlatforms} />
+          <NewsletterTeasersCard teasers={(newsletterTeasers.data as NewsletterTeaser[] | null) ?? []} />
         </div>
         <RepurposeDashboardClient
           userId={userId}

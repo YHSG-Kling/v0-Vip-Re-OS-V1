@@ -59,6 +59,7 @@ export default async function TeamDashboard() {
   // Fetch all dashboard data in parallel — Promise.allSettled so no single failure blocks render
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
   const twentyOneDaysAgo = new Date(Date.now() - 21 * 24 * 60 * 60 * 1000).toISOString()
+  const fourteenDaysAgoStr = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
   const todayStr = new Date().toISOString().split("T")[0]
   const weekEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
 
@@ -74,6 +75,7 @@ export default async function TeamDashboard() {
     leaderboardResult,
     upcomingShowingsResult,
     agentUsersResult,
+    activityTrendResult,
   ] = await Promise.allSettled([
     // 1. Team members
     supabase
@@ -171,6 +173,16 @@ export default async function TeamDashboard() {
       .eq("brokerage_id", brokerageId)
       .in("user_type", ["agent", "broker", "team_lead"])
       .order("first_name"),
+
+    // 12. Daily activity trend — team_activity_snapshots (per-brokerage daily
+    // rollup written by the team-heatmap-snapshot cron; intentionally distinct
+    // from team_heatmap_snapshots' per-agent-per-zip grain)
+    supabase
+      .from("team_activity_snapshots")
+      .select("snapshot_date, agent_count, total_activities, avg_per_agent")
+      .eq("brokerage_id", brokerageId)
+      .gte("snapshot_date", fourteenDaysAgoStr)
+      .order("snapshot_date", { ascending: true }),
   ])
 
   // Safely unpack
@@ -194,6 +206,12 @@ export default async function TeamDashboard() {
     upcomingShowingsResult.status === "fulfilled" ? (upcomingShowingsResult.value.data ?? []) : []
   const agentUsers =
     agentUsersResult.status === "fulfilled" ? (agentUsersResult.value.data ?? []) : []
+  const activityTrend =
+    activityTrendResult.status === "fulfilled" ? (activityTrendResult.value.data ?? []) : []
+  const maxTrendActivities = Math.max(
+    1,
+    ...activityTrend.map((d: any) => d.total_activities ?? 0)
+  )
 
   // Build leaderboard from commissions
   const gciByAgent: Record<string, number> = {}
@@ -283,6 +301,52 @@ export default async function TeamDashboard() {
             </Button>
           </Link>
         </div>
+
+        {/* Daily Activity Trend — team_activity_snapshots (brokerage-day rollups) */}
+        {activityTrend.length > 0 && (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Activity className="h-4 w-4 text-muted-foreground" />
+                Daily Activity Trend
+                <Badge variant="secondary" className="text-xs">last 14 days</Badge>
+              </CardTitle>
+              <CardDescription>Total team activities and average per agent, per day</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {activityTrend.map((day: any) => (
+                  <div
+                    key={day.snapshot_date}
+                    className="flex flex-col items-center gap-1 min-w-[52px] shrink-0"
+                  >
+                    <div className="h-16 w-full flex items-end justify-center">
+                      <div
+                        className="w-5 rounded-sm bg-primary/70"
+                        style={{
+                          height: `${Math.max(
+                            4,
+                            Math.round(((day.total_activities ?? 0) / maxTrendActivities) * 100)
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                    <p className="text-xs font-semibold leading-none">{day.total_activities ?? 0}</p>
+                    <p className="text-[10px] text-muted-foreground leading-none">
+                      {Number(day.avg_per_agent ?? 0).toFixed(1)}/agent
+                    </p>
+                    <p className="text-[10px] text-muted-foreground leading-none">
+                      {new Date(`${day.snapshot_date}T00:00:00`).toLocaleDateString(undefined, {
+                        month: "numeric",
+                        day: "numeric",
+                      })}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Operating Snapshot — 6 metrics */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">

@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
@@ -76,6 +77,49 @@ interface ShowingRequestInput {
 // ============================================================================
 // Public Data Fetching (No Auth Required)
 // ============================================================================
+
+export interface GeneratedLandingPage {
+  id: string
+  listing_id: string | null
+  slug: string
+  status: string
+  content: { headline?: string; subheadline?: string; body?: string } | null
+  view_count: number
+}
+
+/**
+ * AI-generated landing page for a slug (listing_landing_pages — written by
+ * generateListingLandingPage and the listing_landing_page workflow adapter).
+ * Published pages are public content, but the table's RLS only carries a
+ * service_role policy, so the anonymous visitor read goes through the service
+ * client scoped to slug + published status.
+ */
+export async function getLandingPageBySlug(slug: string): Promise<GeneratedLandingPage | null> {
+  const supabase = createServiceClient()
+
+  const { data: page } = await supabase
+    .from("listing_landing_pages")
+    .select("id, listing_id, slug, status, content, view_count")
+    .eq("slug", slug)
+    .eq("status", "published")
+    .maybeSingle()
+
+  return (page as GeneratedLandingPage | null) ?? null
+}
+
+/** Fire-and-forget view counter for a generated landing page. */
+export async function incrementLandingPageViews(pageId: string, currentViewCount: number) {
+  try {
+    const supabase = createServiceClient()
+    await supabase
+      .from("listing_landing_pages")
+      .update({ view_count: currentViewCount + 1, updated_at: new Date().toISOString() })
+      .eq("id", pageId)
+  } catch (err) {
+    // Fail silently - analytics should not block page load
+    console.error("[v0] incrementLandingPageViews error:", err)
+  }
+}
 
 export async function getListingBySlug(slug: string): Promise<ListingDetails | null> {
   const supabase = await createClient()

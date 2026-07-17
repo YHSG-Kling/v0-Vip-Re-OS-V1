@@ -2,6 +2,8 @@ import { notFound } from "next/navigation"
 import { Suspense } from "react"
 import {
   getListingBySlug,
+  getLandingPageBySlug,
+  incrementLandingPageViews,
   getNeighborhoodData,
   getSimilarListings,
   logLandingSession,
@@ -42,8 +44,20 @@ interface PageProps {
  */
 export async function generateMetadata({ params }: PageProps) {
   const { slug } = await params
-  const listing = await getListingBySlug(slug)
+  // AI-generated landing pages resolve by their own slug first, then fall
+  // through to the listing they point at (or the plain listings path).
+  const landingPage = await getLandingPageBySlug(slug)
+  const listing = landingPage?.listing_id
+    ? await getListingBySlug(landingPage.listing_id)
+    : await getListingBySlug(slug)
   if (!listing) {
+    const generated = landingPage?.content
+    if (generated?.headline) {
+      return {
+        title: generated.headline,
+        description: generated.subheadline ?? generated.body?.slice(0, 160) ?? "Real estate listing",
+      }
+    }
     return { title: "Listing", description: "Real estate listing" }
   }
   const l = listing as unknown as {
@@ -96,10 +110,60 @@ export default async function ListingLandingPage({ params, searchParams }: PageP
   const { slug } = await params
   const search = await searchParams
 
-  const listing = await getListingBySlug(slug)
+  // Generated landing page first (listing_landing_pages by slug), then the
+  // classic listings resolution. When a generated page points at a listing we
+  // render the full listing page enriched with its AI content; when it stands
+  // alone we render the generated content directly.
+  const landingPage = await getLandingPageBySlug(slug)
+  const generated = landingPage?.content ?? null
+
+  if (landingPage) {
+    // Fire-and-forget view counter
+    incrementLandingPageViews(landingPage.id, landingPage.view_count)
+  }
+
+  const listing = landingPage?.listing_id
+    ? await getListingBySlug(landingPage.listing_id)
+    : await getListingBySlug(slug)
 
   if (!listing) {
-    notFound()
+    if (!landingPage || !generated?.headline) {
+      notFound()
+    }
+
+    // Standalone generated landing page (no live listing behind it) — keep the
+    // GEO breadcrumb block so AI search engines can still read and cite it.
+    const siteBase = siteUrl()
+    const productName = (await loadProductBrand(createServiceClient())).name
+    const pageUrl = `${siteBase}/listing/${slug}`
+    const breadcrumbJsonLd = buildBreadcrumbJsonLd({
+      siteName: productName, siteUrl: siteBase,
+      agentName: null,
+      pageName: generated.headline, pageUrl,
+    })
+
+    return (
+      <div className="min-h-screen bg-background">
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(breadcrumbJsonLd) }} />
+        <div className="container mx-auto px-4 py-16 max-w-3xl">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-3xl">{generated.headline}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {generated.subheadline && (
+                <p className="text-lg text-muted-foreground">{generated.subheadline}</p>
+              )}
+              {generated.body && (
+                <p className="text-muted-foreground whitespace-pre-wrap leading-relaxed">
+                  {generated.body}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    )
   }
 
   // Generate session token for analytics
@@ -247,6 +311,23 @@ export default async function ListingLandingPage({ params, searchParams }: PageP
                 <p className="text-sm text-muted-foreground mt-1">MLS# {listing.mls_number}</p>
               )}
             </div>
+
+            {/* AI-generated landing page content (listing_landing_pages) */}
+            {generated?.headline && (
+              <Card className="border-primary/30">
+                <CardContent className="pt-6 space-y-3">
+                  <h2 className="text-2xl font-bold text-foreground">{generated.headline}</h2>
+                  {generated.subheadline && (
+                    <p className="text-lg text-muted-foreground">{generated.subheadline}</p>
+                  )}
+                  {generated.body && (
+                    <p className="text-muted-foreground whitespace-pre-wrap leading-relaxed">
+                      {generated.body}
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
 
             {/* Section 3: Description */}
             <Card>

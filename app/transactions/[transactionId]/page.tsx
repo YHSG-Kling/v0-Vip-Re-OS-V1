@@ -30,6 +30,8 @@ import {
   Upload,
   Download,
   Loader2,
+  Gift,
+  ShieldCheck,
 } from "lucide-react"
 import { loadClientDashboard } from "@/app/actions/transactions"
 import { createClient } from "@/lib/supabase/client"
@@ -54,6 +56,12 @@ export default function AgentTransactionDetailPage() {
 
   // Health factor breakdown — latest AI-scored factors persisted to transaction_health_factors
   const [healthFactors, setHealthFactors] = useState<any[]>([])
+
+  // AI contract reviews — latest review per document (contract_reviews, keyed by document_id)
+  const [reviewsByDoc, setReviewsByDoc] = useState<Record<string, any>>({})
+
+  // Closing gift tracker — closing_gifts rows keyed by the transaction's listing
+  const [closingGifts, setClosingGifts] = useState<any[]>([])
 
   useEffect(() => {
     async function loadData() {
@@ -88,6 +96,28 @@ export default function AgentTransactionDetailPage() {
       })
   }, [transactionId])
 
+  // Load closing gifts — closing_gifts keys on listing_id/contact_id (no transaction_id),
+  // so resolve the transaction's listing first, then fetch its gifts.
+  useEffect(() => {
+    const supabase = createClient()
+    supabase
+      .from("transactions")
+      .select("listing_id")
+      .eq("id", transactionId)
+      .maybeSingle()
+      .then(({ data: txn }: { data: { listing_id: string | null } | null }) => {
+        if (!txn?.listing_id) return
+        supabase
+          .from("closing_gifts")
+          .select("id, gift_description, status, order_date, delivery_date, price_cents, created_at")
+          .eq("listing_id", txn.listing_id)
+          .order("created_at", { ascending: false })
+          .then(({ data: rows }: { data: any[] | null }) => {
+            setClosingGifts(rows ?? [])
+          })
+      })
+  }, [transactionId])
+
   // Lazy-load documents when the Documents tab is first opened
   useEffect(() => {
     if (activeTab !== "documents" || documents.length > 0 || docsLoading) return
@@ -101,6 +131,20 @@ export default function AgentTransactionDetailPage() {
       .then(({ data: rows }: { data: any[] | null }) => {
         setDocuments(rows ?? [])
         setDocsLoading(false)
+      })
+    // AI contract reviews for these documents — keep only the LATEST review per document
+    supabase
+      .from("contract_reviews")
+      .select("id, document_id, overall_score, overall_assessment, issues, recommendations, reviewed_at")
+      .eq("transaction_id", transactionId)
+      .order("reviewed_at", { ascending: false })
+      .limit(50)
+      .then(({ data: rows }: { data: any[] | null }) => {
+        const latestByDoc: Record<string, any> = {}
+        for (const row of rows ?? []) {
+          if (row.document_id && !latestByDoc[row.document_id]) latestByDoc[row.document_id] = row
+        }
+        setReviewsByDoc(latestByDoc)
       })
   }, [activeTab, transactionId])
 
@@ -430,6 +474,51 @@ export default function AgentTransactionDetailPage() {
             </Card>
           </div>
 
+          {/* Closing Gift Tracker — closing_gifts scheduled against this transaction's listing */}
+          {closingGifts.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Gift className="h-5 w-5" />
+                  Closing Gift
+                </CardTitle>
+                <CardDescription>Gift ordered around the closing date</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {closingGifts.map((gift) => {
+                  const giftStatusColors: Record<string, string> = {
+                    scheduled: "bg-gray-100 text-gray-800 dark:bg-gray-950 dark:text-gray-300",
+                    ordered: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
+                    shipped: "bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300",
+                    delivered: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
+                    cancelled: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
+                  }
+                  return (
+                    <div key={gift.id} className="flex items-center justify-between p-3 border rounded-lg">
+                      <div>
+                        <p className="text-sm font-medium">{gift.gift_description || "Closing gift"}</p>
+                        <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+                          {gift.order_date && (
+                            <span>Order: {new Date(gift.order_date).toLocaleDateString()}</span>
+                          )}
+                          {gift.delivery_date && (
+                            <span>Delivery: {new Date(gift.delivery_date).toLocaleDateString()}</span>
+                          )}
+                          {gift.price_cents != null && (
+                            <span>${(gift.price_cents / 100).toFixed(2)}</span>
+                          )}
+                        </div>
+                      </div>
+                      <Badge className={cn("text-xs capitalize font-semibold", giftStatusColors[gift.status] ?? "")}>
+                        {gift.status}
+                      </Badge>
+                    </div>
+                  )
+                })}
+              </CardContent>
+            </Card>
+          )}
+
           {/* Recent Activity */}
           <Card>
             <CardHeader>
@@ -594,44 +683,100 @@ export default function AgentTransactionDetailPage() {
                 </div>
               ) : (
                 <div className="divide-y">
-                  {documents.map((doc) => (
-                    <div key={doc.id} className="flex items-center justify-between py-3">
-                      <div className="flex items-start gap-3">
-                        <FileText className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
-                        <div>
-                          <p className="text-sm font-medium">{doc.doc_label || doc.doc_type}</p>
-                          <div className="flex items-center gap-2 mt-0.5">
-                            <Badge variant="outline" className="text-xs capitalize">
-                              {doc.doc_type}
-                            </Badge>
-                            <span className="text-xs text-muted-foreground">
-                              {doc.uploaded_at
-                                ? new Date(doc.uploaded_at).toLocaleDateString()
-                                : "—"}
-                            </span>
+                  {documents.map((doc) => {
+                    const review = reviewsByDoc[doc.id]
+                    return (
+                      <div key={doc.id} className="py-3 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-start gap-3">
+                            <FileText className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
+                            <div>
+                              <p className="text-sm font-medium">{doc.doc_label || doc.doc_type}</p>
+                              <div className="flex items-center gap-2 mt-0.5">
+                                <Badge variant="outline" className="text-xs capitalize">
+                                  {doc.doc_type}
+                                </Badge>
+                                <span className="text-xs text-muted-foreground">
+                                  {doc.uploaded_at
+                                    ? new Date(doc.uploaded_at).toLocaleDateString()
+                                    : "—"}
+                                </span>
+                              </div>
+                              {doc.notes && (
+                                <p className="text-xs text-muted-foreground mt-0.5">{doc.notes}</p>
+                              )}
+                            </div>
                           </div>
-                          {doc.notes && (
-                            <p className="text-xs text-muted-foreground mt-0.5">{doc.notes}</p>
-                          )}
+                          <div className="flex items-center gap-2">
+                            <Badge
+                              variant={doc.status === "approved" ? "default" : "secondary"}
+                              className="text-xs capitalize"
+                            >
+                              {doc.status}
+                            </Badge>
+                            {doc.storage_url && (
+                              <Button variant="ghost" size="sm" asChild>
+                                <a href={doc.storage_url} target="_blank" rel="noopener noreferrer">
+                                  <Download className="h-4 w-4" />
+                                </a>
+                              </Button>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Badge
-                          variant={doc.status === "approved" ? "default" : "secondary"}
-                          className="text-xs capitalize"
-                        >
-                          {doc.status}
-                        </Badge>
-                        {doc.storage_url && (
-                          <Button variant="ghost" size="sm" asChild>
-                            <a href={doc.storage_url} target="_blank" rel="noopener noreferrer">
-                              <Download className="h-4 w-4" />
-                            </a>
-                          </Button>
+                        {review && (
+                          <div className="ml-8 rounded-md border bg-muted/30 p-3 space-y-1.5">
+                            <div className="flex items-center gap-2">
+                              <ShieldCheck className="h-4 w-4 text-primary shrink-0" />
+                              <span className="text-xs font-medium">AI Contract Review</span>
+                              {review.overall_score != null && (
+                                <Badge
+                                  variant={review.overall_score >= 70 ? "default" : "destructive"}
+                                  className="text-xs"
+                                >
+                                  {Math.round(review.overall_score)}/100
+                                </Badge>
+                              )}
+                              {review.reviewed_at && (
+                                <span className="text-[10px] text-muted-foreground">
+                                  {new Date(review.reviewed_at).toLocaleDateString()}
+                                </span>
+                              )}
+                            </div>
+                            {review.overall_assessment && (
+                              <p className="text-xs text-muted-foreground">{review.overall_assessment}</p>
+                            )}
+                            {Array.isArray(review.issues) && review.issues.length > 0 && (
+                              <div className="space-y-0.5">
+                                {review.issues.slice(0, 3).map((issue: any, i: number) => (
+                                  <p key={i} className="text-xs text-red-600 flex items-start gap-1">
+                                    <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                                    {typeof issue === "string"
+                                      ? issue
+                                      : [issue.category, issue.description].filter(Boolean).join(": ") ||
+                                        JSON.stringify(issue)}
+                                  </p>
+                                ))}
+                                {review.issues.length > 3 && (
+                                  <p className="text-[10px] text-muted-foreground">
+                                    +{review.issues.length - 3} more issues
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                            {Array.isArray(review.recommendations) && review.recommendations.length > 0 && (
+                              <div className="space-y-0.5">
+                                {review.recommendations.slice(0, 2).map((rec: any, i: number) => (
+                                  <p key={i} className="text-xs text-muted-foreground">
+                                    {typeof rec === "string" ? rec : JSON.stringify(rec)}
+                                  </p>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         )}
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </CardContent>

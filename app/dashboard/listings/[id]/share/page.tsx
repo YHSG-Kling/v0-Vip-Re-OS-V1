@@ -12,7 +12,7 @@ import { Separator } from "@/components/ui/separator"
 import {
   Share2, QrCode, Copy, Check, ExternalLink, Send,
   Instagram, Linkedin, Facebook, Twitter, MessageSquare,
-  Loader2, Home,
+  Loader2, Home, Sparkles,
 } from "lucide-react"
 import { pushListingToSellerPortal } from "@/app/actions/push-listing-to-seller-portal"
 import { toast } from "sonner"
@@ -42,6 +42,37 @@ interface Listing {
   contact_id: string | null
 }
 
+interface MarketingContentRow {
+  id: string
+  content_type: string
+  content: unknown
+  created_at: string | null
+}
+
+// Flatten a listing_marketing_content jsonb blob into copyable text pieces.
+// Writers persist objects of strings (ai_marketing, ai_descriptions), arrays,
+// or plain strings depending on content_type.
+function contentPieces(content: unknown): Array<{ label: string; text: string }> {
+  const toText = (v: unknown): string => {
+    if (typeof v === "string") return v
+    if (Array.isArray(v)) return v.map(toText).join("\n")
+    if (v != null && typeof v === "object") return JSON.stringify(v, null, 2)
+    return String(v ?? "")
+  }
+  if (content == null) return []
+  if (typeof content === "string") return [{ label: "", text: content }]
+  if (Array.isArray(content)) {
+    return content.map((item, i) => ({ label: `#${i + 1}`, text: toText(item) }))
+  }
+  if (typeof content === "object") {
+    return Object.entries(content as Record<string, unknown>).map(([key, value]) => ({
+      label: key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " "),
+      text: toText(value),
+    }))
+  }
+  return [{ label: "", text: toText(content) }]
+}
+
 export default function ListingSharePage() {
   const { id: listingId } = useParams<{ id: string }>()
   const [listing, setListing] = useState<Listing | null>(null)
@@ -51,6 +82,7 @@ export default function ListingSharePage() {
   const [agentMessage, setAgentMessage] = useState("")
   const [isPushing, startPushing] = useTransition()
   const [userId, setUserId] = useState<string | null>(null)
+  const [marketingContent, setMarketingContent] = useState<MarketingContentRow[]>([])
 
   useEffect(() => {
     const supabase = createClient()
@@ -86,6 +118,15 @@ export default function ListingSharePage() {
         })
         setQrDataUrl(dataUrl)
       }
+
+      // AI-generated marketing pieces for this listing (listing_marketing_content)
+      const { data: marketing } = await supabase
+        .from("listing_marketing_content")
+        .select("id, content_type, content, created_at")
+        .eq("listing_id", listingId)
+        .order("created_at", { ascending: false })
+
+      setMarketingContent((marketing as MarketingContentRow[] | null) ?? [])
     }
 
     load()
@@ -312,6 +353,63 @@ export default function ListingSharePage() {
           })}
         </div>
       </div>
+
+      {/* Generated Marketing — AI content persisted to listing_marketing_content */}
+      {marketingContent.length > 0 && (
+        <>
+          <Separator />
+          <div>
+            <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <Sparkles className="h-4 w-4" />
+              Generated Marketing
+            </h2>
+            <div className="space-y-3">
+              {marketingContent.map((row) => {
+                const pieces = contentPieces(row.content)
+                if (pieces.length === 0) return null
+                return (
+                  <Card key={row.id} className="border-dashed">
+                    <CardContent className="p-3 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <Badge variant="outline" className="text-xs capitalize">
+                          {row.content_type.replace(/_/g, " ")}
+                        </Badge>
+                        {row.created_at && (
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(row.created_at).toLocaleDateString()}
+                          </span>
+                        )}
+                      </div>
+                      {pieces.map((piece, i) => (
+                        <div key={i} className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            {piece.label && (
+                              <span className="text-xs font-medium capitalize">{piece.label}</span>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 text-xs ml-auto"
+                              onClick={() => {
+                                navigator.clipboard.writeText(piece.text)
+                                toast.success(`${piece.label || row.content_type.replace(/_/g, " ")} copied!`)
+                              }}
+                            >
+                              <Copy className="h-3 w-3 mr-1" />
+                              Copy
+                            </Button>
+                          </div>
+                          <p className="text-xs text-muted-foreground whitespace-pre-wrap">{piece.text}</p>
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                )
+              })}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }

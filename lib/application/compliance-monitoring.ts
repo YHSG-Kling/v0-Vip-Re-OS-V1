@@ -387,7 +387,7 @@ export async function applyDocumentRetentionService(transactionId: string) {
 
   const { data: transaction } = await supabase
     .from("transactions")
-    .select("actual_close_date:close_date")
+    .select("actual_close_date:close_date, brokerage_id")
     .eq("id", transactionId)
     .single()
 
@@ -413,6 +413,9 @@ export async function applyDocumentRetentionService(transactionId: string) {
         retention_years: retentionYears,
         transaction_close_date: transaction.actual_close_date,
         delete_after_date: deleteAfterDate.toISOString().split("T")[0],
+        // Tenant anchor — RLS on document_retention gates SELECT/UPDATE on
+        // has_brokerage_access(brokerage_id), so rows must carry it to be readable.
+        brokerage_id: transaction.brokerage_id,
       },
       { onConflict: "document_id" },
     )

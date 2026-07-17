@@ -113,6 +113,39 @@ export default async function ComplianceDashboardPage() {
     .order("created_at", { ascending: false })
     .limit(20)
 
+  // Retention schedule — document_retention rows for the caller's brokerage
+  // (same tenant anchor as the AI brief above: users.brokerage_id), purge-due first.
+  let retentionRows: Array<{
+    id: string
+    document_id: string
+    retention_category: string | null
+    retention_years: number | null
+    delete_after_date: string | null
+    transaction_close_date: string | null
+  }> = []
+  const retentionDocNames: Record<string, string> = {}
+  if (brokerageId) {
+    const { data: retention } = await supabase
+      .from("document_retention")
+      .select("id, document_id, retention_category, retention_years, delete_after_date, transaction_close_date")
+      .eq("brokerage_id", brokerageId)
+      .order("delete_after_date", { ascending: true })
+      .limit(25)
+    retentionRows = retention ?? []
+
+    const retentionDocIds = retentionRows.map((r) => r.document_id).filter(Boolean)
+    if (retentionDocIds.length > 0) {
+      const { data: retentionDocs } = await supabase
+        .from("client_documents")
+        .select("id, document_name")
+        .in("id", retentionDocIds)
+      for (const doc of retentionDocs ?? []) {
+        retentionDocNames[doc.id] = doc.document_name
+      }
+    }
+  }
+  const todayDateStr = today.toISOString().split("T")[0]
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       {/* Header */}
@@ -244,6 +277,57 @@ export default async function ComplianceDashboardPage() {
           />
         </div>
       </div>
+
+      {/* Retention Schedule — document_retention rows, purge-due first */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <ClipboardCheck className="h-4 w-4 text-primary" />
+            Retention Schedule
+          </CardTitle>
+          <CardDescription>
+            Document retention windows for closed transactions — earliest purge dates first
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {retentionRows.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-2 text-center">
+              No documents on a retention schedule yet. Schedules are created when transactions close.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {retentionRows.map((row) => {
+                const purgeDue = !!row.delete_after_date && row.delete_after_date <= todayDateStr
+                return (
+                  <div
+                    key={row.id}
+                    className={`flex items-center justify-between p-3 rounded-lg border ${
+                      purgeDue ? "border-red-200 bg-red-50" : ""
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {retentionDocNames[row.document_id] ?? "Document"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        <span className="capitalize">{row.retention_category ?? "uncategorized"}</span>
+                        {row.retention_years != null && ` · ${row.retention_years} year${row.retention_years !== 1 ? "s" : ""}`}
+                        {row.transaction_close_date &&
+                          ` · closed ${new Date(row.transaction_close_date).toLocaleDateString()}`}
+                      </p>
+                    </div>
+                    <Badge variant={purgeDue ? "destructive" : "outline"} className="text-xs shrink-0">
+                      {row.delete_after_date
+                        ? `${purgeDue ? "Purge due" : "Delete after"} ${new Date(row.delete_after_date).toLocaleDateString()}`
+                        : "No purge date"}
+                    </Badge>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Alert Banner */}
       <Alert>

@@ -423,17 +423,8 @@ export async function generatePodcastAudio(episodeId: string) {
           contentType: "audio/mpeg",
         })
 
-        // Create segment record
-        await supabase.from("podcast_segments").insert({
-          brokerage_id: brokerageId,
-          episode_id: episodeId,
-          segment_order: index,
-          segment_type: segment.type,
-          text_content: segment.text,
-          voice_id: episode.primary_voice_id,
-          audio_url: blob.url,
-        })
-
+        // No podcast_segments row: intermediate render artifacts retired —
+        // episodes carry the consumable audio (open-loop sweep).
         return { url: blob.url, duration: segment.estimatedDuration }
       })
     )
@@ -1155,12 +1146,8 @@ export async function deletePodcastEpisode(episodeId: string) {
   const supabase = await createClient()
 
   try {
-    // Delete segments first
-    await supabase
-      .from("podcast_segments")
-      .delete()
-      .eq("episode_id", episodeId)
-      .eq("brokerage_id", brokerageId)
+    // No podcast_segments cascade: intermediate render artifacts retired —
+    // episodes carry the consumable audio (open-loop sweep).
 
     // Delete episode
     const { error } = await supabase
