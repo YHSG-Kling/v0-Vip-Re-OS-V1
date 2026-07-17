@@ -42,6 +42,8 @@ const GROUPS: ToolGroup[] = [
         desc: "Every subscriber across the 4 tiers — lifecycle, tier changes, margin, per-tenant detail." },
       { label: "Add subscriber manually", href: "/dashboard/superadmin/brokerages/new", cap: "tenants",
         desc: "Provision a new tenant + owner account without self-serve signup." },
+      { label: "Usage reports — all tiers", href: "/dashboard/superadmin/usage-reports", cap: "tenants",
+        desc: "Seats, book size, and metered usage per subscriber" },
       { label: "Create user in a subscription", href: "/dashboard/superadmin/brokerages", cap: "tenants",
         desc: "Open the tenant → Team panel → Add user. Invites any role into any tenant, with full role records, audited." },
     ],
@@ -60,6 +62,8 @@ const GROUPS: ToolGroup[] = [
   },
   {
     title: "Support", icon: LifeBuoy, tools: [
+      { label: "Communications — platform lines", href: "/dashboard/superadmin/communications", cap: "support",
+        desc: "The AI phone reception + outbound rails" },
       { label: "Support console", href: "/dashboard/superadmin/support", cap: "support", countKey: "openTickets",
         desc: "Every tenant's tickets — queue with SLA flags, threads, replies, assignment." },
     ],
