@@ -64,17 +64,22 @@ const FFMPEG_BIN = ffmpegPath as unknown as string | null
 
 export async function compositeVideoAttribution(opts: {
   inputVideoUrl: string
+  /** When provided, used as the input bytes instead of downloading the URL —
+   *  lets an upstream compositing step (b-roll cutaways) feed its buffer in
+   *  so the attribution band lands ON TOP of the cutaways (compliance: the
+   *  band must stay visible through the whole timeline). */
+  inputVideoBuffer?: Buffer | null
   brand: VideoAttributionBrand
 }): Promise<CompositeVideoAttributionResult> {
   if (!FFMPEG_BIN) {
-    return await passthrough(opts.inputVideoUrl, "ffmpeg-static binary unavailable")
+    return await passthrough(opts.inputVideoUrl, "ffmpeg-static binary unavailable", opts.inputVideoBuffer)
   }
   if (opts.brand.mlsClean) {
-    return await passthrough(opts.inputVideoUrl, "mls_clean")
+    return await passthrough(opts.inputVideoUrl, "mls_clean", opts.inputVideoBuffer)
   }
   const tradeName = opts.brand.brokerageDba ?? opts.brand.brokerageName ?? opts.brand.teamName
   if (!tradeName) {
-    return await passthrough(opts.inputVideoUrl, "no brokerage trade name configured")
+    return await passthrough(opts.inputVideoUrl, "no brokerage trade name configured", opts.inputVideoBuffer)
   }
 
   let workDir: string | null = null
@@ -85,12 +90,16 @@ export async function compositeVideoAttribution(opts: {
     const logoPath   = path.join(workDir, "logo.png")
     const outputPath = path.join(workDir, "out.mp4")
 
-    // ── 1. Download the input video ─────────────────────────────────────────
-    const videoRes = await downloadVideoBytes(opts.inputVideoUrl)
-    if (!videoRes.ok || !videoRes.bytes) {
-      return await passthrough(opts.inputVideoUrl, `Input fetch failed: ${videoRes.status}`)
+    // ── 1. Input bytes: upstream buffer wins; otherwise download the URL ────
+    if (opts.inputVideoBuffer && opts.inputVideoBuffer.length > 0) {
+      await writeFile(inputPath, opts.inputVideoBuffer)
+    } else {
+      const videoRes = await downloadVideoBytes(opts.inputVideoUrl)
+      if (!videoRes.ok || !videoRes.bytes) {
+        return await passthrough(opts.inputVideoUrl, `Input fetch failed: ${videoRes.status}`)
+      }
+      await writeFile(inputPath, videoRes.bytes)
     }
-    await writeFile(inputPath, videoRes.bytes)
 
     // ── 2. Probe input dimensions so the band is sized correctly ───────────
     const dims = await probeDimensions(inputPath)
@@ -181,8 +190,13 @@ async function downloadVideoBytes(url: string): Promise<{ ok: boolean; status: n
   return { ok: res.ok && !!res.data, status: res.status, bytes: res.data }
 }
 
-async function passthrough(inputUrl: string, reason: string): Promise<CompositeVideoAttributionResult> {
+async function passthrough(inputUrl: string, reason: string, inputBuffer?: Buffer | null): Promise<CompositeVideoAttributionResult> {
   try {
+    // Upstream buffer wins — a b-roll-composited buffer must survive an
+    // attribution skip (e.g. mls_clean) instead of re-downloading the raw URL.
+    if (inputBuffer && inputBuffer.length > 0) {
+      return { outputBuffer: inputBuffer, overlayApplied: false, skippedReason: reason }
+    }
     const res = await downloadVideoBytes(inputUrl)
     if (!res.ok || !res.bytes) {
       throw new Error(`Input fetch failed: ${res.status}`)
@@ -581,6 +595,162 @@ export async function compositeExplainerVideo(opts: {
     return { outputBuffer, overlayApplied: true }
   } catch (err: any) {
     return await passthrough(opts.backgroundVideoUrl, err?.message ?? "explainer ffmpeg failed")
+  } finally {
+    if (workDir) {
+      await rm(workDir, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+}
+
+// ============================================================================
+// B-ROLL CUTAWAYS — timed full-frame inserts while the voice-over continues
+// ============================================================================
+//
+// The classic listing-video pattern: the agent's talking head (D-ID render)
+// carries the narration, and property b-roll clips (drone pass, kitchen pan,
+// backyard) CUT AWAY full-frame at intervals while the voice keeps playing.
+// This was the last "pending (ffmpeg filter graph not yet wired)" note in
+// lib/did — it now rides the same ffmpeg-static rail as the attribution
+// band and the intro/outro concat.
+//
+// Plan (pure, exported for the simulator):
+//   - The first ~20% (min 3s) and last ~15% (min 2s) of the timeline are
+//     PROTECTED — the viewer always sees the agent open and close.
+//   - Up to MAX_BROLL_CLIPS cutaway windows of ~BROLL_SECONDS each are
+//     spaced evenly across the unprotected middle.
+//   - Videos shorter than MIN_MAIN_SECONDS get NO cutaways (a 10s clip is
+//     all agent).
+//
+// Graph: each b-roll input is normalised to the main canvas (scale+pad,
+// fps, yuv420p), trimmed to its window length, PTS-shifted to its slot, and
+// overlaid with enable='between(t,start,end)'. Audio is ALWAYS the main
+// track — b-roll audio (wind, footsteps) is dropped.
+//
+// NEVER throws — returns the input untouched on any failure so the agent
+// always gets a working video.
+
+const MAX_BROLL_CLIPS = 4
+const BROLL_SECONDS = 4
+const MIN_MAIN_SECONDS = 12
+
+export interface BrollWindow { start: number; end: number }
+
+/** PURE: plan the cutaway windows for a main video of `duration` seconds. */
+export function planBrollCutaways(duration: number, clipCount: number): BrollWindow[] {
+  if (!Number.isFinite(duration) || duration < MIN_MAIN_SECONDS || clipCount <= 0) return []
+  const n = Math.min(clipCount, MAX_BROLL_CLIPS)
+  const lead = Math.max(3, duration * 0.2)
+  const tail = Math.max(2, duration * 0.15)
+  const span = duration - lead - tail
+  if (span <= BROLL_SECONDS) return []
+  // Center one window per equal slice of the allowed span.
+  const windows: BrollWindow[] = []
+  const slice = span / n
+  const len = Math.min(BROLL_SECONDS, Math.max(2, slice * 0.6))
+  for (let i = 0; i < n; i++) {
+    const center = lead + slice * i + slice / 2
+    const start = Math.max(lead, center - len / 2)
+    windows.push({ start: round1(start), end: round1(start + len) })
+  }
+  return windows
+}
+
+function round1(n: number): number { return Math.round(n * 10) / 10 }
+
+async function probeDuration(filePath: string): Promise<number | null> {
+  if (!FFMPEG_BIN) return null
+  return new Promise((resolve) => {
+    const proc = spawn(FFMPEG_BIN!, ["-i", filePath, "-hide_banner"])
+    let stderr = ""
+    proc.stderr.on("data", (chunk) => { stderr += chunk.toString() })
+    proc.on("close", () => {
+      const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+\.?\d*)/)
+      if (m) resolve(parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseFloat(m[3]))
+      else resolve(null)
+    })
+    proc.on("error", () => resolve(null))
+  })
+}
+
+export async function compositeBrollCutaways(opts: {
+  mainVideoBuffer: Buffer
+  brollUrls: string[]
+}): Promise<CompositeVideoAttributionResult> {
+  if (!FFMPEG_BIN) {
+    return { outputBuffer: opts.mainVideoBuffer, overlayApplied: false, skippedReason: "ffmpeg-static binary unavailable" }
+  }
+  const urls = (opts.brollUrls ?? []).filter(Boolean).slice(0, MAX_BROLL_CLIPS)
+  if (urls.length === 0) {
+    return { outputBuffer: opts.mainVideoBuffer, overlayApplied: false, skippedReason: "no b-roll clips" }
+  }
+
+  let workDir: string | null = null
+  try {
+    workDir = await mkdtemp(path.join(tmpdir(), "vip-broll-"))
+    const mainPath = path.join(workDir, "main.mp4")
+    const outputPath = path.join(workDir, "out.mp4")
+    await writeFile(mainPath, opts.mainVideoBuffer)
+
+    const [dims, duration] = await Promise.all([probeDimensions(mainPath), probeDuration(mainPath)])
+    const W = dims.width ?? 1280
+    const H = dims.height ?? 720
+    if (!duration) {
+      return { outputBuffer: opts.mainVideoBuffer, overlayApplied: false, skippedReason: "could not probe main duration" }
+    }
+    const windows = planBrollCutaways(duration, urls.length)
+    if (windows.length === 0) {
+      return { outputBuffer: opts.mainVideoBuffer, overlayApplied: false, skippedReason: `main too short for cutaways (${Math.round(duration)}s)` }
+    }
+
+    // Download the clips that actually got a window.
+    const clipPaths: string[] = []
+    for (let i = 0; i < windows.length; i++) {
+      const r = await downloadVideoBytes(urls[i])
+      if (!r.ok || !r.bytes) throw new Error(`b-roll ${i} fetch ${r.status}`)
+      const p = path.join(workDir, `broll${i}.mp4`)
+      await writeFile(p, r.bytes)
+      clipPaths.push(p)
+    }
+
+    // Filter graph: normalise each clip, trim to its window, shift PTS to the
+    // slot, then chain overlays gated by enable=between(t,...). Main audio only.
+    const parts: string[] = []
+    windows.forEach((w, i) => {
+      const len = round1(w.end - w.start)
+      parts.push(
+        `[${i + 1}:v]scale=${W}:${H}:force_original_aspect_ratio=decrease,` +
+        `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p,` +
+        `trim=duration=${len},setpts=PTS-STARTPTS+${w.start}/TB[b${i}]`
+      )
+    })
+    let base = "[0:v]"
+    windows.forEach((w, i) => {
+      const out = i === windows.length - 1 ? "[outv]" : `[m${i}]`
+      parts.push(`${base}[b${i}]overlay=enable='between(t,${w.start},${w.end})':eof_action=pass${out}`)
+      base = `[m${i}]`
+    })
+    const filter = parts.join(";")
+
+    const args = [
+      "-y",
+      "-i", mainPath,
+      ...clipPaths.flatMap((p) => ["-i", p]),
+      "-filter_complex", filter,
+      "-map", "[outv]",
+      "-map", "0:a?",
+      "-c:v", "libx264",
+      "-pix_fmt", "yuv420p",
+      "-preset", "fast",
+      "-c:a", "aac",
+      "-b:a", "128k",
+      "-movflags", "+faststart",
+      outputPath,
+    ]
+    await runFfmpeg(args)
+    const outputBuffer = await readFile(outputPath)
+    return { outputBuffer, overlayApplied: true }
+  } catch (err: any) {
+    return { outputBuffer: opts.mainVideoBuffer, overlayApplied: false, skippedReason: err?.message ?? "b-roll compositing failed" }
   } finally {
     if (workDir) {
       await rm(workDir, { recursive: true, force: true }).catch(() => {})

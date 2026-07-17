@@ -250,10 +250,15 @@ export async function generateVideo(
 
   const notes: string[] = []
   if ((input.brollUrls?.length ?? 0) > 0) {
-    notes.push("B-roll compositing pending (ffmpeg filter graph not yet wired)")
+    // Applied post-render in the poll-did-videos cron via
+    // compositeBrollCutaways() — timed full-frame cutaways while the
+    // voice-over continues; the row carries them in b_roll_urls.
+    notes.push("B-roll cutaways applied post-render by compositeBrollCutaways()")
   }
   if (input.introUrl || input.outroUrl) {
-    notes.push("Intro/outro compositing pending (ffmpeg filter graph not yet wired)")
+    // Applied post-render via concatIntroOutro() off the row's
+    // intro_video_url / outro_video_url columns.
+    notes.push("Intro/outro applied post-render by concatIntroOutro()")
   }
   if (input.logoUrl) {
     // Logo + attribution band overlay runs in the poll-did-videos cron via

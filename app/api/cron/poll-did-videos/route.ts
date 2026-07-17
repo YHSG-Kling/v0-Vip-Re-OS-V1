@@ -63,7 +63,7 @@ export async function GET(request: NextRequest) {
     // Fetch all D-ID jobs that are still generating
     const { data: pending, error: fetchError } = await supabase
       .from("ai_video_projects")
-      .select("id, agent_id, brokerage_id, listing_id, contact_id, marketing_campaign_id, provider_job_id, provider_metadata, status, retry_count, video_type, usage_intent, background_type, background_url, intro_video_url, outro_video_url")
+      .select("id, agent_id, brokerage_id, listing_id, contact_id, marketing_campaign_id, provider_job_id, provider_metadata, status, retry_count, video_type, usage_intent, background_type, background_url, intro_video_url, outro_video_url, b_roll_urls")
       .eq("status", "generating")
       .not("provider_job_id", "is", null)
       .filter("provider_metadata->>provider", "eq", "did")
@@ -226,8 +226,25 @@ export async function GET(request: NextRequest) {
                 logoUrl:               teamLogoUrl ?? brokerage?.logo_url ?? null,
               }
 
-              const { compositeVideoAttribution, compositeExplainerVideo, concatIntroOutro } =
+              const { compositeVideoAttribution, compositeExplainerVideo, concatIntroOutro, compositeBrollCutaways } =
                 await import("@/lib/video/composite-attribution")
+
+              // B-ROLL CUTAWAYS run FIRST (talking-head mode only — explainer
+              // mode already carries a full-frame background): property clips
+              // cut away full-frame while the voice-over continues, and the
+              // attribution band then lands ON TOP so it stays visible through
+              // the whole timeline (compliance). Best-effort like every other
+              // compositing step.
+              let brolledBuffer: Buffer | null = null
+              const brollUrls = ((video as any).b_roll_urls as string[] | null) ?? []
+              if (!isExplainer && brollUrls.length > 0) {
+                const raw = await fetch(persistedVideoUrl).then(async (r) => (r.ok ? Buffer.from(await r.arrayBuffer()) : null)).catch(() => null)
+                if (raw) {
+                  const brolled = await compositeBrollCutaways({ mainVideoBuffer: raw, brollUrls })
+                  if (brolled.overlayApplied && brolled.outputBuffer.length > 0) brolledBuffer = brolled.outputBuffer
+                }
+              }
+
               let result = isExplainer
                 ? await compositeExplainerVideo({
                     backgroundVideoUrl:  (video as any).background_url,
@@ -236,8 +253,17 @@ export async function GET(request: NextRequest) {
                   })
                 : await compositeVideoAttribution({
                     inputVideoUrl: persistedVideoUrl,
+                    inputVideoBuffer: brolledBuffer,
                     brand,
                   })
+              // The compliance flag (visualOverlayApplied) must mean the BRAND
+              // band landed — b-roll alone doesn't satisfy it. But a b-rolled
+              // video is still a changed video worth uploading when the band
+              // was skipped (e.g. mls_clean), so track the two separately.
+              const brandOverlayApplied = result.overlayApplied
+              if (!isExplainer && brolledBuffer && !result.overlayApplied && result.outputBuffer.length > 0) {
+                result = { outputBuffer: result.outputBuffer, overlayApplied: true }
+              }
 
               // Intro / outro bookends — applied AFTER the brand overlay so the
               // brokerage-curated intro/outro clips don't get another attribution
@@ -274,7 +300,9 @@ export async function GET(request: NextRequest) {
                     .from("listing-media")
                     .getPublicUrl(brandedPath)
                   brandedVideoUrl = publicUrl
-                  visualOverlayApplied = true
+                  // Compliance truth: only the BRAND band satisfies the visual
+                  // overlay requirement (b-roll-only composites don't).
+                  visualOverlayApplied = brandOverlayApplied
                 } else {
                   console.error("[poll-did-videos] Branded upload failed:", brandedUploadErr)
                 }
