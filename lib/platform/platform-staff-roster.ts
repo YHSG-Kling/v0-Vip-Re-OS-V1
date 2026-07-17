@@ -23,14 +23,14 @@ export function isPlatformStaffRole(role: string | null | undefined): role is Pl
 export type PlatformCapability =
   | "plans" | "billing" | "staff" | "providers" | "marketing"
   | "support" | "tenants" | "ai_ops" | "sentinel" | "impersonate"
+  | "announcements" // post internal staff announcements (admin+); every staff role reads them
 
 const CAPS: Record<PlatformStaffRole, PlatformCapability[] | "*"> = {
   superadmin: "*",
-  admin: ["plans", "billing", "providers", "marketing", "support", "tenants", "ai_ops", "sentinel", "impersonate"],
+  admin: ["plans", "billing", "providers", "marketing", "support", "tenants", "ai_ops", "sentinel", "impersonate", "announcements"],
   marketing: ["marketing", "tenants"],
   support: ["support", "tenants", "impersonate"],
 }
-
 export function platformStaffCan(role: string | null | undefined, capability: PlatformCapability): boolean {
   if (!isPlatformStaffRole(role)) return false
   const caps = CAPS[role]

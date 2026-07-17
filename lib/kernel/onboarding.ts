@@ -23,6 +23,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { ROLE_DASHBOARD_ROUTES } from "./role-routes"
 import { emitUserProvisionedEvent } from "./users"
+import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -354,12 +355,25 @@ export async function determineFirstLoginDestination(
 
   const [{ data: userData }, { data: agentData }, { data: onboardingData }] =
     await Promise.all([
-      service.from("users").select("user_type, brokerage_id").eq("id", userId).maybeSingle(),
+      service.from("users").select("user_type, platform_role, brokerage_id").eq("id", userId).maybeSingle(),
       service.from("agents").select("id").eq("user_id", userId).maybeSingle(),
       service.from("agent_onboarding").select("status").eq("user_id", userId).maybeSingle(),
     ])
 
   const userType = userData?.user_type ?? "agent"
+
+  // ── PLATFORM STAFF ────────────────────────────────────────────────────────
+  // Platform employees (superadmin/admin/marketing/support via platform_role, or
+  // legacy user_type='superadmin') sit ABOVE every tenant — they have no
+  // brokerage_id and no onboarding, so they must be routed BEFORE the
+  // no-brokerage "setup incomplete" check. They land on the role-aware staff
+  // command home, which shows exactly the surfaces their capability map allows.
+  const platformRole =
+    (userData as { platform_role?: string | null } | null)?.platform_role ??
+    (userType === "superadmin" ? "superadmin" : null)
+  if (isPlatformStaffRole(platformRole)) {
+    return { route: "/dashboard/superadmin/home", reason: "role_dashboard" }
+  }
 
   // No brokerage — account is incomplete
   if (!userData?.brokerage_id) {

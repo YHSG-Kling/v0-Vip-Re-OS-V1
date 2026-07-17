@@ -9,6 +9,8 @@ import { ImageLibraryCard } from "./image-library-card"
 import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
 import { PlatformGrowthBoard } from "./platform-growth-board"
 import { ProductContentBoard } from "./product-content-board"
+import { listSubscriberReferralsAction } from "@/app/actions/superadmin/subscriber-referrals"
+import { SubscriberReferralsCard } from "./subscriber-referrals-card"
 
 export const dynamic = "force-dynamic"
 
@@ -22,7 +24,13 @@ export default async function PlatformGrowthPage() {
   const role = (data as any)?.platform_role ?? ((data as any)?.user_type === "superadmin" ? "superadmin" : null)
   if (!platformStaffCan(role, "marketing")) return <div className="p-6 text-red-600">Forbidden: platform marketing access required</div>
 
-  const [res, draftsRes, brandRes, topicsRes] = await Promise.all([listPlatformProspectsAction(), listProductDraftsAction(), getProductBrandAction(), listTopicsAction()])
+  // Referral fees are a MONEY surface — billing capability (superadmin + platform admin),
+  // narrower than this page's marketing gate, so the card only renders for those roles.
+  const canSeeFees = platformStaffCan(role, "billing")
+  const [res, draftsRes, brandRes, topicsRes, referralsRes] = await Promise.all([
+    listPlatformProspectsAction(), listProductDraftsAction(), getProductBrandAction(), listTopicsAction(),
+    canSeeFees ? listSubscriberReferralsAction() : Promise.resolve(null),
+  ])
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -37,6 +45,10 @@ export default async function PlatformGrowthPage() {
         <div className="rounded border p-4 text-sm text-red-600">Failed: {res.error}</div>
       ) : (
         <PlatformGrowthBoard initialProspects={res.prospects} initialFunnel={res.funnel} />
+      )}
+      {/* Subscriber referral fees — who referred each tenant + what's owed (billing roles only) */}
+      {referralsRes && referralsRes.ok && (
+        <SubscriberReferralsCard initialRows={referralsRes.rows} feePercent={referralsRes.feePercent} brokerageOptions={referralsRes.brokerageOptions} />
       )}
       {/* Brand kit (configurable product name) + watched-topic pool */}
       <BrandTopicsCard initialBrand={brandRes.ok ? brandRes.brand : DEFAULT_PRODUCT_BRAND} initialTopics={topicsRes.ok ? topicsRes.topics : []} />

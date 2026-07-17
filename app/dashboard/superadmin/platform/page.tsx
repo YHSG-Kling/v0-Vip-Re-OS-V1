@@ -113,6 +113,9 @@ export default async function SuperadminPlatformPage() {
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="text-xs">{totals.brokerage_count} brokerages</Badge>
           <Button asChild size="sm" variant="outline">
+            <Link href="/dashboard/superadmin/home">Home</Link>
+          </Button>
+          <Button asChild size="sm" variant="outline">
             <Link href="/dashboard/superadmin/brokerages">Manage all</Link>
           </Button>
           <Button asChild size="sm" variant="outline">

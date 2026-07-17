@@ -9,6 +9,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { PLATFORM_STAFF_ROLES } from "@/lib/auth/resolve-user-role"
 
+/** notifications.type for internal staff announcements (posted from the staff
+ *  command home, read back per-staffer on it). */
+export const PLATFORM_ANNOUNCEMENT_TYPE = "platform_announcement"
+
 export interface PlatformStaffNotification {
   type: string
   title: string
