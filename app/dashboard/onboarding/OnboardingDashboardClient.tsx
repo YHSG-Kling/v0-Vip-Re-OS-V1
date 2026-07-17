@@ -1,5 +1,6 @@
 'use client'
 
+import { YourWebsiteCard } from '@/app/components/settings/YourWebsiteCard'
 import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
@@ -256,6 +257,9 @@ export function OnboardingDashboardClient({
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           {/* LEFT COLUMN - Progress Sidebar */}
           <div className="lg:col-span-1 space-y-4">
+            {/* Day-one wow: the tenant's zero-hosting website is ALREADY live —
+                show it in the very first session (round-17 share-your-site moment). */}
+            <YourWebsiteCard />
             {/* Progress Dial */}
             <Card>
               <CardContent className="pt-6">

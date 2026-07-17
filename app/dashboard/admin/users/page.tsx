@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Users, AlertTriangle, CheckCircle2, Building2, ArrowRight } from "lucide-react"
 import { InviteUserButton } from "./invite-user-button"
 import { EditUserButton } from "./edit-user-button"
+import { SEAT_ROLES, seatLimitForTier, tierLabel } from "@/lib/kernel/tier-role-matrix"
 
 export const dynamic = "force-dynamic"
 
@@ -133,6 +134,14 @@ export default async function AdminUsersPage() {
 
   const incompleteCount = userList.filter(u => isDomainRecordMissing(u)).length
 
+  // SEAT METER — the same math the invite gate enforces (Solo 2 · Team 5 ·
+  // Brokerage/Multi unlimited; a seat = active SEAT_ROLES user, partners and
+  // suspended users never count).
+  const seatCount = userList.filter(
+    (u) => (SEAT_ROLES as readonly string[]).includes(u.user_type ?? "") && u.status !== "suspended"
+  ).length
+  const seatLimit = seatLimitForTier(planTier)
+
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
@@ -144,6 +153,11 @@ export default async function AdminUsersPage() {
           </h1>
           <p className="text-muted-foreground text-sm mt-0.5">
             {userList.length} user{userList.length !== 1 ? "s" : ""}
+            <span className={`ml-2 font-medium ${seatLimit !== null && seatCount >= seatLimit ? "text-red-600" : "text-slate-700"}`}>
+              — {seatLimit === null
+                ? `${seatCount} seats in use (unlimited on ${tierLabel(planTier)})`
+                : `${seatCount} of ${seatLimit} seats used`}
+            </span>
             {incompleteCount > 0 && (
               <span className="ml-2 text-amber-600 font-medium">
                 — {incompleteCount} incomplete account{incompleteCount !== 1 ? "s" : ""}
