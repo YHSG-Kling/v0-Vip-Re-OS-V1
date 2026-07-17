@@ -53,18 +53,29 @@ Generate a post that resonates with their situation and needs.`
     // Analyze quality
     const quality = analyzeContentQuality(text)
 
-    // Save generated content
+    // ai_generated_content is the CANONICAL AI-output ledger (the AI audit +
+    // content surfaces read it; plain generated_content was a write-only twin
+    // nothing consumed — keep-one repoint, open-loop sweep).
     const { data: savedContent, error: saveError } = await supabase
-      .from("generated_content")
+      .from("ai_generated_content")
       .insert({
         content_type: "social",
         content: text,
+        user_id: user.id,                      // users-class
+        agent_id: agentId,                     // agents-class (identity census)
+        brokerage_id: agentCtx?.brokerageId ?? null,
+        platform: platform || null,
+        title: `Social post — ${audienceSegment || "general"}`,
         quality_score: quality.score / 100,
-        them_percentage: quality.themPercentage,
-        agent_percentage: quality.agentPercentage,
-        metadata: { audienceSegment, platform, warnings: quality.warnings },
+        metadata: {
+          source: "generate_social_api",
+          audienceSegment,
+          them_percentage: quality.themPercentage,
+          agent_percentage: quality.agentPercentage,
+          warnings: quality.warnings,
+        },
       })
-      .select()
+      .select("id")
       .single()
 
     if (saveError) throw saveError
