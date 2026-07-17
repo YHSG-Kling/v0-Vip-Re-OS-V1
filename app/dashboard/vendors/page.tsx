@@ -6,6 +6,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { VendorDirectoryClient } from "./vendor-directory-client"
 import {
+  PremiumPlacementPanel,
+  type DirectoryEntry,
+  type PlacementInvoice,
+} from "./premium-placement-panel"
+import {
   searchVendors,
   getAllVendorBookings,
   getCompletedBookingsForRating,
@@ -49,6 +54,8 @@ export default async function VendorsPage() {
     assignedVendors,
     preferredVendors,
     deliverables,
+    directoryEntries,
+    placementInvoices,
   ] = await Promise.all([
     searchVendors({ limit: 100 }),
     getAllVendorBookings(20),
@@ -78,6 +85,25 @@ export default async function VendorsPage() {
       .order("created_at", { ascending: false })
       .limit(100)
       .then(r => r.data || []),
+    // Premium placement (monetization): curated vendor_directory rows carry the
+    // paid placement flags {preferred, display_priority}; the vendor_invoices
+    // ledger holds the placement charges. See lib/vendors/premium-placement.ts.
+    supabase
+      .from("vendor_directory")
+      .select("id, name, category, preferred, display_priority")
+      .eq("brokerage_id", profile.brokerage_id)
+      .order("display_priority", { ascending: false })
+      .order("name", { ascending: true })
+      .limit(100)
+      .then(r => (r.data || []) as DirectoryEntry[]),
+    supabase
+      .from("vendor_invoices")
+      .select("id, invoice_number, status, total_amount, due_date, paid_at, line_items")
+      .eq("brokerage_id", profile.brokerage_id)
+      .contains("line_items", JSON.stringify([{ type: "premium_placement" }]))
+      .order("created_at", { ascending: false })
+      .limit(100)
+      .then(r => (r.data || []) as PlacementInvoice[]),
   ])
 
   const serviceTypes = [...new Set(vendors.map(v => v.category).filter(Boolean))]
@@ -274,6 +300,13 @@ export default async function VendorsPage() {
               )}
             </CardContent>
           </Card>
+
+          {/* Premium placement — subscribers charge vendors to be featured here */}
+          <PremiumPlacementPanel
+            directoryEntries={directoryEntries}
+            placementInvoices={placementInvoices}
+            userRole={profile.user_type ?? "agent"}
+          />
         </TabsContent>
 
         {/* Tab 4: Reviews */}

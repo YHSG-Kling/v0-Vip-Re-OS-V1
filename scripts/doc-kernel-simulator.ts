@@ -2193,6 +2193,23 @@ async function main() {
         && src("app/dashboard/campaigns/ads/ctv-lane.tsx").length > 0
         && src("supabase/migrations/m271-ad-campaigns-vibe-ctv-platform.sql").includes("platform = ANY"))
     }
+    // ── ROUND 15: THE ROLE MODEL, ALIGNED TO SPEC (owner audit — 'fix this') ──
+    {
+      const { TIER_INVITABLE_ROLES, tierAllowsRole } = await import("../lib/kernel/tier-role-matrix")
+      check("ROUND 15 — THE OWNER'S CANONICAL ROLE MODEL, AUDITED THEN ALIGNED. The audit proved four spec items ALREADY TRUE (solo owner = admin wearing an agents row at 100% split; contact-portal view-as via the Portal button + same-brokerage staff preview rule; vendor invites open to every tier; platform social self-marketing) — untouched. THE FIVE DRIFTS, FIXED: (1) tier→role matrix EXISTED NOWHERE (every tier was offered the full role list) — now a pure kernel module enforced at BOTH tenant grant surfaces AND the god console (target-tenant tier, audited superadminOverride), solo=one seat + partners only, team adds team structure, brokerage/multi add governance roles, honest upgrade-naming errors, legacy null tiers fail OPEN to the brokerage set; (2) vendors are now CHARGEABLE for premium placement — the two unconnected halves (vendor_directory.preferred/display_priority flags, vendor_invoices billing ledger) wired keep-one: offer → 'submitted' invoice (the LIVE vocabulary — 'pending' does not exist in the CHECK) → mark-paid flips featured + records placement_until on the line item → daily expiry rider on the EXISTING vendor-orchestration cron; full flow live-fired (including the category vocabulary catch: lowercase 'stager'), residue 0; payment marking is documented as the tenant's assertion of off-platform collection — never simulated; (3) the platform phone reception surfaced first-class at /communications (mounting the SAME panel — keep-one); (4) per-subscriber usage reports across ALL tiers in one table (seats, book size, monthly metered media) — the spec's oversight view; (5) the marketing staff role got its dashboard route. Platform website builder: the one spec item deliberately DEFERRED as a real feature, reported not faked",
+        TIER_INVITABLE_ROLES.solo_agent.slice().sort().join(",") === "lender,vendor"
+        && TIER_INVITABLE_ROLES.brokerage.slice().sort().join(",") === TIER_INVITABLE_ROLES.multi_location.slice().sort().join(",")
+        && tierAllowsRole("team", "team_lead") && !tierAllowsRole("team", "broker") && !tierAllowsRole("solo_agent", "agent")
+        && src("app/actions/admin/invite-user.ts").includes("tierAllowsRole")
+        && src("app/actions/superadmin/tenant-users.ts").includes("tier_matrix_override")
+        && src("lib/kernel/role-routes.ts").includes("marketing:")
+        && src("lib/vendors/premium-placement.ts").includes('"submitted"')
+        && src("lib/vendors/premium-placement.ts").includes("placement_until")
+        && src("app/api/cron/vendor-orchestration/route.ts").includes("expirePlacements")
+        && src("app/dashboard/superadmin/communications/page.tsx").includes("PlatformReceptionPanel")
+        && src("app/dashboard/superadmin/usage-reports/page.tsx").includes("usage_counters")
+        && src("app/dashboard/superadmin/home/page.tsx").includes("/dashboard/superadmin/usage-reports"))
+    }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {
       const { readdirSync, statSync } = await import("fs")

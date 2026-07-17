@@ -8,6 +8,7 @@ import {
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { runVendorOrchestration } from "@/lib/kernel/vendor-orchestration"
+import { expirePlacements } from "@/lib/vendors/premium-placement"
 
 /**
  * VENDOR ORCHESTRATION cron (daily 14:00 UTC via the dispatcher) — as transactions cross
@@ -35,7 +36,7 @@ export async function GET(req: NextRequest) {
   const supabase = createServiceClient()
   const errors: string[] = []
   let scanned = 0, proposed = 0, benchMisses = 0, stagingSkipped = 0
-  let noShowsMarked = 0, backupsProposed = 0
+  let noShowsMarked = 0, backupsProposed = 0, placementsExpired = 0
 
   try {
     const { data: rows, error } = await supabase.from("brokerages").select("id").limit(500)
@@ -46,6 +47,10 @@ export async function GET(req: NextRequest) {
         scanned += r.scanned; proposed += r.proposed
         benchMisses += r.benchMisses; stagingSkipped += r.stagingSkipped
         if (r.errors.length) errors.push(...r.errors.map((e) => `${b.id}: ${e}`))
+        // PREMIUM PLACEMENT EXPIRY — un-feature vendor_directory rows whose paid placement term lapsed (lib/vendors/premium-placement).
+        const pe = await expirePlacements({ brokerageId: b.id })
+        placementsExpired += pe.expired
+        if (pe.error) errors.push(`${b.id}: placement-expiry: ${pe.error}`)
       } catch (e: any) { errors.push(`${b.id}: ${e?.message ?? String(e)}`) }
     }
 
@@ -102,9 +107,9 @@ export async function GET(req: NextRequest) {
 
     await recordCronSuccessAction({
       context_id: contextId, records_processed: proposed,
-      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors, suppressedVendors, flaggedVendors, pendingVendors, docSuspended, docReminders, errors: errors.slice(0, 10) },
+      metadata: { scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, placementsExpired, coverageGaps, overpricedVendors, suppressedVendors, flaggedVendors, pendingVendors, docSuspended, docReminders, errors: errors.slice(0, 10) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, coverageGaps, overpricedVendors, suppressedVendors, flaggedVendors, pendingVendors, docSuspended, docReminders })
+    return NextResponse.json({ ok: true, scanned, proposed, benchMisses, stagingSkipped, noShowsMarked, backupsProposed, placementsExpired, coverageGaps, overpricedVendors, suppressedVendors, flaggedVendors, pendingVendors, docSuspended, docReminders })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })
