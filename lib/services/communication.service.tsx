@@ -354,34 +354,6 @@ export async function sendAnniversaryMessage(params: {
   return { success: true, results }
 }
 
-/**
- * Send vendor booking confirmation
- */
-export async function sendVendorBookingConfirmation(params: {
-  vendorEmail: string
-  vendorName: string
-  serviceType: string
-  bookingDetails: any
-}) {
-  const htmlBody = `
-    <html>
-      <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2>New Booking Request</h2>
-        <p>Hello ${params.vendorName},</p>
-        <p>You have received a new booking request for ${params.serviceType}.</p>
-        <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
-          <h3>Booking Details:</h3>
-          <pre style="white-space: pre-wrap;">${JSON.stringify(params.bookingDetails, null, 2)}</pre>
-        </div>
-        <p>Please confirm your availability as soon as possible.</p>
-      </body>
-    </html>
-  `
-
-  return await sendEmail({
-    to: params.vendorEmail,
-    subject: `New Booking Request - ${params.serviceType}`,
-    htmlBody,
-    metadata: { serviceType: params.serviceType },
-  })
-}
+// (The vendor booking-confirmation twin was retired — zero callers; the live
+// rail is lib/communications/vendor-communications.tsx, which now sends
+// through dispatchEmail and logs the delivery ledger. Keep-one.)

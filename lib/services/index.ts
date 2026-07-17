@@ -60,5 +60,4 @@ export {
   sendCalculatorResults,
   sendCollaborativeSearchInvite,
   sendAnniversaryMessage,
-  sendVendorBookingConfirmation,
 } from "./communication.service"

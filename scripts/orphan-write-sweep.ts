@@ -24,13 +24,51 @@ import { join } from "node:path"
 const BASELINE = join(process.cwd(), "scripts/orphan-write-baseline.json")
 
 /** Intentionally write-heavy audit/forensic ledgers — each names its
- *  out-of-band consumer so the exemption stays auditable. */
+ *  out-of-band consumer so the exemption stays auditable. (Round-11 batch:
+ *  every entry below carries the verdict from the full 44-table review.) */
 const AUDIT_EXEMPT: Record<string, string> = {
   superadmin_audit_log: "app/dashboard/superadmin/audit (platform-action viewer)",
   lifecycle_events: "kernel event spine — consumed by processKernelEvent subscribers",
   tenant_transition_log: "forensic boundary-crossing ledger (compliance export)",
   audit_logs: "compliance export + retention",
   security_audit_log: "compliance export + retention",
+  // ── Telemetry / debugging ledgers ──
+  agent_assistant_tool_calls: "assistant tool-call telemetry (debugging/analytics)",
+  ai_usage_log: "LLM token/cost record — billing & cost reconciliation export",
+  assistant_queries: "assistant usage telemetry (debugging/analytics)",
+  automation_logs: "automation-execution forensics (debugging)",
+  event_processing_log: "orchestrator event replay/debugging ledger",
+  workflow_webhook_events: "inbound webhook receipt — replay/debugging",
+  video_render_log: "video-ops render telemetry (cost monitoring)",
+  photo_enhancement_jobs: "enhancement job telemetry (status updated inline, same call)",
+  onboarding_ai_chats: "onboarding assistant transcript (support/debugging)",
+  // ── Compliance / legal proof ledgers ──
+  document_audit_trail: "document access/change events — compliance export + retention",
+  phone_number_events: "telephony provisioning lifecycle — carrier/A2P compliance audit",
+  platform_tos_acceptances: "ToS consent record — legal proof-of-acceptance export",
+  license_verifications: "license-check results — regulatory compliance proof",
+  reg_change_observations: "regulatory watcher ledger (self-consumed for dedup/escalation)",
+  notification_log: "delivery forensics for sent notifications (distinct from live notifications)",
+  cost_breakdown_tracking: "per-transaction cost lines — brokerage P&L reconciliation",
+  showing_communications: "showing-comms delivery ledger (forensic)",
+  mentor_sessions: "mentorship check-in record (coaching history)",
+  newsletter_seo_scores: "SEO score history (score served inline to the caller)",
+  smart_landing_sessions: "raw landing-session events — aggregates read via listing_page_analytics",
+  vendor_communications: "vendor email delivery ledger — rows written ONLY after a real dispatchEmail success",
+  // ── Lead-intelligence enrichment provenance (derived score lands on the contact) ──
+  lead_osint_data: "OSINT enrichment provenance (feeds contact fields)",
+  google_search_activity: "SERP-presence signal provenance",
+  google_search_intelligence: "parsed search-intel provenance",
+  nextdoor_activity: "Nextdoor mention provenance",
+  external_behavior: "external behavioral-event provenance",
+  intelligent_outreach_log: "AI outreach decision log (provenance)",
+  intelligence_signals_log: "aggregated intel-signal provenance (derived score drives decisions)",
+}
+
+/** Tables read through Postgres RPCs the .from() scanner can't see —
+ *  table → the rpc name that reads it (verified in code). */
+const RPC_READERS: Record<string, string> = {
+  contact_memory: "contact_memory_recall", // lib/agents/contact-memory.ts recallContactMemory
 }
 
 function walk(dir: string, acc: string[]) {
@@ -58,13 +96,20 @@ function main() {
     let m: RegExpExecArray | null
     while ((m = FROM.exec(s))) {
       const table = m[1]
-      const window = s.slice(m.index, m.index + m[0].length + 160)
+      // 400-char read window: long multi-line .select("...") strings pushed the
+      // verb past the old 160 cap and produced false write-only flags
+      // (credit_partner_referrals) — widened round 11.
+      const window = s.slice(m.index, m.index + m[0].length + 400)
       if (/\.(insert|upsert|update|delete)\s*\(/.test(window)) {
         const set = writers.get(table) ?? new Set<string>()
         set.add(f.replace(process.cwd() + "/", ""))
         writers.set(table, set)
       }
       if (/\.select\s*\(/.test(window)) readers.add(table)
+    }
+    // RPC reads (pgvector recall etc.) are invisible to the .from() scan.
+    for (const [table, rpc] of Object.entries(RPC_READERS)) {
+      if (s.includes(`.rpc("${rpc}"`) || s.includes(`.rpc('${rpc}'`)) readers.add(table)
     }
     // Embedded reads count as reads of the embedded table.
     let sm: RegExpExecArray | null

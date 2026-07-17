@@ -70,10 +70,24 @@ export async function sendVendorBookingConfirmation(params: {
       </div>
     `
 
-    // Send email to vendor
-    console.log(`[v0] Sending booking confirmation to ${params.vendorEmail}`)
+    // REAL SEND through the canonical email gate (this function used to
+    // console.log "Sending" and log a false 'sent' row — open-loop sweep).
+    // Vendors are B2B service partners, not contacts/leads, so no contactId.
+    const { dispatchEmail } = await import("@/lib/providers/dispatch")
+    const send = await dispatchEmail({
+      brokerageId: (transaction as any).brokerage_id,
+      from: "",
+      to: params.vendorEmail,
+      subject: `New booking — ${params.serviceType}${property?.address ? ` at ${property.address}` : ""}`,
+      html: emailHtml,
+      channelPurpose: "transactional",
+      systemSource: "vendor_booking_confirmation",
+    })
+    if (!send.success) {
+      return { success: false, error: send.error ?? "Email dispatch failed" }
+    }
 
-    // Log the booking
+    // Delivery ledger — written ONLY after a real successful dispatch.
     await supabase.from("vendor_communications").insert({
       vendor_id: params.vendorId,
       service_id: params.serviceId,
@@ -136,8 +150,23 @@ export async function sendVendorServiceReminder(params: {
       </div>
     `
 
-    console.log(`[v0] Sending service reminder to ${vendor.email}`)
+    // REAL SEND through the canonical email gate (used to console.log only).
+    if (!vendor?.email) return { success: false, error: "Vendor has no email on file" }
+    const { dispatchEmail } = await import("@/lib/providers/dispatch")
+    const send = await dispatchEmail({
+      brokerageId: (service as any).transactions?.brokerage_id,
+      from: "",
+      to: vendor.email,
+      subject: `Service reminder — ${service.service_type} due in ${params.daysUntilDue} day${params.daysUntilDue === 1 ? "" : "s"}`,
+      html: emailHtml,
+      channelPurpose: "transactional",
+      systemSource: "vendor_service_reminder",
+    })
+    if (!send.success) {
+      return { success: false, error: send.error ?? "Email dispatch failed" }
+    }
 
+    // Delivery ledger — written ONLY after a real successful dispatch.
     await supabase.from("vendor_communications").insert({
       vendor_id: params.vendorId,
       service_id: params.serviceId,
