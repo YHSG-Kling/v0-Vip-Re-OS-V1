@@ -11,6 +11,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'first-deal', label: 'First Deal', href: '/dashboard/agent/first-deal', icon: 'Target' },
       { id: 'ai-roi', label: 'AI ROI', href: '/dashboard/agent/roi', icon: 'TrendingUp' },
       { id: 'refer-agent', label: 'Refer an Agent', href: '/dashboard/agent/refer', icon: 'Share2' },
+      // Orphan-route sweep: built client-referral surface no nav linked — now discoverable.
+      { id: 'referral-network', label: 'Referral Network', href: '/dashboard/agent/referral-network', icon: 'Share2' },
       { id: 'operations', label: 'Operations', href: '/dashboard/operations', icon: 'Activity' },
       // NOTE: agents work contacts — "My Leads", "Lead Acquisition", and "Lead Intelligence"
       // are intentionally excluded. Lead intake is admin/system; ISA qualification is system.
@@ -22,6 +24,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
       { id: 'closing-concierge', label: 'Closing Concierge', href: '/dashboard/transactions/closing-concierge', icon: 'ShieldCheck' },
       { id: 'documents', label: 'Document Center', href: '/dashboard/documents', icon: 'FolderOpen' },
+      // Orphan-route sweep: AI contract review existed with zero inbound links.
+      { id: 'contract-review', label: 'Contract Review', href: '/dashboard/documents/contract-review', icon: 'FileSearch' },
       { id: 'overdue', label: 'Overdue', href: '/dashboard/overdue', icon: 'AlertCircle', badgeKey: 'overdue_count' },
       { id: 'weekly-insights', label: 'Weekly Insights', href: '/dashboard/insights/weekly', icon: 'Sparkles' },
       { id: 'forms-library', label: 'Forms Library', href: '/dashboard/forms', icon: 'ClipboardList' },
@@ -88,6 +92,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'patterns', label: 'Behavioral Patterns', href: '/dashboard/patterns', icon: 'Activity' },
       { id: 'stale', label: 'Stale Queue', href: '/dashboard/stale', icon: 'AlertCircle' },
       { id: 'financials', label: 'My Financials', href: '/dashboard/financials/agent', icon: 'DollarSign' },
+      // Orphan-route sweep: open brokerage-fee charges page was unreachable.
+      { id: 'financials-fees', label: 'My Fees', href: '/dashboard/financials/agent/fees', icon: 'DollarSign' },
       { id: 'credit-pipeline', label: 'Credit Pipeline', href: '/credit-pipeline', icon: 'CreditCard' },
       {
         id: 'sphere',
@@ -101,6 +107,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'sphere-referrals', label: 'Referrals', href: '/lifetime-customers?tab=referrals' },
           { id: 'sphere-reviews', label: 'Reviews & Reputation', href: '/lifetime-customers?tab=reviews' },
           { id: 'sphere-gifting', label: 'Gifting & Milestones', href: '/lifetime-customers?tab=gifting' },
+          // Orphan-route sweep: the Gift Studio command center had no inbound nav link.
+          { id: 'sphere-gift-studio', label: 'Gift Studio', href: '/dashboard/gifts' },
         ],
       },
       { id: 'academy', label: 'Academy', href: '/academy', icon: 'BookOpen' },
@@ -124,6 +132,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'goals', label: 'My Goals', href: '/dashboard/goals', icon: 'Target' },
       { id: 'voice-intelligence', label: 'Voice Intelligence', href: '/dashboard/voice-intelligence', icon: 'Mic' },
       { id: 'motivation', label: 'Motivation', href: '/dashboard/motivation', icon: 'Trophy' },
+      // Orphan-route sweep: challenges gamification surface was unreachable.
+      { id: 'challenges', label: 'Challenges', href: '/dashboard/challenges', icon: 'Trophy' },
       { id: 'diagnosis', label: 'Business Diagnosis', href: '/dashboard/diagnosis', icon: 'Stethoscope' },
       { id: 'reports', label: 'Reports', href: '/dashboard/reports', icon: 'BarChart3' },
       {
@@ -134,6 +144,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'business-cards', label: 'Business Cards', href: '/dashboard/agent/business-cards' },
           { id: 'qr-codes', label: 'QR Codes', href: '/dashboard/agent/qr-codes' },
           { id: 'home-value', label: 'Home Value Tool', href: '/dashboard/tools/home-value' },
+          // Orphan-route sweep: calculators dashboard existed with zero inbound links.
+          { id: 'calculators', label: 'Calculators', href: '/dashboard/calculators' },
         ],
       },
       { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell' },
@@ -288,6 +300,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'sphere-referrals', label: 'Referrals', href: '/lifetime-customers?tab=referrals' },
           { id: 'sphere-reviews', label: 'Reviews & Reputation', href: '/lifetime-customers?tab=reviews' },
           { id: 'sphere-gifting', label: 'Gifting & Milestones', href: '/lifetime-customers?tab=gifting' },
+          // Orphan-route sweep: the Gift Studio command center had no inbound nav link.
+          { id: 'sphere-gift-studio', label: 'Gift Studio', href: '/dashboard/gifts' },
         ],
       },
       { id: 'leaderboard', label: 'Leaderboard', href: '/dashboard/leaderboard', icon: 'Award' },
@@ -383,6 +397,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'dashboard', label: 'Admin Dashboard', href: '/dashboard/admin', icon: 'LayoutGrid' },
       { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
       { id: 'onboarding', label: 'Agent Onboarding', href: '/dashboard/admin/onboarding', icon: 'UserPlus' },
+      // Orphan-route sweep: onboarding-step editor was unreachable from any nav.
+      { id: 'onboarding-steps', label: 'Onboarding Steps', href: '/dashboard/admin/onboarding-steps', icon: 'ListChecks' },
       { id: 'education', label: 'Education Content', href: '/dashboard/admin/education', icon: 'GraduationCap' },
       { id: 'brokerage-fees', label: 'Brokerage Fees', href: '/dashboard/admin/fees', icon: 'DollarSign' },
       { id: 'phone-settings', label: 'Phone & ISA Voice', href: '/dashboard/admin/phone-settings', icon: 'Phone' },
@@ -429,6 +445,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'ai-identity', label: 'AI Identity', href: '/dashboard/admin/ai-identity', icon: 'Bot' },
           { id: 'ai-disclosures', label: 'AI Disclosures', href: '/dashboard/admin/compliance/ai-disclosures', icon: 'FileCheck' },
           { id: 'cron-health', label: 'Cron Health', href: '/dashboard/admin/cron-health', icon: 'HeartPulse' },
+          // Orphan-route sweep: vendor approval queue was unreachable from any nav.
+          { id: 'vendor-approvals', label: 'Vendor Approvals', href: '/dashboard/admin/vendor-approvals', icon: 'ShieldCheck' },
         ],
       },
       { id: 'analytics', label: 'Analytics', href: '/analytics', icon: 'BarChart3' },
@@ -750,6 +768,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'sphere-referrals', label: 'Referrals', href: '/lifetime-customers?tab=referrals' },
           { id: 'sphere-reviews', label: 'Reviews & Reputation', href: '/lifetime-customers?tab=reviews' },
           { id: 'sphere-gifting', label: 'Gifting & Milestones', href: '/lifetime-customers?tab=gifting' },
+          // Orphan-route sweep: the Gift Studio command center had no inbound nav link.
+          { id: 'sphere-gift-studio', label: 'Gift Studio', href: '/dashboard/gifts' },
         ],
       },
       { id: 'settings', label: 'Settings', href: '/dashboard/settings/general', icon: 'Settings' },

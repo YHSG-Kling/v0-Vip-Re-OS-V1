@@ -2216,6 +2216,19 @@ async function main() {
         && src("app/dashboard/superadmin/usage-reports/page.tsx").includes("usage_counters")
         && src("app/dashboard/superadmin/home/page.tsx").includes("/dashboard/superadmin/usage-reports"))
     }
+    // ── ROUND 17: LOST WORK MADE STRUCTURALLY IMPOSSIBLE (PASS 18) + LOOPS CLOSED ──
+    {
+      const routeBaseline = JSON.parse(src("scripts/orphan-route-baseline.json")) as string[]
+      check("ROUND 17 — 'DID ANYTHING ELSE GET LOST?' ANSWERED STRUCTURALLY. PASS 18, the ORPHAN-ROUTE SWEEP: the tenant-website system was fully built yet undiscoverable — the generalized defect class is a route with a page and no inbound link. The sweep walks all 521 routes against 635 reference sources (nav configs, hrefs, router pushes, redirects, revalidates, minted absolute URLs), exempts ONLY externally-reachable surfaces with the reachability source NAMED (the 7 sitemap slug routes, the embed iframe, the gated seed page — candidates like /login that are referenced in-app were deliberately NOT exempted so the guard stays sharp), baselines 42 legacy orphans as a shrink-only burn-down, and FAILS CI on any NEW unlinked page — building something and not wiring it is now a build break. EIGHT REAL SURFACES RESCUED with nav links on day one: Gift Studio, agent referral network, contract review, fees, challenges, calculators, onboarding steps, vendor approvals. LOOPS CLOSED: the tenant users page carries the seat meter (same matrix math the invite gate enforces, red at capacity), and onboarding opens with the day-one 'Your live website' card — every new subscriber sees their zero-hosting site in their first session",
+        src("scripts/orphan-route-sweep.ts").includes("GUARD_ROUTE_BASELINE")
+        && src("scripts/orphan-route-sweep.ts").includes("EXEMPT")
+        && routeBaseline.length <= 42
+        && src("package.json").includes("test:orphan-routes")
+        && src("app/config/navigation-config.ts").includes("/dashboard/gifts")
+        && src("app/dashboard/admin/users/page.tsx").includes("seatLimitForTier")
+        && src("app/dashboard/onboarding/OnboardingDashboardClient.tsx").includes("YourWebsiteCard")
+        && src("app/components/settings/YourWebsiteCard.tsx").includes("getMyPublicSiteLinks"))
+    }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {
       const { readdirSync, statSync } = await import("fs")
