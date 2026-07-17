@@ -732,6 +732,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   prohibited_phrases: "data_steward",
   provider_overrides: "data_steward",
   push_notification_queue: "data_steward",
+  push_subscriptions: "data_steward", // web-push endpoint registry (round 12) — same steward as its queue
   qr_codes: "data_steward",
   qr_scan_events: "data_steward",
   reg_change_observations: "compliance_officer",
