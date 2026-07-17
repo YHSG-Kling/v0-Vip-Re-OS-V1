@@ -142,8 +142,10 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
 
 // ─── Provider adapters ──────────────────────────────────────────────────────
 //
-// Each adapter is a no-op stub returning null. Wiring the real API calls is
-// done in a follow-up session. The cascade runs identically once they're real.
+// Every adapter below makes a REAL call (RentCast connector-gateway, BatchData
+// client, ZenRows Zillow scrape, Perplexity via the AI gateway) — creds-gated,
+// silent-fail to the next provider. The one deliberate null is OSINT (public
+// records yield life events, not values).
 
 async function tryRentcast(req: AvmRequest): Promise<AvmResult | null> {
   if (!req.brokerageId) return null
@@ -252,16 +254,42 @@ async function marketAppreciationFallback(
   zipCode: string,
   cachedAt: string | null | undefined
 ): Promise<AvmResult | null> {
-  // Read market_data.price_trend_pct_1yr for the zip; apply pro-rata
-  // appreciation to the cached value based on time since cachedAt.
-  // No-op in this stub — returns the cached value with reduced confidence.
   if (!cachedValue) return null
+
+  // Read the newest zip-level trend and apply pro-rata appreciation to the
+  // stale cached value for the time elapsed since it was fetched.
+  let adjusted = cachedValue
+  let trendNote = "no zip trend on file"
+  try {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const supabase = createServiceClient()
+    const { data: md } = await supabase
+      .from("market_data")
+      .select("price_trend_pct_1yr, data_date")
+      .eq("zip_code", zipCode)
+      .not("price_trend_pct_1yr", "is", null)
+      .order("data_date", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    const annualPct = md?.price_trend_pct_1yr != null ? Number(md.price_trend_pct_1yr) : null
+    if (annualPct != null && Number.isFinite(annualPct) && cachedAt) {
+      const yearsStale = Math.max(0, (Date.now() - new Date(cachedAt).getTime()) / (365.25 * 24 * 60 * 60 * 1000))
+      // Clamp: never extrapolate beyond 3 years or ±25%/yr of drift.
+      const clampedYears = Math.min(yearsStale, 3)
+      const clampedPct = Math.max(-25, Math.min(25, annualPct))
+      adjusted = Math.round(cachedValue * Math.pow(1 + clampedPct / 100, clampedYears))
+      trendNote = `${clampedPct}%/yr zip trend applied over ${clampedYears.toFixed(1)}y`
+    }
+  } catch {
+    /* trend read is best-effort — fall through with the raw cached value */
+  }
+
   return {
-    value: cachedValue,
+    value: adjusted,
     confidence: 0.4,
     source: "market_appreciation_fallback",
     fetchedAt: new Date().toISOString(),
-    notes: `Stale cached value, no live provider returned a confident result for zip ${zipCode}`,
+    notes: `Stale cached value adjusted for zip ${zipCode} (${trendNote})`,
   }
 }
 

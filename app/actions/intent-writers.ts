@@ -17,6 +17,21 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
 
+/**
+ * ROUND-TRIP RECEIPT: after every write, the row is read back FRESH from the
+ * ledger and the receipt is composed from THAT row — never from the input.
+ * The voice admin speaks these facts, so "done" always means "verified on the
+ * ledger", not "I tried". A write that can't be read back reports failure.
+ */
+export interface LedgerReceipt {
+  table: string
+  rowId: string
+  /** When the ledger says the row landed/changed (row timestamp, not now()). */
+  recordedAt: string | null
+  /** Ledger-sourced facts the voice line can speak (status, due date, role…). */
+  facts: Record<string, string>
+}
+
 /** Request a document from a contact/transaction. Live CHECK: status
  *  pending/submitted/approved/rejected/cancelled. requested_by is users-class. */
 export async function requestDocument(input: {
@@ -25,7 +40,7 @@ export async function requestDocument(input: {
   transactionId?: string | null
   contactId?: string | null
   dueDate?: string | null // YYYY-MM-DD
-}): Promise<{ success: boolean; requestId?: string; error?: string }> {
+}): Promise<{ success: boolean; requestId?: string; receipt?: LedgerReceipt; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   if (!input.documentName?.trim()) return { success: false, error: "document_name_required" }
@@ -42,8 +57,26 @@ export async function requestDocument(input: {
     metadata: { source: "intent_writer" },
   }).select("id").single()
   if (error) return { success: false, error: error.message }
+  // Round-trip: fresh read of the row that landed.
+  const { data: fresh } = await svc.from("document_requests")
+    .select("id, document_name, status, due_date, created_at")
+    .eq("id", data.id).maybeSingle()
+  if (!fresh) return { success: false, error: "write_not_verifiable" }
   revalidatePath("/dashboard/transactions")
-  return { success: true, requestId: data.id as string }
+  return {
+    success: true,
+    requestId: fresh.id as string,
+    receipt: {
+      table: "document_requests",
+      rowId: fresh.id as string,
+      recordedAt: (fresh as any).created_at ?? null,
+      facts: {
+        document: String((fresh as any).document_name),
+        status: String((fresh as any).status),
+        ...((fresh as any).due_date ? { due: String((fresh as any).due_date) } : {}),
+      },
+    },
+  }
 }
 
 /** Link a vendor to a contact (the relationship the vendor-messaging gate and
@@ -55,7 +88,7 @@ export async function assignVendorToContact(input: {
   transactionId?: string | null
   role?: string | null
   notes?: string | null
-}): Promise<{ success: boolean; error?: string }> {
+}): Promise<{ success: boolean; receipt?: LedgerReceipt; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   const svc = createServiceClient()
@@ -98,8 +131,28 @@ export async function assignVendorToContact(input: {
       if (error) return { success: false, error: error.message }
     }
   }
+  // Round-trip: fresh read of the link as it now stands on the ledger.
+  let linkQ = svc.from("contact_vendors")
+    .select("id, status, role, introduced_at")
+    .eq("contact_id", input.contactId).eq("vendor_id", input.vendorId)
+  const { data: freshLink } = await (input.transactionId
+    ? linkQ.eq("transaction_id", input.transactionId)
+    : linkQ.is("transaction_id", null)
+  ).maybeSingle()
+  if (!freshLink) return { success: false, error: "write_not_verifiable" }
   revalidatePath("/crm")
-  return { success: true }
+  return {
+    success: true,
+    receipt: {
+      table: "contact_vendors",
+      rowId: (freshLink as any).id as string,
+      recordedAt: (freshLink as any).introduced_at ?? null,
+      facts: {
+        status: String((freshLink as any).status),
+        ...((freshLink as any).role ? { role: String((freshLink as any).role) } : {}),
+      },
+    },
+  }
 }
 
 /** Record a property upgrade on a listing (feeds the seller CMA's valuation
@@ -110,7 +163,7 @@ export async function logPropertyUpgrade(input: {
   estimatedCost?: number | null
   roiEstimate?: number | null
   status?: "suggested" | "approved" | "completed" | "declined"
-}): Promise<{ success: boolean; upgradeId?: string; error?: string }> {
+}): Promise<{ success: boolean; upgradeId?: string; receipt?: LedgerReceipt; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   if (!input.description?.trim()) return { success: false, error: "description_required" }
@@ -126,8 +179,25 @@ export async function logPropertyUpgrade(input: {
     status: input.status ?? "completed", // sellers usually report work already done
   }).select("id").single()
   if (error) return { success: false, error: error.message }
+  // Round-trip: fresh read of the row that landed.
+  const { data: fresh } = await svc.from("property_upgrades")
+    .select("id, status, estimated_cost, created_at")
+    .eq("id", data.id).maybeSingle()
+  if (!fresh) return { success: false, error: "write_not_verifiable" }
   revalidatePath("/dashboard/listings")
-  return { success: true, upgradeId: data.id as string }
+  return {
+    success: true,
+    upgradeId: fresh.id as string,
+    receipt: {
+      table: "property_upgrades",
+      rowId: fresh.id as string,
+      recordedAt: (fresh as any).created_at ?? null,
+      facts: {
+        status: String((fresh as any).status),
+        ...((fresh as any).estimated_cost != null ? { cost: `$${Number((fresh as any).estimated_cost).toLocaleString()}` } : {}),
+      },
+    },
+  }
 }
 
 /** Set which milestones a contact sees in their portal (the kernel portal read
@@ -137,7 +207,7 @@ export async function setPortalMilestonePreferences(input: {
   /** e.g. { inspection: false, appraisal: true } — milestone key → visible */
   milestoneOverrides: Record<string, boolean>
   notificationSettings?: Record<string, unknown> | null
-}): Promise<{ success: boolean; error?: string }> {
+}): Promise<{ success: boolean; receipt?: LedgerReceipt; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   const svc = createServiceClient()
@@ -154,6 +224,24 @@ export async function setPortalMilestonePreferences(input: {
   }
   const { error } = await svc.from("contact_portal_preferences").upsert(row, { onConflict: "contact_id" })
   if (error) return { success: false, error: error.message }
+  // Round-trip: fresh read of the preference row as the portal will see it.
+  const { data: fresh } = await svc.from("contact_portal_preferences")
+    .select("id, milestone_overrides, updated_at")
+    .eq("contact_id", input.contactId).maybeSingle()
+  if (!fresh) return { success: false, error: "write_not_verifiable" }
   revalidatePath("/portal")
-  return { success: true }
+  const overrides = ((fresh as any).milestone_overrides ?? {}) as Record<string, boolean>
+  const hidden = Object.entries(overrides).filter(([, v]) => v === false).length
+  return {
+    success: true,
+    receipt: {
+      table: "contact_portal_preferences",
+      rowId: (fresh as any).id as string,
+      recordedAt: (fresh as any).updated_at ?? null,
+      facts: {
+        overrides: String(Object.keys(overrides).length),
+        hidden: String(hidden),
+      },
+    },
+  }
 }

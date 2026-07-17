@@ -21,6 +21,20 @@ interface VoiceIntent {
 }
 
 /**
+ * ROUND-TRIP RECEIPT line — spoken ONLY from the fresh ledger row the intent
+ * writer read back after its write (LedgerReceipt), never from the command
+ * input. "Done" from the voice admin always means "verified on the ledger".
+ */
+function speakReceipt(r?: import("@/app/actions/intent-writers").LedgerReceipt): string {
+  if (!r) return ""
+  const at = r.recordedAt
+    ? new Date(r.recordedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : null
+  const facts = Object.entries(r.facts).map(([k, v]) => `${k} ${v}`).join(", ")
+  return ` Verified on the ledger${at ? ` at ${at}` : ""}${facts ? ` — ${facts}` : ""}.`
+}
+
+/**
  * Resolve the calling user's agents.id from the session.
  * Falls back to a direct lookup if getAgentContext returns null (e.g. broker
  * with an agents row but no role assignment yet).
@@ -223,6 +237,9 @@ export async function processVoiceCommand(params: {
       // ── VOICE-ADMIN INTENT WRITERS (burn-down round 4) — "tell the admin and
       // it's done": these dispatch the intent-writers actions, which are the
       // ONE writers for document_requests / contact_vendors / property_upgrades.
+      // ROUND-TRIP RECEIPTS (round 11): every success line ends with a receipt
+      // composed from the FRESH ledger row the writer read back — the admin
+      // never says "done" from intent, only from the verified write.
       case "request_document": {
         const docContact = intent.entities.contact_name
           ? await lookupContact(intent.entities.contact_name, agentId)
@@ -241,9 +258,10 @@ export async function processVoiceCommand(params: {
             dueDate: intent.entities.due_date ?? null,
           })
           if (r.success) {
-            response = docContact
+            response = (docContact
               ? `Requested "${docName}" from ${docContact.first_name}. It's on the tracked list — I'll flag it if it goes overdue.`
               : `Requested "${docName}". It's on the tracked list — I'll flag it if it goes overdue.`
+            ) + speakReceipt(r.receipt)
           } else {
             response = "I couldn't file that document request."
             success = false
@@ -283,7 +301,7 @@ export async function processVoiceCommand(params: {
             role: intent.entities.vendor_role ?? null,
           })
           response = r.success
-            ? `Linked ${vendor.name} to ${vContact.first_name} — the vendor can now message them and it shows on the contact's profile.`
+            ? `Linked ${vendor.name} to ${vContact.first_name} — the vendor can now message them and it shows on the contact's profile.` + speakReceipt(r.receipt)
             : "I couldn't link that vendor."
           success = r.success
         }
@@ -306,7 +324,7 @@ export async function processVoiceCommand(params: {
             milestoneOverrides: { [milestoneKey]: visible },
           })
           response = r.success
-            ? `${visible ? "Showing" : "Hiding"} the ${milestoneKey.replace(/_/g, " ")} milestone on ${pContact.first_name}'s portal.`
+            ? `${visible ? "Showing" : "Hiding"} the ${milestoneKey.replace(/_/g, " ")} milestone on ${pContact.first_name}'s portal.` + speakReceipt(r.receipt)
             : "I couldn't update that portal preference."
           success = r.success
         }
@@ -334,7 +352,7 @@ export async function processVoiceCommand(params: {
             estimatedCost: intent.entities.amount ? Number(intent.entities.amount) : null,
           })
           response = r.success
-            ? `Logged the upgrade on ${listing.address} — it'll show in the seller's CMA valuation.`
+            ? `Logged the upgrade on ${listing.address} — it'll show in the seller's CMA valuation.` + speakReceipt(r.receipt)
             : "I couldn't log that upgrade."
           success = r.success
         }

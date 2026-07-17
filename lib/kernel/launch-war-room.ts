@@ -33,13 +33,15 @@ export function composeLaunch(address: string, city: string | null, comingSoon: 
     email: `${tag}${where} — ${address}. I wanted you to see this before anyone else. Reply for the full details and a private showing.`,
     newsletter: `New ${comingSoon ? "coming-soon" : "listing"}${where}: ${address}. A standout on the market this week.`,
     blog: `Introducing ${address}${where}. Here's a closer look at the home, the neighborhood, and why it won't last.`,
-    agentSummary: `Launch war room is staged for ${address}${where}: the coming-soon reel, social + email + newsletter + blog drafts, an open-house draft to date, a neighbor "coming soon" farm, and a geo ad — all waiting on your approval. Set your open-house date and approve to launch in one review.`,
+    agentSummary: `Launch war room is staged for ${address}${where}: the coming-soon reel, a QR-coded "be first to see it" capture page, social + email + newsletter + blog drafts, an open-house draft to date, a neighbor "coming soon" farm, and a geo ad — all waiting on your approval. Set your open-house date and approve to launch in one review.`,
   }
 }
 
 export interface LaunchResult {
   launches: number
   reels: number
+  /** QR-coded listing capture pages (lead_capture_forms + qr_codes), scored by the playbook scoreboard. */
+  capturePagesStaged: number
   channelsStaged: number
   /** Open houses are PROPOSED (a draft with no date) — never auto-scheduled, because
    *  the system can't know the agent's chosen date. */
@@ -61,7 +63,7 @@ export async function runLaunchWarRoom(
   const supabase = client ?? createServiceClient()
   const now = opts.now ?? new Date()
   const result: LaunchResult = {
-    launches: 0, reels: 0, channelsStaged: 0, openHousesProposed: 0, neighborFarms: 0, adsStaged: 0, summariesProposed: 0,
+    launches: 0, reels: 0, capturePagesStaged: 0, channelsStaged: 0, openHousesProposed: 0, neighborFarms: 0, adsStaged: 0, summariesProposed: 0,
   }
 
   // onlyListingId → the ON-DEMAND path (the Deal Play convenes the room for ONE
@@ -98,6 +100,51 @@ export async function runLaunchWarRoom(
       })
       const rr = await dispatcher({ brokerageId, listingId: l.id, agentUserId, eventType: comingSoon ? "coming_soon" : "just_listed", bypassPolicy: false })
       if (rr.ok && rr.status !== "skipped") result.reels += 1
+    }
+
+    // 1.5) CAPTURE — the QR-coded "be first to see it" landing for THIS listing.
+    // Rides the canonical lead-magnet kernel (createLeadMagnet → publishLeadMagnet
+    // mints the tracked QR + lifecycle event); landing copy is AI-authored per
+    // listing (generatePersonaCopy; composeLaunch facts are the deterministic
+    // fallback — same authoring contract as the bench lane below). The
+    // landing_content playbookKey tag is what puts this launch on the SAME
+    // outcome scoreboard as the strategy playbooks (qr scan/lead ledgers).
+    if (agentRowId && agentUserId) {
+      const { createLeadMagnet, publishLeadMagnet } = await import("@/lib/kernel/lead-magnets")
+      const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
+      const persona = { audience: "buyer", situation: comingSoon ? "watching for new inventory" : "actively shopping" }
+      const facts = [`${comingSoon ? "Coming soon" : "Just listed"}: ${l.address}${l.city ? ` in ${l.city}` : ""}`, "Sign up to preview it before the open market"]
+      const [head, desc] = await Promise.all([
+        generatePersonaCopy({ goal: "a listing capture-page hero headline", facts, channel: "landing", persona, words: 12 }, { body: `Be the first inside ${l.address}` }, { generator: opts.copyGenerator }),
+        generatePersonaCopy({ goal: "two sentences of listing capture-page intro copy", facts, channel: "landing", persona, words: 45 }, { body: `${comingSoon ? "Coming soon" : "Just listed"}${l.city ? ` in ${l.city}` : ""}: ${l.address}. Leave your details for a private preview before it hits the open market.` }, { generator: opts.copyGenerator }),
+      ])
+      const magnet = await createLeadMagnet({
+        title: `First look — ${l.address}`,
+        description: desc.body,
+        magnetType: "listing_alert",
+        brokerageId, agentId: agentRowId, createdBy: agentRowId,
+        thankYouMessage: "You're on the list — expect a private-preview invitation shortly.",
+      })
+      if (magnet.success && magnet.magnetId) {
+        const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? ""
+        const pub = baseUrl
+          ? await publishLeadMagnet({ magnetId: magnet.magnetId, brokerageId, baseUrl, channels: ["qr_code"], actorUserId: agentUserId })
+          : { success: false as const }
+        const { data: magnetRow } = await supabase
+          .from("lead_capture_forms").select("landing_content").eq("id", magnet.magnetId).maybeSingle()
+        await supabase.from("lead_capture_forms").update({
+          landing_content: {
+            ...(((magnetRow as any)?.landing_content as Record<string, unknown>) ?? {}),
+            headline: head.body,
+            subhead: desc.body,
+            playbookKey: "listing_launch",
+            listingId: l.id,
+            qrCodeId: (pub as any)?.qrCodeId ?? null,
+            installedAt: now.toISOString(),
+          },
+        }).eq("id", magnet.magnetId)
+        result.capturePagesStaged += 1
+      }
     }
 
     // 2) THE BENCH — social + email + newsletter + blog, copy GENERATED per channel
