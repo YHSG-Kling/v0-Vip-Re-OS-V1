@@ -160,6 +160,26 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     } catch (err) {
       console.error("[InboundRouter] inbox record failed (non-blocking):", err)
     }
+
+    // ── WRITTEN CRITERIA → LIVING ALERT (SMS ear) ───────────────────────────
+    // The same listener the voice sweep runs on call transcripts, on the
+    // contact's TEXTED words: a body stating concrete search criteria (high
+    // confidence, ≥2 concrete signals) proposes ONE inactive property alert
+    // (source 'text_conversation') on the approval rail. Reads ONLY the
+    // contact's inbound body — never AI drafts. Deduped per MessageSid
+    // ([msg:<id>] in alert_name); best-effort — never breaks ingress.
+    try {
+      const { proposeWrittenCriteriaAlert } = await import("@/lib/buyer-search/written-criteria-alert")
+      await proposeWrittenCriteriaAlert(supabase, {
+        brokerageId: inbound.brokerageId,
+        contactId: entityId,
+        agentUserId: numberCtx?.agentUserId ?? null,
+        messageRef: inbound.messageId,
+        body: inbound.text ?? "",
+      })
+    } catch (err) {
+      console.error("[InboundRouter] written-criteria listener failed (non-blocking):", err)
+    }
   }
 
   // ── Step 6: Write lifecycle_events ─────────────────────────────────────────

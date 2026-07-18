@@ -21,10 +21,13 @@
  *   acv:  ad_creative_variations (approval_status draft — pre-launch review)
  *   vsn:  video_snippets       (approval_status pending)
  *   bp:   blog_posts           (publish_status draft)
- *   pa:   property_alerts      (SPOKEN CRITERIA proposals — is_active=false,
- *         source 'voice_conversation', paused_reason '[VOICE_PROPOSAL]…'
- *         carrying the buyer's literal quotes; approve activates + runs the
- *         first search, reject deletes the proposal)
+ *   pa:   property_alerts      (SPOKEN/WRITTEN CRITERIA proposals —
+ *         is_active=false, source 'voice_conversation' (calls) or
+ *         'text_conversation' (inbound email/SMS), paused_reason
+ *         '[VOICE_PROPOSAL]…' / '[TEXT_PROPOSAL]…' carrying the buyer's
+ *         literal quotes; approve activates + runs the first search, reject
+ *         deletes the proposal. Pinned to is_active=false + these two
+ *         sources ONLY — never a live or agent-created alert.)
  *   ai:   approval_items       (legacy table; no prefix when present)
  */
 
@@ -95,15 +98,17 @@ export async function aggregatePendingApprovals(
         .order("created_at", { ascending: false })
         .limit(PER_TABLE_LIMIT),
       svc
-        // SPOKEN CRITERIA proposals — inactive voice-sourced alerts still
-        // carrying the [VOICE_PROPOSAL] marker (approval clears it, so an
-        // approved-then-paused alert can never re-enter the queue).
+        // SPOKEN + WRITTEN CRITERIA proposals — inactive conversation-sourced
+        // alerts ('voice_conversation' from the call sweep, 'text_conversation'
+        // from inbound email/SMS) still carrying their proposal marker
+        // (approval clears it, so an approved-then-paused alert can never
+        // re-enter the queue).
         .from("property_alerts")
         .select("id, contact_id, agent_user_id, alert_name, paused_reason, created_at, updated_at")
         .eq("brokerage_id", brokerageId)
         .eq("is_active", false)
-        .eq("source", "voice_conversation")
-        .ilike("paused_reason", "[VOICE_PROPOSAL]%")
+        .in("source", ["voice_conversation", "text_conversation"])
+        .or("paused_reason.ilike.[VOICE_PROPOSAL]%,paused_reason.ilike.[TEXT_PROPOSAL]%")
         .order("created_at", { ascending: false })
         .limit(PER_TABLE_LIMIT),
       svc
@@ -189,9 +194,11 @@ export async function aggregatePendingApprovals(
     })
   }
 
-  // SPOKEN CRITERIA → LIVING ALERT proposals. The card leads with the
-  // buyer's literal quotes ("They said: …") so the agent approves what was
-  // actually SAID. property_alerts.agent_user_id is users.id while the
+  // SPOKEN/WRITTEN CRITERIA → LIVING ALERT proposals. The card leads with
+  // the buyer's literal quotes ("They said: …" / "They wrote: …") so the
+  // agent approves what was actually SAID — the fair-housing no-steering
+  // line: only buyer-stated criteria, evidenced by their own words, ever
+  // reach this queue. property_alerts.agent_user_id is users.id while the
   // agent scope key is agents.id — same id-class mismatch as blog_posts, so
   // these list brokerage-wide (like blogs).
   const alertRows = (voiceAlerts.data ?? []) as Array<Record<string, unknown>>
@@ -209,8 +216,8 @@ export async function aggregatePendingApprovals(
   }
   for (const row of alertRows) {
     const who = alertContactNames.get(String(row.contact_id)) ?? "a buyer"
-    const label = String(row.alert_name ?? "Property alert").replace(/\s*\[call:[^\]]*\]\s*/g, " ").trim()
-    const heard = String(row.paused_reason ?? "").replace(/^\[VOICE_PROPOSAL\]\s*/, "")
+    const label = String(row.alert_name ?? "Property alert").replace(/\s*\[(?:call|msg):[^\]]*\]\s*/g, " ").trim()
+    const heard = String(row.paused_reason ?? "").replace(/^\[(?:VOICE|TEXT)_PROPOSAL\]\s*/, "")
     items.push({
       id: `pa:${String(row.id)}`,
       type: "property_alert",
@@ -347,20 +354,22 @@ async function cascade(
       return { success: true, type: "blog", targetId }
     }
     case "pa": {
-      // SPOKEN CRITERIA alert proposal. Approve = activate (resume semantics:
-      // is_active true, paused_* cleared — which removes the [VOICE_PROPOSAL]
-      // marker so the row can never re-enter the queue) + run the first
-      // search, exactly like resumePropertyAlert. Reject = DELETE the
-      // proposal — it never ran, there is nothing to keep. Both are pinned to
-      // source='voice_conversation' + is_active=false so this route can never
-      // touch a live or agent-created alert.
+      // SPOKEN/WRITTEN CRITERIA alert proposal. Approve = activate (resume
+      // semantics: is_active true, paused_* cleared — which removes the
+      // [VOICE_PROPOSAL]/[TEXT_PROPOSAL] marker so the row can never re-enter
+      // the queue) + run the first search, exactly like resumePropertyAlert.
+      // Reject = DELETE the proposal — it never ran, there is nothing to
+      // keep. Both are pinned to the two conversation sources
+      // ('voice_conversation' from calls, 'text_conversation' from inbound
+      // email/SMS) + is_active=false so this route can never touch a live or
+      // agent-created alert.
       if (outcome === "approved") {
         const { data, error } = await svc
           .from("property_alerts")
           .update({ is_active: true, paused_by: null, paused_reason: null, updated_at: new Date().toISOString() })
           .eq("id", targetId)
           .eq("brokerage_id", ctx.brokerageId)
-          .eq("source", "voice_conversation")
+          .in("source", ["voice_conversation", "text_conversation"])
           .eq("is_active", false)
           .select("id")
           .maybeSingle()
@@ -377,7 +386,7 @@ async function cascade(
         .delete()
         .eq("id", targetId)
         .eq("brokerage_id", ctx.brokerageId)
-        .eq("source", "voice_conversation")
+        .in("source", ["voice_conversation", "text_conversation"])
         .eq("is_active", false)
       if (error) return { success: false, error: error.message }
       return { success: true, type: "property_alert", targetId }

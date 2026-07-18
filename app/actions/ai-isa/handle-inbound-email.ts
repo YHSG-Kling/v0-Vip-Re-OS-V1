@@ -129,6 +129,46 @@ export async function processInboundEmail(params: {
     }
   }
 
+  // ── WRITTEN CRITERIA → LIVING ALERT (text-thread ear) ─────────────────────
+  // The same listener the voice sweep runs on call transcripts, on the
+  // lead's WRITTEN words: if this inbound body states concrete search
+  // criteria (high confidence, ≥2 concrete signals), propose ONE inactive
+  // property alert (source 'text_conversation') on the approval rail.
+  // Reads ONLY the lead's inbound body — never the AI's replies. Requires a
+  // linked CONTACT (criteria without a buyer record to alert are just
+  // chatter). Runs BEFORE the stop-responding/classifier guards so a
+  // qualified or self-converting lead's stated criteria still land; deduped
+  // per message body hash; best-effort — never blocks the reply path.
+  if (leadForDnc?.brokerage_id) {
+    try {
+      const { data: leadLink } = await supabase
+        .from('leads')
+        .select('contact_id, agent_id')
+        .eq('id', params.leadId)
+        .maybeSingle()
+      if (leadLink?.contact_id) {
+        // property_alerts.agent_user_id carries the agent's USER id —
+        // resolve from the lead's agents.id (same mapping as the voice lane).
+        let alertAgentUserId: string | null = null
+        if (leadLink.agent_id) {
+          const { data: agentRow } = await supabase
+            .from('agents').select('user_id').eq('id', leadLink.agent_id).maybeSingle()
+          alertAgentUserId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+        }
+        const { proposeWrittenCriteriaAlert } = await import('@/lib/buyer-search/written-criteria-alert')
+        await proposeWrittenCriteriaAlert(supabase, {
+          brokerageId: leadForDnc.brokerage_id,
+          contactId: leadLink.contact_id,
+          agentUserId: alertAgentUserId,
+          messageRef: null, // no provider message id on this path — content hash dedupes
+          body: params.body,
+        })
+      }
+    } catch (err) {
+      console.error('[handle-inbound-email] written-criteria listener failed (non-blocking):', err)
+    }
+  }
+
   // ── Guard 1: auto-respond check ───────────────────────────────────────────
   const stopResponding = await shouldStopAutoResponding(params.leadId)
   if (stopResponding) {

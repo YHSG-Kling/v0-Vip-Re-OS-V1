@@ -12,13 +12,20 @@
  * property_alerts column shape.
  *
  * PURE: no I/O, no supabase — the voice sweep (lib/voice/call-analysis.ts)
- * owns the insert and the approval queue owns activation. Proposals are
+ * and the text-thread listener (lib/buyer-search/written-criteria-alert.ts)
+ * own the inserts and the approval queue owns activation. Proposals are
  * ALWAYS is_active=false — the agent approves; nothing self-activates.
  *
- * FAIR HOUSING: inherits the parser's stance — schools/family/age are never
- * turned into criteria. Evidence quotes are the buyer's literal words
- * (factual record for the approving agent), but nothing protected-class ever
- * becomes a filter.
+ * FAIR HOUSING — CAPTURE IS NOT STEERING (owner directive): a buyer may
+ * lawfully ask to be "in the Mocksley school district" or for a "55+ /
+ * age-restricted community" — those are the BUYER'S OWN stated criteria, and
+ * honoring them is service, not steering. The NO-STEERING line is absolute
+ * and it lives here: this extractor only ever captures what the BUYER SAID —
+ * every captured criterion is backed by an evidence quote of their literal
+ * words — and the OS never suggests, infers, or recommends demographic or
+ * familial criteria in either direction. Familial-status INFERENCE stays
+ * out: "good for kids" is the AI characterizing a home, not a buyer-stated
+ * searchable criterion, and is never captured.
  */
 
 import { parseNaturalLanguageQuery } from "./intent-parser"
@@ -35,13 +42,20 @@ export interface ConversationCriteria {
   cities?: string[]
   /** Concrete feature words (pool, garage, …) → must_have_features. */
   features?: string[]
+  /** BUYER-STATED school-district / school-zone phrases ("Mocksley school
+   *  district", "Lincoln Elementary") → property_alerts.keywords. Captured
+   *  only from the buyer's literal words — never inferred. */
+  schoolDistricts?: string[]
+  /** BUYER-STATED 55+/active-adult/age-restricted community request →
+   *  must_have_features entry. Stated by the buyer, never suggested. */
+  ageRestrictedCommunity?: boolean
 }
 
 export interface ExtractedConversationCriteria {
   criteria: ConversationCriteria
   /** 'high' needs ≥2 distinct CONCRETE signals (price / location / beds /
-   *  baths / property type). One signal alone is 'low' — not enough to
-   *  propose an alert from. */
+   *  baths / property type / stated school district / stated 55+ community).
+   *  One signal alone is 'low' — not enough to propose an alert from. */
   confidence: "high" | "low"
   /** How many distinct concrete signal groups landed (features excluded). */
   signalCount: number
@@ -112,6 +126,54 @@ export function detectSupplementalCity(sentence: string): string | null {
   return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")
 }
 
+// ─── Buyer-STATED school district / age-restricted community ────────────────
+//
+// NO-STEERING LINE (absolute): the extractor may CAPTURE a school district or
+// 55+/age-restricted community only when the BUYER SAID it — their literal
+// quote lands in evidence to prove it — and the OS never suggests, infers, or
+// recommends demographic/familial criteria either way. Characterizations
+// ("good for kids", "family-friendly") are NOT stated searchable criteria and
+// are never captured: the patterns below require the buyer to name a
+// district/school (proper noun) or an age-restricted community type.
+
+/** Generic words that never start a real district/school name — blocks
+ *  "Good school district" from capturing "Good" as a proper noun. */
+const SCHOOL_NAME_STOPWORDS = new Set([
+  "the", "a", "an", "good", "great", "best", "top", "better", "nice", "any",
+  "that", "this", "some", "strong", "excellent",
+])
+
+/**
+ * Capture a buyer-STATED school district or school zone:
+ *   "in the Mocksley school district"      → "Mocksley school district"
+ *   "zoned for Lincoln Elementary"         → "Lincoln Elementary"
+ * Proper-noun-gated: "good schools" / "a good school district" return null —
+ * quality adjectives are characterizations, not stated criteria.
+ */
+export function detectStatedSchoolDistrict(sentence: string): string | null {
+  const district = sentence.match(/\b((?:[A-Z][A-Za-z'’.-]+\s+)*[A-Z][A-Za-z'’.-]+)\s+[Ss]chool [Dd]istrict\b/)
+  if (district) {
+    const words = district[1].split(/\s+/).filter((w) => !SCHOOL_NAME_STOPWORDS.has(w.toLowerCase()))
+    if (words.length > 0) return `${words.join(" ")} school district`
+  }
+  const zoned = sentence.match(/\bzoned for\s+((?:[A-Z][A-Za-z'’.-]+\s+)+(?:Elementary|Middle|High)(?:\s+School)?)\b/)
+  if (zoned) {
+    const words = zoned[1].split(/\s+/).filter((w) => !SCHOOL_NAME_STOPWORDS.has(w.toLowerCase()))
+    if (words.length > 1) return words.join(" ") // needs a name, not bare "Elementary"
+  }
+  return null
+}
+
+/** Canonical must_have_features entry for a buyer-stated 55+ request. */
+export const AGE_RESTRICTED_LABEL = "55+ / age-restricted community"
+
+/** Buyer-STATED age-restricted community request ("55+ community",
+ *  "55-plus", "active adult", "age-restricted"). Age words about anything
+ *  other than a community type do not match. */
+export function detectStatedAgeRestrictedCommunity(sentence: string): boolean {
+  return /(\b55\s*\+|\b55[-\s]plus\b|\bactive[-\s]adult\b|\bage[-\s]restricted\b)/i.test(sentence)
+}
+
 // ─── Extraction + merge ──────────────────────────────────────────────────────
 
 function unionInto(target: string[] | undefined, add: string[]): string[] {
@@ -149,6 +211,13 @@ export function extractCriteriaFromTranscript(text: string): ExtractedConversati
     }
     if (cities.length > 0) { criteria.cities = unionInto(criteria.cities, cities); contributed = true }
 
+    // Buyer-STATED school district / 55+ community — capture, never infer.
+    // The contributing sentence lands in evidence: the quote IS the proof the
+    // buyer asked (the no-steering line above).
+    const school = detectStatedSchoolDistrict(sentence)
+    if (school) { criteria.schoolDistricts = unionInto(criteria.schoolDistricts, [school]); contributed = true }
+    if (detectStatedAgeRestrictedCommunity(sentence)) { criteria.ageRestrictedCommunity = true; contributed = true }
+
     if (contributed) evidence.push(sentence.length > 160 ? `${sentence.slice(0, 157)}…` : sentence)
   }
 
@@ -164,6 +233,10 @@ export function extractCriteriaFromTranscript(text: string): ExtractedConversati
   if (criteria.minBeds != null) signalCount++
   if (criteria.minBaths != null) signalCount++
   if (criteria.propertyTypes?.length) signalCount++
+  // Buyer-stated school district / 55+ community are CONCRETE signals — the
+  // buyer named a searchable criterion in their own words.
+  if (criteria.schoolDistricts?.length) signalCount++
+  if (criteria.ageRestrictedCommunity) signalCount++
 
   return {
     criteria,
@@ -190,6 +263,32 @@ export function spokenAlertCallMarker(callId: string): string {
   return `[call:${callId}]`
 }
 
+/** TEXT-THREAD lane (inbound email/SMS) — honest provenance: a written
+ *  criterion is not a spoken one. The approval queue accepts BOTH sources. */
+export const TEXT_ALERT_SOURCE = "text_conversation"
+
+/** paused_reason state marker for a TEXT-thread proposal — same discriminator
+ *  contract as VOICE_PROPOSAL_MARKER (approval clears paused_reason). */
+export const TEXT_PROPOSAL_MARKER = "[TEXT_PROPOSAL]"
+
+/** Dedupe marker embedded in alert_name — one proposal per source message,
+ *  mirroring [call:<id>]. `ref` is the provider message id when the ingress
+ *  has one, else a stable content hash (hashConversationText). */
+export function writtenAlertMessageMarker(ref: string): string {
+  return `[msg:${ref}]`
+}
+
+/** FNV-1a 32-bit hex — a stable dedupe ref for ingresses with no message id
+ *  (a re-delivered webhook of the same body hashes identically). */
+export function hashConversationText(text: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0).toString(16).padStart(8, "0")
+}
+
 /** Short human label — "3+ bed under $650k in Mocksley". */
 export function describeCriteria(criteria: ConversationCriteria): string {
   const parts: string[] = []
@@ -200,6 +299,10 @@ export function describeCriteria(criteria: ConversationCriteria): string {
   else if (criteria.maxPrice != null) parts.push(`under ${fmtPrice(criteria.maxPrice)}`)
   else if (criteria.minPrice != null) parts.push(`over ${fmtPrice(criteria.minPrice)}`)
   if (criteria.cities?.length) parts.push(`in ${criteria.cities.join(", ")}`)
+  for (const s of criteria.schoolDistricts ?? []) {
+    parts.push(s.endsWith("school district") ? `in the ${s}` : `zoned for ${s}`)
+  }
+  if (criteria.ageRestrictedCommunity) parts.push("55+ community")
   return parts.length > 0 ? parts.join(" ") : "Buyer search"
 }
 
@@ -237,17 +340,19 @@ export interface ProposedAlertRow {
 }
 
 /** Map merged conversation criteria onto the property_alerts row shape.
- *  Defaults follow createPropertyAlert (app/actions/property-alerts). */
+ *  Defaults follow createPropertyAlert (app/actions/property-alerts).
+ *  `source` defaults to the voice lane; the text-thread listener passes
+ *  TEXT_ALERT_SOURCE so provenance stays honest. */
 export function criteriaToAlertRow(
   criteria: ConversationCriteria,
-  ids: { contactId: string; agentUserId: string | null; brokerageId: string; alertName: string },
+  ids: { contactId: string; agentUserId: string | null; brokerageId: string; alertName: string; source?: string },
 ): ProposedAlertRow {
   return {
     brokerage_id:                ids.brokerageId,
     contact_id:                  ids.contactId,
     agent_user_id:               ids.agentUserId,
     alert_name:                  ids.alertName,
-    source:                      SPOKEN_ALERT_SOURCE,
+    source:                      ids.source ?? SPOKEN_ALERT_SOURCE,
     is_active:                   false, // PROPOSED — only agent approval activates
     min_price:                   criteria.minPrice ?? null,
     max_price:                   criteria.maxPrice ?? null,
@@ -256,8 +361,14 @@ export function criteriaToAlertRow(
     property_types:              criteria.propertyTypes ?? [],
     cities:                      criteria.cities ?? [],
     zip_codes:                   [],
-    must_have_features:          criteria.features ?? [],
-    keywords:                    null,
+    // Buyer-STATED criteria only (see the no-steering block above): a stated
+    // 55+ request lands as a must-have feature; stated school-district
+    // phrases land as keywords. Both trace to evidence quotes.
+    must_have_features:          [
+      ...(criteria.features ?? []),
+      ...(criteria.ageRestrictedCommunity ? [AGE_RESTRICTED_LABEL] : []),
+    ],
+    keywords:                    criteria.schoolDistricts?.length ? criteria.schoolDistricts.join(", ") : null,
     new_listings_only:           true,
     include_coming_soon:         true,
     include_price_reductions:    true,

@@ -9,10 +9,17 @@ import {
   criteriaToAlertRow,
   buyerUtterances,
   detectSupplementalCity,
+  detectStatedSchoolDistrict,
+  detectStatedAgeRestrictedCommunity,
   describeCriteria,
   spokenAlertCallMarker,
+  writtenAlertMessageMarker,
+  hashConversationText,
   SPOKEN_ALERT_SOURCE,
+  TEXT_ALERT_SOURCE,
   VOICE_PROPOSAL_MARKER,
+  TEXT_PROPOSAL_MARKER,
+  AGE_RESTRICTED_LABEL,
 } from '../conversation-criteria'
 
 describe('buyerUtterances', () => {
@@ -163,6 +170,97 @@ describe('extractCriteriaFromTranscript — confidence gating', () => {
   })
 })
 
+describe('fair housing — capture buyer-STATED criteria, never steer', () => {
+  // A buyer may lawfully ask for a school district or a 55+ community; we
+  // capture their OWN words (evidence proves it) and never suggest, infer,
+  // or recommend demographic/familial criteria in either direction.
+
+  test('buyer-stated school district is captured as a keywords criterion', () => {
+    const result = extractCriteriaFromTranscript(
+      'Caller: We need to be in the Mocksley school district.'
+    )
+
+    expect(result.criteria.schoolDistricts).toContain('Mocksley school district')
+  })
+
+  test('"zoned for X Elementary" is captured as a stated school-zone criterion', () => {
+    expect(detectStatedSchoolDistrict('We have to be zoned for Lincoln Elementary')).toBe('Lincoln Elementary')
+  })
+
+  test('generic school-quality talk is NOT a criterion ("good school district" stays out)', () => {
+    expect(detectStatedSchoolDistrict('somewhere with a good school district')).toBeNull()
+    expect(detectStatedSchoolDistrict('near good schools')).toBeNull()
+  })
+
+  test('buyer-stated 55+/age-restricted community is captured', () => {
+    expect(detectStatedAgeRestrictedCommunity('We want a 55+ community')).toBe(true)
+    expect(detectStatedAgeRestrictedCommunity('an active adult neighborhood')).toBe(true)
+    expect(detectStatedAgeRestrictedCommunity('age-restricted only please')).toBe(true)
+    expect(detectStatedAgeRestrictedCommunity('a house with a big yard')).toBe(false)
+
+    const result = extractCriteriaFromTranscript('Caller: Looking for a 55+ community.')
+    expect(result.criteria.ageRestrictedCommunity).toBe(true)
+  })
+
+  test('school district counts as a concrete signal toward confidence', () => {
+    const result = extractCriteriaFromTranscript(
+      'Caller: Under 650k in the Mocksley school district.'
+    )
+
+    expect(result.criteria.maxPrice).toBe(650000)
+    expect(result.criteria.schoolDistricts).toContain('Mocksley school district')
+    expect(result.signalCount).toBe(2)
+    expect(result.confidence).toBe('high')
+  })
+
+  test('stated 55+ community counts as a concrete signal toward confidence', () => {
+    const result = extractCriteriaFromTranscript(
+      'Caller: A 55+ community in Austin would be perfect.'
+    )
+
+    expect(result.criteria.ageRestrictedCommunity).toBe(true)
+    expect(result.criteria.cities).toContain('Austin')
+    expect(result.signalCount).toBe(2)
+    expect(result.confidence).toBe('high')
+  })
+
+  test('familial-status inference stays out — "good for kids" is never captured', () => {
+    const result = extractCriteriaFromTranscript(
+      'Caller: We want somewhere good for kids.'
+    )
+
+    expect(result.criteria.schoolDistricts).toBeUndefined()
+    expect(result.criteria.ageRestrictedCommunity).toBeUndefined()
+    expect(result.signalCount).toBe(0)
+    expect(result.confidence).toBe('low')
+  })
+
+  test('evidence carries the buyer literal quote for stated school/age criteria', () => {
+    const result = extractCriteriaFromTranscript(
+      [
+        'Caller: Hello there.',
+        'Caller: We need to be in the Mocksley school district.',
+        'Caller: And it should be a 55+ community under 650k.',
+      ].join('\n')
+    )
+
+    expect(result.evidence).toContain('We need to be in the Mocksley school district.')
+    expect(result.evidence).toContain('And it should be a 55+ community under 650k.')
+    expect(result.evidence).not.toContain('Hello there.')
+  })
+
+  test('the AI mentioning a school district never becomes the buyer criteria', () => {
+    const result = extractCriteriaFromTranscript(
+      [
+        'AI: Many buyers like the Westfield school district.',
+        'Caller: Our budget is under 500k.',
+      ].join('\n')
+    )
+
+    expect(result.criteria.schoolDistricts).toBeUndefined()
+  })
+})
+
 describe('detectSupplementalCity', () => {
   test('picks up a proper-noun city the parser city list misses', () => {
     expect(detectSupplementalCity('near good schools in Mocksley')).toBe('Mocksley')
@@ -212,6 +310,26 @@ describe('criteriaToAlertRow', () => {
     expect(row.zip_codes).toEqual([])
     expect(row.keywords).toBeNull()
   })
+
+  test('stated school district lands in keywords; stated 55+ in must_have_features', () => {
+    const extraction = extractCriteriaFromTranscript(
+      'Caller: A 55+ community under 650k in the Mocksley school district.'
+    )
+    const row = criteriaToAlertRow(extraction.criteria, {
+      contactId: 'c', agentUserId: null, brokerageId: 'b', alertName: 'n',
+    })
+
+    expect(row.keywords).toBe('Mocksley school district')
+    expect(row.must_have_features).toContain(AGE_RESTRICTED_LABEL)
+  })
+
+  test('text-thread lane overrides source honestly; voice stays the default', () => {
+    const ids = { contactId: 'c', agentUserId: null, brokerageId: 'b', alertName: 'n' }
+
+    expect(criteriaToAlertRow({ maxPrice: 1 }, ids).source).toBe(SPOKEN_ALERT_SOURCE)
+    expect(criteriaToAlertRow({ maxPrice: 1 }, { ...ids, source: TEXT_ALERT_SOURCE }).source).toBe('text_conversation')
+    expect(criteriaToAlertRow({ maxPrice: 1 }, { ...ids, source: TEXT_ALERT_SOURCE }).is_active).toBe(false)
+  })
 })
 
 describe('markers and labels', () => {
@@ -221,6 +339,21 @@ describe('markers and labels', () => {
 
   test('proposal marker is a stable state discriminator', () => {
     expect(VOICE_PROPOSAL_MARKER).toBe('[VOICE_PROPOSAL]')
+    expect(TEXT_PROPOSAL_MARKER).toBe('[TEXT_PROPOSAL]')
+  })
+
+  test('message marker embeds the message ref for per-message dedupe', () => {
+    expect(writtenAlertMessageMarker('SM123')).toBe('[msg:SM123]')
+  })
+
+  test('content hash is stable for identical text, distinct for different text', () => {
+    const a = hashConversationText('contact-1:3 bed under 650k in Mocksley')
+    const b = hashConversationText('contact-1:3 bed under 650k in Mocksley')
+    const c = hashConversationText('contact-1:2 bed under 400k in Austin')
+
+    expect(a).toBe(b)
+    expect(a).not.toBe(c)
+    expect(a).toMatch(/^[0-9a-f]{8}$/)
   })
 
   test('describeCriteria reads like the buyer spoke', () => {
