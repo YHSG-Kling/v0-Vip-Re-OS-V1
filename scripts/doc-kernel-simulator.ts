@@ -2260,6 +2260,26 @@ async function main() {
         && src("app/actions/superadmin/platform-growth.ts").includes("proposal")
         && src("supabase/migrations/m272-platform-prospects-details.sql").includes("details"))
     }
+    // ── ROUND 22 VERDICT: TEAMMATES ARE A PERSONA LAYER, NEVER A SECOND AGENT SYSTEM ──
+    {
+      // Owner challenge answered ("doesn't the OS already do what teammates do?
+      // I don't want 2 similar systems battle each other"): VERDICT — KEEP, because
+      // tenant_ai_teammates is NOT an agent system. It spawns nothing, queues
+      // nothing, sends nothing; it decorates the ONE manager system (charter →
+      // the single draft-context builder; name → dispatcher attribution; autonomy
+      // CLAMPED to the earned ledger). This lock makes that verdict structural:
+      // the teammates lib/actions must stay free of every execution primitive —
+      // if a future round tries to give teammates their own send/cron/queue rail,
+      // this check fails and forces the work back onto the managers.
+      const teammatesLib = src("lib/kernel/ai-teammates.ts")
+      const teammatesActions = src("app/actions/ai-teammates.ts")
+      const executionPrimitives = ["sendEmail", "sendSMS", "sendSms", "twilio", "from(\"activities\")", "cron", "publishManagerSignal", "dispatchTeamCommand("]
+      check("TEAMMATES = PERSONA-ONLY (round-22 owner verdict codified): the teammate layer decorates the ONE manager system and can NEVER become a rival executor — lib + actions contain zero execution primitives (no send/cron/queue/signal calls), the ONLY table the actions write is tenant_ai_teammates, charters flow through the single central draft-context builder, and autonomy stays clamped to the earned ledger",
+        executionPrimitives.every((p) => !teammatesLib.includes(p) && !teammatesActions.includes(p))
+        && (teammatesActions.match(/\.from\("(?!tenant_ai_teammates|brokerages|users|agents)/g) ?? []).length === 0
+        && teammatesLib.includes("clampTeammateAutonomy")
+        && src("lib/ai-isa/brand-voice-prompt.ts").includes("composeTeammateContext"))
+    }
     // ── ROUND 21: THE OS SELLS + RUNS ITSELF — SNAPSHOT PROVISIONING, SENTINEL, OWNERSHIP ──
     {
       check("ROUND 21 — SIX RAILS THAT MAKE THE OS A SELLABLE, SELF-RUNNING COMPANY. (1) SNAPSHOT-AT-CREATION: snapshots gain a SITE layer (the fields that drive the day-one /site/[slug] website) with apply-side re-sanitization so a payload can never smuggle identity/tier/status; manualProvisionSubscriberAction takes snapshotId through the ONE apply path — a new tenant is born branded (audited tenant.provisioned_from_snapshot; recommendedTier preselects the tier). (2) COUPONS: platform_coupons + redemption ledger (UNIQUE constraint is the concurrency guard, count recomputed from ledger), tier-validated, Stripe-published mock-safe; redeemed coupons are billing records — deactivate, never delete. (3) PLATFORM SENTINEL: the staff-side AI manager — daily cron (in the ONE dispatch registry) reads engagement/credential-expiry/dunning≥3/SLA/expiring-trials and proposes severity-ranked actions WITH drafted outreach, weekly-bucketed dedupe keys, ignoreDuplicates never resurrects a dismissal; Approve&send only when SendGrid truly configured, 'sent' only on provider acceptance. (4) COMPANY CHANNELS: platform-scope OAuth on the SAME tenant route, tokens under owner_type='platform' with DISTINCT platform_social_<channel> keys because scopeCascade falls back to platform — reusing tenant ids would let a brokerage post through the company account; LinkedIn/X drafts auto-publish with real permalinks, others honestly manual. (5) DEMO SHOWCASE: is_demo tenant provisioned via the CANONICAL signup path (no fork), deterministic believable seed across contacts/leads/listings/transactions/conversations/messages/activities, reset re-queries is_demo=true before ANY delete, subscription paused so it never bills. (6) AI TEAMMATES: tenants name+charter their own teammates over the registry; autonomy CLAMPED to the earned-autonomy grant ledgers (fail-closed), charters injected in the ONE draft-context builder, dispatcher attributes by teammate name. Every table live-fired residue 0",
