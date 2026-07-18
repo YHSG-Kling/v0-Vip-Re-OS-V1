@@ -1,16 +1,23 @@
 'use client'
 
 // The platform's own social calendar — generate a week of product-marketing drafts,
-// approve, and record the permalink when a post actually goes out on the company
-// channels. Gated to platform marketing staff; nothing auto-publishes.
+// approve, then either DISPATCH through the connected company channel (when the
+// channel is connected AND the publisher supports it — real send, real permalink)
+// or copy & post manually with the honest per-channel reason. Gated to platform
+// marketing staff; nothing fakes a send.
 import { useState, useTransition } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { CalendarPlus, Loader2, Megaphone } from 'lucide-react'
+import { CalendarPlus, Loader2, Megaphone, Send } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { generateProductCalendarAction, listProductDraftsAction, transitionProductDraftAction, generateProductVideoDraftAction, attachProductVideoAction } from '@/app/actions/superadmin/platform-content'
+import { publishProductDraftAction } from '@/app/actions/superadmin/platform-social'
+
+/** Honest per-channel dispatch state, computed server-side from the company
+ *  channel connections (app/dashboard/superadmin/growth/page.tsx). */
+export interface ChannelState { connected: boolean; dispatchSupported: boolean; note: string | null }
 
 const STATUS_BADGE: Record<string, string> = {
   draft: 'bg-slate-100 text-slate-700', approved: 'bg-blue-100 text-blue-800', posted: 'bg-emerald-100 text-emerald-800',
@@ -18,7 +25,7 @@ const STATUS_BADGE: Record<string, string> = {
 
 interface Draft { id: string; channel: string; angle: string; content: string; hashtags: string | null; status: string; scheduled_for: string | null; permalink: string | null; media_type?: string | null; format?: string | null; script?: string | null; video_url?: string | null }
 
-export function ProductContentBoard({ initialDrafts }: { initialDrafts: Draft[] }) {
+export function ProductContentBoard({ initialDrafts, channelStates = {} }: { initialDrafts: Draft[]; channelStates?: Record<string, ChannelState> }) {
   const [drafts, setDrafts] = useState<Draft[]>(initialDrafts)
   const [startDate, setStartDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [permalinks, setPermalinks] = useState<Record<string, string>>({})
@@ -54,6 +61,13 @@ export function ProductContentBoard({ initialDrafts }: { initialDrafts: Draft[] 
     startTransition(async () => {
       const r = await transitionProductDraftAction({ id, to, permalink: permalinks[id] })
       if (r.ok) reload(); else toast({ title: 'Error', description: r.error, variant: 'destructive' })
+    })
+  }
+  function publish(id: string, channel: string) {
+    startTransition(async () => {
+      const r = await publishProductDraftAction({ id })
+      if (r.ok) { toast({ title: `Published to ${channel}`, description: r.permalink }); reload() }
+      else toast({ title: 'Publish failed', description: r.error, variant: 'destructive' })
     })
   }
 
@@ -100,15 +114,33 @@ export function ProductContentBoard({ initialDrafts }: { initialDrafts: Draft[] 
             <p className="text-[11px] text-muted-foreground">{d.hashtags}</p>
             <div className="flex items-center gap-2">
               {d.status === 'draft' && <Button size="sm" variant="outline" disabled={pending} onClick={() => transition(d.id, 'approved')}>Approve</Button>}
-              {d.status === 'approved' && (
-                <>
-                  <Input className="h-7 text-xs flex-1" placeholder="permalink after posting" value={permalinks[d.id] ?? ''} onChange={(e) => setPermalinks({ ...permalinks, [d.id]: e.target.value })} />
-                  <Button size="sm" disabled={pending || !(permalinks[d.id] ?? '').trim()} onClick={() => transition(d.id, 'posted')}>Mark posted</Button>
-                </>
-              )}
+              {d.status === 'approved' && (() => {
+                const cs = channelStates[d.channel]
+                const canDispatch = !!cs && cs.connected && cs.dispatchSupported && d.media_type !== 'video'
+                return (
+                  <>
+                    {canDispatch && (
+                      <Button size="sm" disabled={pending} onClick={() => publish(d.id, d.channel)}>
+                        <Send className="h-3.5 w-3.5 mr-1" />Publish to {d.channel}
+                      </Button>
+                    )}
+                    <Input className="h-7 text-xs flex-1" placeholder="permalink after posting" value={permalinks[d.id] ?? ''} onChange={(e) => setPermalinks({ ...permalinks, [d.id]: e.target.value })} />
+                    <Button size="sm" variant={canDispatch ? 'outline' : 'default'} disabled={pending || !(permalinks[d.id] ?? '').trim()} onClick={() => transition(d.id, 'posted')}>Mark posted</Button>
+                  </>
+                )
+              })()}
               {d.status === 'posted' && d.permalink && <a className="text-xs text-indigo-600 underline" href={d.permalink} target="_blank" rel="noreferrer">view post</a>}
               {d.status !== 'posted' && <Button size="sm" variant="ghost" className="text-red-600" disabled={pending} onClick={() => transition(d.id, 'discarded')}>Discard</Button>}
             </div>
+            {d.status === 'approved' && (() => {
+              const cs = channelStates[d.channel]
+              // Honest dispatch state: why this draft can (or can't) go out automatically.
+              if (d.media_type === 'video') return <p className="text-[11px] text-muted-foreground">Video draft — upload the rendered video on {d.channel} and record the permalink manually.</p>
+              if (!cs) return null
+              if (!cs.connected) return <p className="text-[11px] text-amber-700">{d.channel} not connected — copy &amp; post manually (or connect it in Company channels above).</p>
+              if (!cs.dispatchSupported) return <p className="text-[11px] text-muted-foreground">{cs.note ?? `${d.channel} auto-publish not supported — copy & post manually.`}</p>
+              return null
+            })()}
           </div>
         ))}
       </CardContent>

@@ -7,101 +7,47 @@
 // - With code param: Handles OAuth callback (exchanges code for tokens)
 // Stores tokens to: social_media_accounts (not platform_credentials)
 // Supports: meta, linkedin, twitter, tiktok, youtube, pinterest, google_business
+//
+// PLATFORM SCOPE (company channels): the SAME route also connects the OS's OWN
+// social accounts (the growth board's "Company channels"). Initiation carries
+// ?platform_scope=<channel> (facebook|instagram|linkedin|youtube|x|tiktok),
+// gated by the platform 'marketing' capability; the scope rides the CSRF state,
+// and the callback stores tokens under platform scope in platform_credentials
+// (owner_type='platform', platform='platform_social_<channel>' — m273) via
+// lib/platform/platform-social.ts, then flips platform_social_accounts to
+// 'connected'. One handshake implementation, two credential homes.
+//
+// Provider configs + authorize-URL building live in lib/social/oauth-config.ts
+// (shared with the platform connect flow — no forked copies).
 
 import { NextRequest, NextResponse } from "next/server"
 import { cookies } from "next/headers"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import {
+  SOCIAL_OAUTH_CONFIGS,
+  buildSocialAuthorizeUrl,
+  isSocialOAuthProvider,
+  type SocialOAuthProvider,
+} from "@/lib/social/oauth-config"
+import {
+  CHANNEL_OAUTH_PROVIDER,
+  completePlatformChannelConnect,
+  isPlatformSocialChannel,
+} from "@/lib/platform/platform-social"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
+import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
 
-// ─── TYPES ────────────────────────────────────────────────────────────────────
+type SocialPlatform = SocialOAuthProvider
 
-type SocialPlatform =
-  | "meta"
-  | "linkedin"
-  | "twitter"
-  | "tiktok"
-  | "youtube"
-  | "pinterest"
-  | "google_business"
-
-interface SocialOAuthConfig {
-  displayName: string
-  clientIdEnv: string
-  clientSecretEnv: string
-  authUrl: string
-  tokenUrl: string
-  scopes: string[]
-  usePKCE?: boolean
-  additionalParams?: Record<string, string>
-}
-
-// ─── PLATFORM CONFIGS ─────────────────────────────────────────────────────────
-
-const SOCIAL_OAUTH_CONFIGS: Record<SocialPlatform, SocialOAuthConfig> = {
-  meta: {
-    displayName: "Meta (Facebook & Instagram)",
-    clientIdEnv: "FACEBOOK_APP_ID",
-    clientSecretEnv: "FACEBOOK_APP_SECRET",
-    authUrl: "https://www.facebook.com/v18.0/dialog/oauth",
-    tokenUrl: "https://graph.facebook.com/v18.0/oauth/access_token",
-    scopes: [
-      "pages_show_list",
-      "pages_manage_posts",
-      "pages_read_engagement",
-      "instagram_basic",
-      "instagram_content_publish",
-    ],
-  },
-  linkedin: {
-    displayName: "LinkedIn",
-    clientIdEnv: "LINKEDIN_CLIENT_ID",
-    clientSecretEnv: "LINKEDIN_CLIENT_SECRET",
-    authUrl: "https://www.linkedin.com/oauth/v2/authorization",
-    tokenUrl: "https://www.linkedin.com/oauth/v2/accessToken",
-    scopes: ["w_member_social", "r_liteprofile"],
-  },
-  twitter: {
-    displayName: "Twitter / X",
-    clientIdEnv: "TWITTER_CLIENT_ID",
-    clientSecretEnv: "TWITTER_CLIENT_SECRET",
-    authUrl: "https://twitter.com/i/oauth2/authorize",
-    tokenUrl: "https://api.twitter.com/2/oauth2/token",
-    scopes: ["tweet.read", "tweet.write", "users.read", "offline.access"],
-    usePKCE: true,
-  },
-  tiktok: {
-    displayName: "TikTok",
-    clientIdEnv: "TIKTOK_CLIENT_KEY",
-    clientSecretEnv: "TIKTOK_CLIENT_SECRET",
-    authUrl: "https://www.tiktok.com/v2/auth/authorize",
-    tokenUrl: "https://open.tiktokapis.com/v2/oauth/token/",
-    scopes: ["user.info.basic", "video.publish", "video.upload"],
-  },
-  youtube: {
-    displayName: "YouTube",
-    clientIdEnv: "GOOGLE_CLIENT_ID",
-    clientSecretEnv: "GOOGLE_CLIENT_SECRET",
-    authUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-    tokenUrl: "https://oauth2.googleapis.com/token",
-    scopes: ["https://www.googleapis.com/auth/youtube.upload"],
-    additionalParams: { access_type: "offline", prompt: "consent" },
-  },
-  pinterest: {
-    displayName: "Pinterest",
-    clientIdEnv: "PINTEREST_APP_ID",
-    clientSecretEnv: "PINTEREST_APP_SECRET",
-    authUrl: "https://www.pinterest.com/oauth/",
-    tokenUrl: "https://api.pinterest.com/v5/oauth/token",
-    scopes: ["boards:read", "pins:read", "pins:write"],
-  },
-  google_business: {
-    displayName: "Google Business Profile",
-    clientIdEnv: "GOOGLE_CLIENT_ID",
-    clientSecretEnv: "GOOGLE_CLIENT_SECRET",
-    authUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-    tokenUrl: "https://oauth2.googleapis.com/token",
-    scopes: ["https://www.googleapis.com/auth/business.manage"],
-    additionalParams: { access_type: "offline", prompt: "consent" },
-  },
+interface OAuthStateData {
+  platform: string
+  userId: string
+  nonce: string
+  /** 'platform' when connecting a COMPANY channel (superadmin growth board). */
+  scope?: "platform"
+  /** The company channel key when scope === 'platform'. */
+  channel?: string
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -129,6 +75,34 @@ function redirectWithResult(
   return NextResponse.redirect(url)
 }
 
+/** Platform-scope results land back on the growth board, not the tenant profile. */
+function redirectPlatformResult(
+  baseUrl: string,
+  success: boolean,
+  channel: string,
+  error?: string
+): NextResponse {
+  const url = new URL("/dashboard/superadmin/growth", baseUrl)
+  if (success) {
+    url.searchParams.set("channel_connected", channel)
+  } else {
+    url.searchParams.set("channel_error", error || "Connection failed")
+    url.searchParams.set("channel", channel)
+  }
+  return NextResponse.redirect(url)
+}
+
+/** Best-effort state decode (NOT trusted — only used to route error redirects
+ *  to the right surface before CSRF verification happens). */
+function tryDecodeState(state: string | null): OAuthStateData | null {
+  if (!state) return null
+  try {
+    return JSON.parse(Buffer.from(state, "base64url").toString())
+  } catch {
+    return null
+  }
+}
+
 // PKCE helpers (Twitter requires this)
 function generateCodeVerifier(): string {
   const array = new Uint8Array(32)
@@ -149,12 +123,11 @@ export async function GET(
   { params }: { params: Promise<{ platform: string }> }
 ) {
   const { platform: platformParam } = await params
-  const platform = platformParam as SocialPlatform
-  const config = SOCIAL_OAUTH_CONFIGS[platform]
-
-  if (!config) {
-    return NextResponse.json({ error: `Unknown social platform: ${platform}` }, { status: 400 })
+  if (!isSocialOAuthProvider(platformParam)) {
+    return NextResponse.json({ error: `Unknown social platform: ${platformParam}` }, { status: 400 })
   }
+  const platform: SocialPlatform = platformParam
+  const config = SOCIAL_OAUTH_CONFIGS[platform]
 
   const searchParams = request.nextUrl.searchParams
   const code = searchParams.get("code")
@@ -167,9 +140,16 @@ export async function GET(
 
   // ─── CALLBACK: Handle OAuth response ──────────────────────────────────────
   if (code || oauthError) {
+    // Route error/failure redirects to the surface that STARTED the flow.
+    const peek = tryDecodeState(state)
+    const failRedirect = (error: string) =>
+      peek?.scope === "platform" && peek.channel
+        ? redirectPlatformResult(baseUrl, false, peek.channel, error)
+        : redirectWithResult(baseUrl, false, platform, error)
+
     if (oauthError) {
       console.error(`[Social OAuth] Error from ${platform}: ${oauthError} — ${errorDescription}`)
-      return redirectWithResult(baseUrl, false, platform, errorDescription || oauthError)
+      return failRedirect(errorDescription || oauthError)
     }
 
     if (!state) {
@@ -180,22 +160,22 @@ export async function GET(
     const cookieStore = await cookies()
     const storedState = cookieStore.get("social_oauth_state")?.value
     if (!storedState || storedState !== state) {
-      return redirectWithResult(baseUrl, false, platform, "Security validation failed — please try again")
+      return failRedirect("Security validation failed — please try again")
     }
     cookieStore.delete("social_oauth_state")
 
     // Decode state
-    let stateData: { platform: string; userId: string; nonce: string }
+    let stateData: OAuthStateData
     try {
       stateData = JSON.parse(Buffer.from(state, "base64url").toString())
     } catch {
-      return redirectWithResult(baseUrl, false, platform, "Invalid state format")
+      return failRedirect("Invalid state format")
     }
 
     const clientId = process.env[config.clientIdEnv]
     const clientSecret = process.env[config.clientSecretEnv]
     if (!clientId || !clientSecret) {
-      return redirectWithResult(baseUrl, false, platform, `${config.displayName} OAuth not configured`)
+      return failRedirect(`${config.displayName} OAuth not configured`)
     }
 
     const redirectUri = `${baseUrl}/api/social/oauth/${platform}`
@@ -233,16 +213,57 @@ export async function GET(
     if (!tokenResponse.ok) {
       const errData = await tokenResponse.json().catch(() => ({}))
       console.error(`[Social OAuth] Token exchange failed for ${platform}:`, errData)
-      return redirectWithResult(
-        baseUrl,
-        false,
-        platform,
+      return failRedirect(
         errData.error_description || errData.message || "Failed to exchange code for tokens"
       )
     }
 
     const tokens = await tokenResponse.json()
 
+    // ── PLATFORM SCOPE: store under the company's credential home ───────────
+    if (stateData.scope === "platform") {
+      const channel = stateData.channel
+      if (!isPlatformSocialChannel(channel) || CHANNEL_OAUTH_PROVIDER[channel] !== platform) {
+        return redirectWithResult(baseUrl, false, platform, "Invalid platform-scope state")
+      }
+      const svc = createServiceClient()
+      // Defense in depth: the connecting user must STILL hold platform marketing.
+      const { data: staffRow } = await svc
+        .from("users").select("user_type, platform_role, email").eq("id", stateData.userId).maybeSingle()
+      const role = (staffRow as any)?.platform_role ?? ((staffRow as any)?.user_type === "superadmin" ? "superadmin" : null)
+      if (!platformStaffCan(role, "marketing")) {
+        return redirectPlatformResult(baseUrl, false, channel, "Platform marketing access required")
+      }
+
+      const done = await completePlatformChannelConnect(svc, {
+        channel,
+        connectedBy: stateData.userId,
+        tokens: {
+          accessToken: tokens.access_token,
+          refreshToken: tokens.refresh_token ?? null,
+          expiresInSeconds: tokens.expires_in ?? null,
+        },
+      })
+      if (!done.ok) {
+        console.error(`[Social OAuth] Platform-channel store failed for ${channel}:`, done.error)
+        return redirectPlatformResult(baseUrl, false, channel, done.error)
+      }
+
+      // Audit the connect (append-only superadmin ledger).
+      await svc.from("superadmin_audit_log").insert({
+        actor_user_id: stateData.userId,
+        actor_email: (staffRow as any)?.email ?? "",
+        action: "platform_social.connected",
+        target_type: "platform_social_account",
+        target_id: channel,
+        details: { provider: platform, accountName: done.accountName },
+      }).then(undefined, () => {})
+
+      console.log(`[Social OAuth] Connected COMPANY channel ${channel} (${platform}) by ${stateData.userId}`)
+      return redirectPlatformResult(baseUrl, true, channel)
+    }
+
+    // ── TENANT SCOPE (original flow): social_media_accounts ─────────────────
     // pass 10: the live unique is (brokerage_id, platform, account_id) — the
     // old onConflict "user_id,platform" matched no index and errored on every
     // callback. Resolve the connecting user's brokerage; account_id keeps the
@@ -283,21 +304,39 @@ export async function GET(
 
   // ─── INITIATE: Start OAuth flow ───────────────────────────────────────────
 
+  // Company-channel connect? (?platform_scope=<channel>) — capability-gated.
+  const platformScopeChannel = searchParams.get("platform_scope")
+
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) {
-    return redirectWithResult(baseUrl, false, platform, "Please log in to connect social accounts")
+    return platformScopeChannel
+      ? redirectPlatformResult(baseUrl, false, platformScopeChannel, "Please log in to connect company channels")
+      : redirectWithResult(baseUrl, false, platform, "Please log in to connect social accounts")
+  }
+
+  let stateScope: Pick<OAuthStateData, "scope" | "channel"> = {}
+  if (platformScopeChannel) {
+    if (!isPlatformSocialChannel(platformScopeChannel) || CHANNEL_OAUTH_PROVIDER[platformScopeChannel] !== platform) {
+      return redirectPlatformResult(baseUrl, false, platformScopeChannel, `Channel '${platformScopeChannel}' does not ride the ${platform} OAuth app`)
+    }
+    const gate = await requirePlatformCapability("marketing", { requireWrite: true })
+    if (!gate.ok) {
+      return redirectPlatformResult(baseUrl, false, platformScopeChannel, gate.error ?? "Platform marketing access required")
+    }
+    stateScope = { scope: "platform", channel: platformScopeChannel }
   }
 
   const clientId = process.env[config.clientIdEnv]
   if (!clientId) {
     console.error(`[Social OAuth] Missing ${config.clientIdEnv} env var`)
-    return redirectWithResult(baseUrl, false, platform, `${config.displayName} OAuth not configured. Contact your administrator.`)
+    return platformScopeChannel
+      ? redirectPlatformResult(baseUrl, false, platformScopeChannel, `${config.displayName} OAuth not configured — set ${config.clientIdEnv} / ${config.clientSecretEnv}`)
+      : redirectWithResult(baseUrl, false, platform, `${config.displayName} OAuth not configured. Contact your administrator.`)
   }
 
   // CSRF state
-  const newState = Buffer.from(
-    JSON.stringify({ platform, userId: user.id, nonce: crypto.randomUUID() })
-  ).toString("base64url")
+  const stateData: OAuthStateData = { platform, userId: user.id, nonce: crypto.randomUUID(), ...stateScope }
+  const newState = Buffer.from(JSON.stringify(stateData)).toString("base64url")
 
   const cookieStore = await cookies()
   cookieStore.set("social_oauth_state", newState, {
@@ -310,21 +349,11 @@ export async function GET(
 
   const redirectUri = `${baseUrl}/api/social/oauth/${platform}`
 
-  const authParams = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    response_type: "code",
-    scope: config.scopes.join(config.usePKCE ? " " : ","),
-    state: newState,
-    ...(config.additionalParams ?? {}),
-  })
-
   // PKCE for Twitter
+  let codeChallenge: string | undefined
   if (config.usePKCE) {
     const codeVerifier = generateCodeVerifier()
-    const codeChallenge = await generateCodeChallenge(codeVerifier)
-    authParams.set("code_challenge", codeChallenge)
-    authParams.set("code_challenge_method", "S256")
+    codeChallenge = await generateCodeChallenge(codeVerifier)
     cookieStore.set("social_oauth_verifier", codeVerifier, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
@@ -334,7 +363,7 @@ export async function GET(
     })
   }
 
-  const authUrl = `${config.authUrl}?${authParams.toString()}`
-  console.log(`[Social OAuth] Initiating ${platform} OAuth for user ${user.id}`)
+  const authUrl = buildSocialAuthorizeUrl(platform, { clientId, redirectUri, state: newState, codeChallenge })
+  console.log(`[Social OAuth] Initiating ${platform} OAuth for user ${user.id}${platformScopeChannel ? ` (company channel ${platformScopeChannel})` : ""}`)
   return NextResponse.redirect(authUrl)
 }
