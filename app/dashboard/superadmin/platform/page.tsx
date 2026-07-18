@@ -122,6 +122,9 @@ export default async function SuperadminPlatformPage() {
             <Link href="/dashboard/superadmin/subscriptions">Subscriptions</Link>
           </Button>
           <Button asChild size="sm" variant="outline">
+            <Link href="/dashboard/superadmin/engagement">Engagement</Link>
+          </Button>
+          <Button asChild size="sm" variant="outline">
             <Link href="/dashboard/superadmin/support">Support</Link>
           </Button>
           <Button asChild size="sm" variant="outline">
@@ -132,6 +135,9 @@ export default async function SuperadminPlatformPage() {
           </Button>
           <Button asChild size="sm" variant="outline">
             <Link href="/dashboard/superadmin/a2p">A2P</Link>
+          </Button>
+          <Button asChild size="sm" variant="outline">
+            <Link href="/dashboard/superadmin/vendors">Vendors</Link>
           </Button>
           <Button asChild size="sm" variant="outline">
             <Link href="/dashboard/superadmin/rollout">Rollout</Link>

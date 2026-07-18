@@ -44,6 +44,8 @@ const GROUPS: ToolGroup[] = [
         desc: "Provision a new tenant + owner account without self-serve signup." },
       { label: "Usage reports — all tiers", href: "/dashboard/superadmin/usage-reports", cap: "tenants",
         desc: "Seats, book size, and metered usage per subscriber" },
+      { label: "Engagement radar", href: "/dashboard/superadmin/engagement", cap: "tenants",
+        desc: "Churn risk from behavior: real sign-ins, active users 7/30d, and creation velocity — riskiest tenants first." },
       { label: "Create user in a subscription", href: "/dashboard/superadmin/brokerages", cap: "tenants",
         desc: "Open the tenant → Team panel → Add user. Invites any role into any tenant, with full role records, audited." },
     ],
@@ -96,6 +98,8 @@ const GROUPS: ToolGroup[] = [
         desc: "Every tenant's SMS campaign registration status." },
       { label: "Suppression list", href: "/dashboard/superadmin/suppression", cap: "sentinel",
         desc: "Platform-wide outbound suppression — addresses that must never be contacted." },
+      { label: "Vendors — every tenant", href: "/dashboard/superadmin/vendors", cap: "sentinel",
+        desc: "Cross-tenant vendor network — status, portal linkage, premium placements, and the invoice ledger." },
     ],
   },
   {
