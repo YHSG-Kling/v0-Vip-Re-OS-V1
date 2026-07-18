@@ -21,6 +21,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { provisionTenantOwner } from "@/lib/kernel/users"
+import { applySnapshotPayload, type SnapshotPayload } from "@/lib/platform/config-snapshots"
+import { validateFunnelCoupon } from "@/lib/platform/trial-funnel"
 import { headers } from "next/headers"
 
 export type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
@@ -36,6 +38,14 @@ export interface SignupBrokerageInput {
   /** Solo-agent only: is the agent's managing brokerage / team also on the platform? */
   brokerageOnPlatform?: boolean
   teamOnPlatform?:      boolean
+  /** Self-serve funnel: platform_config_snapshots id to apply AFTER provisioning
+   *  (the tier's assigned template — day-one branded website). Best-effort:
+   *  a bad/missing snapshot never fails the signup. */
+  snapshotId?:     string
+  /** Self-serve funnel: coupon code to redeem for the new tenant. Recorded in the
+   *  redemption ledger + brokerages.billing_metadata.coupon so billing honors it
+   *  when the Stripe subscription is created. Best-effort — never fails signup. */
+  couponCode?:     string
 }
 
 export interface SignupBrokerageResult {
@@ -43,6 +53,12 @@ export interface SignupBrokerageResult {
   error?:       string
   brokerageId?: string
   trialEndsAt?: string
+  /** Snapshot outcome — honest per-part reporting (only set when snapshotId was given). */
+  snapshotApplied?: string[]
+  snapshotError?:   string
+  /** Coupon outcome — honest per-part reporting (only set when couponCode was given). */
+  couponApplied?: { code: string; summary: string }
+  couponError?:   string
 }
 
 const TRIAL_DAYS = 14
@@ -162,6 +178,116 @@ export async function signupBrokerageAction(
     updated_at:          new Date().toISOString(),
   })
 
+  // ── SELF-SERVE FUNNEL EXTRAS — snapshot + coupon, applied AFTER provisioning.
+  // Both are best-effort: a template or discount problem must NEVER cost us the
+  // signup itself. The result reports each outcome honestly instead.
+
+  // Step 4a — apply the tier funnel's config snapshot through THE one apply path
+  // (allow-listed layers only — never name/slug/email/status/tier/billing), so
+  // the day-one /site/[slug] website comes up branded.
+  let snapshotApplied: string[] | undefined
+  let snapshotError:   string | undefined
+  let snapshotName:    string | null = null
+  if (input.snapshotId) {
+    try {
+      const { data: snap } = await service
+        .from("platform_config_snapshots")
+        .select("id, name, payload")
+        .eq("id", input.snapshotId)
+        .maybeSingle()
+      if (!snap) {
+        snapshotError = "Config snapshot not found — starting from platform defaults."
+      } else {
+        snapshotName = (snap as any).name ?? null
+        const { applied } = await applySnapshotPayload(
+          ((snap as any).payload ?? {}) as SnapshotPayload,
+          brokerage.id,
+          newUser.id,
+          service,
+        )
+        snapshotApplied = applied
+      }
+    } catch (err) {
+      snapshotError = err instanceof Error ? err.message : "Snapshot apply failed"
+      console.warn("[signupBrokerage] snapshot apply failed (non-fatal):", err)
+    }
+  }
+
+  // Step 4b — redeem the coupon. Same rules + same two-write idiom as the
+  // superadmin redemption path: validate via the pure layer, (1) INSERT the
+  // redemption row FIRST — UNIQUE(coupon_id, brokerage_id) is the concurrency
+  // guard — then (2) set redeemed_count from a fresh COUNT of the ledger.
+  // The coupon is then stored in brokerages.billing_metadata.coupon (jsonb)
+  // so the billing rail can honor it when the Stripe subscription is created.
+  let couponApplied: { code: string; summary: string } | undefined
+  let couponError:   string | undefined
+  if (input.couponCode?.trim()) {
+    try {
+      const check = await validateFunnelCoupon(input.couponCode, input.tier, service)
+      if (!check.ok) {
+        couponError = check.message
+      } else {
+        const { error: insErr } = await service.from("platform_coupon_redemptions").insert({
+          coupon_id:    check.couponId,
+          brokerage_id: brokerage.id,
+          redeemed_by:  newUser.id,
+        })
+        if (insErr) {
+          couponError = (insErr as any).code === "23505"
+            ? `${check.code} was already redeemed for this account`
+            : insErr.message
+        } else {
+          // redeemed_count = COUNT(ledger) — derived from the source of truth.
+          const { count } = await service
+            .from("platform_coupon_redemptions")
+            .select("id", { count: "exact", head: true })
+            .eq("coupon_id", check.couponId)
+          const { error: cntErr } = await service
+            .from("platform_coupons")
+            .update({ redeemed_count: count ?? check.coupon.redeemed_count + 1 })
+            .eq("id", check.couponId)
+          if (cntErr) console.warn("[signupBrokerage] redeemed_count sync failed (ledger row exists):", cntErr.message)
+
+          // billing_metadata is a jsonb bag (stripe_customer_id / billing_cycle /
+          // subscription_status …) — merge, never replace, and add the coupon under
+          // its own key so the checkout/billing rail can apply it later.
+          const { data: bmRow } = await service
+            .from("brokerages")
+            .select("billing_metadata")
+            .eq("id", brokerage.id)
+            .maybeSingle()
+          const existingBm = (bmRow as any)?.billing_metadata
+          const bm = existingBm && typeof existingBm === "object" ? existingBm : {}
+          await service
+            .from("brokerages")
+            .update({
+              billing_metadata: {
+                ...bm,
+                coupon: {
+                  id:               check.couponId,
+                  code:             check.code,
+                  stripe_coupon_id: check.coupon.stripe_coupon_id ?? null,
+                  percent_off:      check.coupon.percent_off,
+                  amount_off_cents: check.coupon.amount_off_cents,
+                  duration:         check.coupon.duration,
+                  duration_months:  check.coupon.duration_months,
+                  summary:          check.summary,
+                  redeemed_at:      new Date().toISOString(),
+                  source:           "self_serve_funnel",
+                },
+              },
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", brokerage.id)
+          couponApplied = { code: check.code, summary: check.summary }
+        }
+      }
+    } catch (err) {
+      couponError = err instanceof Error ? err.message : "Coupon redemption failed"
+      console.warn("[signupBrokerage] coupon redemption failed (non-fatal):", err)
+    }
+  }
+
   // DAY-ONE ASSISTANT — seed the starter AI identity (name + generated headshot
   // + narration voice) so Aria answers the phone and hosts the first weekly show
   // immediately; the settings page becomes personalization, not setup. Best-effort.
@@ -194,6 +320,14 @@ export async function signupBrokerageAction(
         admin_email:    input.adminEmail,
         trial_ends_at:  trialEndsAt.toISOString(),
         user_agent:     (await headers()).get("user-agent") ?? null,
+        // Self-serve funnel outcome — honest either way (null when not requested).
+        snapshot_id:      input.snapshotId ?? null,
+        snapshot_name:    snapshotName,
+        snapshot_applied: snapshotApplied ?? null,
+        snapshot_error:   snapshotError ?? null,
+        coupon_code:      couponApplied?.code ?? (input.couponCode?.trim() || null),
+        coupon_applied:   couponApplied ?? null,
+        coupon_error:     couponError ?? null,
       }),
       created_at:    new Date().toISOString(),
       updated_at:    new Date().toISOString(),
@@ -236,5 +370,9 @@ export async function signupBrokerageAction(
     ok:          true,
     brokerageId: brokerage.id,
     trialEndsAt: trialEndsAt.toISOString(),
+    snapshotApplied,
+    snapshotError,
+    couponApplied,
+    couponError,
   }
 }
