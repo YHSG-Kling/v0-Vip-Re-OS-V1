@@ -13,6 +13,7 @@ import {
   checkVendorBudget,
   getBrokerageBudgetWarningEnabled,
   getVendorSpendBreakdown,
+  getBudgetBlockedSendCount,
 } from "@/lib/vendor-governance/budget-gate"
 import { redactBudgetForActor, type BudgetView } from "@/lib/vendor-governance/budget-visibility"
 import { aggregateBrokerageSpend, type BrokerageSpendRow } from "@/lib/vendor-governance/budget-eval"
@@ -47,6 +48,21 @@ export async function getBrokerageBudgetWarning(): Promise<BudgetView | null> {
   ])
   // Force isPlatformStaff:false here — this surface is for the brokerage's own view.
   return redactBudgetForActor(budget, { isPlatformStaff: false, showBrokerageWarning: warningEnabled })
+}
+
+/**
+ * How many outbound sends the vendor-budget gate refused in the last 30 days for the
+ * CURRENT brokerage — derived from the egress-refusal ledger (self_heal_events), no new
+ * tables. A coarse COUNT only (no vendor names, no dollar amounts), so it respects the
+ * privacy contract above. Returns 0 when unauthenticated, warning-hidden, or nothing
+ * was blocked — the banner simply omits the line.
+ */
+export async function getBudgetBlockedSendCount30d(): Promise<number> {
+  const actor = await resolveActor()
+  if (!actor?.brokerageId) return 0
+  const warningEnabled = await getBrokerageBudgetWarningEnabled()
+  if (!warningEnabled) return 0 // superadmin hid the budget surface from brokerages
+  return getBudgetBlockedSendCount(actor.brokerageId, 30)
 }
 
 /**

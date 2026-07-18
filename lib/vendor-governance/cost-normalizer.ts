@@ -92,6 +92,14 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
     unitType: 'minutes',
     costPerUnit: 0.0140, // $0.014 per minute
   },
+
+  // SMS Providers
+  'twilio_sms': {
+    vendorName: 'Twilio SMS',
+    unitType: 'api_calls',
+    costPerUnit: 0.0075, // $0.0075 per outbound segment
+    notes: 'Per SMS segment — keep in lockstep with the figure metered in lib/providers/dispatch.ts',
+  },
   'elevenlabs': {
     vendorName: 'ElevenLabs',
     unitType: 'tokens',

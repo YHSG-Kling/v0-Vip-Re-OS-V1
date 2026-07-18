@@ -21,6 +21,7 @@ import {
   placeCall as messagingPlaceCall,
 } from "@/lib/providers/messaging"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
+import { normalizeVendorCost } from "@/lib/vendor-governance/cost-normalizer"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
 import { evaluateOutboundCompliance } from "@/lib/kernel/communication-compliance"
@@ -101,6 +102,122 @@ interface DispatchResult {
   providerKey: string
   messageId?: string
   error?: string
+  /** Soft vendor-budget warning (≥80% of the monthly ceiling) — the send PROCEEDED. */
+  budgetWarning?: string
+}
+
+// ─── Vendor-budget pre-flight — the platform-spend ceiling applied at the egress gate ──
+// Mirrors the outbound-voice lane (lib/voice/twilio-outbound.ts, step 2): checkVendorBudget
+// with the estimated cost of THIS send (cost-normalizer rates, kept in lockstep with the
+// post-hoc metered figure), so Twilio SMS / SendGrid email / Lob mail get the same
+// pre-spend cap that already protects D-ID / ElevenLabs / Vapi / twilio-native voice.
+//
+// GOVERNANCE ORDER (deliberate): this runs AFTER every consumer-protection gate
+// (autonomy, consent/suppression/DNC/quiet-hours, de-confliction, content safety) has
+// passed and BEFORE the provider call — budget never masks a compliance refusal, and a
+// compliance refusal never spends.
+//
+// FAIL-OPEN RULE (critical): if the budget CHECK ITSELF fails — table missing, query
+// failure, module-load error — the send PROCEEDS and the failure is ledgered via
+// recordSelfHeal. A broken budget system must never silence a consented client
+// communication; only an AFFIRMATIVE over-ceiling verdict blocks.
+async function vendorBudgetPreflight(args: {
+  brokerageId: string
+  channel: "email" | "sms" | "phone" | "direct_mail"
+  vendorKey: string
+  /** Estimated USD cost of this send — keep in lockstep with the metered figure below. */
+  addCost: number
+  systemSource?: string
+}): Promise<{ refusal: DispatchResult | null; warning?: string }> {
+  const channelLabel = args.channel.replace(/_/g, " ")
+  try {
+    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
+    const budget = await checkVendorBudget({ brokerageId: args.brokerageId, addCost: args.addCost })
+
+    if (budget.degraded) {
+      // The budget system couldn't answer (ledger read failed) — FAIL OPEN: proceed,
+      // and record the breakage so it's a visible fact, never a silent hole.
+      void recordBudgetLedgerEvent({
+        brokerageId: args.brokerageId,
+        subject: `budget_check:${args.brokerageId}`,
+        outcome: "failed",
+        detail: {
+          flow: "vendor_budget_check_error", channel: args.channel, connector: args.vendorKey,
+          reason: "Vendor-budget pre-flight could not read the spend ledger — send proceeded (fail-open)",
+          system_source: args.systemSource ?? "dispatch",
+        },
+      })
+      return { refusal: null }
+    }
+
+    if (!budget.allowed) {
+      // Refusal ledger — an 'escalated' self_heal_events row is what the broker's
+      // Exception Center folds into its OPEN list (the same rail the Lob no-address
+      // refusal rides). The subject collapses per channel+brokerage so a burst of
+      // blocked sends is ONE open exception, not a flood. PRIVACY: `reason` is
+      // brokerage-visible — no dollar amounts or vendor names in it; the numbers
+      // ride in separate (non-rendered) detail keys for platform staff.
+      await recordBudgetLedgerEvent({
+        brokerageId: args.brokerageId,
+        subject: `budget:${args.channel}:${args.brokerageId}`,
+        outcome: "escalated",
+        detail: {
+          flow: "egress_budget_blocked", channel: args.channel, connector: args.vendorKey,
+          reason: `Monthly platform usage limit reached — ${channelLabel} sends are paused until the limit resets`,
+          spent: budget.spent, budget: budget.budget, percent: budget.percent,
+          system_source: args.systemSource ?? "dispatch",
+        },
+      })
+      return {
+        refusal: {
+          success: false,
+          providerKey: "budget_gate",
+          error: `Outbound blocked: monthly platform usage limit reached — ${channelLabel} send paused until the limit resets`,
+        },
+      }
+    }
+
+    return {
+      refusal: null,
+      warning: budget.softWarning
+        ? "Approaching the monthly platform usage limit — this send proceeded; outbound may pause if the limit is reached"
+        : undefined,
+    }
+  } catch {
+    // FAIL-OPEN RULE: an error thrown by the check itself never blocks the send.
+    void recordBudgetLedgerEvent({
+      brokerageId: args.brokerageId,
+      subject: `budget_check:${args.brokerageId}`,
+      outcome: "failed",
+      detail: {
+        flow: "vendor_budget_check_error", channel: args.channel, connector: args.vendorKey,
+        reason: "Vendor-budget pre-flight threw — send proceeded (fail-open)",
+        system_source: args.systemSource ?? "dispatch",
+      },
+    })
+    return { refusal: null }
+  }
+}
+
+/** Best-effort append to the self-heal ledger — ledgering never blocks or fails a dispatch. */
+async function recordBudgetLedgerEvent(evt: {
+  brokerageId: string
+  subject: string
+  outcome: "failed" | "escalated"
+  detail: Record<string, unknown>
+}): Promise<void> {
+  try {
+    const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+    const svc = createServiceClient()
+    await recordSelfHeal(svc, {
+      brokerageId: evt.brokerageId,
+      domain: "data_flow",
+      subject: evt.subject,
+      action: "none",
+      outcome: evt.outcome,
+      detail: evt.detail,
+    })
+  } catch { /* the dispatch result is the record of truth */ }
 }
 
 // ─── De-Conflict helper — single chokepoint for over-touch suppression ──────
@@ -260,6 +377,17 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
   })
   if (fhEmail.blocked) return { success: false, providerKey: "content_safety_gate", error: `Outbound blocked: ${fhEmail.reason}` }
 
+  // ── VENDOR-BUDGET PRE-FLIGHT — after every consumer-protection gate, before the
+  //    provider call. addCost matches the $/email figure metered below. Fail-open.
+  const emailBudget = await vendorBudgetPreflight({
+    brokerageId: params.brokerageId,
+    channel: "email",
+    vendorKey: "sendgrid",
+    addCost: normalizeVendorCost("sendgrid", 1),
+    systemSource: params.systemSource,
+  })
+  if (emailBudget.refusal) return emailBudget.refusal
+
   let result: DispatchResult
 
   if (providerKey === "sendgrid") {
@@ -274,6 +402,7 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
       success: raw.success,
       providerKey,
       error: raw.error,
+      budgetWarning: emailBudget.warning,
     }
   } else {
     // Future: SMTP relay via global_settings (smtp_host / smtp_port / smtp_username / smtp_password)
@@ -289,6 +418,7 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
       success: raw.success,
       providerKey,
       error: raw.error,
+      budgetWarning: emailBudget.warning,
     }
   }
 
@@ -410,6 +540,17 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
     },
   })
 
+  // ── VENDOR-BUDGET PRE-FLIGHT — after every consumer-protection gate, before the
+  //    provider call. addCost matches the $/segment figure metered below. Fail-open.
+  const smsBudget = await vendorBudgetPreflight({
+    brokerageId: params.brokerageId,
+    channel: "sms",
+    vendorKey: "twilio_sms",
+    addCost: normalizeVendorCost("twilio_sms", 1),
+    systemSource: params.systemSource,
+  })
+  if (smsBudget.refusal) return smsBudget.refusal
+
   // Only Twilio is supported for SMS today
   const raw = await messagingSendSMS({
     to: params.to,
@@ -421,6 +562,7 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
     providerKey,
     messageId: raw.messageId,
     error: raw.error,
+    budgetWarning: smsBudget.warning,
   }
 
   void logVendorUsage({
@@ -531,6 +673,19 @@ export async function dispatchPhone(params: DispatchPhoneParams): Promise<Dispat
     },
   })
 
+  // ── VENDOR-BUDGET PRE-FLIGHT — after every consumer-protection gate, before the
+  //    provider call. NOTE: this is the generic TwiML lane only; the Twilio-native
+  //    AI call lane (lib/voice/twilio-outbound.ts) runs its OWN budget pre-flight
+  //    and never routes through dispatchPhone — no double-gating. Fail-open.
+  const phoneBudget = await vendorBudgetPreflight({
+    brokerageId: params.brokerageId,
+    channel: "phone",
+    vendorKey: "twilio_voice",
+    addCost: normalizeVendorCost("twilio_voice", 1), // ~1 min estimate
+    systemSource: params.systemSource,
+  })
+  if (phoneBudget.refusal) return phoneBudget.refusal
+
   const raw = await messagingPlaceCall({
     to: params.to,
     twimlUrl: params.twimlUrl,
@@ -541,6 +696,7 @@ export async function dispatchPhone(params: DispatchPhoneParams): Promise<Dispat
     providerKey,
     messageId: raw.callSid,
     error: raw.error,
+    budgetWarning: phoneBudget.warning,
   }
 
   void logVendorUsage({
@@ -721,23 +877,21 @@ export async function dispatchDirectMail(
   // Approx Lob per-piece cost by type (telemetry only; reconciled against Lob invoices).
   const COST: Record<DirectMailPieceType, number> = { letter: 1.2, postcard: 0.78, self_mailer: 1.05 }
 
-  // Budget gate — Lob is the priciest platform-paid vendor. Apply the SAME
-  // month-to-date vendor-spend ceiling that already protects D-ID / ElevenLabs /
-  // Vapi BEFORE incurring spend, so a runaway agent or bulk mail send can't blow
-  // past the brokerage's plan-tier budget on the most expensive channel. addCost
-  // matches the figure metered into vendor_usage_tracking below. Fail-open: a
-  // budget read error returns allowed:true and never blocks a real send.
-  if (params.brokerageId) {
-    const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
-    const budget = await checkVendorBudget({ brokerageId: params.brokerageId, addCost: COST[pieceType] })
-    if (!budget.allowed) {
-      return {
-        success: false,
-        providerKey,
-        error: `Vendor budget paused: month-to-date platform-vendor spend ($${budget.spent}) would exceed the $${budget.budget} monthly ceiling — direct-mail send skipped`,
-      }
-    }
-  }
+  // Budget gate — Lob is the priciest platform-paid vendor. The SAME shared
+  // pre-flight the email/SMS/phone dispatchers run: month-to-date vendor-spend
+  // ceiling BEFORE incurring spend, so a runaway agent or bulk mail send can't
+  // blow past the brokerage's plan-tier budget on the most expensive channel.
+  // addCost is the per-piece figure BY MAIL SIZE (letter/postcard/self-mailer)
+  // and matches the figure metered into vendor_usage_tracking below. A blocked
+  // send is ledgered (Exception Center); a broken budget check FAILS OPEN.
+  const mailBudget = await vendorBudgetPreflight({
+    brokerageId: params.brokerageId,
+    channel: "direct_mail",
+    vendorKey: "lob",
+    addCost: COST[pieceType],
+    systemSource: params.systemSource,
+  })
+  if (mailBudget.refusal) return mailBudget.refusal
 
   let data: { id?: string }
   try {
@@ -792,7 +946,7 @@ export async function dispatchDirectMail(
     },
   })
 
-  return { success: true, providerKey, messageId: data.id }
+  return { success: true, providerKey, messageId: data.id, budgetWarning: mailBudget.warning }
 }
 
 // ─── VIDEO (superadmin-controlled, system-only) ───────────────────────────────
