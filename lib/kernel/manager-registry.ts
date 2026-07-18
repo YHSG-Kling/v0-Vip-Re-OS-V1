@@ -1472,6 +1472,7 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/queue-drain": "cron_manager",
   "/api/cron/tenant-safety-scan": "data_steward",
   "/api/cron/support-sla": "data_steward",
+  "/api/cron/platform-sentinel": "data_steward", // fleet-watching staff action proposals (round 21)
   "/api/cron/manager-eval": "data_steward",
   "/api/cron/manager-learning": "data_steward",
   "/api/cron/manager-signals": "cron_manager",

@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button"
 import { Building2, Plus, Search, Filter, TrendingUp } from "lucide-react"
 import Link from "next/link"
 import { listBrokeragesAction } from "@/app/actions/superadmin/brokerage-management"
+import { getDemoTenantStatusAction } from "@/app/actions/superadmin/demo-tenant"
+import { DemoShowcaseCard } from "./demo-showcase-card"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { redirect } from "next/navigation"
 
@@ -50,14 +52,18 @@ export default async function SuperadminBrokeragesPage(
   }
 
   const params = await searchParams
-  const result = await listBrokeragesAction({
-    status: params.status as any,
-    tier:   params.tier as any,
-    search: params.search,
-  })
+  const [result, demoStatus] = await Promise.all([
+    listBrokeragesAction({
+      status: params.status as any,
+      tier:   params.tier as any,
+      search: params.search,
+    }),
+    getDemoTenantStatusAction(),
+  ])
   if (!result.ok) return <div className="p-6 text-red-600">Failed: {result.error}</div>
 
   const { rows, totals } = result
+  const demoBrokerageId = demoStatus.ok ? demoStatus.status?.brokerage?.id ?? null : null
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -80,6 +86,9 @@ export default async function SuperadminBrokeragesPage(
           </Button>
         </div>
       </div>
+
+      {/* Demo showcase — the persistent, resettable demo brokerage for sales tours */}
+      <DemoShowcaseCard status={demoStatus.ok ? demoStatus.status ?? null : null} />
 
       {/* Filter chips (links — keeps the page server-rendered) */}
       <div className="flex gap-2 items-center flex-wrap">
@@ -146,6 +155,9 @@ export default async function SuperadminBrokeragesPage(
                         <Link href={`/dashboard/superadmin/brokerages/${r.id}`} className="font-medium hover:underline">
                           {r.name ?? "(unnamed)"}
                         </Link>
+                        {r.id === demoBrokerageId && (
+                          <Badge className="ml-1.5 bg-violet-100 text-violet-800 text-[10px] align-middle">demo</Badge>
+                        )}
                         <div className="text-xs text-muted-foreground flex items-center gap-1">
                           {r.city && r.state ? `${r.city}, ${r.state}` : "—"}
                           {sourceBadge(r.signup_source)}

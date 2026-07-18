@@ -42,6 +42,7 @@ const ALLOWLIST: Record<string, { cls: Class; why: string }> = {
   "lib/transactions/deal-vendor-notify.ts":     { cls: "b2b-transactional", why: "Deal-Save Huddle B2B leg — notifies the loan officer / title-escrow officer of a deal issue (business counterparty on the file; deduped + audited)" },
   "lib/kernel/vendors.ts":                      { cls: "b2b-transactional", why: "vendor-facing email (B2B service coordination)" },
   "lib/showings/dispatchers.ts":                { cls: "b2b-transactional", why: "agent-to-agent showing coordination (listing agent's phone, no consumer contact) via the connector-gateway adapter" },
+  "app/actions/superadmin/platform-sentinel.ts": { cls: "b2b-transactional", why: "PLATFORM SENTINEL approve&send (round 21) — a human staff member with sentinel WRITE capability approves an AI-drafted email to a TENANT admin (the platform's own B2B customer, retention/ops outreach — never a consumer); platform suppression list checked before send; canonical sendEmail; 'sent' only on provider acceptance; every approve/send audited to superadmin_audit_log" },
   // Client sends below were CLOSED this PR — they now route through lib/providers/dispatch.ts
   // (credit-copilot, listing-lifecycle, external-services, workflow-engine) and no longer touch
   // the raw senders, so they fall off this list entirely. Zero known-gaps remain.
@@ -94,6 +95,7 @@ const SOCIAL_MODULE = "@/lib/social/publisher"
 const SOCIAL_PRIMITIVE = /\bpublishToSocialPlatform\b/
 const SOCIAL_ALLOWLIST: Record<string, string> = {
   "app/api/cron/publish-social-posts/route.ts": "approval-gated — publishes ONLY social_posts with approval_status='approved'",
+  "app/actions/superadmin/platform-social.ts": "approval-gated — publishes ONLY platform_social_drafts with status='approved' to the COMPANY'S OWN connected channels (platform-scope creds, marketing WRITE gate, real permalink recorded or refuses to mark posted; audited)",
 }
 const socialCallers = files
   .map((abs) => ({ abs, src: readFileSync(abs, "utf8") }))

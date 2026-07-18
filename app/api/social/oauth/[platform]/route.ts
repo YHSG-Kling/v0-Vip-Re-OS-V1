@@ -249,15 +249,17 @@ export async function GET(
         return redirectPlatformResult(baseUrl, false, channel, done.error)
       }
 
-      // Audit the connect (append-only superadmin ledger).
-      await svc.from("superadmin_audit_log").insert({
+      // Audit the connect (append-only superadmin ledger; best-effort but
+      // sentinel-ledgered — the silencer ratchet forbids swallowing losses).
+      const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+      await sentinelWrite(svc, svc.from("superadmin_audit_log").insert({
         actor_user_id: stateData.userId,
         actor_email: (staffRow as any)?.email ?? "",
         action: "platform_social.connected",
         target_type: "platform_social_account",
         target_id: channel,
         details: { provider: platform, accountName: done.accountName },
-      }).then(undefined, () => {})
+      }), { flow: "platform_social_connect", table: "superadmin_audit_log" })
 
       console.log(`[Social OAuth] Connected COMPANY channel ${channel} (${platform}) by ${stateData.userId}`)
       return redirectPlatformResult(baseUrl, true, channel)
