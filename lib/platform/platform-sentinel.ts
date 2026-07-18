@@ -24,6 +24,9 @@
 //   • nps detractors— platform_nps_responses scores ≤ 6 in the last 60 days,
 //                     most recent per tenant (lib/platform/nps classification;
 //                     same ledger the superadmin engagement page rolls up)
+//   • a2p stalls    — assessA2pStall (lib/platform/provider-posture) over the
+//                     SAME inputs the superadmin A2P board reads (persisted
+//                     twilio_a2p state + last a2p_registration event)
 //
 // DEDUPE BUCKET: `${kind}:${brokerageId}:…:${weekBucket(now)}` — the bucket is
 // the Monday of `now`'s week (yyyy-mm-dd-ish, deterministic from the passed-in
@@ -117,6 +120,15 @@ export interface NpsDetractorFact {
   respondedAt: string
 }
 
+export interface A2pStallFact {
+  brokerageId: string
+  brokerageName: string
+  /** assessA2pStall's honest reason (lib/platform/provider-posture). */
+  reason: string
+  /** Registration review FAILED and nobody re-ran it — the critical shade. */
+  failed: boolean
+}
+
 export interface SentinelFacts {
   engagement: EngagementFact[]
   connections: ConnectionExpiryFact[]
@@ -124,6 +136,7 @@ export interface SentinelFacts {
   slaBreaches: SlaBreachFact[]
   trials: TrialFact[]
   npsDetractors: NpsDetractorFact[]
+  a2pStalls: A2pStallFact[]
 }
 
 /** How far back the cron looks for detractor responses (days). */
@@ -354,6 +367,30 @@ function composeNpsDetractor(f: NpsDetractorFact, brandName: string, bucket: str
     draftChannel: "email",
     draftText: draft,
     dedupeKey: `engagement_risk:${f.brokerageId}:nps:${bucket}`,
+  }
+}
+
+function composeA2pStall(f: A2pStallFact, bucket: string): ProposedSentinelAction {
+  // Kind vocabulary is fixed by the table CHECK — a stalled carrier
+  // registration IS a connectivity/compliance rail lapsing, so it files under
+  // 'connection_expiry'. The ':a2p:' segment keeps this dedupe key disjoint
+  // from composeConnections' `connection_expiry:${brokerageId}:${bucket}`
+  // credential-expiry keys (same convention as the ':nps:' segment above).
+  return {
+    kind: "connection_expiry",
+    severity: f.failed ? "critical" : "warn",
+    brokerageId: f.brokerageId,
+    title: `A2P stalled: ${f.brokerageName} — ${f.reason}`,
+    detail: `A2P board stall detection (assessA2pStall over the persisted twilio_a2p state): ${f.reason}. Until brand and campaign clear carrier review this tenant's texting is filtered or blocked — and nothing advances on its own.`,
+    // No outreach draft — a stuck carrier registration is STAFF work (re-run
+    // the runner, fix the profile, open a Twilio ticket), not tenant outreach.
+    draftChannel: "none",
+    draftText: `Internal action: open /dashboard/superadmin/a2p, find ${f.brokerageName}, and ${
+      f.failed
+        ? "fix the business profile then re-run the registration — the review FAILED and was never re-run"
+        : "re-run the runner to re-poll the review; if it has sat beyond the normal carrier window, open a Twilio support ticket"
+    }. The tenant cannot fix this themselves — no outreach until it moves.`,
+    dedupeKey: `connection_expiry:${f.brokerageId}:a2p:${bucket}`,
   }
 }
 
@@ -610,6 +647,7 @@ export function composeSentinelActions(
     if (a) out.push(a)
   }
   for (const f of facts.npsDetractors) out.push(composeNpsDetractor(f, brand.name, bucket))
+  for (const f of facts.a2pStalls) out.push(composeA2pStall(f, bucket))
 
   out.sort(
     (a, b) =>

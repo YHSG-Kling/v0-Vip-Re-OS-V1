@@ -115,6 +115,18 @@ export interface A2pState {
   campaign_status?: string
   last_error?: string | null
   updated_at?: string
+  // ── Voice integrity (CNAM + SHAKEN/STIR) — the step APPENDED after campaign
+  // approval. Same store (platform_credentials 'twilio_a2p' config jsonb), same
+  // TrustHub customer profile; statuses are Twilio's own bundle statuses
+  // (draft | pending-review | in-review | twilio-rejected | twilio-approved),
+  // POLLED on every run, never assumed. voice_integrity_error is kept SEPARATE
+  // from last_error so assessA2pStall's failed-registration detection
+  // (lib/platform/provider-posture) never fires on a caller-ID hiccup.
+  cnam_trust_product_sid?: string
+  cnam_status?: string
+  shaken_trust_product_sid?: string
+  shaken_status?: string
+  voice_integrity_error?: string | null
 }
 
 /** PURE: the next step to run given persisted state (resumable, idempotent). */
@@ -413,4 +425,185 @@ export async function runA2pRegistration(svc: any, brokerageId: string, opts?: {
   }
   await saveA2pState(svc, brokerageId, rowId, state)
   return { ok: true, state, advancedTo: nextA2pStep(state) }
+}
+
+// ── Voice integrity: CNAM + SHAKEN/STIR (appended step, after campaign) ──────
+// Carriers now label unsigned/unnamed business calls "Spam Likely" — the voice
+// twin of unregistered SMS. Both registrations ride the SAME TrustHub customer
+// profile the A2P machine already filed, so this is an APPENDED step of the
+// same machine, persisted in the same platform_credentials 'twilio_a2p' jsonb:
+//   CNAM         — TrustProduct (policy RNf3db…) + 'cnam_information' EndUser
+//                  (cnam_display_name, 15-char carrier cap) + number assignment
+//   SHAKEN/STIR  — TrustProduct (policy RN7a97…) + number assignment (no extra
+//                  end user; the customer profile IS the identity)
+// CONTRACT-VERIFIED against Twilio's current docs (July 2026): both policy SIDs
+// are Twilio-published constants; numbers must be ChannelEndpointAssigned to
+// the CUSTOMER PROFILE before a trust product will accept them; bundles are
+// evaluated then submitted (Status pending-review) and reviewed async — status
+// is polled by bundle sid on every run, never fabricated. Unlike the brand,
+// TrustHub has NO Mock flag here, so opts.mock stops BEFORE submission and
+// leaves the bundle in Twilio's real 'draft' status — an honest mock state; a
+// later real run resumes by submitting the drafts. Without master creds the
+// runner fails honestly ("not configured") — nothing is ever marked registered.
+
+const CNAM_TRUST_POLICY = "RNf3db3cd1fe25fcfd3c3ded065c8fea53"
+const SHAKEN_TRUST_POLICY = "RN7a97559effdf62d00f4298208492a5ea"
+/** Carrier CNAM display-name cap (15 characters). */
+export const CNAM_DISPLAY_NAME_MAX = 15
+
+export type VoiceIntegrityStep = "cnam" | "shaken"
+
+/** PURE: voice integrity registers only AFTER the campaign clears review. */
+export function a2pCampaignApproved(s: A2pState): boolean {
+  const st = (s.campaign_status ?? "").toUpperCase()
+  return !!s.campaign_sid && (st === "VERIFIED" || st === "APPROVED")
+}
+
+/** PURE: the next voice-integrity step given persisted state (resumable). */
+export function nextVoiceIntegrityStep(s: A2pState): VoiceIntegrityStep | "done" {
+  if (!s.cnam_trust_product_sid) return "cnam"
+  if (!s.shaken_trust_product_sid) return "shaken"
+  return "done"
+}
+
+/** PURE: one honest status line for the board/settings. */
+export function describeVoiceIntegrityState(s: A2pState): string {
+  if (!a2pCampaignApproved(s)) return "Awaiting A2P campaign approval — CNAM and SHAKEN/STIR register afterward on the same TrustHub profile."
+  const part = (label: string, sid?: string, status?: string) =>
+    `${label} ${sid ? (status ?? "pending-review") : "not filed"}`
+  const line = `${part("CNAM", s.cnam_trust_product_sid, s.cnam_status)} · ${part("SHAKEN/STIR", s.shaken_trust_product_sid, s.shaken_status)}`
+  return s.voice_integrity_error ? `${line} — last error: ${s.voice_integrity_error}` : line
+}
+
+export interface VoiceIntegrityRunResult {
+  ok: boolean
+  state: A2pState
+  advancedTo: VoiceIntegrityStep | "done"
+  error?: string
+}
+
+/** Idempotent: assign each PN to a bundle, skipping ones already assigned. */
+async function assignNumbersToBundle(master: Creds, bundlePath: string, phoneSids: string[]): Promise<string | null> {
+  const existing = await twilio<{ results?: Array<{ channel_endpoint_sid?: string }> }>(
+    master, TRUSTHUB, `${bundlePath}/ChannelEndpointAssignments?PageSize=1000`, "GET")
+  const have = new Set(((existing.ok ? existing.data?.results : null) ?? []).map((r) => r.channel_endpoint_sid).filter(Boolean))
+  for (const pn of phoneSids) {
+    if (have.has(pn)) continue
+    const r = await twilio(master, TRUSTHUB, `${bundlePath}/ChannelEndpointAssignments`, "POST", {
+      ChannelEndpointType: "phone-number", ChannelEndpointSid: pn,
+    })
+    // 409/already-assigned is fine — idempotent.
+    if (!r.ok && r.status !== 409) return `Number assignment failed on ${bundlePath.split("/").slice(-1)[0]}: ${r.error ?? r.status}`
+  }
+  return null
+}
+
+/**
+ * Register CNAM + SHAKEN/STIR for a tenant whose A2P campaign is approved.
+ * Resumable and idempotent exactly like runA2pRegistration: completed bundles
+ * are skipped (sids persist in the SAME twilio_a2p jsonb), drafts left by a
+ * mock run are submitted on the next real run, and async reviews are polled.
+ */
+export async function runVoiceIntegrityRegistration(svc: any, brokerageId: string, opts?: { mock?: boolean }): Promise<VoiceIntegrityRunResult> {
+  const { rowId, state } = await loadA2pState(svc, brokerageId)
+  const fail = async (error: string): Promise<VoiceIntegrityRunResult> => {
+    const s = { ...state, voice_integrity_error: error.slice(0, 400) }
+    await saveA2pState(svc, brokerageId, rowId, s)
+    return { ok: false, state: s, advancedTo: nextVoiceIntegrityStep(s), error }
+  }
+
+  if (!a2pCampaignApproved(state)) return fail("A2P campaign not yet carrier-approved — voice integrity (CNAM + SHAKEN/STIR) registers AFTER campaign approval")
+  if (!state.customer_profile_sid) return fail("No TrustHub customer profile on file — run A2P registration first")
+
+  const { data: bs } = await svc.from("brokerage_settings").select("settings").eq("brokerage_id", brokerageId).maybeSingle()
+  const profileV = validateA2pProfile((bs as any)?.settings?.a2p_business_profile)
+  if (!profileV.ok) return fail(`Business profile incomplete — missing: ${profileV.missing.join(", ")}`)
+  const profile = profileV.value
+
+  const masterSid = process.env.TWILIO_ACCOUNT_SID
+  const masterToken = process.env.TWILIO_AUTH_TOKEN
+  if (!masterSid || !masterToken) return fail("Twilio master account not configured (TWILIO_ACCOUNT_SID/AUTH_TOKEN) — nothing was filed")
+  const master: Creds = { accountSid: masterSid, authToken: masterToken }
+
+  const { data: numbers } = await svc.from("vapi_phone_numbers")
+    .select("byoc_credential_id").eq("brokerage_id", brokerageId).eq("is_active", true)
+    .not("byoc_credential_id", "is", null).limit(10)
+  const phoneSids = ((numbers ?? []) as any[]).map((n) => n.byoc_credential_id).filter(Boolean) as string[]
+  if (phoneSids.length === 0) return fail("No active tenant numbers to register — provision a number first")
+
+  // Prerequisite: numbers must belong to the CUSTOMER PROFILE before either
+  // trust product will accept them (Twilio eligibility rule).
+  const cpAssignErr = await assignNumbersToBundle(master, `/v1/CustomerProfiles/${state.customer_profile_sid}`, phoneSids)
+  if (cpAssignErr) return fail(cpAssignErr)
+
+  const registerBundle = async (
+    kind: VoiceIntegrityStep,
+    policySid: string,
+    extraEntitySids: string[],
+  ): Promise<{ sid: string; status: string } | { error: string }> => {
+    const label = kind === "cnam" ? "CNAM" : "SHAKEN/STIR"
+    const shell = await twilio<{ sid?: string; status?: string }>(master, TRUSTHUB, "/v1/TrustProducts", "POST", {
+      FriendlyName: `${profile.legalName} — ${label}`, Email: profile.contactEmail, PolicySid: policySid,
+    })
+    if (!shell.ok || !shell.data?.sid) return { error: `${label} trust product create failed: ${shell.error ?? shell.status}` }
+    const tpSid = shell.data.sid
+    for (const objectSid of [state.customer_profile_sid!, ...extraEntitySids]) {
+      const assign = await twilio(master, TRUSTHUB, `/v1/TrustProducts/${tpSid}/EntityAssignments`, "POST", { ObjectSid: objectSid })
+      if (!assign.ok) return { error: `${label} assignment failed: ${assign.error ?? assign.status}` }
+    }
+    const numErr = await assignNumbersToBundle(master, `/v1/TrustProducts/${tpSid}`, phoneSids)
+    if (numErr) return { error: numErr }
+    const evalR = await twilio<{ status?: string }>(master, TRUSTHUB, `/v1/TrustProducts/${tpSid}/Evaluations`, "POST", { PolicySid: policySid })
+    if (!evalR.ok || evalR.data?.status !== "compliant") return { error: `${label} bundle not compliant (Twilio: ${evalR.error ?? evalR.data?.status ?? "noncompliant"})` }
+    if (opts?.mock) return { sid: tpSid, status: "draft" } // honest mock: real bundle, NOT submitted
+    const submit = await twilio<{ status?: string }>(master, TRUSTHUB, `/v1/TrustProducts/${tpSid}`, "POST", { Status: "pending-review" })
+    if (!submit.ok) return { error: `${label} submit failed: ${submit.error ?? submit.status}` }
+    return { sid: tpSid, status: submit.data?.status ?? "pending-review" }
+  }
+
+  // ── CNAM ──
+  if (!state.cnam_trust_product_sid) {
+    const endUser = await twilio<{ sid?: string }>(master, TRUSTHUB, "/v1/EndUsers", "POST", {
+      FriendlyName: `${profile.legalName} caller ID`,
+      Type: "cnam_information",
+      Attributes: JSON.stringify({ cnam_display_name: profile.legalName.slice(0, CNAM_DISPLAY_NAME_MAX).trim() }),
+    })
+    if (!endUser.ok || !endUser.data?.sid) return fail(`CNAM display-name end user failed: ${endUser.error ?? endUser.status}`)
+    const r = await registerBundle("cnam", CNAM_TRUST_POLICY, [endUser.data.sid])
+    if ("error" in r) return fail(r.error)
+    state.cnam_trust_product_sid = r.sid
+    state.cnam_status = r.status
+    state.voice_integrity_error = null
+    await saveA2pState(svc, brokerageId, rowId, state)
+  }
+
+  // ── SHAKEN/STIR ──
+  if (!state.shaken_trust_product_sid) {
+    const r = await registerBundle("shaken", SHAKEN_TRUST_POLICY, [])
+    if ("error" in r) return fail(r.error)
+    state.shaken_trust_product_sid = r.sid
+    state.shaken_status = r.status
+    state.voice_integrity_error = null
+    await saveA2pState(svc, brokerageId, rowId, state)
+  }
+
+  // Drafts left by a mock run: submit on a real run; then poll async reviews
+  // so the board's status stays honest (terminal: twilio-approved/-rejected).
+  const bundles: Array<[VoiceIntegrityStep, string, "cnam_status" | "shaken_status"]> = [
+    ["cnam", state.cnam_trust_product_sid!, "cnam_status"],
+    ["shaken", state.shaken_trust_product_sid!, "shaken_status"],
+  ]
+  for (const [kind, sid, key] of bundles) {
+    if (!opts?.mock && (state[key] ?? "draft") === "draft") {
+      const submit = await twilio<{ status?: string }>(master, TRUSTHUB, `/v1/TrustProducts/${sid}`, "POST", { Status: "pending-review" })
+      if (!submit.ok) return fail(`${kind === "cnam" ? "CNAM" : "SHAKEN/STIR"} submit failed: ${submit.error ?? submit.status}`)
+      state[key] = submit.data?.status ?? "pending-review"
+    } else if (!["twilio-approved", "twilio-rejected", "draft"].includes(state[key] ?? "")) {
+      const poll = await twilio<{ status?: string }>(master, TRUSTHUB, `/v1/TrustProducts/${sid}`, "GET")
+      if (poll.ok && poll.data?.status) state[key] = poll.data.status
+    }
+  }
+  state.voice_integrity_error = null
+  await saveA2pState(svc, brokerageId, rowId, state)
+  return { ok: true, state, advancedTo: nextVoiceIntegrityStep(state) }
 }

@@ -24,7 +24,13 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const isBrokerageRole = !!userContext?.roles.some(r => ['admin', 'broker', 'superadmin'].includes(r));
   // Brokerage-wide sections (billing, users, global, commission, accounting, services, providers)
   // stay admin/broker; personal-stack sections are open to any authenticated tier.
-  const hasAccess = isBrokerageRole || isPersonalSection
+  // Developers is gated SERVER-SIDE to the tenancy principal (isTenancyPrincipal:
+  // broker/admin always; the solo agent on solo tier; the team lead on team tier
+  // — a solo principal carries role 'agent'). The client can't compute tier/lead
+  // membership here, so it must not pre-empt the server: let the section through
+  // and the page renders its honest "Principal access required" state for
+  // non-principals.
+  const hasAccess = isBrokerageRole || isPersonalSection || section === 'developers'
 
   useEffect(() => {
     if (!loading && (!user || !hasAccess)) {

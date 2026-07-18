@@ -2,8 +2,9 @@ import Link from "next/link"
 import { redirect } from "next/navigation"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { createServiceClient } from "@/lib/supabase/service"
-import { validateA2pProfile, nextA2pStep, type A2pState } from "@/lib/voice/a2p-registration"
+import { validateA2pProfile, nextA2pStep, a2pCampaignApproved, type A2pState } from "@/lib/voice/a2p-registration"
 import { assessA2pStall } from "@/lib/platform/provider-posture"
+import { VoiceIntegrityCell } from "./voice-integrity-cell"
 
 export const dynamic = "force-dynamic"
 
@@ -41,6 +42,18 @@ function campaignBadge(s: A2pState): StageBadge {
   if (st === "VERIFIED" || st === "APPROVED") return { label: st.toLowerCase(), cls: "bg-emerald-100 text-emerald-800" }
   if (st === "FAILED") return { label: "failed", cls: "bg-red-100 text-red-800" }
   return { label: `under review (${st.toLowerCase()})`, cls: "bg-amber-100 text-amber-800" }
+}
+
+/** CNAM / SHAKEN/STIR bundle badge — Twilio's own TrustHub bundle statuses
+ *  (draft | pending-review | in-review | twilio-rejected | twilio-approved),
+ *  exactly as the voice-integrity runner last persisted them. */
+function integrityBadge(sid: string | undefined, status: string | undefined): StageBadge {
+  if (!sid) return { label: "not filed", cls: "bg-slate-100 text-slate-600" }
+  const st = (status ?? "pending-review").toLowerCase()
+  if (st === "twilio-approved") return { label: "approved", cls: "bg-emerald-100 text-emerald-800" }
+  if (st === "twilio-rejected") return { label: "rejected", cls: "bg-red-100 text-red-800" }
+  if (st === "draft") return { label: "draft (not submitted)", cls: "bg-slate-100 text-slate-600" }
+  return { label: `under review (${st})`, cls: "bg-amber-100 text-amber-800" }
 }
 
 /** Messaging-ready = the campaign cleared carrier review — the same terminal
@@ -101,6 +114,11 @@ export default async function SuperadminA2pPage() {
       brand: brandBadge(state),
       campaign: campaignBadge(state),
       ready: isMessagingReady(state),
+      // Voice integrity (CNAM + SHAKEN/STIR) — same jsonb, appended step.
+      cnam: integrityBadge(state.cnam_trust_product_sid, state.cnam_status),
+      shaken: integrityBadge(state.shaken_trust_product_sid, state.shaken_status),
+      integrityEligible: a2pCampaignApproved(state),
+      integrityError: state.voice_integrity_error ?? null,
       nextStep: nextA2pStep(state),
       lastError: state.last_error ?? null,
       phoneCount: numberCount.get(b.id) ?? 0,
@@ -174,6 +192,7 @@ export default async function SuperadminA2pPage() {
                   <th className="p-2">Brand</th>
                   <th className="p-2">Campaign</th>
                   <th className="p-2">Ready</th>
+                  <th className="p-2">CNAM / SHAKEN</th>
                   <th className="p-2 text-right">Numbers</th>
                   <th className="p-2">Next step</th>
                   <th className="p-2">Last A2P event</th>
@@ -198,6 +217,14 @@ export default async function SuperadminA2pPage() {
                       <span className={"rounded px-1.5 py-0.5 text-[11px] font-semibold " + (r.ready ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600")}>
                         {r.ready ? "yes" : "no"}
                       </span>
+                    </td>
+                    <td className="p-2">
+                      <div className="flex flex-col gap-1">
+                        <span className={"rounded px-1.5 py-0.5 text-[11px] font-medium " + r.cnam.cls}>CNAM: {r.cnam.label}</span>
+                        <span className={"rounded px-1.5 py-0.5 text-[11px] font-medium " + r.shaken.cls}>SHAKEN: {r.shaken.label}</span>
+                        {r.integrityError && <span className="max-w-[220px] truncate text-[11px] text-red-600" title={r.integrityError}>{r.integrityError}</span>}
+                        <VoiceIntegrityCell brokerageId={r.id} eligible={r.integrityEligible} />
+                      </div>
                     </td>
                     <td className="p-2 text-right tabular-nums">{r.phoneCount}</td>
                     <td className="p-2 text-xs text-muted-foreground">

@@ -20,9 +20,12 @@ import {
   type SentinelFacts,
   type ConnectionExpiryFact,
   type NpsDetractorFact,
+  type A2pStallFact,
   type SentinelVerdictRow,
 } from "@/lib/platform/platform-sentinel"
 import { NPS_DETRACTOR_MAX_SCORE } from "@/lib/platform/nps"
+import { assessA2pStall } from "@/lib/platform/provider-posture"
+import type { A2pState } from "@/lib/voice/a2p-registration"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -133,6 +136,7 @@ export async function GET(request: NextRequest) {
         slaBreaches: facts.slaBreaches.length,
         trials: facts.trials.length,
         npsDetractors: facts.npsDetractors.length,
+        a2pStalls: facts.a2pStalls.length,
       },
     }
     await recordCronSuccessAction({
@@ -163,6 +167,9 @@ const DAY_MS = 86_400_000
  *  • NPS detractors — platform_nps_responses scores ≤ 6 in the last 60 days,
  *    most recent response per tenant (the same ledger the engagement page
  *    rolls up — lib/platform/nps.ts owns the classification)
+ *  • A2P stalls — assessA2pStall (lib/platform/provider-posture) over the SAME
+ *    inputs the superadmin A2P board reads: the persisted twilio_a2p state on
+ *    platform_credentials + the newest a2p_registration phone_number_event
  */
 async function loadSentinelFacts(svc: any, now: Date): Promise<SentinelFacts> {
   const { data: brokerages, error: brkError } = await svc
@@ -340,5 +347,46 @@ async function loadSentinelFacts(svc: any, now: Date): Promise<SentinelFacts> {
     })
   }
 
-  return { engagement, connections, dunning, slaBreaches, trials, npsDetractors }
+  // ── A2P stalls: the SAME inputs the superadmin A2P board reads ────────────
+  // (persisted step-machine state on platform_credentials 'twilio_a2p' + the
+  // newest runner event), then the board's own pure clock — assessA2pStall.
+  // Tenants with no credential row have empty state → never "started" → never
+  // stalled, so iterating credential rows matches the board row-for-row.
+  const [{ data: a2pCreds, error: a2pCredErr }, { data: a2pEvents }] = await Promise.all([
+    svc.from("platform_credentials")
+      .select("brokerage_id, config, updated_at")
+      .eq("platform", "twilio_a2p").eq("is_active", true),
+    svc.from("phone_number_events")
+      .select("brokerage_id, created_at")
+      .eq("source", "a2p_registration")
+      .order("created_at", { ascending: false })
+      .limit(2000),
+  ])
+  if (a2pCredErr) throw new Error(`Failed to load A2P state: ${a2pCredErr.message}`)
+  const lastA2pEventBy = new Map<string, string>()
+  for (const e of (a2pEvents ?? []) as any[]) {
+    if (e.brokerage_id && !lastA2pEventBy.has(e.brokerage_id)) lastA2pEventBy.set(e.brokerage_id, e.created_at)
+  }
+  const a2pStalls: A2pStallFact[] = []
+  for (const c of (a2pCreds ?? []) as any[]) {
+    if (!c.brokerage_id || !tenantIds.has(c.brokerage_id)) continue
+    const state = ((c.config ?? {}) as A2pState)
+    const lastActivity = lastA2pEventBy.get(c.brokerage_id) ?? state.updated_at ?? c.updated_at ?? null
+    const stall = assessA2pStall(state, lastActivity, now)
+    if (!stall.stalled) continue
+    // "failed and not re-run" — the same condition assessA2pStall's failed
+    // branch reads from the state, recomputed here for the severity shade.
+    const failed =
+      (state.brand_status ?? "").toUpperCase() === "FAILED" ||
+      (state.campaign_status ?? "").toUpperCase() === "FAILED" ||
+      !!state.last_error
+    a2pStalls.push({
+      brokerageId: c.brokerage_id as string,
+      brokerageName: nameOf.get(c.brokerage_id) ?? "(unnamed)",
+      reason: stall.reason ?? "registration stalled",
+      failed,
+    })
+  }
+
+  return { engagement, connections, dunning, slaBreaches, trials, npsDetractors, a2pStalls }
 }
