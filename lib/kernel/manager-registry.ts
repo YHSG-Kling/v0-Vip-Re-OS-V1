@@ -743,6 +743,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   tenant_webhook_subscriptions: "data_steward", // tenant outbound-webhook endpoints (round 24)
   tenant_webhook_deliveries: "data_steward", // outbound-webhook delivery ledger w/ retries (round 24)
   tenant_custom_domains: "data_steward", // white-label domain mappings + TLS state (round 24)
+  tenant_sso_connections: "data_steward", // brokerage-tier SAML/OIDC SSO config (round 26)
   platform_nps_responses: "data_steward", // tenant→platform NPS ledger (round 24)
   platform_affiliates: "data_steward", // external MRR-commission affiliates — NOT the rev-share tree (round 24)
   affiliate_referrals: "data_steward", // affiliate → tenant attribution (round 24)

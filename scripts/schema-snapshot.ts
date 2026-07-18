@@ -498,6 +498,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   tenant_webhook_subscriptions: ["active", "brokerage_id", "created_at", "created_by", "description", "events", "failure_count", "id", "last_failure_at", "last_success_at", "secret", "updated_at", "url"],
   tenant_webhook_deliveries: ["attempts", "brokerage_id", "created_at", "delivered_at", "error_detail", "event_type", "id", "next_attempt_at", "payload", "response_status", "status", "subscription_id"],
   tenant_custom_domains: ["added_by", "brokerage_id", "created_at", "domain", "error_detail", "id", "last_checked_at", "status", "verification", "verified_at"],
+  tenant_sso_connections: ["activated_at", "brokerage_id", "created_at", "created_by", "email_domain", "error_detail", "id", "metadata_url", "provider_type", "status", "supabase_sso_provider_id", "updated_at"],
   platform_nps_responses: ["brokerage_id", "created_at", "id", "period", "score", "user_id", "verbatim"],
   platform_affiliates: ["code", "commission_percent", "created_at", "created_by", "duration_months", "email", "id", "name", "notes", "payout_details", "status", "updated_at"],
   affiliate_referrals: ["affiliate_id", "attributed_at", "brokerage_id", "expires_at", "first_payment_at", "id"],
