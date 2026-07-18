@@ -57,7 +57,12 @@ export function composeBoardPacketMarkdown(d: BoardPacketData): string {
       ? [
           ``,
           `## AI Team Intelligence (proof the team is learning)`,
-          ...d.intelligence.map((s) => `- **${s.title}** — ${s.headline}`),
+          // Promoter quotes are the payload, not the headline — the section's
+          // lines carry the verbatims, quoted as written.
+          ...d.intelligence.flatMap((s) => [
+            `- **${s.title}** — ${s.headline}`,
+            ...(s.id === "promoter_quotes" ? s.lines.map((l) => `  - ${l.value}`) : []),
+          ]),
         ]
       : []),
     ``,

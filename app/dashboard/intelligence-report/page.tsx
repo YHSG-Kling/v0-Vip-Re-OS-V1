@@ -113,24 +113,35 @@ export default async function IntelligenceReportPage({
                 <p className="text-sm font-medium leading-snug">{s.headline}</p>
               </CardHeader>
               <CardContent>
-                <dl className="divide-y">
-                  {s.lines.map((l, i) => (
-                    <div key={i} className="flex items-baseline justify-between gap-4 py-1.5">
-                      <dt className="text-sm text-muted-foreground">{l.label}</dt>
-                      <dd className="text-right text-sm">
-                        <span className="font-medium">{l.value}</span>
-                        {l.delta ? <span className="ml-2 text-xs text-muted-foreground">{l.delta}</span> : null}
-                      </dd>
-                    </div>
-                  ))}
-                </dl>
+                {s.id === "promoter_quotes" ? (
+                  // Verbatims read as quotes, not metric rows — their words, as written.
+                  <div className="space-y-3">
+                    {s.lines.map((l, i) => (
+                      <blockquote key={i} className="border-l-2 border-primary/40 pl-3 text-sm italic leading-snug">
+                        {l.value}
+                      </blockquote>
+                    ))}
+                  </div>
+                ) : (
+                  <dl className="divide-y">
+                    {s.lines.map((l, i) => (
+                      <div key={i} className="flex items-baseline justify-between gap-4 py-1.5">
+                        <dt className="text-sm text-muted-foreground">{l.label}</dt>
+                        <dd className="text-right text-sm">
+                          <span className="font-medium">{l.value}</span>
+                          {l.delta ? <span className="ml-2 text-xs text-muted-foreground">{l.delta}</span> : null}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
               </CardContent>
             </Card>
           ))}
           <p className="text-xs text-muted-foreground">
             Composed from the operating ledgers (drafts, policy decisions, attribution credits, voice calls,
-            transactions, manager signals, self-heal events) — the same composer feeds your monthly board
-            packet PDF.
+            transactions, manager signals, self-heal events, your team&apos;s NPS verbatims) — the same composer
+            feeds your monthly board packet PDF.
           </p>
         </div>
       )}

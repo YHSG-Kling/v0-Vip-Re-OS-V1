@@ -120,6 +120,14 @@ const SERVICE_CHECKS: Record<
   },
 }
 
+// PROVIDER-DOWN → STATUS-NOTICE PROPOSAL: when a platform-critical provider
+// (service_status.is_critical) records this many consecutive DOWN checks
+// (service_status.consecutive_failures — incremented per down check, reset on
+// healthy), the cron PROPOSES a prefilled tenant status notice for superadmin
+// one-click publish. Never auto-published; withdrawn automatically if checks
+// recover before staff publish (a PUBLISHED notice is never auto-cleared).
+const CONSECUTIVE_DOWN_THRESHOLD = 2
+
 // Integration services that check brokerage_integrations table
 const INTEGRATION_SERVICES = [
   "vapi",
@@ -175,6 +183,14 @@ export async function POST(request: NextRequest) {
       status: string
       responseTimeMs: number
     }> = []
+
+    // Per-provider aggregate across all checked rows (service_status is
+    // per-brokerage; the notice proposal is platform-wide, so a provider only
+    // counts as platform-down when NO row of it came back healthy this run).
+    const criticalProviderRuns = new Map<
+      string,
+      { name: string | null; down: number; healthy: number; maxConsecutiveFailures: number }
+    >()
 
     // Process each service
     for (const service of services || []) {
@@ -268,6 +284,26 @@ export async function POST(request: NextRequest) {
         updateData.consecutive_failures = (service.consecutive_failures || 0) + 1
       }
 
+      // Track platform-critical providers for the status-notice proposal hook.
+      if (service.is_critical === true) {
+        const agg = criticalProviderRuns.get(serviceKey) ?? {
+          name: service.service_name ?? null,
+          down: 0,
+          healthy: 0,
+          maxConsecutiveFailures: 0,
+        }
+        if (checkResult.status === "down") {
+          agg.down += 1
+          agg.maxConsecutiveFailures = Math.max(
+            agg.maxConsecutiveFailures,
+            Number(updateData.consecutive_failures ?? service.consecutive_failures ?? 0),
+          )
+        } else if (checkResult.status === "healthy") {
+          agg.healthy += 1
+        }
+        criticalProviderRuns.set(serviceKey, agg)
+      }
+
       await supabase
         .from("service_status")
         .update(updateData)
@@ -343,6 +379,37 @@ export async function POST(request: NextRequest) {
           })
         }
       }
+    }
+
+    // PROVIDER-DOWN → STATUS-NOTICE PROPOSAL / RECOVERY-WITHDRAWAL.
+    // Best-effort: the notice hook never fails the health check itself.
+    try {
+      const { proposeStatusNotice, withdrawProposedStatusNotice, composeProviderDownNotice } =
+        await import("@/lib/platform/status-notice")
+      for (const [serviceKey, agg] of criticalProviderRuns) {
+        if (agg.down > 0 && agg.healthy === 0 && agg.maxConsecutiveFailures >= CONSECUTIVE_DOWN_THRESHOLD) {
+          // Platform-critical provider down 2+ checks in a row → PROPOSE a
+          // prefilled tenant notice (superadmin publishes; never automatic).
+          const draft = composeProviderDownNotice(serviceKey, agg.name, agg.maxConsecutiveFailures)
+          const { stored } = await proposeStatusNotice(supabase as any, {
+            provider: serviceKey,
+            severity: draft.severity,
+            message: draft.message,
+            reason: draft.reason,
+          })
+          if (stored) {
+            console.log(
+              `[health-check] proposed tenant status notice for "${serviceKey}" — ${draft.reason}; awaiting superadmin publish/dismiss`,
+            )
+          }
+        } else if (agg.healthy > 0 && agg.down === 0) {
+          // Provider recovered → withdraw an UNPUBLISHED proposal only.
+          // A published notice is staff-owned and never auto-cleared.
+          await withdrawProposedStatusNotice(supabase as any, serviceKey)
+        }
+      }
+    } catch (err) {
+      console.error("[health-check] status-notice proposal hook failed (health check unaffected):", err)
     }
 
     const durationMs = Date.now() - startTime

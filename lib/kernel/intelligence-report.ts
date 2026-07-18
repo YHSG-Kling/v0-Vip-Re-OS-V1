@@ -21,6 +21,9 @@
 //      rule), inter-manager coordination signals raised (manager_signals).
 //   5. TRUST — self_heal_events: best_effort_write losses trending DOWN is a
 //      healthier ledger; breaks self-healed vs escalated.
+//   6. PROMOTER QUOTES — platform_nps_responses: the tenant's OWN team's
+//      promoter verbatims for the month (score ≥ 9, verbatim non-null, created
+//      in the window). Their words, quoted as written — omitted when none.
 //
 // The composer is PURE. A section with no data this month is OMITTED — never
 // zero-padded; young tenants get an honest empty report, not a wall of zeros.
@@ -122,6 +125,11 @@ export interface IntelligenceFacts {
     /** Breaks routed to a human. */
     escalated: number
   }
+  promoters: {
+    /** This tenant's own team's promoter verbatims for the month
+     *  (platform_nps_responses: score ≥ 9, verbatim non-null, in-window). */
+    quotes: string[]
+  }
 }
 
 // ─── Report shape ────────────────────────────────────────────────────────────
@@ -132,6 +140,7 @@ export type IntelligenceSectionId =
   | "attribution"
   | "activity"
   | "trust"
+  | "promoter_quotes"
 
 export interface ReportMetricLine {
   label: string
@@ -320,6 +329,21 @@ function composeTrustSection(f: IntelligenceFacts): IntelligenceSection | null {
   return { id: "trust", title: "Trust — the OS keeps receipts on itself", headline, lines }
 }
 
+function composePromoterQuotesSection(f: IntelligenceFacts): IntelligenceSection | null {
+  const quotes = (f.promoters?.quotes ?? []).map((q) => q.trim()).filter((q) => q.length > 0)
+  if (quotes.length === 0) return null // no promoter verbatims this month — omitted, never padded
+
+  const headline = quotes.length === 1
+    ? `One of your own team scored the platform 9+ this month and said why — quoted as written.`
+    : `${quotes.length} of your own team scored the platform 9+ this month and said why — quoted as written.`
+  const lines: ReportMetricLine[] = quotes.map((q) => ({
+    label: "In their words",
+    value: `“${q}”`,
+    delta: null,
+  }))
+  return { id: "promoter_quotes", title: "Promoter quotes — your team's own words", headline, lines }
+}
+
 /** PURE: fold the month's facts into the owner-facing report. Only earned
  *  sections render; empty months come back honest, never zero-padded. */
 export function composeIntelligenceReport(facts: IntelligenceFacts): IntelligenceReport {
@@ -329,6 +353,7 @@ export function composeIntelligenceReport(facts: IntelligenceFacts): Intelligenc
     composeAttributionSection(facts),
     composeActivitySection(facts),
     composeTrustSection(facts),
+    composePromoterQuotesSection(facts),
   ].filter((s): s is IntelligenceSection => s !== null)
   return { monthKey: facts.monthKey, monthLabel: facts.monthLabel, sections, empty: sections.length === 0 }
 }
@@ -369,6 +394,14 @@ export async function loadIntelligenceFacts(svc: any, brokerageId: string, month
     .eq("brokerage_id", brokerageId).eq("outcome", outcome)
     .neq("action", "best_effort_write")
     .gte("created_at", w.startIso).lt("created_at", w.endIso))
+  // The NPS ledger's documented read: this tenant's own team's promoter
+  // verbatims for the month — score ≥ 9, verbatim non-null, created in-window.
+  const promoterQuotesIn = (w: MonthWindow) => svc.from("platform_nps_responses")
+    .select("verbatim, score, created_at")
+    .eq("brokerage_id", brokerageId).gte("score", 9)
+    .not("verbatim", "is", null)
+    .gte("created_at", w.startIso).lt("created_at", w.endIso)
+    .order("created_at", { ascending: false }).limit(12)
 
   const [
     draftRowsCur, draftRowsPri,
@@ -376,6 +409,7 @@ export async function loadIntelligenceFacts(svc: any, brokerageId: string, month
     callsCur, callsPri, bookingsCur, bookingsPri,
     dealsCur, dealsPri, signalsCur, signalsPri,
     lossesCur, lossesPri, healedCur, escalatedCur,
+    promoterRows,
     grantDecisions, docGrants, mktGrants,
   ] = await Promise.all([
     draftsIn(cur), draftsIn(pri),
@@ -383,6 +417,7 @@ export async function loadIntelligenceFacts(svc: any, brokerageId: string, month
     callsIn(cur), callsIn(pri), bookingsIn(cur), bookingsIn(pri),
     dealsIn(cur), dealsIn(pri), signalsIn(cur), signalsIn(pri),
     lossesIn(cur), lossesIn(pri), healOutcomeIn(cur, "healed"), healOutcomeIn(cur, "escalated"),
+    promoterQuotesIn(cur),
     // The autonomy ratchet's own ledger writes: target_type='autonomy_grant',
     // recommended_action 'autonomy_granted' / 'autonomy_grant_declined'
     // (lib/documents/autonomy-ratchet.ts resolveAutonomyRatchetCore).
@@ -410,6 +445,9 @@ export async function loadIntelligenceFacts(svc: any, brokerageId: string, month
 
   const draftsCurQ = rollupDraftQuality((((draftRowsCur as any)?.data ?? []) as DraftRow[]))
   const draftsPriQ = rollupDraftQuality((((draftRowsPri as any)?.data ?? []) as DraftRow[]))
+  const promoterQuotes = (((promoterRows as any)?.data ?? []) as Array<{ verbatim: string | null }>)
+    .map((r) => (r.verbatim ?? "").trim())
+    .filter((v) => v.length > 0)
 
   return {
     monthKey: cur.key,
@@ -423,5 +461,6 @@ export async function loadIntelligenceFacts(svc: any, brokerageId: string, month
       prior: { callsAnswered: callsPri, appointmentsBooked: bookingsPri, draftsProduced: draftsPriQ.drafted, dealsAdvanced: dealsPri, signalsRaised: signalsPri },
     },
     trust: { writeLosses: lossesCur, priorWriteLosses: lossesPri, healed: healedCur, escalated: escalatedCur },
+    promoters: { quotes: promoterQuotes },
   }
 }

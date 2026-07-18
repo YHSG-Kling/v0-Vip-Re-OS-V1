@@ -74,6 +74,17 @@ export async function renderBoardPacketPdf(d: BoardPacketData): Promise<Uint8Arr
         if (y < 95) break
         line(l, { size: 9.5, color: MUTE, gap: 13 })
       }
+      // Promoter quotes: the verbatims ARE the section — render each quoted
+      // line (the composer already wrapped them in quote marks), same y-guard.
+      if (s.id === "promoter_quotes") {
+        for (const q of s.lines) {
+          if (y < 95) break
+          for (const l of wrap(q.value, 90)) {
+            if (y < 95) break
+            line(`   ${l}`, { size: 9.5, color: MUTE, gap: 13 })
+          }
+        }
+      }
       y -= 3
     }
   }

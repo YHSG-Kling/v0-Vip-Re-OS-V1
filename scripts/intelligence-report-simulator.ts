@@ -60,6 +60,7 @@ const quietFacts = (): IntelligenceFacts => ({
   attribution: { current: { attributedGciCents: 0, attributedDeals: 0 }, prior: { attributedGciCents: 0, attributedDeals: 0 } },
   activity: { current: { ...quietActivity }, prior: { ...quietActivity } },
   trust: { writeLosses: 0, priorWriteLosses: 0, healed: 0, escalated: 0 },
+  promoters: { quotes: [] },
 })
 
 async function main() {
@@ -170,6 +171,33 @@ async function main() {
   const trustZero = composeIntelligenceReport(zeroAfterLossy).sections.find((s) => s.id === "trust")
   check("zero-loss month AFTER a lossy month still renders (the trend IS data)", !!trustZero && /4→0/.test(trustZero.headline))
 
+  console.log("\n[Layer 1 · promoter quotes — the team's own words]")
+  const withQuotes = quietFacts()
+  withQuotes.promoters = { quotes: ["The AI receptionist books showings while I sleep.", "Best money we spend every month."] }
+  const quotesReport = composeIntelligenceReport(withQuotes)
+  const quotesSection = quotesReport.sections.find((s) => s.id === "promoter_quotes")
+  check("promoter section renders when verbatims exist", !!quotesSection)
+  check("headline counts the promoters (9+ scorers)", /2 of your own team scored the platform 9\+/.test(quotesSection?.headline ?? ""))
+  check("each verbatim renders as its own quoted line", quotesSection?.lines.length === 2
+    && quotesSection.lines.every((l) => l.label === "In their words" && l.delta === null)
+    && quotesSection.lines.some((l) => l.value === "“The AI receptionist books showings while I sleep.”"))
+  const oneQuote = quietFacts()
+  oneQuote.promoters = { quotes: ["Loving it."] }
+  const oneQuoteSection = composeIntelligenceReport(oneQuote).sections.find((s) => s.id === "promoter_quotes")!
+  check("single promoter gets the singular headline", /One of your own team scored the platform 9\+/.test(oneQuoteSection.headline))
+  check("promoter section OMITTED when no verbatims this month (never zero-padded)",
+    !composeIntelligenceReport(quietFacts()).sections.some((s) => s.id === "promoter_quotes"))
+  const blankQuotes = quietFacts()
+  blankQuotes.promoters = { quotes: ["   ", ""] }
+  check("whitespace-only verbatims never render a section",
+    !composeIntelligenceReport(blankQuotes).sections.some((s) => s.id === "promoter_quotes"))
+  const quotesPlusOther = quietFacts()
+  quotesPlusOther.attribution.current = { attributedGciCents: 1_000_00, attributedDeals: 1 }
+  check("month with other data but no verbatims still omits the promoter section",
+    !composeIntelligenceReport(quotesPlusOther).sections.some((s) => s.id === "promoter_quotes"))
+  check("all-quiet month stays EMPTY with the promoters field present",
+    composeIntelligenceReport(quietFacts()).empty)
+
   console.log("\n[Layer 1 · board-packet fusion — one composer, two surfaces]")
   const packetBase: BoardPacketData = {
     brokerageName: "Kling Group", monthLabel: "June 2026",
@@ -182,6 +210,10 @@ async function main() {
   check("packet carries the composer's exact headline (no second formula)", withIntel.includes("74%→86%"))
   const withoutIntel = composeBoardPacketMarkdown(packetBase)
   check("packet with no intelligence sections omits the block entirely", !/AI Team Intelligence/.test(withoutIntel))
+  const withQuotesPacket = composeBoardPacketMarkdown({ ...packetBase, intelligence: composeIntelligenceReport(withQuotes).sections })
+  check("packet carries the promoter verbatims as quoted sub-bullets",
+    withQuotesPacket.includes("  - “Best money we spend every month.”"))
+  check("packet without verbatims carries no quote sub-bullets", !withIntel.includes("  - “"))
 
   report()
 }

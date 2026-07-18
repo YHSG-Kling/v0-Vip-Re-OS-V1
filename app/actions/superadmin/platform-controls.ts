@@ -104,3 +104,92 @@ export async function setStatusNoticeAction(input: {
     return { ok: false, error: `${err?.message ?? "Write failed"} — has scripts/l61-s01-retention-offer-status-notice.sql been applied?` }
   }
 }
+
+// ── HEALTH-CHECK PROPOSED NOTICE (publish / dismiss) ─────────────────────────
+// The health-check cron stores a PROPOSED notice in the same status_notice
+// jsonb when a platform-critical provider fails consecutive checks. These
+// actions are the staff side of that loop: read the pending proposal, publish
+// it one-click, or dismiss it. Same gate + audit trail as every notice write.
+
+export async function getStatusNoticeStateAction(): Promise<
+  | { ok: true; state: import("@/lib/platform/status-notice").StatusNoticeState }
+  | { ok: false; error: string }
+> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  const { loadStatusNoticeState } = await import("@/lib/platform/status-notice")
+  return { ok: true, state: await loadStatusNoticeState(createServiceClient()) }
+}
+
+export async function publishProposedStatusNoticeAction(): Promise<
+  | { ok: true; notice: import("@/lib/platform/status-notice").StatusNotice }
+  | { ok: false; error: string }
+> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  const { loadStatusNoticeState, saveStatusNotice } = await import("@/lib/platform/status-notice")
+  const svc = createServiceClient()
+  try {
+    const state = await loadStatusNoticeState(svc)
+    if (!state.proposed) return { ok: false, error: "No proposed notice to publish — it may have been withdrawn after recovery" }
+    const notice = await saveStatusNotice(svc, {
+      active: true,
+      severity: state.proposed.severity,
+      message: state.proposed.message,
+      // Same idiom as manual updates: an already-active incident keeps its
+      // original start time; a fresh publish starts the clock now.
+      startedAt: state.notice.active ? state.notice.startedAt : null,
+      clearProposed: true,
+    })
+
+    try {
+      const hdrs = await headers()
+      await svc.from("superadmin_audit_log").insert({
+        actor_user_id: auth.userId, actor_email: auth.email,
+        action: "status_notice.proposal_published",
+        target_type: "platform_settings", target_id: null,
+        details: { proposed: state.proposed, before: state.notice, after: notice },
+        ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
+        user_agent: hdrs.get("user-agent"),
+      })
+    } catch (err) {
+      console.error("[status-notice] audit write failed:", err)
+    }
+    return { ok: true, notice }
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? "Publish failed" }
+  }
+}
+
+export async function dismissProposedStatusNoticeAction(): Promise<
+  | { ok: true; state: import("@/lib/platform/status-notice").StatusNoticeState }
+  | { ok: false; error: string }
+> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  const { loadStatusNoticeState, clearProposedStatusNotice } = await import("@/lib/platform/status-notice")
+  const svc = createServiceClient()
+  try {
+    const before = await loadStatusNoticeState(svc)
+    const state = await clearProposedStatusNotice(svc)
+
+    if (before.proposed) {
+      try {
+        const hdrs = await headers()
+        await svc.from("superadmin_audit_log").insert({
+          actor_user_id: auth.userId, actor_email: auth.email,
+          action: "status_notice.proposal_dismissed",
+          target_type: "platform_settings", target_id: null,
+          details: { dismissed: before.proposed },
+          ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
+          user_agent: hdrs.get("user-agent"),
+        })
+      } catch (err) {
+        console.error("[status-notice] audit write failed:", err)
+      }
+    }
+    return { ok: true, state }
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? "Dismiss failed" }
+  }
+}
