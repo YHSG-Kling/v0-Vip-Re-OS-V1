@@ -19,6 +19,7 @@ const menuItems: Array<{ label: string; href: string; personal: boolean }> = [
   { label: 'Notifications', href: '/settings/notifications', personal: true },
   { label: 'Commission', href: '/settings/commission', personal: false },
   { label: 'Providers', href: '/settings/providers', personal: false },
+  { label: 'Developers', href: '/settings/developers', personal: false },
   { label: 'Users', href: '/settings/users', personal: false },
 ];
 
