@@ -735,6 +735,11 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   push_subscriptions: "data_steward",
   platform_staff_profiles: "data_steward", // staff HR records (round 20)
   platform_role_capability_overrides: "data_steward", // capability matrix overrides (round 20) // web-push endpoint registry (round 12) — same steward as its queue
+  platform_coupons: "data_steward", // discount codes (round 21)
+  platform_coupon_redemptions: "data_steward", // coupon → tenant redemption ledger (round 21)
+  platform_sentinel_actions: "data_steward", // platform sentinel proposed staff actions (round 21)
+  platform_social_accounts: "data_steward", // the OS's OWN social account connections (round 21)
+  tenant_ai_teammates: "data_steward", // tenant-created named AI teammates over the manager registry (round 21)
   qr_codes: "data_steward",
   qr_scan_events: "data_steward",
   reg_change_observations: "compliance_officer",

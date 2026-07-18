@@ -30,7 +30,9 @@ export interface SnapshotRow {
   description: string | null
   sourceBrokerageId: string | null
   createdAt: string
-  counts: { global: number; brand: number; voice: number; features: number }
+  /** Tier hint for "provision new subscriber from this snapshot" (payload metadata). */
+  recommendedTier: string | null
+  counts: { global: number; brand: number; voice: number; site: number; features: number }
 }
 
 function counts(payload: SnapshotPayload) {
@@ -38,18 +40,20 @@ function counts(payload: SnapshotPayload) {
     global: Object.keys(payload.global ?? {}).length,
     brand: Object.keys(payload.brand ?? {}).length,
     voice: Object.keys(payload.voice ?? {}).length,
+    site: Object.keys(payload.site ?? {}).length,
     features: (payload.features ?? []).length,
   }
 }
 
 /** Capture a snapshot from a source tenant. */
-export async function captureSnapshotAction(params: { sourceBrokerageId: string; name: string; description?: string }): Promise<{ ok: boolean; id?: string; error?: string }> {
+export async function captureSnapshotAction(params: { sourceBrokerageId: string; name: string; description?: string; recommendedTier?: string }): Promise<{ ok: boolean; id?: string; error?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   if (!params.sourceBrokerageId || !params.name?.trim()) return { ok: false, error: "Source brokerage + name required" }
   const svc = createServiceClient()
 
   const payload = await buildSnapshotPayload(params.sourceBrokerageId, svc)
+  if (params.recommendedTier?.trim()) payload.recommendedTier = params.recommendedTier.trim()
   // Defence-in-depth: refuse to persist if a secret ever slipped past the allow-list.
   if (payloadLeaksSecret(payload)) return { ok: false, error: "Refused: snapshot would contain a secret field" }
 
@@ -59,7 +63,7 @@ export async function captureSnapshotAction(params: { sourceBrokerageId: string;
   }).select("id").single()
   if (error || !data) return { ok: false, error: error?.message ?? "Capture failed" }
 
-  await audit(auth.userId, auth.email, "snapshot.capture", params.sourceBrokerageId, { snapshot_id: (data as any).id, name: params.name.trim(), counts: counts(payload) })
+  await audit(auth.userId, auth.email, "snapshot.capture", params.sourceBrokerageId, { snapshot_id: (data as any).id, name: params.name.trim(), recommended_tier: payload.recommendedTier ?? null, counts: counts(payload) })
   return { ok: true, id: (data as any).id }
 }
 
@@ -73,6 +77,7 @@ export async function listSnapshotsAction(): Promise<{ ok: true; snapshots: Snap
     ok: true,
     snapshots: ((data ?? []) as any[]).map((s) => ({
       id: s.id, name: s.name, description: s.description, sourceBrokerageId: s.source_brokerage_id, createdAt: s.created_at,
+      recommendedTier: ((s.payload ?? {}) as SnapshotPayload).recommendedTier ?? null,
       counts: counts((s.payload ?? {}) as SnapshotPayload),
     })),
   }

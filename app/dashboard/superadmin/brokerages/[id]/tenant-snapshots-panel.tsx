@@ -20,6 +20,7 @@ export function TenantSnapshotsPanel({ brokerageId }: { brokerageId: string }) {
   const [msg, setMsg] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
   const [name, setName] = useState('')
+  const [recTier, setRecTier] = useState('')
 
   function refresh() {
     listSnapshotsAction().then((r) => { if (r.ok) setSnapshots(r.snapshots); else setErr(r.error); setLoading(false) })
@@ -30,8 +31,8 @@ export function TenantSnapshotsPanel({ brokerageId }: { brokerageId: string }) {
     setErr(null); setMsg(null)
     if (!name.trim()) { setErr('Name the snapshot'); return }
     startTransition(async () => {
-      const r = await captureSnapshotAction({ sourceBrokerageId: brokerageId, name })
-      if (!r.ok) setErr(r.error ?? 'Capture failed'); else { setMsg(`Captured "${name}"`); setName('') }
+      const r = await captureSnapshotAction({ sourceBrokerageId: brokerageId, name, recommendedTier: recTier || undefined })
+      if (!r.ok) setErr(r.error ?? 'Capture failed'); else { setMsg(`Captured "${name}"`); setName(''); setRecTier('') }
       refresh()
     })
   }
@@ -58,9 +59,16 @@ export function TenantSnapshotsPanel({ brokerageId }: { brokerageId: string }) {
 
         <div className="flex flex-wrap items-center gap-2">
           <input className="flex-1 min-w-[10rem] rounded border px-2 py-1 text-sm" placeholder="Snapshot name (captures THIS tenant)" value={name} onChange={(e) => setName(e.target.value)} />
+          <select className="rounded border px-2 py-1 text-sm bg-transparent" value={recTier} onChange={(e) => setRecTier(e.target.value)} aria-label="Recommended tier">
+            <option value="">No recommended tier</option>
+            <option value="solo_agent">Recommend: Solo agent</option>
+            <option value="team">Recommend: Team</option>
+            <option value="brokerage">Recommend: Brokerage</option>
+            <option value="multi_location">Recommend: Multi-location</option>
+          </select>
           <Button size="sm" disabled={pending} onClick={capture} className="gap-1.5"><Camera className="h-3.5 w-3.5" />Capture</Button>
         </div>
-        <p className="text-[11px] text-muted-foreground -mt-2">Captures branding, brand voice, and feature enablement. Secrets/credentials are never included.</p>
+        <p className="text-[11px] text-muted-foreground -mt-2">Captures branding, brand voice, public-site content, and feature enablement. Secrets/credentials are never included. The recommended tier is preselected when provisioning a new subscriber from the snapshot.</p>
 
         {loading ? (
           <p className="text-sm text-muted-foreground flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />Loading…</p>
@@ -73,8 +81,9 @@ export function TenantSnapshotsPanel({ brokerageId }: { brokerageId: string }) {
                 <span className="flex-1 truncate">
                   <span className="font-medium">{s.name}</span>
                   <span className="ml-2 text-[11px] text-muted-foreground">
-                    {s.counts.global + s.counts.brand} brand · {s.counts.voice} voice · {s.counts.features} features
+                    {s.counts.global + s.counts.brand} brand · {s.counts.voice} voice · {s.counts.site} site · {s.counts.features} features
                   </span>
+                  {s.recommendedTier && <Badge variant="secondary" className="ml-2 text-[9px]">recommended: {s.recommendedTier}</Badge>}
                   {s.sourceBrokerageId === brokerageId && <Badge variant="outline" className="ml-2 text-[9px]">from this tenant</Badge>}
                 </span>
                 <Button size="sm" variant="outline" className="h-6 gap-1 px-2 text-[11px]" disabled={pending} onClick={() => apply(s.id, s.name)}><Download className="h-3 w-3" />Apply here</Button>

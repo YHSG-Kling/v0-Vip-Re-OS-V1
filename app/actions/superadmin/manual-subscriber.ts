@@ -20,6 +20,7 @@ import { resolvePlatformRole } from "@/lib/platform/require-capability"
 import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createSubscriber } from "@/app/actions/admin/create-subscriber"
+import { applySnapshotPayload, type SnapshotPayload } from "@/lib/platform/config-snapshots"
 import { headers } from "next/headers"
 
 export interface ManualProvisionInput {
@@ -34,6 +35,9 @@ export interface ManualProvisionInput {
   tier:            "solo_agent" | "team" | "brokerage" | "multi_location"
   billingCycle:    "monthly" | "annual"
   notes?:          string
+  /** Optional config snapshot to apply right after provisioning — the tenant's
+   *  day-one website comes up fully branded (brand + voice + site + features). */
+  snapshotId?:     string
 }
 
 export interface ManualProvisionResult {
@@ -44,6 +48,9 @@ export interface ManualProvisionResult {
   subscriptionId?: string
   inviteSent?: boolean
   inviteError?: string
+  /** Layers applied from the config snapshot (when snapshotId was given). */
+  snapshotApplied?: string[]
+  snapshotError?: string
 }
 
 export async function manualProvisionSubscriberAction(
@@ -74,6 +81,18 @@ export async function manualProvisionSubscriberAction(
     .maybeSingle()
   if (tierErr || !tier) return { ok: false, error: `Tier not found: ${input.tier}` }
 
+  // Resolve the config snapshot BEFORE creating anything — fail fast if it's gone.
+  let snapshot: { id: string; name: string; payload: SnapshotPayload } | null = null
+  if (input.snapshotId) {
+    const { data: snap } = await svc
+      .from("platform_config_snapshots")
+      .select("id, name, payload")
+      .eq("id", input.snapshotId)
+      .maybeSingle()
+    if (!snap) return { ok: false, error: "Config snapshot not found" }
+    snapshot = { id: (snap as any).id, name: (snap as any).name, payload: ((snap as any).payload ?? {}) as SnapshotPayload }
+  }
+
   const result = await createSubscriber({
     brokerageName:   input.brokerageName,
     brokerageCity:   input.brokerageCity,
@@ -88,6 +107,41 @@ export async function manualProvisionSubscriberAction(
     billingCycle:    input.billingCycle,
     notes:           input.notes,
   })
+
+  // Apply the config snapshot to the new tenant — SAME implementation as the god-console
+  // "apply" path (allow-listed layers only; never name/slug/email/status/tier/ids).
+  let snapshotApplied: string[] | undefined
+  let snapshotError: string | undefined
+  if (snapshot && result.success && result.brokerageId) {
+    try {
+      const { applied } = await applySnapshotPayload(snapshot.payload, result.brokerageId, user.id, svc)
+      snapshotApplied = applied
+      try {
+        const hdrs = await headers()
+        await svc.from("superadmin_audit_log").insert({
+          actor_user_id: user.id,
+          actor_email:   profile?.email ?? user.email,
+          action:        "tenant.provisioned_from_snapshot",
+          target_type:   "brokerage",
+          target_id:     result.brokerageId,
+          details: {
+            snapshot_id:      snapshot.id,
+            snapshot_name:    snapshot.name,
+            recommended_tier: snapshot.payload.recommendedTier ?? null,
+            selected_tier:    input.tier,
+            applied,
+          },
+          ip_address:    hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
+          user_agent:    hdrs.get("user-agent"),
+        })
+      } catch (err) {
+        console.error("[manualProvisionSubscriber] snapshot audit log write failed:", err)
+      }
+    } catch (err) {
+      snapshotError = err instanceof Error ? err.message : "Snapshot apply failed"
+      console.error("[manualProvisionSubscriber] snapshot apply failed:", err)
+    }
+  }
 
   // Always write the audit row — successful or failed provisioning.
   try {
@@ -107,6 +161,9 @@ export async function manualProvisionSubscriberAction(
         invite_error:   result.inviteError ?? null,
         error:          result.error ?? null,
         notes:          input.notes ?? null,
+        snapshot_id:    snapshot?.id ?? null,
+        snapshot_applied: snapshotApplied ?? null,
+        snapshot_error: snapshotError ?? null,
       },
       ip_address:    hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
       user_agent:    hdrs.get("user-agent"),
@@ -123,5 +180,7 @@ export async function manualProvisionSubscriberAction(
     subscriptionId: result.subscriptionId,
     inviteSent:     result.inviteSent,
     inviteError:    result.inviteError,
+    snapshotApplied,
+    snapshotError,
   }
 }

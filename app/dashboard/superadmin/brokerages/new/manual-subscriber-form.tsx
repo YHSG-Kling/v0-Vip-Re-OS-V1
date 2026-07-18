@@ -1,15 +1,18 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Loader2, CheckCircle2 } from "lucide-react"
+import { Loader2, CheckCircle2, Camera } from "lucide-react"
 import { manualProvisionSubscriberAction } from "@/app/actions/superadmin/manual-subscriber"
+import { listSnapshotsAction, type SnapshotRow } from "@/app/actions/superadmin/config-snapshots"
 
 type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
+const CANONICAL_TIERS: readonly CanonicalTier[] = ["solo_agent", "team", "brokerage", "multi_location"]
 
 export function ManualSubscriberForm() {
   const router = useRouter()
@@ -28,6 +31,28 @@ export function ManualSubscriberForm() {
   const [feedback, setFeedback] = useState<{ kind: "error" | "success"; message: string; brokerageId?: string } | null>(null)
   const [isPending, startTransition] = useTransition()
 
+  // Optional config snapshot — day-one branding for the new tenant's website.
+  const [snapshots, setSnapshots] = useState<SnapshotRow[]>([])
+  const [snapshotsLoaded, setSnapshotsLoaded] = useState(false)
+  const [snapshotsError, setSnapshotsError] = useState<string | null>(null)
+  const [snapshotId, setSnapshotId] = useState<string | null>(null)
+
+  useEffect(() => {
+    listSnapshotsAction().then((r) => {
+      if (r.ok) setSnapshots(r.snapshots)
+      else setSnapshotsError(r.error)
+      setSnapshotsLoaded(true)
+    })
+  }, [])
+
+  function selectSnapshot(s: SnapshotRow | null) {
+    setSnapshotId(s?.id ?? null)
+    // A snapshot can recommend a tier — preselect it (still overridable above).
+    if (s?.recommendedTier && (CANONICAL_TIERS as readonly string[]).includes(s.recommendedTier)) {
+      setTier(s.recommendedTier as CanonicalTier)
+    }
+  }
+
   function onSubmit(e: React.FormEvent) {
     e.preventDefault()
     setFeedback(null)
@@ -37,11 +62,17 @@ export function ManualSubscriberForm() {
         brokerageEmail, brokeragePhone: brokeragePhone || undefined,
         adminFirstName: firstName, adminLastName: lastName, adminEmail,
         tier, billingCycle, notes: notes || undefined,
+        snapshotId: snapshotId ?? undefined,
       })
       if (!r.ok) { setFeedback({ kind: "error", message: r.error ?? "Failed" }); return }
+      const snapshotNote = snapshotId
+        ? r.snapshotError
+          ? ` Snapshot apply FAILED: ${r.snapshotError}.`
+          : ` Snapshot applied: ${(r.snapshotApplied ?? []).join(", ") || "nothing to apply"}.`
+        : ""
       setFeedback({
         kind: "success",
-        message: `Provisioned ${brokerageName} on ${tier}. ${r.inviteSent ? "Invite email sent" : `Invite email ${r.inviteError ? "FAILED: " + r.inviteError : "skipped"}`}.`,
+        message: `Provisioned ${brokerageName} on ${tier}. ${r.inviteSent ? "Invite email sent" : `Invite email ${r.inviteError ? "FAILED: " + r.inviteError : "skipped"}`}.${snapshotNote}`,
         brokerageId: r.brokerageId,
       })
     })
@@ -49,6 +80,49 @@ export function ManualSubscriberForm() {
 
   return (
     <form onSubmit={onSubmit} className="space-y-5">
+      {/* Optional config snapshot — day-one branded website for the new tenant */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Camera className="h-4 w-4 text-primary" />Start from a config snapshot <span className="font-normal text-muted-foreground">(optional)</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <p className="text-[11px] text-muted-foreground">
+            Applies a saved template (branding, brand voice, public-site content, feature enablement) right after
+            provisioning so the tenant&apos;s day-one website comes up fully branded. Secrets are never part of a snapshot.
+          </p>
+          {!snapshotsLoaded ? (
+            <p className="text-sm text-muted-foreground flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" />Loading snapshots…</p>
+          ) : snapshotsError ? (
+            <p className="text-sm text-muted-foreground">Snapshots unavailable: {snapshotsError}</p>
+          ) : snapshots.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No snapshots yet — capture one from an existing tenant&apos;s brokerage page.</p>
+          ) : (
+            <div className="space-y-1">
+              <button type="button"
+                onClick={() => selectSnapshot(null)}
+                className={`w-full text-left rounded border px-2 py-1.5 text-sm ${snapshotId === null ? "border-primary bg-primary/5" : "hover:bg-muted/50"}`}>
+                <span className="font-medium">None</span>
+                <span className="ml-2 text-[11px] text-muted-foreground">Provision blank — tenant starts from scratch</span>
+              </button>
+              {snapshots.map((s) => (
+                <button key={s.id} type="button"
+                  onClick={() => selectSnapshot(s)}
+                  className={`w-full text-left rounded border px-2 py-1.5 text-sm ${snapshotId === s.id ? "border-primary bg-primary/5" : "hover:bg-muted/50"}`}>
+                  <span className="font-medium">{s.name}</span>
+                  {s.recommendedTier && <Badge variant="secondary" className="ml-2 text-[9px]">recommended: {s.recommendedTier}</Badge>}
+                  <span className="ml-2 text-[11px] text-muted-foreground">
+                    {s.counts.global + s.counts.brand} brand · {s.counts.voice} voice · {s.counts.site} site · {s.counts.features} features
+                  </span>
+                  {s.description && <span className="block text-[11px] text-muted-foreground truncate">{s.description}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Tier + billing */}
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-sm">Plan</CardTitle></CardHeader>
