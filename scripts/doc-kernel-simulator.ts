@@ -2260,6 +2260,24 @@ async function main() {
         && src("app/actions/superadmin/platform-growth.ts").includes("proposal")
         && src("supabase/migrations/m272-platform-prospects-details.sql").includes("details"))
     }
+    // ── ROUND 23: THE OS PROVES ITSELF, LISTENS EVERYWHERE, SELLS ITSELF, KEEPS ITS CUSTOMERS ──
+    {
+      check("ROUND 23 — FOUR RAILS. (1) MONTHLY INTELLIGENCE REPORT: ONE pure composer fuses the three closed learning loops + attribution into the owner's monthly proof (draft quality via the EXISTING rollupDraftQuality, autonomy grants from the exact policy_decisions rows the ratchet writes incl. declines, attributed closed volume with the board packet's counting rules, team activity from the Command Center's own ledgers, write-sentinel loss trends where 4→0 renders because the trend IS data) — empty sections OMITTED never zero-padded; owner page principal-gated + the board packet's AI Team Intelligence section fed by the SAME composer. (2) FAIR-HOUSING CAPTURE CORRECTED (owner directive): buyer-STATED school districts and 55+/age-restricted communities ARE captured as criteria with literal evidence quotes — the line is STEERING, not honoring; quality adjectives ('good schools') and familial inference ('good for kids') stay out, and the NO-STEERING sentence lives in the code. The listener also READS: ISA inbound email + unified Twilio SMS ingress propose the same inactive alerts (source 'text_conversation', [TEXT_PROPOSAL] evidence, msg-id/hash dedupe) through the same pa: approval cascade pinned to inactive rows. (3) SELF-SERVE TRIAL FUNNEL: tier cards with live catalog pricing, newest-snapshot-per-recommendedTier resolution (payload ids only ever ship {id,name} to the public page), live coupon validation through the ONE pure layer, snapshot+coupon applied best-effort AFTER provisioning so neither can fail a signup, coupon parked in billing_metadata for the checkout rail. (4) SAAS LOOP-CLOSERS (l61 applied): cancellation SAVE-OFFER re-derived server-side from the coupon engine's own eligibility rules (client never picks the coupon; redemption-ledger-first; honest straight-to-confirm when unconfigured), tenant-facing STATUS NOTICE broadcast + What's-New page (in-repo changelog that ships WITH the release so notes can never describe features a tenant lacks; god-switch freezes stated to tenants), and the public /trust page whose every claim was verified against code — explicitly NO SOC-2 claims: honesty as the posture. Verdicts recorded: NPS, webhooks-out, SSO, white-label domains, external affiliates deferred (each needs real tables/infra — never stubbed)",
+        src("lib/kernel/intelligence-report.ts").includes("composeIntelligenceReport")
+        && src("lib/kernel/board-packet.ts").includes("intelligence")
+        && src("lib/buyer-search/conversation-criteria.ts").includes("detectStatedSchoolDistrict")
+        && src("lib/buyer-search/conversation-criteria.ts").includes("age-restricted")
+        && src("lib/buyer-search/written-criteria-alert.ts").includes("text_conversation")
+        && src("lib/kernel/approval-queue-aggregator.ts").includes("TEXT_PROPOSAL")
+        && src("lib/platform/trial-funnel.ts").includes("resolveNewestPerTier")
+        && src("app/actions/auth/signup-brokerage.ts").includes("couponCode")
+        && src("lib/platform/save-offer.ts").includes("resolveSaveOffer")
+        && src("app/actions/billing.ts").includes("acceptCancellationSaveOfferAction")
+        && src("lib/platform/status-notice.ts").length > 0
+        && src("lib/platform/changelog.ts").includes("PRODUCT_CHANGELOG")
+        && src("app/trust/page.tsx").length > 0
+        && src("scripts/schema-snapshot.ts").includes("retention_offer"))
+    }
     // ── ROUND 22 VERDICT: TEAMMATES ARE A PERSONA LAYER, NEVER A SECOND AGENT SYSTEM ──
     {
       // Owner challenge answered ("doesn't the OS already do what teammates do?

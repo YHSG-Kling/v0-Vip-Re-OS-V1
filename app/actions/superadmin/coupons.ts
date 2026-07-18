@@ -266,6 +266,65 @@ export async function redeemCouponForBrokerageAction(couponId: string, brokerage
   return { ok: true, code: coupon.code, brokerageName: brokerage.name ?? "(unnamed)", summary: describeCoupon(coupon) }
 }
 
+// ── CANCELLATION SAVE-OFFER DESIGNATION ──────────────────────────────────────
+// Which coupon the tenant cancel flow counters with (platform_settings.
+// retention_offer jsonb — the singleton, no new table). Read by the tenant-side
+// getCancellationSaveOfferAction; a tenant is only shown the offer when the
+// coupon's own redemption rules allow it. Clearing turns the save-offer off.
+
+export async function getRetentionOfferConfigAction(): Promise<
+  | { ok: true; couponCode: string | null; headline: string }
+  | { ok: false; error: string }
+> {
+  const gate = await gateBilling()
+  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
+  const { resolveRetentionOfferConfig } = await import("@/lib/platform/save-offer")
+  const svc = createServiceClient()
+  try {
+    const { data } = await svc.from("platform_settings").select("retention_offer").limit(1).maybeSingle()
+    const config = resolveRetentionOfferConfig((data as any)?.retention_offer)
+    return { ok: true, couponCode: config.couponCode, headline: config.headline }
+  } catch {
+    // Column not migrated yet — honest "not configured", not an error.
+    const config = resolveRetentionOfferConfig(null)
+    return { ok: true, couponCode: null, headline: config.headline }
+  }
+}
+
+export async function setRetentionOfferAction(input: { couponCode: string | null; headline?: string | null }): Promise<
+  | { ok: true; couponCode: string | null }
+  | { ok: false; error: string }
+> {
+  const gate = await gateBilling(true)
+  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
+  const { resolveRetentionOfferConfig } = await import("@/lib/platform/save-offer")
+  const svc = createServiceClient()
+
+  const config = resolveRetentionOfferConfig({ couponCode: input.couponCode, headline: input.headline ?? undefined })
+  if (input.couponCode && !config.couponCode) return { ok: false, error: "That coupon code is not a valid code" }
+
+  // Setting (not clearing) requires the coupon to exist and be active.
+  if (config.couponCode) {
+    const { data: coupon } = await svc.from("platform_coupons").select("id, active").eq("code", config.couponCode).maybeSingle()
+    if (!coupon) return { ok: false, error: `No coupon with code ${config.couponCode} exists` }
+    if (!(coupon as any).active) return { ok: false, error: `Coupon ${config.couponCode} is deactivated — activate it first` }
+  }
+
+  const value = { couponCode: config.couponCode, headline: config.headline }
+  const { data: existing, error: readErr } = await svc.from("platform_settings").select("id").order("created_at", { ascending: true }).limit(1).maybeSingle()
+  if (readErr) return { ok: false, error: readErr.message }
+  const write = existing
+    ? await svc.from("platform_settings").update({ retention_offer: value, updated_at: new Date().toISOString() }).eq("id", (existing as any).id)
+    : await svc.from("platform_settings").insert({ retention_offer: value })
+  if (write.error) {
+    return { ok: false, error: `${write.error.message} — has scripts/l61-s01-retention-offer-status-notice.sql been applied?` }
+  }
+
+  await audit(gate.userId!, config.couponCode ? "coupon.set_save_offer" : "coupon.clear_save_offer", null, value)
+  revalidatePath(COUPONS_PATH)
+  return { ok: true, couponCode: config.couponCode }
+}
+
 // ── PUBLISH TO STRIPE (mock-safe, same convention as the pricing publish) ────
 
 /**

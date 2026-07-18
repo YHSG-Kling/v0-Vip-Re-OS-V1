@@ -80,6 +80,21 @@ export function computeTrialExtension(currentTrialEnd: string | null, addDays: n
   return { iso: new Date(end).toISOString(), unix: Math.floor(end / 1000) }
 }
 
+/** Apply a published Stripe coupon to a live subscription (retention save-offer,
+ *  manual redemption). Skips honestly when Stripe is unconfigured, the
+ *  subscription isn't Stripe-linked, or the coupon was only mock-published
+ *  (mock_… ids never reach Stripe) — the local redemption ledger is the source
+ *  of intent either way. */
+export function stripeApplyCoupon(
+  subscriptionId: string | null | undefined,
+  stripeCouponId: string | null | undefined,
+): Promise<StripeOpResult> {
+  if (!stripeCouponId || stripeCouponId.startsWith("mock_")) return Promise.resolve(skip())
+  return guard(subscriptionId, async (stripe) => {
+    await stripe.subscriptions.update(subscriptionId!, { discounts: [{ coupon: stripeCouponId }] })
+  })
+}
+
 /** Refund the subscription's most recent PAID invoice (full or partial cents).
  *  The refund lands on the invoice's charge/payment_intent — the only honest
  *  refund target for subscription billing (never a blind charge search). */

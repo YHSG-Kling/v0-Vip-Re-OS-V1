@@ -473,6 +473,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'logs', label: 'Audit Trail', href: '/dashboard/superadmin/audit-trail', icon: 'Eye' },
       { id: 'ai-audit', label: 'AI Audit', href: '/dashboard/admin/ai-audit', icon: 'Sparkles' },
       { id: 'error-handler', label: 'Error Handler', href: '/dashboard/admin/error-handler', icon: 'AlertTriangle' },
+      { id: 'whats-new', label: "What's New & Status", href: '/dashboard/whats-new', icon: 'Megaphone' },
       { id: 'settings', label: 'Settings', href: '/settings', icon: 'Settings' },
     ],
     topNavItems: [

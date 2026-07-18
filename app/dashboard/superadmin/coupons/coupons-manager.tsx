@@ -11,11 +11,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, Plus, Save, Trash2, Ticket, UploadCloud } from 'lucide-react'
+import { Loader2, Plus, Save, Trash2, Ticket, UploadCloud, LifeBuoy } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import {
   listCouponsAction, createCouponAction, setCouponActiveAction, removeCouponAction,
-  redeemCouponForBrokerageAction, publishCouponToStripeAction, type CouponListRow,
+  redeemCouponForBrokerageAction, publishCouponToStripeAction, setRetentionOfferAction, type CouponListRow,
 } from '@/app/actions/superadmin/coupons'
 import { isMockStripeCouponId, normalizeCouponCode } from '@/lib/platform/coupons'
 
@@ -41,12 +41,14 @@ const BLANK: Draft = {
   duration: 'once', durationMonths: '3', appliesToTier: '', maxRedemptions: '', expiresAt: '',
 }
 
-export function CouponsManager({ initialCoupons, brokerages, stripeConfigured }: {
+export function CouponsManager({ initialCoupons, brokerages, stripeConfigured, initialSaveOfferCode = null }: {
   initialCoupons: CouponListRow[]
   brokerages: BrokerageOption[]
   stripeConfigured: boolean
+  initialSaveOfferCode?: string | null
 }) {
   const [coupons, setCoupons] = useState<CouponListRow[]>(initialCoupons)
+  const [saveOfferCode, setSaveOfferCode] = useState<string | null>(initialSaveOfferCode)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [applyFor, setApplyFor] = useState<string | null>(null) // coupon id with picker open
   const [pickedBrokerage, setPickedBrokerage] = useState<string>('')
@@ -101,6 +103,21 @@ export function CouponsManager({ initialCoupons, brokerages, stripeConfigured }:
     })
   }
 
+  function setSaveOffer(c: CouponListRow | null) {
+    startTransition(async () => {
+      const r = await setRetentionOfferAction({ couponCode: c ? c.code : null })
+      if (r.ok) {
+        setSaveOfferCode(r.couponCode)
+        toast({
+          title: c ? `${c.code} is now the cancellation save-offer` : 'Save-offer cleared',
+          description: c
+            ? 'Tenant admins who click "Cancel subscription" will be countered with this coupon (when eligible).'
+            : 'The cancel flow goes straight to confirmation.',
+        })
+      } else toast({ title: 'Error', description: r.error, variant: 'destructive' })
+    })
+  }
+
   function publish(c: CouponListRow) {
     startTransition(async () => {
       const r = await publishCouponToStripeAction(c.id)
@@ -123,6 +140,25 @@ export function CouponsManager({ initialCoupons, brokerages, stripeConfigured }:
         {stripeConfigured
           ? 'Stripe is configured — Publish creates a live Stripe coupon.'
           : 'Stripe is NOT configured (STRIPE_SECRET_KEY unset) — Publish records an honest mock ledger entry only; nothing reaches Stripe until creds are added.'}
+      </div>
+
+      {/* Cancellation save-offer — which coupon counters a tenant's cancel click */}
+      <div className="rounded-md border px-3 py-2 text-xs flex items-center gap-2 flex-wrap">
+        <LifeBuoy className="h-3.5 w-3.5 text-emerald-700 shrink-0" />
+        {saveOfferCode ? (
+          <>
+            <span>
+              Cancellation save-offer: <span className="font-mono font-semibold">{saveOfferCode}</span> — shown to a tenant
+              admin before they confirm cancellation (only when their account is eligible to redeem it).
+            </span>
+            <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={pending} onClick={() => setSaveOffer(null)}>Clear</Button>
+          </>
+        ) : (
+          <span className="text-muted-foreground">
+            No cancellation save-offer configured — the tenant cancel flow goes straight to confirmation.
+            Use &quot;Set as save-offer&quot; on a coupon below to counter cancellations with a discount.
+          </span>
+        )}
       </div>
 
       <div className="flex justify-end">
@@ -227,6 +263,16 @@ export function CouponsManager({ initialCoupons, brokerages, stripeConfigured }:
                     title={stripeConfigured ? 'Create this coupon on Stripe' : 'Stripe not configured — records an honest mock ledger entry'}>
                     <UploadCloud className="h-3.5 w-3.5 mr-1.5" />{stripeConfigured ? 'Publish to Stripe' : 'Publish (mock)'}
                   </Button>
+                  {saveOfferCode === c.code ? (
+                    <Badge className="bg-emerald-100 text-emerald-800 text-[10px] self-center">
+                      <LifeBuoy className="h-3 w-3 mr-1" />Save-offer
+                    </Badge>
+                  ) : (
+                    <Button size="sm" variant="ghost" disabled={pending || !c.active || expired || exhausted} onClick={() => setSaveOffer(c)}
+                      title="Offer this coupon to tenant admins who click Cancel subscription">
+                      Set as save-offer
+                    </Button>
+                  )}
                   <Button size="sm" variant="ghost" disabled={pending} onClick={() => toggleActive(c)}>{c.active ? 'Deactivate' : 'Activate'}</Button>
                   <Button size="sm" variant="ghost" className="text-red-600" disabled={pending} onClick={() => remove(c)}
                     title="Deletes only while unredeemed; a redeemed coupon is deactivated (ledger preserved)">

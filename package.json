@@ -149,6 +149,7 @@
     "test:impersonation": "tsx scripts/impersonation-simulator.ts",
     "test:tenant-entitlements": "tsx scripts/tenant-entitlements-simulator.ts",
     "test:config-snapshots": "tsx scripts/config-snapshots-simulator.ts",
+    "test:intelligence-report": "tsx scripts/intelligence-report-simulator.ts",
     "test:content-safety": "tsx scripts/content-safety-simulator.ts",
     "test:signal-retry": "tsx scripts/signal-retry-simulator.ts",
     "test:tenant-isolation": "tsx scripts/tenant-isolation-simulator.ts",

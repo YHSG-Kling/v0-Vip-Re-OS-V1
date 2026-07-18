@@ -7,18 +7,20 @@ import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
-import { CreditCard, Calendar, AlertTriangle } from "lucide-react"
-import { cancelSubscription } from "@/app/actions/billing"
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { CreditCard, Calendar, AlertTriangle, BadgePercent, Loader2 } from "lucide-react"
+import { useToast } from "@/hooks/use-toast"
+import {
+  cancelSubscription,
+  getCancellationSaveOfferAction,
+  acceptCancellationSaveOfferAction,
+} from "@/app/actions/billing"
+import type { SaveOffer } from "@/lib/platform/save-offer"
 import { UpgradeModal } from "./upgrade-modal"
 
 interface CurrentPlanCardProps {
@@ -28,10 +30,19 @@ interface CurrentPlanCardProps {
   brokerageId: string
 }
 
+const fmtCents = (c: number) =>
+  `$${(c / 100).toLocaleString("en-US", { maximumFractionDigits: c % 100 === 0 ? 0 : 2 })}`
+
 export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: CurrentPlanCardProps) {
   const [isAnnual, setIsAnnual] = useState(false)
-  const [isCancelling, setIsCancelling] = useState(false)
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false)
+  const { toast } = useToast()
+
+  // Cancellation flow: loading offer → (offer | confirm) → done.
+  const [cancelOpen, setCancelOpen] = useState(false)
+  const [cancelStep, setCancelStep] = useState<"loading" | "offer" | "confirm">("loading")
+  const [saveOffer, setSaveOffer] = useState<SaveOffer | null>(null)
+  const [busy, setBusy] = useState(false)
 
   const status = subscription?.status || "inactive"
   const renewalDate = subscription?.current_period_end
@@ -49,15 +60,50 @@ export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: Curr
     ? Math.round(100 - (tier.annual_price_cents / (tier.monthly_price_cents * 12)) * 100)
     : 0
 
+  // Open the cancel flow — check for a retention offer BEFORE showing confirm.
+  const startCancelFlow = async () => {
+    setCancelOpen(true)
+    setCancelStep("loading")
+    setSaveOffer(null)
+    try {
+      const res = await getCancellationSaveOfferAction()
+      if (res.ok && res.offer) {
+        setSaveOffer(res.offer)
+        setCancelStep("offer")
+      } else {
+        setCancelStep("confirm") // no offer configured / ineligible — straight to confirm
+      }
+    } catch {
+      setCancelStep("confirm")
+    }
+  }
+
+  const handleAcceptOffer = async () => {
+    setBusy(true)
+    try {
+      const res = await acceptCancellationSaveOfferAction()
+      if (res.ok) {
+        toast({ title: "Offer applied — glad you're staying", description: `Your discount: ${res.summary}. It will show on your next invoice.` })
+        setCancelOpen(false)
+      } else {
+        toast({ title: "Could not apply the offer", description: res.error, variant: "destructive" })
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const handleCancelSubscription = async () => {
     if (!subscription?.id) return
-    setIsCancelling(true)
+    setBusy(true)
     try {
       await cancelSubscription(subscription.id)
-    } catch (error) {
-      console.error("Failed to cancel subscription:", error)
+      toast({ title: "Cancellation scheduled", description: `Your subscription remains active until ${renewalDate}.` })
+      setCancelOpen(false)
+    } catch (error: any) {
+      toast({ title: "Cancellation failed", description: error?.message ?? "Please try again.", variant: "destructive" })
     } finally {
-      setIsCancelling(false)
+      setBusy(false)
     }
   }
 
@@ -145,17 +191,76 @@ export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: Curr
             <Button onClick={() => setUpgradeModalOpen(true)}>
               Upgrade Plan
             </Button>
-            
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="outline" className="text-red-600 hover:text-red-700">
-                  Cancel Subscription
+
+            <Button
+              variant="outline"
+              className="text-red-600 hover:text-red-700"
+              onClick={startCancelFlow}
+              disabled={!subscription?.id}
+            >
+              Cancel Subscription
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Cancellation flow — save-offer first (when configured), then confirm */}
+      <Dialog open={cancelOpen} onOpenChange={(open) => { if (!busy) setCancelOpen(open) }}>
+        <DialogContent className="max-w-md">
+          {cancelStep === "loading" && (
+            <>
+              <DialogHeader>
+                <DialogTitle>One moment…</DialogTitle>
+                <DialogDescription>Checking your account before cancelling.</DialogDescription>
+              </DialogHeader>
+              <div className="flex justify-center py-6">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            </>
+          )}
+
+          {cancelStep === "offer" && saveOffer && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <BadgePercent className="h-5 w-5 text-emerald-600" />
+                  {saveOffer.headline}
+                </DialogTitle>
+                <DialogDescription>
+                  Accept the offer below and keep your AI team working — or continue to cancellation.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-4 space-y-1">
+                <p className="text-lg font-semibold text-emerald-800">{saveOffer.summary}</p>
+                {saveOffer.currentMonthlyCents > 0 && (
+                  <p className="text-sm text-emerald-800">
+                    {fmtCents(saveOffer.discountedMonthlyCents)}/month instead of {fmtCents(saveOffer.currentMonthlyCents)}
+                    {saveOffer.appliesForMonths != null
+                      ? ` for ${saveOffer.appliesForMonths} month${saveOffer.appliesForMonths === 1 ? "" : "s"}`
+                      : " for as long as you stay"}
+                    {" — "}saving {fmtCents(saveOffer.savingsPerMonthCents)}/month.
+                  </p>
+                )}
+                <p className="text-xs text-emerald-700">Applied to your subscription — the discount appears on your Stripe invoice.</p>
+              </div>
+              <div className="flex flex-col gap-2 pt-2">
+                <Button onClick={handleAcceptOffer} disabled={busy} className="bg-emerald-600 hover:bg-emerald-700">
+                  {busy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+                  Accept offer &amp; stay
                 </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Cancel Subscription?</AlertDialogTitle>
-                  <AlertDialogDescription className="space-y-2">
+                <Button variant="ghost" className="text-red-600" disabled={busy} onClick={() => setCancelStep("confirm")}>
+                  No thanks — continue to cancel
+                </Button>
+              </div>
+            </>
+          )}
+
+          {cancelStep === "confirm" && (
+            <>
+              <DialogHeader>
+                <DialogTitle>Cancel Subscription?</DialogTitle>
+                <DialogDescription asChild>
+                  <div className="space-y-2">
                     <p>Are you sure you want to cancel your subscription? This will:</p>
                     <ul className="list-disc list-inside space-y-1 text-sm">
                       <li>Remove access to premium features at period end</li>
@@ -166,23 +271,25 @@ export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: Curr
                     <p className="font-medium pt-2">
                       Your subscription will remain active until {renewalDate}.
                     </p>
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Keep Subscription</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={handleCancelSubscription}
-                    disabled={isCancelling}
-                    className="bg-red-600 hover:bg-red-700"
-                  >
-                    {isCancelling ? "Cancelling..." : "Yes, Cancel"}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          </div>
-        </CardContent>
-      </Card>
+                  </div>
+                </DialogDescription>
+              </DialogHeader>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="outline" disabled={busy} onClick={() => setCancelOpen(false)}>
+                  Keep Subscription
+                </Button>
+                <Button
+                  onClick={handleCancelSubscription}
+                  disabled={busy}
+                  className="bg-red-600 hover:bg-red-700"
+                >
+                  {busy ? "Cancelling…" : "Yes, Cancel"}
+                </Button>
+              </div>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <UpgradeModal
         open={upgradeModalOpen}

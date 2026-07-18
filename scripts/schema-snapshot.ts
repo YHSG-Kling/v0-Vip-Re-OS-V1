@@ -485,7 +485,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   platform_social_drafts: ["angle", "channel", "content", "created_at", "created_by", "format", "hashtags", "id", "media_type", "permalink", "scheduled_for", "script", "status", "updated_at", "video_url"],
   platform_config_snapshots: ["captured_by", "created_at", "description", "id", "name", "payload", "source_brokerage_id"],
   platform_impersonation_sessions: ["actor_email", "actor_user_id", "ended_at", "expires_at", "id", "ip_address", "mode", "reason", "started_at", "target_brokerage_id", "target_user_id", "user_agent"],
-  platform_settings: ["ai_enabled", "collect_tax", "created_at", "emergency_mode", "global_rate_limit_per_minute", "id", "product_brand", "show_brokerage_budget_warning", "tos_version", "updated_at"],
+  platform_settings: ["ai_enabled", "collect_tax", "created_at", "emergency_mode", "global_rate_limit_per_minute", "id", "product_brand", "retention_offer", "show_brokerage_budget_warning", "status_notice", "tos_version", "updated_at"],
   platform_dunning_events: ["brokerage_id", "channel", "created_at", "detail", "id", "step", "subscription_id"],
   platform_tos_acceptances: ["accepted_at", "email", "id", "ip_address", "tos_version", "user_agent"],
   platform_role_capability_overrides: ["access", "allowed", "capability", "id", "role", "updated_at", "updated_by"],

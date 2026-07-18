@@ -53,3 +53,54 @@ export async function setPlatformControlsAction(
   }
   return { ok: true, controls }
 }
+
+// ── TENANT-FACING STATUS NOTICE ──────────────────────────────────────────────
+// The platform → tenant incident broadcast (platform_settings.status_notice —
+// see lib/platform/status-notice.ts). platform_announcements reach STAFF only;
+// this is what a TENANT sees on /dashboard/whats-new during an incident or
+// maintenance window. Superadmin-gated + audited like the god switch.
+
+export async function setStatusNoticeAction(input: {
+  active: boolean
+  severity: "info" | "degraded" | "outage"
+  message: string
+}): Promise<
+  | { ok: true; notice: import("@/lib/platform/status-notice").StatusNotice }
+  | { ok: false; error: string }
+> {
+  const auth = await requireSuperadmin()
+  if (!auth.ok) return auth
+  if (input.active && !(input.message ?? "").trim()) {
+    return { ok: false, error: "An active status notice needs a message" }
+  }
+
+  const { loadStatusNotice, saveStatusNotice } = await import("@/lib/platform/status-notice")
+  const svc = createServiceClient()
+  try {
+    const before = await loadStatusNotice(svc)
+    const notice = await saveStatusNotice(svc, {
+      active: input.active,
+      severity: input.severity,
+      message: input.message,
+      // Keep the original start time while an already-active incident is being updated.
+      startedAt: input.active && before.active ? before.startedAt : null,
+    })
+
+    try {
+      const hdrs = await headers()
+      await svc.from("superadmin_audit_log").insert({
+        actor_user_id: auth.userId, actor_email: auth.email,
+        action: notice.active ? "status_notice.set" : "status_notice.cleared",
+        target_type: "platform_settings", target_id: null,
+        details: { before, after: notice },
+        ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
+        user_agent: hdrs.get("user-agent"),
+      })
+    } catch (err) {
+      console.error("[status-notice] audit write failed:", err)
+    }
+    return { ok: true, notice }
+  } catch (err: any) {
+    return { ok: false, error: `${err?.message ?? "Write failed"} — has scripts/l61-s01-retention-offer-status-notice.sql been applied?` }
+  }
+}

@@ -28,6 +28,161 @@ export async function createBrokerageBillingPortalAction(returnUrl?: string): Pr
   }
 }
 
+// ─── CANCELLATION SAVE-OFFER ─────────────────────────────────────────────────
+// The retention step before cancel. The offer coupon is configured by platform
+// staff (platform_settings.retention_offer → a platform_coupons code); a tenant
+// is only ever shown an offer they are actually eligible to redeem (same rules
+// as a manual redemption — lib/platform/save-offer.ts). Honest empty: no offer
+// configured or ineligible ⇒ { offer: null } and the cancel flow proceeds.
+
+async function requireTenantBillingAdmin(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthenticated" }
+  const { data: u } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
+  if (!BILLING_ADMIN_ROLES.has((u as any).user_type ?? "")) return { ok: false, error: "Only an admin/broker can manage billing" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id as string }
+}
+
+/** Load the save-offer context for the caller's brokerage: config + coupon +
+ *  tier price + prior-redemption flag, resolved through the pure layer. */
+async function loadSaveOfferResolution(brokerageId: string) {
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { resolveRetentionOfferConfig, resolveSaveOffer } = await import("@/lib/platform/save-offer")
+  const svc = createServiceClient()
+
+  // retention_offer column may not be migrated yet — fail soft to "not configured".
+  let rawConfig: any = null
+  try {
+    const { data } = await svc.from("platform_settings").select("retention_offer").limit(1).maybeSingle()
+    rawConfig = (data as any)?.retention_offer
+  } catch { rawConfig = null }
+  const config = resolveRetentionOfferConfig(rawConfig)
+
+  const [brokerageRes, subRes] = await Promise.all([
+    svc.from("brokerages").select("subscription_tier, plan_tier").eq("id", brokerageId).maybeSingle(),
+    svc
+      .from("subscriptions")
+      .select("id, stripe_subscription_id, status, subscription_tiers:tier_id(monthly_price_cents)")
+      .eq("brokerage_id", brokerageId)
+      .in("status", ["active", "trialing", "past_due"])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ])
+
+  let coupon: any = null
+  let existingRedemption = false
+  if (config.couponCode) {
+    const { data: couponRow } = await svc
+      .from("platform_coupons")
+      .select("id, code, description, percent_off, amount_off_cents, duration, duration_months, applies_to_tier, max_redemptions, redeemed_count, expires_at, active, stripe_coupon_id")
+      .eq("code", config.couponCode)
+      .maybeSingle()
+    coupon = couponRow ?? null
+    if (coupon) {
+      const { data: existing } = await svc
+        .from("platform_coupon_redemptions")
+        .select("id")
+        .eq("coupon_id", coupon.id)
+        .eq("brokerage_id", brokerageId)
+        .maybeSingle()
+      existingRedemption = !!existing
+    }
+  }
+
+  const tier = ((brokerageRes.data as any)?.subscription_tier ?? (brokerageRes.data as any)?.plan_tier) ?? null
+  const monthlyPriceCents = Number((subRes.data as any)?.subscription_tiers?.monthly_price_cents ?? 0)
+  const resolution = resolveSaveOffer({
+    config, coupon, tier, monthlyPriceCents, existingRedemption, now: new Date(),
+  })
+  return { resolution, coupon, subscription: subRes.data as any, svc }
+}
+
+export async function getCancellationSaveOfferAction(): Promise<
+  | { ok: true; offer: import("@/lib/platform/save-offer").SaveOffer | null }
+  | { ok: false; error: string }
+> {
+  const gate = await requireTenantBillingAdmin()
+  if (!gate.ok) return { ok: false, error: gate.error }
+  try {
+    const { resolution } = await loadSaveOfferResolution(gate.brokerageId)
+    return { ok: true, offer: resolution.offer ?? null }
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? "Could not load the save-offer" }
+  }
+}
+
+/**
+ * Accept the save-offer INSTEAD of cancelling. The offer is re-derived
+ * server-side (the client never picks the coupon): redemption row first
+ * (UNIQUE(coupon_id, brokerage_id) is the concurrency guard), derived
+ * redeemed_count, then the discount is pushed to Stripe when both the coupon
+ * and the subscription are live there (mock/unconfigured ⇒ honest skip; the
+ * ledger row is still the source of intent). Audited to audit_log.
+ */
+export async function acceptCancellationSaveOfferAction(): Promise<
+  | { ok: true; summary: string }
+  | { ok: false; error: string }
+> {
+  const gate = await requireTenantBillingAdmin()
+  if (!gate.ok) return { ok: false, error: gate.error }
+
+  try {
+    const { resolution, coupon, subscription, svc } = await loadSaveOfferResolution(gate.brokerageId)
+    if (!resolution.offer || !coupon) {
+      const detail = resolution.offer ? null : (resolution as { detail?: string }).detail
+      return { ok: false, error: detail || "No save-offer is available for this account" }
+    }
+
+    // 1) Redemption row first — the unique constraint is the double-redeem guard.
+    const { error: insErr } = await svc.from("platform_coupon_redemptions").insert({
+      coupon_id: coupon.id,
+      brokerage_id: gate.brokerageId,
+      redeemed_by: gate.userId,
+    })
+    if (insErr) {
+      if ((insErr as any).code === "23505") return { ok: false, error: "This offer was already redeemed for your account" }
+      return { ok: false, error: insErr.message }
+    }
+
+    // 2) redeemed_count = COUNT(ledger) — derived, never a stale +1.
+    const { count } = await svc.from("platform_coupon_redemptions").select("id", { count: "exact", head: true }).eq("coupon_id", coupon.id)
+    const { error: cntErr } = await svc.from("platform_coupons").update({ redeemed_count: count ?? (coupon.redeemed_count ?? 0) + 1 }).eq("id", coupon.id)
+    if (cntErr) console.error("[save-offer] redeemed_count sync failed (ledger row exists):", cntErr.message)
+
+    // 3) Push the discount to Stripe (skips honestly when mock/unlinked).
+    const { stripeApplyCoupon } = await import("@/lib/billing/stripe-subscription-ops")
+    const stripeRes = await stripeApplyCoupon(subscription?.stripe_subscription_id, coupon.stripe_coupon_id)
+    if (stripeRes.error) console.error("[save-offer] Stripe discount apply failed (ledger row kept):", stripeRes.error)
+
+    // 4) Audit — a retention acceptance is a billing event.
+    await svc.from("audit_log").insert({
+      user_id: gate.userId,
+      action: "retention_offer_accepted",
+      entity_type: "subscription",
+      entity_id: subscription?.id ?? null,
+      after: {
+        brokerage_id: gate.brokerageId,
+        coupon_code: coupon.code,
+        summary: resolution.offer.summary,
+        stripe_applied: stripeRes.applied,
+        stripe_skipped: stripeRes.skipped,
+      },
+    })
+
+    const { revalidatePath } = await import("next/cache")
+    revalidatePath("/settings/billing")
+    return { ok: true, summary: resolution.offer.summary }
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? "Could not apply the offer" }
+  }
+}
+
 // ─── GET SUBSCRIPTION TIERS ──────────────────────────────────────────────────
 export async function getSubscriptionTiers() {
   const supabase = await createClient()

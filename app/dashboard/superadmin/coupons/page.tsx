@@ -1,7 +1,7 @@
 import Link from "next/link"
 import { redirect } from "next/navigation"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
-import { listCouponsAction, listBrokeragesForCouponAction } from "@/app/actions/superadmin/coupons"
+import { listCouponsAction, listBrokeragesForCouponAction, getRetentionOfferConfigAction } from "@/app/actions/superadmin/coupons"
 import { CouponsManager } from "./coupons-manager"
 
 export const dynamic = "force-dynamic"
@@ -14,9 +14,10 @@ export default async function SuperadminCouponsPage() {
   if (!gate.userId) redirect("/login")
   if (!gate.ok) return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
 
-  const [couponsRes, brokeragesRes] = await Promise.all([
+  const [couponsRes, brokeragesRes, retentionRes] = await Promise.all([
     listCouponsAction(),
     listBrokeragesForCouponAction(),
+    getRetentionOfferConfigAction(),
   ])
 
   return (
@@ -40,6 +41,7 @@ export default async function SuperadminCouponsPage() {
         initialCoupons={couponsRes.ok ? couponsRes.coupons : []}
         brokerages={brokeragesRes.ok ? brokeragesRes.brokerages : []}
         stripeConfigured={couponsRes.ok ? couponsRes.stripeConfigured : false}
+        initialSaveOfferCode={retentionRes.ok ? retentionRes.couponCode : null}
       />
     </div>
   )

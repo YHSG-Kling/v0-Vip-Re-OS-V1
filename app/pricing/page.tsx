@@ -116,6 +116,9 @@ export default async function PricingPage() {
               <Link href="/get-started">Or just raise your hand</Link>
             </Button>
           </div>
+          <p className="text-xs text-muted-foreground">
+            How we protect your data: <Link href="/trust" className="underline underline-offset-2">Trust &amp; Security</Link>
+          </p>
         </div>
       </div>
     </div>

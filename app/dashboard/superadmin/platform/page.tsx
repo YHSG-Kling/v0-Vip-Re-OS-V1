@@ -20,6 +20,8 @@ import { getPlatformControls } from "@/lib/platform/platform-controls"
 import { PlatformControlsPanel } from "./platform-controls-panel"
 import { getPlatformProviderConfig, PLATFORM_PROVIDER_SPEC } from "@/lib/platform/platform-providers"
 import { PlatformProvidersPanel } from "./platform-providers-panel"
+import { loadStatusNotice } from "@/lib/platform/status-notice"
+import { StatusNoticePanel } from "./status-notice-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -86,12 +88,13 @@ export default async function SuperadminPlatformPage() {
     return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
   }
 
-  const [overviewRes, cronRes, safetyRes, budgetWarningEnabled, platformControls] = await Promise.all([
+  const [overviewRes, cronRes, safetyRes, budgetWarningEnabled, platformControls, statusNotice] = await Promise.all([
     getPlatformOverviewAction(),
     getCronHealthAction(),
     getTenantSafetyFeedAction(15),
     getBrokerageBudgetWarningEnabled(),
     getPlatformControls(),
+    loadStatusNotice(),
   ])
   const platformProviders = await getPlatformProviderConfig()
 
@@ -168,6 +171,9 @@ export default async function SuperadminPlatformPage() {
 
       {/* THE GOD SWITCH — platform-wide emergency mode / AI engine / rate limit (enforced at the autonomy gate) */}
       <PlatformControlsPanel initial={platformControls} />
+
+      {/* TENANT STATUS NOTICE — the incident broadcast every tenant sees on /dashboard/whats-new */}
+      <StatusNoticePanel initial={statusNotice} />
 
       {/* PLATFORM PROVIDERS — channel enablement + default vendors (read by resolveProvider at runtime) */}
       <PlatformProvidersPanel spec={PLATFORM_PROVIDER_SPEC} initial={platformProviders} />
