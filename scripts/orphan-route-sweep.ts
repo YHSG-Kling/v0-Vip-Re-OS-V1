@@ -55,6 +55,29 @@ const EXEMPT: Record<string, string> = {
   "/embed/[publicId]": "iframe src minted by the embed loader script (app/api/embed/script/route.ts, string concat) — embedded on EXTERNAL sites",
   // ── Intentionally nav-less internal tooling ──
   "/seed": "developer seed utility — typed URL, auth-gated; unlinked by design",
+  // ── Legacy redirect stubs (bookmark compatibility) ──
+  // Each page is a pure redirect() to its canonical successor. They are kept
+  // (not deleted) because NOTHING routes old URLs at runtime: ROUTE_ALIASES
+  // in app/routes-compatibility.ts is imported by no middleware or catch-all
+  // (verified — no middleware.ts exists, resolveRoute has zero consumers), so
+  // the stub page IS the only thing keeping old bookmarks/external links from
+  // 404ing. In-app links to them are zero BY DESIGN — that is the exemption.
+  "/admin/audit-trail": "legacy redirect stub (bookmark compatibility) → /dashboard/superadmin/audit-trail",
+  "/admin/billing": "legacy redirect stub (bookmark compatibility) → /dashboard/superadmin/subscriptions",
+  "/admin/brokerages": "legacy redirect stub (bookmark compatibility) → /dashboard/superadmin/brokerages",
+  "/admin/integrations": "legacy redirect stub (bookmark compatibility) → /dashboard/superadmin/connectors",
+  "/admin/platform": "legacy redirect stub (bookmark compatibility) → /dashboard/superadmin/platform",
+  "/admin/providers": "legacy redirect stub (bookmark compatibility) → /dashboard/superadmin/connectors",
+  "/admin/system-health": "legacy redirect stub (bookmark compatibility) → /dashboard/superadmin/observability",
+  "/admin/system/providers": "legacy redirect stub (bookmark compatibility) → /dashboard/superadmin/env-providers",
+  "/admin/users/[userId]": "legacy redirect stub (bookmark compatibility) → /dashboard/admin/users/[userId]",
+  "/transaction/dashboard": "legacy redirect stub (bookmark compatibility) → /dashboard/coordinator",
+  "/onboarding": "legacy redirect stub (bookmark compatibility) → /dashboard/onboarding",
+  "/past-clients": "legacy redirect stub (bookmark compatibility) → /lifetime-customers (Past Clients renamed Lifetime Customers)",
+  "/referral-partners": "legacy redirect stub (bookmark compatibility) → /dashboard/agent/referrals",
+  "/dashboard/marketing": "legacy redirect stub (bookmark compatibility) → /dashboard/marketing/studio",
+  "/portal/[contactId]/dashboard/[persona]": "legacy redirect stub (bookmark compatibility) → /portal/[contactId] — persona routing is now kernel-decided; portal links were sent to clients externally, so old deep links must not 404",
+  "/auth/error": "legacy redirect stub (bookmark compatibility) → /login?message=… — possible OAuth error-redirect target in hosted Supabase auth config (not verifiable in-repo)",
 }
 
 /** Files whose ENTIRE content is route configuration — every "/..." string

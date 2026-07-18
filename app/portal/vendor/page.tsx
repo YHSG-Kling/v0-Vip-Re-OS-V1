@@ -4,7 +4,8 @@ import { getVendorBookings } from "@/app/actions/multi-persona"
 import { getVendorJobs } from "@/app/actions/vendor-portal"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { Wrench, Calendar, CheckCircle2, Clock, DollarSign, FileText, MessageSquare } from "lucide-react"
+import Link from "next/link"
+import { Wrench, Calendar, CheckCircle2, Clock, DollarSign, FileText, MessageSquare, Users } from "lucide-react"
 import { VendorJobsList } from "@/components/vendor/jobs-list"
 import { VendorJobDetail } from "@/components/vendor/job-detail"
 import { InternalAIAssistant } from "@/app/components/shared/internal-ai-assistant"
@@ -86,6 +87,14 @@ export default async function VendorPortalDashboard({ searchParams }: { searchPa
           <h1 className="text-3xl font-bold tracking-tight">My Jobs</h1>
           <p className="text-muted-foreground">Manage your service assignments and deliverables</p>
         </div>
+        {/* Orphan-route sweep: the scoped assigned-contacts surface was unreachable from any nav. */}
+        <Link
+          href="/portal/vendor/contacts"
+          className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted"
+        >
+          <Users className="h-4 w-4" />
+          My Contacts
+        </Link>
       </div>
 
       {/* Key Metrics */}

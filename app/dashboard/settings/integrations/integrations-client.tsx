@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import Link from "next/link"
 import type {
   PlatformCredential,
   ProviderOverride,
@@ -184,11 +185,20 @@ export function IntegrationsClient({
     <div className="p-6 space-y-8 max-w-4xl">
 
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Integrations</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Manage platform credentials and provider routing overrides for your brokerage.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Integrations</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Manage platform credentials and provider routing overrides for your brokerage.
+          </p>
+        </div>
+        {/* Orphan-route sweep: the tenant lead-source / listing-feed setup page
+            was unreachable from any nav — this hub is its home. */}
+        <Button variant="outline" size="sm" asChild>
+          <Link href="/dashboard/settings/integrations/lead-sources">
+            Lead Sources &amp; Listing Feeds
+          </Link>
+        </Button>
       </div>
 
       {/* ── Provider Routing ─────────────────────────────────────────────── */}

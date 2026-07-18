@@ -423,6 +423,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'patterns', label: 'Behavioral Patterns', href: '/dashboard/patterns' },
           { id: 'stale', label: 'Stale Queue', href: '/dashboard/stale' },
           { id: 'ai-quality', label: 'AI Quality', href: '/dashboard/ai-quality' },
+          // Orphan-route sweep: the FINRA-2026 manager eval harness UI was unreachable from any nav.
+          { id: 'compliance-eval', label: 'Compliance Eval', href: '/dashboard/admin/compliance-eval' },
           { id: 'coordination', label: 'AI Coordination', href: '/dashboard/coordination' },
           { id: 'comm-intel', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence' },
           { id: 'farm-intel', label: 'Farm Intelligence', href: '/dashboard/admin/farm-intelligence' },
@@ -456,6 +458,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'education', label: 'Education Library', href: '/dashboard/education', icon: 'GraduationCap' },
       { id: 'brand-compliance', label: 'Brand & Compliance', href: '/dashboard/admin/brand', icon: 'Shield' },
       { id: 'tcpa-compliance', label: 'TCPA Compliance', href: '/dashboard/admin/compliance/tcpa', icon: 'Shield' },
+      // Orphan-route sweep: per-state required-document settings were unreachable from any nav.
+      { id: 'required-documents', label: 'Required Documents', href: '/dashboard/settings/required-documents', icon: 'FileCheck' },
       { id: 'feature-governance', label: 'Feature Governance', href: '/dashboard/admin/feature-governance', icon: 'Shield' },
       { id: 'workflows', label: 'Workflows', href: '/workflows', icon: 'Workflow' },
       { id: 'video-analytics', label: 'Video Analytics', href: '/dashboard/videos/analytics', icon: 'Video' },
@@ -499,6 +503,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'portfolio', label: 'Portfolio', href: '/vendor/portfolio', icon: 'Image' },
       { id: 'earnings', label: 'Earnings', href: '/vendor/earnings', icon: 'DollarSign' },
       { id: 'documents', label: 'Documents', href: '/vendor/documents', icon: 'FolderOpen' },
+      // Orphan-route sweep: the vendor connection center was unreachable from any nav.
+      { id: 'connections', label: 'Connections', href: '/vendor/connections', icon: 'Plug' },
       { id: 'settings', label: 'Settings', href: '/vendor/settings', icon: 'Settings' },
     ],
     topNavItems: [
@@ -604,6 +610,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     sidebarItems: [
       { id: 'dashboard', label: 'Lender Dashboard', href: '/lender/dashboard', icon: 'LayoutGrid' },
       { id: 'pipeline', label: 'Loan Pipeline', href: '/lender/pipeline', icon: 'TrendingUp', badgeKey: 'lender_pipeline_count' },
+      // Orphan-route sweep: the assigned-transaction milestone board was unreachable from any nav.
+      { id: 'transactions', label: 'Assigned Transactions', href: '/lender/transactions', icon: 'Handshake' },
       { id: 'approvals', label: 'Approvals', href: '/lender/approvals', icon: 'CheckCircle' },
       { id: 'underwriting', label: 'Underwriting', href: '/lender/underwriting', icon: 'FileCheck' },
       { id: 'documents', label: 'Documents', href: '/lender/documents', icon: 'Folder' },

@@ -123,6 +123,7 @@ export default async function LenderDashboardPage() {
           <CardContent className="grid grid-cols-2 gap-2">
             {[
               { label: 'Loan Pipeline', href: '/lender/pipeline' },
+              { label: 'Assigned Transactions', href: '/lender/transactions' },
               { label: 'Approvals', href: '/lender/approvals' },
               { label: 'Underwriting', href: '/lender/underwriting' },
               { label: 'Documents', href: '/lender/documents' },

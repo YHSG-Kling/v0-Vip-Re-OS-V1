@@ -1,26 +1,15 @@
-import React from 'react'
-import Link from 'next/link'
-import { Button } from '@/components/ui/button'
-import { AlertCircle } from 'lucide-react'
+import { redirect } from "next/navigation"
 
-export default async function ErrorPage({
+// Superseded by the auth callback's error rail (/login?message=…, see
+// app/auth/callback/route.ts). Kept as a redirect stub instead of deleted:
+// this path may still be configured as an OAuth error-redirect target in the
+// hosted Supabase auth config, which is not verifiable in-repo — a deletion
+// would 404 those redirects. Exempted in scripts/orphan-route-sweep.ts.
+export default async function LegacyAuthErrorPage({
   searchParams,
 }: {
   searchParams: Promise<{ error?: string }>
 }) {
-  const params = await searchParams
-  const error = params.error || 'An error occurred during authentication'
-
-  return (
-    <div className="min-h-screen bg-white flex items-center justify-center px-4">
-      <div className="w-full max-w-md text-center">
-        <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">Authentication Error</h1>
-        <p className="text-gray-600 mb-6">{error}</p>
-        <Button asChild className="w-full bg-blue-600 hover:bg-blue-700 text-white">
-          <Link href="/login">Back to Login</Link>
-        </Button>
-      </div>
-    </div>
-  )
+  const { error } = await searchParams
+  redirect(`/login?message=${encodeURIComponent(error || "error")}`)
 }

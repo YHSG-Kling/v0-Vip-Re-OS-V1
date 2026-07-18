@@ -2229,6 +2229,20 @@ async function main() {
         && src("app/dashboard/onboarding/OnboardingDashboardClient.tsx").includes("YourWebsiteCard")
         && src("app/components/settings/YourWebsiteCard.tsx").includes("getMyPublicSiteLinks"))
     }
+    // ── ROUND 18: THREE ZEROS + THE NIGHTLY TRUTH LANE ──
+    {
+      const routeBaseline18 = JSON.parse(src("scripts/orphan-route-baseline.json")) as string[]
+      check("ROUND 18 — THE THIRD ZERO, AND THE DATABASE WATCHES ITSELF NIGHTLY. ROUTE BURN 42 → 0: the honest branch mattered — ROUTE_ALIASES turned out to be runtime-DEAD (no middleware consumes it), so the 14 legacy redirect stubs ARE the bookmark-compatibility layer and were kept + exempted with named targets instead of aliased-and-deleted into 404s; the 14 hardcoded journey mock pages and 4 superseded surfaces were deleted after zero-ref verification; 9 more real surfaces got their links — including the client portal's Full Deal Dashboard (the buyer loan-condition rail) and the FIRST public privacy-request footer on the tenant sites. All three rot classes now sit at ZERO with shrink-only guards: writes nothing reads, reads nothing writes, pages nothing links. NIGHTLY TRUTH LANE: the per-push drift guard proves code vs the committed snapshot; the new creds-gated check proves the snapshot vs the LIVE database (service-role-only live_schema_json RPC, l72_s14) — DDL applied between deploys is caught within a day, with the diff shown and the committed snapshot restored so regens are always deliberate; the nightly workflow now also runs the FULL guard chain against main. FLEET DRILL ran live: all four tiers provisioned with real shapes, the seat gate's exact predicate proven (solo at its 2-seat cap, vendor partner not counting, suspension freeing the seat), residue 0",
+        routeBaseline18.length === 0
+        && src("scripts/orphan-route-sweep.ts").includes("legacy redirect stub")
+        && src("scripts/check-live-schema-drift.ts").includes("live_schema_json")
+        && src("scripts/check-live-schema-drift.ts").includes("skipped (no Supabase credentials")
+        && src(".github/workflows/e2e.yml").includes("check-live-schema-drift")
+        && src(".github/workflows/e2e.yml").includes("npm run guard")
+        && src("app/site/[slug]/page.tsx").includes("/privacy/request")
+        && JSON.parse(src("scripts/orphan-write-baseline.json")).length === 0
+        && src("scripts/writerless-read-sweep.ts").length > 0)
+    }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {
       const { readdirSync, statSync } = await import("fs")

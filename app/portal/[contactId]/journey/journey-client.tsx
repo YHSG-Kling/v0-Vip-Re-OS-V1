@@ -218,6 +218,14 @@ export default function JourneyClient({
                   )}
                 </div>
               )}
+              {/* Orphan-route sweep: the full deal dashboard (loan-condition
+                  visibility, closing costs, feedback) had no inbound link. */}
+              <Link href={`/portal/${contactId}/transaction/${transaction.id}`}>
+                <Button variant="outline" size="sm">
+                  <FileText className="mr-2 h-4 w-4" />
+                  Full Deal Dashboard
+                </Button>
+              </Link>
             </div>
           </div>
         </CardHeader>

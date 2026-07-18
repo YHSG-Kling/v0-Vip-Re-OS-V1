@@ -265,6 +265,13 @@ export default async function TenantSitePage({ params }: PageProps) {
             Equal Housing Opportunity
           </div>
           <div>If your home is currently listed with another broker, this is not a solicitation. Information deemed reliable but not guaranteed.</div>
+          {/* Orphan-route sweep: the CCPA/GDPR data-subject-request form was
+              unreachable — this public footer is its required surface. */}
+          <div>
+            <Link href="/privacy/request" className="underline underline-offset-2 hover:text-foreground">
+              Privacy request (CCPA / GDPR)
+            </Link>
+          </div>
         </div>
       </footer>
     </div>
