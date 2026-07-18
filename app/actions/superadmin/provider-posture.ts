@@ -13,8 +13,10 @@ import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import {
   getTwilioFleetPosture,
   getSendgridPosture,
+  getFullProviderPosture,
   type TwilioFleetPosture,
   type SendgridPosture,
+  type FullProviderPosture,
 } from "@/lib/platform/provider-posture"
 
 async function audit(svc: ReturnType<typeof createServiceClient>, userId: string, action: string, details: Record<string, unknown>) {
@@ -38,6 +40,28 @@ export async function getTwilioFleetPostureAction(): Promise<
   await audit(svc, gate.userId, "provider_posture.twilio_fleet_swept", {
     liveProbes: posture.liveProbes, totalTenants: posture.totalTenants, probedTenants: posture.probedTenants,
     driftedTenants: posture.tenants.filter((t) => t.driftedCount > 0).length,
+  })
+  return { ok: true, posture }
+}
+
+/** The FULL-REGISTRY posture sweep (owner correction to round 24): every
+ *  provider the platform manages — derived from the code's own vocabularies,
+ *  never a hand-picked trio. DB + env reads only (zero vendor calls), so it is
+ *  cheap on demand; the Twilio/SendGrid actions below stay the vendor-calling
+ *  deep-dives. */
+export async function getFullProviderPostureAction(): Promise<
+  { ok: true; posture: FullProviderPosture } | { ok: false; error: string }
+> {
+  const gate = await requirePlatformCapability("providers")
+  if (!gate.ok || !gate.userId) return { ok: false, error: gate.error ?? "Forbidden" }
+
+  const svc = createServiceClient()
+  const posture = await getFullProviderPosture(svc)
+  await audit(svc, gate.userId, "provider_posture.full_registry_swept", {
+    providerCount: posture.providerCount,
+    needsAttention: posture.needsAttentionCount,
+    windowDays: posture.windowDays,
+    capped: posture.capped,
   })
   return { ok: true, posture }
 }

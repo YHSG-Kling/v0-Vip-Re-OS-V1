@@ -1,17 +1,193 @@
 "use client"
 
-// Fleet-wide external-provider posture — Twilio (subaccounts, numbers, spend,
-// webhook drift) + SendGrid (domain auth, suppression sync, bounce/complaint
-// rates). Real vendor calls, so each sweep is a button, not a page-load;
-// no-creds environments get an honest DB-only / not-configured view.
+// Fleet-wide external-provider posture. The FULL-REGISTRY table (owner
+// correction to round 24) covers EVERY provider the platform manages — derived
+// from the code's own provider vocabularies — with configured/last-activity/
+// self-heal signals from our own ledgers (DB-only sweep, zero vendor calls).
+// The Twilio-fleet + SendGrid cards below it stay the vendor-calling
+// deep-dives; no-creds environments get an honest not-configured view.
 
-import { useState } from "react"
+import { Fragment, useState } from "react"
+import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Phone, MailCheck } from "lucide-react"
-import { getTwilioFleetPostureAction, getSendgridPostureAction } from "@/app/actions/superadmin/provider-posture"
-import type { TwilioFleetPosture, SendgridPosture } from "@/lib/platform/provider-posture"
+import { Phone, MailCheck, LayoutGrid } from "lucide-react"
+import {
+  getTwilioFleetPostureAction,
+  getSendgridPostureAction,
+  getFullProviderPostureAction,
+} from "@/app/actions/superadmin/provider-posture"
+import type { TwilioFleetPosture, SendgridPosture, FullProviderPosture, ProviderPostureRow } from "@/lib/platform/provider-posture"
+
+// ── Full provider registry (every rail, grouped by category) ─────────────────
+
+const CATEGORY_LABEL: Record<string, string> = {
+  voice_sms: "Voice / SMS", email: "Email", mail: "Direct mail", enrichment: "Enrichment",
+  scraper: "Scrapers", ai_media: "AI media", ai_llm: "AI models", search: "Search / research",
+  payments: "Payments", accounting: "Accounting", esign: "E-sign / transactions",
+  leadgen: "Lead generation", social: "Social", showing: "Showings", crm: "CRM",
+  calendar: "Calendar", listings: "Listings / IDX", records: "Public records",
+  infra: "Infrastructure", other: "Other",
+}
+
+const SCOPE_LABEL: Record<string, string> = {
+  platform: "Platform", tenant_byo: "Tenant BYO", both: "Both",
+}
+
+function fmtWhen(iso: string | null): string {
+  if (!iso) return "—"
+  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000)
+  if (m < 1) return "just now"
+  if (m < 60) return `${m}m ago`
+  const h = Math.round(m / 60)
+  if (h < 24) return `${h}h ago`
+  return `${Math.round(h / 24)}d ago`
+}
+
+function ConfiguredBadge({ r }: { r: ProviderPostureRow }) {
+  const envPart = r.platformEnvConfigured === null ? null : r.platformEnvConfigured
+  if (envPart === true) return <Badge variant="default">env set</Badge>
+  if (envPart === false && r.tenantConnections === 0) return <Badge variant="outline">not configured</Badge>
+  if (envPart === false) return <Badge variant="secondary">env unset</Badge>
+  // env-less provider: credential stores are the only home
+  return r.tenantConnections > 0
+    ? <Badge variant="default">connected</Badge>
+    : <Badge variant="outline">no connections</Badge>
+}
+
+export function FullProviderRegistryCard() {
+  const [busy, setBusy] = useState(false)
+  const [p, setP] = useState<FullProviderPosture | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  const run = async () => {
+    setBusy(true); setErr(null)
+    const res = await getFullProviderPostureAction()
+    if (res.ok) setP(res.posture)
+    else setErr(res.error)
+    setBusy(false)
+  }
+
+  const grouped = new Map<string, ProviderPostureRow[]>()
+  if (p) for (const r of p.rows) {
+    const list = grouped.get(r.category) ?? []
+    list.push(r)
+    grouped.set(r.category, list)
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <LayoutGrid className="h-4 w-4" /> Full provider registry posture
+        </CardTitle>
+        <CardDescription className="text-xs">
+          EVERY provider the platform manages — the registry is derived from the code's own provider
+          vocabularies (connector registry, tenancy matrix, vendor ownership, guardian probe surface,
+          cost normalizer, connected-capability registry), never a hand-typed list. Per provider:
+          configured state, connector-ledger activity, {p?.windowDays ?? 14}-day self-heal counts, and
+          pull-drift sentinel state. DB + env reads only — the Twilio fleet and SendGrid cards below are
+          the vendor-calling deep-dives.{" "}
+          <Link href="/dashboard/superadmin/continuity" className="underline">Continuity Board →</Link>
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <div className="flex items-center gap-3 flex-wrap">
+          <Button size="sm" onClick={run} disabled={busy}>{busy ? "Sweeping…" : "Run registry sweep"}</Button>
+          {p && (
+            <span className={p.needsAttentionCount === 0 ? "text-green-600 font-medium text-xs" : "text-amber-600 font-medium text-xs"}>
+              {p.providerCount} providers · {p.needsAttentionCount} need attention
+            </span>
+          )}
+        </div>
+        {err && <div className="text-xs text-red-600">{err}</div>}
+        {p && (
+          <>
+            <div className="text-xs text-muted-foreground">{p.detail}</div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-muted-foreground border-b">
+                    <th className="py-1.5 pr-3">Provider</th>
+                    <th className="py-1.5 pr-3">Scope</th>
+                    <th className="py-1.5 pr-3">Configured</th>
+                    <th className="py-1.5 pr-3">Activity ({p.windowDays}d)</th>
+                    <th className="py-1.5 pr-3">Last success</th>
+                    <th className="py-1.5 pr-3">Self-heal ({p.windowDays}d)</th>
+                    <th className="py-1.5 pr-3">Drift</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...grouped.entries()].map(([category, rows]) => (
+                    <Fragment key={category}>
+                      <tr className="border-b bg-muted/40">
+                        <td colSpan={7} className="py-1.5 pr-3 font-semibold text-muted-foreground">
+                          {CATEGORY_LABEL[category] ?? category}
+                        </td>
+                      </tr>
+                      {rows.map((r) => (
+                        <tr key={r.provider} className={`border-b last:border-0 align-top ${r.needsAttention ? "bg-red-500/5" : ""}`}>
+                          <td className="py-1.5 pr-3">
+                            <span className="font-medium" title={`Sources: ${r.sources.join(", ")}${r.envVars.length ? ` · Env: ${r.envVars.join(", ")}` : ""}`}>
+                              {r.label}
+                            </span>
+                            {r.needsAttention && (
+                              <div className="text-[11px] text-red-600 max-w-[360px]">
+                                needs attention — {r.attentionReason}{" "}
+                                <Link href="/dashboard/superadmin/continuity" className="underline">Continuity Board</Link>
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-1.5 pr-3 text-muted-foreground">{SCOPE_LABEL[r.scope] ?? r.scope}</td>
+                          <td className="py-1.5 pr-3">
+                            <ConfiguredBadge r={r} />
+                            {r.tenantConnections > 0 && r.platformEnvConfigured !== null && (
+                              <span className="ml-1 text-muted-foreground">+{r.tenantConnections} tenant</span>
+                            )}
+                          </td>
+                          <td className="py-1.5 pr-3 tabular-nums">
+                            {r.activityNote ? (
+                              <span className="text-muted-foreground">{r.activityNote}</span>
+                            ) : (
+                              <>
+                                {r.calls14d} call{r.calls14d === 1 ? "" : "s"}
+                                {r.errors14d > 0 && <span className="text-red-600"> · {r.errors14d} err</span>}
+                              </>
+                            )}
+                          </td>
+                          <td className="py-1.5 pr-3 text-muted-foreground">{fmtWhen(r.lastSuccessAt)}</td>
+                          <td className="py-1.5 pr-3">
+                            {r.selfHeal.healed + r.selfHeal.failed + r.selfHeal.escalated === 0 ? (
+                              <span className="text-muted-foreground">—</span>
+                            ) : (
+                              <span>
+                                <span className="text-green-600">{r.selfHeal.healed} healed</span>
+                                {r.selfHeal.failed > 0 && <span className="text-red-600"> · {r.selfHeal.failed} failed</span>}
+                                {r.selfHeal.escalated > 0 && <span className="text-amber-600"> · {r.selfHeal.escalated} escalated</span>}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-1.5 pr-3">
+                            {r.drift.pendingQuarantines > 0 ? (
+                              <Badge variant="destructive">{r.drift.pendingQuarantines} quarantined</Badge>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
 
 const TIER_LABEL: Record<string, string> = {
   byo: "BYO", subaccount: "Subaccount", master_fallback: "Master (legacy)", none: "—",

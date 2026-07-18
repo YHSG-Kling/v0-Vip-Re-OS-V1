@@ -11,7 +11,7 @@ import { Activity, AlertTriangle, Clock, PlugZap, Cpu } from "lucide-react"
 import { PlatformReceptionPanel } from "./platform-reception-panel"
 import { A2pVerifyCard } from "./a2p-verify-card"
 import { GoLiveCard } from "./go-live-card"
-import { TwilioFleetPostureCard, SendgridPostureCard } from "./provider-posture-cards"
+import { TwilioFleetPostureCard, SendgridPostureCard, FullProviderRegistryCard } from "./provider-posture-cards"
 
 export const dynamic = "force-dynamic"
 
@@ -203,7 +203,11 @@ export default async function SuperadminConnectorsPage() {
 
       <GoLiveCard />
 
-      {/* Fleet-wide external-provider posture (Twilio + SendGrid) — on-demand vendor sweeps */}
+      {/* FULL-REGISTRY provider posture — every provider the platform manages,
+          derived from the code's own vocabularies (DB-only sweep, no vendor calls) */}
+      <FullProviderRegistryCard />
+
+      {/* Deep-dive drill-downs (real vendor calls, on-demand): Twilio fleet + SendGrid */}
       <TwilioFleetPostureCard />
       <SendgridPostureCard />
 

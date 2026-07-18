@@ -35,6 +35,15 @@
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import type { A2pState } from "@/lib/voice/a2p-registration"
 import { nextA2pStep } from "@/lib/voice/a2p-registration"
+import { CONNECTOR_REGISTRY } from "@/lib/agentic-os/connector-registry"
+import { PROVIDER_TENANCY } from "@/lib/providers/tenancy-matrix"
+import { PLATFORM_VENDORS, USER_CONNECTED_VENDORS } from "@/lib/agentic-os/vendor-ownership"
+import { PLATFORM_PROVIDER_KEYS, PROBE_SPECS } from "@/lib/agentic-os/connector-probe"
+import { VENDOR_PRICING } from "@/lib/vendor-governance/cost-normalizer"
+import { CONNECTED_CAPABILITY_REGISTRY, type ConnectedCapability } from "@/lib/agentic-os/connected-vendor-registry"
+import { canonicalProvider } from "@/lib/integrations/connection-manager"
+import { composeSentinelLossReport } from "@/lib/kernel/write-sentinel"
+import { geoapifyConfigured } from "@/lib/external/geoapify-client"
 
 // ── Webhook expectations (the URLs bindNumberToTwilioLane writes) ────────────
 
@@ -447,4 +456,478 @@ export async function getSendgridPosture(svc: any): Promise<SendgridPosture> {
       : "Suppression lists unreadable",
   ]
   return { generatedAt, configured: true, detail: detailParts.join(" · "), domains, suppressions, ledger }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE FULL PLATFORM PROVIDER REGISTRY (owner correction to round 24) — the
+// posture board covered a hand-picked trio (Twilio fleet + SendGrid); the
+// platform actually manages an entire connector economy. The registry below is
+// DERIVED, never hand-typed: it is the UNION of the code's own provider
+// vocabularies, so a provider added to any of those sources appears here
+// automatically —
+//   • CONNECTOR_REGISTRY        (lib/agentic-os/connector-registry — gateway
+//                                connector specs: category, envKey)
+//   • PROVIDER_TENANCY          (lib/providers/tenancy-matrix — ownership
+//                                models + env vars; the "scrapers" fleet entry
+//                                expands into its per-lane env vars)
+//   • PLATFORM_VENDORS /
+//     USER_CONNECTED_VENDORS    (lib/agentic-os/vendor-ownership — scope)
+//   • PLATFORM_PROVIDER_KEYS +
+//     PROBE_SPECS               (lib/agentic-os/connector-probe — the
+//                                Integration Guardian's probe surface)
+//   • VENDOR_PRICING            (lib/vendor-governance/cost-normalizer — every
+//                                vendor the cost engine knows a rate for)
+//   • CONNECTED_CAPABILITY_REGISTRY (lib/agentic-os/connected-vendor-registry —
+//                                every provider a tenant capability routes to)
+//   • geoapify-client           (env-gated module with no registry row — bound
+//                                by importing its own configured() check)
+// Only NORMALIZATION is local: alias folding (d_id/did, twilio_voice/twilio,
+// openai_gpt4/openai…) and mapping each source's category vocabulary onto one
+// posture vocabulary. Removing a provider from every source removes it here.
+
+export type ProviderCategory =
+  | "voice_sms" | "email" | "mail" | "enrichment" | "scraper" | "ai_media"
+  | "ai_llm" | "search" | "payments" | "accounting" | "esign" | "leadgen"
+  | "social" | "showing" | "crm" | "calendar" | "listings" | "records"
+  | "infra" | "other"
+
+export type ProviderScope = "platform" | "tenant_byo" | "both"
+
+export interface PlatformProviderEntry {
+  /** Canonical provider key (alias-folded). */
+  provider: string
+  label: string
+  category: ProviderCategory
+  /** Who holds the key: the platform (env), the tenant (credential stores), or both. */
+  scope: ProviderScope
+  /** Platform env var(s) that can carry the key — [] means credential-stores only. */
+  envVars: string[]
+  /** Every name this provider may be stored under across the three credential stores. */
+  storageAliases: string[]
+  /** Which code sources contributed the entry — the registry's provenance. */
+  sources: string[]
+}
+
+/** Alias folding ON TOP of connection-manager's canonicalProvider — the extra
+ *  spellings the pricing table / connector registry / ownership sets use. */
+const POSTURE_CANON: Record<string, string> = {
+  d_id: "did",
+  twilio_voice: "twilio",
+  twilio_sms: "twilio",
+  twilio_byo: "twilio",
+  twilio_subaccount: "twilio",
+  anthropic_claude: "anthropic",
+  openai_gpt4: "openai",
+  openai_gpt35: "openai",
+  peoplesdata: "peopledata",
+  apify_social: "apify",
+  facebook: "meta",
+  instagram: "meta",
+}
+
+function canonPostureKey(name: string): string {
+  const lc = (name ?? "").trim().toLowerCase()
+  return POSTURE_CANON[lc] ?? canonicalProvider(lc)
+}
+
+/** Category overrides where a source vocabulary lacks fidelity (documented per
+ *  key). The provider LIST is never hand-typed — only its shelf label is. */
+const CATEGORY_OVERRIDES: Record<string, ProviderCategory> = {
+  meta: "leadgen",            // the platform-side Meta rail is lead-ads ingestion (meta_lead_orphan flow)
+  batchdata: "enrichment",    // owner vocabulary: enrichment, not scraper
+  rentcast: "enrichment",
+  geoapify: "enrichment",
+  cma_aggregate: "enrichment",
+  openai: "ai_llm", ai_gateway: "ai_llm", perplexity: "ai_llm",
+  heygen: "ai_media", remotion: "ai_media", pexels: "ai_media", browser_tts: "ai_media",
+  vapi: "voice_sms",
+  stripe: "payments", plaid: "payments",
+  quickbooks: "accounting",
+  lob: "mail",
+  socrata: "records", osint: "records",
+  newsapi_ai: "search", exa: "search", tavily: "search",
+  podcast_syndicator: "social",
+  web_push: "infra", supabase_storage: "infra",
+  zyte: "scraper",
+}
+
+/** Capability → category, checked in order (email before calendar so Outlook
+ *  reads as email; its calendar role still shows via the capability registry). */
+const CAPABILITY_CATEGORY: Array<[ConnectedCapability, ProviderCategory]> = [
+  ["sms_send", "voice_sms"], ["phone_call_place", "voice_sms"],
+  ["email_send", "email"],
+  ["esign_send", "esign"], ["transaction_forms_open", "esign"],
+  ["showing_schedule", "showing"],
+  ["calendar_event_book", "calendar"], ["calendar_availability_get", "calendar"],
+  ["crm_contact_sync", "crm"],
+  ["idx_listing_search", "listings"],
+  ["social_account_publish", "social"], ["podcast_syndicate", "social"],
+]
+
+const CATEGORY_ORDER: ProviderCategory[] = [
+  "voice_sms", "email", "mail", "enrichment", "scraper", "ai_media", "ai_llm",
+  "search", "payments", "accounting", "esign", "leadgen", "social", "showing",
+  "crm", "calendar", "listings", "records", "infra", "other",
+]
+
+interface RegistryAccumulator {
+  envVars: Set<string>
+  aliases: Set<string>
+  sources: Set<string>
+  platformHint: boolean
+  tenantHint: boolean
+  label: string | null
+  connectorCategory: string | null
+  connectorTags: string[]
+  capabilities: Set<ConnectedCapability>
+}
+
+function resolveCategory(canon: string, acc: RegistryAccumulator): ProviderCategory {
+  const override = CATEGORY_OVERRIDES[canon]
+  if (override) return override
+  for (const [cap, cat] of CAPABILITY_CATEGORY) {
+    if (acc.capabilities.has(cap)) return cat
+  }
+  switch (acc.connectorCategory) {
+    case "letters": return "mail"
+    case "enrichment": return "enrichment"
+    case "mls": return "enrichment"
+    case "scraper": return "scraper"
+    case "osint": return "records"
+    case "comms": return "voice_sms"
+    case "ai": {
+      const tags = acc.connectorTags
+      if (tags.some((t) => /tts|voice|video|avatar|lip-sync/.test(t))) return "ai_media"
+      if (tags.some((t) => /llm|claude|gemini/.test(t))) return "ai_llm"
+      return "search"
+    }
+  }
+  return "other"
+}
+
+function prettyLabel(key: string): string {
+  return key.split("_").map((w) => (w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1))).join(" ")
+}
+
+/**
+ * Derive the COMPLETE provider registry from the code's own sources (see the
+ * banner above). Pure — no I/O — so it is cheap to call and unit-testable.
+ */
+export function getPlatformProviderRegistry(): PlatformProviderEntry[] {
+  const acc = new Map<string, RegistryAccumulator>()
+  const get = (name: string, source: string): RegistryAccumulator => {
+    const canon = canonPostureKey(name)
+    let a = acc.get(canon)
+    if (!a) {
+      a = {
+        envVars: new Set(), aliases: new Set([canon]), sources: new Set(),
+        platformHint: false, tenantHint: false, label: null,
+        connectorCategory: null, connectorTags: [], capabilities: new Set(),
+      }
+      acc.set(canon, a)
+    }
+    a.aliases.add((name ?? "").trim().toLowerCase())
+    a.sources.add(source)
+    return a
+  }
+
+  // env var → provider, so multi-lane entries (the scraper fleet) attribute
+  // each env var to its lane instead of one blurred row.
+  const envToProvider = new Map<string, string>()
+  for (const spec of Object.values(CONNECTOR_REGISTRY)) {
+    if (spec.envKey) envToProvider.set(spec.envKey, canonPostureKey(spec.connector))
+  }
+  for (const [provider, envKey] of Object.entries(PLATFORM_PROVIDER_KEYS)) {
+    if (!envToProvider.has(envKey)) envToProvider.set(envKey, canonPostureKey(provider))
+  }
+
+  // 1. Gateway connector registry — category, tags, env key.
+  for (const spec of Object.values(CONNECTOR_REGISTRY)) {
+    const a = get(spec.connector, "connector-registry")
+    if (spec.envKey) { a.envVars.add(spec.envKey); a.platformHint = true }
+    a.connectorCategory = a.connectorCategory ?? spec.category
+    a.connectorTags = a.connectorTags.length ? a.connectorTags : (spec.tags ?? [])
+  }
+
+  // 2. Tenancy matrix — ownership models + env vars. The "scrapers" fleet
+  // entry expands per env var (APIFY→apify, ZENROWS→zenrows, ZYTE→zyte…).
+  for (const t of PROVIDER_TENANCY) {
+    const targets: Array<{ name: string; envVars: string[] }> = t.provider === "scrapers"
+      ? t.envVars.map((ev) => ({
+          name: envToProvider.get(ev) ?? ev.replace(/_(API_)?(KEY|TOKEN|SECRET)$/i, "").toLowerCase(),
+          envVars: [ev],
+        }))
+      : [{ name: t.provider, envVars: t.envVars }]
+    for (const target of targets) {
+      const a = get(target.name, t.provider === "scrapers" ? "tenancy-matrix (scraper fleet)" : "tenancy-matrix")
+      for (const ev of target.envVars) a.envVars.add(ev)
+      if (t.models.some((m) => m === "platform_metered" || m === "platform_subaccount" || m === "tenant_optional_key")) a.platformHint = true
+      if (t.models.some((m) => m === "user_oauth" || m === "byo_top_tier" || m === "tenant_optional_key")) a.tenantHint = true
+    }
+  }
+
+  // 3. Ownership sets — the budget-gate vs connection-gate axis.
+  for (const v of PLATFORM_VENDORS) { const a = get(v, "vendor-ownership (platform)"); a.platformHint = true }
+  for (const v of USER_CONNECTED_VENDORS) { const a = get(v, "vendor-ownership (user-connected)"); a.tenantHint = true }
+
+  // 4. Integration Guardian probe surface — platform-keyed probes + specs.
+  for (const [provider, envKey] of Object.entries(PLATFORM_PROVIDER_KEYS)) {
+    const a = get(provider, "connector-probe (platform keys)")
+    a.envVars.add(envKey); a.platformHint = true
+  }
+  for (const provider of Object.keys(PROBE_SPECS)) get(provider, "connector-probe (probe specs)")
+
+  // 5. Cost normalizer — every vendor the cost engine knows a rate for.
+  for (const [key, pricing] of Object.entries(VENDOR_PRICING)) {
+    const a = get(key, "cost-normalizer")
+    if (!a.label) a.label = pricing.vendorName.replace(/ (GPT-4|GPT-3\.5|Claude|Voice)$/, "")
+  }
+
+  // 6. Connected-capability registry — every provider a tenant capability routes to.
+  for (const def of Object.values(CONNECTED_CAPABILITY_REGISTRY)) {
+    for (const p of def.connections) {
+      const a = get(p, "connected-capability-registry")
+      a.tenantHint = true
+      a.capabilities.add(def.capability)
+    }
+  }
+
+  // 7. Env-gated client modules with no registry row — bound via their own
+  // exported configured() check so the module can't silently drift away.
+  void geoapifyConfigured // binding: lib/external/geoapify-client
+  { const a = get("geoapify", "geoapify-client (env-gated module)"); a.envVars.add("GEOAPIFY_API_KEY"); a.platformHint = true }
+
+  const entries: PlatformProviderEntry[] = [...acc.entries()].map(([provider, a]) => ({
+    provider,
+    label: a.label ?? prettyLabel(provider),
+    category: resolveCategory(provider, a),
+    // Unknown-scope providers read as platform — conservative, mirroring
+    // vendorOwnership()'s default (anything the platform might pay for).
+    scope: a.platformHint && a.tenantHint ? "both" : a.tenantHint ? "tenant_byo" : "platform",
+    envVars: [...a.envVars].sort(),
+    storageAliases: [...a.aliases].sort(),
+    sources: [...a.sources].sort(),
+  }))
+  return entries.sort((x, y) =>
+    CATEGORY_ORDER.indexOf(x.category) - CATEGORY_ORDER.indexOf(y.category) || x.provider.localeCompare(y.provider))
+}
+
+// ── Full-registry posture (DB + env only — no vendor calls; the deep-dive
+//    Twilio/SendGrid sweeps above remain the vendor-calling drill-downs) ──────
+
+export const POSTURE_WINDOW_DAYS = 14
+/** A provider with ≥ this many unhealed failures (failed/escalated) in the window needs attention. */
+export const UNHEALED_ATTENTION_THRESHOLD = 3
+const LEDGER_FETCH_CAP = 8000
+const HEAL_FETCH_CAP = 8000
+const QUARANTINE_FETCH_CAP = 2000
+const CRED_FETCH_CAP = 5000
+
+export interface ProviderPostureRow {
+  provider: string
+  label: string
+  category: ProviderCategory
+  scope: ProviderScope
+  envVars: string[]
+  sources: string[]
+  /** Platform env key present? null when the provider has no env home (credential-stores only). */
+  platformEnvConfigured: boolean | null
+  /** Active tenant credential rows across the three stores (all aliases). */
+  tenantConnections: number
+  /** Connector-ledger signal (api_response_logs — the gateway's own telemetry). */
+  calls14d: number
+  errors14d: number
+  lastSuccessAt: string | null
+  lastErrorAt: string | null
+  /** Self-heal ledger activity attributed to this provider (14d). */
+  selfHeal: { healed: number; failed: number; escalated: number; topFailure: string | null }
+  /** Pull-drift sentinel state: pending schema_drift_quarantine dead letters. */
+  drift: { pendingQuarantines: number; lastAt: string | null }
+  needsAttention: boolean
+  attentionReason: string | null
+  /** Honest no-data label — "no traffic recorded (14d)" — never fake health. */
+  activityNote: string | null
+}
+
+export interface FullProviderPosture {
+  generatedAt: string
+  windowDays: number
+  providerCount: number
+  needsAttentionCount: number
+  /** True when any bounded fetch hit its cap — counts are floors, honestly labeled. */
+  capped: boolean
+  detail: string
+  rows: ProviderPostureRow[]
+}
+
+/** PURE: fold a provider's failed/escalated heal rows into one plain-language
+ *  cause line, riding composeSentinelLossReport's grouping + pg-code hints
+ *  (reused, not forked — same vocabulary the sentinel loss report speaks). */
+export function topFailureCause(
+  rows: Array<{ brokerage_id?: string | null; detail?: unknown }>,
+): string | null {
+  if (rows.length === 0) return null
+  // Normalize: provider-probe / drift-escalation events carry their explanation
+  // in detail.reason or detail.status — surface it where the report reads message.
+  const normalized = rows.map((r) => {
+    const d = (r.detail ?? {}) as Record<string, unknown>
+    return { brokerage_id: r.brokerage_id ?? null, detail: { ...d, message: d.message ?? d.reason ?? d.status ?? undefined } }
+  })
+  const report = composeSentinelLossReport(normalized)
+  const g = report.groups[0]
+  if (!g) return null
+  const cause = g.code ? g.hint : (g.sampleMessage || g.hint)
+  const where = g.flow !== "unknown" ? `${g.flow}: ` : ""
+  return `${where}${cause} (${g.count}×)`.slice(0, 200)
+}
+
+/**
+ * The full-registry sweep. Five bounded DB reads (three credential stores, the
+ * connector ledger, the self-heal ledger) + one dead-letter read + env checks —
+ * zero vendor calls, so it is safe on demand. Every signal is our own recorded
+ * truth; a provider with no recorded traffic says so instead of claiming health.
+ */
+export async function getFullProviderPosture(svc: any): Promise<FullProviderPosture> {
+  const generatedAt = new Date().toISOString()
+  const sinceIso = new Date(Date.now() - POSTURE_WINDOW_DAYS * 86_400_000).toISOString()
+  const registry = getPlatformProviderRegistry()
+
+  // alias → canonical, for attributing credential rows / ledger rows / heal events.
+  const aliasToCanon = new Map<string, string>()
+  for (const e of registry) {
+    aliasToCanon.set(e.provider, e.provider)
+    for (const al of e.storageAliases) aliasToCanon.set(al, e.provider)
+  }
+  const canonOf = (name: string | null | undefined): string | null => {
+    const lc = (name ?? "").trim().toLowerCase()
+    if (!lc) return null
+    return aliasToCanon.get(lc) ?? aliasToCanon.get(canonPostureKey(lc)) ?? null
+  }
+
+  const [platCreds, intCreds, agentCreds, ledgerRows, healRows, quarantineRows] = await Promise.all([
+    svc.from("platform_credentials").select("platform").eq("is_active", true).limit(CRED_FETCH_CAP),
+    svc.from("integration_credentials").select("provider_name").eq("is_active", true).limit(CRED_FETCH_CAP),
+    svc.from("agent_api_credentials").select("service_name").eq("is_active", true).limit(CRED_FETCH_CAP),
+    svc.from("api_response_logs").select("service_key, recorded_at, is_error")
+      .gte("recorded_at", sinceIso).order("recorded_at", { ascending: false }).limit(LEDGER_FETCH_CAP),
+    svc.from("self_heal_events").select("brokerage_id, subject, action, outcome, detail, created_at")
+      .gte("created_at", sinceIso).order("created_at", { ascending: false }).limit(HEAL_FETCH_CAP),
+    svc.from("ingress_dead_letters").select("provider, status, created_at")
+      .eq("event_kind", "schema_drift_quarantine").order("created_at", { ascending: false }).limit(QUARANTINE_FETCH_CAP),
+  ])
+
+  // Tenant credential presence per canonical provider.
+  const connectionCounts = new Map<string, number>()
+  const bump = (name: string | null | undefined) => {
+    const canon = canonOf(name)
+    if (canon) connectionCounts.set(canon, (connectionCounts.get(canon) ?? 0) + 1)
+  }
+  for (const r of ((platCreds.data ?? []) as any[])) bump(r.platform)
+  for (const r of ((intCreds.data ?? []) as any[])) bump(r.provider_name)
+  for (const r of ((agentCreds.data ?? []) as any[])) bump(r.service_name)
+
+  // Connector ledger — the gateway's own per-call telemetry.
+  const ledger = new Map<string, { calls: number; errors: number; lastSuccessAt: string | null; lastErrorAt: string | null }>()
+  const ledgerData = (ledgerRows.data ?? []) as Array<{ service_key: string; recorded_at: string; is_error: boolean }>
+  for (const r of ledgerData) {
+    const canon = canonOf(r.service_key)
+    if (!canon) continue
+    const l = ledger.get(canon) ?? { calls: 0, errors: 0, lastSuccessAt: null, lastErrorAt: null }
+    l.calls++
+    if (r.is_error) { l.errors++; if (!l.lastErrorAt) l.lastErrorAt = r.recorded_at }
+    else if (!l.lastSuccessAt) l.lastSuccessAt = r.recorded_at // rows arrive newest-first
+    ledger.set(canon, l)
+  }
+
+  // Self-heal attribution — STRUCTURED matches only (subject prefixes the
+  // connector-health cron / drift quarantine write, or detail.connector /
+  // detail.provider). Unattributable flow events are never guessed at.
+  type HealRow = { brokerage_id?: string | null; subject?: string; outcome?: string; detail?: any }
+  const healByProvider = new Map<string, { healed: number; failed: number; escalated: number; failures: HealRow[] }>()
+  const attributeHeal = (r: HealRow): string | null => {
+    const subject = String(r.subject ?? "")
+    const m = subject.match(/^platform_provider:([^:]+)/) ?? subject.match(/^sdq:([^:]+):/)
+    if (m) return canonOf(m[1])
+    const d = (r.detail ?? {}) as { connector?: string; provider?: string }
+    return canonOf(d.connector) ?? canonOf(d.provider)
+  }
+  for (const r of ((healRows.data ?? []) as HealRow[])) {
+    const canon = attributeHeal(r)
+    if (!canon) continue
+    const h = healByProvider.get(canon) ?? { healed: 0, failed: 0, escalated: 0, failures: [] }
+    if (r.outcome === "healed") h.healed++
+    else if (r.outcome === "failed") { h.failed++; h.failures.push(r) }
+    else if (r.outcome === "escalated") { h.escalated++; h.failures.push(r) }
+    healByProvider.set(canon, h)
+  }
+
+  // Pull-drift sentinel state (pending schema-drift quarantines per connector).
+  const driftByProvider = new Map<string, { pending: number; lastAt: string | null }>()
+  for (const r of ((quarantineRows.data ?? []) as Array<{ provider: string; status: string; created_at: string }>)) {
+    const canon = canonOf(r.provider)
+    if (!canon) continue
+    const d = driftByProvider.get(canon) ?? { pending: 0, lastAt: null }
+    if (r.status === "pending") d.pending++
+    if (!d.lastAt) d.lastAt = r.created_at // newest-first
+    driftByProvider.set(canon, d)
+  }
+
+  const capped =
+    ledgerData.length >= LEDGER_FETCH_CAP ||
+    ((healRows.data ?? []) as any[]).length >= HEAL_FETCH_CAP ||
+    ((quarantineRows.data ?? []) as any[]).length >= QUARANTINE_FETCH_CAP
+
+  let needsAttentionCount = 0
+  const rows: ProviderPostureRow[] = registry.map((e) => {
+    const envConfigured = e.envVars.length === 0 ? null : e.envVars.some((v) => !!process.env[v])
+    const l = ledger.get(e.provider) ?? { calls: 0, errors: 0, lastSuccessAt: null, lastErrorAt: null }
+    const h = healByProvider.get(e.provider) ?? { healed: 0, failed: 0, escalated: 0, failures: [] }
+    const d = driftByProvider.get(e.provider) ?? { pending: 0, lastAt: null }
+
+    const unhealed = h.failed + h.escalated
+    const topFailure = topFailureCause(h.failures)
+    const reasons: string[] = []
+    if (unhealed >= UNHEALED_ATTENTION_THRESHOLD) {
+      reasons.push(`${unhealed} unhealed failure(s) in ${POSTURE_WINDOW_DAYS}d${topFailure ? ` — ${topFailure}` : ""}`)
+    }
+    if (d.pending > 0) {
+      reasons.push(`${d.pending} pending shape-drift quarantine(s) — the provider changed shape and the contract needs teaching`)
+    }
+    const noTraffic = l.calls === 0 && h.healed + unhealed === 0 && d.pending === 0
+    if (reasons.length > 0) needsAttentionCount++
+
+    return {
+      provider: e.provider, label: e.label, category: e.category, scope: e.scope,
+      envVars: e.envVars, sources: e.sources,
+      platformEnvConfigured: envConfigured,
+      tenantConnections: connectionCounts.get(e.provider) ?? 0,
+      calls14d: l.calls, errors14d: l.errors,
+      lastSuccessAt: l.lastSuccessAt, lastErrorAt: l.lastErrorAt,
+      selfHeal: { healed: h.healed, failed: h.failed, escalated: h.escalated, topFailure },
+      drift: { pendingQuarantines: d.pending, lastAt: d.lastAt },
+      needsAttention: reasons.length > 0,
+      attentionReason: reasons.length > 0 ? reasons.join(" · ") : null,
+      activityNote: noTraffic ? `no traffic recorded (${POSTURE_WINDOW_DAYS}d)` : null,
+    }
+  })
+
+  // Category-grouped; attention first (then busiest) within each category.
+  rows.sort((a, b) =>
+    CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category) ||
+    Number(b.needsAttention) - Number(a.needsAttention) ||
+    b.calls14d - a.calls14d ||
+    a.provider.localeCompare(b.provider))
+
+  return {
+    generatedAt,
+    windowDays: POSTURE_WINDOW_DAYS,
+    providerCount: rows.length,
+    needsAttentionCount,
+    capped,
+    detail:
+      `${rows.length} providers derived from ${new Set(registry.flatMap((e) => e.sources)).size} code sources · ` +
+      `signals: env/credential presence, connector ledger (api_response_logs), self-heal ledger (self_heal_events), ` +
+      `pull-drift quarantines — DB + env only, zero vendor calls${capped ? " · a fetch hit its cap; counts are floors" : ""}.`,
+    rows,
+  }
 }
