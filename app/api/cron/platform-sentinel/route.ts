@@ -16,10 +16,13 @@ import {
   summarizeSentinelVerdicts,
   applySentinelLearning,
   SENTINEL_LEARNING_WINDOW_DAYS,
+  NPS_DETRACTOR_LOOKBACK_DAYS,
   type SentinelFacts,
   type ConnectionExpiryFact,
+  type NpsDetractorFact,
   type SentinelVerdictRow,
 } from "@/lib/platform/platform-sentinel"
+import { NPS_DETRACTOR_MAX_SCORE } from "@/lib/platform/nps"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -129,6 +132,7 @@ export async function GET(request: NextRequest) {
         dunning: facts.dunning.length,
         slaBreaches: facts.slaBreaches.length,
         trials: facts.trials.length,
+        npsDetractors: facts.npsDetractors.length,
       },
     }
     await recordCronSuccessAction({
@@ -156,6 +160,9 @@ const DAY_MS = 86_400_000
  *  • SLA — evaluateTicketSla over open tickets (support console's clock)
  *  • trials — subscriptions.trial_end ?? brokerages.trial_ends_at (the
  *    subscription-oversight reconciliation rule)
+ *  • NPS detractors — platform_nps_responses scores ≤ 6 in the last 60 days,
+ *    most recent response per tenant (the same ledger the engagement page
+ *    rolls up — lib/platform/nps.ts owns the classification)
  */
 async function loadSentinelFacts(svc: any, now: Date): Promise<SentinelFacts> {
   const { data: brokerages, error: brkError } = await svc
@@ -303,5 +310,35 @@ async function loadSentinelFacts(svc: any, now: Date): Promise<SentinelFacts> {
     }]
   })
 
-  return { engagement, connections, dunning, slaBreaches, trials }
+  // ── NPS detractors: score ≤ 6 in the lookback, most recent per tenant ─────
+  // Ordered newest-first, so the first row seen per brokerage IS its latest
+  // detractor response. A tenant whose newest response in the window is a
+  // promoter still surfaces here if an older detractor row exists — deliberate:
+  // we keep only detractor rows, and the freshest detractor voice per tenant.
+  const npsSince = new Date(now.getTime() - NPS_DETRACTOR_LOOKBACK_DAYS * DAY_MS).toISOString()
+  const { data: npsRows, error: npsError } = await svc
+    .from("platform_nps_responses")
+    .select("brokerage_id, score, verbatim, period, created_at")
+    .lte("score", NPS_DETRACTOR_MAX_SCORE)
+    .gte("created_at", npsSince)
+    .order("created_at", { ascending: false })
+    .limit(2000)
+  if (npsError) throw new Error(`Failed to load NPS detractors: ${npsError.message}`)
+  const npsDetractors: NpsDetractorFact[] = []
+  const seenNpsTenants = new Set<string>()
+  for (const r of (npsRows ?? []) as any[]) {
+    const brokerageId = (r.brokerage_id as string | null) ?? null
+    if (!brokerageId || !tenantIds.has(brokerageId) || seenNpsTenants.has(brokerageId)) continue
+    seenNpsTenants.add(brokerageId)
+    npsDetractors.push({
+      brokerageId,
+      brokerageName: nameOf.get(brokerageId) ?? "(unnamed)",
+      score: Number(r.score),
+      verbatim: (r.verbatim as string | null) ?? null,
+      period: r.period as string,
+      respondedAt: r.created_at as string,
+    })
+  }
+
+  return { engagement, connections, dunning, slaBreaches, trials, npsDetractors }
 }

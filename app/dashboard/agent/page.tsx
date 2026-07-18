@@ -64,6 +64,7 @@ import AgentInsightsWidget from "@/app/dashboard/agent/components/agent-insights
 import { AiInsightsFeedCard, type AiInsightRow } from "@/app/dashboard/agent/components/ai-insights-feed-card"
 import PresentationReadyBanner from "@/app/dashboard/agent/components/presentation-ready-banner"
 import { LearnThisWeekCard } from "@/app/components/learning/learn-this-week-card"
+import { NpsSurveyCard } from "./components/nps-survey-card"
 import { NegotiationCoPilotCard } from "@/app/components/negotiation/negotiation-copilot-card"
 
 export default function AgentDashboard() {
@@ -427,6 +428,10 @@ export default function AgentDashboard() {
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
         <ApprovalsBanner />
+
+        {/* Tenant→platform NPS — renders only when the quarter-eligibility
+            rule says so (app/actions/nps.ts); dismiss hides for this session. */}
+        <NpsSurveyCard />
 
         {/* Role-aware setup readiness — what the agent still needs to configure to sell */}
         <SetupReadinessCardClient />

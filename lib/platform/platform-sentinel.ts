@@ -21,6 +21,9 @@
 //   • support SLA   — evaluateTicketSla breaches (lib/support/support-sla)
 //   • trials        — reconciled trial end (subscriptions.trial_end ??
 //                     brokerages.trial_ends_at, the subscription-oversight rule)
+//   • nps detractors— platform_nps_responses scores ≤ 6 in the last 60 days,
+//                     most recent per tenant (lib/platform/nps classification;
+//                     same ledger the superadmin engagement page rolls up)
 //
 // DEDUPE BUCKET: `${kind}:${brokerageId}:…:${weekBucket(now)}` — the bucket is
 // the Monday of `now`'s week (yyyy-mm-dd-ish, deterministic from the passed-in
@@ -102,13 +105,29 @@ export interface TrialFact {
   daysLeft: number
 }
 
+export interface NpsDetractorFact {
+  brokerageId: string
+  brokerageName: string
+  /** The tenant's most recent detractor score (0–6) inside the lookback window. */
+  score: number
+  /** The respondent's own words, if they left any. */
+  verbatim: string | null
+  /** "YYYY-MM" period the response was filed under. */
+  period: string
+  respondedAt: string
+}
+
 export interface SentinelFacts {
   engagement: EngagementFact[]
   connections: ConnectionExpiryFact[]
   dunning: DunningFact[]
   slaBreaches: SlaBreachFact[]
   trials: TrialFact[]
+  npsDetractors: NpsDetractorFact[]
 }
+
+/** How far back the cron looks for detractor responses (days). */
+export const NPS_DETRACTOR_LOOKBACK_DAYS = 60
 
 export const SEVERITY_ORDER: Record<SentinelSeverity, number> = { critical: 0, warn: 1, info: 2 }
 
@@ -300,6 +319,41 @@ function composeTrial(f: TrialFact, brandName: string, bucket: string): Proposed
     draftChannel: "email",
     draftText: draft,
     dedupeKey: `growth_opportunity:${f.brokerageId}:trial:${bucket}`,
+  }
+}
+
+function composeNpsDetractor(f: NpsDetractorFact, brandName: string, bucket: string): ProposedSentinelAction {
+  // Kind vocabulary is fixed by the table CHECK — a detractor IS an engagement
+  // risk (the behavioral radar catches silence; NPS catches the ones still
+  // signed in but unhappy). The ':nps:' segment keeps this dedupe key disjoint
+  // from composeEngagement's `engagement_risk:${brokerageId}:${bucket}`.
+  const quote = (f.verbatim ?? "").trim()
+  const severity: SentinelSeverity = f.score <= 2 ? "critical" : "warn"
+  const draft = [
+    `Subject: Your feedback on ${brandName} — thank you, and can we talk?`,
+    ``,
+    `Hi ${f.brokerageName} team,`,
+    ``,
+    `Someone on your team recently rated ${brandName} a ${f.score} out of 10 in our quarterly check-in. That's a score we take personally — thank you for being straight with us.`,
+    ``,
+    quote
+      ? `You told us: "${quote}" — we've read it, and we'd like to understand it better rather than guess at a fix.`
+      : `We'd like to understand what's behind that score rather than guess at a fix.`,
+    ``,
+    `Would a short call with someone who can actually change things help? Reply to this email and we'll set it up — and if there's a specific breakage, we'll take it into the same conversation.`,
+    ``,
+    `— The ${brandName} team`,
+  ].join("\n")
+
+  return {
+    kind: "engagement_risk",
+    severity,
+    brokerageId: f.brokerageId,
+    title: `NPS detractor: ${f.brokerageName} scored ${f.score}/10`,
+    detail: `Tenant NPS: most recent response from ${f.brokerageName} is ${f.score}/10 (detractor), filed ${fmtDate(f.respondedAt)} for period ${f.period}.${quote ? ` Verbatim: "${quote}"` : " No verbatim left."} Propose a human check-in before the renewal conversation happens without us.`,
+    draftChannel: "email",
+    draftText: draft,
+    dedupeKey: `engagement_risk:${f.brokerageId}:nps:${bucket}`,
   }
 }
 
@@ -555,6 +609,7 @@ export function composeSentinelActions(
     const a = composeTrial(f, brand.name, bucket)
     if (a) out.push(a)
   }
+  for (const f of facts.npsDetractors) out.push(composeNpsDetractor(f, brand.name, bucket))
 
   out.sort(
     (a, b) =>

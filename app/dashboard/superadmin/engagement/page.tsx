@@ -9,6 +9,13 @@ import {
   TIER_ORDER,
   type EngagementTier,
 } from "@/lib/platform/engagement-risk"
+import {
+  lastNPeriods,
+  rollupNpsByPeriod,
+  classifyNps,
+  NPS_DETRACTOR_MAX_SCORE,
+  type NpsRollupByPeriod,
+} from "@/lib/platform/nps"
 
 export const dynamic = "force-dynamic"
 
@@ -44,6 +51,22 @@ function fmtAgo(iso: string | null) {
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`
   if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`
   return `${Math.round(ms / 86_400_000)}d ago`
+}
+
+function fmtPeriod(period: string) {
+  const m = /^(\d{4})-(\d{2})$/.exec(period)
+  if (!m) return period
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, 1)).toLocaleString("en-US", {
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  })
+}
+
+const NPS_BUCKET_BADGE: Record<ReturnType<typeof classifyNps>, string> = {
+  detractor: "bg-red-100 text-red-800",
+  passive: "bg-slate-100 text-slate-700",
+  promoter: "bg-emerald-100 text-emerald-800",
 }
 
 const TIER_BADGE: Record<EngagementTier, { label: string; cls: string }> = {
@@ -170,6 +193,21 @@ export default async function SuperadminEngagementPage() {
       a.name.localeCompare(b.name)
   )
 
+  // ── Tenant→platform NPS rollup (platform_nps_responses, last 6 periods) ────
+  // Same ledger the tenant survey card writes and the sentinel's detractor
+  // feed reads. A read failure degrades to an inline error, not a dead page.
+  const npsPeriods = lastNPeriods(6, now)
+  let nps: NpsRollupByPeriod | null = null
+  let npsError: string | null = null
+  try {
+    nps = await rollupNpsByPeriod(npsPeriods)
+  } catch (e) {
+    npsError = e instanceof Error ? e.message : "Failed to load NPS responses"
+  }
+  const tenantName = new Map<string, string>(tenants.map((b: any) => [b.id as string, (b.name as string) ?? "(unnamed)"]))
+  const npsVerbatims = (nps?.responses ?? []).filter((r) => (r.verbatim ?? "").trim().length > 0).slice(0, 8)
+  const npsDetractors = (nps?.responses ?? []).filter((r) => r.score <= NPS_DETRACTOR_MAX_SCORE).slice(0, 10)
+
   const atRiskCount = rows.filter((r) => r.tier === "at_risk").length
   const coolingCount = rows.filter((r) => r.tier === "cooling").length
   const engagedCount = rows.filter((r) => r.tier === "engaged").length
@@ -267,6 +305,133 @@ export default async function SuperadminEngagementPage() {
               </tbody>
             </table>
           </div>
+        )}
+      </section>
+
+      {/* Tenant→platform NPS — the voice-of-subscriber signal next to the
+          behavior signal. Fed by the once-a-quarter survey card on the tenant
+          dashboard; detractors here also flow into the platform sentinel as
+          engagement_risk proposals with a drafted check-in. */}
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-lg font-semibold">Tenant NPS</h2>
+          <p className="text-xs text-muted-foreground">
+            "How likely are you to recommend us?" — every tenant user, at most once a quarter.
+            NPS = % promoters (9–10) − % detractors (0–6); n is the sample behind each score.
+          </p>
+        </div>
+
+        {npsError ? (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+            Failed to load NPS responses: {npsError}
+          </div>
+        ) : !nps || nps.responses.length === 0 ? (
+          <div className="rounded-lg border p-6 text-center text-sm text-muted-foreground">
+            No NPS responses yet. Tenant users are prompted on their dashboard once per quarter,
+            after 30 days of tenancy — scores land here as they answer.
+          </div>
+        ) : (
+          <>
+            {/* Score by period, last 6 (oldest → newest) */}
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
+              {[...nps.platform].reverse().map((p) => (
+                <div key={p.period} className="rounded-lg border p-3">
+                  <div className="text-[11px] text-muted-foreground">{fmtPeriod(p.period)}</div>
+                  <div className="text-2xl font-bold tabular-nums">
+                    {p.nps === null ? "—" : p.nps > 0 ? `+${p.nps}` : p.nps}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    n={p.sample}
+                    {p.sample > 0 && (
+                      <span className="ml-1">
+                        ({p.promoters}P / {p.passives}N / {p.detractors}D)
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              {/* Recent verbatims */}
+              <div className="rounded-lg border">
+                <div className="border-b bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">
+                  Recent verbatims ({npsVerbatims.length})
+                </div>
+                {npsVerbatims.length === 0 ? (
+                  <div className="p-4 text-sm text-muted-foreground">
+                    No written feedback yet — scores only so far.
+                  </div>
+                ) : (
+                  <ul className="divide-y">
+                    {npsVerbatims.map((r) => (
+                      <li key={r.id} className="p-3 text-sm">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium truncate">
+                            {r.brokerageId ? tenantName.get(r.brokerageId) ?? "(unknown tenant)" : "(unknown tenant)"}
+                          </span>
+                          <span
+                            className={
+                              "shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular-nums " +
+                              NPS_BUCKET_BADGE[classifyNps(r.score)]
+                            }
+                          >
+                            {r.score}/10
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">&ldquo;{r.verbatim}&rdquo;</p>
+                        <p className="mt-0.5 text-[11px] text-muted-foreground">
+                          {fmtPeriod(r.period)} · {fmtAgo(r.createdAt)}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {/* Detractor list */}
+              <div className="rounded-lg border">
+                <div className="border-b bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">
+                  Detractors — score ≤ {NPS_DETRACTOR_MAX_SCORE} ({npsDetractors.length})
+                </div>
+                {npsDetractors.length === 0 ? (
+                  <div className="p-4 text-sm text-muted-foreground">
+                    No detractors in the last 6 periods.
+                  </div>
+                ) : (
+                  <ul className="divide-y">
+                    {npsDetractors.map((r) => (
+                      <li key={r.id} className="p-3 text-sm">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium truncate">
+                            {r.brokerageId ? tenantName.get(r.brokerageId) ?? "(unknown tenant)" : "(unknown tenant)"}
+                          </span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="rounded px-1.5 py-0.5 text-[11px] font-semibold tabular-nums bg-red-100 text-red-800">
+                              {r.score}/10
+                            </span>
+                            {r.brokerageId && (
+                              <Link
+                                href={`/dashboard/superadmin/brokerages/${r.brokerageId}`}
+                                className="text-xs font-medium text-indigo-600"
+                              >
+                                Manage →
+                              </Link>
+                            )}
+                          </div>
+                        </div>
+                        {r.verbatim && <p className="mt-1 text-xs text-muted-foreground">&ldquo;{r.verbatim}&rdquo;</p>}
+                        <p className="mt-0.5 text-[11px] text-muted-foreground">
+                          {fmtPeriod(r.period)} · {fmtAgo(r.createdAt)} · flows into the platform sentinel as an
+                          engagement-risk check-in draft
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </>
         )}
       </section>
     </div>
