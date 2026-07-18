@@ -21,13 +21,17 @@
  *   acv:  ad_creative_variations (approval_status draft — pre-launch review)
  *   vsn:  video_snippets       (approval_status pending)
  *   bp:   blog_posts           (publish_status draft)
+ *   pa:   property_alerts      (SPOKEN CRITERIA proposals — is_active=false,
+ *         source 'voice_conversation', paused_reason '[VOICE_PROPOSAL]…'
+ *         carrying the buyer's literal quotes; approve activates + runs the
+ *         first search, reject deletes the proposal)
  *   ai:   approval_items       (legacy table; no prefix when present)
  */
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 
-export type ApprovalSource = "newsletter" | "email" | "ad_creative" | "video_snippet" | "blog" | "legacy"
+export type ApprovalSource = "newsletter" | "email" | "ad_creative" | "video_snippet" | "blog" | "property_alert" | "legacy"
 
 export interface UnifiedApprovalItem {
   /** Prefixed id — nl:<uuid> / em:<uuid> / acv:<uuid> / vsn:<uuid> / bp:<uuid>
@@ -53,7 +57,7 @@ export async function aggregatePendingApprovals(
   // newsletter_campaigns.agent_id is agents.id (FK); blog_posts uses
   // agent_user_id (users.id). Filter applied conditionally — when the caller
   // is a broker/admin agentScopeId is null so they see brokerage-wide.
-  const [newsletters, emails, adCreatives, videoSnippets, blogs, legacy] =
+  const [newsletters, emails, adCreatives, videoSnippets, blogs, voiceAlerts, legacy] =
     await Promise.all([
       svc
         .from("newsletter_campaigns")
@@ -88,6 +92,18 @@ export async function aggregatePendingApprovals(
         .select("id, agent_user_id, title, excerpt, publish_status, created_at, updated_at")
         .eq("brokerage_id", brokerageId)
         .eq("publish_status", "draft")
+        .order("created_at", { ascending: false })
+        .limit(PER_TABLE_LIMIT),
+      svc
+        // SPOKEN CRITERIA proposals — inactive voice-sourced alerts still
+        // carrying the [VOICE_PROPOSAL] marker (approval clears it, so an
+        // approved-then-paused alert can never re-enter the queue).
+        .from("property_alerts")
+        .select("id, contact_id, agent_user_id, alert_name, paused_reason, created_at, updated_at")
+        .eq("brokerage_id", brokerageId)
+        .eq("is_active", false)
+        .eq("source", "voice_conversation")
+        .ilike("paused_reason", "[VOICE_PROPOSAL]%")
         .order("created_at", { ascending: false })
         .limit(PER_TABLE_LIMIT),
       svc
@@ -168,6 +184,40 @@ export async function aggregatePendingApprovals(
       status: String(row.publish_status ?? "draft"),
       priority: "standard",
       content: `${String(row.title ?? "(untitled)")} — ${String(row.excerpt ?? "")}`.trim(),
+      created_at: String(row.created_at ?? new Date().toISOString()),
+      updated_at: String(row.updated_at ?? row.created_at ?? new Date().toISOString()),
+    })
+  }
+
+  // SPOKEN CRITERIA → LIVING ALERT proposals. The card leads with the
+  // buyer's literal quotes ("They said: …") so the agent approves what was
+  // actually SAID. property_alerts.agent_user_id is users.id while the
+  // agent scope key is agents.id — same id-class mismatch as blog_posts, so
+  // these list brokerage-wide (like blogs).
+  const alertRows = (voiceAlerts.data ?? []) as Array<Record<string, unknown>>
+  const alertContactNames = new Map<string, string>()
+  if (alertRows.length > 0) {
+    const contactIds = [...new Set(alertRows.map((r) => r.contact_id).filter(Boolean))] as string[]
+    const { data: contacts } = await svc
+      .from("contacts")
+      .select("id, first_name, last_name")
+      .in("id", contactIds)
+    for (const c of (contacts ?? []) as Array<Record<string, unknown>>) {
+      const name = `${String(c.first_name ?? "").trim()} ${String(c.last_name ?? "").trim()}`.trim()
+      if (name) alertContactNames.set(String(c.id), name)
+    }
+  }
+  for (const row of alertRows) {
+    const who = alertContactNames.get(String(row.contact_id)) ?? "a buyer"
+    const label = String(row.alert_name ?? "Property alert").replace(/\s*\[call:[^\]]*\]\s*/g, " ").trim()
+    const heard = String(row.paused_reason ?? "").replace(/^\[VOICE_PROPOSAL\]\s*/, "")
+    items.push({
+      id: `pa:${String(row.id)}`,
+      type: "property_alert",
+      agent_id: (row.agent_user_id as string | null) ?? null,
+      status: "proposed",
+      priority: "medium",
+      content: `Proposed alert for ${who}: ${label}. ${heard}`.trim(),
       created_at: String(row.created_at ?? new Date().toISOString()),
       updated_at: String(row.updated_at ?? row.created_at ?? new Date().toISOString()),
     })
@@ -295,6 +345,42 @@ async function cascade(
       const { error } = await q
       if (error) return { success: false, error: error.message }
       return { success: true, type: "blog", targetId }
+    }
+    case "pa": {
+      // SPOKEN CRITERIA alert proposal. Approve = activate (resume semantics:
+      // is_active true, paused_* cleared — which removes the [VOICE_PROPOSAL]
+      // marker so the row can never re-enter the queue) + run the first
+      // search, exactly like resumePropertyAlert. Reject = DELETE the
+      // proposal — it never ran, there is nothing to keep. Both are pinned to
+      // source='voice_conversation' + is_active=false so this route can never
+      // touch a live or agent-created alert.
+      if (outcome === "approved") {
+        const { data, error } = await svc
+          .from("property_alerts")
+          .update({ is_active: true, paused_by: null, paused_reason: null, updated_at: new Date().toISOString() })
+          .eq("id", targetId)
+          .eq("brokerage_id", ctx.brokerageId)
+          .eq("source", "voice_conversation")
+          .eq("is_active", false)
+          .select("id")
+          .maybeSingle()
+        if (error) return { success: false, error: error.message }
+        if (!data) return { success: false, error: "Not a pending alert proposal" }
+        try {
+          const { runAlert } = await import("@/lib/property-alerts/alert-engine")
+          await runAlert(targetId) // first search fires on approval; failure doesn't undo it
+        } catch { /* alert is active; the alert cron picks it up */ }
+        return { success: true, type: "property_alert", targetId }
+      }
+      const { error } = await svc
+        .from("property_alerts")
+        .delete()
+        .eq("id", targetId)
+        .eq("brokerage_id", ctx.brokerageId)
+        .eq("source", "voice_conversation")
+        .eq("is_active", false)
+      if (error) return { success: false, error: error.message }
+      return { success: true, type: "property_alert", targetId }
     }
     case "": {
       // Bare uuid — legacy approval_items row

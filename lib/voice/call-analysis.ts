@@ -14,6 +14,7 @@
 // intelligence reader filters by.
 
 import { z } from "zod"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 export const VoiceIntelSchema = z.object({
   summary: z.string(),
@@ -125,12 +126,64 @@ async function proposeUrgentCallback(svc: any, call: {
   }
 }
 
-export interface VoiceIntelSweepResult { candidates: number; analyzed: number; skipped: number; errors: number; callbacksProposed: number }
+/** SPOKEN CRITERIA → LIVING ALERT — a call where the buyer STATED search
+ *  criteria ("3 bed under 650 in Mocksley") proposes ONE ready-to-approve
+ *  property alert (is_active=false, source 'voice_conversation'). Gated:
+ *  extraction must be high-confidence with at least this many distinct
+ *  concrete signals (location+price, beds+location, …). The agent approves in
+ *  /approvals — nothing self-activates. */
+export const SPOKEN_ALERT_MIN_SIGNALS = 2
+
+async function proposeSpokenCriteriaAlert(svc: any, call: {
+  id: string; brokerage_id: string; contact_id: string | null; agent_id: string | null; transcription: string
+}): Promise<boolean> {
+  if (!call.contact_id) return false // criteria without a buyer to alert are just chatter
+  try {
+    const { extractCriteriaFromTranscript, criteriaToAlertRow, describeCriteria, spokenAlertCallMarker, VOICE_PROPOSAL_MARKER } =
+      await import("@/lib/buyer-search/conversation-criteria")
+
+    const extraction = extractCriteriaFromTranscript(call.transcription)
+    if (extraction.confidence !== "high" || extraction.signalCount < SPOKEN_ALERT_MIN_SIGNALS) return false
+
+    // IDEMPOTENT: one proposal per source call — the call marker lives in
+    // alert_name and survives approval, so a re-run can never double-propose.
+    const marker = spokenAlertCallMarker(call.id)
+    const { data: dup } = await svc.from("property_alerts").select("id")
+      .eq("contact_id", call.contact_id).ilike("alert_name", `%${marker}%`).limit(1).maybeSingle()
+    if (dup) return false
+
+    // agent_user_id carries the agent's USER id (createPropertyAlert's shape) —
+    // resolve from the ledger's agents.id.
+    let agentUserId: string | null = null
+    if (call.agent_id) {
+      const { data: agent } = await svc.from("agents").select("user_id").eq("id", call.agent_id).maybeSingle()
+      agentUserId = (agent as any)?.user_id ?? null
+    }
+
+    const row = criteriaToAlertRow(extraction.criteria, {
+      contactId: call.contact_id,
+      agentUserId,
+      brokerageId: call.brokerage_id,
+      alertName: `${describeCriteria(extraction.criteria)} ${marker}`,
+    })
+    // paused_reason carries the proposal state marker + the buyer's literal
+    // words — the approval card shows them; approval clears the column.
+    const heard = extraction.evidence.map((q) => `"${q}"`).join(" · ")
+    return await sentinelWrite(svc, svc.from("property_alerts").insert({
+      ...row,
+      paused_reason: `${VOICE_PROPOSAL_MARKER} They said: ${heard}`.slice(0, 600),
+    }), { table: "property_alerts", flow: "spoken_criteria_alert", brokerageId: call.brokerage_id })
+  } catch {
+    return false
+  }
+}
+
+export interface VoiceIntelSweepResult { candidates: number; analyzed: number; skipped: number; errors: number; callbacksProposed: number; alertsProposed: number }
 
 /** Hourly sweep: recent completed AI calls with transcripts, not yet analyzed
  *  (keyed by voice_call_id), newest first, capped per run (LLM cost control). */
 export async function sweepVoiceCallIntelligence(svc: any, limit = 15): Promise<VoiceIntelSweepResult> {
-  const r: VoiceIntelSweepResult = { candidates: 0, analyzed: 0, skipped: 0, errors: 0, callbacksProposed: 0 }
+  const r: VoiceIntelSweepResult = { candidates: 0, analyzed: 0, skipped: 0, errors: 0, callbacksProposed: 0, alertsProposed: 0 }
   const since = new Date(Date.now() - 48 * 3_600_000).toISOString()
   const { data: calls } = await svc.from("voice_calls")
     .select("id, brokerage_id, contact_id, agent_id, direction, duration_seconds, transcription, status")
@@ -155,6 +208,10 @@ export async function sweepVoiceCallIntelligence(svc: any, limit = 15): Promise<
       if (res.intel && res.intel.urgencyScore >= URGENT_CALLBACK_THRESHOLD) {
         if (await proposeUrgentCallback(svc, call, res.intel)) r.callbacksProposed += 1
       }
+      // SPOKEN CRITERIA → LIVING ALERT: a linked contact who stated concrete
+      // search criteria gets ONE proposed (inactive) property alert on the
+      // approval rail — deduped per call, agent-approved before it ever runs.
+      if (await proposeSpokenCriteriaAlert(svc, call)) r.alertsProposed += 1
     } else r.errors += 1
   }
   return r
