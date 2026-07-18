@@ -12,7 +12,7 @@
 // TENANT they act on, never whether they are staff).
 
 import { createClient } from "@/lib/supabase/server"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
 
 export type PlatformGuardResult =
   | { ok: true; userId: string; email: string; role: string }
@@ -35,14 +35,28 @@ async function loadCaller(): Promise<{ userId: string; email: string; userType: 
   }
 }
 
-/** superadmin OR support — platform-wide read / assist. */
+/**
+ * ANY platform staff role — the FULL 4-role roster (superadmin/admin/
+ * marketing/support), matching the capability map the pages gate on.
+ *
+ * ROUND-19 PARITY FIX: this used to accept only superadmin+support, which
+ * bounced platform 'admin' and 'marketing' out of the god console BEFORE any
+ * capability check ran — two documented staff roles were unreachable.
+ *
+ * IDENTITY-CLASS RULE: 'admin' is ALSO a tenant user_type, so the roster is
+ * matched ONLY against platform_role. user_type participates solely through
+ * the legacy 'superadmin' marker — a tenant admin can never become platform
+ * staff here.
+ */
 export async function requirePlatformStaff(): Promise<PlatformGuardResult> {
   const c = await loadCaller()
   if (!c) return { ok: false, error: "Unauthenticated" }
-  if (!isPlatformStaff(c.userType) && !isPlatformStaff(c.platformRole)) {
+  const legacySuperadmin = c.userType === "superadmin"
+  const rosterRole = isPlatformStaffRole(c.platformRole) ? c.platformRole : null
+  if (!legacySuperadmin && !rosterRole) {
     return { ok: false, error: "Forbidden — platform staff only" }
   }
-  return { ok: true, userId: c.userId, email: c.email, role: (isPlatformStaff(c.userType) ? c.userType : c.platformRole) ?? "support" }
+  return { ok: true, userId: c.userId, email: c.email, role: rosterRole ?? "superadmin" }
 }
 
 /** superadmin ONLY — destructive platform configuration. */

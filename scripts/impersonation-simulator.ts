@@ -36,12 +36,17 @@ function pureLayer() {
 function sourceLayer() {
   console.log("\n[wiring — the seam, gating, audit, ownership]")
   const ctx = src("lib/identity/get-agent-context.ts")
+  // (round-19 parity: the seam now checks BOTH identity columns — legacy
+  //  user_type 'superadmin' OR roster platform_role — so platform admin/
+  //  marketing staff can impersonate per the capability map.)
   check("getAgentContext consults the act-as seam, staff-gated, only for platform staff",
-    /isPlatformStaff\(userType\)/.test(ctx) && /resolveActiveImpersonation\(user\.id, userType\)/.test(ctx))
+    /isPlatformStaffIdentity\(userType, platformRole\)/.test(ctx) && /resolveActiveImpersonation\(user\.id, platformRole \?\? userType/.test(ctx))
   check("impersonated context keeps the REAL actor + flags (attributable writes)",
     /impersonatorUserId: imp\.impersonatorUserId/.test(ctx) && /isImpersonating: true/.test(ctx))
   const lib = src("lib/platform/impersonation.ts")
-  check("resolver is defence-in-depth (returns null unless isPlatformStaff)", /if \(!isPlatformStaff\(staffRole\)\) return null/.test(lib))
+  // (round-19: full 4-role roster — 'admin' is safe here because staffRole is
+  //  ALWAYS sourced from platform_role/legacy-superadmin, never tenant user_type.)
+  check("resolver is defence-in-depth (returns null unless roster staff)", /if \(!isPlatformStaffRole\(staffRole\)\) return null/.test(lib))
   check("sessions auto-expire (TTL) — no standing backdoor", /IMPERSONATION_TTL_MINUTES\s*=\s*30/.test(lib) && /expires_at/.test(lib))
   const act = src("app/actions/superadmin/impersonation.ts")
   check("enter/exit are platform-staff-gated + audited to superadmin_audit_log",

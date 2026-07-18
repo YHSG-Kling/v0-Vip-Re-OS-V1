@@ -16,6 +16,8 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { resolvePlatformRole } from "@/lib/platform/require-capability"
+import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createSubscriber } from "@/app/actions/admin/create-subscriber"
 import { headers } from "next/headers"
@@ -56,7 +58,10 @@ export async function manualProvisionSubscriberAction(
     .select("user_type, email")
     .eq("id", user.id)
     .maybeSingle()
-  if (profile?.user_type !== "superadmin") return { ok: false, error: "Forbidden — superadmin only" }
+  // ROUND-19 PARITY: subscription creation is a 'tenants' capability — platform
+  // ADMIN staff provision subscribers too (GHL model); resolved the canonical way.
+  const platformRole = resolvePlatformRole(profile as any)
+  if (!platformStaffCan(platformRole, "tenants")) return { ok: false, error: "Forbidden — requires platform 'tenants' capability" }
 
   const svc = createServiceClient()
 

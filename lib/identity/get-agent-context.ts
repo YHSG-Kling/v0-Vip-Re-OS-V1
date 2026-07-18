@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaff, isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 import { resolveActiveImpersonation } from "@/lib/platform/impersonation"
 
 export interface AgentContext {
@@ -59,7 +59,7 @@ export async function getAgentContext(): Promise<AgentContext> {
     const [{ data: userData }, { data: rolesData }] = await Promise.all([
       supabase
         .from("users")
-        .select("id, brokerage_id, user_type, team_id")
+        .select("id, brokerage_id, user_type, platform_role, team_id")
         .eq("id", user.id)
         .maybeSingle(),
       supabase
@@ -101,8 +101,9 @@ export async function getAgentContext(): Promise<AgentContext> {
     // session, resolve the TARGET tenant's workspace context instead — while keeping
     // the real staff id as impersonatorUserId so every downstream write stays
     // attributable. Non-staff / expired sessions are ignored (defence in depth).
-    if (isPlatformStaff(userType)) {
-      const imp = await resolveActiveImpersonation(user.id, userType)
+    const platformRole: string | null = (userData as any)?.platform_role ?? null
+    if (isPlatformStaffIdentity(userType, platformRole)) {
+      const imp = await resolveActiveImpersonation(user.id, platformRole ?? userType ?? "")
       if (imp) {
         return {
           userId: imp.userId,

@@ -23,6 +23,7 @@ import "server-only"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
 
 export interface ContactAccessRow {
   id:               string
@@ -70,7 +71,7 @@ export async function assertCanActOnContact(contactId: string): Promise<ContactA
   const profile = profileRes.data
 
   // Platform admin / staff always allowed
-  if (profile?.user_type === "superadmin" || isPlatformStaff(profile?.platform_role)) {
+  if (profile?.user_type === "superadmin" || isPlatformStaffRole(profile?.platform_role)) {
     return { ok: true, userId: user.id, contact: c }
   }
 

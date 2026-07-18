@@ -11,7 +11,7 @@
 // RLS scope could never read.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
 
 /** Impersonation auto-expires — a forgotten session must not become a standing backdoor. */
 export const IMPERSONATION_TTL_MINUTES = 30
@@ -66,7 +66,9 @@ export async function resolveActiveImpersonation(
   client?: Svc,
   now: Date = new Date(),
 ): Promise<EffectiveImpersonation | null> {
-  if (!isPlatformStaff(staffRole)) return null
+  // Full 4-role roster (round-19 parity — admin/marketing hold the impersonate cap too;
+  // capability enforcement happens at grant time, this is the defence-in-depth identity check).
+  if (!isPlatformStaffRole(staffRole)) return null
   const svc = client ?? createServiceClient()
 
   const { data: s } = await svc

@@ -33,6 +33,22 @@ export type UserRole =
 export const PLATFORM_STAFF_ROLES = ["superadmin", "support"] as const
 
 /** True for platform-staff roles (superadmin OR support) — cross-brokerage visibility. */
+/**
+ * ROUND-19 PARITY: dual-column staff identity. 'admin'/'marketing' are roster
+ * roles carried ONLY in platform_role ('admin' is also a tenant user_type, so
+ * user_type participates solely via the legacy 'superadmin' marker).
+ */
+export function isPlatformStaffIdentity(
+  userType: string | null | undefined,
+  platformRole: string | null | undefined,
+): boolean {
+  if (userType === "superadmin") return true
+  // Lazy import avoided — the roster is pure; inline the roster check here to
+  // keep this module dependency-light and the four roles in ONE place there.
+  const ROSTER = ["superadmin", "admin", "marketing", "support"]
+  return !!platformRole && ROSTER.includes(platformRole)
+}
+
 export function isPlatformStaff(role: string | null | undefined): boolean {
   return !!role && (PLATFORM_STAFF_ROLES as readonly string[]).includes(role)
 }
