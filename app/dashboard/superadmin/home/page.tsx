@@ -31,7 +31,7 @@ interface Tool {
   /** The capability the target page's own gate requires. */
   cap: PlatformCapability
   /** Key into the live-counts map (only cheap head-counts on familiar tables). */
-  countKey?: "activeTenants" | "openTickets" | "pendingHealing"
+  countKey?: "activeTenants" | "openTickets" | "pendingHealing" | "proposedSentinel"
 }
 
 interface ToolGroup { title: string; icon: typeof Building2; tools: Tool[] }
@@ -85,6 +85,8 @@ const GROUPS: ToolGroup[] = [
         desc: "Cross-tenant AI operations — usage, cost, and the autonomous managers." },
       { label: "OS Sentinel", href: "/dashboard/superadmin/sentinel", cap: "sentinel",
         desc: "One view of the whole agentic OS — subsystems, open incidents, self-healing." },
+      { label: "Sentinel — today's proposed actions", href: "/dashboard/superadmin/sentinel#proposed-actions", cap: "sentinel", countKey: "proposedSentinel",
+        desc: "The AI fleet manager's daily queue: engagement risk, expiring connections, dunning, SLA breaches, expiring trials — each with drafted outreach awaiting your approval." },
       { label: "Observability", href: "/dashboard/superadmin/observability", cap: "sentinel",
         desc: "System health, cron runs, and error surfaces across the platform." },
       { label: "Continuity board", href: "/dashboard/superadmin/continuity", cap: "sentinel",
@@ -142,7 +144,7 @@ export default async function PlatformStaffHomePage() {
   const svc = createServiceClient()
 
   // Live counts — cheap HEAD counts only, and only for surfaces this role can reach.
-  const [tenantsRes, ticketsRes, healingRes, announcementsRes] = await Promise.all([
+  const [tenantsRes, ticketsRes, healingRes, sentinelRes, announcementsRes] = await Promise.all([
     can("tenants")
       ? svc.from("brokerages").select("id", { count: "exact", head: true }).eq("status", "active")
       : Promise.resolve({ count: null, error: null }),
@@ -151,6 +153,9 @@ export default async function PlatformStaffHomePage() {
       : Promise.resolve({ count: null, error: null }),
     can("providers")
       ? svc.from("connector_healing_proposals").select("id", { count: "exact", head: true }).eq("status", "pending")
+      : Promise.resolve({ count: null, error: null }),
+    can("sentinel")
+      ? svc.from("platform_sentinel_actions").select("id", { count: "exact", head: true }).eq("status", "proposed")
       : Promise.resolve({ count: null, error: null }),
     svc.from("notifications")
       .select("id, title, body, priority, is_read, created_at")
@@ -173,6 +178,7 @@ export default async function PlatformStaffHomePage() {
     activeTenants: tenantsRes.error == null && tenantsRes.count != null ? `${tenantsRes.count} active` : null,
     openTickets: ticketsRes.error == null && ticketsRes.count != null ? `${ticketsRes.count} open` : null,
     pendingHealing: healingRes.error == null && healingRes.count != null ? `${healingRes.count} pending` : null,
+    proposedSentinel: sentinelRes.error == null && sentinelRes.count != null ? `${sentinelRes.count} proposed` : null,
   }
   const announcements = announcementsRes.error == null ? (announcementsRes.data ?? []) : []
 
