@@ -10,13 +10,14 @@ import Link from 'next/link'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { ClipboardList, Loader2, Check, Send, X, Copy } from 'lucide-react'
+import { ClipboardList, Loader2, Check, Send, X, Copy, Brain } from 'lucide-react'
 import {
   listSentinelActionsAction,
   approveSentinelActionAction,
   dismissSentinelActionAction,
   type SentinelActionRow,
   type SentinelQueue,
+  type SentinelLearningView,
 } from '@/app/actions/superadmin/platform-sentinel'
 
 const SEVERITY_BADGE: Record<string, string> = {
@@ -45,6 +46,74 @@ const CHANNEL_LABEL: Record<string, string> = {
   sms: 'SMS draft',
   call: 'call script',
   none: 'internal action',
+}
+
+/** THE SENTINEL FLYWHEEL readout — what staff verdicts have taught the
+ *  sentinel: per-kind approve/dismiss stats (with any active kind-level
+ *  severity downgrades) and the tenant-level suppressions in force. No
+ *  "unsuppress" button on purpose: a suppression is just a run of most-recent
+ *  dismissals, so the honest control is stated, not faked. */
+function LearningStrip({ learning }: { learning: SentinelLearningView }) {
+  return (
+    <div className="rounded-lg border bg-muted/20 p-3 space-y-2">
+      <h3 className="text-xs font-semibold flex items-center gap-1.5">
+        <Brain className="h-3.5 w-3.5 text-primary" />What the sentinel has learned
+        {learning.decisions > 0 && (
+          <span className="font-normal text-muted-foreground">
+            — from {learning.decisions} decision{learning.decisions === 1 ? '' : 's'} in the last {learning.windowDays} days
+          </span>
+        )}
+      </h3>
+
+      {learning.decisions === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No decisions yet — the sentinel learns from your first approvals and dismissals. Kinds you
+          approve keep their urgency; kinds you consistently dismiss get quieter on their own.
+        </p>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-1.5">
+            {learning.kinds.map((k) => (
+              <div key={k.kind} className="rounded border bg-background px-2 py-1 text-[11px] leading-4">
+                <span className="font-medium">{KIND_LABEL[k.kind] ?? k.kind}</span>{' '}
+                <span className="text-muted-foreground tabular-nums">
+                  {k.approved + k.sent} approved · {k.dismissed} dismissed ({k.dismissalRate}%)
+                </span>
+                {k.downgraded && (
+                  <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800">
+                    severity lowered
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {learning.suppressions.length > 0 && (
+            <div className="space-y-1">
+              <p className="text-[11px] font-medium">Suppressed for specific tenants:</p>
+              <ul className="space-y-0.5">
+                {learning.suppressions.map((s) => (
+                  <li key={`${s.kind}:${s.brokerageId}`} className="text-[11px] text-muted-foreground">
+                    <span className="text-foreground">{KIND_LABEL[s.kind] ?? s.kind}</span> for{' '}
+                    <Link href={`/dashboard/superadmin/brokerages/${s.brokerageId}`} className="text-indigo-600 font-medium">
+                      {s.brokerageName ?? 'this tenant'}
+                    </Link>{' '}
+                    — you dismissed the last {s.streak} in a row, so the sentinel stopped proposing it there.
+                  </li>
+                ))}
+              </ul>
+              <p className="text-[11px] text-muted-foreground">
+                There is no unsuppress switch because none is needed: the suppression is just your run of
+                most-recent dismissals. Approving any still-open proposal of that kind for that tenant clears
+                it immediately, and old dismissals age out of the {learning.windowDays}-day learning window on
+                their own.
+              </p>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
 }
 
 function ActionCard({
@@ -191,6 +260,8 @@ export function SentinelActionQueue() {
           <p className="text-sm text-red-600">{err}</p>
         ) : !queue ? null : (
           <>
+            <LearningStrip learning={queue.learning} />
+
             {queue.proposed.length === 0 ? (
               <div className="rounded-lg border p-6 text-center text-sm text-muted-foreground">
                 Nothing proposed right now — the fleet looks healthy. The sentinel sweeps daily and new proposals will land here.

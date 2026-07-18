@@ -32,6 +32,10 @@
 // OUTREACH DRAFTS are composed from the real facts (days silent, provider
 // names, expiry dates, dunning step, trial end) and the platform's OWN brand
 // name (lib/platform/product-brand — never hardcoded; the caller resolves it).
+//
+// THE SENTINEL FLYWHEEL (below composeSentinelActions): staff verdicts on
+// platform_sentinel_actions feed back into composition — see the feedback-
+// layer section for the tenant suppression and kind downgrade rules.
 
 import { classifyEngagement, daysSinceActivity } from "@/lib/platform/engagement-risk"
 
@@ -309,6 +313,223 @@ export function splitDraftEmail(draftText: string, defaultSubject: string): { su
   const m = draftText.match(/^Subject:\s*(.+)\r?\n/)
   if (!m) return { subject: defaultSubject, body: draftText.trim() }
   return { subject: m[1].trim(), body: draftText.slice(m[0].length).trim() }
+}
+
+// ── THE SENTINEL FLYWHEEL — the feedback layer ───────────────────────────────
+// Mirrors the tenant draft-quality flywheel (lib/kernel/draft-quality.ts): the
+// verdict table IS the training signal. Every approve/send/dismiss staff makes
+// on platform_sentinel_actions is already recorded — folding those decisions
+// back into composition is how the sentinel learns:
+//
+//   (a) TENANT RULE — 3+ consecutive most-recent dismissals of a kind for a
+//       tenant means "stop proposing this here": that kind is SUPPRESSED for
+//       that tenant (dropped before upsert, logged by the cron). No override
+//       table and none needed: the streak is computed from the most recent
+//       decisions, so approving any still-open proposal of that kind for that
+//       tenant clears it instantly, and old dismissals age out of the learning
+//       window on their own.
+//   (b) KIND RULE — a fleet-wide dismissal rate ≥70% over ≥10 decisions means
+//       staff consistently consider the kind over-alarmed: severity drops one
+//       step (critical→warn→info) and the detail says so, honestly.
+//   (c) Approval-heavy kinds pass through unchanged — staff agreement is the
+//       signal that the composer is calibrated.
+//
+// All PURE: counts in, adjusted proposals out; no dates generated inside.
+
+/** How many days of decisions the flywheel reads (cron + queue panel). */
+export const SENTINEL_LEARNING_WINDOW_DAYS = 90
+/** Consecutive dismissals of a kind for one tenant that suppress that kind there. */
+export const SENTINEL_SUPPRESSION_STREAK = 3
+/** Kind-level downgrade needs at least this many fleet-wide decisions… */
+export const SENTINEL_DOWNGRADE_MIN_DECISIONS = 10
+/** …with at least this share of them dismissals. */
+export const SENTINEL_DOWNGRADE_DISMISSAL_RATE = 0.7
+
+/** A decided (or proposed) platform_sentinel_actions row, as verdict input. */
+export interface SentinelVerdictRow {
+  kind: string
+  brokerageId: string | null
+  status: string
+  /** When the verdict landed (acted_at) — orders the dismissal streak. */
+  actedAt: string | null
+}
+
+export interface SentinelVerdictStats {
+  kind: string
+  /** The tenant, or null in the fleet-wide per-kind map. */
+  brokerageId: string | null
+  proposed: number
+  approved: number
+  sent: number
+  dismissed: number
+  /** approved + sent + dismissed. */
+  decided: number
+  /** Consecutive dismissals at the most-recent end (any approve/send resets to 0). */
+  dismissalStreak: number
+}
+
+export interface SentinelVerdictSummary {
+  /** Keyed by sentinelKindTenantKey(kind, brokerageId). */
+  byKindTenant: Record<string, SentinelVerdictStats>
+  /** Keyed by kind, fleet-wide. */
+  byKind: Record<string, SentinelVerdictStats>
+}
+
+export function sentinelKindTenantKey(kind: string, brokerageId: string | null): string {
+  return `${kind}:${brokerageId ?? "none"}`
+}
+
+const DECIDED_STATUSES = new Set(["approved", "sent", "dismissed"])
+
+/**
+ * PURE: fold staff verdicts into per-(kind, tenant) and per-kind stats.
+ * Rows may arrive in any order — streaks are computed from actedAt descending.
+ */
+export function summarizeSentinelVerdicts(rows: SentinelVerdictRow[]): SentinelVerdictSummary {
+  const byKindTenant: Record<string, SentinelVerdictStats> = {}
+  const byKind: Record<string, SentinelVerdictStats> = {}
+  const decidedFor = new Map<SentinelVerdictStats, SentinelVerdictRow[]>()
+
+  const statsAt = (
+    map: Record<string, SentinelVerdictStats>,
+    key: string,
+    kind: string,
+    brokerageId: string | null,
+  ): SentinelVerdictStats => {
+    let s = map[key]
+    if (!s) {
+      s = { kind, brokerageId, proposed: 0, approved: 0, sent: 0, dismissed: 0, decided: 0, dismissalStreak: 0 }
+      map[key] = s
+      decidedFor.set(s, [])
+    }
+    return s
+  }
+
+  for (const r of rows) {
+    const status = (r.status ?? "").toLowerCase()
+    const targets = [
+      statsAt(byKind, r.kind, r.kind, null),
+      statsAt(byKindTenant, sentinelKindTenantKey(r.kind, r.brokerageId), r.kind, r.brokerageId),
+    ]
+    for (const s of targets) {
+      if (status === "approved") s.approved += 1
+      else if (status === "sent") s.sent += 1
+      else if (status === "dismissed") s.dismissed += 1
+      else s.proposed += 1
+      if (DECIDED_STATUSES.has(status)) {
+        s.decided += 1
+        decidedFor.get(s)!.push(r)
+      }
+    }
+  }
+
+  for (const [s, decided] of decidedFor) {
+    // Most-recent first; a missing actedAt sorts oldest (it can't anchor a streak).
+    decided.sort((a, b) => (b.actedAt ?? "").localeCompare(a.actedAt ?? ""))
+    let streak = 0
+    for (const r of decided) {
+      if ((r.status ?? "").toLowerCase() === "dismissed") streak += 1
+      else break
+    }
+    s.dismissalStreak = streak
+  }
+
+  return { byKindTenant, byKind }
+}
+
+/** PURE: does the fleet-wide record say this kind is over-alarmed? */
+export function isSentinelKindOverAlarmed(k: SentinelVerdictStats | undefined): boolean {
+  return (
+    !!k &&
+    k.decided >= SENTINEL_DOWNGRADE_MIN_DECISIONS &&
+    k.dismissed / k.decided >= SENTINEL_DOWNGRADE_DISMISSAL_RATE
+  )
+}
+
+/** A proposal the tenant rule dropped this run — the cron logs these. */
+export interface SentinelSuppression {
+  kind: string
+  brokerageId: string
+  streak: number
+  note: string
+}
+
+export interface SentinelLearningResult {
+  proposals: ProposedSentinelAction[]
+  suppressed: SentinelSuppression[]
+  /** Kinds whose severity the kind rule lowered in this run. */
+  downgradedKinds: string[]
+}
+
+/**
+ * PURE: apply what the verdicts teach to a freshly composed proposal list.
+ * Tenant rule first (suppress), then kind rule (downgrade one step + honest
+ * note), everything else untouched. Re-sorted with the composer's comparator
+ * so downgraded rows land where their new severity puts them.
+ */
+export function applySentinelLearning(
+  proposals: ProposedSentinelAction[],
+  summary: SentinelVerdictSummary,
+): SentinelLearningResult {
+  const kept: ProposedSentinelAction[] = []
+  const suppressed: SentinelSuppression[] = []
+  const downgraded = new Set<string>()
+
+  for (const p of proposals) {
+    // (a) Tenant rule: this tenant has dismissed this kind 3+ times running.
+    if (p.brokerageId) {
+      const t = summary.byKindTenant[sentinelKindTenantKey(p.kind, p.brokerageId)]
+      if (t && t.dismissalStreak >= SENTINEL_SUPPRESSION_STREAK) {
+        suppressed.push({
+          kind: p.kind,
+          brokerageId: p.brokerageId,
+          streak: t.dismissalStreak,
+          note: `Suppressed: staff dismissed the last ${t.dismissalStreak} '${p.kind}' proposals for this tenant in a row.`,
+        })
+        continue
+      }
+    }
+    // (b) Kind rule: fleet-wide dismissal-heavy kinds drop one severity step.
+    const k = summary.byKind[p.kind]
+    if (isSentinelKindOverAlarmed(k) && p.severity !== "info") {
+      const lowered: SentinelSeverity = p.severity === "critical" ? "warn" : "info"
+      const pct = Math.round((k!.dismissed / k!.decided) * 100)
+      downgraded.add(p.kind)
+      kept.push({
+        ...p,
+        severity: lowered,
+        detail: `Learned: staff dismissed ${pct}% of the last ${k!.decided} '${p.kind}' proposals fleet-wide, so this is filed as ${lowered} instead of ${p.severity}. ${p.detail}`,
+      })
+      continue
+    }
+    // (c) Approval-heavy (or not-yet-judged) kinds pass through unchanged.
+    kept.push(p)
+  }
+
+  kept.sort(
+    (a, b) =>
+      SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] ||
+      a.kind.localeCompare(b.kind) ||
+      a.dedupeKey.localeCompare(b.dedupeKey),
+  )
+  return { proposals: kept, suppressed, downgradedKinds: [...downgraded].sort() }
+}
+
+/**
+ * PURE: every (kind, tenant) pair the tenant rule currently suppresses —
+ * for the queue panel's "what the sentinel has learned" strip.
+ */
+export function activeSentinelSuppressions(
+  summary: SentinelVerdictSummary,
+): Array<{ kind: string; brokerageId: string; streak: number }> {
+  const out: Array<{ kind: string; brokerageId: string; streak: number }> = []
+  for (const s of Object.values(summary.byKindTenant)) {
+    if (s.brokerageId && s.dismissalStreak >= SENTINEL_SUPPRESSION_STREAK) {
+      out.push({ kind: s.kind, brokerageId: s.brokerageId, streak: s.dismissalStreak })
+    }
+  }
+  out.sort((a, b) => a.kind.localeCompare(b.kind) || a.brokerageId.localeCompare(b.brokerageId))
+  return out
 }
 
 /**

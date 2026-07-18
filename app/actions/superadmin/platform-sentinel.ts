@@ -24,7 +24,17 @@ import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { isEmailOnSuppressionList } from "@/lib/platform/suppression-list"
-import { splitDraftEmail, SEVERITY_ORDER, type SentinelSeverity } from "@/lib/platform/platform-sentinel"
+import {
+  splitDraftEmail,
+  SEVERITY_ORDER,
+  summarizeSentinelVerdicts,
+  activeSentinelSuppressions,
+  isSentinelKindOverAlarmed,
+  SENTINEL_LEARNING_WINDOW_DAYS,
+  SENTINEL_SUPPRESSION_STREAK,
+  type SentinelSeverity,
+  type SentinelVerdictRow,
+} from "@/lib/platform/platform-sentinel"
 
 const SENTINEL_PAGE = "/dashboard/superadmin/sentinel"
 
@@ -43,12 +53,44 @@ export interface SentinelActionRow {
   actedAt: string | null
 }
 
+/** Fleet-wide flywheel stats for one proposal kind (the learning strip). */
+export interface SentinelKindLearning {
+  kind: string
+  approved: number
+  sent: number
+  dismissed: number
+  decided: number
+  /** dismissed / decided as a whole percentage (0–100). */
+  dismissalRate: number
+  /** True when the kind rule is currently lowering this kind's severity. */
+  downgraded: boolean
+}
+
+/** A (kind, tenant) pair the tenant rule currently suppresses. */
+export interface SentinelSuppressionView {
+  kind: string
+  brokerageId: string
+  brokerageName: string | null
+  streak: number
+}
+
+/** What the sentinel has learned from staff verdicts (the flywheel readout). */
+export interface SentinelLearningView {
+  kinds: SentinelKindLearning[]
+  suppressions: SentinelSuppressionView[]
+  /** Total decisions inside the learning window. */
+  decisions: number
+  windowDays: number
+  suppressionStreak: number
+}
+
 export interface SentinelQueue {
   proposed: SentinelActionRow[]
   recent: SentinelActionRow[]
   /** True when the platform email rail (SendGrid) is configured — the UI keeps
    *  its "send" affordance honest instead of pretending. */
   emailRailReady: boolean
+  learning: SentinelLearningView
 }
 
 type Gate = { ok: true; userId: string; email: string } | { ok: false; error: string }
@@ -90,13 +132,15 @@ function toRow(r: any, nameOf: Map<string, string>): SentinelActionRow {
   }
 }
 
-/** The queue: every proposed action (severity-first), plus the recent decisions. */
+/** The queue: every proposed action (severity-first), the recent decisions,
+ *  and the flywheel readout (what those decisions have taught the sentinel). */
 export async function listSentinelActionsAction(): Promise<{ ok: true; data: SentinelQueue } | { ok: false; error: string }> {
   const g = await gate(false)
   if (!g.ok) return g
   const svc = createServiceClient()
 
-  const [proposedRes, recentRes] = await Promise.all([
+  const decidedSince = new Date(Date.now() - SENTINEL_LEARNING_WINDOW_DAYS * 86_400_000).toISOString()
+  const [proposedRes, recentRes, decidedRes] = await Promise.all([
     svc.from("platform_sentinel_actions")
       .select("id, kind, severity, brokerage_id, title, detail, draft_channel, draft_text, status, created_at, acted_at")
       .eq("status", "proposed")
@@ -107,13 +151,30 @@ export async function listSentinelActionsAction(): Promise<{ ok: true; data: Sen
       .neq("status", "proposed")
       .order("acted_at", { ascending: false, nullsFirst: false })
       .limit(30),
+    // The flywheel input: every decision in the learning window — the same
+    // rows the cron reads before composing, so panel and cron never disagree.
+    svc.from("platform_sentinel_actions")
+      .select("kind, brokerage_id, status, acted_at")
+      .in("status", ["approved", "sent", "dismissed"])
+      .gte("acted_at", decidedSince)
+      .limit(5000),
   ])
-  const err = proposedRes.error ?? recentRes.error
+  const err = proposedRes.error ?? recentRes.error ?? decidedRes.error
   if (err) return { ok: false, error: `Failed to load sentinel actions: ${err.message}` }
 
-  const brokerageIds = [...new Set(
-    [...(proposedRes.data ?? []), ...(recentRes.data ?? [])].map((r: any) => r.brokerage_id).filter(Boolean),
-  )] as string[]
+  const verdictRows: SentinelVerdictRow[] = ((decidedRes.data ?? []) as any[]).map((r) => ({
+    kind: r.kind as string,
+    brokerageId: (r.brokerage_id as string | null) ?? null,
+    status: r.status as string,
+    actedAt: (r.acted_at as string | null) ?? null,
+  }))
+  const summary = summarizeSentinelVerdicts(verdictRows)
+  const suppressions = activeSentinelSuppressions(summary)
+
+  const brokerageIds = [...new Set([
+    ...[...(proposedRes.data ?? []), ...(recentRes.data ?? [])].map((r: any) => r.brokerage_id).filter(Boolean),
+    ...suppressions.map((s) => s.brokerageId),
+  ])] as string[]
   const nameOf = new Map<string, string>()
   if (brokerageIds.length > 0) {
     const { data: brks } = await svc.from("brokerages").select("id, name").in("id", brokerageIds)
@@ -125,12 +186,38 @@ export async function listSentinelActionsAction(): Promise<{ ok: true; data: Sen
     (SEVERITY_ORDER[a.severity as SentinelSeverity] ?? 3) - (SEVERITY_ORDER[b.severity as SentinelSeverity] ?? 3) ||
     b.createdAt.localeCompare(a.createdAt),
   )
+
+  const kinds: SentinelKindLearning[] = Object.values(summary.byKind)
+    .filter((k) => k.decided > 0)
+    .map((k) => ({
+      kind: k.kind,
+      approved: k.approved,
+      sent: k.sent,
+      dismissed: k.dismissed,
+      decided: k.decided,
+      dismissalRate: Math.round((k.dismissed / k.decided) * 100),
+      downgraded: isSentinelKindOverAlarmed(k),
+    }))
+    .sort((a, b) => b.decided - a.decided || a.kind.localeCompare(b.kind))
+
   return {
     ok: true,
     data: {
       proposed,
       recent: ((recentRes.data ?? []) as any[]).map((r) => toRow(r, nameOf)),
       emailRailReady: !!process.env.SENDGRID_API_KEY,
+      learning: {
+        kinds,
+        suppressions: suppressions.map((s) => ({
+          kind: s.kind,
+          brokerageId: s.brokerageId,
+          brokerageName: nameOf.get(s.brokerageId) ?? null,
+          streak: s.streak,
+        })),
+        decisions: verdictRows.length,
+        windowDays: SENTINEL_LEARNING_WINDOW_DAYS,
+        suppressionStreak: SENTINEL_SUPPRESSION_STREAK,
+      },
     },
   }
 }

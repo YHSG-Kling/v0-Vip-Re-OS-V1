@@ -13,8 +13,12 @@ import { evaluateTicketSla } from "@/lib/support/support-sla"
 import { loadProductBrand } from "@/lib/platform/product-brand"
 import {
   composeSentinelActions,
+  summarizeSentinelVerdicts,
+  applySentinelLearning,
+  SENTINEL_LEARNING_WINDOW_DAYS,
   type SentinelFacts,
   type ConnectionExpiryFact,
+  type SentinelVerdictRow,
 } from "@/lib/platform/platform-sentinel"
 
 export const dynamic = "force-dynamic"
@@ -24,10 +28,14 @@ export const maxDuration = 300
  * Platform Sentinel Cron — daily fleet watch. Loads live facts from the same
  * sources the individual superadmin boards read (engagement sign-ins, the three
  * credential stores, platform_dunning_events, open support tickets, trial
- * ends), runs the PURE composer (lib/platform/platform-sentinel.ts), and
- * upserts proposed actions on the deterministic dedupe_key with
- * ignoreDuplicates — re-runs never duplicate a proposal. Staff approve/dismiss
- * from the Sentinel page (app/dashboard/superadmin/sentinel).
+ * ends), runs the PURE composer (lib/platform/platform-sentinel.ts), applies
+ * THE SENTINEL FLYWHEEL (staff verdicts from the last 90 days suppress
+ * tenant-rejected kinds and downgrade fleet-dismissed kinds — pure feedback
+ * layer in the same module), and upserts proposed actions on the deterministic
+ * dedupe_key with ignoreDuplicates — re-runs never duplicate a proposal.
+ * Staff approve/dismiss from the Sentinel page
+ * (app/dashboard/superadmin/sentinel) — and those verdicts are what the next
+ * sweep learns from.
  */
 export async function GET(request: NextRequest) {
   const unauth = verifyCronAuth(request)
@@ -48,7 +56,34 @@ export async function GET(request: NextRequest) {
     const now = new Date()
     const facts = await loadSentinelFacts(svc, now)
     const brand = await loadProductBrand(svc)
-    const proposed = composeSentinelActions(facts, brand, now)
+    const composed = composeSentinelActions(facts, brand, now)
+
+    // ── THE SENTINEL FLYWHEEL: staff verdicts from the learning window feed
+    // back into today's proposals (tenant suppression, kind downgrade) BEFORE
+    // anything is upserted. The verdict table is the training signal.
+    const decidedSince = new Date(now.getTime() - SENTINEL_LEARNING_WINDOW_DAYS * DAY_MS).toISOString()
+    const { data: decidedRows, error: decidedErr } = await svc
+      .from("platform_sentinel_actions")
+      .select("kind, brokerage_id, status, acted_at")
+      .in("status", ["approved", "sent", "dismissed"])
+      .gte("acted_at", decidedSince)
+      .limit(5000)
+    if (decidedErr) throw new Error(`Failed to load sentinel verdicts: ${decidedErr.message}`)
+    const verdictRows: SentinelVerdictRow[] = ((decidedRows ?? []) as any[]).map((r) => ({
+      kind: r.kind as string,
+      brokerageId: (r.brokerage_id as string | null) ?? null,
+      status: r.status as string,
+      actedAt: (r.acted_at as string | null) ?? null,
+    }))
+    const verdicts = summarizeSentinelVerdicts(verdictRows)
+    const learned = applySentinelLearning(composed, verdicts)
+    if (learned.suppressed.length > 0) {
+      console.log(
+        `[platform-sentinel] flywheel suppressed ${learned.suppressed.length} proposal(s): ` +
+          learned.suppressed.map((s) => `${s.kind}@${s.brokerageId} (streak ${s.streak})`).join(", "),
+      )
+    }
+    const proposed = learned.proposals
 
     let inserted = 0
     if (proposed.length > 0) {
@@ -73,8 +108,21 @@ export async function GET(request: NextRequest) {
     }
 
     const summary = {
-      composed: proposed.length,
+      composed: composed.length,
+      afterLearning: proposed.length,
       inserted,
+      learning: {
+        windowDays: SENTINEL_LEARNING_WINDOW_DAYS,
+        decisionsConsidered: verdictRows.length,
+        suppressedCount: learned.suppressed.length,
+        suppressed: learned.suppressed.map((s) => ({
+          kind: s.kind,
+          brokerage_id: s.brokerageId,
+          streak: s.streak,
+          note: s.note,
+        })),
+        downgradedKinds: learned.downgradedKinds,
+      },
       facts: {
         engagement: facts.engagement.length,
         connections: facts.connections.length,
