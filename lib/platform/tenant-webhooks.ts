@@ -221,11 +221,93 @@ export async function enqueueTenantWebhookDeliveries(client?: Svc): Promise<Enqu
   return result
 }
 
+// ─── Rail outcomes → the governed bus + the self-heal ledger ─────────────────
+
+/**
+ * Best-effort: ledger one failed delivery attempt onto self_heal_events
+ * (flow 'webhook_delivery') so the repair digest ranks flaky subscriber
+ * endpoints — a delivery that fails weekly is a root cause, not noise. A dead
+ * row ledgers as 'escalated' (the human is routed in via the bus signal below),
+ * a retryable failure as 'failed'. A ledger write never affects the drain.
+ */
+async function ledgerWebhookDeliveryFailure(svc: Svc, params: {
+  brokerageId: string | null
+  subscriptionId: string
+  deliveryId: string
+  event: string
+  attempts: number
+  responseStatus: number | null
+  error: string | null
+  dead: boolean
+}): Promise<void> {
+  try {
+    const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+    await recordSelfHeal(svc, {
+      brokerageId: params.brokerageId,
+      domain: "data_flow",
+      subject: `webhook_delivery:${params.subscriptionId}`,
+      action: "deliver_webhook",
+      outcome: params.dead ? "escalated" : "failed",
+      detail: {
+        flow: "webhook_delivery",
+        delivery_id: params.deliveryId,
+        event: params.event,
+        attempts: params.attempts,
+        response_status: params.responseStatus,
+        error: (params.error ?? "").slice(0, 300),
+      },
+    })
+  } catch { /* the ledger is additive — never fail the drain on it */ }
+}
+
+/**
+ * A subscription's delivery just went DEAD (5th failure) — put the outcome on the
+ * governed manager bus so the human SEES it on the Command Center feed: "your
+ * endpoint at X is dead — fix and re-test". Registered feed_only in
+ * SIGNAL_REGISTRY: the only real fix is on the subscriber's OWN server, so no
+ * governed in-OS deliverable exists for a manager to propose (a handler would be
+ * a dead promise). Data Steward (webhook-table owner) → Cron Manager (loop-health
+ * owner). Idempotent per open (subscription) via the bus dedupe. Best-effort.
+ */
+async function announceDeadWebhookEndpoint(svc: Svc, params: {
+  brokerageId: string
+  subscriptionId: string
+  url: string
+  event: string
+  failureCount: number
+  responseStatus: number | null
+  error: string | null
+}): Promise<void> {
+  try {
+    const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+    await publishManagerSignal({
+      brokerageId: params.brokerageId,
+      fromManager: "data_steward",
+      toManager: "cron_manager",
+      signalType: "webhook_endpoint_dead",
+      message:
+        `Outbound webhook endpoint ${params.url} is DEAD — a "${params.event}" delivery exhausted all ` +
+        `${MAX_DELIVERY_ATTEMPTS} attempts (${params.error ?? "no response"}). Fix the endpoint, then send a ` +
+        `test ping from Settings → API & Webhooks; new events will keep failing until it answers 2xx.`,
+      entityType: "webhook_subscription",
+      entityId: params.subscriptionId,
+      payload: {
+        url: params.url,
+        event: params.event,
+        failure_count: params.failureCount,
+        response_status: params.responseStatus,
+        error: (params.error ?? "").slice(0, 300),
+      },
+    }, svc)
+  } catch { /* visibility is best-effort — the honest delivery record already landed */ }
+}
+
 // ─── Drain ───────────────────────────────────────────────────────────────────
 
 interface DueDeliveryRow {
   id: string
   subscription_id: string
+  brokerage_id: string | null
   event_type: string
   payload: WebhookPayload
   attempts: number
@@ -255,7 +337,7 @@ export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainR
   const { data: dueRows, error: dueError } = await svc
     .from("tenant_webhook_deliveries")
     .select(
-      "id, subscription_id, event_type, payload, attempts, tenant_webhook_subscriptions!inner(id, url, secret, active, failure_count)",
+      "id, subscription_id, brokerage_id, event_type, payload, attempts, tenant_webhook_subscriptions!inner(id, url, secret, active, failure_count)",
     )
     .in("status", ["pending", "failed"])
     .lte("next_attempt_at", nowIso)
@@ -311,6 +393,19 @@ export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainR
           .update({ failure_count: (sub.failure_count ?? 0) + 1, last_failure_at: attemptedAt, updated_at: attemptedAt })
           .eq("id", sub.id)
         result.dead += 1
+        // Rail outcome onto the governed bus + ledger — the managers (and the human
+        // on the Command Center feed) see the endpoint death, not just a status column.
+        await ledgerWebhookDeliveryFailure(svc, {
+          brokerageId: raw.brokerage_id ?? null, subscriptionId: sub.id, deliveryId: raw.id,
+          event: raw.event_type, attempts, responseStatus: post.status, error: post.error, dead: true,
+        })
+        if (raw.brokerage_id) {
+          await announceDeadWebhookEndpoint(svc, {
+            brokerageId: raw.brokerage_id, subscriptionId: sub.id, url: sub.url,
+            event: raw.event_type, failureCount: (sub.failure_count ?? 0) + 1,
+            responseStatus: post.status, error: post.error,
+          })
+        }
       } else {
         await svc
           .from("tenant_webhook_deliveries")
@@ -327,6 +422,12 @@ export async function drainTenantWebhookDeliveries(client?: Svc): Promise<DrainR
           .update({ last_failure_at: attemptedAt, updated_at: attemptedAt })
           .eq("id", sub.id)
         result.retried += 1
+        // Per-delivery failure onto the self-heal ledger (flow 'webhook_delivery') —
+        // the repair digest ranks endpoints that fail weekly as root causes.
+        await ledgerWebhookDeliveryFailure(svc, {
+          brokerageId: raw.brokerage_id ?? null, subscriptionId: sub.id, deliveryId: raw.id,
+          event: raw.event_type, attempts, responseStatus: post.status, error: post.error, dead: false,
+        })
       }
     } catch (e: unknown) {
       result.errors.push(`${raw.id}: ${e instanceof Error ? e.message : String(e)}`)

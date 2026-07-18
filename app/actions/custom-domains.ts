@@ -39,6 +39,7 @@ import {
   getDomainStatus,
   removeDomainFromProject,
   getVercelDomainsConfig,
+  reportCustomDomainOutcome,
   VERCEL_NOT_CONFIGURED_NOTE,
   type DnsRecordInstruction,
   type VercelVerificationChallenge,
@@ -264,6 +265,11 @@ export async function addCustomDomainAction(rawDomain: string): Promise<
         })
         .eq("id", row.id).select(ROW_COLUMNS).single()
       row = data ?? { ...row, status: "error", error_detail: vercel.error }
+      // Rail outcome onto the governed bus + self-heal ledger (best-effort).
+      await reportCustomDomainOutcome({
+        brokerageId: gate.brokerageId, domainRowId: String(row.id), domain,
+        outcome: "error", phase: "add", errorCode: vercel.errorCode, errorDetail: vercel.error,
+      })
     } else {
       const nowIso = new Date().toISOString()
       const patch: Record<string, unknown> = {
@@ -278,6 +284,13 @@ export async function addCustomDomainAction(rawDomain: string): Promise<
       const { data } = await svc.from("tenant_custom_domains")
         .update(patch).eq("id", row.id).select(ROW_COLUMNS).single()
       row = data ?? row
+      if (vercel.verified) {
+        // status→active on first registration — announce it on the governed bus.
+        await reportCustomDomainOutcome({
+          brokerageId: gate.brokerageId, domainRowId: String(row.id), domain,
+          outcome: "verified", phase: "add",
+        })
+      }
     }
   }
 
@@ -354,6 +367,19 @@ export async function checkCustomDomainStatusAction(id: string): Promise<
       brokerage_id: gate.brokerageId,
       domain: (existing as any).domain,
     })
+    // status→active — the rail's outcome onto the governed bus (best-effort).
+    await reportCustomDomainOutcome({
+      brokerageId: gate.brokerageId, domainRowId: id, domain: (existing as any).domain,
+      outcome: "verified", phase: "verify",
+    })
+  } else if (patch.status === "error") {
+    // Verification hit an error — feed alert for the human + self-heal ledger.
+    await reportCustomDomainOutcome({
+      brokerageId: gate.brokerageId, domainRowId: id, domain: (existing as any).domain,
+      outcome: "error", phase: "verify",
+      errorCode: result.configured && !result.ok ? result.errorCode : null,
+      errorDetail: String(patch.error_detail ?? ""),
+    })
   }
   revalidatePath("/settings/branding")
   return { ok: true, domain: rowToView(updated), vercelConfigured: true }
@@ -375,6 +401,13 @@ export async function removeCustomDomainAction(id: string): Promise<
   // Vercel detach is best-effort — the row goes to 'removed' either way so
   // the middleware stops serving the host immediately.
   const vercel = await removeDomainFromProject((existing as any).domain)
+  if (vercel.configured && !vercel.ok) {
+    // Ledger the API failure (no feed line — the row is removed regardless).
+    await reportCustomDomainOutcome({
+      brokerageId: gate.brokerageId, domainRowId: id, domain: (existing as any).domain,
+      outcome: "error", phase: "remove", errorDetail: vercel.error, announce: false,
+    })
+  }
 
   const { error } = await svc.from("tenant_custom_domains")
     .update({

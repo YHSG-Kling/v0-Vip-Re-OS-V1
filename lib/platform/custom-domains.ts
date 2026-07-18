@@ -302,6 +302,92 @@ export async function getDomainStatus(domain: string): Promise<VercelDomainResul
   }
 }
 
+// ── Rail outcomes → the governed manager bus + the self-heal ledger ──────────
+//
+// The actions layer (app/actions/custom-domains.ts) owns the row LIFECYCLE, so it
+// reports the transitions; this module owns the EMISSION so the custom-domain rail
+// has one bus voice. Everything here is best-effort (dynamic imports, swallowed
+// failures) — reporting never fails the user action or the Vercel wire.
+
+export type CustomDomainOutcome = "verified" | "error"
+
+/**
+ * Report a custom-domain transition onto the governed bus (+ ledger the failure).
+ *
+ *   verified (status→active) → 'custom_domain_verified' (feed_only, registered in
+ *     SIGNAL_REGISTRY): Data Steward (tenant_custom_domains owner) announces the
+ *     completed state change to the Marketing Manager (brand owner).
+ *   error → 'custom_domain_error' (feed_only alert): the human fixes DNS/ownership
+ *     at their registrar — nothing in-OS can change third-party DNS. The Vercel
+ *     API failure ALSO ledgers self_heal_events (flow 'custom_domain_vercel',
+ *     connector domain) so recurring wire failures surface to platform staff.
+ *
+ * Both signals are idempotent per open (domain row) via the bus dedupe.
+ * `announce: false` = ledger only (e.g. a failed detach on remove — the row is
+ * already 'removed'; there is no state change worth a feed line).
+ */
+export async function reportCustomDomainOutcome(params: {
+  brokerageId: string
+  domainRowId: string
+  domain: string
+  outcome: CustomDomainOutcome
+  /** Which wire call failed/succeeded — for the ledger detail. */
+  phase: "add" | "verify" | "remove"
+  errorCode?: string | null
+  errorDetail?: string | null
+  announce?: boolean
+}): Promise<void> {
+  if (params.announce !== false) {
+    try {
+      const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+      await publishManagerSignal({
+        brokerageId: params.brokerageId,
+        fromManager: "data_steward",
+        toManager: "marketing_agent",
+        signalType: params.outcome === "verified" ? "custom_domain_verified" : "custom_domain_error",
+        message: params.outcome === "verified"
+          ? `Custom domain ${params.domain} is verified and LIVE — the white-label site now serves on it.`
+          : `Custom domain ${params.domain} hit a verification error` +
+            `${params.errorDetail ? `: ${params.errorDetail.slice(0, 200)}` : ""} — ` +
+            `check the DNS records under Settings → Branding, then run Check status again.`,
+        entityType: "tenant_custom_domain",
+        entityId: params.domainRowId,
+        payload: {
+          domain: params.domain,
+          outcome: params.outcome,
+          phase: params.phase,
+          error_code: params.errorCode ?? null,
+          error_detail: params.errorDetail ? params.errorDetail.slice(0, 300) : null,
+        },
+      })
+    } catch { /* visibility is best-effort — the row transition already landed */ }
+  }
+  if (params.outcome === "error") {
+    try {
+      const [{ recordSelfHeal }, { createServiceClient }] = await Promise.all([
+        import("@/lib/kernel/self-heal-ledger"),
+        import("@/lib/supabase/service"),
+      ])
+      await recordSelfHeal(createServiceClient(), {
+        brokerageId: params.brokerageId,
+        domain: "connector",
+        subject: `custom_domain_vercel:${params.domain}`,
+        action: "verify_custom_domain",
+        // Announced errors route the human in via the feed alert; a silent
+        // (announce:false) failure is recorded as a plain failure.
+        outcome: params.announce !== false ? "escalated" : "failed",
+        detail: {
+          flow: "custom_domain_vercel",
+          domain: params.domain,
+          phase: params.phase,
+          error_code: params.errorCode ?? null,
+          error_detail: params.errorDetail ? params.errorDetail.slice(0, 300) : null,
+        },
+      })
+    } catch { /* the ledger is additive — never fail the action on it */ }
+  }
+}
+
 /** DELETE /v9/projects/{id}/domains/{domain} — detach (best-effort on remove). */
 export async function removeDomainFromProject(
   domain: string,
