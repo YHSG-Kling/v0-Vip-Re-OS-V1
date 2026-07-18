@@ -15,6 +15,7 @@ import {
   startPlatformSocialConnectAction,
   disconnectPlatformSocialAction,
   verifyPlatformSocialAction,
+  selectPlatformFacebookPageAction,
 } from '@/app/actions/superadmin/platform-social'
 
 export interface ChannelAccount {
@@ -26,7 +27,9 @@ export interface ChannelAccount {
   lastVerifiedAt: string | null
   envReady: boolean
   missingEnv: string[]
-  dispatch: { supported: boolean; reason?: string }
+  dispatch: { supported: boolean; requiresImage?: boolean; reason?: string }
+  /** Meta connect found several managed Pages — pick which one the company posts as. */
+  pendingPages: { id: string; name: string; igUsername: string | null; hasInstagram: boolean }[] | null
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -47,10 +50,12 @@ export function CompanyChannelsCard({ initialAccounts }: { initialAccounts: Chan
     const params = new URLSearchParams(window.location.search)
     const connected = params.get('channel_connected')
     const failed = params.get('channel_error')
+    const pendingPage = params.get('channel_pending')
     if (connected) toast({ title: `${connected} connected` })
+    if (pendingPage) toast({ title: 'Almost there', description: 'Your Meta login manages several Facebook Pages — choose the one the company posts as below.' })
     if (failed) toast({ title: 'Connection failed', description: failed, variant: 'destructive' })
-    if (connected || failed) {
-      params.delete('channel_connected'); params.delete('channel_error'); params.delete('channel')
+    if (connected || failed || pendingPage) {
+      params.delete('channel_connected'); params.delete('channel_error'); params.delete('channel'); params.delete('channel_pending')
       const qs = params.toString()
       window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''))
       reload()
@@ -83,6 +88,17 @@ export function CompanyChannelsCard({ initialAccounts }: { initialAccounts: Chan
       setBusy(null)
       if (r.ok) toast({ title: `Verified${r.accountName ? ` — ${r.accountName}` : ''}` })
       else toast({ title: 'Verification failed', description: r.error, variant: 'destructive' })
+      reload()
+    })
+  }
+
+  function selectPage(platform: string, pageId: string, pageName: string) {
+    setBusy(platform)
+    startTransition(async () => {
+      const r = await selectPlatformFacebookPageAction(pageId)
+      setBusy(null)
+      if (r.ok) toast({ title: `Posting as ${r.accountName ?? pageName}` })
+      else toast({ title: 'Page selection failed', description: r.error, variant: 'destructive' })
       reload()
     })
   }
@@ -139,8 +155,28 @@ export function CompanyChannelsCard({ initialAccounts }: { initialAccounts: Chan
                 {pending && busy === a.platform ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : (a.status === 'error' || a.status === 'disconnected' ? 'Reconnect' : 'Connect')}
               </Button>
             )}
-            {a.status === 'connected' && !a.dispatch.supported && a.dispatch.reason && (
+            {a.status === 'connected' && a.dispatch.reason && (
               <p className="w-full text-[11px] text-muted-foreground">{a.dispatch.reason}</p>
+            )}
+            {/* Multi-Page Meta connect: choose which Page the company posts as */}
+            {a.pendingPages && a.pendingPages.length > 0 && (
+              <div className="w-full space-y-1 rounded bg-muted/40 p-2">
+                <p className="text-[11px] text-muted-foreground">
+                  This Meta login manages {a.pendingPages.length} Facebook Pages — choose the one the company posts as
+                  {a.platform === 'instagram' ? ' (Instagram rides the Page’s linked business account)' : ''}:
+                </p>
+                {a.pendingPages.map((p) => (
+                  <div key={p.id} className="flex items-center gap-2">
+                    <span className="text-xs flex-1">
+                      {p.name}
+                      {p.hasInstagram && <span className="text-muted-foreground"> · IG {p.igUsername ? `@${p.igUsername}` : 'linked'}</span>}
+                    </span>
+                    <Button size="sm" variant="outline" disabled={pending && busy === a.platform} onClick={() => selectPage(a.platform, p.id, p.name)}>
+                      {pending && busy === a.platform ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Post as this Page'}
+                    </Button>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         ))}

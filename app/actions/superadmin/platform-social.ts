@@ -22,6 +22,8 @@ import {
   getChannelPublishCredential,
   channelDispatchSupport,
   fetchChannelProfile,
+  completePlatformFacebookPageSelection,
+  fetchMetaPostPermalink,
   isPlatformSocialChannel,
   CHANNEL_LABELS,
   type PlatformSocialAccountView,
@@ -85,6 +87,29 @@ export async function startPlatformSocialConnectAction(channel: string): Promise
   return { ok: true, url: start.url }
 }
 
+// ── Facebook Page selection (multi-Page Meta connect) ─────────────────────────
+// The Meta callback parks the managed-Page list (pending_pages) when the login
+// controls SEVERAL Pages; the growth card's picker calls this to finish — it
+// exchanges the stored user token for the chosen Page's token, connects
+// facebook, and connects instagram too when the Page has a linked IG business
+// account (IG rides the FB Page).
+
+export async function selectPlatformFacebookPageAction(pageId: string): Promise<
+  { ok: true; accountName: string | null } | { ok: false; error: string }
+> {
+  const auth = await gate({ requireWrite: true })
+  if (!auth.ok) return auth
+  const cleanPageId = (pageId ?? "").trim()
+  if (!/^\d+$/.test(cleanPageId)) return { ok: false, error: "Invalid Facebook Page id" }
+  const res = await completePlatformFacebookPageSelection(createServiceClient(), cleanPageId, auth.userId)
+  if (!res.ok) return res
+  await audit(auth.userId, auth.email, "platform_social.page_selected", res.channel, {
+    pageId: cleanPageId, accountName: res.accountName,
+  })
+  revalidatePath("/dashboard/superadmin/growth")
+  return { ok: true, accountName: res.accountName }
+}
+
 // ── Disconnect ────────────────────────────────────────────────────────────────
 
 export async function disconnectPlatformSocialAction(channel: string): Promise<{ ok: boolean; error?: string }> {
@@ -114,7 +139,7 @@ export async function verifyPlatformSocialAction(channel: string): Promise<
 
 // ── Auto-publish an approved product draft through the real publisher ─────────
 
-export async function publishProductDraftAction(input: { id: string }): Promise<
+export async function publishProductDraftAction(input: { id: string; imageUrl?: string }): Promise<
   { ok: true; permalink: string } | { ok: false; error: string }
 > {
   const auth = await gate({ requireWrite: true })
@@ -137,8 +162,22 @@ export async function publishProductDraftAction(input: { id: string }): Promise<
     return { ok: false, error: support.reason ?? `${CHANNEL_LABELS[channel]} auto-publish is not supported — copy & post manually` }
   }
 
+  // Instagram Graph refuses text-only posts — an image URL is REQUIRED (the
+  // drafts are text; the caller supplies one from the shared Image library).
+  const imageUrl = (input.imageUrl ?? "").trim()
+  if (support.requiresImage && !/^https?:\/\/.+/.test(imageUrl)) {
+    return { ok: false, error: `${CHANNEL_LABELS[channel]} needs an image — attach one from the Image library (text-only posts are impossible via the API)` }
+  }
+
   const cred = await getChannelPublishCredential(svc, channel)
   if (!cred.ok) return cred
+
+  // Meta channels post AS an account by id: facebook as the Page, instagram as
+  // the IG business account. Those ids land at connect time — absence means the
+  // page-selection leg never finished.
+  if ((channel === "facebook" || channel === "instagram") && !cred.accountId) {
+    return { ok: false, error: `${CHANNEL_LABELS[channel]} has no ${channel === "facebook" ? "Page" : "Instagram business-account"} id on file — Reconnect the channel (and pick the company Page)` }
+  }
 
   // LinkedIn posts as the member — the author URN needs the person id. If the
   // connect-time profile ping didn't capture it, fetch it now (and persist).
@@ -165,14 +204,27 @@ export async function publishProductDraftAction(input: { id: string }): Promise<
     accessToken: cred.accessToken,
     accountId: accountId ?? "",
     hashtags,
+    // Instagram: the container flow's image (validated above). Facebook stays a
+    // text feed post — any link in the content gets Meta's own preview.
+    ...(support.requiresImage ? { mediaUrls: [imageUrl] } : {}),
   })
   if (!result.success) {
     return { ok: false, error: result.error ?? `Publish to ${CHANNEL_LABELS[channel]} failed` }
   }
 
-  const permalink = result.externalPostId
-    ? getPublishedPostUrl(support.publisherPlatform, result.externalPostId)
-    : null
+  // The REAL permalink. Meta posts: ask Graph (IG media ids don't map to a URL
+  // pattern — never guess one; a Page-post URL can be derived as a fallback).
+  let permalink: string | null = null
+  if (result.externalPostId) {
+    if (channel === "facebook" || channel === "instagram") {
+      permalink = await fetchMetaPostPermalink(channel, result.externalPostId, cred.accessToken)
+      if (!permalink && channel === "facebook") {
+        permalink = getPublishedPostUrl("facebook", result.externalPostId)
+      }
+    } else {
+      permalink = getPublishedPostUrl(support.publisherPlatform, result.externalPostId)
+    }
+  }
   if (!permalink) {
     // The post DID go out but the provider returned no id — never invent a link.
     await audit(auth.userId, auth.email, "platform_content.auto_published_unlinked", input.id, { channel }, "platform_social_draft")
@@ -190,6 +242,7 @@ export async function publishProductDraftAction(input: { id: string }): Promise<
 
   await audit(auth.userId, auth.email, "platform_content.auto_published", input.id, {
     channel, permalink, externalPostId: result.externalPostId,
+    ...(support.requiresImage ? { imageUrl } : {}),
   }, "platform_social_draft")
   revalidatePath("/dashboard/superadmin/growth")
   return { ok: true, permalink }

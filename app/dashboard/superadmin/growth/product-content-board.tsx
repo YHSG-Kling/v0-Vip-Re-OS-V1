@@ -30,6 +30,7 @@ export function ProductContentBoard({ initialDrafts, channelStates = {} }: { ini
   const [startDate, setStartDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [permalinks, setPermalinks] = useState<Record<string, string>>({})
   const [videoUrls, setVideoUrls] = useState<Record<string, string>>({})
+  const [publishImages, setPublishImages] = useState<Record<string, string>>({}) // Instagram: image URL required at publish time
   const [videoAngle, setVideoAngle] = useState('ai_team')
   const [pending, startTransition] = useTransition()
   const { toast } = useToast()
@@ -63,9 +64,9 @@ export function ProductContentBoard({ initialDrafts, channelStates = {} }: { ini
       if (r.ok) reload(); else toast({ title: 'Error', description: r.error, variant: 'destructive' })
     })
   }
-  function publish(id: string, channel: string) {
+  function publish(id: string, channel: string, imageUrl?: string) {
     startTransition(async () => {
-      const r = await publishProductDraftAction({ id })
+      const r = await publishProductDraftAction({ id, imageUrl })
       if (r.ok) { toast({ title: `Published to ${channel}`, description: r.permalink }); reload() }
       else toast({ title: 'Publish failed', description: r.error, variant: 'destructive' })
     })
@@ -117,10 +118,18 @@ export function ProductContentBoard({ initialDrafts, channelStates = {} }: { ini
               {d.status === 'approved' && (() => {
                 const cs = channelStates[d.channel]
                 const canDispatch = !!cs && cs.connected && cs.dispatchSupported && d.media_type !== 'video'
+                // IG Graph refuses text-only posts — publish needs an image URL
+                // (the drafts are text; the Image library above supplies one).
+                const needsImage = d.channel === 'instagram'
+                const imageOk = /^https?:\/\/.+/.test((publishImages[d.id] ?? '').trim())
                 return (
                   <>
+                    {canDispatch && needsImage && (
+                      <Input className="h-7 text-xs flex-1" placeholder="image URL (required — copy one from the Image library above)"
+                        value={publishImages[d.id] ?? ''} onChange={(e) => setPublishImages({ ...publishImages, [d.id]: e.target.value })} />
+                    )}
                     {canDispatch && (
-                      <Button size="sm" disabled={pending} onClick={() => publish(d.id, d.channel)}>
+                      <Button size="sm" disabled={pending || (needsImage && !imageOk)} onClick={() => publish(d.id, d.channel, needsImage ? publishImages[d.id]?.trim() : undefined)}>
                         <Send className="h-3.5 w-3.5 mr-1" />Publish to {d.channel}
                       </Button>
                     )}
@@ -139,6 +148,7 @@ export function ProductContentBoard({ initialDrafts, channelStates = {} }: { ini
               if (!cs) return null
               if (!cs.connected) return <p className="text-[11px] text-amber-700">{d.channel} not connected — copy &amp; post manually (or connect it in Company channels above).</p>
               if (!cs.dispatchSupported) return <p className="text-[11px] text-muted-foreground">{cs.note ?? `${d.channel} auto-publish not supported — copy & post manually.`}</p>
+              if (d.channel === 'instagram') return <p className="text-[11px] text-muted-foreground">Instagram needs an image — attach one from the Image library above (text-only Instagram posts are impossible via the API); or copy &amp; post manually.</p>
               return null
             })()}
           </div>

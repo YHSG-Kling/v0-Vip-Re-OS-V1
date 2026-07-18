@@ -251,15 +251,24 @@ export async function GET(
 
       // Audit the connect (append-only superadmin ledger; best-effort but
       // sentinel-ledgered — the silencer ratchet forbids swallowing losses).
+      // A multi-Page Meta connect isn't done yet — the Page picker still has to
+      // choose — so it audits (and redirects) as pending, never as connected.
       const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
       await sentinelWrite(svc, svc.from("superadmin_audit_log").insert({
         actor_user_id: stateData.userId,
         actor_email: (staffRow as any)?.email ?? "",
-        action: "platform_social.connected",
+        action: done.pendingSelection ? "platform_social.connect_pending_page" : "platform_social.connected",
         target_type: "platform_social_account",
         target_id: channel,
-        details: { provider: platform, accountName: done.accountName },
+        details: { provider: platform, accountName: done.accountName, ...(done.pendingSelection ? { pendingSelection: true } : {}) },
       }), { flow: "platform_social_connect", table: "superadmin_audit_log" })
+
+      if (done.pendingSelection) {
+        console.log(`[Social OAuth] COMPANY channel ${channel} (${platform}) awaits Page selection by ${stateData.userId}`)
+        const url = new URL("/dashboard/superadmin/growth", baseUrl)
+        url.searchParams.set("channel_pending", channel)
+        return NextResponse.redirect(url)
+      }
 
       console.log(`[Social OAuth] Connected COMPANY channel ${channel} (${platform}) by ${stateData.userId}`)
       return redirectPlatformResult(baseUrl, true, channel)

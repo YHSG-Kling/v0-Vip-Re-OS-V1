@@ -22,9 +22,14 @@
 //
 // HONESTY RULES: a provider whose OAuth app env creds are absent reports
 // { needsCreds, missingEnv } — never a dead button. verify() actually pings the
-// provider. Dispatch capability is stated per channel (LinkedIn member posts and
-// X tweets work with the tokens the OAuth flow grants; Facebook/Instagram need a
-// Page/IG-business selection flow that is NOT built, so they stay copy-&-post).
+// provider. Dispatch capability is stated per channel: LinkedIn member posts and
+// X tweets work with the tokens the OAuth flow grants; Facebook posts as a PAGE
+// (the Meta callback runs the page-token leg below — /me/accounts, auto-select a
+// single Page or store pending_pages for the picker); Instagram rides the same
+// Page's instagram_business_account and REQUIRES an image (the Graph API cannot
+// post text-only — the publish action asks for an image URL, never fakes it).
+// Page data (page id/name, IG business id, pending page list) lives in the
+// credential row's `config` json — no new tables.
 
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
@@ -75,8 +80,10 @@ export function credentialPlatformKey(channel: PlatformSocialChannel): string {
 export interface ChannelDispatchSupport {
   supported: boolean
   /** lib/social/publisher.ts platform key when supported. */
-  publisherPlatform?: "linkedin" | "twitter"
-  /** Honest reason when NOT supported (shown verbatim in the UI). */
+  publisherPlatform?: "linkedin" | "twitter" | "facebook" | "instagram"
+  /** The Graph API cannot post text-only to this channel — publish must carry an image. */
+  requiresImage?: boolean
+  /** Honest reason/caveat (shown verbatim in the UI). */
   reason?: string
 }
 
@@ -89,9 +96,16 @@ export function channelDispatchSupport(channel: PlatformSocialChannel): ChannelD
     case "x":
       return { supported: true, publisherPlatform: "twitter" } // POST /2/tweets with the user token
     case "facebook":
-      return { supported: false, reason: "Facebook publishing needs a Page token (a Page-selection step that isn't built) — copy & post manually." }
+      return { supported: true, publisherPlatform: "facebook" } // Page feed post with the stored PAGE token
     case "instagram":
-      return { supported: false, reason: "Instagram publishing needs an IG business-account id and media — copy & post manually." }
+      // Container flow works with the Page-derived token + IG business id, but IG
+      // Graph refuses text-only posts — publish must supply an image URL.
+      return {
+        supported: true,
+        publisherPlatform: "instagram",
+        requiresImage: true,
+        reason: "Instagram posts need an image — auto-publish asks for an image URL (use the Image library above); text-only posts are impossible via the API.",
+      }
     case "youtube":
       return { supported: false, reason: "YouTube takes video uploads only — render the video, then upload and record the permalink manually." }
     case "tiktok":
@@ -100,6 +114,14 @@ export function channelDispatchSupport(channel: PlatformSocialChannel): ChannelD
 }
 
 // ── Account list (lazy-seeded, one row per channel) ──────────────────────────
+
+/** One managed Facebook Page awaiting selection (Meta grants access to several). */
+export interface PendingMetaPage {
+  id: string
+  name: string
+  igUsername: string | null
+  hasInstagram: boolean
+}
 
 export interface PlatformSocialAccountView {
   id: string | null
@@ -114,6 +136,8 @@ export interface PlatformSocialAccountView {
   missingEnv: string[]
   oauthProvider: SocialOAuthProvider
   dispatch: ChannelDispatchSupport
+  /** Meta connect found several managed Pages — the picker must choose one. */
+  pendingPages: PendingMetaPage[] | null
 }
 
 /** One row per channel, seeded lazily (status 'pending' until a real connect). */
@@ -133,6 +157,29 @@ export async function getPlatformSocialAccounts(svc: ServiceClient): Promise<Pla
     for (const r of (seeded ?? []) as any[]) byChannel.set(r.platform, r)
   }
 
+  // A Meta connect that found SEVERAL managed Pages parks the list in the
+  // credential row's config (pending_pages) and leaves the account 'pending' —
+  // surface that list so the growth card can render the Page picker.
+  const pendingRefs = (["facebook", "instagram"] as const)
+    .map((c) => byChannel.get(c))
+    .filter((r) => r && r.status === "pending" && r.credential_ref)
+    .map((r) => String(r.credential_ref))
+  const pendingByCred = new Map<string, PendingMetaPage[]>()
+  if (pendingRefs.length > 0) {
+    const { data: creds } = await svc.from("platform_credentials").select("id, config").in("id", pendingRefs)
+    for (const c of (creds ?? []) as any[]) {
+      const list = Array.isArray(c?.config?.pending_pages) ? c.config.pending_pages : []
+      if (list.length > 0) {
+        pendingByCred.set(String(c.id), list.map((p: any): PendingMetaPage => ({
+          id: String(p?.id ?? ""),
+          name: String(p?.name ?? p?.id ?? ""),
+          igUsername: p?.ig_username ?? null,
+          hasInstagram: !!(p?.has_instagram || p?.ig_username),
+        })).filter((p: PendingMetaPage) => p.id))
+      }
+    }
+  }
+
   return PLATFORM_SOCIAL_CHANNELS.map((channel) => {
     const row = byChannel.get(channel)
     const env = socialOAuthEnvStatus(CHANNEL_OAUTH_PROVIDER[channel])
@@ -148,6 +195,7 @@ export async function getPlatformSocialAccounts(svc: ServiceClient): Promise<Pla
       missingEnv: env.missingEnv,
       oauthProvider: CHANNEL_OAUTH_PROVIDER[channel],
       dispatch: channelDispatchSupport(channel),
+      pendingPages: row?.credential_ref ? (pendingByCred.get(String(row.credential_ref)) ?? null) : null,
     }
   })
 }
@@ -177,33 +225,20 @@ export interface PlatformTokenPayload {
   expiresInSeconds: number | null
 }
 
-/** Store exchanged tokens under platform scope in platform_credentials and mark
- *  the channel connected. credential_ref points at the token row — the token
- *  itself never touches platform_social_accounts. */
-export async function completePlatformChannelConnect(
+/** Owner-keyed update-or-insert on platform_credentials (m104 unique:
+ *  owner_type, owner_id, platform). Returns the credential row id. */
+async function upsertPlatformCredential(
   svc: ServiceClient,
-  args: { channel: PlatformSocialChannel; connectedBy: string; tokens: PlatformTokenPayload },
-): Promise<{ ok: true; accountName: string | null } | { ok: false; error: string }> {
-  const { channel, connectedBy, tokens } = args
-  const nowIso = new Date().toISOString()
-
-  // Best-effort profile ping — the honest account name + provider account id.
-  const profile = await fetchChannelProfile(channel, tokens.accessToken)
-  const accountName = profile.ok ? (profile.name ?? SOCIAL_OAUTH_CONFIGS[CHANNEL_OAUTH_PROVIDER[channel]].displayName) : SOCIAL_OAUTH_CONFIGS[CHANNEL_OAUTH_PROVIDER[channel]].displayName
-
-  // Owner-keyed update-or-insert (m104 unique: owner_type, owner_id, platform).
+  channel: PlatformSocialChannel,
+  fields: Record<string, unknown>,
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const credKey = credentialPlatformKey(channel)
   const credRow: Record<string, unknown> = {
     owner_type: "platform",
     owner_id: "platform",
     platform: credKey,
-    access_token: tokens.accessToken,
-    refresh_token: tokens.refreshToken,
-    token_expires_at: tokens.expiresInSeconds ? new Date(Date.now() + tokens.expiresInSeconds * 1000).toISOString() : null,
-    account_id: profile.ok ? (profile.accountId ?? null) : null,
-    account_name: accountName,
-    is_active: true,
-    updated_at: nowIso,
+    updated_at: new Date().toISOString(),
+    ...fields,
   }
   const { data: existingCred } = await svc
     .from("platform_credentials")
@@ -216,24 +251,335 @@ export async function completePlatformChannelConnect(
   if (credWrite.error || !credWrite.data?.id) {
     return { ok: false, error: credWrite.error?.message ?? "Failed to store the credential" }
   }
+  return { ok: true, id: String(credWrite.data.id) }
+}
+
+/** Update-or-insert the channel status row (unique(platform)). */
+async function upsertChannelAccount(
+  svc: ServiceClient,
+  patch: Record<string, unknown> & { platform: PlatformSocialChannel },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { error } = await svc.from("platform_social_accounts").upsert(patch, { onConflict: "platform" })
+  return error ? { ok: false, error: error.message } : { ok: true }
+}
+
+/** Store exchanged tokens under platform scope in platform_credentials and mark
+ *  the channel connected. credential_ref points at the token row — the token
+ *  itself never touches platform_social_accounts. Meta channels (facebook /
+ *  instagram) run the extra page-token leg: the user token alone cannot post. */
+export async function completePlatformChannelConnect(
+  svc: ServiceClient,
+  args: { channel: PlatformSocialChannel; connectedBy: string; tokens: PlatformTokenPayload },
+): Promise<{ ok: true; accountName: string | null; pendingSelection?: boolean } | { ok: false; error: string }> {
+  const { channel, connectedBy, tokens } = args
+
+  if (channel === "facebook" || channel === "instagram") {
+    return completeMetaChannelConnect(svc, { channel, connectedBy, tokens })
+  }
+
+  const nowIso = new Date().toISOString()
+
+  // Best-effort profile ping — the honest account name + provider account id.
+  const profile = await fetchChannelProfile(channel, tokens.accessToken)
+  const accountName = profile.ok ? (profile.name ?? SOCIAL_OAUTH_CONFIGS[CHANNEL_OAUTH_PROVIDER[channel]].displayName) : SOCIAL_OAUTH_CONFIGS[CHANNEL_OAUTH_PROVIDER[channel]].displayName
+
+  const credWrite = await upsertPlatformCredential(svc, channel, {
+    access_token: tokens.accessToken,
+    refresh_token: tokens.refreshToken,
+    token_expires_at: tokens.expiresInSeconds ? new Date(Date.now() + tokens.expiresInSeconds * 1000).toISOString() : null,
+    account_id: profile.ok ? (profile.accountId ?? null) : null,
+    account_name: accountName,
+    is_active: true,
+  })
+  if (!credWrite.ok) return credWrite
 
   // Mark the channel connected (row may not be seeded yet — update-or-insert on unique(platform)).
-  const accountPatch = {
+  const marked = await upsertChannelAccount(svc, {
     platform: channel,
     account_name: accountName,
     status: "connected",
-    credential_ref: String(credWrite.data.id),
+    credential_ref: credWrite.id,
     connected_by: connectedBy,
     connected_at: nowIso,
     last_verified_at: profile.ok ? nowIso : null,
     updated_at: nowIso,
-  }
-  const { error: upsertError } = await svc
-    .from("platform_social_accounts")
-    .upsert(accountPatch, { onConflict: "platform" })
-  if (upsertError) return { ok: false, error: upsertError.message }
+  })
+  if (!marked.ok) return marked
 
   return { ok: true, accountName }
+}
+
+// ── Meta page-token leg (facebook + instagram ride a Facebook PAGE) ──────────
+//
+// The OAuth callback hands us a USER token; posting happens as a PAGE. The leg:
+//   1. exchange the user token for a long-lived one (best-effort — page tokens
+//      minted from a long-lived user token never expire),
+//   2. GET /me/accounts to list managed Pages (with each Page's token and any
+//      linked instagram_business_account),
+//   3. exactly one Page → auto-select; several → store pending_pages in the
+//      credential config and let selectPlatformFacebookPageAction finish;
+//      zero → honest error, nothing stored.
+// Instagram NEVER gets its own OAuth material — it rides the selected Page's
+// token + instagram_business_account id. A Page with no linked IG business
+// account is an honest connect failure for the instagram channel.
+
+interface MetaPage {
+  id: string
+  name: string
+  access_token?: string
+  instagram_business_account?: { id?: string; username?: string } | null
+}
+
+const META_PAGE_FIELDS = "id,name,access_token,instagram_business_account{id,username}"
+
+/** Best-effort long-lived user-token exchange (fb_exchange_token). */
+async function exchangeMetaLongLivedToken(
+  userToken: string,
+): Promise<{ ok: true; token: string; expiresInSeconds: number | null } | { ok: false }> {
+  const cfg = SOCIAL_OAUTH_CONFIGS.meta
+  const clientId = process.env[cfg.clientIdEnv]
+  const clientSecret = process.env[cfg.clientSecretEnv]
+  if (!clientId || !clientSecret) return { ok: false }
+  const res = await callConnector<{ access_token?: string; expires_in?: number }>({
+    connector: "meta", baseUrl: "https://graph.facebook.com", path: "/v18.0/oauth/access_token", method: "GET",
+    query: { grant_type: "fb_exchange_token", client_id: clientId, client_secret: clientSecret, fb_exchange_token: userToken },
+    auth: { style: "none" },
+  })
+  if (!res.ok || !res.data?.access_token) return { ok: false }
+  return { ok: true, token: res.data.access_token, expiresInSeconds: res.data.expires_in ?? null }
+}
+
+/** The Pages this user token manages (each with its Page token + linked IG). */
+async function listMetaPages(userToken: string): Promise<{ ok: true; pages: MetaPage[] } | { ok: false; error: string }> {
+  const res = await callConnector<{ data?: MetaPage[]; error?: { message?: string } }>({
+    connector: "meta", baseUrl: "https://graph.facebook.com", path: "/v18.0/me/accounts", method: "GET",
+    query: { fields: META_PAGE_FIELDS, limit: "100" },
+    auth: { style: "query", name: "access_token", value: userToken },
+  })
+  if (!res.ok) return { ok: false, error: res.data?.error?.message || res.error || "Meta rejected the Pages request" }
+  return { ok: true, pages: ((res.data?.data ?? []) as MetaPage[]).filter((p) => p?.id) }
+}
+
+/** One Page (fresh Page token + IG link) via the stored long-lived user token. */
+async function fetchMetaPage(pageId: string, userToken: string): Promise<{ ok: true; page: MetaPage } | { ok: false; error: string }> {
+  const res = await callConnector<MetaPage & { error?: { message?: string } }>({
+    connector: "meta", baseUrl: "https://graph.facebook.com", path: `/v18.0/${pageId}`, method: "GET",
+    query: { fields: META_PAGE_FIELDS },
+    auth: { style: "query", name: "access_token", value: userToken },
+  })
+  if (!res.ok || !res.data?.id) return { ok: false, error: (res.data as any)?.error?.message || res.error || "Meta rejected the Page lookup" }
+  return { ok: true, page: res.data }
+}
+
+/** Commit a chosen Page: store the PAGE token as the facebook credential and,
+ *  when the Page has a linked instagram_business_account, connect instagram off
+ *  the same Page token (IG rides the FB Page — one Meta login, two channels). */
+async function finalizeMetaPageSelection(
+  svc: ServiceClient,
+  args: {
+    requestedChannel: "facebook" | "instagram"
+    page: MetaPage
+    userToken: string
+    userTokenExpiresAt: string | null
+    connectedBy: string
+  },
+): Promise<{ ok: true; accountName: string | null } | { ok: false; error: string }> {
+  const { requestedChannel, page, userToken, userTokenExpiresAt, connectedBy } = args
+  const ig = page.instagram_business_account
+  if (requestedChannel === "instagram" && !ig?.id) {
+    return { ok: false, error: "This Facebook Page has no linked Instagram business account — link it in Meta Business Suite, then Reconnect." }
+  }
+  if (!page.access_token) {
+    return { ok: false, error: `Meta returned no access token for Page "${page.name}" — the connecting user must have full control of the Page. Fix the role in Meta Business Suite, then Reconnect.` }
+  }
+
+  const nowIso = new Date().toISOString()
+
+  // Facebook leg — both channels ride this Page, so it always lands. Page tokens
+  // minted from a long-lived user token do not expire (token_expires_at null);
+  // the user token is kept in config for later re-selection without re-OAuth.
+  const fbCred = await upsertPlatformCredential(svc, "facebook", {
+    access_token: page.access_token,
+    refresh_token: null,
+    token_expires_at: null,
+    account_id: page.id,
+    account_name: page.name,
+    is_active: true,
+    config: {
+      page_id: page.id,
+      page_name: page.name,
+      ig_business_account_id: ig?.id ?? null,
+      ig_username: ig?.username ?? null,
+      user_access_token: userToken,
+      user_token_expires_at: userTokenExpiresAt,
+    },
+  })
+  if (!fbCred.ok) return fbCred
+  const fbMarked = await upsertChannelAccount(svc, {
+    platform: "facebook",
+    account_name: page.name,
+    status: "connected",
+    credential_ref: fbCred.id,
+    connected_by: connectedBy,
+    connected_at: nowIso,
+    last_verified_at: nowIso,
+    updated_at: nowIso,
+  })
+  if (!fbMarked.ok) return fbMarked
+
+  let igName: string | null = null
+  if (ig?.id) {
+    igName = ig.username ? `@${ig.username}` : page.name
+    const igCred = await upsertPlatformCredential(svc, "instagram", {
+      access_token: page.access_token,
+      refresh_token: null,
+      token_expires_at: null,
+      account_id: ig.id,
+      account_name: igName,
+      is_active: true,
+      config: { page_id: page.id, page_name: page.name, ig_business_account_id: ig.id, ig_username: ig.username ?? null },
+    })
+    if (!igCred.ok) return igCred
+    const igMarked = await upsertChannelAccount(svc, {
+      platform: "instagram",
+      account_name: igName,
+      status: "connected",
+      credential_ref: igCred.id,
+      connected_by: connectedBy,
+      connected_at: nowIso,
+      last_verified_at: nowIso,
+      updated_at: nowIso,
+    })
+    if (!igMarked.ok) return igMarked
+  }
+
+  return { ok: true, accountName: requestedChannel === "instagram" ? igName : page.name }
+}
+
+/** The Meta half of completePlatformChannelConnect (see leg comment above). */
+async function completeMetaChannelConnect(
+  svc: ServiceClient,
+  args: { channel: "facebook" | "instagram"; connectedBy: string; tokens: PlatformTokenPayload },
+): Promise<{ ok: true; accountName: string | null; pendingSelection?: boolean } | { ok: false; error: string }> {
+  const { channel, connectedBy, tokens } = args
+
+  // 1. Long-lived user token (best-effort — fall back to the short one honestly,
+  //    keeping its real expiry).
+  const exchanged = await exchangeMetaLongLivedToken(tokens.accessToken)
+  const userToken = exchanged.ok ? exchanged.token : tokens.accessToken
+  const expiresInSeconds = exchanged.ok ? exchanged.expiresInSeconds : tokens.expiresInSeconds
+  const userTokenExpiresAt = expiresInSeconds ? new Date(Date.now() + expiresInSeconds * 1000).toISOString() : null
+
+  // 2. Managed Pages.
+  const listed = await listMetaPages(userToken)
+  if (!listed.ok) return listed
+  if (listed.pages.length === 0) {
+    return { ok: false, error: "This Meta login manages no Facebook Pages — the company posts as a Page. Get admin access to the company Page in Meta Business Suite, then Reconnect." }
+  }
+
+  // 3a. Exactly one Page → auto-select it.
+  if (listed.pages.length === 1) {
+    return finalizeMetaPageSelection(svc, {
+      requestedChannel: channel, page: listed.pages[0], userToken, userTokenExpiresAt, connectedBy,
+    })
+  }
+
+  // 3b. Several Pages → park the list (pending_pages) and let the growth card's
+  //     picker finish via completePlatformFacebookPageSelection. The credential
+  //     row holds the (long-lived) USER token for that later exchange.
+  const nowIso = new Date().toISOString()
+  const credWrite = await upsertPlatformCredential(svc, channel, {
+    access_token: userToken,
+    refresh_token: null,
+    token_expires_at: userTokenExpiresAt,
+    account_id: null,
+    account_name: null,
+    is_active: true,
+    config: {
+      pending_for: channel,
+      pending_pages: listed.pages.map((p) => ({
+        id: p.id,
+        name: p.name,
+        ig_username: p.instagram_business_account?.username ?? null,
+        has_instagram: !!p.instagram_business_account?.id,
+      })),
+    },
+  })
+  if (!credWrite.ok) return credWrite
+  const marked = await upsertChannelAccount(svc, {
+    platform: channel,
+    account_name: null,
+    status: "pending",
+    credential_ref: credWrite.id,
+    connected_by: connectedBy,
+    connected_at: null,
+    last_verified_at: null,
+    updated_at: nowIso,
+  })
+  if (!marked.ok) return marked
+  return { ok: true, accountName: null, pendingSelection: true }
+}
+
+/** Finish a parked multi-Page Meta connect: find the channel whose credential
+ *  holds pending_pages containing pageId, fetch that Page fresh with the stored
+ *  user token, and commit it (finalizeMetaPageSelection — clears the pending
+ *  config by overwriting the credential row). */
+export async function completePlatformFacebookPageSelection(
+  svc: ServiceClient,
+  pageId: string,
+  connectedBy: string,
+): Promise<{ ok: true; accountName: string | null; channel: "facebook" | "instagram" } | { ok: false; error: string }> {
+  for (const channel of ["facebook", "instagram"] as const) {
+    const { data: account } = await svc
+      .from("platform_social_accounts")
+      .select("credential_ref, status")
+      .eq("platform", channel)
+      .maybeSingle()
+    if (!account?.credential_ref) continue
+    const { data: cred } = await svc
+      .from("platform_credentials")
+      .select("id, access_token, token_expires_at, config")
+      .eq("id", account.credential_ref)
+      .maybeSingle()
+    const pending: any[] = Array.isArray((cred as any)?.config?.pending_pages) ? (cred as any).config.pending_pages : []
+    if (!cred?.access_token || pending.length === 0) continue
+    if (!pending.some((p) => String(p?.id) === pageId)) {
+      return { ok: false, error: "That Page isn't in the pending list — hit Reconnect to refresh the Page list from Meta" }
+    }
+    if (cred.token_expires_at && new Date(cred.token_expires_at).getTime() < Date.now()) {
+      return { ok: false, error: "The stored Meta token expired before a Page was chosen — hit Reconnect and pick again" }
+    }
+    const fetched = await fetchMetaPage(pageId, cred.access_token)
+    if (!fetched.ok) return fetched
+    const done = await finalizeMetaPageSelection(svc, {
+      requestedChannel: (cred as any)?.config?.pending_for === "instagram" ? "instagram" : "facebook",
+      page: fetched.page,
+      userToken: cred.access_token,
+      userTokenExpiresAt: cred.token_expires_at ?? null,
+      connectedBy,
+    })
+    if (!done.ok) return done
+    return { ok: true, accountName: done.accountName, channel }
+  }
+  return { ok: false, error: "No Facebook Page selection is pending — start Connect on the Facebook (or Instagram) channel first" }
+}
+
+/** The REAL permalink of a just-published Meta post (Page post: permalink_url;
+ *  IG media: permalink). Null when Graph won't say — callers must not invent one. */
+export async function fetchMetaPostPermalink(
+  kind: "facebook" | "instagram",
+  postId: string,
+  accessToken: string,
+): Promise<string | null> {
+  const field = kind === "facebook" ? "permalink_url" : "permalink"
+  const res = await callConnector<{ permalink_url?: string; permalink?: string }>({
+    connector: "meta", baseUrl: "https://graph.facebook.com", path: `/v18.0/${postId}`, method: "GET",
+    query: { fields: field },
+    auth: { style: "query", name: "access_token", value: accessToken },
+  })
+  if (!res.ok) return null
+  const link = kind === "facebook" ? res.data?.permalink_url : res.data?.permalink
+  return typeof link === "string" && link.startsWith("http") ? link : null
 }
 
 // ── Verify (honest provider ping) ─────────────────────────────────────────────
@@ -268,7 +614,7 @@ export async function verifyPlatformChannel(svc: ServiceClient, channel: Platfor
   if (!account.credential_ref) return markError("No credential on file — reconnect")
   const { data: cred } = await svc
     .from("platform_credentials")
-    .select("id, access_token, token_expires_at, is_active")
+    .select("id, access_token, account_id, token_expires_at, is_active")
     .eq("id", account.credential_ref)
     .maybeSingle()
   if (!cred?.access_token || cred.is_active === false) return markError("Stored credential is missing or inactive — reconnect")
@@ -276,7 +622,9 @@ export async function verifyPlatformChannel(svc: ServiceClient, channel: Platfor
     return markError(`Token expired ${new Date(cred.token_expires_at).toLocaleDateString()} — reconnect`)
   }
 
-  const profile = await fetchChannelProfile(channel, cred.access_token)
+  // Meta channels ping with the stored PAGE token (facebook: /me resolves to the
+  // Page identity under a Page token; instagram: the IG business node by id).
+  const profile = await fetchChannelProfile(channel, cred.access_token, cred.account_id ?? null)
   if (!profile.ok) return markError(profile.error)
 
   const nowIso = new Date().toISOString()
@@ -347,11 +695,26 @@ export async function getChannelPublishCredential(
 type ProfileResult = { ok: true; accountId?: string; name?: string } | { ok: false; error: string }
 
 /** One authenticated read per provider — proves the token works and returns the
- *  real account identity. All egress rides the connector gateway. */
-export async function fetchChannelProfile(channel: PlatformSocialChannel, accessToken: string): Promise<ProfileResult> {
+ *  real account identity. All egress rides the connector gateway. Meta channels
+ *  carry the PAGE token: facebook's /me resolves to the Page; instagram needs
+ *  the IG business-account id (accountId) since /me would answer as the Page. */
+export async function fetchChannelProfile(
+  channel: PlatformSocialChannel,
+  accessToken: string,
+  accountId?: string | null,
+): Promise<ProfileResult> {
   const provider = CHANNEL_OAUTH_PROVIDER[channel]
   try {
     if (provider === "meta") {
+      if (channel === "instagram") {
+        if (!accountId) return { ok: false, error: "No Instagram business-account id on file — reconnect the channel" }
+        const res = await callConnector<{ id?: string; username?: string; name?: string }>({
+          connector: "meta", baseUrl: "https://graph.facebook.com", path: `/v18.0/${accountId}`, method: "GET",
+          query: { fields: "id,username,name" }, auth: { style: "query", name: "access_token", value: accessToken },
+        })
+        if (!res.ok || !res.data?.id) return { ok: false, error: res.error || "Meta rejected the Instagram token" }
+        return { ok: true, accountId: res.data.id, name: res.data.username ? `@${res.data.username}` : res.data.name }
+      }
       const res = await callConnector<{ id?: string; name?: string }>({
         connector: "meta", baseUrl: "https://graph.facebook.com", path: "/v18.0/me", method: "GET",
         query: { fields: "id,name" }, auth: { style: "query", name: "access_token", value: accessToken },
