@@ -46,6 +46,7 @@ export default async function SuperadminSubscriptionsPage() {
         </div>
         <div className="flex items-center gap-2">
           <span className="rounded-md border px-3 py-1 text-sm font-semibold text-emerald-700">{fmtCents(totalMrrCents)} MRR</span>
+          <Link href="/dashboard/superadmin/affiliates" className="rounded-md border px-3 py-1 text-sm">Affiliates</Link>
           <Link href="/dashboard/superadmin/coupons" className="rounded-md border px-3 py-1 text-sm">Coupons</Link>
           <Link href="/dashboard/superadmin/platform" className="rounded-md border px-3 py-1 text-sm">Platform</Link>
         </div>

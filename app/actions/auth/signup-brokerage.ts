@@ -46,6 +46,10 @@ export interface SignupBrokerageInput {
    *  redemption ledger + brokerages.billing_metadata.coupon so billing honors it
    *  when the Stripe subscription is created. Best-effort — never fails signup. */
   couponCode?:     string
+  /** External affiliate ref code (MRR-commission rail — NOT the rev-share tree).
+   *  Defaults to the /api/ref attribution cookie when omitted. Best-effort —
+   *  attribution never fails a signup. */
+  affiliateCode?:  string
 }
 
 export interface SignupBrokerageResult {
@@ -177,6 +181,16 @@ export async function signupBrokerageAction(
     created_at:          new Date().toISOString(),
     updated_at:          new Date().toISOString(),
   })
+
+  // AFFILIATE ATTRIBUTION (external MRR-commission rail — NOT the rev-share tree).
+  // Explicit param wins; else the 90-day /api/ref cookie. One insert, first-wins
+  // per tenant (UNIQUE(brokerage_id)); best-effort — never fails the signup.
+  try {
+    const { cookies } = await import("next/headers")
+    const { attributeSignupToAffiliate, AFFILIATE_REF_COOKIE } = await import("@/lib/platform/affiliates")
+    const refCode = input.affiliateCode?.trim() || (await cookies()).get(AFFILIATE_REF_COOKIE)?.value || null
+    if (refCode) await attributeSignupToAffiliate(refCode, brokerage.id, service)
+  } catch (err) { console.warn("[signupBrokerage] affiliate attribution failed (non-fatal):", (err as any)?.message) }
 
   // ── SELF-SERVE FUNNEL EXTRAS — snapshot + coupon, applied AFTER provisioning.
   // Both are best-effort: a template or discount problem must NEVER cost us the
