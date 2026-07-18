@@ -740,6 +740,13 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   platform_sentinel_actions: "data_steward", // platform sentinel proposed staff actions (round 21)
   platform_social_accounts: "data_steward", // the OS's OWN social account connections (round 21)
   tenant_ai_teammates: "data_steward", // tenant-created named AI teammates over the manager registry (round 21)
+  tenant_webhook_subscriptions: "data_steward", // tenant outbound-webhook endpoints (round 24)
+  tenant_webhook_deliveries: "data_steward", // outbound-webhook delivery ledger w/ retries (round 24)
+  tenant_custom_domains: "data_steward", // white-label domain mappings + TLS state (round 24)
+  platform_nps_responses: "data_steward", // tenant→platform NPS ledger (round 24)
+  platform_affiliates: "data_steward", // external MRR-commission affiliates — NOT the rev-share tree (round 24)
+  affiliate_referrals: "data_steward", // affiliate → tenant attribution (round 24)
+  affiliate_commission_events: "data_steward", // monthly MRR commission accruals (round 24)
   qr_codes: "data_steward",
   qr_scan_events: "data_steward",
   reg_change_observations: "compliance_officer",
