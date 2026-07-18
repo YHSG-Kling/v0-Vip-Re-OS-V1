@@ -25,6 +25,10 @@ export interface BoardPacketData {
    *  marketing_attribution_credits engine — measured, never re-modeled here). */
   attributedGciCents: number
   attributedDeals: number
+  /** AI TEAM INTELLIGENCE — the monthly learning-loop proof, composed by the
+   *  ONE composer (lib/kernel/intelligence-report.ts). Only earned sections
+   *  arrive here; absent/empty months render nothing (honest omission). */
+  intelligence?: import("./intelligence-report").IntelligenceSection[]
 }
 
 const money = (cents: number) => `$${Math.round(cents / 100).toLocaleString("en-US")}`
@@ -49,6 +53,13 @@ export function composeBoardPacketMarkdown(d: BoardPacketData): string {
     `- AI reply drafts your agents sent: **${d.draftsUsed}**`,
     `- Opt-outs honored immediately: **${d.optOutsHonored}** (compliance is a feature)`,
     `- Marketing-attributed closed volume: **${money(d.attributedGciCents)}** across **${d.attributedDeals}** deal${d.attributedDeals === 1 ? "" : "s"} (attribution-weighted)`,
+    ...(d.intelligence && d.intelligence.length > 0
+      ? [
+          ``,
+          `## AI Team Intelligence (proof the team is learning)`,
+          ...d.intelligence.map((s) => `- **${s.title}** — ${s.headline}`),
+        ]
+      : []),
     ``,
     `---`,
     `*Composed automatically from the operating ledgers — every number traces to records in the ${d.monthLabel} window.*`,
@@ -92,7 +103,7 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
       ])
       const closed = ((closedRows as any)?.data ?? []) as Array<{ sold_price: number | null }>
       const credits = ((creditRows as any)?.data ?? []) as Array<{ credit_dollars: number | null; transaction_id: string | null }>
-      const packetData = {
+      const packetData: BoardPacketData = {
         brokerageName: b.name ?? "Brokerage", monthLabel,
         newContacts, activeListings, showings, openHouses,
         aiCallsAnswered: aiCalls, aiOutboundConnects: aiOut, aiBookings, draftsUsed, optOutsHonored: optOuts,
@@ -101,6 +112,14 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
         attributedGciCents: credits.reduce((a, c) => a + Math.round(Number(c.credit_dollars ?? 0) * 100), 0),
         attributedDeals: new Set(credits.map((c) => c.transaction_id).filter(Boolean)).size,
       }
+      // AI TEAM INTELLIGENCE — the SAME pure composer the owner page renders
+      // (one implementation, two surfaces). Best-effort: a hiccup here never
+      // blocks the packet; empty months simply omit the section.
+      try {
+        const { loadIntelligenceFacts, composeIntelligenceReport } = await import("./intelligence-report")
+        const report = composeIntelligenceReport(await loadIntelligenceFacts(svc, b.id, sISO.slice(0, 7)))
+        if (report.sections.length > 0) packetData.intelligence = report.sections
+      } catch { /* intelligence section is additive */ }
       const { renderBoardPacketPdf } = await import("./board-packet-pdf")
       const pdf = await renderBoardPacketPdf(packetData)
       const { error: upErr } = await svc.storage.from("documents")

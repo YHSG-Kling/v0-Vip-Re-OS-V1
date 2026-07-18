@@ -50,6 +50,34 @@ export async function renderBoardPacketPdf(d: BoardPacketData): Promise<Uint8Arr
   line(`Opt-outs honored immediately: ${d.optOutsHonored} — compliance is a feature`)
   line(`Marketing-attributed closed volume: ${money(d.attributedGciCents)} across ${d.attributedDeals} deal${d.attributedDeals === 1 ? "" : "s"} (attribution-weighted)`)
 
+  // AI TEAM INTELLIGENCE — the monthly learning-loop proof, fed by the ONE
+  // pure composer (lib/kernel/intelligence-report.ts). Only earned sections
+  // arrive; an absent/empty month renders nothing. Long headlines wrap; the
+  // section stops above the footer rather than overflowing the page.
+  if (d.intelligence && d.intelligence.length > 0) {
+    const wrap = (text: string, max = 96): string[] => {
+      const words = text.split(/\s+/)
+      const out: string[] = []
+      let cur = ""
+      for (const w of words) {
+        if ((cur + " " + w).trim().length > max) { if (cur) out.push(cur); cur = w }
+        else cur = (cur + " " + w).trim()
+      }
+      if (cur) out.push(cur)
+      return out
+    }
+    section("AI Team Intelligence (proof the team is learning)")
+    for (const s of d.intelligence) {
+      if (y < 110) break // honest truncation above the footer, never overflow
+      line(s.title, { size: 10, b: true, gap: 15 })
+      for (const l of wrap(s.headline)) {
+        if (y < 95) break
+        line(l, { size: 9.5, color: MUTE, gap: 13 })
+      }
+      y -= 3
+    }
+  }
+
   page.drawText(
     `Composed automatically from the operating ledgers — every number traces to records in the ${d.monthLabel} window.`,
     { x: 54, y: 60, size: 8.5, font, color: MUTE },
