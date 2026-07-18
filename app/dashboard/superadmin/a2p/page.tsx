@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { createServiceClient } from "@/lib/supabase/service"
 import { validateA2pProfile, nextA2pStep, type A2pState } from "@/lib/voice/a2p-registration"
+import { assessA2pStall } from "@/lib/platform/provider-posture"
 
 export const dynamic = "force-dynamic"
 
@@ -89,6 +90,9 @@ export default async function SuperadminA2pPage() {
     const state = entry?.state ?? {}
     // Last A2P activity: last runner event, else the persisted state's own timestamp.
     const lastEvent = lastEventByBrokerage.get(b.id) ?? state.updated_at ?? entry?.updatedAt ?? null
+    // STALLED detection (pure clock over the persisted state — the #1 real-world
+    // SMS blocker is a review that sat PENDING for a week with nobody watching).
+    const stall = assessA2pStall(state, lastEvent)
     return {
       id: b.id as string,
       name: (b.name as string) ?? "(unnamed)",
@@ -101,15 +105,18 @@ export default async function SuperadminA2pPage() {
       lastError: state.last_error ?? null,
       phoneCount: numberCount.get(b.id) ?? 0,
       lastEvent,
+      stalled: stall.stalled,
+      stallReason: stall.reason,
     }
   })
-  // Ready last (they need no attention); within groups keep name order.
-  rows.sort((a, b) => Number(a.ready) - Number(b.ready) || a.name.localeCompare(b.name))
+  // Stalled first (they need a human), ready last; within groups keep name order.
+  rows.sort((a, b) => Number(b.stalled) - Number(a.stalled) || Number(a.ready) - Number(b.ready) || a.name.localeCompare(b.name))
 
   const readyCount = rows.filter((r) => r.ready).length
   const inProgressCount = rows.filter((r) => !r.ready && r.nextStep !== "customer_profile").length
   const notStartedCount = rows.length - readyCount - inProgressCount
   const failedCount = rows.filter((r) => r.brand.label === "failed" || r.campaign.label === "failed").length
+  const stalledCount = rows.filter((r) => r.stalled).length
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -129,10 +136,14 @@ export default async function SuperadminA2pPage() {
       </div>
 
       {/* Posture counts */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
         <div className="rounded-lg border p-3">
           <div className="text-2xl font-bold tabular-nums">{readyCount}</div>
           <div className="mt-1 inline-block rounded px-1.5 py-0.5 text-[11px] font-medium bg-emerald-100 text-emerald-800">Messaging-ready</div>
+        </div>
+        <div className="rounded-lg border p-3">
+          <div className="text-2xl font-bold tabular-nums">{stalledCount}</div>
+          <div className="mt-1 inline-block rounded px-1.5 py-0.5 text-[11px] font-medium bg-red-100 text-red-800">Stalled</div>
         </div>
         <div className="rounded-lg border p-3">
           <div className="text-2xl font-bold tabular-nums">{inProgressCount}</div>
@@ -190,6 +201,12 @@ export default async function SuperadminA2pPage() {
                     </td>
                     <td className="p-2 text-right tabular-nums">{r.phoneCount}</td>
                     <td className="p-2 text-xs text-muted-foreground">
+                      {r.stalled && (
+                        <div>
+                          <span className="rounded px-1.5 py-0.5 text-[11px] font-semibold bg-red-100 text-red-800">STALLED</span>
+                          {r.stallReason && <span className="ml-1 text-red-600" title={r.stallReason}>{r.stallReason.length > 60 ? `${r.stallReason.slice(0, 60)}…` : r.stallReason}</span>}
+                        </div>
+                      )}
                       {r.ready ? "—" : r.nextStep.replace(/_/g, " ")}
                       {r.lastError && <div className="text-red-600 max-w-[280px] truncate" title={r.lastError}>{r.lastError}</div>}
                     </td>
