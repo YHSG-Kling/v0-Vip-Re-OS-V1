@@ -488,6 +488,8 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   platform_settings: ["ai_enabled", "collect_tax", "created_at", "emergency_mode", "global_rate_limit_per_minute", "id", "product_brand", "show_brokerage_budget_warning", "tos_version", "updated_at"],
   platform_dunning_events: ["brokerage_id", "channel", "created_at", "detail", "id", "step", "subscription_id"],
   platform_tos_acceptances: ["accepted_at", "email", "id", "ip_address", "tos_version", "user_agent"],
+  platform_role_capability_overrides: ["access", "allowed", "capability", "id", "role", "updated_at", "updated_by"],
+  platform_staff_profiles: ["agreement_acknowledged_at", "created_at", "created_by", "employment_agreement_text", "notes", "start_date", "title", "updated_at", "user_id"],
   platform_suppression_list: ["added_by_user_id", "created_at", "email", "id", "notes", "phone_digits", "reason", "source_brokerage_id", "source_contact_id", "source_lead_id"],
   podcast_analytics_events: ["brokerage_id", "created_at", "duration_listened_seconds", "episode_id", "event_type", "id", "listener_contact_id", "platform", "timestamp_seconds"],
   podcast_auto_runs: ["agent_id", "brokerage_id", "completed_at", "created_at", "duration_seconds", "error_message", "id", "iso_week", "podcast_episode_id", "script_word_count", "status"],

@@ -134,6 +134,12 @@ export default async function SuperadminPlatformPage() {
             <Link href="/dashboard/superadmin/connectors">Connectors</Link>
           </Button>
           <Button asChild size="sm" variant="outline">
+            <Link href="/dashboard/superadmin/connection-health">Connection Health</Link>
+          </Button>
+          <Button asChild size="sm" variant="outline">
+            <Link href="/dashboard/superadmin/tenant-calls">Tenant Calls</Link>
+          </Button>
+          <Button asChild size="sm" variant="outline">
             <Link href="/dashboard/superadmin/a2p">A2P</Link>
           </Button>
           <Button asChild size="sm" variant="outline">

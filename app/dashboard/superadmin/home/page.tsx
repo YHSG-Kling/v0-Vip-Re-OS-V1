@@ -12,6 +12,7 @@ import { resolvePlatformRole } from "@/lib/platform/require-capability"
 import { platformStaffCan, isPlatformStaffRole, type PlatformCapability } from "@/lib/platform/platform-staff-roster"
 import { PLATFORM_ANNOUNCEMENT_TYPE } from "@/lib/notifications/platform-staff"
 import { AnnouncementComposer } from "./announcement-composer"
+import { AgreementAckBanner } from "./agreement-ack-banner"
 
 export const dynamic = "force-dynamic"
 
@@ -68,6 +69,8 @@ const GROUPS: ToolGroup[] = [
         desc: "The AI phone reception + outbound rails" },
       { label: "Support console", href: "/dashboard/superadmin/support", cap: "support", countKey: "openTickets",
         desc: "Every tenant's tickets — queue with SLA flags, threads, replies, assignment." },
+      { label: "Tenant call logs", href: "/dashboard/superadmin/tenant-calls", cap: "support",
+        desc: "Cross-tenant AI call oversight — transcripts + summaries for debugging a tenant's calls. Access is audited." },
     ],
   },
   {
@@ -88,6 +91,8 @@ const GROUPS: ToolGroup[] = [
         desc: "Business-continuity posture — what keeps running when a dependency fails." },
       { label: "Connectors", href: "/dashboard/superadmin/connectors", cap: "providers",
         desc: "Vendor connector status — connected, expiring, broken." },
+      { label: "Connection health — every tenant", href: "/dashboard/superadmin/connection-health", cap: "sentinel",
+        desc: "Per tenant × their connected integrations — OAuth expiry and inactive credentials across the fleet." },
       { label: "Connector healing", href: "/dashboard/superadmin/connector-healing", cap: "providers", countKey: "pendingHealing",
         desc: "AI-proposed connector fixes awaiting a human approve/reject." },
       { label: "Env providers", href: "/dashboard/superadmin/env-providers", cap: "providers",
@@ -153,6 +158,17 @@ export default async function PlatformStaffHomePage() {
       .order("created_at", { ascending: false }).limit(5),
   ])
 
+  // HR: does MY staff profile carry an employment agreement I haven't acknowledged?
+  const { data: hrProfile, error: hrErr } = await svc
+    .from("platform_staff_profiles")
+    .select("employment_agreement_text, agreement_acknowledged_at")
+    .eq("user_id", user.id)
+    .maybeSingle()
+  const pendingAgreement =
+    hrErr == null && (hrProfile as any)?.employment_agreement_text && !(hrProfile as any)?.agreement_acknowledged_at
+      ? ((hrProfile as any).employment_agreement_text as string)
+      : null
+
   const counts: Record<NonNullable<Tool["countKey"]>, string | null> = {
     activeTenants: tenantsRes.error == null && tenantsRes.count != null ? `${tenantsRes.count} active` : null,
     openTickets: ticketsRes.error == null && ticketsRes.count != null ? `${ticketsRes.count} open` : null,
@@ -175,6 +191,9 @@ export default async function PlatformStaffHomePage() {
         </div>
         <Badge variant="outline" className="text-xs capitalize">{role}</Badge>
       </div>
+
+      {/* HR: my employment agreement awaits MY acknowledgment (self-row action, audited) */}
+      {pendingAgreement && <AgreementAckBanner agreementText={pendingAgreement} />}
 
       {/* Internal staff announcements — the lightweight comms lane (admin+ post, all staff read) */}
       <Card>

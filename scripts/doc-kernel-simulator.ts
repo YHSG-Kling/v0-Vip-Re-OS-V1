@@ -2260,6 +2260,23 @@ async function main() {
         && src("app/actions/superadmin/platform-growth.ts").includes("proposal")
         && src("supabase/migrations/m272-platform-prospects-details.sql").includes("details"))
     }
+    // ── ROUND 20: THE PLATFORM RUNS ITS OWN COMPANY — HR, EDITABLE MATRIX, OVERSIGHT ──
+    {
+      check("ROUND 20 — THE OS BECOMES A REAL COMPANY THE SUPERADMIN RUNS. STAFF HR: platform_staff_profiles (l72_s15) carries each staffer's title, start date, employment agreement + acknowledgment, notes — the superadmin enters them per staff member; a CHANGED agreement text nulls the acknowledgment so staff must re-acknowledge what they were actually shown, and the home banner makes them do it. EDITABLE CAPABILITY MATRIX (the owner's 'check off what each role can see + read/write'): platform_role_capability_overrides is the superadmin's tri-state editor over the pure code-map default — GRANT a capability the map withholds, REVOKE one it grants, or downgrade write→read — merged at the ONE gate (mergeCapability); superadmin is NEVER overridable (short-circuited before the override layer, rejected by the setter, excluded by the table CHECK), so the OS can't be locked out of itself; gate.access surfaces read-only honestly (banner) with requireWrite opt-in for mutating pages. CALL-TRANSCRIPT OVERSIGHT: the platform's own line (platform_reception_calls, turn-by-turn transcript) AND every tenant's calls (voice_calls: summary/notes/transcription) are readable by staff — the tenant board writes an oversight.tenant_calls_viewed audit row BEFORE the query and refuses to render if that insert fails (no unaudited access path), numbers masked to last-4. ALL-TENANT CONNECTION HEALTH: the three credential stores read platform-globally with the SAME pure derivation the tenant panels use, attention-first. Every new table owned (data_steward), shapes live-fired residue 0. HONEST GAP reported: connecting the OS's OWN social ACCOUNTS (vs composing for them) stays manual until the platform-scope OAuth lands — brand settings + the social calendar already exist",
+        src("scripts/schema-snapshot.ts").includes("platform_staff_profiles")
+        && src("scripts/schema-snapshot.ts").includes("platform_role_capability_overrides")
+        && src("lib/platform/capability-overrides.ts").includes("mergeCapability")
+        && src("lib/platform/require-capability.ts").includes("requireWrite")
+        && src("lib/platform/require-capability.ts").includes('role === "superadmin"')
+        && src("app/actions/superadmin/platform-staff.ts").includes("upsertStaffProfileAction")
+        && src("app/actions/superadmin/platform-staff.ts").includes("setCapabilityOverrideAction")
+        && src("app/actions/superadmin/platform-staff.ts").includes("agreement_acknowledged_at")
+        && src("app/dashboard/superadmin/staff/capability-matrix.tsx").length > 0
+        && src("app/dashboard/superadmin/tenant-calls/page.tsx").includes("tenant_calls_viewed")
+        && src("app/dashboard/superadmin/connection-health/page.tsx").length > 0
+        && src("app/dashboard/superadmin/communications/page.tsx").includes("platform_reception_calls")
+        && src("lib/kernel/manager-registry.ts").includes("platform_staff_profiles"))
+    }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {
       const { readdirSync, statSync } = await import("fs")

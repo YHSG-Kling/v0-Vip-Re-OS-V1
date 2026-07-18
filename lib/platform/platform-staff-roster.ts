@@ -20,10 +20,18 @@ export function isPlatformStaffRole(role: string | null | undefined): role is Pl
 // platform but NOT manage other staff's roles; marketing = marketing surfaces +
 // read-only dashboards; support = tenant support + read. The surface gates consult
 // platformStaffCan(role, capability) so access is provable in one place.
-export type PlatformCapability =
-  | "plans" | "billing" | "staff" | "providers" | "marketing"
-  | "support" | "tenants" | "ai_ops" | "sentinel" | "impersonate"
-  | "announcements" // post internal staff announcements (admin+); every staff role reads them
+export const PLATFORM_CAPABILITIES = [
+  "plans", "billing", "staff", "providers", "marketing",
+  "support", "tenants", "ai_ops", "sentinel", "impersonate",
+  "announcements", // post internal staff announcements (admin+); every staff role reads them
+] as const
+export type PlatformCapability = (typeof PLATFORM_CAPABILITIES)[number]
+
+// Roles whose capabilities MAY be overridden per-role in platform_role_capability_overrides.
+// superadmin is deliberately absent — '*' is a HARD RULE, enforced here, in the gate,
+// in setCapabilityOverrideAction, AND by the table's role CHECK.
+export const OVERRIDABLE_PLATFORM_ROLES = ["admin", "marketing", "support"] as const
+export type OverridablePlatformRole = (typeof OVERRIDABLE_PLATFORM_ROLES)[number]
 
 const CAPS: Record<PlatformStaffRole, PlatformCapability[] | "*"> = {
   superadmin: "*",
@@ -35,6 +43,16 @@ export function platformStaffCan(role: string | null | undefined, capability: Pl
   if (!isPlatformStaffRole(role)) return false
   const caps = CAPS[role]
   return caps === "*" || caps.includes(capability)
+}
+
+/** A superadmin-set override row (platform_role_capability_overrides). Shared
+ *  DTO for the server loader AND the client matrix editor. The MERGE semantics
+ *  live in ONE place: mergeCapability (lib/platform/capability-overrides.ts). */
+export interface CapabilityOverride {
+  role: string
+  capability: string
+  allowed: boolean
+  access: "read" | "write"
 }
 
 export interface StaffInput {
