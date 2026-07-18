@@ -16,11 +16,20 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { composeTeammateContext, isManagerKey } from "@/lib/kernel/ai-teammates"
 
 export interface BrandVoicePromptContext {
   brokerageId: string
   agentId?: string | null
   teamId?: string | null
+  /**
+   * Which built-in manager's domain this draft belongs to — used to thread the
+   * tenant's ACTIVE custom AI teammates (tenant_ai_teammates) whose base
+   * manager covers that domain into the system block. Defaults to "ai_isa"
+   * (every current caller is the ISA drafting rail: inbound email, engagement,
+   * call context). Pass the owning manager key for other rails.
+   */
+  managerKey?: string
 }
 
 export interface BrandVoicePromptResult {
@@ -39,6 +48,9 @@ export interface BrandVoicePromptResult {
   objectionLibrary: Array<{ objection: string; response: string; category: string }>
   escalationRules: Record<string, boolean>
   followupStyle: string
+  /** The tenant's custom AI teammate answering for this domain, when one is
+   *  chartered and active — callers may surface the name in attributions. */
+  teammate: { name: string; roleTitle: string; baseManagerKey: string } | null
 }
 
 export async function loadBrandVoicePrompt(
@@ -82,6 +94,25 @@ export async function loadBrandVoicePrompt(
   const identityResults = await Promise.all(scopeQueries)
   const [brokIdentity, teamIdentity, agentIdentity] = identityResults.map((r) => r.data)
 
+  // ── Tenant-chartered AI teammates (tenant_ai_teammates) ────────────────
+  // ACTIVE custom teammates whose base manager covers this draft's domain —
+  // their charter is injected below so the tenant's own mandate genuinely
+  // shapes the copy (paused/retired teammates never speak).
+  const domainKey = ctx.managerKey ?? "ai_isa"
+  type TeammateRow = { name: string; role_title: string; charter: string; focus_tags: string[] | null; base_manager_key: string }
+  let domainTeammates: TeammateRow[] = []
+  if (isManagerKey(domainKey)) {
+    const { data: tmRows } = await supabase
+      .from("tenant_ai_teammates")
+      .select("name, role_title, charter, focus_tags, base_manager_key")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("status", "active")
+      .eq("base_manager_key", domainKey)
+      .order("created_at", { ascending: true })
+      .limit(3)
+    domainTeammates = (tmRows ?? []) as TeammateRow[]
+  }
+
   // ── Merge: lower scopes override higher where non-null ─────────────────
   // Priority order: brokVoice < brokIdentity < teamIdentity < agentVoice < agentIdentity
   const resolvedTone =
@@ -122,16 +153,21 @@ export async function loadBrandVoicePrompt(
   const missionStatement = agentVoice?.mission_statement ?? brokVoice?.mission_statement ?? null
 
   // Resolved identity values from ai_identity_profiles
+  // A configured identity-profile name wins; otherwise the tenant's chartered
+  // teammate for this domain lends its name before the generic fallback —
+  // the AI team answers as THEIRS, not as "Your AI Assistant".
   const assistantName: string =
     agentIdentity?.assistant_name ??
     teamIdentity?.assistant_name ??
     brokIdentity?.assistant_name ??
+    domainTeammates[0]?.name ??
     "Your AI Assistant"
 
   const personaLabel: string | null =
     agentIdentity?.persona_label ??
     teamIdentity?.persona_label ??
     brokIdentity?.persona_label ??
+    domainTeammates[0]?.role_title ??
     null
 
   // Merge FAQs: parent + child (child appends)
@@ -165,6 +201,19 @@ export async function loadBrandVoicePrompt(
   const parts: string[] = []
 
   parts.push(`You are ${assistantName}${personaLabel ? `, ${personaLabel}` : ""}.`)
+
+  // The tenant's charters for this domain — injected ONCE here so every rail
+  // that builds its prompt from this block (inbound email drafts, engagement
+  // outreach, call context) genuinely composes under the teammate's mandate.
+  for (const t of domainTeammates) {
+    parts.push(composeTeammateContext({
+      name: t.name,
+      roleTitle: t.role_title,
+      charter: t.charter,
+      focusTags: t.focus_tags,
+      baseManagerKey: t.base_manager_key,
+    }))
+  }
 
   if (resolvedTone) {
     parts.push(`Write in a ${resolvedTone} tone.`)
@@ -213,5 +262,8 @@ export async function loadBrandVoicePrompt(
     objectionLibrary,
     escalationRules,
     followupStyle,
+    teammate: domainTeammates[0]
+      ? { name: domainTeammates[0].name, roleTitle: domainTeammates[0].role_title, baseManagerKey: domainTeammates[0].base_manager_key }
+      : null,
   }
 }

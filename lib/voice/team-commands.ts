@@ -59,6 +59,13 @@ async function resolveContactId(params: Record<string, unknown>, brokerageId: st
  * answer; ACTING commands delegate to backends that enforce their own compliance gate (the
  * proposal→approval gate re-checks consent — nothing here sends autonomously). Throws on an
  * unknown name (callers gate on isTeamCommand).
+ *
+ * CUSTOM-TEAMMATE ATTRIBUTION: when the command lands squarely in one manager's domain
+ * (TEAM_COMMAND_MANAGER) and the tenant has chartered an ACTIVE custom teammate on that
+ * manager (tenant_ai_teammates), the answer comes back in the teammate's name — the tenant
+ * hears "Maya, your Luxury Listings Concierge, on it", not a generic bench. Attribution is
+ * presentation only: routing, gates, and backends are untouched, and it degrades to the
+ * plain answer on any lookup failure.
  */
 export async function dispatchTeamCommand(
   name: string,
@@ -67,7 +74,42 @@ export async function dispatchTeamCommand(
   client?: Svc,
 ): Promise<TeamCommandResult> {
   const svc = client ?? createServiceClient()
+  const result = await routeTeamCommand(name, params, ctx, svc)
+  if (!result.ok) return result
 
+  const { TEAM_COMMAND_MANAGER, formatTeammateAttribution } = await import("@/lib/kernel/ai-teammates")
+  const managerKey = TEAM_COMMAND_MANAGER[name]
+  if (!managerKey) return result
+  try {
+    const { data: tm } = await svc
+      .from("tenant_ai_teammates")
+      .select("id, name, role_title, base_manager_key")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("status", "active")
+      .eq("base_manager_key", managerKey)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    if (!tm) return result
+    return {
+      ...result,
+      spoken: formatTeammateAttribution({ name: (tm as any).name, roleTitle: (tm as any).role_title }, result.spoken),
+      data: {
+        ...(result.data ?? {}),
+        teammate: { id: (tm as any).id, name: (tm as any).name, roleTitle: (tm as any).role_title, baseManagerKey: (tm as any).base_manager_key },
+      },
+    }
+  } catch {
+    return result // attribution is additive — never breaks the answer
+  }
+}
+
+async function routeTeamCommand(
+  name: string,
+  params: Record<string, unknown>,
+  ctx: TeamCommandCtx,
+  svc: Svc,
+): Promise<TeamCommandResult> {
   switch (name) {
     case "team_query": {
       const { runTeamQuery } = await import("@/lib/kernel/team-query")

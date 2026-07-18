@@ -11,8 +11,10 @@ import { EarnedAutonomyPanel } from "./earned-autonomy-panel"
 import { QuarterlyReviewCard } from "./quarterly-review-card"
 import { ActingAsLog } from "./acting-as-log"
 import { CoverageCard } from "./coverage-card"
+import { AiTeammatesPanel } from "./ai-teammates-panel"
 import { listEarnedAutonomyAction } from "@/app/actions/document-kernel-review"
 import { getQuarterlyReviewAction } from "@/app/actions/quarterly-review"
+import { listAiTeammatesAction } from "@/app/actions/ai-teammates"
 
 export const metadata = {
   title:       "Agent Command Center | Kernel OS Admin",
@@ -147,6 +149,12 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     ? await listEarnedAutonomyAction().catch(() => null)
     : null
 
+  // YOUR AI TEAMMATES — the tenant's own chartered identities on the manager
+  // bench (the action enforces tier-parity principal access; others see nothing).
+  const teammates = brokerageId && userType !== "superadmin"
+    ? await listAiTeammatesAction().catch(() => null)
+    : null
+
   // QUARTERLY BUSINESS REVIEW + adoption pulse — the principal's 90-day read
   // (the action enforces tier-parity principal access; others see nothing).
   const qbr = brokerageId && userType !== "superadmin"
@@ -207,6 +215,15 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       {earned?.ok && earned.grants && (
         <div className="mx-6 mt-4">
           <EarnedAutonomyPanel grants={earned.grants} />
+        </div>
+      )}
+      {teammates?.ok && (
+        <div className="mx-6 mt-4">
+          <AiTeammatesPanel
+            teammates={teammates.teammates}
+            limit={teammates.limit}
+            autonomousUnlocked={teammates.autonomousUnlocked}
+          />
         </div>
       )}
       {qbr?.ok && (
