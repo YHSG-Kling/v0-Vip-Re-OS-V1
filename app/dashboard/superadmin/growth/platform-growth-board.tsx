@@ -4,9 +4,11 @@ import { useState, useTransition } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, Sparkles } from 'lucide-react'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Loader2, Sparkles, FileText, Copy } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
-import { advanceProspectAction, draftProspectOutreachAction, listPlatformProspectsAction } from '@/app/actions/superadmin/platform-growth'
+import { advanceProspectAction, draftProspectOutreachAction, generateProspectProposalAction, listPlatformProspectsAction } from '@/app/actions/superadmin/platform-growth'
+import { PROPOSAL_SECTIONS, proposalPricingLine, proposalToClipboardText, type ProspectProposal } from '@/lib/platform/growth-funnel'
 
 const STATUSES = ['new', 'contacted', 'trial', 'converted', 'lost']
 const STATUS_BADGE: Record<string, string> = {
@@ -14,13 +16,17 @@ const STATUS_BADGE: Record<string, string> = {
   converted: 'bg-emerald-100 text-emerald-800', lost: 'bg-slate-100 text-slate-400',
 }
 
-interface Prospect { id: string; name: string | null; email: string; company: string | null; role_interest: string; source: string; status: string }
+interface Prospect {
+  id: string; name: string | null; email: string; company: string | null; role_interest: string; source: string; status: string
+  details?: { proposal?: ProspectProposal } | null
+}
 interface Funnel { total: number; byStatus: Record<string, number>; conversionRate: number; activationRate: number }
 
-export function PlatformGrowthBoard({ initialProspects, initialFunnel }: { initialProspects: Prospect[]; initialFunnel: Funnel }) {
+export function PlatformGrowthBoard({ initialProspects, initialFunnel, brandName }: { initialProspects: Prospect[]; initialFunnel: Funnel; brandName: string }) {
   const [prospects, setProspects] = useState<Prospect[]>(initialProspects)
   const [funnel, setFunnel] = useState<Funnel>(initialFunnel)
   const [draft, setDraft] = useState<{ subject: string; body: string } | null>(null)
+  const [proposalView, setProposalView] = useState<{ prospect: Prospect; proposal: ProspectProposal } | null>(null)
   const [pending, startTransition] = useTransition()
   const { toast } = useToast()
 
@@ -30,6 +36,26 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel }: { initi
   }
   function pitch(id: string) {
     startTransition(async () => { const r = await draftProspectOutreachAction(id); if (r.ok) setDraft({ subject: r.subject, body: r.body }); else toast({ title: 'Error', description: r.error, variant: 'destructive' }) })
+  }
+  // Assisted-sale proposal — AI-authored + persisted on the prospect row; a stored
+  // proposal opens instantly, "Regenerate" re-authors. Honest-absence on AI failure.
+  function generateProposal(p: Prospect) {
+    startTransition(async () => {
+      const r = await generateProspectProposalAction(p.id)
+      if (r.ok) { setProposalView({ prospect: p, proposal: r.proposal }); reload() }
+      else toast({ title: 'Proposal not generated', description: r.error, variant: 'destructive' })
+    })
+  }
+  function openProposal(p: Prospect) {
+    const stored = p.details?.proposal
+    if (stored) setProposalView({ prospect: p, proposal: stored })
+    else generateProposal(p)
+  }
+  function copyProposal() {
+    if (!proposalView) return
+    navigator.clipboard.writeText(proposalToClipboardText(proposalView.proposal, brandName, proposalView.prospect.name))
+      .then(() => toast({ title: 'Copied', description: 'Proposal copied to clipboard.' }))
+      .catch(() => toast({ title: 'Copy failed', description: 'Select the text and copy manually.', variant: 'destructive' }))
   }
 
   const pct = (n: number) => `${Math.round(n * 100)}%`
@@ -57,6 +83,42 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel }: { initi
         </Card>
       )}
 
+      {/* Assisted-sale proposal — AI-authored sections + DB-driven pricing, copy-ready */}
+      <Dialog open={!!proposalView} onOpenChange={(o) => { if (!o) setProposalView(null) }}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-4 w-4 text-primary" />
+              Proposal — {proposalView?.prospect.name || proposalView?.prospect.email}
+            </DialogTitle>
+          </DialogHeader>
+          {proposalView && (
+            <div className="space-y-4 text-sm">
+              <p className="text-xs text-muted-foreground">
+                Generated {new Date(proposalView.proposal.generatedAt).toLocaleString()} · recommended plan:{' '}
+                <b>{proposalView.proposal.tier.displayName}</b>
+              </p>
+              {PROPOSAL_SECTIONS.map((s) => (
+                <div key={s.key}>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{s.title}</p>
+                  <p className="mt-1 whitespace-pre-wrap">{proposalView.proposal.sections[s.key]}</p>
+                  {s.key === 'recommendation' && (
+                    <p className="mt-1 rounded bg-muted/40 px-2 py-1 text-xs font-medium">{proposalPricingLine(proposalView.proposal.tier)}</p>
+                  )}
+                </div>
+              ))}
+              <p className="text-xs text-muted-foreground">Demo link: {proposalView.proposal.demoUrl}</p>
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="outline" disabled={pending} onClick={() => generateProposal(proposalView.prospect)}>
+                  {pending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1.5" />}Regenerate
+                </Button>
+                <Button size="sm" onClick={copyProposal}><Copy className="h-3.5 w-3.5 mr-1.5" />Copy to clipboard</Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       <Card>
         <CardHeader className="pb-2"><CardTitle className="text-sm">Prospects ({prospects.length})</CardTitle></CardHeader>
         <CardContent className="p-0 overflow-x-auto">
@@ -79,6 +141,10 @@ export function PlatformGrowthBoard({ initialProspects, initialFunnel }: { initi
                       </select>
                       <Button size="sm" variant="ghost" disabled={pending} onClick={() => pitch(p.id)} title="Draft pitch">
                         {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                      </Button>
+                      <Button size="sm" variant="ghost" disabled={pending} onClick={() => openProposal(p)}
+                        title={p.details?.proposal ? 'View proposal' : 'Generate proposal'}>
+                        {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileText className={'h-3.5 w-3.5 ' + (p.details?.proposal ? 'text-primary' : '')} />}
                       </Button>
                     </div>
                   </td>

@@ -12,6 +12,7 @@ import { TenantSetupPanel } from "./tenant-setup-panel"
 import { EnterTenantButton } from "./enter-tenant-button"
 import { TenantEntitlementsPanel } from "./tenant-entitlements-panel"
 import { TenantSnapshotsPanel } from "./tenant-snapshots-panel"
+import { TenantImportPanel } from "./tenant-import-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -83,6 +84,11 @@ export default async function SuperadminBrokerageDetailPage(
 
       {/* Config snapshots — capture this tenant as a template / apply a template here */}
       <TenantSnapshotsPanel brokerageId={brokerage.id} />
+
+      {/* Onboarding — white-glove data migration: land the subscriber's old-CRM
+          CSV (contacts / draft listings) in THIS tenant. Inbound mirror of the
+          export card below. */}
+      <TenantImportPanel brokerageId={brokerage.id} />
 
       {/* Offboarding — the tenant's data, downloadable. Export never deletes;
           retention-law records stay put regardless of tenancy. */}

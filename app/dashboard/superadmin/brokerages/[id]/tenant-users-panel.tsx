@@ -1,21 +1,27 @@
 "use client"
 
 // Cross-tenant user management on the god console — per-user activate/suspend + invitation resend/revoke,
-// with last-login, for any tenant. Superadmin-gated + audited server-side.
+// with last-login, for any tenant. Superadmin-gated + audited server-side. Per-user
+// "Enter as" (full) / "View as" (read-only) begin USER-GRANULAR impersonation
+// sessions (GHL parity): the staff member lands in the tenant dashboard resolved
+// as THAT user until they exit (banner) or the session auto-expires.
 import { useEffect, useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Users, Loader2 } from "lucide-react"
+import { Users, Loader2, LogIn, Eye } from "lucide-react"
 import {
   listTenantUsersAction, setTenantUserStatusAction, resendTenantInviteAction, revokeTenantInviteAction,
   createTenantUserAction,
   type TenantUserRow, type TenantInviteRow,
 } from "@/app/actions/superadmin/tenant-users"
+import { enterTenantAction } from "@/app/actions/superadmin/impersonation"
 
 const CREATABLE_ROLES = ["admin", "broker", "agent", "team_lead", "tc", "isa", "compliance_officer", "lender", "vendor"]
 
 export function TenantUsersPanel({ brokerageId }: { brokerageId: string }) {
+  const router = useRouter()
   const [users, setUsers] = useState<TenantUserRow[]>([])
   const [invites, setInvites] = useState<TenantInviteRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -40,6 +46,18 @@ export function TenantUsersPanel({ brokerageId }: { brokerageId: string }) {
   function invite(action: "resend" | "revoke", id: string) {
     setErr(null)
     startTransition(async () => { const r = action === "resend" ? await resendTenantInviteAction(id) : await revokeTenantInviteAction(id); if (!r.ok) setErr(r.error ?? "Failed"); refresh() })
+  }
+  // User-granular impersonation — same redirect behavior as EnterTenantButton.
+  function enterAs(userId: string, mode: "full" | "read_only") {
+    setErr(null)
+    startTransition(async () => {
+      const r = await enterTenantAction({
+        brokerageId, targetUserId: userId, mode,
+        reason: mode === "read_only" ? "god-console view-as-user" : "god-console enter-as-user",
+      })
+      if (!r.ok) { setErr(r.error ?? "Failed to start impersonation"); return }
+      router.push("/dashboard")
+    })
   }
   function addUser() {
     setErr(null); setAddOk(null)
@@ -103,9 +121,17 @@ export function TenantUsersPanel({ brokerageId }: { brokerageId: string }) {
                       <td className="px-3 py-2"><span className={"rounded px-1.5 py-0.5 text-[11px] font-medium " + (suspended ? "bg-red-100 text-red-800" : "bg-emerald-100 text-emerald-800")}>{suspended ? "suspended" : "active"}</span></td>
                       <td className="px-3 py-2 text-right">
                         {u.role === "superadmin" ? <span className="text-xs text-muted-foreground">—</span> : (
-                          <Button size="sm" variant="outline" disabled={pending} onClick={() => setStatus(u.id, suspended ? "active" : "suspended")}>
-                            {suspended ? "Reactivate" : "Suspend"}
-                          </Button>
+                          <div className="inline-flex items-center gap-1.5">
+                            <Button size="sm" variant="ghost" disabled={pending} title={`Enter the tenant as ${u.name} (full access)`} onClick={() => enterAs(u.id, "full")} className="gap-1">
+                              <LogIn className="h-3.5 w-3.5" /> Enter as
+                            </Button>
+                            <Button size="sm" variant="ghost" disabled={pending} title={`View the tenant as ${u.name} (read-only)`} onClick={() => enterAs(u.id, "read_only")} className="gap-1">
+                              <Eye className="h-3.5 w-3.5" /> View as
+                            </Button>
+                            <Button size="sm" variant="outline" disabled={pending} onClick={() => setStatus(u.id, suspended ? "active" : "suspended")}>
+                              {suspended ? "Reactivate" : "Suspend"}
+                            </Button>
+                          </div>
                         )}
                       </td>
                     </tr>

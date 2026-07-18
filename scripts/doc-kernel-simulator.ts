@@ -2243,6 +2243,23 @@ async function main() {
         && JSON.parse(src("scripts/orphan-write-baseline.json")).length === 0
         && src("scripts/writerless-read-sweep.ts").length > 0)
     }
+    // ── ROUND 19: GHL PARITY — THE PLATFORM RUNS ITS TENANTS LIKE GHL RUNS GHL ──
+    {
+      check("ROUND 19 — FULL PLATFORM CONTROL, AUDITED THEN CLOSED (the owner's GHL mandate). THE TOP FINDING WAS A LOCKOUT: the capability map documents four staff roles but the subtree gate recognized only two — platform admin and marketing were bounced from the god console BEFORE any capability check ran; fixed identity-class-safely (the roster matches ONLY platform_role; 'admin' as a tenant user_type can never become staff), applied across the gate, the impersonation resolver + act-as seam (both identity columns), contact access, and manual-subscriber (hard superadmin → the 'tenants' capability). WHITE-GLOVE IMPORT: the inbound half of migration finally exists — CSV contacts parsed by a pure RFC-4180-tolerant parser with per-line errors, deduped, batch-inserted tenant-anchored with source 'import' (shape live-fired, residue 0), audited, with dry-run preview on the tenant console. CROSS-TENANT VENDOR OVERSIGHT + ENGAGEMENT RADAR: every vendor across every tenant with placement/invoice truth (no-FK nominal matching LABELED, never hidden), and the churn signal money views miss — real sign-ins (auth.users, the only honest source, alternatives rejected by name), velocity halving, pure engaged/cooling/at_risk classifier. ASSISTED SALE: user-granular impersonation UI (Enter-as / View-as read_only per tenant user — the backend always supported it, now the buttons exist, banner names the target user), public DB-driven /pricing (same tiers as signup, JSON-LD), /demo booking into the EXISTING prospect rail (source demo_request, m272 details column — no fake calendar), and the per-prospect AI-authored proposal generator persisted on the prospect row",
+        src("lib/auth/platform-guard.ts").includes("isPlatformStaffRole")
+        && src("lib/identity/get-agent-context.ts").includes("isPlatformStaffIdentity")
+        && src("lib/platform/tenant-import.ts").includes("importContacts")
+        && src("lib/platform/tenant-import-parser.ts").length > 0
+        && src("app/actions/superadmin/tenant-import.ts").includes("tenants")
+        && src("app/dashboard/superadmin/vendors/page.tsx").includes('requirePlatformCapability("sentinel")')
+        && src("app/dashboard/superadmin/engagement/page.tsx").includes("classifyEngagement")
+        && src("lib/platform/engagement-risk.ts").includes("at_risk")
+        && src("app/dashboard/superadmin/brokerages/[id]/tenant-users-panel.tsx").includes("read_only")
+        && src("app/pricing/page.tsx").includes("subscription_tiers")
+        && src("app/demo/page.tsx").length > 0
+        && src("app/actions/superadmin/platform-growth.ts").includes("proposal")
+        && src("supabase/migrations/m272-platform-prospects-details.sql").includes("details"))
+    }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {
       const { readdirSync, statSync } = await import("fs")

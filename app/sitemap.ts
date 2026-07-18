@@ -17,6 +17,9 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const base = siteUrl()
   const staticEntries: MetadataRoute.Sitemap = [
     { url: `${base}/`, changeFrequency: "weekly", priority: 0.8 },
+    // Platform marketing surface — DB-driven pricing + the assisted-sale demo form.
+    { url: `${base}/pricing`, changeFrequency: "weekly", priority: 0.8 },
+    { url: `${base}/demo`, changeFrequency: "monthly", priority: 0.7 },
   ]
 
   try {

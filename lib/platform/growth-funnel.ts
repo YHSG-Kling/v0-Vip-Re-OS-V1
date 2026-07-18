@@ -105,6 +105,63 @@ export function composeProspectNudge(p: { name?: string | null; roleInterest?: s
   }
 }
 
+// ── PROSPECT PROPOSAL (assisted sale) ────────────────────────────────────────
+// The proposal DOCUMENT is AI-authored through the charter rail (generateTextRouted
+// + the platform's own brand context) in app/actions/superadmin/platform-growth.ts —
+// nothing here is sales prose. This module owns only the SHAPE (which sections a
+// proposal has + per-section authoring guidance) and the deterministic assembly of
+// an authored proposal into clipboard text.
+
+export const PROPOSAL_SECTIONS = [
+  { key: "situation",      title: "Your situation",        hint: "2-3 sentences grounding the proposal in THEIR facts (name, company, size/shape, how they found us, anything they told us). No flattery, no invented detail." },
+  { key: "recommendation", title: "Recommended plan",      hint: "why the recommended tier fits their shape, citing the EXACT plan name and EXACT prices provided (verbatim — never invent or round prices)." },
+  { key: "what_it_does",   title: "What the OS does for you", hint: "what the platform concretely runs for a business of their size, grounded ONLY in the plan inclusions provided." },
+  { key: "migration",      title: "Migration & white-glove onboarding", hint: "the honest migration story: guided onboarding plus data import from their current tools — no timelines or guarantees we did not state." },
+  { key: "next_steps",     title: "Next steps",            hint: "2-3 concrete steps; MUST include the demo link provided verbatim." },
+] as const
+
+export type ProposalSectionKey = (typeof PROPOSAL_SECTIONS)[number]["key"]
+
+export interface ProposalTierSummary {
+  tierName: string
+  displayName: string
+  monthlyCents: number
+  annualCents: number
+  setupCents: number
+}
+
+export interface ProspectProposal {
+  generatedAt: string
+  demoUrl: string
+  tier: ProposalTierSummary
+  sections: Record<ProposalSectionKey, string>
+}
+
+const centsToDollars = (c: number) => "$" + Math.round(c / 100).toLocaleString("en-US")
+
+/** PURE: one deterministic pricing line from the DB-driven tier row (no prose). */
+export function proposalPricingLine(t: ProposalTierSummary): string {
+  const parts = [`${t.displayName}: ${t.monthlyCents > 0 ? `${centsToDollars(t.monthlyCents)}/month` : "pricing on request"}`]
+  if (t.annualCents > 0) parts.push(`${centsToDollars(t.annualCents)}/year billed annually`)
+  if (t.setupCents > 0) parts.push(`${centsToDollars(t.setupCents)} one-time setup`)
+  return parts.join(" · ")
+}
+
+/** PURE: assemble an authored proposal into copyable plain text (formatting only). */
+export function proposalToClipboardText(p: ProspectProposal, productName: string, prospectName?: string | null): string {
+  const lines: string[] = [
+    `${productName} — proposal${(prospectName ?? "").trim() ? ` for ${(prospectName ?? "").trim()}` : ""}`,
+    `Prepared ${new Date(p.generatedAt).toLocaleDateString()}`,
+    "",
+  ]
+  for (const s of PROPOSAL_SECTIONS) {
+    lines.push(s.title.toUpperCase(), p.sections[s.key], "")
+    if (s.key === "recommendation") lines.push(proposalPricingLine(p.tier), "")
+  }
+  lines.push(`Book the 15-minute demo: ${p.demoUrl}`)
+  return lines.join("\n")
+}
+
 /**
  * PURE: compose the platform's own outreach to a prospect — the "AI OS transforming
  * real estate" pitch, tier-aware. Returned as a GATED draft (never auto-sent); a

@@ -34,6 +34,8 @@ export interface ActiveImpersonation {
   targetBrokerageId?: string
   targetBrokerageName?: string
   targetUserId?: string | null
+  /** Resolved display name when the session targets a specific USER (user-granular). */
+  targetUserName?: string | null
   mode?: ImpersonationMode
   expiresAt?: string
 }
@@ -98,9 +100,19 @@ export async function getActiveImpersonationAction(): Promise<ActiveImpersonatio
   const svc = createServiceClient()
   const s = await loadActiveImpersonation(auth.userId, svc)
   if (!s) return { active: false }
-  const { data: brk } = await svc.from("brokerages").select("name").eq("id", s.targetBrokerageId).maybeSingle()
+  const [{ data: brk }, { data: tu }] = await Promise.all([
+    svc.from("brokerages").select("name").eq("id", s.targetBrokerageId).maybeSingle(),
+    s.targetUserId
+      ? svc.from("users").select("first_name, last_name, email").eq("id", s.targetUserId).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ])
+  // User-granular sessions name the target USER in the banner (name falls back to email).
+  const targetUserName = tu
+    ? ([(tu as any).first_name, (tu as any).last_name].filter(Boolean).join(" ") || (tu as any).email || null)
+    : null
   return {
     active: true, sessionId: s.id, targetBrokerageId: s.targetBrokerageId,
-    targetBrokerageName: (brk as any)?.name ?? null, targetUserId: s.targetUserId, mode: s.mode, expiresAt: s.expiresAt,
+    targetBrokerageName: (brk as any)?.name ?? null, targetUserId: s.targetUserId, targetUserName,
+    mode: s.mode, expiresAt: s.expiresAt,
   }
 }

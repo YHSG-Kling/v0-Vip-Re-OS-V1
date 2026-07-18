@@ -33,7 +33,12 @@ export function ImpersonationBanner() {
     <div className="flex items-center gap-3 bg-amber-500 px-4 py-2 text-sm font-medium text-amber-950">
       <Eye className="h-4 w-4 shrink-0" />
       <span className="flex-1 truncate">
-        Acting as <strong>{state.targetBrokerageName ?? 'tenant'}</strong>
+        {/* User-granular sessions name the target USER; tenant-wide sessions name the brokerage. */}
+        {state.targetUserName ? (
+          <>Acting as <strong>{state.targetUserName}</strong> at <strong>{state.targetBrokerageName ?? 'tenant'}</strong></>
+        ) : (
+          <>Acting as <strong>{state.targetBrokerageName ?? 'tenant'}</strong></>
+        )}
         {state.mode === 'read_only' && <span className="ml-1 rounded bg-amber-700/20 px-1.5 py-0.5 text-[11px]">read-only</span>}
         {expires && <span className="ml-2 text-amber-900/80">· session ends {expires}</span>}
       </span>

@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { CheckCircle2, Loader2, User, Briefcase, Building2, MapPin } from "lucide-react"
 import { signupBrokerageAction, type CanonicalTier } from "@/app/actions/auth/signup-brokerage"
+import { formatTierPrice, type PublicTier } from "@/lib/platform/public-tiers"
 import { recordTosAcceptanceAction, getCurrentTosVersionAction } from "@/app/actions/public/tos-acceptance"
 
 // EVERY tier field (name, blurb, bullets, highlight, price) is DB-driven from
@@ -16,25 +17,17 @@ const TIER_ICON: Record<string, typeof User> = {
   solo_agent: User, team: Briefcase, brokerage: Building2, multi_location: MapPin,
 }
 
-export interface SignupTier {
-  tierName: string
-  displayName: string
-  description: string
-  bullets: string[]
-  featured: boolean
-  monthlyCents: number
-  annualCents: number
-  setupCents: number
-}
+// Keep-one: the card shape IS the shared public-tier shape /pricing renders from.
+export type SignupTier = PublicTier
 
-/** Format cents → "$X" / "$X,XXX" (whole dollars); "—" when the tier has no price yet. */
-function fmtPrice(cents: number | undefined): string {
-  if (!cents || cents <= 0) return "—"
-  return "$" + Math.round(cents / 100).toLocaleString("en-US")
-}
+// Price formatting is shared with /pricing (keep-one).
+const fmtPrice = formatTierPrice
 
-export function SignupForm({ tiers = [] }: { tiers?: SignupTier[] }) {
-  const defaultTier = (tiers.find((t) => t.featured)?.tierName ?? tiers[0]?.tierName ?? "team") as CanonicalTier
+export function SignupForm({ tiers = [], initialTier = null }: { tiers?: SignupTier[]; initialTier?: string | null }) {
+  // /pricing hands off with ?tier=X — a validated match preselects that card.
+  const defaultTier = (initialTier && tiers.some((t) => t.tierName === initialTier)
+    ? initialTier
+    : (tiers.find((t) => t.featured)?.tierName ?? tiers[0]?.tierName ?? "team")) as CanonicalTier
   const [tier, setTier] = useState<CanonicalTier>(defaultTier)
   const [brokerageName, setBrokerageName] = useState("")
   const [city, setCity]                   = useState("")

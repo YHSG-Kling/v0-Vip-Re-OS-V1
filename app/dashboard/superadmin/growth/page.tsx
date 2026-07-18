@@ -44,7 +44,11 @@ export default async function PlatformGrowthPage() {
       {!res.ok ? (
         <div className="rounded border p-4 text-sm text-red-600">Failed: {res.error}</div>
       ) : (
-        <PlatformGrowthBoard initialProspects={res.prospects} initialFunnel={res.funnel} />
+        <PlatformGrowthBoard
+          initialProspects={res.prospects}
+          initialFunnel={res.funnel}
+          brandName={brandRes.ok ? brandRes.brand.name : DEFAULT_PRODUCT_BRAND.name}
+        />
       )}
       {/* Subscriber referral fees — who referred each tenant + what's owed (billing roles only) */}
       {referralsRes && referralsRes.ok && (
