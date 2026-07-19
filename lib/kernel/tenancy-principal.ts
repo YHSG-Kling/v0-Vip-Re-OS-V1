@@ -30,11 +30,13 @@ export async function isTenancyPrincipal(
   const tier = String((brk as any)?.plan_tier ?? "solo_agent")
   if (tier === "solo_agent") return true
   if (tier === "team") {
-    const { data: agentRow } = await svc.from("agents").select("id")
-      .eq("user_id", input.userId).eq("brokerage_id", input.brokerageId).maybeSingle()
-    if (!agentRow) return false
+    // team_lead_id is users.id (FK auth.users(id) per scripts/230; written as
+    // authUserId in lib/kernel/users.ts, read as .eq(team_lead_id, userId) by the
+    // team-lead brief). The prior code matched it against the caller's agents.id,
+    // which never equals a users.id — so a team lead was silently denied principal
+    // status and locked out of governing their own team. Compare against userId.
     const { data: lead } = await svc.from("teams").select("id")
-      .eq("brokerage_id", input.brokerageId).eq("team_lead_id", (agentRow as any).id)
+      .eq("brokerage_id", input.brokerageId).eq("team_lead_id", input.userId)
       .is("deleted_at", null).limit(1).maybeSingle()
     return !!lead
   }

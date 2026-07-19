@@ -302,11 +302,9 @@ export async function runRecruitingPitchKits(svc: any): Promise<{ pitchKits: num
       if (!produced.ok || !produced.pdfUrl) { out.pitchErrors++; continue }
 
       // Notify the TEAM LEAD (fall back to the broker pattern when unset).
-      let notifyUserId: string | null = null
-      if (t.team_lead_id) {
-        const { data: leadAgent } = await svc.from("agents").select("user_id").eq("id", t.team_lead_id).maybeSingle()
-        notifyUserId = (leadAgent as any)?.user_id ?? null
-      }
+      // teams.team_lead_id IS users.id (FK auth.users(id)) — use it directly;
+      // the prior agents.id lookup never matched, so the lead was skipped.
+      let notifyUserId: string | null = t.team_lead_id ?? null
       if (!notifyUserId) {
         const { data: broker } = await svc.from("users").select("id")
           .eq("brokerage_id", t.brokerage_id).order("created_at", { ascending: true }).limit(1).maybeSingle()
