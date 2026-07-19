@@ -173,6 +173,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/overnight-digest"                    , schedule: "30 12 * * *" },
   { path: "/api/cron/board-packet"                        , schedule: "0 13 1 * *" },
   { path: "/api/cron/board-packet?phase=deliver"          , schedule: "0 13 2 * *" },
+  { path: "/api/cron/qbr-invitations"                     , schedule: "0 14 1,2,3,4,5,6,7 1,4,7,10 *" }, // quarterly QBR invites, self-gates to the Q window (round 28)
   { path: "/api/cron/signature-chase"                     , schedule: "0 15 * * *" },
   { path: "/api/cron/listing-propensity"                  , schedule: "0 14 * * 2" },
   { path: "/api/cron/video-plays"                         , schedule: "30 15 * * *" },

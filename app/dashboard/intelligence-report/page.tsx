@@ -10,6 +10,7 @@ import {
   monthWindow,
 } from "@/lib/kernel/intelligence-report"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { TrustReceiptsCard } from "./trust-receipts-card"
 
 export const dynamic = "force-dynamic"
 
@@ -145,6 +146,9 @@ export default async function IntelligenceReportPage({
           </p>
         </div>
       )}
+
+      {/* TRUST RECEIPTS — live (not month-keyed): the broker-visible continuity receipts. */}
+      <TrustReceiptsCard brokerageId={brokerageId} />
     </div>
   )
 }

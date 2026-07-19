@@ -1450,6 +1450,7 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/billing-dunning": "finance_manager",
   "/api/cron/platform-prospect-followup": "data_steward",
   "/api/cron/board-packet": "finance_manager",
+  "/api/cron/qbr-invitations": "finance_manager", // quarterly QBR invitations to principals (round 28)
   "/api/cron/brokerage-pl-rollup": "finance_manager",
   "/api/cron/commission-forecaster": "finance_manager",
   "/api/cron/earnings-rollup": "finance_manager",
