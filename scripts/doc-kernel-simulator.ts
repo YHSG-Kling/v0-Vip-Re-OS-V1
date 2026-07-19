@@ -2225,7 +2225,7 @@ async function main() {
         && routeBaseline.length <= 42
         && src("package.json").includes("test:orphan-routes")
         && src("app/config/navigation-config.ts").includes("/dashboard/gifts")
-        && src("app/dashboard/admin/users/page.tsx").includes("seatLimitForTier")
+        && src("app/dashboard/admin/users/page.tsx").includes("effectiveSeatLimit") // round 31: seatLimitForTier evolved into effectiveSeatLimit (tier default + staff override, ONE math for meter + invite gate)
         && src("app/dashboard/onboarding/OnboardingDashboardClient.tsx").includes("YourWebsiteCard")
         && src("app/components/settings/YourWebsiteCard.tsx").includes("getMyPublicSiteLinks"))
     }
@@ -2259,6 +2259,20 @@ async function main() {
         && src("app/demo/page.tsx").length > 0
         && src("app/actions/superadmin/platform-growth.ts").includes("proposal")
         && src("supabase/migrations/m272-platform-prospects-details.sql").includes("details"))
+    }
+    // ── ROUND 31: THE CERTIFICATION FLIPS — EVERY PERSON A SUBSCRIBER ADDS, SUPPORTABLE ──
+    {
+      check("ROUND 31 — THE FOUR BLOCKERS CLOSED; the round-30 'NEARLY' becomes YES. (1) PORTAL CLIENTS ARE FIRST-CLASS USERS (the owner's identity correction, verified: user_type='contact' was in the users CHECK from day one; portal invites mint real auth users via OTP): ensureContactPortalUser creates the missing public.users row on the contact's own first authenticated portal entry (checked insert via sentinelWrite, link-back stamped, portal access NEVER fails on it), a backfill action covers existing clients with honest DB-confirmed counters, the staff roster badges them 'Portal client', and enterTenantAction returns a server-resolved landing route so staff entering a contact-type user land on THEIR portal — with a defence-in-depth rule granting the live impersonation session portal access. (2) THE STAFF→TENANT-ADMIN COMPOSER: suppression-checked canonical sendEmail (B2B-transactional, allowlist-reviewed), success only on provider acceptance, in-app notifications mirror, subject audited NEVER the body, distinct refusals, AI-draft grounded in real facts in the PLATFORM's voice with a stated fallback source — two mounts, one composer. (3) PER-TENANT AUTONOMY HALT in feature_access_overrides — the ONE home with no tenant-side write path (managed_agents.config is broker-writable; brokerages jsonb is under the tenant admin's row-level RLS) — enforced at the exact god-switch hook with sim-proven precedence (god switch > tenant halt > broker posture; human/transactional sends untouched), reason required, audited, the tenant told VERBATIM why on their Command Center. (4) PER-TENANT SEAT OVERRIDE in billing_metadata (the overrides table has no numeric column — smuggling a number would be dishonest): ONE effectiveSeatLimit resolution used by the invite gate, the god-console create, and the seat meter's honest '(custom limit)'",
+        src("lib/portal/portal-invite-core.ts").includes("ensureContactPortalUser")
+        && src("app/actions/superadmin/portal-clients.ts").includes("backfillPortalClientUsersAction")
+        && src("app/actions/superadmin/impersonation.ts").includes("redirectTo")
+        && src("app/dashboard/superadmin/brokerages/[id]/tenant-users-panel.tsx").includes("Portal client")
+        && src("app/actions/superadmin/tenant-message.ts").includes("sendTenantAdminMessageAction")
+        && src("app/actions/superadmin/tenant-message.ts").includes("isEmailOnSuppressionList")
+        && src("lib/managers/autonomy-gate.ts").includes("loadTenantAutonomyHalt")
+        && src("app/dashboard/admin/command-center/autonomy-halt-banner.tsx").length > 0
+        && src("lib/kernel/tier-role-matrix.ts").includes("effectiveSeatLimit")
+        && src("app/actions/admin/invite-user.ts").includes("effectiveSeatLimit"))
     }
     // ── ROUND 30: THE PLATFORM CERTIFICATION — COVERAGE, CLOSED LOOPS, AND THE HONEST 'NEARLY' ──
     {
