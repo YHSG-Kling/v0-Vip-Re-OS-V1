@@ -8,9 +8,10 @@
  */
 
 import { useEffect, useState } from "react"
+import Link from "next/link"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { CheckCircle2, Circle, Landmark } from "lucide-react"
+import { CheckCircle2, Circle, Landmark, GraduationCap } from "lucide-react"
 import { loadBuyerLoanChecklist, type BuyerLoanChecklist } from "@/app/actions/portal-loan-checklist"
 
 export function LoanChecklistCard({ contactId, transactionId }: { contactId: string; transactionId: string }) {
@@ -62,6 +63,17 @@ export function LoanChecklistCard({ contactId, transactionId }: { contactId: str
           </ul>
         </>
       )}
+      {data.preApprovalNudge ? (
+        <div className="mt-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          <GraduationCap className="w-4 h-4 mt-0.5 flex-shrink-0" />
+          <span>
+            {data.preApprovalNudge}{" "}
+            <Link href={`/portal/${contactId}/learn`} className="font-medium underline underline-offset-2">
+              See &ldquo;Pre-qual vs pre-approval — which is stronger?&rdquo; in your lessons
+            </Link>
+          </span>
+        </div>
+      ) : null}
     </Card>
   )
 }

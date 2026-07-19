@@ -57,6 +57,19 @@ export async function produceOfferStrategyBrief(
     .in("status", ["proposed", "approved", "sent"]).maybeSingle()
   if (existing) return { proposed: 0 }
 
+  // Shared read: the buyer's financing profile — grounds BOTH the strategy's max budget AND the
+  // honest letter-strength note below. Same buyer_financial_profiles row the pre-approval record
+  // sourcing reads; the OS records no explicit pre-qual vs pre-approval letter TYPE, so strength
+  // keys off verified/letter-on-file/expiry (see lib/financing/letter-strength.ts).
+  type FinProfileRow = { is_cash_buyer: boolean | null; verified: boolean | null; pre_approval_amount: number | null; pre_approval_letter_doc_id: string | null; pre_approval_expires_at: string | null; pre_approval_lender: string | null }
+  let finProfile: FinProfileRow | null = null
+  try {
+    const { data: fin } = await supabase.from("buyer_financial_profiles")
+      .select("is_cash_buyer, verified, pre_approval_amount, pre_approval_letter_doc_id, pre_approval_expires_at, pre_approval_lender")
+      .eq("contact_id", contactId).maybeSingle()
+    finProfile = (fin as FinProfileRow | null) ?? null
+  } catch { /* best-effort — a missing profile degrades to the no-letter note */ }
+
   // ── OFFER ACCELERATOR — fill the formerly-empty offer-strategy moment with a REAL,
   //    comps/market-grounded plan. Detect the buyer's hot target (most-recent active saved
   //    listing), ground the strategy in its real list price + days-on-market + the buyer's
@@ -88,11 +101,12 @@ export async function produceOfferStrategyBrief(
       await import("@/lib/offers/offer-target")
     const target = pickBuyerTargetListing(flat, new Date())
     if (target) {
-      const { data: fin } = await supabase.from("buyer_financial_profiles")
-        .select("pre_approval_amount").eq("contact_id", contactId).maybeSingle()
       const { data: cfull } = await supabase.from("contacts")
         .select("timeline, motivation_type, buyer_stage").eq("id", contactId).maybeSingle()
-      const maxBudget = resolveBuyerMaxBudget((fin as any)?.pre_approval_amount ?? null, target.listPrice)
+      // The ceiling is the buyer's REAL pre-approval or nothing — resolveBuyerMaxBudget no
+      // longer fabricates a %-of-list budget (owner correction: loan figures come from the
+      // pre-approval or the lender). No pre-approval → the generic brief below, honestly.
+      const maxBudget = resolveBuyerMaxBudget(finProfile?.pre_approval_amount ?? null, target.listPrice)
       if (maxBudget) {
         const { generateBuyerOfferStrategy, summarizeOfferStrategy } =
           await import("@/lib/offers/offer-strategy-advisor")
@@ -103,7 +117,11 @@ export async function produceOfferStrategyBrief(
           buyerMotivation: motivationFromBuyer((cfull as any) ?? {}),
           buyerMaxBudget: maxBudget,
         })
-        if (strategy) strategySummary = summarizeOfferStrategy(strategy)
+        if (strategy) {
+          // Provenance — downstream math names its source, the OS's own discipline.
+          const lender = finProfile?.pre_approval_lender ?? null
+          strategySummary = `${summarizeOfferStrategy(strategy)} Budget ceiling $${maxBudget.toLocaleString()} per the buyer's pre-approval${lender ? ` from ${lender}` : ""}.`
+        }
       }
     }
   } catch (e) {
@@ -121,11 +139,25 @@ export async function produceOfferStrategyBrief(
     ctas: ["Review recent comparable sales together", "Set your price and terms", "Map how we respond if it's competitive"],
     fallback: buildOfferStrategyMessage(agentName),
   })
+  // MOMENT-OF-TRUTH HONESTY — if the buyer is about to offer with only a pre-qual-strength letter
+  // (unverified), no letter, or an expired one, the AGENT brief says so plainly. Deterministic,
+  // agent-facing only (the buyer-facing copy stays warm; the coaching happens through the agent
+  // and the pre-qual vs pre-approval education modules).
+  const { assessFinancingLetterStrength } = await import("@/lib/financing/letter-strength")
+  const letterNote = assessFinancingLetterStrength(finProfile ? {
+    isCashBuyer: finProfile.is_cash_buyer,
+    verified: finProfile.verified,
+    preApprovalAmount: finProfile.pre_approval_amount,
+    preApprovalLetterDocId: finProfile.pre_approval_letter_doc_id,
+    preApprovalExpiresAt: finProfile.pre_approval_expires_at,
+  } : null).agentNote
+
   // The agent sees the CONCRETE plan in the rationale (real, comps-grounded numbers); the
   // buyer-facing copy stays warm + number-free until the agent reviews and releases it.
-  const rationale = strategySummary
+  const baseRationale = strategySummary
     ? `Buyer reached offer-strategy stage. AI offer plan (review before sending): ${strategySummary}`
     : "Buyer reached offer-strategy stage — propose the offer game plan before they write."
+  const rationale = letterNote ? `${baseRationale} ${letterNote}` : baseRationale
 
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
   const r = await proposeClientMessage({

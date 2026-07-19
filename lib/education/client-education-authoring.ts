@@ -38,7 +38,9 @@ export async function persistClientModule(svc: Svc, brokerageId: string, tag: st
     gap_tags: [tag],
     audience_roles: ["customer"],
     audience_personas: isPersona && topic.persona ? [topic.persona] : [],
-    stage_tags: !isPersona && topic.milestone ? [topic.milestone] : [],
+    // stage_tags drive the learning-router's kernel-context match (buyer_stage / milestone / portal view).
+    // A topic may cover a journey WINDOW via topic.stages; otherwise it anchors on its single milestone.
+    stage_tags: !isPersona ? (topic.stages ?? (topic.milestone ? [topic.milestone] : [])) : [],
     milestone_key: !isPersona ? (topic.milestone ?? null) : null,
     channels: channelsForFormat(resolveMaterialFormat({ topicKey: topic.key })),
     estimated_minutes: 4,

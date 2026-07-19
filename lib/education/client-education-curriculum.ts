@@ -22,6 +22,11 @@ export interface ClientTopic {
   kind: "buyer_stage" | "seller_stage" | "persona"
   /** For stage modules: the milestone key it maps to (stage_tags + milestone_key). */
   milestone?: string
+  /** For stage modules: OPTIONAL extra stage tags beyond the milestone (e.g. the contacts.buyer_stage
+   *  values the kernel's education context resolves — resolveEducationContext feeds buyer_stage +
+   *  current milestone + portal view into the learning-router's stage match), so a lesson can cover a
+   *  whole journey WINDOW (like intake → financing) instead of a single milestone. */
+  stages?: string[]
   /** For persona modules: the contact_persona it serves (audience_personas). */
   persona?: string
   brief: string
@@ -30,6 +35,10 @@ export interface ClientTopic {
 /** Curated, highest-anxiety client moments — where a client most needs "what now / what to do". */
 export const CLIENT_SYLLABUS: ClientTopic[] = [
   // BUYER stages
+  // The letter-strength lesson fires EARLY — while the pre-approval milestone is still PENDING (buyer_stage
+  // 'prospect'/'pre_approval_pending', the kernel's intake/financing window) — so a buyer holding only a
+  // pre-qualification learns which letter is stronger BEFORE they shop, not after an offer stumbles.
+  { key: "buyer_letter_strength", title: "Pre-qual vs pre-approval — which is stronger?", kind: "buyer_stage", milestone: "pre_approval_pending", stages: ["prospect", "pre_approval_pending"], brief: "For a buyer at the very start — no letter yet, or only a pre-qualification. Explain in plain, friendly words: a pre-qualification is a quick estimate based on what you tell a lender (nothing is checked — no credit pull, no documents), while a pre-approval means the lender actually verified your credit, income, and savings and put a conditional commitment in writing. The pre-approval is the STRONGER letter — it's the one sellers and their agents take seriously, and many sellers won't consider an offer without it. Encourage them, warmly and without pressure, to move from pre-qual to pre-approval early (before they find the home they love), list the simple documents a lender will ask for (pay stubs, tax forms, bank statements, ID), and note that letters expire — usually after about 60-90 days — so timing matters. Remind them their agent can connect them with a lender and walk them through it. No jargon, no scare tactics, no financial advice — general guidance that defers specifics to their agent and lender." },
   { key: "buyer_pre_approved", title: "You're pre-approved — what it means and what's next", kind: "buyer_stage", milestone: "pre_approved", brief: "Explain to a buyer what pre-approval actually means (vs pre-qualification), how it shapes their search and offer strength, and the do's/don'ts to protect it — plain, encouraging language." },
   { key: "buyer_offer_accepted", title: "You're under contract — what happens next", kind: "buyer_stage", milestone: "offer_accepted", brief: "Walk a buyer through what happens the moment their offer is accepted: earnest money, timelines, inspection/appraisal/financing, and what THEY need to do at each step. Reassuring, plain-language." },
   { key: "buyer_clear_to_close", title: "Clear to close — your final week", kind: "buyer_stage", milestone: "clear_to_close", brief: "Guide a buyer through the final week: reviewing the Closing Disclosure, the wire-fraud warning (verify wiring instructions by phone), what to bring to closing, and the closing-day sequence — calm and specific." },

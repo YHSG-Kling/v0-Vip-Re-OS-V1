@@ -316,6 +316,7 @@
     "test:dual-intent": "tsx scripts/dual-intent-simulator.ts",
     "test:dual-portal": "tsx scripts/dual-portal-simulator.ts",
     "test:financing-pit-stop": "tsx scripts/financing-pit-stop-simulator.ts",
+    "test:letter-strength": "tsx scripts/letter-strength-simulator.ts",
     "test:bidding-war": "tsx scripts/bidding-war-concierge-simulator.ts",
     "test:marketing-bench": "tsx scripts/marketing-bench-simulator.ts",
     "test:intent-campaign": "tsx scripts/intent-campaign-simulator.ts",
