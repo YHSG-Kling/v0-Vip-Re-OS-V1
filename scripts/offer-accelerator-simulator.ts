@@ -60,9 +60,9 @@ function main() {
   check("browsing → nice_to_have", motivationFromBuyer({ timeline: "just browsing" }) === "nice_to_have")
   check("neutral → would_like", motivationFromBuyer({}) === "would_like")
 
-  console.log("\n[Max budget — pre-approval first, conservative ceiling otherwise]")
+  console.log("\n[Max budget — the pre-approval on file, NEVER a fabricated ceiling]")
   check("pre-approval used when present", resolveBuyerMaxBudget(480000, 525000) === 480000)
-  check("no pre-approval → ~110% of list ceiling", resolveBuyerMaxBudget(null, 500000) === 550000)
+  check("no pre-approval → null (no invented %-of-list budget; degrade to the generic brief)", resolveBuyerMaxBudget(null, 500000) === null)
   check("nothing usable → null (skip the numeric plan)", resolveBuyerMaxBudget(null, 0) === null)
 
   console.log("\n[Agent-facing summary of the strategy]")

@@ -110,11 +110,12 @@ export default async function MyOfferPage({ params }: { params: Promise<{ contac
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Financing</p>
-                <p className="font-semibold">{activeOffer.financing_type || "Conventional"}</p>
+                {/* Never invent a loan type — financing comes from the offer record or reads "Not on file yet". */}
+                <p className="font-semibold">{activeOffer.financing_type || "Not on file yet"}</p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Down Payment</p>
-                <p className="font-semibold">{activeOffer.down_payment_percent || 20}%</p>
+                <p className="font-semibold">{activeOffer.down_payment_percent ? `${activeOffer.down_payment_percent}%` : "Not on file yet"}</p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Earnest Money</p>

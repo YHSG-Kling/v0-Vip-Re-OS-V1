@@ -263,20 +263,31 @@ export async function convertBuyerLeadOnIntent(
   }
 
   // 3b. PRE-APPROVAL — START the step (unverified profile row), don't fake verification.
+  // NEVER clobber real loan facts already on the profile (owner correction: loan terms
+  // come from the pre-approval or the lender, never an assumption): an existing row keeps
+  // its finance_type / cash flag / verified state unless the intake EXPLICITLY stated
+  // them; the "conventional" placeholder is only ever written on a brand-new row because
+  // finance_type is NOT NULL on the live schema (no honest "unknown" value exists yet).
   if (plan.startsPreapproval) {
     const pre = params.preapproval ?? {}
+    const { data: existingFin } = await svc
+      .from("buyer_financial_profiles")
+      .select("id, finance_type, is_cash_buyer, verified")
+      .eq("contact_id", contactId)
+      .maybeSingle()
+    const ex = existingFin as { id: string; finance_type: string | null; is_cash_buyer: boolean | null; verified: boolean | null } | null
     const { data: profile, error: profErr } = await svc
       .from("buyer_financial_profiles")
       .upsert(
         {
           contact_id:               contactId,
           brokerage_id:             params.brokerageId,
-          // finance_type is NOT NULL on the live schema; default to conventional at start.
-          finance_type:             pre.financeType ?? "conventional",
-          is_cash_buyer:            pre.isCashBuyer ?? false,
+          finance_type:             pre.financeType ?? ex?.finance_type ?? "conventional",
+          is_cash_buyer:            pre.isCashBuyer ?? ex?.is_cash_buyer ?? false,
           estimated_monthly_budget: pre.estimatedMonthlyBudget ?? null,
-          // verified stays false — the buyer REQUESTED pre-approval, hasn't completed it.
-          verified:                 false,
+          // verified stays false on a NEW request — but an already-verified profile is
+          // never un-verified by a lead-intent replay.
+          verified:                 ex?.verified === true,
           lender_referral_status:   "requested",
           updated_at:               new Date().toISOString(),
         },

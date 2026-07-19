@@ -67,10 +67,12 @@ export function SellerMeaningCard({ offer, listPrice, mortgagePayoff = 0 }: Sell
               {isCash ? (
                 <>This is a <span className="font-medium text-green-700">cash offer</span> with no financing risk.</>
               ) : (
-                <>This buyer needs financing ({offer.financing_type ?? "conventional"}). {offer.down_payment_percent && offer.down_payment_percent >= 20 ? (
+                <>This buyer needs financing{offer.financing_type ? ` (${offer.financing_type})` : " (loan type not on the offer — confirm with the buyer's agent or their pre-approval)"}. {offer.down_payment_percent && offer.down_payment_percent >= 20 ? (
                   <span className="text-green-700">Strong {offer.down_payment_percent}% down payment reduces risk.</span>
+                ) : offer.down_payment_percent ? (
+                  <span className="text-amber-700">Lower down payment ({offer.down_payment_percent}%) may increase financing risk.</span>
                 ) : (
-                  <span className="text-amber-700">Lower down payment ({offer.down_payment_percent ?? 0}%) may increase financing risk.</span>
+                  <span className="text-amber-700">Down payment not stated on the offer — ask for the lender letter to gauge financing strength.</span>
                 )}</>
               )}
               {contingencyCount > 0 ? (

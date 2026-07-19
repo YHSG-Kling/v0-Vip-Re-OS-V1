@@ -20,6 +20,7 @@ const money = (n: number) => `$${Math.round(n).toLocaleString()}`
 
 export function BuyerOfferToolsCard({
   contactId, propertyId, propertyAddress, price, preApprovalAmount, preApprovalExpiresAt,
+  preApprovalLender = null, profileDownPaymentPercent = null,
 }: {
   contactId: string
   propertyId: string
@@ -27,12 +28,23 @@ export function BuyerOfferToolsCard({
   price: number | null
   preApprovalAmount: number | null
   preApprovalExpiresAt: string | null
+  /** provenance — the lender named on the buyer's pre-approval record, when on file */
+  preApprovalLender?: string | null
+  /** the buyer's REAL planned down payment from their financial profile — seeds the
+   *  editable field so the default is their record, not a generic 20% */
+  profileDownPaymentPercent?: number | null
 }) {
   const { toast } = useToast()
   const [pending, startTransition] = useTransition()
   const [offerPending, startOffer] = useTransition()
   const [refreshPending, startRefresh] = useTransition()
-  const [downPct, setDownPct] = useState<number>(AFFORDABILITY_DEFAULTS.downPaymentPercent)
+  // Down payment seeds from the buyer's OWN financial profile when it exists (the real
+  // record); only a profile-less buyer sees the labeled, editable 20% estimate default.
+  const [downPct, setDownPct] = useState<number>(
+    profileDownPaymentPercent && profileDownPaymentPercent > 0 && profileDownPaymentPercent < 100
+      ? profileDownPaymentPercent
+      : AFFORDABILITY_DEFAULTS.downPaymentPercent,
+  )
   const [ratePct, setRatePct] = useState<number>(AFFORDABILITY_DEFAULTS.annualInterestRatePct)
   const [budget, setBudget] = useState<string>("")
 
@@ -141,9 +153,12 @@ export function BuyerOfferToolsCard({
         {read.headroomToPreApproval != null && (
           <p className="text-xs text-muted-foreground">
             {read.headroomToPreApproval >= 0
-              ? `${money(read.headroomToPreApproval)} under your pre-approval.`
-              : `${money(-read.headroomToPreApproval)} over your pre-approval.`}
+              ? `${money(read.headroomToPreApproval)} under your pre-approval${preApprovalLender ? ` from ${preApprovalLender}` : ""}.`
+              : `${money(-read.headroomToPreApproval)} over your pre-approval${preApprovalLender ? ` from ${preApprovalLender}` : ""}.`}
           </p>
+        )}
+        {profileDownPaymentPercent != null && profileDownPaymentPercent > 0 && profileDownPaymentPercent < 100 && downPct === profileDownPaymentPercent && (
+          <p className="text-[11px] text-muted-foreground">Down payment pre-filled from your financial profile ({profileDownPaymentPercent}%).</p>
         )}
         <p className="text-[11px] text-muted-foreground">Estimates only — rate, taxes, and insurance vary. Your agent and lender confirm the real numbers.</p>
 

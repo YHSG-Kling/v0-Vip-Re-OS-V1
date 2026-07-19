@@ -42,13 +42,43 @@ type Svc = ReturnType<typeof createServiceClient>
 export type AppraisalOptionKey = "seller_reduces" | "buyer_covers" | "split_or_reappraise"
 export type OptionFavors = "buyer" | "seller" | "balanced"
 
-/** Facts the pure composer needs. Loan/earnest are optional — when the loan amount
- *  is unknown we assume a conventional 20%-down structure and flag it. */
+/** Where the buyer's loan figure actually came from — the sourcing hierarchy the
+ *  runner walks (lender record → transaction record → the buyer's pre-approval).
+ *  There is NO assumption tier: when none of these exist, terms are UNKNOWN and
+ *  the math that needs them is presented as pending — never invented. */
+export type LoanTermsSource = "transaction_lenders" | "transaction" | "pre_approval"
+
+export interface KnownLoanTerms {
+  /** The real loan amount (0 = a cash purchase per the record). */
+  loanAmount: number
+  source: LoanTermsSource
+  lenderName?: string | null
+  loanType?: string | null
+  /** Extra provenance detail (e.g. a pre-approval expiry) rendered in the label. */
+  detail?: string | null
+}
+
+/** The provenance line downstream math carries ("per the buyer's pre-approval from …"). */
+export function loanTermsProvenanceLabel(t: KnownLoanTerms): string {
+  switch (t.source) {
+    case "transaction_lenders":
+      return `per the lender's loan terms on file${t.lenderName ? ` (${t.lenderName}${t.loanType ? `, ${t.loanType}` : ""})` : t.loanType ? ` (${t.loanType})` : ""}`
+    case "transaction":
+      return "per the loan amount on the transaction record"
+    case "pre_approval":
+      return `per the buyer's pre-approval${t.lenderName ? ` from ${t.lenderName}` : ""}${t.detail ? ` (${t.detail})` : ""}`
+  }
+}
+
+/** Facts the pure composer needs. `loanTerms` is the REAL, sourced loan structure —
+ *  null means genuinely unknown, and the composer then presents only the price/gap
+ *  math (which needs no loan terms) with the loan-dependent figures marked pending.
+ *  Nothing is ever assumed. */
 export interface AppraisalGapFacts {
   contractPrice: number
   appraisalValue: number
-  /** Original loan on the transaction (transactions.loan_amount). Null → assume 80% LTV. */
-  loanAmount?: number | null
+  /** Sourced loan terms (lender row → transaction → pre-approval), or null = unknown. */
+  loanTerms?: KnownLoanTerms | null
   earnestMoney?: number | null
 }
 
@@ -73,19 +103,22 @@ export interface AppraisalGapContext {
   appraisalValue: number
   gapAmount: number
   gapPct: number
-  ltv: number
-  originalDownPayment: number
-  originalLoanAmount: number
-  /** false → loan terms were absent and a conventional 20%-down structure was assumed. */
+  /** null when loan terms are unknown — no LTV is ever assumed. */
+  ltv: number | null
+  originalDownPayment: number | null
+  originalLoanAmount: number | null
+  /** false → no lender record, transaction loan, or pre-approval on file. The
+   *  loan-dependent figures are then PENDING (never an invented structure). */
   loanTermsKnown: boolean
+  loanTermsSource: LoanTermsSource | null
+  /** Provenance line for the briefing ("per the buyer's pre-approval from …"). */
+  loanTermsProvenance: string | null
 }
 
 export interface AppraisalGapCopilot {
   context: AppraisalGapContext
   options: AppraisalGapOption[]
 }
-
-const DEFAULT_LTV = 0.8
 
 function usd(n: number): string {
   return `$${Math.round(n).toLocaleString("en-US")}`
@@ -106,54 +139,67 @@ export function composeAppraisalGapOptions(facts: AppraisalGapFacts): AppraisalG
   const gapAmount = Math.max(0, contractPrice - appraisalValue)
   const gapPct = contractPrice > 0 ? Math.round((gapAmount / contractPrice) * 1000) / 10 : 0
 
-  // Derive the buyer's original structure. If the loan amount is on file and sane,
-  // use its real LTV; otherwise assume a conventional 20%-down (80% LTV) purchase.
-  const rawLoan = Number(facts.loanAmount ?? 0)
-  const loanTermsKnown = Number.isFinite(rawLoan) && rawLoan > 0 && rawLoan < contractPrice
-  const originalLoanAmount = loanTermsKnown ? Math.round(rawLoan) : Math.round(contractPrice * DEFAULT_LTV)
-  const originalDownPayment = contractPrice - originalLoanAmount
-  const ltv = contractPrice > 0 ? originalLoanAmount / contractPrice : DEFAULT_LTV
+  // The buyer's REAL structure — only from a sourced record (lender row, the
+  // transaction's own loan amount, or the buyer's pre-approval). When none is on
+  // file the terms are UNKNOWN: the options below present the price/gap math
+  // (which needs no loan terms) and the loan-dependent figures are pending the
+  // lender's terms. An invented 20%-down is still an invention — we never assume.
+  const t = facts.loanTerms ?? null
+  const loanTermsKnown =
+    t != null && Number.isFinite(t.loanAmount) && t.loanAmount >= 0 && t.loanAmount < contractPrice
+  const originalLoanAmount = loanTermsKnown ? Math.round(t!.loanAmount) : null
+  const originalDownPayment = loanTermsKnown ? contractPrice - (originalLoanAmount as number) : null
+  const ltv = loanTermsKnown && contractPrice > 0 ? (originalLoanAmount as number) / contractPrice : null
+  const provenance = loanTermsKnown ? loanTermsProvenanceLabel(t!) : null
+  const PENDING_LINE =
+    "loan figures pending the lender's terms — attach the pre-approval or lender details to complete this"
 
   // ── Option 1: SELLER REDUCES to the appraised value ──────────────────────────
   // Price is re-cut to the appraisal. The lender re-bases the loan on the new
   // (lower) price at the same LTV, so the buyer's down payment and cash-to-close
-  // both DROP. The seller absorbs the full gap.
+  // both DROP. The seller absorbs the full gap. The loan/down figures exist ONLY
+  // when the buyer's real structure is on file — otherwise they are pending.
   const o1NewPrice = appraisalValue
-  const o1NewLoan  = Math.round(appraisalValue * ltv)
-  const o1NewDown  = o1NewPrice - o1NewLoan
-  const o1BuyerCashDelta = o1NewDown - originalDownPayment // negative → buyer needs LESS cash
+  const o1NewLoan  = loanTermsKnown ? Math.round(appraisalValue * (ltv as number)) : null
+  const o1NewDown  = o1NewLoan != null ? o1NewPrice - o1NewLoan : null
+  const o1BuyerCashDelta =
+    o1NewDown != null && originalDownPayment != null ? o1NewDown - originalDownPayment : null // negative → buyer needs LESS cash
   const sellerReduces: AppraisalGapOption = {
     key: "seller_reduces",
     title: "Seller reduces to the appraised value",
     favors: "buyer",
     numbers: [
       num("New purchase price", o1NewPrice),
-      num("Revised loan", o1NewLoan),
-      num("Revised down payment", o1NewDown),
-      num("Buyer cash change", o1BuyerCashDelta),
+      ...(o1NewLoan != null ? [num("Revised loan", o1NewLoan)] : []),
+      ...(o1NewDown != null ? [num("Revised down payment", o1NewDown)] : []),
+      ...(o1BuyerCashDelta != null ? [num("Buyer cash change", o1BuyerCashDelta)] : []),
       num("Seller gives up", gapAmount),
     ],
     pros: [
       "Deal closes with no new cash from the buyer — often the fastest path to the table.",
       "Loan re-bases cleanly on the appraised value; no appraisal-contingency exposure remains.",
-      `Buyer's cash-to-close drops by about ${usd(Math.abs(o1BuyerCashDelta))}.`,
+      ...(o1BuyerCashDelta != null
+        ? [`Buyer's cash-to-close drops by about ${usd(Math.abs(o1BuyerCashDelta))} (${provenance}).`]
+        : []),
     ],
     cons: [
       `Seller nets ${usd(gapAmount)} less than the contract.`,
       "Hardest sell in a hot market or when the seller has other backup offers.",
     ],
-    fallbackFraming:
-      `Ask the seller to meet the appraisal at ${usd(o1NewPrice)}. The buyer keeps their financing, their down payment falls to about ${usd(o1NewDown)}, and the appraisal contingency clears itself. The trade is ${usd(gapAmount)} off the seller's net.`,
+    fallbackFraming: loanTermsKnown
+      ? `Ask the seller to meet the appraisal at ${usd(o1NewPrice)}. The buyer keeps their financing, their down payment falls to about ${usd(o1NewDown as number)} (${provenance}), and the appraisal contingency clears itself. The trade is ${usd(gapAmount)} off the seller's net.`
+      : `Ask the seller to meet the appraisal at ${usd(o1NewPrice)}. The appraisal contingency clears itself and the trade is ${usd(gapAmount)} off the seller's net; the buyer's revised ${PENDING_LINE}.`,
   }
 
   // ── Option 2: BUYER BRINGS CASH to cover the gap ─────────────────────────────
   // Price holds at contract. The lender caps the loan against the appraised value,
   // so the buyer commits to bring the gap in cash ABOVE the appraised value — the
-  // "appraisal-gap coverage" clause. Their original down PLUS the gap is the new
-  // cash-to-close; the loan drops by the gap and stays comfortably financeable.
-  const o2GapCoverage       = gapAmount
-  const o2RevisedCashToClose = originalDownPayment + gapAmount
-  const o2NewLoan           = contractPrice - o2RevisedCashToClose // = originalLoan - gap
+  // "appraisal-gap coverage" clause. The gap-coverage figure itself needs NO loan
+  // terms (it is pure price − appraisal); the revised cash-to-close/loan figures
+  // exist only when the buyer's real structure is on file.
+  const o2GapCoverage        = gapAmount
+  const o2RevisedCashToClose = originalDownPayment != null ? originalDownPayment + gapAmount : null
+  const o2NewLoan            = o2RevisedCashToClose != null ? contractPrice - o2RevisedCashToClose : null // = originalLoan - gap
   const buyerCovers: AppraisalGapOption = {
     key: "buyer_covers",
     title: "Buyer brings cash to cover the gap",
@@ -161,20 +207,23 @@ export function composeAppraisalGapOptions(facts: AppraisalGapFacts): AppraisalG
     numbers: [
       num("Purchase price (unchanged)", contractPrice),
       num("Appraisal-gap coverage", o2GapCoverage),
-      num("Revised cash to close", o2RevisedCashToClose),
-      num("Revised loan", o2NewLoan),
+      ...(o2RevisedCashToClose != null ? [num("Revised cash to close", o2RevisedCashToClose)] : []),
+      ...(o2NewLoan != null ? [num("Revised loan", o2NewLoan)] : []),
     ],
     pros: [
       "Seller keeps the full contract price — strongest option to hold the deal exactly as written.",
       "Backs an appraisal-gap coverage clause the buyer likely already anticipated in a competitive offer.",
     ],
     cons: [
-      `Buyer needs about ${usd(o2GapCoverage)} more cash at closing (revised cash-to-close ~${usd(o2RevisedCashToClose)}).`,
+      o2RevisedCashToClose != null
+        ? `Buyer needs about ${usd(o2GapCoverage)} more cash at closing (revised cash-to-close ~${usd(o2RevisedCashToClose)}, ${provenance}).`
+        : `Buyer needs about ${usd(o2GapCoverage)} more cash at closing; their full revised ${PENDING_LINE}.`,
       "Only works if the buyer has the reserves — confirm proof of funds before proposing it.",
       "Buyer is paying over the appraised value, which they may resist.",
     ],
-    fallbackFraming:
-      `Hold the price at ${usd(contractPrice)} and have the buyer cover the ${usd(o2GapCoverage)} gap in cash above the appraisal. Their cash-to-close rises to about ${usd(o2RevisedCashToClose)} and the loan settles near ${usd(o2NewLoan)}. Confirm the buyer's reserves before you float it.`,
+    fallbackFraming: loanTermsKnown
+      ? `Hold the price at ${usd(contractPrice)} and have the buyer cover the ${usd(o2GapCoverage)} gap in cash above the appraisal. Their cash-to-close rises to about ${usd(o2RevisedCashToClose as number)} (${provenance}) and the loan settles near ${usd(o2NewLoan as number)}. Confirm the buyer's reserves before you float it.`
+      : `Hold the price at ${usd(contractPrice)} and have the buyer cover the ${usd(o2GapCoverage)} gap in cash above the appraisal. Their exact cash-to-close and revised ${PENDING_LINE}. Confirm the buyer's reserves before you float it.`,
   }
 
   // ── Option 3: MEET IN THE MIDDLE / RE-APPRAISE with comps ────────────────────
@@ -212,10 +261,12 @@ export function composeAppraisalGapOptions(facts: AppraisalGapFacts): AppraisalG
       appraisalValue,
       gapAmount,
       gapPct,
-      ltv: Math.round(ltv * 1000) / 1000,
+      ltv: ltv != null ? Math.round(ltv * 1000) / 1000 : null,
       originalDownPayment,
       originalLoanAmount,
       loanTermsKnown,
+      loanTermsSource: loanTermsKnown ? t!.source : null,
+      loanTermsProvenance: provenance,
     },
     options: [sellerReduces, buyerCovers, splitOrReappraise],
   }
@@ -393,12 +444,111 @@ export function buildAgentBriefing(
     lines.push("")
   }
 
-  if (!context.loanTermsKnown) {
-    lines.push("Note: no loan amount on file — figures assume a conventional 20%-down purchase. Confirm the buyer's actual financing.")
+  if (context.loanTermsKnown && context.loanTermsProvenance) {
+    lines.push(`Loan figures are ${context.loanTermsProvenance}.`)
+    lines.push("")
+  } else {
+    lines.push(
+      "Loan-dependent figures (revised loan, down payment, cash-to-close) are PENDING the lender's terms — no lender record or pre-approval is on file, and nothing was assumed. Attach the buyer's pre-approval or the lender details to complete this; the price/gap math above stands on its own.",
+    )
     lines.push("")
   }
   lines.push(`Bottom line: ${bottomLine}`)
   return lines.join("\n")
+}
+
+/**
+ * Resolve the buyer's REAL loan terms for a transaction — the sourcing hierarchy:
+ *   1. transaction_lenders — the lender's own record (loan_amount, loan_type, lender_name)
+ *   2. transactions.loan_amount — the loan recorded on the deal itself
+ *   3. buyer_financial_profiles — the buyer's pre-approval (cash flag, down payment
+ *      amount/percent, lender, expiry) → the planned structure at THIS contract price
+ *   4. null — genuinely unknown. NO assumption tier exists.
+ * Best-effort; never throws.
+ */
+export async function resolveLoanTermsForTransaction(
+  supabase: Svc,
+  transactionId: string,
+  contractPrice: number,
+  transactionLoanAmount?: number | null,
+): Promise<KnownLoanTerms | null> {
+  const sane = (n: unknown): number | null => {
+    const v = Number(n)
+    return Number.isFinite(v) && v > 0 && v < contractPrice ? Math.round(v) : null
+  }
+  try {
+    // 1. The lender record on the deal.
+    const { data: lender } = await supabase
+      .from("transaction_lenders")
+      .select("loan_amount, loan_type, lender_name")
+      .eq("transaction_id", transactionId)
+      .limit(1)
+      .maybeSingle()
+    const lenderLoan = sane((lender as any)?.loan_amount)
+    if (lenderLoan != null) {
+      return {
+        loanAmount: lenderLoan,
+        source: "transaction_lenders",
+        lenderName: (lender as any)?.lender_name ?? null,
+        loanType: (lender as any)?.loan_type ?? null,
+      }
+    }
+
+    // 2. The loan amount recorded on the transaction itself.
+    const txLoan = sane(transactionLoanAmount)
+    if (txLoan != null) return { loanAmount: txLoan, source: "transaction" }
+
+    // 3. The buyer's pre-approval record (buyer_financial_profiles).
+    const { data: tx } = await supabase
+      .from("transactions")
+      .select("buyer_contact_id, contact_id")
+      .eq("id", transactionId)
+      .maybeSingle()
+    const buyerContactId = (tx as any)?.buyer_contact_id ?? (tx as any)?.contact_id ?? null
+    if (buyerContactId) {
+      const { data: fin } = await supabase
+        .from("buyer_financial_profiles")
+        .select("is_cash_buyer, down_payment_amount, down_payment_percent, pre_approval_lender, pre_approval_expires_at, finance_type")
+        .eq("contact_id", buyerContactId)
+        .maybeSingle()
+      if (fin) {
+        const f = fin as any
+        const expiry = f.pre_approval_expires_at
+          ? `expires ${String(f.pre_approval_expires_at).slice(0, 10)}`
+          : null
+        if (f.is_cash_buyer === true) {
+          return {
+            loanAmount: 0,
+            source: "pre_approval",
+            lenderName: f.pre_approval_lender ?? null,
+            detail: "cash purchase per the buyer's financial profile",
+          }
+        }
+        const downAmt = sane(f.down_payment_amount)
+        if (downAmt != null) {
+          return {
+            loanAmount: contractPrice - downAmt,
+            source: "pre_approval",
+            lenderName: f.pre_approval_lender ?? null,
+            loanType: f.finance_type ?? null,
+            detail: expiry,
+          }
+        }
+        const downPct = Number(f.down_payment_percent)
+        if (Number.isFinite(downPct) && downPct > 0 && downPct < 100) {
+          return {
+            loanAmount: Math.round(contractPrice * (1 - downPct / 100)),
+            source: "pre_approval",
+            lenderName: f.pre_approval_lender ?? null,
+            loanType: f.finance_type ?? null,
+            detail: expiry,
+          }
+        }
+      }
+    }
+  } catch { /* best-effort — unknown is an honest answer */ }
+  // 4. Genuinely unknown — the copilot presents the price/gap math and says so.
+  return null
 }
 
 export interface AppraisalNegotiationResult {
@@ -454,11 +604,15 @@ export async function runAppraisalNegotiationCopilot(
     .maybeSingle()
   if (dup) return { ran: true, taskCreated: false, compsFound: 0, reason: "already briefed for this appraisal value" }
 
-  // Pure math → the three priced options.
+  // Source the buyer's REAL loan terms (lender record → transaction → pre-approval;
+  // null = genuinely unknown, nothing assumed), then pure math → the three options.
+  const loanTerms = await resolveLoanTermsForTransaction(
+    supabase, args.transactionId, args.contractPrice, args.loanAmount ?? null,
+  )
   const copilot = composeAppraisalGapOptions({
     contractPrice: args.contractPrice,
     appraisalValue: args.appraisalValue,
-    loanAmount: args.loanAmount ?? null,
+    loanTerms,
     earnestMoney: args.earnestMoney ?? null,
   })
 

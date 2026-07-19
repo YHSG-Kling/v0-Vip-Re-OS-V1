@@ -691,9 +691,23 @@ export async function runCompleteOfferWorkflow(params: {
       buyerMaxBudget: params.buyerMaxBudget,
     })
 
+    // Financing type comes from the buyer's REAL pre-approval record (buyer_financial_profiles)
+    // — never assumed conventional (owner correction). Cash flag wins; a missing profile reads
+    // honestly as unknown so the AI reasons about the uncertainty instead of a fiction.
+    let buyerFinancingType = "unknown (no pre-approval or lender record on file)"
+    try {
+      const { data: finProfile } = await supabase
+        .from("buyer_financial_profiles")
+        .select("finance_type, is_cash_buyer")
+        .eq("contact_id", params.buyerId)
+        .maybeSingle()
+      if (finProfile?.is_cash_buyer === true) buyerFinancingType = "cash"
+      else if (finProfile?.finance_type) buyerFinancingType = String(finProfile.finance_type)
+    } catch { /* honest unknown */ }
+
     // Step 2: Contingency recommendations
     const contingencyResult = await aiRecommendContingencies({
-      buyerFinancingType: "conventional",
+      buyerFinancingType,
       propertyAge: listing.year_built ? new Date().getFullYear() - listing.year_built : 20,
       propertyCondition: "good",
       competitionLevel: "medium",
@@ -732,7 +746,7 @@ export async function runCompleteOfferWorkflow(params: {
     // Step 5: Get required forms
     const formsResult = await getOfferForms({
       state: listing.state || "DEFAULT",
-      financingType: "conventional",
+      financingType: buyerFinancingType, // real record or honest "unknown" — never assumed conventional
       isShortSale: false,
       hasHoa: listing.has_hoa || false,
       isNewConstruction: listing.is_new_construction || false,

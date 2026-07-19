@@ -34,7 +34,11 @@ export function BuyerClosingCostsCard({ contactId, transactionId }: { contactId:
         Beyond your down payment, plan for roughly <span className="font-semibold">{usd(est.netLow)}–{usd(est.netHigh)}</span> at
         closing ({est.pctLow}%–{est.pctHigh}% of the purchase price{est.sellerCredit > 0 ? `, after the ${usd(est.sellerCredit)} seller credit your agent negotiated` : ""}).
         {est.isCash ? " Paying cash keeps the lender fees off this list entirely." : ""}
+        {!est.isCash && !est.loanKnown ? " Lender charges aren't included yet — they depend on your loan terms, which aren't on file." : ""}
       </p>
+      {est.loanSourceNote && (
+        <p className="mt-1 text-xs text-muted-foreground">Loan figures {est.loanSourceNote}.</p>
+      )}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -51,7 +55,9 @@ export function BuyerClosingCostsCard({ contactId, transactionId }: { contactId:
                 {l.label}
                 {l.note && <span className="block text-xs text-muted-foreground">{l.note}</span>}
               </span>
-              <span className="shrink-0 tabular-nums text-muted-foreground">{usd(l.low)}–{usd(l.high)}</span>
+              <span className="shrink-0 tabular-nums text-muted-foreground">
+                {l.pending ? "Pending lender terms" : `${usd(l.low)}–${usd(l.high)}`}
+              </span>
             </div>
           ))}
           {est.sellerCredit > 0 && (

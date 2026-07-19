@@ -247,22 +247,41 @@ export async function connectBuyerToLender(params: {
 
   if (referralError) return { success: false, error: referralError.message }
 
-  // 2. UPSERT buyer_financial_profiles lender referral
-  const { error: profileError } = await supabase
+  // 2. UPSERT buyer_financial_profiles lender referral — WITHOUT clobbering real
+  // loan facts. A referral must never overwrite an existing profile's finance_type
+  // (e.g. a VA buyer) or cash flag with an invented "conventional" (owner
+  // correction: loan terms come from the pre-approval or the lender, never
+  // assumed). Existing row → update ONLY the referral fields; new row → insert
+  // with the schema-required NOT NULL finance_type placeholder.
+  const { data: existingProfile } = await supabase
     .from("buyer_financial_profiles")
-    .upsert(
-      {
-        contact_id:                  params.contactId,
-        brokerage_id:                access.brokerageId,
-        agent_user_id:               access.userId,
-        finance_type:                "conventional",
-        is_cash_buyer:               false,
-        lender_referral_status:      "referred",
-        lender_referred_partner_id:  params.partnerId,
-        updated_at:                  new Date().toISOString(),
-      },
-      { onConflict: "contact_id" }
-    )
+    .select("id")
+    .eq("contact_id", params.contactId)
+    .maybeSingle()
+  const { error: profileError } = existingProfile
+    ? await supabase
+        .from("buyer_financial_profiles")
+        .update({
+          lender_referral_status:     "referred",
+          lender_referred_partner_id: params.partnerId,
+          updated_at:                 new Date().toISOString(),
+        })
+        .eq("contact_id", params.contactId)
+    : await supabase
+        .from("buyer_financial_profiles")
+        .insert({
+          contact_id:                  params.contactId,
+          brokerage_id:                access.brokerageId,
+          agent_user_id:               access.userId,
+          // finance_type is NOT NULL on the live schema; no honest "unknown" value
+          // exists yet (deferred schema shape). This placeholder is only ever written
+          // on a brand-new row and is replaced the moment real pre-approval terms land.
+          finance_type:                "conventional",
+          is_cash_buyer:               false,
+          lender_referral_status:      "referred",
+          lender_referred_partner_id:  params.partnerId,
+          updated_at:                  new Date().toISOString(),
+        })
 
   if (profileError) return { success: false, error: profileError.message }
 

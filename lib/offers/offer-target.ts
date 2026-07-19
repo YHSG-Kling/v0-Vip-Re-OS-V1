@@ -103,14 +103,15 @@ export function marketConditionsFromDom(daysOnMarket: number | null): "hot" | "b
   return "balanced"
 }
 
-/** PURE. The buyer's max budget for the advisor — pre-approval amount when present, else a
- *  conservative ceiling derived from the list price (never above ~110% of list without a real
- *  pre-approval signal). Returns null when neither is usable (caller skips the numeric plan). */
+/** PURE. The buyer's max budget for the advisor — the pre-approval amount on file (the real
+ *  lender-cleared ceiling), and NOTHING else. A ceiling derived from the list price would be a
+ *  fabricated financial fact about the buyer (owner correction: loan figures come from the
+ *  pre-approval or the lender, never an assumption) — so with no pre-approval this returns
+ *  null and the caller degrades honestly to the generic (non-numeric) brief. */
 export function resolveBuyerMaxBudget(
   preApprovalAmount: number | null | undefined,
-  listPrice: number,
+  _listPrice: number,
 ): number | null {
   if (typeof preApprovalAmount === "number" && preApprovalAmount > 0) return preApprovalAmount
-  if (listPrice > 0) return Math.round(listPrice * 1.1)
   return null
 }

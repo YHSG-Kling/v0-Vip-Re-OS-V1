@@ -428,7 +428,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-sm text-muted-foreground">Financing</p>
-                  <Badge>{offer.financing_type || "Conventional"}</Badge>
+                  <Badge>{offer.financing_type || "Financing not specified"}</Badge>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Earnest Money</p>
@@ -665,7 +665,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                 <td className="py-3">Financing</td>
                 {offers.map((offer) => (
                   <td key={offer.id} className="text-center py-3">
-                    {offer.financing_type || "Conventional"}
+                    {offer.financing_type || "Not specified"}
                     {offer.financing_type === "cash" && " ⭐"}
                   </td>
                 ))}
