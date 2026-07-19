@@ -3,6 +3,7 @@ import Link from "next/link"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { createServiceClient } from "@/lib/supabase/service"
 import { Badge } from "@/components/ui/badge"
+import { loadUsageReportRows } from "./usage-report-data"
 
 export const dynamic = "force-dynamic"
 
@@ -17,8 +18,9 @@ export const dynamic = "force-dynamic"
 // Scale note: per-tenant head counts fan out N queries; fine for the current
 // subscriber count (cron sweeps cap at 500). When the fleet outgrows this,
 // fold the counts into the nightly meter rollup instead.
-
-const CORE_TABLES = ["contacts", "listings", "transactions"] as const
+//
+// The data loader lives in ./usage-report-data.ts (shared with ./export — the
+// CSV download of exactly these rows).
 
 export default async function UsageReportsPage() {
   const gate = await requirePlatformCapability("tenants")
@@ -26,47 +28,9 @@ export default async function UsageReportsPage() {
   if (!gate.ok) return <div className="p-6 text-red-600">Forbidden: requires platform tenants capability</div>
 
   const svc = createServiceClient()
-  const { data: tenants, error } = await svc
-    .from("brokerages")
-    .select("id, name, plan_tier, status, created_at")
-    .is("deleted_at", null)
-    .order("created_at", { ascending: true })
-    .limit(200)
-  if (error) return <div className="p-6 text-red-600">Failed to load subscribers: {error.message}</div>
-
-  // Current-month media/usage counters (one query, grouped client-side).
-  const monthStart = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString()
-  const { data: counters } = await svc
-    .from("usage_counters")
-    .select("brokerage_id, metric, value")
-    .eq("period_start", monthStart)
-  const countersByTenant = new Map<string, Record<string, number>>()
-  for (const c of counters ?? []) {
-    const m = countersByTenant.get(c.brokerage_id) ?? {}
-    m[c.metric] = Number(c.value ?? 0)
-    countersByTenant.set(c.brokerage_id, m)
-  }
-
-  // Core-object head counts per tenant.
-  const rows = await Promise.all(
-    (tenants ?? []).map(async (t) => {
-      const counts: Record<string, number> = {}
-      await Promise.all(
-        CORE_TABLES.map(async (tbl) => {
-          const { count } = await svc
-            .from(tbl)
-            .select("id", { count: "exact", head: true })
-            .eq("brokerage_id", t.id)
-          counts[tbl] = count ?? 0
-        })
-      )
-      const { count: userCount } = await svc
-        .from("users")
-        .select("id", { count: "exact", head: true })
-        .eq("brokerage_id", t.id)
-      return { tenant: t, counts, userCount: userCount ?? 0, usage: countersByTenant.get(t.id) ?? {} }
-    })
-  )
+  const res = await loadUsageReportRows(svc)
+  if (!res.ok) return <div className="p-6 text-red-600">Failed to load subscribers: {res.error}</div>
+  const rows = res.rows
 
   const fmtMetric = (v: number | undefined) => (v == null || v === 0 ? "—" : v.toLocaleString())
 
@@ -81,6 +45,9 @@ export default async function UsageReportsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <a href="/dashboard/superadmin/usage-reports/export" className="rounded-md border px-3 py-1 text-sm font-medium" download>
+            Download CSV
+          </a>
           <Link href="/dashboard/superadmin/home" className="rounded-md border px-3 py-1 text-sm">Home</Link>
           <Link href="/dashboard/superadmin/ai-ops" className="rounded-md border px-3 py-1 text-sm">AI Ops (spend)</Link>
           <Link href="/dashboard/superadmin/subscriptions" className="rounded-md border px-3 py-1 text-sm">Subscriptions</Link>

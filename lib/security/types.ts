@@ -41,6 +41,8 @@ export type LegacyRole =
   | 'COMPLIANCE_OFFICER'       // → compliance_officer (old enum key)
   | 'TEAM_LEADER'              // → team_lead (old enum key)
   | 'super_admin'              // → superadmin
+  | 'broker_admin'             // → broker (brokerage-admin user_type in older rows)
+  | 'solo_agent'               // → agent (plan-tier string leaked into role fields)
 
 /** Any raw string that could arrive from the database or a JWT claim. */
 export type RawRole = CanonicalRole | LegacyRole | string
@@ -55,6 +57,13 @@ const LEGACY_ROLE_MAP: Record<string, CanonicalRole> = {
   client: 'contact',
   team_leader: 'team_lead',
   super_admin: 'superadmin',
+  // broker_admin is a live user_type in older rows — everywhere it appears it is
+  // grouped with 'broker' at brokerage-wide scope (see lib/kernel/egress-scope.ts),
+  // so it maps to 'broker', NOT the default fallback ('agent' in most callers).
+  broker_admin: 'broker',
+  // solo_agent is a PLAN TIER string that leaked into role fields in early rows;
+  // a solo-tier user is an agent.
+  solo_agent: 'agent',
 
   // Old enum key strings (stored verbatim in some early rows)
   TC: 'tc',

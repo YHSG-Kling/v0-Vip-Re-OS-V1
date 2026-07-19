@@ -88,8 +88,14 @@ export async function listAffiliatesAction(): Promise<
   | { ok: true; affiliates: AffiliateRow[] }
   | { ok: false; error: string }
 > {
+  // READ gate: 'billing' (the board's home capability) OR 'marketing' — the
+  // marketing role hands out ref links and needs to SEE partners/attribution.
+  // Every mutation below stays billing + requireWrite; marketing can never mutate.
   const gate = await requirePlatformCapability("billing")
-  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
+  if (!gate.ok) {
+    const marketingGate = await requirePlatformCapability("marketing")
+    if (!marketingGate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
+  }
   const svc = createServiceClient()
 
   const [affR, refR, evtR, marginR, subsR, brokR] = await Promise.all([

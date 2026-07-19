@@ -49,7 +49,19 @@ export interface PlatformMarginRow {
   margin_percent:      number | null
   quota_status:        "ok" | "warning" | "blocked" | "unlimited" | null
   quota_percent_used:  number | null
+  /** MTD telephony spend (cents) from the EXISTING vendor_usage_tracking ledger
+   *  (twilio/telnyx/bandwidth voice+SMS metering) — NOT part of margin_cents
+   *  (the view's MRR − AI number); rendered as its own labeled line. */
+  telephony_cost_cents: number
 }
+
+// Telephony vendor names as they appear in vendor_usage_tracking. Writers store
+// either the resolved provider key (dispatch.ts → 'twilio'/'telnyx'/'bandwidth')
+// or the lane key ('twilio_voice'/'twilio_sms' via the cost normalizer /
+// message-persister). Matching the whole family keeps the number honest.
+const TELEPHONY_VENDOR_NAMES = [
+  "twilio", "twilio_voice", "twilio_sms", "telnyx", "bandwidth", "plivo", "sinch",
+]
 
 export interface PlatformOverviewResult {
   ok: true
@@ -57,6 +69,8 @@ export interface PlatformOverviewResult {
     brokerage_count:   number
     total_mrr_cents:   number
     total_ai_cents:    number
+    /** MTD telephony spend across all tenants (vendor_usage_tracking ledger). */
+    total_telephony_cents: number
     total_margin_cents: number
     margin_percent:    number | null
     by_tier: Record<
@@ -76,18 +90,42 @@ export async function getPlatformOverviewAction(): Promise<
   if (!auth.ok) return auth
   const svc = createServiceClient()
 
-  const { data, error } = await svc
-    .from("v_platform_margin")
-    .select("*")
-    .order("margin_cents", { ascending: true })   // worst-margin first
+  // Same window as the view: the current UTC month.
+  const now = new Date()
+  const monthStartIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString()
+
+  const [{ data, error }, telRes] = await Promise.all([
+    svc
+      .from("v_platform_margin")
+      .select("*")
+      .order("margin_cents", { ascending: true }),   // worst-margin first
+    // TELEPHONY (MTD) — cheap ledger read (vendor_usage_tracking); no vendor API.
+    svc
+      .from("vendor_usage_tracking")
+      .select("brokerage_id, total_cost")
+      .in("vendor_name", TELEPHONY_VENDOR_NAMES)
+      .gte("created_at", monthStartIso)
+      .limit(10000),
+  ])
 
   if (error) return { ok: false, error: error.message }
-  const rows = (data ?? []) as PlatformMarginRow[]
+  const telephonyByBrokerage = new Map<string, number>()
+  for (const t of (telRes.data ?? []) as Array<{ brokerage_id: string | null; total_cost: number | string | null }>) {
+    if (!t.brokerage_id) continue
+    const cents = Math.round(Number(t.total_cost ?? 0) * 100)
+    if (!(cents > 0)) continue
+    telephonyByBrokerage.set(t.brokerage_id, (telephonyByBrokerage.get(t.brokerage_id) ?? 0) + cents)
+  }
+  const rows = ((data ?? []) as Omit<PlatformMarginRow, "telephony_cost_cents">[]).map((r) => ({
+    ...r,
+    telephony_cost_cents: telephonyByBrokerage.get(r.brokerage_id) ?? 0,
+  })) as PlatformMarginRow[]
 
   const totals = {
     brokerage_count:    rows.length,
     total_mrr_cents:    rows.reduce((s, r) => s + (r.mrr_cents ?? 0), 0),
     total_ai_cents:     rows.reduce((s, r) => s + (r.ai_cost_cents ?? 0), 0),
+    total_telephony_cents: rows.reduce((s, r) => s + (r.telephony_cost_cents ?? 0), 0),
     total_margin_cents: 0,
     margin_percent:     null as number | null,
     by_tier: {

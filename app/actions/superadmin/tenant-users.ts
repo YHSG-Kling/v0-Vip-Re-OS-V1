@@ -12,6 +12,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { inviteTenantMember, type UserDomainRole } from "@/lib/kernel/users"
 import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatCheck, parseSeatOverride, SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
+import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 
@@ -26,24 +27,130 @@ async function audit(actorUserId: string, actorEmail: string, action: string, ta
   } catch (err) { console.error("[tenant-users audit] failed:", err) }
 }
 
-export interface TenantUserRow { id: string; email: string | null; name: string; role: string; status: string | null }
+export interface TenantUserRow {
+  id: string; email: string | null; name: string; role: string; status: string | null
+  /** auth.users.last_sign_in_at (the engagement radar's source, via the auth
+   *  admin API) — null when Auth has no record, rendered as an honest "—". */
+  lastLoginAt: string | null
+}
 export interface TenantInviteRow { id: string; email: string; role: string; status: string; expiresAt: string | null; createdAt: string }
+export interface TenantTeamRow { id: string; name: string; leadName: string | null; memberCount: number }
+
+/** auth.users.last_sign_in_at for a set of user ids — SAME source as the
+ *  engagement radar (svc.auth.admin.listUsers, paged); early-exits once every
+ *  requested id is resolved. Best-effort: failure → empty map (honest "—"). */
+async function lastSignInsFor(svc: ReturnType<typeof createServiceClient>, ids: Set<string>): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  if (ids.size === 0) return out
+  try {
+    let remaining = ids.size
+    for (let page = 1; page <= 20 && remaining > 0; page++) {
+      const { data: authPage, error } = await svc.auth.admin.listUsers({ page, perPage: 1000 })
+      if (error) break
+      for (const u of authPage.users) {
+        if (ids.has(u.id)) {
+          remaining -= 1
+          if (u.last_sign_in_at) out.set(u.id, u.last_sign_in_at)
+        }
+      }
+      if (authPage.users.length < 1000) break
+    }
+  } catch { /* best-effort — the roster renders "—" for unknowns */ }
+  return out
+}
 
 export async function listTenantUsersAction(brokerageId: string): Promise<
-  | { ok: true; users: TenantUserRow[]; invites: TenantInviteRow[] }
+  | { ok: true; users: TenantUserRow[]; invites: TenantInviteRow[]; teams: TenantTeamRow[]; planTier: string | null }
   | { ok: false; error: string }
 > {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  const [{ data: users }, { data: invites }] = await Promise.all([
-    svc.from("users").select("id, email, first_name, last_name, user_type, status").eq("brokerage_id", brokerageId).is("deleted_at", null).limit(500),
+  const [{ data: users }, { data: invites }, { data: teams }, { data: brk }] = await Promise.all([
+    svc.from("users").select("id, email, first_name, last_name, user_type, status, team_id").eq("brokerage_id", brokerageId).is("deleted_at", null).limit(500),
     svc.from("user_invitations").select("id, email, user_type, status, expires_at, created_at").eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(200),
+    svc.from("teams").select("id, name, team_lead_id").eq("brokerage_id", brokerageId).is("deleted_at", null).order("name").limit(100),
+    svc.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle(),
   ])
+
+  const userRows = (users ?? []) as any[]
+  const lastSignIn = await lastSignInsFor(svc, new Set(userRows.map((u) => u.id as string)))
+
+  // Team structure: member counts from the roster's team_id; lead name resolved
+  // from the same roster (team_lead_id is a users.id).
+  const nameById = new Map<string, string>()
+  for (const u of userRows) nameById.set(u.id, [u.first_name, u.last_name].filter(Boolean).join(" ") || (u.email ?? "—"))
+  const membersByTeam = new Map<string, number>()
+  for (const u of userRows) {
+    if (u.team_id) membersByTeam.set(u.team_id, (membersByTeam.get(u.team_id) ?? 0) + 1)
+  }
+  const teamRows: TenantTeamRow[] = ((teams ?? []) as any[]).map((t) => ({
+    id: t.id,
+    name: t.name ?? "(unnamed team)",
+    leadName: t.team_lead_id ? (nameById.get(t.team_lead_id) ?? null) : null,
+    memberCount: membersByTeam.get(t.id) ?? 0,
+  }))
+
   return {
     ok: true,
-    users: ((users ?? []) as any[]).map((u) => ({ id: u.id, email: u.email, name: [u.first_name, u.last_name].filter(Boolean).join(" ") || "—", role: u.user_type, status: u.status })),
+    users: userRows.map((u) => ({
+      id: u.id, email: u.email,
+      name: [u.first_name, u.last_name].filter(Boolean).join(" ") || "—",
+      role: u.user_type, status: u.status,
+      lastLoginAt: lastSignIn.get(u.id) ?? null,
+    })),
     invites: ((invites ?? []) as any[]).map((i) => ({ id: i.id, email: i.email, role: i.user_type, status: i.status, expiresAt: i.expires_at, createdAt: i.created_at })),
+    teams: teamRows,
+    planTier: ((brk as any)?.plan_tier as string | null) ?? null,
+  }
+}
+
+// ── CROSS-TENANT USER SEARCH ─────────────────────────────────────────────────
+
+export interface CrossTenantUserHit {
+  id: string; email: string | null; name: string; role: string; status: string | null
+  brokerageId: string | null; brokerageName: string | null
+}
+
+/** Find users by email ACROSS every tenant — "which brokerage is this person
+ *  in?" without opening tenants one by one. Read-only; gated on the platform
+ *  'tenants' capability (every staff role oversees subscribers). */
+export async function searchUsersByEmailAction(query: string): Promise<
+  | { ok: true; hits: CrossTenantUserHit[] }
+  | { ok: false; error: string }
+> {
+  const gate = await requirePlatformCapability("tenants")
+  if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden" }
+  const q = (query ?? "").trim().toLowerCase()
+  if (q.length < 3) return { ok: false, error: "Enter at least 3 characters of the email" }
+
+  const svc = createServiceClient()
+  const pattern = `%${q.replace(/[%_]/g, "\\$&")}%`
+  const { data, error } = await svc
+    .from("users")
+    .select("id, email, first_name, last_name, user_type, status, brokerage_id")
+    .ilike("email", pattern)
+    .is("deleted_at", null)
+    .limit(20)
+  if (error) return { ok: false, error: error.message }
+
+  const rows = (data ?? []) as any[]
+  const brokerageIds = [...new Set(rows.map((u) => u.brokerage_id).filter(Boolean))] as string[]
+  const brokerageNameById = new Map<string, string>()
+  if (brokerageIds.length > 0) {
+    const { data: brks } = await svc.from("brokerages").select("id, name").in("id", brokerageIds)
+    for (const b of (brks ?? []) as any[]) brokerageNameById.set(b.id, b.name ?? "(unnamed)")
+  }
+
+  return {
+    ok: true,
+    hits: rows.map((u) => ({
+      id: u.id, email: u.email,
+      name: [u.first_name, u.last_name].filter(Boolean).join(" ") || "—",
+      role: u.user_type, status: u.status,
+      brokerageId: u.brokerage_id ?? null,
+      brokerageName: u.brokerage_id ? (brokerageNameById.get(u.brokerage_id) ?? null) : null,
+    })),
   }
 }
 

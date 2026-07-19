@@ -39,6 +39,40 @@ export type ValidationResult =
   | { ok: true; value: NormalizedPlanTier }
   | { ok: false; error: string }
 
+// ── STRIPE DRIFT COMPARE (pure) ──────────────────────────────────────────────
+// ONE comparison for "does this catalog tier still match its live Stripe
+// price?" — used by the weekly stripe-drift cron. Mirrors the interval logic
+// syncPlanTierFromStripeAction uses when it PULLS a price (interval 'year' →
+// annual_price_cents, else monthly_price_cents), so cron and manual sync can
+// never disagree about what "matches" means.
+
+export interface StripePriceFacts {
+  unitAmount: number | null
+  interval: "month" | "year" | string | null
+  active: boolean
+}
+
+export interface PlanDriftFinding {
+  drifted: boolean
+  reason: "price_inactive" | "amount_mismatch" | null
+  /** Which DB column the Stripe price maps onto (by its interval). */
+  field: "monthly_price_cents" | "annual_price_cents"
+  dbCents: number
+  stripeCents: number | null
+}
+
+export function comparePlanPriceToStripe(
+  tier: { monthly_price_cents: number | null; annual_price_cents: number | null },
+  price: StripePriceFacts,
+): PlanDriftFinding {
+  const field = price.interval === "year" ? "annual_price_cents" : "monthly_price_cents"
+  const dbCents = Number(tier[field] ?? 0)
+  const stripeCents = price.unitAmount == null ? null : Number(price.unitAmount)
+  if (!price.active) return { drifted: true, reason: "price_inactive", field, dbCents, stripeCents }
+  if (stripeCents !== dbCents) return { drifted: true, reason: "amount_mismatch", field, dbCents, stripeCents }
+  return { drifted: false, reason: null, field, dbCents, stripeCents }
+}
+
 const nonNeg = (n: unknown): number => {
   const v = typeof n === "number" ? n : Number(n ?? 0)
   return Number.isFinite(v) && v >= 0 ? Math.round(v) : NaN

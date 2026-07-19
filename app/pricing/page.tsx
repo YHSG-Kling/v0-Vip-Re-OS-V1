@@ -9,6 +9,8 @@ import { loadPublicTiers, formatTierPrice } from "@/lib/platform/public-tiers"
 import { loadProductBrand } from "@/lib/platform/product-brand"
 import { serializeJsonLd } from "@/lib/geo/video-landing"
 import { siteUrl } from "@/lib/platform/site-url"
+import { redirect } from "next/navigation"
+import { refCaptureRedirect } from "@/lib/platform/affiliate-ref-capture"
 
 export const dynamic = "force-dynamic"
 
@@ -24,7 +26,16 @@ export async function generateMetadata(): Promise<Metadata> {
   }
 }
 
-export default async function PricingPage() {
+export default async function PricingPage({ searchParams }: { searchParams: Promise<{ ref?: string }> }) {
+  // AFFILIATE ?ref CAPTURE — a server component cannot set cookies, so bounce
+  // once through /api/ref (the one cookie-setter; 90-day AFFILIATE_REF_COOKIE)
+  // and land back here without the ref param (no loop).
+  const params = await searchParams
+  if (params.ref) {
+    const capture = refCaptureRedirect(params.ref, "/pricing")
+    if (capture) redirect(capture)
+  }
+
   const svc = createServiceClient()
   const [brand, tiers] = await Promise.all([loadProductBrand(svc), loadPublicTiers(svc)])
   const base = siteUrl()

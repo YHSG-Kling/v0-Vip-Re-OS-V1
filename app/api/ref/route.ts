@@ -5,6 +5,7 @@ import {
   AFFILIATE_REF_COOKIE_DAYS,
   normalizeAffiliateCode,
 } from "@/lib/platform/affiliates"
+import { isSafeRefReturn } from "@/lib/platform/affiliate-ref-capture"
 
 /**
  * AFFILIATE ATTRIBUTION CAPTURE — the marketing link target.
@@ -25,7 +26,12 @@ import {
 export async function GET(req: NextRequest) {
   const url = new URL(req.url)
   const code = normalizeAffiliateCode(url.searchParams.get("code"))
-  const dest = new URL("/get-started", url.origin)
+  // `to` lets the funnel pages (/pricing, /get-started — which cannot set
+  // cookies as server components) bounce through here and return to
+  // themselves. Allowlisted relative paths only (isSafeRefReturn) — anything
+  // else falls back to the signup funnel.
+  const to = url.searchParams.get("to")
+  const dest = new URL(isSafeRefReturn(to) ? (to as string) : "/get-started", url.origin)
 
   const res = NextResponse.redirect(dest, { status: 307 })
   if (AFFILIATE_CODE_RE.test(code)) {

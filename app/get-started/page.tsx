@@ -5,6 +5,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { loadProductBrand } from "@/lib/platform/product-brand"
 import { loadPublicTiers } from "@/lib/platform/public-tiers"
 import { liveFunnelSnapshots } from "@/lib/platform/trial-funnel"
+import { redirect } from "next/navigation"
+import { refCaptureRedirect } from "@/lib/platform/affiliate-ref-capture"
 
 export const dynamic = "force-dynamic"
 export const metadata = { title: "Start your free trial — get started" }
@@ -17,8 +19,22 @@ export const metadata = { title: "Start your free trial — get started" }
 // the day-one website comes up branded. No snapshots / no coupons configured ⇒
 // the page still works as a plain signup. The prospect-capture form stays below
 // for people who want a walkthrough before starting a trial.
-export default async function GetStartedPage({ searchParams }: { searchParams: Promise<{ utm_source?: string; utm_campaign?: string; tier?: string }> }) {
+export default async function GetStartedPage({ searchParams }: { searchParams: Promise<{ utm_source?: string; utm_campaign?: string; tier?: string; ref?: string }> }) {
   const params = await searchParams
+
+  // AFFILIATE ?ref CAPTURE — a server component cannot set cookies, so bounce
+  // once through /api/ref (the one cookie-setter; 90-day AFFILIATE_REF_COOKIE),
+  // preserving tier/utm params. The return URL carries no ref → no loop.
+  if (params.ref) {
+    const keep = new URLSearchParams()
+    if (params.tier) keep.set("tier", params.tier)
+    if (params.utm_source) keep.set("utm_source", params.utm_source)
+    if (params.utm_campaign) keep.set("utm_campaign", params.utm_campaign)
+    const qs = keep.toString()
+    const capture = refCaptureRedirect(params.ref, `/get-started${qs ? `?${qs}` : ""}`)
+    if (capture) redirect(capture)
+  }
+
   const svc = createServiceClient()
   const [brand, tiers, snapshotsByTier] = await Promise.all([
     loadProductBrand(svc),

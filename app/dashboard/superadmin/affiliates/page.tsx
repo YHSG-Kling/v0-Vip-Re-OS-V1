@@ -11,9 +11,18 @@ export const dynamic = "force-dynamic"
 // see lib/platform/affiliates.ts). Create partners, hand them a ref link,
 // watch attributed tenants + monthly accruals, mark periods paid.
 export default async function SuperadminAffiliatesPage() {
-  const gate = await requirePlatformCapability("billing")
+  // 'billing' owns this board (writes stay billing-gated in ./actions); the
+  // 'marketing' capability gets READ access — marketing hands out the ref
+  // links and needs to see partners, attribution, and accruals.
+  let gate = await requirePlatformCapability("billing")
+  let readOnly = gate.access === "read"
   if (!gate.userId) redirect("/login")
-  if (!gate.ok) return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
+  if (!gate.ok) {
+    const marketingGate = await requirePlatformCapability("marketing")
+    if (!marketingGate.ok) return <div className="p-6 text-red-600">Forbidden: requires platform billing (write) or marketing (read) capability</div>
+    gate = marketingGate
+    readOnly = true
+  }
 
   const res = await listAffiliatesAction()
 
@@ -38,7 +47,7 @@ export default async function SuperadminAffiliatesPage() {
       <AffiliatesManager
         initialAffiliates={res.ok ? res.affiliates : []}
         refLinkBase={siteUrl()}
-        readOnly={gate.access === "read"}
+        readOnly={readOnly}
       />
     </div>
   )

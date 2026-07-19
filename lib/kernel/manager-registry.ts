@@ -1530,6 +1530,7 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/platform-sentinel": "data_steward", // fleet-watching staff action proposals (round 21)
   "/api/cron/webhook-deliveries": "data_steward", // tenant outbound-webhook enqueue + drain (round 24)
   "/api/cron/affiliate-commissions": "finance_manager", // monthly MRR affiliate accrual (round 24)
+  "/api/cron/stripe-drift": "finance_manager", // weekly plan-catalog vs Stripe price drift watch (round 33)
   "/api/cron/manager-eval": "data_steward",
   "/api/cron/manager-learning": "data_steward",
   "/api/cron/manager-signals": "cron_manager",

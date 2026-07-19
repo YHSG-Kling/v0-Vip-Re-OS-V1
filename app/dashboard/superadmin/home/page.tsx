@@ -11,6 +11,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolvePlatformRole } from "@/lib/platform/require-capability"
 import { platformStaffCan, isPlatformStaffRole, type PlatformCapability } from "@/lib/platform/platform-staff-roster"
 import { PLATFORM_ANNOUNCEMENT_TYPE } from "@/lib/notifications/platform-staff"
+import { PLATFORM_MANAGERS, type PlatformManagerKey } from "@/lib/kernel/manager-registry"
 import { AnnouncementComposer } from "./announcement-composer"
 import { AgreementAckBanner } from "./agreement-ack-banner"
 
@@ -32,6 +33,10 @@ interface Tool {
   cap: PlatformCapability
   /** Key into the live-counts map (only cheap head-counts on familiar tables). */
   countKey?: "activeTenants" | "openTickets" | "pendingHealing" | "proposedSentinel"
+  /** Registered platform-scope manager persona behind this card — renders the
+   *  registry chip (label/domain/accent) exactly like the sentinel queue does,
+   *  so the card's identity can never drift from the manager constitution. */
+  managerKey?: PlatformManagerKey
 }
 
 interface ToolGroup { title: string; icon: typeof Building2; tools: Tool[] }
@@ -89,7 +94,7 @@ const GROUPS: ToolGroup[] = [
         desc: "Cross-tenant AI operations — usage, cost, and the autonomous managers." },
       { label: "OS Sentinel", href: "/dashboard/superadmin/sentinel", cap: "sentinel",
         desc: "One view of the whole agentic OS — subsystems, open incidents, self-healing." },
-      { label: "Sentinel — today's proposed actions", href: "/dashboard/superadmin/sentinel#proposed-actions", cap: "sentinel", countKey: "proposedSentinel",
+      { label: "Sentinel — today's proposed actions", href: "/dashboard/superadmin/sentinel#proposed-actions", cap: "sentinel", countKey: "proposedSentinel", managerKey: "platform_sentinel",
         desc: "The AI fleet manager's daily queue: engagement risk, expiring connections, dunning, SLA breaches, expiring trials — each with drafted outreach awaiting your approval." },
       { label: "Observability", href: "/dashboard/superadmin/observability", cap: "sentinel",
         desc: "System health, cron runs, and error surfaces across the platform." },
@@ -243,12 +248,18 @@ export default async function PlatformStaffHomePage() {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {g.tools.map((t) => {
               const count = t.countKey ? counts[t.countKey] : null
+              const manager = t.managerKey ? PLATFORM_MANAGERS[t.managerKey] : null
               return (
                 <Card key={t.href + t.label} className="hover:border-primary/50 transition-colors">
                   <CardContent className="p-4">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-sm font-medium">{t.label}</span>
                       {count && <Badge variant="secondary" className="text-[10px] tabular-nums">{count}</Badge>}
+                      {manager && (
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${manager.accent}`} title={manager.domain}>
+                          {manager.label}
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-muted-foreground mt-1 min-h-[2rem]">{t.desc}</p>
                     <Button asChild size="sm" variant="ghost" className="mt-2 -ml-2 h-7 px-2 text-xs">

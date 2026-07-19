@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getSubscriptionOversightAction } from "@/app/actions/superadmin/subscription-oversight"
 import type { SubscriptionState } from "@/lib/platform/subscription-oversight"
 import { loadRevenueAnalytics } from "@/lib/platform/revenue-analytics"
+import { DUNNING_LADDER } from "@/lib/billing/dunning"
 
 export const dynamic = "force-dynamic"
 
@@ -27,13 +28,44 @@ export default async function SuperadminSubscriptionsPage() {
   if (!gate.userId) redirect("/login")
   if (!gate.ok) return <div className="p-6 text-red-600">Forbidden: superadmin access only</div>
 
-  const [res, revenue] = await Promise.all([
+  const svc = createServiceClient()
+  const [res, revenue, dunningRes] = await Promise.all([
     getSubscriptionOversightAction(),
-    loadRevenueAnalytics(createServiceClient()).catch(() => null),
+    loadRevenueAnalytics(svc).catch(() => null),
+    // DUNNING LEDGER — the billing-dunning cron's audit spine (platform_dunning_events).
+    // Written daily by lib/billing/dunning.ts; this is the staff read.
+    svc.from("platform_dunning_events")
+      .select("id, brokerage_id, subscription_id, step, channel, detail, created_at")
+      .order("created_at", { ascending: false })
+      .limit(50),
   ])
   if (!res.ok) return <div className="p-6 text-red-600">Failed: {res.error}</div>
   const { rows, queue, counts, totalMrrCents, attentionCount } = res.data
   const maxMonth = Math.max(1, ...(revenue?.months ?? []).map((m) => m.paidCents))
+
+  // Dunning rollup: recent events (newest first) + each tenant's CURRENT ladder
+  // step (the latest event per brokerage — rows already arrive newest-first).
+  const dunningEvents = (dunningRes.data ?? []) as Array<{
+    id: string; brokerage_id: string; subscription_id: string | null
+    step: number; channel: string | null; detail: string | null; created_at: string
+  }>
+  const tenantNameById = new Map<string, string>(rows.map((r) => [r.brokerageId, r.name]))
+  const latestStepByTenant = new Map<string, { step: number; at: string; channel: string | null }>()
+  for (const e of dunningEvents) {
+    if (!latestStepByTenant.has(e.brokerage_id)) {
+      latestStepByTenant.set(e.brokerage_id, { step: e.step, at: e.created_at, channel: e.channel })
+    }
+  }
+  const ladderStepLabel = (step: number) => {
+    const rung = DUNNING_LADDER.find((s) => s.step === step)
+    return rung ? `Step ${rung.step}/${DUNNING_LADDER.length} (day ${rung.afterDays})` : `Step ${step}`
+  }
+  const fmtAgo = (iso: string) => {
+    const ms = Date.now() - new Date(iso).getTime()
+    if (ms < 3_600_000) return `${Math.max(1, Math.round(ms / 60_000))}m ago`
+    if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`
+    return `${Math.round(ms / 86_400_000)}d ago`
+  }
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -105,6 +137,53 @@ export default async function SuperadminSubscriptionsPage() {
                 <span className="shrink-0 text-xs font-medium text-indigo-600">Manage →</span>
               </Link>
             ))}
+          </div>
+        )}
+      </section>
+
+      {/* Dunning ledger — platform_dunning_events (written by the billing-dunning cron) */}
+      <section className="space-y-2">
+        <h2 className="text-lg font-semibold">Dunning — recovery ladder</h2>
+        {dunningRes.error ? (
+          <div className="rounded-lg border p-4 text-sm text-red-600">Failed to load dunning ledger: {dunningRes.error.message}</div>
+        ) : dunningEvents.length === 0 ? (
+          <div className="rounded-lg border p-6 text-center text-sm text-muted-foreground">
+            No dunning events — no past-due subscription has needed a recovery nudge. The daily billing-dunning cron records every ladder step here.
+          </div>
+        ) : (
+          <div className="grid gap-3 lg:grid-cols-2">
+            {/* Per-tenant current ladder step */}
+            <div className="rounded-lg border p-4 space-y-2">
+              <h3 className="text-sm font-semibold">Tenants on the ladder ({latestStepByTenant.size})</h3>
+              <p className="text-xs text-muted-foreground">Latest step sent per tenant (day 0 → 3 → 7 → 14; each step sent once per past-due episode).</p>
+              <ul className="space-y-1.5">
+                {[...latestStepByTenant.entries()].map(([brokerageId, s]) => (
+                  <li key={brokerageId} className="flex items-center gap-2 text-sm">
+                    <span className={"shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold " + (s.step >= 4 ? "bg-red-100 text-red-800" : s.step >= 3 ? "bg-orange-100 text-orange-800" : "bg-amber-100 text-amber-800")}>
+                      {ladderStepLabel(s.step)}
+                    </span>
+                    <Link href={`/dashboard/superadmin/brokerages/${brokerageId}`} className="min-w-0 flex-1 truncate text-sm font-medium text-indigo-600">
+                      {tenantNameById.get(brokerageId) ?? `Brokerage ${brokerageId.slice(0, 8)}`}
+                    </Link>
+                    <span className="shrink-0 text-[11px] text-muted-foreground">{s.channel ?? "in_app"} · {fmtAgo(s.at)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            {/* Recent events */}
+            <div className="rounded-lg border p-4 space-y-2">
+              <h3 className="text-sm font-semibold">Recent dunning events</h3>
+              <ul className="space-y-1.5">
+                {dunningEvents.slice(0, 12).map((e) => (
+                  <li key={e.id} className="flex items-center gap-2 text-xs">
+                    <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-medium text-slate-700">step {e.step}</span>
+                    <span className="shrink-0 font-medium">{tenantNameById.get(e.brokerage_id) ?? `Brokerage ${e.brokerage_id.slice(0, 8)}`}</span>
+                    <span className="min-w-0 flex-1 truncate text-muted-foreground" title={e.detail ?? undefined}>{e.detail ?? ""}</span>
+                    <span className="shrink-0 text-muted-foreground">{e.channel ?? "in_app"} · {fmtAgo(e.created_at)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
           </div>
         )}
       </section>

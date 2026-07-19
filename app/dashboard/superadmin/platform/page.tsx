@@ -208,6 +208,9 @@ export default async function SuperadminPlatformPage() {
               <p className="text-xs text-muted-foreground">AI cost (MTD)</p>
             </div>
             <p className="text-3xl font-bold">{fmtCents(totals.total_ai_cents)}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              + {fmtCents(totals.total_telephony_cents)} telephony (vendor ledger — not in margin)
+            </p>
           </CardContent>
         </Card>
         <Card className={
@@ -299,6 +302,7 @@ export default async function SuperadminPlatformPage() {
                   <th className="text-left px-4 py-2 font-medium text-muted-foreground">Tier</th>
                   <th className="text-right px-4 py-2 font-medium text-muted-foreground">MRR</th>
                   <th className="text-right px-4 py-2 font-medium text-muted-foreground">AI Cost</th>
+                  <th className="text-right px-4 py-2 font-medium text-muted-foreground" title="MTD telephony spend from vendor_usage_tracking (Twilio family) — informational; not part of the margin column">Telephony</th>
                   <th className="text-right px-4 py-2 font-medium text-muted-foreground">Tokens</th>
                   <th className="text-right px-4 py-2 font-medium text-muted-foreground">Margin</th>
                   <th className="text-center px-4 py-2 font-medium text-muted-foreground">%</th>
@@ -307,13 +311,14 @@ export default async function SuperadminPlatformPage() {
               </thead>
               <tbody>
                 {rows.length === 0 ? (
-                  <tr><td colSpan={8} className="text-center p-6 text-muted-foreground">No brokerages yet.</td></tr>
+                  <tr><td colSpan={9} className="text-center p-6 text-muted-foreground">No brokerages yet.</td></tr>
                 ) : rows.map(r => (
                   <tr key={r.brokerage_id} className="border-b last:border-0 hover:bg-muted/10">
                     <td className="px-4 py-2.5 font-medium">{r.brokerage_name ?? "(unnamed)"}</td>
                     <td className="px-4 py-2.5"><Badge variant="outline" className="text-xs">{tierLabel(r.plan_tier)}</Badge></td>
                     <td className="px-4 py-2.5 text-right">{fmtCents(r.mrr_cents)}</td>
                     <td className="px-4 py-2.5 text-right text-purple-700">{fmtCents(r.ai_cost_cents)}</td>
+                    <td className="px-4 py-2.5 text-right text-xs text-muted-foreground">{r.telephony_cost_cents > 0 ? fmtCents(r.telephony_cost_cents) : "—"}</td>
                     <td className="px-4 py-2.5 text-right text-xs text-muted-foreground">{fmtTokens(r.ai_tokens)}</td>
                     <td className={`px-4 py-2.5 text-right font-medium ${r.margin_cents < 0 ? "text-red-600" : "text-emerald-700"}`}>
                       {fmtCents(r.margin_cents)}
