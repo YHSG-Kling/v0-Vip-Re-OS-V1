@@ -2,6 +2,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { ensureRequiredMilestones, seedJourneyMilestones } from "./milestone-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { populateInitialParticipants } from "./participant-populator"
+import { deriveEarnestDueDate } from "./earnest-terms"
 
 /**
  * Canonical "is this offer eligible to become a transaction?" gate. Reads SOURCE-OF-TRUTH
@@ -206,6 +207,10 @@ export async function createTransactionFromOffer(params: {
       // compliance docs + persona for every non-buyer deal.
       deal_type:            dealType,
       purchase_price:       (offer as any).offer_price,
+      // Earnest DEPOSIT AMOUNT (a dollar figure) carried onto the transaction as a first-class term,
+      // distinct from the earnest DUE DATE (an EMD milestone, seeded below). Owner correction R28:
+      // the amount is currency ("Earnest Deposit: $X"), never a date.
+      earnest_money:        (offer as any).earnest_money ?? null,
       contract_date:        params.contractDate,
       compliance_passed_at: params.compliancePassedAt,
       stage:                "UNDER_CONTRACT",
@@ -252,13 +257,14 @@ export async function createTransactionFromOffer(params: {
   // execution" via pure UTC date arithmetic — NOT new Date(timestamptz).toISOString(), which would
   // shift a money-sensitive deadline by a day for non-UTC stored times. Fall back to the stored
   // value's literal date portion, then to any caller-provided term.
-  const dueDays = (offer as any).earnest_money_due_days as number | null
-  const earnestDueDate: string | undefined =
-    (params.contractDate && typeof dueDays === "number")
-      ? addDaysToDateString(params.contractDate.split("T")[0], dueDays)
-      : (offer as any).earnest_money_due_at
-        ? String((offer as any).earnest_money_due_at).slice(0, 10)
-        : params.contractTerms.earnestMoneyDue ?? undefined
+  // DUE DATE only — never the amount. deriveEarnestDueDate refuses a non-date fallback (a mis-passed
+  // dollar amount like "$5000"), so the earnest DEPOSIT AMOUNT can never leak into the DUE-date slot.
+  const earnestDueDate: string | undefined = deriveEarnestDueDate({
+    contractDate:        params.contractDate,
+    earnestMoneyDueDays: (offer as any).earnest_money_due_days as number | null,
+    earnestMoneyDueAt:   (offer as any).earnest_money_due_at as string | null,
+    fallbackDue:         params.contractTerms.earnestMoneyDue ?? null,
+  })
   let titleCompany: string | null = null
   try {
     const { data: doc } = await supabase
@@ -399,13 +405,4 @@ export async function createTransactionFromOffer(params: {
   }
 
   return { success: true, transactionId: transaction.id }
-}
-
-/** Add N calendar days to a "YYYY-MM-DD" date string using pure UTC arithmetic (no local-timezone
- *  drift), returning "YYYY-MM-DD". */
-function addDaysToDateString(dateStr: string, days: number): string {
-  const [y, m, d] = dateStr.split("-").map(Number)
-  const dt = new Date(Date.UTC(y, (m ?? 1) - 1, d ?? 1))
-  dt.setUTCDate(dt.getUTCDate() + days)
-  return dt.toISOString().split("T")[0]
 }

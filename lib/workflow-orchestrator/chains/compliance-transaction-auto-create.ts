@@ -63,7 +63,12 @@ export const complianceTransactionAutoCreateChain: WorkflowChain = {
           extracted.closingDate ?? "",
           extracted.contractDate ?? new Date().toISOString().slice(0, 10),
           {
-            earnestMoneyDue: extracted.earnestMoneyAmount?.toString(),
+            // earnestMoneyDue is a DATE (the deposit's due-by milestone), NOT the
+            // dollar amount — feeding extracted.earnestMoneyAmount here was the
+            // root of the amount-as-date conflation. Leave it unset: the offer
+            // bridge derives the real due date from the offer's own
+            // earnest_money_due_days / earnest_money_due_at, and reads the deposit
+            // AMOUNT from offers.earnest_money — the two are kept typed apart.
             inspectionDeadline: extracted.inspectionDeadline,
             appraisalDeadline: extracted.appraisalDeadline,
             financingDeadline: extracted.financingDeadline,

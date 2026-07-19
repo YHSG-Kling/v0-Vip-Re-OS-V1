@@ -148,8 +148,8 @@ export function OfferCard({ offer, listPrice, canApprove, isPending, userId, onA
       <CardContent className="pt-0">
         <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm md:grid-cols-4">
           <div>
-            <p className="text-xs text-muted-foreground">Earnest Money</p>
-            <p className="font-medium">{fmt(offer.earnest_money ?? offer.earnest_money)}</p>
+            <p className="text-xs text-muted-foreground">Earnest Deposit</p>
+            <p className="font-medium">{fmt(offer.earnest_money)}</p>
           </div>
           <div>
             <p className="text-xs text-muted-foreground">Closing Date</p>

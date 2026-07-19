@@ -8,6 +8,7 @@
  * Pure: no I/O.
  */
 import { isOfferFullyExecuted, shouldAutoExecuteOffer } from "../lib/transactions/offer-execution-state"
+import { deriveEarnestDueDate, formatEarnestAmount, isCalendarDate } from "../lib/transactions/earnest-terms"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -38,6 +39,27 @@ function main() {
     shouldAutoExecuteOffer({ seller_response_type: "accepted", fully_signed_contract_received_at: T, transaction_id: "11111111-1111-1111-1111-111111111111" }) === false)
   check("not executed + no transaction → DO NOT fire",
     shouldAutoExecuteOffer({ seller_response_type: "countered", transaction_id: null }) === false)
+
+  // ── Earnest AMOUNT (currency) vs earnest DUE (date) — owner correction R28: never conflated ──
+  console.log("\n[Earnest amount renders as currency, earnest DUE renders as a date — never conflated]")
+  check("earnest AMOUNT renders as currency ($X)",
+    formatEarnestAmount(5000) === "$5,000")
+  check("absent earnest amount → em dash, never a date",
+    formatEarnestAmount(null) === "—")
+  check("earnest DUE derives from contract_date + due_days as a calendar date",
+    deriveEarnestDueDate({ contractDate: "2026-06-27", earnestMoneyDueDays: 3 }) === "2026-06-30")
+  check("earnest DUE derived value is a real calendar date, not a currency string",
+    isCalendarDate(deriveEarnestDueDate({ contractDate: "2026-06-27", earnestMoneyDueDays: 3 })) === true)
+  check("earnest DUE falls back to stored earnest_money_due_at (date portion)",
+    deriveEarnestDueDate({ earnestMoneyDueAt: "2026-07-05T00:00:00Z" }) === "2026-07-05")
+  check("a mis-passed DOLLAR AMOUNT ('$5000') is REFUSED as the due date (guard)",
+    deriveEarnestDueDate({ fallbackDue: "$5000" }) === undefined)
+  check("a bare numeric amount ('5000') is REFUSED as the due date (guard)",
+    deriveEarnestDueDate({ fallbackDue: "5000" }) === undefined)
+  check("a genuine date fallback IS accepted as the due date",
+    deriveEarnestDueDate({ fallbackDue: "2026-07-05" }) === "2026-07-05")
+  check("'$5000' is not a calendar date; '2026-07-05' is (the two are never conflated)",
+    isCalendarDate("$5000") === false && isCalendarDate("2026-07-05") === true)
 
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
