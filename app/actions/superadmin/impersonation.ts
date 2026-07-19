@@ -40,13 +40,19 @@ export interface ActiveImpersonation {
   expiresAt?: string
 }
 
-/** Enter a tenant — begin an audited impersonation session. */
+/** Enter a tenant — begin an audited impersonation session.
+ *
+ *  LANDING ROUTE: `redirectTo` is where the staff member should land. Staff/agent
+ *  targets go through /dashboard (the entry router resolves their role route). A
+ *  user_type='contact' target is a PORTAL CLIENT — their workspace is
+ *  /portal/[contactId], so we resolve their contact row (contact_user_id link
+ *  first, then email within the tenant) and land the impersonator THERE. */
 export async function enterTenantAction(params: {
   brokerageId: string
   targetUserId?: string | null
   mode?: ImpersonationMode
   reason?: string
-}): Promise<{ ok: boolean; error?: string; expiresAt?: string }> {
+}): Promise<{ ok: boolean; error?: string; expiresAt?: string; redirectTo?: string }> {
   const auth = await requirePlatformStaff()
   if (!auth.ok) return auth
   if (!params.brokerageId) return { ok: false, error: "Target brokerage required" }
@@ -55,9 +61,27 @@ export async function enterTenantAction(params: {
   const { data: brk } = await svc.from("brokerages").select("id, name").eq("id", params.brokerageId).maybeSingle()
   if (!brk) return { ok: false, error: "Brokerage not found" }
   // A named target user must actually belong to the target tenant.
+  let redirectTo = "/dashboard"
   if (params.targetUserId) {
-    const { data: tu } = await svc.from("users").select("id, brokerage_id").eq("id", params.targetUserId).maybeSingle()
+    const { data: tu } = await svc.from("users").select("id, brokerage_id, user_type, email").eq("id", params.targetUserId).maybeSingle()
     if (!tu || (tu as any).brokerage_id !== params.brokerageId) return { ok: false, error: "Target user is not in that tenant" }
+    if ((tu as any).user_type === "contact") {
+      // Portal client — land on THEIR portal. contact_user_id is the canonical
+      // link (stamped by ensureContactPortalUser); email+brokerage is the fallback
+      // for pre-backfill rows.
+      const { data: byLink } = await svc.from("contacts")
+        .select("id").eq("contact_user_id", params.targetUserId).eq("brokerage_id", params.brokerageId)
+        .is("deleted_at", null).limit(1).maybeSingle()
+      let contactId: string | null = (byLink as any)?.id ?? null
+      if (!contactId && (tu as any).email) {
+        const { data: byEmail } = await svc.from("contacts")
+          .select("id").ilike("email", (tu as any).email).eq("brokerage_id", params.brokerageId)
+          .is("deleted_at", null).limit(1).maybeSingle()
+        contactId = (byEmail as any)?.id ?? null
+      }
+      if (contactId) redirectTo = `/portal/${contactId}`
+      // No contact row resolvable → honest fallback to /dashboard (entry router).
+    }
   }
   const h = await headers()
   const started = await startImpersonation({
@@ -72,9 +96,10 @@ export async function enterTenantAction(params: {
   await audit(auth.userId, auth.email, "impersonation.enter", params.brokerageId, {
     session_id: started.sessionId, target_user_id: params.targetUserId ?? null, mode: params.mode ?? "full",
     reason: params.reason ?? null, expires_at: started.expiresAt, brokerage_name: (brk as any).name,
+    redirect_to: redirectTo,
   })
   revalidatePath("/dashboard")
-  return { ok: true, expiresAt: started.expiresAt }
+  return { ok: true, expiresAt: started.expiresAt, redirectTo }
 }
 
 /** Exit the current tenant — end the active impersonation session. */

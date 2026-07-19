@@ -1,5 +1,6 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { randomUUID } from "crypto"
 
 /**
@@ -116,6 +117,103 @@ export async function issuePortalInvite(
   }
 
   return { success: true, inviteId, emailSent }
+}
+
+// ─── ensureContactPortalUser ─────────────────────────────────────────────────
+//
+// IDENTITY CORRECTION: portal clients ARE users. The magic-link OTP flow creates a
+// REAL auth user, but nothing ever wrote the public.users row that makes the client
+// first-class — visible in staff rosters and impersonable (impersonation targets
+// users.id). This is the ONE ensure hook: called on the contact's first (and every)
+// authenticated Rule-1 portal hit, and reused verbatim by the superadmin backfill.
+//
+// Contract:
+//   • IDEMPOTENT — a users row for the auth uid short-circuits to link-stamping only.
+//   • BEST-EFFORT — never throws; portal access NEVER fails on the ensure. Every
+//     lost write is ledgered via sentinelWrite (silencer ratchet), never swallowed.
+//   • Column shape follows the provisionTenantOwner users upsert idiom exactly
+//     (id = auth uid, email, first/last, user_type + role 'contact', brokerage_id,
+//     is_contact) + status 'active'. users.id === auth.users.id — THE invariant.
+//   • Link-back: contacts.contact_user_id (the column every portal action already
+//     authorizes on) is stamped when empty, plus has_login = true.
+
+export interface EnsureContactUserParams {
+  /** auth.users.id of the OTP-authenticated portal visitor. */
+  authUserId: string
+  /** The auth user's email (fallback when the contact row has none). */
+  authEmail: string | null
+  contact: {
+    id: string
+    email: string | null
+    first_name: string | null
+    last_name: string | null
+    brokerage_id: string | null
+  }
+}
+
+export interface EnsureContactUserResult {
+  /** A users row for the auth uid exists after this call (created now or before). */
+  ensured: boolean
+  /** This call created the users row (false = already existed or write lost). */
+  created: boolean
+}
+
+export async function ensureContactPortalUser(
+  params: EnsureContactUserParams,
+): Promise<EnsureContactUserResult> {
+  const { authUserId, authEmail, contact } = params
+  try {
+    if (!authUserId || !contact?.id || !contact.brokerage_id) {
+      return { ensured: false, created: false }
+    }
+    const svc = createServiceClient()
+
+    // Idempotency gate: users.id === auth uid is the identity invariant.
+    const { data: existing } = await svc
+      .from("users").select("id").eq("id", authUserId).maybeSingle()
+
+    let created = false
+    if (!existing) {
+      const email = (contact.email ?? authEmail ?? "").trim().toLowerCase()
+      // Checked insert (NOT upsert): existence was checked above, and an id
+      // collision here must ledger, never silently overwrite a staff row.
+      created = await sentinelWrite(
+        svc,
+        svc.from("users").insert({
+          id:           authUserId,
+          email:        email || null,
+          first_name:   contact.first_name ?? null,
+          last_name:    contact.last_name ?? null,
+          user_type:    "contact",
+          role:         "contact",
+          brokerage_id: contact.brokerage_id,
+          is_contact:   true,
+          status:       "active",
+          updated_at:   new Date().toISOString(),
+        }),
+        { table: "users", flow: "portal_contact_user_ensure", brokerageId: contact.brokerage_id },
+      )
+    }
+
+    // Link-back stamp: only when unset (never clobber an existing link), and the
+    // has_login flag so roster/portal-state reads agree with reality.
+    const { data: c } = await svc
+      .from("contacts").select("contact_user_id, has_login").eq("id", contact.id).maybeSingle()
+    if (c && (!c.contact_user_id || !c.has_login)) {
+      await sentinelWrite(
+        svc,
+        svc.from("contacts")
+          .update({ contact_user_id: c.contact_user_id ?? authUserId, has_login: true })
+          .eq("id", contact.id),
+        { table: "contacts", flow: "portal_contact_user_ensure", brokerageId: contact.brokerage_id },
+      )
+    }
+
+    return { ensured: !!existing || created, created }
+  } catch {
+    // Best-effort contract: the portal must render regardless.
+    return { ensured: false, created: false }
+  }
 }
 
 /**

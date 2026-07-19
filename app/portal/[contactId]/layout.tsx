@@ -10,6 +10,8 @@ import {
   type PortalView,
 } from "@/lib/kernel/portal"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
+import { ensureContactPortalUser } from "@/lib/portal/portal-invite-core"
+import { resolveActiveImpersonation } from "@/lib/platform/impersonation"
 import PortalNav from "@/app/components/features/portal/base/PortalNav"
 import PortalUserMenu from "@/app/components/features/portal/base/PortalUserMenu"
 import PortalChatLauncher from "@/app/components/features/portal/ai/PortalChatLauncher"
@@ -93,7 +95,7 @@ export default async function PortalLayout({
     if (!accessGranted) {
       const { data: ur } = await supabase
         .from("users")
-        .select("user_type, brokerage_id")
+        .select("user_type, brokerage_id, platform_role")
         .eq("id", user.id)
         .maybeSingle()
       const STAFF_TYPES = ["agent", "team_lead", "tc", "admin", "broker", "superadmin"]
@@ -102,6 +104,18 @@ export default async function PortalLayout({
         STAFF_TYPES.includes(ur?.user_type ?? "")
       ) {
         accessGranted = true
+      }
+
+      // Rule 2c: Platform staff with an ACTIVE impersonation session into this
+      // contact's brokerage ("Enter as" a portal client from the god console).
+      // resolveActiveImpersonation is defence-in-depth: it returns null unless
+      // the caller is genuinely platform staff AND holds a live, unexpired session.
+      if (!accessGranted) {
+        const staffRole = ur?.platform_role ?? ur?.user_type ?? ""
+        const imp = await resolveActiveImpersonation(user.id, staffRole).catch(() => null)
+        if (imp && imp.brokerageId === contact.brokerage_id) {
+          accessGranted = true
+        }
       }
     }
 
@@ -128,6 +142,22 @@ export default async function PortalLayout({
 
   // ── First-access: mark invite accepted + notify agent (non-blocking) ──
   if (user && user.email?.toLowerCase() === contact.email?.toLowerCase()) {
+    // ENSURE HOOK — portal clients ARE users. The OTP magic link created a real
+    // auth user; on the Rule-1 match make them first-class: idempotent, best-effort
+    // creation of the public.users row (user_type 'contact', id = auth uid) +
+    // contacts.contact_user_id link-back. Never blocks portal access.
+    await ensureContactPortalUser({
+      authUserId: user.id,
+      authEmail:  user.email ?? null,
+      contact: {
+        id:           contact.id,
+        email:        contact.email ?? null,
+        first_name:   contact.first_name ?? null,
+        last_name:    contact.last_name ?? null,
+        brokerage_id: contact.brokerage_id ?? null,
+      },
+    }).catch(() => {})
+
     const { data: invite } = await supabase
       .from("portal_contact_invites")
       .select("id, status")

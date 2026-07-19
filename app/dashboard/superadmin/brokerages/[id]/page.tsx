@@ -11,8 +11,10 @@ import { TenantUsersPanel } from "./tenant-users-panel"
 import { TenantSetupPanel } from "./tenant-setup-panel"
 import { EnterTenantButton } from "./enter-tenant-button"
 import { TenantEntitlementsPanel } from "./tenant-entitlements-panel"
+import { TenantAutonomyPanel } from "./tenant-autonomy-panel"
 import { TenantSnapshotsPanel } from "./tenant-snapshots-panel"
 import { TenantImportPanel } from "./tenant-import-panel"
+import { PortalClientsPanel } from "./portal-clients-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -76,8 +78,15 @@ export default async function SuperadminBrokerageDetailPage(
       {/* Admin actions card */}
       <BrokerageActions brokerage={brokerage} />
 
+      {/* Per-tenant autonomy halt — pause this tenant's autonomous AI (staff-only lever) */}
+      <TenantAutonomyPanel brokerageId={brokerage.id} />
+
       {/* Team members — actionable cross-tenant user management */}
       <TenantUsersPanel brokerageId={brokerage.id} />
+
+      {/* Portal clients — accepted/pending portal access + users-row backfill
+          (portal clients ARE users: user_type='contact', impersonable) */}
+      <PortalClientsPanel brokerageId={brokerage.id} />
 
       {/* Per-tenant entitlements — feature flags + AI-token quota overrides */}
       <TenantEntitlementsPanel brokerageId={brokerage.id} />

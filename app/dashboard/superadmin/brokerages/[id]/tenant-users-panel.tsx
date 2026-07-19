@@ -47,7 +47,9 @@ export function TenantUsersPanel({ brokerageId }: { brokerageId: string }) {
     setErr(null)
     startTransition(async () => { const r = action === "resend" ? await resendTenantInviteAction(id) : await revokeTenantInviteAction(id); if (!r.ok) setErr(r.error ?? "Failed"); refresh() })
   }
-  // User-granular impersonation — same redirect behavior as EnterTenantButton.
+  // User-granular impersonation. The server action resolves the landing route:
+  // staff targets land on /dashboard (entry router); a user_type='contact' target
+  // is a PORTAL CLIENT and lands directly on THEIR portal (/portal/[contactId]).
   function enterAs(userId: string, mode: "full" | "read_only") {
     setErr(null)
     startTransition(async () => {
@@ -56,7 +58,7 @@ export function TenantUsersPanel({ brokerageId }: { brokerageId: string }) {
         reason: mode === "read_only" ? "god-console view-as-user" : "god-console enter-as-user",
       })
       if (!r.ok) { setErr(r.error ?? "Failed to start impersonation"); return }
-      router.push("/dashboard")
+      router.push(r.redirectTo ?? "/dashboard")
     })
   }
   function addUser() {
@@ -117,7 +119,14 @@ export function TenantUsersPanel({ brokerageId }: { brokerageId: string }) {
                     <tr key={u.id} className="border-b last:border-0">
                       <td className="px-3 py-2 font-medium">{u.name}</td>
                       <td className="px-3 py-2 text-xs">{u.email}</td>
-                      <td className="px-3 py-2"><Badge variant="outline" className="text-xs">{u.role}</Badge></td>
+                      <td className="px-3 py-2">
+                        {u.role === "contact" ? (
+                          // Identity correction: portal clients ARE users — distinct badge.
+                          <Badge className="text-xs bg-violet-100 text-violet-800" variant="secondary">Portal client</Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-xs">{u.role}</Badge>
+                        )}
+                      </td>
                       <td className="px-3 py-2"><span className={"rounded px-1.5 py-0.5 text-[11px] font-medium " + (suspended ? "bg-red-100 text-red-800" : "bg-emerald-100 text-emerald-800")}>{suspended ? "suspended" : "active"}</span></td>
                       <td className="px-3 py-2 text-right">
                         {u.role === "superadmin" ? <span className="text-xs text-muted-foreground">—</span> : (
