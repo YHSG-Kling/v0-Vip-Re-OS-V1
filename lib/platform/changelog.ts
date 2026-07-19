@@ -24,6 +24,29 @@ export interface ChangelogEntry {
 /** Newest-first product changelog. Append a new entry per release wave. */
 export const PRODUCT_CHANGELOG: ChangelogEntry[] = [
   {
+    date: "2026-07-19",
+    title: "Your AI team through the anxious middle of a deal",
+    area: "Deals & Sellers",
+    points: [
+      "Sellers on a live deal now get their own weekly status note — the same grounded facts as the buyer side, reframed for the seller, and never a duplicate of the listing-activity update.",
+      "When an appraisal comes in low, buyer and seller each get a calm, specific portal update with the real paths forward — and your agent gets a pre-emptive appraiser packet plus a negotiation copilot.",
+      "Inspection completion now posts to both buyer and seller portals the moment it's recorded — no more waiting for the weekly note to hear the deal's most anxious milestone landed.",
+      "Sellers can share their home's marketing to their own social channels straight from the portal, and that share activity now feeds a measured ROI story in your intelligence report.",
+      "A quick pulse survey occasionally appears on your dashboard — when you tell us it's not going well, a human follows up.",
+    ],
+  },
+  {
+    date: "2026-07-19",
+    title: "The OS becomes a platform: webhooks, API tokens, your own domain, SSO",
+    area: "Integrations & Identity",
+    points: [
+      "Outbound webhooks: subscribe to lead, contact, listing, offer, and deal events — every delivery is HMAC-signed, retried on failure, and shown in an honest delivery log (Settings → Developers).",
+      "Self-serve API tokens scoped to your brokerage, minted with explicit permissions you choose (Brokerage and Multi-Location plans).",
+      "Connect your own domain to your client-facing site: you get the exact DNS records to set, and the connection status is tracked honestly until it's live.",
+      "Brokerage plan: SAML single sign-on setup from Settings → Users — the connection card walks through your identity provider and shows honest status at every step.",
+    ],
+  },
+  {
     date: "2026-07-18",
     title: "Billing you can run yourself — and a straight answer on platform status",
     area: "Billing & Transparency",

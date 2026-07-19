@@ -371,6 +371,35 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
       },
     },
   },
+  // MILESTONE_COMPLETED's ONLY emitter today is inspection completion
+  // (lib/application/transactions.ts completeInspection — metadata always carries
+  // milestone_name='inspection_completed' + inspection_type). Round 27's audit
+  // flagged the gap: inspection COMPLETION reached the timeline but never the
+  // portal, so clients only heard about the most anxious due-diligence moment via
+  // the weekly deal note. Copy is inspection-worded on purpose — it matches the
+  // single real emitter; if a future emitter reuses this event for a different
+  // milestone, split the event (or key copy off milestone_name) before shipping.
+  [KernelEvent.MILESTONE_COMPLETED]: {
+    title: "Inspection complete",
+    plainLanguageSummary:
+      "The {inspection_type} inspection is finished. Your agent will review the findings and walk through any repair discussion before the deadline.",
+    responsibleParty: "agent",
+    nextStep: "Review the inspection findings with your agent.",
+    perRole: {
+      buyer: {
+        title: "Your inspection is complete",
+        plainLanguageSummary:
+          "Your {inspection_type} inspection is finished. We'll go through the report together and decide whether to request any repairs — before your inspection deadline.",
+        chatBody: "Your inspection is done — I'll walk you through the report and we can decide on any repair requests together.",
+      },
+      seller: {
+        title: "The buyer's inspection is complete",
+        plainLanguageSummary:
+          "The buyer's {inspection_type} inspection is finished. If any repair requests come in, your agent will walk you through the options before you respond.",
+        chatBody: "The buyer's inspection wrapped up — I'll let you know as soon as anything comes through on it.",
+      },
+    },
+  },
   [KernelEvent.APPRAISAL_ORDERED]: {
     title: "Appraisal ordered",
     plainLanguageSummary:

@@ -91,38 +91,24 @@ async function publishToPlatform(params: {
 }): Promise<PublishResult> {
   const { post, platform } = params
 
-  try {
-    console.log(`[v0] Publishing to ${platform}:`, post.id)
-
-    // In production, this would call actual platform APIs
-    // For now, we simulate successful publishing
-    
-    const externalId = `${platform}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-
-    // Log the publication
-    const supabase = await createClient()
-    await supabase.from("social_media_analytics").insert({
-      post_id: post.id,
-      platform,
-      external_post_id: externalId,
-      published_at: new Date().toISOString(),
-      impressions: 0,
-      engagements: 0,
-      clicks: 0
-    })
-
-    return {
-      success: true,
-      platform,
-      externalId
-    }
-  } catch (error) {
-    console.error(`[v0] Error publishing to ${platform}:`, error)
-    return {
-      success: false,
-      platform,
-      error: error instanceof Error ? error.message : "Publication failed"
-    }
+  // HONEST FAILURE, never fake success. This legacy service is NOT wired to the
+  // real publishing rail — the canonical path is the publish-social-posts cron
+  // (app/api/cron/publish-social-posts) → lib/social/publisher.ts, which posts
+  // through real platform APIs with real credentials. This function used to
+  // SIMULATE success (fabricated external ids + zeroed analytics rows), which
+  // would mark a post 'published' that never left the building. It now refuses,
+  // so any future caller gets the truth instead of a silent no-op. Use
+  // schedulePost() here (which the canonical cron picks up) or the real rail.
+  console.error(
+    `[social-publishing.service] refusing simulated publish of post ${post?.id} to ${platform} — ` +
+    "use the canonical publish-social-posts cron / lib/social/publisher.ts rail",
+  )
+  return {
+    success: false,
+    platform,
+    error:
+      "publishToSocialMedia is not connected to a real publisher — schedule the post instead " +
+      "(the publish-social-posts cron sends scheduled+approved posts through the real rail)",
   }
 }
 
