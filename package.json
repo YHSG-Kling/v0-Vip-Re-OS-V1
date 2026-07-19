@@ -495,7 +495,8 @@
     "test:e2e-lifecycle": "tsx scripts/e2e-lifecycle-harness.ts",
     "test:writerless-reads": "tsx scripts/writerless-read-sweep.ts",
     "test:orphan-writes": "tsx scripts/orphan-write-sweep.ts",
-    "test:orphan-routes": "tsx scripts/orphan-route-sweep.ts"
+    "test:orphan-routes": "tsx scripts/orphan-route-sweep.ts",
+    "test:regional-closing-costs": "tsx scripts/regional-closing-costs-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

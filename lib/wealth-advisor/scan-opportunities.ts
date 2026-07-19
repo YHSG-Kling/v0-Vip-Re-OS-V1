@@ -129,14 +129,41 @@ async function processBrokerageWealthScan(
   const contactIds = contactsRaw.map((c) => c.id)
   const { data: txns } = await supabase
     .from("transactions")
-    .select("contact_id, purchase_price, close_date, status")
+    .select("id, contact_id, purchase_price, close_date, status")
     .in("contact_id", contactIds)
     .eq("status", "closed")
 
-  const priorByContact = new Map<string, { purchase_price: number | null; close_date: string | null }>()
-  for (const t of (txns as unknown as Array<{ contact_id: string; purchase_price: number | null; close_date: string | null }>) ?? []) {
+  const priorByContact = new Map<string, PriorTransaction>()
+  for (const t of (txns as unknown as Array<{ id: string; contact_id: string; purchase_price: number | null; close_date: string | null }>) ?? []) {
     if (!priorByContact.has(t.contact_id)) {
-      priorByContact.set(t.contact_id, { purchase_price: t.purchase_price, close_date: t.close_date })
+      priorByContact.set(t.contact_id, { transaction_id: t.id, purchase_price: t.purchase_price, close_date: t.close_date, lender: null })
+    }
+  }
+
+  // LOAN TRUTH RE-SOURCE (loan-sweep deferral closed): when the prior
+  // transaction has a transaction_lenders row, the equity math runs on the
+  // REAL loan_amount / rate / term — the 80%-LTV heuristic survives ONLY as
+  // the labeled fallback ("estimated — no loan record on file").
+  const priorTxnIds = Array.from(priorByContact.values()).map((p) => p.transaction_id)
+  if (priorTxnIds.length > 0) {
+    const { data: lenderRows } = await supabase
+      .from("transaction_lenders")
+      .select("transaction_id, loan_amount, interest_rate, loan_term_years, lender_name")
+      .in("transaction_id", priorTxnIds)
+    const lenderByTxn = new Map<string, PriorLenderRecord>()
+    for (const l of (lenderRows as unknown as Array<{ transaction_id: string; loan_amount: number | null; interest_rate: number | null; loan_term_years: number | null; lender_name: string | null }>) ?? []) {
+      const loanAmount = Number(l.loan_amount)
+      if (!lenderByTxn.has(l.transaction_id) && Number.isFinite(loanAmount) && loanAmount > 0) {
+        lenderByTxn.set(l.transaction_id, {
+          loan_amount: loanAmount,
+          interest_rate: Number.isFinite(Number(l.interest_rate)) && Number(l.interest_rate) > 0 ? Number(l.interest_rate) : null,
+          loan_term_years: Number.isFinite(Number(l.loan_term_years)) && Number(l.loan_term_years) > 0 ? Number(l.loan_term_years) : null,
+          lender_name: l.lender_name ?? null,
+        })
+      }
+    }
+    for (const p of priorByContact.values()) {
+      p.lender = lenderByTxn.get(p.transaction_id) ?? null
     }
   }
 
@@ -201,6 +228,29 @@ async function processBrokerageWealthScan(
 
 // ─── Opportunity Detection ──────────────────────────────────────────────────
 
+interface PriorLenderRecord {
+  loan_amount: number
+  interest_rate: number | null
+  loan_term_years: number | null
+  lender_name: string | null
+}
+
+interface PriorTransaction {
+  transaction_id: string
+  purchase_price: number | null
+  close_date: string | null
+  /** the REAL loan record on the prior transaction, when one exists */
+  lender: PriorLenderRecord | null
+}
+
+type LoanFigureSource = "lender_record" | "estimated_80_ltv" | "no_purchase_data"
+
+const LOAN_SOURCE_LABELS: Record<LoanFigureSource, string> = {
+  lender_record: "per the loan record on file",
+  estimated_80_ltv: "estimated — no loan record on file (assumes 80% LTV at purchase)",
+  no_purchase_data: "estimated — no purchase or loan record on file (50% equity baseline)",
+}
+
 interface DetectedOpportunity {
   type:
     | "refinance_opportunity"
@@ -242,7 +292,7 @@ async function detectOpportunities(input: {
     age_range: string | null
     contact_persona: string | null
   }
-  prior?: { purchase_price: number | null; close_date: string | null }
+  prior?: PriorTransaction
   marketRate: MarketRate
 }): Promise<{ opportunities: DetectedOpportunity[]; refreshedAvm: boolean }> {
   const { contact, prior, marketRate } = input
@@ -284,9 +334,12 @@ async function detectOpportunities(input: {
 
   if (!avm || avm <= 0) return { opportunities, refreshedAvm }
 
-  // Equity calculation — true equity if we have purchase price, otherwise heuristic
+  // Equity calculation — LOAN TRUTH first (loan-sweep re-source): the prior
+  // transaction's transaction_lenders row (real loan_amount/rate/term) when one
+  // exists; the 80%-LTV heuristic ONLY as the labeled fallback.
   const purchasePrice = prior?.purchase_price ?? null
   const purchaseDate = prior?.close_date ?? null
+  const lenderRecord = prior?.lender ?? null
   const yearsOwned = purchaseDate
     ? (Date.now() - new Date(purchaseDate).getTime()) / (365.25 * 24 * 60 * 60 * 1000)
     : null
@@ -294,23 +347,51 @@ async function detectOpportunities(input: {
   let estimatedEquity: number
   let equityPct: number
   let estimatedLockedRateBps: number | null = null
+  let remainingBalance: number
+  let loanSource: LoanFigureSource
 
-  if (purchasePrice && purchasePrice > 0 && yearsOwned != null) {
-    // Initial loan ≈ 80% LTV, paydown ~1.5%/yr early-amort
+  if (lenderRecord && yearsOwned != null) {
+    // REAL loan record: amortize the actual original balance at the actual
+    // rate/term; fall back to the ~1.5%/yr paydown curve only when the record
+    // carries no rate (still anchored to the REAL original loan amount).
+    loanSource = "lender_record"
+    const initialLoan = lenderRecord.loan_amount
+    if (lenderRecord.interest_rate != null) {
+      const monthlyRate = lenderRecord.interest_rate / 100 / 12
+      const termMonths = (lenderRecord.loan_term_years ?? 30) * 12
+      const elapsedMonths = Math.min(Math.max(0, Math.round(yearsOwned * 12)), termMonths)
+      const growth = Math.pow(1 + monthlyRate, termMonths)
+      const elapsedGrowth = Math.pow(1 + monthlyRate, elapsedMonths)
+      remainingBalance = monthlyRate > 0
+        ? initialLoan * ((growth - elapsedGrowth) / (growth - 1))
+        : initialLoan * Math.max(0, 1 - elapsedMonths / termMonths)
+      estimatedLockedRateBps = Math.round(lenderRecord.interest_rate * 100)
+    } else {
+      remainingBalance = initialLoan * Math.max(0, 1 - 0.015 * yearsOwned)
+      estimatedLockedRateBps = purchaseDate ? estimateRateByYear(new Date(purchaseDate).getFullYear()) : null
+    }
+    estimatedEquity = avm - remainingBalance
+    equityPct = Math.max(0, estimatedEquity / avm)
+  } else if (purchasePrice && purchasePrice > 0 && yearsOwned != null) {
+    // Labeled heuristic: initial loan ≈ 80% LTV, paydown ~1.5%/yr early-amort
+    loanSource = "estimated_80_ltv"
     const initialLoan = purchasePrice * 0.8
     const remainingPct = Math.max(0, 1 - 0.015 * yearsOwned)
-    const remainingBalance = initialLoan * remainingPct
+    remainingBalance = initialLoan * remainingPct
     estimatedEquity = avm - remainingBalance
     equityPct = Math.max(0, estimatedEquity / avm)
 
-    // Estimate locked rate by purchase year
+    // Estimate locked rate by purchase year (proxy — no loan record on file)
     estimatedLockedRateBps = estimateRateByYear(new Date(purchaseDate!).getFullYear())
   } else {
     // No purchase data — assume 50% equity baseline for lifetime customers
+    loanSource = "no_purchase_data"
     estimatedEquity = avm * 0.5
     equityPct = 0.5
+    remainingBalance = avm * 0.5
     estimatedLockedRateBps = null
   }
+  const loanSourceLabel = LOAN_SOURCE_LABELS[loanSource]
 
   const signals = {
     avm,
@@ -320,6 +401,13 @@ async function detectOpportunities(input: {
     equityPct,
     estimatedLockedRateBps,
     currentMarketRateBps: marketRate.rate30yrFixedBps,
+    // provenance discipline: which record (or labeled heuristic) produced the loan figures
+    loanSource,
+    loanSourceLabel,
+    lenderName: lenderRecord?.lender_name ?? null,
+    lockedRateSource: lenderRecord?.interest_rate != null
+      ? "lender_record"
+      : estimatedLockedRateBps != null ? "purchase_year_proxy" : null,
   }
 
   // 1. Refinance opportunity — rate dropped 100+ bps from locked.
@@ -330,7 +418,7 @@ async function detectOpportunities(input: {
   const hasAuthoritativeRate = marketRate.source !== "seed_default"
   if (hasAuthoritativeRate && estimatedLockedRateBps && estimatedLockedRateBps - marketRate.rate30yrFixedBps >= REFI_OPPORTUNITY_BPS_THRESHOLD) {
     const rateGap = estimatedLockedRateBps - marketRate.rate30yrFixedBps
-    const remainingBalance = avm * (1 - equityPct)
+    // remainingBalance: real amortized balance when a loan record exists, else the labeled heuristic (computed above)
     // Approximate monthly savings: balance × (gap_bps / 10000) / 12
     const monthlySavings = (remainingBalance * (rateGap / 10000)) / 12
     opportunities.push({
@@ -497,7 +585,8 @@ Client persona: ${personaContext || "Lifetime customer"}
 Opportunity: ${opportunity.type.replace(/_/g, " ")}
 Current AVM: $${opportunity.currentAvm.toLocaleString()}
 Estimated equity: $${opportunity.estimatedEquity.toLocaleString()} (${(opportunity.equityPct * 100).toFixed(0)}%)
-${opportunity.estimatedLockedRateBps ? `Their estimated locked rate: ${(opportunity.estimatedLockedRateBps / 100).toFixed(2)}%` : ""}
+Loan-figure provenance: ${String((opportunity.signals as Record<string, unknown>).loanSourceLabel ?? "estimated")} — when the figures are estimates (not a loan record), keep the language soft and estimate-framed.
+${opportunity.estimatedLockedRateBps ? `Their ${(opportunity.signals as Record<string, unknown>).lockedRateSource === "lender_record" ? "locked rate (per the loan record on file)" : "estimated locked rate"}: ${(opportunity.estimatedLockedRateBps / 100).toFixed(2)}%` : ""}
 ${opportunity.rateGapBps ? `Current 30yr fixed: ${(marketRate.rate30yrFixedBps / 100).toFixed(2)}% (gap: ${opportunity.rateGapBps} bps)` : ""}
 ${opportunity.monthlySavingsEstimate ? `Estimated monthly savings: $${opportunity.monthlySavingsEstimate.toLocaleString()}` : ""}
 ${opportunity.oneTimeProceedsEstimate ? `Estimated one-time proceeds: $${opportunity.oneTimeProceedsEstimate.toLocaleString()}` : ""}

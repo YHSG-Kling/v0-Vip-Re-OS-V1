@@ -298,7 +298,7 @@ export async function advanceStage(params: {
     try {
       const { data: txForCosts } = await supabase
         .from("transactions")
-        .select("buyer_contact_id, contact_id, purchase_price, deal_type, property_address")
+        .select("buyer_contact_id, contact_id, purchase_price, deal_type, property_address, property_state")
         .eq("id", params.transactionId)
         .eq("brokerage_id", params.brokerageId)
         .maybeSingle()
@@ -324,7 +324,7 @@ export async function advanceStage(params: {
             recipientContactId: buyerContactId,
             audience: "buyer",
             subject: "Your estimated closing costs are ready",
-            body: `Your estimated closing costs are ready — a plain-numbers breakdown of what to plan for beyond your down payment${txForCosts?.property_address ? ` on ${txForCosts.property_address}` : ""}. Walk through them before closing day so nothing at the table is a surprise: open your deal page at /portal/${buyerContactId}/transaction/${params.transactionId} and look for "Your closing costs, in plain numbers." Questions on any line? Just reply — happy to go through it together.`,
+            body: `Your estimated closing costs are ready — a plain-numbers breakdown of what to plan for beyond your down payment${txForCosts?.property_address ? ` on ${txForCosts.property_address}` : ""}. Each line is labeled with where its number comes from: your lender's real terms where we have them, and ${txForCosts?.property_state ? `${txForCosts.property_state} closing conventions (a labeled regional estimate)` : "your state's closing conventions (a labeled regional estimate)"} where we don't — your lender's Loan Estimate is the authority on the lender lines. Walk through them before closing day so nothing at the table is a surprise: open your deal page at /portal/${buyerContactId}/transaction/${params.transactionId} and look for "Your closing costs, in plain numbers." Questions on any line? Just reply — happy to go through it together.`,
             rationale: `${costsTag} — the deal entered closing prep; the buyer's closing-cost estimate card is live on their portal and this is the moment they need it. Drafted for approval, never auto-sent.`,
             channel: "portal",
             outreachReason: "milestone_update",

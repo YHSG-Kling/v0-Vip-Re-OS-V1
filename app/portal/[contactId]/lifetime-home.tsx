@@ -261,6 +261,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           <RefinanceIndicatorCard
             purchasePrice={transaction.sale_price}
             closeDate={transaction.close_date}
+            transactionId={transaction.id}
           />
         )}
 
