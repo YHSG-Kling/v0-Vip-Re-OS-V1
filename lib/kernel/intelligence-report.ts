@@ -100,6 +100,18 @@ export interface ActivityMonth {
   signalsRaised: number
 }
 
+export interface SellerReachMonth {
+  /** Visits to listing landing pages driven by a seller's OWN share
+   *  (smart_landing_sessions.utm_source='seller-share' — the round-28 rail's
+   *  attribution tag), scoped to the tenant. */
+  visits: number
+  /** …of those, the ones that converted to a showing request on the same
+   *  session (smart_landing_sessions.showing_requested) — a seller-driven lead.
+   *  A real, in-row linkage: submitShowingRequest flips this flag on the
+   *  session token the visit was logged under. */
+  leads: number
+}
+
 export interface IntelligenceFacts {
   monthKey: string
   monthLabel: string
@@ -114,6 +126,7 @@ export interface IntelligenceFacts {
     totalGrants: string[]
   }
   attribution: { current: AttributionMonth; prior: AttributionMonth }
+  sellerReach: { current: SellerReachMonth; prior: SellerReachMonth }
   activity: { current: ActivityMonth; prior: ActivityMonth }
   trust: {
     /** best_effort_write failures ledgered this month (fewer = healthier). */
@@ -138,6 +151,7 @@ export type IntelligenceSectionId =
   | "draft_quality"
   | "earned_autonomy"
   | "attribution"
+  | "seller_reach"
   | "activity"
   | "trust"
   | "promoter_quotes"
@@ -276,6 +290,26 @@ function composeAttributionSection(f: IntelligenceFacts): IntelligenceSection | 
   return { id: "attribution", title: "Marketing attribution — receipts", headline, lines }
 }
 
+function composeSellerReachSection(f: IntelligenceFacts): IntelligenceSection | null {
+  const c = f.sellerReach.current
+  const p = f.sellerReach.prior
+  if (c.visits <= 0) return null // no seller-driven visits this month — omitted, never zero-padded
+
+  const headline = c.leads > 0
+    ? `Your sellers' own shares drew ${c.visits} ${plural(c.visits, "visit")} to their listing ${plural(c.visits, "page")} this month — ${c.leads} asked for a showing. Distribution you didn't pay for.`
+    : `Your sellers' own shares drew ${c.visits} ${plural(c.visits, "visit")} to their listing ${plural(c.visits, "page")} this month — reach you didn't pay for.`
+
+  const lines: ReportMetricLine[] = [
+    { label: "Seller-shared visits", value: String(c.visits), delta: countDelta(c.visits, p.visits) },
+  ]
+  // Only surface the conversion line when either month has one — never narrate a
+  // zero, same rule as every other section.
+  if (c.leads > 0 || p.leads > 0) {
+    lines.push({ label: "…that requested a showing", value: String(c.leads), delta: countDelta(c.leads, p.leads) })
+  }
+  return { id: "seller_reach", title: "Seller-driven reach — earned distribution", headline, lines }
+}
+
 function composeActivitySection(f: IntelligenceFacts): IntelligenceSection | null {
   const c = f.activity.current
   const p = f.activity.prior
@@ -351,6 +385,7 @@ export function composeIntelligenceReport(facts: IntelligenceFacts): Intelligenc
     composeDraftSection(facts),
     composeAutonomySection(facts),
     composeAttributionSection(facts),
+    composeSellerReachSection(facts),
     composeActivitySection(facts),
     composeTrustSection(facts),
     composePromoterQuotesSection(facts),
@@ -386,6 +421,15 @@ export async function loadIntelligenceFacts(svc: any, brokerageId: string, month
   const signalsIn = (w: MonthWindow) => cnt(svc.from("manager_signals").select("id", { count: "exact", head: true })
     .eq("brokerage_id", brokerageId)
     .gte("created_at", w.startIso).lt("created_at", w.endIso))
+  // SELLER-DRIVEN REACH — visits a seller drove to their own listing page by
+  // re-sharing its published posts (round-28 rail), tagged utm_source='seller-share'
+  // on the SAME smart_landing_sessions ledger the listing page already writes.
+  // showing_requested is flipped on that session row when the visit converts to a
+  // showing request — a real, in-row visit→lead linkage (no invented join).
+  const sellerReachIn = (w: MonthWindow) => svc.from("smart_landing_sessions")
+    .select("showing_requested")
+    .eq("brokerage_id", brokerageId).eq("utm_source", "seller-share")
+    .gte("created_at", w.startIso).lt("created_at", w.endIso).limit(5000)
   const lossesIn = (w: MonthWindow) => cnt(svc.from("self_heal_events").select("id", { count: "exact", head: true })
     .eq("brokerage_id", brokerageId).eq("domain", "data_flow")
     .eq("action", "best_effort_write").eq("outcome", "failed")
@@ -410,6 +454,7 @@ export async function loadIntelligenceFacts(svc: any, brokerageId: string, month
     dealsCur, dealsPri, signalsCur, signalsPri,
     lossesCur, lossesPri, healedCur, escalatedCur,
     promoterRows,
+    sellerReachCur, sellerReachPri,
     grantDecisions, docGrants, mktGrants,
   ] = await Promise.all([
     draftsIn(cur), draftsIn(pri),
@@ -418,6 +463,7 @@ export async function loadIntelligenceFacts(svc: any, brokerageId: string, month
     dealsIn(cur), dealsIn(pri), signalsIn(cur), signalsIn(pri),
     lossesIn(cur), lossesIn(pri), healOutcomeIn(cur, "healed"), healOutcomeIn(cur, "escalated"),
     promoterQuotesIn(cur),
+    sellerReachIn(cur), sellerReachIn(pri),
     // The autonomy ratchet's own ledger writes: target_type='autonomy_grant',
     // recommended_action 'autonomy_granted' / 'autonomy_grant_declined'
     // (lib/documents/autonomy-ratchet.ts resolveAutonomyRatchetCore).
@@ -429,6 +475,10 @@ export async function loadIntelligenceFacts(svc: any, brokerageId: string, month
     loadMarketingGrants(svc, brokerageId),
   ])
 
+  const toSellerReach = (res: any): SellerReachMonth => {
+    const rows = ((res as any)?.data ?? []) as Array<{ showing_requested: boolean | null }>
+    return { visits: rows.length, leads: rows.filter((r) => r.showing_requested === true).length }
+  }
   const toCredits = (res: any): AttributionMonth => {
     const rows = ((res as any)?.data ?? []) as Array<{ credit_dollars: number | null; transaction_id: string | null }>
     return {
@@ -456,6 +506,7 @@ export async function loadIntelligenceFacts(svc: any, brokerageId: string, month
     drafts: { current: draftsCurQ, prior: draftsPriQ },
     autonomy: { grantedShapes, declined, totalGrants },
     attribution: { current: toCredits(creditRowsCur), prior: toCredits(creditRowsPri) },
+    sellerReach: { current: toSellerReach(sellerReachCur), prior: toSellerReach(sellerReachPri) },
     activity: {
       current: { callsAnswered: callsCur, appointmentsBooked: bookingsCur, draftsProduced: draftsCurQ.drafted, dealsAdvanced: dealsCur, signalsRaised: signalsCur },
       prior: { callsAnswered: callsPri, appointmentsBooked: bookingsPri, draftsProduced: draftsPriQ.drafted, dealsAdvanced: dealsPri, signalsRaised: signalsPri },

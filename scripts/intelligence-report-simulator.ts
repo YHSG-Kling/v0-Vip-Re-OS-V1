@@ -58,6 +58,7 @@ const quietFacts = (): IntelligenceFacts => ({
   drafts: { current: { ...quietDrafts }, prior: { ...quietDrafts } },
   autonomy: { grantedShapes: [], declined: 0, totalGrants: [] },
   attribution: { current: { attributedGciCents: 0, attributedDeals: 0 }, prior: { attributedGciCents: 0, attributedDeals: 0 } },
+  sellerReach: { current: { visits: 0, leads: 0 }, prior: { visits: 0, leads: 0 } },
   activity: { current: { ...quietActivity }, prior: { ...quietActivity } },
   trust: { writeLosses: 0, priorWriteLosses: 0, healed: 0, escalated: 0 },
   promoters: { quotes: [] },
@@ -153,6 +154,30 @@ async function main() {
   check("attribution headline: measured, not claimed", /\$840K closed volume/.test(attrSection.headline) && /measured by the attribution engine/.test(attrSection.headline))
   check("attribution volume line carries prior-month money delta", attrSection.lines.some((l) => l.delta === "↑ from $520K last month"))
 
+  console.log("\n[Layer 1 · seller-driven reach — earned distribution]")
+  const reach = quietFacts()
+  reach.sellerReach.current = { visits: 41, leads: 3 }
+  reach.sellerReach.prior = { visits: 22, leads: 1 }
+  const reachSection = composeIntelligenceReport(reach).sections.find((s) => s.id === "seller_reach")!
+  check("seller-reach section renders when a seller's share drove visits", !!reachSection)
+  check("headline counts the visits and the showing conversions", /41 visits/.test(reachSection.headline) && /3 asked for a showing/.test(reachSection.headline))
+  check("headline names it as unpaid distribution", /didn't pay for/.test(reachSection.headline))
+  check("visits line carries the month-over-month delta", reachSection.lines.find((l) => /Seller-shared visits/.test(l.label))?.delta === "↑ 19 vs last month")
+  check("showing-conversion line present with its own delta", reachSection.lines.some((l) => /requested a showing/.test(l.label) && l.value === "3" && l.delta === "↑ 2 vs last month"))
+  const reachNoLeads = quietFacts()
+  reachNoLeads.sellerReach.current = { visits: 8, leads: 0 }
+  const reachNoLeadsSection = composeIntelligenceReport(reachNoLeads).sections.find((s) => s.id === "seller_reach")!
+  check("visits-but-no-leads month uses the reach-only headline (never narrates a zero)", /reach you didn't pay for/.test(reachNoLeadsSection.headline) && !/showing/.test(reachNoLeadsSection.headline))
+  check("conversion line omitted when neither month had a lead", !reachNoLeadsSection.lines.some((l) => /requested a showing/.test(l.label)))
+  check("seller-reach section OMITTED when no seller-driven visits this month (never zero-padded)",
+    !composeIntelligenceReport(quietFacts()).sections.some((s) => s.id === "seller_reach"))
+  const reachPriorOnly = quietFacts()
+  reachPriorOnly.sellerReach.prior = { visits: 15, leads: 2 }
+  check("prior-month-only seller reach does NOT render (no data THIS month)",
+    !composeIntelligenceReport(reachPriorOnly).sections.some((s) => s.id === "seller_reach"))
+  check("all-quiet month stays EMPTY with the sellerReach field present",
+    composeIntelligenceReport(quietFacts()).empty)
+
   console.log("\n[Layer 1 · headline selection — trust]")
   const healthier = quietFacts()
   healthier.trust = { writeLosses: 1, priorWriteLosses: 6, healed: 4, escalated: 0 }
@@ -210,6 +235,9 @@ async function main() {
   check("packet carries the composer's exact headline (no second formula)", withIntel.includes("74%→86%"))
   const withoutIntel = composeBoardPacketMarkdown(packetBase)
   check("packet with no intelligence sections omits the block entirely", !/AI Team Intelligence/.test(withoutIntel))
+  const reachPacket = composeBoardPacketMarkdown({ ...packetBase, intelligence: composeIntelligenceReport(reach).sections })
+  check("packet renders the seller-driven reach section through the same composer (no second surface)",
+    reachPacket.includes("**Seller-driven reach — earned distribution**") && reachPacket.includes("3 asked for a showing"))
   const withQuotesPacket = composeBoardPacketMarkdown({ ...packetBase, intelligence: composeIntelligenceReport(withQuotes).sections })
   check("packet carries the promoter verbatims as quoted sub-bullets",
     withQuotesPacket.includes("  - “Best money we spend every month.”"))

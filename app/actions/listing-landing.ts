@@ -393,9 +393,23 @@ export async function logLandingSession(params: {
     const supabase = await createClient()
     const today = new Date().toISOString().split("T")[0]
 
-    // Insert session row
+    // Resolve the listing's brokerage so the session row is tenant-attributable.
+    // smart_landing_sessions.brokerage_id already exists but was left null here,
+    // which made seller-share (and every other utm) visit impossible to scope to
+    // a tenant for the monthly intelligence report. One cheap read on an already
+    // fire-and-forget path — no new table, no new column.
+    const { data: listingRow } = await supabase
+      .from("listings")
+      .select("brokerage_id")
+      .eq("id", params.listingId)
+      .maybeSingle()
+
+    // Insert session row — the utm params already carry the attribution source
+    // (SellerSharePostsRail appends utm_source=seller-share), now stamped with the
+    // owning brokerage so the report can read seller-driven reach per tenant.
     await supabase.from("smart_landing_sessions").insert({
       listing_id: params.listingId,
+      brokerage_id: listingRow?.brokerage_id ?? null,
       session_token: params.sessionToken,
       utm_source: params.utmSource || null,
       utm_medium: params.utmMedium || null,
