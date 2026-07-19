@@ -30,6 +30,7 @@ export async function GET(req: NextRequest) {
   const supabase = createServiceClient()
   let processed = 0
   let skipped = 0
+  let drafted = 0
   const errors: string[] = []
 
   try {
@@ -95,15 +96,46 @@ export async function GET(req: NextRequest) {
           continue
         }
 
-        // Generate and schedule the review request
-        await aiGenerateReviewRequest({
+        // Generate the review request — then ACTUALLY SEND IT (informed-audit
+        // fix: this cron used to create the pending row, discard the composed
+        // message, and report "processed" for a send that never happened).
+        const gen: any = await aiGenerateReviewRequest({
           transactionId: txn.id,
           agentId:       txn.agent_id,
           platform:      "google",
           channel:       "email",
         })
+        if (!gen?.success) { errors.push(`txn ${txn.id}: compose failed`); continue }
 
-        processed++
+        const contactEmail = (txn as any).contacts?.email as string | undefined
+        if (!contactEmail || !gen.message) {
+          // No email on file — the draft stays 'pending' for the agent to
+          // deliver another way; counted honestly as drafted, not sent.
+          drafted++
+          continue
+        }
+        const { dispatchEmail } = await import("@/lib/providers/dispatch")
+        const sent = await dispatchEmail({
+          brokerageId: txn.brokerage_id,
+          from: "Your Agent",
+          to: contactEmail,
+          subject: gen.data?.subject ?? "Quick favor — how was your experience?",
+          html: String(gen.message),
+          channelPurpose: "update",
+          systemSource: "review_automation",
+          contactId: txn.contact_id,
+          metadata: { transactionId: txn.id, platform: "google" },
+        })
+        if (sent.success && gen.reviewRequestId) {
+          await supabase.from("review_requests")
+            .update({ status: "sent", sent_at: new Date().toISOString() })
+            .eq("id", gen.reviewRequestId)
+          processed++
+        } else {
+          // Refused by the compliance gate (or no row id) — row stays 'pending'
+          // with the draft intact; never stamped sent.
+          drafted++
+        }
       } catch (err: any) {
         errors.push(`txn ${txn.id}: ${err?.message ?? String(err)}`)
       }
@@ -112,10 +144,10 @@ export async function GET(req: NextRequest) {
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: processed,
-      metadata: { skipped, errors },
+      metadata: { skipped, drafted, errors },
     })
 
-    return NextResponse.json({ ok: true, processed, skipped, errors })
+    return NextResponse.json({ ok: true, processed, skipped, drafted, errors })
   } catch (err: any) {
     const msg = err?.message ?? String(err)
     await recordCronFailureAction({ context_id: contextId, error: msg })

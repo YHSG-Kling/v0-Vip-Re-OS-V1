@@ -124,9 +124,40 @@ export async function canAccessFeature(
     const { data: user, error: userError } = await supabase
       .from("users").select("user_type, team_id, brokerage_id, platform_role").eq("id", userId).maybeSingle()
     if (userError) throw new Error(`[FeatureAccess] Failed to load user: ${userError.message}`)
-    if (!user) return { allowed: false, reason: "User not found" }
+    if (!user) {
+      // TENANT-ID FALLBACK — some rails (competitor monitor ingest/insights) gate
+      // by the TENANT, passing a brokerages.id here. Tier is a tenant property, so
+      // resolve it from brokerages.plan_tier instead of hard-failing "User not
+      // found" (which silently killed those features for every tier).
+      const { data: brkAsId } = await supabase
+        .from("brokerages").select("plan_tier").eq("id", userId).maybeSingle()
+      const bt = (brkAsId as { plan_tier?: string } | null)?.plan_tier
+      if (bt === "solo_agent" || bt === "team" || bt === "brokerage" || bt === "multi_location") {
+        resolvedTier = bt
+      } else if (brkAsId) {
+        resolvedTier = "brokerage" // legacy/unbackfilled tenant — pre-matrix behavior
+      } else {
+        return { allowed: false, reason: "User not found" }
+      }
+      isSuperadmin = false
+    } else {
     resolvedTier = mapUserTypeToTier(user.user_type, user.brokerage_id, user.team_id)
     isSuperadmin = user.user_type === "superadmin" || (user as any).platform_role === "superadmin"
+    // BILLED-TIER TRUTH: the tenant's brokerages.plan_tier is what the customer
+    // pays for — it wins over user_type inference. Without this, a solo_agent
+    // tenant's owner (user_type='admin') was gated by the *brokerage* columns and
+    // a brokerage tenant's team members were gated by the *team* columns (wrong
+    // access + wrong per-tier limits). Inference remains the legacy fallback for
+    // unbackfilled/unknown plan_tier values.
+    if (!isSuperadmin && user.brokerage_id) {
+      const { data: brk } = await supabase
+        .from("brokerages").select("plan_tier").eq("id", user.brokerage_id).maybeSingle()
+      const planTier = (brk as { plan_tier?: string } | null)?.plan_tier
+      if (planTier === "solo_agent" || planTier === "team" || planTier === "brokerage" || planTier === "multi_location") {
+        resolvedTier = planTier
+      }
+    }
+    }
   }
 
   // ── Platform hard rule (god-switch) — the highest-precedence gate. Superadmins

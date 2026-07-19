@@ -51,13 +51,13 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     const tier = String((brk as any)?.plan_tier ?? "solo_agent")
     if (tier === "solo_agent") mayEnter = true
     else if (tier === "team") {
-      const { data: myAgent } = await svcGate.from("agents").select("id").eq("user_id", user.id).eq("brokerage_id", brokerageId).maybeSingle()
-      if (myAgent) {
-        const { data: lead } = await svcGate.from("teams").select("id")
-          .eq("brokerage_id", brokerageId).eq("team_lead_id", (myAgent as any).id)
-          .is("deleted_at", null).limit(1).maybeSingle()
-        if (lead) mayEnter = true
-      }
+      // teams.team_lead_id is users.id (FK auth.users(id)) — compare against the
+      // auth user id directly. The prior agents.id comparison never matched, so
+      // team leads were silently locked out of their own Command Center.
+      const { data: lead } = await svcGate.from("teams").select("id")
+        .eq("brokerage_id", brokerageId).eq("team_lead_id", user.id)
+        .is("deleted_at", null).limit(1).maybeSingle()
+      if (lead) mayEnter = true
     }
   }
   if (!mayEnter) redirect("/dashboard")

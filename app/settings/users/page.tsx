@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { UsersManagementClient } from "./users-management-client"
+import { SsoConnectionCard } from "./sso-connection-card"
 
 export const dynamic = "force-dynamic"
 
@@ -40,10 +41,14 @@ export default async function SettingsUsersPage() {
         .order("created_at", { ascending: false })
 
   return (
-    <UsersManagementClient
-      users={users ?? []}
-      currentUserId={user.id}
-      brokerageId={brokerageId}
-    />
+    <div className="space-y-6">
+      <UsersManagementClient
+        users={users ?? []}
+        currentUserId={user.id}
+        brokerageId={brokerageId}
+      />
+      {/* SSO / SAML — team access policy lives with team management. */}
+      <SsoConnectionCard />
+    </div>
   )
 }

@@ -217,7 +217,7 @@ Generate:
       ?? (params.channel === "text" ? request.callScript : null)
       ?? `Hi ${transaction.contacts?.first_name ?? "there"}, ${request.personalizedOpener ?? ""} ${request.softAsk ?? ""}`.trim()
 
-    return { success: true, data: request, message: messageText }
+    return { success: true, data: request, message: messageText, reviewRequestId: rrInsert?.id ?? null }
   } catch (error) {
     return handleError(error, "aiGenerateReviewRequest")
   }

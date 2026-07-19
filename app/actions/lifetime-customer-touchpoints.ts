@@ -64,7 +64,26 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
   })
   const message = anniversaryCopy.body
 
-  // Create touchpoint record only after confirming email exists — status "sent" must be truthful
+  // GATED EGRESS (informed-audit fix): this send used to go through the raw
+  // communication.service path, bypassing consent/DNC/suppression/quiet-hours.
+  // It now routes through THE gate (dispatchEmail with contactId) — and the
+  // touchpoint row is stamped "sent" ONLY when the gate actually dispatched.
+  const { dispatchEmail } = await import("@/lib/providers/dispatch")
+  const result = await dispatchEmail({
+    brokerageId: brokerageId!,
+    from: "Your Agent",
+    to: contact.email,
+    subject: anniversaryCopy.subject || "Happy home anniversary!",
+    html: message,
+    channelPurpose: "update",
+    systemSource: "lifetime_touchpoints",
+    contactId,
+    metadata: { touchpoint: "home_anniversary", yearsAgo },
+  })
+  if (!result.success) {
+    return { success: false, error: result.error ?? "Send blocked by compliance gate" }
+  }
+
   const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
     brokerage_id: brokerageId,
     contact_id: contactId,
@@ -78,16 +97,6 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
   })
 
   if (error) throw error
-
-  // Send via consolidated communications service — anniversary is email-only
-  // to match the touchpoint record above (channel: "email")
-  const { sendAnniversaryMessage: sendAnniversaryComm } = await import("@/lib/services")
-  await sendAnniversaryComm({
-    contactId,
-    email: contact.email,
-    message,
-    occasionType: "Home Anniversary",
-  })
 
   // Fire the personalized anniversary D-ID + cloned-voice video alongside the
   // email. Gated on contacts.video_opt_out + agent voice profile, idempotent
@@ -116,9 +125,12 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
 export async function sendBirthdayMessage(contactId: string, opts?: TouchpointActorOpts) {
   const { supabase, agentId, brokerageId } = await resolveTouchpointActor(opts)
 
-  const { data: contact } = await supabase.from("contacts").select("first_name, last_name").eq("id", contactId).single()
+  const { data: contact } = await supabase.from("contacts").select("first_name, last_name, phone").eq("id", contactId).single()
 
   if (!contact) throw new Error("Contact not found")
+  if (!contact.phone) {
+    return { success: false, error: "Contact has no phone number for a birthday text" }
+  }
 
   const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
   const birthdayCopy = await generateClientMessage({
@@ -127,6 +139,22 @@ export async function sendBirthdayMessage(contactId: string, opts?: TouchpointAc
     fallback: { subject: "Happy Birthday!", body: `Happy Birthday ${contact.first_name}! Wishing you an amazing year ahead!` },
   })
   const message = birthdayCopy.body
+
+  // INFORMED-AUDIT FIX: this row used to be stamped "sent" with NO send behind
+  // it. It now dispatches through THE gate (consent/DNC/quiet-hours) first and
+  // records "sent" only when the gate actually dispatched.
+  const { dispatchSms } = await import("@/lib/providers/dispatch")
+  const result = await dispatchSms({
+    brokerageId: brokerageId!,
+    to: contact.phone,
+    message,
+    systemSource: "lifetime_touchpoints",
+    contactId,
+    metadata: { touchpoint: "birthday" },
+  })
+  if (!result.success) {
+    return { success: false, error: result.error ?? "Send blocked by compliance gate" }
+  }
 
   const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
     brokerage_id: brokerageId,
@@ -172,6 +200,24 @@ export async function sendReferralRequest(contactId: string, opts?: TouchpointAc
     },
   })
   const message = referralCopy.body
+
+  // INFORMED-AUDIT FIX: previously stamped "sent" with no send behind it.
+  // Dispatch through THE gate first; record "sent" only on a real dispatch.
+  if (!contact.phone) {
+    return { success: false, error: "Contact has no phone number for a referral text" }
+  }
+  const { dispatchSms } = await import("@/lib/providers/dispatch")
+  const result = await dispatchSms({
+    brokerageId: brokerageId!,
+    to: contact.phone,
+    message,
+    systemSource: "lifetime_touchpoints",
+    contactId,
+    metadata: { touchpoint: "referral_request" },
+  })
+  if (!result.success) {
+    return { success: false, error: result.error ?? "Send blocked by compliance gate" }
+  }
 
   const { error } = await supabase.from("lifetime_customer_touchpoints").insert({
     brokerage_id: brokerageId,

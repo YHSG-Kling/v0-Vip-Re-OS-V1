@@ -15,8 +15,9 @@
  *   · Every authenticated user can see the AGENT tab (their own override)
  *   · user_type ∈ {broker, admin, compliance_officer} → BROKERAGE tab
  *     visible AND can pick any TEAM in the brokerage for the team tab
- *   · agents.id matches teams.team_lead_id on some row → TEAM tab
- *     visible (their own team only)
+ *   · users.id matches teams.team_lead_id on some row → TEAM tab
+ *     visible (their own team only). team_lead_id is a users.id
+ *     (FK auth.users(id)) — never compare it to agents.id.
  *
  * Returns the resolved scopeIds so the calling server action can write
  * to the right (scope_type, scope_id) without re-resolving role.
@@ -72,16 +73,21 @@ export async function resolvePolicyScopeAccess(): Promise<PolicyScopeAccess> {
   const agentScopeId = agentRow?.id ?? null
   const agentTeamId  = agentRow?.team_id ?? null
 
-  // Team-lead check — agents.id appears as teams.team_lead_id on at least
-  // one row. Brokerage tier users always get team access.
+  // Team-lead check — teams.team_lead_id is users.id (FK auth.users(id), same
+  // id-class the kernel writes in lib/kernel/users.ts). The prior code compared
+  // it against the caller's agents.id, which never equals a users.id — so team
+  // leads never saw their Team tab. Brokerage tier users always get team access.
   let isTeamLead = false
-  if (!BROKER_ROLES.has(ctx.userType) && agentScopeId) {
+  let leadTeamIds: string[] = []
+  if (!BROKER_ROLES.has(ctx.userType)) {
     try {
       const { data: leadCheck } = await svc.from("teams")
         .select("id")
-        .eq("team_lead_id", agentScopeId)
-        .limit(1)
-      isTeamLead = !!(leadCheck && leadCheck.length > 0)
+        .eq("team_lead_id", ctx.userId)
+        .eq("brokerage_id", ctx.brokerageId)
+        .is("deleted_at", null)
+      leadTeamIds = ((leadCheck ?? []) as Array<{ id: string }>).map((r) => r.id)
+      isTeamLead = leadTeamIds.length > 0
     } catch { /* fail-closed */ }
   }
 
@@ -97,8 +103,13 @@ export async function resolvePolicyScopeAccess(): Promise<PolicyScopeAccess> {
   let teamScopeIds: string[] = []
   if (canEditBrokerage) {
     teamScopeIds = ((teamsR.data ?? []) as Array<{ id: string }>).map((r) => r.id)
-  } else if (isTeamLead && agentTeamId) {
-    teamScopeIds = [agentTeamId]
+  } else if (isTeamLead) {
+    // The teams they LEAD (team_lead_id match) — plus their own membership
+    // team if it isn't already in the list (a lead's agents.team_id may point
+    // at the same team, or they may lead a team they aren't a member row of).
+    teamScopeIds = agentTeamId && !leadTeamIds.includes(agentTeamId)
+      ? [...leadTeamIds, agentTeamId]
+      : leadTeamIds
   }
 
   return {
