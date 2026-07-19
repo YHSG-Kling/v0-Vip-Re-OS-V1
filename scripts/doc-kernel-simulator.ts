@@ -2213,7 +2213,8 @@ async function main() {
         && src("lib/vendors/premium-placement.ts").includes("placement_until")
         && src("app/api/cron/vendor-orchestration/route.ts").includes("expirePlacements")
         && src("app/dashboard/superadmin/communications/page.tsx").includes("PlatformReceptionPanel")
-        && src("app/dashboard/superadmin/usage-reports/page.tsx").includes("usage_counters")
+        // round 33 moved the usage_counters read into the keep-one loader shared by the page + CSV export
+        && src("app/dashboard/superadmin/usage-reports/usage-report-data.ts").includes("usage_counters")
         && src("app/dashboard/superadmin/home/page.tsx").includes("/dashboard/superadmin/usage-reports"))
     }
     // ── ROUND 17: LOST WORK MADE STRUCTURALLY IMPOSSIBLE (PASS 18) + LOOPS CLOSED ──
@@ -2259,6 +2260,28 @@ async function main() {
         && src("app/demo/page.tsx").length > 0
         && src("app/actions/superadmin/platform-growth.ts").includes("proposal")
         && src("supabase/migrations/m272-platform-prospects-details.sql").includes("details"))
+    }
+    // ── ROUND 33: SIX POLICY CORRECTIONS + THE FLAGGED-LOOP BURN ──
+    {
+      check("ROUND 33 — SIX OWNER POLICIES + every agent-flagged deferred loop closed (teammate video excluded). (1) APPROVALS SPAN EVERYTHING: the unified queue gains blog_posts (publish_status ladder), podcast_episodes (pending_review → distribution channels), ai_video_projects (commissioned renders awaiting release), and offers — approve IS the acceptOffer kernel command /offers uses, reject IS rejectOffer, zero forked transitions. (2) NOTIFICATIONS = ALL USERS: /notifications nav parity for every tenant role block (ISA, vendor, compliance officer joined); portal contacts keep the portal bell. (3) ADVERTISING INCL. NEWSLETTER = ALL TIERS. (4) LEADS = BROKERAGE + PLATFORM ONLY (nav entries removed from agent/ISA blocks AND server-enforced on pages, routes, actions), RAW LEADS = PLATFORM ONLY (/api/leads/raw flipped from any-authenticated-tenant to requirePlatformStaffAuth — tenants first see data as promoted leads). (5) EXCEPTION CENTER for brokerage + per-location multi_location scoping. (6) VOICE EXPANSION: management opt-in (voice_assistant_expanded_roles) extends the assistant to staff roles; platform staff by platform_role. (7) CLOSING COSTS BY REGION: pure 50-state+DC convention table — every figure labeled 'regional estimate — {state} conventions', lender's Loan Estimate the named authority, AI refinement clamped within the regional band (lender-fact + pending lines untouchable, reason required); RefinanceIndicatorCard + wealth scan re-source real loans from transaction_lenders. Round-32 deferreds landed: broker→agents broadcast (in-app only, team scoping server-forced), per-contact reassignment (the bulk move-set reused), merge extended 2→18 child pairs abort-before-delete. Plus: weekly stripe-drift cron (finance_manager, never auto-fixes, same comparePlanPriceToStripe rule as manual sync) + affiliate ?ref capture through the ONE cookie-setter",
+        src("lib/kernel/approval-queue-aggregator.ts").includes("blog_posts")
+        && src("lib/kernel/approval-queue-aggregator.ts").includes("podcast_episodes")
+        && src("lib/kernel/approval-queue-aggregator.ts").includes("ai_video_projects")
+        && src("lib/kernel/approval-queue-aggregator.ts").includes("acceptOffer")
+        && src("lib/kernel/approval-queue-aggregator.ts").includes("rejectOffer")
+        && src("app/config/navigation-config.ts").includes("LEADS = BROKERAGE + PLATFORM ONLY")
+        && src("app/api/leads/raw/route.ts").includes("requirePlatformStaffAuth")
+        && src("lib/kernel/exception-center.ts").includes("multi_location")
+        && src("app/actions/voice-access.ts").includes("setVoiceAssistantExpandedRoles")
+        && src("lib/brokerage/get-brokerage-settings.ts").includes("voice_assistant_expanded_roles")
+        && src("lib/offers/regional-closing-costs.ts").includes("applyAiRefinements")
+        && src("lib/offers/regional-closing-costs.ts").includes("regional estimate")
+        && src("app/components/portal/lifetime/RefinanceIndicatorCard.tsx").includes("transaction_lenders")
+        && src("app/actions/communications.ts").includes("notifyBrokerageAgentsAction")
+        && src("lib/billing/plan-catalog.ts").includes("comparePlanPriceToStripe")
+        && src("lib/kernel/cron-dispatch.ts").includes("/api/cron/stripe-drift")
+        && src("lib/platform/affiliate-ref-capture.ts").includes("refCaptureRedirect")
+        && src("package.json").includes("test:regional-closing-costs"))
     }
     // ── ROUND 32: THE TENANT MIRROR — SUB-ACCOUNT PARITY, LOAN TRUTH, LETTER EDUCATION ──
     {

@@ -396,11 +396,15 @@ async function main() {
   check("email campaigns: template-body campaigns and queued email_sends both drain through the consent-gated dispatchEmail",
     sender.includes("resolveCampaignHtml") && sender.includes('.eq("status", "queued")')
     && sender.includes("dispatchEmail") && src("app/actions/email-campaigns.ts").includes("sendCampaignNow"))
+  // Round 33 moved the per-kind approve/reject cascades into the keep-one
+  // aggregator (applyMarketingAssetApproval) shared with the unified /approvals
+  // queue — the tenant-scoped action delegates, so the two surfaces can't drift.
   check("newsletter approval schedules (status→scheduled + send_date) — approve-only no longer strands the AI newsletter",
-    src("app/actions/marketing-ai-approvals.ts").includes('kind === "newsletter"')
-    && src("app/actions/marketing-ai-approvals.ts").includes("send_date: nl.send_date ?? new Date().toISOString()"))
+    src("lib/kernel/approval-queue-aggregator.ts").includes('kind === "newsletter"')
+    && src("lib/kernel/approval-queue-aggregator.ts").includes("send_date: nl.send_date ?? new Date().toISOString()")
+    && src("app/actions/marketing-ai-approvals.ts").includes("applyMarketingAssetApproval"))
   check("blog approval advances publish_status AND the cadence cron's publish phase ships approved hosted/embed posts public",
-    src("app/actions/marketing-ai-approvals.ts").includes('kind === "blog"')
+    src("lib/kernel/approval-queue-aggregator.ts").includes('kind === "blog"')
     && src("app/api/cron/blog-cadence-tick/route.ts").includes('publish_status: "published"')
     && src("app/api/cron/blog-cadence-tick/route.ts").includes('["hosted", "embed"]'))
   check("the SECOND social approval handler (handleContentApproved) also flips drafts publishable — both approval paths agree",
@@ -436,8 +440,8 @@ async function main() {
   check("podcast distributor honors the human gate: only approval_status='approved' episodes ship (the bypass is dead)",
     distSrc.includes('.eq("approval_status", "approved")'))
   check("podcast approve makes the episode DISTRIBUTABLE: empty publish_channels default to the brokerage's enabled channels",
-    src("app/actions/marketing-ai-approvals.ts").includes('kind === "podcast"')
-    && src("app/actions/marketing-ai-approvals.ts").includes("podcast_distribution_channels"))
+    src("lib/kernel/approval-queue-aggregator.ts").includes('kind === "podcast"')
+    && src("lib/kernel/approval-queue-aggregator.ts").includes("podcast_distribution_channels"))
   check("podcast production is scheduled (weekly auto + distribution crons registered, manager-owned)",
     src("lib/kernel/cron-dispatch.ts").includes("podcast-weekly-auto")
     && src("lib/kernel/cron-dispatch.ts").includes("distribute-podcast-episodes"))
