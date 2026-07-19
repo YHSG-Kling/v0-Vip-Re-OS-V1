@@ -190,8 +190,241 @@ export async function getContactTimeline(contactId: string) {
   }
 }
 
-export async function mergeContacts(params: { primaryContactId: string; duplicateContactId: string; agentId: string }) {
-  return mergeContactsService(params)
+// ─────────────────────────────────────────────────────────────────────────────
+// MERGE / DEDUPE
+//
+// COMPLETENESS VERDICT on the original lib/services/contact-management.service
+// mergeContacts: it merged the contact ROW (phone/budget/cities/tags/notes,
+// primary wins) and moved only TWO child tables (property_interactions,
+// transactions.contact_id) before soft-deleting the duplicate — every other
+// child row (activities, tasks, messages, notes, leads, conversations, portal
+// invites/messages/access logs, showings, offers, property alerts, interests,
+// segments, agent client messages, transactions' buyer/seller contact columns)
+// stayed pointed at the soft-deleted duplicate: STRANDED history. The action
+// below EXTENDS the merge — it moves the full child set FIRST with checked
+// writes and honest per-table counters, then delegates the field merge +
+// property_interactions/transactions.contact_id move + soft delete to the
+// existing service, then audits via the activities idiom.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Child tables re-pointed from the duplicate to the survivor before the
+ *  service-level merge runs. Column named where it isn't contact_id. */
+const MERGE_CHILD_TABLES: Array<{ table: string; column: string }> = [
+  { table: "activities",                     column: "contact_id" },
+  { table: "tasks",                          column: "contact_id" },
+  { table: "messages",                       column: "contact_id" },
+  { table: "contact_notes",                  column: "contact_id" },
+  { table: "leads",                          column: "contact_id" },
+  { table: "conversations",                  column: "contact_id" },
+  { table: "client_portal_messages",         column: "contact_id" },
+  { table: "portal_contact_invites",         column: "contact_id" },
+  { table: "portal_access_logs",             column: "contact_id" },
+  { table: "showings",                       column: "contact_id" },
+  { table: "offers",                         column: "contact_id" },
+  { table: "property_alerts",                column: "contact_id" },
+  { table: "property_interests",             column: "contact_id" },
+  { table: "contact_segments",               column: "contact_id" },
+  { table: "agent_client_messages",          column: "recipient_contact_id" },
+  { table: "smart_showing_recommendations",  column: "contact_id" },
+  // The service moves transactions.contact_id; the side-specific columns are ours:
+  { table: "transactions",                   column: "buyer_contact_id" },
+  { table: "transactions",                   column: "seller_contact_id" },
+]
+
+/** Who may merge: the owning agent of BOTH contacts, or a brokerage manager. */
+async function requireMergeAuthority(primaryContact: { agent_id: string | null; brokerage_id: string | null }, duplicateContact: { agent_id: string | null; brokerage_id: string | null }) {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false as const, error: "Not authenticated" }
+  if (primaryContact.brokerage_id !== ctx.brokerageId || duplicateContact.brokerage_id !== ctx.brokerageId) {
+    return { ok: false as const, error: "Forbidden: cross-brokerage merge" }
+  }
+  const isManager = CRM_ADMIN_ROLES.has(ctx.role)
+  const ownsBoth = !!ctx.agentId && primaryContact.agent_id === ctx.agentId && duplicateContact.agent_id === ctx.agentId
+  if (!isManager && !ownsBoth) return { ok: false as const, error: "Forbidden: not your contacts" }
+  return { ok: true as const, ctx }
+}
+
+export interface MergeContactsResult {
+  success: boolean
+  error?: string
+  /** Per-table child rows re-pointed to the survivor (honest counts). */
+  moved?: Record<string, number>
+  /** Tables whose move FAILED — surfaced, never silent. */
+  failed?: string[]
+}
+
+/**
+ * mergeContacts — EXTENDED complete merge. Moves every known child row from
+ * the duplicate to the survivor (checked writes, honest counters), then runs
+ * the existing service merge (field union + property_interactions +
+ * transactions.contact_id + soft delete of the duplicate), then audits.
+ * A child-move failure ABORTS before the duplicate is deleted — we never
+ * soft-delete a contact whose history didn't fully move.
+ */
+export async function mergeContacts(params: {
+  primaryContactId: string
+  duplicateContactId: string
+  agentId: string
+}): Promise<MergeContactsResult> {
+  try {
+    if (!isValidUUID(params.primaryContactId) || !isValidUUID(params.duplicateContactId)) {
+      return { success: false, error: "Invalid contact IDs" }
+    }
+    if (params.primaryContactId === params.duplicateContactId) {
+      return { success: false, error: "Pick two different contacts" }
+    }
+
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+
+    const [{ data: primary }, { data: duplicate }] = await Promise.all([
+      svc.from("contacts").select("id, agent_id, brokerage_id").eq("id", params.primaryContactId).maybeSingle(),
+      svc.from("contacts").select("id, agent_id, brokerage_id").eq("id", params.duplicateContactId).maybeSingle(),
+    ])
+    if (!primary || !duplicate) return { success: false, error: "One or both contacts not found" }
+
+    const auth = await requireMergeAuthority(primary as any, duplicate as any)
+    if (!auth.ok) return { success: false, error: auth.error }
+
+    // ── 1. Move ALL child rows first (checked writes — a failure aborts) ──
+    const moved: Record<string, number> = {}
+    const failed: string[] = []
+    for (const { table, column } of MERGE_CHILD_TABLES) {
+      const { count, error } = await svc
+        .from(table)
+        .update({ [column]: params.primaryContactId }, { count: "exact" })
+        .eq(column, params.duplicateContactId)
+      const key = column === "contact_id" ? table : `${table}.${column}`
+      if (error) {
+        console.error(`[mergeContacts] child move failed for ${key}:`, error.message)
+        failed.push(key)
+      } else if ((count ?? 0) > 0) {
+        moved[key] = count ?? 0
+      }
+    }
+    if (failed.length > 0) {
+      // NEVER soft-delete a duplicate whose history didn't fully move.
+      return {
+        success: false,
+        error: `Merge aborted — child rows could not be moved for: ${failed.join(", ")}. Nothing was deleted.`,
+        moved,
+        failed,
+      }
+    }
+
+    // ── 2. Field merge + property_interactions + transactions.contact_id +
+    //       soft delete — the existing service (survivor's fields win). The
+    //       service checks agent_id, so pass the contacts' actual owner. ──
+    const serviceRes = await mergeContactsService({
+      primaryContactId: params.primaryContactId,
+      duplicateContactId: params.duplicateContactId,
+      agentId: (primary as any).agent_id ?? params.agentId,
+    })
+    if (!(serviceRes as any)?.success) {
+      return {
+        success: false,
+        error: (serviceRes as any)?.error ?? "Field merge failed (child rows were already moved to the survivor — safe, nothing deleted)",
+        moved,
+      }
+    }
+
+    // ── 3. Audit — the activities idiom (same as updateContactStage) ──
+    await svc.from("activities").insert({
+      contact_id:    params.primaryContactId,
+      brokerage_id:  (primary as any).brokerage_id,
+      agent_id:      (primary as any).agent_id,
+      activity_type: "contact_merged",
+      title:         "Duplicate contact merged",
+      description:   `Merged duplicate ${params.duplicateContactId} into this contact. Moved: ${
+        Object.entries(moved).map(([t, n]) => `${t}(${n})`).join(", ") || "no child rows"
+      }.`,
+      status:        "completed",
+      metadata:      { duplicate_contact_id: params.duplicateContactId, moved, by: auth.ctx.userId },
+    }).then(() => {}, (e: unknown) => console.error("[mergeContacts] audit failed:", e))
+
+    revalidatePath("/crm")
+    revalidatePath("/dashboard/crm")
+    return { success: true, moved }
+  } catch (error) {
+    return handleError(error, "mergeContacts") as MergeContactsResult
+  }
+}
+
+export interface DuplicateCandidate {
+  contactId: string
+  name: string
+  email: string | null
+  phone: string | null
+  createdAt: string | null
+  score: number
+  /** True only with a strong identifier (exact email/phone) — same rule the
+   *  raw-lead pipeline enforces (lib/lead-pipeline/fuzzy-matcher). */
+  confident: boolean
+}
+
+/**
+ * findDuplicateContacts — candidate duplicates for one contact, scored with
+ * the SAME fuzzy matcher the raw-lead dedup pipeline uses (name-only matches
+ * are surfaced but never marked confident — no same-name PII conflation).
+ */
+export async function findDuplicateContacts(contactId: string): Promise<
+  { success: true; candidates: DuplicateCandidate[] } | { success: false; error: string }
+> {
+  try {
+    if (!isValidUUID(contactId)) return { success: false, error: "Invalid contact ID" }
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+    const { data: me } = await svc
+      .from("contacts")
+      .select("id, agent_id, brokerage_id, first_name, last_name, email, phone")
+      .eq("id", contactId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (!me) return { success: false, error: "Contact not found" }
+    const isManager = CRM_ADMIN_ROLES.has(ctx.role)
+    if (!isManager && (!ctx.agentId || (me as any).agent_id !== ctx.agentId)) {
+      return { success: false, error: "Forbidden: not your contact" }
+    }
+
+    // Candidates: same owning agent's live contacts (a merge is only allowed
+    // within one book unless a manager runs it — and even a manager's picker
+    // stays inside the same book to avoid cross-agent surprises).
+    const { data: rows } = await svc
+      .from("contacts")
+      .select("id, first_name, last_name, email, phone, created_at")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("agent_id", (me as any).agent_id)
+      .neq("id", contactId)
+      .neq("status", "deleted")
+      .is("deleted_at", null)
+      .limit(500)
+
+    const { calculateFuzzyMatch, isConfidentMatch, DEDUP_MERGE_THRESHOLD } = await import("@/lib/lead-pipeline/fuzzy-matcher")
+    const candidates: DuplicateCandidate[] = []
+    for (const c of (rows ?? []) as any[]) {
+      const match = calculateFuzzyMatch(
+        { first_name: (me as any).first_name, last_name: (me as any).last_name, email: (me as any).email, phone: (me as any).phone },
+        { first_name: c.first_name, last_name: c.last_name, email: c.email, phone: c.phone },
+      )
+      if (match.score < DEDUP_MERGE_THRESHOLD) continue
+      candidates.push({
+        contactId: c.id,
+        name: [c.first_name, c.last_name].filter(Boolean).join(" ").trim() || "Unnamed contact",
+        email: c.email ?? null,
+        phone: c.phone ?? null,
+        createdAt: c.created_at ?? null,
+        score: Math.round(match.score * 100) / 100,
+        confident: isConfidentMatch(match),
+      })
+    }
+    candidates.sort((a, b) => Number(b.confident) - Number(a.confident) || b.score - a.score)
+    return { success: true, candidates: candidates.slice(0, 20) }
+  } catch (error) {
+    return handleError(error, "findDuplicateContacts") as { success: false; error: string }
+  }
 }
 
 /**

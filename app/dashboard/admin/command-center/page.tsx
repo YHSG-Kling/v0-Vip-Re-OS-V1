@@ -12,6 +12,7 @@ import { QuarterlyReviewCard } from "./quarterly-review-card"
 import { ActingAsLog } from "./acting-as-log"
 import { CoverageCard } from "./coverage-card"
 import { AiTeammatesPanel } from "./ai-teammates-panel"
+import { TeamAnnouncementComposer } from "./team-announcement-composer"
 import { AutonomyHaltBanner } from "./autonomy-halt-banner"
 import { loadTenantAutonomyHalt } from "@/lib/managers/autonomy-gate"
 import { listEarnedAutonomyAction } from "@/app/actions/document-kernel-review"
@@ -225,6 +226,14 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
         </div>
       )}
       {trust && <TrustMeter outcomes={trust.outcomes} feedback={trust.feedback} />}
+      {/* ANNOUNCE TO MY TEAM — the principal's internal broadcast composer.
+          Page entry is already principal-gated (mayEnter above, the same
+          tier-parity rule); the server action re-enforces it. In-app only. */}
+      {brokerageId && userType !== "superadmin" && (
+        <div className="mx-6 mt-4">
+          <TeamAnnouncementComposer canChooseScope={["admin", "broker"].includes(userType)} />
+        </div>
+      )}
       {earned?.ok && earned.grants && (
         <div className="mx-6 mt-4">
           <EarnedAutonomyPanel grants={earned.grants} />

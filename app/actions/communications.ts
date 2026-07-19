@@ -557,3 +557,265 @@ export async function sendNotificationToAgent(
     notificationId: notifRecord?.id ?? `notif_${Date.now()}`,
   }
 }
+
+// =====================================================
+// BROKER → THEIR-AGENTS BROADCAST (in-app announcement)
+// =====================================================
+// The tenant-level sibling of the platform-staff announcement lane
+// (app/actions/superadmin/platform-announcements.ts): the tenancy PRINCIPAL
+// (broker/admin always; the solo agent on solo tier; the team lead on team
+// tier — lib/kernel/tenancy-principal.ts) composes one internal announcement
+// and it fans out as ONE notifications row per recipient in the in-app rail.
+//
+// IN-APP ONLY by design: this writes notifications rows (channel "in_app") and
+// never touches email/SMS/voice, so NO egress gates (suppression / DNC /
+// provider dispatch) apply — nothing here leaves the platform.
+//
+// Scoping: broker/admin may address the whole brokerage or one team; a team
+// lead (principal on the team tier without a broker/admin seat) is ALWAYS
+// forced to their own team — they govern their team, not the brokerage.
+// Ledgered in lifecycle_events (event_type "team_announcement_posted") so the
+// act is auditable; counters are honest (rows actually written, or zero).
+
+/** notifications.type for tenant-internal team announcements. */
+const TEAM_ANNOUNCEMENT_TYPE = "team_announcement"
+
+const BROADCAST_ADMIN_ROLES = new Set(["broker", "admin", "super_admin", "superadmin", "broker_owner", "broker_admin"])
+
+/** Staff seats (users.user_type) included in a whole-brokerage announcement
+ *  alongside every active agent. */
+const BROKERAGE_STAFF_TYPES = ["broker", "admin", "tc", "coordinator"] as const
+
+async function resolveAnnouncementRecipients(
+  svc: any,
+  params: { brokerageId: string; scope: "brokerage" | "team"; teamId: string | null },
+): Promise<string[]> {
+  const ids = new Set<string>()
+  if (params.scope === "team" && params.teamId) {
+    // Team scope: the team's ACTIVE agents + the team lead.
+    const { data: teamAgents } = await svc
+      .from("agents")
+      .select("user_id")
+      .eq("brokerage_id", params.brokerageId)
+      .eq("team_id", params.teamId)
+      .eq("is_active", true)
+      .not("user_id", "is", null)
+      .limit(500)
+    for (const a of (teamAgents ?? []) as Array<{ user_id: string | null }>) {
+      if (a.user_id) ids.add(a.user_id)
+    }
+    const { data: team } = await svc
+      .from("teams")
+      .select("team_lead_id")
+      .eq("id", params.teamId)
+      .eq("brokerage_id", params.brokerageId)
+      .maybeSingle()
+    if ((team as any)?.team_lead_id) ids.add((team as any).team_lead_id)
+  } else {
+    // Brokerage scope: every ACTIVE agent + broker/admin/TC staff seats.
+    const [{ data: agents }, { data: staff }] = await Promise.all([
+      svc
+        .from("agents")
+        .select("user_id")
+        .eq("brokerage_id", params.brokerageId)
+        .eq("is_active", true)
+        .not("user_id", "is", null)
+        .limit(1000),
+      svc
+        .from("users")
+        .select("id")
+        .eq("brokerage_id", params.brokerageId)
+        .in("user_type", BROKERAGE_STAFF_TYPES as unknown as string[])
+        .limit(500),
+    ])
+    for (const a of (agents ?? []) as Array<{ user_id: string | null }>) {
+      if (a.user_id) ids.add(a.user_id)
+    }
+    for (const u of (staff ?? []) as Array<{ id: string }>) {
+      if (u.id) ids.add(u.id)
+    }
+  }
+  return Array.from(ids)
+}
+
+/**
+ * notifyBrokerageAgentsAction — principal-gated fan-out of one internal
+ * announcement to every active agent/staff user in the caller's brokerage
+ * (or one team). In-app notifications rail only — never email/SMS.
+ */
+export async function notifyBrokerageAgentsAction(input: {
+  subject: string
+  body: string
+  priority?: "low" | "medium" | "high"
+  /** "brokerage" (default for broker/admin) or "team". A team-lead principal
+   *  is always forced to their own team regardless of what is passed. */
+  scope?: "brokerage" | "team"
+  /** Team to address when a broker/admin picks team scope. Ignored for team
+   *  leads (their own team is resolved server-side). */
+  teamId?: string | null
+}): Promise<{ ok: boolean; notified?: number; scope?: "brokerage" | "team"; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Not authenticated" }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { isTenancyPrincipal } = await import("@/lib/kernel/tenancy-principal")
+  const svc = createServiceClient()
+
+  const principal = await isTenancyPrincipal(svc, {
+    userId: ctx.userId,
+    brokerageId: ctx.brokerageId,
+    role: ctx.role,
+  })
+  if (!principal) return { ok: false, error: "Forbidden — only the tenancy principal can announce to the team" }
+
+  const subject = (input.subject ?? "").trim()
+  const body = (input.body ?? "").trim()
+  if (!subject) return { ok: false, error: "A subject is required" }
+  if (!body) return { ok: false, error: "A message is required" }
+  const priority = input.priority === "high" || input.priority === "low" ? input.priority : "medium"
+
+  // ── Resolve effective scope ──
+  const isBrokerAdmin = BROADCAST_ADMIN_ROLES.has(ctx.role)
+  let scope: "brokerage" | "team" = input.scope === "team" ? "team" : "brokerage"
+  let teamId: string | null = input.teamId ?? null
+  if (!isBrokerAdmin) {
+    // Non-broker principal: on the team tier this is the team lead — force
+    // their own team. (A solo-tier principal has no team; brokerage scope of a
+    // solo tenancy IS just their own shop.)
+    const { data: ledTeam } = await svc
+      .from("teams")
+      .select("id")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("team_lead_id", ctx.userId)
+      .is("deleted_at", null)
+      .limit(1)
+      .maybeSingle()
+    if ((ledTeam as any)?.id) {
+      scope = "team"
+      teamId = (ledTeam as any).id
+    } else {
+      scope = "brokerage"
+      teamId = null
+    }
+  } else if (scope === "team" && !teamId) {
+    return { ok: false, error: "Pick a team for a team-scoped announcement" }
+  }
+
+  // ── Author attribution (mirrors the platform-announcement idiom) ──
+  const { data: me } = await svc.from("users").select("email, first_name, last_name").eq("id", ctx.userId).maybeSingle()
+  const author =
+    [(me as any)?.first_name, (me as any)?.last_name].filter(Boolean).join(" ") || (me as any)?.email || "Your broker"
+
+  // ── Fan out: one notifications row per recipient ──
+  const recipientIds = await resolveAnnouncementRecipients(svc, { brokerageId: ctx.brokerageId, scope, teamId })
+  if (recipientIds.length === 0) {
+    return { ok: false, error: "No active agents or staff resolved for this scope — nothing was sent" }
+  }
+
+  const rows = recipientIds.map((userId) => ({
+    user_id: userId,
+    brokerage_id: ctx.brokerageId,
+    type: TEAM_ANNOUNCEMENT_TYPE,
+    title: subject.slice(0, 200),
+    body: `${body}\n— ${author}`.slice(0, 480),
+    priority,
+    channel: "in_app",
+    is_read: false,
+  }))
+  const { error: insertError } = await svc.from("notifications").insert(rows)
+  if (insertError) {
+    console.error("[notifyBrokerageAgents] fan-out insert failed:", insertError.message)
+    return { ok: false, error: "Announcement was not delivered — the notification write failed" }
+  }
+
+  // ── Ledger the act (audit + dedupe marker) — best-effort, never blocks ──
+  await svc
+    .from("lifecycle_events")
+    .insert({
+      brokerage_id: ctx.brokerageId,
+      entity_type: scope === "team" ? "team" : "brokerage",
+      entity_id: scope === "team" ? teamId : ctx.brokerageId,
+      event_type: "team_announcement_posted",
+      actor_user_id: ctx.userId,
+      metadata: { subject, priority, scope, team_id: teamId, notified: recipientIds.length },
+    })
+    .then(() => {}, (e: unknown) => console.error("[notifyBrokerageAgents] ledger failed:", e))
+
+  return { ok: true, notified: recipientIds.length, scope }
+}
+
+/**
+ * draftTeamAnnouncementAction — optional AI polish for the composer. Drafts
+ * the announcement in the tenant's brand voice (lib/ai-isa/brand-voice-prompt
+ * resolves the tone) via the generatePersonaCopy seam; the caller's own raw
+ * subject/body is the deterministic FALLBACK FLOOR — the composer always gets
+ * real copy back even when the gateway is down.
+ */
+export async function draftTeamAnnouncementAction(input: {
+  subject: string
+  body: string
+}): Promise<{ ok: boolean; subject?: string; body?: string; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Not authenticated" }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { isTenancyPrincipal } = await import("@/lib/kernel/tenancy-principal")
+  const svc = createServiceClient()
+  const principal = await isTenancyPrincipal(svc, { userId: ctx.userId, brokerageId: ctx.brokerageId, role: ctx.role })
+  if (!principal) return { ok: false, error: "Forbidden" }
+
+  const subject = (input.subject ?? "").trim()
+  const body = (input.body ?? "").trim()
+  if (!subject && !body) return { ok: false, error: "Give the draft something to work with" }
+
+  // Tenant brand voice → tone hint; the raw input is the fallback floor.
+  let tone: string | null = null
+  try {
+    const { loadBrandVoicePrompt } = await import("@/lib/ai-isa/brand-voice-prompt")
+    const voice = await loadBrandVoicePrompt({ brokerageId: ctx.brokerageId })
+    tone = voice.tone
+  } catch {
+    /* voice profile unavailable → neutral tone; the fallback still stands */
+  }
+
+  const fallback = { subject: subject || "Team announcement", body: body || subject }
+  try {
+    const { generatePersonaCopy, realCopyGenerator } = await import("@/lib/kernel/ai-copy")
+    const drafted = await generatePersonaCopy(
+      {
+        goal: "a short INTERNAL team announcement from the broker to their own agents — clear, warm, action-first, no marketing fluff",
+        facts: [subject ? `Topic: ${subject}` : null, body ? `Details: ${body}` : null].filter(Boolean) as string[],
+        channel: "in_app",
+        persona: { audience: "agent", tone: tone ?? undefined },
+        words: 80,
+      },
+      fallback,
+      { generator: realCopyGenerator },
+    )
+    return { ok: true, subject: drafted.subject?.trim() || fallback.subject, body: drafted.body?.trim() || fallback.body }
+  } catch {
+    // Gateway down → the principal's own words are the floor.
+    return { ok: true, subject: fallback.subject, body: fallback.body }
+  }
+}
+
+/** Teams the broker/admin composer can address (id + name). Principal-gated. */
+export async function listAnnouncementTeamsAction(): Promise<{
+  ok: boolean
+  teams?: Array<{ id: string; name: string }>
+  error?: string
+}> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Not authenticated" }
+  if (!BROADCAST_ADMIN_ROLES.has(ctx.role)) return { ok: true, teams: [] }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { data } = await svc
+    .from("teams")
+    .select("id, name")
+    .eq("brokerage_id", ctx.brokerageId)
+    .is("deleted_at", null)
+    .order("name")
+    .limit(100)
+  return { ok: true, teams: ((data ?? []) as Array<{ id: string; name: string }>) }
+}

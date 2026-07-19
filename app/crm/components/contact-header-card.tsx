@@ -32,9 +32,13 @@ import {
 import {
   Phone, Mail, MessageSquare, MessageCircle, Globe, MapPin, AlertTriangle,
   ChevronDown, MoreHorizontal, Share2, FileText, Loader2, ChevronUp, X,
+  UserCog, GitMerge,
 } from "lucide-react"
+import { useRouter } from "next/navigation"
 import { logActivity } from "@/app/actions/activities"
 import { AIPilotControl } from "@/app/crm/components/ai-pilot-control"
+import { ReassignContactDialog } from "@/app/crm/components/reassign-contact-dialog"
+import { MergeContactsDialog } from "@/app/crm/components/merge-contacts-dialog"
 import { cn } from "@/lib/utils"
 import type { AIPilotLevel } from "@/app/actions/contact-intelligence"
 
@@ -51,6 +55,9 @@ interface ContactBasic {
   buyer_stage?: string | null
   status?: string | null
   lead_source?: string | null
+  /** agents.id of the owning agent — present on the raw contacts row; used to
+   *  filter the current owner out of the reassign picker when available. */
+  agent_id?: string | null
   dnc_status?: boolean | null
   email_opt_out?: boolean | null
   sms_opt_out?: boolean | null
@@ -93,9 +100,14 @@ export function ContactHeaderCard({
   onShareSocialPost,
   onChannelToggle,
 }: Props) {
+  const router = useRouter()
   const [channelsOpen, setChannelsOpen] = useState(false)
   const [, startTransition] = useTransition()
   const [channelLoading, setChannelLoading] = useState<string | null>(null)
+  // Reassign + Merge/Dedupe affordances (dialogs enforce their own server-side
+  // gates: reassign is principal/manager-only; merge is owner-or-manager).
+  const [reassignOpen, setReassignOpen] = useState(false)
+  const [mergeOpen, setMergeOpen] = useState(false)
 
   const initials = [contact.first_name?.[0], contact.last_name?.[0]]
     .filter(Boolean).join("").toUpperCase() || "?"
@@ -268,12 +280,37 @@ export function ContactHeaderCard({
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setReassignOpen(true)} className="gap-2 text-xs">
+                <UserCog className="h-3.5 w-3.5" />
+                Reassign to another agent
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setMergeOpen(true)} className="gap-2 text-xs">
+                <GitMerge className="h-3.5 w-3.5" />
+                Find duplicates / Merge
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => setChannelsOpen(o => !o)} className="gap-2 text-xs">
                 <MessageSquare className="h-3.5 w-3.5" />
                 {channelsOpen ? "Hide channel preferences" : "Channel preferences"}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          <ReassignContactDialog
+            open={reassignOpen}
+            onOpenChange={setReassignOpen}
+            contactId={contact.id}
+            contactName={fullName}
+            currentAgentId={contact.agent_id ?? null}
+            onReassigned={() => router.refresh()}
+          />
+          <MergeContactsDialog
+            open={mergeOpen}
+            onOpenChange={setMergeOpen}
+            contactId={contact.id}
+            contactName={fullName}
+            agentId={agentId}
+          />
 
           <button
             type="button"

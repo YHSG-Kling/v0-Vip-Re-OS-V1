@@ -11,7 +11,8 @@ import { InvestorDealsPanel }        from "@/components/contact/investor-deals-p
 import { assertCanActOnContact }    from "@/lib/auth/contact-access"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge }                    from "@/components/ui/badge"
-import { Route }                    from "lucide-react"
+import { Route, PanelsTopLeft }     from "lucide-react"
+import Link                         from "next/link"
 
 /**
  * CONSOLIDATED agent-facing contact dashboard — the SINGLE entry point for every contact type:
@@ -20,6 +21,24 @@ import { Route }                    from "lucide-react"
  *                                activities) + a deep-link to the full /crm workspace for any
  *                                seller-side advanced tools that aren't surfaced here yet
  * Quick-action panel (Run investigation / Verify email / Verify address) renders for ALL types.
+ *
+ * ROUTE-PARITY VERDICT (vs the /crm?contact= workspace) — a blanket redirect to
+ * /crm?contact=[id] was CONSIDERED and REJECTED, because real things genuinely
+ * depend on this standalone route:
+ *   · it is the ONLY mount of the buyer journey hub (BuyerOverviewClient) and
+ *     the PARENT of a live sub-tree — /offers, /offers/new, /tours, /search,
+ *     /listings/new, /alerts — whose pages gate-redirect BACK here (e.g.
+ *     ?gate=offer_not_eligible) and whose entry points render only here;
+ *   · /dashboard/buyers/[contactId] already PERMANENTLY redirects INTO this
+ *     route as "the unified agent-facing view" (the platform's prior keep-one
+ *     decision), and the agent-assistant tool-call rail emits review URLs into
+ *     this sub-tree;
+ *   · the concierge panels (quick actions / addressing memory / strategy
+ *     session / last promise / investor deals / AI showing plan) mount only here.
+ * The honest parity fix instead: an explicit cross-link into the full CRM
+ * workspace (tabs: portal, unified inbox, channel controls, credit, videos,
+ * transactions, activity) rendered below, so neither surface is a dead end and
+ * nothing was deleted or orphaned.
  */
 interface PageProps {
   params: Promise<{ contactId: string }>
@@ -129,6 +148,19 @@ export default async function ContactDetailPage({ params }: PageProps) {
 
   return (
     <div className="flex flex-col h-full min-h-screen bg-background">
+      {/* Route parity: explicit cross-link to the full CRM workspace (portal /
+          unified inbox / channel-control tabs live there) — see the verdict in
+          the header comment for why this is a link, not a redirect. */}
+      <div className="px-4 pt-3">
+        <Link
+          href={`/crm?contact=${contactId}`}
+          className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <PanelsTopLeft className="h-3.5 w-3.5" />
+          Open in full CRM workspace (portal, inbox, channels, credit, activity)
+        </Link>
+      </div>
+
       {/* AI quick actions — server-action-gated to the contact's owning agent / brokerage / platform */}
       <div className="p-4 pb-0">
         <ContactQuickActions
