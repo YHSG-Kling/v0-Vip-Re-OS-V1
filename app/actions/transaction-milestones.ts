@@ -202,7 +202,7 @@ async function runAppraisalGapDetection(args: {
 
   const { data: tx } = await svc
     .from("transactions")
-    .select("purchase_price, deal_name, property_address")
+    .select("purchase_price, deal_name, property_address, property_city, property_state, property_zip, loan_amount, earnest_money")
     .eq("id", args.transactionId)
     .eq("brokerage_id", args.brokerageId)
     .maybeSingle()
@@ -283,6 +283,126 @@ async function runAppraisalGapDetection(args: {
   } catch (err) {
     console.error("[runAppraisalGapDetection] deal-save huddle convene failed (non-blocking):", err)
   }
+
+  // (c) THE APPRAISAL-GAP NEGOTIATION COPILOT — the huddle above tells the deal team a gap
+  // exists; the copilot hands the AGENT the three priced plays (seller reduces / buyer covers
+  // the gap in cash / meet-in-the-middle-or-re-appraise) WITH supporting comps, delivered as an
+  // agent-facing transaction task so they walk into the negotiation prepared. Idempotent per
+  // (transaction, appraisal value). Best-effort — the humans were already informed by (a)/(b).
+  try {
+    const { runAppraisalNegotiationCopilot } = await import("@/lib/kernel/appraisal-negotiation")
+    const propRow = tx as {
+      deal_name?: string | null; property_address?: string | null; property_city?: string | null
+      property_state?: string | null; property_zip?: string | null
+      loan_amount?: number | string | null; earnest_money?: number | string | null
+    }
+    await runAppraisalNegotiationCopilot({
+      transactionId:   args.transactionId,
+      brokerageId:     args.brokerageId,
+      appraisalValue:  args.appraisalValue,
+      contractPrice:   contractPrice,
+      loanAmount:      propRow.loan_amount != null ? Number(propRow.loan_amount) : null,
+      earnestMoney:    propRow.earnest_money != null ? Number(propRow.earnest_money) : null,
+      dealName:        propRow.deal_name ?? null,
+      propertyAddress: propRow.property_address ?? null,
+      propertyCity:    propRow.property_city ?? null,
+      propertyState:   propRow.property_state ?? null,
+      propertyZip:     propRow.property_zip ?? null,
+    }, svc)
+  } catch (err) {
+    console.error("[runAppraisalGapDetection] negotiation copilot failed (non-blocking):", err)
+  }
+}
+
+// ─── Appraisal ordered (the PREVENTION coaching moment) ──────────────────────
+// PAIRS with markAppraisalCompleteAction's gap detector above: that fires AFTER
+// a low value lands; this fires BEFORE — when the appraisal is ORDERED — to coach
+// the LISTING agent to be present and bring the appraiser packet. Kept as a
+// SEPARATE action + separate lib so it never collides with the appraisal-gap
+// path in this file.
+
+export interface MarkAppraisalOrderedParams extends ScopedParams {
+  appraisalOrderedDate?: string  // YYYY-MM-DD; defaults to today
+  lenderName?:           string
+  loanOfficerName?:      string
+}
+
+export async function markAppraisalOrderedAction(
+  params: MarkAppraisalOrderedParams,
+): Promise<{ success: boolean; error?: string; packet?: { fired: boolean; reason: string; pdfUrl?: string | null; taskId?: string | null } }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+
+  const { data: tx } = await supabase
+    .from("transactions")
+    .select("id")
+    .eq("id", params.transactionId)
+    .eq("brokerage_id", params.brokerageId)
+    .maybeSingle()
+  if (!tx) return { success: false, error: "Transaction not found in your brokerage" }
+
+  const orderedDate = params.appraisalOrderedDate ?? new Date().toISOString().slice(0, 10)
+
+  // Record the order on the lender row (canonical home for appraisal_ordered_date).
+  try {
+    const { updateLenderState } = await import("@/lib/kernel/transactions")
+    await updateLenderState({
+      transactionId:        params.transactionId,
+      brokerageId:          params.brokerageId,
+      appraisalOrderedDate: orderedDate,
+      lenderName:           params.lenderName,
+      loanOfficerName:      params.loanOfficerName,
+    })
+  } catch (err) {
+    console.error("[markAppraisalOrderedAction] updateLenderState failed (non-blocking):", err)
+  }
+
+  // Complete the appraisal_ordered milestone — canonical fan-out fires here.
+  try {
+    await completeMilestone({
+      transactionId: params.transactionId,
+      brokerageId:   params.brokerageId,
+      milestoneName: "appraisal_ordered",
+      completedBy:   user.id,
+    })
+  } catch (err) {
+    console.error("[markAppraisalOrderedAction] completeMilestone failed (non-blocking):", err)
+  }
+
+  // Client-facing "appraisal ordered" portal card (event-fanout has the template).
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    await emitTransactionEvent({
+      event:       KernelEvent.APPRAISAL_ORDERED,
+      brokerageId: params.brokerageId,
+      entityId:    params.transactionId,
+      actorUserId: user.id,
+      metadata:    { appraisal_ordered_date: orderedDate },
+    })
+  } catch (err) {
+    console.error("[markAppraisalOrderedAction] APPRAISAL_ORDERED emit failed (non-blocking):", err)
+  }
+
+  // THE COACHING MOMENT — seller-gated, idempotent, best-effort. Composes the
+  // appraiser packet PDF and creates the agent-facing "be present + bring the
+  // packet" task. Must never fail the milestone flow above.
+  let packet: { fired: boolean; reason: string; pdfUrl?: string | null; taskId?: string | null } | undefined
+  try {
+    const { runAppraiserPacketCoaching } = await import("@/lib/kernel/appraiser-packet")
+    const res = await runAppraiserPacketCoaching({
+      transactionId: params.transactionId,
+      brokerageId:   params.brokerageId,
+      actorUserId:   user.id,
+    })
+    packet = { fired: res.fired, reason: res.reason, pdfUrl: res.pdfUrl, taskId: res.taskId }
+  } catch (err) {
+    console.error("[markAppraisalOrderedAction] appraiser-packet coaching failed (non-blocking):", err)
+  }
+
+  revalidatePath(`/dashboard/transactions/${params.transactionId}`)
+  return { success: true, packet }
 }
 
 // ─── Final walkthrough scheduling + completion ───────────────────────────────
