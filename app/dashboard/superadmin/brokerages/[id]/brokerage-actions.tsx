@@ -14,6 +14,7 @@ import {
   pauseSubscriptionAction,
   issueRefundAction,
 } from "@/app/actions/superadmin/brokerage-management"
+import { MessageAdminComposer } from "../../message-admin-composer"
 
 type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
 
@@ -115,6 +116,15 @@ export function BrokerageActions({ brokerage }: { brokerage: any }) {
         <CardTitle className="text-sm">Superadmin actions</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Direct message — proactive staff→tenant-admin email (suppression-checked, audited, in-app mirrored) */}
+        <div className="border rounded p-3">
+          <div className="text-xs text-muted-foreground mb-2">Contact</div>
+          <MessageAdminComposer brokerageId={brokerage.id} brokerageName={brokerage.name ?? null} />
+          <p className="text-xs text-muted-foreground mt-2">
+            Email this tenant&apos;s broker/admin directly — outside any ticket. Suppression list is checked first; every send is audited and mirrored in-app.
+          </p>
+        </div>
+
         {/* Tier change */}
         <div className="border rounded p-3">
           <div className="text-xs text-muted-foreground mb-2">Plan tier</div>

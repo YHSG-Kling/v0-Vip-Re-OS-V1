@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { getTicketThreadAction } from "@/app/actions/superadmin/support-console"
 import { SupportReplyBox } from "./reply-box"
+import { MessageAdminComposer } from "../../message-admin-composer"
 
 export const dynamic = "force-dynamic"
 
@@ -25,9 +26,13 @@ export default async function SuperadminTicketPage({ params }: { params: Promise
           <span className="rounded bg-slate-100 px-2 py-0.5 text-xs">{t.status.replace("_", " ")}</span>
           {t.priority && <span className="rounded bg-slate-100 px-2 py-0.5 text-xs">{t.priority}</span>}
         </div>
-        <p className="text-sm text-muted-foreground mt-1">
-          {t.brokerageName ?? "Unknown tenant"}{t.requesterName ? ` · ${t.requesterName}` : ""}{t.category ? ` · ${t.category}` : ""}
-        </p>
+        <div className="flex items-center justify-between gap-3 flex-wrap mt-1">
+          <p className="text-sm text-muted-foreground">
+            {t.brokerageName ?? "Unknown tenant"}{t.requesterName ? ` · ${t.requesterName}` : ""}{t.category ? ` · ${t.category}` : ""}
+          </p>
+          {/* Proactive rail: email the tenant's admin OUTSIDE this ticket (suppression-checked, audited, in-app mirrored) */}
+          {t.brokerageId && <MessageAdminComposer brokerageId={t.brokerageId} brokerageName={t.brokerageName} />}
+        </div>
       </div>
 
       {/* Original request */}
