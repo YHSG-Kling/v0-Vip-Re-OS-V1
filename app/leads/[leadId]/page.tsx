@@ -32,12 +32,15 @@ export default async function LeadDetailPage({ params }: PageProps) {
     return <div className="p-6 text-sm text-muted-foreground">Lead not found.</div>
   }
 
-  // Page-level gate (mirrors the canonical lead scoping rule used inside the server actions):
-  // platform admin / staff → always. Brokerage staff → only when brokerage_id matches.
+  // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY. Page-level gate
+  // (mirrors the canonical lead scoping rule used inside the server actions):
+  // platform admin / staff → always. Brokerage-LEVEL roles (broker/admin family)
+  // → only when brokerage_id matches. Agents, team leads, TCs and compliance
+  // officers do NOT reach lead rows — agents work CONTACTS only (post-promotion).
   const { data: profile } = await svc.from("users")
     .select("user_type, platform_role, brokerage_id").eq("id", user.id).maybeSingle()
   const isPlatform = profile?.user_type === "superadmin" || isPlatformStaff(profile?.platform_role)
-  const BROKERAGE_ROLES = new Set(["broker","broker_owner","team_lead","team_leader","tc","transaction_coordinator","compliance_officer","compliance_manager"])
+  const BROKERAGE_ROLES = new Set(["broker","broker_owner","broker_admin","admin"])
   const isBrokerageMatch =
     !!profile?.user_type && BROKERAGE_ROLES.has(profile.user_type)
     && !!profile?.brokerage_id && profile.brokerage_id === lead.brokerage_id

@@ -121,6 +121,84 @@ export async function ensureAssistantAgent(
   return { ok: true, convAiAgentId: data.agent_id, created: true }
 }
 
+// ─── Expanded-staff assistant (per-brokerage) ───────────────────────────────
+
+export interface EnsureStaffAssistantAgentParams {
+  brokerageId: string
+  /** The staff member's display name (used only for the greeting). */
+  displayName: string
+  /** ElevenLabs voice_id — the platform fallback / generic voice for staff. */
+  voiceId: string
+}
+
+/**
+ * VOICE ACCESS POLICY (owner: "voice assistant should be able to expand to
+ * staff if management wants"): non-agent staff have no agents row to cache a
+ * personal Conv-AI agent on, so expanded staff sessions share ONE per-brokerage
+ * staff assistant. It registers the SAME tool webhook — every tool call is
+ * attributed to the individual staff user via their agent_assistant_sessions
+ * row, and per-intent authority is enforced by the tool-registry role gates
+ * (never widened by this expansion). The Conv-AI agent id is cached in
+ * global_settings.additional_settings.staff_assistant_conv_ai_agent_id (read
+ * through the brokerage-settings resolver — no new table).
+ */
+export async function ensureStaffAssistantAgent(
+  params: EnsureStaffAssistantAgentParams,
+): Promise<EnsureAssistantAgentResult> {
+  const apiKey = process.env.ELEVENLABS_API_KEY
+  if (!apiKey) return { ok: false, error: "ELEVENLABS_API_KEY not configured" }
+
+  const { getBrokerageSettings } = await import("@/lib/brokerage/get-brokerage-settings")
+  const settings = await getBrokerageSettings(params.brokerageId)
+  if (settings.staff_assistant_conv_ai_agent_id) {
+    return { ok: true, convAiAgentId: settings.staff_assistant_conv_ai_agent_id, created: false }
+  }
+
+  const systemPrompt = buildSystemPrompt({
+    agentId: "",
+    agentName: "the team",
+    voiceId: params.voiceId,
+  })
+  const toolsConfig = buildToolsConfig()
+
+  const body = {
+    name: `Brokerage Staff Assistant (${params.brokerageId.slice(0, 8)})`,
+    conversation_config: {
+      agent: {
+        first_message: "Hi, what can I help you with?",
+        language: "en",
+        prompt: { prompt: systemPrompt, tools: toolsConfig },
+      },
+      tts: { voice_id: params.voiceId, optimize_streaming_latency: 3 },
+    },
+  }
+
+  const res = await callConnector<{ agent_id?: string }>({
+    connector: "elevenlabs", baseUrl: ELEVENLABS_API_BASE, path: "/v1/convai/agents/create", method: "POST",
+    auth: { style: "header", name: "xi-api-key", value: apiKey }, body,
+  })
+  const data = res.data ?? {}
+  if (!res.ok || !data?.agent_id) {
+    return { ok: false, error: res.error ?? `ElevenLabs staff agent create failed (${res.status})` }
+  }
+
+  // Cache in the settings jsonb (merge-preserving write — same idiom as the
+  // widget-scope setting; reads always go through the resolver).
+  const supabase = createServiceClient()
+  const { data: gs } = await supabase
+    .from("global_settings")
+    .select("additional_settings")
+    .eq("brokerage_id", params.brokerageId)
+    .maybeSingle()
+  const existing = (gs?.additional_settings as Record<string, unknown> | null) ?? {}
+  await supabase
+    .from("global_settings")
+    .update({ additional_settings: { ...existing, staff_assistant_conv_ai_agent_id: data.agent_id } })
+    .eq("brokerage_id", params.brokerageId)
+
+  return { ok: true, convAiAgentId: data.agent_id, created: true }
+}
+
 // ─── Track C — Objection-training scenario agents ───────────────────────────
 
 export interface EnsureScenarioAgentParams {

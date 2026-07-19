@@ -247,19 +247,28 @@ export default function LeadsPage() {
       // Resolve user role
       const { data: profile } = await supabase
         .from("users")
-        .select("user_type, role")
+        .select("user_type, role, platform_role")
         .eq("id", user.id)
         .single()
 
       const resolvedType = profile?.user_type ?? profile?.role ?? "agent"
 
-      // TC / vendor / lender: redirect immediately
-      if (["tc", "vendor", "lender"].includes(resolvedType)) {
+      // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY. This surface
+      // is usable only by brokerage-LEVEL roles (broker/admin family) and
+      // platform staff. team_lead / TC / compliance_officer / isa / vendor /
+      // lender are redirected — they work contacts, not the lead desk. Agents
+      // fall through to the explanatory gate screen below (no lead data is
+      // fetched or rendered for them). Server actions re-enforce this gate.
+      if (["tc", "transaction_coordinator", "vendor", "lender", "team_lead", "team_leader", "compliance_officer", "compliance_manager", "isa", "title_agent"].includes(resolvedType)) {
         router.push("/dashboard")
         return
       }
 
-      const adminBroker = ["admin", "broker", "superadmin"].includes(resolvedType)
+      const platformStaff = ["superadmin", "admin", "marketing", "support"].includes(
+        String((profile as any)?.platform_role ?? "")
+      )
+      const adminBroker =
+        ["admin", "broker", "broker_owner", "broker_admin", "superadmin"].includes(resolvedType) || platformStaff
       setIsAdminOrBroker(adminBroker)
 
       // Resolve brokerageId from users table

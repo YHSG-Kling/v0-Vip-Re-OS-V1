@@ -8,6 +8,15 @@ export async function GET(request: NextRequest) {
   const auth = await requireAuth(supabase)
   if (!auth.ok) return auth.response
 
+  // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY. The dedup log is
+  // lead-pipeline metadata (lead ids + raw_record ids) — restricted to
+  // brokerage-LEVEL roles + platform staff. Previously any authenticated
+  // brokerage user (agent / TC / compliance) could read it.
+  const leadVisibleRoles = ["broker", "broker_owner", "broker_admin", "admin", "superadmin", "support"]
+  if (!leadVisibleRoles.includes(auth.userType)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+  }
+
   try {
     const searchParams = request.nextUrl.searchParams
     const lead_id = searchParams.get("lead_id")

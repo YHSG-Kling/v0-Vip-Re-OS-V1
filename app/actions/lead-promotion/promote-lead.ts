@@ -39,6 +39,10 @@ export async function promoteLead(
   // Auth gate — promotion writes a leads row + triggers downstream scoring +
   // platform distribution. Previously trusted caller-supplied brokerageId,
   // so any signed-in user could promote raw records into other brokerages.
+  // ACCESS POLICY (owner): RAW LEADS = PLATFORM ONLY / LEADS = BROKERAGE +
+  // PLATFORM. This is a promotion-pipeline TRIGGER: brokerage-level roles may
+  // fire it for their own brokerage, but the raw record is processed
+  // server-side and its content is never returned to the tenant.
   const authClient = await createClient()
   const { data: { user } } = await authClient.auth.getUser()
   if (!user) {
@@ -226,31 +230,42 @@ export interface RawLeadReviewRow {
 }
 
 /**
- * Lists recent raw_scraped_leads for the caller's brokerage so an admin can review
- * and manually promote them (un-promoted first). Same role gate + brokerage scoping
- * as promoteLead, so every listed record is promotable by the caller.
+ * Lists recent raw_scraped_leads for manual review / promotion (un-promoted first).
+ *
+ * ACCESS POLICY (owner): RAW LEADS = PLATFORM ONLY. Raw scraped records are
+ * platform-owned pre-promotion inventory (mirrors migration 035's platform-only
+ * RLS) — NO tenant surface or action reads raw record CONTENT; tenants first
+ * see the data as promoted `leads`. This listing returns raw rows, so it is
+ * platform staff (superadmin / support) only. Tenant brokers keep the
+ * promotion TRIGGERS (promoteLead / process-pipeline), which process raw rows
+ * server-side without returning their content.
  */
 export async function listRawLeadsForReview(opts?: {
   limit?: number
+  /** Platform staff may narrow the bench to one brokerage. */
+  brokerageId?: string
 }): Promise<{ ok: true; rows: RawLeadReviewRow[] } | { ok: false; error: string }> {
   const authClient = await createClient()
   const { data: { user } } = await authClient.auth.getUser()
   if (!user) return { ok: false, error: "Unauthorized" }
   const { data: callerRow } = await authClient
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
-  if (!callerRow?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
-  if (!PROMOTE_ROLES.includes(callerRow.user_type ?? "")) {
-    return { ok: false, error: "Only brokers and admins can review raw leads" }
+  const isPlatform =
+    callerRow?.user_type === "superadmin" ||
+    ["superadmin", "admin", "marketing", "support"].includes(String((callerRow as any)?.platform_role ?? ""))
+  if (!isPlatform) {
+    return { ok: false, error: "Raw leads are platform-only — tenants see promoted leads" }
   }
 
   const supabase = createServiceClient()
-  const { data, error } = await supabase
+  let query = supabase
     .from("raw_scraped_leads")
     .select("id, first_name, last_name, email, phone, city, state, source, source_family, processing_status, dedupe_status, lead_id, promotion_attempts, error_message, created_at")
-    .eq("brokerage_id", callerRow.brokerage_id)
+  if (opts?.brokerageId) query = query.eq("brokerage_id", opts.brokerageId)
+  const { data, error } = await query
     // un-promoted first, then most recent
     .order("lead_id", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: false })

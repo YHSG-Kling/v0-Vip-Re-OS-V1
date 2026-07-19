@@ -19,10 +19,20 @@ import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
 import { resolveWriteContext } from "@/lib/kernel/identity"
 import { createServiceClient } from "@/lib/supabase/service"
-import { ensureAssistantAgent, issueAssistantSession } from "@/lib/elevenlabs/conv-ai"
+import { ensureAssistantAgent, ensureStaffAssistantAgent, issueAssistantSession } from "@/lib/elevenlabs/conv-ai"
 import { checkUsageCap } from "@/lib/usage/check-cap"
 import { logMediaUsage } from "@/lib/usage/log-media-usage"
 import { resolveSelfVoice } from "@/lib/voice/voice-resolver"
+import { getVoiceAssistantExpandedRoles } from "@/lib/brokerage/get-brokerage-settings"
+import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
+
+// VOICE ACCESS POLICY (owner): the voice assistant is principal/agent-scoped
+// by default. The PRINCIPAL may expand it to additional tenant staff roles
+// via the brokerage-level setting voice_assistant_expanded_roles (managed on
+// Settings → Voice Assistant Access), and PLATFORM STAFF always have it.
+// Expansion grants SURFACE access only — per-intent permissions stay each
+// role's existing tool-registry authority gates, never widened here.
+const PRINCIPAL_VOICE_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "superadmin"])
 
 export const runtime = "nodejs"
 
@@ -43,16 +53,31 @@ export async function POST(request: NextRequest) {
 
   const supabase = createServiceClient()
 
-  // ── Resolve which real-estate agent owns the assistant ──────────────────
-  // For agent users this is straightforward. For non-agent staff (TC, broker,
-  // lender), we need a way to give them an assistant too. v1: only support
-  // agent users; non-agent staff get a clear error pointing at the team_lead /
-  // broker for setup.
+  // ── Resolve which lane owns the assistant ────────────────────────────────
+  // Agent users (an agents row exists) get their personal assistant with their
+  // chosen voice. Non-agent users are admitted only per the VOICE ACCESS
+  // POLICY above: principals, platform staff, and the staff roles the
+  // principal expanded via voice_assistant_expanded_roles. Everyone else gets
+  // a clear error naming the management setting.
+  let staffLane = false
   if (!ctx.agentId) {
-    return NextResponse.json(
-      { error: "Voice assistant is currently agent-only — no agent profile found for this user." },
-      { status: 409 },
-    )
+    const { data: profileRow } = await supabase
+      .from("users").select("platform_role").eq("id", ctx.userId).maybeSingle()
+    const platformStaff = isPlatformStaffIdentity(ctx.userType, (profileRow as any)?.platform_role ?? null)
+    const principal = PRINCIPAL_VOICE_ROLES.has(ctx.userType)
+    const expanded = !principal && !platformStaff
+      ? (await getVoiceAssistantExpandedRoles(ctx.brokerageId)).includes(ctx.userType)
+      : false
+    if (!principal && !platformStaff && !expanded) {
+      return NextResponse.json(
+        {
+          error:
+            "Voice assistant is not enabled for your role — your broker can enable it under Settings → Voice Assistant Access.",
+        },
+        { status: 403 },
+      )
+    }
+    staffLane = true
   }
 
   // Cap check — fail fast before we burn an ElevenLabs API call.
@@ -68,30 +93,46 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // ── Resolve agent identity + the agent's chosen assistant voice ──────────
-  // Voice is sourced from the user's settings (Settings → Assistant). The
-  // resolver honors voice_preference: 'clone' uses agent.voice_id, 'generic'
-  // uses agent.assistant_voice_id, and only falls back to FALLBACK_VOICE_ID
-  // when the user hasn't picked yet — never a hardcoded platform default.
-  const { data: agentRow } = await supabase
-    .from("agents")
-    .select("id, conv_ai_agent_id, users(first_name, last_name, email, phone)")
-    .eq("id", ctx.agentId)
-    .maybeSingle()
+  // ── Resolve identity + the assistant voice, then provision the Conv-AI
+  // agent for the right lane ───────────────────────────────────────────────
+  // Agent lane: voice is sourced from the user's settings (Settings →
+  // Assistant); the resolver honors voice_preference ('clone' uses
+  // agent.voice_id, 'generic' uses agent.assistant_voice_id) and only falls
+  // back to FALLBACK_VOICE_ID when the user hasn't picked yet.
+  // Staff lane (expanded roles / principals / platform staff without an
+  // agents row): the shared per-brokerage staff assistant with the platform
+  // fallback voice — tool calls still attribute to THIS user via the session.
+  let ensured: Awaited<ReturnType<typeof ensureAssistantAgent>>
+  if (!staffLane) {
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("id, conv_ai_agent_id, users(first_name, last_name, email, phone)")
+      .eq("id", ctx.agentId)
+      .maybeSingle()
 
-  if (!agentRow) {
-    return NextResponse.json({ error: "Agent profile not found" }, { status: 404 })
+    if (!agentRow) {
+      return NextResponse.json({ error: "Agent profile not found" }, { status: 404 })
+    }
+
+    const agentName = [(agentRow.users as any)?.first_name, (agentRow.users as any)?.last_name].filter(Boolean).join(" ").trim() || "Agent"
+    const resolved = await resolveSelfVoice(ctx.userId)
+
+    ensured = await ensureAssistantAgent({
+      agentId: agentRow.id,
+      agentName,
+      voiceId: resolved.voiceId,
+    })
+  } else {
+    const { data: staffUser } = await supabase
+      .from("users").select("first_name, last_name").eq("id", ctx.userId).maybeSingle()
+    const displayName = [(staffUser as any)?.first_name, (staffUser as any)?.last_name].filter(Boolean).join(" ").trim() || "Staff"
+    const resolved = await resolveSelfVoice(ctx.userId) // no agents row → platform fallback voice
+    ensured = await ensureStaffAssistantAgent({
+      brokerageId: ctx.brokerageId,
+      displayName,
+      voiceId: resolved.voiceId,
+    })
   }
-
-  const agentName = [(agentRow.users as any)?.first_name, (agentRow.users as any)?.last_name].filter(Boolean).join(" ").trim() || "Agent"
-  const resolved = await resolveSelfVoice(ctx.userId)
-
-  // ── Provision (or reuse) the ElevenLabs Conv-AI agent ────────────────────
-  const ensured = await ensureAssistantAgent({
-    agentId: agentRow.id,
-    agentName,
-    voiceId: resolved.voiceId,
-  })
   if (!ensured.ok) {
     return NextResponse.json({ error: ensured.error }, { status: 502 })
   }

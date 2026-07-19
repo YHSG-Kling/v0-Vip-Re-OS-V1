@@ -110,3 +110,58 @@ export function composeExceptionCenter(rows: ExceptionLedgerRow[], opts?: { maxO
   const supervisedList = [...supervised.values()].sort((a, b) => b.at.localeCompare(a.at)).slice(0, opts?.maxSupervised ?? 10)
   return { open: openList, supervised: supervisedList }
 }
+
+// ── MULTI-LOCATION SCOPING (owner: "exception center — brokerage, multiple
+// location brokerage") ──────────────────────────────────────────────────────
+//
+// Exception rows carry no location column — a row is attributed to an office
+// by resolving its SUBJECT (an entity id) to the entity's agent, then the
+// agent's agents.location_id — the SAME org idiom reporting-scope uses (the
+// org structure lives on agents). Attribution is best-effort and HONEST:
+// the default view is ALL locations; an office filter keeps only rows that
+// attribute to that office and reports how many rows could not be attributed
+// (they are never silently assigned to an office).
+
+/** Office metadata for the exception-center picker. */
+export interface ExceptionLocationOption {
+  id: string
+  name: string
+}
+
+/** How the read was scoped — returned alongside the read so the UI is honest. */
+export interface ExceptionScope {
+  /** true only for multi_location-tier tenants (the picker renders only then). */
+  multiLocation: boolean
+  locations: ExceptionLocationOption[]
+  /** the office the read is narrowed to (null = ALL locations, the honest default). */
+  selectedLocationId: string | null
+  /** true when the caller is a location admin — pinned to their own office (egress-scope rule). */
+  forced: boolean
+  /** rows hidden by the office filter because they could not be attributed to ANY office. */
+  hiddenUnattributed: number
+}
+
+/**
+ * PURE: narrow a composed read to one office given a subject→location
+ * attribution map. Rows attributed to another office are dropped; rows with
+ * NO attribution are dropped but COUNTED (hiddenUnattributed) so the UI can
+ * say so instead of pretending the office is clean. locationId null = no
+ * narrowing (all locations).
+ */
+export function applyExceptionLocationFilter(
+  read: ExceptionCenterRead,
+  subjectLocation: ReadonlyMap<string, string | null>,
+  locationId: string | null,
+): { read: ExceptionCenterRead; hiddenUnattributed: number } {
+  if (!locationId) return { read, hiddenUnattributed: 0 }
+  const unattributed = new Set<string>()
+  const keep = (subject: string): boolean => {
+    const loc = subjectLocation.get(subject) ?? null
+    if (loc === locationId) return true
+    if (loc === null) unattributed.add(subject)
+    return false
+  }
+  const open = read.open.filter((e) => keep(e.subject))
+  const supervised = read.supervised.filter((r) => keep(r.subject))
+  return { read: { open, supervised }, hiddenUnattributed: unattributed.size }
+}

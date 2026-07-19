@@ -7,34 +7,62 @@
  * supervised repairs a human may still veto — "this fix was wrong" appends a
  * failure to the ledger and demotes that repair type instantly (the ratchet's
  * feedback loop). Renders only when there's something to show.
+ *
+ * MULTI-LOCATION (owner: "exception center — brokerage, multiple location
+ * brokerage"): on the multi_location tier an office picker narrows the list
+ * using the same location-scope idiom reporting uses (agents.location_id).
+ * The honest default is ALL locations; a location admin is pinned to their
+ * own office by the egress-scope rule, and any rows an office filter hides
+ * because they could not be attributed to an office are counted out loud.
  */
 
 import { useCallback, useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { AlertTriangle, RefreshCw, Check, X, ShieldAlert } from "lucide-react"
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select"
+import { AlertTriangle, RefreshCw, Check, X, ShieldAlert, MapPin } from "lucide-react"
 import {
   getExceptionCenter, resolveException, dismissException, retryDataFlows, flagRepairWrong,
 } from "@/app/actions/exception-center"
-import type { ExceptionCenterRead } from "@/lib/kernel/exception-center"
+import type { ExceptionCenterRead, ExceptionScope } from "@/lib/kernel/exception-center"
+
+const ALL_LOCATIONS = "__all__"
 
 export function BrokerExceptionCenter() {
   const [read, setRead] = useState<ExceptionCenterRead | null>(null)
+  const [scope, setScope] = useState<ExceptionScope | null>(null)
+  const [locationId, setLocationId] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [retryNote, setRetryNote] = useState<string | null>(null)
 
-  const reload = useCallback(() => {
-    getExceptionCenter().then((x) => { if (x.success) setRead(x.read) }).catch(() => {})
+  const reload = useCallback((loc: string | null) => {
+    getExceptionCenter(loc ? { locationId: loc } : undefined)
+      .then((x) => {
+        if (x.success) {
+          setRead(x.read)
+          setScope(x.scope)
+        }
+      })
+      .catch(() => {})
   }, [])
-  useEffect(() => { reload() }, [reload])
+  useEffect(() => { reload(locationId) }, [reload, locationId])
 
-  if (!read || (read.open.length === 0 && read.supervised.length === 0)) return null
+  if (!read || !scope) return null
+  const empty = read.open.length === 0 && read.supervised.length === 0
+  const filterActive = !!scope.selectedLocationId
+  // Nothing anywhere and no office narrowing in play → stay out of the way.
+  if (empty && !filterActive) return null
+  // A location admin (pinned office) with a genuinely clean office and nothing hidden.
+  if (empty && filterActive && scope.forced && scope.hiddenUnattributed === 0) return null
 
   const act = async (key: string, fn: () => Promise<{ success: boolean }>) => {
     setBusy(key)
-    try { await fn(); reload() } finally { setBusy(null) }
+    try { await fn(); reload(locationId) } finally { setBusy(null) }
   }
+
+  const showPicker = scope.multiLocation && scope.locations.length > 0
 
   return (
     <Card className="border-amber-200">
@@ -59,9 +87,44 @@ export function BrokerExceptionCenter() {
         <p className="text-xs text-muted-foreground">
           What the OS couldn't repair safely — with why, and what it already tried
         </p>
+        {showPicker && (
+          <div className="flex items-center gap-2 pt-1">
+            <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
+            {scope.forced ? (
+              <span className="text-xs text-muted-foreground">
+                {scope.locations.find((l) => l.id === scope.selectedLocationId)?.name ?? "Your office"} — your office (location-admin scope)
+              </span>
+            ) : (
+              <Select
+                value={locationId ?? ALL_LOCATIONS}
+                onValueChange={(v) => setLocationId(v === ALL_LOCATIONS ? null : v)}
+              >
+                <SelectTrigger className="h-7 w-56 text-xs">
+                  <SelectValue placeholder="All locations" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL_LOCATIONS}>All locations</SelectItem>
+                  {scope.locations.map((l) => (
+                    <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+        )}
+        {filterActive && scope.hiddenUnattributed > 0 && (
+          <p className="text-xs text-muted-foreground">
+            {scope.hiddenUnattributed} exception{scope.hiddenUnattributed === 1 ? "" : "s"} couldn't be
+            attributed to an office and {scope.hiddenUnattributed === 1 ? "is" : "are"} hidden by this filter —
+            {scope.forced ? " ask a broker to review them under All locations." : " switch to All locations to see them."}
+          </p>
+        )}
         {retryNote && <p className="text-xs text-emerald-700">{retryNote}</p>}
       </CardHeader>
       <CardContent className="space-y-3">
+        {empty && (
+          <p className="text-sm text-muted-foreground">Nothing open for this office.</p>
+        )}
         {read.open.map((ex) => (
           <div key={ex.eventId} className="rounded-md border border-amber-100 p-2.5">
             <div className="flex items-start gap-2">

@@ -3,15 +3,15 @@
 /**
  * Quick-action server actions for LEAD intelligence — pre-conversion verification + enrichment.
  *
- * Authorization (matches the canonical tenant-scoping rule for leads):
+ * ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY.
  *   - `leads` are platform OR brokerage-scoped (NEVER agent-assigned in the canonical flow — the
  *     moment a lead is assigned to an agent it's promoted to a contact).
  *   - Platform admin / staff (superadmin / support) → always allowed.
- *   - Brokerage staff (broker / broker_owner / team_lead / team_leader / tc / transaction_
- *     coordinator / compliance_officer / compliance_manager) → allowed when their
- *     `users.brokerage_id` matches `leads.brokerage_id`. (When the lead has `brokerage_id IS NULL`
- *     it is platform-only — only platform admin / staff can act.)
- *   - Agents do NOT get access to lead rows. The CRM contact flow is where their work happens.
+ *   - Brokerage-LEVEL roles only (broker / broker_owner / broker_admin / admin) → allowed when
+ *     their `users.brokerage_id` matches `leads.brokerage_id`. (When the lead has
+ *     `brokerage_id IS NULL` it is platform-only — only platform admin / staff can act.)
+ *   - Agents, team leads, TCs, compliance officers do NOT get access to lead rows — agents work
+ *     CONTACTS only (post-promotion); the CRM contact flow is where non-broker work happens.
  *   - Anyone else → structured `{ success:false, error:"Forbidden" }` (no row leak).
  *
  * Actions: tier-3 PDL email verify, Lob address verify, full PDL skip-trace re-enrich. All write
@@ -34,10 +34,11 @@ interface LeadRow {
   mailing_zip:      string | null
 }
 
+// ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY. Only brokerage-LEVEL
+// roles (broker/admin family) may act on lead rows — team_lead / TC / compliance
+// were removed from this set deliberately; they work contacts, not the lead desk.
 const BROKERAGE_ROLES = new Set([
-  "broker", "broker_owner", "team_lead", "team_leader",
-  "tc", "transaction_coordinator",
-  "compliance_officer", "compliance_manager",
+  "broker", "broker_owner", "broker_admin", "admin",
 ])
 
 async function assertCanActOnLead(leadId: string): Promise<
@@ -62,8 +63,8 @@ async function assertCanActOnLead(leadId: string): Promise<
     return { ok: true, userId: user.id, lead: l }
   }
 
-  // Brokerage staff — only when their brokerage matches the lead's. NULL brokerage_id on the lead
-  // means platform-only → no brokerage staff can act; the previous block already handled platform.
+  // Brokerage-LEVEL roles — only when their brokerage matches the lead's. NULL brokerage_id on the
+  // lead means platform-only → no brokerage staff can act; the previous block already handled platform.
   if (profile?.user_type && BROKERAGE_ROLES.has(profile.user_type)
     && profile.brokerage_id && l.brokerage_id === profile.brokerage_id) {
     return { ok: true, userId: user.id, lead: l }

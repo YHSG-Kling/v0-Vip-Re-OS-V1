@@ -121,6 +121,26 @@ export async function POST(request: NextRequest) {
     return jsonToolError("Session not found — try ending and re-opening the assistant.")
   }
 
+  // ── Per-intent role gate ───────────────────────────────────────────────
+  // VOICE ACCESS POLICY (owner): expanding the voice SURFACE to more staff
+  // roles never widens per-intent permissions — every tool call is checked
+  // against the canonical tool-registry authority for the session user's
+  // role (agent sessions pass exactly as before; an expanded TC/compliance
+  // session only gets the intents its role gates already permit).
+  {
+    const { voiceTools, authorityAllows } = await import("@/lib/voice/tool-registry")
+    if (voiceTools[toolName]) {
+      const { data: sessionUser } = await supabase
+        .from("users").select("user_type").eq("id", session.user_id).maybeSingle()
+      const sessionUserType = (sessionUser as { user_type?: string | null } | null)?.user_type ?? "agent"
+      if (!authorityAllows(toolName, sessionUserType)) {
+        return jsonToolError(
+          `That action isn't available for your role — ${toolName.replace(/_/g, " ")} requires a different permission level.`,
+        )
+      }
+    }
+  }
+
   // ── Dispatch ───────────────────────────────────────────────────────────
   let result: any
   let success = true

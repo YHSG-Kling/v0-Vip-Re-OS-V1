@@ -12,6 +12,7 @@ import {
   SettingsBatchMaintenancePanel,
 } from "./components/os"
 import { IsaAutoRespondSettings } from "@/app/components/isa/IsaAutoRespondSettings"
+import { VoiceAccessSettings } from "@/app/components/settings/VoiceAccessSettings"
 
 interface ProviderData {
   id: string
@@ -198,6 +199,9 @@ export function SettingsControlOSClient({
           currentSettings={isaSettings.current as any}
           existingAdditionalSettings={isaSettings.existing}
         />
+
+        {/* Voice Assistant Access — management-controlled staff expansion */}
+        <VoiceAccessSettings />
       </div>
     </div>
   )

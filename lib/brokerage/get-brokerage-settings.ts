@@ -139,7 +139,40 @@ export interface BrokerageSettings {
   compliance_levels: ComplianceLevels
   pipeline_settings: PipelineSettings
   financial_defaults: FinancialDefaults
+
+  // ── Voice assistant access (owner: "voice assistant should be able to
+  // expand to staff if management wants") ───────────────────
+  /**
+   * Extra tenant staff roles the PRINCIPAL has enabled the voice assistant
+   * for. Agents (and platform staff) always have it; this list only ever
+   * ADDS page/surface access for staff roles — per-intent permissions are
+   * still each role's own gates (tool-registry authority), never widened.
+   * Default [] — voice stays principal/agent-scoped until management opts in.
+   */
+  voice_assistant_expanded_roles: string[]
+
+  /**
+   * Infrastructure cache: the shared per-brokerage ElevenLabs Conv-AI agent
+   * minted for expanded (non-agent) staff sessions. Null until first staff
+   * session. Written only by lib/elevenlabs/conv-ai.ensureStaffAssistantAgent.
+   */
+  staff_assistant_conv_ai_agent_id: string | null
 }
+
+/**
+ * The staff roles a principal may expand the voice assistant to. Principals
+ * (broker/admin family) and agents are covered by their own lanes; contacts /
+ * portal personas are never expandable.
+ */
+export const EXPANDABLE_VOICE_ROLES = [
+  "tc",
+  "transaction_coordinator",
+  "compliance_officer",
+  "isa",
+  "team_lead",
+  "lender",
+  "title_agent",
+] as const
 
 // ─────────────────────────────────────────────────────────────
 // Safe Defaults
@@ -191,6 +224,10 @@ const DEFAULT_SETTINGS: BrokerageSettings = {
     pmi_threshold_percent: 0.80,
     closing_cost_percent: 0.02,
   },
+
+  // Voice stays principal/agent-scoped until management opts staff roles in.
+  voice_assistant_expanded_roles: [],
+  staff_assistant_conv_ai_agent_id: null,
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -251,6 +288,13 @@ export async function getBrokerageSettings(
       ...DEFAULT_SETTINGS.financial_defaults,
       ...(raw.financial_defaults ?? {}),
     },
+    voice_assistant_expanded_roles: Array.isArray(raw.voice_assistant_expanded_roles)
+      ? raw.voice_assistant_expanded_roles.map(String)
+      : [],
+    staff_assistant_conv_ai_agent_id:
+      typeof raw.staff_assistant_conv_ai_agent_id === "string" && raw.staff_assistant_conv_ai_agent_id
+        ? raw.staff_assistant_conv_ai_agent_id
+        : null,
   }
 }
 
@@ -387,6 +431,22 @@ export async function getFinancialVerificationSLAHours(
 ): Promise<number> {
   const settings = await getPipelineSettings(brokerageId)
   return settings.financial_verification_sla_hours
+}
+
+/**
+ * VOICE ACCESS POLICY (owner): the voice assistant is principal/agent-scoped
+ * by default; the principal may EXPAND it to additional tenant staff roles
+ * (TC, compliance_officer, …), and platform staff always have it. This getter
+ * returns the sanitized expansion list — only roles from
+ * EXPANDABLE_VOICE_ROLES survive, so a corrupted settings row can never
+ * smuggle in contact/portal personas.
+ */
+export async function getVoiceAssistantExpandedRoles(
+  brokerageId: string
+): Promise<string[]> {
+  const settings = await getBrokerageSettings(brokerageId)
+  const allowed = new Set<string>(EXPANDABLE_VOICE_ROLES)
+  return settings.voice_assistant_expanded_roles.filter((r) => allowed.has(r))
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -1,21 +1,24 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { requireAuth } from "@/lib/kernel/api-auth"
+import { requirePlatformStaffAuth } from "@/lib/kernel/api-auth"
 
 /**
- * Raw scraped-lead inspection + state updates. Was previously open to the
- * world — anyone could enumerate any brokerage's scraped lead inventory by
- * passing a brokerage_id query param, and update any row's processing_status.
+ * Raw scraped-lead inspection + state updates.
  *
- * Now scoped to the caller's brokerage via session-resolved brokerage_id.
- * The body/query value for brokerage_id is ignored (defense against ID
- * substitution).
+ * ACCESS POLICY (owner): RAW LEADS = PLATFORM ONLY. The raw_scraped_leads
+ * bench is platform-owned pre-promotion inventory (mirrors migration 035's
+ * platform-only RLS): NO tenant surface or action reads raw records — the
+ * promotion pipeline processes them server-side and tenants first see the
+ * data as promoted `leads`. This route previously admitted ANY authenticated
+ * brokerage user via requireAuth + a service client (RLS bypassed); it is now
+ * platform staff (superadmin / support) only. Platform staff may optionally
+ * narrow to one brokerage with ?brokerage_id=.
  */
 
 export async function GET(request: NextRequest) {
   const supabase = await createClient()
-  const auth = await requireAuth(supabase)
+  const auth = await requirePlatformStaffAuth(supabase)
   if (!auth.ok) return auth.response
 
   try {
@@ -23,6 +26,7 @@ export async function GET(request: NextRequest) {
     const source = searchParams.get("source")
     const status = searchParams.get("status") || "pending"
     const limit = parseInt(searchParams.get("limit") || "100")
+    const brokerageId = searchParams.get("brokerage_id")
 
     const svc = createServiceClient()
 
@@ -30,9 +34,12 @@ export async function GET(request: NextRequest) {
       .from("raw_scraped_leads")
       .select("*")
       .eq("processing_status", status)
-      .eq("brokerage_id", auth.brokerageId)  // always scope to caller's brokerage
       .order("created_at", { ascending: false })
       .limit(limit)
+
+    if (brokerageId) {
+      query = query.eq("brokerage_id", brokerageId)
+    }
 
     if (source) {
       query = query.eq("source", source)
@@ -53,8 +60,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
+  // ACCESS POLICY (owner): RAW LEADS = PLATFORM ONLY — see GET above. State
+  // updates on raw rows are a platform-staff repair verb, never a tenant one.
   const supabase = await createClient()
-  const auth = await requireAuth(supabase)
+  const auth = await requirePlatformStaffAuth(supabase)
   if (!auth.ok) return auth.response
 
   try {
@@ -67,16 +76,12 @@ export async function PATCH(request: NextRequest) {
 
     const svc = createServiceClient()
 
-    // Verify the row belongs to the caller's brokerage before mutating.
     const { data: row } = await svc
       .from("raw_scraped_leads")
       .select("brokerage_id")
       .eq("id", id)
       .maybeSingle()
     if (!row) return NextResponse.json({ error: "Lead not found" }, { status: 404 })
-    if (row.brokerage_id !== auth.brokerageId) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
-    }
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     if (processing_status) updates.processing_status = processing_status
@@ -86,7 +91,6 @@ export async function PATCH(request: NextRequest) {
       .from("raw_scraped_leads")
       .update(updates)
       .eq("id", id)
-      .eq("brokerage_id", auth.brokerageId)
       .select()
       .single()
 

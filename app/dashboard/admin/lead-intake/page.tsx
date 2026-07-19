@@ -30,16 +30,25 @@ export default async function LeadIntakeCockpitPage() {
     data: { user },
   } = await supabase.auth.getUser()
   if (!user) redirect("/auth/login")
-  const { data: u } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
+  const { data: u } = await supabase.from("users").select("user_type, brokerage_id, platform_role").eq("id", user.id).maybeSingle()
   const userType = u?.user_type ?? "agent"
   const brokerageId = u?.brokerage_id ?? undefined
-  if (!["admin", "broker", "superadmin"].includes(userType) || !brokerageId) redirect("/dashboard")
+  // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY — the cockpit's
+  // funnel AGGREGATES are brokerage-level observability (broker/admin family).
+  if (!["admin", "broker", "broker_owner", "broker_admin", "superadmin"].includes(userType) || !brokerageId) redirect("/dashboard")
 
   const data = await loadLeadIntakeCockpit(brokerageId)
   const { funnel } = data
 
-  const rawLeadsRes = await listRawLeadsForReview({ limit: 100 })
-  const rawLeadRows = rawLeadsRes.ok ? rawLeadsRes.rows : []
+  // ACCESS POLICY (owner): RAW LEADS = PLATFORM ONLY. Raw record CONTENT
+  // (the review bench) renders only for platform staff — tenant brokers see
+  // the funnel aggregates and the promoted leads, never raw rows. The action
+  // below re-enforces this server-side.
+  const isPlatform =
+    userType === "superadmin" ||
+    ["superadmin", "admin", "marketing", "support"].includes(String((u as any)?.platform_role ?? ""))
+  const rawLeadsRes = isPlatform ? await listRawLeadsForReview({ limit: 100, brokerageId }) : null
+  const rawLeadRows = rawLeadsRes?.ok ? rawLeadsRes.rows : []
 
   const stageCards: Array<{ label: string; value: number; hint?: string }> = [
     { label: "Raw scraped", value: funnel.rawTotal, hint: "all rows on the bench" },
@@ -181,7 +190,8 @@ export default async function LeadIntakeCockpitPage() {
 
       <SocialScrapeTrigger />
 
-      <RawLeadsReviewPanel initialRows={rawLeadRows} />
+      {/* RAW LEADS = PLATFORM ONLY — the raw review bench never renders for tenant roles. */}
+      {isPlatform && <RawLeadsReviewPanel initialRows={rawLeadRows} />}
     </div>
   )
 }

@@ -22,6 +22,7 @@ import { Mic, MicOff } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { usePathname } from "next/navigation"
 import { useShell } from "./shell-context"
+import { getVoiceAssistantAccess } from "@/app/actions/voice-access"
 
 const LONG_PRESS_MS = 500
 
@@ -32,6 +33,20 @@ export function FloatingVoiceFAB() {
   } = useShell()
   const pathname = usePathname()
   const [inputFocused, setInputFocused] = useState(false)
+
+  // VOICE ACCESS POLICY (owner): principal/agent-scoped by default, expandable
+  // to staff roles by the principal (Settings → Voice Assistant Access), and
+  // platform staff always. The mic renders only for allowed users — honest
+  // visibility; the /api/agent-assistant/session route re-enforces the same
+  // policy server-side.
+  const [voiceAllowed, setVoiceAllowed] = useState<boolean | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    getVoiceAssistantAccess()
+      .then((r) => { if (!cancelled) setVoiceAllowed(r.allowed) })
+      .catch(() => { if (!cancelled) setVoiceAllowed(false) })
+    return () => { cancelled = true }
+  }, [])
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const longPressFiredRef = useRef(false)
 
@@ -72,6 +87,7 @@ export function FloatingVoiceFAB() {
   }, [])
 
   if (hidden) return null
+  if (voiceAllowed !== true) return null
 
   function startPress() {
     longPressFiredRef.current = false

@@ -15,10 +15,12 @@ export async function GET(request: Request) {
   const motivationType = searchParams.get('motivationType')
   const limit = parseInt(searchParams.get('limit') || '50')
 
-  // Agents do not have direct visibility on `leads` — lead lineage reaches
-  // them via the `contacts` row and the `contact_lead_history` view. Reject
-  // here so we don't return a misleading empty array.
-  const leadVisibleRoles = ['broker', 'broker_owner', 'admin', 'team_lead', 'compliance_officer', 'superadmin']
+  // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY. Agents do not
+  // have direct visibility on `leads` — lead lineage reaches them via the
+  // `contacts` row and the `contact_lead_history` view. team_lead / TC /
+  // compliance_officer are ALSO excluded (they work contacts, not the lead
+  // desk). Reject here so we don't return a misleading empty array.
+  const leadVisibleRoles = ['broker', 'broker_owner', 'broker_admin', 'admin', 'superadmin', 'support']
   if (!leadVisibleRoles.includes(auth.userType)) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   }
