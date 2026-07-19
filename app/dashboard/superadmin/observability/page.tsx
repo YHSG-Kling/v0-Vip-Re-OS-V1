@@ -3,7 +3,9 @@ import { createClient } from "@/lib/supabase/server"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import type { AutomationErrorRow, CalendarSyncLogRow } from "@/lib/kernel"
 
-export default async function ObservabilityPage() {
+export default async function ObservabilityPage(
+  { searchParams }: { searchParams: Promise<{ brokerageId?: string }> },
+) {
   const gate = await requirePlatformCapability("sentinel")
   if (!gate.userId) return <div className="text-red-600">Not authenticated</div>
   if (!gate.ok) {
@@ -13,19 +15,25 @@ export default async function ObservabilityPage() {
   const supabase = await createClient()
 
   // Get brokerages for filter
-  const { data: brokerages } = await supabase.from("brokerages").select("id, name")
+  const { data: brokerages } = await supabase.from("brokerages").select("id, name").order("name")
 
-  // Default to first brokerage
-  const defaultBrokerageId = brokerages?.[0]?.id || ""
+  // The filter is REAL: ?brokerageId=… (validated against the tenant list) wins;
+  // otherwise fall back to the first brokerage. Previously the <select> was
+  // decorative — no form, no handler — so staff could only ever see tenant #1.
+  const params = await searchParams
+  const requestedId = params.brokerageId ?? ""
+  const selectedBrokerageId = brokerages?.some((b) => b.id === requestedId)
+    ? requestedId
+    : brokerages?.[0]?.id || ""
 
   let dashboard
   let automationErrors
   let syncLogs
 
   try {
-    dashboard = await fetchObservabilityDashboard(defaultBrokerageId)
-    automationErrors = await fetchAutomationErrors({ brokerageId: defaultBrokerageId, limit: 100 })
-    syncLogs = await fetchCalendarSyncLogs({ brokerageId: defaultBrokerageId, limit: 50 })
+    dashboard = await fetchObservabilityDashboard(selectedBrokerageId)
+    automationErrors = await fetchAutomationErrors({ brokerageId: selectedBrokerageId, limit: 100 })
+    syncLogs = await fetchCalendarSyncLogs({ brokerageId: selectedBrokerageId, limit: 50 })
   } catch {
     return <div className="text-red-600 p-6">Failed to load observability data</div>
   }
@@ -37,15 +45,26 @@ export default async function ObservabilityPage() {
         <p className="text-gray-600 mt-2">Monitor automation health and calendar sync status</p>
       </div>
 
-      {/* Brokerage Filter */}
+      {/* Brokerage Filter — a real GET filter (server page re-renders scoped to the choice) */}
       <div className="bg-white rounded-lg shadow p-4">
-        <label className="block text-sm font-medium text-gray-700 mb-2">Brokerage</label>
-        <select className="border border-gray-300 rounded px-3 py-2 text-sm w-full">
-          <option value="">All Brokerages</option>
-          {brokerages?.map(b => (
-            <option key={b.id} value={b.id}>{b.name}</option>
-          ))}
-        </select>
+        <form method="get" className="flex items-end gap-3">
+          <div className="flex-1">
+            <label htmlFor="brokerageId" className="block text-sm font-medium text-gray-700 mb-2">Brokerage</label>
+            <select
+              id="brokerageId"
+              name="brokerageId"
+              defaultValue={selectedBrokerageId}
+              className="border border-gray-300 rounded px-3 py-2 text-sm w-full"
+            >
+              {brokerages?.map(b => (
+                <option key={b.id} value={b.id}>{b.name}</option>
+              ))}
+            </select>
+          </div>
+          <button type="submit" className="border border-gray-300 rounded px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+            Apply
+          </button>
+        </form>
       </div>
 
       {/* Summary Cards */}

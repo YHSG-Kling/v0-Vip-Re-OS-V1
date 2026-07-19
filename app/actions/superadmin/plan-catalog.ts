@@ -9,10 +9,34 @@
 // A tier that has active subscriptions is SOFT-removed (is_active=false) so no
 // tenant is orphaned.
 
+import { headers } from "next/headers"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { validatePlanTierInput, type PlanTierInput } from "@/lib/billing/plan-catalog"
+
+// Audit — same conventions as the other superadmin billing actions (coupons /
+// brokerage-management): every catalog mutation → superadmin_audit_log,
+// non-fatal on failure (audit never blocks the action).
+async function audit(actorUserId: string, action: string, targetId: string | null, details: Record<string, unknown>): Promise<void> {
+  try {
+    const svc = createServiceClient()
+    const hdrs = await headers()
+    const { data: actor } = await svc.from("users").select("email").eq("id", actorUserId).maybeSingle()
+    await svc.from("superadmin_audit_log").insert({
+      actor_user_id: actorUserId,
+      actor_email: (actor as any)?.email ?? null,
+      action,
+      target_type: "subscription_tier",
+      target_id: targetId,
+      details,
+      ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
+      user_agent: hdrs.get("user-agent"),
+    })
+  } catch (err) {
+    console.error("[plan-catalog audit] write failed:", err)
+  }
+}
 
 async function requireSuperadmin(): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
   const supabase = await createClient()
@@ -59,6 +83,7 @@ export async function upsertPlanTierAction(input: PlanTierInput & { id?: string 
   if (input.id) {
     const { error } = await svc.from("subscription_tiers").update(row).eq("id", input.id)
     if (error) return { ok: false, error: error.message }
+    await audit(auth.userId, "plan_tier.updated", input.id, { tierName: row.tier_name, monthlyPriceCents: row.monthly_price_cents, isActive: row.is_active })
     revalidatePath("/dashboard/superadmin/plans")
     revalidatePath("/signup")
     return { ok: true, id: input.id }
@@ -66,6 +91,7 @@ export async function upsertPlanTierAction(input: PlanTierInput & { id?: string 
 
   const { data, error } = await svc.from("subscription_tiers").insert(row).select("id").single()
   if (error) return { ok: false, error: error.message }
+  await audit(auth.userId, "plan_tier.created", (data as any).id, { tierName: row.tier_name, monthlyPriceCents: row.monthly_price_cents, isActive: row.is_active })
   revalidatePath("/dashboard/superadmin/plans")
   revalidatePath("/signup")
   return { ok: true, id: (data as any).id }
@@ -81,11 +107,13 @@ export async function removePlanTierAction(tierId: string): Promise<{ ok: true; 
   if ((count ?? 0) > 0) {
     const { error } = await svc.from("subscription_tiers").update({ is_active: false }).eq("id", tierId)
     if (error) return { ok: false, error: error.message }
+    await audit(auth.userId, "plan_tier.deactivated", tierId, { reason: "remove requested but tenants are subscribed — soft-deactivated", subscriptions: count })
     revalidatePath("/dashboard/superadmin/plans"); revalidatePath("/signup")
     return { ok: true, removed: "soft" }
   }
   const { error } = await svc.from("subscription_tiers").delete().eq("id", tierId)
   if (error) return { ok: false, error: error.message }
+  await audit(auth.userId, "plan_tier.deleted", tierId, {})
   revalidatePath("/dashboard/superadmin/plans"); revalidatePath("/signup")
   return { ok: true, removed: "hard" }
 }
@@ -104,6 +132,7 @@ export async function syncPlanTierFromStripeAction(tierId: string): Promise<{ ok
     const cents = price.unit_amount ?? 0
     const patch = price.recurring?.interval === "year" ? { annual_price_cents: cents } : { monthly_price_cents: cents }
     await svc.from("subscription_tiers").update(patch).eq("id", tierId)
+    await audit(auth.userId, "plan_tier.synced_from_stripe", tierId, { priceId, cents, interval: price.recurring?.interval ?? "month" })
     revalidatePath("/dashboard/superadmin/plans"); revalidatePath("/signup")
     return { ok: true, monthlyPriceCents: cents }
   } catch (err: any) {
@@ -151,6 +180,10 @@ export async function publishTierToStripeAction(tierId: string): Promise<{ ok: t
       metadata: { tier_name: t.tier_name },
     })
     await svc.from("subscription_tiers").update({ stripe_price_id: price.id }).eq("id", tierId)
+    await audit(auth.userId, "plan_tier.published_to_stripe", tierId, {
+      tierName: t.tier_name, monthlyPriceCents: t.monthly_price_cents,
+      newPriceId: price.id, previousPriceId: t.stripe_price_id ?? null,
+    })
     revalidatePath("/dashboard/superadmin/plans"); revalidatePath("/signup")
     return { ok: true, priceId: price.id }
   } catch (err: any) {

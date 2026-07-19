@@ -1,5 +1,6 @@
 "use server"
 
+import { headers } from "next/headers"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isPlatformStaff } from "@/lib/auth/resolve-user-role"
@@ -27,6 +28,29 @@ async function assertPlatformStaff(): Promise<{ ok: true; userId: string } | { o
   const allowed = profile?.user_type === "superadmin" || isPlatformStaff(profile?.platform_role)
   if (!allowed) return { ok: false, error: "Forbidden" }
   return { ok: true, userId: user.id }
+}
+
+// Central-ledger audit — approve/reject previously stamped only the proposal row
+// (applied_by/applied_at), leaving the platform-action ledger blind to healing
+// verdicts. Same conventions as the other superadmin actions: non-fatal.
+async function audit(actorUserId: string, action: string, proposalId: string, details: Record<string, unknown>): Promise<void> {
+  try {
+    const svc = createServiceClient()
+    const hdrs = await headers()
+    const { data: actor } = await svc.from("users").select("email").eq("id", actorUserId).maybeSingle()
+    await svc.from("superadmin_audit_log").insert({
+      actor_user_id: actorUserId,
+      actor_email: (actor as any)?.email ?? null,
+      action,
+      target_type: "connector_healing_proposal",
+      target_id: proposalId,
+      details,
+      ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
+      user_agent: hdrs.get("user-agent"),
+    })
+  } catch (err) {
+    console.error("[connector-healing audit] write failed:", err)
+  }
 }
 
 export async function listPendingProposalsAction(): Promise<{
@@ -92,6 +116,7 @@ export async function approveProposalAction(params: {
     .maybeSingle()
   if (error) return { success: false, error: error.message }
   if (!data) return { success: false, error: "Proposal already finalized — refresh to see current state" }
+  await audit(gate.userId, "connector_healing.approved", params.proposalId, { notes: params.notes ?? null })
   revalidatePath("/dashboard/superadmin/connector-healing")
   return { success: true }
 }
@@ -119,6 +144,7 @@ export async function rejectProposalAction(params: {
     .maybeSingle()
   if (error) return { success: false, error: error.message }
   if (!data) return { success: false, error: "Proposal already finalized — refresh to see current state" }
+  await audit(gate.userId, "connector_healing.rejected", params.proposalId, { notes: params.notes ?? null })
   revalidatePath("/dashboard/superadmin/connector-healing")
   return { success: true }
 }

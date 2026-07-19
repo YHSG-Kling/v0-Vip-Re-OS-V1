@@ -7,6 +7,7 @@
 // notifies the tenant, assignment, and status. Every ticket carries the brokerage name so a staffer knows
 // whose ticket it is.
 
+import { headers } from "next/headers"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
@@ -14,6 +15,28 @@ import { postTicketReply, loadTicketThread, awaitingFirstResponse, type TicketTh
 import { evaluateTicketSla, rollupCsat, type SlaBreachKind } from "@/lib/support/support-sla"
 
 const STAFF_ROLES = new Set(["superadmin", "support"])
+
+// Audit — staff mutations on ANOTHER tenant's ticket land in superadmin_audit_log
+// (same conventions as coupons/brokerage-management: non-fatal, never blocks).
+async function audit(actorUserId: string, action: string, ticketId: string, details: Record<string, unknown>): Promise<void> {
+  try {
+    const svc = createServiceClient()
+    const hdrs = await headers()
+    const { data: actor } = await svc.from("users").select("email").eq("id", actorUserId).maybeSingle()
+    await svc.from("superadmin_audit_log").insert({
+      actor_user_id: actorUserId,
+      actor_email: (actor as any)?.email ?? null,
+      action,
+      target_type: "support_ticket",
+      target_id: ticketId,
+      details,
+      ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
+      user_agent: hdrs.get("user-agent"),
+    })
+  } catch (err) {
+    console.error("[support-console audit] write failed:", err)
+  }
+}
 
 async function requireStaff(): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
   const supabase = await createClient()
@@ -97,6 +120,7 @@ export async function replyToTicketAction(params: { ticketId: string; body: stri
   if (!auth.ok) return auth
   const r = await postTicketReply(createServiceClient(), { ticketId: params.ticketId, authorUserId: auth.userId, authorKind: "staff", body: params.body })
   if (!r.ok) return { ok: false, error: r.error }
+  await audit(auth.userId, "support_ticket.staff_replied", params.ticketId, { bodyLength: params.body.length })
   revalidatePath(`/dashboard/superadmin/support/${params.ticketId}`)
   revalidatePath("/dashboard/superadmin/support")
   return { ok: true }
@@ -106,8 +130,10 @@ export async function assignTicketAction(params: { ticketId: string; assigneeUse
   const auth = await requireStaff()
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  const { error } = await svc.from("support_tickets").update({ assigned_to: params.assigneeUserId ?? auth.userId, updated_at: new Date().toISOString() }).eq("id", params.ticketId)
+  const assignee = params.assigneeUserId ?? auth.userId
+  const { error } = await svc.from("support_tickets").update({ assigned_to: assignee, updated_at: new Date().toISOString() }).eq("id", params.ticketId)
   if (error) return { ok: false, error: error.message }
+  await audit(auth.userId, "support_ticket.assigned", params.ticketId, { assigneeUserId: assignee })
   revalidatePath(`/dashboard/superadmin/support/${params.ticketId}`)
   return { ok: true }
 }
@@ -121,6 +147,7 @@ export async function setTicketStatusAction(params: { ticketId: string; status: 
   else patch.resolved_at = null
   const { error } = await svc.from("support_tickets").update(patch).eq("id", params.ticketId)
   if (error) return { ok: false, error: error.message }
+  await audit(auth.userId, "support_ticket.status_changed", params.ticketId, { status: params.status })
   revalidatePath(`/dashboard/superadmin/support/${params.ticketId}`)
   revalidatePath("/dashboard/superadmin/support")
   return { ok: true }
