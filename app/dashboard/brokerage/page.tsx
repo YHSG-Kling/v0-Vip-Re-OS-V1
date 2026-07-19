@@ -26,6 +26,7 @@ import {
 import { BrokerageAgentList } from "@/components/brokerage/agent-list"
 import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
 import BudgetWarningBanner from "@/app/components/shell/budget-warning-banner"
+import AutonomyHaltNotice from "@/app/components/shell/autonomy-halt-notice"
 import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 import { BrokerageRevenueChart } from "@/app/components/features/dashboard/brokerage/revenue-chart"
 import { BrokerageComplianceOverview } from "@/app/components/features/dashboard/brokerage/compliance-overview"
@@ -464,6 +465,9 @@ export default async function BrokerageDashboard({
           </Badge>
         )}
       </div>
+
+      {/* Staff autonomy halt — honest "your AI team is paused" notice (renders only when halted) */}
+      <AutonomyHaltNotice />
 
       {/* Usage warning — generic, superadmin-gated (no vendor names / amounts) */}
       <BudgetWarningBanner />

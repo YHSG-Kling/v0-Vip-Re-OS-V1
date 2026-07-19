@@ -30,7 +30,18 @@ async function requireAdmin(): Promise<
     .maybeSingle()
   if (!row?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
   const userType = row.user_type as string
-  if (!ADMIN_ROLES.has(userType)) return { ok: false, error: "Forbidden" }
+  if (!ADMIN_ROLES.has(userType)) {
+    // TIER PARITY (owner rule): a solo-tier subscriber IS their own broker — their
+    // one working seat often carries user_type 'agent'/'solo_agent', which locked
+    // them out of their own bulk-campaign rail. Same allowance the voice
+    // 'draft_save_plays' intent already applies (app/api/internal/voice-command).
+    const svc = createServiceClient()
+    const { data: b } = await svc
+      .from("brokerages").select("plan_tier").eq("id", row.brokerage_id).maybeSingle()
+    if ((b as { plan_tier?: string } | null)?.plan_tier !== "solo_agent") {
+      return { ok: false, error: "Forbidden" }
+    }
+  }
   return { ok: true, userId: user.id, brokerageId: row.brokerage_id as string, userType }
 }
 

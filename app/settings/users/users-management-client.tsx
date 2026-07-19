@@ -1,7 +1,9 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { createClient } from "@/lib/supabase/client"
+import { updateUser } from "@/app/actions/admin/update-user"
+import { invitableRolesForTier } from "@/lib/kernel/tier-role-matrix"
+import { InviteUserButton } from "@/app/dashboard/admin/users/invite-user-button"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -36,8 +38,6 @@ type UserRow = {
   brokerage_id: string | null
 }
 
-const USER_TYPES = ["agent", "broker", "admin", "tc", "isa", "compliance_officer", "lender", "vendor", "contact"]
-
 const ROLE_COLORS: Record<string, string> = {
   admin: "bg-red-100 text-red-800",
   superadmin: "bg-red-100 text-red-800",
@@ -56,9 +56,13 @@ interface Props {
   users: UserRow[]
   currentUserId: string
   brokerageId: string | null | undefined
+  /** Caller's user_type — forwarded to the tier-aware invite dialog. */
+  callerRole: string
+  /** brokerages.plan_tier — drives the invitable/assignable role menu. */
+  tier: string | null
 }
 
-export function UsersManagementClient({ users: initialUsers, currentUserId, brokerageId }: Props) {
+export function UsersManagementClient({ users: initialUsers, currentUserId, brokerageId, callerRole, tier }: Props) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [users, setUsers] = useState<UserRow[]>(initialUsers)
@@ -69,7 +73,9 @@ export function UsersManagementClient({ users: initialUsers, currentUserId, brok
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const supabase = createClient()
+  // Tier-aware assignable roles — the SAME matrix as the invite path, so the
+  // role menu never offers a seat the tenant's plan does not include.
+  const assignableRoles = invitableRolesForTier(tier)
 
   const filtered = users.filter(u => {
     const q = search.toLowerCase()
@@ -81,18 +87,17 @@ export function UsersManagementClient({ users: initialUsers, currentUserId, brok
     )
   })
 
+  // Role changes ride the guarded server action (tier matrix + brokerage scope +
+  // RBAC sync + audit ledger) — never a raw client-side users update, which
+  // bypassed tierAllowsRole/seatCheck and left no audit trail.
   async function handleUpdateRole() {
     if (!editingUser || !editRole) return
     setSaving(true)
     setError(null)
 
-    const { error: err } = await supabase
-      .from("users")
-      .update({ user_type: editRole, updated_at: new Date().toISOString() })
-      .eq("id", editingUser.id)
-
-    if (err) {
-      setError(err.message)
+    const result = await updateUser({ userId: editingUser.id, updates: { user_type: editRole } })
+    if (!result.success) {
+      setError(result.error ?? "Could not update role")
       setSaving(false)
       return
     }
@@ -102,18 +107,17 @@ export function UsersManagementClient({ users: initialUsers, currentUserId, brok
     setSaving(false)
   }
 
+  // Deactivation (status='suspended') is the honest offboarding rail: it frees the
+  // seat (the invite gate excludes suspended users), keeps the user's records for
+  // reassignment, and lands in the audit ledger via the guarded server action.
   async function handleDelete() {
     if (!deletingUser) return
     setSaving(true)
     setError(null)
 
-    const { error: err } = await supabase
-      .from("users")
-      .update({ deleted_at: new Date().toISOString() })
-      .eq("id", deletingUser.id)
-
-    if (err) {
-      setError(err.message)
+    const result = await updateUser({ userId: deletingUser.id, updates: { status: "suspended" } })
+    if (!result.success) {
+      setError(result.error ?? "Could not deactivate user")
       setSaving(false)
       return
     }
@@ -133,6 +137,9 @@ export function UsersManagementClient({ users: initialUsers, currentUserId, brok
             Manage roles and access for {users.length} user{users.length !== 1 ? "s" : ""} in your brokerage.
           </p>
         </div>
+        {/* Tier-aware invite — the same seat-gated dialog as /dashboard/admin/users.
+            This surface previously had NO invite path at all. */}
+        <InviteUserButton callerRole={callerRole} brokerageId={brokerageId} tier={tier} />
       </div>
 
       <Card>
@@ -248,7 +255,7 @@ export function UsersManagementClient({ users: initialUsers, currentUserId, brok
                   <SelectValue placeholder="Select role" />
                 </SelectTrigger>
                 <SelectContent>
-                  {USER_TYPES.map(t => (
+                  {assignableRoles.map(t => (
                     <SelectItem key={t} value={t}>{t}</SelectItem>
                   ))}
                 </SelectContent>
@@ -269,9 +276,10 @@ export function UsersManagementClient({ users: initialUsers, currentUserId, brok
       <Dialog open={!!deletingUser} onOpenChange={open => !open && setDeletingUser(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Remove User</DialogTitle>
+            <DialogTitle>Deactivate User</DialogTitle>
             <DialogDescription>
-              Are you sure you want to remove {deletingUser?.email} from your brokerage? This action cannot be undone.
+              Deactivate {deletingUser?.email}? They lose access immediately and their seat is freed.
+              Their contacts, deals, and history are kept so you can reassign them.
             </DialogDescription>
           </DialogHeader>
           {error && <p className="text-sm text-destructive">{error}</p>}
@@ -279,7 +287,7 @@ export function UsersManagementClient({ users: initialUsers, currentUserId, brok
             <Button variant="outline" onClick={() => setDeletingUser(null)} disabled={saving}>Cancel</Button>
             <Button variant="destructive" onClick={handleDelete} disabled={saving}>
               {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Remove User
+              Deactivate User
             </Button>
           </DialogFooter>
         </DialogContent>

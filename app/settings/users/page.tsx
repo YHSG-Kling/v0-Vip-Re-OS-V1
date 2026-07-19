@@ -28,6 +28,13 @@ export default async function SettingsUsersPage() {
 
   const brokerageId = profile?.brokerage_id
 
+  // Tenant tier — drives the tier-aware role menu + invite dialog (same matrix
+  // the canonical /dashboard/admin/users surface uses; no drift).
+  const { data: tenant } = brokerageId
+    ? await supabase.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle()
+    : { data: null }
+  const planTier = (tenant as { plan_tier?: string | null } | null)?.plan_tier ?? null
+
   // Fetch all users in the brokerage
   const { data: users } = brokerageId
     ? await supabase
@@ -46,6 +53,8 @@ export default async function SettingsUsersPage() {
         users={users ?? []}
         currentUserId={user.id}
         brokerageId={brokerageId}
+        callerRole={userType}
+        tier={planTier}
       />
       {/* SSO / SAML — team access policy lives with team management. */}
       <SsoConnectionCard />

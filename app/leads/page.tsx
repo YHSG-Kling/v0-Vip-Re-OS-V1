@@ -856,7 +856,7 @@ export default function LeadsPage() {
                       </div>
                       {contactId && (
                         <a
-                          href={`/crm/${contactId}`}
+                          href={`/crm?contact=${contactId}`}
                           className="shrink-0 rounded-md border border-border px-2.5 py-1 text-xs font-medium hover:bg-muted transition-colors"
                         >
                           Open Contact
@@ -946,7 +946,7 @@ export default function LeadsPage() {
                         <p className="text-xs text-muted-foreground truncate capitalize">{signalType}</p>
                         {profileId && (
                           <a
-                            href={`/crm/${profileId}`}
+                            href={`/crm?contact=${profileId}`}
                             className="mt-auto text-xs text-primary underline underline-offset-2 hover:no-underline"
                           >
                             View Profile
@@ -1217,7 +1217,7 @@ export default function LeadsPage() {
                           <p className="text-xs text-muted-foreground truncate capitalize">{signalType}</p>
                           {profileId && (
                             <a
-                              href={`/crm/${profileId}`}
+                              href={`/crm?contact=${profileId}`}
                               className="mt-auto text-xs text-primary underline underline-offset-2 hover:no-underline"
                             >
                               View Profile

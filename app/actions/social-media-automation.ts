@@ -860,7 +860,28 @@ export async function getSocialMediaAnalytics(brokerageId: string, dateRange?: {
     const { data: posts } = await query
 
     const totalPosts = posts?.length || 0
-    
+
+    // REAL synced platform metrics (lib/social/analytics-sync.ts writes
+    // social_media_analytics, keyed on post_id). The legacy
+    // social_engagement_tracking rows are often empty — when a synced
+    // measurement exists for a post it WINS for impressions/engagement/clicks,
+    // so the tenant dashboard shows what the platforms actually reported.
+    const syncedByPost = new Map<string, { impressions: number; engagements: number; clicks: number }>()
+    if (totalPosts > 0) {
+      const { data: syncedRows } = await supabase
+        .from("social_media_analytics")
+        .select("post_id, impressions, engagements, clicks")
+        .eq("brokerage_id", brokerageId)
+        .in("post_id", (posts ?? []).map((p) => p.id))
+      for (const r of (syncedRows ?? []) as Array<{ post_id: string; impressions: number | null; engagements: number | null; clicks: number | null }>) {
+        syncedByPost.set(r.post_id, {
+          impressions: r.impressions ?? 0,
+          engagements: r.engagements ?? 0,
+          clicks: r.clicks ?? 0,
+        })
+      }
+    }
+
     // Aggregate engagement metrics
     let totalImpressions = 0
     let totalLikes = 0
@@ -868,31 +889,37 @@ export async function getSocialMediaAnalytics(brokerageId: string, dateRange?: {
     let totalShares = 0
     let totalClicks = 0
     let totalLeads = 0
+    let totalEngagement = 0
 
     const platformBreakdown: Record<string, { posts: number; impressions: number; engagement: number }> = {}
 
     posts?.forEach((post) => {
       const engagement = Array.isArray(post.engagement) ? post.engagement[0] : post.engagement
+      const synced = syncedByPost.get(post.id)
 
-      totalImpressions += engagement?.impressions_count || 0
+      const trackedEngagement =
+        (engagement?.likes_count || 0) +
+        (engagement?.comments_count || 0) +
+        (engagement?.shares_count || 0)
+      const postImpressions = synced ? synced.impressions : engagement?.impressions_count || 0
+      const postEngagement = synced && synced.engagements > 0 ? synced.engagements : trackedEngagement
+      const postClicks = synced && synced.clicks > 0 ? synced.clicks : engagement?.clicks_count || 0
+
+      totalImpressions += postImpressions
       totalLikes += engagement?.likes_count || 0
       totalComments += engagement?.comments_count || 0
       totalShares += engagement?.shares_count || 0
-      totalClicks += engagement?.clicks_count || 0
+      totalClicks += postClicks
       totalLeads += engagement?.leads_generated || 0
+      totalEngagement += postEngagement
 
       if (!platformBreakdown[post.platform]) {
         platformBreakdown[post.platform] = { posts: 0, impressions: 0, engagement: 0 }
       }
       platformBreakdown[post.platform].posts++
-      platformBreakdown[post.platform].impressions += engagement?.impressions_count || 0
-      platformBreakdown[post.platform].engagement +=
-        (engagement?.likes_count || 0) +
-        (engagement?.comments_count || 0) +
-        (engagement?.shares_count || 0)
+      platformBreakdown[post.platform].impressions += postImpressions
+      platformBreakdown[post.platform].engagement += postEngagement
     })
-
-    const totalEngagement = totalLikes + totalComments + totalShares
     const avgEngagementRate = totalImpressions > 0 ? (totalEngagement / totalImpressions) * 100 : 0
 
     const topPosts =

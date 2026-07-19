@@ -17,6 +17,9 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       // NOTE: agents work contacts — "My Leads", "Lead Acquisition", and "Lead Intelligence"
       // are intentionally excluded. Lead intake is admin/system; ISA qualification is system.
       { id: 'contacts', label: 'My Contacts', href: '/crm', icon: 'Users' },
+      // Tenant mirror of the round-31 staff portal-clients view: which of my
+      // contacts have client-portal access + pending invites.
+      { id: 'portal-clients', label: 'Portal Clients', href: '/crm/portal-clients', icon: 'DoorOpen' },
       { id: 'listings', label: 'My Listings', href: '/dashboard/listings', icon: 'Home' },
       { id: 'listing-health', label: 'Listing Health', href: '/dashboard/listings/health', icon: 'ShieldCheck' },
       { id: 'open-houses', label: 'Open Houses', href: '/dashboard/open-houses', icon: 'CalendarDays' },
@@ -114,6 +117,11 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'academy', label: 'Academy', href: '/academy', icon: 'BookOpen' },
       { id: 'help-support', label: 'Help & Support', href: '/dashboard/help', icon: 'LifeBuoy' },
       { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare' },
+      // Tier-parity: a solo-tier principal signs in as an agent — the Command Center
+      // (AI-teammate roster, earned autonomy, trust meter, QBR) is their room too.
+      // The page itself gates: non-principal staff agents are redirected to /dashboard.
+      { id: 'command-center', label: 'AI Command Center', href: '/dashboard/admin/command-center', icon: 'Bot' },
+      { id: 'intelligence-report', label: 'Monthly Intelligence Report', href: '/dashboard/intelligence-report', icon: 'Sparkles' },
       { id: 'divider2', divider: true },
       {
         id: 'ai-tools',
@@ -202,6 +210,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'dashboard', label: 'Broker Dashboard', href: '/dashboard/brokerage', icon: 'LayoutGrid' },
       { id: 'operations', label: 'Operations', href: '/dashboard/operations', icon: 'Activity' },
       { id: 'team', label: 'My Team', href: '/dashboard/team', icon: 'Users' },
+      { id: 'portal-clients', label: 'Portal Clients', href: '/crm/portal-clients', icon: 'DoorOpen' },
       { id: 'help-support', label: 'Help & Support', href: '/dashboard/help', icon: 'LifeBuoy' },
       { id: 'lead-intel', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
       { id: 'acquisition', label: 'Lead Acquisition', href: '/dashboard/acquisition', icon: 'Zap' },
@@ -211,6 +220,12 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'overdue', label: 'Overdue', href: '/dashboard/overdue', icon: 'AlertCircle' },
       { id: 'forms-library', label: 'Forms Library', href: '/dashboard/forms', icon: 'ClipboardList' },
       { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare', badgeKey: 'pending_approvals' },
+      // Tenant-parity: the Command Center (AI-teammate roster, earned autonomy, trust
+      // meter, QBR, autonomy-halt banner) had no nav entry for ANY role — reachable
+      // only from QBR email deep-links. It is the principal's room; link it.
+      { id: 'command-center', label: 'AI Command Center', href: '/dashboard/admin/command-center', icon: 'Bot' },
+      { id: 'voice-command', label: 'Voice Assistant', href: '/dashboard/voice', icon: 'Mic' },
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'divider1', divider: true },
       {
         id: 'intel',
@@ -252,6 +267,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
+          // Nav-parity: agents and team leads could reach Newsletters; the broker could not.
+          { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
           { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/admin/lead-magnets' },
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
@@ -398,6 +415,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'briefing', label: 'AI Briefing', href: '/dashboard/briefing', icon: 'Sparkles' },
       { id: 'dashboard', label: 'Admin Dashboard', href: '/dashboard/admin', icon: 'LayoutGrid' },
       { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
+      { id: 'portal-clients', label: 'Portal Clients', href: '/crm/portal-clients', icon: 'DoorOpen' },
       { id: 'onboarding', label: 'Agent Onboarding', href: '/dashboard/admin/onboarding', icon: 'UserPlus' },
       // Orphan-route sweep: onboarding-step editor was unreachable from any nav.
       { id: 'onboarding-steps', label: 'Onboarding Steps', href: '/dashboard/admin/onboarding-steps', icon: 'ListChecks' },
@@ -413,6 +431,10 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'manager-trust', label: 'Manager Trust', href: '/dashboard/admin/manager-trust', icon: 'ShieldCheck' },
       { id: 'support-tickets', label: 'Support Tickets', href: '/dashboard/admin/support-tickets', icon: 'LifeBuoy' },
       { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare', badgeKey: 'pending_approvals' },
+      // Tenant-parity: the Command Center had no nav entry for any role (see broker block).
+      { id: 'command-center', label: 'AI Command Center', href: '/dashboard/admin/command-center', icon: 'Bot' },
+      { id: 'voice-command', label: 'Voice Assistant', href: '/dashboard/voice', icon: 'Mic' },
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'divider1', divider: true },
       {
         id: 'intelligence',
@@ -455,6 +477,43 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'vendor-approvals', label: 'Vendor Approvals', href: '/dashboard/admin/vendor-approvals', icon: 'ShieldCheck' },
         ],
       },
+      {
+        // Tenant-parity: the admin persona is the OWNER seat for solo and brokerage
+        // tenants, yet had zero advertising nav — every marketing page exists and every
+        // tier's flag grants access, they were simply unreachable from this sidebar.
+        id: 'content',
+        label: 'Marketing & Content',
+        icon: 'Palette',
+        children: [
+          { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+          { id: 'market-intelligence', label: 'Market Intelligence', href: '/dashboard/marketing/intelligence' },
+          { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
+          { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
+          { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
+          { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
+          { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/admin/lead-magnets' },
+          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
+          { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
+          { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
+          { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
+          { id: 'competitors', label: 'Competitors', href: '/dashboard/marketing/competitors' },
+        ],
+      },
+      {
+        id: 'campaigns',
+        label: 'Campaigns',
+        icon: 'Megaphone',
+        children: [
+          { id: 'sequences', label: 'Automation Sequences', href: '/dashboard/campaigns/sequences' },
+          { id: 'workflow-builder', label: 'Workflow Builder', href: '/dashboard/campaigns/workflows' },
+          { id: 'workflow-reports', label: 'Workflow Reports', href: '/dashboard/campaigns/workflow-reports' },
+          { id: 'ads', label: 'Ad Campaigns', href: '/dashboard/campaigns/ads' },
+          { id: 'direct-mail', label: 'Direct Mail', href: '/dashboard/campaigns/mail' },
+          { id: 'repurpose', label: 'Repurpose Content', href: '/dashboard/campaigns/repurpose' },
+          { id: 'competitive', label: 'Competitive Intel', href: '/dashboard/campaigns/competitive' },
+          { id: 'roi', label: 'Campaign ROI', href: '/dashboard/campaigns/roi' },
+        ],
+      },
       { id: 'analytics', label: 'Analytics', href: '/analytics', icon: 'BarChart3' },
       { id: 'reports', label: 'Reports', href: '/dashboard/reports', icon: 'FileText' },
       { id: 'team-financials', label: 'Team Financials', href: '/dashboard/financials/team', icon: 'DollarSign' },
@@ -470,11 +529,16 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'sla-monitor', label: 'SLA Monitor', href: '/dashboard/admin/sla-monitor', icon: 'Clock' },
       { id: 'visitor-tracking', label: 'Visitor Tracking', href: '/dashboard/admin/visitor-tracking', icon: 'Eye' },
       { id: 'divider2', divider: true },
-      { id: 'billing', label: 'Billing', href: '/dashboard/superadmin/subscriptions', icon: 'CreditCard' },
+      // Tenant-parity fix: Billing pointed at the platform-gated superadmin console
+      // ("Forbidden" for every tenant principal). The tenant billing home is /dashboard/admin/billing.
+      { id: 'billing', label: 'Billing', href: '/dashboard/admin/billing', icon: 'CreditCard' },
       { id: 'usage-metrics', label: 'Usage Metrics', href: '/dashboard/admin/usage', icon: 'Activity' },
       { id: 'system-intel', label: 'System Intelligence', href: '/dashboard/system', icon: 'Radar' },
-      { id: 'system', label: 'System Health', href: '/dashboard/superadmin/observability', icon: 'HeartPulse' },
-      { id: 'logs', label: 'Audit Trail', href: '/dashboard/superadmin/audit-trail', icon: 'Eye' },
+      // Tenant-parity fix: System Health + Audit Trail pointed at platform-gated superadmin
+      // consoles (dead "Forbidden" links for tenant admins). System Intelligence
+      // (/dashboard/system, admin/broker-gated) already covers system health above;
+      // the tenant audit surface is /compliance/audits.
+      { id: 'logs', label: 'Audit Trail', href: '/compliance/audits', icon: 'Eye' },
       { id: 'ai-audit', label: 'AI Audit', href: '/dashboard/admin/ai-audit', icon: 'Sparkles' },
       { id: 'error-handler', label: 'Error Handler', href: '/dashboard/admin/error-handler', icon: 'AlertTriangle' },
       { id: 'whats-new', label: "What's New & Status", href: '/dashboard/whats-new', icon: 'Megaphone' },
@@ -487,13 +551,13 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     mobileBottomNav: [
       { id: 'dashboard', label: 'Dashboard', href: '/dashboard/admin', icon: 'LayoutGrid' },
       { id: 'onboarding', label: 'Onboarding', href: '/dashboard/admin/onboarding', icon: 'UserPlus' },
-      { id: 'system', label: 'System', href: '/dashboard/superadmin/observability', icon: 'Activity' },
+      { id: 'system', label: 'System', href: '/dashboard/system', icon: 'Activity' },
       { id: 'settings', label: 'Settings', href: '/settings', icon: 'Settings' },
     ],
     commandPaletteItems: [
       { id: 'briefing', label: 'AI Briefing', href: '/dashboard/briefing' },
-      { id: 'view-logs', label: 'View Audit Trail', href: '/dashboard/superadmin/audit-trail' },
-      { id: 'system-status', label: 'System Health', href: '/dashboard/superadmin/observability' },
+      { id: 'view-logs', label: 'View Audit Trail', href: '/compliance/audits' },
+      { id: 'system-status', label: 'System Health', href: '/dashboard/system' },
       { id: 'deal-health', label: 'Deal Health', href: '/dashboard/brokerage/deal-health' },
       { id: 'ai-quality', label: 'AI Quality', href: '/dashboard/ai-quality' },
       { id: 'workflows', label: 'Workflows', href: '/workflows' },
@@ -564,7 +628,10 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'comm-intel', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence', icon: 'Brain' },
       { id: 'approvals', label: 'Approvals Queue', href: '/approvals', icon: 'CheckSquare' },
       { id: 'ai-quality', label: 'AI Quality', href: '/dashboard/ai-quality', icon: 'Sparkles' },
-      { id: 'audit-trail', label: 'Platform Audit Trail', href: '/dashboard/superadmin/audit-trail', icon: 'Database' },
+      // Tenant-parity fix: "Platform Audit Trail" pointed at the superadmin-gated console —
+      // a dead "Forbidden" link for tenant compliance officers. AI Audit is their tenant-scoped
+      // audit surface (page allows compliance_officer); /compliance/audits covers the rest above.
+      { id: 'ai-audit', label: 'AI Audit', href: '/dashboard/admin/ai-audit', icon: 'Database' },
       { id: 'settings', label: 'Settings', href: '/compliance/settings', icon: 'Settings' },
     ],
     topNavItems: [
@@ -718,12 +785,19 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'briefing', label: 'AI Briefing', href: '/dashboard/briefing', icon: 'Sparkles' },
       { id: 'dashboard', label: 'Team Dashboard', href: '/dashboard/agent', icon: 'LayoutGrid' },
       { id: 'crm', label: 'CRM', href: '/crm', icon: 'Users' },
+      { id: 'portal-clients', label: 'Portal Clients', href: '/crm/portal-clients', icon: 'DoorOpen' },
       { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
       { id: 'agent-roster', label: 'My Team', href: '/dashboard/team', icon: 'UserCheck' },
       { id: 'team-heatmap', label: 'Team Heatmap', href: '/dashboard/team-heatmap', icon: 'Map' },
       { id: 'leaderboard', label: 'Leaderboard', href: '/dashboard/leaderboard', icon: 'Award' },
       { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare' },
+      // Tenant-parity: a team-tier principal (team lead) owns the subscription's
+      // operations — Command Center + Monthly Intelligence Report are their surfaces
+      // too (both pages already admit team leads via isTenancyPrincipal).
+      { id: 'command-center', label: 'AI Command Center', href: '/dashboard/admin/command-center', icon: 'Bot' },
+      { id: 'intelligence-report', label: 'Monthly Intelligence Report', href: '/dashboard/intelligence-report', icon: 'Sparkles' },
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'market-insights', label: 'Market Insights', href: '/dashboard/market-insights', icon: 'TrendingUp' },
       { id: 'divider1', divider: true },
       {
@@ -743,9 +817,27 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+          // Nav-parity: these marketing pages exist and are open to the team tier,
+          // but were unreachable from the team_lead sidebar.
+          { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'newsletters', label: 'Newsletters', href: '/newsletters/templates' },
+          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
+          { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
+          { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
+          { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
+          { id: 'competitors', label: 'Competitors', href: '/dashboard/marketing/competitors' },
+        ],
+      },
+      {
+        id: 'campaigns',
+        label: 'Campaigns',
+        icon: 'Megaphone',
+        children: [
+          { id: 'ads', label: 'Ad Campaigns', href: '/dashboard/campaigns/ads' },
+          { id: 'direct-mail', label: 'Direct Mail', href: '/dashboard/campaigns/mail' },
           { id: 'repurpose', label: 'Repurpose Content', href: '/dashboard/campaigns/repurpose' },
+          { id: 'roi', label: 'Campaign ROI', href: '/dashboard/campaigns/roi' },
         ],
       },
       {
@@ -756,6 +848,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'outreach', label: 'AI Outreach', href: '/dashboard/communications/outreach' },
           { id: 'sequences', label: 'Automation Sequences', href: '/dashboard/campaigns/sequences' },
           { id: 'intelligence', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence' },
+          { id: 'voice-command', label: 'Voice Assistant', href: '/dashboard/voice' },
         ],
       },
       {

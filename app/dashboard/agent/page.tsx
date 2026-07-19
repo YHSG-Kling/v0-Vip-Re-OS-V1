@@ -8,6 +8,7 @@ import { generateDailyGameplan } from "@/app/actions/copilot"
 import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTransactions, getUserTypeBrief } from "@/app/actions/briefing-actions"
 import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
 import BudgetWarningBanner from "@/app/components/shell/budget-warning-banner"
+import AutonomyHaltNotice from "@/app/components/shell/autonomy-halt-notice"
 import type { UserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 import { getUpcomingAnniversaries } from "@/app/actions/lifetime-customers"
 import { getCommissionRecords, getExpenses } from "@/app/actions/ai-financial-management"
@@ -435,6 +436,9 @@ export default function AgentDashboard() {
 
         {/* Role-aware setup readiness — what the agent still needs to configure to sell */}
         <SetupReadinessCardClient />
+
+        {/* Staff autonomy halt — honest "your AI team is paused" notice (renders only when halted) */}
+        <AutonomyHaltNotice />
 
         {/* Usage warning — generic, superadmin-gated (no vendor names / amounts) */}
         <BudgetWarningBanner />
