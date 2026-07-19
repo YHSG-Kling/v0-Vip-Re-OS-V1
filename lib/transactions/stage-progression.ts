@@ -285,6 +285,55 @@ export async function advanceStage(params: {
     } catch (e) {
       console.error("[stage-progression] buyer move-case ensure failed:", e)
     }
+
+    // ── Proactive closing-cost push (Deal Coordinator) ────────────────────────
+    // The buyer closing-cost estimator + portal card (BuyerClosingCostsCard on
+    // /portal/[contactId]/transaction/[transactionId]) already exist, but nothing pushed them —
+    // entering CLOSING_PREP is exactly when "what do I actually bring to closing?" becomes the
+    // buyer's live question. Propose a GATED client message (proposeClientMessage — a human
+    // approves; nothing auto-sends) deep-linking the existing card. Idempotent per transaction
+    // via the rationale tag. Buyer-side only: skipped when we don't represent the buyer
+    // (deal_type seller/sale) or the deal has no price yet — the card itself renders nothing
+    // without a price, so we never push a hollow estimate. Best-effort, never blocks the advance.
+    try {
+      const { data: txForCosts } = await supabase
+        .from("transactions")
+        .select("buyer_contact_id, contact_id, purchase_price, deal_type, property_address")
+        .eq("id", params.transactionId)
+        .eq("brokerage_id", params.brokerageId)
+        .maybeSingle()
+      const buyerContactId = (txForCosts?.buyer_contact_id ?? txForCosts?.contact_id ?? null) as string | null
+      const dealType = String(txForCosts?.deal_type ?? "")
+      const price = Number(txForCosts?.purchase_price ?? 0)
+      const costsTag = `[CLOSING_COSTS_READY] [${params.transactionId}]`
+      if (buyerContactId && Number.isFinite(price) && price > 0 && dealType !== "seller" && dealType !== "sale") {
+        const { data: dupMsg } = await supabase
+          .from("agent_client_messages")
+          .select("id")
+          .eq("brokerage_id", params.brokerageId)
+          .ilike("rationale", `%${costsTag}%`)
+          .limit(1)
+          .maybeSingle()
+        if (!dupMsg) {
+          const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+          await proposeClientMessage({
+            brokerageId: params.brokerageId,
+            agentKind: "deal_coordinator",
+            entityType: "transaction",
+            entityId: params.transactionId,
+            recipientContactId: buyerContactId,
+            audience: "buyer",
+            subject: "Your estimated closing costs are ready",
+            body: `Your estimated closing costs are ready — a plain-numbers breakdown of what to plan for beyond your down payment${txForCosts?.property_address ? ` on ${txForCosts.property_address}` : ""}. Walk through them before closing day so nothing at the table is a surprise: open your deal page at /portal/${buyerContactId}/transaction/${params.transactionId} and look for "Your closing costs, in plain numbers." Questions on any line? Just reply — happy to go through it together.`,
+            rationale: `${costsTag} — the deal entered closing prep; the buyer's closing-cost estimate card is live on their portal and this is the moment they need it. Drafted for approval, never auto-sent.`,
+            channel: "portal",
+            outreachReason: "milestone_update",
+          })
+        }
+      }
+    } catch (e) {
+      console.error("[stage-progression] closing-cost push propose failed:", e)
+    }
   } else if (params.targetStage === "CLOSED") {
     // Trigger final commission calculation
     const { calculateCommission } = await import("@/lib/commission/engine")

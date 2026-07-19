@@ -386,6 +386,28 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     nextStep: "Financing moves toward final approval.",
     chatBody: "The appraisal is in — let's review the results together.",
   },
+  // Appraisal came in BELOW the contract price — the moment deals die quietly. Calm,
+  // specific, paths-forward framing; severity phrasing arrives via the {gap_framing}
+  // token (computed by the emitter, scales with the % gap) so a 1% shortfall never
+  // reads like a 10% one. Buyer gets the "here are the paths forward" card; on inside
+  // (dual) deals the seller side gets the seller-appropriate version — audience gating
+  // means an unrepresented side simply has no contact to post to.
+  [KernelEvent.APPRAISAL_GAP_DETECTED]: {
+    title: "Appraisal came in at {appraisal_value_fmt}",
+    plainLanguageSummary:
+      "The appraisal came in at {appraisal_value_fmt} vs the {contract_price_fmt} contract price — {gap_framing} of {gap_amount_fmt}. This is a known, workable moment with established paths forward: renegotiate the price, cover part of the difference, or challenge the appraisal with stronger comps. Your agent is already on it and will walk you through which path fits your deal.",
+    responsibleParty: "agent",
+    nextStep: "Review the paths forward with your agent before the appraisal-contingency deadline.",
+    chatBody: "The appraisal came in at {appraisal_value_fmt} against the {contract_price_fmt} contract — there are clear paths forward and I'm already on it. Let's talk through the options.",
+    perRole: {
+      seller: {
+        title: "The buyer's appraisal came in at {appraisal_value_fmt}",
+        plainLanguageSummary:
+          "The buyer's appraisal came in at {appraisal_value_fmt} vs the {contract_price_fmt} contract price — {gap_framing} of {gap_amount_fmt}. Deals regularly work through this: the price can be revisited, the buyer can cover part of the difference, or the appraisal can be challenged with stronger comps. Your agent will walk you through the options and what each means for your net.",
+        chatBody: "Heads-up — the buyer's appraisal came in at {appraisal_value_fmt} against the {contract_price_fmt} contract. There are several ways through this; let's talk options.",
+      },
+    },
+  },
   [KernelEvent.FINANCING_CLEAR_TO_CLOSE]: {
     title: "You're clear to close!",
     plainLanguageSummary:

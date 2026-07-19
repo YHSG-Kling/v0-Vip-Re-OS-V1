@@ -147,14 +147,20 @@ export interface DealNoteFacts {
 }
 
 /** PURE: the deal-note brief. Returns null when the OS holds NOTHING to
- *  report (no loan state, no dates) — never a hollow note. */
-export function dealNoteBrief(f: DealNoteFacts): StoryBrief | null {
+ *  report (no loan state, no dates) — never a hollow note.
+ *  ONE composer, two audiences (keep-one, no fork): the default "buyer" note is
+ *  second-person on the loan; audience "seller" reframes the SAME facts for the
+ *  other side of a dual-represented deal — the buyer's financing progress toward
+ *  THEIR sale, never "your loan". */
+export function dealNoteBrief(f: DealNoteFacts, audience: "buyer" | "seller" = "buyer"): StoryBrief | null {
   const hasLoan = !!(f.loanStatus && LOAN_CLIENT_LANGUAGE[f.loanStatus])
   if (!hasLoan && f.upcoming.length === 0) return null
   const facts: string[] = []
   if (f.address) facts.push(`Property: ${f.address}.`)
   if (hasLoan) {
-    facts.push(`Loan status (use this exact client-language framing): "${LOAN_CLIENT_LANGUAGE[f.loanStatus!]}"${f.loanStatus === "clear_to_close" && f.clearToCloseDate ? ` (recorded ${f.clearToCloseDate})` : ""}.`)
+    facts.push(audience === "buyer"
+      ? `Loan status (use this exact client-language framing): "${LOAN_CLIENT_LANGUAGE[f.loanStatus!]}"${f.loanStatus === "clear_to_close" && f.clearToCloseDate ? ` (recorded ${f.clearToCloseDate})` : ""}.`
+      : `The BUYER'S financing status — reframe in third person for the seller (the buyer-language version is "${LOAN_CLIENT_LANGUAGE[f.loanStatus!]}"; the seller hears what the buyer's lender progress means for THEIR sale — e.g. "the buyer's loan is in underwriting, a normal step toward your closing" — never "your loan")${f.loanStatus === "clear_to_close" && f.clearToCloseDate ? ` (recorded ${f.clearToCloseDate})` : ""}.`)
   }
   if (f.upcoming.length > 0) {
     facts.push(`Upcoming dates: ${f.upcoming.slice(0, 3).map((m) => `${m.name.replace(/_/g, " ")}${m.date ? ` on ${m.date}` : ""}`).join("; ")}.`)
@@ -163,17 +169,27 @@ export function dealNoteBrief(f: DealNoteFacts): StoryBrief | null {
     ? `The team is working ${f.openTaskCount} open item(s) behind the scenes; nothing is currently waiting on the client — say that calmly and that they'll hear first if it changes.`
     : `Nothing is waiting on the client right now — close on that reassurance.`)
   return {
-    goal: "the weekly all-parties status note on an active deal — where everything stands, in the client's language",
-    audience: "buyer",
-    situation: `Client under contract${f.address ? ` on ${f.address}` : ""}; the most nervous stretch of the deal — calm, specific, zero jargon.`,
+    goal: audience === "buyer"
+      ? "the weekly all-parties status note on an active deal — where everything stands, in the client's language"
+      : "the weekly all-parties status note to the SELLER on their sale — where the buyer's side stands and what it means for their closing, in the seller's language",
+    audience,
+    situation: audience === "buyer"
+      ? `Client under contract${f.address ? ` on ${f.address}` : ""}; the most nervous stretch of the deal — calm, specific, zero jargon.`
+      : `Home seller under contract${f.address ? ` on ${f.address}` : ""}; waiting on the buyer's due diligence + financing — calm, specific, zero jargon.`,
     facts,
     recipientFirstName: f.clientFirstName,
   }
 }
 
-/** PURE: per-deal-per-week dedupe tag. */
+/** PURE: per-deal-per-week dedupe tag (buyer/primary-client side). */
 export function dealWeeklyTag(transactionId: string, isoWeek: string): string {
   return `[TC_WEEKLY] [${transactionId}] [${isoWeek}]`
+}
+
+/** PURE: per-deal-per-week dedupe tag for the SELLER side of a dual-represented
+ *  deal — separate tag so each side dedupes independently. */
+export function dealWeeklySellerTag(transactionId: string, isoWeek: string): string {
+  return `[TC_WEEKLY_SELLER] [${transactionId}] [${isoWeek}]`
 }
 
 // ── 4. Buyer weekly search story (the RealScout counter — authored, not a blast) ──
@@ -373,47 +389,97 @@ export async function runWeeklyDealNotes(svc: Svc, brokerageId: string, now: Dat
   const isoWeek = isoWeekOf(now)
 
   const { data: txs } = await svc.from("transactions")
-    .select("id, property_address, buyer_contact_id, contact_id, status")
+    .select("id, property_address, buyer_contact_id, contact_id, seller_contact_id, listing_id, status")
     .eq("brokerage_id", brokerageId).in("status", ["under_contract", "closing"]).limit(200)
   for (const tx of ((txs ?? []) as any[])) {
     const clientId = tx.buyer_contact_id ?? tx.contact_id
-    if (!clientId) continue
+    // Distinct seller contact on a dual-represented deal — the side that used to
+    // get NOTHING post-listing from this rail.
+    const sellerId: string | null =
+      tx.seller_contact_id && tx.seller_contact_id !== clientId ? tx.seller_contact_id : null
+    if (!clientId && !sellerId) continue
     out.scanned++
     const tag = dealWeeklyTag(tx.id, isoWeek)
-    if (await alreadyProposed(svc, brokerageId, tag)) continue
+    const sellerTag = dealWeeklySellerTag(tx.id, isoWeek)
+    // Each side dedupes on its OWN tag, so a retry after a partial week never
+    // skips the side that didn't land.
+    const needBuyer = !!clientId && !(await alreadyProposed(svc, brokerageId, tag))
+    let needSeller  = !!sellerId && !(await alreadyProposed(svc, brokerageId, sellerTag))
 
-    const [{ data: client }, { data: lender }, { data: milestones }, { count: openTasks }] = await Promise.all([
-      svc.from("contacts").select("first_name").eq("id", clientId).maybeSingle(),
+    // DE-CONFLICT with the listing-side weekly seller update: the seller-updates cron
+    // (app/api/cron/seller-updates) selects listings with lifecycle_stage IN
+    // ('active','under_contract') — when this transaction's listing is in that selection
+    // set the seller is already getting the weekly listing-activity update, so we skip
+    // rather than double-note. Detection = the cron's own selection predicate (the same
+    // lifecycle_stage filter it queries on), not a guess about what it might have sent.
+    if (needSeller && tx.listing_id) {
+      const { data: lst } = await svc.from("listings").select("lifecycle_stage")
+        .eq("id", tx.listing_id).maybeSingle()
+      const stage = String((lst as any)?.lifecycle_stage ?? "")
+      if (stage === "active" || stage === "under_contract") needSeller = false
+    }
+    if (!needBuyer && !needSeller) continue
+
+    const [{ data: lender }, { data: milestones }, { count: openTasks }] = await Promise.all([
       svc.from("transaction_lenders").select("underwriting_status, clear_to_close_date").eq("transaction_id", tx.id).limit(1).maybeSingle(),
       svc.from("transaction_milestones").select("milestone_name, target_date").eq("transaction_id", tx.id).eq("status", "pending").order("target_date", { ascending: true }).limit(3),
       svc.from("tasks").select("id", { count: "exact", head: true }).eq("transaction_id", tx.id).eq("status", "pending"),
     ])
-    const brief = dealNoteBrief({
-      clientFirstName: (client as any)?.first_name ?? null,
+    // Same grounded facts for both sides; the composer reframes per audience.
+    const sharedFacts = {
       address: tx.property_address ?? null,
       loanStatus: (lender as any)?.underwriting_status ?? null,
       clearToCloseDate: (lender as any)?.clear_to_close_date ?? null,
       upcoming: ((milestones ?? []) as any[]).map((m) => ({ name: m.milestone_name ?? "next step", date: m.target_date ?? null })),
       openTaskCount: openTasks ?? 0,
-    })
-    if (!brief) continue // the OS holds nothing to report — never a hollow note
-    const draft = await authorStory(brief)
-    if (!draft) { out.skippedNoCopy++; continue }
+    }
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
-    const r = await proposeClientMessage({
-      brokerageId,
-      agentKind: "deal_coordinator",
-      entityType: "transaction",
-      entityId: tx.id,
-      recipientContactId: clientId,
-      audience: tx.buyer_contact_id ? "buyer" : "seller",
-      subject: draft.subject,
-      body: draft.body,
-      rationale: `weekly deal note — the all-parties status in the client's language. ${tag}`,
-      channel: "portal",
-      outreachReason: "relationship_maintenance",
-    }, svc as any)
-    if (r.ok) out.proposed++
+
+    if (needBuyer) {
+      const { data: client } = await svc.from("contacts").select("first_name").eq("id", clientId).maybeSingle()
+      const brief = dealNoteBrief({ ...sharedFacts, clientFirstName: (client as any)?.first_name ?? null })
+      if (!brief) continue // the OS holds nothing to report — never a hollow note (for either side)
+      const draft = await authorStory(brief)
+      if (draft) {
+        const r = await proposeClientMessage({
+          brokerageId,
+          agentKind: "deal_coordinator",
+          entityType: "transaction",
+          entityId: tx.id,
+          recipientContactId: clientId,
+          audience: tx.buyer_contact_id ? "buyer" : "seller",
+          subject: draft.subject,
+          body: draft.body,
+          rationale: `weekly deal note — the all-parties status in the client's language. ${tag}`,
+          channel: "portal",
+          outreachReason: "relationship_maintenance",
+        }, svc as any)
+        if (r.ok) out.proposed++
+      } else out.skippedNoCopy++
+    }
+
+    if (needSeller && sellerId) {
+      const { data: sellerContact } = await svc.from("contacts").select("first_name").eq("id", sellerId).maybeSingle()
+      const sellerBrief = dealNoteBrief({ ...sharedFacts, clientFirstName: (sellerContact as any)?.first_name ?? null }, "seller")
+      if (!sellerBrief) continue
+      const sellerDraft = await authorStory(sellerBrief)
+      if (sellerDraft) {
+        const r = await proposeClientMessage({
+          brokerageId,
+          agentKind: "deal_coordinator",
+          entityType: "transaction",
+          entityId: tx.id,
+          recipientContactId: sellerId,
+          audience: "seller",
+          subject: sellerDraft.subject,
+          body: sellerDraft.body,
+          rationale: `weekly deal note (seller side) — the same all-parties status, reframed for the seller of a dual-represented deal. ${sellerTag}`,
+          channel: "portal",
+          outreachReason: "relationship_maintenance",
+        }, svc as any)
+        if (r.ok) out.proposed++
+      } else out.skippedNoCopy++
+    }
   }
   return out
 }

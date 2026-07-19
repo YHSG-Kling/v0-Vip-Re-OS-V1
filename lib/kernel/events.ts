@@ -195,6 +195,9 @@ export enum KernelEvent {
   EARNEST_MONEY_MILESTONE_COMPLETED   = 'earnest_money_milestone_completed',
   APPRAISAL_ORDERED                   = 'appraisal_ordered',
   APPRAISAL_COMPLETED                 = 'appraisal_completed',
+  /** Appraisal came in BELOW the contract price — the silent deal-killer moment.
+   *  Emitted by the appraisal-complete path when appraisal_value < purchase_price. */
+  APPRAISAL_GAP_DETECTED              = 'appraisal_gap_detected',
   FINANCING_CLEAR_TO_CLOSE            = 'financing_clear_to_close',
   CDA_GENERATED                       = 'cda_generated',
   CDA_APPROVED                        = 'cda_approved',
