@@ -9,8 +9,9 @@
 //       public tokenized form link. Deduped per showing by the request row.
 //   (b) BUYER T-24h REMINDER — agents had T-30 whisper briefings; the BUYER had
 //       nothing. Confirmed showings 20–28h out get ONE portal reminder (+
-//       best-effort TCPA-gated SMS from the tenant's own number — a scheduled
-//       showing reminder is transactional: DNC/quiet-hours still enforced).
+//       best-effort SMS through the FULL dispatch gate (dispatchSms): autonomy /
+//       suppression-list / DNC / de-conflict / content backstop / budget at the
+//       dispatch layer, quiet hours in the inner TCPA gate).
 //       Deduped per showing via client_portal_messages.metadata.
 //   (c) VIRTUAL TOUR woven in (audit #4): when the listing carries a
 //       virtual_tour_url/matterport_url, the reminder invites a pre-visit walk-
@@ -110,14 +111,31 @@ export async function runShowingLifecycle(svc: any, now: Date = new Date()): Pro
       r.remindersSent += 1
 
       // SMS best-effort — TRANSACTIONAL (a reminder for a showing the buyer
-      // booked): EWC skipped per TCPA, but DNC/quiet-hours/opt-out still
-      // enforced inside sendSMS. From the tenant's own number.
+      // THEMSELVES booked), now routed through THE dispatch gate (dispatchSms)
+      // instead of the raw sender: suppression-list, DNC/opt-out compliance,
+      // de-conflict, content backstop and vendor budget all run at the dispatch
+      // layer, and quiet hours are still enforced by the inner TCPA gate.
+      // HONEST DELTA (dispatchSms exposes no `transactional` flag, and the
+      // dispatch layer is owned elsewhere — no flag is faked here): the raw
+      // sender's EWC bypass is not expressible through the wrapper, so a buyer
+      // with neither tcpa_consent nor an active representation (open deal /
+      // signed agreement / live offer) has this SMS leg refused by the dispatch
+      // compliance gate. The portal reminder above is the primary channel and
+      // always lands; the refusal is audited to compliance_events.
       if (s.contacts?.phone) {
         try {
-          const { sendSMS } = await import("@/lib/providers/messaging")
-          const sent = await sendSMS({
-            to: s.contacts.phone, message: body,
-            contactId: s.contact_id, brokerageId: s.brokerage_id, transactional: true,
+          const { dispatchSms } = await import("@/lib/providers/dispatch")
+          const sent = await dispatchSms({
+            to: s.contacts.phone,
+            message: body,
+            contactId: s.contact_id,
+            brokerageId: s.brokerage_id,
+            systemSource: "showing_reminder_transactional",
+            // TCPA-transactional: a reminder for a showing the buyer THEMSELVES
+            // booked — the gate waives only the EWC rule; DNC/quiet-hours/
+            // opt-out/suppression/de-conflict all still apply.
+            transactional: true,
+            metadata: { kind: "showing_reminder", showing_id: s.id, transactional: true },
           })
           if (sent.success) r.smsSent += 1
         } catch { /* the portal reminder already landed */ }

@@ -449,6 +449,15 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
 export interface DispatchSmsParams extends DispatchActorContext {
   to: string
   message: string
+  /**
+   * TCPA-transactional send (e.g. a reminder for a showing the recipient
+   * THEMSELVES booked): relaxes the express-written-consent rule the same way
+   * the inner sendSMS transactional contract did, while every other gate —
+   * suppression list, DNC, quiet hours, opt-out, de-conflict, content safety,
+   * budget — still applies. Set ONLY for genuinely recipient-initiated
+   * transactional moments; never for marketing or outreach.
+   */
+  transactional?: boolean
   metadata?: Record<string, unknown>
 }
 
@@ -499,7 +508,13 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
         },
       })
 
-      if (!complianceResult.allowed) {
+      // Transactional carve-out: a consent-rule refusal is waived for
+      // recipient-initiated transactional sends (TCPA treats these as outside
+      // EWC) — every OTHER refusal reason still blocks.
+      const onlyConsentRefusal =
+        params.transactional === true &&
+        complianceResult.primaryReason === "no_tcpa_consent"
+      if (!complianceResult.allowed && !onlyConsentRefusal) {
         console.warn(
           `[Dispatch] SMS blocked for ${recipientId}: ${complianceResult.primaryReason}`
         )
@@ -551,10 +566,15 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
   })
   if (smsBudget.refusal) return smsBudget.refusal
 
-  // Only Twilio is supported for SMS today
+  // Only Twilio is supported for SMS today. contactId/brokerageId/transactional
+  // are forwarded so the inner TCPA gate keeps full attribution and applies its
+  // own transactional contract (DNC/quiet-hours/opt-out always enforced).
   const raw = await messagingSendSMS({
     to: params.to,
     message: params.message,
+    contactId: params.contactId,
+    brokerageId: params.brokerageId,
+    transactional: params.transactional,
   })
 
   const result: DispatchResult = {

@@ -34,7 +34,9 @@ const ALLOWLIST: Record<string, { cls: Class; why: string }> = {
   "app/actions/instant-property-alerts.ts":     { cls: "gated-inline", why: "buyer alerts check opt-out / consent inline before send" },
   "app/api/agent-assistant/tool-call/route.ts": { cls: "gated-inline", why: "voice admin tool-call checks consent/opt-out inline before any send" },
   "app/api/cron/weekly-income-digest/route.ts": { cls: "non-client", why: "agent-facing weekly digest (to the user themselves, not a client)" },
-  "lib/kernel/showing-lifecycle.ts":            { cls: "gated-inline", why: "T-24h reminder for a showing the buyer THEMSELVES booked (transactional per TCPA: EWC skipped but DNC/quiet-hours/opt-out enforced inside sendSMS); one per showing, metadata-deduped" },
+  // showing-lifecycle.ts fell OFF this list in round 27 — its reminder now
+  // routes through dispatchSms (THE gate) with the transactional flag, so it
+  // no longer touches the raw senders at all.
   "lib/voice/twilio-voice.ts":                  { cls: "gated-inline", why: "confirmation card for a booking/RSVP the caller THEMSELVES made on a live AI call (transactional per TCPA — same class as the showing-lifecycle reminder; DNC/quiet-hours/opt-out enforced inside sendSMS; best-effort, one per outcome)" },
   "lib/billing/dunning.ts":                     { cls: "b2b-transactional", why: "dunning email to the TENANT billing admin (the platform own customer, past-due recovery, not consumer marketing; SendGrid-gated, one step per episode via platform_dunning_events)" },
   "lib/platform/prospect-followup.ts":          { cls: "b2b-transactional", why: "the platform's own speed-to-lead to a B2B prospect who RAISED THEIR HAND (site form / phone reception / consented capture — never a cold consumer); platform suppression list enforced as a hard boundary; intro + exactly ONE day-3 nudge ('ignore this and we won't keep nudging'), then permanent silence; failed sends never fake a contacted stamp; every send audited to superadmin_audit_log" },

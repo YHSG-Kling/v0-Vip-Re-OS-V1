@@ -123,6 +123,76 @@ Additional notes: ${additionalNotes || "none"}`,
     // 5. Call aiAnalyzeShowingFeedback (non-blocking)
     aiAnalyzeShowingFeedback(requestId).catch(() => {})
 
+    // 5b. BUYER ACK LOOP-BACK — close the loop in the SAME portal thread the
+    //     feedback ask rode (client_portal_messages, agent_to_client). Before
+    //     this, the buyer's submission vanished into agent-side analytics with
+    //     nothing back. Idempotent per feedback submission (metadata-deduped by
+    //     feedback_request_id); AI-authored in the tenant's brand voice with a
+    //     deterministic fallback; portal-native ONLY — no email/SMS.
+    try {
+      const { data: ackShowing } = await supabase
+        .from("showings")
+        .select("contact_id, agent_id, listings(address)")
+        .eq("id", fbReq.showing_id)
+        .maybeSingle()
+
+      // agent_id is NOT NULL on client_portal_messages; contact_id keys the thread.
+      if (ackShowing?.contact_id && ackShowing.agent_id) {
+        const { data: alreadyAcked } = await supabase
+          .from("client_portal_messages")
+          .select("id")
+          .eq("contact_id", ackShowing.contact_id)
+          .contains("metadata", { kind: "showing_feedback_ack", feedback_request_id: requestId })
+          .limit(1)
+          .maybeSingle()
+
+        if (!alreadyAcked) {
+          const ackAddress =
+            (ackShowing as { listings?: { address?: string | null } | null }).listings?.address ??
+            "the home you toured"
+          // Deterministic fallback — always valid, never blocks on the LLM.
+          let ackBody = `Got it — thanks for the feedback on ${ackAddress}. This helps us zero in on the right home.`
+          try {
+            const { loadBrandVoicePrompt } = await import("@/lib/ai-isa/brand-voice-prompt")
+            const voice = await loadBrandVoicePrompt({
+              brokerageId: fbReq.brokerage_id,
+              agentId: ackShowing.agent_id,
+            })
+            const ack = await generateAIResponse({
+              system: voice.systemBlock,
+              prompt: `A buyer just submitted showing feedback for ${ackAddress} through their client portal. Write ONE short, warm acknowledgment (1–2 sentences, plain text, no subject line, no signature, no emojis) thanking them and letting them know their feedback helps their agent zero in on the right home for them. Do not ask questions, do not request anything, do not mention ratings or scores.`,
+              metadata: {
+                userId: "system",
+                brokerageId: fbReq.brokerage_id,
+                feature: "client_communication",
+              },
+            })
+            const text = (ack.text ?? "").trim().replace(/\s+/g, " ")
+            // Guardrails: only adopt a plausibly-sized, non-empty draft.
+            if (text.length >= 20 && text.length <= 400) ackBody = text
+          } catch {
+            // Brand-voice draft unavailable — the deterministic ack stands.
+          }
+
+          await supabase.from("client_portal_messages").insert({
+            contact_id: ackShowing.contact_id,
+            brokerage_id: fbReq.brokerage_id,
+            agent_id: ackShowing.agent_id,
+            direction: "agent_to_client",
+            channel: "portal",
+            body: ackBody,
+            metadata: {
+              kind: "showing_feedback_ack",
+              showing_id: fbReq.showing_id,
+              feedback_request_id: requestId,
+            },
+          })
+        }
+      }
+    } catch {
+      // Ack is best-effort — the feedback submission itself already succeeded.
+    }
+
     // 6. Recalculate showing_analytics for this listing
     const { data: listing } = await supabase
       .from("showings")
