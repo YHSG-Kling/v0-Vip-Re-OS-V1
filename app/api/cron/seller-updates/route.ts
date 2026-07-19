@@ -32,6 +32,7 @@ export async function GET(req: NextRequest) {
   const errors: string[] = []
   let processed = 0
   let skipped = 0
+  let marketingCards = 0
 
   try {
     // Pick active / under-contract listings whose most recent seller-update
@@ -117,6 +118,26 @@ export async function GET(req: NextRequest) {
             }
           }
 
+          // MARKETING RECEIPT — the consolidated "what your team's marketing DID this week"
+          // portal card for the seller (published social posts + completed promo videos,
+          // one card per listing per week — the helper carries its own weekly dedupe).
+          // Autonomous by design (the tour-recap portal-card idiom); best-effort, never
+          // blocks the seller-update rail itself.
+          if (sellerContactId) {
+            try {
+              const { pushWeeklyMarketingCard } = await import("@/lib/kernel/listing-marketing-week")
+              const receipt = await pushWeeklyMarketingCard({
+                brokerageId: listing.brokerage_id,
+                listingId: listing.id,
+                sellerContactId,
+                address: propertyAddress || "your listing",
+              }, supabase)
+              if (receipt.pushed) marketingCards++
+            } catch (err) {
+              console.warn(`[seller-updates] marketing receipt failed for ${listing.id}:`, err)
+            }
+          }
+
           processed++
         } catch (err: any) {
           skipped++
@@ -133,8 +154,8 @@ export async function GET(req: NextRequest) {
   }
 
   if (errors.length === 0) {
-    await recordCronSuccessAction({ context_id: contextId, records_processed: processed, metadata: { ranAt, skipped, errors } })
+    await recordCronSuccessAction({ context_id: contextId, records_processed: processed, metadata: { ranAt, skipped, marketingCards, errors } })
   }
 
-  return NextResponse.json({ ok: errors.length === 0, ranAt, processed, skipped, errors })
+  return NextResponse.json({ ok: errors.length === 0, ranAt, processed, skipped, marketingCards, errors })
 }

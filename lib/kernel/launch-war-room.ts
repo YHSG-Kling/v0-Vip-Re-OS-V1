@@ -15,6 +15,16 @@
 //
 // Nothing publishes: every draft is gated, the open house is unpublished, the farm awaits
 // seller permission. One War Room per listing. NOT server-only.
+//
+// THE SELLER IS IN THE ROOM TOO — a launch the seller never hears about is a launch that
+// didn't happen, as far as they know. When the listing has a linked seller contact
+// (seller_contact_id ?? contact_id), the war room ALSO:
+//   (a) pushes an AUTONOMOUS portal value card (the tour-recap idiom, transparency_updates)
+//       listing the REAL artifacts staged THIS run — never invented, honesty over noise; and
+//   (b) PROPOSES a warm agent-voiced launch summary through the client-message gate
+//       (audience 'seller', channel 'portal', AI-authored via generateClientMessage with the
+//       deterministic composeSellerLaunch copy as the fallback floor). Approval-first.
+// Both ride the war room's own once-per-listing guard for idempotency.
 
 import { createServiceClient } from "@/lib/supabase/service"
 import type { NeighborScraper } from "@/lib/kernel/neighbor-farm"
@@ -37,6 +47,43 @@ export function composeLaunch(address: string, city: string | null, comingSoon: 
   }
 }
 
+/** What THIS run actually staged for one listing — the only facts the seller card may state. */
+export interface StagedLaunchArtifacts {
+  reelQueued: boolean
+  capturePage: boolean
+  channels: number
+  openHouseProposed: boolean
+  neighborFarm: boolean
+  geoAd: boolean
+}
+
+/**
+ * Pure: the seller-facing launch card — title + summary built ONLY from what the run
+ * really staged (empty `lines` = nothing real to say = no card). Also the deterministic
+ * fallback floor for the AI-authored gated proposal.
+ */
+export function composeSellerLaunch(
+  address: string,
+  comingSoon: boolean,
+  a: StagedLaunchArtifacts,
+): { title: string; summary: string; lines: string[] } {
+  const lines: string[] = []
+  if (a.reelQueued) lines.push("a launch video reel is in production")
+  if (a.capturePage) lines.push('a QR-coded "be first to see it" page is ready for curious buyers')
+  if (a.channels > 0) lines.push(`${a.channels} marketing draft${a.channels === 1 ? "" : "s"} across social, email, newsletter and blog are written`)
+  if (a.openHouseProposed) lines.push("an open-house plan is drafted (your agent picks the date)")
+  if (a.neighborFarm) lines.push("a neighborhood announcement campaign is prepared")
+  if (a.geoAd) lines.push("a local ad campaign is drafted")
+  const title = comingSoon
+    ? `Your launch is underway — here's what your team staged today`
+    : `Your listing is live — here's what your team staged today`
+  const summary =
+    `Your team convened a launch war room for ${address} today: ` +
+    lines.join("; ") +
+    `. Nothing goes public until your agent reviews and approves each piece.`
+  return { title, summary, lines }
+}
+
 export interface LaunchResult {
   launches: number
   reels: number
@@ -49,6 +96,10 @@ export interface LaunchResult {
   neighborFarms: number
   adsStaged: number
   summariesProposed: number
+  /** Autonomous "your listing launched" portal value cards pushed to linked sellers. */
+  sellerLaunchCards: number
+  /** Gated (audience 'seller') warm launch summaries proposed through the client-message gate. */
+  sellerLaunchProposals: number
 }
 
 /**
@@ -64,12 +115,13 @@ export async function runLaunchWarRoom(
   const now = opts.now ?? new Date()
   const result: LaunchResult = {
     launches: 0, reels: 0, capturePagesStaged: 0, channelsStaged: 0, openHousesProposed: 0, neighborFarms: 0, adsStaged: 0, summariesProposed: 0,
+    sellerLaunchCards: 0, sellerLaunchProposals: 0,
   }
 
   // onlyListingId → the ON-DEMAND path (the Deal Play convenes the room for ONE
   // listing from its detail page); default remains the brokerage-wide sweep.
   let q = supabase.from("listings")
-    .select("id, address, city, status, agent_id, created_at").eq("brokerage_id", brokerageId)
+    .select("id, address, city, status, agent_id, seller_contact_id, contact_id, created_at").eq("brokerage_id", brokerageId)
     .in("status", ["coming_soon", "active"]).order("created_at", { ascending: false }).limit(50)
   if (opts.onlyListingId) q = q.eq("id", opts.onlyListingId)
   const { data: listings } = await q
@@ -90,6 +142,10 @@ export async function runLaunchWarRoom(
 
     const comingSoon = l.status === "coming_soon"
     const copy = composeLaunch(l.address, l.city ?? null, comingSoon)
+    // What THIS run actually stages for THIS listing — the only facts the seller card may state.
+    const staged: StagedLaunchArtifacts = {
+      reelQueued: false, capturePage: false, channels: 0, openHouseProposed: false, neighborFarm: false, geoAd: false,
+    }
 
     // 1) ASSET — the launch reel (canonical rail; injectable dispatcher for tests).
     if (agentUserId) {
@@ -99,7 +155,7 @@ export async function runLaunchWarRoom(
         return { ok: r.ok, status: r.status, reason: r.reason }
       })
       const rr = await dispatcher({ brokerageId, listingId: l.id, agentUserId, eventType: comingSoon ? "coming_soon" : "just_listed", bypassPolicy: false })
-      if (rr.ok && rr.status !== "skipped") result.reels += 1
+      if (rr.ok && rr.status !== "skipped") { result.reels += 1; staged.reelQueued = true }
     }
 
     // 1.5) CAPTURE — the QR-coded "be first to see it" landing for THIS listing.
@@ -144,6 +200,7 @@ export async function runLaunchWarRoom(
           },
         }).eq("id", magnet.magnetId)
         result.capturePagesStaged += 1
+        staged.capturePage = true
       }
     }
 
@@ -168,6 +225,7 @@ export async function runLaunchWarRoom(
         { channel: "blog", idemName: `Introducing ${l.address}`, subject: `A closer look at ${l.address}`, body: bl.body, brief: "LAUNCH WAR ROOM — listing blog" },
       ], supabase)
       result.channelsStaged += b.staged.length
+      staged.channels = b.staged.length
     }
 
     // 3) LISTING CONCIERGE — PROPOSE the first open house as a DRAFT (no date). The
@@ -181,7 +239,7 @@ export async function runLaunchWarRoom(
           title: `Open House — ${l.address} (set a date)`, property_address: l.address,
           status: "draft", is_published: false, require_rsvp: true, allow_walkins: true,
         })
-        if (!error) result.openHousesProposed += 1
+        if (!error) { result.openHousesProposed += 1; staged.openHouseProposed = true }
       }
     }
 
@@ -189,7 +247,7 @@ export async function runLaunchWarRoom(
     if (agentUserId) {
       const { stageNeighborFarm } = await import("@/lib/kernel/neighbor-farm")
       const farm = await stageNeighborFarm(brokerageId, l.id, agentUserId, { scraper: opts.scraper }, supabase)
-      if (farm.created) result.neighborFarms += 1
+      if (farm.created) { result.neighborFarms += 1; staged.neighborFarm = true }
     }
 
     // 5) ADS — a geo campaign on the listing's city (draft).
@@ -203,7 +261,7 @@ export async function runLaunchWarRoom(
           status: "draft", objective: "lead_generation",
           targeting_config: { locations: [l.city], play: "listing_launch", listing_id: l.id },
         })
-        if (!error) result.adsStaged += 1
+        if (!error) { result.adsStaged += 1; staged.geoAd = true }
       }
     }
 
@@ -217,6 +275,66 @@ export async function runLaunchWarRoom(
         channel: "portal",
       }, supabase)
       if (res.ok) result.summariesProposed += 1
+    }
+
+    // 7) THE SELLER LAUNCH MOMENT — the client this launch is FOR hears about it.
+    // (a) AUTONOMOUS portal value card (tour-recap idiom → transparency_updates): the
+    //     REAL artifacts this run staged, nothing invented. Idempotent via the war
+    //     room's once-per-listing guard above + the card's own dedupe window.
+    // (b) GATED warm launch summary through the client-message gate (audience 'seller',
+    //     channel 'portal') — AI-authored in the agent's brand voice (generateClientMessage,
+    //     the canonical Wave-58 idiom), with the deterministic card copy as the floor.
+    const sellerContactId: string | null = l.seller_contact_id ?? l.contact_id ?? null
+    if (sellerContactId) {
+      const sellerCopy = composeSellerLaunch(l.address, comingSoon, staged)
+      if (sellerCopy.lines.length > 0) {
+        try {
+          const { pushPortalValueCard } = await import("@/lib/kernel/portal-value")
+          const card = await pushPortalValueCard({
+            brokerageId, contactId: sellerContactId, listingId: l.id,
+            title: sellerCopy.title, summary: sellerCopy.summary,
+            updateType: "listing_launch_seller", now,
+            metadata: {
+              listing_id: l.id, coming_soon: comingSoon, staged: { ...staged }, seller_safe: true,
+            },
+          }, supabase)
+          if (card.pushed) result.sellerLaunchCards += 1
+        } catch { /* the card must never break the launch itself */ }
+
+        // Deterministic floor; upgraded to brand-voiced AI copy when the gateway is available.
+        let subject = `${comingSoon ? "Your launch is underway" : "Your listing is live"} — ${l.address}`
+        let body = sellerCopy.summary
+        try {
+          // Dynamic import: generate-client-message is server-only; in non-Next runtimes
+          // (simulators) the import throws and the deterministic floor stands.
+          const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
+          let sellerFirstName: string | null = null
+          const { data: sc } = await supabase.from("contacts").select("first_name").eq("id", sellerContactId).maybeSingle()
+          sellerFirstName = (sc as { first_name?: string | null } | null)?.first_name ?? null
+          const gen = await generateClientMessage({
+            brokerageId, agentUserId, audience: "seller",
+            recipientFirstName: sellerFirstName,
+            purpose: `Warmly tell your seller that their listing's marketing launch is staged: the whole team convened today and prepared the launch pieces listed in the facts. Make clear that you (their agent) review and approve every piece before anything goes public. Celebratory, reassuring, no pressure.`,
+            facts: [
+              { label: "Home", value: `${l.address}${l.city ? `, ${l.city}` : ""} (${comingSoon ? "coming soon" : "just listed"})` },
+              ...sellerCopy.lines.map((v) => ({ label: "Staged today", value: v })),
+            ],
+            fallback: { subject, body },
+          })
+          subject = gen.subject
+          body = gen.body
+        } catch { /* deterministic floor stands */ }
+
+        const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
+        const sellerRes = await proposeClientMessage({
+          brokerageId, agentKind: "listing_concierge", entityType: "listing", entityId: l.id,
+          recipientContactId: sellerContactId, audience: "seller",
+          subject, body,
+          rationale: `LAUNCH WAR ROOM — seller launch summary for ${l.address}: the autonomous portal card already lists what was staged; this is the warm agent-voiced version, gated for your review.`,
+          channel: "portal",
+        }, supabase)
+        if (sellerRes.ok) result.sellerLaunchProposals += 1
+      }
     }
 
     const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
