@@ -77,19 +77,28 @@ export async function scheduleInspectionAction(params: {
     return { success: false, error: result.error }
   }
 
-  // Emit kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id:  auth.brokerageId,
-    entity_type:   "transaction",
-    entity_id:     params.transactionId,
-    event_type:    KernelEvent.INSPECTION_ORDERED,
-    metadata:      {
-      inspection_type: params.inspectionType,
-      inspector_name:  params.inspectorName,
-      scheduled_date:  params.scheduledDate ?? null,
-      cost:            params.cost ?? null,
-    },
-  })
+  // Emit kernel event — through emitTransactionEvent (NOT a bare lifecycle_events
+  // insert) so the INSPECTION_ORDERED portal template actually fires: the bare
+  // insert wrote the ledger row but skipped fanOutKernelEvent, so the buyer/seller
+  // "Home inspection scheduled" transparency card + notifications never happened.
+  // emitTransactionEvent does the lifecycle_events insert itself.
+  try {
+    const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
+    await emitTransactionEvent({
+      event:       KernelEvent.INSPECTION_ORDERED,
+      brokerageId: auth.brokerageId,
+      entityId:    params.transactionId,
+      actorUserId: auth.userId,
+      metadata: {
+        inspection_type: params.inspectionType,
+        inspector_name:  params.inspectorName,
+        scheduled_date:  params.scheduledDate ?? null,
+        cost:            params.cost ?? null,
+      },
+    })
+  } catch (err) {
+    console.error("[scheduleInspectionAction] kernel fan-out failed (non-blocking)", err)
+  }
 
   // If cost provided, request quote approval
   if (params.cost && result.data?.id) {
