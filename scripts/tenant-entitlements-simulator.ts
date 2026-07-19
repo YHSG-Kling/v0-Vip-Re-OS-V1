@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { normalizeOverrideType } from "../lib/kernel/override-vocab"
+import { parseSeatOverride, effectiveSeatLimit, seatCheck } from "../lib/kernel/tier-role-matrix"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -30,6 +31,25 @@ function pureLayer() {
   check("'grant_trial' + legacy 'trial' fold to grant_trial", normalizeOverrideType("grant_trial") === "grant_trial" && normalizeOverrideType("trial") === "grant_trial")
   check("'disable' + legacy 'disabled' fold to disable", normalizeOverrideType("disable") === "disable" && normalizeOverrideType("disabled") === "disable")
   check("an unknown/clear action is not a valid override kind", normalizeOverrideType("clear") === null && normalizeOverrideType("") === null)
+
+  console.log("\n[per-tenant seat override · pure — ONE keep-one resolution]")
+  check("billing_metadata.seat_override parses only honest integers ≥ 0",
+    parseSeatOverride({ seat_override: 12 }) === 12
+    && parseSeatOverride({ seat_override: 0 }) === 0
+    && parseSeatOverride({ seat_override: -3 }) === null
+    && parseSeatOverride({ seat_override: 2.5 }) === null
+    && parseSeatOverride({ seat_override: "9" }) === null
+    && parseSeatOverride(null) === null && parseSeatOverride({}) === null)
+  check("override WINS when set — raises a capped tier and caps an unlimited one",
+    effectiveSeatLimit("solo_agent", 12).limit === 12 && effectiveSeatLimit("solo_agent", 12).overridden === true
+    && effectiveSeatLimit("brokerage", 25).limit === 25)
+  check("null override ⇒ tier default (Solo 2 · Team 5 · Brokerage unlimited)",
+    effectiveSeatLimit("solo_agent", null).limit === 2 && effectiveSeatLimit("solo_agent", null).overridden === false
+    && effectiveSeatLimit("team", null).limit === 5 && effectiveSeatLimit("brokerage", null).limit === null)
+  check("seatCheck enforces the SAME resolved limit (2 in use: solo denies, solo+override 12 allows)",
+    seatCheck("solo_agent", 2).allowed === false
+    && seatCheck("solo_agent", 2, 12).allowed === true && seatCheck("solo_agent", 2, 12).overridden === true
+    && seatCheck("brokerage", 25, 25).allowed === false)
 }
 
 function sourceLayer() {
@@ -45,6 +65,35 @@ function sourceLayer() {
   const reg = src("lib/kernel/manager-registry.ts")
   check("burn domain owned by data_steward with a runnable proof", /tenant_entitlements:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:tenant-entitlements"/.test(reg))
   check("package.json wires the proof", /"test:tenant-entitlements":\s*"tsx scripts\/tenant-entitlements-simulator\.ts"/.test(src("package.json")))
+
+  console.log("\n[wiring — per-tenant autonomy halt (cert blocker #3)]")
+  check("halt writer is tenants-capability + requireWrite gated, reason required",
+    /setTenantAutonomyHaltAction/.test(act)
+    && /requirePlatformCapability\("tenants", \{ requireWrite: true \}\)/.test(act)
+    && /A reason is required \(audited \+ shown to the tenant\)/.test(act))
+  check("halt is a brokerage-scoped 'autonomy' feature kill (override_type disable, user/team null)",
+    /TENANT_AUTONOMY_FEATURE_KEY/.test(act) && /override_type: "disable"/.test(act))
+  check("audited as tenant.autonomy_halted / tenant.autonomy_resumed",
+    /"tenant\.autonomy_halted" : "tenant\.autonomy_resumed"/.test(act))
+  const gateSrc = src("lib/managers/autonomy-gate.ts")
+  check("gate enforces the tenant halt at the SAME hook point as the god switch (resolveManagerAutonomy)",
+    /loadTenantAutonomyHalt\(brokerageId, client\)/.test(gateSrc) && /tenantHalt\.halted\) return "approval_required"/.test(gateSrc))
+  check("pure decision holds on tenantHalt below platformHalt, above broker posture",
+    /input\.tenantHalt\?\.halted/.test(gateSrc)
+    && gateSrc.indexOf("input.platformHalt?.halted") < gateSrc.indexOf("input.tenantHalt?.halted"))
+  check("the brokerage detail page wires the halt toggle + the tenant Command Center wires the banner",
+    /TenantAutonomyPanel/.test(src("app/dashboard/superadmin/brokerages/[id]/page.tsx"))
+    && /AutonomyHaltBanner/.test(src("app/dashboard/admin/command-center/page.tsx")))
+
+  console.log("\n[wiring — per-tenant seat override (cert blocker #4)]")
+  check("seat-override writer is requireWrite gated + audited tenant.seat_override_set with old/new",
+    /setTenantSeatOverrideAction/.test(act) && /"tenant\.seat_override_set"/.test(act) && /old, new: params\.seatOverride/.test(act))
+  check("BOTH invite gates resolve seats through parseSeatOverride → seatCheck (one enforcement point)",
+    /seatCheck\(tenantTier, seatCount \?\? 0, parseSeatOverride\(/.test(src("app/actions/admin/invite-user.ts"))
+    && /seatCheck\(targetTier, seatCount \?\? 0, parseSeatOverride\(/.test(src("app/actions/superadmin/tenant-users.ts")))
+  check("the tenant seat meter uses the SAME resolution and says 'custom limit' when overridden",
+    /effectiveSeatLimit\(planTier, parseSeatOverride\(/.test(src("app/dashboard/admin/users/page.tsx"))
+    && /custom limit/.test(src("app/dashboard/admin/users/page.tsx")))
 }
 
 async function liveLayer() {

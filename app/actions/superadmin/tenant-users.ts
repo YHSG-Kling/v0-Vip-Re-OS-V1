@@ -10,7 +10,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { inviteTenantMember, type UserDomainRole } from "@/lib/kernel/users"
-import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatCheck, SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
+import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatCheck, parseSeatOverride, SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
@@ -85,7 +85,7 @@ export async function createTenantUserAction(params: {
   if (!TENANT_CREATABLE_ROLES.has(params.userType)) return { ok: false, error: `Role not allowed: ${params.userType}` }
 
   const svc = createServiceClient()
-  const { data: brk, error: brkErr } = await svc.from("brokerages").select("id, plan_tier").eq("id", params.brokerageId).maybeSingle()
+  const { data: brk, error: brkErr } = await svc.from("brokerages").select("id, plan_tier, billing_metadata").eq("id", params.brokerageId).maybeSingle()
   if (brkErr) return { ok: false, error: brkErr.message }
   if (!brk) return { ok: false, error: "Brokerage not found" }
 
@@ -114,12 +114,14 @@ export async function createTenantUserAction(params: {
       .in("user_type", SEAT_ROLES as unknown as string[])
       .neq("status", "suspended")
     if (seatErr) return { ok: false, error: seatErr.message }
-    const seats = seatCheck(targetTier, seatCount ?? 0)
+    // ONE resolution (effectiveSeatLimit inside seatCheck): staff-set per-tenant seat override
+    // (billing_metadata.seat_override — the tenant-entitlements panel) wins over the tier default.
+    const seats = seatCheck(targetTier, seatCount ?? 0, parseSeatOverride((brk as any)?.billing_metadata))
     seatOverLimit = !seats.allowed
     if (seatOverLimit && !params.superadminOverride) {
       return {
         ok: false,
-        error: `The ${tierLabel(targetTier)} plan includes ${seats.limit} seats and all are in use. Deactivate a user, upgrade the tenant, or pass superadminOverride.`,
+        error: `${seats.overridden ? `This tenant has a custom limit of ${seats.limit} seats` : `The ${tierLabel(targetTier)} plan includes ${seats.limit} seats`} and all are in use. Deactivate a user, adjust the seat override, or pass superadminOverride.`,
       }
     }
   }

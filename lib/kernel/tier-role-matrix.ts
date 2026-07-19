@@ -96,18 +96,44 @@ export function seatLimitForTier(tier: string | null | undefined): number | null
 }
 
 /**
- * PURE seat check: given the tier and the CURRENT count of seat-role users,
- * may one more seat user be added? Returns the honest verdict + copy inputs.
+ * PURE: read the staff-set per-tenant seat override out of brokerages.billing_metadata
+ * ({ ..., seat_override: <int> }). null / absent / non-integer / negative ⇒ no override
+ * (tier default applies). Set ONLY by the platform tenant-entitlements surface (audited).
  */
-export function seatCheck(tier: string | null | undefined, currentSeatCount: number): {
+export function parseSeatOverride(billingMetadata: unknown): number | null {
+  if (!billingMetadata || typeof billingMetadata !== "object") return null
+  const raw = (billingMetadata as Record<string, unknown>).seat_override
+  return typeof raw === "number" && Number.isInteger(raw) && raw >= 0 ? raw : null
+}
+
+/**
+ * PURE keep-one seat-limit resolution: the staff override WINS when set (it can raise a
+ * capped tier or cap an unlimited one); otherwise the tier default. Every seat surface —
+ * both invite gates and the seat meter — resolves through THIS.
+ */
+export function effectiveSeatLimit(
+  tier: string | null | undefined,
+  seatOverride?: number | null,
+): { limit: number | null; overridden: boolean } {
+  if (seatOverride !== null && seatOverride !== undefined) return { limit: seatOverride, overridden: true }
+  return { limit: seatLimitForTier(tier), overridden: false }
+}
+
+/**
+ * PURE seat check: given the tier, the CURRENT count of seat-role users, and any staff-set
+ * per-tenant override, may one more seat user be added? Returns the honest verdict + copy inputs.
+ */
+export function seatCheck(tier: string | null | undefined, currentSeatCount: number, seatOverride?: number | null): {
   allowed: boolean
   limit: number | null
   remaining: number | null
+  /** true when the limit came from the staff-set per-tenant override, not the tier. */
+  overridden: boolean
 } {
-  const limit = seatLimitForTier(tier)
-  if (limit === null) return { allowed: true, limit: null, remaining: null }
+  const { limit, overridden } = effectiveSeatLimit(tier, seatOverride)
+  if (limit === null) return { allowed: true, limit: null, remaining: null, overridden }
   const remaining = Math.max(0, limit - currentSeatCount)
-  return { allowed: remaining > 0, limit, remaining }
+  return { allowed: remaining > 0, limit, remaining, overridden }
 }
 
 /** Lowest tier whose matrix includes the role — null for platform-only roles. */

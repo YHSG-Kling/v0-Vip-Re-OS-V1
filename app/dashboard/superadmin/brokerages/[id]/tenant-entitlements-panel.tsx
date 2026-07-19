@@ -6,9 +6,10 @@ import { useEffect, useState, useTransition } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, SlidersHorizontal, Zap } from 'lucide-react'
+import { Loader2, SlidersHorizontal, Users, Zap } from 'lucide-react'
 import {
   getTenantEntitlementsAction, setTenantFeatureOverrideAction, grantTenantQuotaAction, revokeTenantQuotaAction,
+  setTenantSeatOverrideAction,
   type TenantEntitlements,
 } from '@/app/actions/superadmin/tenant-entitlements'
 
@@ -18,6 +19,7 @@ export function TenantEntitlementsPanel({ brokerageId }: { brokerageId: string }
   const [err, setErr] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
   const [q, setQ] = useState({ extraTokens: '', days: '30', reason: '' })
+  const [s, setS] = useState({ seats: '', reason: '' })
 
   function refresh() {
     getTenantEntitlementsAction(brokerageId).then((r) => {
@@ -48,6 +50,17 @@ export function TenantEntitlementsPanel({ brokerageId }: { brokerageId: string }
   function revoke(id: string) {
     setErr(null)
     startTransition(async () => { const r = await revokeTenantQuotaAction(id); if (!r.ok) setErr(r.error ?? 'Failed'); refresh() })
+  }
+  function setSeats(clear: boolean) {
+    setErr(null)
+    const n = clear ? null : (s.seats.trim() === '' ? Number.NaN : Number(s.seats))
+    if (!clear && (!Number.isInteger(n) || (n as number) < 0)) { setErr('Seat override must be a whole number ≥ 0'); return }
+    if (!s.reason.trim()) { setErr('A reason is required (audited)'); return }
+    startTransition(async () => {
+      const r = await setTenantSeatOverrideAction({ brokerageId, seatOverride: n, reason: s.reason })
+      if (!r.ok) setErr(r.error ?? 'Failed'); else setS({ seats: '', reason: '' })
+      refresh()
+    })
   }
 
   const grouped = (data?.features ?? []).reduce<Record<string, TenantEntitlements['features']>>((acc, f) => {
@@ -92,6 +105,27 @@ export function TenantEntitlementsPanel({ brokerageId }: { brokerageId: string }
                   ))}
                 </div>
               )}
+            </div>
+
+            {/* Seats — tier default vs staff-set per-tenant override (the invite gates enforce this exact number) */}
+            <div className="rounded-md border bg-muted/10 p-3">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium flex items-center gap-1.5"><Users className="h-3.5 w-3.5 text-sky-600" />Seats</p>
+                <span className="text-xs text-muted-foreground">
+                  {data.seats.effectiveLimit === null
+                    ? `${data.seats.inUse} in use / unlimited`
+                    : `${data.seats.inUse} of ${data.seats.effectiveLimit} in use`}
+                  {data.seats.override !== null
+                    ? <Badge className="ml-2 bg-sky-100 text-sky-800 text-[10px]">custom limit</Badge>
+                    : <Badge variant="outline" className="ml-2 text-[10px]">tier default{data.seats.tierLimit === null ? ' (unlimited)' : ` (${data.seats.tierLimit})`}</Badge>}
+                </span>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <input className="w-28 rounded border px-2 py-1 text-sm" placeholder="seat limit" value={s.seats} onChange={(e) => setS((v) => ({ ...v, seats: e.target.value }))} />
+                <input className="flex-1 min-w-[8rem] rounded border px-2 py-1 text-sm" placeholder="reason (audited)" value={s.reason} onChange={(e) => setS((v) => ({ ...v, reason: e.target.value }))} />
+                <Button size="sm" disabled={pending} onClick={() => setSeats(false)}>Set override</Button>
+                <Button size="sm" variant="ghost" disabled={pending || data.seats.override === null} onClick={() => setSeats(true)}>Restore tier default</Button>
+              </div>
             </div>
 
             {/* Feature matrix */}

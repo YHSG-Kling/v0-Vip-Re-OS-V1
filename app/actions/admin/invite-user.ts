@@ -7,7 +7,7 @@ import { inviteTenantMember } from "@/lib/kernel/users"
 import { emitUserProvisionedEvent } from "@/lib/kernel/users"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { UserDomainRole } from "@/lib/kernel/users"
-import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatCheck, SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
+import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatCheck, parseSeatOverride, SEAT_ROLES } from "@/lib/kernel/tier-role-matrix"
 
 export interface InviteUserParams {
   email: string
@@ -98,7 +98,7 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   // bypass lives in the platform-side createTenantUserAction (god console).
   const { data: tenant, error: tierErr } = await service
     .from("brokerages")
-    .select("plan_tier")
+    .select("plan_tier, billing_metadata")
     .eq("id", resolvedBrokerageId)
     .maybeSingle()
   if (tierErr) return { success: false, error: tierErr.message }
@@ -126,13 +126,17 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
       .in("user_type", SEAT_ROLES as unknown as string[])
       .neq("status", "suspended")
     if (seatErr) return { success: false, error: seatErr.message }
-    const seats = seatCheck(tenantTier, seatCount ?? 0)
+    // ONE resolution (effectiveSeatLimit inside seatCheck): staff-set per-tenant override
+    // (brokerages.billing_metadata.seat_override) wins when set, else the tier default.
+    const seats = seatCheck(tenantTier, seatCount ?? 0, parseSeatOverride((tenant as any)?.billing_metadata))
     if (!seats.allowed) {
       return {
         success: false,
-        error:
-          `The ${tierLabel(tenantTier)} plan includes ${seats.limit} seat${seats.limit === 1 ? "" : "s"} and all are in use. ` +
-          `Deactivate a user to free a seat, or upgrade the plan.`,
+        error: seats.overridden
+          ? `This account has a custom limit of ${seats.limit} seat${seats.limit === 1 ? "" : "s"} (set by VIP support) and all are in use. ` +
+            `Deactivate a user to free a seat, or contact support to raise the limit.`
+          : `The ${tierLabel(tenantTier)} plan includes ${seats.limit} seat${seats.limit === 1 ? "" : "s"} and all are in use. ` +
+            `Deactivate a user to free a seat, or upgrade the plan.`,
       }
     }
   }

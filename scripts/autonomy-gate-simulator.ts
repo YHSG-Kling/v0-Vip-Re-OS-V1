@@ -39,6 +39,23 @@ function pureLayer(): void {
   check("review_recommended ⇒ allow (advisory only)", autonomyDecision({ managerKey: "ai_isa", effective: "review_recommended" }).allow === true)
   check("no posture signal (null) ⇒ allow (no day-one regression)", autonomyDecision({ managerKey: "ai_isa", effective: null }).allow === true)
 
+  console.log("\n[per-tenant staff halt · pure — between the god switch and broker posture]")
+  const th = { halted: true, reason: "Billing dispute — autonomy paused pending resolution." }
+  const heldTenant = autonomyDecision({ managerKey: "ai_isa", effective: "autonomous", tenantHalt: th })
+  check("tenant halt HOLDS even when the broker posture is 'autonomous' (tenant cannot out-rank staff)",
+    heldTenant.allow === false && heldTenant.held === true && heldTenant.reason === th.reason)
+  check("human-approved ⇒ allow even under a tenant halt (approved/human sends unaffected)",
+    autonomyDecision({ managerKey: "ai_isa", effective: "autonomous", tenantHalt: th, humanApproved: true }).allow === true)
+  check("no managerKey ⇒ allow under a tenant halt (transactional/system never gated)",
+    autonomyDecision({ effective: null, tenantHalt: th }).allow === true)
+  const bothHalts = autonomyDecision({
+    managerKey: "ai_isa", effective: "autonomous",
+    platformHalt: { halted: true, reason: "platform emergency" }, tenantHalt: th,
+  })
+  check("god switch out-ranks the tenant halt (platform reason wins when both are set)",
+    bothHalts.allow === false && bothHalts.reason === "platform emergency")
+  check("tenantHalt {halted:false} changes nothing", autonomyDecision({ managerKey: "ai_isa", effective: "autonomous", tenantHalt: { halted: false, reason: null } }).allow === true)
+
   console.log("\n[manager inference · pure]")
   check("explicit managerKey wins over systemSource", managerForDispatch("listing_concierge", "sequence") === "listing_concierge")
   check("'sequence' ⇒ campaign_orchestrator", managerForDispatch(null, "sequence") === "campaign_orchestrator")
@@ -63,6 +80,7 @@ async function liveLayer(): Promise<void> {
   const tag = `autonomy-sim-${randomUUID().slice(0, 8)}`
   const brokerageId = randomUUID()
   const agentId = randomUUID()
+  let flagCreated = false
 
   try {
     await svc.from("brokerages").insert({ id: brokerageId, name: `${tag} (autonomy test)` })
@@ -101,7 +119,36 @@ async function liveLayer(): Promise<void> {
     __clearAutonomyCache()
     check("manager with no row resolves to no-signal (⇒ allow)",
       (await resolveManagerAutonomy(brokerageId, "deal_coordinator")) === null)
+
+    // PER-TENANT STAFF HALT — a brokerage-scoped feature_access_overrides 'autonomy' disable
+    // out-ranks even a broker-set 'autonomous' posture; removing it restores the posture.
+    const { TENANT_AUTONOMY_FEATURE_KEY, loadTenantAutonomyHalt } = await import("../lib/managers/autonomy-gate")
+    await svc.from("managed_agents").update({ config: { autonomy_tier: "autonomous", autonomy_set_by: tag } }).eq("id", agentId)
+    const { data: preFlag } = await svc.from("feature_flags").select("feature_key").eq("feature_key", TENANT_AUTONOMY_FEATURE_KEY).maybeSingle()
+    if (!preFlag) {
+      await svc.from("feature_flags").insert({
+        feature_key: TENANT_AUTONOMY_FEATURE_KEY, display_name: "Autonomous AI managers", category: "governance",
+        enabled: true, superadmin_only: false, solo_agent_access: true, team_access: true, brokerage_access: true, multi_location_access: true,
+      })
+      flagCreated = true
+    }
+    const { error: haltErr } = await svc.from("feature_access_overrides").insert({
+      brokerage_id: brokerageId, feature_key: TENANT_AUTONOMY_FEATURE_KEY, override_type: "disable",
+      disabled_reason: `${tag} staff halt`,
+    })
+    check("staff halt row written (brokerage-scoped 'autonomy' disable)", !haltErr)
+    __clearAutonomyCache()
+    check("tenant halt reads back with the staff reason",
+      (await loadTenantAutonomyHalt(brokerageId)).halted === true)
+    check("halted tenant resolves approval_required even with broker posture 'autonomous'",
+      (await resolveManagerAutonomy(brokerageId, "ai_isa")) === "approval_required")
+    await svc.from("feature_access_overrides").delete().eq("brokerage_id", brokerageId).eq("feature_key", TENANT_AUTONOMY_FEATURE_KEY)
+    __clearAutonomyCache()
+    check("resume (override removed) restores the broker posture",
+      (await resolveManagerAutonomy(brokerageId, "ai_isa")) === "autonomous")
   } finally {
+    await svc.from("feature_access_overrides").delete().eq("brokerage_id", brokerageId)
+    if (flagCreated) await svc.from("feature_flags").delete().eq("feature_key", "autonomy")
     await svc.from("managed_agents").delete().eq("id", agentId)
     await svc.from("brokerages").delete().eq("id", brokerageId)
     const { count } = await svc.from("managed_agents").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId)

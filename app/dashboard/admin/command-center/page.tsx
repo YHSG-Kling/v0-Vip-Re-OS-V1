@@ -12,6 +12,8 @@ import { QuarterlyReviewCard } from "./quarterly-review-card"
 import { ActingAsLog } from "./acting-as-log"
 import { CoverageCard } from "./coverage-card"
 import { AiTeammatesPanel } from "./ai-teammates-panel"
+import { AutonomyHaltBanner } from "./autonomy-halt-banner"
+import { loadTenantAutonomyHalt } from "@/lib/managers/autonomy-gate"
 import { listEarnedAutonomyAction } from "@/app/actions/document-kernel-review"
 import { getQuarterlyReviewAction } from "@/app/actions/quarterly-review"
 import { listAiTeammatesAction } from "@/app/actions/ai-teammates"
@@ -209,8 +211,19 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     } catch { /* visibility is additive */ }
   }
 
+  // PER-TENANT AUTONOMY HALT — if platform staff paused this brokerage's autonomous AI, say so
+  // honestly, up top, with the staff-entered reason (the same state the dispatch gate enforces).
+  const tenantHalt = brokerageId && userType !== "superadmin"
+    ? await loadTenantAutonomyHalt(brokerageId).catch(() => null)
+    : null
+
   return (
     <>
+      {tenantHalt?.halted && (
+        <div className="mx-6 mt-4">
+          <AutonomyHaltBanner reason={tenantHalt.reason} haltedAt={tenantHalt.haltedAt} />
+        </div>
+      )}
       {trust && <TrustMeter outcomes={trust.outcomes} feedback={trust.feedback} />}
       {earned?.ok && earned.grants && (
         <div className="mx-6 mt-4">

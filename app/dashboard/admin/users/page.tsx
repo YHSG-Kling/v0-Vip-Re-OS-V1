@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Users, AlertTriangle, CheckCircle2, Building2, ArrowRight } from "lucide-react"
 import { InviteUserButton } from "./invite-user-button"
 import { EditUserButton } from "./edit-user-button"
-import { SEAT_ROLES, seatLimitForTier, tierLabel } from "@/lib/kernel/tier-role-matrix"
+import { SEAT_ROLES, effectiveSeatLimit, parseSeatOverride, tierLabel } from "@/lib/kernel/tier-role-matrix"
 
 export const dynamic = "force-dynamic"
 
@@ -86,7 +86,7 @@ export default async function AdminUsersPage() {
   // lib/kernel/tier-role-matrix.ts; the invite server action enforces the same).
   const { data: tenant } = await service
     .from("brokerages")
-    .select("plan_tier")
+    .select("plan_tier, billing_metadata")
     .eq("id", profile.brokerage_id)
     .maybeSingle()
   const planTier: string | null = tenant?.plan_tier ?? null
@@ -140,7 +140,8 @@ export default async function AdminUsersPage() {
   const seatCount = userList.filter(
     (u) => (SEAT_ROLES as readonly string[]).includes(u.user_type ?? "") && u.status !== "suspended"
   ).length
-  const seatLimit = seatLimitForTier(planTier)
+  // ONE resolution with the invite gate: staff-set per-tenant override wins over the tier default.
+  const { limit: seatLimit, overridden: seatOverridden } = effectiveSeatLimit(planTier, parseSeatOverride(tenant?.billing_metadata))
 
   return (
     <div className="p-6 space-y-6">
@@ -156,7 +157,7 @@ export default async function AdminUsersPage() {
             <span className={`ml-2 font-medium ${seatLimit !== null && seatCount >= seatLimit ? "text-red-600" : "text-slate-700"}`}>
               — {seatLimit === null
                 ? `${seatCount} seats in use (unlimited on ${tierLabel(planTier)})`
-                : `${seatCount} of ${seatLimit} seats used`}
+                : `${seatCount} of ${seatLimit} seats used${seatOverridden ? " (custom limit)" : ""}`}
             </span>
             {incompleteCount > 0 && (
               <span className="ml-2 text-amber-600 font-medium">
