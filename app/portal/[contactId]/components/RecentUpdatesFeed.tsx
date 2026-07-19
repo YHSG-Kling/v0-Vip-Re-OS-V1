@@ -11,7 +11,13 @@ import Link from "next/link"
 import { Badge } from "@/app/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
-import { Bell, ArrowRight, MessageSquare, CheckCircle2 } from "lucide-react"
+import { Bell, ArrowRight, MessageSquare, CheckCircle2, Share2 } from "lucide-react"
+
+// Marketing-receipt card types whose content the SELLER can re-share from the
+// "Share My Home" surface (published posts only). The nudge deep-links to the
+// share rail's anchor on the portal home. Seller-only update_types — these
+// never appear on buyer/lifetime feeds.
+const SHAREABLE_UPDATE_TYPES = new Set(["listing_marketing_week", "listing_launch_seller"])
 
 export interface RecentUpdate {
   id: string
@@ -94,6 +100,15 @@ export function RecentUpdatesFeed({ contactId, updates, limit = 4, hideWhenEmpty
               <p className="text-[11px] text-muted-foreground">
                 Responsible: {u.responsible_party_name ?? cap(u.responsible_party)}
               </p>
+            )}
+            {SHAREABLE_UPDATE_TYPES.has(u.update_type ?? "") && (
+              <Link
+                href={`/portal/${contactId}#share-my-home`}
+                className="text-xs flex items-center gap-1 pt-1 text-blue-700 hover:underline"
+              >
+                <Share2 className="h-3 w-3" />
+                Share these posts to your own social channels
+              </Link>
             )}
           </article>
         ))}

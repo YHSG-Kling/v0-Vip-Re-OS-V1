@@ -224,7 +224,10 @@ export async function submitOfferToCompliance(
       contractDate:        finalContractDate,
       compliancePassedAt:  now,
       contractTerms: {
-        earnestMoneyDue:     offer.earnest_money ? String(offer.earnest_money) : undefined,
+        // earnestMoneyDue is a DATE term (milestone target), not the deposit amount —
+        // passing String(offer.earnest_money) here fed "$5000" into the earnest-money
+        // milestone date. Leave it unset: the bridge derives the real due date from
+        // contract_date + offers.earnest_money_due_days / earnest_money_due_at.
         inspectionDeadline:  fromContract(offer.inspection_period_days as number | null),
         appraisalDeadline:   fromContract(offer.appraisal_contingency_days as number | null),
         financingDeadline:   fromContract(offer.financing_contingency_days as number | null),

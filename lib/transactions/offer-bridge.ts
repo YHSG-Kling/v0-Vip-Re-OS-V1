@@ -169,6 +169,20 @@ export async function createTransactionFromOffer(params: {
   const { resolveDealType } = await import("./deal-type-resolver")
   const dealType = params.dealType ?? resolveDealType({ ourListing: !!sellerContactId, ourBuyer })
 
+  // REPRESENTATION-AWARE client linkage. On a 'seller' deal the buyer is an OUTSIDE
+  // party (another brokerage represents them) — offer.contact_id is just the intake
+  // record we logged for the paperwork. Stamping them as buyer_contact_id/contact_id
+  // made every informing rail (portal cards, sequence auto-enrollment, weekly deal
+  // notes — all keyed off transactions.buyer_contact_id/contact_id via
+  // resolveEventContacts) treat another agent's client as OUR represented buyer:
+  // "your offer was accepted!" cards + drip enrollment to someone we don't represent.
+  // The client FK on a seller deal is the SELLER; the outside buyer still appears on
+  // the deal via transaction_participants (populated from the offer row below).
+  const representsBuyer = dealType !== "seller"
+  const clientContactId = representsBuyer
+    ? ((offer as any).contact_id ?? null)
+    : (sellerContactId ?? (offer as any).contact_id ?? null)
+
   // Create transaction — use contact_id (not buyer_id) and agent_id (not buyer_agents join)
   // deal_name is NOT NULL on transactions; default to property_address (or
   // a synthetic name from offer id if address is somehow missing) so the
@@ -180,8 +194,8 @@ export async function createTransactionFromOffer(params: {
     .insert({
       brokerage_id:         params.brokerageId,
       agent_id:             (offer as any).agent_id,
-      contact_id:           (offer as any).contact_id,   // live FK (not buyer_id)
-      buyer_contact_id:     (offer as any).contact_id,
+      contact_id:           clientContactId,             // live FK — OUR client (seller on 'seller' deals)
+      buyer_contact_id:     representsBuyer ? (offer as any).contact_id : null,  // only when the buyer is OURS
       seller_contact_id:    sellerContactId,             // resolved from listing → enables seller-side close logic
       listing_id:           (offer as any).listing_id ?? null,
       offer_id:             params.offerId,

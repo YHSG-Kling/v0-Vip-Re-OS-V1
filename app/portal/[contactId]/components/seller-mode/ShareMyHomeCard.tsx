@@ -1,15 +1,37 @@
+// app/portal/[contactId]/components/seller-mode/ShareMyHomeCard.tsx
+//
+// SHARE MY HOME — the seller's no-OAuth share surface. Two sections:
+//   1. The agent-pushed ready-to-share payload (seller_share_feed): public link
+//      + per-platform copy the agent wrote.
+//   2. The listing's recent PUBLISHED social posts, each with the interactive
+//      share rail (native Web Share, FB/X/LinkedIn intents, copy caption,
+//      download asset) — rendered by the SellerSharePostsRail client component.
+//
+// COMPLIANCE: sharing is the SELLER's own action from their own account/browser
+// — nothing sends from our infra, so no egress gate applies. Only PUBLISHED
+// posts are ever shareable (status='published' enforced below; drafts/scheduled/
+// failed posts never reach the seller).
+//
+// ATTRIBUTION: every share link points at the listing's canonical public page
+// (/listing/[slug], the same URL pushListingToSellerPortal resolves) with
+// ?ref=seller-share&listing=<id>&utm_source=seller-share&utm_campaign=… so the
+// public page's existing logLandingSession() (smart_landing_sessions +
+// listing_page_analytics) attributes seller-driven visits — no new tables.
+
 import { createClient } from "@/lib/supabase/server"
+import { siteUrl } from "@/lib/platform/site-url"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Share2, Facebook, Linkedin, Twitter, ExternalLink, Link2 } from "lucide-react"
+import { SellerSharePostsRail, type SellerSharePost } from "./SellerSharePostsRail"
 
 interface Props {
   listingId: string
   listingAddress: string
 }
 
-interface SocialPost {
+interface PublishedPostRow {
   id: string
   content: string | null
   platform: string | null
@@ -18,9 +40,8 @@ interface SocialPost {
   status: string | null
 }
 
-/** The agent-pushed, ready-to-share payload (public link + per-platform copy) the seller portal's
- *  "Share My Home" surface is meant to show. Written by pushListingToSellerPortal; until now nothing
- *  read it, so the pushed copy never reached the seller. */
+/** The agent-pushed, ready-to-share payload (public link + per-platform copy)
+ *  written by pushListingToSellerPortal. */
 interface ShareFeedRow {
   public_url: string | null
   share_messages: Record<string, string> | null
@@ -38,52 +59,87 @@ const PLATFORM_ICON: Record<string, React.ReactNode> = {
   tiktok: <Share2 className="h-4 w-4" />,
 }
 
-const SHARE_URLS: Record<string, (text: string) => string> = {
-  facebook: (t) => `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(t)}`,
+// Feed-section intent links. facebook/linkedin share a URL; twitter shares text.
+const SHARE_URLS: Record<string, (t: string) => string> = {
+  facebook: (u) => `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(u)}`,
   twitter: (t) => `https://twitter.com/intent/tweet?text=${encodeURIComponent(t)}`,
-  linkedin: (t) => `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(t)}`,
+  linkedin: (u) => `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(u)}`,
+}
+
+/** Append the seller-share attribution params to any public listing URL. */
+function withSellerShareAttribution(url: string, listingId: string): string {
+  const sep = url.includes("?") ? "&" : "?"
+  return `${url}${sep}ref=seller-share&listing=${listingId}&utm_source=seller-share&utm_campaign=seller_share_${listingId}`
 }
 
 export async function ShareMyHomeCard({ listingId, listingAddress }: Props) {
   const supabase = await createClient()
 
-  // The agent-pushed, ready-to-share payload (public link + per-platform copy) — the purpose-built
-  // surface this card exists for. Read it FIRST so the seller actually sees what their agent pushed.
-  const { data: shareFeed } = await supabase
-    .from("seller_share_feed")
-    .select("public_url, share_messages, agent_note, pushed_at")
-    .eq("listing_id", listingId)
-    .order("pushed_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+  const [{ data: listingRow }, { data: shareFeed }, { data: campaigns }] = await Promise.all([
+    supabase.from("listings").select("id, slug").eq("id", listingId).maybeSingle(),
+    supabase
+      .from("seller_share_feed")
+      .select("public_url, share_messages, agent_note, pushed_at")
+      .eq("listing_id", listingId)
+      .order("pushed_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase.from("marketing_campaigns").select("id").eq("listing_id", listingId).limit(10),
+  ])
   const feed = (shareFeed as ShareFeedRow | null) ?? null
+  const slug = (listingRow as { slug: string | null } | null)?.slug ?? null
 
-  // Secondary: the agent's published social posts for this listing's campaigns.
-  const { data: campaigns } = await supabase
-    .from("marketing_campaigns")
-    .select("id")
-    .eq("listing_id", listingId)
-    .limit(10)
-  const campaignIds = (campaigns ?? []).map((c) => c.id)
-  const { data: posts } = campaignIds.length
-    ? await supabase
-        .from("social_posts")
-        .select("id, content, platform, media_urls, published_at, status")
-        .in("marketing_campaign_id", campaignIds)
-        .not("status", "eq", "draft")
-        .order("published_at", { ascending: false })
-        .limit(6)
-    : { data: [] as SocialPost[] }
+  // PUBLISHED posts only — the compliance line this surface never crosses.
+  // social_posts carries listing_id directly AND via marketing_campaign_id;
+  // query both paths and merge (older posts only have the campaign link).
+  const campaignIds = (campaigns ?? []).map((c: { id: string }) => c.id)
+  const [byListing, byCampaign] = await Promise.all([
+    supabase
+      .from("social_posts")
+      .select("id, content, platform, media_urls, published_at, status")
+      .eq("listing_id", listingId)
+      .eq("status", "published")
+      .order("published_at", { ascending: false })
+      .limit(6),
+    campaignIds.length
+      ? supabase
+          .from("social_posts")
+          .select("id, content, platform, media_urls, published_at, status")
+          .in("marketing_campaign_id", campaignIds)
+          .eq("status", "published")
+          .order("published_at", { ascending: false })
+          .limit(6)
+      : Promise.resolve({ data: [] as PublishedPostRow[] }),
+  ])
+  const seen = new Set<string>()
+  const publishedPosts: PublishedPostRow[] = [
+    ...((byListing.data ?? []) as PublishedPostRow[]),
+    ...((byCampaign.data ?? []) as PublishedPostRow[]),
+  ]
+    .filter((p) => p.status === "published" && !seen.has(p.id) && seen.add(p.id))
+    .sort((a, b) => (b.published_at ?? "").localeCompare(a.published_at ?? ""))
+    .slice(0, 6)
 
   // Nothing pushed and nothing published — no surface to show.
-  if (!feed && (!posts || posts.length === 0)) {
-    return null
-  }
+  if (!feed && publishedPosts.length === 0) return null
+
+  // Canonical public listing URL (+ attribution). Prefer the slug-derived URL;
+  // fall back to the agent-pushed public_url from the share feed.
+  const base = slug ? `${siteUrl()}/listing/${slug}` : (feed?.public_url ?? null)
+  const shareUrl = base ? withSellerShareAttribution(base, listingId) : null
 
   const feedMessages = feed?.share_messages ?? null
+  const railPosts: SellerSharePost[] = publishedPosts.map((p) => ({
+    id: p.id,
+    content: p.content,
+    platform: p.platform,
+    mediaUrl: p.media_urls?.[0] ?? null,
+    publishedAt: p.published_at,
+  }))
 
   return (
-    <Card>
+    // id anchor — the "Share these" nudge on marketing-receipt cards deep-links here.
+    <Card id="share-my-home" className="scroll-mt-24">
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center gap-2">
           <Share2 className="h-5 w-5 text-blue-600" />
@@ -91,25 +147,23 @@ export async function ShareMyHomeCard({ listingId, listingAddress }: Props) {
         </CardTitle>
         <p className="text-xs text-muted-foreground">
           Your home, ready to share with friends and family for {listingAddress}. Your neighbors often
-          know exactly who'd love to live nearby.
+          know exactly who&apos;d love to live nearby — every share links back to your home&apos;s page.
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Agent-pushed share payload — the public link + ready-to-send copy per platform. */}
         {feed && (
           <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-3 space-y-3">
-            {feed.agent_note && (
-              <p className="text-sm text-foreground">{feed.agent_note}</p>
-            )}
-            {feed.public_url && (
+            {feed.agent_note && <p className="text-sm text-foreground">{feed.agent_note}</p>}
+            {shareUrl && (
               <div className="flex flex-wrap items-center gap-2">
                 <Button size="sm" variant="outline" className="gap-1.5 text-xs h-7" asChild>
-                  <a href={feed.public_url} target="_blank" rel="noopener noreferrer">
+                  <a href={shareUrl} target="_blank" rel="noopener noreferrer">
                     <ExternalLink className="h-3 w-3" /> Open my listing page
                   </a>
                 </Button>
                 <code className="text-xs text-muted-foreground break-all flex items-center gap-1">
-                  <Link2 className="h-3 w-3 shrink-0" /> {feed.public_url}
+                  <Link2 className="h-3 w-3 shrink-0" /> {shareUrl}
                 </code>
               </div>
             )}
@@ -119,7 +173,7 @@ export async function ShareMyHomeCard({ listingId, listingAddress }: Props) {
                   const text = feedMessages[platform]
                   const shareHref = platform === "twitter"
                     ? SHARE_URLS.twitter(text)
-                    : (feed.public_url && SHARE_URLS[platform] ? SHARE_URLS[platform](feed.public_url) : null)
+                    : (shareUrl && SHARE_URLS[platform] ? SHARE_URLS[platform](shareUrl) : null)
                   return (
                     <div key={platform} className="rounded-md border bg-background p-2 space-y-1.5">
                       <div className="flex items-center gap-1.5">
@@ -142,83 +196,16 @@ export async function ShareMyHomeCard({ listingId, listingAddress }: Props) {
           </div>
         )}
 
-        {posts && posts.length > 0 && (
-          <p className="text-xs font-medium text-muted-foreground pt-1">Posts your agent published</p>
+        {/* Published posts + the interactive share rail (client component —
+            native Web Share / intents / copy / download live there). */}
+        {railPosts.length > 0 && (
+          <>
+            <p className="text-xs font-medium text-muted-foreground pt-1">
+              Posts your team published — share them to your own channels
+            </p>
+            <SellerSharePostsRail posts={railPosts} shareUrl={shareUrl} address={listingAddress} />
+          </>
         )}
-        {(posts ?? []).map((post: SocialPost) => (
-          <div key={post.id} className="rounded-lg border p-3 space-y-2">
-            {post.platform && (
-              <div className="flex items-center gap-1.5">
-                {PLATFORM_ICON[post.platform.toLowerCase()] ?? <Share2 className="h-4 w-4" />}
-                <Badge variant="secondary" className="text-xs capitalize">
-                  {post.platform}
-                </Badge>
-                {post.published_at && (
-                  <span className="text-xs text-muted-foreground ml-auto">
-                    {new Date(post.published_at).toLocaleDateString()}
-                  </span>
-                )}
-              </div>
-            )}
-
-            {post.content && (
-              <p className="text-sm text-muted-foreground line-clamp-3">{post.content}</p>
-            )}
-
-            {post.media_urls && post.media_urls.length > 0 && (
-              <div className="flex gap-2 overflow-x-auto">
-                {post.media_urls.slice(0, 3).map((url: string, i: number) => (
-                  <img
-                    key={i}
-                    src={url}
-                    alt="Listing media"
-                    className="h-16 w-24 rounded object-cover shrink-0"
-                  />
-                ))}
-              </div>
-            )}
-
-            <div className="flex flex-wrap gap-2 pt-1">
-              {post.platform && SHARE_URLS[post.platform.toLowerCase()] && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="gap-1.5 text-xs h-7"
-                  asChild
-                >
-                  <a
-                    href={SHARE_URLS[post.platform.toLowerCase()](
-                      `${post.content?.slice(0, 200) ?? listingAddress}`
-                    )}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <Share2 className="h-3 w-3" />
-                    Share on {post.platform}
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
-                </Button>
-              )}
-              <Button
-                size="sm"
-                variant="ghost"
-                className="gap-1.5 text-xs h-7"
-                onClick={undefined}
-                asChild
-              >
-                <button
-                  onClick={() => {
-                    if (typeof navigator !== "undefined" && post.content) {
-                      navigator.clipboard.writeText(post.content)
-                    }
-                  }}
-                >
-                  Copy Caption
-                </button>
-              </Button>
-            </div>
-          </div>
-        ))}
       </CardContent>
     </Card>
   )

@@ -167,6 +167,11 @@ export async function pushWeeklyMarketingCard(
         videos_completed: facts.videosCompleted,
         week_since: since,
         seller_safe: true,
+        // "Share these" nudge — the portal feed deep-links this card to the
+        // seller's Share My Home rail (portal home #share-my-home anchor),
+        // where the week's PUBLISHED posts are one tap from the seller's own
+        // social channels. Anchor id, not a URL — the portal owns the route.
+        share_cta_anchor: "share-my-home",
       },
     }, supabase)
     return { ...pushed, facts }

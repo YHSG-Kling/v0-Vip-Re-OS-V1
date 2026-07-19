@@ -48,6 +48,19 @@ export async function resolveEventContacts(
         const { data: l } = await svc
           .from("listings").select("seller_contact_id").eq("id", out.listingId).maybeSingle()
         out.sellerContactId = l?.seller_contact_id ?? undefined
+        // REPRESENTATION GATE (mirrors deal-type-resolver): an offer on OUR listing
+        // from an OUTSIDE buyer (another brokerage's client — bare intake contact,
+        // no buyer_stage) must not put that buyer on OUR client rails (portal cards,
+        // sequence enrollment). Only a buyer in our pipeline is "our buyer" here;
+        // off-listing offers are inherently our-buyer and skip this check.
+        if (out.sellerContactId && out.buyerContactId) {
+          const { data: bc } = await svc
+            .from("contacts").select("buyer_stage").eq("id", out.buyerContactId).maybeSingle()
+          if (!(bc as { buyer_stage?: string | null } | null)?.buyer_stage) {
+            out.buyerContactId = undefined
+            out.contactId = out.sellerContactId
+          }
+        }
       }
     } else if (entityType === "listing") {
       out.listingId = entityId

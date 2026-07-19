@@ -2260,6 +2260,25 @@ async function main() {
         && src("app/actions/superadmin/platform-growth.ts").includes("proposal")
         && src("supabase/migrations/m272-platform-prospects-details.sql").includes("details"))
     }
+    // ── ROUND 28: THE PUNCH LIST + SELLER SHARES + THE INSIDE/OUTSIDE OFFER TRUTH ──
+    {
+      check("ROUND 28 — THE READINESS PUNCH LIST CLEARED + TWO OWNER ADDITIONS. (1) QBR INVITATIONS (was pull-only): a quarterly cron (registered, finance_manager) self-gates to the Q window, composes a brand-voiced invitation from REAL headline facts (omitted when none), notifies principals deduped per (user, quarter) via the notifications ledger, deep-links Command Center. (2) BROKER TRUST RECEIPTS (was client-only): the SAME continuity-receipt computation aggregated onto the intelligence-report page for principals. (3) APPRAISAL-CAME-IN-LOW (was silent): the value is now COMPARED to purchase_price and any shortfall emits APPRAISAL_GAP_DETECTED (calm buyer + seller-on-inside cards, deal-save huddle) — fully null-guarded, idempotent per (transaction, value), non-blocking. (4) DUAL-SIDE WEEKLY DEAL NOTE: one composer, two audiences — the seller on a dual-represented deal now gets the buyer's financing reframed in THIRD person ('the buyer's loan is in underwriting, a normal step toward your closing'), de-conflicted against the listing-side update. (5) PROACTIVE CLOSING-COST PUSH on entering CLOSING_PREP. (6) SELLER SHARES TO THEIR OWN CHANNELS (owner add): a no-OAUTH portal rail — Web Share API + Facebook/X/LinkedIn intent links + copy/download, PUBLISHED posts only, shares link to the tenant's own site with seller-share attribution; our tokens never touched. (7) INSIDE vs OUTSIDE OFFERS (owner add): representation-aware party resolution — an OUTSIDE buyer offering on OUR listing never receives buyer-side client rails and the SELLER only gets fanout when we represent them; outside-property deals with no listings row resolve an honest address from the transaction's own fields; every informing rail null-safe across both shapes",
+        src("lib/intelligence/qbr-invitation.ts").includes("composeQbrInvitation")
+        && src("app/api/cron/qbr-invitations/route.ts").includes("verifyCronAuth")
+        && src("lib/kernel/cron-dispatch.ts").includes("qbr-invitations")
+        && src("app/dashboard/intelligence-report/trust-receipts-card.tsx").length > 0
+        && src("app/dashboard/intelligence-report/page.tsx").includes("TrustReceiptsCard")
+        && src("lib/kernel/events.ts").includes("APPRAISAL_GAP_DETECTED")
+        && src("lib/kernel/event-fanout.ts").includes("APPRAISAL_GAP_DETECTED")
+        && src("app/actions/transaction-milestones.ts").includes("runAppraisalGapDetection")
+        && src("lib/kernel/client-story-drafts.ts").includes('audience: "buyer" | "seller"')
+        && src("lib/transactions/stage-progression.ts").includes("CLOSING_COSTS_READY")
+        && src("app/portal/[contactId]/components/seller-mode/SellerSharePostsRail.tsx").includes("navigator.share")
+        && src("app/portal/[contactId]/components/seller-mode/SellerSharePostsRail.tsx").includes("ref=seller-share")
+        && src("lib/kernel/event-fanout.ts").includes("Your transaction")
+        && src("lib/kernel/resolve-event-contacts.ts").includes("buyer_stage")
+        && src("lib/transactions/offer-bridge.ts").includes("representsBuyer"))
+    }
     // ── ROUND 27: EVERYONE STAYS INFORMED — THE SELLER HEARS, THE LOOPS CLOSE ──
     {
       check("ROUND 27 — THE READINESS AUDIT'S FINDINGS BECOME RAILS. (1) THE SELLER HEARS: runLaunchWarRoom fills a staged-artifacts struct from THIS RUN'S OWN results and pushes the seller an autonomous launch portal card (zero artifacts → no card) + a brand-voice proposed launch message on the approval rail; the weekly seller-updates cron gains the consolidated marketing receipt counting only REAL published posts + finished videos (no activity → no card; batch, never per-post). (2) BUYER LOOPS: feedback submission earns a warm ack in the SAME portal thread (token-validated ids, deduped per submission, honest fallback floor); first-touch inbox visibility VERDICTED RESOLVED with evidence (the round-94 ISA lane already merges the outreach ledger read-side). (3) THE GATE'S TRANSACTIONAL CONTRACT: showing reminders moved onto dispatchSms — DispatchSmsParams.transactional waives ONLY the express-consent rule for recipient-initiated sends while suppression/DNC/quiet-hours/opt-out/de-conflict/budget all still apply, and contactId/brokerageId/transactional forward to the inner TCPA gate; showing-lifecycle fell OFF the raw-sender allowlist — the reviewed surface shrank. (4) SWEEP FIXES: inspection scheduling now emits through emitTransactionEvent so the existing portal template actually reaches both parties; the intelligence report is nav-linked for principals. Move-in concierge verdicted INFORMED (rides the deal-health sweep by design). Deferred, ranked: QBR scheduled invitations, appraisal-low detector, dual-side weekly deal note, proactive closing-cost push, broker trust-receipt surface",

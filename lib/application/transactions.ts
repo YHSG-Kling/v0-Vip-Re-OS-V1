@@ -1885,8 +1885,20 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
     .single()
   
   if (!transaction) throw new Error("Transaction not found")
-  if (contactId && transaction.contact_id !== contactId) {
-    throw new Error("Unauthorized: Transaction does not belong to this contact")
+  // A deal has up to three represented-contact links: contact_id (the client FK),
+  // buyer_contact_id, seller_contact_id. Any of them may be the portal viewer —
+  // on a dual deal the seller's portal must open the same transaction page, and
+  // on a seller-side deal contact_id IS the seller. Matching only contact_id
+  // locked legitimate parties out.
+  if (contactId) {
+    const allowedContacts = [
+      transaction.contact_id,
+      transaction.buyer_contact_id,
+      transaction.seller_contact_id,
+    ].filter(Boolean)
+    if (!allowedContacts.includes(contactId)) {
+      throw new Error("Unauthorized: Transaction does not belong to this contact")
+    }
   }
   
   const persona = transaction.contacts?.contact_persona || (transaction.deal_type === "seller" ? "seller" : "buyer")
@@ -2046,7 +2058,10 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
     persona,
     personaConfig,
     hero: {
-      property_address: transaction.property_address,
+      // Honest address from the transaction's OWN fields — outside-listing deals
+      // have no listings row, and legacy rows may lack property_address entirely.
+      // Never render a blank hero: fall back to deal_name, then a neutral label.
+      property_address: transaction.property_address || transaction.deal_name || "Your transaction",
       current_stage_display: friendlyStageName(transaction.stage || transaction.status, persona),
       status_message: await generateFriendlyStatusMessage(transaction, persona),
       progress_percent: progressPercent,

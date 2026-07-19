@@ -55,6 +55,13 @@ async function emitOfferEvent(params: {
   // canonical fan-out can reach both sides' portals. Only events with a portal
   // template (e.g. OFFER_OS_SUBMITTED) produce a client card; others stay
   // staff-only (fanOutKernelEvent still runs processKernelEvent internally).
+  //
+  // REPRESENTATION GATE: on OUR listing an offer can come from an OUTSIDE buyer
+  // (another brokerage's client, logged via mail/upload intake as a bare contact).
+  // Buyer-side portal cards + sequence enrollment must only reach a buyer WE
+  // represent — ground truth mirrors deal-type-resolver: on our listing, the buyer
+  // is ours only when they're in our buyer pipeline (contacts.buyer_stage set).
+  // Off-listing (external/IDX target) offers are inherently our-buyer.
   let buyerContactId: string | undefined
   let sellerContactId: string | undefined
   let listingId: string | undefined
@@ -75,6 +82,12 @@ async function emitOfferEvent(params: {
         .eq("id", listingId)
         .maybeSingle()
       sellerContactId = l?.seller_contact_id ?? undefined
+      if (sellerContactId && buyerContactId) {
+        const { data: buyerContact } = await supabase
+          .from("contacts").select("buyer_stage").eq("id", buyerContactId).maybeSingle()
+        const ourBuyer = !!(buyerContact as { buyer_stage?: string | null } | null)?.buyer_stage
+        if (!ourBuyer) buyerContactId = undefined  // outside buyer — no buyer-side client rail
+      }
     }
   } catch { /* best-effort enrichment */ }
 
