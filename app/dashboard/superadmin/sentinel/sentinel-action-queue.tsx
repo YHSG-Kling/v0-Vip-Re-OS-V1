@@ -19,6 +19,12 @@ import {
   type SentinelQueue,
   type SentinelLearningView,
 } from '@/app/actions/superadmin/platform-sentinel'
+import { PLATFORM_MANAGERS } from '@/lib/kernel/manager-registry'
+
+// The registered platform-scope manager persona — identity (label/domain/accent)
+// comes from the manager registry, exactly like the tenant Command Center's 14
+// manager chips, so the staff surface can never drift from the constitution.
+const SENTINEL = PLATFORM_MANAGERS.platform_sentinel
 
 const SEVERITY_BADGE: Record<string, string> = {
   critical: 'bg-red-100 text-red-800',
@@ -240,13 +246,16 @@ export function SentinelActionQueue() {
           <ClipboardList className="h-5 w-5 text-primary" />Sentinel — today&apos;s proposed actions
         </CardTitle>
         <div className="flex items-center gap-2">
+          <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${SENTINEL.accent}`} title={SENTINEL.domain}>
+            {SENTINEL.label}
+          </span>
           {queue && <Badge variant="secondary" className="text-xs tabular-nums">{queue.proposed.length} proposed</Badge>}
           <button onClick={refresh} className="text-xs text-muted-foreground underline">refresh</button>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-xs text-muted-foreground">
-          The Platform Sentinel Manager watches the whole subscriber fleet daily — engagement risk,
+          The {SENTINEL.label} — the platform&apos;s own registered AI manager — watches the whole subscriber fleet daily: engagement risk,
           expiring connections, dunning, support SLA breaches, expiring trials — and drafts the outreach.
           You approve; it never sends without you.
           {queue && !queue.emailRailReady && (
