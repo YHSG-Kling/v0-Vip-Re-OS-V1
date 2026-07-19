@@ -8,7 +8,8 @@ import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useState, useEffect, Suspense, useId } from 'react'
-import { Mail, Lock, Loader2 } from 'lucide-react'
+import { Mail, Lock, Loader2, KeyRound } from 'lucide-react'
+import { checkSsoDomainAction } from '@/app/actions/tenant-sso'
 
 function LoginContent() {
   const [email, setEmail] = useState('')
@@ -17,6 +18,12 @@ function LoginContent() {
   const [message, setMessage] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [mounted, setMounted] = useState(false)
+  // SSO (SAML): when the typed email's domain has an ACTIVE brokerage SSO
+  // connection, an additive "Sign in with SSO" button appears. Password and
+  // magic-link stay the default — nothing is taken away.
+  const [ssoAvailable, setSsoAvailable] = useState(false)
+  const [ssoCheckedDomain, setSsoCheckedDomain] = useState<string | null>(null)
+  const [ssoLoading, setSsoLoading] = useState(false)
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -31,6 +38,53 @@ function LoginContent() {
       setError(decodeURIComponent(errorParam))
     }
   }, [searchParams])
+
+  // Cheap availability probe on email blur — the server action returns ONLY
+  // { ssoAvailable } for an active connection; it never enumerates domains.
+  const checkSsoAvailability = async () => {
+    const domain = email.trim().toLowerCase().split('@')[1] ?? ''
+    if (!domain || !domain.includes('.')) {
+      setSsoAvailable(false)
+      setSsoCheckedDomain(null)
+      return
+    }
+    if (domain === ssoCheckedDomain) return
+    setSsoCheckedDomain(domain)
+    try {
+      const { ssoAvailable: available } = await checkSsoDomainAction(email)
+      setSsoAvailable(available)
+    } catch {
+      setSsoAvailable(false)
+    }
+  }
+
+  const handleSsoLogin = async () => {
+    const domain = email.trim().toLowerCase().split('@')[1]
+    if (!domain) return
+    setSsoLoading(true)
+    setError(null)
+    try {
+      const supabase = createClient()
+      const { data, error } = await supabase.auth.signInWithSSO({
+        domain,
+        options: { redirectTo: `${window.location.origin}/auth/callback` },
+      })
+      if (error) {
+        setError(error.message)
+        setSsoLoading(false)
+        return
+      }
+      if (data?.url) {
+        window.location.href = data.url // hand off to the identity provider
+        return
+      }
+      setError('SSO sign-in could not start — try password sign-in instead')
+      setSsoLoading(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred')
+      setSsoLoading(false)
+    }
+  }
 
   const handlePasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -133,6 +187,7 @@ function LoginContent() {
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
+                    onBlur={checkSsoAvailability}
                     className="pl-10"
                   />
                 </div>
@@ -167,6 +222,30 @@ function LoginContent() {
                   'Sign In'
                 )}
               </Button>
+
+              {/* Additive SSO path — appears only when the typed email's
+                  domain has an active brokerage SSO connection. */}
+              {ssoAvailable && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={handleSsoLogin}
+                  disabled={isLoading || ssoLoading}
+                >
+                  {ssoLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Redirecting to your identity provider...
+                    </>
+                  ) : (
+                    <>
+                      <KeyRound className="mr-2 h-4 w-4" />
+                      Sign in with SSO
+                    </>
+                  )}
+                </Button>
+              )}
             </form>
           </TabsContent>
 
