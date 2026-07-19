@@ -136,6 +136,7 @@ const CONNECTOR_ALLOWLIST: Record<string, string> = {
   "lib/voice/warm-transfer.ts":             "warm-bridge agent leg (call-control dial to the AGENT on an already-gated live call — a bridge, not a consumer message)",
   "app/api/voice/twilio/whisper/route.ts":  "warm-bridge caller redirect (call-control on the SAME already-gated live call; token-gated endpoints we author ourselves)",
   "lib/platform/provider-posture.ts":       "provider fleet posture sweeps (round 24) — READ-ONLY GETs: Twilio subaccount status/number lists/usage records + SendGrid domain-auth/suppressions; superadmin 'providers'-gated + audited; never a message",
+  "lib/voice/number-provisioning.ts":       "shared number search/purchase/webhook-bind pipeline (round 26) — Twilio ADMIN API only (AvailablePhoneNumbers search, IncomingPhoneNumbers purchase, VoiceUrl/SmsUrl binding); one implementation for the tenant action and the staff fleet console (providers+write gated, audited, type-the-number release confirm); never a message",
 }
 const connectorSenders = files
   .map((abs) => ({ abs, src: readFileSync(abs, "utf8") }))

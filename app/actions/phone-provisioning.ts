@@ -16,7 +16,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContext } from "@/lib/kernel/identity"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { provisionNumber, logPhoneNumberEvent } from "@/lib/voice/number-provisioning"
 
 // ─── Brokerage-level settings ────────────────────────────────────────────────
 
@@ -123,102 +123,21 @@ export async function autoProvisionAgentPhone(params: {
     return { success: true, phoneNumber: existing.phone_number }
   }
 
-  // TENANT ISOLATION: numbers are purchased inside the brokerage's own Twilio
-  // SUBACCOUNT (created on first provision; platform master is the parent).
-  // Resolution order: BYO creds (top tier) -> tenant subaccount -> platform
-  // master (legacy fallback). See lib/voice/twilio-tenancy.ts.
-  const { ensureTenantSubaccount, resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
-  await ensureTenantSubaccount(svc, ctx.brokerageId).then(undefined, () => {}) // best-effort; master fallback below
-  const creds = await resolveTenantTwilioCreds(svc, ctx.brokerageId)
-  if (!creds) {
-    return { success: false, error: "Twilio not configured (missing TWILIO_ACCOUNT_SID / AUTH_TOKEN)" }
-  }
-  const accountSid = creds.accountSid
-  const authToken = creds.authToken
-
-  // Search available numbers in area code
-  let availableNumber: string | null = null
-  try {
-    const searchRes = await callConnector<{ available_phone_numbers?: Array<{ phone_number?: string }> }>({
-      connector: "twilio", baseUrl: "https://api.twilio.com",
-      path: `/2010-04-01/Accounts/${accountSid}/AvailablePhoneNumbers/US/Local.json`, method: "GET",
-      ...(params.areaCode ? { query: { AreaCode: String(params.areaCode) } } : {}),
-      auth: { style: "basic", username: accountSid, password: authToken },
-    })
-    if (!searchRes.ok) {
-      return { success: false, error: `Twilio number search failed: ${searchRes.status}` }
-    }
-    availableNumber = searchRes.data?.available_phone_numbers?.[0]?.phone_number ?? null
-    if (!availableNumber) {
-      return { success: false, error: `No available numbers found${params.areaCode ? ` in area code ${params.areaCode}` : ""}` }
-    }
-  } catch (err: any) {
-    return { success: false, error: `Twilio search error: ${err?.message ?? String(err)}` }
-  }
-
-  // Purchase
-  let purchasedSid: string | null = null
-  try {
-    const purchaseRes = await callConnector<{ sid?: string }>({
-      connector: "twilio", baseUrl: "https://api.twilio.com",
-      path: `/2010-04-01/Accounts/${accountSid}/IncomingPhoneNumbers.json`, method: "POST",
-      auth: { style: "basic", username: accountSid, password: authToken },
-      bodyType: "form", body: { PhoneNumber: availableNumber },
-    })
-    if (!purchaseRes.ok) {
-      const body = purchaseRes.error ?? ""
-      await logProvisionEvent(svc, {
-        brokerageId: ctx.brokerageId,
-        agentId: params.agentId,
-        phoneNumber: availableNumber,
-        eventType: "failed",
-        notes: `Twilio purchase failed (${purchaseRes.status}): ${body}`,
-      })
-      return { success: false, error: `Twilio purchase failed (${purchaseRes.status}): ${body}` }
-    }
-    purchasedSid = purchaseRes.data?.sid ?? null
-  } catch (err: any) {
-    return { success: false, error: `Twilio purchase error: ${err?.message ?? String(err)}` }
-  }
-
-  // Save assignment (vapi_phone_numbers schema: agent_user_id + byoc_credential_id).
-  // BUG FIX: this insert used to fail SILENTLY (vapi_phone_number_id was NOT NULL
-  // and omitted -- the number was purchased but never saved). The column is now
-  // nullable (l27-s01: the Vapi id is unknown until inbound binding registers
-  // the number) and a failed save is surfaced instead of swallowed.
-  const { error: saveErr } = await svc.from("vapi_phone_numbers").insert({
-    agent_user_id: agentUserId,
-    brokerage_id: ctx.brokerageId,
-    scope_type: "agent",
-    phone_number: availableNumber,
-    phone_digits: availableNumber.replace(/\D/g, ""),
-    byoc_credential_id: purchasedSid,
-    number_source: "byoc_twilio",
-    is_active: true,
-  })
-  if (saveErr) {
-    await logProvisionEvent(svc, {
-      brokerageId: ctx.brokerageId,
-      agentId: params.agentId,
-      phoneNumber: availableNumber,
-      eventType: "failed",
-      twilioSid: purchasedSid,
-      notes: `Number PURCHASED on Twilio but the assignment save failed: ${saveErr.message} -- reconcile manually`,
-    })
-    return { success: false, error: `Number purchased but not saved (${saveErr.message}) -- support has been notified via the audit log` }
-  }
-
-  await logProvisionEvent(svc, {
+  // THE SHARED CORE (lib/voice/number-provisioning.ts — keep-one, no fork):
+  // search → purchase → persist → phone_number_events, with the canonical
+  // credential resolution (BYO → tenant subaccount → platform master) inside.
+  // The staff fleet console runs the SAME pipeline.
+  const result = await provisionNumber(svc, {
     brokerageId: ctx.brokerageId,
+    areaCode: params.areaCode ?? null,
+    scopeType: "agent",
+    agentUserId,
     agentId: params.agentId,
-    phoneNumber: availableNumber,
-    eventType: "purchased",
-    twilioSid: purchasedSid,
-    costUsd: 1.15,
-    notes: `Auto-provisioned via brokerage setting`,
+    eventSource: "tenant_action",
+    eventNotes: "Auto-provisioned via brokerage setting",
   })
-
-  return { success: true, phoneNumber: availableNumber, twilioSid: purchasedSid ?? undefined }
+  if (!result.ok) return { success: false, error: result.error }
+  return { success: true, phoneNumber: result.phoneNumber, twilioSid: result.twilioSid ?? undefined }
 }
 
 /**
@@ -283,11 +202,12 @@ export async function manuallyAddAgentPhone(params: {
 
   if (error) return { success: false, error: error.message }
 
-  await logProvisionEvent(svc, {
+  await logPhoneNumberEvent(svc, {
     brokerageId: ctx.brokerageId,
     agentId: params.agentId,
     phoneNumber: cleaned,
     eventType: params.source === "ported_in" ? "ported_in" : "manually_added",
+    source: "tenant_action",
     twilioSid: params.twilioSid,
   })
 
@@ -298,29 +218,4 @@ export async function manuallyAddAgentPhone(params: {
 
 function isBrokerRole(t?: string | null) {
   return ["admin", "broker", "broker_admin", "superadmin"].includes(t ?? "")
-}
-
-async function logProvisionEvent(
-  svc: ReturnType<typeof createServiceClient>,
-  ev: {
-    brokerageId: string
-    agentId: string
-    phoneNumber: string
-    eventType: "purchased" | "manually_added" | "ported_in" | "released" | "failed"
-    twilioSid?: string | null
-    vapiNumberId?: string | null
-    costUsd?: number
-    notes?: string
-  }
-) {
-  await svc.from("phone_number_events").insert({
-    brokerage_id: ev.brokerageId,
-    agent_id: ev.agentId,
-    phone_number: ev.phoneNumber,
-    event_type: ev.eventType,
-    twilio_sid: ev.twilioSid ?? null,
-    vapi_number_id: ev.vapiNumberId ?? null,
-    cost_usd: ev.costUsd ?? null,
-    notes: ev.notes ?? null,
-  })
 }

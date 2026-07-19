@@ -27,7 +27,11 @@ export function SettingsSidebar() {
   const pathname = usePathname();
   const { userContext } = useAuth();
   const isBrokerageRole = !!userContext?.roles.some((r) => ['admin', 'broker', 'superadmin'].includes(r));
-  const items = menuItems.filter((i) => i.personal || isBrokerageRole);
+  // Developers is principal-gated SERVER-side (isTenancyPrincipal: a solo-tier
+  // agent IS their own principal) — the client can't compute tier/lead
+  // membership, so it must not pre-empt the server: always show the link and
+  // let the page render the honest denial (mirrors app/settings/layout.tsx).
+  const items = menuItems.filter((i) => i.personal || isBrokerageRole || i.href === '/settings/developers');
 
   return (
     <aside className="w-64 bg-white border-r border-gray-200 h-full">

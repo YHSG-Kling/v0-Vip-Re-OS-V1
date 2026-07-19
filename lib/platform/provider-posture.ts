@@ -44,6 +44,9 @@ import { CONNECTED_CAPABILITY_REGISTRY, type ConnectedCapability } from "@/lib/a
 import { canonicalProvider } from "@/lib/integrations/connection-manager"
 import { composeSentinelLossReport } from "@/lib/kernel/write-sentinel"
 import { geoapifyConfigured } from "@/lib/external/geoapify-client"
+import { OSINTClient } from "@/lib/osint-client"
+import { fetchOSINTNeighborhoodData } from "@/lib/external/osint-neighborhood"
+import { gatewayChat } from "@/lib/ai/gateway-chat"
 
 // ── Webhook expectations (the URLs bindNumberToTwilioLane writes) ────────────
 
@@ -481,9 +484,17 @@ export async function getSendgridPosture(svc: any): Promise<SendgridPosture> {
 //                                every provider a tenant capability routes to)
 //   • geoapify-client           (env-gated module with no registry row — bound
 //                                by importing its own configured() check)
+//   • osint-client              (module-bound: the OSINT court/public-records
+//                                lane — rides the ZenRows scraper key)
+//   • osint-neighborhood        (module-bound: the KEYLESS OSINT-free lane —
+//                                Nominatim + Overpass + US Census, no key)
+//   • lib/ai gateway client     (module-bound: the VERCEL AI GATEWAY every
+//                                LLM/image call routes through)
 // Only NORMALIZATION is local: alias folding (d_id/did, twilio_voice/twilio,
 // openai_gpt4/openai…) and mapping each source's category vocabulary onto one
-// posture vocabulary. Removing a provider from every source removes it here.
+// posture vocabulary. Removing a provider from every source removes it here —
+// and owner-DECOMMISSIONED vendors (DECOMMISSIONED_PROVIDERS below) are
+// excluded even while historical sources still speak their names.
 
 export type ProviderCategory =
   | "voice_sms" | "email" | "mail" | "enrichment" | "scraper" | "ai_media"
@@ -506,6 +517,8 @@ export interface PlatformProviderEntry {
   storageAliases: string[]
   /** Which code sources contributed the entry — the registry's provenance. */
   sources: string[]
+  /** True when the lane needs no credential BY DESIGN (free API / own infra). */
+  keyless: boolean
 }
 
 /** Alias folding ON TOP of connection-manager's canonicalProvider — the extra
@@ -523,7 +536,46 @@ const POSTURE_CANON: Record<string, string> = {
   apify_social: "apify",
   facebook: "meta",
   instagram: "meta",
+  // The AI-gateway clients (lib/ai/gateway-chat, lib/ai/image-generation) log
+  // their connector calls under "vercel-ai-gateway" — fold onto the tenancy
+  // matrix's ai_gateway key so ALL gateway traffic attributes to ONE row.
+  "vercel-ai-gateway": "ai_gateway",
+  vercel_ai_gateway: "ai_gateway",
+  // The keyless OSINT-free lane (lib/external/osint-neighborhood + nominatim-
+  // geocode + census-appreciation) calls the gateway as three connectors —
+  // fold them onto its single posture row.
+  nominatim: "osint_free",
+  overpass: "osint_free",
+  census: "osint_free",
 }
+
+/** DECOMMISSIONED (owner decision) — excluded from the derived registry even
+ *  though historical sources still speak their names:
+ *  • vapi — the third-party voice-AI vendor was RETIRED; the Twilio-native
+ *    turn engine replaced it (VoiceUrl → our webhook → AI gateway → TwiML).
+ *    Legacy code stays reachable only behind VOICE_ENGINE=vapi for the
+ *    migration window and table names (vapi_phone_numbers) persist, but Vapi
+ *    is not a managed provider — nothing new binds to it.
+ *  • heygen — owner: "no HeyGen". The avatar/explainer engine is D-ID-locked
+ *    (resolveVideoProvider forces 'did'; the direct api.heygen.com calls were
+ *    removed and the l38/l39 purge scripts dropped its columns). Only manual
+ *    dev shell scripts and historical VENDOR_PRICING rates (kept so old
+ *    ledger rows still price — never delete rates) mention it.
+ *  Exclusion also drops their aliases from posture attribution, so a stale
+ *  ledger row can never resurrect a decommissioned provider's row. */
+export const DECOMMISSIONED_PROVIDERS = new Set<string>(["vapi", "heygen"])
+
+/** Env vars a source lists ALONGSIDE a provider that are not the vendor
+ *  credential itself (callback/tool secrets) — excluded from envVars so the
+ *  board's "configured" means the vendor KEY is present. (The tenancy matrix
+ *  lists AGENT_ASSISTANT_TOOL_SECRET with ElevenLabs, but that secret guards
+ *  OUR assistant-tool webhook, not the ElevenLabs account.) */
+const NON_CREDENTIAL_ENV = new Set<string>(["AGENT_ASSISTANT_TOOL_SECRET"])
+
+/** Lanes that need no credential BY DESIGN — free public APIs or our own
+ *  infrastructure. Rendering them "not configured / no connections" would be a
+ *  false alarm; the posture board badges them keyless instead. */
+const KEYLESS_PROVIDERS = new Set<string>(["osint_free", "browser_tts", "remotion", "cma_aggregate"])
 
 function canonPostureKey(name: string): string {
   const lc = (name ?? "").trim().toLowerCase()
@@ -544,7 +596,7 @@ const CATEGORY_OVERRIDES: Record<string, ProviderCategory> = {
   stripe: "payments", plaid: "payments",
   quickbooks: "accounting",
   lob: "mail",
-  socrata: "records", osint: "records",
+  socrata: "records", osint: "records", osint_free: "records",
   newsapi_ai: "search", exa: "search", tavily: "search",
   podcast_syndicator: "social",
   web_push: "infra", supabase_storage: "infra",
@@ -692,22 +744,67 @@ export function getPlatformProviderRegistry(): PlatformProviderEntry[] {
     }
   }
 
-  // 7. Env-gated client modules with no registry row — bound via their own
-  // exported configured() check so the module can't silently drift away.
+  // 7. Env-gated / keyless client modules with no registry row — each bound via
+  // one of its own exports so the module can't silently drift away from its row.
   void geoapifyConfigured // binding: lib/external/geoapify-client
   { const a = get("geoapify", "geoapify-client (env-gated module)"); a.envVars.add("GEOAPIFY_API_KEY"); a.platformHint = true }
 
-  const entries: PlatformProviderEntry[] = [...acc.entries()].map(([provider, a]) => ({
-    provider,
-    label: a.label ?? prettyLabel(provider),
-    category: resolveCategory(provider, a),
-    // Unknown-scope providers read as platform — conservative, mirroring
-    // vendorOwnership()'s default (anything the platform might pay for).
-    scope: a.platformHint && a.tenantHint ? "both" : a.tenantHint ? "tenant_byo" : "platform",
-    envVars: [...a.envVars].sort(),
-    storageAliases: [...a.aliases].sort(),
-    sources: [...a.sources].sort(),
-  }))
+  // OSINT records lane — lib/osint-client scrapes court/public records by
+  // territory (divorce/probate/foreclosure… → motivated-seller signals). It
+  // holds no key of its own: every fetch rides the ZenRows scraper credential,
+  // so that key IS its configured-state.
+  void OSINTClient // binding: lib/osint-client
+  {
+    const a = get("osint", "osint-client (module — rides the ZenRows key)")
+    a.envVars.add("ZENROWS_API_KEY")
+    a.platformHint = true
+  }
+
+  // OSINT-FREE lane (owner correction: was missing) — lib/external/
+  // osint-neighborhood (+ nominatim-geocode, census-appreciation): Nominatim
+  // geocoding, Overpass amenities, US Census ACS — all keyless free tiers.
+  // Its gateway calls log under service keys nominatim/overpass/census, which
+  // POSTURE_CANON folds here so the lane's traffic attributes to this row.
+  void fetchOSINTNeighborhoodData // binding: lib/external/osint-neighborhood
+  {
+    const a = get("osint_free", "osint-neighborhood (keyless module)")
+    a.label = "OSINT Free (OSM + Census)"
+    a.aliases.add("nominatim"); a.aliases.add("overpass"); a.aliases.add("census")
+    a.platformHint = true
+  }
+
+  // VERCEL AI GATEWAY (owner correction: was missing as a first-class row) —
+  // where all AI moves through. Every LLM/image call routes to
+  // https://ai-gateway.vercel.sh, on two client paths: the Vercel AI SDK via
+  // createGateway (lib/ai/generate.ts, lib/ai/models.ts, resolve-model.ts)
+  // and the raw connector "vercel-ai-gateway" (lib/ai/gateway-chat.ts,
+  // lib/ai/image-generation.ts). AI_GATEWAY_API_KEY is the one model key;
+  // the tenancy matrix's ANTHROPIC/OPENAI entries are direct-key fallbacks
+  // (managed-agents egress is the sole deliberate direct-Anthropic path).
+  void gatewayChat // binding: lib/ai/gateway-chat
+  {
+    const a = get("ai_gateway", "ai-gateway client (lib/ai)")
+    a.label = "Vercel AI Gateway"
+    a.envVars.add("AI_GATEWAY_API_KEY")
+    a.aliases.add("vercel-ai-gateway")
+    a.platformHint = true
+  }
+
+  const entries: PlatformProviderEntry[] = [...acc.entries()]
+    // Owner decommissions beat historical vocabulary — vapi/heygen never render.
+    .filter(([provider]) => !DECOMMISSIONED_PROVIDERS.has(provider))
+    .map(([provider, a]) => ({
+      provider,
+      label: a.label ?? prettyLabel(provider),
+      category: resolveCategory(provider, a),
+      // Unknown-scope providers read as platform — conservative, mirroring
+      // vendorOwnership()'s default (anything the platform might pay for).
+      scope: (a.platformHint && a.tenantHint ? "both" : a.tenantHint ? "tenant_byo" : "platform") as ProviderScope,
+      envVars: [...a.envVars].filter((v) => !NON_CREDENTIAL_ENV.has(v)).sort(),
+      storageAliases: [...a.aliases].sort(),
+      sources: [...a.sources].sort(),
+      keyless: KEYLESS_PROVIDERS.has(provider),
+    }))
   return entries.sort((x, y) =>
     CATEGORY_ORDER.indexOf(x.category) - CATEGORY_ORDER.indexOf(y.category) || x.provider.localeCompare(y.provider))
 }
