@@ -196,7 +196,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'quick-contact', label: 'Create Contact', href: '/crm/contacts/new' },
       { id: 'video-studio', label: 'Create AI Video', href: '/dashboard/videos/create' },
       { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
-      { id: 'lead-intel', label: 'Lead Intelligence', href: '/leads' },
+      // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY — the '/leads'
+      // command-palette entry was removed; agents work contacts (post-promotion).
       { id: 'briefing', label: 'AI Daily Briefing', href: '/dashboard/briefing' },
       { id: 'voice', label: 'Voice Command', href: '/dashboard/voice' },
       { id: 'outreach', label: 'AI Outreach', href: '/dashboard/communications/outreach' },
@@ -370,7 +371,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     sidebarItems: [
       { id: 'dashboard', label: 'AI-ISA Console', href: '/dashboard/isa', icon: 'LayoutGrid' },
       { id: 'calling', label: 'Calling Queue', href: '/dashboard/isa/calling', icon: 'Phone', badgeKey: 'isa_queue_count' },
-      { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Zap' },
+      // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY — the '/leads'
+      // entry was removed from the ISA block; the ISA works its own console.
       { id: 'outreach', label: 'AI Outreach', href: '/dashboard/communications/outreach', icon: 'Send' },
       { id: 'sequences', label: 'Automation Sequences', href: '/dashboard/campaigns/sequences', icon: 'Repeat' },
       { id: 'campaigns', label: 'Campaigns', href: '/dashboard/isa/campaigns', icon: 'Megaphone' },
@@ -378,6 +380,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'analytics', label: 'My Stats', href: '/dashboard/isa/analytics', icon: 'BarChart3' },
       { id: 'isa-settings', label: 'ISA Settings', href: '/dashboard/ai-isa/settings', icon: 'Settings' },
       { id: 'intelligence', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence', icon: 'Brain' },
+      // Notification-rail parity: every tenant user type gets the /notifications home.
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'divider1', divider: true },
       {
         id: 'video-tools',
@@ -397,7 +401,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     ],
     mobileBottomNav: [
       { id: 'calling', label: 'Calling', href: '/dashboard/isa/calling', icon: 'Phone' },
-      { id: 'leads', label: 'Leads', href: '/leads', icon: 'Zap' },
+      // LEADS = BROKERAGE + PLATFORM ONLY — '/leads' removed (see sidebar note).
       { id: 'outreach', label: 'Outreach', href: '/dashboard/communications/outreach', icon: 'Send' },
       { id: 'analytics', label: 'Stats', href: '/dashboard/isa/analytics', icon: 'BarChart3' },
       { id: 'more', label: 'More', href: '/dashboard', icon: 'Menu' },
@@ -574,6 +578,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'documents', label: 'Documents', href: '/vendor/documents', icon: 'FolderOpen' },
       // Orphan-route sweep: the vendor connection center was unreachable from any nav.
       { id: 'connections', label: 'Connections', href: '/vendor/connections', icon: 'Plug' },
+      // Notification-rail parity: every tenant user type gets the /notifications home.
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'settings', label: 'Settings', href: '/vendor/settings', icon: 'Settings' },
     ],
     topNavItems: [
@@ -632,6 +638,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       // a dead "Forbidden" link for tenant compliance officers. AI Audit is their tenant-scoped
       // audit surface (page allows compliance_officer); /compliance/audits covers the rest above.
       { id: 'ai-audit', label: 'AI Audit', href: '/dashboard/admin/ai-audit', icon: 'Database' },
+      // Notification-rail parity: every tenant user type gets the /notifications home.
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'settings', label: 'Settings', href: '/compliance/settings', icon: 'Settings' },
     ],
     topNavItems: [
@@ -659,6 +667,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'checklists', label: 'Checklists', href: '/transaction/checklists', icon: 'CheckSquare' },
       { id: 'documents', label: 'Documents', href: '/transaction/documents', icon: 'Folder' },
       { id: 'vendors', label: 'Vendor Coordination', href: '/transaction/vendors', icon: 'Users' },
+      // Notification-rail parity: every tenant user type gets the /notifications home.
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'settings', label: 'Settings', href: '/transaction/settings', icon: 'Settings' },
     ],
     topNavItems: [
@@ -687,6 +697,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'approvals', label: 'Approvals', href: '/lender/approvals', icon: 'CheckCircle' },
       { id: 'underwriting', label: 'Underwriting', href: '/lender/underwriting', icon: 'FileCheck' },
       { id: 'documents', label: 'Documents', href: '/lender/documents', icon: 'Folder' },
+      // Notification-rail parity: every tenant user type gets the /notifications home.
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'settings', label: 'Settings', href: '/lender/settings', icon: 'Settings' },
     ],
     topNavItems: [
@@ -713,6 +725,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'status', label: 'Order Status', href: '/title/status', icon: 'Clock' },
       { id: 'documents', label: 'Title Documents', href: '/title/documents', icon: 'FileText' },
       { id: 'closing', label: 'Closing Schedule', href: '/title/closing', icon: 'Calendar' },
+      // Notification-rail parity: every tenant user type gets the /notifications home.
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'settings', label: 'Settings', href: '/title/settings', icon: 'Settings' },
     ],
     topNavItems: [
@@ -786,7 +800,9 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'dashboard', label: 'Team Dashboard', href: '/dashboard/agent', icon: 'LayoutGrid' },
       { id: 'crm', label: 'CRM', href: '/crm', icon: 'Users' },
       { id: 'portal-clients', label: 'Portal Clients', href: '/crm/portal-clients', icon: 'DoorOpen' },
-      { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
+      // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY — the '/leads'
+      // entry was removed from the team_lead block; team leads oversee their
+      // team's CONTACTS, the lead desk is broker/admin + platform staff only.
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
       { id: 'agent-roster', label: 'My Team', href: '/dashboard/team', icon: 'UserCheck' },
       { id: 'team-heatmap', label: 'Team Heatmap', href: '/dashboard/team-heatmap', icon: 'Map' },

@@ -16,11 +16,18 @@
  * a schema migration.
  *
  * Prefix legend:
- *   nl:   newsletter_campaigns (approval_status pending)
+ *   nl:   newsletter_campaigns (approval_status pending / pending_review)
  *   em:   email_campaigns      (approval_status pending)
  *   acv:  ad_creative_variations (approval_status draft — pre-launch review)
  *   vsn:  video_snippets       (approval_status pending)
  *   bp:   blog_posts           (publish_status draft)
+ *   pc:   podcast_episodes     (approval_status pending_review — generated
+ *         episodes awaiting release before the distributor ships them)
+ *   vp:   ai_video_projects    (approval_status pending_review — commissioned
+ *         video renders awaiting release before publish/distribution)
+ *   of:   offers               (status pending — received offers awaiting the
+ *         agent's accept/reject decision; approve REUSES the canonical
+ *         acceptOffer kernel command from /offers, reject reuses rejectOffer)
  *   pa:   property_alerts      (SPOKEN/WRITTEN CRITERIA proposals —
  *         is_active=false, source 'voice_conversation' (calls) or
  *         'text_conversation' (inbound email/SMS), paused_reason
@@ -34,7 +41,115 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 
-export type ApprovalSource = "newsletter" | "email" | "ad_creative" | "video_snippet" | "blog" | "property_alert" | "legacy"
+export type ApprovalSource = "newsletter" | "email" | "ad_creative" | "video_snippet" | "blog" | "podcast" | "video" | "offer" | "property_alert" | "legacy"
+
+// ─── Canonical marketing-asset transitions (ONE implementation) ──────────────
+// The dedicated /dashboard/admin/marketing-approvals surface and this unified
+// queue's cascade both call these — the approve/reject state machine for
+// newsletter / blog / podcast / direct-mail / video assets lives HERE, so the
+// two surfaces can never drift ("approve" always leaves the asset PUBLISHABLE,
+// per the 2026-07 loop audit).
+
+export type MarketingAssetKind = "newsletter" | "blog" | "podcast" | "direct_mail" | "video" | "video_script"
+
+export const MARKETING_TABLE_BY_KIND: Record<MarketingAssetKind, string> = {
+  newsletter:   "newsletter_campaigns",
+  blog:         "blog_posts",
+  podcast:      "podcast_episodes",
+  direct_mail:  "direct_mail_campaigns",
+  video:        "ai_video_projects",
+  video_script: "video_scripts_library",
+}
+
+/**
+ * Approve (RELEASE) a marketing asset — sets approval_status='approved' and
+ * runs the kind-specific cascade so the asset leaves human review PUBLISHABLE:
+ *   newsletter — the publish cron only sends status='scheduled' with a
+ *     send_date; the stager writes draft/pending with none, so approve-only
+ *     stranded every AI newsletter forever.
+ *   blog — publishBlogPost keys on publish_status (a separate ladder from
+ *     approval_status); approval advances it so the cadence cron can ship.
+ *   podcast — the distributor ships approved episodes to publish_channels ∩
+ *     enabled channels; the auto-producer stages with NO channels, so default
+ *     them to everything the brokerage has enabled.
+ * Caller is responsible for auth + tenant/agent scoping.
+ */
+export async function applyMarketingAssetApproval(
+  kind: MarketingAssetKind, id: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const svc = createServiceClient()
+  const table = MARKETING_TABLE_BY_KIND[kind]
+
+  // Some marketing tables (newsletter_campaigns) don't carry updated_at;
+  // keep the update minimal to the column we know exists everywhere.
+  const { error } = await svc.from(table)
+    .update({ approval_status: "approved" })
+    .eq("id", id)
+  if (error) return { ok: false, error: error.message }
+
+  if (kind === "newsletter") {
+    const { data: nl } = await svc.from("newsletter_campaigns")
+      .select("status, send_date").eq("id", id).maybeSingle()
+    if (nl && (nl.status === "draft" || nl.status === "pending_review")) {
+      await svc.from("newsletter_campaigns").update({
+        status: "scheduled",
+        send_date: nl.send_date ?? new Date().toISOString(),
+      }).eq("id", id)
+    }
+  }
+  if (kind === "blog") {
+    const { data: bp } = await svc.from("blog_posts")
+      .select("publish_status").eq("id", id).maybeSingle()
+    if (bp && bp.publish_status === "draft") {
+      await svc.from("blog_posts").update({ publish_status: "approved" }).eq("id", id)
+    }
+  }
+  if (kind === "podcast") {
+    const { data: ep } = await svc.from("podcast_episodes")
+      .select("publish_channels, brokerage_id").eq("id", id).maybeSingle()
+    if (ep && (!Array.isArray(ep.publish_channels) || ep.publish_channels.length === 0)) {
+      const { data: channels } = await svc.from("podcast_distribution_channels")
+        .select("channel_name").eq("brokerage_id", ep.brokerage_id).eq("is_enabled", true)
+      const names = ((channels ?? []) as Array<{ channel_name: string }>).map((c) => c.channel_name)
+      if (names.length > 0) {
+        await svc.from("podcast_episodes").update({ publish_channels: names }).eq("id", id)
+      }
+    }
+  }
+
+  return { ok: true }
+}
+
+/**
+ * Reject a marketing asset — approval_status='rejected' (+ rejected_reason on
+ * tables that have it, with a defensive retry for those that don't). Blog also
+ * drops publish_status to 'rejected' so the post leaves BOTH review queues and
+ * the publish cron can never ship it.
+ */
+export async function applyMarketingAssetRejection(
+  kind: MarketingAssetKind, id: string, reason: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const svc = createServiceClient()
+  const table = MARKETING_TABLE_BY_KIND[kind]
+
+  // rejected_reason exists on direct_mail_campaigns; some tables only have
+  // approval_status. Set both defensively — retry without for the rest.
+  const { error } = await svc.from(table)
+    .update({ approval_status: "rejected", rejected_reason: reason })
+    .eq("id", id)
+  if (error) {
+    const { error: retryErr } = await svc.from(table)
+      .update({ approval_status: "rejected" })
+      .eq("id", id)
+    if (retryErr) return { ok: false, error: retryErr.message }
+  }
+
+  if (kind === "blog") {
+    await svc.from("blog_posts").update({ publish_status: "rejected" }).eq("id", id)
+  }
+
+  return { ok: true }
+}
 
 export interface UnifiedApprovalItem {
   /** Prefixed id — nl:<uuid> / em:<uuid> / acv:<uuid> / vsn:<uuid> / bp:<uuid>
@@ -60,13 +175,15 @@ export async function aggregatePendingApprovals(
   // newsletter_campaigns.agent_id is agents.id (FK); blog_posts uses
   // agent_user_id (users.id). Filter applied conditionally — when the caller
   // is a broker/admin agentScopeId is null so they see brokerage-wide.
-  const [newsletters, emails, adCreatives, videoSnippets, blogs, voiceAlerts, legacy] =
+  const [newsletters, emails, adCreatives, videoSnippets, blogs, podcasts, videoProjects, pendingOffers, voiceAlerts, legacy] =
     await Promise.all([
       svc
         .from("newsletter_campaigns")
         .select("id, agent_id, campaign_name, subject_line, status, approval_status, created_at")
         .eq("brokerage_id", brokerageId)
-        .eq("approval_status", "pending")
+        // 'pending' is the legacy manual value; the AI stager (lib/kernel/
+        // marketing.ts) writes 'pending_review' — both are awaiting a human.
+        .in("approval_status", ["pending", "pending_review"])
         .order("created_at", { ascending: false })
         .limit(PER_TABLE_LIMIT),
       svc
@@ -92,9 +209,43 @@ export async function aggregatePendingApprovals(
         .limit(PER_TABLE_LIMIT),
       svc
         .from("blog_posts")
-        .select("id, agent_user_id, title, excerpt, publish_status, created_at, updated_at")
+        .select("id, agent_user_id, title, excerpt, publish_status, approval_status, created_at, updated_at")
         .eq("brokerage_id", brokerageId)
         .eq("publish_status", "draft")
+        // A dedicated-surface reject only flips approval_status — keep those
+        // out so a rejected draft can't linger in this queue. (NULL-safe: a
+        // plain NOT IN would also drop manual drafts with no approval_status.)
+        .or("approval_status.is.null,approval_status.neq.rejected")
+        .order("created_at", { ascending: false })
+        .limit(PER_TABLE_LIMIT),
+      svc
+        // Podcast episodes staged for review (lib/kernel/marketing.ts writes
+        // approval_status='pending_review'); the distribute-podcast-episodes
+        // cron only ships 'approved', so a pending episode cannot reach a feed.
+        .from("podcast_episodes")
+        .select("id, agent_id, title, description, approval_status, created_at, updated_at")
+        .eq("brokerage_id", brokerageId)
+        .eq("approval_status", "pending_review")
+        .order("created_at", { ascending: false })
+        .limit(PER_TABLE_LIMIT),
+      svc
+        // Commissioned VIDEO RENDERS (ai_video_projects) awaiting release —
+        // migration 1051 gates AI videos on approval_status='pending_review';
+        // publishVideo (lib/kernel/marketing.ts) refuses anything not approved.
+        .from("ai_video_projects")
+        .select("id, agent_id, title, video_type, audience_type, video_provider, approval_status, created_at, updated_at")
+        .eq("brokerage_id", brokerageId)
+        .eq("approval_status", "pending_review")
+        .order("created_at", { ascending: false })
+        .limit(PER_TABLE_LIMIT),
+      svc
+        // Received OFFERS awaiting the accept/reject decision. Round-32 drill:
+        // offers were approvable only from /offers — surfacing them here makes
+        // the unified queue span deals too. Approve reuses acceptOffer.
+        .from("offers")
+        .select("id, agent_id, contact_id, listing_id, offer_price, status, created_at, updated_at")
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "pending")
         .order("created_at", { ascending: false })
         .limit(PER_TABLE_LIMIT),
       svc
@@ -189,6 +340,85 @@ export async function aggregatePendingApprovals(
       status: String(row.publish_status ?? "draft"),
       priority: "standard",
       content: `${String(row.title ?? "(untitled)")} — ${String(row.excerpt ?? "")}`.trim(),
+      created_at: String(row.created_at ?? new Date().toISOString()),
+      updated_at: String(row.updated_at ?? row.created_at ?? new Date().toISOString()),
+    })
+  }
+
+  for (const row of (podcasts.data ?? []) as Array<Record<string, unknown>>) {
+    // podcast_episodes.agent_id FKs users.id while the agent scope key is
+    // agents.id — same id-class mismatch as blog_posts, so these list
+    // brokerage-wide (like blogs).
+    items.push({
+      id: `pc:${String(row.id)}`,
+      type: "podcast",
+      agent_id: (row.agent_id as string | null) ?? null,
+      status: String(row.approval_status ?? "pending_review"),
+      priority: "standard",
+      content: `${String(row.title ?? "(untitled episode)")} — ${String(row.description ?? "")}`.trim().replace(/—\s*$/, "").trim(),
+      created_at: String(row.created_at ?? new Date().toISOString()),
+      updated_at: String(row.updated_at ?? row.created_at ?? new Date().toISOString()),
+    })
+  }
+
+  for (const row of (videoProjects.data ?? []) as Array<Record<string, unknown>>) {
+    // ai_video_projects.agent_id IS agents.id (kernel commissionVideo writes
+    // ctx.agentId) — the newsletter scope key applies.
+    if (agentScopeId && row.agent_id && row.agent_id !== agentScopeId) continue
+    const facets = [row.video_type, row.audience_type === "customer_facing" ? "customer-facing" : row.audience_type, row.video_provider]
+      .filter(Boolean).join(" · ")
+    items.push({
+      id: `vp:${String(row.id)}`,
+      type: "video",
+      agent_id: (row.agent_id as string | null) ?? null,
+      status: String(row.approval_status ?? "pending_review"),
+      priority: "medium",
+      content: `${String(row.title ?? "(untitled video)")}${facets ? ` — ${facets}` : ""}`.trim(),
+      created_at: String(row.created_at ?? new Date().toISOString()),
+      updated_at: String(row.updated_at ?? row.created_at ?? new Date().toISOString()),
+    })
+  }
+
+  // Received offers — enrich with buyer name + listing address (same light
+  // lookup idiom the alert proposals below use).
+  const offerRows = ((pendingOffers.data ?? []) as Array<Record<string, unknown>>)
+    // offers.agent_id is agents.id — same scope key as newsletters.
+    .filter((row) => !(agentScopeId && row.agent_id && row.agent_id !== agentScopeId))
+  const offerContactNames = new Map<string, string>()
+  const offerListingAddresses = new Map<string, string>()
+  if (offerRows.length > 0) {
+    const contactIds = [...new Set(offerRows.map((r) => r.contact_id).filter(Boolean))] as string[]
+    const listingIds = [...new Set(offerRows.map((r) => r.listing_id).filter(Boolean))] as string[]
+    const [{ data: offerContacts }, { data: offerListings }] = await Promise.all([
+      contactIds.length > 0
+        ? svc.from("contacts").select("id, first_name, last_name").in("id", contactIds)
+        : Promise.resolve({ data: [] as Array<Record<string, unknown>> }),
+      listingIds.length > 0
+        ? svc.from("listings").select("id, address, city").in("id", listingIds)
+        : Promise.resolve({ data: [] as Array<Record<string, unknown>> }),
+    ])
+    for (const c of (offerContacts ?? []) as Array<Record<string, unknown>>) {
+      const name = `${String(c.first_name ?? "").trim()} ${String(c.last_name ?? "").trim()}`.trim()
+      if (name) offerContactNames.set(String(c.id), name)
+    }
+    for (const l of (offerListings ?? []) as Array<Record<string, unknown>>) {
+      const addr = [l.address, l.city].filter(Boolean).join(", ")
+      if (addr) offerListingAddresses.set(String(l.id), addr)
+    }
+  }
+  for (const row of offerRows) {
+    const who = offerContactNames.get(String(row.contact_id)) ?? "a buyer"
+    const addr = offerListingAddresses.get(String(row.listing_id))
+    const price = typeof row.offer_price === "number"
+      ? `$${Number(row.offer_price).toLocaleString()}`
+      : null
+    items.push({
+      id: `of:${String(row.id)}`,
+      type: "offer",
+      agent_id: (row.agent_id as string | null) ?? null,
+      status: String(row.status ?? "pending"),
+      priority: "high", // a live offer is deal-critical — jumps the queue
+      content: `Offer from ${who}${addr ? ` on ${addr}` : ""}${price ? ` — ${price}` : ""}. Approve = accept (other pending offers on the listing are declined); reject = decline.`,
       created_at: String(row.created_at ?? new Date().toISOString()),
       updated_at: String(row.updated_at ?? row.created_at ?? new Date().toISOString()),
     })
@@ -306,9 +536,48 @@ async function cascade(
     return { success: true as const, type, targetId }
   }
 
+  // Scope pre-check for the sources whose approve/reject rides the shared
+  // canonical marketing transition (helpers scope by id only — tenancy is
+  // enforced HERE, before the write).
+  async function checkMarketingScope(
+    kind: MarketingAssetKind,
+    scopeKey: "agent_id" | null,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const table = MARKETING_TABLE_BY_KIND[kind]
+    const { data: row } = await svc
+      .from(table)
+      .select(scopeKey ? `id, brokerage_id, ${scopeKey}` : "id, brokerage_id")
+      .eq("id", targetId)
+      .maybeSingle()
+    if (!row) return { ok: false, error: "Not found" }
+    const r = row as unknown as Record<string, unknown>
+    if (r.brokerage_id !== ctx.brokerageId) return { ok: false, error: "Forbidden" }
+    if (scopeKey && ctx.agentScopeId && r[scopeKey] && r[scopeKey] !== ctx.agentScopeId) {
+      return { ok: false, error: "Forbidden" }
+    }
+    return { ok: true }
+  }
+
+  async function marketingCascade(
+    kind: MarketingAssetKind,
+    type: ApprovalSource,
+    scopeKey: "agent_id" | null,
+  ): Promise<CascadeOutcome> {
+    const scope = await checkMarketingScope(kind, scopeKey)
+    if (!scope.ok) return { success: false, error: scope.error }
+    const res = outcome === "approved"
+      ? await applyMarketingAssetApproval(kind, targetId)
+      : await applyMarketingAssetRejection(kind, targetId, ctx.notes?.trim() || "Rejected in approvals queue")
+    if (!res.ok) return { success: false, error: res.error }
+    return { success: true, type, targetId }
+  }
+
   switch (prefix) {
     case "nl":
-      return updateApprovalStatus("newsletter_campaigns", "newsletter", false)
+      // Canonical newsletter transition — approve also schedules the send
+      // (the publish cron only ships status='scheduled' with a send_date).
+      // newsletter_campaigns.agent_id is agents.id — scope applies.
+      return marketingCascade("newsletter", "newsletter", "agent_id")
     case "em":
       return updateApprovalStatus("email_campaigns", "email")
     case "acv": {
@@ -336,22 +605,48 @@ async function cascade(
       if (error) return { success: false, error: error.message }
       return { success: true, type: "video_snippet", targetId }
     }
-    case "bp": {
-      // blog_posts uses publish_status semantics: approved → publishable,
-      // rejected → archive. No compliance_approved column in live schema.
-      const newStatus = outcome === "approved" ? "approved" : "rejected"
-      let q = svc
-        .from("blog_posts")
-        .update({
-          publish_status: newStatus,
-          updated_at: new Date().toISOString(),
-        })
+    case "bp":
+      // Canonical blog transition — approve advances BOTH ladders
+      // (approval_status + publish_status) so neither review queue re-shows
+      // it and the cadence cron can publish; reject drops both to rejected.
+      // blog_posts.agent_user_id is users.id while the agent scope key is
+      // agents.id (id-class mismatch) — blogs list + action brokerage-wide,
+      // matching the aggregate view above.
+      return marketingCascade("blog", "blog", null)
+    case "pc":
+      // Podcast episode release — canonical transition (approve also defaults
+      // publish_channels to everything the brokerage has enabled, else the
+      // distributor would have nothing to ship to). podcast_episodes.agent_id
+      // is users.id — brokerage-wide, like blogs.
+      return marketingCascade("podcast", "podcast", null)
+    case "vp":
+      // Commissioned video render release — canonical transition; the publish
+      // rail (publishVideo) refuses anything not 'approved'.
+      // ai_video_projects.agent_id is agents.id — scope applies.
+      return marketingCascade("video", "video", "agent_id")
+    case "of": {
+      // Received offer — REUSE the canonical /offers kernel commands:
+      // approve = acceptOffer (declines competing pending offers, advances a
+      // linked transaction to under_contract, emits OFFER_OS_ACCEPTED);
+      // reject = rejectOffer (notes carry the reason, emits OFFER_OS_REJECTED).
+      const { data: offer } = await svc
+        .from("offers")
+        .select("id, brokerage_id, agent_id, status")
         .eq("id", targetId)
-        .eq("brokerage_id", ctx.brokerageId)
-      if (ctx.agentScopeId) q = q.eq("agent_user_id", ctx.agentScopeId)
-      const { error } = await q
-      if (error) return { success: false, error: error.message }
-      return { success: true, type: "blog", targetId }
+        .maybeSingle()
+      if (!offer) return { success: false, error: "Not found" }
+      if (offer.brokerage_id !== ctx.brokerageId) return { success: false, error: "Forbidden" }
+      if (ctx.agentScopeId && offer.agent_id && offer.agent_id !== ctx.agentScopeId) {
+        return { success: false, error: "Forbidden" }
+      }
+      // Idempotence: only a still-pending offer can be actioned from the queue.
+      if (offer.status !== "pending") return { success: false, error: "Offer is no longer pending" }
+      const { acceptOffer, rejectOffer } = await import("@/lib/kernel/offers")
+      const res = outcome === "approved"
+        ? await acceptOffer({ offerId: targetId, agentId: ctx.reviewerUserId, brokerageId: ctx.brokerageId })
+        : await rejectOffer({ offerId: targetId, agentId: ctx.reviewerUserId, brokerageId: ctx.brokerageId, reason: ctx.notes })
+      if (!res.success) return { success: false, error: res.error ?? "Offer action failed" }
+      return { success: true, type: "offer", targetId }
     }
     case "pa": {
       // SPOKEN/WRITTEN CRITERIA alert proposal. Approve = activate (resume

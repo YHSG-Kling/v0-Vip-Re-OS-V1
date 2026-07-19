@@ -33,6 +33,21 @@ const priorityConfig = {
   standard: { icon: "⚪", label: "Standard", color: "text-muted-foreground" },
 }
 
+// Type badge per unified-queue source (lib/kernel/approval-queue-aggregator.ts
+// ApprovalSource). Unknown types fall back to the raw value.
+const typeConfig: Record<string, { icon: string; label: string }> = {
+  newsletter: { icon: "📧", label: "Newsletter" },
+  email: { icon: "✉️", label: "Email Campaign" },
+  ad_creative: { icon: "📣", label: "Ad Creative" },
+  video_snippet: { icon: "🎬", label: "Video Snippet" },
+  blog: { icon: "📝", label: "Blog Post" },
+  podcast: { icon: "🎙️", label: "Podcast Episode" },
+  video: { icon: "🎥", label: "Video Render" },
+  offer: { icon: "🤝", label: "Offer" },
+  property_alert: { icon: "🔔", label: "Property Alert" },
+  legacy: { icon: "✅", label: "Approval" },
+}
+
 export default function ApprovalsPage() {
   const [items, setItems] = useState<ApprovalItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -293,7 +308,9 @@ function ApprovalItemCard({
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-2">
               <Badge variant="outline" className="text-xs">
-                {item.type}
+                {typeConfig[item.type]
+                  ? `${typeConfig[item.type].icon} ${typeConfig[item.type].label}`
+                  : item.type}
               </Badge>
               <span className="text-xs text-muted-foreground">{formatTimeAgo(item.created_at)}</span>
             </div>

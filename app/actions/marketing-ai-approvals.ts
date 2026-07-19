@@ -15,6 +15,11 @@
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import {
+  applyMarketingAssetApproval,
+  applyMarketingAssetRejection,
+  MARKETING_TABLE_BY_KIND,
+} from "@/lib/kernel/approval-queue-aggregator"
 
 const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 
@@ -32,7 +37,18 @@ async function requireAdmin(): Promise<
     .maybeSingle()
   if (!row?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
   const userType = row.user_type as string
-  if (!ADMIN_ROLES.has(userType)) return { ok: false, error: "Forbidden" }
+  if (!ADMIN_ROLES.has(userType)) {
+    // TIER PARITY (owner rule): a solo-tier subscriber IS their own broker —
+    // their one working seat often carries user_type 'agent'/'solo_agent',
+    // which locked them out of their own marketing-approvals rail. Same
+    // allowance round 32 gave bulk campaigns (marketing-campaigns-admin.ts).
+    const svc = createServiceClient()
+    const { data: b } = await svc
+      .from("brokerages").select("plan_tier").eq("id", row.brokerage_id).maybeSingle()
+    if ((b as { plan_tier?: string } | null)?.plan_tier !== "solo_agent") {
+      return { ok: false, error: "Forbidden" }
+    }
+  }
   return { ok: true, userId: user.id, brokerageId: row.brokerage_id as string, userType }
 }
 
@@ -159,14 +175,13 @@ export async function listPendingMarketingAssetsAction(): Promise<
   return { ok: true, rows }
 }
 
-const TABLE_BY_KIND: Record<AssetKind, string> = {
-  newsletter:    "newsletter_campaigns",
-  blog:          "blog_posts",
-  podcast:       "podcast_episodes",
-  direct_mail:   "direct_mail_campaigns",
-  video:         "ai_video_projects",
-  video_script:  "video_scripts_library",
-}
+// The approve/reject state machine lives in ONE place —
+// lib/kernel/approval-queue-aggregator.ts (applyMarketingAssetApproval /
+// applyMarketingAssetRejection) — shared with the unified /approvals queue's
+// cascade so the two review surfaces can never drift. APPROVAL IS THE LAST
+// HUMAN STOP: each kind leaves the helper PUBLISHABLE (newsletter scheduled,
+// blog publish_status advanced, podcast channels defaulted) — see the helper
+// docs for the 2026-07 loop-audit findings behind each cascade.
 
 export async function approveMarketingAssetAction(
   kind: AssetKind, id: string,
@@ -175,61 +190,13 @@ export async function approveMarketingAssetAction(
   if (!auth.ok) return auth
 
   const svc = createServiceClient()
-  const table = TABLE_BY_KIND[kind]
+  const table = MARKETING_TABLE_BY_KIND[kind]
   const { data: row } = await svc.from(table).select("brokerage_id").eq("id", id).maybeSingle()
   if (!row) return { ok: false, error: "Not found" }
   if (row.brokerage_id !== auth.brokerageId) return { ok: false, error: "Forbidden" }
 
-  // Some marketing tables (newsletter_campaigns) don't carry updated_at;
-  // keep the update minimal to the column we know exists everywhere.
-  const { error } = await svc.from(table)
-    .update({ approval_status: "approved" })
-    .eq("id", id)
-  if (error) return { ok: false, error: error.message }
-
-  // APPROVAL IS THE LAST HUMAN STOP — each kind must leave here PUBLISHABLE
-  // or the loop dead-ends (the 2026-07 loop audit found both of these):
-  //   newsletter — publish-newsletters only sends status='scheduled' AND
-  //     send_date<=now; the stager writes draft/pending with NO send_date,
-  //     so approve-only stranded every AI newsletter forever.
-  //   blog — publishBlogPost keys on publish_status (a separate ladder from
-  //     approval_status); approving the queue row never made the post
-  //     publishable. Approval now advances publish_status so the blog
-  //     cadence cron's publish phase can ship it.
-  if (kind === "newsletter") {
-    const { data: nl } = await svc.from("newsletter_campaigns")
-      .select("status, send_date").eq("id", id).maybeSingle()
-    if (nl && (nl.status === "draft" || nl.status === "pending_review")) {
-      await svc.from("newsletter_campaigns").update({
-        status: "scheduled",
-        send_date: nl.send_date ?? new Date().toISOString(),
-      }).eq("id", id)
-    }
-  }
-  if (kind === "blog") {
-    const { data: bp } = await svc.from("blog_posts")
-      .select("publish_status").eq("id", id).maybeSingle()
-    if (bp && bp.publish_status === "draft") {
-      await svc.from("blog_posts").update({ publish_status: "approved" }).eq("id", id)
-    }
-  }
-  if (kind === "podcast") {
-    //   podcast — the distributor ships approval_status='approved' episodes
-    //   to episode.publish_channels ∩ the brokerage's enabled channels, but
-    //   the auto-producer stages with NO channels — approve-only would
-    //   never distribute. Default the channels to everything the brokerage
-    //   has enabled (none enabled → honestly nothing to ship to).
-    const { data: ep } = await svc.from("podcast_episodes")
-      .select("publish_channels, brokerage_id").eq("id", id).maybeSingle()
-    if (ep && (!Array.isArray(ep.publish_channels) || ep.publish_channels.length === 0)) {
-      const { data: channels } = await svc.from("podcast_distribution_channels")
-        .select("channel_name").eq("brokerage_id", ep.brokerage_id).eq("is_enabled", true)
-      const names = ((channels ?? []) as Array<{ channel_name: string }>).map((c) => c.channel_name)
-      if (names.length > 0) {
-        await svc.from("podcast_episodes").update({ publish_channels: names }).eq("id", id)
-      }
-    }
-  }
+  const res = await applyMarketingAssetApproval(kind, id)
+  if (!res.ok) return res
 
   revalidatePath("/dashboard/admin/marketing-approvals")
   return { ok: true }
@@ -245,26 +212,13 @@ export async function rejectMarketingAssetAction(
   }
 
   const svc = createServiceClient()
-  const table = TABLE_BY_KIND[kind]
+  const table = MARKETING_TABLE_BY_KIND[kind]
   const { data: row } = await svc.from(table).select("brokerage_id").eq("id", id).maybeSingle()
   if (!row) return { ok: false, error: "Not found" }
   if (row.brokerage_id !== auth.brokerageId) return { ok: false, error: "Forbidden" }
 
-  // rejected_reason exists on direct_mail_campaigns; some tables only have
-  // approval_status. Set both defensively — the kernel ignores unknowns.
-  const { error } = await svc.from(table)
-    .update({
-      approval_status: "rejected",
-      rejected_reason: reason.trim(),
-    })
-    .eq("id", id)
-  if (error) {
-    // Retry without rejected_reason for tables that don't have it
-    const { error: retryErr } = await svc.from(table)
-      .update({ approval_status: "rejected" })
-      .eq("id", id)
-    if (retryErr) return { ok: false, error: retryErr.message }
-  }
+  const res = await applyMarketingAssetRejection(kind, id, reason.trim())
+  if (!res.ok) return res
 
   revalidatePath("/dashboard/admin/marketing-approvals")
   return { ok: true }

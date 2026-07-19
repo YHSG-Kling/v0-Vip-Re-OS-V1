@@ -13,15 +13,19 @@ import { aggregatePendingApprovals } from "@/lib/kernel/approval-queue-aggregato
  * generateAdCreative, etc.) actually produce.
  *
  * Sources (live schema verified):
- *   - newsletter_campaigns.approval_status='pending'
+ *   - newsletter_campaigns.approval_status in ('pending','pending_review')
  *   - email_campaigns.approval_status='pending'
  *   - ad_creative_variations.approval_status='draft' (pre-launch review)
  *   - video_snippets.approval_status='pending'
- *   - blog_posts.publish_status='draft'
+ *   - blog_posts.publish_status='draft' (not rejected)
+ *   - podcast_episodes.approval_status='pending_review'
+ *   - ai_video_projects.approval_status='pending_review' (commissioned renders)
+ *   - offers.status='pending' (received offers awaiting accept/reject)
+ *   - property_alerts voice/text criteria proposals
  *   - approval_items.status='pending' (legacy table — still surfaced)
  *
- * Each item carries a prefixed id (nl:/em:/acv:/vsn:/bp:) so the
- * approve/reject routes know which source table to cascade to.
+ * Each item carries a prefixed id (nl:/em:/acv:/vsn:/bp:/pc:/vp:/of:/pa:) so
+ * the approve/reject routes know which source table to cascade to.
  */
 export async function GET() {
   try {

@@ -1,6 +1,30 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
+
+const TEMPLATE_APPROVER_ROLES = new Set(['broker', 'broker_admin', 'admin', 'superadmin', 'team_lead'])
+
+/**
+ * Can this user approve/reject newsletter templates?
+ * Broker-side roles always can. TIER PARITY (owner rule, same allowance round
+ * 32 gave bulk campaigns): a solo-tier subscriber IS their own broker — their
+ * one working seat often carries user_type 'agent'/'solo_agent', which locked
+ * them out of approving their OWN templates, and scheduleNewsletter refuses
+ * unapproved templates → solo principals could never send a templated
+ * newsletter end-to-end.
+ */
+async function canApproveTemplates(
+  userType: string | null,
+  role: string | null,
+  brokerageId: string,
+): Promise<boolean> {
+  if (TEMPLATE_APPROVER_ROLES.has(userType ?? role ?? '')) return true
+  const svc = createServiceClient()
+  const { data: b } = await svc
+    .from('brokerages').select('plan_tier').eq('id', brokerageId).maybeSingle()
+  return (b as { plan_tier?: string } | null)?.plan_tier === 'solo_agent'
+}
 
 export async function submitTemplateForApproval(templateId: string) {
   const supabase = await createClient()
@@ -44,16 +68,18 @@ export async function approveTemplate(templateId: string, approvingUserId: strin
   } = await supabase.auth.getUser()
   if (!user) throw new Error('Not authenticated')
 
-  // Verify approver is broker admin
+  // Verify approver is broker-side (or the solo-tier principal)
   const { data: approverData } = await supabase
     .from('users')
     .select('user_type, role, brokerage_id')
     .eq('id', user.id)
     .single()
 
-  if (!approverData || !['broker', 'admin'].includes(approverData.user_type ?? approverData.role ?? '')) {
-    throw new Error('Only broker admins can approve templates')
-  }
+  if (!approverData?.brokerage_id) throw new Error('User has no brokerage assigned')
+  const allowed = await canApproveTemplates(
+    approverData.user_type ?? null, approverData.role ?? null, approverData.brokerage_id,
+  )
+  if (!allowed) throw new Error('Only broker admins can approve templates')
 
   const { error } = await supabase
     .from('newsletter_brokers_templates')
@@ -64,6 +90,7 @@ export async function approveTemplate(templateId: string, approvingUserId: strin
       updated_at: new Date().toISOString(),
     })
     .eq('id', templateId)
+    .eq('brokerage_id', approverData.brokerage_id) // tenant-scoped write
 
   if (error) throw new Error(`Failed to approve template: ${error.message}`)
 
@@ -81,16 +108,18 @@ export async function rejectTemplate(templateId: string, rejectionReason: string
   } = await supabase.auth.getUser()
   if (!user) throw new Error('Not authenticated')
 
-  // Verify rejector is broker admin
+  // Verify rejector is broker-side (or the solo-tier principal)
   const { data: rejectorData } = await supabase
     .from('users')
-    .select('user_type, role')
+    .select('user_type, role, brokerage_id')
     .eq('id', user.id)
     .single()
 
-  if (!rejectorData || !['broker', 'admin'].includes(rejectorData.user_type ?? rejectorData.role ?? '')) {
-    throw new Error('Only broker admins can reject templates')
-  }
+  if (!rejectorData?.brokerage_id) throw new Error('User has no brokerage assigned')
+  const allowed = await canApproveTemplates(
+    rejectorData.user_type ?? null, rejectorData.role ?? null, rejectorData.brokerage_id,
+  )
+  if (!allowed) throw new Error('Only broker admins can reject templates')
 
   const { error } = await supabase
     .from('newsletter_brokers_templates')
@@ -101,6 +130,7 @@ export async function rejectTemplate(templateId: string, rejectionReason: string
       updated_at: new Date().toISOString(),
     })
     .eq('id', templateId)
+    .eq('brokerage_id', rejectorData.brokerage_id) // tenant-scoped write
 
   if (error) throw new Error(`Failed to reject template: ${error.message}`)
 

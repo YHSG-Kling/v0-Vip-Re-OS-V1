@@ -13,11 +13,16 @@ import { cascadeApprove } from "@/lib/kernel/approval-queue-aggregator"
  *   acv:   ad_creative_variations
  *   vsn:   video_snippets
  *   bp:    blog_posts
+ *   pc:    podcast_episodes
+ *   vp:    ai_video_projects (commissioned video renders)
+ *   of:    offers (approve = the canonical acceptOffer from /offers)
+ *   pa:    property_alerts (criteria proposals)
  *   <bare> approval_items (legacy)
  *
  * Authority: agents may approve only their own items (per-table scope key
- * varies — newsletter/email use agents.id, blog/video use users.id; cascade
- * handles both). Brokers / admins may approve any item in their brokerage.
+ * varies — newsletter/email/video-render/offer use agents.id, blog/podcast
+ * use users.id and act brokerage-wide; cascade handles each). Brokers /
+ * admins may approve any item in their brokerage.
  */
 export async function POST(request: Request) {
   const supabase = await createClient()
