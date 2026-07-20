@@ -26,7 +26,9 @@ import { AlertTriangle, RefreshCw, Check, X, ShieldAlert, MapPin } from "lucide-
 import {
   getExceptionCenter, resolveException, dismissException, retryDataFlows, flagRepairWrong,
 } from "@/app/actions/exception-center"
+import { getApprovalSlaTelemetry } from "@/app/actions/approval-sla"
 import type { ExceptionCenterRead, ExceptionScope } from "@/lib/kernel/exception-center"
+import type { ApprovalKindSla } from "@/lib/kernel/approval-sla"
 
 const ALL_LOCATIONS = "__all__"
 
@@ -36,6 +38,9 @@ export function BrokerExceptionCenter() {
   const [locationId, setLocationId] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [retryNote, setRetryNote] = useState<string | null>(null)
+  // APPROVAL-QUEUE SLA TELEMETRY (round 34) — per-kind pending-approval aging from the
+  // canonical aggregator (brokerage-wide; the aging question is an operations question).
+  const [sla, setSla] = useState<ApprovalKindSla[]>([])
 
   const reload = useCallback((loc: string | null) => {
     getExceptionCenter(loc ? { locationId: loc } : undefined)
@@ -46,16 +51,21 @@ export function BrokerExceptionCenter() {
         }
       })
       .catch(() => {})
+    getApprovalSlaTelemetry()
+      .then((x) => { if (x.success) setSla(x.rows) })
+      .catch(() => {})
   }, [])
   useEffect(() => { reload(locationId) }, [reload, locationId])
 
   if (!read || !scope) return null
   const empty = read.open.length === 0 && read.supervised.length === 0
   const filterActive = !!scope.selectedLocationId
+  // Only aging that needs eyes earns a chip — an all-green queue stays out of the way.
+  const slaFlagged = sla.filter((r) => r.status !== "ok")
   // Nothing anywhere and no office narrowing in play → stay out of the way.
-  if (empty && !filterActive) return null
+  if (empty && !filterActive && slaFlagged.length === 0) return null
   // A location admin (pinned office) with a genuinely clean office and nothing hidden.
-  if (empty && filterActive && scope.forced && scope.hiddenUnattributed === 0) return null
+  if (empty && filterActive && scope.forced && scope.hiddenUnattributed === 0 && slaFlagged.length === 0) return null
 
   const act = async (key: string, fn: () => Promise<{ success: boolean }>) => {
     setBusy(key)
@@ -122,8 +132,40 @@ export function BrokerExceptionCenter() {
         {retryNote && <p className="text-xs text-emerald-700">{retryNote}</p>}
       </CardHeader>
       <CardContent className="space-y-3">
-        {empty && (
+        {/* APPROVAL-QUEUE SLA — aging chips per approval kind (from the canonical
+            aggregator's own pending rows; >24h amber, >48h red — a queue kind sitting
+            past two days is a stalled human gate, and the Cron Manager has referred it
+            to the owning manager on the bus). Only kinds needing eyes are shown. */}
+        {slaFlagged.length > 0 && (
+          <div className="rounded-md border border-amber-100 p-2.5">
+            <p className="text-xs font-medium text-muted-foreground">
+              Approval queue aging — pending past 24h flagged, past 48h breached
+            </p>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {slaFlagged.map((r) => (
+                <span
+                  key={r.kind}
+                  title={`${r.pending} pending · oldest ${r.oldestHours}h · avg ${r.avgHours}h · owner: ${r.ownerLabel}`}
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] ${
+                    r.status === "breach"
+                      ? "border-red-200 bg-red-50 text-red-700"
+                      : "border-amber-200 bg-amber-50 text-amber-800"
+                  }`}
+                >
+                  <span className="font-medium">{r.label}</span>
+                  <span>{r.pending} pending</span>
+                  <span>· oldest {r.oldestHours}h</span>
+                  <span className="text-muted-foreground">· {r.ownerLabel}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        {empty && slaFlagged.length === 0 && (
           <p className="text-sm text-muted-foreground">Nothing open for this office.</p>
+        )}
+        {empty && slaFlagged.length > 0 && (
+          <p className="text-sm text-muted-foreground">No open exceptions — only approval-queue aging above.</p>
         )}
         {read.open.map((ex) => (
           <div key={ex.eventId} className="rounded-md border border-amber-100 p-2.5">

@@ -129,6 +129,109 @@ export function resolvePlatformManager(key: string): PlatformManagerInfo {
     : { key: "platform_sentinel", label: "Platform Operations", domain: "Unassigned platform-scope work — needs an owner", accent: "bg-slate-100 text-slate-700" }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CROSS-MANAGEMENT (round 34 — "managers should be working together and can
+// cross manage"): the DECLARED COLLABORATION MAP. Single-ownership stays the
+// law (TABLE_MANAGER / QUEUE_MANAGER / CRON_MANAGER are untouched — one steward
+// per table, one owner per queue), but the REAL overlaps where two managers
+// already co-work a domain are now first-class instead of implicit. Every entry
+// below is DERIVED from evidence that already exists in this registry + the
+// signal catalog (catalogued bus signals, stewarded tables, queue ownership) —
+// no aspirational edges. The cross_manager_referral signal (SIGNAL_REGISTRY)
+// may ONLY travel along these declared edges: the shared referral handler
+// refuses any from→to pair that no collaboration domain contains, so
+// cross-management is governed by this map, never a free-for-all.
+// Pure data (no I/O) — safe for the client governance surface to render.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CollaborationDomain {
+  key: string
+  /** Human label for the co-managed domain (governance surface). */
+  label: string
+  /** The co-managers of this shared domain. A referral edge is valid only when
+   *  BOTH ends appear in the same entry. */
+  managers: ManagerKey[]
+  /** The REAL overlap this entry encodes — the catalogued signals / stewarded
+   *  tables / queue ownership that prove these managers already co-work it. */
+  evidence: string
+}
+
+export const MANAGER_COLLABORATIONS: Record<string, CollaborationDomain> = {
+  listing_demand_bridge: {
+    key: "listing_demand_bridge",
+    label: "In-house inventory ↔ buyer demand",
+    managers: ["listing_concierge", "shopping_agent"],
+    evidence: "Catalogued bus signals price_reduced, listing_back_on_market, listing_stall_reprospect and dual_transaction_timing — the seller side (listings, listing_concierge-stewarded) and the buyer side (offers / saved properties / property_alerts, shopping_agent-stewarded) already work the same in-house inventory from both ends.",
+  },
+  listing_launch_play: {
+    key: "listing_launch_play",
+    label: "Listing launch → creative → campaign → paid push",
+    managers: ["listing_concierge", "asset_manager", "campaign_orchestrator", "ads_manager"],
+    evidence: "The Deal Play chain (deal_play_prep_ready → deal_play_reel_ready → deal_play_campaign_ready → deal_play_ads_ready) plus listing_marketing_ready — a launch is staged by the concierge, the reel cut by the Asset Manager, the campaign drafted by the Orchestrator, the paid push proposed by the Ads Manager.",
+  },
+  closing_money_and_risk: {
+    key: "closing_money_and_risk",
+    label: "Closings: money + regulatory exposure (incl. commission records)",
+    managers: ["deal_coordinator", "finance_manager", "compliance_officer"],
+    evidence: "transaction_action_pending and deal_save_huddle are consumed by BOTH finance_manager and compliance_officer, routed by the failing component; rate_lock_watch and loan_milestone ride the same deals. One closing crosses three stewardships — transactions (deal_coordinator), commission_records / agent_commission_profiles (finance_manager), compliance_flags (compliance_officer) — the finance+compliance seam at disbursement (the CDA flow).",
+  },
+  long_horizon_nurture: {
+    key: "long_horizon_nurture",
+    label: "Lead lifecycle ↔ lifetime relationship",
+    managers: ["ai_isa", "sphere_of_influence"],
+    evidence: "long_horizon_nurture_handoff (a year-quiet lead handed to the lifetime-nurture owner instead of abandoned) and next_move_intent (the ISA hears a past client's re-transaction intent and hands it to the Sphere) — leads/engagement (ai_isa) and lifetime clients (sphere_of_influence) share every relationship that outlives a single deal.",
+  },
+  agent_licensing_readiness: {
+    key: "agent_licensing_readiness",
+    label: "Agent roster ↔ regulatory readiness",
+    managers: ["recruiting_manager", "compliance_officer"],
+    evidence: "license_lapsing — the Recruiting Manager detects blockers on the agents/certifications tables it stewards; the Compliance Officer records the exposure in compliance_flags. Recruiting detects → Compliance records, per the round-30 license-readiness sweep.",
+  },
+  creative_distribution: {
+    key: "creative_distribution",
+    label: "Finished renders: distribute + promote",
+    managers: ["asset_manager", "campaign_orchestrator", "ads_manager"],
+    evidence: "video_ready fans out to BOTH the Campaign Orchestrator (gated distribution) and the Ads Manager (gated paid promotion); repurpose_shorts_handoff and seller_update_ready close the loop — one render (ai_video_projects, asset_manager-stewarded), three hands on it.",
+  },
+  organic_paid_content: {
+    key: "organic_paid_content",
+    label: "Organic winners → governed paid spend",
+    managers: ["marketing_agent", "ads_manager"],
+    evidence: "content_winner — an organic winner on social_posts (marketing_agent-stewarded) becomes a governed launch proposal in ad_manager_actions (ads_manager-stewarded). The organic/paid boundary is a working seam, not a wall.",
+  },
+  offer_intake: {
+    key: "offer_intake",
+    label: "Inbound offer extraction → seller net-sheet",
+    managers: ["data_steward", "listing_concierge"],
+    evidence: "offers_compare_handoff — the Data Steward's extraction pipeline finishes AI-reading an inbound offer on an in-house listing and hands the comparison-ready offer to the Listing Concierge for the net-sheet ranking (deliberately NOT the Deal Coordinator, which only owns post-gate transactions).",
+  },
+  approval_queue_slo: {
+    key: "approval_queue_slo",
+    label: "Approval-queue aging (per-manager SLO)",
+    managers: ["cron_manager", "campaign_orchestrator", "asset_manager", "ads_manager", "shopping_agent", "data_steward"],
+    evidence: "The unified approval queue's per-kind owners (QUEUE_MANAGER + table stewardship: newsletters/emails/blogs/podcasts → campaign_orchestrator; video renders/snippets → asset_manager; ad creatives → ads_manager; pending offers/property-alert proposals → shopping_agent; legacy approval_items → data_steward) under the Cron Manager's loop-health/per-manager-SLO charter — approvals aging past SLA are raised INTO the owning manager's domain as governed referrals.",
+  },
+}
+
+/** Every collaboration domain a manager co-manages (governance surface). Pure. */
+export function collaborationsFor(manager: ManagerKey): CollaborationDomain[] {
+  return Object.values(MANAGER_COLLABORATIONS).filter((d) => d.managers.includes(manager))
+}
+
+/**
+ * Is from → to a DECLARED cross-management edge? True only when both are real,
+ * distinct managers sharing a collaboration domain (the named one when
+ * domainKey is given, any one otherwise). The referral handler enforces this —
+ * an undeclared referral is refused on the bus, honestly, with the reason.
+ */
+export function canRefer(from: string, to: string, domainKey?: string): boolean {
+  if (!(from in MANAGERS) || !(to in MANAGERS) || from === to) return false
+  const domains = domainKey
+    ? (MANAGER_COLLABORATIONS[domainKey] ? [MANAGER_COLLABORATIONS[domainKey]] : [])
+    : Object.values(MANAGER_COLLABORATIONS)
+  return domains.some((d) => d.managers.includes(from as ManagerKey) && d.managers.includes(to as ManagerKey))
+}
+
 /**
  * Every Command Center queue → its owning manager. `client_message` is resolved
  * per-row from the message's agent_kind (any of the deal-critical managers can

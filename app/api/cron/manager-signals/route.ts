@@ -87,6 +87,20 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // CROSS-MANAGEMENT (round 34) — the Cron Manager's approval-queue SLA sweep: any
+    // tenant with a >48h-aging approval kind gets a governed cross_manager_referral
+    // raised INTO the owning manager's domain (approval_queue_slo collaboration).
+    // Cross-tenant + recency-deduped inside the sweep; the referrals published here
+    // are consumed by the shared referral handler on the NEXT consume pass.
+    try {
+      const { publishApprovalSlaReferrals } = await import("@/lib/managers/cross-referral")
+      const sla = await publishApprovalSlaReferrals(supabase)
+      published += sla.published
+      for (const err of sla.errors.slice(0, 5)) errors.push(`sla-referral: ${err}`)
+    } catch (e: any) {
+      errors.push(`sla-referral-sweep: ${e?.message ?? String(e)}`)
+    }
+
     await recordCronSuccessAction({
       context_id: contextId, records_processed: published + consumed,
       metadata: { published, consumed, reaped, escalated, brokerages: brokerages.length, errors: errors.slice(0, 20) },

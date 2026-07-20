@@ -1,6 +1,9 @@
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity"
-import { getManagerTrustScorecard, getLearnedAdjustmentsForBrokerage } from "@/app/actions/admin/manager-evals"
+import {
+  getManagerTrustScorecard, getLearnedAdjustmentsForBrokerage,
+  getCrossManagerReferrals, getStandingReviews,
+} from "@/app/actions/admin/manager-evals"
 import { ManagerTrustClient } from "./manager-trust-client"
 
 export const dynamic = "force-dynamic"
@@ -18,5 +21,17 @@ export default async function ManagerTrustPage() {
   }
   const learnedRes = await getLearnedAdjustmentsForBrokerage()
   const learned = learnedRes.ok ? learnedRes.rows : []
-  return <ManagerTrustClient managers={res.managers} team={res.team} learned={learned} />
+  // CROSS-MANAGEMENT (round 34): referral lifecycle + standing reviews on the governance surface.
+  const [referralsRes, reviewsRes] = await Promise.all([getCrossManagerReferrals(), getStandingReviews()])
+  const referrals = referralsRes.ok ? referralsRes.referrals : []
+  const standingReviews = reviewsRes.ok ? reviewsRes.reviews : []
+  return (
+    <ManagerTrustClient
+      managers={res.managers}
+      team={res.team}
+      learned={learned}
+      referrals={referrals}
+      standingReviews={standingReviews}
+    />
+  )
 }

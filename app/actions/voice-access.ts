@@ -64,7 +64,7 @@ export interface VoiceAccessSettingsRead {
 }
 
 async function requireManagement(): Promise<
-  { ok: true; brokerageId: string } | { ok: false; error: string }
+  { ok: true; brokerageId: string; userId: string } | { ok: false; error: string }
 > {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -77,7 +77,7 @@ async function requireManagement(): Promise<
   if (!profile?.brokerage_id || !MANAGEMENT_ROLES.has(String(profile.user_type ?? ""))) {
     return { ok: false, error: "Management access required" }
   }
-  return { ok: true, brokerageId: profile.brokerage_id }
+  return { ok: true, brokerageId: profile.brokerage_id, userId: user.id }
 }
 
 /** Management read for the Settings toggle card. */
@@ -98,6 +98,13 @@ export async function getVoiceAccessSettings(): Promise<
  * Sanitized against EXPANDABLE_VOICE_ROLES; merge-preserving jsonb write into
  * global_settings.additional_settings (same idiom as the other settings
  * toggles — reads always go back through the brokerage-settings resolver).
+ *
+ * AUDIT TRAIL (round 34, owner-approved recommendation): every grant/revoke of a
+ * role writes an audit_log row via the same idiom the other settings actions use
+ * (user_id / action / entity / before+after jsonb), checked through sentinelWrite
+ * so a lost audit row lands on the self-heal ledger instead of vanishing. The
+ * tenant audit surface (/compliance/audits) renders it with the roles granted and
+ * revoked. A no-op save (same role set) is not an access change — nothing is logged.
  */
 export async function setVoiceAssistantExpandedRoles(
   roles: string[],
@@ -115,10 +122,34 @@ export async function setVoiceAssistantExpandedRoles(
     .eq("brokerage_id", gate.brokerageId)
     .maybeSingle()
   const existing = (gs?.additional_settings as Record<string, unknown> | null) ?? {}
+  // The previous role set, read from the SAME jsonb the write merges into — the
+  // honest "before" for the audit row (the resolver sanitizes reads identically).
+  const previous = Array.isArray(existing.voice_assistant_expanded_roles)
+    ? [...new Set((existing.voice_assistant_expanded_roles as unknown[]).map(String))].filter((r) => allowed.has(r))
+    : []
   const { error } = await svc
     .from("global_settings")
     .update({ additional_settings: { ...existing, voice_assistant_expanded_roles: sanitized } })
     .eq("brokerage_id", gate.brokerageId)
   if (error) return { success: false, error: "Could not save voice access settings" }
+
+  const granted = sanitized.filter((r) => !previous.includes(r))
+  const revoked = previous.filter((r) => !sanitized.includes(r))
+  if (granted.length > 0 || revoked.length > 0) {
+    const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+    await sentinelWrite(svc, svc.from("audit_log").insert({
+      user_id: gate.userId,
+      action: "voice_access_expanded_roles_changed",
+      entity_type: "voice_access_policy",
+      entity_id: gate.brokerageId,
+      before: { voice_assistant_expanded_roles: previous },
+      after: {
+        voice_assistant_expanded_roles: sanitized,
+        granted,
+        revoked,
+        compliance_relevant: true,
+      },
+    }), { table: "audit_log", flow: "voice_access_policy_audit", brokerageId: gate.brokerageId })
+  }
   return { success: true, expandedRoles: sanitized }
 }

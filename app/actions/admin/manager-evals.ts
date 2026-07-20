@@ -302,3 +302,166 @@ export async function vetoLearnedAdjustment(
   revalidatePath("/dashboard/admin/manager-trust")
   return r.ok ? { ok: true, vetoed: r.vetoed } : { ok: false, error: "Failed to update veto" }
 }
+
+// ── CROSS-MANAGEMENT (round 34) — referrals + standing reviews on the governance surface ──────
+// "Managers should be working together and can cross manage": the manager-trust page shows the
+// DECLARED collaboration map (pure registry import in the client), every cross_manager_referral's
+// lifecycle (who asked whom, for what, state, and what the receiving manager did), and the Finance
+// Manager's standing yearly regional-convention review with its audit-ledger-derived due state.
+
+export interface CrossManagerReferralView {
+  id: string
+  from: string
+  fromLabel: string
+  to: string
+  toLabel: string
+  /** MANAGER_COLLABORATIONS key the referral traveled (from payload.collab_domain). */
+  domain: string | null
+  domainLabel: string | null
+  ask: string
+  status: "open" | "consumed" | "expired"
+  /** What the receiving manager did (consumed_action) — includes governed refusals. */
+  action: string | null
+  createdAt: string
+  consumedAt: string | null
+}
+
+/** The last 90 days of cross-manager referrals for the caller's brokerage, newest first. */
+export async function getCrossManagerReferrals(): Promise<
+  { ok: true; referrals: CrossManagerReferralView[] } | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  if (!ADMIN_ROLES.has(ctx.userType)) return { ok: false, error: "Forbidden" }
+  if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
+
+  const { MANAGER_COLLABORATIONS } = await import("@/lib/kernel/manager-registry")
+  const svc = createServiceClient()
+  const { data, error } = await svc
+    .from("manager_signals")
+    .select("id, from_manager, to_manager, payload, message, status, consumed_action, consumed_at, created_at")
+    .eq("brokerage_id", ctx.brokerageId)
+    .eq("signal_type", "cross_manager_referral")
+    .gte("created_at", new Date(Date.now() - 90 * 86_400_000).toISOString())
+    .order("created_at", { ascending: false })
+    .limit(50)
+  if (error) return { ok: false, error: error.message }
+
+  const referrals: CrossManagerReferralView[] = ((data ?? []) as Array<Record<string, any>>).map((r) => {
+    const payload = (r.payload ?? {}) as Record<string, unknown>
+    const domainKey = typeof payload.collab_domain === "string" ? payload.collab_domain : null
+    const domain = domainKey ? MANAGER_COLLABORATIONS[domainKey] : undefined
+    const from = String(r.from_manager)
+    const to = String(r.to_manager)
+    return {
+      id: String(r.id),
+      from,
+      fromLabel: (MANAGERS as Record<string, { label: string }>)[from]?.label ?? from,
+      to,
+      toLabel: (MANAGERS as Record<string, { label: string }>)[to]?.label ?? to,
+      domain: domainKey,
+      domainLabel: domain?.label ?? null,
+      ask: (typeof payload.ask === "string" && payload.ask.trim()) || String(r.message ?? ""),
+      status: (r.status === "consumed" || r.status === "expired" ? r.status : "open") as CrossManagerReferralView["status"],
+      action: (r.consumed_action as string | null) ?? null,
+      createdAt: String(r.created_at),
+      consumedAt: (r.consumed_at as string | null) ?? null,
+    }
+  })
+  return { ok: true, referrals }
+}
+
+export interface StandingReviewView {
+  key: string
+  ownerLabel: string
+  ownerAccent: string
+  label: string
+  target: string
+  what: string
+  sources: string[]
+  status: "due" | "overdue" | "scheduled"
+  dueAt: string | null
+  lastCompletedAt: string | null
+  summary: string
+}
+
+/** The Finance Manager's standing yearly regional-convention review, due state derived
+ *  purely from the latest completion row on the audit ledger (no parallel state). */
+export async function getStandingReviews(): Promise<
+  { ok: true; reviews: StandingReviewView[] } | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  if (!ADMIN_ROLES.has(ctx.userType)) return { ok: false, error: "Forbidden" }
+  if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
+
+  const { REGIONAL_CONVENTION_REVIEW, assessStandingReview } = await import("@/lib/managers/regional-convention-review")
+  const svc = createServiceClient()
+  const { data: last } = await svc
+    .from("audit_log")
+    .select("created_at")
+    .eq("action", REGIONAL_CONVENTION_REVIEW.auditAction)
+    .eq("entity_type", REGIONAL_CONVENTION_REVIEW.auditEntityType)
+    .eq("entity_id", ctx.brokerageId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  const assessment = assessStandingReview(REGIONAL_CONVENTION_REVIEW, (last as { created_at?: string } | null)?.created_at ?? null)
+  const owner = MANAGERS[REGIONAL_CONVENTION_REVIEW.owner]
+  return {
+    ok: true,
+    reviews: [{
+      key: REGIONAL_CONVENTION_REVIEW.key,
+      ownerLabel: owner.label,
+      ownerAccent: owner.accent,
+      label: REGIONAL_CONVENTION_REVIEW.label,
+      target: REGIONAL_CONVENTION_REVIEW.target,
+      what: REGIONAL_CONVENTION_REVIEW.what,
+      sources: REGIONAL_CONVENTION_REVIEW.sources,
+      status: assessment.status,
+      dueAt: assessment.dueAt,
+      lastCompletedAt: assessment.lastCompletedAt,
+      summary: assessment.summary,
+    }],
+  }
+}
+
+/**
+ * Complete the yearly regional-convention review — a broker/admin (the Finance
+ * Manager's supervising principal) attests the model was re-verified against the
+ * published sources. Lands on audit_log (the settings-actions idiom), which is BOTH
+ * the completion ledger the due-state derives from AND the tenant audit surface's
+ * feed — one write, no parallel state. Checked via sentinelWrite (a lost completion
+ * row would silently re-flag the review as overdue).
+ */
+export async function completeRegionalConventionReview(
+  notes?: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  if (!["broker", "broker_admin", "admin", "superadmin"].includes(ctx.userType)) {
+    return { ok: false, error: "Forbidden — completing a standing review is a broker/admin attestation" }
+  }
+  if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
+
+  const { REGIONAL_CONVENTION_REVIEW } = await import("@/lib/managers/regional-convention-review")
+  const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+  const svc = createServiceClient()
+  const landed = await sentinelWrite(svc, svc.from("audit_log").insert({
+    user_id: ctx.userId,
+    action: REGIONAL_CONVENTION_REVIEW.auditAction,
+    entity_type: REGIONAL_CONVENTION_REVIEW.auditEntityType,
+    entity_id: ctx.brokerageId,
+    before: null,
+    after: {
+      review_key: REGIONAL_CONVENTION_REVIEW.key,
+      target: REGIONAL_CONVENTION_REVIEW.target,
+      sources_checked: REGIONAL_CONVENTION_REVIEW.sources,
+      notes: (notes ?? "").trim().slice(0, 500) || null,
+      compliance_relevant: true,
+    },
+  }), { table: "audit_log", flow: "regional_convention_review", brokerageId: ctx.brokerageId })
+  if (!landed) return { ok: false, error: "Could not record the review completion — see the self-heal ledger" }
+  revalidatePath("/dashboard/admin/manager-trust")
+  return { ok: true }
+}

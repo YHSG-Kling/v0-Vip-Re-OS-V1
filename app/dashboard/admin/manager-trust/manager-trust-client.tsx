@@ -6,11 +6,17 @@ import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
-import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot, Lock, Brain, Undo2, Ban } from "lucide-react"
+import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot, Lock, Brain, Undo2, Ban, ArrowRightLeft, CalendarClock, CheckCircle2 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { setManagerAutonomy, vetoLearnedAdjustment, type ManagerTrustRow } from "@/app/actions/admin/manager-evals"
+import {
+  setManagerAutonomy, vetoLearnedAdjustment, completeRegionalConventionReview,
+  type ManagerTrustRow, type CrossManagerReferralView, type StandingReviewView,
+} from "@/app/actions/admin/manager-evals"
 import type { LearnedAdjustmentView } from "@/lib/managers/learning-loop"
 import type { TrustTier, AutonomyPosture } from "@/lib/managers/eval-scoring"
+// Pure registry data (no I/O) — the ONE source of truth for the collaboration map,
+// so this surface can never drift from what the referral handler actually enforces.
+import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/manager-registry"
 
 const FOLLOW_REC = "__recommended__"
 
@@ -28,18 +34,38 @@ const AUTONOMY_LABEL: Record<AutonomyPosture, string> = {
 }
 
 export function ManagerTrustClient({
-  managers: initialManagers, team, learned: initialLearned = [],
+  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [],
 }: {
   managers: ManagerTrustRow[]
   team: { passRate: number; total: number; trustedCount: number; managerCount: number }
   learned?: LearnedAdjustmentView[]
+  referrals?: CrossManagerReferralView[]
+  standingReviews?: StandingReviewView[]
 }) {
   const { toast } = useToast()
   const [managers, setManagers] = useState<ManagerTrustRow[]>(initialManagers)
   const [learned, setLearned] = useState<LearnedAdjustmentView[]>(initialLearned)
+  const [reviews, setReviews] = useState<StandingReviewView[]>(initialReviews)
   const [saving, setSaving] = useState<string | null>(null)
   const [vetoing, setVetoing] = useState<string | null>(null)
+  const [completingReview, setCompletingReview] = useState<string | null>(null)
   const hasData = team.total > 0
+
+  async function markReviewDone(review: StandingReviewView) {
+    setCompletingReview(review.key)
+    const r = await completeRegionalConventionReview()
+    setCompletingReview(null)
+    if (!r.ok) {
+      toast({ title: "Could not record the review", description: r.error, variant: "destructive" })
+      return
+    }
+    const nowIso = new Date().toISOString()
+    const dueIso = new Date(Date.now() + 365 * 86_400_000).toISOString()
+    setReviews((cur) => cur.map((x) => (x.key === review.key
+      ? { ...x, status: "scheduled", lastCompletedAt: nowIso, dueAt: dueIso, summary: `Verified today; next review due ${dueIso.slice(0, 10)}.` }
+      : x)))
+    toast({ title: "Yearly review recorded", description: "The attestation is on the audit ledger; the next verification is due in a year." })
+  }
 
   async function toggleVeto(key: string, vetoed: boolean) {
     setVetoing(key)
@@ -214,6 +240,121 @@ export function ManagerTrustClient({
               </div>
             )
           })}
+        </CardContent>
+      </Card>
+
+      {/* CROSS-MANAGEMENT — the declared collaboration map (round 34). Pure registry data:
+          exactly the edges the cross_manager_referral handler enforces on the bus. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2"><ArrowRightLeft className="h-4 w-4" />Cross-management — who co-manages what</CardTitle>
+          <CardDescription>
+            Single ownership stays the law (one steward per table, one owner per queue), but these are the
+            <strong> declared</strong> domains where managers already work together — derived from the real
+            signal traffic and stewardship overlaps. A cross-manager referral may <strong>only</strong> travel
+            these edges; anything else is refused on the bus.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {Object.values(MANAGER_COLLABORATIONS).map((d) => (
+            <div key={d.key} className="rounded-lg border p-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-medium">{d.label}</span>
+                {d.managers.map((mk: ManagerKey) => (
+                  <span key={mk} className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] ${MANAGERS[mk].accent}`}>
+                    {MANAGERS[mk].label}
+                  </span>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">{d.evidence}</p>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      {/* CROSS-MANAGER REFERRALS — who asked whom for what, with state + what the receiver did. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2"><ArrowRightLeft className="h-4 w-4" />Cross-manager referrals</CardTitle>
+          <CardDescription>
+            A manager&apos;s sweep found something in a peer&apos;s domain and raised it through the governed bus.
+            Every referral shows who asked whom, for what, and what the receiving manager did — including
+            governed refusals of undeclared edges. Last 90 days.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {referrals.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-2">
+              No referrals yet — they appear when a manager&apos;s sweep raises work into a co-managed domain
+              (first live emitter: the Cron Manager referring approval kinds aging past the 48h SLA to their owners).
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {referrals.map((r) => (
+                <div key={r.id} className="rounded-lg border p-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] ${MANAGERS[r.from as ManagerKey]?.accent ?? "bg-slate-100 text-slate-700"}`}>{r.fromLabel}</span>
+                    <ArrowRightLeft className="h-3 w-3 text-muted-foreground" />
+                    <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] ${MANAGERS[r.to as ManagerKey]?.accent ?? "bg-slate-100 text-slate-700"}`}>{r.toLabel}</span>
+                    {r.domainLabel && <Badge variant="outline" className="text-[11px]">{r.domainLabel}</Badge>}
+                    <Badge className={`text-[11px] ${r.status === "open" ? "bg-amber-100 text-amber-800 border-amber-200" : r.status === "consumed" ? "bg-emerald-100 text-emerald-700 border-emerald-200" : "bg-gray-100 text-gray-600 border-gray-200"}`}>
+                      {r.status}
+                    </Badge>
+                    <span className="text-[11px] text-muted-foreground ml-auto">{new Date(r.createdAt).toLocaleDateString()}</span>
+                  </div>
+                  <p className="text-sm mt-1.5">{r.ask}</p>
+                  {r.action && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      <CheckCircle2 className="h-3 w-3 inline mr-1" />
+                      {r.toLabel}: {r.action}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* STANDING REVIEWS — recurring manager review tasks with audit-ledger-derived due state. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2"><CalendarClock className="h-4 w-4" />Standing reviews</CardTitle>
+          <CardDescription>
+            Recurring verification tasks a manager owns on a fixed cadence. Completion is recorded on the
+            audit ledger — the due state derives from the latest completion, no parallel state.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {reviews.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-2">No standing reviews configured.</p>
+          ) : reviews.map((rv) => (
+            <div key={rv.key} className="rounded-lg border p-3 space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] ${rv.ownerAccent}`}>{rv.ownerLabel}</span>
+                <span className="text-sm font-medium">{rv.label}</span>
+                <Badge className={`text-[11px] ${rv.status === "overdue" ? "bg-red-100 text-red-700 border-red-200" : rv.status === "due" ? "bg-amber-100 text-amber-800 border-amber-200" : "bg-emerald-100 text-emerald-700 border-emerald-200"}`}>
+                  {rv.status}
+                </Badge>
+                <span className="text-[11px] text-muted-foreground ml-auto">yearly · {rv.target}</span>
+              </div>
+              <p className="text-xs text-muted-foreground">{rv.what}</p>
+              <p className="text-xs">{rv.summary}</p>
+              <div className="text-[11px] text-muted-foreground">
+                <p className="font-medium">Published sources to check:</p>
+                <ul className="list-disc pl-4 mt-0.5 space-y-0.5">
+                  {rv.sources.map((s) => <li key={s}>{s}</li>)}
+                </ul>
+              </div>
+              <div className="flex justify-end">
+                <Button size="sm" variant="outline" disabled={completingReview === rv.key}
+                  onClick={() => markReviewDone(rv)}>
+                  <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                  Mark verified against the published sources
+                </Button>
+              </div>
+            </div>
+          ))}
         </CardContent>
       </Card>
     </div>

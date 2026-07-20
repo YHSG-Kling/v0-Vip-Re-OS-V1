@@ -19,7 +19,7 @@
 // Only ever writes through a caller-supplied/service client — never import client-side.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
+import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/manager-registry"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -2013,6 +2013,57 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     })
     return `escalated relocation referral to responsible agent${newArea ? ` (${newArea})` : ""}`
   },
+}
+
+/**
+ * CROSS-MANAGEMENT REFERRAL (round 34) — the ONE shared handler behind every
+ * `<manager>:cross_manager_referral` inbox key. A manager's sweep found something in a
+ * PEER's domain and raised it through the bus; the receiving manager:
+ *   1. checks the DECLARED collaboration map (MANAGER_COLLABORATIONS) — an edge no
+ *      collaboration domain contains is REFUSED, with the refusal recorded as the
+ *      consumed action (cross-management stays governed by the registry, never a
+ *      free-for-all);
+ *   2. on a declared edge, ACCEPTS the referral and raises a prioritized follow-up to
+ *      the supervising principals (broker/admin — the notifyBrokerageAdmins rail the
+ *      other escalation handlers use), carrying who asked whom for what.
+ * The full lifecycle (open → consumed + action, or refusal) is visible on the managers
+ * governance surface and the Command Center feed. Never an autonomous client send.
+ */
+async function handleCrossManagerReferral(
+  signal: ManagerSignal, ctx: { brokerageId: string; supabase: Svc },
+): Promise<string | null> {
+  const domainKey = ((signal.payload?.collab_domain as string | undefined) ?? "").trim() || null
+  const domain = domainKey ? MANAGER_COLLABORATIONS[domainKey] : undefined
+  const declared = !!domain
+    && domain.managers.includes(signal.fromManager)
+    && domain.managers.includes(signal.toManager)
+  const fromLabel = MANAGERS[signal.fromManager]?.label ?? signal.fromManager
+  const toLabel = MANAGERS[signal.toManager]?.label ?? signal.toManager
+  if (!declared) {
+    return `refused the referral — ${fromLabel} → ${toLabel} is not a declared collaboration edge` +
+      (domainKey ? ` for '${domainKey}'` : " (no collab_domain named)") +
+      "; cross-management only travels the registry's MANAGER_COLLABORATIONS map"
+  }
+  const ask = ((signal.payload?.ask as string | undefined) ?? signal.message ?? "").trim()
+  const { notifyBrokerageAdmins } = await import("@/lib/notifications/brokerage-admins")
+  const n = await notifyBrokerageAdmins(ctx.supabase, ctx.brokerageId, {
+    type: "cross_manager_referral",
+    title: `${fromLabel} → ${toLabel}: referral in ${domain.label}`,
+    body: ask || `${fromLabel} raised work into ${toLabel}'s domain (${domain.label}).`,
+    entityType: signal.entityType ?? null,
+    entityId: signal.entityId ?? null,
+    priority: "medium",
+  })
+  return n > 0
+    ? `accepted the referral in '${domain.label}' — raised a prioritized follow-up to ${n} supervising principal${n === 1 ? "" : "s"}`
+    : `accepted the referral in '${domain.label}' — no principal seat to notify; the referral stays visible on the governance surface`
+}
+
+// Every registered manager can RECEIVE a governed referral — one shared handler per
+// inbox key, matching the SIGNAL_REGISTRY consumers declaration (guards 2 + 3 of
+// test:signal-integrity verify the pairing at runtime).
+for (const managerKey of Object.keys(MANAGERS)) {
+  SIGNAL_HANDLERS[`${managerKey}:cross_manager_referral`] = handleCrossManagerReferral
 }
 
 /**
