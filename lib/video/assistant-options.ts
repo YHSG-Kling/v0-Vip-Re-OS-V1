@@ -52,20 +52,11 @@ export const ASSISTANT_FACE_BRIEFS: Array<{ key: string; prompt: string }> = [
 
 export interface AssistantFaceOption { key: string; imageUrl: string }
 
-/** Generate the headshot GALLERY through the existing image-gen rail.
- *  Best-effort per option — a single generation failure shrinks the gallery
- *  instead of blocking it; zero successes returns [] (the UI says so). */
-export async function generateAssistantFaceOptions(count = 3): Promise<AssistantFaceOption[]> {
-  const briefs = ASSISTANT_FACE_BRIEFS.slice(0, Math.max(1, Math.min(count, ASSISTANT_FACE_BRIEFS.length)))
-  const { generateImage } = await import("@/lib/ai/image-generation")
-  const results = await Promise.all(briefs.map(async (b) => {
-    try {
-      const img = await generateImage({ prompt: b.prompt, purpose: "generic", size: "1024x1024", style: "natural" })
-      return img.success && img.imageUrl ? { key: b.key, imageUrl: img.imageUrl } : null
-    } catch { return null }
-  }))
-  return results.filter((r): r is AssistantFaceOption => !!r)
-}
+// generateAssistantFaceOptions() moved to ./assistant-faces (server-only) — it
+// pulls the image-generation rail (which imports "server-only"), and this
+// module is imported by the client component AIIdentityEditor.tsx. Keeping the
+// data (voices/face briefs/avatars) here client-safe; the server action
+// app/actions/ai-identity.ts imports the generator from ./assistant-faces.
 
 /** D-ID V4 EXPRESSIVE stock avatars the assistant can present AS — a moving,
  *  sentiment-aligned host instead of a still photo PIP. Ids carry "@avt_"

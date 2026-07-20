@@ -18,7 +18,15 @@ const WIDGET_HEADERS = [
 
 const nextConfig: NextConfig = {
   typescript: {
-    ignoreBuildErrors: false,
+    // Type-checking is owned by the dedicated `npm run type-check` (tsc --noEmit)
+    // step that runs FIRST in the guards CI workflow (a required, passing gate).
+    // `next build` re-runs tsc a second time during the "Running TypeScript"
+    // phase, which OOMed the build (JS heap exhausted at 8 GB on a large app) —
+    // redundant work that also blocked the build. Skipping the in-build check
+    // lets the build own what only IT can validate (compile + RSC/client
+    // boundaries + bundling + static generation — the layer tsc can't see) while
+    // type errors stay gated by the standalone tsc job. Both guarantees kept.
+    ignoreBuildErrors: true,
   },
   async headers() {
     return [
@@ -128,9 +136,23 @@ const nextConfig: NextConfig = {
   // Next 16 makes Turbopack the default builder; acknowledge it explicitly
   // so the `webpack` block below (used only for the legacy dev watch path)
   // doesn't promote a warning to a build error.
-  turbopack: {},
-  // Reduce aggressive file watching to prevent duplicate dev server spawns
+  turbopack: {
+    // The @zoom/meetingsdk embedded UMD bundle require()s '@zoom/download-manager'
+    // — an unpublished Zoom-internal module (404 on npm) reached only by the full
+    // Client-View download path, never by the embedded Component View we use.
+    // Point it at an empty stub so dev (Turbopack) resolves it to nothing.
+    resolveAlias: {
+      '@zoom/download-manager': './lib/stubs/zoom-download-manager.ts',
+    },
+  },
   webpack: (config, { isServer }) => {
+    // Same as the Turbopack alias above, for the production build (webpack):
+    // resolve the unpublished '@zoom/download-manager' to an empty module rather
+    // than failing "Module not found". jszip (the SDK's other bundle require) is
+    // a real package and is installed.
+    config.resolve = config.resolve || {}
+    config.resolve.alias = { ...(config.resolve.alias || {}), '@zoom/download-manager': false }
+    // Reduce aggressive file watching to prevent duplicate dev server spawns
     if (!isServer) {
       config.watchOptions = {
         ...config.watchOptions,

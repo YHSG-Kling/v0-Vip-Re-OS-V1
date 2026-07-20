@@ -288,7 +288,7 @@ export async function generateAssistantFaceOptionsAction(): Promise<
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthenticated" }
   try {
-    const { generateAssistantFaceOptions } = await import("@/lib/video/assistant-options")
+    const { generateAssistantFaceOptions } = await import("@/lib/video/assistant-faces")
     const options = await generateAssistantFaceOptions(3)
     if (options.length === 0) return { success: false, error: "Image generation unavailable — add a photo URL instead" }
     return { success: true, options }
