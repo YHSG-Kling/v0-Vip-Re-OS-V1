@@ -143,3 +143,45 @@ The launch checklist tells you *whether* these are done; this is *how*:
 11. **Verify**: open `/dashboard/superadmin/connectors` — Launch Checklist
     shows the presence gaps; "Run readiness checks" live-probes every vendor;
     "Queue render proof" pushes a real video through the full pipeline.
+
+## 8. The post-deploy smoke ritual (round 43)
+
+Every deploy ends with the same question: *does a fresh tenant still walk the
+golden path on what we just shipped?* The answer is `npm run test:production-smoke`
+(`scripts/production-smoke-drill.ts`) — provision through the real self-serve
+path → territory → raw lead → real promotion pipeline → qualification stamps →
+Engine 2 assignment → portal read → dispatch-gate refusal probe → **full cleanup
+with a residue sweep across every touched table**. It is now wired as the
+documented post-deploy ritual via `.github/workflows/post-deploy-smoke.yml`:
+
+- **When it runs automatically:** on every `deployment_status: success` event
+  (e.g. Vercel's GitHub integration reporting a finished deploy). Failed or
+  pending deployments do not trigger it.
+- **When to run it manually:** after any out-of-band change that bypasses a
+  deployment event — env-var edits, Supabase migrations applied directly,
+  vendor-key rotation, restoring from backup. Actions → `post-deploy-smoke` →
+  Run workflow, pick the environment (its scoped secrets are used; default
+  `production`).
+- **What green means:** with `NEXT_PUBLIC_SUPABASE_URL` +
+  `SUPABASE_SERVICE_ROLE_KEY` secrets configured, green =
+  `PRODUCTION_SMOKE_PASS` — the golden path executed end-to-end against the
+  live DB **and the residue sweep counted zero leftover rows**. Without those
+  secrets the drill's honesty rules apply: every live step prints a **stated
+  skip** (`⊘ … no SUPABASE creds`) and the run exits 0 — green then means "pure
+  layers green, live layer not exercised", and the log says so explicitly.
+  Skips are stated, never faked as passes.
+- **What a residue failure means:** the drill created rows it could not delete
+  (step 8 sweeps every touched table in FK order, auth users included).
+  Residue > 0 fails the run and names the tables. That is a real defect —
+  usually a new FK or trigger writing rows outside the drill's cleanup list —
+  and it means real tenant deletion/off-boarding is likely broken the same
+  way. Fix the cleanup path (or the schema), rerun to residue 0; never delete
+  the leftovers by hand and call it green.
+- **What any other red means:** the golden path itself broke on the deployed
+  code — treat it as a ship-stopping regression, not a flaky test; the drill
+  runs the production functions themselves, not mocks.
+
+Egress posture: the drill never sends a client-facing message in any
+environment — outbound is probed only through gates that refuse before any
+provider call. It does write (then deletes) real rows, including one auth user,
+in the target project's database.

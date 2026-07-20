@@ -1,0 +1,60 @@
+name: post-deploy-smoke
+# POST-DEPLOY SMOKE RITUAL — runs scripts/production-smoke-drill.ts (npm run
+# test:production-smoke): one fresh-tenant golden path (provision → market → raw lead →
+# promote → qualify → Engine 2 assign → portal read → dispatch-gate probe → full
+# cleanup + residue sweep) live-fired through the REAL code paths against the real DB.
+#
+# Triggers:
+#   - deployment_status: fires automatically when a deployment (e.g. Vercel's GitHub
+#     integration) reports SUCCESS — the drill is the "did the thing we just shipped
+#     still walk the golden path?" check, minutes after every deploy.
+#   - workflow_dispatch: the manual ritual — pick the environment whose scoped secrets
+#     should be used and run it on demand (see PRODUCTION-READINESS.md § "The
+#     post-deploy smoke ritual").
+#
+# Secrets posture (IMPORTANT — no fake green, no hard dependency):
+#   The drill needs NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY to live-fire.
+#   If those secrets are NOT configured (forks, fresh repos, locked-down environments),
+#   the drill's own stated-skip posture handles it: every live step prints an explicit
+#   "⊘ skipped — no SUPABASE creds" line and the run still exits 0. Skips are STATED,
+#   never faked as passes — so a green run without secrets means "pure layers green,
+#   live layer not exercised", and the log says exactly that. The dispatch-gate step
+#   never egresses a client message in any environment.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "GitHub environment whose scoped secrets to smoke against (repo-level secrets apply if the environment defines none)"
+        required: false
+        default: production
+        type: string
+  deployment_status: {}
+
+jobs:
+  production-smoke:
+    # deployment_status fires for pending/failure too — only smoke a SUCCESSFUL deploy.
+    if: github.event_name == 'workflow_dispatch' || github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Environment-scoped secrets: manual runs use the chosen input; deployment_status
+    # runs use the environment the deployment itself targeted (e.g. Vercel's
+    # "Production"/"Preview"). If the named environment isn't configured in the repo,
+    # repo-level secrets (or none) apply — and "none" is the stated-skip case above.
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.event.deployment.environment }}
+    env:
+      # Empty when unset — the drill then degrades to stated skips (exit 0), per its
+      # honesty rules. Never substitute placeholders here.
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Production smoke drill (fresh-tenant golden path, live-fired, residue-0)
+        run: npm run test:production-smoke

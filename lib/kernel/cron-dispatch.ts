@@ -36,69 +36,69 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/retry-errors",                   schedule: "*/30 * * * *" }, // documented (every 30 min)
   { path: "/api/cron/ad-performance-sync",            schedule: "0 */6 * * *" },
   { path: "/api/cron/ads-manager-sweep",              schedule: "0 12 * * *" },
-  { path: "/api/cron/brokerage-intelligence-mine",    schedule: "0 4 * * *" },
+  { path: "/api/cron/brokerage-intelligence-mine",    schedule: "12 4 * * *" }, // (staggered r43)
   { path: "/api/cron/brokerage-pl-rollup",            schedule: "0 3 * * *" },
-  { path: "/api/cron/listing-health-scan",            schedule: "0 */6 * * *" },
+  { path: "/api/cron/listing-health-scan",            schedule: "14 */6 * * *" }, // (staggered r43)
   { path: "/api/cron/marketing-attribution-engine",   schedule: "0 2 * * *" },
   { path: "/api/cron/journey-conformance-audit",       schedule: "0 3 * * *" },
-  { path: "/api/cron/source-conversion-learning",      schedule: "0 4 * * 1" },
+  { path: "/api/cron/source-conversion-learning",      schedule: "32 4 * * 1" }, // (staggered r43)
   { path: "/api/cron/marketing-campaign-scheduler",   schedule: "*/30 * * * *" },
   { path: "/api/cron/negotiation-strategy-generator", schedule: "0 */4 * * *" },
   { path: "/api/cron/onboarding-progress-tracker",    schedule: "0 10 * * *" },
-  { path: "/api/cron/recalculate-roi",                schedule: "0 1 * * *" },
+  { path: "/api/cron/recalculate-roi",                schedule: "15 1 * * *" }, // (staggered r43)
   { path: "/api/cron/review-request-on-close",        schedule: "0 16 * * *" },
   { path: "/api/cron/sync-facebook-audiences",        schedule: "0 */6 * * *" },
   // Idle-hands initiative — managers fill silence with governed work (hourly).
-  { path: "/api/cron/idle-hands",                     schedule: "0 * * * *" },
+  { path: "/api/cron/idle-hands",                     schedule: "5 * * * *" }, // (staggered r43)
   // Client Pulse — the weekly "what your team did for you" for sellers + buyers.
-  { path: "/api/cron/client-pulse",                   schedule: "0 16 * * 5" },
-  { path: "/api/cron/client-pulse?phase=deliver",     schedule: "0 18 * * 5" },
+  { path: "/api/cron/client-pulse",                   schedule: "22 16 * * 5" }, // (staggered r43)
+  { path: "/api/cron/client-pulse?phase=deliver",     schedule: "22 18 * * 5" }, // (staggered r43)
   // Manager office hours — morning + afternoon drops sweep approval pings into one card.
-  { path: "/api/cron/office-hours",                   schedule: "0 13,19 * * *" },
+  { path: "/api/cron/office-hours",                   schedule: "15 13,19 * * *" }, // (staggered r43)
   // Farm Play — the marketing bench convenes geographic farming on each closed deal.
-  { path: "/api/cron/farm-play",                      schedule: "0 15 * * *" },
+  { path: "/api/cron/farm-play",                      schedule: "15 15 * * *" }, // (staggered r43)
   // Intent Campaign — Data Steward scrapes motivated sellers + hot buyers → multi-channel.
-  { path: "/api/cron/intent-campaign",                schedule: "0 14 * * 2" },
+  { path: "/api/cron/intent-campaign",                schedule: "32 14 * * 2" }, // (staggered r43)
   // Listing Launch War Room — the bench launches each new/coming-soon listing.
-  { path: "/api/cron/launch-war-room",                schedule: "0 */4 * * *" },
+  { path: "/api/cron/launch-war-room",                schedule: "8 */4 * * *" }, // (staggered r43)
   // Lookalike from the closing table — first-party seed audience (weekly).
-  { path: "/api/cron/lookalike-audience",             schedule: "0 11 * * 1" },
+  { path: "/api/cron/lookalike-audience",             schedule: "22 11 * * 1" }, // (staggered r43)
   // Parallel multi-manager plays (reverse prospecting, vendor orchestration, objections, referrals).
-  { path: "/api/cron/reverse-prospecting",            schedule: "0 * * * *" },
+  { path: "/api/cron/reverse-prospecting",            schedule: "7 * * * *" }, // (staggered r43)
   // Investor off-market refresh — Shopping Agent keeps each investor's off-market deal list + portal card current.
-  { path: "/api/cron/investor-offmarket-refresh",     schedule: "0 6 * * *" },
-  { path: "/api/cron/vendor-orchestration",           schedule: "0 14 * * *" },
-  { path: "/api/cron/objection-library",              schedule: "0 13 * * 1" },
-  { path: "/api/cron/referral-radar",                 schedule: "0 12 * * 1" },
-  { path: "/api/cron/returning-customer-reengagement", schedule: "0 13 * * *" },
-  { path: "/api/cron/manager-learning",               schedule: "0 8 * * 1" },
-  { path: "/api/cron/commission-forecaster",          schedule: "0 12 * * 1" },
-  { path: "/api/cron/quarterly-tax-concierge",        schedule: "0 13 * * *" },
+  { path: "/api/cron/investor-offmarket-refresh",     schedule: "12 6 * * *" }, // (staggered r43)
+  { path: "/api/cron/vendor-orchestration",           schedule: "12 14 * * *" }, // (staggered r43)
+  { path: "/api/cron/objection-library",              schedule: "54 13 * * 1" }, // (staggered r43)
+  { path: "/api/cron/referral-radar",                 schedule: "22 12 * * 1" }, // (staggered r43)
+  { path: "/api/cron/returning-customer-reengagement", schedule: "22 13 * * *" }, // (staggered r43)
+  { path: "/api/cron/manager-learning",               schedule: "12 8 * * 1" }, // (staggered r43)
+  { path: "/api/cron/commission-forecaster",          schedule: "42 12 * * 1" }, // (staggered r43)
+  { path: "/api/cron/quarterly-tax-concierge",        schedule: "32 13 * * *" }, // (staggered r43)
   { path: "/api/cron/manager-eval",                   schedule: "0 6 * * 1" },
-  { path: "/api/cron/offer-net-sheet",                schedule: "*/15 * * * *" },
-  { path: "/api/cron/inventory-radar",                schedule: "0 */6 * * *" },
+  { path: "/api/cron/offer-net-sheet",                schedule: "1,16,31,46 * * * *" }, // (staggered r43)
+  { path: "/api/cron/inventory-radar",                schedule: "44 */6 * * *" }, // (staggered r43)
   { path: "/api/cron/geo-reel-autopublish",           schedule: "*/30 * * * *" },
-  { path: "/api/cron/bidding-war-concierge",          schedule: "0 */2 * * *" },
-  { path: "/api/cron/tour-optimizer",                 schedule: "*/30 * * * *" },
-  { path: "/api/cron/closing-watchtower",             schedule: "0 * * * *" },
-  { path: "/api/cron/anniversary-equity",             schedule: "0 13 * * *" },
-  { path: "/api/cron/equity-trigger",                 schedule: "0 14 * * 1" },
-  { path: "/api/cron/regulatory-watcher",             schedule: "0 8 * * 1" },
-  { path: "/api/cron/financing-pit-stop",             schedule: "0 */6 * * *" },
-  { path: "/api/cron/agent-coaching",                 schedule: "0 7 * * 1" },
+  { path: "/api/cron/bidding-war-concierge",          schedule: "15 */2 * * *" }, // (staggered r43)
+  { path: "/api/cron/tour-optimizer",                 schedule: "25,55 * * * *" }, // (staggered r43)
+  { path: "/api/cron/closing-watchtower",             schedule: "17 * * * *" }, // (staggered r43)
+  { path: "/api/cron/anniversary-equity",             schedule: "12 13 * * *" }, // (staggered r43)
+  { path: "/api/cron/equity-trigger",                 schedule: "22 14 * * 1" }, // (staggered r43)
+  { path: "/api/cron/regulatory-watcher",             schedule: "22 8 * * 1" }, // (staggered r43)
+  { path: "/api/cron/financing-pit-stop",             schedule: "38 */6 * * *" }, // (staggered r43)
+  { path: "/api/cron/agent-coaching",                 schedule: "12 7 * * 1" }, // (staggered r43)
   // ── The original vercel.json schedules, preserved verbatim ──
   { path: "/api/cron/appointment-whisper"                 , schedule: "*/10 * * * *" },
-  { path: "/api/cron/appointment-noshow"                  , schedule: "0 * * * *" },
+  { path: "/api/cron/appointment-noshow"                  , schedule: "35 * * * *" }, // (staggered r43)
   { path: "/api/cron/document-compliance-audit"           , schedule: "0 * * * *" },
-  { path: "/api/cron/document-autofile"                   , schedule: "*/15 * * * *" },
-  { path: "/api/cron/document-retention-scan"             , schedule: "0 6 * * 1" },
-  { path: "/api/cron/context-spine-refresh"               , schedule: "0 */4 * * *" },
+  { path: "/api/cron/document-autofile"                   , schedule: "3,18,33,48 * * * *" }, // (staggered r43)
+  { path: "/api/cron/document-retention-scan"             , schedule: "54 6 * * 1" }, // (staggered r43)
+  { path: "/api/cron/context-spine-refresh"               , schedule: "24 */4 * * *" }, // (staggered r43)
   { path: "/api/cron/marketing-image-regen"               , schedule: "*/10 * * * *" },
-  { path: "/api/alerts/cron"                              , schedule: "*/15 * * * *" },
+  { path: "/api/alerts/cron"                              , schedule: "6,21,36,51 * * * *" }, // (staggered r43)
   { path: "/api/cron/audience-sync-runner"                , schedule: "*/15 * * * *" },
   { path: "/api/cron/buyer-reel-deliver"                  , schedule: "*/15 * * * *" },
-  { path: "/api/cron/enrichment-processor"                , schedule: "*/15 * * * *" },
-  { path: "/api/cron/health-check"                        , schedule: "*/15 * * * *" },
+  { path: "/api/cron/enrichment-processor"                , schedule: "11,26,41,56 * * * *" }, // (staggered r43)
+  { path: "/api/cron/health-check"                        , schedule: "13,28,43,58 * * * *" }, // (staggered r43)
   { path: "/api/cron/letter-audio-renderer"               , schedule: "*/15 * * * *" },
   { path: "/api/cron/presentation-section-drip"           , schedule: "*/15 * * * *" },
   { path: "/api/cron/publish-social-posts"                , schedule: "*/15 * * * *" },
@@ -112,8 +112,8 @@ export const CRON_REGISTRY: CronEntry[] = [
   // Speed-to-lead — micro-personalized first touch on promotion + 5-min agent-grace ISA jump-in.
   { path: "/api/cron/speed-to-lead"                       , schedule: "*/2 * * * *" },
   { path: "/api/cron/poll-did-avatars"                    , schedule: "*/3 * * * *" },
-  { path: "/api/cron/fire-drill"                          , schedule: "*/30 * * * *" },
-  { path: "/api/cron/manager-signals"                     , schedule: "*/30 * * * *" },
+  { path: "/api/cron/fire-drill"                          , schedule: "27,57 * * * *" }, // (staggered r43)
+  { path: "/api/cron/manager-signals"                     , schedule: "23,53 * * * *" }, // (staggered r43)
   { path: "/api/cron/campaign-sequence-steps"             , schedule: "*/5 * * * *" },
   // Unified queue drain — email_queue / push_notification_queue / orchestrator_tasks /
   // drip_campaigns (write-only-ledger burn-down: queues finally get a consumer).
@@ -126,44 +126,44 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/agent-health-check"                  , schedule: "0 * * * *" },
   { path: "/api/cron/automation-error-monitor"            , schedule: "0 * * * *" },
   { path: "/api/cron/connector-auto-applier"              , schedule: "0 * * * *" },
-  { path: "/api/cron/consent-recovery"                    , schedule: "0 * * * *" },
+  { path: "/api/cron/consent-recovery"                    , schedule: "47 * * * *" }, // (staggered r43)
   { path: "/api/cron/gbp-auto-posts"                      , schedule: "0 * * * *" },
   { path: "/api/cron/open-house-reminder"                 , schedule: "0 * * * *" },
   { path: "/api/cron/predictive-listing-execute"          , schedule: "0 * * * *" },
   { path: "/api/cron/publish-newsletters"                 , schedule: "0 * * * *" },
-  { path: "/api/cron/connector-health"                    , schedule: "0 */12 * * *" },
+  { path: "/api/cron/connector-health"                    , schedule: "34 */12 * * *" }, // (staggered r43)
   { path: "/api/fatigue/cron"                             , schedule: "0 */12 * * *" },
-  { path: "/api/cron/approval-push"                       , schedule: "0 */2 * * *" },
+  { path: "/api/cron/approval-push"                       , schedule: "52 */2 * * *" }, // (staggered r43)
   { path: "/api/cron/calendar-sync"                       , schedule: "0 */2 * * *" },
   { path: "/api/cron/deal-health-scan"                    , schedule: "0 */4 * * *" },
   { path: "/api/cron/pattern-scan"                        , schedule: "0 */4 * * *" },
   { path: "/api/cron/closing-orchestration"               , schedule: "0 */6 * * *" },
   { path: "/api/cron/dotloop-sync"                        , schedule: "0 */6 * * *" },
   { path: "/api/cron/earnings-rollup"                     , schedule: "0 1 * * *" },
-  { path: "/api/cron/partners-meeting"                    , schedule: "0 1 * * 1" },
-  { path: "/api/cron/partners-meeting?phase=deliver"      , schedule: "0 16 * * 1" },
-  { path: "/api/cron/ghost-detection"                     , schedule: "0 10 * * *" },
+  { path: "/api/cron/partners-meeting"                    , schedule: "22 1 * * 1" }, // (staggered r43)
+  { path: "/api/cron/partners-meeting?phase=deliver"      , schedule: "12 16 * * 1" }, // (staggered r43)
+  { path: "/api/cron/ghost-detection"                     , schedule: "12 10 * * *" }, // (staggered r43)
   { path: "/api/cron/distribute-podcast-episodes"         , schedule: "0 10 * * 2" },
-  { path: "/api/cron/referral-asks"                       , schedule: "0 10 * * 2" },
+  { path: "/api/cron/referral-asks"                       , schedule: "22 10 * * 2" }, // (staggered r43)
   { path: "/api/cron/podcast-weekly-auto"                 , schedule: "0 10 * * 3" },
   { path: "/api/cron/competitor-ads-exa"                  , schedule: "0 11 * * *" },
   // Content-intel scan runs an hour BEFORE the ads scan so the Marketing
   // Studio's briefs have the organic + trending picture first (round 5-7).
   { path: "/api/cron/content-intel-scan"                  , schedule: "0 10 * * *" },
-  { path: "/api/cron/stale-contact-monitor"               , schedule: "0 11 * * *" },
+  { path: "/api/cron/stale-contact-monitor"               , schedule: "15 11 * * *" }, // (staggered r43)
   { path: "/api/cron/long-term-nurture"                   , schedule: "0 11 * * 1" },
-  { path: "/api/cron/recruit-outreach"                    , schedule: "0 11 * * 1" },
-  { path: "/api/cron/vendor-review-requests"              , schedule: "0 13 * * *" },
+  { path: "/api/cron/recruit-outreach"                    , schedule: "12 11 * * 1" }, // (staggered r43)
+  { path: "/api/cron/vendor-review-requests"              , schedule: "42 13 * * *" }, // (staggered r43)
   { path: "/api/cron/weekly-income-digest"                , schedule: "0 13 * * 1" },
   { path: "/api/cron/voice-week-in-review"                , schedule: "30 14 * * 1" },
   { path: "/api/cron/education-delivery"                  , schedule: "0 14 * * 3" },
   { path: "/api/cron/engagement-scores"                   , schedule: "0 2 * * *" },
-  { path: "/api/cron/territory-metrics"                   , schedule: "0 2 * * *" },
-  { path: "/api/cron/sphere-weekly"                       , schedule: "0 22 * * 0" },
-  { path: "/api/cron/revenue-protection-rollup"           , schedule: "0 3 * * *" },
+  { path: "/api/cron/territory-metrics"                   , schedule: "12 2 * * *" }, // (staggered r43)
+  { path: "/api/cron/sphere-weekly"                       , schedule: "12 22 * * 0" }, // (staggered r43)
+  { path: "/api/cron/revenue-protection-rollup"           , schedule: "15 3 * * *" }, // (staggered r43)
   { path: "/api/cron/billing-dunning"                     , schedule: "0 14 * * *" },
   // Platform Sentinel — daily fleet watch → proposed staff actions with drafted outreach.
-  { path: "/api/cron/platform-sentinel"                   , schedule: "0 12 * * *" },
+  { path: "/api/cron/platform-sentinel"                   , schedule: "12 12 * * *" }, // (staggered r43)
   { path: "/api/cron/webhook-deliveries"                  , schedule: "*/5 * * * *" }, // tenant outbound webhooks: enqueue from lifecycle_events + drain due deliveries (round 24)
   { path: "/api/cron/affiliate-commissions"               , schedule: "0 6 28 * *" }, // monthly MRR commission accrual, idempotent per (referral, period) (round 24)
   { path: "/api/cron/stripe-drift"                        , schedule: "0 9 * * 1" }, // weekly plan-catalog vs Stripe price drift watch — notifies superadmins, never auto-fixes (round 33)
@@ -176,53 +176,53 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/overnight-digest"                    , schedule: "30 12 * * *" },
   { path: "/api/cron/board-packet"                        , schedule: "0 13 1 * *" },
   { path: "/api/cron/board-packet?phase=deliver"          , schedule: "0 13 2 * *" },
-  { path: "/api/cron/qbr-invitations"                     , schedule: "0 14 1,2,3,4,5,6,7 1,4,7,10 *" }, // quarterly QBR invites, self-gates to the Q window (round 28)
+  { path: "/api/cron/qbr-invitations"                     , schedule: "42 14 1,2,3,4,5,6,7 1,4,7,10 *" }, // quarterly QBR invites, self-gates to the Q window (round 28) (staggered r43)
   { path: "/api/cron/signature-chase"                     , schedule: "0 15 * * *" },
   { path: "/api/cron/listing-propensity"                  , schedule: "0 14 * * 2" },
   { path: "/api/cron/video-plays"                         , schedule: "30 15 * * *" },
   { path: "/api/cron/photo-intelligence"                  , schedule: "15 5 * * *" },
   { path: "/api/cron/send-email-campaigns"                , schedule: "10,25,40,55 * * * *" },
   { path: "/api/cron/credential-refresh"                  , schedule: "0 7 * * *" },
-  { path: "/api/cron/tenant-safety-scan"                  , schedule: "0 4 * * *" },
+  { path: "/api/cron/tenant-safety-scan"                  , schedule: "22 4 * * *" }, // (staggered r43)
   { path: "/api/cron/lead-scraping"                       , schedule: "0 5 * * *" },
-  { path: "/api/cron/lifetime-npv-forecast-rollup"        , schedule: "0 5 * * *" },
+  { path: "/api/cron/lifetime-npv-forecast-rollup"        , schedule: "15 5 * * *" }, // (staggered r43)
   { path: "/api/cron/market-data-refresh"                 , schedule: "0 5 * * *" },
   { path: "/api/cron/actor-health"                        , schedule: "0 6 * * *" },
-  { path: "/api/cron/compliance-monitoring"               , schedule: "0 6 * * *" },
+  { path: "/api/cron/compliance-monitoring"               , schedule: "22 6 * * *" }, // (staggered r43)
   { path: "/api/cron/contact-enrichment"                  , schedule: "0 6 * * *" },
   { path: "/api/cron/content-intel-reddit"                , schedule: "0 6 * * *" },
   { path: "/api/cron/predictive-listing-scoring"          , schedule: "0 6 * * *" },
-  { path: "/api/cron/team-heatmap-snapshot"               , schedule: "0 6 * * *" },
+  { path: "/api/cron/team-heatmap-snapshot"               , schedule: "42 6 * * *" }, // (staggered r43)
   { path: "/api/deal-health/cron"                         , schedule: "0 6 * * *" },
   { path: "/api/cron/annual-home-value-reports"           , schedule: "0 7 * * *" },
   { path: "/api/cron/blog-cadence-tick"                   , schedule: "0 7 * * *" },
   { path: "/api/cron/newsletter-cadence-tick"             , schedule: "0 7 * * *" },
-  { path: "/api/cron/social-cadence-tick"                 , schedule: "0 7 * * *" },
+  { path: "/api/cron/social-cadence-tick"                 , schedule: "15 7 * * *" }, // (staggered r43)
   { path: "/api/cron/content-intel-rss"                   , schedule: "0 7 * * *" },
   { path: "/api/cron/wealth-opportunity-scan"             , schedule: "0 7 * * *" },
   { path: "/api/fatigue/calculate"                        , schedule: "0 7 * * *" },
-  { path: "/api/cron/asset-manager-weekly"                , schedule: "0 7 * * 1" },
-  { path: "/api/cron/campaign-orchestrator-weekly"        , schedule: "0 7 * * 1" },
+  { path: "/api/cron/asset-manager-weekly"                , schedule: "32 7 * * 1" }, // (staggered r43)
+  { path: "/api/cron/campaign-orchestrator-weekly"        , schedule: "42 7 * * 1" }, // (staggered r43)
   { path: "/api/cron/buyer-market-watch"                  , schedule: "0 8 * * *" },
-  { path: "/api/cron/proactive-intelligence"              , schedule: "0 7 * * *" },
+  { path: "/api/cron/proactive-intelligence"              , schedule: "22 7 * * *" }, // (staggered r43)
   { path: "/api/cron/content-performance-aggregator"      , schedule: "0 8 * * *" },
   { path: "/api/cron/em-receipt-watcher"                  , schedule: "0 8 * * *" },
   { path: "/api/property-alerts/run?frequency=daily"      , schedule: "0 8 * * *" },
   { path: "/api/cron/seller-updates"                      , schedule: "0 8 * * 1" },
   { path: "/api/property-alerts/run?frequency=weekly"     , schedule: "0 8 * * 1" },
-  { path: "/api/cron/prompt-calibration"                  , schedule: "0 8 * * 2" },
-  { path: "/api/cron/farm-mail-weekly"                    , schedule: "0 8 * * 4" },
+  { path: "/api/cron/prompt-calibration"                  , schedule: "12 8 * * 2" }, // (staggered r43)
+  { path: "/api/cron/farm-mail-weekly"                    , schedule: "12 8 * * 4" }, // (staggered r43)
   { path: "/api/property-alerts/run?frequency=twice_daily", schedule: "0 8,17 * * *" },
   { path: "/api/cron/bundle-attribution-rollup"           , schedule: "0 9 * * *" },
   { path: "/api/cron/lifetime-customer-touchpoints"       , schedule: "0 9 * * *" },
   { path: "/api/cron/onboarding-health"                   , schedule: "0 9 * * *" },
   { path: "/api/cron/onboarding-reminders"                , schedule: "0 9 * * *" },
-  { path: "/api/cron/stale-lead-monitor"                  , schedule: "0 9 * * *" },
-  { path: "/api/cron/listing-seller-update-video"         , schedule: "0 9 * * 1" },
-  { path: "/api/cron/marketing-agent-weekly"              , schedule: "0 9 * * 1" },
+  { path: "/api/cron/stale-lead-monitor"                  , schedule: "15 9 * * *" }, // (staggered r43)
+  { path: "/api/cron/listing-seller-update-video"         , schedule: "22 9 * * 1" }, // (staggered r43)
+  { path: "/api/cron/marketing-agent-weekly"              , schedule: "12 9 * * 1" }, // (staggered r43)
   { path: "/api/cron/voice-distiller-weekly"              , schedule: "0 9 * * 5" },
   { path: "/api/cron/showing-prep"                        , schedule: "15 * * * *" },
-  { path: "/api/cron/deadline-watcher"                    , schedule: "30 * * * *" },
+  { path: "/api/cron/deadline-watcher"                    , schedule: "45 * * * *" }, // (staggered r43)
   { path: "/api/cron/marketing-agent-weekly-measure"      , schedule: "30 22 * * 0" },
   { path: "/api/cron/refresh-market-rates"                , schedule: "30 6 * * *" },
   { path: "/api/cron/market-insights-weekly"              , schedule: "30 6 * * 1" },
@@ -230,7 +230,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/content-intel-apify"                 , schedule: "30 7 * * *" },
   { path: "/api/cron/quarterly-home-value-reports"        , schedule: "30 7 * * *" },
   { path: "/api/cron/sphere-resonance"                    , schedule: "30 7 * * *" },
-  { path: "/api/cron/weekly-ai-metrics"                   , schedule: "30 7 * * 1" },
+  { path: "/api/cron/weekly-ai-metrics"                   , schedule: "54 7 * * 1" }, // (staggered r43)
   { path: "/api/cron/variant-outcomes-aggregator"         , schedule: "30 8 * * *" },
 ]
 
