@@ -70,6 +70,18 @@ import {
   type ClosedDealGciRow,
 } from "../lib/analytics/prediction-accuracy"
 import {
+  summarizeAssignmentPolicyRows,
+  computePolicyOutcomes,
+  findDivergentRulePair,
+  policyLabel,
+  ASSIGNMENT_OUTCOME_HORIZON_DAYS,
+  ASSIGNMENT_POLICY_MIN_OBSERVATIONS,
+  type AssignedCohortRow,
+  type AssignmentRuleInfo,
+  type FirstAppointmentEvent,
+  type PolicyOutcomeStat,
+} from "../lib/analytics/assignment-outcomes"
+import {
   ACCURACY_GATE_POLICIES,
   MANAGER_ACCURACY_DOMAIN,
   accuracyGateVerdict,
@@ -372,6 +384,75 @@ async function main() {
   })
   check("decision: the tenant halt also beats the accuracy gate", !tenantWins.allow && tenantWins.reason === "staff paused this brokerage")
 
+  // ═══ Layer 1d · the round-38 assignment-policy rail (rec 2) ═══
+  console.log("\n[Layer 1d · assignment-policy outcomes — attributed policies vs real first appointments]")
+
+  const apRules: AssignmentRuleInfo[] = [
+    { id: "ra", name: "Hot ZIPs", ruleType: "geo_based", isActive: true },
+    { id: "rb", name: "Round robin", ruleType: "round_robin", isActive: true },
+    { id: "rc", name: "Old rule", ruleType: "specialization", isActive: false },
+  ]
+  const asg = (over: Partial<AssignedCohortRow>): AssignedCohortRow => ({
+    key: "lead:l1", brokerageId: "b1", contactId: "c1", leadId: "l1",
+    ruleId: "ra", method: "geo_based", assignedAt: "2026-01-01T00:00:00Z", ...over,
+  })
+  const apCohort: AssignedCohortRow[] = [
+    asg({}),                                                                                 // ruleA — appt on c1 at day 9 → hit
+    asg({ key: "lead:l1", assignedAt: "2026-02-01T00:00:00Z" }),                             // duplicate identity — first assignment wins
+    asg({ key: "lead:l2", leadId: "l2", contactId: "c2" }),                                  // ruleA — no appt, window elapsed → miss
+    asg({ key: "lead:l3", leadId: "l3", contactId: null, ruleId: "rb", method: "round_robin" }),      // ruleB — appt joins via the LEAD entity at day 59 → miss (past horizon)
+    asg({ key: "lead:l4", leadId: "l4", contactId: "c4", ruleId: "rb", method: "round_robin" }),      // ruleB — appt day 4 → hit
+    asg({ key: "lead:l5", leadId: "l5", contactId: "c5", ruleId: null, method: "load_balance", assignedAt: "2026-07-10T00:00:00Z" }), // fallback — open window → pending
+    asg({ key: "lead:l6", leadId: "l6", contactId: "c6" }),                                  // appt BEFORE assignment → refused
+    asg({ key: "contact:c9", leadId: null, contactId: "c9", ruleId: "rb", method: "round_robin", assignedAt: "2026-01-20T00:00:00Z" }), // Track-B contact — appt day 12 → hit
+  ]
+  const apEvents: FirstAppointmentEvent[] = [
+    { contactId: "c1", leadId: null, at: "2026-01-10T00:00:00Z" },
+    { contactId: null, leadId: "l3", at: "2026-03-01T00:00:00Z" },
+    { contactId: "c4", leadId: null, at: "2026-01-05T00:00:00Z" },
+    { contactId: "c6", leadId: null, at: "2025-12-30T00:00:00Z" },
+    { contactId: "c9", leadId: null, at: "2026-02-01T00:00:00Z" },
+  ]
+  const apRail = summarizeAssignmentPolicyRows(apCohort, apRules, apEvents, NOW)
+  check("assignment policy: 5 graded (dup deduped, pending + pre-existing excluded)", apRail.available && apRail.observations === 5, String(apRail.observations))
+  check(`assignment policy: outcome rate 3/5 with the ${ASSIGNMENT_OUTCOME_HORIZON_DAYS}-day horizon NAMED in the label`,
+    apRail.withinRate?.rate === 0.6 && (apRail.withinRate?.label ?? "").includes(String(ASSIGNMENT_OUTCOME_HORIZON_DAYS)), JSON.stringify(apRail.withinRate))
+  check("assignment policy: a rate rail mints NO error metric", apRail.medianError === null)
+  check("assignment policy: per-policy breakdown carries only graded policies (rule B 3 obs first, rule A 2 obs)",
+    apRail.breakdown?.length === 2 && apRail.breakdown[0].group.includes("Round robin") && apRail.breakdown[0].observations === 3
+    && apRail.breakdown[0].withinRate === 0.67 && apRail.breakdown[1].observations === 2 && apRail.breakdown[1].withinRate === 0.5,
+    JSON.stringify(apRail.breakdown))
+  check("assignment policy: pending + pre-existing-appointment refusals named in the honest notes",
+    apRail.honestNotes.some((n) => n.includes("still inside the window")) && apRail.honestNotes.some((n) => n.includes("refused")), JSON.stringify(apRail.honestNotes))
+  check("assignment policy: an appointment joining via the LEAD entity grades (no contact row required)",
+    (() => { const r = computePolicyOutcomes(apCohort, apRules, apEvents, NOW); return r.stats.find((s) => s.policyKey === "rule:rb")?.observations === 3 })())
+  check("assignment policy: empty cohort → available:false with a why", summarizeAssignmentPolicyRows([], apRules, [], NOW).available === false)
+  const apPendingOnly = summarizeAssignmentPolicyRows([asg({ key: "lead:l9", leadId: "l9", contactId: "c99", assignedAt: "2026-07-15T00:00:00Z" })], apRules, [], NOW)
+  check("assignment policy: open windows only → available:false (never graded early)",
+    apPendingOnly.available === false && (apPendingOnly.why ?? "").includes("window"), apPendingOnly.why ?? "")
+  check("policy labels: retired + deleted rules and fallback methods are named honestly",
+    policyLabel({ ruleId: "rc", method: "specialization" }, apRules).includes("(retired)")
+    && policyLabel({ ruleId: "gone-rule-id", method: "x" }, apRules).startsWith("deleted rule")
+    && policyLabel({ ruleId: null, method: "load_balance" }, apRules).includes("fallback"))
+
+  // — the divergence detector (the deliberation feed's trigger) —
+  const stat = (over: Partial<PolicyOutcomeStat>): PolicyOutcomeStat => ({
+    policyKey: "rule:ra", ruleId: "ra", isActiveRule: true, label: "A",
+    observations: 10, hits: 6, rate: 0.6, pending: 0, ...over,
+  })
+  const divergent = findDivergentRulePair([
+    stat({}), stat({ policyKey: "rule:rb", ruleId: "rb", label: "B", hits: 2, rate: 0.2 }),
+  ])
+  check("divergence: two active rules ≥ floor with a 40-pt gap → the pair is found (top vs laggard)",
+    divergent?.top.ruleId === "ra" && divergent?.laggard.ruleId === "rb" && divergent?.gap === 0.4, JSON.stringify(divergent))
+  check(`divergence: below the ${ASSIGNMENT_POLICY_MIN_OBSERVATIONS}-observation floor → NO dispute is manufactured`,
+    findDivergentRulePair([stat({ observations: ASSIGNMENT_POLICY_MIN_OBSERVATIONS - 1 }), stat({ policyKey: "rule:rb", ruleId: "rb", rate: 0.1 })]) === null)
+  check("divergence: an immaterial gap → null (never argued)",
+    findDivergentRulePair([stat({}), stat({ policyKey: "rule:rb", ruleId: "rb", rate: 0.5 })]) === null)
+  check("divergence: retired rules and non-rule fallbacks never argue (no admin knob to defend)",
+    findDivergentRulePair([stat({}), stat({ policyKey: "rule:rc", ruleId: "rc", isActiveRule: false, rate: 0.1 })]) === null
+    && findDivergentRulePair([stat({}), stat({ policyKey: "method:load_balance", ruleId: null, rate: 0.1 })]) === null)
+
   // ═══ Layer 2 · static guarantees on the library + the two mounts ═══
   console.log("\n[Layer 2 · read-only, existing tables only, keep-one component]")
 
@@ -385,6 +466,31 @@ async function main() {
   check("adapters actually read the ledgers (≥ 12 table reads)", tables.length >= 12, tables.join(","))
   const unknown = [...new Set(tables)].filter((t) => !new RegExp(`^\\s+${t}: \\[`, "m").test(snapshot))
   check("every table read exists in the schema snapshot (no new table literals)", unknown.length === 0, unknown.join(","))
+
+  // ── round-38 wiring: the assignment-policy rail, its attribution sites, and its sweep ──
+  const assignSrc = readFileSync(join(ROOT, "lib/analytics/assignment-outcomes.ts"), "utf8")
+  const assignTables = [...assignSrc.matchAll(/\.from\("([a-z_]+)"\)/g)].map((m) => m[1])
+  const assignUnknown = [...new Set(assignTables)].filter((t) => !new RegExp(`^\\s+${t}: \\[`, "m").test(snapshot))
+  check("assignment-policy adapter reads only schema-snapshot tables", assignUnknown.length === 0, assignUnknown.join(","))
+  check("assignment-policy module performs no direct writes (the sweep raises through the governed referral bus only)",
+    !/\.(insert|update|upsert|delete)\s*\(/.test(assignSrc) && assignSrc.includes("raiseReferralDeduped"))
+  const leadHandlersSrc = readFileSync(join(ROOT, "lib/kernel/lead-acquisition-handlers.ts"), "utf8")
+  check("attribution is recorded AT assignment time: assignment_log.rule_id + the LEAD_ASSIGNED event payload carries the matched rule",
+    leadHandlersSrc.includes("rule_id: ruleId ?? null") &&
+    /LEAD_ASSIGNED,\s*\n\s*brokerage_id: brokerageId,\s*\n\s*metadata: \{ assignment:/.test(leadHandlersSrc))
+  const captureSrc = readFileSync(join(ROOT, "lib/contact-pipeline/contact-capture.ts"), "utf8")
+  check("Track-B capture stamps the matched rule on CONTACT_CAPTURED (attribution starts now — never retro-fabricated)",
+    captureSrc.includes("createAttribution = { method: createAssignment.method, rule_id: createAssignment.ruleId ?? null }")
+    && captureSrc.includes("{ assignment: createAttribution }"))
+  const crossSrc = readFileSync(join(ROOT, "lib/managers/cross-referral.ts"), "utf8")
+  const registrySrc = readFileSync(join(ROOT, "lib/kernel/manager-registry.ts"), "utf8")
+  check("the divergence sweep is the registered live raiser of the deliberative assignment_policy_outcomes edge (ai_isa → data_steward)",
+    crossSrc.includes('collabDomain: "assignment_policy_outcomes"') && crossSrc.includes("assignment_policy_sweep")
+    && registrySrc.includes('key: "assignment_policy_outcomes"')
+    && /assignment_policy_outcomes:[\s\S]{0,1600}?deliberate: true/.test(registrySrc))
+  const delibSrc = readFileSync(join(ROOT, "lib/managers/deliberation.ts"), "utf8")
+  check("the Data Steward's deliberation seat is grounded in the assignment_rules book for policy disputes",
+    delibSrc.includes('ctx.entityType === "assignment_rule"') && delibSrc.includes('svc.from("assignment_rules")'))
 
   // ── round-36 wiring: the outcome writer, the freezer, and the accuracy gate ──
   const outcomesSrc = readFileSync(join(ROOT, "lib/analytics/ai-prediction-outcomes.ts"), "utf8")
@@ -476,7 +582,7 @@ async function main() {
   const { createServiceClient } = await import("../lib/supabase/service")
   const svc = createServiceClient()
   const live = await getPredictionAccuracyReport(svc as any)
-  check("live: full 12-rail shape returned without throwing", live.rails.length === 12, String(live.rails.length))
+  check("live: full 13-rail shape returned without throwing", live.rails.length === 13, String(live.rails.length))
   check("live: every rail is honest (available with numbers, or unavailable with a why)",
     live.rails.every((r: RailAccuracy) => (r.available && r.observations > 0) || (!r.available && !!r.why && r.medianError === null)),
     JSON.stringify(live.rails.map((r) => ({ rail: r.rail, available: r.available, obs: r.observations, why: r.why }))))

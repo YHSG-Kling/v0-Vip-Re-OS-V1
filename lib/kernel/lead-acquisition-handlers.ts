@@ -372,11 +372,17 @@ export async function handleLeadAssigned(params: {
     .eq('sla_type', 'assignment')
     .is('completed_at', null)
 
+  // ASSIGNMENT ATTRIBUTION (round 38): the LEAD_ASSIGNED event itself carries
+  // WHICH policy routed the lead (matched rule + method + agent) — the same
+  // attribution assignment_log records, mirrored onto the kernel event so the
+  // event stream is self-describing. The assignment-policy outcomes rail
+  // (lib/analytics/assignment-outcomes.ts) grades policies off assignment_log.
   await supabase.from('lifecycle_events').insert({
     entity_type: 'lead',
     entity_id: leadId,
     event_type: KernelEvent.LEAD_ASSIGNED,
     brokerage_id: brokerageId,
+    metadata: { assignment: { rule_id: ruleId ?? null, method, agent_id: agentId } },
     created_at: new Date().toISOString(),
   })
 

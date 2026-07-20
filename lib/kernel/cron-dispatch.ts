@@ -167,6 +167,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/webhook-deliveries"                  , schedule: "*/5 * * * *" }, // tenant outbound webhooks: enqueue from lifecycle_events + drain due deliveries (round 24)
   { path: "/api/cron/affiliate-commissions"               , schedule: "0 6 28 * *" }, // monthly MRR commission accrual, idempotent per (referral, period) (round 24)
   { path: "/api/cron/stripe-drift"                        , schedule: "0 9 * * 1" }, // weekly plan-catalog vs Stripe price drift watch — notifies superadmins, never auto-fixes (round 33)
+  { path: "/api/cron/platform-lead-distribution"          , schedule: "0 */2 * * *" }, // batch sweep for platform leads whose inline distribution found no subscriber — speed-to-lead once a zip gains one (round 38)
   { path: "/api/cron/platform-prospect-followup"          , schedule: "0 15 * * *" },
   { path: "/api/cron/support-sla"                         , schedule: "30 * * * *" },
   { path: "/api/cron/showing-lifecycle"                   , schedule: "15 * * * *" },

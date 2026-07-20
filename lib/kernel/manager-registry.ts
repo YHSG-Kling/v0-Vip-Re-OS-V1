@@ -257,6 +257,18 @@ export const MANAGER_COLLABORATIONS: Record<string, CollaborationDomain> = {
     // about this vendor vs the alternatives. Two legitimate answers — argue it.
     deliberate: true,
   },
+  assignment_policy_outcomes: {
+    key: "assignment_policy_outcomes",
+    label: "Assignment policies ↔ measured conversion outcomes",
+    managers: ["ai_isa", "data_steward"],
+    evidence: "assignment_log (ai_isa-stewarded) records WHICH assignment_rules row (data_steward-stewarded) routed every qualified lead at assignment time, and the outcome side of the grade — appointments / showings / contacts — is data_steward-stewarded too: the routing config and the measured 30-day first-appointment evidence describe the SAME assignments from two seats. Live raiser: the assignment-policy sweep (publishAssignmentPolicyReferrals in lib/analytics/assignment-outcomes.ts) fires when two active rules' measured outcome rates diverge materially.",
+    // A ROUTING-POLICY dispute by construction: the AI ISA carries the measured
+    // conversion evidence that says one rule is out-earning another, the Data
+    // Steward defends (or amends) the config the admin intended — territory
+    // splits and specialization pools can be RIGHT even when their measured
+    // rates differ. Two legitimate answers about the same assignments — argue it.
+    deliberate: true,
+  },
   approval_queue_slo: {
     key: "approval_queue_slo",
     label: "Approval-queue aging (per-manager SLO)",
@@ -1687,6 +1699,7 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/webhook-deliveries": "data_steward", // tenant outbound-webhook enqueue + drain (round 24)
   "/api/cron/affiliate-commissions": "finance_manager", // monthly MRR affiliate accrual (round 24)
   "/api/cron/stripe-drift": "finance_manager", // weekly plan-catalog vs Stripe price drift watch (round 33)
+  "/api/cron/platform-lead-distribution": "data_steward", // platform-lead batch distribution sweep (round 38)
   "/api/cron/manager-eval": "data_steward",
   "/api/cron/manager-learning": "data_steward",
   "/api/cron/manager-signals": "cron_manager",

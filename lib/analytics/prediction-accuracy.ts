@@ -58,6 +58,16 @@
 //                        days after each snapshot; the snapshot's own
 //                        low/high-band percentages are the source tolerance.
 //
+// RAIL ADDED IN ROUND 38 (rec 2 — the assignment-policy grading loop):
+//   assignment_policy    assignment_log records WHICH assignment_rules row (or
+//                        fallback method) routed every qualified lead AT
+//                        assignment time; the outcome is a real first booked
+//                        appointment (calendar_events isa/listing appointments +
+//                        showings) within a declared 30-day horizon. Adapter
+//                        lives in lib/analytics/assignment-outcomes.ts (it also
+//                        hosts the deliberation-feed sweep, so the read-only
+//                        rule below stays true of THIS module).
+//
 // RAILS DELIBERATELY EXCLUDED (and why — auditable, not forgotten):
 //   buyer_behavior_predictions   UPSERT ON CONFLICT (contact_id) with a 24h
 //                                expires_at — every regeneration DESTROYS the
@@ -99,6 +109,7 @@ export type AccuracyRailId =
   | "home_value_avm"
   | "listing_propensity"
   | "income_forecast"
+  | "assignment_policy"
 
 export interface RailMedianError {
   value: number
@@ -1341,7 +1352,8 @@ export async function getPredictionAccuracyReport(
   opts?: { brokerageId?: string },
 ): Promise<PredictionAccuracyReport> {
   const b = opts?.brokerageId
-  const [closingCosts, netSheet, priceRails, attendance, strategy, patterns, content, dealOutcome, homeValue, propensity, incomeForecast] = await Promise.all([
+  const { assignmentPolicyAdapter, ASSIGNMENT_POLICY_BASE } = await import("./assignment-outcomes")
+  const [closingCosts, netSheet, priceRails, attendance, strategy, patterns, content, dealOutcome, homeValue, propensity, incomeForecast, assignmentPolicy] = await Promise.all([
     safeRail(closingCostsAdapter(svc, b), CLOSING_COSTS_BASE),
     safeRail(netSheetAdapter(svc, b), NET_SHEET_BASE),
     pricePairsRails(svc, b).catch((e): [RailAccuracy, RailAccuracy] => [
@@ -1356,8 +1368,9 @@ export async function getPredictionAccuracyReport(
     safeRail(homeValueAdapter(svc, b), HOME_VALUE_BASE),
     safeRail(propensityAdapter(svc, b), PROPENSITY_BASE),
     safeRail(incomeForecastAdapter(svc, b), INCOME_FORECAST_BASE),
+    safeRail(assignmentPolicyAdapter(svc, b), ASSIGNMENT_POLICY_BASE),
   ])
-  const rails = [closingCosts, netSheet, priceRails[0], priceRails[1], attendance, strategy, patterns, content, dealOutcome, homeValue, propensity, incomeForecast]
+  const rails = [closingCosts, netSheet, priceRails[0], priceRails[1], attendance, strategy, patterns, content, dealOutcome, homeValue, propensity, incomeForecast, assignmentPolicy]
   return {
     scope: b ? "brokerage" : "platform",
     generatedAt: new Date().toISOString(),
@@ -1393,6 +1406,10 @@ export async function loadRailAccuracy(svc: Svc, rail: AccuracyRailId, brokerage
     case "home_value_avm": return safeRail(homeValueAdapter(svc, brokerageId), HOME_VALUE_BASE)
     case "listing_propensity": return safeRail(propensityAdapter(svc, brokerageId), PROPENSITY_BASE)
     case "income_forecast": return safeRail(incomeForecastAdapter(svc, brokerageId), INCOME_FORECAST_BASE)
+    case "assignment_policy": {
+      const { assignmentPolicyAdapter, ASSIGNMENT_POLICY_BASE } = await import("./assignment-outcomes")
+      return safeRail(assignmentPolicyAdapter(svc, brokerageId), ASSIGNMENT_POLICY_BASE)
+    }
   }
 }
 

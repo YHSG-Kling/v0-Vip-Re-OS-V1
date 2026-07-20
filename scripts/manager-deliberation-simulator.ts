@@ -102,10 +102,11 @@ async function main() {
 
   console.log("\n[Layer 1a · the deliberate flags — argument only where the overlap is a real tradeoff]")
   const flagged = deliberativeDomains().map((d) => d.key).sort()
-  check("exactly the SIX tradeoff domains are deliberative (round 36 full build-out: pricing dispute, closing money+risk, organic-vs-paid budget, lead-quality spend, recruiting offer economics, vendor selection)",
+  check("exactly the SEVEN tradeoff domains are deliberative (round 36 full build-out + round 38 assignment-policy outcomes: pricing dispute, closing money+risk, organic-vs-paid budget, lead-quality spend, recruiting offer economics, vendor selection, assignment policy)",
     JSON.stringify(flagged) === JSON.stringify([
-      "closing_money_and_risk", "lead_quality_spend", "listing_demand_bridge",
-      "organic_paid_content", "recruiting_offer_economics", "transaction_vendor_selection",
+      "assignment_policy_outcomes", "closing_money_and_risk", "lead_quality_spend",
+      "listing_demand_bridge", "organic_paid_content", "recruiting_offer_economics",
+      "transaction_vendor_selection",
     ]), flagged.join(","))
   check("isDeliberativeDomain: listing_demand_bridge (a pricing dispute by construction) → true",
     isDeliberativeDomain("listing_demand_bridge"))
@@ -120,7 +121,8 @@ async function main() {
     && JSON.stringify(MANAGER_COLLABORATIONS.lead_quality_spend.managers.slice().sort()) === JSON.stringify(["ads_manager", "ai_isa"])
     && JSON.stringify(MANAGER_COLLABORATIONS.recruiting_offer_economics.managers.slice().sort()) === JSON.stringify(["finance_manager", "recruiting_manager"])
     && JSON.stringify(MANAGER_COLLABORATIONS.transaction_vendor_selection.managers.slice().sort()) === JSON.stringify(["data_steward", "deal_coordinator"])
-    && Object.keys(MANAGER_COLLABORATIONS).length === 12)
+    && JSON.stringify(MANAGER_COLLABORATIONS.assignment_policy_outcomes.managers.slice().sort()) === JSON.stringify(["ai_isa", "data_steward"])
+    && Object.keys(MANAGER_COLLABORATIONS).length === 13)
   check("every deliberative domain's evidence names its LIVE RAISER (no aspirational edges)",
     deliberativeDomains().every((d) => /raiser|sweep|hook|assignVendorToTransaction|publish/i.test(d.evidence)))
 

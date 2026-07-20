@@ -532,8 +532,28 @@ const loadRecruitingManagerFacts: FactLoader = async (svc, ctx) => {
 
 /** The vendor book: the jobs on the referred transaction + what the ratings ledger
  *  actually says about those vendors — the Data Steward's seat in the vendor-pick
- *  argument (stewarded tables: vendors, vendor_jobs, vendor_ratings). */
+ *  argument (stewarded tables: vendors, vendor_jobs, vendor_ratings). Round 38:
+ *  when the referral is an ASSIGNMENT-POLICY dispute (entityType 'assignment_rule',
+ *  the assignment_policy_outcomes edge) the Steward instead argues from the config
+ *  it stewards — the live assignment_rules book (name/type/priority/rotation). */
 const loadDataStewardFacts: FactLoader = async (svc, ctx) => {
+  // ── Assignment-policy seat (assignment_policy_outcomes, round 38) ──
+  if (ctx.entityType === "assignment_rule") {
+    const facts: string[] = [], citations: string[] = []
+    const { data: rules } = await svc.from("assignment_rules")
+      .select("id, name, rule_type, priority, is_active, times_triggered, agent_ids, team_id")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("is_active", true)
+      .order("priority", { ascending: false })
+      .limit(10)
+    for (const r of (rules ?? []) as any[]) {
+      const pool = Array.isArray(r.agent_ids) ? r.agent_ids.length : 0
+      facts.push(`rule "${r.name ?? r.id}" — ${r.rule_type}, priority ${r.priority}, fired ${r.times_triggered ?? 0} time${(r.times_triggered ?? 0) === 1 ? "" : "s"}${pool > 0 ? `, ${pool} agent${pool === 1 ? "" : "s"} in the pool` : r.team_id ? ", team-scoped pool" : ""}${r.id === ctx.entityId ? " (the rule under challenge)" : ""}`)
+      citations.push(`assignment_rules.rule_type=${r.rule_type} priority=${r.priority} times_triggered=${r.times_triggered ?? 0} (assignment_rules.id=${r.id})`)
+    }
+    return { facts, citations }
+  }
+
   const facts: string[] = [], citations: string[] = []
   let vendorIds: string[] = []
   if (ctx.entityType === "transaction" && ctx.entityId) {

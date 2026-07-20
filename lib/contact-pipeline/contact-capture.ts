@@ -388,6 +388,12 @@ export async function captureContact(
   // skipAutoAssign: honor an explicit owner hint if present, else leave ownership unset
   // (NAR Article 16 — never auto-poach a represented buyer). Otherwise resolve normally.
   let createAgentId: string | null
+  // ASSIGNMENT ATTRIBUTION (round 38): WHICH policy picked the owner (matched
+  // assignment_rules row / fallback method) is recorded on the CONTACT_CAPTURED
+  // event below — the Track-B twin of assignment_log.rule_id on the lead path,
+  // so the assignment-policy outcomes rail can grade rule-routed form/import
+  // contacts too. Recording starts here; nothing earlier is retro-attributed.
+  let createAttribution: { method: string; rule_id: string | null } | null = null
   if (params.skipAutoAssign) {
     createAgentId = ownerAgentHint ?? null
   } else {
@@ -402,6 +408,7 @@ export async function captureContact(
       )
     }
     createAgentId = createAssignment.agentId
+    createAttribution = { method: createAssignment.method, rule_id: createAssignment.ruleId ?? null }
   }
 
   const { data: created, error: createError } = await supabase
@@ -454,7 +461,10 @@ export async function captureContact(
     entity_type: 'contact',
     entity_id: contactId,
     event_type: KernelEvent.CONTACT_CAPTURED,
-    metadata: { source: params.source },
+    metadata: {
+      source: params.source,
+      ...(createAttribution ? { assignment: createAttribution } : {}),
+    },
   })
 
   await processKernelEvent({

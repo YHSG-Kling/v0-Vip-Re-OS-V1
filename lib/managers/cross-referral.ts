@@ -33,6 +33,9 @@
  *         leads flowing while the ISA's qualification ledger disagrees with the CPL story
  *       publishRecruitOfferReferrals   → recruiting_offer_economics  (recruiting_manager)
  *         — a recruit at 'offer_extended' puts real terms on the table to argue
+ *       publishAssignmentPolicyReferrals → assignment_policy_outcomes (ai_isa) — two
+ *         active assignment rules' measured outcome rates diverge materially (round 38;
+ *         lives beside its rail in lib/analytics/assignment-outcomes.ts)
  *   · HOOKS (raised inline at the real decision point, additive, best-effort):
  *       listing-stall price play       → listing_demand_bridge       (manager-signals.ts)
  *       appraisal-gap detection        → closing_money_and_risk      (transaction-milestones.ts)
@@ -426,6 +429,20 @@ export const REFERRAL_EMITTERS: Record<string, ReferralEmitterInfo> = {
     sourceFile: "lib/managers/cross-referral.ts",
     marker: "export async function publishRecruitOfferReferrals",
     run: publishRecruitOfferReferrals,
+  },
+  assignment_policy_sweep: {
+    key: "assignment_policy_sweep",
+    collabDomain: "assignment_policy_outcomes",
+    from: "ai_isa",
+    kind: "sweep",
+    what: "Two active assignment rules' measured 30-day first-appointment outcomes diverge materially — the routing policy argued against the evidence",
+    sourceFile: "lib/analytics/assignment-outcomes.ts",
+    marker: "export async function publishAssignmentPolicyReferrals",
+    // Lazy import — the sweep lives beside its rail (assignment-outcomes) which
+    // imports raiseReferralDeduped from THIS module; a static import here would
+    // be a cycle.
+    run: (client?: Svc) =>
+      import("@/lib/analytics/assignment-outcomes").then((m) => m.publishAssignmentPolicyReferrals(client as any)),
   },
   listing_price_dispute_hook: {
     key: "listing_price_dispute_hook",
