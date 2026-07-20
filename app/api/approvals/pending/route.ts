@@ -20,7 +20,9 @@ import { aggregatePendingApprovals } from "@/lib/kernel/approval-queue-aggregato
  *   - blog_posts.publish_status='draft' (not rejected)
  *   - podcast_episodes.approval_status='pending_review'
  *   - ai_video_projects.approval_status='pending_review' (commissioned renders)
- *   - offers.status='pending' (received offers awaiting accept/reject)
+ *   - offers (DEAL DECISIONS, own 'deals' section — inbound offers on our
+ *     seller listings, status pending/submitted, awaiting accept/reject/
+ *     counter; outbound buyer offers on outside properties never appear)
  *   - property_alerts voice/text criteria proposals
  *   - approval_items.status='pending' (legacy table — still surfaced)
  *

@@ -7,6 +7,9 @@ import { cascadeReject } from "@/lib/kernel/approval-queue-aggregator"
  * Reject endpoint — cascades to the right source table based on the
  * prefixed id. Same routing as /approve; flips approval_status to
  * 'rejected' on the source row (or publish_status='rejected' for blog).
+ * For of:-prefixed OFFER items this is the canonical rejectOffer kernel
+ * command — the optional `reason` body field is passed through and lands
+ * in offers.notes (the kernel's reason column).
  */
 export async function POST(request: Request) {
   const supabase = await createClient()

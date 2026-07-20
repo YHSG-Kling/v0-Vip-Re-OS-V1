@@ -504,14 +504,17 @@ export async function acceptOffer(params: {
 
   if (error) return { success: false, error: error.message }
 
-  // Reject all other pending/countered offers on same listing
+  // Reject all other still-open offers on same listing. 'submitted' is the
+  // status BOTH intake rails write for received offers (app/api/offers/upload
+  // + lib/inbound-mail/offer-intake.ts — it is also the column default), so
+  // omitting it stranded competing intake offers as open after an accept.
   if ((offer as any).listing_id) {
     await supabase
       .from("offers")
       .update({ status: "rejected" })
       .eq("listing_id", (offer as any).listing_id)
       .neq("id", offerId)
-      .in("status", ["pending", "countered"])
+      .in("status", ["pending", "submitted", "countered"])
   }
 
   // Update linked transaction if present

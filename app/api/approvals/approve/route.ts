@@ -15,7 +15,8 @@ import { cascadeApprove } from "@/lib/kernel/approval-queue-aggregator"
  *   bp:    blog_posts
  *   pc:    podcast_episodes
  *   vp:    ai_video_projects (commissioned video renders)
- *   of:    offers (approve = the canonical acceptOffer from /offers)
+ *   of:    offers (deal decisions — approve = the canonical acceptOffer from
+ *          /offers; the counter lane lives at /api/approvals/counter)
  *   pa:    property_alerts (criteria proposals)
  *   <bare> approval_items (legacy)
  *

@@ -25,9 +25,16 @@
  *         episodes awaiting release before the distributor ships them)
  *   vp:   ai_video_projects    (approval_status pending_review — commissioned
  *         video renders awaiting release before publish/distribution)
- *   of:   offers               (status pending — received offers awaiting the
- *         agent's accept/reject decision; approve REUSES the canonical
- *         acceptOffer kernel command from /offers, reject reuses rejectOffer)
+ *   of:   offers               (DEAL DECISIONS — NOT marketing content. Only
+ *         INBOUND offers received on OUR seller listings (listing_id set,
+ *         status pending/submitted, not a counter row) enter the queue; the
+ *         full response set is accept / reject / COUNTER. Approve REUSES the
+ *         canonical acceptOffer kernel command from /offers, reject reuses
+ *         rejectOffer (optional reason), counter reuses issueCounterOffer via
+ *         cascadeCounterOffer. Outbound offers — our buyer offering on an
+ *         OUTSIDE property (listing_id NULL, property_address set) or our own
+ *         counters awaiting the buyer — are the OTHER side's decision and are
+ *         never approvable here.)
  *   pa:   property_alerts      (SPOKEN/WRITTEN CRITERIA proposals —
  *         is_active=false, source 'voice_conversation' (calls) or
  *         'text_conversation' (inbound email/SMS), paused_reason
@@ -162,6 +169,24 @@ export interface UnifiedApprovalItem {
   content: string
   created_at: string
   updated_at: string
+  /** UI grouping. "deals" = offer responses — DEAL DECISIONS the /approvals
+   *  page renders in their own section, never among marketing content.
+   *  Unset = the default content/workflow feed. */
+  section?: "deals"
+  /** Action lanes this item supports. Unset = approve/reject (the default
+   *  pair every source has). Offers carry the full negotiation response set:
+   *  approve (= accept), reject, counter. */
+  actions?: Array<"approve" | "reject" | "counter">
+  /** Offer-decision metadata (section='deals' only) — powers the /approvals
+   *  counter dialog prefill. */
+  deal?: {
+    offer_id: string
+    offer_price: number | null
+    listing_address: string | null
+    buyer_name: string | null
+    round: number
+    response_deadline: string | null
+  }
 }
 
 const PER_TABLE_LIMIT = 50
@@ -239,13 +264,36 @@ export async function aggregatePendingApprovals(
         .order("created_at", { ascending: false })
         .limit(PER_TABLE_LIMIT),
       svc
-        // Received OFFERS awaiting the accept/reject decision. Round-32 drill:
-        // offers were approvable only from /offers — surfacing them here makes
-        // the unified queue span deals too. Approve reuses acceptOffer.
+        // INBOUND OFFERS awaiting OUR side's decision (accept / reject /
+        // counter) — DEAL DECISIONS, kept apart from the marketing feed.
+        // Direction key (round-34 study of the offer rails):
+        //   INSIDE  = offer received ON OUR SELLER LISTING → listing_id IS
+        //             SET. The intake rails (app/api/offers/upload + lib/
+        //             inbound-mail/offer-intake.ts) insert these with
+        //             status='submitted' (also the column default); 'pending'
+        //             is the legacy/manual value. Our seller side responds —
+        //             these are the queue's approvables.
+        //   OUTSIDE = our buyer's offer on an EXTERNAL property → listing_id
+        //             NULL, property identified by property_address
+        //             (app/actions/buyer-offers.ts never fabricates a listing
+        //             for an external target). The OTHER side responds — we
+        //             WAIT (recordSellerResponse records their answer), so
+        //             outside rows must never appear approvable.
+        // Exclusions (either would be a dishonest approvable):
+        //   - offer_type='counter': every counter row is issued by OUR side
+        //     (kernel issueCounterOffer / seller sendCounterOffer) and awaits
+        //     the BUYER's response. Null-safe or-filter (offer_type nullable).
+        //   - esign_status='sent': an in-house buyer offer on our own listing
+        //     mid-signature — status-sync maps buyer.offer.signature.requested
+        //     → status='submitted', but it awaits the buyer's SIGNATURE, not
+        //     a seller decision.
         .from("offers")
-        .select("id, agent_id, contact_id, listing_id, offer_price, status, created_at, updated_at")
+        .select("id, agent_id, contact_id, listing_id, offer_price, status, offer_type, current_round, response_deadline, created_at, updated_at")
         .eq("brokerage_id", brokerageId)
-        .eq("status", "pending")
+        .in("status", ["pending", "submitted"])
+        .not("listing_id", "is", null)
+        .or("offer_type.is.null,offer_type.neq.counter")
+        .or("esign_status.is.null,esign_status.neq.sent")
         .order("created_at", { ascending: false })
         .limit(PER_TABLE_LIMIT),
       svc
@@ -407,18 +455,32 @@ export async function aggregatePendingApprovals(
     }
   }
   for (const row of offerRows) {
-    const who = offerContactNames.get(String(row.contact_id)) ?? "a buyer"
-    const addr = offerListingAddresses.get(String(row.listing_id))
-    const price = typeof row.offer_price === "number"
+    const buyerName = offerContactNames.get(String(row.contact_id)) ?? null
+    const who = buyerName ?? "a buyer"
+    const addr = offerListingAddresses.get(String(row.listing_id)) ?? null
+    const price = typeof row.offer_price === "number" && row.offer_price > 0
       ? `$${Number(row.offer_price).toLocaleString()}`
       : null
+    const round = typeof row.current_round === "number" && row.current_round > 0
+      ? row.current_round
+      : 1
     items.push({
       id: `of:${String(row.id)}`,
       type: "offer",
       agent_id: (row.agent_id as string | null) ?? null,
-      status: String(row.status ?? "pending"),
+      status: String(row.status ?? "submitted"),
       priority: "high", // a live offer is deal-critical — jumps the queue
-      content: `Offer from ${who}${addr ? ` on ${addr}` : ""}${price ? ` — ${price}` : ""}. Approve = accept (other pending offers on the listing are declined); reject = decline.`,
+      section: "deals", // deal decision — the UI renders these apart from marketing
+      actions: ["approve", "reject", "counter"],
+      deal: {
+        offer_id: String(row.id),
+        offer_price: typeof row.offer_price === "number" && row.offer_price > 0 ? Number(row.offer_price) : null,
+        listing_address: addr,
+        buyer_name: buyerName,
+        round,
+        response_deadline: (row.response_deadline as string | null) ?? null,
+      },
+      content: `Offer from ${who}${addr ? ` on ${addr}` : ""}${price ? ` — ${price}` : ""}${round > 1 ? ` (round ${round})` : ""}. Accept = under contract (competing open offers on the listing are declined); counter = send new terms; reject = decline with optional reason.`,
       created_at: String(row.created_at ?? new Date().toISOString()),
       updated_at: String(row.updated_at ?? row.created_at ?? new Date().toISOString()),
     })
@@ -625,22 +687,14 @@ async function cascade(
       // ai_video_projects.agent_id is agents.id — scope applies.
       return marketingCascade("video", "video", "agent_id")
     case "of": {
-      // Received offer — REUSE the canonical /offers kernel commands:
-      // approve = acceptOffer (declines competing pending offers, advances a
-      // linked transaction to under_contract, emits OFFER_OS_ACCEPTED);
-      // reject = rejectOffer (notes carry the reason, emits OFFER_OS_REJECTED).
-      const { data: offer } = await svc
-        .from("offers")
-        .select("id, brokerage_id, agent_id, status")
-        .eq("id", targetId)
-        .maybeSingle()
-      if (!offer) return { success: false, error: "Not found" }
-      if (offer.brokerage_id !== ctx.brokerageId) return { success: false, error: "Forbidden" }
-      if (ctx.agentScopeId && offer.agent_id && offer.agent_id !== ctx.agentScopeId) {
-        return { success: false, error: "Forbidden" }
-      }
-      // Idempotence: only a still-pending offer can be actioned from the queue.
-      if (offer.status !== "pending") return { success: false, error: "Offer is no longer pending" }
+      // Inbound offer DEAL DECISION — REUSE the canonical /offers kernel
+      // commands: approve = acceptOffer (declines competing open offers,
+      // advances a linked transaction to under_contract, emits
+      // OFFER_OS_ACCEPTED); reject = rejectOffer (notes carry the reason,
+      // emits OFFER_OS_REJECTED). The counter lane lives in
+      // cascadeCounterOffer (same guard, kernel issueCounterOffer).
+      const guard = await loadInboundOfferForDecision(svc, targetId, ctx)
+      if (!guard.ok) return { success: false, error: guard.error }
       const { acceptOffer, rejectOffer } = await import("@/lib/kernel/offers")
       const res = outcome === "approved"
         ? await acceptOffer({ offerId: targetId, agentId: ctx.reviewerUserId, brokerageId: ctx.brokerageId })
@@ -706,4 +760,94 @@ async function cascade(
     default:
       return { success: false, error: `Unknown approval id prefix: ${prefix}` }
   }
+}
+
+// ─── Offer decision guard + COUNTER lane ─────────────────────────────────────
+
+/**
+ * Load + guard an offer for a queue decision. Enforces, in order:
+ *   - tenant + agent scope (offers.agent_id is agents.id — the newsletter
+ *     scope key class)
+ *   - INBOUND only: listing_id set (the offer is ON our seller listing —
+ *     outside/buyer-side offers with property_address await the OTHER side)
+ *     and not a counter row (every counter is OUR side's and awaits the buyer)
+ *   - still awaiting a decision (status pending/submitted) — idempotence, so
+ *     a double-click or a raced /offers action can't re-run a transition.
+ */
+async function loadInboundOfferForDecision(
+  svc: ReturnType<typeof createServiceClient>,
+  targetId: string,
+  ctx: CascadeContext,
+): Promise<
+  | { ok: true; offer: { id: string; agent_id: string | null } }
+  | { ok: false; error: string }
+> {
+  const { data: offer } = await svc
+    .from("offers")
+    .select("id, brokerage_id, agent_id, status, listing_id, offer_type")
+    .eq("id", targetId)
+    .maybeSingle()
+  if (!offer) return { ok: false, error: "Not found" }
+  if (offer.brokerage_id !== ctx.brokerageId) return { ok: false, error: "Forbidden" }
+  if (ctx.agentScopeId && offer.agent_id && offer.agent_id !== ctx.agentScopeId) {
+    return { ok: false, error: "Forbidden" }
+  }
+  if (!offer.listing_id) {
+    return { ok: false, error: "This is our buyer's offer on an outside property — the other side responds; nothing to decide here" }
+  }
+  if (offer.offer_type === "counter") {
+    return { ok: false, error: "This is our counter — it awaits the buyer's response" }
+  }
+  if (offer.status !== "pending" && offer.status !== "submitted") {
+    return { ok: false, error: "Offer is no longer awaiting a decision" }
+  }
+  return { ok: true, offer: { id: offer.id as string, agent_id: (offer.agent_id as string | null) ?? null } }
+}
+
+/**
+ * COUNTER lane — routes a queue counter action to the REAL kernel command,
+ * issueCounterOffer (the same canonical creator the /offers surfaces delegate
+ * to — see app/actions/buyer-offer/record-seller-signed-counter.ts; the
+ * seller counter slide-over idiom supplies price + optional notes/terms).
+ * Never forks the transition: the kernel command creates the counter row
+ * (offer_type='counter', parent_offer_id, round+1), marks the parent
+ * status='countered' + has_counter=true, and emits OFFER_OS_COUNTERED.
+ * Valid ONLY for of:-prefixed queue ids — marketing content has no counter
+ * semantics.
+ */
+export async function cascadeCounterOffer(
+  prefixedId: string,
+  ctx: CascadeContext,
+  terms: { counterPrice: number; closingDate?: string; notes?: string },
+): Promise<CascadeOutcome> {
+  const svc = createServiceClient()
+  const colonIdx = prefixedId.indexOf(":")
+  const prefix = colonIdx > 0 ? prefixedId.slice(0, colonIdx) : ""
+  const targetId = colonIdx > 0 ? prefixedId.slice(colonIdx + 1) : ""
+
+  if (prefix !== "of" || !targetId) {
+    return { success: false, error: "Counter is only available for offer items" }
+  }
+  if (!Number.isFinite(terms.counterPrice) || terms.counterPrice <= 0) {
+    return { success: false, error: "Counter price must be a positive number" }
+  }
+
+  const guard = await loadInboundOfferForDecision(svc, targetId, ctx)
+  if (!guard.ok) return { success: false, error: guard.error }
+
+  const { issueCounterOffer } = await import("@/lib/kernel/offers")
+  const res = await issueCounterOffer({
+    offerId: targetId,
+    // agents.id for the counter row — the offer's own agent when set, else
+    // the reviewer (same fallback idiom as record-seller-signed-counter).
+    agentId: guard.offer.agent_id ?? ctx.reviewerUserId,
+    brokerageId: ctx.brokerageId,
+    counterPrice: terms.counterPrice,
+    closingDate: terms.closingDate,
+    notes: terms.notes ?? ctx.notes,
+  })
+  if (!res.success || !res.data) {
+    return { success: false, error: res.error ?? "Counter failed" }
+  }
+  return { success: true, type: "offer", targetId }
 }

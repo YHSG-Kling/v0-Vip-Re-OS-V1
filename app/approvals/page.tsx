@@ -1,10 +1,21 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, CheckCircle, XCircle, Clock, AlertTriangle } from "lucide-react"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
+import { Loader2, CheckCircle, XCircle, Clock, MessageSquare } from "lucide-react"
 import { toast } from "sonner"
 
 interface ApprovalItem {
@@ -19,6 +30,20 @@ interface ApprovalItem {
   approved_at?: string
   notes?: string
   updated_at: string
+  /** "deals" = offer responses — rendered in their own section, never among
+   *  marketing content (lib/kernel/approval-queue-aggregator.ts). */
+  section?: "deals"
+  /** Action lanes. Offers carry ["approve","reject","counter"]. */
+  actions?: Array<"approve" | "reject" | "counter">
+  /** Offer-decision metadata for the counter dialog prefill. */
+  deal?: {
+    offer_id: string
+    offer_price: number | null
+    listing_address: string | null
+    buyer_name: string | null
+    round: number
+    response_deadline: string | null
+  }
 }
 
 interface GroupedItems {
@@ -52,6 +77,9 @@ export default function ApprovalsPage() {
   const [items, setItems] = useState<ApprovalItem[]>([])
   const [loading, setLoading] = useState(true)
   const [processingIds, setProcessingIds] = useState<Set<string>>(new Set())
+  // Offer dialogs — counter terms + reject-with-reason (deal cards only)
+  const [counterItem, setCounterItem] = useState<ApprovalItem | null>(null)
+  const [rejectItem, setRejectItem] = useState<ApprovalItem | null>(null)
 
   useEffect(() => {
     fetchPendingApprovals()
@@ -76,8 +104,17 @@ export default function ApprovalsPage() {
     }
   }
 
+  function markProcessing(id: string, on: boolean) {
+    setProcessingIds((prev) => {
+      const next = new Set(prev)
+      if (on) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+
   async function handleApprove(item: ApprovalItem) {
-    setProcessingIds((prev) => new Set(prev).add(item.id))
+    markProcessing(item.id, true)
 
     try {
       const response = await fetch("/api/approvals/approve", {
@@ -92,24 +129,21 @@ export default function ApprovalsPage() {
 
       if (response.ok) {
         setItems((prev) => prev.filter((i) => i.id !== item.id))
-        toast.success("Item approved successfully")
+        toast.success(item.type === "offer" ? "Offer accepted" : "Item approved successfully")
       } else {
-        toast.error("Failed to approve item")
+        const data = await response.json().catch(() => ({}))
+        toast.error(data.error ?? "Failed to approve item")
       }
     } catch (error) {
       console.error("[v0] Error approving item:", error)
       toast.error("Error approving item")
     } finally {
-      setProcessingIds((prev) => {
-        const next = new Set(prev)
-        next.delete(item.id)
-        return next
-      })
+      markProcessing(item.id, false)
     }
   }
 
-  async function handleReject(item: ApprovalItem) {
-    setProcessingIds((prev) => new Set(prev).add(item.id))
+  async function handleReject(item: ApprovalItem, reason?: string) {
+    markProcessing(item.id, true)
 
     try {
       const response = await fetch("/api/approvals/reject", {
@@ -118,25 +152,57 @@ export default function ApprovalsPage() {
         body: JSON.stringify({
           id: item.id,
           agent_id: item.agent_id,
-          reason: `Rejected ${item.type}`,
+          reason: reason?.trim() || `Rejected ${item.type}`,
         }),
       })
 
       if (response.ok) {
         setItems((prev) => prev.filter((i) => i.id !== item.id))
-        toast.success("Item rejected successfully")
+        toast.success(item.type === "offer" ? "Offer declined" : "Item rejected successfully")
       } else {
-        toast.error("Failed to reject item")
+        const data = await response.json().catch(() => ({}))
+        toast.error(data.error ?? "Failed to reject item")
       }
     } catch (error) {
       console.error("[v0] Error rejecting item:", error)
       toast.error("Error rejecting item")
     } finally {
-      setProcessingIds((prev) => {
-        const next = new Set(prev)
-        next.delete(item.id)
-        return next
+      markProcessing(item.id, false)
+    }
+  }
+
+  async function handleCounter(
+    item: ApprovalItem,
+    terms: { counterPrice: number; closingDate?: string; notes?: string },
+  ): Promise<boolean> {
+    markProcessing(item.id, true)
+
+    try {
+      const response = await fetch("/api/approvals/counter", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: item.id,
+          counterPrice: terms.counterPrice,
+          closingDate: terms.closingDate,
+          notes: terms.notes,
+        }),
       })
+
+      if (response.ok) {
+        setItems((prev) => prev.filter((i) => i.id !== item.id))
+        toast.success("Counter offer sent")
+        return true
+      }
+      const data = await response.json().catch(() => ({}))
+      toast.error(data.error ?? "Failed to send counter")
+      return false
+    } catch (error) {
+      console.error("[v0] Error countering offer:", error)
+      toast.error("Error sending counter")
+      return false
+    } finally {
+      markProcessing(item.id, false)
     }
   }
 
@@ -164,7 +230,11 @@ export default function ApprovalsPage() {
     return `${diffDays}d ago`
   }
 
-  const groupedItems = groupByPriority(items)
+  // Offers are DEAL DECISIONS — their own section with the full accept /
+  // reject / counter response set, never mixed into the marketing feed.
+  const dealItems = items.filter((i) => i.section === "deals" || i.type === "offer")
+  const contentItems = items.filter((i) => !(i.section === "deals" || i.type === "offer"))
+  const groupedItems = groupByPriority(contentItems)
   const totalItems = items.length
 
   if (loading) {
@@ -207,6 +277,37 @@ export default function ApprovalsPage() {
           </Card>
         ) : (
           <div className="space-y-6">
+            {/* Deals — offer responses (accept / counter / reject) */}
+            {dealItems.length > 0 && (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl">🤝</span>
+                  <div>
+                    <h2 className="text-lg font-semibold text-foreground">Deals — offer responses</h2>
+                    <p className="text-xs text-muted-foreground">
+                      Offers received on your listings. Accept, counter with new terms, or decline.
+                    </p>
+                  </div>
+                  <Badge variant="destructive" className="ml-auto">
+                    {dealItems.length}
+                  </Badge>
+                </div>
+                <div className="space-y-3">
+                  {dealItems.map((item) => (
+                    <DealDecisionCard
+                      key={item.id}
+                      item={item}
+                      isProcessing={processingIds.has(item.id)}
+                      onAccept={() => handleApprove(item)}
+                      onCounter={() => setCounterItem(item)}
+                      onReject={() => setRejectItem(item)}
+                      formatTimeAgo={formatTimeAgo}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* High Priority Items */}
             {groupedItems.high.length > 0 && (
               <div className="space-y-3">
@@ -284,7 +385,273 @@ export default function ApprovalsPage() {
           </div>
         )}
       </div>
+
+      {/* Counter dialog — mirrors the /offers counter slide-over idiom
+          (price + optional notes/closing date), routed through the kernel
+          issueCounterOffer via /api/approvals/counter. */}
+      {counterItem && (
+        <CounterOfferDialog
+          item={counterItem}
+          isProcessing={processingIds.has(counterItem.id)}
+          onClose={() => setCounterItem(null)}
+          onSubmit={async (terms) => {
+            const ok = await handleCounter(counterItem, terms)
+            if (ok) setCounterItem(null)
+          }}
+        />
+      )}
+
+      {/* Reject dialog — the kernel rejectOffer supports an optional reason
+          (stored in offers.notes), so offer declines collect one. */}
+      {rejectItem && (
+        <RejectOfferDialog
+          item={rejectItem}
+          isProcessing={processingIds.has(rejectItem.id)}
+          onClose={() => setRejectItem(null)}
+          onSubmit={async (reason) => {
+            await handleReject(rejectItem, reason)
+            setRejectItem(null)
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+function DealDecisionCard({
+  item,
+  isProcessing,
+  onAccept,
+  onCounter,
+  onReject,
+  formatTimeAgo,
+}: {
+  item: ApprovalItem
+  isProcessing: boolean
+  onAccept: () => void
+  onCounter: () => void
+  onReject: () => void
+  formatTimeAgo: (date: string) => string
+}) {
+  const deal = item.deal
+  const canCounter = !item.actions || item.actions.includes("counter")
+  return (
+    <Card className="hover:border-primary transition-colors">
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="flex-1 min-w-[240px]">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
+              <Badge variant="outline" className="text-xs">
+                🤝 Offer
+              </Badge>
+              {deal && deal.round > 1 && (
+                <Badge variant="secondary" className="text-xs">
+                  Round {deal.round}
+                </Badge>
+              )}
+              {deal?.response_deadline && (
+                <Badge variant="secondary" className="text-xs">
+                  Respond by {new Date(deal.response_deadline).toLocaleDateString()}
+                </Badge>
+              )}
+              <span className="text-xs text-muted-foreground">{formatTimeAgo(item.created_at)}</span>
+            </div>
+            <p className="text-sm text-foreground leading-relaxed">{item.content}</p>
+          </div>
+          <div className="flex gap-2 shrink-0 flex-wrap">
+            <Button
+              size="sm"
+              variant="default"
+              onClick={onAccept}
+              disabled={isProcessing}
+              className="min-w-[80px]"
+            >
+              {isProcessing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <>
+                  <CheckCircle className="h-4 w-4 mr-1.5" />
+                  Accept
+                </>
+              )}
+            </Button>
+            {canCounter && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onCounter}
+                disabled={isProcessing}
+                className="min-w-[80px] bg-transparent"
+              >
+                <MessageSquare className="h-4 w-4 mr-1.5" />
+                Counter
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onReject}
+              disabled={isProcessing}
+              className="min-w-[80px] bg-transparent text-destructive hover:text-destructive border-destructive/40 hover:border-destructive"
+            >
+              <XCircle className="h-4 w-4 mr-1.5" />
+              Reject
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function CounterOfferDialog({
+  item,
+  isProcessing,
+  onClose,
+  onSubmit,
+}: {
+  item: ApprovalItem
+  isProcessing: boolean
+  onClose: () => void
+  onSubmit: (terms: { counterPrice: number; closingDate?: string; notes?: string }) => void
+}) {
+  const deal = item.deal
+  const [price, setPrice] = useState(deal?.offer_price ? String(deal.offer_price) : "")
+  const [closingDate, setClosingDate] = useState("")
+  const [notes, setNotes] = useState("")
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault()
+    const parsed = parseFloat(price.replace(/[^0-9.]/g, ""))
+    if (isNaN(parsed) || parsed <= 0) {
+      toast.error("Enter a valid counter price")
+      return
+    }
+    onSubmit({
+      counterPrice: parsed,
+      closingDate: closingDate || undefined,
+      notes: notes.trim() || undefined,
+    })
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Send counter offer</DialogTitle>
+          <DialogDescription>
+            {deal?.buyer_name ? `Countering ${deal.buyer_name}'s offer` : "Countering the offer"}
+            {deal?.listing_address ? ` on ${deal.listing_address}` : ""} &middot; Round{" "}
+            {(deal?.round ?? 1) + 1}
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={submit} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="approvals-counter-price">Counter price ($)</Label>
+            <Input
+              id="approvals-counter-price"
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+              placeholder="e.g. 525000"
+              required
+            />
+            {deal?.offer_price != null && (
+              <p className="text-xs text-muted-foreground">
+                Their offer: ${deal.offer_price.toLocaleString()}
+              </p>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="approvals-counter-closing">Closing date (optional)</Label>
+            <Input
+              id="approvals-counter-closing"
+              type="date"
+              value={closingDate}
+              onChange={(e) => setClosingDate(e.target.value)}
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="approvals-counter-notes">Notes (optional)</Label>
+            <Textarea
+              id="approvals-counter-notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Contingency changes or special terms..."
+              rows={3}
+            />
+          </div>
+
+          <DialogFooter className="gap-2 pt-1">
+            <Button type="button" variant="outline" onClick={onClose} disabled={isProcessing}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={isProcessing}>
+              {isProcessing && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+              Send counter
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function RejectOfferDialog({
+  item,
+  isProcessing,
+  onClose,
+  onSubmit,
+}: {
+  item: ApprovalItem
+  isProcessing: boolean
+  onClose: () => void
+  onSubmit: (reason?: string) => void
+}) {
+  const deal = item.deal
+  const [reason, setReason] = useState("")
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Decline offer</DialogTitle>
+          <DialogDescription>
+            {deal?.buyer_name ? `Declining ${deal.buyer_name}'s offer` : "Declining the offer"}
+            {deal?.listing_address ? ` on ${deal.listing_address}` : ""}. The buyer&apos;s side is
+            notified.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="approvals-reject-reason">Reason (optional)</Label>
+          <Textarea
+            id="approvals-reject-reason"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="e.g. Seller went with a stronger offer..."
+            rows={3}
+          />
+        </div>
+
+        <DialogFooter className="gap-2 pt-1">
+          <Button type="button" variant="outline" onClick={onClose} disabled={isProcessing}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={isProcessing}
+            onClick={() => onSubmit(reason.trim() || undefined)}
+          >
+            {isProcessing && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+            Decline offer
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
