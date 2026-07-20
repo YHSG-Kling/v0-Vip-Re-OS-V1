@@ -100,7 +100,12 @@ const nextConfig: NextConfig = {
     // memory-predictable, and the mature path this app used before Next 16 made
     // Turbopack the default. These two flags are the memory levers:
     webpackMemoryOptimizations: true, // drop retained caches → lower peak heap
-    webpackBuildWorker: true,         // compile in isolated worker processes ("in sections")
+    // webpackBuildWorker was tried but spawns one worker PER CORE; on a 16 GB CI
+    // runner their combined footprint OOMed the container ("external memory
+    // pressure" at ~6.7 GB heap, below the 8 GB V8 cap — i.e. total RSS, not the
+    // JS heap). A SINGLE-process build holds one module graph bounded by the heap
+    // cap (NODE_OPTIONS below) — the lowest-peak-memory config, which fits. Left
+    // OFF (default). Slower, but it completes on a constrained runner.
   },
   // Skip bundling for packages that ship platform-specific native binaries
   // or otherwise can't be analysed by Turbopack. They get plain Node

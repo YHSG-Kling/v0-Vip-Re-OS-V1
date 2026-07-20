@@ -32,10 +32,10 @@ jobs:
     timeout-minutes: 40
     env:
       NEXT_TELEMETRY_DISABLED: "1"
-      # Webpack holds the module graph in the V8 heap — raise it so a large-app
-      # build doesn't hit the default ~4 GB ceiling and JS-heap-OOM. (This is the
-      # opposite of Turbopack, whose native compiler was starved by a big heap.)
-      NODE_OPTIONS: "--max-old-space-size=8192"
+      # Single-process webpack build (no build worker — see next.config.ts). Give
+      # that one process a large heap; on a 16 GB runner one process at ~10 GB +
+      # OS/native overhead fits, whereas parallel workers did not.
+      NODE_OPTIONS: "--max-old-space-size=10240"
       # NO max-old-space-size override: `next build` uses Turbopack (Rust), which
       # holds the heavy compile state in NATIVE memory. Reserving a large V8 old
       # space steals from that native budget and pushed total RSS past the 16 GB
