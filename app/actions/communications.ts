@@ -653,9 +653,35 @@ export async function notifyBrokerageAgentsAction(input: {
   /** Team to address when a broker/admin picks team scope. Ignored for team
    *  leads (their own team is resolved server-side). */
   teamId?: string | null
-}): Promise<{ ok: boolean; notified?: number; scope?: "brokerage" | "team"; error?: string }> {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Not authenticated" }
+},
+/**
+ * Sessionless-caller overload (voice webhook): the caller supplies its OWN
+ * verified client + acting users.id, and the SAME principal guard below runs
+ * against the DB through that client. The cookie path stays the default —
+ * every existing caller is untouched. A browser cannot spoof this param:
+ * server-action deserialization cannot produce a functioning Supabase client,
+ * so a forged `caller` fails closed at the guard query.
+ */
+caller?: { client: { from: (t: string) => any }; actorUserId: string },
+): Promise<{ ok: boolean; notified?: number; scope?: "brokerage" | "team"; error?: string }> {
+  let ctx: { userId: string; brokerageId: string; role: string }
+  if (caller) {
+    if (typeof caller.client?.from !== "function" || typeof caller.actorUserId !== "string" || !caller.actorUserId) {
+      return { ok: false, error: "Not authenticated" }
+    }
+    const { data: userRow } = await caller.client
+      .from("users")
+      .select("brokerage_id, user_type")
+      .eq("id", caller.actorUserId)
+      .maybeSingle()
+    const row = userRow as { brokerage_id?: string | null; user_type?: string | null } | null
+    if (!row?.brokerage_id) return { ok: false, error: "Not authenticated" }
+    ctx = { userId: caller.actorUserId, brokerageId: row.brokerage_id, role: String(row.user_type ?? "agent") }
+  } else {
+    const sessionCtx = await getAgentContext()
+    if (!sessionCtx.isAuthenticated || !sessionCtx.brokerageId) return { ok: false, error: "Not authenticated" }
+    ctx = { userId: sessionCtx.userId, brokerageId: sessionCtx.brokerageId, role: sessionCtx.role }
+  }
 
   const { createServiceClient } = await import("@/lib/supabase/service")
   const { isTenancyPrincipal } = await import("@/lib/kernel/tenancy-principal")

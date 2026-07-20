@@ -499,7 +499,9 @@
     "test:regional-closing-costs": "tsx scripts/regional-closing-costs-simulator.ts",
     "test:prediction-accuracy": "tsx scripts/prediction-accuracy-simulator.ts",
     "test:manager-deliberation": "tsx scripts/manager-deliberation-simulator.ts",
-    "test:voice-command-coverage": "tsx scripts/voice-command-coverage-simulator.ts"
+    "test:voice-command-coverage": "tsx scripts/voice-command-coverage-simulator.ts",
+    "test:seller-closing-costs": "tsx scripts/seller-closing-costs-simulator.ts",
+    "test:accounting-scopes": "tsx scripts/accounting-scopes-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

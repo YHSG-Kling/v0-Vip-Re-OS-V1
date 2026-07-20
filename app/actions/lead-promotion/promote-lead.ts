@@ -34,7 +34,17 @@ interface PromotionResponse {
  */
 export async function promoteLead(
   rawRecordId: string,
-  _brokerageId?: string  // ignored — derived from session
+  _brokerageId?: string,  // ignored — derived from session
+  /**
+   * Sessionless-caller overload (voice webhook): the caller supplies its OWN
+   * verified client + the acting users.id, and the SAME role/brokerage guard
+   * below runs against the DB through that client. The cookie path is the
+   * default — every existing caller is untouched. A browser cannot spoof this
+   * param: server-action deserialization cannot produce a functioning
+   * Supabase client (functions don't cross the boundary), so a forged
+   * `caller` fails closed at the guard query.
+   */
+  caller?: { client: ReturnType<typeof createServiceClient>; actorUserId: string },
 ): Promise<PromotionResponse> {
   // Auth gate — promotion writes a leads row + triggers downstream scoring +
   // platform distribution. Previously trusted caller-supplied brokerageId,
@@ -43,15 +53,27 @@ export async function promoteLead(
   // PLATFORM. This is a promotion-pipeline TRIGGER: brokerage-level roles may
   // fire it for their own brokerage, but the raw record is processed
   // server-side and its content is never returned to the tenant.
-  const authClient = await createClient()
-  const { data: { user } } = await authClient.auth.getUser()
-  if (!user) {
-    return { success: false, message: "Unauthorized", stage: "auth" }
+  let actorId: string
+  let guardClient: { from: (t: string) => any }
+  if (caller) {
+    if (typeof caller.client?.from !== "function" || typeof caller.actorUserId !== "string" || !caller.actorUserId) {
+      return { success: false, message: "Unauthorized", stage: "auth" }
+    }
+    actorId = caller.actorUserId
+    guardClient = caller.client
+  } else {
+    const authClient = await createClient()
+    const { data: { user } } = await authClient.auth.getUser()
+    if (!user) {
+      return { success: false, message: "Unauthorized", stage: "auth" }
+    }
+    actorId = user.id
+    guardClient = authClient
   }
-  const { data: callerRow } = await authClient
+  const { data: callerRow } = await guardClient
     .from("users")
     .select("brokerage_id, user_type")
-    .eq("id", user.id)
+    .eq("id", actorId)
     .maybeSingle()
   if (!callerRow?.brokerage_id) {
     return { success: false, message: "Unauthorized", stage: "auth" }

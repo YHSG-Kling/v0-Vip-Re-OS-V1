@@ -11,11 +11,15 @@
 //   the System-7.1B compliance gate, records an explicit HOLD when compliance
 //   hasn't passed, and creates the transaction through the canonical bridge.
 //   It is service-client based end-to-end, so it is executable from the
-//   sessionless ElevenLabs tool webhook — unlike lib/kernel/offers.ts
-//   acceptOffer/rejectOffer/issueCounterOffer, which run on the caller's
-//   auth-cookie client (RLS 'authenticated' + tenant policies) and therefore
-//   CANNOT run from this webhook. Those stay speakable:false in
-//   lib/voice/command-coverage.ts with that exact reason.
+//   sessionless ElevenLabs tool webhook.
+//
+// ROUND 36 — the rest of the decision family is closed the same way:
+//   rejectOffer / issueCounterOffer / withdrawOffer (lib/kernel/offers.ts) now
+//   take an optional injected client (cookie client remains the default for
+//   every click path), so voiceRejectOffer / voiceCounterOffer /
+//   voiceWithdrawOffer below run the SAME kernel transitions with the service
+//   client AFTER the same mirrored guard — no forked writes, same
+//   OFFER_OS_* lifecycle events, same negotiation outcome loop.
 //
 // Guard (mirrors loadInboundOfferForDecision in
 // lib/kernel/approval-queue-aggregator.ts — the approvals-queue "of:" lane —
@@ -151,6 +155,71 @@ async function contactNames(svc: Svc, contactIds: string[]): Promise<Map<string,
 }
 
 /**
+ * Shared spoken-offer resolution — explicit id, else spoken hint, else the
+ * only open candidate. Ambiguity always refuses with the numbered list (an
+ * acting verb never fires on a guess). Used by ALL decision verbs so the
+ * matching behavior can't drift between accept/reject/counter/withdraw.
+ */
+async function resolveSpokenOffer(
+  svc: Svc,
+  input: VoiceAcceptOfferInput,
+  actor: { agentScopeId: string | null },
+  finder: (svc: Svc, brokerageId: string) => Promise<DecisionOfferRow[]>,
+): Promise<
+  | { found: true; offer: DecisionOfferRow }
+  | { found: false; refusal: VoiceDealDecisionResult }
+> {
+  if (input.offerId) {
+    const { data } = await svc
+      .from("offers")
+      .select(DECISION_COLUMNS)
+      .eq("id", input.offerId)
+      .maybeSingle()
+    const offer = (data as DecisionOfferRow | null) ?? null
+    if (!offer) return { found: false, refusal: { ok: false, spoken: "I couldn't find that offer." } }
+    return { found: true, offer }
+  }
+
+  const candidates = await finder(svc, input.brokerageId)
+  // Agent self-scope applies to matching too — an agent only hears their own.
+  const scoped = actor.agentScopeId
+    ? candidates.filter((o) => !o.agent_id || o.agent_id === actor.agentScopeId)
+    : candidates
+  if (scoped.length === 0) {
+    return { found: false, refusal: { ok: false, spoken: "There are no open offers waiting on a decision right now." } }
+  }
+  const names = await contactNames(svc, scoped.map((o) => o.contact_id).filter(Boolean) as string[])
+  const q = (input.query ?? "").trim().toLowerCase()
+  const matches = q
+    ? scoped.filter((o) => {
+        const addr = (o.property_address ?? "").toLowerCase()
+        const buyer = (o.contact_id ? names.get(o.contact_id) ?? "" : "").toLowerCase()
+        return (addr && addr.includes(q)) || (buyer && buyer.includes(q)) ||
+               // loose token match ("Hendersons" vs "Henderson")
+               q.split(/\s+/).every((tok) => addr.includes(tok) || buyer.includes(tok))
+      })
+    : scoped
+  if (matches.length === 0) {
+    return { found: false, refusal: { ok: false, spoken: `I don't see an open offer matching "${input.query}". Say "what offers are pending" to hear the list.` } }
+  }
+  if (matches.length > 1) {
+    const spokenList = matches.slice(0, 3).map((o, i) => {
+      const buyer = o.contact_id ? names.get(o.contact_id) ?? "a buyer" : "a buyer"
+      return `${i + 1}: ${buyer} at ${spokenPrice(o.offer_price)}${o.property_address ? ` on ${o.property_address}` : ""}`
+    }).join(". ")
+    return {
+      found: false,
+      refusal: {
+        ok: false,
+        spoken: `There ${matches.length === 2 ? "are two" : `are ${matches.length}`} open offers that could match. ${spokenList}. Which one — give me the buyer's name or the address.`,
+        data: { candidates: matches.map((o) => ({ offer_id: o.id, property_address: o.property_address, offer_price: o.offer_price })) },
+      },
+    }
+  }
+  return { found: true, offer: matches[0] }
+}
+
+/**
  * The approvals-queue decision guard, mirrored check-for-check (see module
  * header). Returns null when the offer may be decided, else the spoken refusal.
  */
@@ -190,52 +259,9 @@ export async function voiceAcceptOffer(
   const actor = await resolveActor(svc, input)
   if ("error" in actor) return { ok: false, spoken: actor.error }
 
-  // ── Resolve the offer (explicit id, else spoken hint, else the only open one) ──
-  let offer: DecisionOfferRow | null = null
-  if (input.offerId) {
-    const { data } = await svc
-      .from("offers")
-      .select(DECISION_COLUMNS)
-      .eq("id", input.offerId)
-      .maybeSingle()
-    offer = (data as DecisionOfferRow | null) ?? null
-    if (!offer) return { ok: false, spoken: "I couldn't find that offer." }
-  } else {
-    const candidates = await findDecisionReadyOffers(svc, input.brokerageId)
-    // Agent self-scope applies to matching too — an agent only hears their own.
-    const scoped = actor.agentScopeId
-      ? candidates.filter((o) => !o.agent_id || o.agent_id === actor.agentScopeId)
-      : candidates
-    if (scoped.length === 0) {
-      return { ok: false, spoken: "There are no open offers waiting on a decision right now." }
-    }
-    const names = await contactNames(svc, scoped.map((o) => o.contact_id).filter(Boolean) as string[])
-    const q = (input.query ?? "").trim().toLowerCase()
-    const matches = q
-      ? scoped.filter((o) => {
-          const addr = (o.property_address ?? "").toLowerCase()
-          const buyer = (o.contact_id ? names.get(o.contact_id) ?? "" : "").toLowerCase()
-          return (addr && addr.includes(q)) || (buyer && buyer.includes(q)) ||
-                 // loose token match ("Hendersons" vs "Henderson")
-                 q.split(/\s+/).every((tok) => addr.includes(tok) || buyer.includes(tok))
-        })
-      : scoped
-    if (matches.length === 0) {
-      return { ok: false, spoken: `I don't see an open offer matching "${input.query}". Say "what offers are pending" to hear the list.` }
-    }
-    if (matches.length > 1) {
-      const spokenList = matches.slice(0, 3).map((o, i) => {
-        const buyer = o.contact_id ? names.get(o.contact_id) ?? "a buyer" : "a buyer"
-        return `${i + 1}: ${buyer} at ${spokenPrice(o.offer_price)}${o.property_address ? ` on ${o.property_address}` : ""}`
-      }).join(". ")
-      return {
-        ok: false,
-        spoken: `There ${matches.length === 2 ? "are two" : `are ${matches.length}`} open offers that could match. ${spokenList}. Which one — give me the buyer's name or the address.`,
-        data: { candidates: matches.map((o) => ({ offer_id: o.id, property_address: o.property_address, offer_price: o.offer_price })) },
-      }
-    }
-    offer = matches[0]
-  }
+  const resolved = await resolveSpokenOffer(svc, input, actor, findDecisionReadyOffers)
+  if (!resolved.found) return resolved.refusal
+  const offer = resolved.offer
 
   // ── Guard — the approvals-queue rule set, same order ──
   const refusal = offerDecisionGuardReason(offer, { brokerageId: input.brokerageId, agentScopeId: actor.agentScopeId })
@@ -291,5 +317,243 @@ export async function voiceAcceptOffer(
       accepted: true,
       transaction_id: res.data.transactionId ?? null,
     },
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROUND 36 — the rest of the decision family. Each verb runs the SAME kernel
+// transition the click path calls (lib/kernel/offers.ts, now client-param
+// capable) behind the SAME mirrored guard, and surfaces the SAME voice-origin
+// receipts (agent_assistant_tool_calls row via the webhook + voice_action bus
+// signal here). No forked writes — the kernel command owns the offers update,
+// the OFFER_OS_* lifecycle event, and the negotiation outcome loop.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface VoiceOfferDecisionInput extends VoiceAcceptOfferInput {
+  /** Spoken reason ("...because the earnest money is too low"). Lands in offers.notes. */
+  reason?: string | null
+}
+
+export interface VoiceCounterOfferInput extends VoiceAcceptOfferInput {
+  /** REQUIRED — the resolved counter price in dollars. The backend refuses a
+   *  counter without an explicit price (an acting verb never guesses terms). */
+  counterPrice?: number | null
+  notes?: string | null
+}
+
+async function busReceipt(
+  svc: Svc,
+  input: { brokerageId: string; tool: "reject_offer" | "counter_offer" | "withdraw_offer"; message: string; offer: DecisionOfferRow; payload?: Record<string, unknown> },
+): Promise<void> {
+  try {
+    const { surfaceVoiceActionOnBus } = await import("@/lib/voice/voice-bus")
+    await surfaceVoiceActionOnBus({
+      brokerageId: input.brokerageId,
+      tool: input.tool,
+      message: input.message,
+      entityType: "offer",
+      entityId: input.offer.id,
+      contactId: input.offer.contact_id,
+      payload: input.payload ?? {},
+    }, svc)
+  } catch { /* visibility best-effort — the transition already landed */ }
+}
+
+async function buyerNameFor(svc: Svc, offer: DecisionOfferRow): Promise<string> {
+  return offer.contact_id
+    ? (await contactNames(svc, [offer.contact_id])).get(offer.contact_id) ?? "the buyer"
+    : "the buyer"
+}
+
+/**
+ * Reject an inbound offer by voice — SAME kernel transition as the
+ * offer-workspace click and the approvals-queue 'of:' reject cascade
+ * (lib/kernel/offers.rejectOffer), SAME guard as the accept lane. The spoken
+ * reason lands in offers.notes exactly like the cascade's reviewer notes.
+ */
+export async function voiceRejectOffer(
+  input: VoiceOfferDecisionInput,
+  client?: Svc,
+): Promise<VoiceDealDecisionResult> {
+  const svc = client ?? createServiceClient()
+  if (!input.brokerageId || !input.actorUserId) return { ok: false, spoken: "I can't tell who's asking — reopen the assistant and try again." }
+
+  const actor = await resolveActor(svc, input)
+  if ("error" in actor) return { ok: false, spoken: actor.error }
+
+  const resolved = await resolveSpokenOffer(svc, input, actor, findDecisionReadyOffers)
+  if (!resolved.found) return resolved.refusal
+  const offer = resolved.offer
+
+  // ── Guard — the approvals-queue rule set, same order as accept ──
+  const refusal = offerDecisionGuardReason(offer, { brokerageId: input.brokerageId, agentScopeId: actor.agentScopeId })
+  if (refusal) return { ok: false, spoken: refusal }
+
+  // ── SAME kernel transition as the click (injected service client) ──
+  const { rejectOffer } = await import("@/lib/kernel/offers")
+  const res = await rejectOffer({
+    offerId:     offer.id,
+    agentId:     input.actorUserId, // users.id — same actor idiom as the 'of:' cascade
+    brokerageId: input.brokerageId,
+    reason:      input.reason ?? undefined,
+  }, svc)
+  if (!res.success) return { ok: false, spoken: `The rejection didn't go through: ${res.error ?? "kernel command failed"}.` }
+
+  const buyerName = await buyerNameFor(svc, offer)
+  await busReceipt(svc, {
+    brokerageId: input.brokerageId,
+    tool: "reject_offer",
+    message: `Voice admin rejected ${buyerName}'s offer${offer.property_address ? ` on ${offer.property_address}` : ""} (${spokenPrice(offer.offer_price)}) — kernel rejectOffer${input.reason ? `; reason: ${input.reason.slice(0, 80)}` : ""}`,
+    offer,
+    payload: { reason: input.reason ?? null },
+  })
+
+  return {
+    ok: true,
+    spoken: `Done — ${buyerName}'s offer at ${spokenPrice(offer.offer_price)} is rejected${offer.property_address ? ` on ${offer.property_address}` : ""}${input.reason ? `, with the reason noted` : ""}. The buyer's side sees the same status the dashboard would show.`,
+    data: { offer_id: offer.id, rejected: true, reason: input.reason ?? null },
+  }
+}
+
+/**
+ * Counter an inbound offer by voice — SAME kernel transition as the seller
+ * counter slide-over and the approvals-queue cascadeCounterOffer lane
+ * (lib/kernel/offers.issueCounterOffer). Requires an explicit price — the
+ * backend never invents terms; without one it asks instead of acting.
+ */
+export async function voiceCounterOffer(
+  input: VoiceCounterOfferInput,
+  client?: Svc,
+): Promise<VoiceDealDecisionResult> {
+  const svc = client ?? createServiceClient()
+  if (!input.brokerageId || !input.actorUserId) return { ok: false, spoken: "I can't tell who's asking — reopen the assistant and try again." }
+
+  const actor = await resolveActor(svc, input)
+  if ("error" in actor) return { ok: false, spoken: actor.error }
+
+  const counterPrice = typeof input.counterPrice === "number" && Number.isFinite(input.counterPrice) && input.counterPrice > 0
+    ? input.counterPrice
+    : null
+  if (!counterPrice) {
+    return { ok: false, spoken: "What price should the counter go out at? Say something like: counter the Hendersons' offer at 450." }
+  }
+
+  const resolved = await resolveSpokenOffer(svc, input, actor, findDecisionReadyOffers)
+  if (!resolved.found) return resolved.refusal
+  const offer = resolved.offer
+
+  // ── Guard — the approvals-queue rule set (a counter is a seller DECISION on
+  //    an inbound, still-open, non-counter offer — same rule set as accept) ──
+  const refusal = offerDecisionGuardReason(offer, { brokerageId: input.brokerageId, agentScopeId: actor.agentScopeId })
+  if (refusal) return { ok: false, spoken: refusal }
+
+  // ── SAME kernel transition as the click (injected service client) ──
+  const { issueCounterOffer } = await import("@/lib/kernel/offers")
+  const res = await issueCounterOffer({
+    offerId:      offer.id,
+    agentId:      input.actorUserId,
+    brokerageId:  input.brokerageId,
+    counterPrice,
+    notes:        input.notes ?? undefined,
+  }, svc)
+  if (!res.success || !res.data) return { ok: false, spoken: `The counter didn't go through: ${res.error ?? "kernel command failed"}.` }
+
+  const buyerName = await buyerNameFor(svc, offer)
+  await busReceipt(svc, {
+    brokerageId: input.brokerageId,
+    tool: "counter_offer",
+    message: `Voice admin countered ${buyerName}'s offer${offer.property_address ? ` on ${offer.property_address}` : ""} at ${spokenPrice(counterPrice)} (round ${res.data.round}) — kernel issueCounterOffer`,
+    offer,
+    payload: { counter_id: res.data.counterId, round: res.data.round, counter_price: counterPrice },
+  })
+
+  return {
+    ok: true,
+    spoken: `Done — countered ${buyerName} at ${spokenPrice(counterPrice)}${offer.property_address ? ` on ${offer.property_address}` : ""}. That's round ${res.data.round}; the original offer shows countered and the ball is in the buyer's court.`,
+    data: { offer_id: offer.id, counter_id: res.data.counterId, round: res.data.round, counter_price: counterPrice },
+  }
+}
+
+/** Candidates for a spoken withdraw — any still-open offer in the tenancy
+ *  (pending / submitted / countered). Counters are excluded from FUZZY
+ *  matching (say the counter's id explicitly to retract it) so "withdraw the
+ *  Hendersons' offer" can never silently pick the wrong row of a chain. */
+async function findWithdrawableOffers(svc: Svc, brokerageId: string): Promise<DecisionOfferRow[]> {
+  const { data } = await svc
+    .from("offers")
+    .select(DECISION_COLUMNS)
+    .eq("brokerage_id", brokerageId)
+    .in("status", ["pending", "submitted", "countered"])
+    .order("submitted_at", { ascending: false })
+    .limit(10)
+  return ((data ?? []) as DecisionOfferRow[]).filter((o) => o.offer_type !== "counter")
+}
+
+/**
+ * The withdraw guard — the click path (offer-workspace withdraw) runs on the
+ * caller's session under tenant RLS with no extra role rule, so the voice
+ * lane's equivalent-or-stricter set is: tenant match, agent self-scope
+ * (broker/team_lead override, same as every decision verb), and still-open
+ * status. Inbound-only does NOT apply — a withdraw retracts OUR side's offer,
+ * whichever direction the deal runs.
+ */
+export function withdrawGuardReason(
+  offer: DecisionOfferRow,
+  ctx: { brokerageId: string; agentScopeId: string | null },
+): string | null {
+  if (offer.brokerage_id !== ctx.brokerageId) return "That offer isn't in your brokerage."
+  if (ctx.agentScopeId && offer.agent_id && offer.agent_id !== ctx.agentScopeId) {
+    return "That offer belongs to a different agent — only they (or a broker) can withdraw it."
+  }
+  if (offer.status !== "pending" && offer.status !== "submitted" && offer.status !== "countered") {
+    return `That offer is already ${offer.status} — there's nothing left to withdraw.`
+  }
+  return null
+}
+
+/**
+ * Withdraw an offer by voice — SAME kernel transition as the offer-workspace
+ * withdraw click (lib/kernel/offers.withdrawOffer), spoken reason in notes.
+ */
+export async function voiceWithdrawOffer(
+  input: VoiceOfferDecisionInput,
+  client?: Svc,
+): Promise<VoiceDealDecisionResult> {
+  const svc = client ?? createServiceClient()
+  if (!input.brokerageId || !input.actorUserId) return { ok: false, spoken: "I can't tell who's asking — reopen the assistant and try again." }
+
+  const actor = await resolveActor(svc, input)
+  if ("error" in actor) return { ok: false, spoken: actor.error }
+
+  const resolved = await resolveSpokenOffer(svc, input, actor, findWithdrawableOffers)
+  if (!resolved.found) return resolved.refusal
+  const offer = resolved.offer
+
+  const refusal = withdrawGuardReason(offer, { brokerageId: input.brokerageId, agentScopeId: actor.agentScopeId })
+  if (refusal) return { ok: false, spoken: refusal }
+
+  // ── SAME kernel transition as the click (injected service client) ──
+  const { withdrawOffer } = await import("@/lib/kernel/offers")
+  const res = await withdrawOffer({
+    offerId:     offer.id,
+    agentId:     input.actorUserId,
+    brokerageId: input.brokerageId,
+    reason:      input.reason ?? undefined,
+  }, svc)
+  if (!res.success) return { ok: false, spoken: `The withdrawal didn't go through: ${res.error ?? "kernel command failed"}.` }
+
+  const buyerName = await buyerNameFor(svc, offer)
+  await busReceipt(svc, {
+    brokerageId: input.brokerageId,
+    tool: "withdraw_offer",
+    message: `Voice admin withdrew ${buyerName}'s offer${offer.property_address ? ` on ${offer.property_address}` : ""} (${spokenPrice(offer.offer_price)}) — kernel withdrawOffer${input.reason ? `; reason: ${input.reason.slice(0, 80)}` : ""}`,
+    offer,
+    payload: { reason: input.reason ?? null },
+  })
+
+  return {
+    ok: true,
+    spoken: `Done — the offer at ${spokenPrice(offer.offer_price)}${offer.property_address ? ` on ${offer.property_address}` : ""} is withdrawn${input.reason ? ", with the reason noted" : ""}.`,
+    data: { offer_id: offer.id, withdrawn: true, reason: input.reason ?? null },
   }
 }

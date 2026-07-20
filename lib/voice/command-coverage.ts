@@ -14,15 +14,29 @@
 //   • Pure module: no I/O, no server-only imports — importable by the
 //     "What can I say?" panel (server component) and the simulator alike.
 //
-// Why some canonical commands are NOT speakable (the recurring reason):
-//   The conv-ai tool webhook is SESSIONLESS by design (ElevenLabs POSTs with a
-//   shared tool secret; there is no user auth cookie). Kernel commands built
-//   on the auth-cookie Supabase client (lib/supabase/server createClient) run
-//   as `anon` there, and the live RLS on offers/showing_requests/... is
-//   tenant-scoped `authenticated`-only — the command would always return
-//   "not found". Closing those gaps honestly requires the kernel command to
-//   accept an injected client (like approveClientMessage / dispatchTeamCommand
-//   already do) — a change owned by the kernel files, not this bridge.
+// Why some canonical commands were NOT speakable (the round-35 recurring
+// reason): the conv-ai tool webhook is SESSIONLESS by design (ElevenLabs POSTs
+// with a shared tool secret; there is no user auth cookie). Kernel commands
+// built on the auth-cookie Supabase client (lib/supabase/server createClient)
+// ran as `anon` there, and the live RLS on offers/showing_requests/... is
+// tenant-scoped `authenticated`-only — the command would always return
+// "not found".
+//
+// ROUND 36 CLOSURE: the cookie-bound kernel commands and the four action-level
+// commands now take a sessionless-caller overload (optional injected client /
+// verified-actor param; the cookie default preserved for every existing
+// caller), so the voice backends run the SAME canonical transitions AFTER
+// enforcing an equivalent-or-stricter guard server-side:
+//   • reject/counter/withdraw offer → lib/voice/deal-decision.ts (mirrored
+//     approvals-queue guard, kernel transitions via injected client)
+//   • promote lead / reassign contact / broadcast → lib/voice/broker-commands.ts
+//     (role guard re-checked from the DB here AND the canonical action re-runs
+//     its own gate through the injected client)
+//   • showing request → lib/voice/showing-request.ts (ownership here; the
+//     NAR-2024 BBA gate inside requestShowing stays absolute)
+// The five phantom tool-registry rows are also closed — each now dispatches to
+// its canonical home (steer-my-day, decision receipts, Income Truth, studio
+// session, requestShowing). Zero rows declared-but-undispatched.
 
 export type VoiceCoverageDomain =
   | "offers"            // deal decisions on inbound offers
@@ -83,36 +97,40 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
     guard: "click paths: offer-workspace action + approvals-queue 'of:' cascade (authenticated session)",
     auditParity: "click path emits OFFER_OS_ACCEPTED lifecycle_events with actor_user_id",
     notYetReason:
-      "Runs on the auth-cookie client (createClient) — sessionless webhook executes as anon and live RLS on offers is authenticated-only. The spoken accept lands in acceptOfferConditionally instead (the stricter, compliance-gated canonical acceptance).",
+      "POLICY, no longer plumbing: the command now takes a client-param overload (round 36), but the spoken accept intentionally keeps landing in acceptOfferConditionally — the STRICTER canonical acceptance whose System-7.1B compliance gate is absolute and records an explicit HOLD. Wiring plain acceptOffer to voice would create a second, weaker spoken accept lane.",
   },
   {
     command: "lib/kernel/offers.rejectOffer",
     domain: "offers",
-    speakable: false,
-    toolName: null,
-    guard: "click paths: offer-workspace action + approvals-queue 'of:' cascade (authenticated session)",
-    auditParity: "click path emits OFFER_OS_REJECTED lifecycle_events; notes carry the reason",
-    notYetReason:
-      "Session-client-bound (createClient + offers RLS authenticated-only) — cannot execute from the sessionless conv-ai webhook without forking the transition; needs a client-param overload of the kernel command (owned by lib/kernel/offers.ts, off-limits this round).",
+    speakable: true,
+    toolName: "reject_offer",
+    guard:
+      "authority 'agent' (tool-registry role gate at the route) + the SAME mirrored approvals-queue decision guard as accept_offer in lib/voice/deal-decision.ts: tenant match, agent self-scope (broker/broker_admin/admin/superadmin/team_lead override), inbound-only, not a counter row, status pending/submitted; backend re-checks role for the run_team_command lane",
+    auditParity:
+      `SAME kernel command the offer-workspace click and the approvals-queue 'of:' reject cascade call (rejectOffer via the round-36 client-param overload) — same OFFER_OS_REJECTED lifecycle event, spoken reason in offers.notes like the cascade's reviewer notes, same negotiation outcome loop; voice origin: ${VOICE_RECEIPT} + ${BUS_RECEIPT}`,
+    sayIt: "“Reject the Hendersons' offer — the earnest money is too low”",
   },
   {
     command: "lib/kernel/offers.issueCounterOffer",
     domain: "offers",
-    speakable: false,
-    toolName: null,
-    guard: "click paths: seller counter slide-over + approvals-queue cascadeCounterOffer (authenticated session)",
-    auditParity: "click path emits OFFER_OS_COUNTERED lifecycle_events; counter row carries parent_offer_id + round",
-    notYetReason:
-      "Session-client-bound (createClient select + insert under offers RLS) — same reason as rejectOffer; not executable from the sessionless webhook without forking.",
+    speakable: true,
+    toolName: "counter_offer",
+    guard:
+      "authority 'agent' + the same mirrored decision guard as reject_offer, PLUS an explicit spoken price is REQUIRED (the backend never invents terms — no price, no counter)",
+    auditParity:
+      `SAME kernel command the seller counter slide-over and approvals-queue cascadeCounterOffer call (issueCounterOffer via the client-param overload) — same counter row (parent_offer_id + round), same OFFER_OS_COUNTERED lifecycle event; voice origin: ${VOICE_RECEIPT} + ${BUS_RECEIPT}`,
+    sayIt: "“Counter the Hendersons' offer at 462”",
   },
   {
     command: "lib/kernel/offers.withdrawOffer",
     domain: "offers",
-    speakable: false,
-    toolName: null,
-    guard: "click path: offer-workspace withdraw action (authenticated session)",
-    auditParity: "click path emits OFFER_OS_WITHDRAWN lifecycle_events",
-    notYetReason: "Session-client-bound — same reason as rejectOffer.",
+    speakable: true,
+    toolName: "withdraw_offer",
+    guard:
+      "authority 'agent' + tenant match + agent self-scope (same override roles) + still-open status (pending/submitted/countered) — equivalent-or-stricter than the click path (session RLS, no extra role rule); counters excluded from fuzzy matching so a chain row is never picked by guess",
+    auditParity:
+      `SAME kernel command the offer-workspace withdraw click calls (withdrawOffer via the client-param overload) — same OFFER_OS_WITHDRAWN lifecycle event, spoken reason in offers.notes; voice origin: ${VOICE_RECEIPT} + ${BUS_RECEIPT}`,
+    sayIt: "“Withdraw the offer on 44 Birch”",
   },
   {
     command: "offers read — agent's pending/countered/submitted pipeline",
@@ -160,7 +178,7 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
     guard: "click path: /api/approvals/approve|reject (requireAuth; agents scoped to own items, brokers brokerage-wide)",
     auditParity: "click path updates each source table's approval_status with reviewer attribution",
     notYetReason:
-      "No conv-ai tool reaches the unified queue cascade yet, and its offer lane ('of:') delegates to the session-client-bound kernel offer commands — the same wall as rejectOffer. Marketing-content approvals by voice ride standup_action's rail today.",
+      "The session-client wall is GONE (round 36): every decision the cascade's offer lane performs is now individually speakable through the deal-decision lane (accept_offer / reject_offer / counter_offer ride the same kernel commands the cascade calls), and marketing-content approvals ride standup_action's rail. What remains unspoken is only the cascade WRAPPER itself — a queue-UI convenience with no distinct transition of its own; wiring a second spoken path to the same kernel commands would add surface without adding capability (and the aggregator file is owned outside this bridge).",
   },
 
   // ── CONTACTS ───────────────────────────────────────────────────────────────
@@ -202,24 +220,26 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
   {
     command: "app/actions/contact-reassignment.reassignContactAction",
     domain: "contacts",
-    speakable: false,
-    toolName: null,
-    guard: "click path: requireReassignAuthority (broker/admin session)",
-    auditParity: "click path moves contact + open work with tenancy checks and activity trail",
-    notYetReason:
-      "Auth-cookie-gated server action (requireReassignAuthority reads the session) — not executable from the sessionless webhook; needs a client/actor-param core extracted from the action.",
+    speakable: true,
+    toolName: "reassign_contact",
+    guard:
+      "authority 'admin' (tool-registry role gate at the route) + the voice backend (lib/voice/broker-commands.ts) re-checks manager-roles-or-tenancy-principal from the DB, AND the canonical action re-runs requireReassignAuthority through the injected client (round-36 sessionless-caller overload) — double-gated, equivalent to the click path",
+    auditParity:
+      `SAME canonical action as the CRM click (reassignContactAction) — same per-entity move set (contact, leads, in-flight deal roles, open tasks, active alerts), same CONTACT_REASSIGNED lifecycle_events audit, same in-app notification to the receiving agent; voice origin: ${VOICE_RECEIPT} + ${BUS_RECEIPT}`,
+    sayIt: "“Reassign Maria Lopez to Bob Chen”",
   },
 
   // ── LEADS ──────────────────────────────────────────────────────────────────
   {
     command: "app/actions/lead-promotion/promote-lead.promoteLead",
     domain: "leads",
-    speakable: false,
-    toolName: null,
-    guard: "click path: authenticated session (createClient getUser) + brokerage checks",
-    auditParity: "click path writes the promotion trail on leads/contacts",
-    notYetReason:
-      "Session-gated server action (auth.getUser on the cookie client) — the sessionless webhook cannot authenticate as the speaking user; needs an actor-param service core.",
+    speakable: true,
+    toolName: "promote_lead",
+    guard:
+      "authority 'admin' (round-33 LEADS POLICY: brokerage principals + platform only — NEVER agent-speakable) + the voice backend re-checks the canonical PROMOTE_ROLES set from the DB, AND promoteLead re-runs its own role + tenancy guard through the injected client (round-36 overload); raw-record CONTENT is never spoken back (RAW LEADS = PLATFORM ONLY)",
+    auditParity:
+      `SAME canonical orchestration as the dashboard trigger (promoteLead: eligibility → promotion → scoring → platform distribution) — same activities/automation_errors audit trail; voice origin: ${VOICE_RECEIPT} + ${BUS_RECEIPT}`,
+    sayIt: "“Promote the lead for John Smith” (broker roles only)",
   },
 
   // ── TASKS ──────────────────────────────────────────────────────────────────
@@ -237,12 +257,13 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
   {
     command: "app/actions/showings.requestShowing (BBA-gated showing request)",
     domain: "showings",
-    speakable: false,
-    toolName: null,
-    guard: "click path: authenticated session; requireActiveBBA (NAR 2024) inside the action",
-    auditParity: "click path inserts showing_requests with source attribution ('agent_input'/'buyer_portal')",
-    notYetReason:
-      "Canonical requestShowing runs on the auth-cookie client and showing_requests RLS is tenant/authenticated-only — not executable from the sessionless webhook without forking the insert + notification chain. The tool-registry's stage_showing row is declared but has never had a dispatcher (phantom row — kept non-speakable here on purpose).",
+    speakable: true,
+    toolName: "stage_showing",
+    guard:
+      "authority 'agent' + contact ownership in the voice backend (assigned agent or broker/broker_admin/admin/superadmin/team_lead — the same requireContactOwnership rule as every NAR artifact) + the NAR-2024 BBA gate INSIDE requestShowing (requireActiveBBA, fails closed — a block is spoken back honestly); spoken dates/times resolve conservatively or the backend asks instead of guessing",
+    auditParity:
+      `SAME canonical action as the buyer portal and agent dashboard (requestShowing via the round-36 sessionless-caller overload) — same showing_requests insert with source='agent_input', same agent/listing-agent/seller notification chain, same client_portal_activity log; voice origin: ${VOICE_RECEIPT} + ${BUS_RECEIPT}`,
+    sayIt: "“Schedule a showing for Maria at 44 Birch on Saturday at 2”",
   },
   {
     command: "showings/activities read — today's schedule",
@@ -295,12 +316,13 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
   {
     command: "app/actions/communications.notifyBrokerageAgentsAction",
     domain: "broadcast",
-    speakable: false,
-    toolName: null,
-    guard: "click path: tenancy-principal only (isTenancyPrincipal on the authenticated session)",
-    auditParity: "click path fans out in-app notifications with principal attribution",
-    notYetReason:
-      "Principal gate resolves the caller from the auth cookie (getAgentContext) — sessionless webhook cannot satisfy it; needs an actor-param core before a broadcast can be spoken.",
+    speakable: true,
+    toolName: "broadcast_announcement",
+    guard:
+      "authority 'admin' + tenancy-principal check in the voice backend (isTenancyPrincipal against the DB — the voice session carries the caller's users.id), AND the canonical action re-runs the same principal gate through the injected client (round-36 overload); team leads are always forced to their own team by the action",
+    auditParity:
+      `SAME canonical action as the composer (notifyBrokerageAgentsAction) — IN-APP ONLY by construction (notifications rows, channel 'in_app'; never email/SMS — no egress), same team_announcement_posted lifecycle_events ledger with honest counters; voice origin: ${VOICE_RECEIPT} + ${BUS_RECEIPT}`,
+    sayIt: "“Announce to the team: the office closes at noon Friday”",
   },
 
   // ── DEAL DOCUMENTS (offer/BBA/listing packets + e-sign) ───────────────────
@@ -525,15 +547,45 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
     auditParity: VOICE_RECEIPT,
     sayIt: "“What's under contract?”",
   },
+  // ── Round 36 phantom closure — the five declared-but-undispatched registry
+  //    rows now dispatch to their CANONICAL homes (stage_showing rides the
+  //    requestShowing row above). Zero phantom rows remain — pinned both
+  //    directions by scripts/voice-command-coverage-simulator.ts. ──
   {
-    command: "tool-registry rows with no dispatcher: get_income_truth, whos_slipping, explain_touches, book_studio_session, stage_showing",
+    command: "lib/intelligence/steer-my-day-runner.getSteerMyDay (who needs you first)",
     domain: "reporting",
-    speakable: false,
-    toolName: null,
-    guard: "declared in lib/voice/tool-registry.ts only",
-    auditParity: "n/a — never dispatched",
-    notYetReason:
-      "Declared in the tool registry but no dispatch surface implements them (phantom rows found by this coverage audit) — the tool-call route throws 'Unknown tool' for all five. Kept non-speakable until a real handler exists.",
+    speakable: true,
+    toolName: "whos_slipping",
+    guard: "authority 'agent_or_isa' (read-only); agent-scoped via the session's agents.id; brokerage-anchored reads",
+    auditParity: `same fused lead-warmth + lifetime-health work queue the dashboard digest reads, spoken via the existing pure formatter (lib/voice/voice-report-format.spokenSteerDay); ${VOICE_RECEIPT}`,
+    sayIt: "“Who's slipping?”",
+  },
+  {
+    command: "lib/intelligence/decision-receipts-runner.getContactDecisionReceipts (the why trail)",
+    domain: "reporting",
+    speakable: true,
+    toolName: "explain_touches",
+    guard: "authority 'agent_or_isa' (read-only); contact must be in the session's brokerage; ambiguous names refuse with a count instead of guessing",
+    auditParity: `same decision-receipts trail the glass-box report reads (every send, every skip/block WITH its reason, opens/replies), spoken via spokenReceipts; ${VOICE_RECEIPT}`,
+    sayIt: "“Why did the Hendersons get that?”",
+  },
+  {
+    command: "Income Truth engine read — income_forecast_gap_analysis + open recommended actions",
+    domain: "reporting",
+    speakable: true,
+    toolName: "get_income_truth",
+    guard: "authority 'agent' (read-only); agent self-scope via the session's agents.id — the SAME scope getLatestGapAction resolves from the cookie session",
+    auditParity: `same persisted snapshot + income_gap_recommended_actions rows the Income Truth dashboard reads; ${VOICE_RECEIPT}`,
+    sayIt: "“How am I tracking against my income goal?”",
+  },
+  {
+    command: "lib/voice/studio-session.voiceStudioSession (gated content-calendar batch)",
+    domain: "marketing-content",
+    speakable: true,
+    toolName: "book_studio_session",
+    guard: "authority 'agent'; every reel routes through the Video Director's commissionVideo — its Fair-Housing/compliance gate runs PER REEL and everything lands at pending_review (nothing auto-publishes); idempotent per session key",
+    auditParity: `studio_sessions anchor row + ai_video_projects.studio_session_id links per reel — same rails as the Content Studio; ${VOICE_RECEIPT}`,
+    sayIt: "“Book me a week of content”",
   },
 ]
 

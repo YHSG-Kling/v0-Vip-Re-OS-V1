@@ -125,18 +125,22 @@ function main() {
   check("accept_offer is in TEAM_ACTION_COMMANDS (both voice front-ends + text bar reach it)",
     TEAM_ACTION_COMMANDS.has("accept_offer") && TEAM_COMMANDS.has("accept_offer"))
 
-  // No fake speakables for the session-bound commands:
-  console.log("\n[3b. honest not-yet — session-bound kernel commands have NO fake tool]")
-  for (const t of ["reject_offer", "counter_offer", "withdraw_offer", "decide_offer"]) {
-    check(`route has NO "${t}" case (would be a fake — kernel command is session-client-bound)`, !routeCases.includes(t))
+  // Round 36 closed the session wall with client-param overloads: the kernel
+  // commands keep their cookie-client DEFAULT (every existing caller untouched)
+  // and the voice backends pass the service client AFTER their own mirrored guard.
+  console.log("\n[3b. round-36 closures — reject/counter/withdraw ride the SAME kernel transitions]")
+  for (const t of ["reject_offer", "counter_offer", "withdraw_offer"]) {
+    check(`route dispatches "${t}" (round-36 closure)`, routeCases.includes(t))
   }
+  check('route has NO "decide_offer" case (never a real command)', !routeCases.includes("decide_offer"))
   for (const cmd of ["lib/kernel/offers.rejectOffer", "lib/kernel/offers.issueCounterOffer", "lib/kernel/offers.withdrawOffer"]) {
     const row = VOICE_COMMAND_COVERAGE.find((r) => r.command === cmd)
-    check(`map row for ${cmd} is speakable:false with a session-bound reason`,
-      !!row && !row.speakable && /session/i.test(row.notYetReason ?? ""))
+    check(`map row for ${cmd} is speakable:true (client-param overload lane)`, !!row && row.speakable === true)
   }
-  check("kernel offers commands are indeed session-client-bound (createClient, not service)",
-    /const supabase = await createClient\(\)/.test(src("lib/kernel/offers.ts")))
+  check("voice backends reuse the kernel transitions (no fork): rejectOffer/issueCounterOffer/withdrawOffer imported",
+    dealDecisionSrc.includes("rejectOffer") && dealDecisionSrc.includes("issueCounterOffer") && dealDecisionSrc.includes("withdrawOffer"))
+  check("kernel offers commands keep the cookie-client DEFAULT (client ?? await createClient())",
+    /client \?\? await createClient\(\)/.test(src("lib/kernel/offers.ts")))
   check("acceptOfferConditionally is indeed service-client based (webhook-executable)",
     src("lib/kernel/transactions.ts").includes("createServiceClient"))
 
@@ -183,8 +187,8 @@ function main() {
   check('"approve the offer from Jane Doe" → accept_offer', p3?.name === "accept_offer")
   check('"accept the counter" does NOT route to accept_offer (buyer-side lane)',
     parseTeamCommandText("accept the counter")?.name !== "accept_offer")
-  check('"reject the offer on 44 Birch" does NOT parse to any command (not speakable — honest)',
-    parseTeamCommandText("reject the offer on 44 Birch") === null)
+  check('"reject the offer on 44 Birch" → reject_offer (round-36 closure)',
+    parseTeamCommandText("reject the offer on 44 Birch")?.name === "reject_offer")
   // Existing commands unregressed:
   check('"what should I do today" still → morning_standup', parseTeamCommandText("what should I do today")?.name === "morning_standup")
   check('"knock out number two" still → standup_action', parseTeamCommandText("knock out number two")?.name === "standup_action")

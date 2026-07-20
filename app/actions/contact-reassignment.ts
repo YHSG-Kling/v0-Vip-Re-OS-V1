@@ -32,21 +32,51 @@ const MANAGER_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-async function requireReassignAuthority(): Promise<
+/** Sessionless-caller overload shape (voice webhook): the caller supplies its
+ *  own verified client + acting users.id; the SAME role/principal guard runs
+ *  against the DB through that client. A browser cannot spoof this — a forged
+ *  plain-object client has no working .from and fails closed at the guard. */
+export interface ReassignCaller {
+  client: Svc
+  actorUserId: string
+}
+
+async function requireReassignAuthority(caller?: ReassignCaller): Promise<
   { ok: true; brokerageId: string; actorUserId: string } | { ok: false; error: string }
 > {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Not authenticated" }
-  if (MANAGER_ROLES.has(ctx.role)) return { ok: true, brokerageId: ctx.brokerageId, actorUserId: ctx.userId }
+  let userId: string
+  let brokerageId: string
+  let role: string
+  if (caller) {
+    if (typeof caller.client?.from !== "function" || typeof caller.actorUserId !== "string" || !caller.actorUserId) {
+      return { ok: false, error: "Not authenticated" }
+    }
+    const { data: userRow } = await caller.client
+      .from("users")
+      .select("brokerage_id, user_type")
+      .eq("id", caller.actorUserId)
+      .maybeSingle()
+    if (!(userRow as { brokerage_id?: string | null } | null)?.brokerage_id) return { ok: false, error: "Not authenticated" }
+    userId = caller.actorUserId
+    brokerageId = (userRow as { brokerage_id: string }).brokerage_id
+    role = String((userRow as { user_type?: string | null }).user_type ?? "agent")
+  } else {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Not authenticated" }
+    userId = ctx.userId
+    brokerageId = ctx.brokerageId
+    role = ctx.role
+  }
+  if (MANAGER_ROLES.has(role)) return { ok: true, brokerageId, actorUserId: userId }
   const { isTenancyPrincipal } = await import("@/lib/kernel/tenancy-principal")
   const svc = createServiceClient()
   const principal = await isTenancyPrincipal(svc, {
-    userId: ctx.userId,
-    brokerageId: ctx.brokerageId,
-    role: ctx.role,
+    userId,
+    brokerageId,
+    role,
   })
   if (!principal) return { ok: false, error: "Forbidden — only a broker/manager or tenancy principal can reassign contacts" }
-  return { ok: true, brokerageId: ctx.brokerageId, actorUserId: ctx.userId }
+  return { ok: true, brokerageId, actorUserId: userId }
 }
 
 export interface ReassignTarget {
@@ -108,12 +138,12 @@ export interface ReassignContactResult {
 export async function reassignContactAction(input: {
   contactId: string
   toAgentId: string
-}): Promise<ReassignContactResult> {
+}, caller?: ReassignCaller): Promise<ReassignContactResult> {
   const empty: ReassignContactResult = {
     ok: false, contactMoved: false, leadsMoved: 0, dealRolesMoved: 0,
     openTasksMoved: 0, alertsMoved: 0, portalFollowsContact: true,
   }
-  const auth = await requireReassignAuthority()
+  const auth = await requireReassignAuthority(caller)
   if (!auth.ok) return { ...empty, error: auth.error }
   if (!input.contactId || !input.toAgentId) return { ...empty, error: "contactId and toAgentId are required" }
 

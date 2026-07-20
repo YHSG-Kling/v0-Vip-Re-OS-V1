@@ -208,17 +208,63 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_outbound: false,
     is_telco_initiating: false,
     is_nar_regulated: true,
-    description: "Accept an inbound offer on one of our listings by voice — the SAME kernel transition as the compliance-bridge click (acceptOfferConditionally): compliance gate absolute, transaction created through the canonical bridge, competing-winner flags handled by the kernel. Guarded by the approvals-queue rule set (tenant + agent scope + inbound-only + not-a-counter + still-open). Reject/counter/withdraw are NOT speakable yet — their kernel commands are session-client-bound (see lib/voice/command-coverage.ts).",
+    description: "Accept an inbound offer on one of our listings by voice — the SAME kernel transition as the compliance-bridge click (acceptOfferConditionally): compliance gate absolute, transaction created through the canonical bridge, competing-winner flags handled by the kernel. Guarded by the approvals-queue rule set (tenant + agent scope + inbound-only + not-a-counter + still-open).",
+  },
+  // ── Round 36 — the rest of the deal-decision family. Each rides the SAME
+  //    kernel transition the click path calls (lib/kernel/offers.ts reject/
+  //    counter/withdraw via the client-param overload) behind the SAME mirrored
+  //    guard as accept_offer (lib/voice/deal-decision.ts). ──
+  reject_offer: {
+    name: "reject_offer",
+    category: "stage",
+    authority: "agent",
+    gates: ["service_role"],  // Backend mirrors the approvals-queue decision guard
+                              // (tenant + agent scope + inbound-only + not-a-counter +
+                              // still-open) then runs kernel rejectOffer with the
+                              // injected service client — same OFFER_OS_REJECTED event,
+                              // spoken reason in offers.notes like the cascade lane.
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: true,
+    description: "Reject an inbound offer on one of our listings by voice — SAME kernel transition as the offer-workspace click and the approvals-queue 'of:' reject cascade (lib/kernel/offers.rejectOffer). Optional spoken reason lands in offers.notes. Guarded by the approvals-queue rule set.",
+  },
+  counter_offer: {
+    name: "counter_offer",
+    category: "stage",
+    authority: "agent",
+    gates: ["service_role"],  // Same mirrored guard as reject_offer; the backend REQUIRES
+                              // an explicit spoken price (never invents terms) then runs
+                              // kernel issueCounterOffer — same counter row (parent_offer_id
+                              // + round), same OFFER_OS_COUNTERED event as the slide-over.
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: true,
+    description: "Counter an inbound offer by voice at an explicit price — SAME kernel transition as the seller counter slide-over and the approvals-queue cascadeCounterOffer lane (lib/kernel/offers.issueCounterOffer). Refuses without a price. Guarded by the approvals-queue rule set.",
+  },
+  withdraw_offer: {
+    name: "withdraw_offer",
+    category: "stage",
+    authority: "agent",
+    gates: ["service_role"],  // Backend guard: tenant + agent self-scope (broker/team_lead
+                              // override) + still-open status — equivalent-or-stricter than
+                              // the click path (session RLS, no extra role rule) — then runs
+                              // kernel withdrawOffer with the injected service client.
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: true,
+    description: "Withdraw a still-open offer by voice — SAME kernel transition as the offer-workspace withdraw click (lib/kernel/offers.withdrawOffer), spoken reason in offers.notes. Counters are excluded from fuzzy matching so a chain row is never picked by guess.",
   },
   stage_showing: {
     name: "stage_showing",
     category: "schedule",
     authority: "agent",
-    gates: ["active_bba"],
+    gates: ["active_bba"],    // Enforced INSIDE the canonical requestShowing action
+                              // (requireActiveBBA, fails closed) — the voice lane
+                              // (lib/voice/showing-request.ts) cannot bypass it.
     is_outbound: false,
     is_telco_initiating: false,
     is_nar_regulated: true,
-    description: "Schedule a showing for a buyer contact. BBA required (NAR 2024).",
+    description: "Schedule a showing for a buyer contact by voice — 'schedule a showing for Maria at 44 Birch on Saturday at 2'. Runs the canonical requestShowing chain (showing_requests insert + agent/listing/seller notifications) behind contact ownership; the NAR-2024 BBA gate inside the action is absolute.",
   },
 
   // ── Activity tracking (no compliance gates) ───────────────────────────────
@@ -414,6 +460,50 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_telco_initiating: false,
     is_nar_regulated: false,
     description: "Search inventory + the market for a buyer by voice — 'find the Hendersons a 3-bed under 500k in Austin'. Resolves the buyer by name or contact_id, runs the natural-language match across our listings + RentCast/IDX (Fair-Housing-sanitized; external results are display-only, no MLS facts stored), and reads back the top matches. Read-only.",
+  },
+
+  // ── Round 36 broker lane — principal/manager-gated acting verbs. Each backend
+  //    (lib/voice/broker-commands.ts) re-checks its role guard server-side AND the
+  //    canonical action re-runs its own gate through the injected client. ──
+  promote_lead: {
+    name: "promote_lead",
+    category: "stage",
+    authority: "admin",       // LEADS POLICY (round 33): brokerage principals + platform
+                              // only — never agent-speakable. The backend re-checks the
+                              // canonical PROMOTE_ROLES set from the DB.
+    gates: ["service_role"],  // Canonical promoteLead re-runs its own role + tenancy guard
+                              // through the injected client; raw-record content is never
+                              // spoken back (RAW LEADS = PLATFORM ONLY).
+    is_outbound: false,       // Promotion NEVER contacts the lead — pipeline trigger only.
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Promote an un-promoted raw lead record into the Leads pipeline by voice — broker/admin only. Runs the canonical promoteLead orchestration (eligibility → promotion → scoring → platform distribution) with full audit trail. Never contacts the lead; never reads raw-record content aloud.",
+  },
+  reassign_contact: {
+    name: "reassign_contact",
+    category: "stage",
+    authority: "admin",       // Broker/manager or tenancy principal — a regular agent can
+                              // never take another agent's contact (same rule as the CRM).
+    gates: ["service_role"],  // Canonical reassignContactAction re-runs requireReassignAuthority
+                              // through the injected client; tenancy pinned on every move.
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Reassign one contact (and their open work — leads, in-flight deal roles, open tasks, active alerts) to another active agent by voice — 'reassign Maria Lopez to Bob Chen'. Same per-entity move set as the CRM action, lifecycle_events audit, receiving agent notified in-app.",
+  },
+  broadcast_announcement: {
+    name: "broadcast_announcement",
+    category: "send",
+    authority: "admin",       // Tenancy principal only (broker/admin; team lead scoped to
+                              // their own team by the canonical action).
+    gates: ["service_role"],  // Canonical notifyBrokerageAgentsAction re-runs the principal
+                              // gate through the injected client.
+    is_outbound: false,       // IN-APP ONLY — notifications rows to STAFF; never a CRM
+                              // contact, never email/SMS/voice. No egress gates apply
+                              // because nothing leaves the platform.
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Post one internal announcement to every active agent/staff member's in-app feed by voice — 'announce to the team: the office closes at noon Friday'. Principal-gated; team leads are always scoped to their own team; ledgered in lifecycle_events. In-app only — never email or SMS.",
   },
 
   // -- Studio Session (batch content calendar commissioning) -----------------

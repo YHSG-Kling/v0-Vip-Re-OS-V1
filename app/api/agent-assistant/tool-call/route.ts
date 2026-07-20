@@ -327,10 +327,25 @@ async function runTool(
     // (lib/voice/deal-decision.ts) lands in the SAME kernel transition as the
     // compliance-bridge click (acceptOfferConditionally) behind the approvals-queue
     // guard, and re-checks role authority itself for the run_team_command lane.
-    // Reject/counter/withdraw are intentionally ABSENT here — their kernel commands
-    // run on the caller's session client and cannot execute from this sessionless
-    // webhook (honest not-yet rows in lib/voice/command-coverage.ts).
     case "accept_offer":
+    // Round 36 — the rest of the deal-decision family: the kernel commands
+    // (rejectOffer / issueCounterOffer / withdrawOffer) now take an injected
+    // client, so the spoken forms ride the SAME transitions behind the SAME
+    // mirrored guard (lib/voice/deal-decision.ts). No forked writes.
+    case "reject_offer":
+    case "counter_offer":
+    case "withdraw_offer":
+    // stage_showing — the canonical BBA-gated requestShowing via its
+    // sessionless-caller overload (lib/voice/showing-request.ts). The NAR-2024
+    // BBA gate inside the action is absolute and fails closed.
+    case "stage_showing":
+    // Round 36 broker lane — principal/manager-gated backends
+    // (lib/voice/broker-commands.ts). promote_lead honors the round-33 leads
+    // policy (brokerage principals + platform only — never agent-speakable);
+    // broadcast_announcement is in-app only by construction.
+    case "promote_lead":
+    case "reassign_contact":
+    case "broadcast_announcement":
     case "find_properties": {
       const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
       return dispatchTeamCommand(
@@ -367,6 +382,21 @@ async function runTool(
 
     case "stage_ad_campaign":
       return stageAdCampaignVoice(params, session)
+
+    // ── Round 36 phantom-tool closure: the declared-but-undispatched registry
+    //    rows now reach their CANONICAL homes (zero registry rows without a
+    //    dispatcher — pinned by scripts/voice-command-coverage-simulator.ts). ──
+    case "whos_slipping":
+      return whosSlipping(session, supabase)
+
+    case "explain_touches":
+      return explainTouches(params, session, supabase)
+
+    case "get_income_truth":
+      return getIncomeTruth(session, supabase)
+
+    case "book_studio_session":
+      return bookStudioSession(params, session, supabase)
 
     default:
       throw new Error(`Unknown tool: ${toolName}`)
@@ -2212,6 +2242,204 @@ async function dispatchTransactionPacket(
       : bba
       ? `BBA for ${contactName} is out for signature via ${resolved.providerName}.`
       : `Offer for ${contactName} is out for signature via ${resolved.providerName}.`,
+  }
+}
+
+// ─── whos_slipping (voice) — round-36 phantom closure ────────────────────────
+// Canonical home: the steer-my-day digest (lib/intelligence/steer-my-day-runner
+// getSteerMyDay — the SAME fused lead-warmth + lifetime-health work queue the
+// dashboard reads) spoken through the existing pure formatter
+// (lib/voice/voice-report-format.spokenSteerDay). Read-only, agent-scoped when
+// the session has an agents profile (contacts/leads.agent_id = agents.id).
+
+async function whosSlipping(
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  const { getSteerMyDay } = await import("@/lib/intelligence/steer-my-day-runner")
+  const steer = await getSteerMyDay(supabase, session.brokerage_id, {
+    agentId: session.agent_id ?? undefined,
+    topN: 3,
+  })
+
+  // Resolve display names for the work-first ids (contacts + leads).
+  const names: Record<string, string> = {}
+  const contactIds = steer.workFirst.filter((w) => w.kind === "contact").map((w) => w.id)
+  const leadIds = steer.workFirst.filter((w) => w.kind === "lead").map((w) => w.id)
+  if (contactIds.length > 0) {
+    const { data } = await supabase
+      .from("contacts").select("id, first_name, last_name")
+      .in("id", contactIds).eq("brokerage_id", session.brokerage_id)
+    for (const c of (data ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
+      const n = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim()
+      if (n) names[c.id] = n
+    }
+  }
+  if (leadIds.length > 0) {
+    const { data } = await supabase
+      .from("leads").select("id, first_name, last_name")
+      .in("id", leadIds).eq("brokerage_id", session.brokerage_id)
+    for (const l of (data ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
+      const n = `${l.first_name ?? ""} ${l.last_name ?? ""}`.trim()
+      if (n) names[l.id] = n
+    }
+  }
+
+  const { spokenSteerDay } = await import("@/lib/voice/voice-report-format")
+  return {
+    success: true,
+    headline: steer.headline,
+    work_first: steer.workFirst.map((w) => ({ ...w, name: names[w.id] ?? null })),
+    planned: steer.planned,
+    spoken_summary: spokenSteerDay(steer, names),
+  }
+}
+
+// ─── explain_touches (voice) — round-36 phantom closure ──────────────────────
+// Canonical home: the decision-receipts trail (lib/intelligence/
+// decision-receipts-runner.getContactDecisionReceipts — every send, every
+// skip/block WITH its reason, opens/replies) spoken through the existing pure
+// formatter (spokenReceipts). Read-only; contact must be in the session's
+// brokerage.
+
+async function explainTouches(
+  params: Record<string, unknown>,
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  let contactId = String(params.contact_id ?? "").trim() || null
+  let contactName: string | null = null
+
+  if (contactId) {
+    const { data: c } = await supabase
+      .from("contacts").select("id, first_name, last_name")
+      .eq("id", contactId).eq("brokerage_id", session.brokerage_id).maybeSingle()
+    if (!c) return { error: "Contact not found in your brokerage" }
+    contactName = `${(c as any).first_name ?? ""} ${(c as any).last_name ?? ""}`.trim() || null
+  } else {
+    const q = String(params.person_query ?? params.query ?? "").trim()
+    if (q.length < 2) return { error: "contact_id or person_query required", spoken_summary: "Whose touches should I explain? Give me the name." }
+    const { data } = await supabase
+      .from("contacts").select("id, first_name, last_name")
+      .eq("brokerage_id", session.brokerage_id)
+      .or(`first_name.ilike.%${q}%,last_name.ilike.%${q}%`)
+      .limit(5)
+    const rows = (data ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>
+    if (rows.length === 0) return { error: `No contact matching "${q}"`, spoken_summary: `I don't see a contact matching "${q}".` }
+    if (rows.length > 1) return { error: "ambiguous", spoken_summary: `There are ${rows.length} contacts matching "${q}" — give me the full name.` }
+    contactId = rows[0].id
+    contactName = `${rows[0].first_name ?? ""} ${rows[0].last_name ?? ""}`.trim() || null
+  }
+
+  const { getContactDecisionReceipts } = await import("@/lib/intelligence/decision-receipts-runner")
+  const receipts = await getContactDecisionReceipts(supabase, contactId!, session.brokerage_id)
+  const { spokenReceipts } = await import("@/lib/voice/voice-report-format")
+  return {
+    success: true,
+    contact_id: contactId,
+    receipts: receipts.slice(0, 10),
+    spoken_summary: spokenReceipts(contactName, receipts),
+  }
+}
+
+// ─── get_income_truth (voice) — round-36 phantom closure ─────────────────────
+// Canonical home: the Income Truth engine's persisted snapshot — the SAME
+// income_forecast_gap_analysis + income_gap_recommended_actions rows the
+// dashboard's getLatestGapAction reads, with the SAME agent self-scope
+// (agents.id from the session). Read-only.
+
+async function getIncomeTruth(
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  if (!session.agent_id) {
+    return { success: true, snapshot: null, actions: [], spoken_summary: "Income Truth is agent-scoped and this session has no agent profile — a broker can see the brokerage view on the dashboard." }
+  }
+
+  const { data: snap } = await supabase
+    .from("income_forecast_gap_analysis")
+    .select("*")
+    .eq("agent_id", session.agent_id)
+    .eq("brokerage_id", session.brokerage_id)
+    .order("analysis_date", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (!snap) {
+    return { success: true, snapshot: null, actions: [], spoken_summary: "No income analysis has run yet — it computes nightly, or you can trigger it from the Income Truth dashboard." }
+  }
+
+  const { data: actions } = await supabase
+    .from("income_gap_recommended_actions")
+    .select("action_rank, action_title, action_description, estimated_gci_impact_cents, priority_score, status")
+    .eq("gap_analysis_id", (snap as any).id)
+    .in("status", ["open", "in_progress"])
+    .order("priority_score", { ascending: false })
+    .limit(5)
+
+  const s = snap as Record<string, any>
+  const dollars = (cents: number | null | undefined) =>
+    cents == null ? null : Math.round(cents / 100)
+  const gap = dollars(s.gap_to_goal_cents)
+  const goal = dollars(s.annual_goal_cents)
+  const projected = dollars(s.projected_year_end_cents) ?? 0
+  const ytd = dollars(s.ytd_gci_cents) ?? 0
+
+  const gapLine = goal == null
+    ? `You're at $${ytd.toLocaleString()} GCI year-to-date, projecting $${projected.toLocaleString()} by year end — set an annual goal on the dashboard to get a gap read.`
+    : gap != null && gap > 0
+      ? `You're at $${ytd.toLocaleString()} GCI year-to-date, projecting $${projected.toLocaleString()} against a $${goal.toLocaleString()} goal — a $${gap.toLocaleString()} gap.`
+      : `You're at $${ytd.toLocaleString()} GCI year-to-date and projecting $${projected.toLocaleString()} — on pace for your $${(goal ?? 0).toLocaleString()} goal.`
+
+  const top = ((actions ?? []) as Array<{ action_title: string; estimated_gci_impact_cents: number | null }>).slice(0, 3)
+  const actionLine = top.length === 0
+    ? " No open recommended actions this week."
+    : ` This week's top ${top.length === 1 ? "action" : "actions"}: ${top.map((a, i) => {
+        const impact = dollars(a.estimated_gci_impact_cents)
+        return `${top.length > 1 ? `${i + 1}. ` : ""}${a.action_title}${impact ? ` (worth about $${impact.toLocaleString()})` : ""}`
+      }).join(". ")}.`
+
+  return {
+    success: true,
+    snapshot: {
+      analysis_date: s.analysis_date,
+      ytd_gci_cents: s.ytd_gci_cents,
+      annual_goal_cents: s.annual_goal_cents,
+      projected_year_end_cents: s.projected_year_end_cents,
+      gap_to_goal_cents: s.gap_to_goal_cents,
+      gap_to_goal_pct: s.gap_to_goal_pct,
+    },
+    actions: actions ?? [],
+    spoken_summary: `${gapLine}${actionLine}`,
+  }
+}
+
+// ─── book_studio_session (voice) — round-36 phantom closure ──────────────────
+// Canonical home: lib/voice/studio-session.voiceStudioSession — the GATED
+// content-calendar batch (planStudioSession → commissionStudioSession → the
+// Video Director's commissionVideo per reel, each landing at pending_review;
+// the Director's Fair-Housing/compliance gate runs per reel; nothing
+// auto-publishes). Idempotent per session key.
+
+async function bookStudioSession(
+  params: Record<string, unknown>,
+  session: SessionRow,
+  supabase: ReturnType<typeof createServiceClient>,
+) {
+  const transcript = String(params.transcript ?? params.command ?? params.duration ?? "a week of content").trim()
+  const { voiceStudioSession } = await import("@/lib/voice/studio-session")
+  const r = await voiceStudioSession({
+    brokerageId: session.brokerage_id,
+    agentUserId: session.user_id,
+    transcript,
+  }, supabase)
+  return {
+    success: r.ok,
+    stage: r.stage,
+    session_id: r.sessionId ?? null,
+    commissioned: r.commissioned ?? 0,
+    skipped: r.skipped ?? 0,
+    spoken_summary: r.spoken,
   }
 }
 

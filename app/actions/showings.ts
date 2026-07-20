@@ -32,9 +32,22 @@ export async function requestShowing(data: {
   savedPropertyId?: string
   preferredDates: { date: string; time: string }[]
   clientNotes?: string
-}) {
+},
+/**
+ * Sessionless-caller overload (voice webhook): a caller-verified client runs
+ * the SAME insert + notification chain (the BBA gate below uses its own
+ * service client and fires regardless of lane — never bypassed). The cookie
+ * client stays the default, so every existing caller (buyer portal, agent
+ * dashboard) is untouched. A browser cannot spoof this param — a forged
+ * plain-object client has no working .from and the call fails closed.
+ */
+caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: string | null },
+) {
   try {
-    const supabase = await createClient()
+    if (caller && typeof caller.client?.from !== "function") {
+      return { success: false, error: "Invalid caller client" }
+    }
+    const supabase: any = caller ? caller.client : await createClient()
 
     // Resolve brokerage_id from the contact (NOT from the auth user — when
     // requestShowing fires from the buyer portal, the auth user is the
@@ -46,7 +59,11 @@ export async function requestShowing(data: {
       .eq("id", data.contactId)
       .maybeSingle()
     const brokerageId: string | null = contactBrokerage?.brokerage_id ?? null
-    const { data: { user } } = await supabase.auth.getUser()
+    // The auth user id feeds only the assigned-agent fallback below; on the
+    // sessionless caller lane it comes from the caller's verified actor.
+    const authUserId: string | null = caller
+      ? (caller.actorUserId ?? null)
+      : ((await (supabase as Awaited<ReturnType<typeof createClient>>).auth.getUser()).data.user?.id ?? null)
 
     // ── NAR 2024 Settlement: BBA gate ──────────────────────────────────────
     // Before scheduling a showing, the buyer must have a signed Buyer Broker
@@ -139,7 +156,7 @@ export async function requestShowing(data: {
         .eq("id", data.contactId)
         .maybeSingle()
 
-      const assignedAgentId = contact?.agent_id ?? (user?.id ?? null)
+      const assignedAgentId = contact?.agent_id ?? authUserId
 
       if (assignedAgentId) {
         await supabase.from("activities").insert({

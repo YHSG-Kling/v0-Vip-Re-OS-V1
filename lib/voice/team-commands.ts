@@ -32,7 +32,7 @@ export interface TeamCommandResult {
 // Command-name catalog + isTeamCommand live in a PURE module so client/test code can import them
 // without this server-only file; re-exported here so existing importers of team-commands keep working.
 export {
-  TEAM_QUERY_COMMANDS, TEAM_ACTION_COMMANDS, BUYER_COMMANDS, TEAM_COMMANDS, isTeamCommand,
+  TEAM_QUERY_COMMANDS, TEAM_ACTION_COMMANDS, BUYER_COMMANDS, BROKER_COMMANDS, TEAM_COMMANDS, isTeamCommand,
 } from "./team-command-names"
 
 /** Speak a price the way a person would say it ("$1.2 million" / "$450 thousand"). */
@@ -269,14 +269,114 @@ async function routeTeamCommand(
       // (acceptOfferConditionally — compliance gate absolute, transaction via the canonical
       // bridge), SAME guard as the approvals queue (tenant + agent scope + inbound-only +
       // not-a-counter + still-open). A compliance HOLD is spoken back honestly, never
-      // silently accepted. Reject/counter/withdraw are NOT wired — their kernel commands
-      // are session-client-bound (see lib/voice/command-coverage.ts).
+      // silently accepted.
       const { voiceAcceptOffer } = await import("@/lib/voice/deal-decision")
       const r = await voiceAcceptOffer({
         brokerageId: ctx.brokerageId,
         actorUserId: ctx.agentUserId,
         offerId: params.offer_id ? String(params.offer_id) : null,
         query: String(params.query ?? params.person_query ?? params.address_query ?? "").trim() || null,
+      }, svc)
+      return { ok: r.ok, spoken: r.spoken, data: r.data }
+    }
+
+    // ── Round 36 — the rest of the deal-decision family. Each rides the SAME kernel
+    //    transition the click path calls (lib/kernel/offers.ts, client-param overload)
+    //    behind the SAME mirrored guard as accept (lib/voice/deal-decision.ts). ──
+    case "reject_offer": {
+      const { voiceRejectOffer } = await import("@/lib/voice/deal-decision")
+      const r = await voiceRejectOffer({
+        brokerageId: ctx.brokerageId,
+        actorUserId: ctx.agentUserId,
+        offerId: params.offer_id ? String(params.offer_id) : null,
+        query: String(params.query ?? params.person_query ?? params.address_query ?? "").trim() || null,
+        reason: params.reason ? String(params.reason) : null,
+      }, svc)
+      return { ok: r.ok, spoken: r.spoken, data: r.data }
+    }
+    case "counter_offer": {
+      const { voiceCounterOffer } = await import("@/lib/voice/deal-decision")
+      const { parseSpokenPrice } = await import("@/lib/voice/spoken-values")
+      const counterPrice = params.counter_price != null
+        ? parseSpokenPrice(params.counter_price as string | number)
+        : params.price != null ? parseSpokenPrice(params.price as string | number) : null
+      const r = await voiceCounterOffer({
+        brokerageId: ctx.brokerageId,
+        actorUserId: ctx.agentUserId,
+        offerId: params.offer_id ? String(params.offer_id) : null,
+        query: String(params.query ?? params.person_query ?? params.address_query ?? "").trim() || null,
+        counterPrice,
+        notes: params.notes ? String(params.notes) : null,
+      }, svc)
+      return { ok: r.ok, spoken: r.spoken, data: r.data }
+    }
+    case "withdraw_offer": {
+      const { voiceWithdrawOffer } = await import("@/lib/voice/deal-decision")
+      const r = await voiceWithdrawOffer({
+        brokerageId: ctx.brokerageId,
+        actorUserId: ctx.agentUserId,
+        offerId: params.offer_id ? String(params.offer_id) : null,
+        query: String(params.query ?? params.person_query ?? params.address_query ?? "").trim() || null,
+        reason: params.reason ? String(params.reason) : null,
+      }, svc)
+      return { ok: r.ok, spoken: r.spoken, data: r.data }
+    }
+
+    case "stage_showing": {
+      // "Schedule a showing for Maria at 44 Birch on Saturday at 2" — the canonical
+      // BBA-gated requestShowing via its sessionless-caller overload; ownership +
+      // tenant checks in the backend, the NAR BBA gate inside the action, fails closed.
+      const { voiceRequestShowing } = await import("@/lib/voice/showing-request")
+      const r = await voiceRequestShowing({
+        brokerageId: ctx.brokerageId,
+        actorUserId: ctx.agentUserId,
+        contactId: params.contact_id ? String(params.contact_id) : null,
+        personQuery: String(params.person_query ?? params.query ?? "").trim() || null,
+        propertyAddress: String(params.address_query ?? params.property_address ?? "").trim() || null,
+        listingId: params.listing_id ? String(params.listing_id) : null,
+        dateText: params.date_text ? String(params.date_text) : params.date ? String(params.date) : null,
+        timeText: params.time_text ? String(params.time_text) : params.time ? String(params.time) : null,
+        notes: params.notes ? String(params.notes) : null,
+      }, svc)
+      return { ok: r.ok, spoken: r.spoken, data: r.data }
+    }
+
+    // ── Round 36 broker lane — principal/manager-gated backends; each re-checks its
+    //    role guard server-side AND the canonical action re-runs its own gate. ──
+    case "promote_lead": {
+      // LEADS POLICY (round 33): brokerage principals + platform only — never
+      // agent-speakable. The backend refuses non-broker roles before touching data.
+      const { voicePromoteLead } = await import("@/lib/voice/broker-commands")
+      const r = await voicePromoteLead({
+        brokerageId: ctx.brokerageId,
+        actorUserId: ctx.agentUserId,
+        rawRecordId: params.raw_record_id ? String(params.raw_record_id) : null,
+        nameQuery: String(params.name_query ?? params.person_query ?? params.query ?? "").trim() || null,
+      }, svc)
+      return { ok: r.ok, spoken: r.spoken, data: r.data }
+    }
+    case "reassign_contact": {
+      const { voiceReassignContact } = await import("@/lib/voice/broker-commands")
+      const r = await voiceReassignContact({
+        brokerageId: ctx.brokerageId,
+        actorUserId: ctx.agentUserId,
+        contactId: params.contact_id ? String(params.contact_id) : null,
+        personQuery: String(params.person_query ?? params.query ?? "").trim() || null,
+        toAgentId: params.to_agent_id ? String(params.to_agent_id) : null,
+        toAgentQuery: String(params.to_agent_query ?? params.to_agent ?? "").trim() || null,
+      }, svc)
+      return { ok: r.ok, spoken: r.spoken, data: r.data }
+    }
+    case "broadcast_announcement": {
+      // IN-APP ONLY by construction — the canonical action writes notifications rows
+      // (channel "in_app") and never touches email/SMS; no egress from this lane.
+      const { voiceBroadcastAnnouncement } = await import("@/lib/voice/broker-commands")
+      const r = await voiceBroadcastAnnouncement({
+        brokerageId: ctx.brokerageId,
+        actorUserId: ctx.agentUserId,
+        message: String(params.message ?? params.body ?? "").trim() || null,
+        subject: params.subject ? String(params.subject) : null,
+        priority: params.priority === "high" || params.priority === "low" ? params.priority : null,
       }, svc)
       return { ok: r.ok, spoken: r.spoken, data: r.data }
     }

@@ -15,6 +15,7 @@
  *  - Returns { success: boolean; error?: string; data?: T } — never throws.
  */
 
+import type { SupabaseClient }   from "@supabase/supabase-js"
 import { createClient }          from "@/lib/supabase/server"
 import { createServiceClient }   from "@/lib/supabase/service"
 import { KernelEvent }           from "@/lib/kernel/events"
@@ -373,11 +374,14 @@ export async function issueCounterOffer(params: {
   contingencies?:  string[]
   possessionTerms?: string
   notes?:          string
-}): Promise<KernelOfferResult<{ counterId: string; round: number }>> {
+}, client?: SupabaseClient): Promise<KernelOfferResult<{ counterId: string; round: number }>> {
   const { offerId, agentId, brokerageId, counterPrice, closingDate, contingencies, possessionTerms, notes } = params
   if (!isValidUUID(offerId)) return { success: false, error: "Invalid offer ID" }
 
-  const supabase = await createClient()
+  // client-param overload: a caller-supplied client (e.g. the sessionless voice
+  // webhook's service client, AFTER its own guard) runs the SAME transition;
+  // every existing caller keeps the auth-cookie client + RLS unchanged.
+  const supabase = client ?? await createClient()
 
   const { data: offer } = await supabase
     .from("offers")
@@ -483,11 +487,12 @@ export async function acceptOffer(params: {
   offerId:     string
   agentId:     string
   brokerageId: string
-}): Promise<KernelOfferResult<{ offerId: string }>> {
+}, client?: SupabaseClient): Promise<KernelOfferResult<{ offerId: string }>> {
   const { offerId, agentId, brokerageId } = params
   if (!isValidUUID(offerId)) return { success: false, error: "Invalid offer ID" }
 
-  const supabase = await createClient()
+  // client-param overload (see issueCounterOffer) — default stays the cookie client.
+  const supabase = client ?? await createClient()
 
   const { data: offer } = await supabase
     .from("offers")
@@ -554,11 +559,12 @@ export async function rejectOffer(params: {
   agentId:     string
   brokerageId: string
   reason?:     string
-}): Promise<KernelOfferResult<{ offerId: string }>> {
+}, client?: SupabaseClient): Promise<KernelOfferResult<{ offerId: string }>> {
   const { offerId, agentId, brokerageId, reason } = params
   if (!isValidUUID(offerId)) return { success: false, error: "Invalid offer ID" }
 
-  const supabase = await createClient()
+  // client-param overload (see issueCounterOffer) — default stays the cookie client.
+  const supabase = client ?? await createClient()
 
   const { error } = await supabase
     .from("offers")
@@ -591,11 +597,12 @@ export async function withdrawOffer(params: {
   agentId:     string
   brokerageId: string
   reason?:     string
-}): Promise<KernelOfferResult<{ offerId: string }>> {
+}, client?: SupabaseClient): Promise<KernelOfferResult<{ offerId: string }>> {
   const { offerId, agentId, brokerageId, reason } = params
   if (!isValidUUID(offerId)) return { success: false, error: "Invalid offer ID" }
 
-  const supabase = await createClient()
+  // client-param overload (see issueCounterOffer) — default stays the cookie client.
+  const supabase = client ?? await createClient()
 
   const { error } = await supabase
     .from("offers")
