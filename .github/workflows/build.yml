@@ -1,0 +1,48 @@
+# The production BUILD GATE — the check that was missing.
+#
+# The guards workflow runs typecheck + the simulator chain, and e2e runs the
+# lifecycle harness, but nothing ran `next build` — so a compile-only failure
+# (RSC/client-boundary violation, invalid route-segment config, a page that
+# throws during static generation) would only ever surface at deploy time on
+# Vercel. This workflow makes `next build` a first-class PR gate.
+#
+# Env: placeholder, non-secret values so module factories that throw on a
+# genuinely-missing var (the Supabase clients) don't false-fail static
+# generation. The build validates COMPILE + BOUNDARIES + PRERENDER — the layer
+# tsc can't see. Real credentials are never needed to prove the app builds.
+name: build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  next-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      NODE_OPTIONS: "--max-old-space-size=6144"
+      # Placeholder build-time env — presence, not real secrets. Overridden by
+      # repository/environment secrets when those are configured.
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co' }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiJ9.placeholder.placeholder' }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://placeholder.supabase.co' }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiJ9.placeholder.placeholder' }}
+      NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL || 'https://app.example.com' }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET || 'placeholder-cron-secret' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - name: Install dependencies
+        run: npm ci
+      - name: Production build (next build)
+        run: npm run build
