@@ -11,8 +11,9 @@
 //    ISA assignment begins only after RAW_RECORD_PROMOTED fires.
 // 3. Direct-contact consented intake (forms, QR, business cards) does NOT
 //    enter this path. It uses lib/kernel/crm.ts createContactManually().
-// 4. Dedup checks both `leads` and `contacts` tables. Never overwrite a real
-//    contact record without a higher enrichment_confidence.
+// 4. Dedup checks THREE tables (owner canonical): `raw_scraped_leads`, `leads`
+//    and `contacts`. Never overwrite a real contact record without a higher
+//    enrichment_confidence.
 // 5. All source attribution fields (source, source_family, source_channel,
 //    source_subtype) are set at ingest time and never mutated downstream.
 // 6. cron_execution_logs are written by runScrapeSourcesChronologically()
@@ -23,6 +24,7 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
 import { recordMatchesTerritory } from '@/lib/lead-pipeline/source-intent-map'
+import { resolveScrapeTerritoriesFrom } from '@/lib/lead-pipeline/scrape-territories'
 import type { NormalizedScrapedRecord } from '@/lib/lead-pipeline/raw-record-types'
 import {
   isViableRecord,
@@ -110,7 +112,7 @@ export interface DedupRawParams {
 
 export interface DedupResult {
   isDuplicate: boolean
-  matchType: 'lead' | 'contact' | null
+  matchType: 'lead' | 'contact' | 'raw' | null
   matchId: string | null
   matchScore: number
   enrichmentConfidenceExisting: number | null
@@ -294,6 +296,13 @@ export async function runScrapeSourcesChronologically(
   }
 
   try {
+    // SHARED PRE-SCRAPE TERRITORY RESOLVER (canonical): only territories owned
+    // by an ACTIVE-subscription tenant may be scraped. Load the live
+    // subscription roster once; the pure resolver filters the market work-list.
+    const { data: subs } = await supabase
+      .from('subscriptions')
+      .select('brokerage_id, status')
+
     // Load active markets ordered by priority — this is the "chronological source order"
     let query = supabase
       .from('lead_scraping_markets')
@@ -311,10 +320,18 @@ export async function runScrapeSourcesChronologically(
       query = query.eq('brokerage_id', params.brokerageId)
     }
 
-    const { data: markets, error: marketsError } = await query
-    if (marketsError || !markets) {
+    const { data: allMarkets, error: marketsError } = await query
+    if (marketsError || !allMarkets) {
       throw new Error(`Failed to load active markets: ${marketsError?.message}`)
     }
+
+    // HONEST NO-OP: no active subscribers / no active-subscriber territories →
+    // scrape NOTHING (never fall back to global geography); reason is recorded.
+    const resolution = resolveScrapeTerritoriesFrom(
+      (subs ?? []) as Array<{ brokerage_id: string | null; status: string | null }>,
+      (allMarkets ?? []) as any[],
+    )
+    const markets = resolution.territories
 
     // Write SCRAPING_CRON_STARTED lifecycle event
     await supabase.from('lifecycle_events').insert({
@@ -322,9 +339,13 @@ export async function runScrapeSourcesChronologically(
       entity_id:   cronLogId ?? '00000000-0000-0000-0000-000000000000',
       event_type:  KernelEvent.SCRAPING_CRON_STARTED,
       brokerage_id: params.brokerageId ?? null,
-      metadata:    { markets_count: markets.length, dry_run: params.dryRun ?? false },
+      metadata:    { markets_count: markets.length, dry_run: params.dryRun ?? false, territory_no_op_reason: resolution.noOp ? resolution.reason : null },
       created_at:  new Date().toISOString(),
     })
+
+    if (resolution.noOp) {
+      result.errors.push(`Territory resolver no-op: ${resolution.reason}`)
+    }
 
     for (const market of markets) {
       // Budget gate — skip territory if monthly budget exhausted
@@ -641,7 +662,8 @@ function deriveSourceFamily(source: string): string {
 }
 
 // ─── 4. dedupRawAgainstLeadAndContact ────────────────────────────────────────
-// Checks both leads and contacts for a fuzzy match on email/phone/name.
+// THREE-TABLE dedup (owner canonical): raw_scraped_leads AND leads AND contacts,
+// matched on exact email/phone (+ exact-name fallback for leads).
 // Must not overwrite a real contact unless new confidence is >10% higher.
 // Returns DedupResult — never throws.
 
@@ -728,6 +750,48 @@ export async function dedupRawAgainstLeadAndContact(
       }
     }
 
+    // Check raw_scraped_leads (third canonical table) by exact email/phone —
+    // the same person scraped twice must not be enriched/promoted twice.
+    // Deterministic older-wins rule: only a row created BEFORE this one (or one
+    // already promoted — which resolves to its lead) owns the identity.
+    if (params.email || params.phone) {
+      const { data: self } = await supabase
+        .from('raw_scraped_leads')
+        .select('created_at')
+        .eq('id', params.rawRecordId)
+        .maybeSingle()
+      const selfCreatedAt = (self as any)?.created_at ?? null
+
+      const identityFilters = [
+        ...(params.email ? [`email.eq.${params.email}`] : []),
+        ...(params.phone ? [`phone.eq.${params.phone}`] : []),
+      ].join(',')
+      const { data: rawCandidates } = await supabase
+        .from('raw_scraped_leads')
+        .select('id, lead_id, processing_status, created_at')
+        .or(identityFilters)
+        .neq('id', params.rawRecordId)
+        .limit(25)
+
+      const owner = ((rawCandidates ?? []) as any[]).find((r) =>
+        r.processing_status === 'promoted' || r.lead_id ||
+        (selfCreatedAt && r.created_at && r.created_at < selfCreatedAt),
+      )
+      if (owner) {
+        const matchType = owner.lead_id ? 'lead' as const : 'raw' as const
+        const matchId = owner.lead_id ?? owner.id
+        await logDedupDecision(supabase, params, matchType, matchId, 1.0, 'raw_identity_match')
+        return {
+          isDuplicate: true,
+          matchType,
+          matchId,
+          matchScore: 1.0,
+          enrichmentConfidenceExisting: null,
+          shouldMerge: false,
+        }
+      }
+    }
+
     // Name + location fuzzy match against leads
     if (params.firstName && params.lastName) {
       const { data: leads } = await supabase
@@ -762,7 +826,7 @@ export async function dedupRawAgainstLeadAndContact(
 async function logDedupDecision(
   supabase: ReturnType<typeof createServiceClient>,
   params: DedupRawParams,
-  matchType: 'lead' | 'contact',
+  matchType: 'lead' | 'contact' | 'raw',
   matchId: string,
   matchScore: number,
   reason: string,

@@ -87,15 +87,16 @@ export async function evaluatePromotionEligibility(
     }
   }
 
-  // 4. Canonical identity gate — shared helper used by BOTH lead-creation paths so they can never
-  //    drift apart. Requires full name + (email OR phone) + mailing_address_verified.
+  // 4. Canonical eligibility gate — shared helper used by BOTH lead-creation paths so they can
+  //    never drift apart. Owner canonical rule: at least an email address AND/OR a mailing address.
   const { evaluateCanonicalLeadEligibility } = await import("@/lib/lead-pipeline/canonical-lead-eligibility")
   const rawData = rawRecord.raw_data || {}
   const eligibility = evaluateCanonicalLeadEligibility({
     first_name:               rawData.first_name,
     last_name:                rawData.last_name,
-    email:                    rawData.email,
-    phone:                    rawData.phone,
+    email:                    rawRecord.email ?? rawData.email,
+    phone:                    rawRecord.phone ?? rawData.phone,
+    mailing_address:          rawRecord.mailing_address ?? rawData.mailing_address ?? null,
     mailing_address_verified: rawRecord.mailing_address_verified ?? rawData.mailing_address_verified ?? false,
   })
   if (!eligibility.eligible) {

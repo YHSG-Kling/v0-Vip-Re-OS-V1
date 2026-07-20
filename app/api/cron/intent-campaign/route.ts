@@ -5,6 +5,7 @@ import {
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { runIntentCampaign } from "@/lib/kernel/intent-campaign"
+import { activeSubscriberBrokerageIds } from "@/lib/lead-pipeline/subscription-gate"
 
 export async function GET(req: NextRequest) {
   const unauth = verifyCronAuth(req)
@@ -17,9 +18,20 @@ export async function GET(req: NextRequest) {
   const errors: string[] = []
   const agg: Record<string, number> = {}
   try {
+    // ACTIVE-TENANT GATE (owner canonical): this campaign scrapes BatchData
+    // motivated-seller counts + Exa buyer intent per market — only tenants with
+    // a live (active/trialing) subscription may be scraped for. Churned/past_due
+    // tenants are skipped; no tenants → honest no-op.
+    const { data: subs } = await supabase.from("subscriptions").select("brokerage_id, status")
+    const activeIds = activeSubscriberBrokerageIds((subs ?? []) as Array<{ brokerage_id: string | null; status: string | null }>)
     const { data: rows, error } = await supabase.from("brokerages").select("id").limit(500)
     if (error) throw error
-    for (const b of (rows ?? []) as Array<{ id: string }>) {
+    const activeRows = ((rows ?? []) as Array<{ id: string }>).filter((b) => activeIds.has(b.id))
+    if (activeRows.length === 0) {
+      await recordCronSuccessAction({ context_id: contextId, records_processed: 0, metadata: { no_op_reason: "no_active_subscribers" } }).catch(() => {})
+      return NextResponse.json({ ok: true, no_op_reason: "no_active_subscribers" })
+    }
+    for (const b of activeRows) {
       try {
         const r = await runIntentCampaign(b.id, {}, supabase) as unknown as Record<string, unknown>
         for (const [k, v] of Object.entries(r)) if (typeof v === "number") agg[k] = (agg[k] ?? 0) + v

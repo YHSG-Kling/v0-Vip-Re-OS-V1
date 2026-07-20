@@ -253,6 +253,8 @@ export function normalizeLinkedInPost(post: Record<string, any>, market: SocialM
 
 export async function sourceLinkedInRelocation(market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
   const where = [market.city, market.state].filter(Boolean).join(" ")
+  // Territory honesty: no territory geography → no scrape (never a global sweep).
+  if (!where) return { records: [], cost: 0 }
   const r = await scrapeLinkedInPosts({
     keywords: ["excited to announce", "starting a new role", "relocating to", "moving to"].map((k) => `${k} ${where}`.trim()),
     location: where || undefined,

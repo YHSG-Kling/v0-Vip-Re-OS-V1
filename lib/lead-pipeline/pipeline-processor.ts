@@ -239,11 +239,14 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     }
   }
 
-  // ── Pre-enrichment deduplication ────────────────────────────────────────────
+  // ── Pre-enrichment deduplication — THREE tables (canonical, owner round 38):
+  // raw_scraped_leads AND leads AND contacts. Same identity resolution
+  // (calculateFuzzyMatch email/phone/name normalization) across all three.
   await setStatus(supabase, rawRecordId, 'queued_for_enrichment')
 
+  const dedupScope = { excludeRawId: rawRecordId, rawCreatedAt: (rawRecord as { created_at?: string | null }).created_at ?? null, marketId: rec.market_id }
   const preEnrichLookup = { first_name: firstName, last_name: lastName, email, phone }
-  const preEnrichDuplicate = await findBestMatch(preEnrichLookup, 'pre_enrichment', effectiveBrokerageId, supabase)
+  const preEnrichDuplicate = await findBestMatch(preEnrichLookup, 'pre_enrichment', effectiveBrokerageId, supabase, dedupScope)
 
   if (preEnrichDuplicate) {
     await setStatus(supabase, rawRecordId, 'duplicate_pre_enrich')
@@ -253,7 +256,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       duplicate_of_contact_id:   preEnrichDuplicate.type === 'contact' ? preEnrichDuplicate.id : null,
       stage:                     'pre_enrichment',
       match_score:               preEnrichDuplicate.score,
-      match_details:             preEnrichDuplicate.details,
+      match_details:             { ...preEnrichDuplicate.details, match_table: preEnrichDuplicate.type, ...(preEnrichDuplicate.type === 'raw' ? { duplicate_of_raw_id: preEnrichDuplicate.id } : {}) },
       action_taken:              'skipped',
       skip_reason:               'Pre-enrichment duplicate found',
       old_enrichment_confidence: preEnrichDuplicate.enrichment_confidence,
@@ -272,8 +275,31 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
 
   const enriched = await enrichWithPeopleData({ first_name: firstName, last_name: lastName, email, phone, city, state, brokerageId: effectiveBrokerageId })
 
-  // ── Post-enrichment deduplication ───────────────────────────────────────────
-  const postEnrichDuplicate = await findBestMatch(enriched, 'post_enrichment', effectiveBrokerageId, supabase)
+  // ── Post-enrichment deduplication — same THREE tables as the pre-enrich pass
+  // (raw_scraped_leads + leads + contacts), now with enrichment-filled identity.
+  const postEnrichDuplicate = await findBestMatch(enriched, 'post_enrichment', effectiveBrokerageId, supabase, dedupScope)
+
+  if (postEnrichDuplicate && postEnrichDuplicate.type === 'raw') {
+    // Duplicate of another (older / already-promoted) RAW record that hasn't
+    // become a lead/contact yet — skip this row; the earlier raw row owns the
+    // identity and will promote (or already failed a gate honestly).
+    await setStatus(supabase, rawRecordId, 'duplicate_post_enrich')
+    await logDeduplication({
+      raw_record_id:             rawRecordId,
+      stage:                     'post_enrichment',
+      match_score:               postEnrichDuplicate.score,
+      match_details:             { ...postEnrichDuplicate.details, match_table: 'raw', duplicate_of_raw_id: postEnrichDuplicate.id },
+      action_taken:              'skipped',
+      skip_reason:               'Post-enrichment duplicate of an earlier raw record',
+      new_enrichment_confidence: enriched.enrichmentConfidence,
+    }, supabase)
+    return {
+      success: false,
+      action: 'skipped',
+      reason: 'Post-enrichment duplicate of an earlier raw record',
+      stage: 'post_enrichment_dedup',
+    }
+  }
 
   if (postEnrichDuplicate) {
     const oldConfidence = postEnrichDuplicate.enrichment_confidence ?? 0
@@ -359,21 +385,31 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     }
   }
 
-  // ── STEP 4B: Promotion identity gate (CANONICAL — shared with lead-promoter) ─
-  // Business rule: promote to an unconsented lead only when full name + (email OR phone) +
-  // mailing_address_verified all hold. Single source of truth in canonical-lead-eligibility so the
-  // two historical paths can never drift apart.
+  // ── STEP 4B: Promotion eligibility gate (CANONICAL — shared with lead-promoter) ─
+  // Owner's canonical rule (round 38): after enrichment + second dedup, promote when the
+  // record carries at least an EMAIL ADDRESS and/or a MAILING ADDRESS. Single source of
+  // truth in canonical-lead-eligibility so the two historical paths can never drift apart.
   const { evaluateCanonicalLeadEligibility } =
     await import("@/lib/lead-pipeline/canonical-lead-eligibility")
   const rawAddrVerified = (rawRecord as any)?.mailing_address_verified
                         ?? (rawRecord.raw_data as any)?.mailing_address_verified
                         ?? false
+  // Resolution order for the mailing address (same chain the lead insert uses):
+  // enrichment result → raw first-class column → preview/raw_data jsonb.
+  const resolvedMailingAddress =
+    (enriched as any).mailing_address
+    ?? rec.mailing_address
+    ?? rec.normalized_preview?.mailingAddress
+    ?? (rec.raw_data as any)?.mailing_address
+    ?? null
+  const resolvedMailingVerified = !!((enriched as any).mailing_address_verified ?? rawAddrVerified)
   const promoEligibility = evaluateCanonicalLeadEligibility({
     first_name:               enriched.first_name ?? firstName,
     last_name:                enriched.last_name  ?? lastName,
     email:                    enriched.email,
     phone:                    enriched.phone ?? phone,
-    mailing_address_verified: (enriched as any).mailing_address_verified ?? rawAddrVerified,
+    mailing_address:          resolvedMailingAddress,
+    mailing_address_verified: resolvedMailingVerified,
   })
   if (!promoEligibility.eligible) {
     await setStatus(supabase, rawRecordId, 'insufficient_identity_for_promotion')
@@ -453,16 +489,17 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       lifecycle_state:       'unconsented',
       ai_isa_owner:          true,
       minimum_viable_for_isa: !!(enriched.email),
-      // Canonical eligibility just passed, so the address is verified on this row. email_verified
-      // propagates whatever the enrichment determined (PeopleData / verification step); when false
-      // the ISA email channel is blocked until a verification step lifts it.
-      mailing_address_verified: true,
+      // HONEST flag: eligibility can now pass on email alone (owner canonical rule), so the
+      // verified flag carries what enrichment/raw actually determined — never a blanket true.
+      // email_verified propagates whatever the enrichment determined (PeopleData / verification
+      // step); when false the ISA email channel is blocked until a verification step lifts it.
+      mailing_address_verified: resolvedMailingVerified,
       // Propagate the actual address (not just the flag) so the AI-ISA direct_mail channel has
       // something to send to — the resolver requires `lead.mailing_address && verified`.
       // Resolution order for every mailing field: enrichment result → raw first-class
       // column → preview/raw_data jsonb. The raw layer keeps mailing_* as first-class
       // columns, so they must be in the fallback chain or the breakdown is silently lost.
-      mailing_address:       (enriched as any).mailing_address        ?? rec.mailing_address        ?? rec.normalized_preview?.mailingAddress ?? (rec.raw_data as any)?.mailing_address        ?? null,
+      mailing_address:       resolvedMailingAddress,
       mailing_address_source:(enriched as any).mailing_address_source ?? rec.mailing_address_source ?? (rec.raw_data as any)?.mailing_address_source ?? null,
       // Carry the FULL address fidelity into leads (was dropping these → enrichment looked
       // incomplete and they never reached the contact): physical address + mailing breakdown.
@@ -616,13 +653,27 @@ async function enrichWithPeopleData(fields: {
 }
 
 // ─── Deduplication matching ───────────────────────────────────────────────────
+// CANONICAL THREE-TABLE DEDUP (owner round 38): every pass checks
+// raw_scraped_leads AND leads AND contacts with the same identity resolution
+// (calculateFuzzyMatch — normalized email/phone/name). Both the pre-enrich and
+// post-enrich passes call this one function so the table set can never drift.
+
+interface DedupScope {
+  /** The raw record being processed — never match it against itself. */
+  excludeRawId?: string | null
+  /** Deterministic older-wins rule: only raw rows created BEFORE this row (or
+   *  already promoted) count as the duplicate owner. */
+  rawCreatedAt?: string | null
+  marketId?: string | null
+}
 
 async function findBestMatch(
   record: { first_name?: string | null; last_name?: string | null; email?: string | null; phone?: string | null },
   _stage: string,
   brokerageId: string,
   supabase: Awaited<ReturnType<typeof createClient>>,
-): Promise<{ id: string; type: 'lead' | 'contact'; score: number; details: any; enrichment_confidence: number | null; email?: string; phone?: string } | null> {
+  scope?: DedupScope,
+): Promise<{ id: string; type: 'lead' | 'contact' | 'raw'; score: number; details: any; enrichment_confidence: number | null; email?: string; phone?: string } | null> {
 
   // Dedup must never reach across tenants: a brokerage's incoming lead can only
   // match its own existing leads/contacts. Without this filter a fuzzy match
@@ -636,12 +687,58 @@ async function findBestMatch(
   const { data: contacts } = await supabase
     .from('contacts')
     .select('id, first_name, last_name, email, phone')
-    .eq('brokerage_id', brokerageId)
     .is('deleted_at', null)
+    .eq('brokerage_id', brokerageId)
+
+  // RAW-vs-RAW dedup: the same person scraped twice (different sources, or a
+  // re-scrape) must not be enriched/promoted twice. Raw rows are platform-owned
+  // (brokerage_id NULL) until promotion, so tenant scoping goes through the
+  // markets this brokerage owns (market_id → lead_scraping_markets.brokerage_id)
+  // plus any rows already stamped with this brokerage_id. Candidates are
+  // narrowed by exact email/phone (a name-only raw match is never confident) and
+  // confirmed by the same fuzzy matcher as leads/contacts.
+  let rawRows: any[] = []
+  if (record.email?.trim() || record.phone?.trim()) {
+    const { data: brokerageMarkets } = await supabase
+      .from('lead_scraping_markets')
+      .select('id')
+      .eq('brokerage_id', brokerageId)
+    const marketIds = ((brokerageMarkets ?? []) as Array<{ id: string }>).map((m) => m.id)
+
+    const identityFilters = [
+      ...(record.email?.trim() ? [`email.eq.${record.email.trim()}`] : []),
+      ...(record.phone?.trim() ? [`phone.eq.${record.phone.trim()}`] : []),
+    ].join(',')
+    const scopeFilters = [
+      `brokerage_id.eq.${brokerageId}`,
+      ...(marketIds.length > 0 ? [`market_id.in.(${marketIds.join(',')})`] : []),
+    ].join(',')
+
+    const { data: rawCandidates } = await supabase
+      .from('raw_scraped_leads')
+      .select('id, first_name, last_name, email, phone, lead_id, processing_status, created_at')
+      .or(identityFilters)
+      .or(scopeFilters)
+      .limit(25)
+
+    rawRows = ((rawCandidates ?? []) as any[]).filter((r) => {
+      if (scope?.excludeRawId && r.id === scope.excludeRawId) return false
+      // Deterministic older-wins: an earlier row (or one already promoted to a
+      // lead) owns the identity; later rows are the duplicates.
+      if (r.processing_status === 'promoted' || r.lead_id) return true
+      if (!scope?.rawCreatedAt || !r.created_at) return false
+      return r.created_at < scope.rawCreatedAt
+    })
+  }
 
   const allRecords = [
     ...(leads    || []).map((l: any) => ({ ...l, type: 'lead'    as const })),
     ...(contacts || []).map((c: any) => ({ ...c, type: 'contact' as const, enrichment_confidence: null })),
+    // A raw duplicate that already promoted resolves to ITS LEAD (merge target);
+    // an unpromoted older raw row surfaces as type 'raw' (skip, no merge target).
+    ...rawRows.map((r: any) => r.lead_id
+      ? { ...r, id: r.lead_id, type: 'lead' as const, enrichment_confidence: null }
+      : { ...r, type: 'raw' as const, enrichment_confidence: null }),
   ]
 
   let bestMatch: typeof allRecords[0] & { score: number; details: any } | null = null

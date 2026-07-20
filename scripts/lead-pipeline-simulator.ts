@@ -20,6 +20,13 @@
  *             (including on failure). Requires SUPABASE_SERVICE_ROLE_KEY;
  *             skips cleanly without it so the pure layer still runs in CI.
  *
+ *   Layer 4 — THE CANONICAL SCRAPING PRE-PIPELINE (owner, round 38): shared
+ *             pre-scrape territory resolver (active tenants' territories only,
+ *             honest no-op otherwise), sourcer no-op-without-territory, THREE-
+ *             table dedup (raw+leads+contacts) in BOTH passes, enrich between
+ *             the passes, email-and/or-mailing-address eligibility, and the
+ *             deterministic brokerage-pickup rule. Pure + static conformance.
+ *
  * The production promotion path (processRawRecord) wraps these same functions
  * behind the SSR cookie client + the paid PeopleData enrichment call — neither
  * is script-drivable, so Layer 2 drives the identical gate functions directly
@@ -32,6 +39,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { calculateFuzzyMatch } from "../lib/lead-pipeline/fuzzy-matcher"
 import { evaluateCanonicalLeadEligibility } from "../lib/lead-pipeline/canonical-lead-eligibility"
+import { resolveScrapeTerritoriesFrom, territoryUnion } from "../lib/lead-pipeline/scrape-territories"
 import { normalizeBatchDataProperty } from "../lib/external/batchdata-client"
 import {
   recordMatchesTerritory, calculateSourceScore, resolveSourceKey,
@@ -73,15 +81,26 @@ function testFuzzyDedup() {
 }
 
 function testEligibilityGate() {
-  console.log("\n[Layer 1 · promotion gate — evaluateCanonicalLeadEligibility]")
-  check("full identity + verified mailing → eligible",
-    evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "m@x.com", phone: "3055550142", mailing_address_verified: true }).eligible === true)
-  const noName = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "", email: "m@x.com", mailing_address_verified: true })
-  check("missing last name → blocked on name", noName.eligible === false && (noName as any).failing === "name")
-  const noContact = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", mailing_address_verified: true })
-  check("no email/phone → blocked on contact", noContact.eligible === false && (noContact as any).failing === "contact")
-  const noAddr = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "m@x.com", mailing_address_verified: false })
-  check("unverified mailing → blocked on mailing_address", noAddr.eligible === false && (noAddr as any).failing === "mailing_address")
+  console.log("\n[Layer 1 · promotion gate — evaluateCanonicalLeadEligibility (owner canonical: email AND/OR mailing address)]")
+  const full = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "m@x.com", phone: "3055550142", mailing_address: "PO Box 9", mailing_address_verified: true })
+  check("full identity + email + mailing → eligible via BOTH anchors",
+    full.eligible === true && (full as any).via.includes("email") && (full as any).via.includes("mailing_address"))
+  const emailOnly = evaluateCanonicalLeadEligibility({ email: "m@x.com" })
+  check("email ALONE → eligible (name/phone no longer gate promotion)",
+    emailOnly.eligible === true && (emailOnly as any).via.join(",") === "email")
+  const mailingOnly = evaluateCanonicalLeadEligibility({ first_name: "Walter", last_name: "Sobchak", mailing_address: "742 Evergreen Ter, Miami FL 33101" })
+  check("mailing address ALONE → eligible (and/or rule)",
+    mailingOnly.eligible === true && (mailingOnly as any).via.join(",") === "mailing_address")
+  const verifiedFlagOnly = evaluateCanonicalLeadEligibility({ mailing_address_verified: true })
+  check("verified-mailing flag alone counts as a mailing anchor", verifiedFlagOnly.eligible === true)
+  const phoneOnly = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", phone: "3055550142" })
+  check("phone-only (no email, no mailing) → NOT eligible (phone is not an owner anchor)",
+    phoneOnly.eligible === false && (phoneOnly as any).failing === "contact_anchor")
+  const nothing = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez" })
+  check("no anchors → blocked with the honest owner-rule reason",
+    nothing.eligible === false && /email address and\/or a mailing address/i.test((nothing as any).reason))
+  check("whitespace-only email/mailing do not fabricate an anchor",
+    evaluateCanonicalLeadEligibility({ email: "   ", mailing_address: "  " }).eligible === false)
 }
 
 function testBatchDataNormalize() {
@@ -280,6 +299,135 @@ function testVisibilityGates() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// LAYER 4 — THE CANONICAL SCRAPING PRE-PIPELINE (owner, round 38 — verbatim):
+//   "before scrap, checks all active tenants and their territories which are
+//    setup in their settings at onboarding then only scrapes those areas, pulls
+//    in raw leads, then dedup against raw leads, leads and contacts, enriches,
+//    dedups again and if atleast an email address and/or mailing address,
+//    promote to a lead when picks up a brokerage and ai isa starts trying to
+//    qualify."
+// Pure resolver tests + static source conformance + real sourcer no-op checks.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function testScrapeTerritoryResolver() {
+  console.log("\n[Layer 4 · shared pre-scrape territory resolver (active tenants only)]")
+  const subs = [
+    { brokerage_id: "b-active",  status: "active" },
+    { brokerage_id: "b-trial",   status: "trialing" },
+    { brokerage_id: "b-churned", status: "cancelled" },
+    { brokerage_id: "b-pastdue", status: "past_due" },
+  ]
+  const markets = [
+    { brokerage_id: "b-active",  city: "Miami",  state: "FL", zip_codes: ["33133", "33101"], counties: ["Miami-Dade"] },
+    { brokerage_id: "b-trial",   city: "Austin", state: "TX", zip_codes: ["78701", "33133"], counties: null },
+    { brokerage_id: "b-churned", city: "Tampa",  state: "FL", zip_codes: ["33602"], counties: null },
+    { brokerage_id: "b-pastdue", city: "Dallas", state: "TX", zip_codes: ["75201"], counties: null },
+  ]
+  const res = resolveScrapeTerritoriesFrom(subs, markets)
+  check("only ACTIVE tenants' territories survive the resolver", res.noOp === false && res.territories.length === 2)
+  check("churned tenant's territory is never scraped", !res.territories.some((t) => t.brokerage_id === "b-churned"))
+  check("past_due tenant's territory is never scraped", !res.territories.some((t) => t.brokerage_id === "b-pastdue"))
+  check("trialing counts as a live tenant (trials are customers)", res.territories.some((t) => t.brokerage_id === "b-trial"))
+
+  const noSubs = resolveScrapeTerritoriesFrom([{ brokerage_id: "b-churned", status: "cancelled" }], markets)
+  check("no active subscribers → honest no-op (no_active_subscribers), zero territories",
+    noSubs.noOp === true && noSubs.reason === "no_active_subscribers" && noSubs.territories.length === 0)
+  const noTerr = resolveScrapeTerritoriesFrom(subs, [markets[2]])
+  check("active subscribers WITHOUT territories → honest no-op (never scrapes the whole country)",
+    noTerr.noOp === true && noTerr.reason === "no_active_territories" && noTerr.territories.length === 0)
+
+  const union = territoryUnion(res.territories)
+  check("territoryUnion is the DEDUPED union of active territories (zip 33133 once)",
+    union.zipCodes.filter((z) => z === "33133").length === 1 && union.zipCodes.length === 3)
+  check("union spans both tenants' states, none from inactive tenants",
+    union.states.includes("FL") && union.states.includes("TX") && union.cities.includes("miami") && !union.cities.includes("tampa"))
+}
+
+function testScraperTerritoryConformance() {
+  console.log("\n[Layer 4 · every scraper derives its areas from the shared resolver (static conformance)]")
+  const cron = src("app/api/cron/lead-scraping/route.ts")
+  check("lead-scraping cron (ZenRows/BatchData/Apify social/Exa/Tavily/OSINT/recruiting) consumes resolveActiveScrapeTerritories",
+    /resolveActiveScrapeTerritories\(/.test(cron))
+  check("cron no-ops honestly with a stated reason (no inline subscription query, no global fallback)",
+    /no_op_reason/.test(cron) && !/from\("subscriptions"\)/.test(cron))
+  const kernel = src("lib/kernel/scraping.ts")
+  check("kernel scrape orchestrator filters its work-list through the SAME pure resolver",
+    /resolveScrapeTerritoriesFrom\(/.test(kernel) && /no_active_/.test(src("lib/lead-pipeline/scrape-territories.ts")))
+  const resolver = src("lib/lead-pipeline/scrape-territories.ts")
+  check("resolver's active-tenant predicate IS the canonical subscription gate (active/trialing)",
+    /activeSubscriberBrokerageIds/.test(resolver))
+  check("territory source is the onboarding-settings work-list (lead_scraping_markets, is_active)",
+    /lead_scraping_markets/.test(resolver) && /is_active/.test(resolver))
+  check("both raw writers keep the INGEST territory gate (recordMatchesTerritory)",
+    /recordMatchesTerritory\(/.test(cron) && /recordMatchesTerritory\(/.test(kernel))
+  const intentCron = src("app/api/cron/intent-campaign/route.ts")
+  check("intent-campaign cron (BatchData counts + Exa buyer intent) is active-tenant gated with honest no-op",
+    /activeSubscriberBrokerageIds/.test(intentCron) && /no_active_subscribers/.test(intentCron))
+}
+
+async function testSourcersNoOpWithoutTerritory() {
+  console.log("\n[Layer 4 · sourcers no-op without a territory (real functions, $0, no provider call)]")
+  const { sourceExaBuyerIntent }     = await import("../lib/lead-pipeline/exa-sourcer")
+  const { sourceTavilyIntent }       = await import("../lib/lead-pipeline/tavily-sourcer")
+  const { sourceOsintRecords }       = await import("../lib/lead-pipeline/osint-sourcer")
+  const { sourceLinkedInRelocation } = await import("../lib/lead-pipeline/social-sourcer")
+  const empty = { city: null, state: null }
+  const exa = await sourceExaBuyerIntent(empty)
+  check("Exa sourcer: no territory → 0 records, $0 spend", exa.records.length === 0 && exa.cost === 0)
+  const tavily = await sourceTavilyIntent(empty)
+  check("Tavily sourcer: no territory → 0 records, $0 spend", tavily.records.length === 0 && tavily.cost === 0)
+  const osint = await sourceOsintRecords(empty)
+  check("OSINT sourcer: no territory state → 0 records, $0 spend", osint.records.length === 0 && osint.cost === 0)
+  const li = await sourceLinkedInRelocation(empty)
+  check("LinkedIn sourcer: no territory → 0 records, $0 spend (no global sweep)", li.records.length === 0 && li.cost === 0)
+}
+
+function testThreeTableDedupAndPromotionConformance() {
+  console.log("\n[Layer 4 · dedup against raw+leads+contacts, enrich between passes, brokerage pickup]")
+  const pipeline = src("lib/lead-pipeline/pipeline-processor.ts")
+
+  // THREE-TABLE dedup in ONE matcher, run by BOTH passes.
+  const fbm = pipeline.slice(pipeline.indexOf("async function findBestMatch"))
+  check("findBestMatch consults ALL THREE tables (raw_scraped_leads + leads + contacts)",
+    fbm.includes("from('leads')") && fbm.includes("from('contacts')") && fbm.includes("from('raw_scraped_leads')"))
+  check("pre-enrich pass runs the three-table matcher",
+    /findBestMatch\(preEnrichLookup, 'pre_enrichment', effectiveBrokerageId, supabase, dedupScope\)/.test(pipeline))
+  check("post-enrich pass runs the SAME three-table matcher",
+    /findBestMatch\(enriched, 'post_enrichment', effectiveBrokerageId, supabase, dedupScope\)/.test(pipeline))
+  check("raw-vs-raw dedup is deterministic (older-wins, never self-match)",
+    fbm.includes("excludeRawId") && fbm.includes("rawCreatedAt"))
+  const kernel = src("lib/kernel/scraping.ts")
+  check("kernel canonical dedup checks the third table too (raw_identity_match, matchType 'raw')",
+    /raw_identity_match/.test(kernel) && /'lead' \| 'contact' \| 'raw'/.test(kernel))
+
+  // ENRICH BETWEEN THE TWO DEDUP PASSES, provider-gated honestly.
+  const pre  = pipeline.indexOf("findBestMatch(preEnrichLookup")
+  const enr  = pipeline.indexOf("await enrichWithPeopleData(")
+  const post = pipeline.indexOf("findBestMatch(enriched")
+  check("enrichment runs BETWEEN the two dedup passes (pre → enrich → post)", pre > -1 && enr > pre && post > enr)
+  check("enrichment is provider-gated honestly (failure → no fabricated identity; Perplexity gap-fill cost-gated)",
+    /catch\(\(\) => \(\{ data: null \}\)\)/.test(pipeline) && /shouldGapFill/.test(pipeline))
+
+  // CANONICAL ELIGIBILITY (email and/or mailing address) in both promotion paths.
+  check("pipeline delegates promotion to THE canonical eligibility gate, feeding it the mailing address",
+    /evaluateCanonicalLeadEligibility/.test(pipeline) && /mailing_address:\s+resolvedMailingAddress/.test(pipeline))
+  const evaluator = src("lib/lead-promotion/eligibility-evaluator.ts")
+  check("lead-promotion evaluator delegates to the SAME canonical gate (no drift)",
+    /evaluateCanonicalLeadEligibility/.test(evaluator) && /mailing_address:/.test(evaluator))
+  check("promoted lead's mailing_address_verified is HONEST (no blanket true stamp)",
+    !/mailing_address_verified:\s*true\s*,/.test(pipeline) && /mailing_address_verified:\s*resolvedMailingVerified/.test(pipeline))
+
+  // BROKERAGE PICKUP on promotion.
+  check("brokerage pickup: owning brokerage resolves from the scraped market's territory",
+    /marketBrokerageId/.test(pipeline) && /brokerageId \?\? marketBrokerageId/.test(pipeline))
+  check("no territory + no explicit brokerage → honest refusal (unassigned_no_market), never a guess",
+    /unassigned_no_market/.test(pipeline))
+  const dist = src("lib/platform/distribution-engine.ts")
+  check("platform-origin overlap rule is deterministic: zip service-area roster ordered by joined_at, round-robin by prior distribution count",
+    /subscriber_service_areas/.test(dist) && /joined_at/.test(dist) && /%\s*subscriberList\.length/.test(dist))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // LAYER 2 — live DB round-trip (real schema, real gates, full cleanup)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -381,8 +529,8 @@ async function testLivePromotion() {
     // 6. Negative cases against the real gates (no promotion should occur).
     check("real gate: out-of-territory record rejected",
       recordMatchesTerritory({ city: "Tampa", state: "FL", zip: "33602" }, market as any) === false)
-    check("real gate: ineligible candidate (no contact) not promotable",
-      evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", mailing_address_verified: true }).eligible === false)
+    check("real gate: candidate with NO email and NO mailing address not promotable",
+      evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", phone: "3055550142" }).eligible === false)
   } finally {
     // Self-cleanup — reverse order, best-effort, runs even on failure.
     for (const c of [...cleanup].reverse()) {
@@ -404,6 +552,10 @@ async function main() {
   console.log(" Lead pipeline simulator (scrape → enrich → promote → qualify → convert → assign)")
   console.log("══════════════════════════════════════════════════")
   testFuzzyDedup(); testEligibilityGate(); testBatchDataNormalize(); testTerritoryAndScoring()
+  testScrapeTerritoryResolver()
+  testScraperTerritoryConformance()
+  await testSourcersNoOpWithoutTerritory()
+  testThreeTableDedupAndPromotionConformance()
   testNoManualRawToLeadDoor()
   testAutoConvertChainLive()
   await testConversionRefusesUnqualified()

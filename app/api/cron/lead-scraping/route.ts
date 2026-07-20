@@ -22,7 +22,7 @@ import {
   sourceRentalListings,
   sourceLinkedInRelocation,
 } from "@/lib/lead-pipeline/social-sourcer"
-import { activeSubscriberBrokerageIds } from "@/lib/lead-pipeline/subscription-gate"
+import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
 import { sourceOsintRecords } from "@/lib/lead-pipeline/osint-sourcer"
 import { sourceExaBuyerIntent } from "@/lib/lead-pipeline/exa-sourcer"
 import { sourceTavilyIntent } from "@/lib/lead-pipeline/tavily-sourcer"
@@ -104,38 +104,26 @@ export async function GET(request: Request) {
   }
 
   try {
-    // STEP 1.5 — SUBSCRIPTION GATE: only scrape territories owned by brokerages
-    // with an ACTIVE subscription, so we never ingest leads that can't be
-    // assigned. Runs automatically every cycle — no manual/admin toggle.
-    const { data: subs } = await supabase
-      .from("subscriptions")
-      .select("brokerage_id, status")
-    const activeBrokerageIds = [...activeSubscriberBrokerageIds(subs ?? [])]
-    if (activeBrokerageIds.length === 0) {
-      console.log("[Lead Scraping Cron] No active-subscription brokerages — nothing to scrape")
-      return NextResponse.json({ message: "No active-subscription brokerages", results })
+    // STEP 1.5 + 2 — SHARED PRE-SCRAPE TERRITORY RESOLVER (canonical): before
+    // ANY scrape, resolve the active tenants (live subscription) and their
+    // territories (set up in settings at onboarding). Only those areas are ever
+    // scraped. No active tenants / no territories → honest no-op with the
+    // stated reason — the platform never scrapes fixed/global geography.
+    const territoryResolution = await resolveActiveScrapeTerritories(supabase)
+    if (territoryResolution.noOp) {
+      const reason = territoryResolution.reason === "no_active_subscribers"
+        ? "No active-subscription brokerages — nothing to scrape"
+        : "No active territories configured for active-subscription brokerages"
+      console.log(`[Lead Scraping Cron] ${reason} (${territoryResolution.reason})`)
+      await recordCronSuccessAction({
+        context_id: contextId,
+        records_processed: 0,
+        output_count: 0,
+        metadata: { no_op_reason: territoryResolution.reason },
+      })
+      return NextResponse.json({ message: reason, no_op_reason: territoryResolution.reason, results })
     }
-
-    // STEP 2 — Load active territories for ACTIVE-SUBSCRIPTION brokerages only.
-    // Zero hardcoded geography — city, state, brokerage_id all come from the record.
-    const { data: markets } = await supabase
-      .from("lead_scraping_markets")
-      .select(`
-        id, brokerage_id, team_id, agent_id, territory_scope, name, city, state,
-        zip_codes, counties, enabled_sources, monthly_budget_usd, spend_this_month,
-        max_records_per_run, priority, last_scraped_at,
-        lead_scraping_property_params (id, is_active, target_sites, min_price, max_price),
-        lead_scraping_motivated_params (id, is_active, signal_types, lookback_days,
-          facebook_group_urls, reddit_subreddits)
-      `)
-      .eq("is_active", true)
-      .in("brokerage_id", activeBrokerageIds)
-      .order("priority", { ascending: false })
-
-    if (!markets || markets.length === 0) {
-      console.log("[Lead Scraping Cron] No active markets configured")
-      return NextResponse.json({ message: "No active markets configured", results })
-    }
+    const markets = territoryResolution.territories
 
     // Get active keywords
     const { data: keywords } = await supabase.from("lead_scraping_keywords").select("*").eq("is_active", true)
