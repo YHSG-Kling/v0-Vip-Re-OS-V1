@@ -5,8 +5,16 @@
 
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getAgentOnboardingDashboard } from '@/lib/kernel/agent-onboarding'
 import { OnboardingDashboardClient } from './OnboardingDashboardClient'
+import { CriticalSetupMeter } from '@/app/components/onboarding/critical-setup-meter'
+import {
+  composeSetupReadiness,
+  loadCriticalSetupFacts,
+  normalizeCriticalRole,
+  type CriticalSetupReadiness,
+} from '@/lib/onboarding/critical-setup'
 
 export const dynamic = 'force-dynamic'
 
@@ -76,8 +84,49 @@ export default async function OnboardingPage() {
     )
   }
 
+  // CRITICAL SETUP — THE FIRST ONBOARDING STEP (round 42). Before the
+  // curriculum, show the role's critical-setup meter: the registry of items
+  // whole engines no-op without (markets → scrape pipeline, assignment rules →
+  // Engine 2, providers → egress, license → signature gate, …), each with an
+  // honest why-line and a link to the existing settings surface. Derived from
+  // real tables on every load — never a stored/staleable step status.
+  let setupReadiness: CriticalSetupReadiness | null = null
+  try {
+    const role = normalizeCriticalRole(userType)
+    if (role) {
+      const svc = createServiceClient()
+      let teamLead = false
+      if (role === 'team_lead') teamLead = true
+      let vendorId: string | null = null
+      if (role === 'vendor') {
+        const { data: ra } = await svc.from('user_role_assignments').select('vendor_id')
+          .eq('user_id', user.id).not('vendor_id', 'is', null).maybeSingle()
+        vendorId = (ra as { vendor_id?: string | null } | null)?.vendor_id ?? null
+      }
+      const facts = await loadCriticalSetupFacts(svc, {
+        brokerageId,
+        userId: user.id,
+        agentId,
+        includeTeamLead: teamLead,
+        vendorId,
+      })
+      setupReadiness = composeSetupReadiness({ role, facts })
+    }
+  } catch (error) {
+    console.error('[Onboarding] critical-setup meter load failed (additive):', error)
+  }
+
   return (
-    <OnboardingDashboardClient
+    <div className="space-y-4">
+      {setupReadiness && (
+        <div className="px-6 pt-4">
+          <CriticalSetupMeter
+            readiness={setupReadiness}
+            heading="Step 1 — critical setup"
+          />
+        </div>
+      )}
+      <OnboardingDashboardClient
       initialData={{
         onboarding: {
           id: dashboard.onboarding.id,
@@ -97,6 +146,7 @@ export default async function OnboardingPage() {
       }}
       userType={userData?.user_type ?? 'agent'}
       brokerageId={brokerageId}
-    />
+      />
+    </div>
   )
 }

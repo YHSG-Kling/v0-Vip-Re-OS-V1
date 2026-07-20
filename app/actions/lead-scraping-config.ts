@@ -79,7 +79,22 @@ export async function createScrapingMarket(marketData: {
 }) {
   try {
     const supabase = await createClient()
-    const { data, error } = await supabase.from("lead_scraping_markets").insert(marketData).select().single()
+    // TENANCY STAMP (round 42): the row must carry the caller's brokerage_id —
+    // the scrape resolver (lib/lead-pipeline/scrape-territories.ts) only ever
+    // scrapes markets owned by an ACTIVE SUBSCRIBER brokerage, so an unstamped
+    // market is invisible to the pipeline (and the service-area sync no-ops).
+    let brokerageId: string | null = null
+    const { data: { user } } = await supabase.auth.getUser()
+    if (user) {
+      const { data: profile } = await supabase
+        .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+      brokerageId = (profile as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    }
+    const { data, error } = await supabase
+      .from("lead_scraping_markets")
+      .insert(brokerageId ? { ...marketData, brokerage_id: brokerageId } : marketData)
+      .select()
+      .single()
 
     if (error) throw error
     // Territory enrollment: the market's zips become active subscriber

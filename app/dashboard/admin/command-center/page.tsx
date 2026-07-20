@@ -14,6 +14,7 @@ import { CoverageCard } from "./coverage-card"
 import { AiTeammatesPanel } from "./ai-teammates-panel"
 import { TeamAnnouncementComposer } from "./team-announcement-composer"
 import { AutonomyHaltBanner } from "./autonomy-halt-banner"
+import { CriticalSetupMeter } from "@/app/components/onboarding/critical-setup-meter"
 import { loadTenantAutonomyHalt } from "@/lib/managers/autonomy-gate"
 import { listEarnedAutonomyAction } from "@/app/actions/document-kernel-review"
 import { getQuarterlyReviewAction } from "@/app/actions/quarterly-review"
@@ -218,11 +219,29 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     ? await loadTenantAutonomyHalt(brokerageId).catch(() => null)
     : null
 
+  // FINISH YOUR SETUP (round 42) — the critical-setup meter for the tenancy's
+  // principal: per-category % over the registry of items whole engines no-op
+  // without (markets → scrape pipeline, assignment rules → Engine 2, providers
+  // → egress, …). Server-composed from real tables; dismissals are UI-only.
+  let setupReadiness: import("@/lib/onboarding/critical-setup").CriticalSetupReadiness | null = null
+  if (brokerageId && userType !== "superadmin") {
+    try {
+      const { loadCriticalSetupFacts, composeSetupReadiness } = await import("@/lib/onboarding/critical-setup")
+      const facts = await loadCriticalSetupFacts(createServiceClient(), { brokerageId })
+      setupReadiness = composeSetupReadiness({ role: "brokerage_admin", facts })
+    } catch { /* the meter is additive — never blocks the Command Center */ }
+  }
+
   return (
     <>
       {tenantHalt?.halted && (
         <div className="mx-6 mt-4">
           <AutonomyHaltBanner reason={tenantHalt.reason} haltedAt={tenantHalt.haltedAt} />
+        </div>
+      )}
+      {setupReadiness && setupReadiness.overallPct < 100 && (
+        <div className="mx-6 mt-4">
+          <CriticalSetupMeter readiness={setupReadiness} heading="Finish your setup" />
         </div>
       )}
       {trust && <TrustMeter outcomes={trust.outcomes} feedback={trust.feedback} />}

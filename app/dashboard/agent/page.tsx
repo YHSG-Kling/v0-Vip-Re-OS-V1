@@ -33,6 +33,7 @@ import { LicenseComplianceWidget } from "./components/license-compliance-widget"
 import { AgentCareerTierCard } from "@/app/components/agent/career-tier-card"
 import { OnboardingJourneyCard } from "@/app/components/agent/onboarding-journey-card"
 import { SetupReadinessCardClient } from "@/app/components/onboarding/setup-readiness-card-client"
+import { CriticalSetupMeterClient } from "@/app/components/onboarding/critical-setup-meter-client"
 import { AgentFinancialIntelligence } from "./components/agent-financial-intelligence"
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
 import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
@@ -433,6 +434,11 @@ export default function AgentDashboard() {
         {/* Tenant→platform NPS — renders only when the quarter-eligibility
             rule says so (app/actions/nps.ts); dismiss hides for this session. */}
         <NpsSurveyCard />
+
+        {/* Critical setup (round 42) — the compact per-agent meter: items the
+            OS engines no-op without (license → signature gate, calendar →
+            scheduling, push → field alerts, contacts → portal invites). */}
+        <CriticalSetupMeterClient variant="compact" />
 
         {/* Role-aware setup readiness — what the agent still needs to configure to sell */}
         <SetupReadinessCardClient />

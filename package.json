@@ -511,7 +511,8 @@
     "test:meeting-followthrough": "tsx scripts/meeting-followthrough-simulator.ts",
     "test:mobile-readiness": "tsx scripts/mobile-readiness-simulator.ts",
     "test:meeting-recap": "tsx scripts/meeting-recap-simulator.ts",
-    "test:launch-checklist": "tsx scripts/launch-checklist-simulator.ts"
+    "test:launch-checklist": "tsx scripts/launch-checklist-simulator.ts",
+    "test:onboarding-readiness": "tsx scripts/onboarding-readiness-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

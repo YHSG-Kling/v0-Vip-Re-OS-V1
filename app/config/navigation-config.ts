@@ -474,6 +474,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'direct-mail-performance', label: 'Direct Mail Performance', href: '/dashboard/admin/direct-mail-performance', icon: 'Mail' },
           { id: 'lead-intake', label: 'Lead Intake', href: '/dashboard/admin/lead-intake', icon: 'Inbox' },
           { id: 'scrape-diagnostics', label: 'Scrape Diagnostics', href: '/dashboard/admin/scrape-diagnostics', icon: 'Radar' },
+          // Round 42: the markets SETUP surface (diagnostics only VIEWS them) — the scrape pipeline no-ops without one.
+          { id: 'lead-markets', label: 'Lead Markets', href: '/dashboard/admin/markets', icon: 'Map' },
           { id: 'ai-identity', label: 'AI Identity', href: '/dashboard/admin/ai-identity', icon: 'Bot' },
           { id: 'ai-disclosures', label: 'AI Disclosures', href: '/dashboard/admin/compliance/ai-disclosures', icon: 'FileCheck' },
           { id: 'cron-health', label: 'Cron Health', href: '/dashboard/admin/cron-health', icon: 'HeartPulse' },
