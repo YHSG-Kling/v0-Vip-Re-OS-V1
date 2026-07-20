@@ -45,6 +45,32 @@ export function parseTeamCommandText(raw: string): ParsedTeamCommand | null {
     if (ordinal) return { name: "standup_action", params: { ordinal } }
   }
 
+  // 1.5. accept_offer — the spoken deal decision ("accept the Hendersons' offer",
+  // "accept the offer on 44 Birch"). Conservative: requires the word "offer" and never
+  // fires on counters ("accept the counter" is the buyer-side lane, not ours). Reject /
+  // counter phrasings intentionally do NOT parse — their kernel commands are
+  // session-client-bound and not speakable yet (lib/voice/command-coverage.ts).
+  if (/\b(accept|approve)\b/.test(t) && /\boffer\b/.test(t) && !/\bcounter\b/.test(t)) {
+    // "accept the offer on/for/from/at 44 Birch" → query "44 Birch"
+    let m = text.match(/\boffer\s+(?:on|for|from|at)\s+(.+)$/i)
+    if (m) {
+      const q = cleanEntity(m[1])
+      if (q) return { name: "accept_offer", params: { query: q } }
+    }
+    // "accept the Hendersons' offer" / "accept Jane Doe's offer" → query "Hendersons"
+    m = text.match(/\b(?:accept|approve)\s+(?:the\s+)?(.+?)(?:'s|s')?\s+offer\b/i)
+    if (m) {
+      const q = cleanEntity(m[1])
+      if (q && q.toLowerCase() !== "the" && q.toLowerCase() !== "this" && q.toLowerCase() !== "that") {
+        return { name: "accept_offer", params: { query: q } }
+      }
+    }
+    // Bare "accept the offer" — no hint; backend auto-selects when exactly one is open.
+    if (/\b(?:accept|approve)\s+(?:the|this|that)?\s*offer\b/.test(t)) {
+      return { name: "accept_offer", params: {} }
+    }
+  }
+
   // 2. morning_standup — "what should I do today", "what's on my plate", "stand-up", "top 3".
   if (/\b(what should i do|what'?s on my plate|my (day|priorities|plan|agenda)|stand[\s-]?up|top (3|three)|what'?s most important|where (should|do) i start)\b/.test(t)) {
     return { name: "morning_standup", params: {} }

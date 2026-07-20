@@ -323,6 +323,14 @@ async function runTool(
     case "kernel_proposals":
     case "kernel_resolve":
     case "ask_guidance":
+    // accept_offer — the spoken DEAL DECISION. Same shared dispatcher; the backend
+    // (lib/voice/deal-decision.ts) lands in the SAME kernel transition as the
+    // compliance-bridge click (acceptOfferConditionally) behind the approvals-queue
+    // guard, and re-checks role authority itself for the run_team_command lane.
+    // Reject/counter/withdraw are intentionally ABSENT here — their kernel commands
+    // run on the caller's session client and cannot execute from this sessionless
+    // webhook (honest not-yet rows in lib/voice/command-coverage.ts).
+    case "accept_offer":
     case "find_properties": {
       const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
       return dispatchTeamCommand(

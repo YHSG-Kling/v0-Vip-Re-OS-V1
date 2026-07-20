@@ -263,6 +263,24 @@ async function routeTeamCommand(
       return { ok: false, spoken: "That one's an earned-autonomy grant — the broker decides those on the Command Center, not by voice." }
     }
 
+    case "accept_offer": {
+      // "Accept the Hendersons' offer" / "accept the offer on 44 Birch" — the spoken deal
+      // decision. SAME kernel transition as the compliance-bridge click
+      // (acceptOfferConditionally — compliance gate absolute, transaction via the canonical
+      // bridge), SAME guard as the approvals queue (tenant + agent scope + inbound-only +
+      // not-a-counter + still-open). A compliance HOLD is spoken back honestly, never
+      // silently accepted. Reject/counter/withdraw are NOT wired — their kernel commands
+      // are session-client-bound (see lib/voice/command-coverage.ts).
+      const { voiceAcceptOffer } = await import("@/lib/voice/deal-decision")
+      const r = await voiceAcceptOffer({
+        brokerageId: ctx.brokerageId,
+        actorUserId: ctx.agentUserId,
+        offerId: params.offer_id ? String(params.offer_id) : null,
+        query: String(params.query ?? params.person_query ?? params.address_query ?? "").trim() || null,
+      }, svc)
+      return { ok: r.ok, spoken: r.spoken, data: r.data }
+    }
+
     case "find_properties": {
       // "Find the Hendersons a 3-bed under 500k in Austin" — resolve the buyer, run the natural-language
       // match (our inventory + RentCast/IDX, Fair-Housing-sanitized in the explanation layer), read back

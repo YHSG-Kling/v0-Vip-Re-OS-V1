@@ -195,6 +195,21 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_nar_regulated: true,
     description: "Stage a listing-agreement packet from voice intake. Voice → conversation → intake → forms → email agent with review link.",
   },
+  accept_offer: {
+    name: "accept_offer",
+    category: "stage",
+    authority: "agent",
+    gates: ["service_role"],  // Backend validates brokerage_id + agent scope manually
+                              // (lib/voice/deal-decision.ts mirrors the approvals-queue
+                              // loadInboundOfferForDecision guard). The transition itself is
+                              // the canonical acceptOfferConditionally — the System-7.1B
+                              // compliance gate is ABSOLUTE inside the kernel command and
+                              // records an explicit HOLD when compliance hasn't passed.
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: true,
+    description: "Accept an inbound offer on one of our listings by voice — the SAME kernel transition as the compliance-bridge click (acceptOfferConditionally): compliance gate absolute, transaction created through the canonical bridge, competing-winner flags handled by the kernel. Guarded by the approvals-queue rule set (tenant + agent scope + inbound-only + not-a-counter + still-open). Reject/counter/withdraw are NOT speakable yet — their kernel commands are session-client-bound (see lib/voice/command-coverage.ts).",
+  },
   stage_showing: {
     name: "stage_showing",
     category: "schedule",

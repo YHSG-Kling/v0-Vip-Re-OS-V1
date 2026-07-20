@@ -498,7 +498,8 @@
     "test:orphan-routes": "tsx scripts/orphan-route-sweep.ts",
     "test:regional-closing-costs": "tsx scripts/regional-closing-costs-simulator.ts",
     "test:prediction-accuracy": "tsx scripts/prediction-accuracy-simulator.ts",
-    "test:manager-deliberation": "tsx scripts/manager-deliberation-simulator.ts"
+    "test:manager-deliberation": "tsx scripts/manager-deliberation-simulator.ts",
+    "test:voice-command-coverage": "tsx scripts/voice-command-coverage-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

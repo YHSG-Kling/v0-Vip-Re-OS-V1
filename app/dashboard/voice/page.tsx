@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { VoiceCommandCenterClient } from "./VoiceCommandCenterClient"
+import { VoiceCoveragePanel } from "@/app/components/dashboard/voice/VoiceCoveragePanel"
 import type { VoiceCommandRequest } from "@/app/actions/voice-assistant/handle-voice-command"
 import type { VoiceCommandRow } from "@/app/components/dashboard/voice/RecentCommandsFeed"
 import type { VoiceCallRow } from "@/app/components/dashboard/voice/VoiceCallHistoryTable"
@@ -209,6 +210,9 @@ export default async function VoiceDashboardPage() {
           avgConfidence={avgConfidence}
           callHistory={shapedCallHistory}
         />
+
+        {/* Read-only voice-command coverage — derived from lib/voice/command-coverage.ts */}
+        <VoiceCoveragePanel />
       </div>
     </main>
   )

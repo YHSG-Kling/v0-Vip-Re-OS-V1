@@ -10,7 +10,7 @@
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import { publishManagerSignal } from "@/lib/kernel/manager-signals"
 
-export type VoiceActionTool = "create_task" | "log_activity" | "send_portal_message"
+export type VoiceActionTool = "create_task" | "log_activity" | "send_portal_message" | "accept_offer"
 
 /** PURE: the manager who OWNS a voice action (the "from" on the bus). */
 export function ownerManagerForVoiceAction(tool: VoiceActionTool): ManagerKey {
@@ -18,6 +18,7 @@ export function ownerManagerForVoiceAction(tool: VoiceActionTool): ManagerKey {
     case "create_task": return "deal_coordinator"        // tasks / ops
     case "log_activity": return "ai_isa"                 // contact engagement / CRM touch
     case "send_portal_message": return "campaign_orchestrator" // client message gate owner
+    case "accept_offer": return "deal_coordinator"       // deal decision — the deal file's owner announces it
   }
 }
 
