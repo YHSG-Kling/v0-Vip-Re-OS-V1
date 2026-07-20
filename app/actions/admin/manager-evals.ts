@@ -377,6 +377,41 @@ export async function getCrossManagerReferrals(): Promise<
   return { ok: true, referrals }
 }
 
+// ── THE PRINCIPAL'S CALL (round 36) — the human can weigh in on a finished
+// deliberation: override the argued winner WITH a stated reason. Recorded on the SAME
+// payload record (payload.deliberation.override, via recordPrincipalOverride →
+// sentinelWrite), never a parallel ledger; teamwork metrics count the overrides.
+
+export async function overrideDeliberationWinner(
+  referralId: string,
+  winner: string,
+  reason: string,
+): Promise<
+  { ok: true; record: import("@/lib/managers/deliberation").DeliberationRecord } | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  // Overriding the argued winner is a broker/admin governance decision (not team_lead).
+  if (!["broker", "broker_admin", "admin", "superadmin"].includes(ctx.userType)) {
+    return { ok: false, error: "Forbidden — only a broker or admin can record the principal's call" }
+  }
+  if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
+  if (!referralId?.trim()) return { ok: false, error: "Missing referral id" }
+  if (!reason?.trim()) return { ok: false, error: "A principal's call requires a stated reason" }
+
+  const { recordPrincipalOverride } = await import("@/lib/managers/deliberation")
+  const r = await recordPrincipalOverride({
+    brokerageId: ctx.brokerageId,
+    signalId: referralId,
+    winner,
+    reason,
+    by: ctx.userId ?? null,
+  }, createServiceClient())
+  if (!r.ok) return r
+  revalidatePath("/dashboard/admin/manager-trust")
+  return { ok: true, record: r.record }
+}
+
 // ── TEAMWORK METRICS (round 35) — the compact card on the governance surface: the
 // referral + deliberation ledgers rolled up per period (pure rollup, no new table).
 

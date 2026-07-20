@@ -7,18 +7,26 @@
  * situation").
  *
  * Layer 1 (pure): the registry's deliberate flags land ONLY on genuine-tradeoff
- *   domains; refusals for non-collaboration pairs still hold; the grounding guard
- *   (filterEvidenceToCitations) drops invented evidence; deliberate() produces
- *   grounded positions, a resolution that states the WHY, honest dissent only on
- *   merit, and an honest 'unavailable' record on an unreachable/junk engine (never
- *   canned arguments); teamwork rollup math (counts, odd/even median, dissents) and
- *   omit-when-empty on both the QBR section and the teamwork lines; a fact loader
- *   exists for every participant of every deliberative domain; the referral handler
- *   source actually escalates (wiring check, doc-kernel idiom).
+ *   domains (SIX after round 36's full build-out); refusals for non-collaboration
+ *   pairs still hold; the grounding guard (filterEvidenceToCitations) drops invented
+ *   evidence; deliberate() produces grounded positions, ONE bounded rebuttal round
+ *   when positions directly conflict (rebuttal evidence grounded through the same
+ *   guard; engines without rebut hold none; the bound is structural), a resolution
+ *   that states the WHY, honest dissent only on merit, and an honest 'unavailable'
+ *   record on an unreachable/junk engine (never canned arguments); THE PRINCIPAL'S
+ *   CALL (applyPrincipalOverride) only lands on resolved records, only picks argued
+ *   positions, always requires a reason; teamwork rollup math (counts, odd/even
+ *   median, dissents, rebuttals, overrides) and omit-when-empty on both the QBR
+ *   section and the teamwork lines; REGISTRY-DRIVEN emitter coverage — every
+ *   deliberative domain has a live raiser in REFERRAL_EMITTERS (sweeps carry a
+ *   runnable entry point, hooks are proven by source markers) and a fact loader for
+ *   every participant; the referral handler source actually escalates (wiring
+ *   check, doc-kernel idiom).
  * Layer 2 (live, creds-gated): a real referral is raised on the bus
  *   (listing_demand_bridge), runDeliberation grounds briefs from the tenant's own
  *   tables, persists the record onto the referral row (payload.deliberation), the
- *   metrics loader rolls it up, and a retried deliberation NEVER re-argues (the
+ *   principal's call persists onto the SAME row (recordPrincipalOverride), the
+ *   metrics loader rolls both up, and a retried deliberation NEVER re-argues (the
  *   persisted record is reused even with a throwing engine). Self-cleans.
  *
  * Run: npx tsx scripts/manager-deliberation-simulator.ts
@@ -29,10 +37,11 @@ import { join } from "node:path"
 import {
   MANAGERS, MANAGER_COLLABORATIONS, canRefer, type ManagerKey,
 } from "../lib/kernel/manager-registry"
-import { validateReferral } from "../lib/managers/cross-referral"
+import { validateReferral, REFERRAL_EMITTERS, emittersForDomain } from "../lib/managers/cross-referral"
 import {
   isDeliberativeDomain, deliberativeDomains, filterEvidenceToCitations,
   validResolutionWinner, summarizeDeliberation, parseDeliberation, deliberate,
+  positionsDirectlyConflict, applyPrincipalOverride, effectiveWinner,
   MANAGER_FACT_LOADERS, DELIBERATION_UNAVAILABLE,
   type ManagerBrief, type DeliberationEngine, type DeliberationRecord,
 } from "../lib/managers/deliberation"
@@ -56,16 +65,27 @@ function report() {
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
 // A deterministic engine: argues from the brief (with deliberately invented evidence
-// mixed in, to prove the grounding guard), resolves to the first position, dissents
-// for the second — every behavior asserted below is the CODE's, not the model's.
-function fixtureEngine(overrides: Partial<DeliberationEngine> = {}): DeliberationEngine {
+// mixed in, to prove the grounding guard), REBUTS with one cited pushback (invented
+// evidence mixed in again, to prove the rebuttal rides the same guard), resolves to
+// the first position, dissents for the second — every behavior asserted below is the
+// CODE's, not the model's. rebutCalls counts invocations to prove the one-round bound.
+function fixtureEngine(overrides: Partial<DeliberationEngine> = {}): DeliberationEngine & { rebutCalls: { count: number } } {
+  const rebutCalls = { count: 0 }
   return {
+    rebutCalls,
     argue: async ({ manager, brief, ask }) => ({
       proposal: `${MANAGERS[manager].label}'s solution to: ${ask.slice(0, 60)}`,
       reasoning: brief.facts[0] ? `Grounded in: ${brief.facts[0]}` : "No domain rows in the window — arguing from the situation alone.",
       risks: ["could be wrong"],
       evidence: [...(brief.citations[0] ? [brief.citations[0]] : []), "totally.invented=42 (made.up.id=999)"],
     }),
+    rebut: async ({ manager, others, brief }) => {
+      rebutCalls.count += 1
+      return {
+        rebuttal: `${MANAGERS[manager].label} disputes ${others.length} other position(s) on the facts`,
+        evidence: [...(brief.citations[0] ? [brief.citations[0]] : []), "fabricated.rebuttal=1 (nope.id=0)"],
+      }
+    },
     resolve: async ({ positions }) => ({
       winner: positions[0].manager,
       why: `it addresses the situation's facts directly while the other ${positions.length - 1} position(s) optimize a narrower slice`,
@@ -82,19 +102,27 @@ async function main() {
 
   console.log("\n[Layer 1a · the deliberate flags — argument only where the overlap is a real tradeoff]")
   const flagged = deliberativeDomains().map((d) => d.key).sort()
-  check("exactly the three tradeoff domains are deliberative (pricing dispute, closing money+risk, organic-vs-paid budget)",
-    JSON.stringify(flagged) === JSON.stringify(["closing_money_and_risk", "listing_demand_bridge", "organic_paid_content"]), flagged.join(","))
+  check("exactly the SIX tradeoff domains are deliberative (round 36 full build-out: pricing dispute, closing money+risk, organic-vs-paid budget, lead-quality spend, recruiting offer economics, vendor selection)",
+    JSON.stringify(flagged) === JSON.stringify([
+      "closing_money_and_risk", "lead_quality_spend", "listing_demand_bridge",
+      "organic_paid_content", "recruiting_offer_economics", "transaction_vendor_selection",
+    ]), flagged.join(","))
   check("isDeliberativeDomain: listing_demand_bridge (a pricing dispute by construction) → true",
     isDeliberativeDomain("listing_demand_bridge"))
   check("isDeliberativeDomain: approval_queue_slo (an SLA nag — one obvious action, nothing to argue) → false",
     !isDeliberativeDomain("approval_queue_slo"))
   check("isDeliberativeDomain: unknown/null domains → false",
     !isDeliberativeDomain("no_such_domain") && !isDeliberativeDomain(null))
-  check("deliberate flags did NOT change the collaboration map's membership (no stewardship drift)",
+  check("deliberate flags did NOT change pre-existing membership (no stewardship drift) and the new edges declare exactly their two disputing seats",
     MANAGER_COLLABORATIONS.listing_demand_bridge.managers.length === 2
     && MANAGER_COLLABORATIONS.closing_money_and_risk.managers.length === 3
     && MANAGER_COLLABORATIONS.organic_paid_content.managers.length === 2
-    && Object.keys(MANAGER_COLLABORATIONS).length === 9)
+    && JSON.stringify(MANAGER_COLLABORATIONS.lead_quality_spend.managers.slice().sort()) === JSON.stringify(["ads_manager", "ai_isa"])
+    && JSON.stringify(MANAGER_COLLABORATIONS.recruiting_offer_economics.managers.slice().sort()) === JSON.stringify(["finance_manager", "recruiting_manager"])
+    && JSON.stringify(MANAGER_COLLABORATIONS.transaction_vendor_selection.managers.slice().sort()) === JSON.stringify(["data_steward", "deal_coordinator"])
+    && Object.keys(MANAGER_COLLABORATIONS).length === 12)
+  check("every deliberative domain's evidence names its LIVE RAISER (no aspirational edges)",
+    deliberativeDomains().every((d) => /raiser|sweep|hook|assignVendorToTransaction|publish/i.test(d.evidence)))
 
   console.log("\n[Layer 1b · refusals for non-collaboration pairs still hold]")
   check("recruiting_manager → ads_manager shares NO collaboration domain → canRefer false",
@@ -149,6 +177,81 @@ async function main() {
   check("a dissent naming the WINNER is discarded — dissent only ever attaches to a losing position",
     recNoDissent.status === "resolved" && recNoDissent.dissent === null)
 
+  console.log("\n[Layer 1d2 · THE ONE BOUNDED REBUTTAL ROUND (round 36) — cited pushback, same grounding guard, structural bound]")
+  check("positionsDirectlyConflict: distinct proposals conflict; unanimous/single positions do not",
+    positionsDirectlyConflict([
+      { manager: "listing_concierge", proposal: "Hold the price", reasoning: "", risks: [], evidence: [] },
+      { manager: "shopping_agent", proposal: "Cut to $749k", reasoning: "", risks: [], evidence: [] },
+    ])
+    && !positionsDirectlyConflict([
+      { manager: "listing_concierge", proposal: "Cut to $749k", reasoning: "", risks: [], evidence: [] },
+      { manager: "shopping_agent", proposal: "  cut to  $749K ", reasoning: "", risks: [], evidence: [] },
+    ])
+    && !positionsDirectlyConflict([{ manager: "listing_concierge", proposal: "x", reasoning: "", risks: [], evidence: [] }]))
+  check("conflicting positions → the rebuttal round ran and each position carries a cited rebuttal",
+    rec.rebuttalHeld === true && rec.positions.every((p) => (p.rebuttal?.note ?? "").includes("disputes")))
+  check("rebuttal evidence rides the SAME grounding guard — the fabricated citation was filtered from every rebuttal",
+    rec.positions.every((p) => (p.rebuttal?.evidence ?? []).every((e) => !e.includes("fabricated")))
+    && rec.positions[0].rebuttal!.evidence[0] === cits[0])
+  check("the summary names the rebuttal round + count", summarizeDeliberation(rec).includes("one rebuttal round held (2 cited rebuttals)"))
+  {
+    // BOUNDED TO EXACTLY ONE ROUND — structural: rebut is invoked once per manager, never again.
+    const counted = fixtureEngine()
+    await deliberate({ domain, ask: "argue it", raisedBy: "listing_concierge", briefs, brokerageId: "b-test", engine: counted })
+    check("rebut is called EXACTLY once per participating manager (one round, never more)",
+      counted.rebutCalls.count === briefs.length, `calls=${counted.rebutCalls.count}`)
+  }
+  {
+    // No conflict → no rebuttal round (nothing to argue against).
+    const agree = fixtureEngine({ argue: async () => ({ proposal: "Cut to $749k", reasoning: "same", risks: [], evidence: [cits[0]] }) })
+    const recAgree = await deliberate({ domain, ask: "argue it", raisedBy: "listing_concierge", briefs, brokerageId: "b-test", engine: agree })
+    check("unanimous proposals → NO rebuttal round held (no manufactured disagreement)",
+      recAgree.status === "resolved" && recAgree.rebuttalHeld === false && agree.rebutCalls.count === 0
+      && recAgree.positions.every((p) => !p.rebuttal))
+  }
+  {
+    // Engine without a rebut capability → honestly no round; the deliberation still resolves.
+    const base = fixtureEngine()
+    const noRebut: DeliberationEngine = { argue: base.argue, resolve: base.resolve }
+    const recNoRebut = await deliberate({ domain, ask: "argue it", raisedBy: "listing_concierge", briefs, brokerageId: "b-test", engine: noRebut })
+    check("an engine without rebut holds NO rebuttal round — recorded honestly, resolution unaffected",
+      recNoRebut.status === "resolved" && recNoRebut.rebuttalHeld === false && recNoRebut.winner !== null)
+  }
+  {
+    // A manager may honestly decline to rebut (null) — no manufactured pushback attached.
+    const declines = fixtureEngine({ rebut: async () => ({ rebuttal: null, evidence: [] }) })
+    const recDecline = await deliberate({ domain, ask: "argue it", raisedBy: "listing_concierge", briefs, brokerageId: "b-test", engine: declines })
+    check("a null rebuttal is an honest pass — the round ran but no rebuttal text was fabricated",
+      recDecline.status === "resolved" && recDecline.rebuttalHeld === true && recDecline.positions.every((p) => !p.rebuttal))
+  }
+
+  console.log("\n[Layer 1d3 · THE PRINCIPAL'S CALL (round 36) — human override on the same record, reason required]")
+  const call = applyPrincipalOverride(rec, { winner: "shopping_agent", reason: "Seller told me on the phone they'll take the cut — demand evidence wins.", by: "user-1", now: new Date("2026-07-20T13:00:00Z") })
+  check("a valid call lands: the override records winner + reason + who + when on the record",
+    call.ok && call.record.override?.winner === "shopping_agent"
+    && call.record.override.by === "user-1" && call.record.override.at === "2026-07-20T13:00:00.000Z")
+  check("the argued record stays INTACT underneath the override (positions + argued winner unchanged)",
+    call.ok && call.record.winner === rec.winner && call.record.positions.length === rec.positions.length)
+  check("effectiveWinner: the principal's call governs when recorded, the argued winner otherwise",
+    call.ok && effectiveWinner(call.record) === "shopping_agent" && effectiveWinner(rec) === rec.winner)
+  check("the summary speaks the PRINCIPAL'S CALL with the stated reason",
+    call.ok && summarizeDeliberation(call.record).includes("PRINCIPAL'S CALL")
+    && summarizeDeliberation(call.record).includes("Shopping Agent"))
+  check("an override WITHOUT a stated reason is refused (an unexplained override is not governance)",
+    !applyPrincipalOverride(rec, { winner: "shopping_agent", reason: "   " }).ok)
+  check("an override naming a manager who never argued is refused",
+    !applyPrincipalOverride(rec, { winner: "finance_manager", reason: "x" }).ok
+    && !applyPrincipalOverride(rec, { winner: "not_a_manager", reason: "x" }).ok)
+  check("an unavailable deliberation cannot take a principal's call (no argued positions to pick from)",
+    !applyPrincipalOverride({ ...rec, status: "unavailable", winner: null, positions: [] }, { winner: "shopping_agent", reason: "x" }).ok)
+  check("re-overriding replaces the previous call — the latest human decision governs",
+    call.ok && (() => {
+      const second = applyPrincipalOverride(call.record, { winner: "listing_concierge", reason: "New comps came in — hold the price." })
+      return second.ok && second.record.override?.winner === "listing_concierge" && effectiveWinner(second.record) === "listing_concierge"
+    })())
+  check("parseDeliberation roundtrips the override (the payload IS the ledger)",
+    call.ok && parseDeliberation({ deliberation: call.record as unknown as Record<string, unknown> })?.override?.winner === "shopping_agent")
+
   console.log("\n[Layer 1e · honest refusal — an unreachable model NEVER yields canned arguments]")
   const recDown = await deliberate({
     domain, ask: "same", raisedBy: "listing_concierge", briefs, brokerageId: "b-test",
@@ -175,29 +278,54 @@ async function main() {
       d.managers.every((m: ManagerKey) => typeof MANAGER_FACT_LOADERS[m] === "function"))
   }
 
+  console.log("\n[Layer 1f2 · NO DELIBERATIVE DOMAIN WITHOUT A LIVE RAISER — registry-driven, not a hardcoded list]")
+  for (const d of deliberativeDomains()) {
+    const emitters = emittersForDomain(d.key)
+    check(`'${d.key}' has at least one registered live emitter`, emitters.length > 0)
+  }
+  for (const e of Object.values(REFERRAL_EMITTERS)) {
+    const domain = MANAGER_COLLABORATIONS[e.collabDomain]
+    check(`emitter '${e.key}': its collaboration domain exists and declares the raising manager (${e.from})`,
+      !!domain && domain.managers.includes(e.from))
+    check(`emitter '${e.key}': ${e.kind === "sweep" ? "sweep carries a runnable cron entry point" : "hook's raise is present at its declared decision point"} (${e.sourceFile})`,
+      e.kind === "sweep"
+        ? typeof e.run === "function" && src(e.sourceFile).includes(e.marker)
+        : typeof e.run === "undefined" && src(e.sourceFile).includes(e.marker) && src(e.sourceFile).includes("raiseReferralDeduped"))
+  }
+  check("the manager-signals cron runs the sweep emitters REGISTRY-DRIVEN (runReferralSweeps — a new sweep auto-joins)",
+    src("app/api/cron/manager-signals/route.ts").includes("runReferralSweeps")
+    && src("lib/managers/cross-referral.ts").includes("for (const emitter of Object.values(REFERRAL_EMITTERS))"))
+  check("every hook emitter dedupes over the bus ledger itself (raiseReferralDeduped — no parallel state)",
+    src("lib/managers/cross-referral.ts").includes('.contains("payload", input.dedupe)'))
+
   console.log("\n[Layer 1g · teamwork metrics — the pure rollup math + omit-when-empty]")
   check("median: odd count picks the middle", median([10, 2, 4]) === 4)
   check("median: even count averages the middle pair", median([1, 2, 10, 20]) === 6)
   check("median: empty → null (never a fabricated stat)", median([]) === null)
   const t0 = new Date("2026-07-01T00:00:00Z").getTime()
   const iso = (h: number) => new Date(t0 + h * 3_600_000).toISOString()
+  const overridden = call.ok ? call.record : rec
   const fixtureRows: ReferralLedgerRow[] = [
     { status: "consumed", created_at: iso(0), consumed_at: iso(2), payload: { deliberation: rec as unknown as Record<string, unknown> } },
     { status: "consumed", created_at: iso(0), consumed_at: iso(4), payload: { deliberation: recDown as unknown as Record<string, unknown> } },
     { status: "consumed", created_at: iso(0), consumed_at: iso(10), payload: {} },
     { status: "open", created_at: iso(0), consumed_at: null, payload: null },
     { status: "expired", created_at: iso(0), consumed_at: null, payload: {} },
+    { status: "consumed", created_at: iso(0), consumed_at: iso(6), payload: { deliberation: overridden as unknown as Record<string, unknown> } },
   ]
   const m = rollupTeamwork(fixtureRows, 90)
-  check("handed-off / resolved counts", m.handedOff === 5 && m.resolved === 3)
-  check("median time-to-pickup over resolved rows (2h, 4h, 10h → 4h)", m.medianPickupHours === 4)
+  check("handed-off / resolved counts", m.handedOff === 6 && m.resolved === 4)
+  check("median time-to-pickup over resolved rows (2h, 4h, 6h, 10h → 5h)", m.medianPickupHours === 5)
   check("deliberations held counts only RESOLVED arguments; unavailable counted separately",
-    m.deliberationsHeld === 1 && m.deliberationsUnavailable === 1)
-  check("dissents recorded", m.dissentsRecorded === 1)
+    m.deliberationsHeld === 2 && m.deliberationsUnavailable === 1)
+  check("dissents recorded", m.dissentsRecorded === 2)
+  check("rebuttals argued counted across resolved deliberations (2 per argued record → 4)", m.rebuttalsArgued === 4)
+  check("principal overrides counted (the one overridden record)", m.principalOverrides === 1)
   const lines = composeTeamworkLines(m)
-  check("teamwork lines state the numbers + the argued-why framing",
-    lines.length >= 2 && lines[0].includes("5 cross-manager referrals") && lines[0].includes("median pickup 4 hours")
-    && lines[1].includes("1 deliberation held") && lines[1].includes("1 honest dissent"))
+  check("teamwork lines state the numbers + the argued-why framing + rebuttals + the principal's call",
+    lines.length >= 3 && lines[0].includes("6 cross-manager referrals") && lines[0].includes("median pickup 5 hours")
+    && lines[1].includes("2 deliberations held") && lines[1].includes("4 cited rebuttals") && lines[1].includes("2 honest dissents")
+    && lines.some((l) => l.includes("1 principal's call") && l.includes("stated reason")))
   const empty = rollupTeamwork([], 90)
   check("OMIT-WHEN-EMPTY: a silent period composes ZERO teamwork lines", composeTeamworkLines(empty).length === 0)
   const baseFacts = {
@@ -217,10 +345,19 @@ async function main() {
     && handlerSrc.includes("summarizeDeliberation"))
   check("the escalation reuses the referral's own payload (idempotent — a retry never re-argues)",
     handlerSrc.includes("existingPayload: signal.payload"))
-  check("the governance surface renders the argument (positions, winner, why, dissent) + the teamwork card",
+  check("the governance surface renders the argument (positions, winner, why, dissent, rebuttals) + the teamwork card",
     src("app/dashboard/admin/manager-trust/manager-trust-client.tsx").includes("DeliberationBlock")
     && src("app/dashboard/admin/manager-trust/manager-trust-client.tsx").includes("winning position")
-    && src("app/dashboard/admin/manager-trust/manager-trust-client.tsx").includes("Dissents recorded"))
+    && src("app/dashboard/admin/manager-trust/manager-trust-client.tsx").includes("Rebuts the others")
+    && src("app/dashboard/admin/manager-trust/manager-trust-client.tsx").includes("Dissents recorded")
+    && src("app/dashboard/admin/manager-trust/manager-trust-client.tsx").includes("Rebuttals argued"))
+  check("THE PRINCIPAL'S CALL is wired end-to-end: admin action (auth-gated) → recordPrincipalOverride → sentinelWrite; the surface offers the override with a required reason",
+    src("app/actions/admin/manager-evals.ts").includes("overrideDeliberationWinner")
+    && src("app/actions/admin/manager-evals.ts").includes("recordPrincipalOverride")
+    && src("lib/managers/deliberation.ts").includes("manager_deliberation_override")
+    && src("app/dashboard/admin/manager-trust/manager-trust-client.tsx").includes("overrideDeliberationWinner")
+    && src("app/dashboard/admin/manager-trust/manager-trust-client.tsx").includes("Principal&apos;s call")
+    && src("app/dashboard/admin/manager-trust/manager-trust-client.tsx").includes("Principal's calls"))
   check("the QBR loader feeds composeTeamworkLines (mounted, not orphaned)",
     src("lib/intelligence/quarterly-review-loader.ts").includes("composeTeamworkLines")
     && src("app/dashboard/admin/command-center/quarterly-review-card.tsx").includes(`section("Teamwork"`))
@@ -292,11 +429,33 @@ async function main() {
     }, svc, fixtureEngine({ argue: async () => { throw new Error("must not be called on a retry") } }))
     check("live: a retried deliberation REUSES the persisted record — never re-argues (no double gateway spend)",
       reused?.status === "resolved" && reused.winner === live?.winner && reused.deliberatedAt === live?.deliberatedAt)
+    check("live: the fixture positions conflicted → the ONE rebuttal round ran and persisted",
+      reused?.rebuttalHeld === true && (reused?.positions ?? []).some((p) => p.rebuttal?.note))
+
+    // THE PRINCIPAL'S CALL — persisted onto the SAME referral row through the real path.
+    const { recordPrincipalOverride, effectiveWinner: liveEffectiveWinner } = await import("../lib/managers/deliberation")
+    const liveLoser = (live?.positions ?? []).find((p) => p.manager !== live?.winner)?.manager
+    if (liveLoser) {
+      const ov = await recordPrincipalOverride({
+        brokerageId, signalId: raised.signalId!,
+        winner: liveLoser, reason: `${TAG} the human weighs in — demand evidence wins`, by: null,
+      }, svc)
+      check("live: the principal's call records onto the same payload (sentinelWrite path)", ov.ok, (ov as { error?: string }).error)
+      const { data: afterOv } = await svc.from("manager_signals").select("payload").eq("id", raised.signalId!).single()
+      const persistedOv = parseDeliberation((afterOv as { payload: Record<string, unknown> }).payload)
+      check("live: the override governs (effectiveWinner) while the argued record stays intact underneath",
+        persistedOv?.override?.winner === liveLoser
+        && persistedOv !== null && liveEffectiveWinner(persistedOv) === liveLoser
+        && persistedOv.winner === live?.winner)
+      check("live: an override without a reason is refused by the same path",
+        !(await recordPrincipalOverride({ brokerageId, signalId: raised.signalId!, winner: liveLoser, reason: "  " }, svc)).ok)
+    }
 
     // Metrics loader folds the live row (deliberationsHeld counts it while it exists).
     const liveMetrics = await loadTeamworkMetrics(brokerageId, { days: 1 }, svc)
-    check("live: the teamwork loader rolls the referral + deliberation off the one ledger",
-      liveMetrics.handedOff >= 1 && liveMetrics.deliberationsHeld >= 1)
+    check("live: the teamwork loader rolls the referral + deliberation + rebuttals + the principal's call off the one ledger",
+      liveMetrics.handedOff >= 1 && liveMetrics.deliberationsHeld >= 1
+      && liveMetrics.rebuttalsArgued >= 1 && (!liveLoser || liveMetrics.principalOverrides >= 1))
 
     // Non-deliberative + unknown domains refuse escalation at runDeliberation itself.
     const notDelib = await runDeliberation({

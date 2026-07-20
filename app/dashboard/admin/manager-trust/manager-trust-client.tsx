@@ -6,10 +6,10 @@ import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
-import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot, Lock, Brain, Undo2, Ban, ArrowRightLeft, CalendarClock, CheckCircle2, Scale, Trophy, Handshake, MessageSquareWarning } from "lucide-react"
+import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot, Lock, Brain, Undo2, Ban, ArrowRightLeft, CalendarClock, CheckCircle2, Scale, Trophy, Handshake, MessageSquareWarning, Gavel, Quote } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import {
-  setManagerAutonomy, vetoLearnedAdjustment, completeRegionalConventionReview,
+  setManagerAutonomy, vetoLearnedAdjustment, completeRegionalConventionReview, overrideDeliberationWinner,
   type ManagerTrustRow, type CrossManagerReferralView, type StandingReviewView,
 } from "@/app/actions/admin/manager-evals"
 import type { LearnedAdjustmentView } from "@/lib/managers/learning-loop"
@@ -17,6 +17,7 @@ import type { TrustTier, AutonomyPosture } from "@/lib/managers/eval-scoring"
 // Type-only imports — erased at build time (the modules themselves are server-side).
 import type { TeamworkMetrics } from "@/lib/managers/teamwork-metrics"
 import type { DeliberationRecord } from "@/lib/managers/deliberation"
+import type { AccuracyGateVerdict } from "@/lib/managers/accuracy-gate"
 // Pure registry data (no I/O) — the ONE source of truth for the collaboration map,
 // so this surface can never drift from what the referral handler actually enforces.
 import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/manager-registry"
@@ -37,7 +38,7 @@ const AUTONOMY_LABEL: Record<AutonomyPosture, string> = {
 }
 
 export function ManagerTrustClient({
-  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null,
+  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null, accuracyGates = [],
 }: {
   managers: ManagerTrustRow[]
   team: { passRate: number; total: number; trustedCount: number; managerCount: number }
@@ -45,11 +46,14 @@ export function ManagerTrustClient({
   referrals?: CrossManagerReferralView[]
   standingReviews?: StandingReviewView[]
   teamwork?: TeamworkMetrics | null
+  /** Per-domain accuracy-gate verdicts (round 36, accuracy-driven autonomy). */
+  accuracyGates?: AccuracyGateVerdict[]
 }) {
   const { toast } = useToast()
   const [managers, setManagers] = useState<ManagerTrustRow[]>(initialManagers)
   const [learned, setLearned] = useState<LearnedAdjustmentView[]>(initialLearned)
   const [reviews, setReviews] = useState<StandingReviewView[]>(initialReviews)
+  const [referralRows, setReferralRows] = useState<CrossManagerReferralView[]>(referrals)
   const [saving, setSaving] = useState<string | null>(null)
   const [vetoing, setVetoing] = useState<string | null>(null)
   const [completingReview, setCompletingReview] = useState<string | null>(null)
@@ -127,6 +131,44 @@ export function ManagerTrustClient({
             No graded sessions yet. As your managers run outcome-graded work (Anthropic Managed Agents'
             rubric grader), their results appear here and each manager earns a trust tier — until then,
             all managers default to <strong>Approval required</strong> for safety.
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Accuracy gate — accuracy-driven autonomy (round 36): an EXPLICIT 'autonomous'
+          posture must also be backed by the domain's measured prediction-accuracy rail.
+          The verdicts below are the exact ones dispatch enforces at the egress. */}
+      {accuracyGates.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2"><Scale className="h-4 w-4" />Accuracy gate — autonomy must be earned by prediction accuracy</CardTitle>
+            <CardDescription>
+              A manager granted <em>autonomous</em> may still be held to the approval queue when its
+              domain&apos;s prediction-accuracy rail hasn&apos;t earned the bar — measured from the same honest
+              outcome ledgers as the accuracy panel. Halts always win; this gate never overrides them
+              and never grants autonomy on its own.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {accuracyGates.map((g) => {
+              const badge =
+                g.state === "earned" ? { label: "Earned", cls: "bg-emerald-100 text-emerald-800 border-emerald-200" } :
+                g.state === "supervised" ? { label: "Stays supervised", cls: "bg-amber-100 text-amber-800 border-amber-200" } :
+                { label: "No signal", cls: "bg-gray-100 text-gray-600 border-gray-200" }
+              return (
+                <div key={g.domain ?? g.railId ?? g.reason} className="flex items-start justify-between gap-3 rounded-lg border p-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium capitalize">{(g.domain ?? "domain").replace(/_/g, " ")}</span>
+                      <Badge variant="outline" className={`text-[11px] ${badge.cls}`}>{badge.label}</Badge>
+                      {g.railId && <Badge variant="outline" className="text-[11px]">{g.railId.replace(/_/g, " ")} rail</Badge>}
+                      <span className="text-[11px] text-muted-foreground">{g.observations} graded outcome{g.observations === 1 ? "" : "s"}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">{g.reason}</p>
+                  </div>
+                </div>
+              )
+            })}
           </CardContent>
         </Card>
       )}
@@ -287,12 +329,14 @@ export function ManagerTrustClient({
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
               <TeamworkStat label="Handed off" value={teamwork.handedOff} />
               <TeamworkStat label="Picked up & acted" value={teamwork.resolved} />
               <TeamworkStat label="Median pickup" value={teamwork.medianPickupHours !== null ? `${teamwork.medianPickupHours}h` : "—"} />
               <TeamworkStat label="Deliberations held" value={teamwork.deliberationsHeld} />
+              <TeamworkStat label="Rebuttals argued" value={teamwork.rebuttalsArgued} />
               <TeamworkStat label="Dissents recorded" value={teamwork.dissentsRecorded} />
+              <TeamworkStat label="Principal's calls" value={teamwork.principalOverrides} />
             </div>
             {teamwork.deliberationsUnavailable > 0 && (
               <p className="text-[11px] text-muted-foreground mt-2">
@@ -315,14 +359,14 @@ export function ManagerTrustClient({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {referrals.length === 0 ? (
+          {referralRows.length === 0 ? (
             <p className="text-sm text-muted-foreground py-2">
               No referrals yet — they appear when a manager&apos;s sweep raises work into a co-managed domain
               (first live emitter: the Cron Manager referring approval kinds aging past the 48h SLA to their owners).
             </p>
           ) : (
             <div className="space-y-2">
-              {referrals.map((r) => (
+              {referralRows.map((r) => (
                 <div key={r.id} className="rounded-lg border p-3">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] ${MANAGERS[r.from as ManagerKey]?.accent ?? "bg-slate-100 text-slate-700"}`}>{r.fromLabel}</span>
@@ -341,7 +385,14 @@ export function ManagerTrustClient({
                       {r.toLabel}: {r.action}
                     </p>
                   )}
-                  {r.deliberation && <DeliberationBlock record={r.deliberation} />}
+                  {r.deliberation && (
+                    <DeliberationBlock
+                      record={r.deliberation}
+                      referralId={r.id}
+                      onOverridden={(updated) =>
+                        setReferralRows((cur) => cur.map((x) => (x.id === r.id ? { ...x, deliberation: updated } : x)))}
+                    />
+                  )}
                 </div>
               ))}
             </div>
@@ -403,10 +454,23 @@ function TeamworkStat({ label, value }: { label: string; value: string | number 
   )
 }
 
-/** THE ARGUMENT, rendered (round 35): every manager's grounded position, the winner
- *  with the stated why-this-beats-the-others, and honest dissent — or the honest
- *  'deliberation unavailable' when the model couldn't be reached. */
-function DeliberationBlock({ record }: { record: DeliberationRecord }) {
+/** THE ARGUMENT, rendered (round 35; rebuttals + the principal's call round 36):
+ *  every manager's grounded position, the ONE bounded rebuttal round's cited
+ *  pushbacks, the winner with the stated why-this-beats-the-others, honest dissent,
+ *  and the human's recorded override — or the honest 'deliberation unavailable' when
+ *  the model couldn't be reached. */
+function DeliberationBlock({
+  record, referralId, onOverridden,
+}: {
+  record: DeliberationRecord
+  referralId: string
+  onOverridden: (updated: DeliberationRecord) => void
+}) {
+  const { toast } = useToast()
+  const [callOpen, setCallOpen] = useState(false)
+  const [callWinner, setCallWinner] = useState<string>("")
+  const [callReason, setCallReason] = useState("")
+  const [savingCall, setSavingCall] = useState(false)
   const accent = (key: string) => (MANAGERS as Record<string, { accent: string; label: string }>)[key]?.accent ?? "bg-slate-100 text-slate-700"
   const label = (key: string) => (MANAGERS as Record<string, { accent: string; label: string }>)[key]?.label ?? key
 
@@ -420,10 +484,31 @@ function DeliberationBlock({ record }: { record: DeliberationRecord }) {
       </div>
     )
   }
+
+  async function recordCall() {
+    if (!callWinner || !callReason.trim()) {
+      toast({ title: "The principal's call needs a pick and a reason", variant: "destructive" })
+      return
+    }
+    setSavingCall(true)
+    const r = await overrideDeliberationWinner(referralId, callWinner, callReason.trim())
+    setSavingCall(false)
+    if (!r.ok) {
+      toast({ title: "Could not record the call", description: r.error, variant: "destructive" })
+      return
+    }
+    onOverridden(r.record)
+    setCallOpen(false)
+    setCallWinner("")
+    setCallReason("")
+    toast({ title: "Principal's call recorded", description: "Your override is on the deliberation ledger with the stated reason." })
+  }
+
   return (
     <div className="mt-2 rounded-md border bg-muted/30 p-2 space-y-2">
       <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground flex items-center gap-1">
         <Scale className="h-3 w-3" /> The argument — {record.positions.length} positions
+        {record.rebuttalHeld ? <span className="normal-case tracking-normal">· one rebuttal round held</span> : null}
       </p>
       {record.positions.map((p) => (
         <div key={p.manager} className={`rounded border p-2 ${p.manager === record.winner ? "border-emerald-300 bg-emerald-50/40" : "bg-background"}`}>
@@ -431,6 +516,9 @@ function DeliberationBlock({ record }: { record: DeliberationRecord }) {
             <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] ${accent(p.manager)}`}>{label(p.manager)}</span>
             {p.manager === record.winner && (
               <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200 text-[10px] gap-1"><Trophy className="h-3 w-3" />winning position</Badge>
+            )}
+            {record.override?.winner === p.manager && (
+              <Badge className="bg-indigo-100 text-indigo-800 border-indigo-200 text-[10px] gap-1"><Gavel className="h-3 w-3" />principal&apos;s pick</Badge>
             )}
             {record.dissent?.manager === p.manager && (
               <Badge className="bg-orange-100 text-orange-800 border-orange-200 text-[10px] gap-1"><MessageSquareWarning className="h-3 w-3" />dissent on the record</Badge>
@@ -448,6 +536,21 @@ function DeliberationBlock({ record }: { record: DeliberationRecord }) {
               ))}
             </ul>
           )}
+          {p.rebuttal?.note && (
+            <div className="mt-1.5 rounded border border-slate-200 bg-slate-50/60 p-1.5">
+              <p className="text-[11px] text-slate-700 flex items-start gap-1">
+                <Quote className="h-3 w-3 mt-0.5 shrink-0" />
+                <span><span className="font-medium">Rebuts the others:</span> {p.rebuttal.note}</span>
+              </p>
+              {p.rebuttal.evidence.length > 0 && (
+                <ul className="mt-0.5 space-y-0.5 pl-4">
+                  {p.rebuttal.evidence.map((e, i) => (
+                    <li key={i} className="text-[11px] font-mono text-muted-foreground truncate">📎 {e}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </div>
       ))}
       <div className="rounded border border-emerald-200 bg-emerald-50/50 p-2">
@@ -460,6 +563,58 @@ function DeliberationBlock({ record }: { record: DeliberationRecord }) {
           <p className="text-xs text-orange-900">
             <span className="font-medium">{label(record.dissent.manager)} dissents:</span> {record.dissent.note}
           </p>
+        </div>
+      )}
+      {/* THE PRINCIPAL'S CALL (round 36) — the human weighs in: override the argued
+          winner with a stated reason, recorded on the same deliberation ledger. */}
+      {record.override ? (
+        <div className="rounded border border-indigo-200 bg-indigo-50/50 p-2">
+          <p className="text-xs text-indigo-900 flex items-start gap-1">
+            <Gavel className="h-3 w-3 mt-0.5 shrink-0" />
+            <span>
+              <span className="font-medium">Principal&apos;s call — {label(record.override.winner)} governs</span>
+              {record.override.winner !== record.winner ? <> (overriding {label(record.winner)}&apos;s argued win)</> : <> (confirming the argued win)</>}:
+              {" "}{record.override.reason}
+              <span className="text-indigo-700/70"> · {new Date(record.override.at).toLocaleDateString()}</span>
+            </span>
+          </p>
+        </div>
+      ) : callOpen ? (
+        <div className="rounded border border-indigo-200 bg-indigo-50/30 p-2 space-y-2">
+          <p className="text-[11px] font-medium text-indigo-900 flex items-center gap-1">
+            <Gavel className="h-3 w-3" /> The principal&apos;s call — pick the position that governs, and say why
+          </p>
+          <Select value={callWinner || undefined} onValueChange={setCallWinner}>
+            <SelectTrigger className="h-8 text-xs bg-background">
+              <SelectValue placeholder="Pick the winning position" />
+            </SelectTrigger>
+            <SelectContent>
+              {record.positions.map((p) => (
+                <SelectItem key={p.manager} value={p.manager}>
+                  {label(p.manager)}{p.manager === record.winner ? " (argued winner)" : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <textarea
+            value={callReason}
+            onChange={(e) => setCallReason(e.target.value)}
+            placeholder="Your stated reason — required; an unexplained override is refused"
+            className="w-full rounded-md border bg-background p-2 text-xs min-h-[52px]"
+            maxLength={500}
+          />
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="ghost" onClick={() => setCallOpen(false)} disabled={savingCall}>Cancel</Button>
+            <Button size="sm" onClick={recordCall} disabled={savingCall || !callWinner || !callReason.trim()}>
+              <Gavel className="h-3.5 w-3.5 mr-1" />Record the call
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex justify-end">
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setCallOpen(true)}>
+            <Gavel className="h-3.5 w-3.5 mr-1" />Principal&apos;s call — override the winner
+          </Button>
         </div>
       )}
     </div>

@@ -1718,6 +1718,26 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
         entityType: "listing", entityId: signal.entityId, contactId: null,
         payload: { property_address: addr, play, reasons },
       }, ctx.supabase)
+      // DELIBERATIVE EMITTER (round 36, listing_demand_bridge): the predictor called a PRICE
+      // conversation — the exact seller-price-vs-buyer-demand dispute the registry marks
+      // deliberative. Raise the governed referral so the co-managers ARGUE the price move
+      // (grounded positions + one rebuttal round + resolution + honest dissent) before the
+      // principals act. Recency-deduped per listing over the bus ledger; best-effort — the
+      // seller play above already reached the humans.
+      if (play === "price_strategy") {
+        try {
+          const { raiseReferralDeduped } = await import("@/lib/managers/cross-referral")
+          await raiseReferralDeduped({
+            brokerageId: ctx.brokerageId, fromManager: "listing_concierge", toManager: "shopping_agent",
+            collabDomain: "listing_demand_bridge",
+            ask: `${addr} is heading for a stall and the predictor recommends a price conversation` +
+              `${reasons.length ? ` (${reasons.join("; ")})` : ""}. Argue the price move: the seller side's list-price case vs the demand evidence (saves, alerts, live offers).`,
+            entityType: "listing", entityId: signal.entityId,
+            payload: { property_address: addr },
+            dedupe: { stall_price_listing_id: signal.entityId },
+          }, ctx.supabase)
+        } catch { /* best-effort — never blocks the stall play */ }
+      }
     }
     return res.ok ? `proposed a gated early "${play}" recommendation + handed the stall to the Shopping Agent to re-prospect savers` : null
   },

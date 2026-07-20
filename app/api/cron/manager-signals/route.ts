@@ -87,18 +87,21 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // CROSS-MANAGEMENT (round 34) — the Cron Manager's approval-queue SLA sweep: any
-    // tenant with a >48h-aging approval kind gets a governed cross_manager_referral
-    // raised INTO the owning manager's domain (approval_queue_slo collaboration).
-    // Cross-tenant + recency-deduped inside the sweep; the referrals published here
-    // are consumed by the shared referral handler on the NEXT consume pass.
+    // CROSS-MANAGEMENT (round 34; registry-driven since round 36) — the referral SWEEP
+    // emitters run from the REFERRAL_EMITTERS registry: the Cron Manager's approval-SLA
+    // sweep (approval_queue_slo), the AI ISA's lead-quality sweep (lead_quality_spend,
+    // deliberative) and the Recruiting Manager's offer-terms sweep
+    // (recruiting_offer_economics, deliberative). Cross-tenant + recency-deduped inside
+    // each sweep over the bus ledger itself; adding a sweep to the registry auto-joins it
+    // here. The referrals published are consumed by the shared referral handler on the
+    // NEXT consume pass (deliberative domains escalate to the full argued deliberation).
     try {
-      const { publishApprovalSlaReferrals } = await import("@/lib/managers/cross-referral")
-      const sla = await publishApprovalSlaReferrals(supabase)
-      published += sla.published
-      for (const err of sla.errors.slice(0, 5)) errors.push(`sla-referral: ${err}`)
+      const { runReferralSweeps } = await import("@/lib/managers/cross-referral")
+      const sweeps = await runReferralSweeps(supabase)
+      published += sweeps.published
+      for (const err of sweeps.errors.slice(0, 10)) errors.push(`referral-sweep: ${err}`)
     } catch (e: any) {
-      errors.push(`sla-referral-sweep: ${e?.message ?? String(e)}`)
+      errors.push(`referral-sweeps: ${e?.message ?? String(e)}`)
     }
 
     await recordCronSuccessAction({

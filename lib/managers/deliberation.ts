@@ -18,11 +18,26 @@
  * citations — anything it invents is filtered out (filterEvidenceToCitations), so an
  * argument can never stand on a fact that isn't in the tenant's own tables.
  *
- * A RESOLUTION pass then compares the positions against the situation's facts, picks
- * the winner WITH the stated why-this-beats-the-others, and records honest DISSENT
- * when a losing position had merit — the same visible-disagreement idiom as the
- * peer-review dissent rail (lib/kernel/manager-dissent.ts), extended from one
- * reviewer's objections to a full argued debate.
+ * THE REBUTTAL ROUND (round 36 — full build-out): when the argued positions directly
+ * conflict (distinct proposals for the same situation), each manager gets EXACTLY ONE
+ * bounded rebuttal — a cited pushback on the others' positions, grounded through the
+ * SAME guard (rebuttal evidence is filtered to that manager's own real citations).
+ * One round, never more (the code has no loop to escalate); an engine without a rebut
+ * capability simply holds no rebuttal round — honestly recorded, never faked.
+ *
+ * A RESOLUTION pass then compares the positions (rebuttals included) against the
+ * situation's facts, picks the winner WITH the stated why-this-beats-the-others, and
+ * records honest DISSENT when a losing position had merit — the same
+ * visible-disagreement idiom as the peer-review dissent rail
+ * (lib/kernel/manager-dissent.ts), extended from one reviewer's objections to a full
+ * argued debate.
+ *
+ * THE PRINCIPAL'S CALL (round 36): the human supervising principal can OVERRIDE the
+ * argued winner with a stated reason — recorded on the SAME payload record
+ * (applyPrincipalOverride / recordPrincipalOverride, persisted via sentinelWrite),
+ * never a parallel ledger. The argued record stays intact underneath: the override
+ * names its winner + reason + who + when, and effectiveWinner() resolves what
+ * actually governs. Teamwork metrics count the overrides.
  *
  * LEDGER: the deliberation persists onto the EXISTING referral ledger — the
  * cross_manager_referral row on manager_signals itself (payload.deliberation), one
@@ -62,6 +77,15 @@ export interface ManagerBrief {
   citations: string[]
 }
 
+/** One manager's bounded rebuttal of the OTHERS' positions (round 36) — cited from
+ *  its OWN loader's real citations, same grounding guard as the position itself. */
+export interface PositionRebuttal {
+  /** The factual pushback on the other positions (empty note = no rebuttal held). */
+  note: string
+  /** Field-level citations — filtered to the rebutting manager's REAL citations. */
+  evidence: string[]
+}
+
 /** One manager's argued position. */
 export interface ManagerPosition {
   manager: ManagerKey
@@ -70,12 +94,26 @@ export interface ManagerPosition {
   risks: string[]
   /** Field-level citations — filtered to the loader's REAL citations, never invented. */
   evidence: string[]
+  /** The ONE bounded rebuttal round's cited pushback (absent/null = none argued). */
+  rebuttal?: PositionRebuttal | null
 }
 
 export interface DeliberationDissent {
   manager: ManagerKey
   /** Why the losing position had merit — honest, on the record. */
   note: string
+}
+
+/** THE PRINCIPAL'S CALL (round 36) — the human's recorded override of the argued
+ *  winner, on the SAME payload record. The argued record stays intact underneath. */
+export interface DeliberationOverride {
+  /** The position the principal picked instead — must be one that actually argued. */
+  winner: ManagerKey
+  /** The principal's stated reason — required; an unexplained override is refused. */
+  reason: string
+  /** users.id of the principal who made the call (null when unknown). */
+  by: string | null
+  at: string
 }
 
 export interface DeliberationRecord {
@@ -90,6 +128,11 @@ export interface DeliberationRecord {
   /** Honest reason when status === 'unavailable'. */
   unavailableReason: string | null
   deliberatedAt: string
+  /** True when the ONE bounded rebuttal round ran (positions directly conflicted and
+   *  the engine could rebut). Absent on pre-round-36 records — treated as false. */
+  rebuttalHeld?: boolean
+  /** The principal's recorded call (round 36) — null/absent until a human overrides. */
+  override?: DeliberationOverride | null
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -124,6 +167,56 @@ export function validResolutionWinner(winner: string, positions: ManagerPosition
   return winner in MANAGERS && positions.some((p) => p.manager === winner)
 }
 
+/**
+ * PURE: do the argued positions DIRECTLY CONFLICT — i.e. is there anything to rebut?
+ * Two or more managers proposing materially different solutions is a direct conflict;
+ * unanimous (or single-position) deliberations hold no rebuttal round — there is
+ * nothing to argue against.
+ */
+export function positionsDirectlyConflict(positions: ManagerPosition[]): boolean {
+  if (positions.length < 2) return false
+  const normalized = new Set(positions.map((p) => p.proposal.trim().toLowerCase().replace(/\s+/g, " ")))
+  return normalized.size > 1
+}
+
+/**
+ * PURE — THE PRINCIPAL'S CALL: apply a human override onto a finished deliberation.
+ * Refused honestly when the record isn't a resolved argument, when the named winner
+ * never argued, or when no reason is stated (an unexplained override is not
+ * governance). Re-overriding replaces the previous call (the latest human decision
+ * is the decision of record). Returns a NEW record — never mutates the input.
+ */
+export function applyPrincipalOverride(
+  record: DeliberationRecord,
+  call: { winner: string; reason: string; by?: string | null; now?: Date },
+): { ok: true; record: DeliberationRecord } | { ok: false; error: string } {
+  if (record.status !== "resolved" || !record.winner) {
+    return { ok: false, error: "only a resolved deliberation can take a principal's call — this one recorded no argued positions" }
+  }
+  const reason = call.reason.trim()
+  if (!reason) return { ok: false, error: "a principal's call requires a stated reason — an unexplained override is refused" }
+  if (!validResolutionWinner(call.winner, record.positions)) {
+    return { ok: false, error: `'${call.winner}' never argued a position in this deliberation — the call must pick one of the argued positions` }
+  }
+  return {
+    ok: true,
+    record: {
+      ...record,
+      override: {
+        winner: call.winner,
+        reason: reason.slice(0, 500),
+        by: call.by ?? null,
+        at: (call.now ?? new Date()).toISOString(),
+      },
+    },
+  }
+}
+
+/** PURE: what actually governs — the principal's call when recorded, else the argued winner. */
+export function effectiveWinner(record: DeliberationRecord): ManagerKey | null {
+  return record.override?.winner ?? record.winner
+}
+
 /** PURE: the consumed-action / feed one-liner for a finished deliberation. */
 export function summarizeDeliberation(record: DeliberationRecord): string {
   const domainLabel = MANAGER_COLLABORATIONS[record.domain]?.label ?? record.domain
@@ -132,12 +225,18 @@ export function summarizeDeliberation(record: DeliberationRecord): string {
   }
   const winnerLabel = MANAGERS[record.winner]?.label ?? record.winner
   const others = record.positions.filter((p) => p.manager !== record.winner).map((p) => MANAGERS[p.manager]?.label ?? p.manager)
+  const rebuttals = record.positions.filter((p) => p.rebuttal?.note).length
   let line = `deliberated '${domainLabel}' — ${record.positions.length} positions argued` +
     (others.length > 0 ? ` (${[winnerLabel, ...others].join(" vs ")})` : "") +
+    (record.rebuttalHeld ? `, one rebuttal round held (${rebuttals} cited rebuttal${rebuttals === 1 ? "" : "s"})` : "") +
     `; ${winnerLabel}'s proposal won: ${record.resolution}`
   if (record.dissent) {
     const dLabel = MANAGERS[record.dissent.manager]?.label ?? record.dissent.manager
     line += ` — DISSENT on the record from ${dLabel}: ${record.dissent.note}`
+  }
+  if (record.override) {
+    const oLabel = MANAGERS[record.override.winner]?.label ?? record.override.winner
+    line += ` — PRINCIPAL'S CALL: the human overrode the argued winner, picking ${oLabel} (${record.override.reason})`
   }
   return line.slice(0, 900)
 }
@@ -265,6 +364,28 @@ const loadFinanceManagerFacts: FactLoader = async (svc, ctx) => {
     const scoped = ctx.entityType === "transaction" && ctx.entityId ? openRows.find((t) => t.id === ctx.entityId) : null
     if (scoped) citations.push(`transactions.estimated_commission=${Math.round(dealCommission(scoped))} (transactions.id=${scoped.id})`)
   }
+  // COMMISSION ECONOMICS (round 36 — grounds the recruiting-offer argument): the live
+  // split/cap policy of record — agent_commission_profiles (written at provisioning)
+  // and agent_cap_tracking (advanced by the commission engine on every disbursement).
+  const [{ data: profiles }, { data: caps }] = await Promise.all([
+    svc.from("agent_commission_profiles").select("agent_id, split_percent, cap_amount")
+      .eq("brokerage_id", ctx.brokerageId).eq("is_active", true).limit(200),
+    svc.from("agent_cap_tracking").select("agent_id, cap_amount, cap_paid_to_date, is_capped")
+      .eq("brokerage_id", ctx.brokerageId).limit(200),
+  ])
+  const profRows = (profiles ?? []) as any[]
+  const withSplit = profRows.filter((p) => p.split_percent != null)
+  if (withSplit.length > 0) {
+    const avgSplit = Math.round((withSplit.reduce((s, p) => s + Number(p.split_percent), 0) / withSplit.length) * 10) / 10
+    facts.push(`${profRows.length} active commission profile${profRows.length === 1 ? "" : "s"} — average split ${avgSplit}% to the agent`)
+    citations.push(`agent_commission_profiles.avg_split_percent=${avgSplit} count=${profRows.length} (agent_commission_profiles.brokerage_id=${ctx.brokerageId})`)
+  }
+  const capRows = (caps ?? []) as any[]
+  if (capRows.length > 0) {
+    const capped = capRows.filter((c) => c.is_capped === true).length
+    facts.push(`${capRows.length} agent${capRows.length === 1 ? "" : "s"} on cap tracking${capped > 0 ? ` — ${capped} already capped this anniversary year` : ""}`)
+    citations.push(`agent_cap_tracking.count=${capRows.length} capped=${capped} (agent_cap_tracking.brokerage_id=${ctx.brokerageId})`)
+  }
   return { facts, citations }
 }
 
@@ -352,6 +473,96 @@ const loadCronManagerFacts: FactLoader = async (svc, ctx) => {
   return { facts, citations }
 }
 
+/** Lead-side conversion evidence: fresh leads + what the ISA's qualification ledger
+ *  actually says about them — the AI ISA's seat in the lead-quality budget argument. */
+const loadAiIsaFacts: FactLoader = async (svc, ctx) => {
+  const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+  const [{ data: leadRows }, { data: qualRows }] = await Promise.all([
+    svc.from("leads").select("id, source, lifecycle_state")
+      .eq("brokerage_id", ctx.brokerageId).gte("created_at", since).limit(1000),
+    svc.from("ai_isa_qualifications").select("id, qualification_result")
+      .eq("brokerage_id", ctx.brokerageId).gte("qualified_at", since).limit(1000),
+  ])
+  const facts: string[] = [], citations: string[] = []
+  const leads = (leadRows ?? []) as any[]
+  if (leads.length > 0) {
+    const bySource = new Map<string, number>()
+    for (const l of leads) bySource.set(l.source ?? "unknown", (bySource.get(l.source ?? "unknown") ?? 0) + 1)
+    const top = [...bySource.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2)
+    facts.push(`${leads.length} new lead${leads.length === 1 ? "" : "s"} in 30d${top.length ? ` (top sources: ${top.map(([s, n]) => `${s} ${n}`).join(", ")})` : ""}`)
+    citations.push(`leads.count_30d=${leads.length} (leads.brokerage_id=${ctx.brokerageId})`)
+    if (top[0]) citations.push(`leads.top_source_30d=${top[0][0]} count=${top[0][1]} (leads.brokerage_id=${ctx.brokerageId})`)
+  }
+  const quals = (qualRows ?? []) as any[]
+  if (quals.length > 0) {
+    const qualified = quals.filter((q) => q.qualification_result === "qualified" || q.qualification_result === "appointment_set").length
+    facts.push(`${quals.length} ISA qualification pass${quals.length === 1 ? "" : "es"} in 30d — ${qualified} qualified/appointment-set, ${quals.length - qualified} not`)
+    citations.push(`ai_isa_qualifications.qualified_30d=${qualified} total=${quals.length} (ai_isa_qualifications.brokerage_id=${ctx.brokerageId})`)
+  }
+  return { facts, citations }
+}
+
+/** Talent pipeline: the live recruits funnel — the Recruiting Manager's seat in the
+ *  offer-terms argument (who's on the table, at what volume, from where). */
+const loadRecruitingManagerFacts: FactLoader = async (svc, ctx) => {
+  const { data } = await svc.from("recruits")
+    .select("id, first_name, last_name, status, annual_volume, years_experience, current_brokerage")
+    .eq("brokerage_id", ctx.brokerageId)
+    .in("status", ["prospect", "contacted", "interviewing", "offer_extended"])
+    .limit(200)
+  const rows = (data ?? []) as any[]
+  const facts: string[] = [], citations: string[] = []
+  if (rows.length > 0) {
+    const byStatus = new Map<string, number>()
+    for (const r of rows) byStatus.set(r.status ?? "unknown", (byStatus.get(r.status ?? "unknown") ?? 0) + 1)
+    facts.push(`${rows.length} live recruit${rows.length === 1 ? "" : "s"} in the pipeline (${[...byStatus.entries()].map(([s, n]) => `${n} ${s}`).join(", ")})`)
+    citations.push(`recruits.pipeline_count=${rows.length} (recruits.brokerage_id=${ctx.brokerageId})`)
+  }
+  const scoped = ctx.entityType === "recruit" && ctx.entityId ? rows.find((r) => r.id === ctx.entityId) : null
+  const detail = scoped ?? rows.find((r) => r.status === "offer_extended") ?? null
+  if (detail) {
+    const name = [detail.first_name, detail.last_name].filter(Boolean).join(" ").trim() || "candidate"
+    facts.push(`${name} — status ${detail.status}${detail.annual_volume != null ? `, ${usd(Number(detail.annual_volume))} annual volume` : ""}${detail.years_experience != null ? `, ${detail.years_experience} yrs experience` : ""}${detail.current_brokerage ? `, currently at ${detail.current_brokerage}` : ""}`)
+    citations.push(`recruits.status=${detail.status} (recruits.id=${detail.id})`)
+    if (detail.annual_volume != null) citations.push(`recruits.annual_volume=${detail.annual_volume} (recruits.id=${detail.id})`)
+    if (detail.years_experience != null) citations.push(`recruits.years_experience=${detail.years_experience} (recruits.id=${detail.id})`)
+  }
+  return { facts, citations }
+}
+
+/** The vendor book: the jobs on the referred transaction + what the ratings ledger
+ *  actually says about those vendors — the Data Steward's seat in the vendor-pick
+ *  argument (stewarded tables: vendors, vendor_jobs, vendor_ratings). */
+const loadDataStewardFacts: FactLoader = async (svc, ctx) => {
+  const facts: string[] = [], citations: string[] = []
+  let vendorIds: string[] = []
+  if (ctx.entityType === "transaction" && ctx.entityId) {
+    const { data: jobs } = await svc.from("vendor_jobs")
+      .select("id, vendor_id, status, job_title")
+      .eq("transaction_id", ctx.entityId).limit(20)
+    for (const j of (jobs ?? []) as any[]) {
+      facts.push(`job "${j.job_title ?? "vendor job"}" — status ${j.status}`)
+      citations.push(`vendor_jobs.status=${j.status} (vendor_jobs.id=${j.id})`)
+      if (j.vendor_id) vendorIds.push(j.vendor_id)
+    }
+  }
+  if (vendorIds.length === 0) {
+    const { data: rated } = await svc.from("vendor_ratings").select("vendor_id")
+      .eq("brokerage_id", ctx.brokerageId).limit(10)
+    vendorIds = ((rated ?? []) as any[]).map((r) => r.vendor_id).filter(Boolean)
+  }
+  if (vendorIds.length > 0) {
+    const { data: ratings } = await svc.from("vendor_ratings")
+      .select("vendor_id, avg_agent_rating, avg_client_rating, total_bookings")
+      .eq("brokerage_id", ctx.brokerageId).in("vendor_id", Array.from(new Set(vendorIds)).slice(0, 10)).limit(10)
+    for (const r of (ratings ?? []) as any[]) {
+      facts.push(`vendor ${r.vendor_id} track record — agents rate ${r.avg_agent_rating ?? "unrated"}, clients ${r.avg_client_rating ?? "unrated"}, ${r.total_bookings ?? 0} booking${(r.total_bookings ?? 0) === 1 ? "" : "s"}`)
+      citations.push(`vendor_ratings.avg_agent_rating=${r.avg_agent_rating ?? "null"} avg_client_rating=${r.avg_client_rating ?? "null"} total_bookings=${r.total_bookings ?? 0} (vendor_ratings.vendor_id=${r.vendor_id})`)
+    }
+  }
+  return { facts, citations }
+}
+
 /** Every manager that can sit at a deliberative table has a REAL loader; anyone else
  *  gets honest empties (never fabricated facts). Exported so the simulator proves a
  *  loader exists for every participant of every deliberative domain. */
@@ -364,6 +575,10 @@ export const MANAGER_FACT_LOADERS: Partial<Record<ManagerKey, FactLoader>> = {
   marketing_agent: loadMarketingAgentFacts,
   ads_manager: loadAdsManagerFacts,
   cron_manager: loadCronManagerFacts,
+  // Round 36 — the new deliberative seats, each grounded in ITS OWN stewarded tables.
+  ai_isa: loadAiIsaFacts,
+  recruiting_manager: loadRecruitingManagerFacts,
+  data_steward: loadDataStewardFacts,
 }
 
 /** Load one manager's grounded brief (empty facts when its tables are quiet — honest). */
@@ -396,6 +611,20 @@ export interface ArgueInput {
   brokerageId: string
 }
 
+/** ONE bounded rebuttal turn (round 36): a manager reads the OTHERS' positions and may
+ *  push back with cited evidence from its OWN brief — or honestly decline (null). */
+export interface RebutInput {
+  manager: ManagerKey
+  domain: CollaborationDomain
+  ask: string
+  /** This manager's own argued position. */
+  own: ManagerPosition
+  /** The other managers' positions being rebutted. */
+  others: ManagerPosition[]
+  brief: ManagerBrief
+  brokerageId: string
+}
+
 export interface ResolveInput {
   domain: CollaborationDomain
   ask: string
@@ -407,6 +636,9 @@ export interface ResolveInput {
 
 export interface DeliberationEngine {
   argue: (input: ArgueInput) => Promise<{ proposal: string; reasoning: string; risks: string[]; evidence: string[] }>
+  /** Optional ONE-round rebuttal capability. An engine without it holds no rebuttal
+   *  round (recorded honestly) — the deliberation still resolves. */
+  rebut?: (input: RebutInput) => Promise<{ rebuttal: string | null; evidence: string[] }>
   resolve: (input: ResolveInput) => Promise<{ winner: string; why: string; dissent: { manager: string; note: string } | null }>
 }
 
@@ -447,13 +679,45 @@ export function gatewayEngine(): DeliberationEngine {
       })
       return object as { proposal: string; reasoning: string; risks: string[]; evidence: string[] }
     },
+    async rebut(input) {
+      const { generateObjectRouted } = await import("@/lib/ai/models")
+      const { z } = await import("zod")
+      const info = MANAGERS[input.manager]
+      const othersText = input.others.map((p) =>
+        `--- ${MANAGERS[p.manager]?.label ?? p.manager} ---\nProposal: ${p.proposal}\nReasoning: ${p.reasoning}\nEvidence: ${p.evidence.join(" | ") || "none"}`,
+      ).join("\n\n")
+      const citationLines = input.brief.citations.length > 0
+        ? input.brief.citations.map((c) => `- ${c}`).join("\n")
+        : "(none)"
+      const { object } = await generateObjectRouted({
+        feature: "manager_deliberation",
+        brokerageId: input.brokerageId,
+        temperature: 0.2,
+        maxTokens: 400,
+        schema: z.object({
+          rebuttal: z.string().nullable().describe("Your factual pushback on the other positions — or null when you have nothing factual to dispute. Never manufacture a disagreement."),
+          evidence: z.array(z.string()).max(4).describe("Citations copied VERBATIM from your allowed citation list that back the rebuttal."),
+        }),
+        system:
+          `You are the ${info.label} in a deliberation on "${input.domain.label}". This is the ONE bounded rebuttal ` +
+          `round: read the other managers' positions and push back ONLY where your own domain's real data contradicts ` +
+          `a factual claim they rely on. If nothing factual is in dispute, return null — an honest pass beats a ` +
+          `manufactured argument. evidence[] must contain ONLY strings copied verbatim from your citation list.`,
+        prompt:
+          `SITUATION: ${input.ask}\n\nYOUR ARGUED POSITION:\nProposal: ${input.own.proposal}\nReasoning: ${input.own.reasoning}\n\n` +
+          `THE OTHER POSITIONS:\n${othersText}\n\n` +
+          `YOUR ALLOWED CITATIONS (copy verbatim into evidence[]):\n${citationLines}`,
+      })
+      return object as { rebuttal: string | null; evidence: string[] }
+    },
     async resolve(input) {
       const { generateObjectRouted } = await import("@/lib/ai/models")
       const { z } = await import("zod")
       const positionsText = input.positions.map((p) =>
         `--- ${MANAGERS[p.manager]?.label ?? p.manager} (key: ${p.manager}) ---\n` +
         `Proposal: ${p.proposal}\nReasoning: ${p.reasoning}\nRisks: ${p.risks.join("; ") || "none stated"}\n` +
-        `Evidence: ${p.evidence.join(" | ") || "none"}`,
+        `Evidence: ${p.evidence.join(" | ") || "none"}` +
+        (p.rebuttal?.note ? `\nRebuttal of the others (cited): ${p.rebuttal.note}` : ""),
       ).join("\n\n")
       const { object } = await generateObjectRouted({
         feature: "manager_deliberation",
@@ -519,6 +783,34 @@ export async function deliberate(params: {
         evidence: filterEvidenceToCitations((raw.evidence ?? []).map(String), brief.citations),
       })
     }
+
+    // ── THE ONE BOUNDED REBUTTAL ROUND (round 36) — held ONLY when the positions
+    // directly conflict AND the engine can rebut. A single pass over the positions
+    // (no loop, no second round — the bound is structural), each rebuttal grounded
+    // through the SAME guard against the rebutting manager's OWN citations. A manager
+    // may honestly decline (null) — no manufactured disagreement. ──
+    let rebuttalHeld = false
+    if (params.engine.rebut && positionsDirectlyConflict(positions)) {
+      rebuttalHeld = true
+      for (let i = 0; i < positions.length; i++) {
+        const own = positions[i]
+        const brief = params.briefs.find((b) => b.manager === own.manager)
+        if (!brief) continue
+        const raw = await params.engine.rebut({
+          manager: own.manager, domain: params.domain, ask: params.ask,
+          own, others: positions.filter((_, j) => j !== i),
+          brief, brokerageId: params.brokerageId,
+        })
+        const note = String(raw.rebuttal ?? "").trim()
+        positions[i] = {
+          ...own,
+          rebuttal: note
+            ? { note: note.slice(0, 600), evidence: filterEvidenceToCitations((raw.evidence ?? []).map(String), brief.citations) }
+            : null,
+        }
+      }
+    }
+
     const situationFacts = params.briefs.flatMap((b) => b.facts)
     const res = await params.engine.resolve({
       domain: params.domain, ask: params.ask, positions, situationFacts, brokerageId: params.brokerageId,
@@ -537,9 +829,9 @@ export async function deliberate(params: {
       dissent = { manager: res.dissent.manager as ManagerKey, note: String(res.dissent.note).slice(0, 500) }
     }
     return {
-      ...base, status: "resolved", positions,
+      ...base, status: "resolved", positions, rebuttalHeld,
       winner: res.winner, resolution: String(res.why ?? "").slice(0, 900), dissent,
-      unavailableReason: null,
+      unavailableReason: null, override: null,
     }
   } catch (e) {
     return {
@@ -600,4 +892,48 @@ export async function runDeliberation(
     })
   }
   return record
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE PRINCIPAL'S CALL — persistence (round 36). The admin action wraps this with
+// auth; the simulator drives it directly. Same ledger (the referral row's own
+// payload.deliberation), same sentinelWrite (a lost override would silently leave
+// the argued winner governing against the human's stated decision).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function recordPrincipalOverride(
+  input: {
+    brokerageId: string
+    /** The referral's manager_signals row id — the ONE ledger the record lives on. */
+    signalId: string
+    winner: string
+    reason: string
+    by?: string | null
+    now?: Date
+  },
+  client?: Svc,
+): Promise<{ ok: true; record: DeliberationRecord } | { ok: false; error: string }> {
+  const svc = client ?? createServiceClient()
+  const { data: row } = await svc.from("manager_signals")
+    .select("id, payload")
+    .eq("id", input.signalId)
+    .eq("brokerage_id", input.brokerageId)
+    .eq("signal_type", "cross_manager_referral")
+    .maybeSingle()
+  if (!row) return { ok: false, error: "referral not found for this brokerage" }
+  const payload = ((row as { payload: Record<string, unknown> | null }).payload ?? {}) as Record<string, unknown>
+  const record = parseDeliberation(payload)
+  if (!record) return { ok: false, error: "this referral holds no deliberation to override" }
+  const applied = applyPrincipalOverride(record, {
+    winner: input.winner, reason: input.reason, by: input.by ?? null, now: input.now,
+  })
+  if (!applied.ok) return applied
+  const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+  const landed = await sentinelWrite(svc, svc.from("manager_signals")
+    .update({ payload: { ...payload, deliberation: applied.record } })
+    .eq("id", input.signalId), {
+    table: "manager_signals", flow: "manager_deliberation_override", brokerageId: input.brokerageId,
+  })
+  if (!landed) return { ok: false, error: "could not record the principal's call — the loss is on the self-heal ledger" }
+  return { ok: true, record: applied.record }
 }

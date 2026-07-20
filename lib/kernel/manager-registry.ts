@@ -170,7 +170,7 @@ export const MANAGER_COLLABORATIONS: Record<string, CollaborationDomain> = {
     key: "listing_demand_bridge",
     label: "In-house inventory ↔ buyer demand",
     managers: ["listing_concierge", "shopping_agent"],
-    evidence: "Catalogued bus signals price_reduced, listing_back_on_market, listing_stall_reprospect and dual_transaction_timing — the seller side (listings, listing_concierge-stewarded) and the buyer side (offers / saved properties / property_alerts, shopping_agent-stewarded) already work the same in-house inventory from both ends.",
+    evidence: "Catalogued bus signals price_reduced, listing_back_on_market, listing_stall_reprospect and dual_transaction_timing — the seller side (listings, listing_concierge-stewarded) and the buyer side (offers / saved properties / property_alerts, shopping_agent-stewarded) already work the same in-house inventory from both ends. Live raiser: the stall predictor's price-strategy play (hook in lib/kernel/manager-signals.ts).",
     // A PRICING DISPUTE by construction: the seller side defends the list price /
     // seller net, the buyer side carries the demand evidence (saves, alerts, offers)
     // that says the market disagrees. Two legitimate answers — argue it.
@@ -186,7 +186,7 @@ export const MANAGER_COLLABORATIONS: Record<string, CollaborationDomain> = {
     key: "closing_money_and_risk",
     label: "Closings: money + regulatory exposure (incl. commission records)",
     managers: ["deal_coordinator", "finance_manager", "compliance_officer"],
-    evidence: "transaction_action_pending and deal_save_huddle are consumed by BOTH finance_manager and compliance_officer, routed by the failing component; rate_lock_watch and loan_milestone ride the same deals. One closing crosses three stewardships — transactions (deal_coordinator), commission_records / agent_commission_profiles (finance_manager), compliance_flags (compliance_officer) — the finance+compliance seam at disbursement (the CDA flow).",
+    evidence: "transaction_action_pending and deal_save_huddle are consumed by BOTH finance_manager and compliance_officer, routed by the failing component; rate_lock_watch and loan_milestone ride the same deals. One closing crosses three stewardships — transactions (deal_coordinator), commission_records / agent_commission_profiles (finance_manager), compliance_flags (compliance_officer) — the finance+compliance seam at disbursement (the CDA flow). Live raiser: the appraisal-gap detector (hook in app/actions/transaction-milestones.ts).",
     // The COMPLIANCE-vs-SPEED tradeoff: the coordinator argues for the close date, the
     // Finance Manager for the money being right at disbursement, the Compliance Officer
     // for the exposure being cleared first. Three accountable answers — argue it.
@@ -214,7 +214,7 @@ export const MANAGER_COLLABORATIONS: Record<string, CollaborationDomain> = {
     key: "organic_paid_content",
     label: "Organic winners → governed paid spend",
     managers: ["marketing_agent", "ads_manager"],
-    evidence: "content_winner — an organic winner on social_posts (marketing_agent-stewarded) becomes a governed launch proposal in ad_manager_actions (ads_manager-stewarded). The organic/paid boundary is a working seam, not a wall.",
+    evidence: "content_winner — an organic winner on social_posts (marketing_agent-stewarded) becomes a governed launch proposal in ad_manager_actions (ads_manager-stewarded). The organic/paid boundary is a working seam, not a wall. Live raiser: the weekly-measure cron's strong-week branch (hook in app/api/cron/marketing-agent-weekly-measure/route.ts).",
     // A BUDGET REBALANCE dispute: the same marketing dollar can double down on the
     // proven organic winner or fund the paid push — CPL evidence vs reach evidence,
     // owned by two different managers. Two legitimate answers — argue it.
@@ -225,6 +225,37 @@ export const MANAGER_COLLABORATIONS: Record<string, CollaborationDomain> = {
     label: "Inbound offer extraction → seller net-sheet",
     managers: ["data_steward", "listing_concierge"],
     evidence: "offers_compare_handoff — the Data Steward's extraction pipeline finishes AI-reading an inbound offer on an in-house listing and hands the comparison-ready offer to the Listing Concierge for the net-sheet ranking (deliberately NOT the Deal Coordinator, which only owns post-gate transactions).",
+  },
+  lead_quality_spend: {
+    key: "lead_quality_spend",
+    label: "Paid lead quality ↔ qualification evidence",
+    managers: ["ai_isa", "ads_manager"],
+    evidence: "ad_performance carries each live campaign's spend + lead counts (ad_campaigns / ad_performance, ads_manager-stewarded) while the AI ISA qualifies those same leads on the tables IT stewards (leads, ai_isa_qualifications) — the CPL number and the qualification evidence describe the SAME dollars from two seats. Live raiser: the lead-quality sweep (publishLeadQualityReferrals) fires when paid leads flow but the qualification ledger disagrees.",
+    // A BUDGET-SHIFT dispute by construction: the Ads Manager defends the CPL math,
+    // the AI ISA carries the conversion evidence that says the leads aren't turning
+    // into qualified pipeline (or that they are, and spend should scale). Two
+    // legitimate answers about the same dollars — argue it.
+    deliberate: true,
+  },
+  recruiting_offer_economics: {
+    key: "recruiting_offer_economics",
+    label: "Recruiting offer terms ↔ brokerage margin",
+    managers: ["recruiting_manager", "finance_manager"],
+    evidence: "agent_crushed_cap already flows cap/production proof from the finance-stewarded forecaster to the Recruiting Manager as recruiting ammunition (lib/kernel/commission-forecaster.ts, lib/finance/cap-crush.ts); the reverse seam is the OFFER — a recruit at recruits.status='offer_extended' (recruiting_manager-stewarded pipeline) is priced against agent_commission_profiles splits + agent_cap_tracking cap economics (finance_manager-stewarded). Live raiser: the offer-terms sweep (publishRecruitOfferReferrals).",
+    // A CAP/SPLIT-vs-MARGIN dispute: the Recruiting Manager argues the terms that WIN
+    // the candidate (volume, experience, the competing brokerage), Finance argues the
+    // split the P&L can actually carry. Two accountable answers — argue it.
+    deliberate: true,
+  },
+  transaction_vendor_selection: {
+    key: "transaction_vendor_selection",
+    label: "Transaction vendor picks: deadline fit ↔ track record",
+    managers: ["deal_coordinator", "data_steward"],
+    evidence: "assignVendorToTransaction (lib/kernel/vendors.ts) writes vendor_assignments + vendor_jobs onto a transaction the Deal Coordinator stewards, choosing from the vendor book the Data Steward stewards (vendors, vendor_ratings, vendor_jobs) — every pick trades the deal's schedule pressure against the book's rated track record. Live raiser: the assignment hook raises the governed second-look referral on each pick.",
+    // A PRICE/SCHEDULE-vs-TRACK-RECORD dispute: the deal side argues deadline fit on a
+    // live closing, the vendor steward argues what the ratings ledger actually says
+    // about this vendor vs the alternatives. Two legitimate answers — argue it.
+    deliberate: true,
   },
   approval_queue_slo: {
     key: "approval_queue_slo",

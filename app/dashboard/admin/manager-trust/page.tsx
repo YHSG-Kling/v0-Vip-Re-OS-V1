@@ -29,6 +29,15 @@ export default async function ManagerTrustPage() {
   const referrals = referralsRes.ok ? referralsRes.referrals : []
   const standingReviews = reviewsRes.ok ? reviewsRes.reviews : []
   const teamwork = teamworkRes.ok ? teamworkRes.metrics : null
+  // ACCURACY GATE (round 36): per-domain accuracy-driven-autonomy verdicts — the exact
+  // policy dispatch enforces for an 'autonomous' posture, shown with its measured reason.
+  let accuracyGates: Awaited<ReturnType<typeof import("@/lib/managers/accuracy-gate").loadAccuracyGateReport>> = []
+  if (ctx.brokerageId) {
+    try {
+      const { loadAccuracyGateReport } = await import("@/lib/managers/accuracy-gate")
+      accuracyGates = await loadAccuracyGateReport(ctx.brokerageId)
+    } catch { accuracyGates = [] }
+  }
   return (
     <ManagerTrustClient
       managers={res.managers}
@@ -37,6 +46,7 @@ export default async function ManagerTrustPage() {
       referrals={referrals}
       standingReviews={standingReviews}
       teamwork={teamwork}
+      accuracyGates={accuracyGates}
     />
   )
 }

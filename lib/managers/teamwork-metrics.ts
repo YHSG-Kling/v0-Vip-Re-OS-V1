@@ -44,6 +44,12 @@ export interface TeamworkMetrics {
   deliberationsUnavailable: number
   /** Honest dissents recorded where a losing position had merit. */
   dissentsRecorded: number
+  /** Cited rebuttals argued in the ONE bounded rebuttal round (round 36) — total
+   *  across all resolved deliberations in the period. */
+  rebuttalsArgued: number
+  /** Principal's calls (round 36) — deliberations where the human overrode the
+   *  argued winner with a stated reason. */
+  principalOverrides: number
 }
 
 /** PURE: median of a numeric list (average of the middle pair on even counts). */
@@ -57,6 +63,7 @@ export function median(values: number[]): number | null {
 /** PURE: fold the referral+deliberation ledger rows into the period's metrics. */
 export function rollupTeamwork(rows: ReferralLedgerRow[], periodDays: number): TeamworkMetrics {
   let resolved = 0, deliberationsHeld = 0, deliberationsUnavailable = 0, dissentsRecorded = 0
+  let rebuttalsArgued = 0, principalOverrides = 0
   const pickupHours: number[] = []
   for (const r of rows) {
     if (r.status === "consumed") {
@@ -71,6 +78,8 @@ export function rollupTeamwork(rows: ReferralLedgerRow[], periodDays: number): T
       if (d.status === "resolved") {
         deliberationsHeld += 1
         if (d.dissent) dissentsRecorded += 1
+        rebuttalsArgued += d.positions.filter((p) => p.rebuttal?.note).length
+        if (d.override) principalOverrides += 1
       } else {
         deliberationsUnavailable += 1
       }
@@ -85,6 +94,8 @@ export function rollupTeamwork(rows: ReferralLedgerRow[], periodDays: number): T
     deliberationsHeld,
     deliberationsUnavailable,
     dissentsRecorded,
+    rebuttalsArgued,
+    principalOverrides,
   }
 }
 
@@ -109,9 +120,15 @@ export function composeTeamworkLines(m: TeamworkMetrics): string[] {
   if (m.deliberationsHeld > 0) {
     lines.push(
       `${m.deliberationsHeld} deliberation${m.deliberationsHeld === 1 ? "" : "s"} held — the involved managers each argued a grounded position and the resolution states why the winner beat the others` +
+      (m.rebuttalsArgued > 0 ? `, with ${m.rebuttalsArgued} cited rebuttal${m.rebuttalsArgued === 1 ? "" : "s"} in the bounded rebuttal round` : "") +
       (m.dissentsRecorded > 0
         ? `; ${m.dissentsRecorded} honest dissent${m.dissentsRecorded === 1 ? "" : "s"} on the record.`
         : "."),
+    )
+  }
+  if (m.principalOverrides > 0) {
+    lines.push(
+      `${m.principalOverrides} principal's call${m.principalOverrides === 1 ? "" : "s"} — the human overrode the argued winner with a stated reason, recorded on the same ledger.`,
     )
   }
   if (m.deliberationsUnavailable > 0) {
