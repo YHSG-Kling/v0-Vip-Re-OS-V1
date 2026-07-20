@@ -192,12 +192,12 @@ async function proposeSpokenCriteriaAlert(svc: any, call: {
   }
 }
 
-export interface VoiceIntelSweepResult { candidates: number; analyzed: number; skipped: number; errors: number; callbacksProposed: number; alertsProposed: number }
+export interface VoiceIntelSweepResult { candidates: number; analyzed: number; skipped: number; errors: number; callbacksProposed: number; alertsProposed: number; followthroughActions: number }
 
 /** Hourly sweep: recent completed AI calls with transcripts, not yet analyzed
  *  (keyed by voice_call_id), newest first, capped per run (LLM cost control). */
 export async function sweepVoiceCallIntelligence(svc: any, limit = 15): Promise<VoiceIntelSweepResult> {
-  const r: VoiceIntelSweepResult = { candidates: 0, analyzed: 0, skipped: 0, errors: 0, callbacksProposed: 0, alertsProposed: 0 }
+  const r: VoiceIntelSweepResult = { candidates: 0, analyzed: 0, skipped: 0, errors: 0, callbacksProposed: 0, alertsProposed: 0, followthroughActions: 0 }
   const since = new Date(Date.now() - 48 * 3_600_000).toISOString()
   const { data: calls } = await svc.from("voice_calls")
     .select("id, brokerage_id, contact_id, agent_id, direction, duration_seconds, transcription, status")
@@ -226,6 +226,17 @@ export async function sweepVoiceCallIntelligence(svc: any, limit = 15): Promise<
       // search criteria gets ONE proposed (inactive) property alert on the
       // approval rail — deduped per call, agent-approved before it ever runs.
       if (await proposeSpokenCriteriaAlert(svc, call)) r.alertsProposed += 1
+      // MEETING-TO-ACTION LOOP (round 40): ONE consumer, TWO sources — the same
+      // follow-through that fires when a Zoom transcript analysis completes also
+      // picks up every phone-call analysis this sweep writes. Sell-first →
+      // gated listing-side outreach, financing → gated pre-qual education,
+      // stated timeline → follow-up at that horizon, objection → agent coaching
+      // note. Proposals only (deduped per call); never a direct send.
+      try {
+        const { runMeetingFollowthroughForCall } = await import("@/lib/ai-isa/meeting-followthrough")
+        const ft = await runMeetingFollowthroughForCall(svc, call.id)
+        if (ft.ok) r.followthroughActions += ft.proposed + ft.scheduled
+      } catch { /* best-effort — the analysis itself stands */ }
     } else r.errors += 1
   }
   return r

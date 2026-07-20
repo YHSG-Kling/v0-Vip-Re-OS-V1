@@ -121,9 +121,14 @@ export default async function SuperadminPlatformPage() {
   // predicate), window lead volume, parked awaiting-subscriber leads, and the
   // per-market scrape funnel with recorded-cost-only economics. Service reads —
   // page is superadmin-gated above; failures degrade to stated unavailability.
-  const [{ board: coverageBoard, error: coverageError }, { report: territoryRoi, error: territoryRoiError }] = await Promise.all([
+  // + PARKED-LEAD RETENTION POSTURE (round 40) — the documented data-retention
+  // stance over the awaiting-subscriber population (leads.brokerage_id IS NULL):
+  // tiered honest counts + the superadmin-only anonymized stale archival.
+  const { loadParkedRetention } = await import("@/lib/lead-pipeline/parked-retention")
+  const [{ board: coverageBoard, error: coverageError }, { report: territoryRoi, error: territoryRoiError }, { report: parkedRetention, error: parkedRetentionError }] = await Promise.all([
     loadCoverageBoard(createServiceClient() as any),
     loadTerritoryRoi(createServiceClient() as any),
+    loadParkedRetention(createServiceClient() as any),
   ])
 
   // PLATFORM BOOKS — the company's own accounting connection (exact owner match on
@@ -376,6 +381,8 @@ export default async function SuperadminPlatformPage() {
         boardError={coverageError}
         roi={territoryRoi}
         roiError={territoryRoiError}
+        retention={parkedRetention}
+        retentionError={parkedRetentionError}
       />
 
       {/* Losing money / margin-at-risk alert */}

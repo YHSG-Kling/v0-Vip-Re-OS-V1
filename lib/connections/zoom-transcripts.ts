@@ -221,6 +221,22 @@ export async function processZoomRecordingEvent(
     "zoom_transcript",
   )
 
+  // MEETING-TO-ACTION LOOP (round 40) — the moment the meeting's analysis lands,
+  // the ISA ACTS on the extracted intents through the governed rails: sell-first
+  // → gated listing-side outreach, financing → gated pre-qual education, stated
+  // timeline → follow-up at that horizon, objection → agent coaching note. ONE
+  // consumer shared with the hourly voice sweep (lib/ai-isa/meeting-followthrough
+  // — proposals only, deduped per meeting, NEVER a direct send). Best-effort:
+  // the attach + analysis stand even if follow-through fails.
+  if (analysis.ok) {
+    try {
+      const { runMeetingFollowthroughForCall } = await import("@/lib/ai-isa/meeting-followthrough")
+      await runMeetingFollowthroughForCall(svc, (callRow as any).id)
+    } catch (e) {
+      console.error("[zoom-transcripts] meeting follow-through failed (non-blocking):", e)
+    }
+  }
+
   await stampTranscriptAttached(svc, (event as any).id, meta, meetingUuid, "contact")
   return { handled: true, attached: "contact", analyzed: analysis.ok }
 }

@@ -8,9 +8,12 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { MapPin, DollarSign } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { MapPin, DollarSign, Archive } from "lucide-react"
 import type { CoverageBoard } from "@/lib/analytics/territory-coverage"
 import type { TerritoryRoiReport } from "@/lib/analytics/territory-roi"
+import type { ParkedRetentionReport } from "@/lib/lead-pipeline/parked-retention"
+import { purgeStaleParkedLeadsFormAction } from "@/app/actions/superadmin/parked-retention"
 
 const pct = (r: number | null) => (r == null ? "—" : `${Math.round(r * 100)}%`)
 const usd = (n: number | null) => (n == null ? null : `$${n.toFixed(2)}`)
@@ -20,11 +23,16 @@ export function TerritoryCoverageBoard({
   boardError,
   roi,
   roiError,
+  retention = null,
+  retentionError = null,
 }: {
   board: CoverageBoard | null
   boardError: string | null
   roi: TerritoryRoiReport | null
   roiError: string | null
+  /** Round 40 — the parked-lead retention posture (optional; omitted = card hidden). */
+  retention?: ParkedRetentionReport | null
+  retentionError?: string | null
 }) {
   return (
     <div className="space-y-6">
@@ -181,6 +189,88 @@ export function TerritoryCoverageBoard({
           )}
         </CardContent>
       </Card>
+
+      {/* ── Parked-lead retention posture (round 40, rec 5) — the documented
+             data-retention stance over the same brokerage_id-IS-NULL population
+             the "Awaiting" column counts, plus the superadmin-only anonymized
+             stale archival (PII purge, zip-level row retained). ── */}
+      {(retention || retentionError) && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Archive className="h-4 w-4 text-primary" />
+              Parked-lead retention posture
+              {retention && (
+                <span className="ml-auto text-xs font-normal text-muted-foreground">
+                  {retention.total} parked lead{retention.total === 1 ? "" : "s"} · {retention.purged} already anonymized
+                </span>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {!retention ? (
+              <p className="text-sm text-muted-foreground">
+                Retention posture unavailable{retentionError ? ` — ${retentionError}` : "."}
+              </p>
+            ) : (
+              <>
+                <p className="text-xs text-muted-foreground">{retention.statement}</p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {(["fresh", "aging", "stale"] as const).map((tier) => (
+                    <div key={tier} className={`border rounded p-3 ${tier === "stale" && retention.tiers.stale > 0 ? "border-amber-300 bg-amber-50/30" : ""}`}>
+                      <div className="flex justify-between items-baseline">
+                        <span className="text-xs font-medium uppercase text-muted-foreground">
+                          {retention.posture[tier].label} <span className="normal-case font-normal">({retention.posture[tier].ageLabel})</span>
+                        </span>
+                        <span className="text-lg font-bold tabular-nums">{retention.tiers[tier]}</span>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground mt-1">{retention.posture[tier].posture}</p>
+                    </div>
+                  ))}
+                </div>
+                {retention.stalePreview.count > 0 ? (
+                  <div className="border rounded p-3 space-y-2">
+                    <p className="text-xs font-medium">
+                      Stale archival preview — exactly what a purge would touch:
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {retention.stalePreview.count} row{retention.stalePreview.count === 1 ? "" : "s"} anonymized (rows kept, PII removed) ·
+                      purges {retention.stalePreview.columnsPurged.join(", ")} ·
+                      retains {retention.stalePreview.columnsRetained.join(", ")} + purged_at marker
+                    </p>
+                    <div className="flex flex-wrap gap-1">
+                      {retention.stalePreview.zips.slice(0, 24).map((z) => (
+                        <Badge key={z.zip} variant="outline" className="text-[10px] font-mono">{z.zip} × {z.count}</Badge>
+                      ))}
+                      {retention.stalePreview.zips.length > 24 && (
+                        <Badge variant="outline" className="text-[10px]">+{retention.stalePreview.zips.length - 24} more zips</Badge>
+                      )}
+                    </div>
+                    <form action={purgeStaleParkedLeadsFormAction}>
+                      <Button type="submit" size="sm" variant="outline" className="text-amber-800 border-amber-300">
+                        <Archive className="h-3.5 w-3.5 mr-1.5" />
+                        Anonymize {retention.stalePreview.count} stale parked lead{retention.stalePreview.count === 1 ? "" : "s"} (purge PII, keep zip rows)
+                      </Button>
+                    </form>
+                    <p className="text-[11px] text-muted-foreground">
+                      Superadmin-only; the action re-derives its target set server-side, anonymizes in place (never deletes rows), and writes the receipt (count + zips) to the superadmin audit ledger.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No stale parked leads are eligible for archival right now — nothing to purge.
+                  </p>
+                )}
+                <ul className="space-y-0.5">
+                  {retention.honestNotes.map((n) => (
+                    <li key={n} className="text-[11px] text-muted-foreground">· {n}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }
