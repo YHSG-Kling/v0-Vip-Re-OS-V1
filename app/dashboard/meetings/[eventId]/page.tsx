@@ -1,15 +1,24 @@
 // app/dashboard/meetings/[eventId]/page.tsx
 // ─────────────────────────────────────────────────────────────────────────────
-// THE MEETING ROOM IN THE OS (round 39) — the page a Zoom appointment opens in.
-// Shows the meeting context (contact, appointment, prep notes) beside the Zoom
-// window.
+// THE MEETING ROOM IN THE OS (round 39, upgraded round 40) — the page a Zoom
+// appointment opens in. Shows the meeting context (contact, appointment, prep
+// notes) beside the Zoom window.
 //
-// EMBED TIER (honest): this page embeds the meeting's REAL join URL in an
-// iframe and always offers the join-launch button. Zoom's own pages may refuse
-// third-party framing — the stated NEXT STEP for a fully in-page experience is
-// the Zoom Meeting Component SDK (separate SDK credentials: ZOOM_SDK_KEY /
-// ZOOM_SDK_SECRET + the @zoom/meetingsdk embedded client), which renders the
-// meeting inside this pane natively. Nothing here pretends to be that SDK.
+// TWO TIERS, ONE HONEST CHOICE:
+//   • FULL IN-PAGE (round 40): Meeting SDK credentials configured
+//     (ZOOM_SDK_KEY/ZOOM_SDK_SECRET, or a Zoom General app's client creds) →
+//     <MeetingEmbed> mounts the @zoom/meetingsdk/embedded Component-view
+//     client right here: signature minted server-side by
+//     /api/meetings/sdk-signature (role 1 when the viewer is the event's
+//     owning agent), meeting runs natively in this pane.
+//   • JOIN-LAUNCH FALLBACK (the round-39 tier, EXTRACTED to
+//     <ZoomJoinFallback>, not duplicated): creds missing — or the SDK refuses
+//     at join time — → real join URL in an iframe + the launch buttons, with
+//     the honest upgrade note.
+//
+// OPS for the in-page tier: the Zoom app needs the Meeting SDK feature
+// enabled and the OS host on its Domain Allow List (see the SDK section in
+// lib/connections/zoom.ts).
 
 import { createClient } from "@/lib/supabase/server"
 import { redirect, notFound } from "next/navigation"
@@ -17,7 +26,10 @@ import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { ExternalLink, Video, FileText, User } from "lucide-react"
+import { Video, FileText, User } from "lucide-react"
+import { currentZoomSdkEnv, resolveZoomSdkCredentials, zoomSdkGap } from "@/lib/connections/zoom"
+import { MeetingEmbed } from "./meeting-embed"
+import { ZoomJoinFallback } from "./join-fallback"
 
 export const dynamic = "force-dynamic"
 
@@ -70,6 +82,13 @@ export default async function MeetingRoomPage({
   const startAt = event.start_at ? new Date(event.start_at) : null
   const isHost = event.agent_user_id === user.id
 
+  // Round 40: full in-page embed only when a usable Meeting SDK credential
+  // pair exists AND the meeting number is stamped. Otherwise the extracted
+  // round-39 tier renders with the honest gap statement.
+  const sdkEnv = currentZoomSdkEnv()
+  const sdkConfigured = resolveZoomSdkCredentials(sdkEnv) !== null
+  const sdkGap = zoomSdkGap(sdkEnv)
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -95,37 +114,30 @@ export default async function MeetingRoomPage({
           <CardContent className="space-y-3">
             {zoom?.join_url ? (
               <>
-                <div className="flex flex-wrap gap-2">
-                  <a href={zoom.join_url} target="_blank" rel="noopener noreferrer">
-                    <Button>
-                      <ExternalLink className="h-4 w-4 mr-2" />
-                      Join Zoom meeting
-                    </Button>
-                  </a>
-                  {isHost && zoom.start_url && (
-                    <a href={zoom.start_url} target="_blank" rel="noopener noreferrer">
-                      <Button variant="outline">Start as host</Button>
-                    </a>
-                  )}
-                </div>
-                {/* Honest embed tier: the real join URL in an iframe. Zoom may
-                    refuse framing — the launch buttons above always work. The
-                    full in-page experience is the Component SDK upgrade (see
-                    file header): ZOOM_SDK_KEY/SECRET + @zoom/meetingsdk. */}
-                <div className="aspect-video w-full rounded-lg border bg-muted/30 overflow-hidden">
-                  <iframe
-                    src={zoom.join_url}
-                    className="h-full w-full"
-                    allow="camera; microphone; fullscreen; display-capture; autoplay"
-                    title="Zoom meeting"
+                {sdkConfigured && zoom.meeting_id ? (
+                  // FULL IN-PAGE TIER: the embedded Component-view client.
+                  // Degrades to <ZoomJoinFallback> client-side if the
+                  // signature route or the SDK refuses at join time.
+                  <MeetingEmbed
+                    eventId={event.id}
+                    joinUrl={zoom.join_url}
+                    startUrl={isHost ? zoom.start_url ?? null : null}
+                    isHost={isHost}
+                    userEmail={user.email ?? null}
                   />
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  If the embedded window stays blank, Zoom is refusing to render inside the OS —
-                  use “Join Zoom meeting” above. A fully in-page meeting requires the Zoom Meeting
-                  Component SDK (separate SDK credentials), which is the stated next step for this
-                  surface.
-                </p>
+                ) : (
+                  // ROUND-39 TIER (extracted): join-launch + iframe, with the
+                  // honest reason the native embed is not active.
+                  <ZoomJoinFallback
+                    joinUrl={zoom.join_url}
+                    startUrl={isHost ? zoom.start_url ?? null : null}
+                    isHost={isHost}
+                    note={
+                      sdkGap ??
+                      "This meeting was stamped without a Zoom meeting number, so the in-page Meeting SDK embed cannot target it — use the join link."
+                    }
+                  />
+                )}
                 {zoom.transcript_attached && (
                   <p className="text-xs text-muted-foreground flex items-center gap-1">
                     <FileText className="h-3 w-3" />

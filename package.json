@@ -505,7 +505,8 @@
     "test:vendor-scope-charging": "tsx scripts/vendor-scope-charging-simulator.ts",
     "test:accuracy-gate-telemetry": "tsx --conditions=react-server scripts/accuracy-gate-telemetry-simulator.ts",
     "test:territory-coverage": "tsx scripts/territory-coverage-simulator.ts",
-    "test:zoom-lane": "tsx --conditions=react-server scripts/zoom-lane-simulator.ts"
+    "test:zoom-lane": "tsx --conditions=react-server scripts/zoom-lane-simulator.ts",
+    "test:zoom-embed": "tsx --conditions=react-server scripts/zoom-embed-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
@@ -565,6 +566,7 @@
     "@vercel/blob": "^2.3.0",
     "@workflow/next": "^4.0.6",
     "@xyflow/react": "^12.10.2",
+    "@zoom/meetingsdk": "^6.2.0",
     "ai": "6.0.16",
     "bcrypt": "^6.0.0",
     "bcryptjs": "3.0.3",

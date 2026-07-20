@@ -466,6 +466,125 @@ export async function readScopedZoom(
   }
 }
 
+// ─── Meeting SDK signature (pure — round 40 in-page embed upgrade) ───────────
+//
+// The Component (embedded) view of the Zoom Meeting SDK joins a meeting with
+// an SDK JWT — NOT an OAuth token: HS256 over { appKey, sdkKey, mn, role,
+// iat, exp, tokenExp } signed with the SDK secret. Credentials come from a
+// Zoom "Meeting SDK" app (ZOOM_SDK_KEY / ZOOM_SDK_SECRET) — OR, on newer Zoom
+// "General" apps (Zoom unified app types in 2023+), the SAME client id/secret
+// as the OAuth app, so we fall back to ZOOM_CLIENT_ID / ZOOM_CLIENT_SECRET
+// when no dedicated SDK vars are set.
+//
+// OPS REQUIREMENTS for the in-page embed (documented here, the one place):
+//   • The Zoom app must have the Meeting SDK feature/embed enabled
+//     (Marketplace → your app → Features → Embed → Meeting SDK).
+//   • The app's Domain Allow List must include the OS host (the origin the
+//     dashboard is served from), or the SDK refuses to join in-browser.
+
+export interface ZoomSdkEnv {
+  sdkKey?: string | null
+  sdkSecret?: string | null
+  clientId?: string | null
+  clientSecret?: string | null
+}
+
+/** Pure: resolve the Meeting SDK credential pair. Dedicated SDK vars win; a
+ *  complete OAuth pair is the documented General-app fallback; otherwise null
+ *  (never a half pair — a key without its secret cannot sign). */
+export function resolveZoomSdkCredentials(
+  env: ZoomSdkEnv,
+): { sdkKey: string; sdkSecret: string; source: "sdk_app" | "general_app" } | null {
+  if (env.sdkKey && env.sdkSecret) return { sdkKey: env.sdkKey, sdkSecret: env.sdkSecret, source: "sdk_app" }
+  if (env.clientId && env.clientSecret) return { sdkKey: env.clientId, sdkSecret: env.clientSecret, source: "general_app" }
+  return null
+}
+
+/** Pure: the honest statement of exactly which env is missing for the Meeting
+ *  SDK embed. Null when a usable pair exists. */
+export function zoomSdkGap(env: ZoomSdkEnv): string | null {
+  if (resolveZoomSdkCredentials(env)) return null
+  const sdkTouched = !!(env.sdkKey || env.sdkSecret)
+  if (sdkTouched) {
+    const missing: string[] = []
+    if (!env.sdkKey) missing.push("ZOOM_SDK_KEY")
+    if (!env.sdkSecret) missing.push("ZOOM_SDK_SECRET")
+    return `Zoom Meeting SDK partially configured — missing ${missing.join(" and ")}. Both are required to sign the SDK JWT.`
+  }
+  const oauthTouched = !!(env.clientId || env.clientSecret)
+  if (oauthTouched) {
+    const missing: string[] = []
+    if (!env.clientId) missing.push("ZOOM_CLIENT_ID")
+    if (!env.clientSecret) missing.push("ZOOM_CLIENT_SECRET")
+    return `Zoom Meeting SDK not configured — no ZOOM_SDK_KEY/ZOOM_SDK_SECRET, and the General-app fallback is missing ${missing.join(" and ")}.`
+  }
+  return "Zoom Meeting SDK not configured — missing ZOOM_SDK_KEY and ZOOM_SDK_SECRET (or, for a Zoom 'General' app where the Meeting SDK shares the OAuth credentials, ZOOM_CLIENT_ID and ZOOM_CLIENT_SECRET)."
+}
+
+/** Live: the current env for the Meeting SDK credential resolution. */
+export function currentZoomSdkEnv(): ZoomSdkEnv {
+  return {
+    sdkKey: process.env.ZOOM_SDK_KEY ?? null,
+    sdkSecret: process.env.ZOOM_SDK_SECRET ?? null,
+    clientId: process.env.ZOOM_CLIENT_ID ?? null,
+    clientSecret: process.env.ZOOM_CLIENT_SECRET ?? null,
+  }
+}
+
+/** Pure: the viewer's Meeting SDK role for a calendar event — 1 (host) only
+ *  when the viewer IS the event's owning agent; everyone else joins as 0. */
+export function zoomSdkRoleForViewer(args: {
+  viewerUserId: string
+  eventAgentUserId: string | null | undefined
+}): 0 | 1 {
+  return args.eventAgentUserId != null && args.eventAgentUserId === args.viewerUserId ? 1 : 0
+}
+
+const b64url = (input: Buffer | string): string =>
+  (typeof input === "string" ? Buffer.from(input) : input).toString("base64url")
+
+/**
+ * Pure: mint the Meeting SDK JWT. Zoom requires HS256, appKey (=== sdkKey),
+ * mn (meeting number), role (0|1), iat/exp with 1800s ≤ exp−iat ≤ 172800s,
+ * and tokenExp ≥ exp. iat is backdated 30s for clock skew.
+ */
+export function mintZoomSdkSignature(args: {
+  sdkKey: string
+  sdkSecret: string
+  meetingNumber: string
+  role: 0 | 1
+  nowMs?: number
+  expiresInSec?: number
+}): string {
+  const iat = Math.floor((args.nowMs ?? Date.now()) / 1000) - 30
+  const lifetime = Math.min(Math.max(args.expiresInSec ?? 2 * 60 * 60, 1800), 172_800)
+  const exp = iat + lifetime
+  const header = { alg: "HS256", typ: "JWT" }
+  const payload = {
+    appKey: args.sdkKey,
+    sdkKey: args.sdkKey,
+    mn: args.meetingNumber,
+    role: args.role,
+    iat,
+    exp,
+    tokenExp: exp,
+  }
+  const signingInput = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(payload))}`
+  const sig = createHmac("sha256", args.sdkSecret).update(signingInput).digest("base64url")
+  return `${signingInput}.${sig}`
+}
+
+/** Pure: the pwd Zoom stamps into a join_url query string (the embedded client
+ *  needs it as a separate `password` field). Null when absent/unparsable. */
+export function zoomPasswordFromJoinUrl(joinUrl: string | null | undefined): string | null {
+  if (!joinUrl) return null
+  try {
+    return new URL(joinUrl).searchParams.get("pwd")
+  } catch {
+    return null
+  }
+}
+
 // ─── Webhook verification (pure — Zoom's documented scheme) ──────────────────
 
 /** Pure: the x-zm-signature value Zoom computes for a request:

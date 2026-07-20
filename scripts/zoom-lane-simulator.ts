@@ -376,9 +376,16 @@ check("booking dialog offers the zoom mode and relays the honest outcome",
   src("app/dashboard/voice/isa/book-appointment-dialog.tsx").includes('value="zoom"')
   && src("app/dashboard/voice/isa/book-appointment-dialog.tsx").includes("result.zoom"))
 
-check("meeting page embeds the join URL + states the Component-SDK next step honestly",
-  meetingPageSrc.includes("iframe") && meetingPageSrc.includes("join_url") && /Component SDK/i.test(meetingPageSrc)
-  && meetingPageSrc.includes("Join Zoom meeting"))
+// Round 40 upgraded this surface: the round-39 iframe/join tier was EXTRACTED
+// to join-fallback.tsx (keep-one) and the page now mounts the Meeting SDK
+// embedded client when SDK creds exist. scripts/zoom-embed-simulator.ts owns
+// the deep locks; here we keep the round-39 promise: the join tier still
+// exists, still uses the REAL join_url, and the page states both tiers.
+const joinFallbackSrc = src("app/dashboard/meetings/[eventId]/join-fallback.tsx")
+check("meeting page keeps the honest join tier (extracted) + the join URL, and wires the SDK embed",
+  joinFallbackSrc.includes("iframe") && joinFallbackSrc.includes("Join Zoom meeting")
+  && meetingPageSrc.includes("join_url") && meetingPageSrc.includes("ZoomJoinFallback")
+  && meetingPageSrc.includes("MeetingEmbed"))
 
 check("registry: meetings domain → zoom, owner-scoped OAuth start path",
   JSON.stringify(CONNECTOR_PROVIDERS.meetings) === JSON.stringify(["zoom"])
