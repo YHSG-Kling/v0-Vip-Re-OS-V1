@@ -174,7 +174,8 @@ export async function pushAgentCommissionToQuickBooks(
   // Pre-flight INCLUDING the marker column (missing-migration detection before any egress).
   const { data: comm, error: commErr } = await svc
     .from("agent_commissions")
-    .select("id, agent_id, gross_commission, agent_commission, property_address, close_date, quickbooks_export_id")
+    // The address lives on the transaction, not the commission row — embed it.
+    .select("id, agent_id, gross_commission, agent_commission, close_date, quickbooks_export_id, transactions(property_address)")
     .eq("id", params.commissionId)
     .eq("agent_id", agentRow.id)
     .maybeSingle()
@@ -210,7 +211,7 @@ export async function pushAgentCommissionToQuickBooks(
           {
             Amount: amount,
             DetailType: "SalesItemLineDetail",
-            Description: `Commission income${comm.property_address ? ` — ${comm.property_address}` : ""}`,
+            Description: `Commission income${(comm as { transactions?: { property_address?: string | null } | null }).transactions?.property_address ? ` — ${(comm as { transactions?: { property_address?: string | null } | null }).transactions!.property_address}` : ""}`,
             SalesItemLineDetail: { ItemRef: { value: "1" } },
           },
         ],
