@@ -129,6 +129,11 @@ export default async function SuperadminPlatformPage() {
   // PLATFORM BOOKS — the company's own accounting connection (exact owner match on
   // owner_type='platform', owner_id='platform', platform='platform_quickbooks').
   const platformBooks = await readScopedAccounting(createServiceClient(), "platform", PLATFORM_OWNER_ID)
+  // PLATFORM MEETINGS (round 39) — the company's own Zoom, same m273 distinct-key
+  // idiom ('platform_zoom'): platform-hosted tenant meetings create here, and
+  // their transcripts attach to the TENANT record (not a tenant contact).
+  const { readScopedZoom, PLATFORM_ZOOM_OWNER_ID, PLATFORM_ZOOM_STORAGE_KEY } = await import("@/lib/connections/zoom")
+  const platformZoom = await readScopedZoom(createServiceClient(), "platform", PLATFORM_ZOOM_OWNER_ID)
   // QuickBooks reconciliation (round 37) — for the platform this is an HONEST
   // "no export lane writes these books yet" statement, not an invented number.
   const { defaultQbReconciliationPeriod, loadPlatformQbReconciliation } = await import("@/lib/finance/qb-reconciliation")
@@ -242,6 +247,20 @@ export default async function SuperadminPlatformPage() {
             connected={false}
             connectPath={ACCOUNTING_OFFERINGS.platform.stripe.connectPath}
             note={ACCOUNTING_OFFERINGS.platform.stripe.verdict}
+          />
+          {/* PLATFORM MEETINGS — Zoom under the distinct 'platform_zoom' key. Provider-gated:
+              missing ZOOM_CLIENT_ID/SECRET renders the honest gap, never a dead button. */}
+          <ProviderConnectionCard
+            provider="zoom"
+            scope="platform"
+            status={platformZoom.offering.status}
+            connected={platformZoom.connected}
+            companyName={platformZoom.accountEmail}
+            connectPath={platformZoom.offering.connectPath}
+            note={platformZoom.offering.verdict}
+            canConnect={platformZoom.providerGap === null}
+            connectDisabledReason={platformZoom.providerGap}
+            storageKey={PLATFORM_ZOOM_STORAGE_KEY}
           />
         </div>
         {/* QuickBooks reconciliation (round 37) — honest no-export-lane verdict. */}

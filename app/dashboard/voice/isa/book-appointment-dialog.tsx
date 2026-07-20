@@ -44,19 +44,23 @@ export function BookAppointmentDialog({
   const [open, setOpen] = useState(false)
   const [when, setWhen] = useState("")
   const [type, setType] = useState<string>(APPOINTMENT_TYPES[0].value)
+  const [meetingMode, setMeetingMode] = useState<"in_person" | "phone" | "zoom">("in_person")
   const [location, setLocation] = useState("")
   const [notes, setNotes] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  const [zoomNote, setZoomNote] = useState<string | null>(null)
 
   const reset = () => {
     setWhen("")
     setType(APPOINTMENT_TYPES[0].value)
+    setMeetingMode("in_person")
     setLocation("")
     setNotes("")
     setError(null)
     setDone(false)
+    setZoomNote(null)
     setSubmitting(false)
   }
 
@@ -78,6 +82,7 @@ export function BookAppointmentDialog({
         timezoneName: resolveTimezoneName(),
         location: location.trim() || undefined,
         notes: notes.trim() || undefined,
+        meetingMode,
       })
 
       if (!result.success) {
@@ -86,15 +91,25 @@ export function BookAppointmentDialog({
         return
       }
 
+      // Honest Zoom outcome: a real join link, or exactly why none was created
+      // (Zoom not connected for your scope → the settings hint).
+      if (result.zoom) {
+        setZoomNote(
+          result.zoom.created
+            ? `Zoom meeting created — join link on the calendar event: ${result.zoom.joinUrl}`
+            : result.zoom.detail || "Zoom meeting not created — booked as in-person/phone.",
+        )
+      }
+
       setDone(true)
       setSubmitting(false)
       onBooked?.(result.calendarEventId)
 
-      // Brief success state, then close
+      // Brief success state, then close (linger when there's a Zoom note to read)
       setTimeout(() => {
         setOpen(false)
         reset()
-      }, 900)
+      }, result.zoom ? 3500 : 900)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to book appointment")
       setSubmitting(false)
@@ -128,6 +143,9 @@ export function BookAppointmentDialog({
           <div className="flex flex-col items-center justify-center py-6 text-center">
             <CheckCircle2 className="h-10 w-10 text-green-500 mb-2" />
             <p className="text-sm font-medium">Appointment booked</p>
+            {zoomNote && (
+              <p className="text-xs text-muted-foreground mt-2 break-all">{zoomNote}</p>
+            )}
           </div>
         ) : (
           <div className="space-y-4">
@@ -155,6 +173,26 @@ export function BookAppointmentDialog({
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="appt-mode">Meeting mode</Label>
+              <Select value={meetingMode} onValueChange={(v) => setMeetingMode(v as "in_person" | "phone" | "zoom")}>
+                <SelectTrigger id="appt-mode">
+                  <SelectValue placeholder="Select mode" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="in_person">In person</SelectItem>
+                  <SelectItem value="phone">Phone</SelectItem>
+                  <SelectItem value="zoom">Zoom (creates a real meeting if connected)</SelectItem>
+                </SelectContent>
+              </Select>
+              {meetingMode === "zoom" && (
+                <p className="text-xs text-muted-foreground">
+                  Uses your connected Zoom (yours, your team&apos;s, or the brokerage&apos;s). If none is
+                  connected, the appointment books as in-person/phone and tells you what to connect.
+                </p>
+              )}
             </div>
 
             <div className="space-y-1.5">

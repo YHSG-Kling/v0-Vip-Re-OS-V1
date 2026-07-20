@@ -3,7 +3,8 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
-import { Clock, MapPin, User, Home } from "lucide-react"
+import { Clock, MapPin, User, Home, Video } from "lucide-react"
+import { useRouter } from "next/navigation"
 import type { UnifiedCalendarEvent } from "./calendar-shell"
 
 interface CalendarAgendaViewProps {
@@ -33,6 +34,7 @@ function isSameDay(d1: Date, d2: Date) {
 }
 
 export function CalendarAgendaView({ events, weekStart, onSelectEvent }: CalendarAgendaViewProps) {
+  const router = useRouter()
   const today = new Date()
   
   // Group events by day
@@ -112,6 +114,20 @@ export function CalendarAgendaView({ events, weekStart, onSelectEvent }: Calenda
                                 <span className="flex items-center gap-1">
                                   <Home className="h-3 w-3" />
                                   {event.listingAddress}
+                                </span>
+                              )}
+                              {/* Zoom appointment (round 39) → the in-OS meeting room.
+                                  A span (not <a>) — the whole row is already a <button>. */}
+                              {event.source === "calendar_events" && !!(event.metadata as any)?.zoom?.join_url && (
+                                <span
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    router.push(`/dashboard/meetings/${event.id}`)
+                                  }}
+                                  className="flex items-center gap-1 text-sky-600 hover:underline cursor-pointer"
+                                >
+                                  <Video className="h-3 w-3" />
+                                  Zoom meeting room
                                 </span>
                               )}
                             </div>

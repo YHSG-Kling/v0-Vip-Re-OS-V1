@@ -108,6 +108,10 @@ export const DOMAIN_AUTH: Record<ConnectorDomain, DomainAuthSpec> = {
       { key: "showId", label: "Show ID", required: true, placeholder: "Transistor show id" },
     ],
   },
+  // Zoom is OAuth, owner-scoped like QuickBooks (the /api/integrations/oauth/zoom
+  // callback stores under the connecting actor's own (owner_type, owner_id);
+  // the platform's account uses the distinct 'platform_zoom' key).
+  meetings: { method: "oauth", fields: [], oauthStartPath: "/api/integrations/oauth/{provider}" },
   documents: { method: "api_key", fields: [] },
   marketing: { method: "api_key", fields: [] },
 }
@@ -222,6 +226,13 @@ export function isConnectSupported(
     // offering + storage-key rules live in lib/connections/accounting-scopes.ts (single source of
     // truth); any owner-capable actor may start the flow. Stripe is Connect onboarding (any actor can
     // onboard a payout account via the platform key — no per-actor brokerage anchor needed).
+    return { available: true }
+  }
+  if (domain === "meetings") {
+    // Zoom OAuth is OWNER-scoped like QuickBooks: the callback stores tokens under
+    // the connecting actor's own (owner_type, owner_id) — platform included (distinct
+    // 'platform_zoom' key, no brokerage anchor required). Per-scope offering rules
+    // live in lib/connections/zoom.ts.
     return { available: true }
   }
   // email / calendar OAuth — the OAuth callback stores tokens owner-scoped (platform_credentials),

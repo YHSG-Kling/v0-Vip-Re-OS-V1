@@ -31,6 +31,7 @@ export type ProviderName =
   | "opcity"
   | "meta_ads"
   | "google_ads"
+  | "zoom"
 
 // ─── MAIN TEST FUNCTION ───────────────────────────────────────────────────────
 
@@ -443,8 +444,18 @@ export const PROVIDER_METADATA: Record<ProviderName, {
     options?: Array<{ value: string; label: string }>
   }>
   isOAuth?: boolean
-  oauthProvider?: "google" | "microsoft" | "docusign" | "quickbooks" | "xero" | "meta_ads" | "google_ads"
+  oauthProvider?: "google" | "microsoft" | "docusign" | "quickbooks" | "xero" | "meta_ads" | "google_ads" | "zoom"
 }> = {
+  zoom: {
+    // Meetings connector (round 39) — owner-scoped OAuth like QuickBooks: each
+    // level (platform/brokerage/team/agent) connects its OWN Zoom account.
+    // Per-scope offering + storage-key rules live in lib/connections/zoom.ts.
+    displayName: "Zoom",
+    providerType: "meetings",
+    credentialFields: [],
+    isOAuth: true,
+    oauthProvider: "zoom",
+  },
   meta_ads: {
     displayName: "Meta Ads (Facebook & Instagram)",
     providerType: "ads",

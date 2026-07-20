@@ -67,9 +67,14 @@ export default async function TeamFinancialsPage() {
   let teamBooks: ScopedAccountingStatus | null = null
   let teamLastSyncedAt: string | null = null
   let teamReconciliation: ScopeQbReconciliation | null = null
+  let teamZoom: Awaited<ReturnType<typeof import("@/lib/connections/zoom").readScopedZoom>> | null = null
   if (teamId) {
     const svc = createServiceClient()
     teamBooks = await readScopedAccounting(svc, "team", teamId).catch(() => null)
+    // TEAM MEETINGS (round 39) — the team's own Zoom (exact owner match): team
+    // members' Zoom appointments host here when they have no personal Zoom.
+    const { readScopedZoom } = await import("@/lib/connections/zoom")
+    teamZoom = await readScopedZoom(svc, "team", teamId).catch(() => null)
     // QuickBooks reconciliation (round 37) — team P&L rows vs the OS-recorded
     // export markers. Best-effort: a failed read renders nothing.
     teamReconciliation = await loadTeamQbReconciliation(svc, {
@@ -496,6 +501,23 @@ export default async function TeamFinancialsPage() {
               connected={false}
               note={ACCOUNTING_OFFERINGS.team.stripe.verdict}
             />
+            {/* MEETINGS (round 39) — the team's Zoom, same card idiom + provider gating. */}
+            {teamZoom && (
+              <ProviderConnectionCard
+                provider="zoom"
+                scope="team"
+                status={teamZoom.offering.status}
+                connected={teamZoom.connected}
+                companyName={teamZoom.accountEmail}
+                connectPath={teamZoom.offering.connectPath}
+                note={teamZoom.offering.verdict}
+                canConnect={userRole === "team_lead" && teamZoom.providerGap === null}
+                connectDisabledReason={
+                  teamZoom.providerGap ??
+                  "Only the team lead's login connects the team's Zoom (the connection is owned by the team, resolved from the team lead's role)."
+                }
+              />
+            )}
           </div>
           {/* QuickBooks reconciliation (round 37) — team P&L vs OS-recorded exports. */}
           {teamReconciliation && <QbReconciliationCard recon={teamReconciliation} />}

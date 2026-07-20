@@ -21,6 +21,13 @@ export async function scheduleISAAppointment(params: {
   timezoneName: string
   location?: string
   notes?: string
+  /** "zoom" → attempt a REAL Zoom meeting (round 39): if any owner in the
+   *  booking agent's host cascade (agent → team → brokerage; platform for a
+   *  platform actor) has Zoom connected, the meeting is created via the Zoom
+   *  API and the join URL becomes the event location. Not connected / provider
+   *  unconfigured / API rejection → the appointment still books, honestly
+   *  in-person/phone, with the refusal recorded in metadata.zoom_outcome. */
+  meetingMode?: 'zoom' | 'in_person' | 'phone'
 }): Promise<string> {
   if (!params.leadId && !params.contactId) {
     throw new Error('scheduleISAAppointment requires either leadId or contactId')
@@ -29,6 +36,51 @@ export async function scheduleISAAppointment(params: {
   const supabase = createServiceClient()
   const entityType = params.leadId ? 'lead' : 'contact'
   const entityId   = params.leadId ?? params.contactId!
+
+  // ── Zoom branch (additive, round 39) — never blocks the booking ────────────
+  let zoomLocation: string | null = null
+  let zoomMetadata: Record<string, unknown> = {}
+  if (params.meetingMode === 'zoom') {
+    try {
+      const { ensureZoomMeetingForAppointment } = await import('@/lib/connections/zoom')
+      const { connectionScopeForUserType } = await import('@/lib/connections/field-spec')
+      const { data: booker } = await supabase
+        .from('users')
+        .select('user_type, team_id, brokerage_id')
+        .eq('id', params.agentId)
+        .maybeSingle()
+      const scope = connectionScopeForUserType((booker?.user_type as string) ?? '').scope
+      const outcome = await ensureZoomMeetingForAppointment(supabase, {
+        host: {
+          scope: scope as any,
+          agentUserId: params.agentId,
+          teamId: (booker?.team_id as string | null) ?? null,
+          brokerageId: (booker?.brokerage_id as string | null) ?? params.brokerageId,
+        },
+        topic: 'ISA Appointment',
+        startAt: params.startAt,
+        endAt: params.endAt,
+        timezoneName: params.timezoneName,
+      })
+      if (outcome.created) {
+        zoomLocation = outcome.joinUrl
+        zoomMetadata = {
+          zoom: {
+            meeting_id: outcome.meetingId,
+            join_url: outcome.joinUrl,
+            start_url: outcome.startUrl,
+            host_owner_type: outcome.hostOwnerType,
+            host_owner_id: outcome.hostOwnerId,
+          },
+        }
+      } else {
+        // HONEST refusal — no fabricated link; the hint travels to the surface.
+        zoomMetadata = { zoom_outcome: { created: false, reason: outcome.reason, detail: outcome.detail } }
+      }
+    } catch (e: any) {
+      zoomMetadata = { zoom_outcome: { created: false, reason: 'api_error', detail: e?.message ?? 'Zoom lane error' } }
+    }
+  }
 
   // ── Step 1: Guard representation state ──────────────────────────────────────
   if (params.leadId) {
@@ -57,10 +109,12 @@ export async function scheduleISAAppointment(params: {
       start_at:            params.startAt.toISOString(),
       end_at:              params.endAt.toISOString(),
       timezone_name:       params.timezoneName,
-      location:            params.location ?? null,
+      // A REAL Zoom join URL (API-accepted) wins the location; otherwise the
+      // caller's honest in-person/phone location.
+      location:            zoomLocation ?? params.location ?? null,
       is_system_generated: true,
       status:              'scheduled',
-      metadata:            { notes: params.notes ?? null },
+      metadata:            { notes: params.notes ?? null, ...zoomMetadata },
     })
     .select('id')
     .single()

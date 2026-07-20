@@ -21,6 +21,7 @@ export type ConnectionScope = "platform" | "brokerage" | "team" | "agent" | "ven
 export type ConnectorDomain =
   | "email" | "phone" | "calendar" | "social" | "crm" | "financial"
   | "listing" | "transaction" | "esign" | "showing" | "documents" | "marketing" | "podcast"
+  | "meetings"
 
 const VENDOR_CONTACT_DOMAINS = new Set<ConnectorDomain>(["email", "calendar", "social", "financial"])
 
@@ -54,6 +55,11 @@ export const CONNECTOR_PROVIDERS: Record<ConnectorDomain, readonly string[]> = {
   // syndicates to Spotify/Apple/etc through its managed RSS — so one per-tier connection covers all
   // channels. Owner-cascade: agent → team → brokerage → platform.
   podcast:     ["transistor"],
+  // Video meetings (round 39). Owner-scoped OAuth like QuickBooks — each level
+  // connects its OWN Zoom; per-scope offering + storage keys live in
+  // lib/connections/zoom.ts (vendor/contact are excluded: they join meetings,
+  // they never host them — see VENDOR_CONTACT_DOMAINS above).
+  meetings:    ["zoom"],
   documents:   [], // surface reserved; no user-selectable document provider yet
   marketing:   [], // system-managed; not a user-selectable connection
 }

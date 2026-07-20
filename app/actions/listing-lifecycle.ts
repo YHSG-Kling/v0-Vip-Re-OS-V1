@@ -35,6 +35,9 @@ export async function scheduleListingAppointment(params: {
   appointment_date: string
   appointment_time: string
   notes?: string
+  /** "zoom" attempts a REAL Zoom meeting on the booker's connected scope
+   *  (agent → team → brokerage); honest in-person default when not connected. */
+  meeting_mode?: "zoom" | "in_person"
 }) {
   if (!params.listing_id || !params.contact_id) throw new Error("listing_id and contact_id are required")
 

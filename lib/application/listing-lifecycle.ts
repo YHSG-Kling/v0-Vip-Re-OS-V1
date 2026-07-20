@@ -17,6 +17,9 @@ export async function scheduleListingAppointmentService(
     appointment_date: string
     appointment_time: string
     notes?: string
+    /** "zoom" → attempt a REAL Zoom meeting on the booking agent's connected
+     *  scope (agent → team → brokerage). Honest in-person default otherwise. */
+    meeting_mode?: "zoom" | "in_person"
   },
   agentId: string,
   brokerageId: string
@@ -29,6 +32,49 @@ export async function scheduleListingAppointmentService(
   // (Previously written to phantom listings.appointment_date/_time/notes — silently failed.)
   const appointmentAt = new Date(`${params.appointment_date}T${params.appointment_time}`).toISOString()
 
+  // ── Zoom branch (additive, round 39) — never blocks the booking ────────────
+  let zoomLocation: string | null = null
+  let zoomMetadata: Record<string, unknown> = {}
+  if (params.meeting_mode === "zoom") {
+    try {
+      const { ensureZoomMeetingForAppointment } = await import("@/lib/connections/zoom")
+      const { connectionScopeForUserType } = await import("@/lib/connections/field-spec")
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      const { data: booker } = await svc
+        .from("users").select("user_type, team_id, brokerage_id").eq("id", agentId).maybeSingle()
+      const scope = connectionScopeForUserType((booker?.user_type as string) ?? "").scope
+      const start = new Date(appointmentAt)
+      const outcome = await ensureZoomMeetingForAppointment(svc, {
+        host: {
+          scope: scope as any,
+          agentUserId: agentId,
+          teamId: (booker?.team_id as string | null) ?? null,
+          brokerageId: (booker?.brokerage_id as string | null) ?? brokerageId,
+        },
+        topic: "Listing Appointment",
+        startAt: start,
+        endAt: new Date(start.getTime() + 60 * 60_000),
+      })
+      if (outcome.created) {
+        zoomLocation = outcome.joinUrl
+        zoomMetadata = {
+          zoom: {
+            meeting_id: outcome.meetingId,
+            join_url: outcome.joinUrl,
+            start_url: outcome.startUrl,
+            host_owner_type: outcome.hostOwnerType,
+            host_owner_id: outcome.hostOwnerId,
+          },
+        }
+      } else {
+        zoomMetadata = { zoom_outcome: { created: false, reason: outcome.reason, detail: outcome.detail } }
+      }
+    } catch (e: any) {
+      zoomMetadata = { zoom_outcome: { created: false, reason: "api_error", detail: e?.message ?? "Zoom lane error" } }
+    }
+  }
+
   const { data: calEvent, error: calErr } = await supabase
     .from("calendar_events")
     .insert({
@@ -38,7 +84,10 @@ export async function scheduleListingAppointmentService(
       event_type: "listing_appointment",
       start_at: appointmentAt,
       is_system_generated: false,
-      metadata: { contact_id: params.contact_id, agent_id: agentId, notes: params.notes ?? null },
+      // agent_user_id lets the Zoom transcript lane resolve the agent later.
+      agent_user_id: agentId,
+      ...(zoomLocation ? { location: zoomLocation } : {}),
+      metadata: { contact_id: params.contact_id, agent_id: agentId, notes: params.notes ?? null, ...zoomMetadata },
     })
     .select("id")
     .single()

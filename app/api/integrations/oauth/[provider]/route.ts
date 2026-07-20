@@ -18,7 +18,7 @@ import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
-type OAuthProvider = "google" | "microsoft" | "docusign" | "quickbooks" | "xero" | "linkedin" | "meta_ads" | "google_ads"
+type OAuthProvider = "google" | "microsoft" | "docusign" | "quickbooks" | "xero" | "linkedin" | "meta_ads" | "google_ads" | "zoom"
 
 interface OAuthConfig {
   clientIdEnv: string
@@ -117,6 +117,20 @@ const OAUTH_CONFIGS: Record<OAuthProvider, OAuthConfig> = {
     tokenUrl: "https://oauth2.googleapis.com/token",
     scopes: ["https://www.googleapis.com/auth/adwords"],
     additionalParams: { access_type: "offline", prompt: "consent" },
+  },
+  // Zoom — meetings connector (round 39). Owner-scoped like QuickBooks: each
+  // level (platform/brokerage/team/agent) connects its OWN Zoom; the platform's
+  // account stores under the distinct 'platform_zoom' key (m273 idiom — see
+  // lib/connections/zoom.ts). Scopes are configured on the Zoom app itself
+  // (user-level OAuth apps ignore the request scope param), so none are sent.
+  // Token exchange REQUIRES HTTP Basic auth (client_id:client_secret) — handled
+  // by the zoom branch in the exchange below.
+  zoom: {
+    clientIdEnv: "ZOOM_CLIENT_ID",
+    clientSecretEnv: "ZOOM_CLIENT_SECRET",
+    authUrl: "https://zoom.us/oauth/authorize",
+    tokenUrl: "https://zoom.us/oauth/token",
+    scopes: [],
   },
 }
 
@@ -229,19 +243,24 @@ export async function GET(
       // Exchange code for tokens (through the connector-gateway). config.tokenUrl is a full URL —
       // split into origin + pathname so the gateway hits the exact endpoint (no trailing-slash drift).
       const tokenUrl = new URL(config.tokenUrl)
+      // Zoom's token endpoint requires HTTP Basic auth (client_id:client_secret
+      // in the Authorization header, NOT the form body); everyone else takes
+      // client creds in the body.
+      const usesBasicTokenAuth = oauthProvider === "zoom"
       const tokenResponse = await callConnector<{ expires_in?: number; error_description?: string }>({
         connector: `${provider}-oauth`,
         baseUrl: tokenUrl.origin,
         path: tokenUrl.pathname,
         method: "POST",
-        auth: { style: "none" },
+        auth: usesBasicTokenAuth
+          ? { style: "basic", username: clientId, password: clientSecret }
+          : { style: "none" },
         bodyType: "form",
         body: {
           grant_type: "authorization_code",
           code: code!,
           redirect_uri: redirectUri,
-          client_id: clientId,
-          client_secret: clientSecret,
+          ...(usesBasicTokenAuth ? {} : { client_id: clientId, client_secret: clientSecret }),
         },
       })
 
@@ -278,6 +297,10 @@ export async function GET(
         : oauthProvider === "meta_ads" ? "facebook"     // what the ad connector loads
         : oauthProvider === "google_ads" ? "google"
         : oauthProvider === "quickbooks" && ownerType === "platform" ? "platform_quickbooks"
+        // Same m273 idiom for meetings: the PLATFORM's own Zoom lives under the
+        // distinct 'platform_zoom' key so a tenant's host cascade can never
+        // resolve — and host meetings on — the COMPANY's Zoom account.
+        : oauthProvider === "zoom" && ownerType === "platform" ? "platform_zoom"
         : provider
 
       // Ad-account connections: resolve the ad account id (Meta) + carry the Google
@@ -299,6 +322,21 @@ export async function GET(
       // For Google/Microsoft, resolve the connected mailbox address up front so it is stored on the
       // owner-scoped row (used as the From address) AND mirrored to the agent row below.
       let connectedEmail: string | null = null
+      // Zoom: resolve the connected account's email + user id so the settings
+      // card can show WHOSE Zoom is connected (config.email / account_id).
+      let zoomUserId: string | null = null
+      if (oauthProvider === "zoom") {
+        try {
+          const me = await callConnector<{ id?: string; email?: string }>({
+            connector: "zoom", baseUrl: "https://api.zoom.us", path: "/v2/users/me",
+            method: "GET", auth: { style: "bearer", token: tokens.access_token },
+          })
+          if (me.ok) {
+            connectedEmail = me.data?.email ?? null
+            zoomUserId = me.data?.id ?? null
+          }
+        } catch {}
+      }
       if (oauthProvider === "google" || oauthProvider === "microsoft") {
         try {
           if (oauthProvider === "google") {
@@ -334,6 +372,7 @@ export async function GET(
         refresh_token: tokens.refresh_token,
         ...(realmId ? { account_id: realmId } : {}),
         ...(adAccountId ? { account_id: adAccountId } : {}),
+        ...(zoomUserId ? { account_id: zoomUserId } : {}),
         config: {
           access_token: tokens.access_token,
           refresh_token: tokens.refresh_token,
@@ -519,7 +558,9 @@ export async function GET(
       client_id: clientId,
       redirect_uri: redirectUri,
       response_type: "code",
-      scope: config.scopes.join(" "),
+      // Zoom (empty scopes list) defines scopes on the app itself — sending an
+      // empty scope param would be rejected, so it is omitted entirely.
+      ...(config.scopes.length > 0 ? { scope: config.scopes.join(" ") } : {}),
       state: newState,
       ...config.additionalParams,
     })

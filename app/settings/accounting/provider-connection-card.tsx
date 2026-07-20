@@ -28,7 +28,7 @@ import { toast } from "sonner"
 export type AccountingCardScope = "platform" | "brokerage" | "team" | "agent" | "vendor"
 
 interface ProviderConnectionCardProps {
-  provider: "quickbooks" | "xero" | "stripe"
+  provider: "quickbooks" | "xero" | "stripe" | "zoom"
   scope: AccountingCardScope
   /** Offering status from lib/connections/accounting-scopes.ts. */
   status: "connectable" | "managed-elsewhere" | "not-offered"
@@ -59,6 +59,7 @@ const PROVIDER_LABELS: Record<string, { name: string; color: string; bg: string 
   quickbooks: { name: "QuickBooks", color: "text-green-600", bg: "bg-green-50" },
   xero: { name: "Xero", color: "text-blue-600", bg: "bg-blue-50" },
   stripe: { name: "Stripe", color: "text-purple-600", bg: "bg-purple-50" },
+  zoom: { name: "Zoom", color: "text-sky-600", bg: "bg-sky-50" },
 }
 
 export function ProviderConnectionCard({
@@ -87,7 +88,8 @@ export function ProviderConnectionCard({
         await disconnectBrokerageAccounting({ provider, brokerageId })
       } else {
         const res = await disconnectOwnerScoped({
-          domain: "financial",
+          // Zoom is the meetings domain; everything else on this card is financial.
+          domain: provider === "zoom" ? "meetings" : "financial",
           provider: storageKey ?? provider,
           owner: scope === "vendor" && vendorId ? { scope: "vendor", id: vendorId } : undefined,
         })

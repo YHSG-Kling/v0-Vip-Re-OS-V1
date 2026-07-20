@@ -75,6 +75,11 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
   const svcBooks = createServiceClient()
   const agentBooks = await readScopedAccounting(svcBooks, "agent", context.userId).catch(() => null)
   const agentScopeMatches = connectionScopeForUserType(context.userType).scope === "agent"
+  // MY MEETINGS (round 39) — the agent's own Zoom (exact owner match on
+  // owner_type='agent', owner_id=<auth user id>): Zoom appointments this agent
+  // books host on their account first (then team, then brokerage).
+  const { readScopedZoom } = await import("@/lib/connections/zoom")
+  const agentZoom = await readScopedZoom(svcBooks, "agent", context.userId).catch(() => null)
   // Last honest export marker (column arrives with the scoped-accounting-export
   // migration; absent column simply reads null → "Not synced yet").
   let agentBooksLastSyncedAt: string | null = null
@@ -568,6 +573,23 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
                 connected={false}
                 note={ACCOUNTING_OFFERINGS.agent.stripe.verdict}
               />
+              {/* MEETINGS (round 39) — the agent's own Zoom, same card idiom + provider gating. */}
+              {agentZoom && (
+                <ProviderConnectionCard
+                  provider="zoom"
+                  scope="agent"
+                  status={agentZoom.offering.status}
+                  connected={agentZoom.connected}
+                  companyName={agentZoom.accountEmail}
+                  connectPath={agentZoom.offering.connectPath}
+                  note={agentZoom.offering.verdict}
+                  canConnect={agentScopeMatches && agentZoom.providerGap === null}
+                  connectDisabledReason={
+                    agentZoom.providerGap ??
+                    "Your login doesn't map to a personal agent scope — this card connects an agent's own Zoom."
+                  }
+                />
+              )}
             </div>
             {/* QuickBooks reconciliation (round 37) — commissions vs OS-recorded exports. */}
             {agentReconciliation && <QbReconciliationCard recon={agentReconciliation} />}

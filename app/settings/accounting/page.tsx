@@ -12,6 +12,7 @@ import {
 } from "@/app/actions/accounting-sync"
 import { LinkIcon, RefreshCw, AlertCircle, CheckCircle2, Clock, Settings2 } from "lucide-react"
 import { ACCOUNTING_OFFERINGS, QUICKBOOKS_OAUTH_START } from "@/lib/connections/accounting-scopes"
+import { readScopedZoom } from "@/lib/connections/zoom"
 import { createServiceClient } from "@/lib/supabase/service"
 import { defaultQbReconciliationPeriod, loadBrokerageQbReconciliation } from "@/lib/finance/qb-reconciliation"
 import { ProviderConnectionCard } from "./provider-connection-card"
@@ -66,6 +67,11 @@ export default async function AccountingSettingsPage() {
     brokerageId: profile.brokerage_id,
     ...defaultQbReconciliationPeriod(),
   }).catch(() => null)
+
+  // BROKERAGE MEETINGS (round 39) — the brokerage's own Zoom (scope-aware, exact
+  // owner match). Zoom appointments booked by brokerage members host here when
+  // no more-specific (agent/team) Zoom is connected.
+  const brokerageZoom = await readScopedZoom(createServiceClient(), "brokerage", profile.brokerage_id).catch(() => null)
 
   return (
     <div className="container mx-auto p-6 space-y-6">
@@ -141,6 +147,24 @@ export default async function AccountingSettingsPage() {
                 brokerageId={profile.brokerage_id}
               />
             </Suspense>
+            {/* MEETINGS (round 39) — the brokerage's Zoom, same card idiom. Provider-gated:
+                missing ZOOM_CLIENT_ID/SECRET renders the honest gap, never a dead button. */}
+            {brokerageZoom && (
+              <Suspense fallback={<div className="animate-pulse h-48 bg-muted rounded-lg" />}>
+                <ProviderConnectionCard
+                  provider="zoom"
+                  scope="brokerage"
+                  status={brokerageZoom.offering.status}
+                  connected={brokerageZoom.connected}
+                  companyName={brokerageZoom.accountEmail}
+                  connectPath={brokerageZoom.offering.connectPath}
+                  note={brokerageZoom.offering.verdict}
+                  canConnect={brokerageZoom.providerGap === null}
+                  connectDisabledReason={brokerageZoom.providerGap}
+                  brokerageId={profile.brokerage_id}
+                />
+              </Suspense>
+            )}
           </div>
 
           {hasActiveProvider && (

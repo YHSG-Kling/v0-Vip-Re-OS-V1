@@ -36,7 +36,32 @@ export function isAnalyzableCall(row: { status?: string | null; transcription?: 
   return t.length >= 80 && /(^|\n)Caller:/.test(t)
 }
 
-/** Analyze one voice_calls row and write the intelligence columns. */
+/** THE one conversation-intel extractor (schema + prompt single-sourced here).
+ *  Every transcript lane — the voice sweep AND the Zoom transcript lane
+ *  (lib/connections/zoom-transcripts.ts) — extracts through THIS function, so
+ *  the insight vocabulary can never fork per channel. */
+export async function extractVoiceIntel(
+  transcription: string,
+  direction: string | null,
+): Promise<z.infer<typeof VoiceIntelSchema>> {
+  const { generateObject } = await import("@/lib/ai/generate")
+  const { object } = await generateObject({
+    model: "openai/gpt-4o-mini",
+    schema: VoiceIntelSchema,
+    prompt: `Analyze this real-estate conversation (phone call or video meeting). Be factual — extract only what was actually said.
+
+DIRECTION: ${direction ?? "unknown"}
+TRANSCRIPT:
+${transcription.slice(0, 12_000)}
+
+Extract: a 2-sentence summary; overall caller sentiment; the caller's objections/concerns (short phrases, empty if none); urgency 0-100 (how soon they intend to act); a coaching score 0-100 (did the conversation serve the caller — clarity, questions answered, a next step secured); the caller's primary intent in one phrase; up to 6 key topics.`,
+  })
+  return object
+}
+
+/** Analyze one voice_calls row and write the intelligence columns.
+ *  `provenance` stamps call_analyses.analyzed_by — the hourly sweep uses the
+ *  default; the Zoom transcript lane passes 'zoom_transcript'. */
 export async function analyzeVoiceCallRow(svc: any, call: {
   id: string
   brokerage_id: string
@@ -45,7 +70,7 @@ export async function analyzeVoiceCallRow(svc: any, call: {
   direction: string | null
   duration_seconds: number | null
   transcription: string
-}): Promise<{ ok: boolean; error?: string; intel?: { urgencyScore: number; intentPrimary: string; summary: string } }> {
+}, provenance: string = "voice_intel_sweep"): Promise<{ ok: boolean; error?: string; intel?: { urgencyScore: number; intentPrimary: string; summary: string } }> {
   try {
     // The intelligence reader (loadCallIntelligence) filters call_analyses by
     // the agent's USER id — resolve it from the ledger's agents.id.
@@ -55,18 +80,7 @@ export async function analyzeVoiceCallRow(svc: any, call: {
       agentUserId = (agent as any)?.user_id ?? null
     }
 
-    const { generateObject } = await import("@/lib/ai/generate")
-    const { object } = await generateObject({
-      model: "openai/gpt-4o-mini",
-      schema: VoiceIntelSchema,
-      prompt: `Analyze this real-estate phone call between an AI assistant and a caller. Be factual — extract only what was actually said.
-
-DIRECTION: ${call.direction ?? "unknown"}
-TRANSCRIPT:
-${call.transcription.slice(0, 12_000)}
-
-Extract: a 2-sentence summary; overall caller sentiment; the caller's objections/concerns (short phrases, empty if none); urgency 0-100 (how soon they intend to act); a coaching score 0-100 (did the conversation serve the caller — clarity, questions answered, a next step secured); the caller's primary intent in one phrase; up to 6 key topics.`,
-    })
+    const object = await extractVoiceIntel(call.transcription, call.direction)
 
     const { error } = await svc.from("call_analyses").insert({
       voice_call_id: call.id,
@@ -84,7 +98,7 @@ Extract: a 2-sentence summary; overall caller sentiment; the caller's objections
       intent_primary: object.intentPrimary.slice(0, 120),
       key_topics: object.keyTopics,
       analyzed_at: new Date().toISOString(),
-      analyzed_by: "voice_intel_sweep",
+      analyzed_by: provenance,
     })
     if (error) return { ok: false, error: error.message }
     return { ok: true, intel: { urgencyScore: Math.round(object.urgencyScore), intentPrimary: object.intentPrimary, summary: object.summary } }

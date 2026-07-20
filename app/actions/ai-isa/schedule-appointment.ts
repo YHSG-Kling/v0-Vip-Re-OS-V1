@@ -11,10 +11,19 @@ export type ScheduleAppointmentInput = {
   timezoneName: string
   location?: string
   notes?: string
+  /** "zoom" attempts a REAL Zoom meeting via the booker's connected scope
+   *  (agent → team → brokerage). Honest fallback when not connected. */
+  meetingMode?: 'zoom' | 'in_person' | 'phone'
 }
 
 export type ScheduleAppointmentResult =
-  | { success: true; calendarEventId: string }
+  | {
+      success: true
+      calendarEventId: string
+      /** Present when meetingMode was 'zoom': either the real meeting's join
+       *  URL, or the honest reason none was created (settings hint / API error). */
+      zoom?: { created: true; joinUrl: string; meetingId: string } | { created: false; reason: string; detail: string }
+    }
   | { success: false; error: string }
 
 export async function scheduleAppointment(
@@ -57,9 +66,27 @@ export async function scheduleAppointment(
       timezoneName: input.timezoneName,
       location:     input.location,
       notes:        input.notes,
+      meetingMode:  input.meetingMode,
     })
 
-    return { success: true, calendarEventId }
+    // Report the honest Zoom outcome (round 39): read back what the scheduler
+    // stamped — a real join URL, or the refusal with its settings hint.
+    let zoom: Extract<ScheduleAppointmentResult, { success: true }>['zoom']
+    if (input.meetingMode === 'zoom') {
+      const { data: ev } = await supabase
+        .from('calendar_events')
+        .select('metadata')
+        .eq('id', calendarEventId)
+        .maybeSingle()
+      const meta = (ev?.metadata ?? {}) as Record<string, any>
+      if (meta.zoom?.join_url && meta.zoom?.meeting_id) {
+        zoom = { created: true, joinUrl: meta.zoom.join_url, meetingId: String(meta.zoom.meeting_id) }
+      } else if (meta.zoom_outcome) {
+        zoom = { created: false, reason: meta.zoom_outcome.reason ?? 'not_connected', detail: meta.zoom_outcome.detail ?? '' }
+      }
+    }
+
+    return { success: true, calendarEventId, ...(zoom ? { zoom } : {}) }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
     return { success: false, error: message }

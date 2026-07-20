@@ -20,6 +20,7 @@ const DOMAIN_LABELS: Record<string, string> = {
   crm: "CRM (sync-out)", financial: "Financial", listing: "IDX / Listings",
   transaction: "Transaction Management", esign: "E-Signature", showing: "Showings",
   podcast: "Podcast Syndication",
+  meetings: "Video Meetings",
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -31,6 +32,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   dotloop: "Dotloop", formsimplicity: "Form Simplicity", docusign: "DocuSign",
   skyslope: "SkySlope", brokermint: "Brokermint", authentisign: "Authentisign", showingtime: "ShowingTime",
   transistor: "Transistor",
+  zoom: "Zoom",
 }
 
 type Domain = ConnectionCenter["domains"][number]

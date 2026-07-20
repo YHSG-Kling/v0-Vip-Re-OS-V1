@@ -1,0 +1,255 @@
+// lib/connections/zoom-transcripts.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// ZOOM TRANSCRIPT → CONTACT/TENANT ATTACH + INSIGHT ENRICHMENT (round 39).
+// Consumes REAL Zoom recording webhooks only (recording.transcript_completed /
+// recording.completed with a TRANSCRIPT file) — a transcript is never invented.
+//
+// Attach design (resolveZoomAttachTarget, pure in lib/connections/zoom.ts):
+//   • TENANT-hosted meeting (agent/team/brokerage Zoom) → the transcript lands
+//     on the CONTACT tied to the calendar event, in the SAME ledger voice
+//     transcripts use: a voice_calls row (call_type 'zoom_meeting', vendor call
+//     id 'zoom:<uuid>', transcription = parsed VTT), then the EXISTING
+//     conversation-intel extractor (lib/voice/call-analysis.ts →
+//     analyzeVoiceCallRow — never a fork) writes the same call_analyses insight
+//     row the coaching/intelligence loop reads, provenance 'zoom_transcript'.
+//   • PLATFORM-hosted meeting → voice_calls is tenant/contact-shaped (l32), so
+//     the transcript attaches to the TENANT instead: a communications row
+//     (channel 'zoom_transcript', brokerage_id = tenant, contact_id null) with
+//     the full transcript + the SAME extractor's insights (extractVoiceIntel —
+//     the shared core, not a second prompt) in metadata, provenance
+//     'zoom_transcript'.
+//
+// Idempotent per meeting uuid on both lanes (a webhook redelivery never
+// double-attaches or double-analyzes).
+
+import type { createServiceClient } from "@/lib/supabase/service"
+import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { parseZoomVtt, resolveZoomAttachTarget } from "./zoom"
+import { analyzeVoiceCallRow, extractVoiceIntel } from "@/lib/voice/call-analysis"
+
+type ServiceClient = ReturnType<typeof createServiceClient>
+
+export interface ZoomRecordingObject {
+  id?: number | string
+  uuid?: string
+  topic?: string
+  start_time?: string
+  duration?: number // minutes
+  recording_files?: Array<{
+    file_type?: string
+    file_extension?: string
+    download_url?: string
+    recording_type?: string
+  }>
+}
+
+export interface ProcessZoomRecordingResult {
+  handled: boolean
+  attached?: "contact" | "tenant"
+  analyzed?: boolean
+  reason?: string
+}
+
+/** Pure: pick the transcript file out of a recording payload (Zoom marks the
+ *  VTT transcript file_type 'TRANSCRIPT'). */
+export function pickTranscriptFile(obj: ZoomRecordingObject): { download_url: string } | null {
+  const f = (obj.recording_files ?? []).find(
+    (x) => (x.file_type ?? "").toUpperCase() === "TRANSCRIPT" && !!x.download_url,
+  )
+  return f?.download_url ? { download_url: f.download_url } : null
+}
+
+/**
+ * Process one verified Zoom recording event: fetch the REAL transcript, find
+ * the calendar event the meeting was stamped on, attach by scope, enrich.
+ */
+export async function processZoomRecordingEvent(
+  svc: ServiceClient,
+  payload: { event?: string; download_token?: string; payload?: { object?: ZoomRecordingObject } },
+): Promise<ProcessZoomRecordingResult> {
+  const obj = payload.payload?.object
+  if (!obj?.id || !obj.uuid) return { handled: false, reason: "payload missing meeting id/uuid" }
+  const meetingId = String(obj.id)
+  const meetingUuid = String(obj.uuid)
+
+  const file = pickTranscriptFile(obj)
+  if (!file) {
+    // recording.completed often arrives before the transcript is rendered —
+    // the recording.transcript_completed event carries it. Nothing to invent.
+    return { handled: false, reason: "no TRANSCRIPT file in payload (waiting for recording.transcript_completed)" }
+  }
+
+  // ── The calendar event this meeting was created for (stamped at booking) ──
+  const { data: event } = await svc
+    .from("calendar_events")
+    .select("id, brokerage_id, agent_user_id, entity_type, entity_id, event_type, title, start_at, metadata")
+    .eq("metadata->zoom->>meeting_id", meetingId)
+    .maybeSingle()
+  if (!event) return { handled: false, reason: `no calendar event carries zoom meeting_id ${meetingId}` }
+
+  const meta = ((event as any).metadata ?? {}) as Record<string, any>
+  const zoomMeta = (meta.zoom ?? {}) as Record<string, any>
+
+  // Resolve a lead's linked contact when the event's entity is a lead.
+  let leadContactId: string | null = null
+  if ((event as any).entity_type === "lead" && (event as any).entity_id) {
+    const { data: lead } = await svc.from("leads").select("contact_id").eq("id", (event as any).entity_id).maybeSingle()
+    leadContactId = (lead as any)?.contact_id ?? null
+  }
+
+  const target = resolveZoomAttachTarget({
+    hostOwnerType: (zoomMeta.host_owner_type as string | undefined) ?? null,
+    brokerageId: (event as any).brokerage_id ?? null,
+    entityType: (event as any).entity_type ?? null,
+    entityId: (event as any).entity_id ?? null,
+    metadataContactId: (meta.contact_id as string | undefined) ?? null,
+    leadContactId,
+  })
+  if (target.kind === "none") return { handled: false, reason: target.reason }
+
+  // ── Fetch the REAL transcript (VTT) via Zoom's short-lived download token ──
+  const dl = await callConnector<string>({
+    connector: "zoom-recording-download",
+    url: file.download_url,
+    method: "GET",
+    responseType: "text",
+    auth: payload.download_token ? { style: "bearer", token: payload.download_token } : { style: "none" },
+  })
+  if (!dl.ok || typeof dl.data !== "string" || dl.data.trim().length === 0) {
+    return { handled: false, reason: `transcript download failed (${dl.status ?? "—"}): ${dl.error ?? "empty body"}` }
+  }
+  const transcript = parseZoomVtt(dl.data)
+  if (transcript.trim().length < 40) {
+    return { handled: false, reason: "transcript too short to attach (parsed VTT under 40 chars)" }
+  }
+
+  const startedAt = obj.start_time ?? (event as any).start_at ?? new Date().toISOString()
+  const durationSeconds = typeof obj.duration === "number" ? obj.duration * 60 : null
+  const topic = obj.topic ?? (event as any).title ?? "Zoom meeting"
+
+  if (target.kind === "tenant") {
+    // ── PLATFORM-hosted: attach to the TENANT (communications, GDPR-exported) ─
+    const { data: dup } = await svc
+      .from("communications")
+      .select("id")
+      .eq("metadata->>zoom_uuid", meetingUuid)
+      .maybeSingle()
+    if (dup) return { handled: true, attached: "tenant", analyzed: false, reason: "already attached (idempotent)" }
+
+    // Insight enrichment through THE shared extractor core (no fork).
+    let insights: Awaited<ReturnType<typeof extractVoiceIntel>> | null = null
+    try {
+      insights = await extractVoiceIntel(transcript, "zoom_meeting")
+    } catch {
+      insights = null // transcript still attaches; enrichment is best-effort
+    }
+
+    const { error } = await svc.from("communications").insert({
+      brokerage_id: target.brokerageId,
+      contact_id: null,
+      channel: "zoom_transcript",
+      direction: "inbound",
+      subject: `Zoom meeting transcript — ${String(topic).slice(0, 180)}`,
+      content_preview: (insights?.summary ?? transcript).slice(0, 1500),
+      metadata: {
+        provenance: "zoom_transcript",
+        zoom_uuid: meetingUuid,
+        zoom_meeting_id: meetingId,
+        calendar_event_id: (event as any).id,
+        transcript,
+        duration_seconds: durationSeconds,
+        ...(insights ? { insights } : {}),
+      },
+      sent_at: startedAt,
+    })
+    if (error) return { handled: false, reason: `communications insert failed: ${error.message}` }
+
+    await stampTranscriptAttached(svc, (event as any).id, meta, meetingUuid, "tenant")
+    return { handled: true, attached: "tenant", analyzed: !!insights }
+  }
+
+  // ── TENANT-hosted: attach to the CONTACT via the ONE voice-transcript ledger ─
+  const vendorCallId = `zoom:${meetingUuid}`
+  const { data: dupCall } = await svc
+    .from("voice_calls")
+    .select("id")
+    .eq("vapi_call_id", vendorCallId)
+    .maybeSingle()
+  if (dupCall) return { handled: true, attached: "contact", analyzed: false, reason: "already attached (idempotent)" }
+
+  // voice_calls.agent_id + call_analyses.agent_id carry agents.id — resolve it
+  // from the calendar event's agent USER id.
+  let agentId: string | null = null
+  if ((event as any).agent_user_id) {
+    const { data: agent } = await svc.from("agents").select("id").eq("user_id", (event as any).agent_user_id).maybeSingle()
+    agentId = (agent as any)?.id ?? null
+  }
+
+  const { data: callRow, error: callErr } = await svc
+    .from("voice_calls")
+    .insert({
+      brokerage_id: (event as any).brokerage_id,
+      contact_id: target.contactId,
+      ...(agentId ? { agent_id: agentId } : {}),
+      direction: "outbound", // we (the host) convened the meeting
+      call_type: "zoom_meeting",
+      status: "completed",
+      started_at: startedAt,
+      ...(durationSeconds != null ? { duration_seconds: durationSeconds } : {}),
+      transcription: transcript.slice(0, 60_000),
+      vapi_call_id: vendorCallId, // the ledger's vendor-call-id column (Twilio CallSid / Vapi id / zoom:<uuid>)
+    })
+    .select("id")
+    .single()
+  if (callErr || !callRow) {
+    return { handled: false, reason: `voice_calls insert failed: ${callErr?.message ?? "no row"}` }
+  }
+
+  // INSIGHT ENRICHMENT — the EXISTING extractor writing the SAME call_analyses
+  // insight row the intelligence loop reads, provenance 'zoom_transcript'.
+  const analysis = await analyzeVoiceCallRow(
+    svc,
+    {
+      id: (callRow as any).id,
+      brokerage_id: (event as any).brokerage_id,
+      contact_id: target.contactId,
+      agent_id: agentId,
+      direction: "zoom_meeting",
+      duration_seconds: durationSeconds,
+      transcription: transcript,
+    },
+    "zoom_transcript",
+  )
+
+  await stampTranscriptAttached(svc, (event as any).id, meta, meetingUuid, "contact")
+  return { handled: true, attached: "contact", analyzed: analysis.ok }
+}
+
+/** Mark the calendar event's zoom metadata so the meeting page can show that
+ *  the transcript landed (best-effort; never blocks the attach). */
+async function stampTranscriptAttached(
+  svc: ServiceClient,
+  eventId: string,
+  meta: Record<string, any>,
+  meetingUuid: string,
+  attachedTo: "contact" | "tenant",
+): Promise<void> {
+  try {
+    await svc
+      .from("calendar_events")
+      .update({
+        metadata: {
+          ...meta,
+          zoom: {
+            ...((meta.zoom ?? {}) as Record<string, any>),
+            transcript_attached: true,
+            transcript_attached_to: attachedTo,
+            transcript_uuid: meetingUuid,
+          },
+        },
+      })
+      .eq("id", eventId)
+  } catch {
+    /* best-effort */
+  }
+}
