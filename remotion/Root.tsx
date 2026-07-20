@@ -18,6 +18,7 @@ import { ComingSoonReel } from "./ComingSoonReel"
 import { OpenHouseAnnounceReel } from "./OpenHouseAnnounceReel"
 import { AgentTalkingHeadReel } from "./AgentTalkingHeadReel"
 import { AgentExplainerReel } from "./AgentExplainerReel"
+import { TeammateExplainerReel } from "./TeammateExplainerReel"
 import { ExplainerAnimReel } from "./ExplainerAnimReel"
 import { TestimonialReel } from "./TestimonialReel"
 import { NeighborhoodSpotlightReel } from "./NeighborhoodSpotlightReel"
@@ -222,6 +223,34 @@ export const RemotionRoot: React.FC = () => {
           ],
           ctaLabel:   "Book a 15-min consult",
           agentName:  "Your Agent",
+          avatarVideoUrl: null,
+          agentPhotoUrl:  null,
+          brand: {
+            primaryColor:  "#0F172A",
+            accentColor:   "#F59E0B",
+            brokerageName: "Your Brokerage",
+            showEhoMark:   true,
+          },
+        }}
+      />
+      {/* TEAMMATE VIDEO lane — full-frame D-ID avatar explainer wrapped in
+          the tenant's brand kit: branded intro card, persistent lower-third
+          (agent + brokerage), logo watermark, branded outro CTA + QR badge.
+          Commissioned by lib/video/avatar-explainer (AI-authored, gated copy;
+          ElevenLabs voice; D-ID clip wired in on provider completion).
+          1080×1080 + 30s. */}
+      <Composition
+        id="TeammateExplainerReel"
+        component={TeammateExplainerReel as unknown as React.FC<Record<string, unknown>>}
+        durationInFrames={900}
+        fps={30}
+        width={1080}
+        height={1080}
+        defaultProps={{
+          eyebrow:  "BUYER BASICS",
+          title:    "Three things to know before you bid",
+          ctaLabel: "Book a 15-min consult",
+          agentName: "Your Agent",
           avatarVideoUrl: null,
           agentPhotoUrl:  null,
           brand: {

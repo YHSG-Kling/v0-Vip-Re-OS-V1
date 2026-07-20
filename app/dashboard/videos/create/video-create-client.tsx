@@ -57,6 +57,7 @@ import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdate
 import { generateVideoScript } from "@/app/actions/video/generate-script"
 import { BrollPicker } from "../components/BrollPicker"
 import { getAgentSettings } from "@/app/actions/agent-settings"
+import { TeammateExplainerCard } from "./teammate-explainer-card"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -877,6 +878,12 @@ export default function VideoCreatePage() {
                     Select a business purpose and we will generate the right script and delivery options
                   </p>
                 </div>
+
+                {/* TEAMMATE VIDEO lane — avatar explainer (D-ID + ElevenLabs +
+                    Remotion brand frames). Self-contained: commissions via
+                    app/actions/avatar-video onto the existing Director rail +
+                    unified approval queue. */}
+                <TeammateExplainerCard />
 
                 {/* Purpose Picker */}
                 <VideoBusinessPurposePicker
