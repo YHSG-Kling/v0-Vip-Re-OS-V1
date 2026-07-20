@@ -202,8 +202,12 @@ export async function GET(
       // Clear state cookie
       cookieStore.delete("oauth_state")
 
-      // Decode state
-      let stateData: { provider: string; brokerageId: string; userId: string }
+      // Intuit returns the QBO company id as a CALLBACK QUERY PARAM (realmId), never in
+      // the token body — capture it here so the stored credential carries the company id.
+      const callbackRealmId = searchParams.get("realmId")
+
+      // Decode state (brokerageId is null for a PLATFORM-scope connect — superadmin has no tenant)
+      let stateData: { provider: string; brokerageId: string | null; userId: string }
       try {
         stateData = JSON.parse(Buffer.from(state, "base64url").toString())
       } catch {
@@ -258,13 +262,22 @@ export async function GET(
         ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
         : null
 
+      // Owner scope resolved by the INITIATE step and carried through state.
+      const ownerType = (stateData as any).ownerType ?? "brokerage"
+      const ownerId = (stateData as any).ownerId ?? stateData.brokerageId
+
       // CANONICAL platform id every resolver reads: google→gmail, microsoft→outlook (the route
       // param `provider` is google_calendar/outlook_calendar); QuickBooks/others keep their id.
+      // EXCEPTION (m273 idiom, see lib/connections/accounting-scopes.ts): the PLATFORM's own
+      // QuickBooks is stored under the DISTINCT 'platform_quickbooks' key — the tenant credential
+      // cascade falls back to owner_type='platform', so reusing 'quickbooks' would let a brokerage
+      // with no connection resolve the COMPANY's books.
       const storedPlatform =
         oauthProvider === "google" ? "gmail"
         : oauthProvider === "microsoft" ? "outlook"
         : oauthProvider === "meta_ads" ? "facebook"     // what the ad connector loads
         : oauthProvider === "google_ads" ? "google"
+        : oauthProvider === "quickbooks" && ownerType === "platform" ? "platform_quickbooks"
         : provider
 
       // Ad-account connections: resolve the ad account id (Meta) + carry the Google
@@ -308,9 +321,10 @@ export async function GET(
       // initiate resolved from the connecting user's role) so a vendor/contact/agent connects their
       // OWN mailbox and it resolves via the owner cascade. Canonical token columns are what every
       // resolver reads; account_id carries the QBO realmId; config keeps the same fields for compat.
-      const ownerType = (stateData as any).ownerType ?? "brokerage"
-      const ownerId = (stateData as any).ownerId ?? stateData.brokerageId
+      // Intuit's realmId arrives on the callback URL (callbackRealmId); tolerate a body echo too.
+      const realmId: string | null = (tokens.realmId as string | undefined) ?? callbackRealmId
       const credRow = {
+        // Nullable since m273 — a platform-owned row has NO tenant anchor.
         brokerage_id: stateData.brokerageId,
         owner_type: ownerType,
         owner_id: ownerId,
@@ -318,7 +332,7 @@ export async function GET(
         platform: storedPlatform,
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
-        ...(tokens.realmId ? { account_id: tokens.realmId } : {}),
+        ...(realmId ? { account_id: realmId } : {}),
         ...(adAccountId ? { account_id: adAccountId } : {}),
         config: {
           access_token: tokens.access_token,
@@ -326,7 +340,7 @@ export async function GET(
           token_type: tokens.token_type,
           scope: tokens.scope,
           ...(connectedEmail ? { email: connectedEmail } : {}),
-          ...(tokens.realmId && { realm_id: tokens.realmId }),
+          ...(realmId && { realm_id: realmId }),
           ...(tokens.x_refresh_token_expires_in && { refresh_token_expires_in: tokens.x_refresh_token_expires_in }),
           ...adConfigExtra,
         },
@@ -382,33 +396,36 @@ export async function GET(
         }
       }
 
-      // Update brokerage_integrations
-      await supabase
-        .from("brokerage_integrations")
-        .upsert({
-          brokerage_id: stateData.brokerageId,
-          provider_type: metadata.providerType,
-          provider_name: provider,
-          status: "connected",
-          last_health_check_at: new Date().toISOString(),
-          last_error: null,
-          updated_at: new Date().toISOString(),
-        }, {
-          onConflict: "brokerage_id,provider_name",
+      // Update brokerage_integrations + kernel event — TENANT connects only (a platform-scope
+      // connect has no brokerage to anchor these to).
+      if (stateData.brokerageId) {
+        await supabase
+          .from("brokerage_integrations")
+          .upsert({
+            brokerage_id: stateData.brokerageId,
+            provider_type: metadata.providerType,
+            provider_name: provider,
+            status: "connected",
+            last_health_check_at: new Date().toISOString(),
+            last_error: null,
+            updated_at: new Date().toISOString(),
+          }, {
+            onConflict: "brokerage_id,provider_name",
+          })
+
+        // Fire kernel event
+        await processKernelEvent({
+          event: KernelEvent.INTEGRATION_CONNECTED,
+          brokerageId: stateData.brokerageId,
+          entityType: "platform_credentials",
+          entityId: stateData.brokerageId,
+
+        }).catch(err => {
+          console.error("[OAuth] Kernel event failed (non-blocking):", err)
         })
+      }
 
-      // Fire kernel event
-      await processKernelEvent({
-        event: KernelEvent.INTEGRATION_CONNECTED,
-        brokerageId: stateData.brokerageId,
-        entityType: "platform_credentials",
-        entityId: stateData.brokerageId,
-        
-      }).catch(err => {
-        console.error("[OAuth] Kernel event failed (non-blocking):", err)
-      })
-
-      console.log(`[OAuth] Successfully connected ${provider} for brokerage ${stateData.brokerageId}`)
+      console.log(`[OAuth] Successfully connected ${provider} for ${ownerType} ${ownerId}`)
       return redirectWithResult(baseUrl, true, provider)
     }
 
@@ -457,13 +474,17 @@ export async function GET(
       brokerageId = brokerageId ?? ((c?.brokerage_id as string | null) ?? null)
     } else if (scope === "team") {
       ownerId = (userData?.team_id as string | null) ?? null
-    } else if (scope === "brokerage" || scope === "platform") {
+    } else if (scope === "platform") {
+      // The PLATFORM's own connection (superadmin) — sentinel owner, NO tenant anchor
+      // (m273: platform_credentials.brokerage_id is nullable for platform-owned rows).
+      ownerId = "platform"
+    } else if (scope === "brokerage") {
       ownerId = brokerageId
     } else {
       ownerId = user.id // agent / staff → personal (owner_type 'agent')
     }
 
-    if (!brokerageId) {
+    if (!brokerageId && scope !== "platform") {
       return redirectWithResult(baseUrl, false, provider, "User not associated with a brokerage")
     }
     if (!ownerId) {

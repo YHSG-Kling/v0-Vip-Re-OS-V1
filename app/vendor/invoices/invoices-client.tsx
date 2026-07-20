@@ -13,7 +13,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { CreditCard, BookOpen, CheckCircle2, Loader2 } from "lucide-react"
+import { CreditCard, CheckCircle2, Loader2 } from "lucide-react"
+import { ProviderConnectionCard } from "@/app/settings/accounting/provider-connection-card"
 import {
   markClientInvoiceCollected,
   syncVendorInvoiceToQuickBooksAction,
@@ -143,32 +144,18 @@ export function VendorInvoicesClient({
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <BookOpen className="h-4 w-4" />
-              Accounting (QuickBooks)
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="text-sm space-y-2">
-            {quickbooksConnected ? (
-              <p className="text-green-700 flex items-center gap-1">
-                <CheckCircle2 className="h-4 w-4" />
-                Connected — sync invoices into your QuickBooks company below.
-              </p>
-            ) : (
-              <>
-                <p className="text-muted-foreground">
-                  Not connected. Invoices show “Not synced” until you connect your own
-                  QuickBooks company — nothing is synced silently.
-                </p>
-                <a href="/api/integrations/oauth/quickbooks">
-                  <Button size="sm" variant="outline">Connect QuickBooks</Button>
-                </a>
-              </>
-            )}
-          </CardContent>
-        </Card>
+        {/* ONE shared accounting card (same component as brokerage/team/agent/platform).
+            Connect hits the REAL OAuth route (scope resolves to vendor server-side);
+            invoices show "Not synced" until a real export happens — nothing silent. */}
+        <ProviderConnectionCard
+          provider="quickbooks"
+          scope="vendor"
+          status="connectable"
+          connected={quickbooksConnected}
+          connectPath="/api/integrations/oauth/quickbooks"
+          note="Not connected. Invoices show “Not synced” until you connect your own QuickBooks company — nothing is synced silently."
+          vendorId={vendorId}
+        />
       </div>
 
       {message && (

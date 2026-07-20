@@ -15,6 +15,9 @@ import {
   type FinancialAction,
 } from "../components/os"
 import { loadBrokerageFinancialSummaryAction } from "@/app/actions/financial-kernel"
+import { createServiceClient } from "@/lib/supabase/service"
+import { ACCOUNTING_OFFERINGS, readScopedAccounting, type ScopedAccountingStatus } from "@/lib/connections/accounting-scopes"
+import { ProviderConnectionCard } from "@/app/settings/accounting/provider-connection-card"
 
 export const dynamic = "force-dynamic"
 
@@ -47,6 +50,34 @@ export default async function TeamFinancialsPage() {
   // Role gate: redirect non-team_lead/broker users
   if (!["team_lead", "broker", "admin", "superadmin"].includes(userRole)) {
     redirect("/dashboard/financials/agent")
+  }
+
+  // ── Team books (scope-aware accounting connection) ─────────────────────────
+  // The TEAM's own QuickBooks — owner (owner_type='team', owner_id=team_id),
+  // exact match, never the brokerage's connection. Only the team lead's login
+  // maps to team scope in the OAuth route, so only they get the connect button.
+  const { data: teamRow } = await supabase
+    .from("users")
+    .select("team_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  const teamId = (teamRow?.team_id as string | null) ?? null
+  let teamBooks: ScopedAccountingStatus | null = null
+  let teamLastSyncedAt: string | null = null
+  if (teamId) {
+    const svc = createServiceClient()
+    teamBooks = await readScopedAccounting(svc, "team", teamId).catch(() => null)
+    // Last honest export marker (column arrives with the scoped-accounting-export
+    // migration; absent column simply reads null → "Not synced yet").
+    const { data: lastExport } = await svc
+      .from("team_earnings")
+      .select("quickbooks_synced_at")
+      .eq("team_id", teamId)
+      .not("quickbooks_synced_at", "is", null)
+      .order("quickbooks_synced_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    teamLastSyncedAt = ((lastExport as { quickbooks_synced_at?: string | null } | null)?.quickbooks_synced_at) ?? null
   }
 
   // Load brokerage financial summary via kernel command
@@ -426,7 +457,41 @@ export default async function TeamFinancialsPage() {
         </CardContent>
       </Card>
 
-      {/* Section 7: Financial Action Stack */}
+      {/* Section 7: Team Books — the TEAM's own accounting connections (scope-aware) */}
+      {teamId && teamBooks && (
+        <div className="space-y-3">
+          <div>
+            <h2 className="text-xl font-semibold">Team Books</h2>
+            <p className="text-sm text-muted-foreground">
+              The team&apos;s own accounting — separate from the brokerage&apos;s books. Team P&amp;L rows
+              export to the team&apos;s QuickBooks and show &quot;Not synced&quot; until a real export happens.
+            </p>
+          </div>
+          <div className="grid gap-6 md:grid-cols-2">
+            <ProviderConnectionCard
+              provider="quickbooks"
+              scope="team"
+              status={teamBooks.quickbooks.offering.status}
+              connected={teamBooks.quickbooks.connected}
+              companyName={teamBooks.quickbooks.accountName ?? teamBooks.quickbooks.realmId}
+              lastSyncedAt={teamLastSyncedAt}
+              connectPath={teamBooks.quickbooks.offering.connectPath}
+              note={teamBooks.quickbooks.offering.verdict}
+              canConnect={userRole === "team_lead"}
+              connectDisabledReason="Only the team lead's login connects the team's QuickBooks (the connection is owned by the team, resolved from the team lead's role)."
+            />
+            <ProviderConnectionCard
+              provider="stripe"
+              scope="team"
+              status={ACCOUNTING_OFFERINGS.team.stripe.status}
+              connected={false}
+              note={ACCOUNTING_OFFERINGS.team.stripe.verdict}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Section 8: Financial Action Stack */}
       <FinancialActionStack actions={teamFinancialActions} />
     </div>
   )

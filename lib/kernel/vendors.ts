@@ -664,6 +664,30 @@ export async function assignVendorToTransaction(
     metadata:     { vendorId, transactionId, assignmentType, jobId: job.id },
   })
 
+  // DELIBERATIVE EMITTER (round 36, transaction_vendor_selection): a vendor was just
+  // picked for a transaction job — the Deal Coordinator raises the governed second-look
+  // referral INTO the vendor steward's domain so the pick is ARGUED (deadline/schedule
+  // fit on a live closing vs what the ratings ledger actually says about this vendor),
+  // with grounded positions + one bounded rebuttal round + a stated resolution on the
+  // manager-trust surface. Deduped per job; best-effort — never blocks the booking.
+  try {
+    const { raiseReferralDeduped } = await import("@/lib/managers/cross-referral")
+    await raiseReferralDeduped({
+      brokerageId,
+      fromManager: "deal_coordinator",
+      toManager: "data_steward",
+      collabDomain: "transaction_vendor_selection",
+      ask: `${vendor.name} was assigned for "${assignmentType}" at ${transaction.property_address}. ` +
+        `Argue the pick: the deal side's deadline/schedule fit vs the vendor book's rated track record — is this the right vendor for this job?`,
+      entityType: "transaction",
+      entityId: transactionId,
+      payload: { vendor_id: vendorId, assignment_type: assignmentType },
+      dedupe: { vendor_job_id: job.id },
+    })
+  } catch (err) {
+    console.error("[assignVendorToTransaction] deliberative referral failed (non-blocking):", err)
+  }
+
   // Fetch agent contact info for email
   const { data: agentProfileTxn } = await supabase
     .from("users")

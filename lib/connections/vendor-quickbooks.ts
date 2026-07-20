@@ -2,6 +2,12 @@
 // Single source of truth for a VENDOR's QuickBooks Online connection, on the unified
 // owner model — the exact sibling of lib/connections/vendor-stripe.ts.
 //
+// REFACTORED (round 36) onto the shared scope-aware accounting layer
+// (lib/connections/accounting-scopes.ts): credential load, token refresh, the QBO
+// egress choke point, and find-or-create-customer are the SAME helpers every scope
+// (platform/brokerage/team/agent/vendor) uses — this module keeps only the
+// vendor-invoice semantics on top of them.
+//
 // A vendor's QBO connection lives in platform_credentials keyed by
 // (owner_type="vendor", owner_id=<vendor id>, platform="quickbooks"). The row is written
 // by the EXISTING /api/integrations/oauth/quickbooks route: its initiate step resolves the
@@ -18,24 +24,18 @@
 
 import "server-only"
 import type { createServiceClient } from "@/lib/supabase/service"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import {
+  loadScopedQuickBooksCredential,
+  ensureFreshQuickBooksToken,
+  qboRequest,
+  findOrCreateQboCustomer,
+} from "@/lib/connections/accounting-scopes"
 
 type ServiceClient = ReturnType<typeof createServiceClient>
-
-const INTUIT_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
-const QBO_API_BASE = "https://quickbooks.api.intuit.com/v3/company"
 
 export interface VendorQuickBooksStatus {
   connected: boolean
   realmId: string | null
-}
-
-interface VendorQBCredential {
-  id: string
-  accessToken: string
-  refreshToken: string
-  realmId: string
-  tokenExpiresAt: string | null
 }
 
 /** Read whether the vendor has a usable QBO connection (token + realmId present). */
@@ -43,131 +43,8 @@ export async function readVendorQuickBooks(
   svc: ServiceClient,
   vendorId: string,
 ): Promise<VendorQuickBooksStatus> {
-  const cred = await loadVendorQBCredential(svc, vendorId)
+  const cred = await loadScopedQuickBooksCredential(svc, "vendor", vendorId)
   return { connected: !!cred, realmId: cred?.realmId ?? null }
-}
-
-async function loadVendorQBCredential(
-  svc: ServiceClient,
-  vendorId: string,
-): Promise<VendorQBCredential | null> {
-  const { data } = await svc
-    .from("platform_credentials")
-    .select("id, access_token, refresh_token, account_id, token_expires_at, config, is_active")
-    .eq("owner_type", "vendor")
-    .eq("owner_id", vendorId)
-    .eq("platform", "quickbooks")
-    .maybeSingle()
-
-  if (!data || data.is_active === false) return null
-  const config = (data.config ?? {}) as Record<string, unknown>
-  // Token columns are canonical; older QBO rows kept tokens in `config` (same
-  // tolerance as lib/finance/accounting-egress.ts).
-  const accessToken = (data.access_token as string | null) ?? (config.access_token as string | undefined) ?? null
-  const refreshToken = (data.refresh_token as string | null) ?? (config.refresh_token as string | undefined) ?? ""
-  const realmId = (data.account_id as string | null) ?? (config.realm_id as string | undefined) ?? (config.realmId as string | undefined) ?? null
-  if (!accessToken || !realmId) return null
-  return {
-    id: data.id as string,
-    accessToken,
-    refreshToken,
-    realmId,
-    tokenExpiresAt: (data.token_expires_at as string | null) ?? null,
-  }
-}
-
-/** Refresh the vendor's access token when near expiry and persist the new set.
- *  Returns the live access token (refreshed or current). Throws on refresh failure. */
-async function ensureFreshToken(svc: ServiceClient, cred: VendorQBCredential): Promise<string> {
-  const exp = cred.tokenExpiresAt ? Date.parse(cred.tokenExpiresAt) : NaN
-  const nearExpiry = !Number.isNaN(exp) && exp <= Date.now() + 5 * 60_000
-  if (!nearExpiry || !cred.refreshToken) return cred.accessToken
-
-  const clientId = process.env.QUICKBOOKS_CLIENT_ID
-  const clientSecret = process.env.QUICKBOOKS_CLIENT_SECRET
-  if (!clientId || !clientSecret) {
-    throw new Error("QuickBooks app credentials not configured (QUICKBOOKS_CLIENT_ID/SECRET)")
-  }
-
-  const tokenUrl = new URL(INTUIT_TOKEN_URL)
-  const res = await callConnector<{ access_token: string; refresh_token: string; expires_in: number }>({
-    connector: "quickbooks-oauth",
-    baseUrl: tokenUrl.origin,
-    path: tokenUrl.pathname,
-    method: "POST",
-    auth: { style: "basic", username: clientId, password: clientSecret },
-    bodyType: "form",
-    body: { grant_type: "refresh_token", refresh_token: cred.refreshToken },
-  })
-  if (!res.ok || !res.data) {
-    throw new Error(`QuickBooks token refresh failed (${res.status ?? "—"}): ${res.error ?? ""}`)
-  }
-  const tokenExpiresAt = new Date(Date.now() + (res.data.expires_in ?? 3600) * 1000).toISOString()
-  await svc
-    .from("platform_credentials")
-    .update({
-      access_token: res.data.access_token,
-      refresh_token: res.data.refresh_token,
-      token_expires_at: tokenExpiresAt,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", cred.id)
-  return res.data.access_token
-}
-
-/** Single egress choke point for QBO API calls (Bearer, via the connector-gateway). */
-async function qboRequest<T>(args: {
-  accessToken: string
-  realmId: string
-  method: "GET" | "POST"
-  path: string
-  body?: unknown
-}): Promise<T> {
-  const res = await callConnector<T>({
-    connector: "quickbooks",
-    baseUrl: `${QBO_API_BASE}/${args.realmId}`,
-    path: args.path,
-    method: args.method,
-    body: args.body,
-    auth: { style: "bearer", token: args.accessToken },
-  })
-  if (!res.ok || res.data == null) {
-    throw new Error(`QuickBooks ${args.method} ${args.path.split("?")[0]} failed (${res.status ?? "—"}): ${res.error ?? ""}`)
-  }
-  return res.data
-}
-
-/** Find a QBO Customer by display name, creating it when absent. Returns the Customer Id. */
-async function findOrCreateCustomer(args: {
-  accessToken: string
-  realmId: string
-  displayName: string
-  email?: string | null
-}): Promise<string> {
-  // QBO query syntax escapes single quotes by doubling them.
-  const name = args.displayName.trim().slice(0, 100) || "Client"
-  const escaped = name.replace(/'/g, "''")
-  const query = `select Id from Customer where DisplayName = '${escaped}'`
-  const found = await qboRequest<{ QueryResponse?: { Customer?: Array<{ Id: string }> } }>({
-    accessToken: args.accessToken,
-    realmId: args.realmId,
-    method: "GET",
-    path: `/query?query=${encodeURIComponent(query)}&minorversion=73`,
-  })
-  const existing = found.QueryResponse?.Customer?.[0]?.Id
-  if (existing) return existing
-
-  const created = await qboRequest<{ Customer: { Id: string } }>({
-    accessToken: args.accessToken,
-    realmId: args.realmId,
-    method: "POST",
-    path: "/customer?minorversion=73",
-    body: {
-      DisplayName: name,
-      ...(args.email ? { PrimaryEmailAddr: { Address: args.email } } : {}),
-    },
-  })
-  return created.Customer.Id
 }
 
 export interface VendorQBPushOutcome {
@@ -217,11 +94,11 @@ export async function pushVendorInvoiceToQuickBooks(
     return { attempted: true, success: true, externalId: invoice.quickbooks_invoice_id }
   }
 
-  const cred = await loadVendorQBCredential(svc, params.vendorId)
+  const cred = await loadScopedQuickBooksCredential(svc, "vendor", params.vendorId)
   if (!cred) return { attempted: false, success: false }
 
   try {
-    const accessToken = await ensureFreshToken(svc, cred)
+    const accessToken = await ensureFreshQuickBooksToken(svc, cred)
 
     // The QBO customer is whoever the invoice bills: the contact (buyer/seller) for
     // billed_to='contact', otherwise the brokerage.
@@ -245,7 +122,7 @@ export async function pushVendorInvoiceToQuickBooks(
       email = (brokerage as { email?: string | null } | null)?.email ?? null
     }
 
-    const customerId = await findOrCreateCustomer({ accessToken, realmId: cred.realmId, displayName, email })
+    const customerId = await findOrCreateQboCustomer({ accessToken, realmId: cred.realmId, displayName, email })
 
     const created = await qboRequest<{ Invoice: { Id: string } }>({
       accessToken,

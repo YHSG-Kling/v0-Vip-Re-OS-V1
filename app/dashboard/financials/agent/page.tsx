@@ -26,6 +26,10 @@ import {
   type FinancialAction,
 } from "../components/os"
 import { getProviderConnectionStatus } from "@/app/actions/accounting-sync"
+import { createServiceClient } from "@/lib/supabase/service"
+import { ACCOUNTING_OFFERINGS, readScopedAccounting } from "@/lib/connections/accounting-scopes"
+import { connectionScopeForUserType } from "@/lib/connections/field-spec"
+import { ProviderConnectionCard } from "@/app/settings/accounting/provider-connection-card"
 import { AgentFinancialsClient } from "./agent-financials-client"
 import { loadAgentFinancialDashboardSummaryAction } from "@/app/actions/financial-kernel"
 
@@ -61,6 +65,28 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
 
   // Fetch accounting sync status in parallel (not in kernel scope yet)
   const syncStatus = await getProviderConnectionStatus(brokerageId!).catch(() => null)
+
+  // ── My Books (scope-aware accounting connection) ───────────────────────────
+  // The AGENT's own QuickBooks — owner (owner_type='agent', owner_id=<auth user
+  // id>), exact match, never the brokerage's connection. The OAuth route derives
+  // scope from the user's role, so only an agent-scope login gets the button.
+  const svcBooks = createServiceClient()
+  const agentBooks = await readScopedAccounting(svcBooks, "agent", context.userId).catch(() => null)
+  const agentScopeMatches = connectionScopeForUserType(context.userType).scope === "agent"
+  // Last honest export marker (column arrives with the scoped-accounting-export
+  // migration; absent column simply reads null → "Not synced yet").
+  let agentBooksLastSyncedAt: string | null = null
+  if (agentBooks?.quickbooks.connected && agentId) {
+    const { data: lastExport } = await svcBooks
+      .from("agent_commissions")
+      .select("quickbooks_synced_at")
+      .eq("agent_id", agentId)
+      .not("quickbooks_synced_at", "is", null)
+      .order("quickbooks_synced_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    agentBooksLastSyncedAt = ((lastExport as { quickbooks_synced_at?: string | null } | null)?.quickbooks_synced_at) ?? null
+  }
 
   // Load the agent's saved budget for the current year (latest if regenerated)
   const { data: budgetRow, error: budgetError } = await supabase
@@ -499,6 +525,41 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
 
         {/* Section 9: P&L Report Generator */}
         <ProfitLossReportPanel agentId={agentId} />
+
+        {/* Section 10: My Books — the AGENT's own accounting connections (scope-aware) */}
+        {agentBooks && (
+          <div className="space-y-3">
+            <div>
+              <h2 className="text-xl font-semibold">My Books</h2>
+              <p className="text-sm text-muted-foreground">
+                Your personal accounting — separate from the brokerage&apos;s books. Closed
+                commissions export to your own QuickBooks and show &quot;Not synced&quot; until a
+                real export happens.
+              </p>
+            </div>
+            <div className="grid gap-6 md:grid-cols-2">
+              <ProviderConnectionCard
+                provider="quickbooks"
+                scope="agent"
+                status={agentBooks.quickbooks.offering.status}
+                connected={agentBooks.quickbooks.connected}
+                companyName={agentBooks.quickbooks.accountName ?? agentBooks.quickbooks.realmId}
+                lastSyncedAt={agentBooksLastSyncedAt}
+                connectPath={agentBooks.quickbooks.offering.connectPath}
+                note={agentBooks.quickbooks.offering.verdict}
+                canConnect={agentScopeMatches}
+                connectDisabledReason="Your login doesn't map to a personal agent scope — this card connects an agent's own QuickBooks."
+              />
+              <ProviderConnectionCard
+                provider="stripe"
+                scope="agent"
+                status={ACCOUNTING_OFFERINGS.agent.stripe.status}
+                connected={false}
+                note={ACCOUNTING_OFFERINGS.agent.stripe.verdict}
+              />
+            </div>
+          </div>
+        )}
       </AgentFinancialsClient>
     </div>
   )

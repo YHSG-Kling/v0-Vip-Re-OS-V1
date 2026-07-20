@@ -216,12 +216,13 @@ export function isConnectSupported(
   }
   if (domain === "social") return { available: true } // stored by user_id — any signed-in user
   if (domain === "financial") {
-    // QuickBooks OAuth is brokerage-scoped; Stripe is Connect onboarding (any actor can onboard a
-    // payout account via the platform key — no per-actor brokerage anchor needed).
-    if (canonicalProviderId === "quickbooks") {
-      return caps.isBrokerageManager ? { available: true } : { available: false, reason: "Connect QuickBooks at the brokerage level." }
-    }
-    return { available: true } // stripe → Connect onboarding
+    // QuickBooks OAuth is OWNER-scoped, not brokerage-only: the /api/integrations/oauth/quickbooks
+    // callback stores tokens under the connecting actor's own (owner_type, owner_id) — vendor, agent,
+    // team lead, broker, or the platform itself (distinct 'platform_quickbooks' key). Per-scope
+    // offering + storage-key rules live in lib/connections/accounting-scopes.ts (single source of
+    // truth); any owner-capable actor may start the flow. Stripe is Connect onboarding (any actor can
+    // onboard a payout account via the platform key — no per-actor brokerage anchor needed).
+    return { available: true }
   }
   // email / calendar OAuth — the OAuth callback stores tokens owner-scoped (platform_credentials),
   // so any actor with a brokerage anchor (agent/team/brokerage/staff/vendor/contact) can connect

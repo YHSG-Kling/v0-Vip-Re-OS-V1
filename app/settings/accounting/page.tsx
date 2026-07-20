@@ -11,6 +11,7 @@ import {
   getTaxCategories,
 } from "@/app/actions/accounting-sync"
 import { LinkIcon, RefreshCw, AlertCircle, CheckCircle2, Clock, Settings2 } from "lucide-react"
+import { ACCOUNTING_OFFERINGS, QUICKBOOKS_OAUTH_START } from "@/lib/connections/accounting-scopes"
 import { ProviderConnectionCard } from "./provider-connection-card"
 import { SyncControlsCard } from "./sync-controls-card"
 import { SyncHistoryTable } from "./sync-history-table"
@@ -95,18 +96,37 @@ export default async function AccountingSettingsPage() {
             <Suspense fallback={<div className="animate-pulse h-48 bg-muted rounded-lg" />}>
               <ProviderConnectionCard
                 provider="quickbooks"
+                scope="brokerage"
+                status="connectable"
                 connected={providerStatus.quickbooks.connected}
                 companyName={providerStatus.quickbooks.companyName}
                 lastSyncedAt={providerStatus.quickbooks.lastSyncedAt}
+                connectPath={QUICKBOOKS_OAUTH_START}
+                note="Connect the brokerage's QuickBooks company to sync commissions and expenses."
                 brokerageId={profile.brokerage_id}
               />
             </Suspense>
             <Suspense fallback={<div className="animate-pulse h-48 bg-muted rounded-lg" />}>
               <ProviderConnectionCard
                 provider="xero"
+                scope="brokerage"
+                status="connectable"
                 connected={providerStatus.xero.connected}
                 companyName={providerStatus.xero.companyName}
                 lastSyncedAt={providerStatus.xero.lastSyncedAt}
+                connectPath="/api/integrations/oauth/xero"
+                note="Connect the brokerage's Xero organisation to sync commissions and expenses."
+                brokerageId={profile.brokerage_id}
+              />
+            </Suspense>
+            <Suspense fallback={<div className="animate-pulse h-48 bg-muted rounded-lg" />}>
+              <ProviderConnectionCard
+                provider="stripe"
+                scope="brokerage"
+                status={ACCOUNTING_OFFERINGS.brokerage.stripe.status}
+                connected={false}
+                connectPath={ACCOUNTING_OFFERINGS.brokerage.stripe.connectPath}
+                note={ACCOUNTING_OFFERINGS.brokerage.stripe.verdict}
                 brokerageId={profile.brokerage_id}
               />
             </Suspense>

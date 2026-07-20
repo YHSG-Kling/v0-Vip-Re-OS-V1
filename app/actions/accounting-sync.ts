@@ -19,6 +19,21 @@ export async function getProviderConnectionStatus(brokerageId: string) {
   const quickbooks = credentials?.find((c) => c.provider_name === "quickbooks")
   const xero = credentials?.find((c) => c.provider_name === "xero")
 
+  // The OAuth callback stores tokens OWNER-SCOPED in platform_credentials
+  // (owner_type='brokerage'), not integration_credentials — read that row too so the
+  // card reflects the connection the flow actually writes (exact owner match; the
+  // status shown is this brokerage's own connection, never an inherited one).
+  const svc = createServiceClient()
+  const { data: ownerRows } = await svc
+    .from("platform_credentials")
+    .select("platform, account_name, account_id, is_active")
+    .eq("owner_type", "brokerage")
+    .eq("owner_id", brokerageId)
+    .in("platform", ["quickbooks", "xero"])
+    .eq("is_active", true)
+  const qbOwnerRow = ownerRows?.find((r) => r.platform === "quickbooks")
+  const xeroOwnerRow = ownerRows?.find((r) => r.platform === "xero")
+
   // Get last sync for each provider
   const { data: lastSyncs } = await supabase
     .from("accounting_sync_log")
@@ -34,14 +49,14 @@ export async function getProviderConnectionStatus(brokerageId: string) {
 
   return {
     quickbooks: {
-      connected: quickbooks?.is_active ?? false,
-      companyName: quickbooks?.webhook_url ?? null, // Using webhook_url as company name storage
+      connected: (quickbooks?.is_active ?? false) || !!qbOwnerRow,
+      companyName: (qbOwnerRow?.account_name ?? quickbooks?.webhook_url) ?? null, // legacy rows kept company name in webhook_url
       lastSyncedAt: qbLastSync?.completed_at ?? null,
       credentialId: quickbooks?.id ?? null,
     },
     xero: {
-      connected: xero?.is_active ?? false,
-      companyName: xero?.webhook_url ?? null,
+      connected: (xero?.is_active ?? false) || !!xeroOwnerRow,
+      companyName: (xeroOwnerRow?.account_name ?? xero?.webhook_url) ?? null,
       lastSyncedAt: xeroLastSync?.completed_at ?? null,
       credentialId: xero?.id ?? null,
     },
@@ -77,6 +92,15 @@ export async function disconnectProvider(data: {
     .eq("provider_name", data.provider)
 
   if (error) throw error
+
+  // Also deactivate the OWNER-SCOPED row the OAuth callback writes (exact owner
+  // match — only this brokerage's own connection is touched).
+  await createServiceClient()
+    .from("platform_credentials")
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq("owner_type", "brokerage")
+    .eq("owner_id", data.brokerageId)
+    .eq("platform", data.provider)
 
   // Log kernel event
   await supabase.from("lifecycle_events").insert({
