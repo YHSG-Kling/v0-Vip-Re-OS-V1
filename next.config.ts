@@ -82,7 +82,17 @@ const nextConfig: NextConfig = {
     // CI AND Vercel identically — the production build is memory-bounded
     // everywhere. Raise if a genuinely larger working set errors; lower if a
     // smaller build container (e.g. 8 GB) still gets killed.
-    turbopackMemoryLimit: 8 * 1024 * 1024 * 1024, // 8 GB
+    turbopackMemoryLimit: 8 * 1024 * 1024 * 1024, // 8 GB (dev only — build now uses webpack)
+    // The PRODUCTION BUILD runs on webpack (`next build --webpack`), not
+    // Turbopack. Turbopack's native compiler climbed to the full 16 GB of a
+    // standard build container and the VM was killed ~5 min into compile — even
+    // with turbopackMemoryLimit set (it's a soft cache target; the non-evictable
+    // working set for an app this large still blew the ceiling). Webpack holds
+    // the graph in the V8 heap (bounded + GC'd) and builds in worker processes —
+    // memory-predictable, and the mature path this app used before Next 16 made
+    // Turbopack the default. These two flags are the memory levers:
+    webpackMemoryOptimizations: true, // drop retained caches → lower peak heap
+    webpackBuildWorker: true,         // compile in isolated worker processes ("in sections")
   },
   // Skip bundling for packages that ship platform-specific native binaries
   // or otherwise can't be analysed by Turbopack. They get plain Node

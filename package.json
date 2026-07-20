@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "next build",
+    "build": "next build --webpack",
     "dev": "rm -f .next/dev/lock 2>/dev/null; next dev",
     "lint": "eslint .",
     "start": "next start",

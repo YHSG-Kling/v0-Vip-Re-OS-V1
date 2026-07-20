@@ -1,5 +1,5 @@
 {
-  "buildCommand": "pnpm install --no-frozen-lockfile && next build",
+  "buildCommand": "pnpm install --no-frozen-lockfile && next build --webpack",
   "installCommand": "pnpm install --no-frozen-lockfile",
   "functions": {
     "app/api/cron/poll-did-videos/route.ts": {

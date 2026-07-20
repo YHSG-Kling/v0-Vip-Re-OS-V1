@@ -19,8 +19,12 @@ on:
   workflow_dispatch: {}
 
 concurrency:
+  # Do NOT cancel an in-flight build when a new commit lands: a webpack build of
+  # this app takes several minutes, and cancel-in-progress surfaced the canceled
+  # run as "the runner received a shutdown signal" — indistinguishable from an
+  # OOM at a glance. Let each build finish so its result is trustworthy.
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   next-build:
@@ -28,6 +32,10 @@ jobs:
     timeout-minutes: 40
     env:
       NEXT_TELEMETRY_DISABLED: "1"
+      # Webpack holds the module graph in the V8 heap — raise it so a large-app
+      # build doesn't hit the default ~4 GB ceiling and JS-heap-OOM. (This is the
+      # opposite of Turbopack, whose native compiler was starved by a big heap.)
+      NODE_OPTIONS: "--max-old-space-size=8192"
       # NO max-old-space-size override: `next build` uses Turbopack (Rust), which
       # holds the heavy compile state in NATIVE memory. Reserving a large V8 old
       # space steals from that native budget and pushed total RSS past the 16 GB
