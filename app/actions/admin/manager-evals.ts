@@ -324,6 +324,10 @@ export interface CrossManagerReferralView {
   action: string | null
   createdAt: string
   consumedAt: string | null
+  /** DELIBERATION (round 35) — the argued positions + winner + why + dissent persisted
+   *  on this referral's own payload (lib/managers/deliberation.ts); null when the
+   *  domain wasn't deliberative or no deliberation ran. */
+  deliberation: import("@/lib/managers/deliberation").DeliberationRecord | null
 }
 
 /** The last 90 days of cross-manager referrals for the caller's brokerage, newest first. */
@@ -336,6 +340,7 @@ export async function getCrossManagerReferrals(): Promise<
   if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
 
   const { MANAGER_COLLABORATIONS } = await import("@/lib/kernel/manager-registry")
+  const { parseDeliberation } = await import("@/lib/managers/deliberation")
   const svc = createServiceClient()
   const { data, error } = await svc
     .from("manager_signals")
@@ -366,9 +371,25 @@ export async function getCrossManagerReferrals(): Promise<
       action: (r.consumed_action as string | null) ?? null,
       createdAt: String(r.created_at),
       consumedAt: (r.consumed_at as string | null) ?? null,
+      deliberation: parseDeliberation(payload),
     }
   })
   return { ok: true, referrals }
+}
+
+// ── TEAMWORK METRICS (round 35) — the compact card on the governance surface: the
+// referral + deliberation ledgers rolled up per period (pure rollup, no new table).
+
+export async function getTeamworkMetrics(): Promise<
+  { ok: true; metrics: import("@/lib/managers/teamwork-metrics").TeamworkMetrics } | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  if (!ADMIN_ROLES.has(ctx.userType)) return { ok: false, error: "Forbidden" }
+  if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
+  const { loadTeamworkMetrics } = await import("@/lib/managers/teamwork-metrics")
+  const metrics = await loadTeamworkMetrics(ctx.brokerageId, { days: 90 }, createServiceClient())
+  return { ok: true, metrics }
 }
 
 export interface StandingReviewView {

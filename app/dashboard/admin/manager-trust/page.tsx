@@ -2,7 +2,7 @@ import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity"
 import {
   getManagerTrustScorecard, getLearnedAdjustmentsForBrokerage,
-  getCrossManagerReferrals, getStandingReviews,
+  getCrossManagerReferrals, getStandingReviews, getTeamworkMetrics,
 } from "@/app/actions/admin/manager-evals"
 import { ManagerTrustClient } from "./manager-trust-client"
 
@@ -22,9 +22,13 @@ export default async function ManagerTrustPage() {
   const learnedRes = await getLearnedAdjustmentsForBrokerage()
   const learned = learnedRes.ok ? learnedRes.rows : []
   // CROSS-MANAGEMENT (round 34): referral lifecycle + standing reviews on the governance surface.
-  const [referralsRes, reviewsRes] = await Promise.all([getCrossManagerReferrals(), getStandingReviews()])
+  // TEAMWORK (round 35): the referral + deliberation ledgers rolled up for the compact card.
+  const [referralsRes, reviewsRes, teamworkRes] = await Promise.all([
+    getCrossManagerReferrals(), getStandingReviews(), getTeamworkMetrics(),
+  ])
   const referrals = referralsRes.ok ? referralsRes.referrals : []
   const standingReviews = reviewsRes.ok ? reviewsRes.reviews : []
+  const teamwork = teamworkRes.ok ? teamworkRes.metrics : null
   return (
     <ManagerTrustClient
       managers={res.managers}
@@ -32,6 +36,7 @@ export default async function ManagerTrustPage() {
       learned={learned}
       referrals={referrals}
       standingReviews={standingReviews}
+      teamwork={teamwork}
     />
   )
 }

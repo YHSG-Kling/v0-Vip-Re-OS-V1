@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
-import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot, Lock, Brain, Undo2, Ban, ArrowRightLeft, CalendarClock, CheckCircle2 } from "lucide-react"
+import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot, Lock, Brain, Undo2, Ban, ArrowRightLeft, CalendarClock, CheckCircle2, Scale, Trophy, Handshake, MessageSquareWarning } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import {
   setManagerAutonomy, vetoLearnedAdjustment, completeRegionalConventionReview,
@@ -14,6 +14,9 @@ import {
 } from "@/app/actions/admin/manager-evals"
 import type { LearnedAdjustmentView } from "@/lib/managers/learning-loop"
 import type { TrustTier, AutonomyPosture } from "@/lib/managers/eval-scoring"
+// Type-only imports — erased at build time (the modules themselves are server-side).
+import type { TeamworkMetrics } from "@/lib/managers/teamwork-metrics"
+import type { DeliberationRecord } from "@/lib/managers/deliberation"
 // Pure registry data (no I/O) — the ONE source of truth for the collaboration map,
 // so this surface can never drift from what the referral handler actually enforces.
 import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/manager-registry"
@@ -34,13 +37,14 @@ const AUTONOMY_LABEL: Record<AutonomyPosture, string> = {
 }
 
 export function ManagerTrustClient({
-  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [],
+  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null,
 }: {
   managers: ManagerTrustRow[]
   team: { passRate: number; total: number; trustedCount: number; managerCount: number }
   learned?: LearnedAdjustmentView[]
   referrals?: CrossManagerReferralView[]
   standingReviews?: StandingReviewView[]
+  teamwork?: TeamworkMetrics | null
 }) {
   const { toast } = useToast()
   const [managers, setManagers] = useState<ManagerTrustRow[]>(initialManagers)
@@ -272,6 +276,34 @@ export function ManagerTrustClient({
         </CardContent>
       </Card>
 
+      {/* TEAMWORK METRICS (round 35) — the referral + deliberation ledgers rolled up:
+          how well the managers actually work TOGETHER, per period. */}
+      {teamwork && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2"><Handshake className="h-4 w-4" />Teamwork — last {teamwork.periodDays} days</CardTitle>
+            <CardDescription>
+              Rolled up from the referral and deliberation ledgers — nothing modeled, every count a real row.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              <TeamworkStat label="Handed off" value={teamwork.handedOff} />
+              <TeamworkStat label="Picked up & acted" value={teamwork.resolved} />
+              <TeamworkStat label="Median pickup" value={teamwork.medianPickupHours !== null ? `${teamwork.medianPickupHours}h` : "—"} />
+              <TeamworkStat label="Deliberations held" value={teamwork.deliberationsHeld} />
+              <TeamworkStat label="Dissents recorded" value={teamwork.dissentsRecorded} />
+            </div>
+            {teamwork.deliberationsUnavailable > 0 && (
+              <p className="text-[11px] text-muted-foreground mt-2">
+                {teamwork.deliberationsUnavailable} deliberation{teamwork.deliberationsUnavailable === 1 ? " was" : "s were"} recorded honestly
+                unavailable (model unreachable) — no canned arguments were substituted.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* CROSS-MANAGER REFERRALS — who asked whom for what, with state + what the receiver did. */}
       <Card>
         <CardHeader className="pb-3">
@@ -309,6 +341,7 @@ export function ManagerTrustClient({
                       {r.toLabel}: {r.action}
                     </p>
                   )}
+                  {r.deliberation && <DeliberationBlock record={r.deliberation} />}
                 </div>
               ))}
             </div>
@@ -357,6 +390,78 @@ export function ManagerTrustClient({
           ))}
         </CardContent>
       </Card>
+    </div>
+  )
+}
+
+function TeamworkStat({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="rounded-lg border p-3 text-center">
+      <p className="text-xl font-bold tabular-nums">{value}</p>
+      <p className="text-[11px] text-muted-foreground">{label}</p>
+    </div>
+  )
+}
+
+/** THE ARGUMENT, rendered (round 35): every manager's grounded position, the winner
+ *  with the stated why-this-beats-the-others, and honest dissent — or the honest
+ *  'deliberation unavailable' when the model couldn't be reached. */
+function DeliberationBlock({ record }: { record: DeliberationRecord }) {
+  const accent = (key: string) => (MANAGERS as Record<string, { accent: string; label: string }>)[key]?.accent ?? "bg-slate-100 text-slate-700"
+  const label = (key: string) => (MANAGERS as Record<string, { accent: string; label: string }>)[key]?.label ?? key
+
+  if (record.status !== "resolved" || !record.winner) {
+    return (
+      <div className="mt-2 rounded-md border border-amber-200 bg-amber-50/50 p-2">
+        <p className="text-xs text-amber-900 flex items-center gap-1">
+          <Scale className="h-3 w-3" /> Deliberation unavailable — {record.unavailableReason ?? "the model could not be reached"}.
+          No canned arguments were substituted; the referral still reached you.
+        </p>
+      </div>
+    )
+  }
+  return (
+    <div className="mt-2 rounded-md border bg-muted/30 p-2 space-y-2">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground flex items-center gap-1">
+        <Scale className="h-3 w-3" /> The argument — {record.positions.length} positions
+      </p>
+      {record.positions.map((p) => (
+        <div key={p.manager} className={`rounded border p-2 ${p.manager === record.winner ? "border-emerald-300 bg-emerald-50/40" : "bg-background"}`}>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] ${accent(p.manager)}`}>{label(p.manager)}</span>
+            {p.manager === record.winner && (
+              <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200 text-[10px] gap-1"><Trophy className="h-3 w-3" />winning position</Badge>
+            )}
+            {record.dissent?.manager === p.manager && (
+              <Badge className="bg-orange-100 text-orange-800 border-orange-200 text-[10px] gap-1"><MessageSquareWarning className="h-3 w-3" />dissent on the record</Badge>
+            )}
+          </div>
+          <p className="text-xs mt-1"><span className="font-medium">Proposal:</span> {p.proposal}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">{p.reasoning}</p>
+          {p.risks.length > 0 && (
+            <p className="text-[11px] text-muted-foreground mt-0.5"><span className="font-medium">Risks:</span> {p.risks.join(" · ")}</p>
+          )}
+          {p.evidence.length > 0 && (
+            <ul className="mt-1 space-y-0.5">
+              {p.evidence.map((e, i) => (
+                <li key={i} className="text-[11px] font-mono text-muted-foreground truncate">📎 {e}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+      <div className="rounded border border-emerald-200 bg-emerald-50/50 p-2">
+        <p className="text-xs text-emerald-900">
+          <span className="font-medium">Why {label(record.winner)}&apos;s solution won:</span> {record.resolution}
+        </p>
+      </div>
+      {record.dissent && (
+        <div className="rounded border border-orange-200 bg-orange-50/50 p-2">
+          <p className="text-xs text-orange-900">
+            <span className="font-medium">{label(record.dissent.manager)} dissents:</span> {record.dissent.note}
+          </p>
+        </div>
+      )}
     </div>
   )
 }

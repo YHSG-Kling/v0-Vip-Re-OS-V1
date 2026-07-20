@@ -34,6 +34,7 @@ export function QuarterlyReviewCard({ review, pulse }: { review: QuarterlyReview
       <CardContent className="grid gap-3 md:grid-cols-2">
         {section("Outcomes", review.outcomes)}
         {section("Trust earned", review.trust)}
+        {section("Teamwork", review.teamwork ?? [])}
         {section("Sitting unused", review.gaps)}
         {section("Next moves", review.nextMoves)}
         {pulse.length > 0 && (

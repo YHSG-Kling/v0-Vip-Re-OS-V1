@@ -154,6 +154,15 @@ export interface CollaborationDomain {
   /** The REAL overlap this entry encodes — the catalogued signals / stewarded
    *  tables / queue ownership that prove these managers already co-work it. */
   evidence: string
+  /** DELIBERATIVE domain (round 35 — "the managers should also argue a solution and
+   *  work through the reason why that solution is the best for the situation"): a
+   *  referral on this domain escalates to a full DELIBERATION — each co-manager argues
+   *  a grounded position from its own domain facts, a resolution pass picks the winner
+   *  with the stated why, and honest dissent is recorded (lib/managers/deliberation.ts).
+   *  Set ONLY where the real overlap is a genuine TRADEOFF two managers can reasonably
+   *  disagree on (pricing disputes, budget rebalances, compliance-vs-speed) — a plain
+   *  handoff/nag domain stays non-deliberative: there is nothing to argue. */
+  deliberate?: boolean
 }
 
 export const MANAGER_COLLABORATIONS: Record<string, CollaborationDomain> = {
@@ -162,6 +171,10 @@ export const MANAGER_COLLABORATIONS: Record<string, CollaborationDomain> = {
     label: "In-house inventory ↔ buyer demand",
     managers: ["listing_concierge", "shopping_agent"],
     evidence: "Catalogued bus signals price_reduced, listing_back_on_market, listing_stall_reprospect and dual_transaction_timing — the seller side (listings, listing_concierge-stewarded) and the buyer side (offers / saved properties / property_alerts, shopping_agent-stewarded) already work the same in-house inventory from both ends.",
+    // A PRICING DISPUTE by construction: the seller side defends the list price /
+    // seller net, the buyer side carries the demand evidence (saves, alerts, offers)
+    // that says the market disagrees. Two legitimate answers — argue it.
+    deliberate: true,
   },
   listing_launch_play: {
     key: "listing_launch_play",
@@ -174,6 +187,10 @@ export const MANAGER_COLLABORATIONS: Record<string, CollaborationDomain> = {
     label: "Closings: money + regulatory exposure (incl. commission records)",
     managers: ["deal_coordinator", "finance_manager", "compliance_officer"],
     evidence: "transaction_action_pending and deal_save_huddle are consumed by BOTH finance_manager and compliance_officer, routed by the failing component; rate_lock_watch and loan_milestone ride the same deals. One closing crosses three stewardships — transactions (deal_coordinator), commission_records / agent_commission_profiles (finance_manager), compliance_flags (compliance_officer) — the finance+compliance seam at disbursement (the CDA flow).",
+    // The COMPLIANCE-vs-SPEED tradeoff: the coordinator argues for the close date, the
+    // Finance Manager for the money being right at disbursement, the Compliance Officer
+    // for the exposure being cleared first. Three accountable answers — argue it.
+    deliberate: true,
   },
   long_horizon_nurture: {
     key: "long_horizon_nurture",
@@ -198,6 +215,10 @@ export const MANAGER_COLLABORATIONS: Record<string, CollaborationDomain> = {
     label: "Organic winners → governed paid spend",
     managers: ["marketing_agent", "ads_manager"],
     evidence: "content_winner — an organic winner on social_posts (marketing_agent-stewarded) becomes a governed launch proposal in ad_manager_actions (ads_manager-stewarded). The organic/paid boundary is a working seam, not a wall.",
+    // A BUDGET REBALANCE dispute: the same marketing dollar can double down on the
+    // proven organic winner or fund the paid push — CPL evidence vs reach evidence,
+    // owned by two different managers. Two legitimate answers — argue it.
+    deliberate: true,
   },
   offer_intake: {
     key: "offer_intake",

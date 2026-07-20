@@ -497,7 +497,8 @@
     "test:orphan-writes": "tsx scripts/orphan-write-sweep.ts",
     "test:orphan-routes": "tsx scripts/orphan-route-sweep.ts",
     "test:regional-closing-costs": "tsx scripts/regional-closing-costs-simulator.ts",
-    "test:prediction-accuracy": "tsx scripts/prediction-accuracy-simulator.ts"
+    "test:prediction-accuracy": "tsx scripts/prediction-accuracy-simulator.ts",
+    "test:manager-deliberation": "tsx scripts/manager-deliberation-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

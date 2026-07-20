@@ -2025,9 +2025,18 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
  *      free-for-all);
  *   2. on a declared edge, ACCEPTS the referral and raises a prioritized follow-up to
  *      the supervising principals (broker/admin — the notifyBrokerageAdmins rail the
- *      other escalation handlers use), carrying who asked whom for what.
- * The full lifecycle (open → consumed + action, or refusal) is visible on the managers
- * governance surface and the Command Center feed. Never an autonomous client send.
+ *      other escalation handlers use), carrying who asked whom for what;
+ *   3. DELIBERATION (round 35 — "the managers should also argue a solution and work
+ *      through the reason why that solution is the best for the situation"): when the
+ *      collaboration domain is marked deliberate (a real tradeoff — pricing disputes,
+ *      budget rebalances, compliance-vs-speed), the domain's co-managers each ARGUE a
+ *      grounded position and a resolution pass picks the winner WITH the stated why
+ *      (+ honest dissent) — lib/managers/deliberation.ts, persisted onto this very
+ *      referral row (payload.deliberation) and rendered on the manager-trust surface.
+ *      An unreachable model records 'deliberation unavailable', never canned arguments.
+ * The full lifecycle (open → [deliberated] → consumed + action, or refusal) is visible
+ * on the managers governance surface and the Command Center feed. Never an autonomous
+ * client send.
  */
 async function handleCrossManagerReferral(
   signal: ManagerSignal, ctx: { brokerageId: string; supabase: Svc },
@@ -2045,18 +2054,58 @@ async function handleCrossManagerReferral(
       "; cross-management only travels the registry's MANAGER_COLLABORATIONS map"
   }
   const ask = ((signal.payload?.ask as string | undefined) ?? signal.message ?? "").trim()
+
+  // ── ESCALATE TO DELIBERATION (round 35) — only on domains the registry marks
+  // deliberate: the co-managers argue grounded positions, the resolution states the
+  // why, dissent is honest, and the record persists onto THIS referral row. Idempotent
+  // (an already-deliberated payload is reused — a retried handler never re-argues);
+  // an unreachable model records 'deliberation unavailable', never canned arguments. ──
+  let deliberationLine: string | null = null
+  let deliberationBody = ""
+  if (domain.deliberate === true) {
+    try {
+      const { runDeliberation, summarizeDeliberation } = await import("@/lib/managers/deliberation")
+      const record = await runDeliberation({
+        brokerageId: ctx.brokerageId,
+        collabDomain: domain.key,
+        ask: ask || signal.message,
+        fromManager: signal.fromManager,
+        entityType: signal.entityType ?? null,
+        entityId: signal.entityId ?? null,
+        signalId: signal.id,
+        existingPayload: signal.payload ?? {},
+      }, ctx.supabase)
+      if (record) {
+        deliberationLine = summarizeDeliberation(record)
+        if (record.status === "resolved" && record.winner) {
+          const winnerLabel = MANAGERS[record.winner]?.label ?? record.winner
+          deliberationBody = `\n\nThe managers argued it out (${record.positions.length} positions). ${winnerLabel}'s solution won: ${record.resolution}` +
+            (record.dissent ? `\nDissent on the record — ${MANAGERS[record.dissent.manager]?.label ?? record.dissent.manager}: ${record.dissent.note}` : "") +
+            `\nFull positions + evidence: Manager Trust → Cross-manager referrals.`
+        } else {
+          deliberationBody = `\n\nA deliberation was called but the model was unreachable — recorded honestly as unavailable (no canned arguments substituted).`
+        }
+      }
+    } catch (e) {
+      // The referral must still reach the principals even if deliberation errored.
+      deliberationLine = `deliberation unavailable — ${e instanceof Error ? e.message.slice(0, 200) : "escalation failed"}`
+      deliberationBody = `\n\nA deliberation was called but could not run — recorded honestly as unavailable.`
+    }
+  }
+
   const { notifyBrokerageAdmins } = await import("@/lib/notifications/brokerage-admins")
   const n = await notifyBrokerageAdmins(ctx.supabase, ctx.brokerageId, {
     type: "cross_manager_referral",
     title: `${fromLabel} → ${toLabel}: referral in ${domain.label}`,
-    body: ask || `${fromLabel} raised work into ${toLabel}'s domain (${domain.label}).`,
+    body: (ask || `${fromLabel} raised work into ${toLabel}'s domain (${domain.label}).`) + deliberationBody,
     entityType: signal.entityType ?? null,
     entityId: signal.entityId ?? null,
     priority: "medium",
   })
-  return n > 0
+  const accepted = n > 0
     ? `accepted the referral in '${domain.label}' — raised a prioritized follow-up to ${n} supervising principal${n === 1 ? "" : "s"}`
     : `accepted the referral in '${domain.label}' — no principal seat to notify; the referral stays visible on the governance surface`
+  return deliberationLine ? `${accepted}; ${deliberationLine}` : accepted
 }
 
 // Every registered manager can RECEIVE a governed referral — one shared handler per
