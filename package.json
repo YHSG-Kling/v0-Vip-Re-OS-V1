@@ -503,7 +503,8 @@
     "test:seller-closing-costs": "tsx scripts/seller-closing-costs-simulator.ts",
     "test:accounting-scopes": "tsx --conditions=react-server scripts/accounting-scopes-simulator.ts",
     "test:vendor-scope-charging": "tsx scripts/vendor-scope-charging-simulator.ts",
-    "test:accuracy-gate-telemetry": "tsx --conditions=react-server scripts/accuracy-gate-telemetry-simulator.ts"
+    "test:accuracy-gate-telemetry": "tsx --conditions=react-server scripts/accuracy-gate-telemetry-simulator.ts",
+    "test:territory-coverage": "tsx scripts/territory-coverage-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

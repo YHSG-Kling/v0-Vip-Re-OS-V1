@@ -25,6 +25,9 @@ import { StatusNoticePanel } from "./status-notice-panel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getPredictionAccuracyReport, composePredictionTrustChip } from "@/lib/analytics/prediction-accuracy"
 import { PredictionAccuracyPanel } from "@/components/analytics/prediction-accuracy-panel"
+import { loadCoverageBoard } from "@/lib/analytics/territory-coverage"
+import { loadTerritoryRoi } from "@/lib/analytics/territory-roi"
+import { TerritoryCoverageBoard } from "./territory-coverage-board"
 import {
   ACCOUNTING_OFFERINGS,
   PLATFORM_BOOKS_STORAGE_KEY,
@@ -112,6 +115,16 @@ export default async function SuperadminPlatformPage() {
   // rollup is now this surface's first rail, keep-one). Service read — page is
   // superadmin-gated above. Never throws: unavailable rails carry their why.
   const predictionAccuracy = await getPredictionAccuracyReport(createServiceClient() as any)
+
+  // TERRITORY COVERAGE + SCRAPE ROI (round 39) — the platform's honest coverage
+  // board: claimed zips per active subscriber (the scrape resolver's own
+  // predicate), window lead volume, parked awaiting-subscriber leads, and the
+  // per-market scrape funnel with recorded-cost-only economics. Service reads —
+  // page is superadmin-gated above; failures degrade to stated unavailability.
+  const [{ board: coverageBoard, error: coverageError }, { report: territoryRoi, error: territoryRoiError }] = await Promise.all([
+    loadCoverageBoard(createServiceClient() as any),
+    loadTerritoryRoi(createServiceClient() as any),
+  ])
 
   // PLATFORM BOOKS — the company's own accounting connection (exact owner match on
   // owner_type='platform', owner_id='platform', platform='platform_quickbooks').
@@ -330,6 +343,20 @@ export default async function SuperadminPlatformPage() {
         report={predictionAccuracy}
         scopeLabel="all tenants"
         trustChip={composePredictionTrustChip(predictionAccuracy.rails)}
+      />
+
+      {/* TERRITORY COVERAGE MAP + SCRAPE ROI (round 39) — who is scraped for
+          where (state → zip claim roster, active-subscriber predicate reused),
+          which zips carry parked awaiting-subscriber leads, and what each
+          market's raw → promoted → contact → appointment funnel costs (recorded
+          spend only — 'cost not recorded' is an honest state, never a guess).
+          A sortable table, deliberately NOT a map: no geo library exists here
+          and nothing is drawn the data cannot back. */}
+      <TerritoryCoverageBoard
+        board={coverageBoard}
+        boardError={coverageError}
+        roi={territoryRoi}
+        roiError={territoryRoiError}
       />
 
       {/* Losing money / margin-at-risk alert */}

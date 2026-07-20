@@ -36,6 +36,10 @@
  *       publishAssignmentPolicyReferrals → assignment_policy_outcomes (ai_isa) — two
  *         active assignment rules' measured outcome rates diverge materially (round 38;
  *         lives beside its rail in lib/analytics/assignment-outcomes.ts)
+ *       publishTerritoryRoiReferrals   → lead_quality_spend          (ai_isa) — one
+ *         scraping market's recorded cost-per-promoted-lead diverges materially from
+ *         the tenant's other markets (round 39; lives beside its funnel in
+ *         lib/analytics/territory-roi.ts — the EXISTING acquisition edge, reused)
  *   · HOOKS (raised inline at the real decision point, additive, best-effort):
  *       listing-stall price play       → listing_demand_bridge       (manager-signals.ts)
  *       appraisal-gap detection        → closing_money_and_risk      (transaction-milestones.ts)
@@ -443,6 +447,20 @@ export const REFERRAL_EMITTERS: Record<string, ReferralEmitterInfo> = {
     // be a cycle.
     run: (client?: Svc) =>
       import("@/lib/analytics/assignment-outcomes").then((m) => m.publishAssignmentPolicyReferrals(client as any)),
+  },
+  territory_roi_sweep: {
+    key: "territory_roi_sweep",
+    collabDomain: "lead_quality_spend",
+    from: "ai_isa",
+    kind: "sweep",
+    what: "One scraping market's recorded cost-per-promoted-lead runs materially above the tenant's other markets — scrape budget argued against the funnel evidence (round 39; lives beside its funnel in lib/analytics/territory-roi.ts, EXISTING lead_quality_spend edge reused)",
+    sourceFile: "lib/analytics/territory-roi.ts",
+    marker: "export async function publishTerritoryRoiReferrals",
+    // Lazy import — the sweep lives beside its funnel (territory-roi) which
+    // imports raiseReferralDeduped from THIS module; a static import here would
+    // be a cycle (the assignment_policy_sweep idiom).
+    run: (client?: Svc) =>
+      import("@/lib/analytics/territory-roi").then((m) => m.publishTerritoryRoiReferrals(client as any)),
   },
   listing_price_dispute_hook: {
     key: "listing_price_dispute_hook",

@@ -1,6 +1,9 @@
 import { loadScrapingDiagnostics } from "@/lib/kernel/scraping"
 import { createClient } from "@/lib/supabase/server"
 import { ScrapeDiagnosticsClient } from "./scrape-diagnostics-client"
+import { TenantCoverageCard } from "./tenant-coverage-card"
+import { loadTenantCoverage, type TenantCoverage } from "@/lib/analytics/territory-coverage"
+import { loadTerritoryRoi, type TerritoryRoiReport } from "@/lib/analytics/territory-roi"
 import { redirect } from "next/navigation"
 
 export const metadata = {
@@ -58,12 +61,47 @@ export default async function ScrapeDiagnosticsPage() {
     .order("task", { ascending: true })
     .order("actor_id", { ascending: true })
 
+  // "YOUR COVERAGE" (round 39) — the tenant territory-coverage card + their own
+  // scrape-ROI funnel, mounted on this brokerage lead-scraping surface. Service
+  // reads behind the admin/broker gate above (the same pattern as
+  // loadScrapingDiagnostics on this page — subscriber_service_areas is
+  // RLS-locked to the platform): the card renders ONLY this tenant's claims,
+  // markets and funnel plus AGGREGATE per-zip counts for expansion hints —
+  // never another tenant's identity. Superadmins (no single brokerage) skip the
+  // tenant card — their board lives on /dashboard/superadmin/platform.
+  let tenantCoverage: TenantCoverage | null = null
+  let tenantCoverageError: string | null = null
+  let tenantRoi: TerritoryRoiReport | null = null
+  let tenantRoiError: string | null = null
+  if (userType !== "superadmin" && brokerageId) {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const svc = createServiceClient()
+    const [cov, roi] = await Promise.all([
+      loadTenantCoverage(svc, brokerageId),
+      loadTerritoryRoi(svc, { brokerageId }),
+    ])
+    tenantCoverage = cov.coverage
+    tenantCoverageError = cov.error
+    tenantRoi = roi.report
+    tenantRoiError = roi.error
+  }
+
   return (
-    <ScrapeDiagnosticsClient
-      data={diagnostics}
-      actorHealth={actorHealth ?? []}
-      isSuperadmin={userType === "superadmin"}
-      currentUserId={user.id}
-    />
+    <>
+      <ScrapeDiagnosticsClient
+        data={diagnostics}
+        actorHealth={actorHealth ?? []}
+        isSuperadmin={userType === "superadmin"}
+        currentUserId={user.id}
+      />
+      {userType !== "superadmin" && brokerageId && (
+        <TenantCoverageCard
+          coverage={tenantCoverage}
+          coverageError={tenantCoverageError}
+          roi={tenantRoi}
+          roiError={tenantRoiError}
+        />
+      )}
+    </>
   )
 }
