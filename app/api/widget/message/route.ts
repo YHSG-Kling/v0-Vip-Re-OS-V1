@@ -8,6 +8,7 @@ import { NextRequest } from 'next/server'
 import { streamText, convertToModelMessages, UIMessage } from 'ai'
 import { resolveModel } from '@/lib/ai/resolve-model'
 import { createServiceClient } from '@/lib/supabase/service'
+import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
 
 const MAX_HISTORY = 20 // keep last 20 messages for context window
 
@@ -26,6 +27,16 @@ export async function POST(req: NextRequest) {
       return new Response(JSON.stringify({ error: 'session_token and messages required' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    // Public-surface throttle — every message burns LLM tokens, so cap the
+    // per-session cadence. Per-instance (see lib/security/public-rate-limit.ts).
+    const verdict = checkPublicRateLimit('widget-message', session_token, { limit: 20, windowMs: 60_000 })
+    if (!verdict.allowed) {
+      return new Response(JSON.stringify({ error: 'Slow down a moment — too many messages at once.' }), {
+        status: 429,
+        headers: { 'Content-Type': 'application/json', 'Retry-After': String(verdict.retryAfterSeconds) },
       })
     }
 

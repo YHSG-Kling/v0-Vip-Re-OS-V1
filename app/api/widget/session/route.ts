@@ -8,9 +8,21 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { randomUUID } from 'crypto'
+import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
 
 export async function POST(req: NextRequest) {
   try {
+    // Public-surface throttle — session mints insert rows with the service
+    // client. Per-IP, per-instance (see lib/security/public-rate-limit.ts).
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || req.headers.get('x-real-ip') || 'unknown'
+    const verdict = checkPublicRateLimit('widget-session', ip, { limit: 10, windowMs: 60_000 })
+    if (!verdict.allowed) {
+      return NextResponse.json(
+        { error: 'Too many sessions from this connection — try again shortly.' },
+        { status: 429, headers: { 'Retry-After': String(verdict.retryAfterSeconds) } },
+      )
+    }
+
     const body = await req.json()
     const {
       brokerage_id,

@@ -79,6 +79,17 @@ function isValidEmail(e: string): boolean {
 export async function signupBrokerageAction(
   input: SignupBrokerageInput,
 ): Promise<SignupBrokerageResult> {
+  // Public-surface throttle — this action provisions a full tenant with the
+  // service client, so it gets the tightest window. Per-instance (honest
+  // limitation documented in lib/security/public-rate-limit.ts).
+  {
+    const { checkPublicRateLimit, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+    const verdict = checkPublicRateLimit("signup", await publicCallerIp(), { limit: 5, windowMs: 10 * 60_000 })
+    if (!verdict.allowed) {
+      return { ok: false, error: `Too many signup attempts from this connection — try again in ${verdict.retryAfterSeconds}s.` }
+    }
+  }
+
   // Input validation — strict, since this endpoint is public
   if (!input.brokerageName?.trim() || input.brokerageName.trim().length < 2) {
     return { ok: false, error: "Brokerage name is required (2+ chars)." }

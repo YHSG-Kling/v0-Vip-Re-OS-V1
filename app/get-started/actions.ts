@@ -24,6 +24,13 @@ export interface FunnelCouponFeedback {
 /** Live coupon-field feedback for the public funnel — validation only, nothing is redeemed. */
 export async function checkFunnelCouponAction(code: string, tier: string): Promise<FunnelCouponFeedback> {
   if (!code?.trim()) return { ok: false, message: "Enter a code to check it" }
+  // Public-surface throttle — stops coupon-code enumeration from one client.
+  // Per-instance (honest limitation documented in lib/security/public-rate-limit.ts).
+  {
+    const { checkPublicRateLimit, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+    const verdict = checkPublicRateLimit("coupon-check", await publicCallerIp(), { limit: 20, windowMs: 60_000 })
+    if (!verdict.allowed) return { ok: false, message: "Too many code checks — wait a moment and try again." }
+  }
   try {
     const check = await validateFunnelCoupon(code, tier)
     if (!check.ok) return { ok: false, message: check.message }

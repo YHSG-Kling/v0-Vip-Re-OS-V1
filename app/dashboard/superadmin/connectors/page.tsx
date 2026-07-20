@@ -10,7 +10,8 @@ import {
 import { Activity, AlertTriangle, Clock, PlugZap, Cpu } from "lucide-react"
 import { PlatformReceptionPanel } from "./platform-reception-panel"
 import { A2pVerifyCard } from "./a2p-verify-card"
-import { GoLiveCard } from "./go-live-card"
+import { GoLiveCard, LaunchChecklistCard } from "./go-live-card"
+import { buildLaunchChecklist } from "@/lib/platform/launch-checklist"
 import { TwilioFleetPostureCard, SendgridPostureCard, FullProviderRegistryCard } from "./provider-posture-cards"
 
 export const dynamic = "force-dynamic"
@@ -200,6 +201,10 @@ export default async function SuperadminConnectorsPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* LAUNCH CHECKLIST — env-gate presence map (server-computed, values never
+          serialized), companion to the on-demand go-live probes below */}
+      <LaunchChecklistCard checklist={buildLaunchChecklist()} />
 
       <GoLiveCard />
 
