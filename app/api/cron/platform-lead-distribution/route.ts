@@ -24,8 +24,16 @@ export const dynamic = "force-dynamic"
  *
  * Honest mechanics:
  *   • Every outcome is counted, never papered over: distributed / suppressed
- *     (platform DNC) / noZip / noSubscribers (still nobody in rotation for the
- *     zip — an honest skip, retried next run) / failed.
+ *     (platform DNC) / noZip / noSubscribers / failed.
+ *   • PARKED, NEVER DISCARDED (owner, round 39): every non-distributed outcome
+ *     leaves the lead exactly where it was — brokerage_id NULL, is_active TRUE,
+ *     nothing deleted, nothing terminally marked. That parked state is what
+ *     keeps the AI ISA off the lead (every ISA sweep selects by brokerage_id;
+ *     initiate-engagement refuses brokerage-less leads) and keeps it in this
+ *     sweep's pending set. noSubscribers means "still nobody in rotation for
+ *     the zip — parked until a subscriber joins, then this sweep un-parks it
+ *     (assigns the brokerage, stamps distributed_at, and speed-to-lead begins
+ *     AI ISA engagement off that stamp)."
  *   • An empty sweep records success with skipped=true — nothing is faked.
  *   • The engine's own idempotent guard (distribution_brokerage_id optimistic
  *     lock) makes re-runs safe; already-distributed leads are never re-routed.

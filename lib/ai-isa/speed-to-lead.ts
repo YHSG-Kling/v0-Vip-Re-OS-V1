@@ -62,6 +62,11 @@ export async function runSpeedToLead(
 
   // ── Sweep 1: LEADS ────────────────────────────────────────────────────────
   // Bound the sweep to last 24h to avoid revisiting ancient records on every run.
+  // The window opens on created_at OR distributed_at: a platform-origin lead can sit
+  // PARKED (brokerage_id NULL — this per-brokerage query never sees it) until the
+  // Engine 1 distribution sweep assigns a subscriber brokerage, which may be days or
+  // weeks after created_at. Un-parking stamps distributed_at, so the distributed_at
+  // leg is what starts AI ISA engagement for a freshly un-parked lead.
   const leadCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
 
   const { data: leads, error: leadsError } = await supabase
@@ -74,7 +79,7 @@ export async function runSpeedToLead(
     .eq("brokerage_id", brokerageId)
     .eq("ai_isa_owner", true)
     .is("first_touched_at", null)
-    .gte("created_at", leadCutoff)
+    .or(`created_at.gte.${leadCutoff},distributed_at.gte.${leadCutoff}`)
     .limit(50) // safety cap per sweep
 
   if (leadsError) {

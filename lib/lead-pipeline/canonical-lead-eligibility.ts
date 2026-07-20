@@ -1,23 +1,28 @@
 /**
  * SINGLE source of truth for the "raw record → lead" eligibility gate.
  *
- * CANONICAL BUSINESS RULE (owner, round 38 — verbatim): after enrichment and the
- * second dedup pass, "if at least an email address and/or mailing address,
- * promote to a lead". A row is promoted to `leads` when it carries:
+ * CANONICAL BUSINESS RULE (owner, round 39): "the first name and last name
+ * should be part of raw lead promotion to a lead" — ON TOP of the round-38
+ * anchor rule ("if at least an email address and/or mailing address, promote
+ * to a lead"). A row is promoted to `leads` when it carries:
  *
+ *   • a FIRST NAME and a LAST NAME, and
  *   • an EMAIL ADDRESS, and/or
  *   • a MAILING ADDRESS (a mailing_address value, or the
  *     mailing_address_verified flag set by enrichment / address verification).
  *
- * WHAT CHANGED (round 38 alignment): the previous predicate was STRICTER than
- * the canonical rule — it required full name (first + last) AND (email OR
- * phone) AND mailing_address_verified === true. That blocked owner-canonical
- * promotions (e.g. email-only records, or mailing-address-only motivated-seller
- * records with no phone/email yet). It also let phone count as the contact
- * anchor, which the owner's rule does not. Name and phone are still captured
- * and enriched — they just no longer gate promotion. The AI ISA channel
- * resolver downstream picks reachable channels per lead (email / direct mail),
- * and `minimum_viable_for_isa` still keys off email.
+ * Phone still does NOT count as a contact anchor (round 38, unchanged).
+ *
+ * WHAT CHANGED (round 39 alignment): round 38 removed the name requirement
+ * entirely; the owner corrected that — the full name IS required, alongside
+ * (not instead of) the email-and/or-mailing anchor. The failure is reported
+ * per-dimension: `failing: 'name'` when first/last is missing (enrichment can
+ * SUPPLY missing names before the post-enrich pass — enrichWithPeopleData
+ * backfills first_name/last_name, so a name-failing record is retryable, not
+ * terminal), `failing: 'contact_anchor'` when the email/mailing anchor is
+ * missing. The AI ISA channel resolver downstream still picks reachable
+ * channels per lead (email / direct mail), and `minimum_viable_for_isa`
+ * still keys off email.
  *
  * Both historical promotion paths (lib/lead-pipeline/pipeline-processor.ts and
  * lib/lead-promotion/eligibility-evaluator.ts) delegate here so they can never
@@ -36,12 +41,21 @@ export interface LeadCandidate {
 
 export type EligibilityResult =
   | { eligible: true; via: Array<"email" | "mailing_address"> }
-  | { eligible: false; reason: string; failing: "contact_anchor" }
+  | { eligible: false; reason: string; failing: "name" | "contact_anchor" }
 
 export function evaluateCanonicalLeadEligibility(c: LeadCandidate): EligibilityResult {
+  const hasFirst   = !!(c.first_name ?? "").trim()
+  const hasLast    = !!(c.last_name ?? "").trim()
   const hasEmail   = !!(c.email ?? "").trim()
   const hasMailing = !!(c.mailing_address ?? "").trim() || c.mailing_address_verified === true
 
+  if (!hasFirst || !hasLast) {
+    return {
+      eligible: false,
+      failing:  "name",
+      reason:   "Needs a first name and a last name (enrichment can supply them before the post-enrich pass)",
+    }
+  }
   if (hasEmail || hasMailing) {
     const via: Array<"email" | "mailing_address"> = []
     if (hasEmail)   via.push("email")

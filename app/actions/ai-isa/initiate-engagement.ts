@@ -101,6 +101,15 @@ export async function initiateAIISAEngagement(
     if (lead.is_active === false) {
       return { success: false, reason: 'stop:inactive' }
     }
+    // PARKED platform lead (owner, round 39): a platform-origin lead whose zip has no
+    // subscriber yet is born with brokerage_id NULL and stays that way until the Engine 1
+    // distribution sweep assigns one. Nobody works a parked lead — the AI ISA must not
+    // engage it (there is no tenant to engage FOR: brand voice, compliance actor, and
+    // dispatch identity are all brokerage-scoped). The per-brokerage sweeps never select
+    // brokerage-less leads; this is the belt-and-suspenders refusal for direct callers.
+    if (!lead.brokerage_id) {
+      return { success: false, reason: 'stop:parked_awaiting_distribution' }
+    }
 
     // ── Contact-level stops ─────────────────────────────────────────────────
     let contactRow: Record<string, any> | null = null

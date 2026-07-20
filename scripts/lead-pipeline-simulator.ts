@@ -24,8 +24,14 @@
  *             pre-scrape territory resolver (active tenants' territories only,
  *             honest no-op otherwise), sourcer no-op-without-territory, THREE-
  *             table dedup (raw+leads+contacts) in BOTH passes, enrich between
- *             the passes, email-and/or-mailing-address eligibility, and the
- *             deterministic brokerage-pickup rule. Pure + static conformance.
+ *             the passes, first+last-name AND email-and/or-mailing-address
+ *             eligibility (round 39 name correction), and the deterministic
+ *             brokerage-pickup rule. Pure + static conformance.
+ *
+ *   Layer 5 — PARKED PLATFORM LEADS (owner, round 39): a platform lead whose
+ *             zip has no subscriber is PARKED (brokerage_id NULL), never
+ *             deleted; the AI ISA is structurally excluded until the 2-hour
+ *             distribution sweep un-parks it into a new subscriber's rotation.
  *
  * The production promotion path (processRawRecord) wraps these same functions
  * behind the SSR cookie client + the paid PeopleData enrichment call — neither
@@ -81,26 +87,34 @@ function testFuzzyDedup() {
 }
 
 function testEligibilityGate() {
-  console.log("\n[Layer 1 · promotion gate — evaluateCanonicalLeadEligibility (owner canonical: email AND/OR mailing address)]")
+  console.log("\n[Layer 1 · promotion gate — evaluateCanonicalLeadEligibility (owner canonical, round 39: first+last NAME AND (email AND/OR mailing address))]")
   const full = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "m@x.com", phone: "3055550142", mailing_address: "PO Box 9", mailing_address_verified: true })
   check("full identity + email + mailing → eligible via BOTH anchors",
     full.eligible === true && (full as any).via.includes("email") && (full as any).via.includes("mailing_address"))
-  const emailOnly = evaluateCanonicalLeadEligibility({ email: "m@x.com" })
-  check("email ALONE → eligible (name/phone no longer gate promotion)",
-    emailOnly.eligible === true && (emailOnly as any).via.join(",") === "email")
-  const mailingOnly = evaluateCanonicalLeadEligibility({ first_name: "Walter", last_name: "Sobchak", mailing_address: "742 Evergreen Ter, Miami FL 33101" })
-  check("mailing address ALONE → eligible (and/or rule)",
-    mailingOnly.eligible === true && (mailingOnly as any).via.join(",") === "mailing_address")
-  const verifiedFlagOnly = evaluateCanonicalLeadEligibility({ mailing_address_verified: true })
-  check("verified-mailing flag alone counts as a mailing anchor", verifiedFlagOnly.eligible === true)
+  const nameAndEmail = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "m@x.com" })
+  check("name + email (no mailing) → eligible via email",
+    nameAndEmail.eligible === true && (nameAndEmail as any).via.join(",") === "email")
+  const mailingAnchor = evaluateCanonicalLeadEligibility({ first_name: "Walter", last_name: "Sobchak", mailing_address: "742 Evergreen Ter, Miami FL 33101" })
+  check("name + mailing address (no email) → eligible via mailing (and/or rule)",
+    mailingAnchor.eligible === true && (mailingAnchor as any).via.join(",") === "mailing_address")
+  const verifiedFlagWithName = evaluateCanonicalLeadEligibility({ first_name: "Walter", last_name: "Sobchak", mailing_address_verified: true })
+  check("verified-mailing flag counts as the mailing anchor", verifiedFlagWithName.eligible === true)
+  const emailNoName = evaluateCanonicalLeadEligibility({ email: "m@x.com" })
+  check("email WITHOUT first+last name → NOT eligible, failing 'name' (retryable — enrichment can supply names)",
+    emailNoName.eligible === false && (emailNoName as any).failing === "name")
+  const partialName = evaluateCanonicalLeadEligibility({ first_name: "Maria", email: "m@x.com" })
+  check("first name alone does not satisfy the name requirement",
+    partialName.eligible === false && (partialName as any).failing === "name")
   const phoneOnly = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", phone: "3055550142" })
-  check("phone-only (no email, no mailing) → NOT eligible (phone is not an owner anchor)",
+  check("name + phone only (no email, no mailing) → NOT eligible (phone is not an owner anchor)",
     phoneOnly.eligible === false && (phoneOnly as any).failing === "contact_anchor")
   const nothing = evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez" })
-  check("no anchors → blocked with the honest owner-rule reason",
+  check("name but no anchors → blocked with the honest owner-rule reason",
     nothing.eligible === false && /email address and\/or a mailing address/i.test((nothing as any).reason))
   check("whitespace-only email/mailing do not fabricate an anchor",
-    evaluateCanonicalLeadEligibility({ email: "   ", mailing_address: "  " }).eligible === false)
+    evaluateCanonicalLeadEligibility({ first_name: "Maria", last_name: "Gonzalez", email: "   ", mailing_address: "  " }).eligible === false)
+  check("whitespace-only names do not fabricate a name",
+    (evaluateCanonicalLeadEligibility({ first_name: "  ", last_name: " ", email: "m@x.com" }) as any).failing === "name")
 }
 
 function testBatchDataNormalize() {
@@ -408,12 +422,21 @@ function testThreeTableDedupAndPromotionConformance() {
   check("enrichment is provider-gated honestly (failure → no fabricated identity; Perplexity gap-fill cost-gated)",
     /catch\(\(\) => \(\{ data: null \}\)\)/.test(pipeline) && /shouldGapFill/.test(pipeline))
 
-  // CANONICAL ELIGIBILITY (email and/or mailing address) in both promotion paths.
+  // CANONICAL ELIGIBILITY (round 39: first+last name AND email-and/or-mailing) in both promotion paths.
   check("pipeline delegates promotion to THE canonical eligibility gate, feeding it the mailing address",
     /evaluateCanonicalLeadEligibility/.test(pipeline) && /mailing_address:\s+resolvedMailingAddress/.test(pipeline))
+  check("pipeline feeds POST-ENRICH names into the gate (enrichment can SUPPLY a missing name before the pass)",
+    /first_name:\s+enriched\.first_name \?\? firstName,/.test(pipeline.slice(pipeline.indexOf("evaluateCanonicalLeadEligibility({"))))
+  check("enrichWithPeopleData actually backfills first/last name from the provider (names flow into promotion)",
+    /first_name:\s+data\.firstName\s+\|\|\s+fields\.first_name/.test(pipeline) && /last_name:\s+data\.lastName\s+\|\|\s+fields\.last_name/.test(pipeline))
   const evaluator = src("lib/lead-promotion/eligibility-evaluator.ts")
   check("lead-promotion evaluator delegates to the SAME canonical gate (no drift)",
     /evaluateCanonicalLeadEligibility/.test(evaluator) && /mailing_address:/.test(evaluator))
+  check("evaluator feeds names first-class-column-first (same resolution chain as the pipeline)",
+    /first_name:\s+rawRecord\.first_name \?\? rawData\.first_name/.test(evaluator))
+  const gate = src("lib/lead-pipeline/canonical-lead-eligibility.ts")
+  check("gate reports name-vs-anchor failures distinctly ('name' is retryable via enrichment, 'contact_anchor' honest)",
+    /failing:\s+"name"/.test(gate) && /failing:\s+"contact_anchor"/.test(gate))
   check("promoted lead's mailing_address_verified is HONEST (no blanket true stamp)",
     !/mailing_address_verified:\s*true\s*,/.test(pipeline) && /mailing_address_verified:\s*resolvedMailingVerified/.test(pipeline))
 
@@ -425,6 +448,65 @@ function testThreeTableDedupAndPromotionConformance() {
   const dist = src("lib/platform/distribution-engine.ts")
   check("platform-origin overlap rule is deterministic: zip service-area roster ordered by joined_at, round-robin by prior distribution count",
     /subscriber_service_areas/.test(dist) && /joined_at/.test(dist) && /%\s*subscriberList\.length/.test(dist))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 5 — PARKED PLATFORM LEADS (owner, round 39): "distribution sweep should
+// not get rid of any leads if no subscriber but just pause the ai isa from
+// engaging and they don't get worked at all." Parked = platform-origin lead
+// with brokerage_id NULL + distribution_brokerage_id NULL: never deleted, no
+// tenant sees it, the AI ISA never engages it, and the 2-hour sweep re-attempts
+// distribution until a subscriber joins the zip (un-park → engagement begins).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function testParkedPlatformLeads() {
+  console.log("\n[Layer 5 · parked platform leads — no subscriber ⇒ PARK (never delete), ISA excluded, sweep un-parks]")
+  const dist = src("lib/platform/distribution-engine.ts")
+
+  // NO DELETE PATH, EVER: the engine never deletes, deactivates, or terminally marks a lead.
+  check("distribution engine has NO delete path and never deactivates a lead",
+    !/\.delete\(/.test(dist) && !/is_active:\s*false/.test(dist))
+  const noSubReturn = dist.indexOf('reason: "no_subscribers_for_zip"')
+  const firstLeadWrite = dist.indexOf(".update(")
+  check("no-subscriber outcome is a plain return BEFORE any write — the lead is left exactly as it was (parked)",
+    noSubReturn > -1 && firstLeadWrite > noSubReturn)
+  check("platform-DNC suppression also just returns (parked, not deleted, not marked)",
+    dist.indexOf('reason: "suppressed_phone"') > -1 && dist.indexOf('reason: "suppressed_phone"') < firstLeadWrite)
+
+  // THE PARKED SET IS RE-SWEPT: pending selection = platform + undistributed + active.
+  check("pending sweep re-selects the parked set every run (source_origin=platform, distribution_brokerage_id NULL, is_active)",
+    /\.eq\("source_origin", "platform"\)/.test(dist) && /\.is\("distribution_brokerage_id", null\)/.test(dist) && /\.eq\("is_active", true\)/.test(dist))
+
+  // BORN PARKED: both promotion paths birth platform leads with brokerage_id NULL.
+  const pipeline = src("lib/lead-pipeline/pipeline-processor.ts")
+  check("pipeline births platform-origin leads PARKED (brokerage_id NULL until Engine 1 assigns a subscriber)",
+    /=== 'platform' \? null : effectiveBrokerageId/.test(pipeline))
+  const promoter = src("lib/lead-promotion/lead-promoter.ts")
+  check("lead-promoter path births platform leads parked too (no drift between the two paths)",
+    /sourceOrigin === 'platform' \? null : brokerageId/.test(promoter))
+
+  // AI ISA EXCLUSION: the engagement sweep is per-brokerage (a NULL-brokerage lead can never
+  // be selected), and the engagement entry point hard-refuses brokerage-less leads.
+  const sweep = src("lib/ai-isa/speed-to-lead.ts")
+  check("ISA speed-to-lead sweep selects strictly BY brokerage — parked (brokerage-less) leads are structurally unselectable",
+    /\.eq\("brokerage_id", brokerageId\)/.test(sweep))
+  const engage = src("app/actions/ai-isa/initiate-engagement.ts")
+  check("initiate-engagement hard-refuses parked leads (stop:parked_awaiting_distribution belt-and-suspenders)",
+    /stop:parked_awaiting_distribution/.test(engage) && /!lead\.brokerage_id/.test(engage))
+
+  // UN-PARK: distribution stamps brokerage_id + distributed_at (optimistic lock), and the
+  // speed-to-lead window opens on distributed_at so engagement begins even weeks after created_at.
+  check("un-park = distribution stamps brokerage_id + distributed_at under the optimistic lock",
+    /brokerage_id: targetBrokerageId/.test(dist) && /distributed_at: nowIso/.test(dist) && /\.is\("distribution_brokerage_id", null\)/.test(dist))
+  check("speed-to-lead window opens on distributed_at too — a freshly un-parked lead gets its first touch",
+    /distributed_at\.gte/.test(sweep))
+  check("zip resolution falls back property → mailing → physical zip (a zip-bearing lead is never stranded as no_zip_code)",
+    /lead\.property_zip_code \|\| lead\.mailing_zip \|\| lead\.zip_code/.test(dist))
+
+  // The 2-hour cron reports every parked outcome honestly — nothing dropped, nothing faked.
+  const cronSrc = src("app/api/cron/platform-lead-distribution/route.ts")
+  check("2-hour sweep cron counts no_subscribers/suppressed/no_zip honestly and re-runs distributePendingPlatformLeads",
+    /no_subscribers: result\.noSubscribers/.test(cronSrc) && /distributePendingPlatformLeads/.test(cronSrc))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -556,6 +638,7 @@ async function main() {
   testScraperTerritoryConformance()
   await testSourcersNoOpWithoutTerritory()
   testThreeTableDedupAndPromotionConformance()
+  testParkedPlatformLeads()
   testNoManualRawToLeadDoor()
   testAutoConvertChainLive()
   await testConversionRefusesUnqualified()

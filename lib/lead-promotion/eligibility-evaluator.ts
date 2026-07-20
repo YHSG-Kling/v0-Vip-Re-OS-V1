@@ -88,12 +88,14 @@ export async function evaluatePromotionEligibility(
   }
 
   // 4. Canonical eligibility gate — shared helper used by BOTH lead-creation paths so they can
-  //    never drift apart. Owner canonical rule: at least an email address AND/OR a mailing address.
+  //    never drift apart. Owner canonical rule (round 39): first name AND last name AND
+  //    (email AND/OR mailing address). Names resolve first-class column → raw_data jsonb,
+  //    the same chain the pipeline processor uses, so enrichment-backfilled names count.
   const { evaluateCanonicalLeadEligibility } = await import("@/lib/lead-pipeline/canonical-lead-eligibility")
   const rawData = rawRecord.raw_data || {}
   const eligibility = evaluateCanonicalLeadEligibility({
-    first_name:               rawData.first_name,
-    last_name:                rawData.last_name,
+    first_name:               rawRecord.first_name ?? rawData.first_name ?? rawData.firstName,
+    last_name:                rawRecord.last_name ?? rawData.last_name ?? rawData.lastName,
     email:                    rawRecord.email ?? rawData.email,
     phone:                    rawRecord.phone ?? rawData.phone,
     mailing_address:          rawRecord.mailing_address ?? rawData.mailing_address ?? null,

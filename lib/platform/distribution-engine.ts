@@ -13,6 +13,18 @@
  * Engine 1 only handles `source_origin = 'platform'` leads. Brokerage-scraped
  * leads (`source_origin = 'brokerage'`) belong to the scraping brokerage by
  * definition and skip this engine entirely.
+ *
+ * PARKED, NEVER DISCARDED (owner, round 39): a platform lead this engine cannot
+ * place — no subscriber in the zip yet (no_subscribers_for_zip), no zip on the
+ * record (no_zip_code), or a platform-DNC suppression hit — is left exactly as
+ * it was born: brokerage_id NULL + distribution_brokerage_id NULL. That is the
+ * PARKED state. NOTHING in this engine deletes, deactivates, or terminally
+ * marks a lead; every non-distributed outcome is a plain return. Parked leads
+ * are invisible to every tenant and to the AI ISA (all ISA sweeps select by
+ * brokerage_id, and initiate-engagement refuses brokerage-less leads), and the
+ * every-2-hours platform-lead-distribution cron re-attempts each of them —
+ * so the moment a subscriber joins the zip, distribution assigns the brokerage
+ * (un-park) and AI ISA engagement begins off the distributed_at stamp.
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
@@ -35,6 +47,7 @@ interface LeadDistributionRow {
   source_origin: "platform" | "brokerage" | null
   property_zip_code: string | null
   mailing_zip: string | null
+  zip_code: string | null
   brokerage_id: string | null
   distribution_brokerage_id: string | null
   phone_digits: string | null
@@ -59,7 +72,7 @@ export async function distributePlatformLead(params: {
   const { data: leadData, error: leadErr } = await supabase
     .from("leads")
     .select(
-      "id, source_origin, property_zip_code, mailing_zip, brokerage_id, distribution_brokerage_id, " +
+      "id, source_origin, property_zip_code, mailing_zip, zip_code, brokerage_id, distribution_brokerage_id, " +
         "phone_digits, email, source_family, motivation_type, urgency_level, raw_record_id"
     )
     .eq("id", leadId)
@@ -87,7 +100,9 @@ export async function distributePlatformLead(params: {
   }
 
   // 4. Hard suppression: phone or email on platform_suppression_list
-  //    (cross-tenant DNC — never give this lead to anyone)
+  //    (cross-tenant DNC — never give this lead to anyone). The lead itself is
+  //    NOT deleted or deactivated — it stays parked (brokerage-less, ISA-invisible)
+  //    and would distribute again if the suppression entry were ever removed.
   if (lead.phone_digits && (await isPhoneOnSuppressionList(lead.phone_digits))) {
     return { success: false, reason: "suppressed_phone" }
   }
@@ -95,8 +110,11 @@ export async function distributePlatformLead(params: {
     return { success: false, reason: "suppressed_email" }
   }
 
-  // 5. Resolve target zip — prefer property zip, fall back to mailing
-  const zip: string | null = lead.property_zip_code || lead.mailing_zip
+  // 5. Resolve target zip — property zip → mailing zip → physical zip_code.
+  //    (zip_code is the scraped physical-address zip the pipeline always carries;
+  //    without this leg a lead with only a physical zip would park forever as
+  //    no_zip_code even when subscribers serve that exact zip.)
+  const zip: string | null = lead.property_zip_code || lead.mailing_zip || lead.zip_code
   if (!zip) {
     return { success: false, reason: "no_zip_code" }
   }
@@ -176,9 +194,13 @@ export async function distributePlatformLead(params: {
 }
 
 /**
- * Batch entry point — call after a scrape execution completes.
- * Picks up all platform-origin leads with no distribution yet and distributes
- * them. Returns counts per outcome.
+ * Batch entry point — call after a scrape execution completes (and every 2 hours
+ * from the platform-lead-distribution cron).
+ * Picks up all platform-origin leads with no distribution yet (the PARKED set:
+ * distribution_brokerage_id NULL) and re-attempts distribution. Returns counts
+ * per outcome. No outcome deletes or deactivates a lead — suppressed / noZip /
+ * noSubscribers leads simply remain parked and are re-attempted next sweep;
+ * a lead leaves the pending set ONLY by being distributed (un-parked).
  */
 export async function distributePendingPlatformLeads(params?: {
   limit?: number

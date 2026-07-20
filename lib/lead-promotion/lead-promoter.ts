@@ -33,18 +33,23 @@ export async function promoteRawRecordToLead(
 
   try {
     // Read the raw record's source_origin (set at ingest time by lib/kernel/scraping)
+    // plus the first-class columns this insert reads off the row (normalized_preview,
+    // email_verified, mailing/name columns) — the old single-column select left those
+    // reads permanently undefined.
     const { data: rawRecord } = await supabase
       .from('raw_scraped_leads')
-      .select('source_origin')
+      .select('source_origin, normalized_preview, email_verified, mailing_address, mailing_address_verified, first_name, last_name')
       .eq('id', rawRecordId)
       .single()
 
     const sourceOrigin: 'platform' | 'brokerage' =
       (rawRecord?.source_origin as 'platform' | 'brokerage') ?? 'brokerage'
 
-    // Extract fields from enriched raw_data
-    const firstName = rawData.first_name
-    const lastName = rawData.last_name
+    // Extract fields from enriched raw_data (first-class raw columns win — the same
+    // resolution order the canonical eligibility gate just evaluated, so the promoted
+    // lead carries the exact first/last name that passed the round-39 name requirement)
+    const firstName = (rawRecord as any)?.first_name ?? rawData.first_name
+    const lastName = (rawRecord as any)?.last_name ?? rawData.last_name
     const email = rawData.email || null
     const phone = rawData.phone || null
     const phoneSecondary = rawData.phone_secondary || null
@@ -108,9 +113,11 @@ export async function promoteRawRecordToLead(
         lifecycle_state: 'unconsented',
         ai_isa_owner: true,
         minimum_viable_for_isa: !!(rawData.email),
-        mailing_address_verified: true,  // canonical eligibility just confirmed it
+        // HONEST flag (round 39): eligibility can pass on email alone, so carry what the
+        // raw record actually determined — never a blanket true (parity with pipeline-processor).
+        mailing_address_verified: !!((rawRecord as any)?.mailing_address_verified ?? rawData.mailing_address_verified),
         // Propagate the actual address so AI-ISA direct_mail has something to send to.
-        mailing_address: rawData.mailing_address ?? null,
+        mailing_address: (rawRecord as any)?.mailing_address ?? rawData.mailing_address ?? null,
         // email_verified: read the row's column (where the verification step writes it), falling
         // back to the raw_data JSON. Drift-fix consistent with pipeline-processor.
         email_verified: !!((rawRecord as any).email_verified ?? rawData.email_verified),

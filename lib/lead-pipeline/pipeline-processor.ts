@@ -386,9 +386,12 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   }
 
   // ── STEP 4B: Promotion eligibility gate (CANONICAL — shared with lead-promoter) ─
-  // Owner's canonical rule (round 38): after enrichment + second dedup, promote when the
-  // record carries at least an EMAIL ADDRESS and/or a MAILING ADDRESS. Single source of
-  // truth in canonical-lead-eligibility so the two historical paths can never drift apart.
+  // Owner's canonical rule (round 39): after enrichment + second dedup, promote when the
+  // record carries a FIRST NAME and LAST NAME plus at least an EMAIL ADDRESS and/or a
+  // MAILING ADDRESS (phone is not an anchor). Names are fed post-enrichment
+  // (enriched.first_name ?? firstName) so enrichWithPeopleData can SUPPLY a missing name
+  // before this pass. Single source of truth in canonical-lead-eligibility so the two
+  // historical paths can never drift apart.
   const { evaluateCanonicalLeadEligibility } =
     await import("@/lib/lead-pipeline/canonical-lead-eligibility")
   const rawAddrVerified = (rawRecord as any)?.mailing_address_verified
@@ -463,7 +466,16 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     .from('leads')
     .insert({
       ...leadSpecs,
-      brokerage_id:          effectiveBrokerageId,
+      // PARKED-UNTIL-DISTRIBUTED (owner, round 39): platform-origin leads are born with
+      // brokerage_id NULL — Engine 1 (distributePlatformLead, fired below) assigns the
+      // subscriber brokerage by zip rotation. If NO subscriber serves the zip yet, the
+      // lead stays PARKED (brokerage_id NULL, distribution_brokerage_id NULL): no tenant
+      // sees it, the AI ISA never engages it (every ISA sweep selects by brokerage_id,
+      // and initiate-engagement hard-refuses brokerage-less leads), and it is NEVER
+      // deleted — the 2-hour platform-lead-distribution sweep retries until a subscriber
+      // joins the zip, which un-parks it. Brokerage-origin leads keep the scraping
+      // brokerage exactly as before. Parity with lib/lead-promotion/lead-promoter.ts.
+      brokerage_id:          (rec.source_origin ?? 'brokerage') === 'platform' ? null : effectiveBrokerageId,
       first_name:            enriched.first_name  ?? firstName,
       last_name:             enriched.last_name   ?? lastName,
       email:                 enriched.email,
