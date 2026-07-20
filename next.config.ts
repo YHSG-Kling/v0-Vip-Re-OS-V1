@@ -73,6 +73,16 @@ const nextConfig: NextConfig = {
   },
   experimental: {
     optimizePackageImports: ['lucide-react', 'zustand'],
+    // Cap Turbopack's compile-time memory. `next build` uses Turbopack (Rust),
+    // which holds compile state in NATIVE memory; on this large app it climbed
+    // to the full 16 GB of a standard CI/build container and the VM was killed
+    // ~4 min into compile ("runner received a shutdown signal" — a memory kill,
+    // not a code error). This is a soft target (bytes) that makes Turbopack GC
+    // more aggressively so total RSS stays well under the ceiling. Applies to
+    // CI AND Vercel identically — the production build is memory-bounded
+    // everywhere. Raise if a genuinely larger working set errors; lower if a
+    // smaller build container (e.g. 8 GB) still gets killed.
+    turbopackMemoryLimit: 8 * 1024 * 1024 * 1024, // 8 GB
   },
   // Skip bundling for packages that ship platform-specific native binaries
   // or otherwise can't be analysed by Turbopack. They get plain Node
