@@ -74,6 +74,10 @@ export const VIDEO_FINISH_SPEC: Record<string, VideoFinish> = {
   // (the agent speaking TO one person); explainers + narrated slide decks use
   // the CIRCLE avatar so the material stays the star (owner rule). ──
   AgentTalkingHeadReel: AVATAR_LED,
+  // Round 34 teammate explainer: the composition carries its OWN brand frames
+  // (intro card, lower-third, outro CTA + QR baked in) — no stock bookends, no
+  // coordinator QR pass; music stays off so nothing fights the avatar's voice.
+  TeammateExplainerReel: { ...AVATAR_LED, bookends: false, broll: "none", music: false, qr: false },
   AgentExplainerReel: { ...AVATAR_LED, presenter: "circle_pip" },
   ListingPresentationSlide: { ...AVATAR_LED, presenter: "circle_pip", broll: "none", music: false }, // music fights the voice
   BuyerConsultationSlide: { ...AVATAR_LED, presenter: "circle_pip", broll: "none", music: false },

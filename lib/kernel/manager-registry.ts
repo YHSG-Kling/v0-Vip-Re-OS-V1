@@ -1025,6 +1025,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   negotiation_strategies: "deal_coordinator",
   net_sheet_calculations: "deal_coordinator",
   net_sheet_reconciliations: "deal_coordinator",
+  closing_cost_accuracy_observations: "finance_manager", // round 34: the closing-cost flywheel ledger that arms Finance's yearly convention review
   offer_comparison: "deal_coordinator",
   outbound_message_compliance_log: "deal_coordinator",
   required_disclosures: "deal_coordinator",
