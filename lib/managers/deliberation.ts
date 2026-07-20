@@ -249,13 +249,13 @@ const loadDealCoordinatorFacts: FactLoader = async (svc, ctx) => {
 /** Back-office money: the weighted pipeline (the forecaster's OWN pure math) + unpaid commissions. */
 const loadFinanceManagerFacts: FactLoader = async (svc, ctx) => {
   const { toPipeline, forecastGci, dealCommission } = await import("@/lib/kernel/commission-forecaster")
-  const [{ data: open }, { data: unpaid }] = await Promise.all([
-    svc.from("transactions")
-      .select("id, deal_name, property_address, estimated_commission, commission_amount, commission_percentage, purchase_price, win_probability, stage, estimated_close_date, close_date")
-      .eq("brokerage_id", ctx.brokerageId).in("status", ["active", "under_contract", "closing"]).is("deleted_at", null).limit(200),
-    svc.from("commission_records").select("id, gross_commission, status")
-      .eq("brokerage_id", ctx.brokerageId).neq("status", "paid").limit(100),
-  ])
+  // Grounded ONLY in tables with live writers: transactions carries the pipeline.
+  // (commission_records has no runtime writer — the writerless-read sweep rejects
+  // grounding an argument in a dead table, so unpaid-commission detail is omitted
+  // until that ledger earns a real writer.)
+  const { data: open } = await svc.from("transactions")
+    .select("id, deal_name, property_address, estimated_commission, commission_amount, commission_percentage, purchase_price, win_probability, stage, estimated_close_date, close_date")
+    .eq("brokerage_id", ctx.brokerageId).in("status", ["active", "under_contract", "closing"]).is("deleted_at", null).limit(200)
   const facts: string[] = [], citations: string[] = []
   const openRows = (open ?? []) as any[]
   if (openRows.length > 0) {
@@ -264,12 +264,6 @@ const loadFinanceManagerFacts: FactLoader = async (svc, ctx) => {
     citations.push(`transactions.open_count=${openRows.length} weighted_gci=${Math.round(weighted)} (transactions.brokerage_id=${ctx.brokerageId})`)
     const scoped = ctx.entityType === "transaction" && ctx.entityId ? openRows.find((t) => t.id === ctx.entityId) : null
     if (scoped) citations.push(`transactions.estimated_commission=${Math.round(dealCommission(scoped))} (transactions.id=${scoped.id})`)
-  }
-  const unpaidRows = (unpaid ?? []) as any[]
-  if (unpaidRows.length > 0) {
-    const gross = unpaidRows.reduce((s, r) => s + (Number(r.gross_commission) || 0), 0)
-    facts.push(`${unpaidRows.length} commission record${unpaidRows.length === 1 ? "" : "s"} not yet paid (${usd(gross)} gross)`)
-    citations.push(`commission_records.unpaid_count=${unpaidRows.length} gross=${Math.round(gross)} (commission_records.brokerage_id=${ctx.brokerageId})`)
   }
   return { facts, citations }
 }
