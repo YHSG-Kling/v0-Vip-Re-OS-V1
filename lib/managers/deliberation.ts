@@ -474,9 +474,30 @@ const loadCronManagerFacts: FactLoader = async (svc, ctx) => {
 }
 
 /** Lead-side conversion evidence: fresh leads + what the ISA's qualification ledger
- *  actually says about them — the AI ISA's seat in the lead-quality budget argument. */
+ *  actually says about them — the AI ISA's seat in the lead-quality budget argument.
+ *  Round 41: when the dispute names a CONTACT (the sequence_touch_cadence edge), the
+ *  ISA also argues from its OWN outreach ledger for that contact (isa_outreach_log) —
+ *  the cadence evidence that consumed the attention window. */
 const loadAiIsaFacts: FactLoader = async (svc, ctx) => {
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+  // ── Contact-cadence seat (sequence_touch_cadence, round 41) ──
+  if (ctx.entityType === "contact" && ctx.entityId) {
+    const facts: string[] = [], citations: string[] = []
+    const { data: touches } = await svc.from("isa_outreach_log")
+      .select("id, channel, status, replied_at")
+      .eq("brokerage_id", ctx.brokerageId).eq("contact_id", ctx.entityId)
+      .gte("created_at", since).limit(200)
+    const rows = (touches ?? []) as any[]
+    if (rows.length > 0) {
+      const byChannel = new Map<string, number>()
+      for (const t of rows) byChannel.set(t.channel ?? "unknown", (byChannel.get(t.channel ?? "unknown") ?? 0) + 1)
+      const replied = rows.filter((t) => t.replied_at != null).length
+      facts.push(`${rows.length} ISA touch${rows.length === 1 ? "" : "es"} on this contact in 30d (${[...byChannel.entries()].map(([c, n]) => `${n} ${c}`).join(", ")})${replied > 0 ? ` — ${replied} got a reply` : ""}`)
+      citations.push(`isa_outreach_log.count_30d=${rows.length} (isa_outreach_log.contact_id=${ctx.entityId})`)
+      if (replied > 0) citations.push(`isa_outreach_log.replied_30d=${replied} (isa_outreach_log.contact_id=${ctx.entityId})`)
+    }
+    return { facts, citations }
+  }
   const [{ data: leadRows }, { data: qualRows }] = await Promise.all([
     svc.from("leads").select("id, source, lifecycle_state")
       .eq("brokerage_id", ctx.brokerageId).gte("created_at", since).limit(1000),
@@ -583,6 +604,81 @@ const loadDataStewardFacts: FactLoader = async (svc, ctx) => {
   return { facts, citations }
 }
 
+/** The referral engine's ledger: the fee terms + history the Sphere argues from — its
+ *  OWN stewarded table (referrals). Round 41, the referral_fee_economics seat: the
+ *  referral in dispute (entityType 'referral') plus the brokerage's own agent-referral
+ *  fee norms and what closed referrals actually paid. */
+const loadSphereOfInfluenceFacts: FactLoader = async (svc, ctx) => {
+  const facts: string[] = [], citations: string[] = []
+  if (ctx.entityType === "referral" && ctx.entityId) {
+    const { data: r } = await svc.from("referrals")
+      .select("id, referral_fee_pct, status, referral_source, commission_amount, commission_potential, value_estimate")
+      .eq("brokerage_id", ctx.brokerageId).eq("id", ctx.entityId).maybeSingle()
+    const row = r as any
+    if (row) {
+      facts.push(`the referral in dispute — agreed fee ${row.referral_fee_pct != null ? `${row.referral_fee_pct}%` : "unset"}, status ${row.status}${row.value_estimate != null ? `, estimated deal value ${usd(Number(row.value_estimate))}` : ""}`)
+      if (row.referral_fee_pct != null) citations.push(`referrals.referral_fee_pct=${row.referral_fee_pct} (referrals.id=${row.id})`)
+      citations.push(`referrals.status=${row.status} (referrals.id=${row.id})`)
+      if (row.value_estimate != null) citations.push(`referrals.value_estimate=${row.value_estimate} (referrals.id=${row.id})`)
+    }
+  }
+  const { data: hist } = await svc.from("referrals")
+    .select("id, referral_fee_pct, status, commission_amount")
+    .eq("brokerage_id", ctx.brokerageId).eq("referral_source", "agent_referral").limit(200)
+  const rows = (hist ?? []) as any[]
+  const withFee = rows.filter((r) => r.referral_fee_pct != null)
+  if (withFee.length > 0) {
+    const avgFee = Math.round((withFee.reduce((s, r) => s + Number(r.referral_fee_pct), 0) / withFee.length) * 10) / 10
+    const closed = rows.filter((r) => r.status === "closed")
+    facts.push(`${rows.length} agent-to-agent referral${rows.length === 1 ? "" : "s"} on the ledger — average agreed fee ${avgFee}%${closed.length > 0 ? `, ${closed.length} closed` : ""}`)
+    citations.push(`referrals.avg_fee_pct=${avgFee} count=${withFee.length} (referrals.brokerage_id=${ctx.brokerageId})`)
+    const paid = closed.filter((r) => r.commission_amount != null)
+    if (paid.length > 0) {
+      const total = paid.reduce((s, r) => s + Number(r.commission_amount), 0)
+      facts.push(`closed agent referrals recorded ${usd(total)} in referral commission`)
+      citations.push(`referrals.closed_commission_total=${Math.round(total)} count=${paid.length} (referrals.brokerage_id=${ctx.brokerageId})`)
+    }
+  }
+  return { facts, citations }
+}
+
+/** The sequence side of a contact's attention window: active enrollments + the shared
+ *  touch ledger — the Orchestrator's OWN stewarded tables (sequence_enrollments,
+ *  marketing_campaign_touchpoints). Round 41, the sequence_touch_cadence seat:
+ *  contact-scoped when the dispute names one, brokerage-wide otherwise. */
+const loadCampaignOrchestratorFacts: FactLoader = async (svc, ctx) => {
+  const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+  const contactScoped = ctx.entityType === "contact" && !!ctx.entityId
+  const facts: string[] = [], citations: string[] = []
+  const enrollQ = svc.from("sequence_enrollments")
+    .select("id, sequence_id, status, current_step, next_step_at")
+    .eq("brokerage_id", ctx.brokerageId).eq("status", "active")
+  const { data: enrolls } = contactScoped
+    ? await enrollQ.eq("contact_id", ctx.entityId!).limit(20)
+    : await enrollQ.limit(500)
+  const enrollRows = (enrolls ?? []) as any[]
+  if (enrollRows.length > 0) {
+    facts.push(`${enrollRows.length} active sequence enrollment${enrollRows.length === 1 ? "" : "s"}${contactScoped ? " on this contact" : ""}${contactScoped && enrollRows[0]?.current_step != null ? ` (at step ${enrollRows[0].current_step})` : ""}`)
+    citations.push(`sequence_enrollments.active_count=${enrollRows.length}${contactScoped ? ` (sequence_enrollments.contact_id=${ctx.entityId})` : ` (sequence_enrollments.brokerage_id=${ctx.brokerageId})`}`)
+    if (contactScoped && enrollRows[0]?.current_step != null) {
+      citations.push(`sequence_enrollments.current_step=${enrollRows[0].current_step} (sequence_enrollments.id=${enrollRows[0].id})`)
+    }
+  }
+  const touchQ = svc.from("marketing_campaign_touchpoints")
+    .select("id, channel").eq("brokerage_id", ctx.brokerageId).gte("created_at", since)
+  const { data: touches } = contactScoped
+    ? await touchQ.eq("contact_id", ctx.entityId!).limit(200)
+    : await touchQ.limit(1000)
+  const touchRows = (touches ?? []) as any[]
+  if (touchRows.length > 0) {
+    const byChannel = new Map<string, number>()
+    for (const t of touchRows) byChannel.set(t.channel ?? "unknown", (byChannel.get(t.channel ?? "unknown") ?? 0) + 1)
+    facts.push(`${touchRows.length} campaign touch${touchRows.length === 1 ? "" : "es"} on the shared ledger in 30d${contactScoped ? " for this contact" : ""} (${[...byChannel.entries()].map(([c, n]) => `${n} ${c}`).join(", ")})`)
+    citations.push(`marketing_campaign_touchpoints.count_30d=${touchRows.length}${contactScoped ? ` (marketing_campaign_touchpoints.contact_id=${ctx.entityId})` : ` (marketing_campaign_touchpoints.brokerage_id=${ctx.brokerageId})`}`)
+  }
+  return { facts, citations }
+}
+
 /** Every manager that can sit at a deliberative table has a REAL loader; anyone else
  *  gets honest empties (never fabricated facts). Exported so the simulator proves a
  *  loader exists for every participant of every deliberative domain. */
@@ -599,6 +695,10 @@ export const MANAGER_FACT_LOADERS: Partial<Record<ManagerKey, FactLoader>> = {
   ai_isa: loadAiIsaFacts,
   recruiting_manager: loadRecruitingManagerFacts,
   data_steward: loadDataStewardFacts,
+  // Round 41 — the last genuinely-arguable seats (no-noise audit: the managers left
+  // without a loader — asset_manager — hold no deliberative seat, by documented verdict).
+  sphere_of_influence: loadSphereOfInfluenceFacts,
+  campaign_orchestrator: loadCampaignOrchestratorFacts,
 }
 
 /** Load one manager's grounded brief (empty facts when its tables are quiet — honest). */

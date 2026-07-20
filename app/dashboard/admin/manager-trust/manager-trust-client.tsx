@@ -18,6 +18,7 @@ import type { TrustTier, AutonomyPosture } from "@/lib/managers/eval-scoring"
 import type { TeamworkMetrics } from "@/lib/managers/teamwork-metrics"
 import type { DeliberationRecord } from "@/lib/managers/deliberation"
 import type { AccuracyGateVerdict, AccuracyHoldRollup } from "@/lib/managers/accuracy-gate"
+import type { TeamArgumentSeat } from "@/lib/managers/team-argument-map"
 // Pure registry data (no I/O) — the ONE source of truth for the collaboration map,
 // so this surface can never drift from what the referral handler actually enforces.
 import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/manager-registry"
@@ -38,7 +39,7 @@ const AUTONOMY_LABEL: Record<AutonomyPosture, string> = {
 }
 
 export function ManagerTrustClient({
-  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null, accuracyGates = [], accuracyHolds = null,
+  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null, accuracyGates = [], accuracyHolds = null, teamMap = [],
 }: {
   managers: ManagerTrustRow[]
   team: { passRate: number; total: number; trustedCount: number; managerCount: number }
@@ -46,6 +47,10 @@ export function ManagerTrustClient({
   referrals?: CrossManagerReferralView[]
   standingReviews?: StandingReviewView[]
   teamwork?: TeamworkMetrics | null
+  /** THE TEAM ARGUMENT MAP (round 41) — who argues with whom, derived purely from
+   *  the registry server-side (collaborations + emitters + loaders); managers that
+   *  have never deliberated are shown honestly, never padded with ceremonial edges. */
+  teamMap?: TeamArgumentSeat[]
   /** Per-domain accuracy-gate verdicts (round 36, accuracy-driven autonomy). */
   accuracyGates?: AccuracyGateVerdict[]
   /** Sends actually HELD by the accuracy gate (round 37 hold telemetry).
@@ -320,6 +325,61 @@ export function ManagerTrustClient({
           ))}
         </CardContent>
       </Card>
+
+      {/* THE TEAM ARGUMENT MAP (round 41) — who argues with whom, derived purely from
+          the registry (deliberative edges + live emitters + grounded loaders). Managers
+          with no deliberative seat are shown HONESTLY — their no-edge verdicts are
+          documented in the registry beside the collaboration map (simulator-locked),
+          never papered over with a ceremonial edge. */}
+      {teamMap.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2"><Scale className="h-4 w-4" />Team argument map</CardTitle>
+            <CardDescription>
+              Which managers <strong>argue</strong> with which — every edge below escalates a referral to a full
+              deliberation (grounded positions, one rebuttal round, a resolved winner with the stated why). A manager
+              listed as never deliberating is an honest fact, not a gap: no genuine dispute exists between its
+              stewarded evidence and a peer&apos;s, and a manufactured edge would be noise.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {teamMap.map((seat) => (
+              <div key={seat.manager} className="rounded-lg border p-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] ${seat.accent}`}>{seat.label}</span>
+                  {seat.deliberates ? (
+                    <>
+                      <span className="text-xs text-muted-foreground">argues with</span>
+                      {seat.arguesWith.map((mk) => (
+                        <span key={mk} className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] ${MANAGERS[mk].accent}`}>
+                          {MANAGERS[mk].label}
+                        </span>
+                      ))}
+                    </>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">
+                      has never deliberated — no genuine dispute with a peer&apos;s evidence (verdict documented in the registry)
+                    </span>
+                  )}
+                </div>
+                {seat.deliberates && (
+                  <div className="mt-1 space-y-0.5">
+                    {seat.domains.filter((d) => d.deliberative).map((d) => (
+                      <p key={d.key} className="text-xs text-muted-foreground">
+                        <span className="font-medium">{d.label}</span>
+                        {" — raised live by "}
+                        {d.emitters.length > 0
+                          ? d.emitters.map((e) => `${e.kind === "sweep" ? "sweep" : "hook"}: ${e.key}`).join(", ")
+                          : "no emitter registered"}
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       {/* AUTONOMY THROTTLED (round 37, hold telemetry) — sends the accuracy gate
           actually HELD at the egress, rolled up per manager/domain from the

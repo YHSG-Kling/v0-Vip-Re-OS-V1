@@ -93,5 +93,31 @@ export async function createAgentReferral(svc: Svc, input: CreateAgentReferralIn
     notes: input.notes ?? null,
   }).select("id").single()
   if (error) return { ok: false, error: error.message }
-  return { ok: true, referralId: (data as any).id }
+  const referralId = (data as any).id as string
+
+  // ── THE FEE SECOND-LOOK (round 41, referral_fee_economics — deliberative): the
+  // agreed fee is real money booked on the canonical commission rail at close, so
+  // the Sphere raises the terms INTO Finance's domain for the governed argument —
+  // the relationship value the fee protects vs the margin the receiving side's
+  // commission can carry (the transaction_vendor_selection second-look idiom).
+  // Best-effort + deduped per referral over the bus ledger; the referral itself is
+  // never blocked by the bus.
+  try {
+    const { raiseReferralDeduped } = await import("@/lib/managers/cross-referral")
+    await raiseReferralDeduped({
+      brokerageId: input.brokerageId,
+      fromManager: "sphere_of_influence",
+      toManager: "finance_manager",
+      collabDomain: "referral_fee_economics",
+      entityType: "referral",
+      entityId: referralId,
+      ask: `An agent-to-agent referral was created with a ${feePct}% agreed fee. Argue the terms: the relationship value the fee protects (the referring agent's ledger) vs the margin the receiving side's commission can carry at close.`,
+      payload: { referral_fee_pct: feePct },
+      dedupe: { agent_referral_id: referralId },
+    }, svc)
+  } catch (err) {
+    console.error("[createAgentReferral] deliberative referral failed (non-blocking):", err)
+  }
+
+  return { ok: true, referralId }
 }

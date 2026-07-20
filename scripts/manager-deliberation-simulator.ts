@@ -35,8 +35,9 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import {
-  MANAGERS, MANAGER_COLLABORATIONS, canRefer, type ManagerKey,
+  MANAGERS, MANAGER_COLLABORATIONS, canRefer, collaborationsFor, type ManagerKey,
 } from "../lib/kernel/manager-registry"
+import { composeTeamArgumentMap } from "../lib/managers/team-argument-map"
 import { validateReferral, REFERRAL_EMITTERS, emittersForDomain } from "../lib/managers/cross-referral"
 import {
   isDeliberativeDomain, deliberativeDomains, filterEvidenceToCitations,
@@ -102,11 +103,11 @@ async function main() {
 
   console.log("\n[Layer 1a · the deliberate flags — argument only where the overlap is a real tradeoff]")
   const flagged = deliberativeDomains().map((d) => d.key).sort()
-  check("exactly the SEVEN tradeoff domains are deliberative (round 36 full build-out + round 38 assignment-policy outcomes: pricing dispute, closing money+risk, organic-vs-paid budget, lead-quality spend, recruiting offer economics, vendor selection, assignment policy)",
+  check("exactly the NINE tradeoff domains are deliberative (rounds 36+38 + round 41's no-noise audit adds: referral-fee terms vs closing margin, dropped sequence touch vs ISA cadence)",
     JSON.stringify(flagged) === JSON.stringify([
       "assignment_policy_outcomes", "closing_money_and_risk", "lead_quality_spend",
       "listing_demand_bridge", "organic_paid_content", "recruiting_offer_economics",
-      "transaction_vendor_selection",
+      "referral_fee_economics", "sequence_touch_cadence", "transaction_vendor_selection",
     ]), flagged.join(","))
   check("isDeliberativeDomain: listing_demand_bridge (a pricing dispute by construction) → true",
     isDeliberativeDomain("listing_demand_bridge"))
@@ -122,7 +123,9 @@ async function main() {
     && JSON.stringify(MANAGER_COLLABORATIONS.recruiting_offer_economics.managers.slice().sort()) === JSON.stringify(["finance_manager", "recruiting_manager"])
     && JSON.stringify(MANAGER_COLLABORATIONS.transaction_vendor_selection.managers.slice().sort()) === JSON.stringify(["data_steward", "deal_coordinator"])
     && JSON.stringify(MANAGER_COLLABORATIONS.assignment_policy_outcomes.managers.slice().sort()) === JSON.stringify(["ai_isa", "data_steward"])
-    && Object.keys(MANAGER_COLLABORATIONS).length === 13)
+    && JSON.stringify(MANAGER_COLLABORATIONS.referral_fee_economics.managers.slice().sort()) === JSON.stringify(["finance_manager", "sphere_of_influence"])
+    && JSON.stringify(MANAGER_COLLABORATIONS.sequence_touch_cadence.managers.slice().sort()) === JSON.stringify(["ai_isa", "campaign_orchestrator"])
+    && Object.keys(MANAGER_COLLABORATIONS).length === 15)
   check("every deliberative domain's evidence names its LIVE RAISER (no aspirational edges)",
     deliberativeDomains().every((d) => /raiser|sweep|hook|assignVendorToTransaction|publish/i.test(d.evidence)))
 
@@ -299,6 +302,48 @@ async function main() {
     && src("lib/managers/cross-referral.ts").includes("for (const emitter of Object.values(REFERRAL_EMITTERS))"))
   check("every hook emitter dedupes over the bus ledger itself (raiseReferralDeduped — no parallel state)",
     src("lib/managers/cross-referral.ts").includes('.contains("payload", input.dedupe)'))
+
+  console.log("\n[Layer 1f3 · THE NO-NOISE AUDIT (round 41) — every non-deliberating manager carries a DOCUMENTED no-edge verdict, registry-derived]")
+  const registrySrc = src("lib/kernel/manager-registry.ts")
+  const deliberatingManagers = new Set<ManagerKey>(deliberativeDomains().flatMap((d) => d.managers))
+  for (const mk of Object.keys(MANAGERS) as ManagerKey[]) {
+    if (deliberatingManagers.has(mk)) {
+      check(`'${mk}' holds a deliberative seat — no stale no-edge verdict lingers in the registry`,
+        !registrySrc.includes(`· ${mk} — no conflicting evidence`))
+    } else {
+      check(`'${mk}' holds NO deliberative seat — the registry documents the honest no-edge verdict ('no conflicting evidence exists')`,
+        registrySrc.includes(`· ${mk} — no conflicting evidence`))
+    }
+  }
+  check("nobody is off the team — every one of the 14 managers sits on at least one declared collaboration edge (deliberative or handoff)",
+    (Object.keys(MANAGERS) as ManagerKey[]).every((mk) => collaborationsFor(mk).length > 0))
+  check("rejected CANDIDATES are documented too, not silently dropped (the gift-budget candidate names its honest why)",
+    registrySrc.includes("REJECTED") && registrySrc.includes("gift/QBR budget"))
+
+  console.log("\n[Layer 1i · THE TEAM ARGUMENT MAP — who argues with whom, derived from the registry alone]")
+  const teamMap = composeTeamArgumentMap()
+  check("one seat per registered manager (derived from MANAGERS — never a hand-kept list)",
+    teamMap.length === Object.keys(MANAGERS).length
+    && teamMap.every((s) => s.manager in MANAGERS && s.label === MANAGERS[s.manager].label))
+  check("arguesWith is SYMMETRIC — if A argues with B, B argues with A (edges, not arrows)",
+    teamMap.every((s) => s.arguesWith.every((peer) =>
+      (teamMap.find((p) => p.manager === peer)?.arguesWith ?? []).includes(s.manager))))
+  check("neverDeliberates is HONEST — exactly the managers outside every deliberative domain",
+    teamMap.every((s) => s.neverDeliberates === !deliberatingManagers.has(s.manager)))
+  check("every deliberative seat has a grounded loader AND every one of its deliberative domains a live emitter",
+    teamMap.filter((s) => s.deliberates).every((s) =>
+      s.hasGroundedLoader && s.domains.filter((d) => d.deliberative).every((d) => d.emitters.length > 0)))
+  check("seat domains mirror the registry (peers = the domain's other managers, deliberative flags intact)",
+    teamMap.every((s) => s.domains.every((d) => {
+      const reg = MANAGER_COLLABORATIONS[d.key]
+      return !!reg && reg.managers.includes(s.manager)
+        && JSON.stringify(d.peers.slice().sort()) === JSON.stringify(reg.managers.filter((m) => m !== s.manager).sort())
+        && d.deliberative === (reg.deliberate === true)
+    })))
+  check("the trust surface mounts the map — the page computes composeTeamArgumentMap server-side and the client renders the card (with the honest never-deliberated line)",
+    src("app/dashboard/admin/manager-trust/page.tsx").includes("composeTeamArgumentMap")
+    && src("app/dashboard/admin/manager-trust/manager-trust-client.tsx").includes("Team argument map")
+    && src("app/dashboard/admin/manager-trust/manager-trust-client.tsx").includes("has never deliberated"))
 
   console.log("\n[Layer 1g · teamwork metrics — the pure rollup math + omit-when-empty]")
   check("median: odd count picks the middle", median([10, 2, 4]) === 4)

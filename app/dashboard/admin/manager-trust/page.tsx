@@ -4,6 +4,7 @@ import {
   getManagerTrustScorecard, getLearnedAdjustmentsForBrokerage,
   getCrossManagerReferrals, getStandingReviews, getTeamworkMetrics,
 } from "@/app/actions/admin/manager-evals"
+import { composeTeamArgumentMap } from "@/lib/managers/team-argument-map"
 import { ManagerTrustClient } from "./manager-trust-client"
 
 export const dynamic = "force-dynamic"
@@ -45,10 +46,15 @@ export default async function ManagerTrustPage() {
       ])
     } catch { accuracyGates = []; accuracyHolds = null }
   }
+  // THE TEAM ARGUMENT MAP (round 41): who argues with whom — derived PURELY from the
+  // registry (collaborations + emitters + loaders), computed server-side and handed to
+  // the client as plain data so the surface can never drift from the law.
+  const teamMap = composeTeamArgumentMap()
   return (
     <ManagerTrustClient
       managers={res.managers}
       team={res.team}
+      teamMap={teamMap}
       learned={learned}
       referrals={referrals}
       standingReviews={standingReviews}

@@ -45,6 +45,8 @@
  *       appraisal-gap detection        → closing_money_and_risk      (transaction-milestones.ts)
  *       organic-winner budget question → organic_paid_content        (marketing-agent-weekly-measure)
  *       vendor pick on a transaction   → transaction_vendor_selection (lib/kernel/vendors.ts)
+ *       agent-referral fee agreed      → referral_fee_economics      (lib/referrals/agent-referral.ts, round 41)
+ *       sequence touch dropped at cap  → sequence_touch_cadence      (lib/campaign-sequences/step-executor.ts, round 41)
  *
  * raiseReferralDeduped() is the shared raise-once idiom: recency-deduped over the bus
  * ledger itself by a payload dedupe key (no parallel state), then raiseCrossManagerReferral.
@@ -497,6 +499,28 @@ export const REFERRAL_EMITTERS: Record<string, ReferralEmitterInfo> = {
     what: "A vendor picked for a transaction job — deadline fit vs rated track record, argued",
     sourceFile: "lib/kernel/vendors.ts",
     marker: 'collabDomain: "transaction_vendor_selection"',
+  },
+  // ── Round 41 — the last genuinely-arguable seats (the no-noise audit): the Sphere's
+  // referral-fee terms and the Orchestrator's dropped sequence touch. Managers still
+  // without a deliberative seat (asset_manager, cron_manager) carry DOCUMENTED no-edge
+  // verdicts in the registry beside MANAGER_COLLABORATIONS — simulator-locked. ──
+  referral_fee_hook: {
+    key: "referral_fee_hook",
+    collabDomain: "referral_fee_economics",
+    from: "sphere_of_influence",
+    kind: "hook",
+    what: "An agent-to-agent referral fee was agreed — relationship value vs the margin the receiving side's commission carries at close, argued",
+    sourceFile: "lib/referrals/agent-referral.ts",
+    marker: 'collabDomain: "referral_fee_economics"',
+  },
+  dropped_touch_hook: {
+    key: "dropped_touch_hook",
+    collabDomain: "sequence_touch_cadence",
+    from: "campaign_orchestrator",
+    kind: "hook",
+    what: "The over-touch cap dropped a sequence touch after MAX_DEFERS — who owns the contact's attention window, argued at the exact drop moment",
+    sourceFile: "lib/campaign-sequences/step-executor.ts",
+    marker: 'collabDomain: "sequence_touch_cadence"',
   },
 }
 

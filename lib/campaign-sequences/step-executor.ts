@@ -381,6 +381,31 @@ export async function executeSequenceStep(
       return { status: "skipped", reason: `over-touch: rescheduled (attempt ${decision.attempt}/${MAX_DEFERS})` }
     }
     // Cap exhausted — advance so a perpetually-capped contact never stalls the cadence forever.
+    // ── THE DROPPED-TOUCH DISPUTE (round 41, sequence_touch_cadence — deliberative):
+    // this is the exact moment a sequence touch is actually LOST — the other lanes
+    // consumed the contact's attention window MAX_DEFERS times over. Instead of the
+    // give-up rule deciding silently, the Orchestrator raises the cadence question
+    // INTO the AI ISA's domain for the governed argument (pause the sequence for
+    // this contact vs the ISA's cadence had the window for good reason). Best-effort
+    // + deduped per enrollment over the bus ledger; the advance is never blocked.
+    if (contactId) {
+      try {
+        const { raiseReferralDeduped } = await import("@/lib/managers/cross-referral")
+        await raiseReferralDeduped({
+          brokerageId,
+          fromManager: "campaign_orchestrator",
+          toManager: "ai_isa",
+          collabDomain: "sequence_touch_cadence",
+          entityType: "contact",
+          entityId: contactId,
+          ask: `The over-touch cap blocked step ${nextStepNumber} (${step.channel}) for this contact ${MAX_DEFERS} times and the sequence advanced past it — the touch was dropped. Argue the cadence: pause this contact's sequence lane, or the other lane's touches had the window for good reason and the step is well lost.`,
+          payload: { enrollment_id: enrollmentId, step_number: nextStepNumber, channel: step.channel },
+          dedupe: { dropped_touch_enrollment: enrollmentId },
+        }, supabase)
+      } catch (err) {
+        console.error("[executeSequenceStep] dropped-touch referral failed (non-blocking):", err)
+      }
+    }
     return await advanceEnrollment(supabase, enrollment, step, "skipped")
   }
 
