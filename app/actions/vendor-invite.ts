@@ -4,9 +4,19 @@
  * Vendor invite-to-platform handshake.
  *
  * inviteVendorToPlatformAction:
- *   Caller: any admin / broker / team_lead / agent within a brokerage.
+ *   Caller: any admin / broker / team_lead / agent within a brokerage (round 15
+ *   opened invites to every tier — INVITE_ALLOWED_ROLES below is the gate, and
+ *   lib/vendors/vendor-scope.ts mirrors it as VENDOR_INVITE_ROLES).
  *   Creates a vendor_invitations row with a cryptographically random token,
  *   sends a Supabase invite email pointing the vendor to /vendor-invite/[token].
+ *
+ *   ROUND 37 (attribution): the vendor row records WHO brought the vendor —
+ *   vendors.invited_by_user_id (first inviter wins) + vendors.invited_by_team_id
+ *   (the inviter's led team, else membership team) — migration 1106. Pre-migration
+ *   the stamp is a logged no-op; the invite itself never fails on attribution.
+ *   The invite email is the EXISTING governed send (svc.auth.admin
+ *   .inviteUserByEmail — the Supabase auth invite every platform invitation
+ *   rides); no new raw sender is introduced here.
  *
  * acceptVendorInviteAction:
  *   Caller: vendor (after authenticating via the magic link in the invite email).
@@ -22,6 +32,34 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { randomBytes } from "node:crypto"
+import { resolveVendorActorScope } from "@/lib/vendors/vendor-scope"
+
+/**
+ * Best-effort first-inviter-wins attribution stamp on the vendor row
+ * (migration 1106 columns). The `.is("invited_by_user_id", null)` filter makes
+ * a second inviter a no-op — the vendor stays attributed to whoever brought
+ * them first. Pre-migration (columns absent) this logs and returns; the invite
+ * flow never fails on attribution.
+ */
+async function stampVendorInviteAttribution(
+  svc: ReturnType<typeof createServiceClient>,
+  args: { vendorId: string; invitedByUserId: string; invitedByTeamId: string | null },
+): Promise<void> {
+  const { error } = await svc
+    .from("vendors")
+    .update({
+      invited_by_user_id: args.invitedByUserId,
+      invited_by_team_id: args.invitedByTeamId,
+    })
+    .eq("id", args.vendorId)
+    .is("invited_by_user_id", null)
+  if (error) {
+    // 42703 (undefined column) pre-migration — honest log, never fatal.
+    console.warn(
+      `[vendor-invite] attribution stamp skipped (${error.message}) — apply migration 1106 (vendors.invited_by_user_id / invited_by_team_id) to record who brought each vendor.`,
+    )
+  }
+}
 
 const INVITE_TTL_DAYS = 14
 const INVITE_ALLOWED_ROLES = new Set(["broker","broker_admin","admin","superadmin","team_lead","agent"])
@@ -119,6 +157,19 @@ export async function inviteVendorToPlatformAction(
     }
     invitationId = inv.id as string
   }
+
+  // Attribution (round 37): record WHO brought this vendor on the vendor row.
+  // Led team wins over membership team (teams.team_lead_id is users.id).
+  const actorScope = await resolveVendorActorScope(svc, {
+    userId: user.id,
+    userType: caller.user_type ?? "",
+    brokerageId: caller.brokerage_id,
+  })
+  await stampVendorInviteAttribution(svc, {
+    vendorId: vendor.id,
+    invitedByUserId: user.id,
+    invitedByTeamId: actorScope.ledTeamId ?? actorScope.membershipTeamId,
+  })
 
   const appUrl    = process.env.NEXT_PUBLIC_APP_URL ?? ""
   const inviteUrl = `${appUrl}/vendor-invite/${token}`
@@ -245,6 +296,17 @@ export async function acceptVendorInviteAction(
     accepted_by: user.id,
     accepted_at: new Date().toISOString(),
   }).eq("id", invitation.id)
+
+  // Legacy-invite attribution catch-up: invitations sent before the round-37
+  // stamp still know their inviter (m1057 invited_by). First-inviter-wins; the
+  // inviter's team at THAT time is unknowable, so team stays null here.
+  if (invitation.invited_by) {
+    await stampVendorInviteAttribution(svc, {
+      vendorId: invitation.vendor_id as string,
+      invitedByUserId: invitation.invited_by as string,
+      invitedByTeamId: null,
+    })
+  }
 
   return {
     ok:         true,

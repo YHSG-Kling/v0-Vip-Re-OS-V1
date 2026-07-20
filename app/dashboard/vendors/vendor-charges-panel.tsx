@@ -1,12 +1,20 @@
 "use client"
 
 // Vendor Charges panel — the GENERAL tenant→vendor billing lane (beyond premium
-// placement). Brokerage leadership issues an invoice TO a vendor (billed_to='vendor',
-// status 'submitted' = issued & awaiting payment) and, once funds arrive off-platform
-// (check / ACH / an externally-sent Stripe invoice), marks it paid — the same
+// placement). An invoice is issued TO a vendor (billed_to='vendor', status
+// 'submitted' = issued & awaiting payment) and, once funds arrive off-platform
+// (check / ACH / an externally-sent Stripe invoice), marked paid — the same
 // documented-assertion idiom as premium placement. Requires migration 1104
 // (vendor_invoices.billed_to CHECK includes 'vendor'); pre-migration attempts surface
 // an honest migration error from the server action.
+//
+// ROUND 37 scopes (server-guarded in issueVendorCharge / markVendorChargePaid):
+//   · broker/admin/team_lead — charge ANY brokerage vendor, mark any charge paid;
+//   · agent — charge only THEIR vendors (attributed via vendors.invited_by_* —
+//     migration 1106; chargeableVendorIds carries the server-computed list) and
+//     mark paid only charges THEY raised (attributed_user_id).
+// Premium placement stays brokerage-level (it flips brokerage-wide directory
+// flags) — see PREMIUM_PLACEMENT_SCOPE_VERDICT in lib/vendors/vendor-scope.ts.
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
@@ -40,6 +48,11 @@ export interface VendorChargeInvoice {
   due_date: string | null
   paid_at: string | null
   notes: string | null
+  /** users.id extracted from the charge_attribution line item (null on
+   *  pre-round-37 charges = brokerage-raised). */
+  attributed_user_id?: string | null
+  /** 'brokerage' | 'team' | 'agent' from the attribution entry. */
+  attributed_scope?: string | null
 }
 
 const MANAGER_ROLES = ["admin", "broker", "broker_admin", "broker_owner", "superadmin", "team_lead"]
@@ -49,10 +62,16 @@ export function VendorChargesPanel({
   vendors,
   charges,
   userRole,
+  viewerUserId,
+  chargeableVendorIds = null,
 }: {
   vendors: ChargeableVendor[]
   charges: VendorChargeInvoice[]
   userRole: string
+  viewerUserId?: string
+  /** Agent scope only: vendor ids the viewer may charge (their attributed
+   *  vendors). null = unrestricted (brokerage leadership). */
+  chargeableVendorIds?: string[] | null
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -67,12 +86,22 @@ export function VendorChargesPanel({
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const canManage = MANAGER_ROLES.includes(userRole)
-  if (!canManage) return null
+  const isManager = MANAGER_ROLES.includes(userRole)
+  const isAgent = userRole === "agent"
+  if (!isManager && !isAgent) return null
+
+  // Agents: only THEIR vendors are chargeable, and only THEIR raised charges
+  // are shown/actionable (mirrors the server gates — never wider than them).
+  const chargeableVendors = isManager
+    ? vendors
+    : vendors.filter((v) => (chargeableVendorIds ?? []).includes(v.id))
+  const visibleCharges = isManager
+    ? charges
+    : charges.filter((c) => !!viewerUserId && c.attributed_user_id === viewerUserId)
 
   const vendorName = (id: string) => vendors.find((v) => v.id === id)?.name ?? "Vendor"
-  const openCharges = charges.filter((c) => c.status !== "paid" && c.status !== "cancelled")
-  const paidCharges = charges.filter((c) => c.status === "paid").slice(0, 5)
+  const openCharges = visibleCharges.filter((c) => c.status !== "paid" && c.status !== "cancelled")
+  const paidCharges = visibleCharges.filter((c) => c.status === "paid").slice(0, 5)
 
   function handleIssue() {
     setMessage(null)
@@ -126,6 +155,9 @@ export function VendorChargesPanel({
           Bill a vendor for anything beyond placement — services, events, referral program
           fees. Collection is off-platform (check, ACH, or a Stripe invoice you send); mark
           the charge paid once funds arrive.
+          {isAgent
+            ? " As an agent you can charge the vendors you (or your team) brought to the platform."
+            : " Agents and team leads can also raise charges against their own vendors — those appear here too."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -149,7 +181,7 @@ export function VendorChargesPanel({
                 <SelectValue placeholder="Select vendor…" />
               </SelectTrigger>
               <SelectContent>
-                {vendors.map((v) => (
+                {chargeableVendors.map((v) => (
                   <SelectItem key={v.id} value={v.id}>
                     {v.name ?? "Vendor"}{v.category ? ` — ${v.category}` : ""}
                   </SelectItem>
@@ -196,7 +228,13 @@ export function VendorChargesPanel({
             />
           </div>
         </div>
-        <Button size="sm" onClick={handleIssue} disabled={isPending}>
+        {isAgent && chargeableVendors.length === 0 && (
+          <p className="text-sm text-muted-foreground border rounded-lg px-3 py-2">
+            No vendors are attributed to you yet — invite a vendor to the platform and they
+            become chargeable here once they are recorded as yours.
+          </p>
+        )}
+        <Button size="sm" onClick={handleIssue} disabled={isPending || (isAgent && chargeableVendors.length === 0)}>
           {isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
           Issue vendor charge
         </Button>
@@ -214,6 +252,9 @@ export function VendorChargesPanel({
                   <div className="flex items-center gap-2">
                     <p className="font-medium">{inv.invoice_number ?? inv.id.slice(0, 8)}</p>
                     <Badge variant="outline">{inv.status}</Badge>
+                    {inv.attributed_scope && inv.attributed_scope !== "brokerage" && (
+                      <Badge variant="secondary">raised by {inv.attributed_scope}</Badge>
+                    )}
                   </div>
                   <p className="text-sm text-muted-foreground">
                     {vendorName(inv.vendor_id)} — ${Number(inv.total_amount ?? 0).toFixed(2)}

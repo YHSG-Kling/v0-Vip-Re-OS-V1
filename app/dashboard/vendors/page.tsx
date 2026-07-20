@@ -14,6 +14,8 @@ import {
   VendorChargesPanel,
   type VendorChargeInvoice,
 } from "./vendor-charges-panel"
+import { createServiceClient } from "@/lib/supabase/service"
+import { findChargeAttribution, resolveVendorActorScope } from "@/lib/vendors/vendor-scope"
 import {
   searchVendors,
   getAllVendorBookings,
@@ -111,15 +113,54 @@ export default async function VendorsPage() {
   ])
 
   // General tenant→vendor charges (billed_to='vendor' — migration 1104). Safe
-  // pre-migration: the filter simply matches no rows.
+  // pre-migration: the filter simply matches no rows. The query stays
+  // BROKERAGE-WIDE with no scope fork — brokerage admins see agent/team-raised
+  // charges in the same list; per-scope attribution is read off the
+  // charge_attribution line item (round 37) for display + agent filtering.
   const vendorCharges = await supabase
     .from("vendor_invoices")
-    .select("id, vendor_id, invoice_number, status, total_amount, due_date, paid_at, notes")
+    .select("id, vendor_id, invoice_number, status, total_amount, due_date, paid_at, notes, line_items")
     .eq("brokerage_id", profile.brokerage_id)
     .eq("billed_to", "vendor")
     .order("created_at", { ascending: false })
     .limit(100)
-    .then(r => (r.data || []) as VendorChargeInvoice[])
+    .then(r =>
+      (r.data || []).map((row: any) => {
+        const attribution = findChargeAttribution(row.line_items)
+        const { line_items: _li, ...rest } = row
+        return {
+          ...rest,
+          attributed_user_id: attribution?.user_id ?? null,
+          attributed_scope: attribution?.scope ?? null,
+        } as VendorChargeInvoice
+      })
+    )
+
+  // Round 37 — agents charge THEIR vendors: resolve the viewer's team scope and
+  // (for agents) which vendors are attributed to them (migration 1106 columns —
+  // pre-migration the select fails soft to an empty list, an honest "none yet").
+  let chargeableVendorIds: string[] | null = null // null = unrestricted (leadership)
+  if (profile.user_type === "agent") {
+    chargeableVendorIds = []
+    try {
+      const svc = createServiceClient()
+      const scope = await resolveVendorActorScope(svc, {
+        userId: profile.id,
+        userType: profile.user_type,
+        brokerageId: profile.brokerage_id,
+      })
+      const { data: attributed } = await svc
+        .from("vendors")
+        .select("id, invited_by_user_id, invited_by_team_id")
+        .eq("brokerage_id", profile.brokerage_id)
+        .or(
+          scope.teamId
+            ? `invited_by_user_id.eq.${profile.id},invited_by_team_id.eq.${scope.teamId}`
+            : `invited_by_user_id.eq.${profile.id}`
+        )
+      chargeableVendorIds = (attributed ?? []).map((v: any) => v.id as string)
+    } catch { /* pre-migration 1106 — no attributed vendors yet */ }
+  }
 
   const serviceTypes = [...new Set(vendors.map(v => v.category).filter(Boolean))]
   const assignedCount = assignedVendors?.length || 0
@@ -323,7 +364,9 @@ export default async function VendorsPage() {
             userRole={profile.user_type ?? "agent"}
           />
 
-          {/* General tenant→vendor charges (beyond placement) */}
+          {/* General tenant→vendor charges (beyond placement). Premium placement
+              above stays brokerage-level (brokerage-wide directory flags); agents
+              and team leads monetize THEIR vendors through this lane instead. */}
           <VendorChargesPanel
             vendors={(preferredVendors ?? []).map((v: any) => ({
               id: v.id,
@@ -332,6 +375,8 @@ export default async function VendorsPage() {
             }))}
             charges={vendorCharges}
             userRole={profile.user_type ?? "agent"}
+            viewerUserId={profile.id}
+            chargeableVendorIds={chargeableVendorIds}
           />
         </TabsContent>
 

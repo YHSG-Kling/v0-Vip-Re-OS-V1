@@ -1080,19 +1080,36 @@ export async function syncVendorInvoiceToQuickBooksAction(params: {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TENANT → VENDOR CHARGING (general charge beyond premium placement)
+//
+// ROUND 37 — "agents and teams can charge THEIR vendors": the SAME lane now
+// serves three scopes (no forked tables, no second ledger):
+//   · broker/admin/team_lead — charge ANY vendor in the brokerage (unchanged);
+//   · agent — charge only vendors ATTRIBUTED to them (vendors.invited_by_user_id
+//     = them, or invited_by_team_id = their team — migration 1106);
+//   · every charge carries a zero-amount typed `charge_attribution` entry in
+//     line_items (the premium-placement typed-line-item idiom — vendor_invoices
+//     has no metadata column) recording {scope, user_id, team_id}. Totals are
+//     untouched; brokerage admins see agent/team-raised charges in the same
+//     brokerage-wide query (billed_to='vendor') they always used.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const VENDOR_CHARGE_ADMIN_ROLES = new Set([
-  "broker", "broker_owner", "broker_admin", "admin", "superadmin", "team_lead",
-])
+import {
+  VENDOR_CHARGE_ADMIN_ROLES,
+  buildChargeAttribution,
+  findChargeAttribution,
+  agentMayChargeVendor,
+  canManageVendorCharge,
+  resolveVendorActorScope,
+} from "@/lib/vendors/vendor-scope"
 
 /**
- * issueVendorCharge — brokerage leadership bills a vendor (billed_to='vendor',
- * status 'submitted' = issued & awaiting payment). Collection is off-platform
+ * issueVendorCharge — the tenant bills a vendor (billed_to='vendor', status
+ * 'submitted' = issued & awaiting payment). Collection is off-platform
  * (check / ACH / an externally-sent Stripe invoice) exactly like premium
  * placement; markVendorChargePaid below is the tenant's assertion of collection.
  * Requires migration 1104 (billed_to CHECK includes 'vendor') — a pre-migration
  * attempt fails with an honest migration message, never a silent fallback.
+ * Agent callers additionally require migration 1106 (vendor attribution).
  */
 export async function issueVendorCharge(params: {
   vendorId: string
@@ -1102,11 +1119,44 @@ export async function issueVendorCharge(params: {
 }): Promise<{ success: boolean; invoiceId?: string; invoiceNumber?: string; error?: string }> {
   const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
-  if (!VENDOR_CHARGE_ADMIN_ROLES.has(ctx.userType)) {
-    return { success: false, error: "Forbidden: broker, admin, or team lead only" }
+  const isAdminCharger = VENDOR_CHARGE_ADMIN_ROLES.has(ctx.userType)
+  if (!isAdminCharger && ctx.userType !== "agent") {
+    return { success: false, error: "Forbidden: broker, admin, team lead, or agent only" }
   }
   if (!await verifyVendorInCallerBrokerage(params.vendorId, ctx.brokerageId)) {
     return { success: false, error: "Forbidden: vendor not in your brokerage" }
+  }
+
+  const svcScope = createServiceClient()
+  const actorScope = await resolveVendorActorScope(svcScope, {
+    userId: ctx.userId,
+    userType: ctx.userType,
+    brokerageId: ctx.brokerageId,
+  })
+
+  // AGENT gate — "THEIR vendors" only: the vendor must be attributed to the
+  // caller (their invite) or to their team (migration 1106 columns).
+  if (!isAdminCharger) {
+    const { data: vRow, error: vErr } = await svcScope
+      .from("vendors")
+      .select("invited_by_user_id, invited_by_team_id")
+      .eq("id", params.vendorId)
+      .maybeSingle()
+    if (vErr) {
+      return /invited_by/i.test(vErr.message)
+        ? { success: false, error: "Charging your own vendors requires database migration 1106 (vendors.invited_by_user_id / invited_by_team_id) — ask your administrator to apply it." }
+        : { success: false, error: vErr.message }
+    }
+    const mine = agentMayChargeVendor(
+      {
+        invitedByUserId: (vRow?.invited_by_user_id as string | null) ?? null,
+        invitedByTeamId: (vRow?.invited_by_team_id as string | null) ?? null,
+      },
+      { userId: ctx.userId, teamId: actorScope.teamId },
+    )
+    if (!mine) {
+      return { success: false, error: "Forbidden: you can only charge vendors you (or your team) brought to the platform — ask your broker to charge this vendor." }
+    }
   }
 
   const invoiceNumber = `VC-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`
@@ -1115,7 +1165,16 @@ export async function issueVendorCharge(params: {
     billedTo: "vendor",
     invoiceNumber,
     dueDate: params.dueDate,
-    lineItems: params.lineItems,
+    lineItems: [
+      ...params.lineItems,
+      // Zero-amount attribution entry — records which scope raised the charge
+      // without touching totals (subtotal = Σ amount; this adds 0).
+      buildChargeAttribution({
+        scope: actorScope.scope,
+        userId: ctx.userId,
+        teamId: actorScope.teamId,
+      }) as unknown as InvoiceLineItem,
+    ],
     notes: params.notes,
   })
   if (!created.success || !created.invoiceId) return { success: false, error: created.error }
@@ -1171,6 +1230,9 @@ export async function issueVendorCharge(params: {
  * markVendorChargePaid — the tenant's assertion that a vendor charge was collected
  * off-platform (premium-placement idiom). Never mints vendor_earnings: the money
  * flowed vendor → brokerage.
+ * Callers: brokerage leadership for ANY charge; an AGENT only for a charge THEY
+ * raised (line-item attribution user_id match — one agent can never assert
+ * collection of another scope's charge).
  */
 export async function markVendorChargePaid(params: {
   invoiceId: string
@@ -1178,8 +1240,8 @@ export async function markVendorChargePaid(params: {
 }): Promise<InvoiceResult> {
   const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
-  if (!VENDOR_CHARGE_ADMIN_ROLES.has(ctx.userType)) {
-    return { success: false, error: "Forbidden: broker, admin, or team lead only" }
+  if (!VENDOR_CHARGE_ADMIN_ROLES.has(ctx.userType) && ctx.userType !== "agent") {
+    return { success: false, error: "Forbidden: broker, admin, team lead, or agent only" }
   }
 
   const verify = await verifyInvoiceInCallerBrokerage(params.invoiceId, ctx.brokerageId)
@@ -1189,6 +1251,24 @@ export async function markVendorChargePaid(params: {
   if (verify.status === "cancelled") return { success: false, error: "Invoice was cancelled" }
 
   const svc = createServiceClient()
+
+  // Agent callers: only the raiser of the charge may assert its collection.
+  if (!VENDOR_CHARGE_ADMIN_ROLES.has(ctx.userType)) {
+    const { data: invRow } = await svc
+      .from("vendor_invoices")
+      .select("line_items")
+      .eq("id", params.invoiceId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    const allowed = canManageVendorCharge({
+      userType: ctx.userType,
+      callerUserId: ctx.userId,
+      attribution: findChargeAttribution(invRow?.line_items),
+    })
+    if (!allowed) {
+      return { success: false, error: "Forbidden: only the agent who raised this charge (or brokerage leadership) can mark it paid" }
+    }
+  }
   const { error } = await svc
     .from("vendor_invoices")
     .update({
