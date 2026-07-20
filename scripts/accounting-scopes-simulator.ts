@@ -53,6 +53,16 @@ import {
 } from "../lib/connections/accounting-scopes"
 import { aliasesFor } from "../lib/integrations/connection-manager"
 import { isConnectSupported, connectionScopeForUserType } from "../lib/connections/field-spec"
+import {
+  QB_RECONCILIATION_HEADER,
+  reconcileLedgerRows,
+  reconcileAgainstSyncLog,
+  monthLabelsBetween,
+  loadTeamQbReconciliation,
+  loadAgentQbReconciliation,
+  loadVendorQbReconciliation,
+  loadPlatformQbReconciliation,
+} from "../lib/finance/qb-reconciliation"
 // Dynamic import: static ESM imports hoist above the server-only shim, so the
 // tainted module must load AFTER the require-cache neutralization runs.
 const { pushTeamPnlToQuickBooks, pushAgentCommissionToQuickBooks } = await import("../lib/finance/scoped-accounting-export")
@@ -167,6 +177,9 @@ function stubSvc(tables: Record<string, StubResult | StubResult[]>, log: Array<{
       insert: () => b,
       eq: (k: string, v: unknown) => { filters[k] = v; return b },
       in: (k: string, v: unknown) => { filters[k] = v; return b },
+      is: (k: string, v: unknown) => { filters[`is:${k}`] = v; return b },
+      gte: (k: string, v: unknown) => { filters[`gte:${k}`] = v; return b },
+      lt: (k: string, v: unknown) => { filters[`lt:${k}`] = v; return b },
       not: () => b,
       order: () => b,
       limit: () => b,
@@ -303,6 +316,158 @@ check("brokerage status/disconnect now see the owner-scoped row the OAuth callba
 
 check("export lanes carry the honest markers (attempted:false + migration pre-flight)",
   exportSrc.includes("attempted: false") && /quickbooks_export_id/i.test(exportSrc) && exportSrc.includes("missingMigrationError"))
+
+// ─────────────────────────────────────────────────────────────────────────────
+section("Layer 5 — QuickBooks reconciliation math (round 37: coverage %, unexported detection)")
+
+{
+  const rows = [
+    { id: "a", label: "Commission A", amount: 1000, exportId: "QB-1", syncedAt: "2026-07-01" },
+    { id: "b", label: "Commission B", amount: 2000, exportId: "QB-2", syncedAt: "2026-07-02" },
+    { id: "c", label: "Commission C", amount: 3000, exportId: null, syncedAt: null },
+    { id: "d", label: "Commission D", amount: 500, exportId: "QB-3", syncedAt: "2026-07-03" },
+  ]
+  const t = reconcileLedgerRows(rows)
+  check("marker-based: coverage % is row-based (3/4 → 75%)", t.coveragePct === 75 && t.exportedRows === 3 && t.totalRows === 4)
+  check("marker-based: amount totals BOTH sides (6500 ledger / 3500 exported / 3000 unexported)",
+    t.totalAmount === 6500 && t.exportedAmount === 3500 && t.unexportedAmount === 3000)
+  check("marker-based: unexported DETECTION names the exact row", t.unexported.length === 1 && t.unexported[0].id === "c")
+}
+{
+  const t = reconcileLedgerRows([])
+  check("empty period → coveragePct null (never a fake 0% or 100%)", t.coveragePct === null && t.totalRows === 0 && t.unexported.length === 0)
+}
+{
+  const rows = [
+    { id: "e1", label: "Expense", amount: 100 },
+    { id: "e2", label: "Expense", amount: 200 },
+    { id: "c1", label: "Commission", amount: 9000 },
+    { id: "c2", label: "Commission", amount: 5000 },
+    { id: "c3", label: "Commission", amount: 4000 },
+  ]
+  const t = reconcileAgainstSyncLog(rows, 3)
+  check("log-based (brokerage lane): count-based coverage (3 completed / 5 rows → 60%)",
+    t.coveragePct === 60 && t.exportedRows === 3 && t.unexportedRows === 2)
+  check("log-based: exported AMOUNTS are honestly null (the log records counts, not row identity)",
+    t.exportedAmount === null && t.unexportedAmount === null && t.totalAmount === 18300)
+  const capped = reconcileAgainstSyncLog(rows, 10)
+  check("log-based: completed pushes can never claim >100% coverage", capped.coveragePct === 100 && capped.exportedRows === 5)
+}
+check("monthLabelsBetween covers the window months, exclusive end",
+  JSON.stringify(monthLabelsBetween("2026-05-01T00:00:00Z", "2026-08-01T00:00:00Z")) === JSON.stringify(["2026-05", "2026-06", "2026-07"]))
+check("the standing honesty header says it is NOT a live QuickBooks pull",
+  /not a live QuickBooks pull/i.test(QB_RECONCILIATION_HEADER))
+
+// ─────────────────────────────────────────────────────────────────────────────
+section("Layer 5b — reconciliation loaders (stubbed I/O: honesty + scope isolation)")
+
+const RECON_PERIOD = { periodStart: "2026-05-01T00:00:00.000Z", periodEnd: "2026-08-01T00:00:00.000Z", periodLabel: "May – Jul 2026" }
+
+{
+  // Missing marker columns → honest 'requires_migration' — numbers are never invented.
+  const log: Array<{ table: string; filters: Record<string, unknown> }> = []
+  const svc = stubSvc({
+    team_earnings: { data: null, error: { message: "column team_earnings.quickbooks_export_id does not exist" } },
+    platform_credentials: { data: null, error: null },
+  }, log)
+  const r = await loadTeamQbReconciliation(svc, { teamId: "t-1", ...RECON_PERIOD })
+  check("team reconciliation, missing migration → status 'requires_migration' with zeroed totals",
+    r.status === "requires_migration" && r.totals.totalRows === 0 && /migration/i.test(r.statement))
+}
+{
+  // Team rows reconcile; the query is the TEAM's own (scope isolation), monthly labels.
+  const log: Array<{ table: string; filters: Record<string, unknown> }> = []
+  const svc = stubSvc({
+    team_earnings: {
+      data: [
+        { period_label: "2026-06", gross_commission: 12000, quickbooks_export_id: "QB-7", quickbooks_synced_at: "2026-07-01" },
+        { period_label: "2026-07", gross_commission: 8000, quickbooks_export_id: null, quickbooks_synced_at: null },
+      ],
+      error: null,
+    },
+    platform_credentials: { data: { id: "pc-1", access_token: "tok", refresh_token: "r", account_id: "realm-1", account_name: "Team Co", token_expires_at: null, config: {}, is_active: true }, error: null },
+  }, log)
+  const r = await loadTeamQbReconciliation(svc, { teamId: "t-1", ...RECON_PERIOD })
+  check("team reconciliation → 50% coverage, the unexported month named",
+    r.status === "reconciled" && r.connected === true && r.totals.coveragePct === 50
+    && r.totals.unexported.length === 1 && r.totals.unexported[0].id === "2026-07")
+  const earnRead = log.find((l) => l.table === "team_earnings")
+  check("…ledger read is the TEAM's own rows (team_id filter + mtd period rows)",
+    !!earnRead && earnRead.filters.team_id === "t-1" && earnRead.filters.period_type === "mtd")
+  const credRead = log.find((l) => l.table === "platform_credentials")
+  check("…connected check uses the TEAM's exact owner filter (never another scope's)",
+    !!credRead && credRead.filters.owner_type === "team" && credRead.filters.owner_id === "t-1")
+}
+{
+  // Agent reconciliation resolves the caller's OWN agent row first (isolation).
+  const log: Array<{ table: string; filters: Record<string, unknown> }> = []
+  const svc = stubSvc({
+    agents: { data: { id: "a-9" }, error: null },
+    agent_commissions: {
+      data: [
+        { id: "c-1", close_date: "2026-06-15", gross_commission: 9000, agent_commission: 7200, quickbooks_export_id: null, quickbooks_synced_at: null },
+      ],
+      error: null,
+    },
+    platform_credentials: { data: null, error: null },
+  }, log)
+  const r = await loadAgentQbReconciliation(svc, { agentUserId: "u-1", ...RECON_PERIOD })
+  check("agent reconciliation, not connected → status 'not_connected' with the honest unexported count",
+    r.status === "not_connected" && r.connected === false && r.totals.unexportedRows === 1 && r.totals.totalAmount === 7200)
+  const commRead = log.find((l) => l.table === "agent_commissions")
+  check("…commission read is scoped to the caller's OWN agent row", !!commRead && commRead.filters.agent_id === "a-9")
+}
+{
+  // Vendor reconciliation filters the VENDOR's own invoices (isolation).
+  const log: Array<{ table: string; filters: Record<string, unknown> }> = []
+  const svc = stubSvc({
+    vendor_invoices: {
+      data: [
+        { id: "i-1", invoice_number: "INV-1", total_amount: 450, created_at: "2026-06-01", quickbooks_invoice_id: "QBI-1", quickbooks_synced_at: "2026-06-02" },
+        { id: "i-2", invoice_number: "INV-2", total_amount: 300, created_at: "2026-07-01", quickbooks_invoice_id: null, quickbooks_synced_at: null },
+      ],
+      error: null,
+    },
+    platform_credentials: { data: { id: "pc-2", access_token: "tok", refresh_token: "r", account_id: "realm-9", account_name: "Vendor Co", token_expires_at: null, config: {}, is_active: true }, error: null },
+  }, log)
+  const r = await loadVendorQbReconciliation(svc, { vendorId: "v-1", ...RECON_PERIOD })
+  check("vendor reconciliation → 50% coverage against the m1104 markers",
+    r.status === "reconciled" && r.totals.coveragePct === 50 && r.totals.unexported[0]?.id === "i-2")
+  const invRead = log.find((l) => l.table === "vendor_invoices")
+  check("…invoice read is the VENDOR's own (vendor_id filter)", !!invRead && invRead.filters.vendor_id === "v-1")
+}
+{
+  // Platform: honest 'no export lane' — a stated absence, never an invented number.
+  const svc = stubSvc({ platform_credentials: { data: null, error: null } }, [])
+  const r = await loadPlatformQbReconciliation(svc, RECON_PERIOD)
+  check("platform reconciliation → status 'no_export_lane' with the honest statement",
+    r.status === "no_export_lane" && r.totals.totalRows === 0 && /no OS export lane/i.test(r.statement))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+section("Layer 5c — reconciliation source locks (one card, five mounts, monthly rail)")
+
+const reconCardSrc = src("app/settings/accounting/qb-reconciliation-card.tsx")
+check("the ONE reconciliation card states the not-a-live-pull honesty in its description",
+  /not a live\s*\n?\s*QuickBooks pull/i.test(reconCardSrc.replace(/\s+/g, " ")))
+const reconSurfaces: Array<[string, string]> = [
+  ["brokerage", "app/settings/accounting/page.tsx"],
+  ["team", "app/dashboard/financials/team/page.tsx"],
+  ["agent", "app/dashboard/financials/agent/page.tsx"],
+  ["vendor", "app/vendor/invoices/page.tsx"],
+  ["platform", "app/dashboard/superadmin/platform/page.tsx"],
+]
+for (const [level, file] of reconSurfaces) {
+  check(`${level} surface mounts the ONE reconciliation card`, src(file).includes("QbReconciliationCard"))
+}
+const packetSrc = src("lib/kernel/board-packet.ts")
+check("board packet (monthly rail) carries the reconciliation section OMIT-WHEN-EMPTY",
+  packetSrc.includes("qbReconciliation") && packetSrc.includes("recon.connected === true && recon.totals.totalRows > 0"))
+const reconLibSrc = src("lib/finance/qb-reconciliation.ts")
+check("reconciliation is READ-SIDE only (no Intuit egress: no qboRequest, no token refresh)",
+  !reconLibSrc.includes("qboRequest") && !reconLibSrc.includes("ensureFreshQuickBooksToken"))
+check("brokerage lane is honestly count-based (log_based status + null exported amounts)",
+  reconLibSrc.includes('"log_based"') && reconLibSrc.includes("exportedAmount: null"))
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log(`\n${"─".repeat(60)}\n${fail === 0 ? "✅" : "❌"} accounting-scopes simulator: ${pass} passed, ${fail} failed`)

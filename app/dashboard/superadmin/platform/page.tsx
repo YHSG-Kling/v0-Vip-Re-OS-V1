@@ -32,6 +32,7 @@ import {
   readScopedAccounting,
 } from "@/lib/connections/accounting-scopes"
 import { ProviderConnectionCard } from "@/app/settings/accounting/provider-connection-card"
+import { QbReconciliationCard } from "@/app/settings/accounting/qb-reconciliation-card"
 
 export const dynamic = "force-dynamic"
 
@@ -115,6 +116,10 @@ export default async function SuperadminPlatformPage() {
   // PLATFORM BOOKS — the company's own accounting connection (exact owner match on
   // owner_type='platform', owner_id='platform', platform='platform_quickbooks').
   const platformBooks = await readScopedAccounting(createServiceClient(), "platform", PLATFORM_OWNER_ID)
+  // QuickBooks reconciliation (round 37) — for the platform this is an HONEST
+  // "no export lane writes these books yet" statement, not an invented number.
+  const { defaultQbReconciliationPeriod, loadPlatformQbReconciliation } = await import("@/lib/finance/qb-reconciliation")
+  const platformReconciliation = await loadPlatformQbReconciliation(createServiceClient(), defaultQbReconciliationPeriod()).catch(() => null)
 
   if (!overviewRes.ok) return <div className="p-6 text-red-600">Failed: {overviewRes.error}</div>
 
@@ -226,6 +231,8 @@ export default async function SuperadminPlatformPage() {
             note={ACCOUNTING_OFFERINGS.platform.stripe.verdict}
           />
         </div>
+        {/* QuickBooks reconciliation (round 37) — honest no-export-lane verdict. */}
+        {platformReconciliation && <QbReconciliationCard recon={platformReconciliation} />}
       </div>
 
       {/* Vendor-spend governance — brokerage warning visibility control */}

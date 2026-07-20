@@ -32,11 +32,18 @@ export default async function ManagerTrustPage() {
   // ACCURACY GATE (round 36): per-domain accuracy-driven-autonomy verdicts — the exact
   // policy dispatch enforces for an 'autonomous' posture, shown with its measured reason.
   let accuracyGates: Awaited<ReturnType<typeof import("@/lib/managers/accuracy-gate").loadAccuracyGateReport>> = []
+  // HOLD TELEMETRY (round 37): sends actually HELD by the accuracy gate, rolled up
+  // per manager/domain from the self-heal ledger (the same rows the Exception
+  // Center folds). null ⇒ the ledger couldn't be read — rendered as unavailable.
+  let accuracyHolds: Awaited<ReturnType<typeof import("@/lib/managers/accuracy-gate").loadAccuracyHoldRollup>> = null
   if (ctx.brokerageId) {
     try {
-      const { loadAccuracyGateReport } = await import("@/lib/managers/accuracy-gate")
-      accuracyGates = await loadAccuracyGateReport(ctx.brokerageId)
-    } catch { accuracyGates = [] }
+      const { loadAccuracyGateReport, loadAccuracyHoldRollup } = await import("@/lib/managers/accuracy-gate")
+      ;[accuracyGates, accuracyHolds] = await Promise.all([
+        loadAccuracyGateReport(ctx.brokerageId),
+        loadAccuracyHoldRollup(ctx.brokerageId, 30),
+      ])
+    } catch { accuracyGates = []; accuracyHolds = null }
   }
   return (
     <ManagerTrustClient
@@ -47,6 +54,7 @@ export default async function ManagerTrustPage() {
       standingReviews={standingReviews}
       teamwork={teamwork}
       accuracyGates={accuracyGates}
+      accuracyHolds={accuracyHolds}
     />
   )
 }

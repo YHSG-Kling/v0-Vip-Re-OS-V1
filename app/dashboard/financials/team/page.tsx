@@ -17,7 +17,9 @@ import {
 import { loadBrokerageFinancialSummaryAction } from "@/app/actions/financial-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ACCOUNTING_OFFERINGS, readScopedAccounting, type ScopedAccountingStatus } from "@/lib/connections/accounting-scopes"
+import { defaultQbReconciliationPeriod, loadTeamQbReconciliation, type ScopeQbReconciliation } from "@/lib/finance/qb-reconciliation"
 import { ProviderConnectionCard } from "@/app/settings/accounting/provider-connection-card"
+import { QbReconciliationCard } from "@/app/settings/accounting/qb-reconciliation-card"
 
 export const dynamic = "force-dynamic"
 
@@ -64,9 +66,16 @@ export default async function TeamFinancialsPage() {
   const teamId = (teamRow?.team_id as string | null) ?? null
   let teamBooks: ScopedAccountingStatus | null = null
   let teamLastSyncedAt: string | null = null
+  let teamReconciliation: ScopeQbReconciliation | null = null
   if (teamId) {
     const svc = createServiceClient()
     teamBooks = await readScopedAccounting(svc, "team", teamId).catch(() => null)
+    // QuickBooks reconciliation (round 37) — team P&L rows vs the OS-recorded
+    // export markers. Best-effort: a failed read renders nothing.
+    teamReconciliation = await loadTeamQbReconciliation(svc, {
+      teamId,
+      ...defaultQbReconciliationPeriod(),
+    }).catch(() => null)
     // Last honest export marker (column arrives with the scoped-accounting-export
     // migration; absent column simply reads null → "Not synced yet").
     const { data: lastExport } = await svc
@@ -488,6 +497,8 @@ export default async function TeamFinancialsPage() {
               note={ACCOUNTING_OFFERINGS.team.stripe.verdict}
             />
           </div>
+          {/* QuickBooks reconciliation (round 37) — team P&L vs OS-recorded exports. */}
+          {teamReconciliation && <QbReconciliationCard recon={teamReconciliation} />}
         </div>
       )}
 

@@ -29,6 +29,18 @@ export interface BoardPacketData {
    *  ONE composer (lib/kernel/intelligence-report.ts). Only earned sections
    *  arrive here; absent/empty months render nothing (honest omission). */
   intelligence?: import("./intelligence-report").IntelligenceSection[]
+  /** QUICKBOOKS RECONCILIATION (round 37) — OS ledgers vs OS-recorded exports
+   *  for the packet month (lib/finance/qb-reconciliation). Present ONLY when
+   *  the brokerage has QuickBooks connected AND the month had ledger rows —
+   *  omit-when-empty, and the statement carries the not-a-live-pull honesty. */
+  qbReconciliation?: {
+    coveragePct: number | null
+    totalRows: number
+    exportedRows: number
+    unexportedRows: number
+    totalAmountUsd: number
+    statement: string
+  }
 }
 
 const money = (cents: number) => `$${Math.round(cents / 100).toLocaleString("en-US")}`
@@ -63,6 +75,14 @@ export function composeBoardPacketMarkdown(d: BoardPacketData): string {
             `- **${s.title}** — ${s.headline}`,
             ...(s.id === "promoter_quotes" ? s.lines.map((l) => `  - ${l.value}`) : []),
           ]),
+        ]
+      : []),
+    ...(d.qbReconciliation
+      ? [
+          ``,
+          `## QuickBooks reconciliation (OS-recorded exports vs OS ledgers)`,
+          `- Export coverage: **${d.qbReconciliation.coveragePct === null ? "—" : `${d.qbReconciliation.coveragePct}%`}** — ${d.qbReconciliation.exportedRows}/${d.qbReconciliation.totalRows} ledger rows, $${Math.round(d.qbReconciliation.totalAmountUsd).toLocaleString("en-US")} on the OS side${d.qbReconciliation.unexportedRows > 0 ? ` · **${d.qbReconciliation.unexportedRows} unexported**` : ""}`,
+          `- ${d.qbReconciliation.statement}`,
         ]
       : []),
     ``,
@@ -125,6 +145,26 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
         const report = composeIntelligenceReport(await loadIntelligenceFacts(svc, b.id, sISO.slice(0, 7)))
         if (report.sections.length > 0) packetData.intelligence = report.sections
       } catch { /* intelligence section is additive */ }
+      // QUICKBOOKS RECONCILIATION (round 37) — the packet month's OS ledgers vs
+      // the OS-recorded export log. OMIT-WHEN-EMPTY: only a brokerage with
+      // QuickBooks connected AND ledger rows in the month gets the section; the
+      // statement carries the "not a live QuickBooks pull" honesty. Best-effort.
+      try {
+        const { loadBrokerageQbReconciliation } = await import("@/lib/finance/qb-reconciliation")
+        const recon = await loadBrokerageQbReconciliation(svc, {
+          brokerageId: b.id, periodStart: sISO, periodEnd: eISO, periodLabel: monthLabel,
+        })
+        if (recon.connected === true && recon.totals.totalRows > 0) {
+          packetData.qbReconciliation = {
+            coveragePct: recon.totals.coveragePct,
+            totalRows: recon.totals.totalRows,
+            exportedRows: recon.totals.exportedRows,
+            unexportedRows: recon.totals.unexportedRows,
+            totalAmountUsd: recon.totals.totalAmount,
+            statement: recon.statement,
+          }
+        }
+      } catch { /* reconciliation section is additive */ }
       const { renderBoardPacketPdf } = await import("./board-packet-pdf")
       const pdf = await renderBoardPacketPdf(packetData)
       const { error: upErr } = await svc.storage.from("documents")

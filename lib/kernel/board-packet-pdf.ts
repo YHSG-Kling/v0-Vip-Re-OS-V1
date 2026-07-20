@@ -89,6 +89,30 @@ export async function renderBoardPacketPdf(d: BoardPacketData): Promise<Uint8Arr
     }
   }
 
+  // QUICKBOOKS RECONCILIATION (round 37) — present only when the month earned
+  // it (connected + ledger rows); the statement carries the not-a-live-pull
+  // honesty. Same y-guard discipline as the intelligence section.
+  if (d.qbReconciliation && y > 130) {
+    const q = d.qbReconciliation
+    section("QuickBooks reconciliation (OS-recorded exports vs OS ledgers)")
+    line(
+      `Export coverage: ${q.coveragePct === null ? "—" : `${q.coveragePct}%`} — ${q.exportedRows}/${q.totalRows} ledger rows · $${Math.round(q.totalAmountUsd).toLocaleString("en-US")} on the OS side${q.unexportedRows > 0 ? ` · ${q.unexportedRows} unexported` : ""}`,
+      { size: 10 },
+    )
+    const words = q.statement.split(/\s+/)
+    let cur = ""
+    const wrapped: string[] = []
+    for (const w of words) {
+      if ((cur + " " + w).trim().length > 96) { if (cur) wrapped.push(cur); cur = w }
+      else cur = (cur + " " + w).trim()
+    }
+    if (cur) wrapped.push(cur)
+    for (const l of wrapped) {
+      if (y < 95) break
+      line(l, { size: 9.5, color: MUTE, gap: 13 })
+    }
+  }
+
   page.drawText(
     `Composed automatically from the operating ledgers — every number traces to records in the ${d.monthLabel} window.`,
     { x: 54, y: 60, size: 8.5, font, color: MUTE },

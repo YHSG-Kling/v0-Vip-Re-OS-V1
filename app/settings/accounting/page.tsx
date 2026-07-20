@@ -12,7 +12,10 @@ import {
 } from "@/app/actions/accounting-sync"
 import { LinkIcon, RefreshCw, AlertCircle, CheckCircle2, Clock, Settings2 } from "lucide-react"
 import { ACCOUNTING_OFFERINGS, QUICKBOOKS_OAUTH_START } from "@/lib/connections/accounting-scopes"
+import { createServiceClient } from "@/lib/supabase/service"
+import { defaultQbReconciliationPeriod, loadBrokerageQbReconciliation } from "@/lib/finance/qb-reconciliation"
 import { ProviderConnectionCard } from "./provider-connection-card"
+import { QbReconciliationCard } from "./qb-reconciliation-card"
 import { SyncControlsCard } from "./sync-controls-card"
 import { SyncHistoryTable } from "./sync-history-table"
 import { ErrorLogTable } from "./error-log-table"
@@ -55,6 +58,14 @@ export default async function AccountingSettingsPage() {
 
   const pendingErrorCount = syncErrorsResult.errors.length
   const hasActiveProvider = providerStatus.quickbooks.connected || providerStatus.xero.connected
+
+  // QuickBooks reconciliation (round 37) — read-side: OS ledgers vs the
+  // OS-recorded export log for the trailing window. Best-effort: a failed
+  // read renders nothing rather than a broken card.
+  const reconciliation = await loadBrokerageQbReconciliation(createServiceClient(), {
+    brokerageId: profile.brokerage_id,
+    ...defaultQbReconciliationPeriod(),
+  }).catch(() => null)
 
   return (
     <div className="container mx-auto p-6 space-y-6">
@@ -146,6 +157,10 @@ export default async function AccountingSettingsPage() {
               </CardContent>
             </Card>
           )}
+
+          {/* QuickBooks reconciliation (round 37) — OS ledgers vs OS-recorded
+              exports; the card itself states it is not a live QuickBooks pull. */}
+          {reconciliation && <QbReconciliationCard recon={reconciliation} />}
         </TabsContent>
 
         {/* Section 3: Sync History */}

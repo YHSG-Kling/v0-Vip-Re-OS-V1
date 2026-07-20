@@ -29,7 +29,9 @@ import { getProviderConnectionStatus } from "@/app/actions/accounting-sync"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ACCOUNTING_OFFERINGS, readScopedAccounting } from "@/lib/connections/accounting-scopes"
 import { connectionScopeForUserType } from "@/lib/connections/field-spec"
+import { defaultQbReconciliationPeriod, loadAgentQbReconciliation } from "@/lib/finance/qb-reconciliation"
 import { ProviderConnectionCard } from "@/app/settings/accounting/provider-connection-card"
+import { QbReconciliationCard } from "@/app/settings/accounting/qb-reconciliation-card"
 import { AgentFinancialsClient } from "./agent-financials-client"
 import { loadAgentFinancialDashboardSummaryAction } from "@/app/actions/financial-kernel"
 
@@ -87,6 +89,15 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
       .maybeSingle()
     agentBooksLastSyncedAt = ((lastExport as { quickbooks_synced_at?: string | null } | null)?.quickbooks_synced_at) ?? null
   }
+
+  // QuickBooks reconciliation (round 37) — the agent's closed commissions vs
+  // the OS-recorded export markers. Best-effort: a failed read renders nothing.
+  const agentReconciliation = agentScopeMatches
+    ? await loadAgentQbReconciliation(svcBooks, {
+        agentUserId: context.userId,
+        ...defaultQbReconciliationPeriod(),
+      }).catch(() => null)
+    : null
 
   // Load the agent's saved budget for the current year (latest if regenerated)
   const { data: budgetRow, error: budgetError } = await supabase
@@ -558,6 +569,8 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
                 note={ACCOUNTING_OFFERINGS.agent.stripe.verdict}
               />
             </div>
+            {/* QuickBooks reconciliation (round 37) — commissions vs OS-recorded exports. */}
+            {agentReconciliation && <QbReconciliationCard recon={agentReconciliation} />}
           </div>
         )}
       </AgentFinancialsClient>

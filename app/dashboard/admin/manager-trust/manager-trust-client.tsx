@@ -17,7 +17,7 @@ import type { TrustTier, AutonomyPosture } from "@/lib/managers/eval-scoring"
 // Type-only imports — erased at build time (the modules themselves are server-side).
 import type { TeamworkMetrics } from "@/lib/managers/teamwork-metrics"
 import type { DeliberationRecord } from "@/lib/managers/deliberation"
-import type { AccuracyGateVerdict } from "@/lib/managers/accuracy-gate"
+import type { AccuracyGateVerdict, AccuracyHoldRollup } from "@/lib/managers/accuracy-gate"
 // Pure registry data (no I/O) — the ONE source of truth for the collaboration map,
 // so this surface can never drift from what the referral handler actually enforces.
 import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/manager-registry"
@@ -38,7 +38,7 @@ const AUTONOMY_LABEL: Record<AutonomyPosture, string> = {
 }
 
 export function ManagerTrustClient({
-  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null, accuracyGates = [],
+  managers: initialManagers, team, learned: initialLearned = [], referrals = [], standingReviews: initialReviews = [], teamwork = null, accuracyGates = [], accuracyHolds = null,
 }: {
   managers: ManagerTrustRow[]
   team: { passRate: number; total: number; trustedCount: number; managerCount: number }
@@ -48,6 +48,9 @@ export function ManagerTrustClient({
   teamwork?: TeamworkMetrics | null
   /** Per-domain accuracy-gate verdicts (round 36, accuracy-driven autonomy). */
   accuracyGates?: AccuracyGateVerdict[]
+  /** Sends actually HELD by the accuracy gate (round 37 hold telemetry).
+   *  null ⇒ the ledger couldn't be read — rendered as honestly unavailable. */
+  accuracyHolds?: AccuracyHoldRollup | null
 }) {
   const { toast } = useToast()
   const [managers, setManagers] = useState<ManagerTrustRow[]>(initialManagers)
@@ -315,6 +318,57 @@ export function ManagerTrustClient({
               <p className="text-xs text-muted-foreground mt-1">{d.evidence}</p>
             </div>
           ))}
+        </CardContent>
+      </Card>
+
+      {/* AUTONOMY THROTTLED (round 37, hold telemetry) — sends the accuracy gate
+          actually HELD at the egress, rolled up per manager/domain from the
+          self-heal ledger (the same rows the Exception Center folds). Sits beside
+          the deliberation/teamwork view so the broker sees enforcement, not just
+          policy. Always rendered — honest empty and honest unavailable states. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Ban className="h-4 w-4" />
+            Autonomy throttled — sends held by the accuracy gate
+          </CardTitle>
+          <CardDescription>
+            Counted from the hold ledger, not modeled: each row is an autonomous send dispatch actually
+            held to the approval queue because the domain&apos;s prediction-accuracy rail was below the bar.
+            Last {accuracyHolds?.windowDays ?? 30} days.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {accuracyHolds === null ? (
+            <p className="text-sm text-muted-foreground py-2">
+              Hold telemetry could not be read right now — counts are unavailable. The gate itself still
+              enforces at the egress; only this view is degraded.
+            </p>
+          ) : accuracyHolds.totalHolds === 0 ? (
+            <p className="text-sm text-muted-foreground py-2">
+              No autonomous sends were held by the accuracy gate in the last {accuracyHolds.windowDays} days —
+              either the granted domains have earned their accuracy bar, or no gated manager attempted an
+              unattended send.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {accuracyHolds.rows.map((h) => (
+                <div key={`${h.managerKey}-${h.domain}`} className="flex items-start justify-between gap-3 rounded-lg border p-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`inline-flex items-center rounded px-2 py-0.5 text-[11px] ${MANAGERS[h.managerKey as ManagerKey]?.accent ?? "bg-slate-100 text-slate-700"}`}>
+                        {MANAGERS[h.managerKey as ManagerKey]?.label ?? h.managerKey.replace(/_/g, " ")}
+                      </span>
+                      <Badge variant="outline" className="text-[11px] capitalize">{h.domain.replace(/_/g, " ")}</Badge>
+                      <span className="text-sm font-medium">{h.holds} send{h.holds === 1 ? "" : "s"} held</span>
+                      <span className="text-[11px] text-muted-foreground ml-auto">last {new Date(h.lastAt).toLocaleDateString()}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">{h.lastReason}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 

@@ -103,7 +103,14 @@ async function autonomyGate(args: {
   if (effective === "autonomous" && !humanApproved) {
     try {
       const { loadAccuracyHoldForManager } = await import("@/lib/managers/accuracy-gate")
-      accuracyGate = await loadAccuracyHoldForManager(args.brokerageId, managerKey)
+      // HOLD TELEMETRY (round 37): `record: true` arms the ledger write inside the
+      // helper — every hold enforced here is ALSO appended to self_heal_events (the
+      // budget-gate idiom: folds per domain into ONE Exception Center item; feeds the
+      // manager-trust "autonomy throttled" rollup). Fire-and-forget, fail-open.
+      accuracyGate = await loadAccuracyHoldForManager(args.brokerageId, managerKey, undefined, {
+        record: true,
+        systemSource: args.systemSource,
+      })
     } catch { accuracyGate = undefined }
   }
 

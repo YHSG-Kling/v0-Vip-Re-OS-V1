@@ -231,13 +231,24 @@ export async function loadAccuracyGateForManager(
   return loadAccuracyGateVerdict(brokerageId, domain, client)
 }
 
-/** Dispatch-shaped helper: the { held, reason } input autonomyDecision consumes. */
+/** Dispatch-shaped helper: the { held, reason } input autonomyDecision consumes.
+ *  HOLD TELEMETRY (round 37): when the caller arms `telemetry.record` (dispatch
+ *  does — it is the enforcement site), a held verdict is ALSO ledgered via
+ *  recordAccuracyGateHold, fire-and-forget, so the hold that is enforced and
+ *  the hold that is surfaced are derived from the SAME verdict — no drift. */
 export async function loadAccuracyHoldForManager(
   brokerageId: string,
   managerKey: ManagerKey,
   client?: Svc,
+  telemetry?: { record: boolean; systemSource?: string },
 ): Promise<{ held: boolean; reason: string | null }> {
-  return accuracyHold(await loadAccuracyGateForManager(brokerageId, managerKey, client))
+  const verdict = await loadAccuracyGateForManager(brokerageId, managerKey, client)
+  const hold = accuracyHold(verdict)
+  if (hold.held && telemetry?.record) {
+    // Fire-and-forget, fail-open — telemetry never blocks or fails the dispatch.
+    void recordAccuracyGateHold({ brokerageId, managerKey, verdict, systemSource: telemetry.systemSource }, client)
+  }
+  return hold
 }
 
 /** Every domain's verdict — the governance-panel read. */
@@ -252,4 +263,166 @@ export async function loadAccuracyGateReport(
 /** Test seam / post-write invalidation. */
 export function __clearAccuracyGateCache(): void {
   verdictCache.clear()
+}
+
+// ─── HOLD TELEMETRY (round 37, owner-approved rec 3) ─────────────────────────
+// Round 36 wired the gate into dispatch — holds HAPPEN but weren't surfaced.
+// Every accuracy-gate hold is now ledgered on the EXISTING self_heal_events
+// rail via the exact idiom the vendor-budget egress block established
+// (lib/providers/dispatch.ts recordBudgetLedgerEvent): domain 'data_flow',
+// outcome 'escalated' (a human is being routed in — the send waits on the
+// approval queue), a subject that COLLAPSES per domain+brokerage so a burst of
+// held sends folds into ONE open item in the broker's Exception Center, and
+// the measured reason (the same numbers the trust panel shows) in detail.
+// No new table; recording is fire-and-forget and NEVER fails a dispatch.
+
+/** detail.flow discriminator for accuracy-hold rows on the self-heal ledger. */
+export const ACCURACY_HOLD_FLOW = "accuracy_gate_hold"
+/** Subject prefix — the rollup reads rows back by this, no extra state. */
+export const ACCURACY_HOLD_SUBJECT_PREFIX = "accuracy_gate:"
+
+export interface AccuracyHoldEvent {
+  subject: string
+  action: "none"
+  outcome: "escalated"
+  detail: {
+    flow: typeof ACCURACY_HOLD_FLOW
+    manager_key: string
+    domain: AccuracyDomain | null
+    rail: AccuracyRailId | null
+    observations: number
+    /** The measured reason — verbatim what dispatch told the caller. */
+    reason: string
+    system_source: string
+  }
+}
+
+/** PURE: verdict → the exact ledger event shape (simulator-proven). */
+export function buildAccuracyHoldEvent(args: {
+  brokerageId: string
+  managerKey: ManagerKey
+  verdict: AccuracyGateVerdict
+  systemSource?: string
+}): AccuracyHoldEvent {
+  return {
+    subject: `${ACCURACY_HOLD_SUBJECT_PREFIX}${args.verdict.domain ?? args.managerKey}:${args.brokerageId}`,
+    action: "none",
+    outcome: "escalated",
+    detail: {
+      flow: ACCURACY_HOLD_FLOW,
+      manager_key: args.managerKey,
+      domain: args.verdict.domain,
+      rail: args.verdict.railId,
+      observations: args.verdict.observations,
+      reason: args.verdict.reason,
+      system_source: args.systemSource ?? "dispatch",
+    },
+  }
+}
+
+/** Best-effort append of one hold to the self-heal ledger. FAIL-OPEN: telemetry
+ *  never blocks, delays, or fails the dispatch whose hold it records. */
+export async function recordAccuracyGateHold(
+  args: { brokerageId: string; managerKey: ManagerKey; verdict: AccuracyGateVerdict; systemSource?: string },
+  client?: Svc,
+): Promise<void> {
+  try {
+    const evt = buildAccuracyHoldEvent(args)
+    const { recordSelfHeal } = await import("@/lib/kernel/self-heal-ledger")
+    const svc = client ?? createServiceClient()
+    await recordSelfHeal(svc, {
+      brokerageId: args.brokerageId,
+      domain: "data_flow",
+      subject: evt.subject,
+      action: evt.action,
+      outcome: evt.outcome,
+      detail: evt.detail,
+    })
+  } catch { /* the dispatch result is the record of truth */ }
+}
+
+// ─── Hold rollup — the manager-trust read (holds per manager/domain per period) ──
+
+export interface AccuracyHoldRollupRow {
+  managerKey: string
+  domain: string
+  holds: number
+  /** The most recent measured reason — the numbers behind the throttle. */
+  lastReason: string
+  lastAt: string
+}
+
+export interface AccuracyHoldRollup {
+  windowDays: number
+  totalHolds: number
+  rows: AccuracyHoldRollupRow[]
+}
+
+/** PURE: fold ledger rows into the rollup. Rows whose detail.flow is not the
+ *  accuracy-hold discriminator are ignored (the subject prefix is shared-rail
+ *  courtesy, the flow key is the contract). */
+export function foldAccuracyHolds(
+  rows: Array<{ detail: Record<string, unknown> | null; created_at: string }>,
+  windowDays: number,
+): AccuracyHoldRollup {
+  const byKey = new Map<string, AccuracyHoldRollupRow>()
+  let total = 0
+  for (const r of rows) {
+    const d = (r.detail ?? {}) as Record<string, unknown>
+    if (d.flow !== ACCURACY_HOLD_FLOW) continue
+    total += 1
+    const managerKey = String(d.manager_key ?? "unknown")
+    const domain = String(d.domain ?? "unknown")
+    const key = `${managerKey}|${domain}`
+    const cur = byKey.get(key)
+    if (!cur) {
+      byKey.set(key, {
+        managerKey,
+        domain,
+        holds: 1,
+        lastReason: String(d.reason ?? ""),
+        lastAt: r.created_at,
+      })
+    } else {
+      cur.holds += 1
+      if (r.created_at > cur.lastAt) {
+        cur.lastAt = r.created_at
+        cur.lastReason = String(d.reason ?? cur.lastReason)
+      }
+    }
+  }
+  return {
+    windowDays,
+    totalHolds: total,
+    rows: [...byKey.values()].sort((a, b) => b.holds - a.holds || b.lastAt.localeCompare(a.lastAt)),
+  }
+}
+
+/** Trailing-window rollup from the self-heal ledger. Returns null when the
+ *  ledger could not be read — the panel says "unavailable", never fakes zero. */
+export async function loadAccuracyHoldRollup(
+  brokerageId: string,
+  windowDays = 30,
+  client?: Svc,
+): Promise<AccuracyHoldRollup | null> {
+  try {
+    const svc = client ?? createServiceClient()
+    const since = new Date(Date.now() - windowDays * 86_400_000).toISOString()
+    const { data, error } = await svc
+      .from("self_heal_events")
+      .select("detail, created_at")
+      .eq("brokerage_id", brokerageId)
+      .eq("domain", "data_flow")
+      .like("subject", `${ACCURACY_HOLD_SUBJECT_PREFIX}%`)
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+      .limit(2000)
+    if (error) return null
+    return foldAccuracyHolds(
+      ((data ?? []) as Array<{ detail: Record<string, unknown> | null; created_at: string }>),
+      windowDays,
+    )
+  } catch {
+    return null
+  }
 }

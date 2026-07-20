@@ -4,6 +4,8 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { readVendorStripeConnect } from "@/lib/connections/vendor-stripe"
 import { readVendorQuickBooks } from "@/lib/connections/vendor-quickbooks"
+import { defaultQbReconciliationPeriod, loadVendorQbReconciliation } from "@/lib/finance/qb-reconciliation"
+import { QbReconciliationCard } from "@/app/settings/accounting/qb-reconciliation-card"
 import { Button } from "@/components/ui/button"
 import { Receipt, ArrowLeft } from "lucide-react"
 import { VendorInvoicesClient, type VendorInvoiceRow } from "./invoices-client"
@@ -46,6 +48,13 @@ export default async function VendorInvoicesPage() {
   }
 
   const svc = createServiceClient()
+
+  // QuickBooks reconciliation (round 37) — invoices vs the OS-recorded
+  // quickbooks_invoice_id markers. Best-effort: a failed read renders nothing.
+  const reconciliation = await loadVendorQbReconciliation(svc, {
+    vendorId,
+    ...defaultQbReconciliationPeriod(),
+  }).catch(() => null)
 
   const [{ data: invoices }, stripeConnect, quickbooks] = await Promise.all([
     svc
@@ -113,6 +122,9 @@ export default async function VendorInvoicesPage() {
         stripeReady={!!stripeConnect.accountId && stripeConnect.onboardingComplete}
         quickbooksConnected={quickbooks.connected}
       />
+
+      {/* QuickBooks reconciliation (round 37) — invoices vs OS-recorded exports. */}
+      {reconciliation && <QbReconciliationCard recon={reconciliation} />}
     </div>
   )
 }
