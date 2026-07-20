@@ -100,6 +100,24 @@ export async function loadQuarterlyReview(svc: Svc, brokerageId: string): Promis
       await loadBrokerageProvenanceRollup(svc, brokerageId, sinceIso), "this quarter")
   } catch { /* the QBR stands without it */ }
 
+  // TEAMWORK (round 35) — the cross-referral + deliberation ledgers rolled up
+  // (referrals crossed, pickup speed, deliberations argued, dissents recorded).
+  // Empty on a quarter with no cross-management → the section is omitted.
+  let teamworkLines: string[] = []
+  try {
+    const { loadTeamworkMetrics, composeTeamworkLines } = await import("@/lib/managers/teamwork-metrics")
+    teamworkLines = composeTeamworkLines(await loadTeamworkMetrics(brokerageId, { days: 90, now }, svc as Parameters<typeof loadTeamworkMetrics>[2]))
+  } catch { /* the QBR stands without it */ }
+
+  // PREDICTION-ACCURACY TRUST CHIP (round 35) — the measured "the system grades
+  // itself" line; null until a rail crosses its honest threshold (the composer
+  // omits it — same idiom as velocityLine/aiSourcedLine).
+  let accuracyTrustLine: string | null = null
+  try {
+    const { loadPredictionTrustChip } = await import("@/lib/analytics/prediction-accuracy")
+    accuracyTrustLine = (await loadPredictionTrustChip(svc, brokerageId))?.line ?? null
+  } catch { /* the QBR stands without it */ }
+
   const review = composeQuarterlyReview({
     windowLabel: `${since.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${now.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
     planTier: (brk as any)?.plan_tier ?? null,
@@ -120,6 +138,8 @@ export async function loadQuarterlyReview(svc: Svc, brokerageId: string): Promis
     // never passed in, so the deal-velocity stat silently never reached a QBR.
     velocityLine,
     aiSourcedLine,
+    accuracyTrustLine,
+    teamworkLines,
   })
 
   // ADOPTION PULSE — who needs a hand (per-agent, capped, thresholded).

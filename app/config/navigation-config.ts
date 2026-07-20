@@ -576,6 +576,9 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'portfolio', label: 'Portfolio', href: '/vendor/portfolio', icon: 'Image' },
       { id: 'earnings', label: 'Earnings', href: '/vendor/earnings', icon: 'DollarSign' },
       { id: 'documents', label: 'Documents', href: '/vendor/documents', icon: 'FolderOpen' },
+      // Round 35 missed-loop sweep: vendor invoicing (round 34) was reachable only
+      // from a dashboard link — first-class nav entry for the money surface.
+      { id: 'invoices', label: 'Invoices', href: '/vendor/invoices', icon: 'Receipt' },
       // Orphan-route sweep: the vendor connection center was unreachable from any nav.
       { id: 'connections', label: 'Connections', href: '/vendor/connections', icon: 'Plug' },
       // Notification-rail parity: every tenant user type gets the /notifications home.

@@ -45,12 +45,25 @@ export interface QuarterFacts {
    *  relationships that closed M deals worth $X GCI"); null when the pipeline
    *  hasn't produced yet — never fabricated. */
   aiSourcedLine?: string | null
+  /** PREDICTION-ACCURACY TRUST CHIP (round 35) — the ONE measured "the system
+   *  grades itself" line (lib/analytics/prediction-accuracy); null until a
+   *  rail crosses its honest threshold — never fabricated. */
+  accuracyTrustLine?: string | null
+  /** TEAMWORK (round 35) — pre-composed lines from the cross-referral + deliberation
+   *  ledgers (lib/managers/teamwork-metrics composeTeamworkLines): referrals crossed,
+   *  pickup speed, deliberations argued, dissents on the record. Empty/omitted when
+   *  the managers had nothing cross-managed this quarter — the section is omitted,
+   *  never fabricated. */
+  teamworkLines?: string[]
 }
 
 export interface QuarterlyReview {
   headline: string
   outcomes: string[]
   trust: string[]
+  /** How the managers worked TOGETHER (referrals + argued deliberations) — empty
+   *  array on a quarter with no cross-management, and the renderer omits it. */
+  teamwork: string[]
   gaps: string[]
   nextMoves: string[]
 }
@@ -83,6 +96,8 @@ export function composeQuarterlyReview(f: QuarterFacts): QuarterlyReview {
     : `${f.trustIncidents} trust incident${f.trustIncidents === 1 ? "" : "s"} (failed sends, flagged deals, recoveries) — each one is on the ledger with what happened next.`)
   // DEAL VELOCITY — the differentiator stat, only when the sample is honest.
   if (f.velocityLine) trust.push(f.velocityLine)
+  // PREDICTION ACCURACY — the self-grading chip, only when a rail earned it.
+  if (f.accuracyTrustLine) trust.push(f.accuracyTrustLine)
 
   const gaps = [...f.unusedRails]
   if (f.briefingsOpened === 0) gaps.push(`The morning briefing went unread — it's where handoffs, client recognition, and wins surface daily.`)
@@ -98,6 +113,7 @@ export function composeQuarterlyReview(f: QuarterFacts): QuarterlyReview {
     headline: `Your quarter, ${f.windowLabel}`,
     outcomes,
     trust,
+    teamwork: f.teamworkLines ?? [],
     gaps,
     nextMoves,
   }

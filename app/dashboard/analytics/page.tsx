@@ -17,6 +17,9 @@ import {
   ArrowDownRight,
   Database,
 } from "lucide-react"
+import { createServiceClient } from "@/lib/supabase/service"
+import { getPredictionAccuracyReport, composePredictionTrustChip, type PredictionAccuracyReport } from "@/lib/analytics/prediction-accuracy"
+import { PredictionAccuracyPanel } from "@/components/analytics/prediction-accuracy-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -96,6 +99,21 @@ export default async function AnalyticsPage() {
   const topSources = Object.entries(leadSources)
     .sort(([,a], [,b]) => b - a)
     .slice(0, 5)
+
+  // PREDICTION ACCURACY (round 35) — the tenant-scoped mount of the ONE trust
+  // surface (same component as the superadmin platform page, keep-one). The
+  // accuracy ledgers are service-role-only by design (they match the
+  // net_sheet_reconciliations RLS pattern), so this reads through the service
+  // client SCOPED HARD to the viewer's own brokerage_id from their profile.
+  let predictionAccuracy: PredictionAccuracyReport | null = null
+  if (profile?.brokerage_id) {
+    try {
+      predictionAccuracy = await getPredictionAccuracyReport(
+        createServiceClient() as any,
+        { brokerageId: profile.brokerage_id },
+      )
+    } catch { /* the page stands without the panel — never a fabricated one */ }
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -320,6 +338,17 @@ export default async function AnalyticsPage() {
             </CardContent>
           </Card>
         </div>
+        {/* PREDICTION ACCURACY — the tenant-scoped trust surface (keep-one
+            component with the superadmin platform mount). Honest per-rail
+            empty states; nothing renders an invented number. */}
+        {predictionAccuracy && (
+          <PredictionAccuracyPanel
+            report={predictionAccuracy}
+            scopeLabel="your brokerage"
+            trustChip={composePredictionTrustChip(predictionAccuracy.rails)}
+          />
+        )}
+
         {/* Source Performance Entry Card */}
         <Card className="border-dashed">
           <CardHeader>

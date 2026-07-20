@@ -44,6 +44,11 @@ export interface RecruitingPitchFacts {
    *  sourced N relationships that closed M deals worth $X GCI" — null/absent
    *  until the pipeline has produced (never fabricated in a sales document). */
   aiSourcedLine?: string | null
+  /** PREDICTION-ACCURACY TRUST CHIP (round 35): the ONE measured "the system
+   *  grades itself" line from lib/analytics/prediction-accuracy — present only
+   *  when a rail crossed its honest threshold; the section is omitted otherwise
+   *  (same idiom as measured GCI: rendered when real, never invented). */
+  accuracyTrustLine?: string | null
   contactLine: string | null
 }
 
@@ -105,6 +110,12 @@ export function recruitingPitchSpec(
       paragraphs: [
         `Agents who joined through this pipeline have generated $${Math.round(f.recruitedGciDollars).toLocaleString("en-US")} in gross commission across ${f.recruitedAgentCount} recruited agent${f.recruitedAgentCount === 1 ? "" : "s"} — measured by the operating ledger, not estimated.`,
       ],
+    })
+  }
+  if (f.accuracyTrustLine) {
+    sections.push({
+      heading: "A system that grades itself",
+      paragraphs: [f.accuracyTrustLine],
     })
   }
   sections.push({
@@ -203,6 +214,14 @@ export async function runRecruitingPitchKits(svc: any): Promise<{ pitchKits: num
         const sinceIso = new Date(Date.now() - 365 * 86_400_000).toISOString()
         facts.aiSourcedLine = composeAgentValueRollup(
           await loadBrokerageProvenanceRollup(svc, b.id, sinceIso), "in the last 12 months")
+      } catch { /* the pitch stands without it */ }
+
+      // PREDICTION-ACCURACY TRUST CHIP — the measured "system grades itself"
+      // line (round 35). Only present when a rail crossed its honest threshold;
+      // omitted otherwise — never fabricated in a sales document.
+      try {
+        const { loadPredictionTrustChip } = await import("@/lib/analytics/prediction-accuracy")
+        facts.accuracyTrustLine = (await loadPredictionTrustChip(svc, b.id))?.line ?? null
       } catch { /* the pitch stands without it */ }
 
       const hash = pitchSettingsHash(facts)

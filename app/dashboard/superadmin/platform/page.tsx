@@ -23,7 +23,8 @@ import { PlatformProvidersPanel } from "./platform-providers-panel"
 import { loadStatusNotice } from "@/lib/platform/status-notice"
 import { StatusNoticePanel } from "./status-notice-panel"
 import { createServiceClient } from "@/lib/supabase/service"
-import { getClosingCostAccuracyReport } from "@/lib/offers/closing-cost-accuracy"
+import { getPredictionAccuracyReport, composePredictionTrustChip } from "@/lib/analytics/prediction-accuracy"
+import { PredictionAccuracyPanel } from "@/components/analytics/prediction-accuracy-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -49,10 +50,6 @@ function fmtAgo(iso: string | null) {
   if (ms < 3_600_000)      return `${Math.round(ms / 60_000)}m ago`
   if (ms < 86_400_000)     return `${Math.round(ms / 3_600_000)}h ago`
   return `${Math.round(ms / 86_400_000)}d ago`
-}
-function fmtSignedUsd(n: number) {
-  const abs = Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 0 })
-  return `${n < 0 ? "−" : "+"}$${abs}`
 }
 function tierLabel(t: string | null | undefined) {
   switch (t) {
@@ -103,9 +100,10 @@ export default async function SuperadminPlatformPage() {
     loadStatusNotice(),
   ])
   const platformProviders = await getPlatformProviderConfig()
-  // Cross-tenant closing-cost accuracy (service read — page is superadmin-gated
-  // above). Never throws: unavailable/empty states are returned, not raised.
-  const closingCostAccuracy = await getClosingCostAccuracyReport(createServiceClient() as any)
+  // Cross-tenant PREDICTION ACCURACY (round 35 — the round-34 closing-cost
+  // rollup is now this surface's first rail, keep-one). Service read — page is
+  // superadmin-gated above. Never throws: unavailable rails carry their why.
+  const predictionAccuracy = await getPredictionAccuracyReport(createServiceClient() as any)
 
   if (!overviewRes.ok) return <div className="p-6 text-red-600">Failed: {overviewRes.error}</div>
 
@@ -273,83 +271,16 @@ export default async function SuperadminPlatformPage() {
         </CardContent>
       </Card>
 
-      {/* CLOSING-COST ACCURACY FLYWHEEL — regional estimate model vs actual Closing
-          Disclosures (document-kernel extractions, provenance-checked). Read-only:
-          this report ARMS the yearly finance review of the convention table
-          (lib/offers/regional-closing-costs.ts); conventions stay code and are
-          never auto-adjusted from these numbers. */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <Gauge className="h-4 w-4 text-primary" />
-            Closing-cost estimate accuracy
-            <span className="ml-auto text-xs font-normal text-muted-foreground">
-              regional model vs actual Closing Disclosures · {closingCostAccuracy.totalObservations} observation{closingCostAccuracy.totalObservations === 1 ? "" : "s"}
-            </span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          {!closingCostAccuracy.available ? (
-            <p className="p-4 text-sm text-muted-foreground">
-              Accuracy ledger not provisioned yet (apply migration scripts/1104-closing-cost-accuracy-observations.sql).
-              No observations → no accuracy claims.
-            </p>
-          ) : closingCostAccuracy.totalObservations === 0 ? (
-            <p className="p-4 text-sm text-muted-foreground">
-              No accuracy observations yet. One is recorded each time a deal CLOSES with a scanned
-              Closing Disclosure whose extracted figures map cleanly to an estimate line — nothing is
-              graded from assumptions, so an empty ledger stays empty here.
-            </p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b bg-muted/10">
-                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">State</th>
-                    <th className="text-right px-4 py-2 font-medium text-muted-foreground">Obs</th>
-                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Estimate line</th>
-                    <th className="text-right px-4 py-2 font-medium text-muted-foreground">Graded</th>
-                    <th className="text-right px-4 py-2 font-medium text-muted-foreground" title="median of (actual − estimate-band midpoint); positive = the model under-estimates">Median Δ vs mid</th>
-                    <th className="text-right px-4 py-2 font-medium text-muted-foreground" title="share of actuals that landed inside the estimate's low–high band">In band</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {closingCostAccuracy.states.flatMap((s) =>
-                    s.lines.map((l, i) => (
-                      <tr key={`${s.state}-${l.key}`} className="border-b last:border-0 hover:bg-muted/10">
-                        <td className="px-4 py-2">
-                          {i === 0 ? (
-                            <span className="font-medium">{s.state}
-                              <span className="ml-2 text-xs text-muted-foreground">({s.observationCount})</span>
-                            </span>
-                          ) : ""}
-                        </td>
-                        <td className="px-4 py-2 text-right text-xs text-muted-foreground">{i === 0 ? s.observationCount : ""}</td>
-                        <td className="px-4 py-2">{l.label}</td>
-                        <td className="px-4 py-2 text-right text-xs">{l.count}</td>
-                        <td className={`px-4 py-2 text-right font-medium ${Math.abs(l.medianDeltaFromMid) > 500 ? "text-amber-700" : "text-muted-foreground"}`}>
-                          {fmtSignedUsd(l.medianDeltaFromMid)}
-                        </td>
-                        <td className="px-4 py-2 text-right">
-                          <Badge className={
-                            l.withinBandRate >= 0.7 ? "bg-emerald-100 text-emerald-800 text-xs" :
-                            l.withinBandRate >= 0.4 ? "bg-amber-100 text-amber-800 text-xs" :
-                            "bg-red-100 text-red-800 text-xs"
-                          }>{Math.round(l.withinBandRate * 100)}%</Badge>
-                        </td>
-                      </tr>
-                    )),
-                  )}
-                </tbody>
-              </table>
-              <p className="px-4 py-3 text-xs text-muted-foreground border-t">
-                Observations come only from document-kernel extractions (human-verified or high/medium-confidence scans).
-                This table arms the yearly review of the state convention table — it never auto-adjusts pricing conventions.
-              </p>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      {/* PREDICTION ACCURACY — the generalized accuracy flywheel (round 35).
+          ONE surface grading EVERY prediction rail with a real outcome ledger:
+          closing costs (the round-34 rollup, merged here keep-one), net-sheet
+          promises, pricing calls vs sales, DOM, open-house attendance, offer
+          strategy, pattern predictions, content performance. Strictly read-only. */}
+      <PredictionAccuracyPanel
+        report={predictionAccuracy}
+        scopeLabel="all tenants"
+        trustChip={composePredictionTrustChip(predictionAccuracy.rails)}
+      />
 
       {/* Losing money / margin-at-risk alert */}
       {losing_money.length > 0 && (
