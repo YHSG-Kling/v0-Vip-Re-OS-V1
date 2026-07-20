@@ -34,6 +34,11 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { estimateBuyerClosingCosts, type BuyerCostLine } from "./buyer-closing-costs"
+import {
+  estimateSellerClosingCosts,
+  resolveSellerCommission,
+  type SellerCostLine,
+} from "./seller-closing-costs"
 import { normalizeStateCode } from "./regional-closing-costs"
 
 type Svc = SupabaseClient<any, any, any>
@@ -131,8 +136,27 @@ export const ACCURACY_LINE_LABELS: Record<AccuracyLineKey, string> = {
   lender_title: "Lender's title insurance",
 }
 
+/** SELLER side (round 36): the seller-line keys graded off the settlement
+ *  statement / CD on a closed SALE-side deal. */
+export type SellerAccuracyLineKey =
+  | "commission"
+  | "mortgage_payoff"
+  | "seller_title_settlement"
+  | "seller_transfer_tax"
+
+export const SELLER_ACCURACY_LINE_LABELS: Record<SellerAccuracyLineKey, string> = {
+  commission: "Real estate commission",
+  mortgage_payoff: "Mortgage payoff",
+  seller_title_settlement: "Seller title & settlement charges",
+  seller_transfer_tax: "Transfer / deed tax (seller share)",
+}
+
+/** Which side of the deal an observation grades. Rows written before the side
+ *  discriminator existed (migration 1105) are buyer-side by construction. */
+export type ClosingCostSide = "buyer" | "seller"
+
 export interface AccuracyLine {
-  key: AccuracyLineKey
+  key: AccuracyLineKey | SellerAccuracyLineKey
   label: string
   estimateLow: number
   estimateHigh: number
@@ -194,10 +218,117 @@ export function mapAccuracyLines(estimateLines: BuyerCostLine[], actual: ActualC
   return out
 }
 
+// ─── Pure: SELLER side — settlement-statement actuals + the honest mapping ──
+//
+// Seller actuals come off the SAME extraction rail the net-sheet surprise
+// guard reads (transaction_documents.extracted_data on the final settlement
+// statement / Closing Disclosure) — real extracted figures, gated on the
+// document's classification confidence. Nothing is inferred or back-filled.
+
+export interface SellerActualFigures {
+  commission: number | null
+  mortgagePayoff: number | null
+  /** the seller-paid title/escrow/settlement charges, combined as stated */
+  titleEscrow: number | null
+  transferTax: number | null
+  netToSeller: number | null
+}
+
+/** Pure: tolerant pick of SELLER-side figures from a settlement statement's
+ *  extracted_data blob. Generous key set (statements vary wildly); a line not
+ *  on the document is null — absent, never zero. Negative figures refused. */
+export function parseSellerSettlementFigures(
+  extracted: Record<string, unknown> | null | undefined,
+): SellerActualFigures {
+  const e = extracted && typeof extracted === "object" ? (extracted as Record<string, unknown>) : {}
+  const pick = (...keys: string[]): number | null => {
+    for (const k of keys) {
+      const n = parseMoney(e[k])
+      if (n != null) return n
+    }
+    return null
+  }
+  return {
+    commission: pick("commission", "total_commission", "real_estate_commission", "broker_commission"),
+    mortgagePayoff: pick("mortgage_payoff", "payoff", "loan_payoff", "existing_loan_payoff"),
+    titleEscrow: pick("title_fees", "escrow_fees", "title_escrow", "settlement_fees"),
+    transferTax: pick("transfer_tax", "transfer_taxes", "deed_tax", "doc_stamps", "documentary_stamps", "excise_tax", "conveyance_tax"),
+    netToSeller: pick("seller_net", "net_to_seller", "cash_to_seller", "seller_net_proceeds", "net_proceeds", "proceeds_to_seller"),
+  }
+}
+
+const mkSellerLine = (key: SellerAccuracyLineKey, low: number, high: number, actual: number): AccuracyLine => {
+  const mid = (low + high) / 2
+  return {
+    key,
+    label: SELLER_ACCURACY_LINE_LABELS[key],
+    estimateLow: low,
+    estimateHigh: high,
+    actual,
+    deltaFromMid: Math.round(actual - mid),
+    withinBand: actual >= low && actual <= high,
+  }
+}
+
+/** Pure: map SELLER estimate lines to settlement actuals — ONLY the clean
+ *  mappings, each refused rather than fudged:
+ *   - commission          ↔ the statement's stated commission — graded only
+ *     when the estimate rode a REAL record (non-pending); a pending line has
+ *     no band, and grading an assumption is exactly what this rail refuses.
+ *   - mortgage_payoff     ↔ the statement's payoff — same non-pending rule.
+ *   - seller_title_settlement ↔ title/escrow/settlement charges combined:
+ *     the estimate side is the SUM of the owner's-title seller share and the
+ *     settlement-share bands (the statement states them combined).
+ *   - seller_transfer_tax ↔ the statement's transfer/deed tax — only where
+ *     the regional band says the seller customarily owes any (high > 0).
+ *  netToSeller is deliberately NOT mapped here — the net-vs-promise story is
+ *  the net-sheet reconciliation rail's (net_sheet_reconciliations), keep-one. */
+export function mapSellerAccuracyLines(
+  estimateLines: SellerCostLine[],
+  actual: SellerActualFigures,
+): AccuracyLine[] {
+  const out: AccuracyLine[] = []
+  const find = (label: string) => estimateLines.find((l) => l.label === label && !l.pending)
+
+  const commission = find("Real estate commission")
+  if (commission && commission.high > 0 && actual.commission != null) {
+    out.push(mkSellerLine("commission", commission.low, commission.high, actual.commission))
+  }
+
+  const payoff = find("Mortgage payoff")
+  if (payoff && payoff.high > 0 && actual.mortgagePayoff != null) {
+    out.push(mkSellerLine("mortgage_payoff", payoff.low, payoff.high, actual.mortgagePayoff))
+  }
+
+  const ownerTitle = find("Owner's title insurance (seller share)")
+  const settlement = estimateLines.find(
+    (l) => (l.label === "Settlement / escrow fee (seller share)" || l.label === "Seller's closing attorney fee") && !l.pending,
+  )
+  if (ownerTitle && settlement && actual.titleEscrow != null) {
+    const low = ownerTitle.low + settlement.low
+    const high = ownerTitle.high + settlement.high
+    if (high > 0) out.push(mkSellerLine("seller_title_settlement", low, high, actual.titleEscrow))
+  }
+
+  const transfer = find("Transfer / deed tax (seller share)")
+  if (transfer && transfer.high > 0 && actual.transferTax != null) {
+    out.push(mkSellerLine("seller_transfer_tax", transfer.low, transfer.high, actual.transferTax))
+  }
+
+  return out
+}
+
 // ─── Pure: per-state aggregation for the report ─────────────────────────────
 
+/** Every gradable line key, both sides — the per-state report shows whichever
+ *  keys actually have observations (honest: ungraded keys never appear). */
+const ALL_ACCURACY_LINE_LABELS: Record<AccuracyLineKey | SellerAccuracyLineKey, string> = {
+  ...ACCURACY_LINE_LABELS,
+  ...SELLER_ACCURACY_LINE_LABELS,
+}
+
 export interface StateAccuracyLineStat {
-  key: AccuracyLineKey
+  key: AccuracyLineKey | SellerAccuracyLineKey
   label: string
   count: number
   medianDeltaFromMid: number
@@ -231,12 +362,12 @@ export function summarizeAccuracyObservations(
   const reports: StateAccuracyReport[] = []
   for (const [state, observations] of byState) {
     const lineStats: StateAccuracyLineStat[] = []
-    for (const key of Object.keys(ACCURACY_LINE_LABELS) as AccuracyLineKey[]) {
+    for (const key of Object.keys(ALL_ACCURACY_LINE_LABELS) as Array<AccuracyLineKey | SellerAccuracyLineKey>) {
       const graded = observations.flatMap((obs) => obs.filter((l) => l.key === key))
       if (graded.length === 0) continue // honest: ungraded lines don't appear
       lineStats.push({
         key,
-        label: ACCURACY_LINE_LABELS[key],
+        label: ALL_ACCURACY_LINE_LABELS[key],
         count: graded.length,
         medianDeltaFromMid: medianOf(graded.map((l) => l.deltaFromMid)),
         withinBandRate: Math.round((graded.filter((l) => l.withinBand).length / graded.length) * 100) / 100,
@@ -254,13 +385,35 @@ export interface RecordAccuracyResult {
   reason: string
   observationId?: string
   lineCount?: number
+  /** SELLER-side sibling result (round 36) — attached by the combined
+   *  entrypoint; absent when the seller pass threw (never blocks the buyer). */
+  seller?: RecordAccuracyResult
 }
 
-/** Record an accuracy observation for a transaction. Honest at every exit:
- *  each precondition that fails names itself instead of inventing data.
- *  Idempotent: upsert on (transaction_id, document_id) — a re-scan with new
- *  figures refreshes the observation; the same figures are a no-op rewrite. */
+/** Combined entrypoint (unchanged callers: stage-progression CLOSED branch +
+ *  the CD post-scan hook). Grades the BUYER side exactly as before, then runs
+ *  the SELLER side best-effort on the same deal — sale-side gates live in the
+ *  seller recorder itself, and a seller failure never blocks the buyer path. */
 export async function recordClosingCostAccuracy(
+  svc: Svc,
+  input: { transactionId: string; brokerageId: string },
+): Promise<RecordAccuracyResult> {
+  const buyer = await recordBuyerClosingCostAccuracy(svc, input)
+  let seller: RecordAccuracyResult | undefined
+  try {
+    seller = await recordSellerClosingCostAccuracy(svc, input)
+  } catch (e) {
+    seller = { recorded: false, reason: `seller pass failed: ${e instanceof Error ? e.message : String(e)}` }
+  }
+  return { ...buyer, seller }
+}
+
+/** Record a BUYER-side accuracy observation for a transaction. Honest at every
+ *  exit: each precondition that fails names itself instead of inventing data.
+ *  Idempotent: upsert on (transaction_id, document_id, side) — a re-scan with
+ *  new figures refreshes the observation; the same figures are a no-op rewrite.
+ *  (Pre-migration-1105 ledgers fall back to the legacy 2-column conflict key.) */
+export async function recordBuyerClosingCostAccuracy(
   svc: Svc,
   input: { transactionId: string; brokerageId: string },
 ): Promise<RecordAccuracyResult> {
@@ -346,17 +499,151 @@ export async function recordClosingCostAccuracy(
     cash_to_close: figures.cashToClose,
     total_closing_costs: figures.totalClosingCosts,
   }
-  const { data: saved, error } = await svc
+  let { data: saved, error } = await svc
     .from("closing_cost_accuracy_observations")
-    .upsert(row, { onConflict: "transaction_id,document_id" })
+    .upsert({ ...row, side: "buyer" }, { onConflict: "transaction_id,document_id,side" })
     .select("id")
     .maybeSingle()
+  if (error) {
+    // Pre-1105 ledger (no side column / legacy 2-column unique) — legacy write
+    // shape; those rows are buyer-side by construction.
+    ;({ data: saved, error } = await svc
+      .from("closing_cost_accuracy_observations")
+      .upsert(row, { onConflict: "transaction_id,document_id" })
+      .select("id")
+      .maybeSingle())
+  }
   if (error) {
     // Table not provisioned yet (migration 1104 is report-only until applied) or
     // any other write failure — degrade honestly, never throw into a close path.
     return { recorded: false, reason: `observation not stored: ${error.message}` }
   }
   return { recorded: true, reason: "observation recorded", observationId: (saved as any)?.id, lineCount: lines.length }
+}
+
+// ─── IO: SELLER side — one observation per closed SALE-side deal ────────────
+
+/** Record a SELLER-side accuracy observation. Actuals come off the settlement
+ *  statement / CD on the transaction-documents rail (the SAME extractions the
+ *  net-sheet surprise guard reconciles against); the estimate is recomputed
+ *  from the deal's real facts — commission ONLY from the deal's own records
+ *  (resolveSellerCommission), payoff honestly pending (and therefore never
+ *  graded) since no payoff-statement ledger exists. Honest at every exit.
+ *  Idempotent: upsert on (transaction_id, document_id, side) — requires the
+ *  side discriminator (migration 1105); degrades honestly until applied. */
+export async function recordSellerClosingCostAccuracy(
+  svc: Svc,
+  input: { transactionId: string; brokerageId: string },
+): Promise<RecordAccuracyResult> {
+  const { data: tx } = await svc
+    .from("transactions")
+    .select("id, brokerage_id, stage, purchase_price, property_state, listing_id, seller_contact_id, seller_agent_id, deal_type, commission_amount, commission_percentage")
+    .eq("id", input.transactionId)
+    .eq("brokerage_id", input.brokerageId)
+    .maybeSingle()
+  if (!tx) return { recorded: false, reason: "transaction not found" }
+  const t = tx as any
+  if (String(t.stage) !== "CLOSED") {
+    return { recorded: false, reason: "transaction is not CLOSED — accuracy is only graded on real outcomes" }
+  }
+  // SALE-side gate: the seller estimate was only ever in play on our sale side.
+  const saleSide =
+    t.seller_contact_id != null || t.seller_agent_id != null || /sell|list/i.test(String(t.deal_type ?? ""))
+  if (!saleSide) {
+    return { recorded: false, reason: "not a sale-side transaction — the seller estimate was never in play" }
+  }
+  const price = Number(t.purchase_price)
+  if (!Number.isFinite(price) || price <= 0) {
+    return { recorded: false, reason: "no purchase price on the closed deal" }
+  }
+
+  let state = normalizeStateCode(t.property_state)
+  if (!state) {
+    const { data: brokerage } = await svc
+      .from("brokerages").select("state").eq("id", input.brokerageId).maybeSingle()
+    state = normalizeStateCode((brokerage as any)?.state)
+  }
+  if (!state) return { recorded: false, reason: "no state on file — the regional model was never in play" }
+
+  // The settlement statement / CD on the guard's rail — real extracted figures.
+  const { data: docs } = await svc
+    .from("transaction_documents")
+    .select("id, doc_type, extracted_data, classification_confidence, created_at")
+    .eq("transaction_id", input.transactionId)
+    .in("doc_type", ["final_settlement_statement", "closing_disclosure"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+  const doc = ((docs ?? []) as any[])[0]
+  if (!doc) {
+    return { recorded: false, reason: "no settlement statement / Closing Disclosure on the transaction-documents rail" }
+  }
+  if (String(doc.classification_confidence ?? "") === "low") {
+    return { recorded: false, reason: "low-confidence extraction — an uncertain scan is not an outcome" }
+  }
+  const actual = parseSellerSettlementFigures(doc.extracted_data)
+  const usableFieldKeys = (
+    [
+      ["commission", actual.commission],
+      ["mortgage_payoff", actual.mortgagePayoff],
+      ["title_escrow", actual.titleEscrow],
+      ["transfer_tax", actual.transferTax],
+      ["net_to_seller", actual.netToSeller],
+    ] as Array<[string, number | null]>
+  ).filter(([, v]) => v != null).map(([k]) => k)
+  if (usableFieldKeys.length === 0) {
+    return { recorded: false, reason: "no seller-side figures extracted from the settlement statement" }
+  }
+
+  // Commission from the deal's OWN records — a rate is never assumed; with no
+  // record the commission line stays pending and is simply not graded.
+  let listingRatePct: number | null = null
+  if (t.listing_id) {
+    const { data: lst } = await svc
+      .from("listings").select("commission_rate").eq("id", t.listing_id).maybeSingle()
+    listingRatePct = (lst as any)?.commission_rate != null ? Number((lst as any).commission_rate) : null
+  }
+  const commission = resolveSellerCommission({
+    transactionCommissionAmount: t.commission_amount != null ? Number(t.commission_amount) : null,
+    listingCommissionRatePct: listingRatePct,
+    transactionCommissionPct: t.commission_percentage != null ? Number(t.commission_percentage) : null,
+  })
+
+  const estimate = estimateSellerClosingCosts({ salePrice: price, state, commission, mortgagePayoff: null })
+  if (!estimate.regionState) {
+    return { recorded: false, reason: "regional conventions unavailable for this state" }
+  }
+
+  const lines = mapSellerAccuracyLines(estimate.lines, actual)
+  if (lines.length === 0) {
+    return { recorded: false, reason: "no extracted settlement figure maps cleanly to a seller estimate line" }
+  }
+
+  const row = {
+    brokerage_id: input.brokerageId,
+    transaction_id: input.transactionId,
+    document_id: doc.id,
+    side: "seller",
+    state,
+    purchase_price: price,
+    loan_amount: null, // the seller's payoff is not a loan-amount fact; never back-filled
+    extraction_verified: false, // transaction_documents carries no human-verify ledger — stated, not assumed
+    extracted_field_keys: usableFieldKeys,
+    lines: lines as unknown,
+    line_count: lines.length,
+    cash_to_close: null,
+    total_closing_costs: null,
+  }
+  const { data: saved, error } = await svc
+    .from("closing_cost_accuracy_observations")
+    .upsert(row, { onConflict: "transaction_id,document_id,side" })
+    .select("id")
+    .maybeSingle()
+  if (error) {
+    // Table (m1104) or the side discriminator (m1105) not provisioned yet, or
+    // any other write failure — degrade honestly, never throw into a close path.
+    return { recorded: false, reason: `seller observation not stored (side column requires migration 1105): ${error.message}` }
+  }
+  return { recorded: true, reason: "seller observation recorded", observationId: (saved as any)?.id, lineCount: lines.length }
 }
 
 // ─── IO: the read surface (superadmin analytics) ────────────────────────────

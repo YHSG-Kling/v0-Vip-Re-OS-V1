@@ -404,10 +404,36 @@ export async function advanceStage(params: {
     // 1. Get transaction to find seller_contact_id and listing_id
     const { data: closedTxn } = await supabase
       .from("transactions")
-      .select("seller_contact_id, listing_id")
+      .select("seller_contact_id, buyer_contact_id, contact_id, listing_id, close_date")
       .eq("id", params.transactionId)
       .eq("brokerage_id", params.brokerageId)
       .maybeSingle()
+
+    // ── AI-PREDICTION CLOSE-TIME GRADER (owner round 36) ──────────────────────
+    // The deal just CLOSED — the one moment the real outcome exists. Stamp
+    // actual_outcome on every ungraded transaction-entity ai_predictions row
+    // (frozen win-probability snapshots + deal_close_probability calls) so the
+    // deal_outcome accuracy rail grades from real events only, and mark the
+    // deal's contacts' lead_conversion predictions converted (ledger
+    // completeness — deliberately NOT rail-graded; positives-only would be
+    // survivorship). Idempotent; best-effort — grading never blocks a close.
+    try {
+      const { gradeTransactionPredictionOutcomes, markLeadConversionOutcomes } =
+        await import("@/lib/analytics/ai-prediction-outcomes")
+      const outcomeDate = (closedTxn?.close_date as string | null) ?? new Date().toISOString()
+      await gradeTransactionPredictionOutcomes(supabase as any, {
+        transactionId: params.transactionId,
+        outcome: "closed",
+        outcomeDate,
+      })
+      await markLeadConversionOutcomes(supabase as any, {
+        contactIds: [closedTxn?.contact_id, closedTxn?.buyer_contact_id, closedTxn?.seller_contact_id],
+        transactionId: params.transactionId,
+        outcomeDate,
+      })
+    } catch (e) {
+      console.error("[stage-progression] ai-prediction close-time grading failed:", e)
+    }
 
     // 2. Update seller contact_type to the CANONICAL lifetime_customer (migration 433) so they enter the
     //    past-client journey AND every contact_type reader (reel persona, referral radar, portal role)
@@ -494,6 +520,21 @@ export async function advanceStage(params: {
         // Non-blocking — review request draft failure doesn't affect close
       }
     })()
+  } else if (params.targetStage === "LOST") {
+    // ── AI-PREDICTION CLOSE-TIME GRADER, lost side (owner round 36) ───────────
+    // LOST is the other REAL terminal event — grading only wins would inflate
+    // every probability rail. Stamp the loss on every ungraded transaction-
+    // entity prediction for this deal. Idempotent; never blocks the stage move.
+    try {
+      const { gradeTransactionPredictionOutcomes } = await import("@/lib/analytics/ai-prediction-outcomes")
+      await gradeTransactionPredictionOutcomes(supabase as any, {
+        transactionId: params.transactionId,
+        outcome: "lost",
+        outcomeDate: new Date().toISOString(),
+      })
+    } catch (e) {
+      console.error("[stage-progression] ai-prediction lost-grading failed:", e)
+    }
   }
 
   return {

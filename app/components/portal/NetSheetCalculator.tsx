@@ -1,24 +1,46 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
+import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
 
 interface NetSheetProps {
   offerPrice: number
   listPrice: number
   currentMortgageBalance: number
   propertyAddress: string
+  /** The property's state ("TX" / "Texas"). When known, the closing-costs
+   *  default derives from that state's REAL closing conventions
+   *  (lib/offers/seller-closing-costs) and the regional section renders with
+   *  its provenance label. Unknown → the flat 2% starting point stands. */
+  state?: string | null
 }
 
-export function NetSheetCalculator({ offerPrice, listPrice, currentMortgageBalance, propertyAddress }: NetSheetProps) {
+export function NetSheetCalculator({ offerPrice, listPrice, currentMortgageBalance, propertyAddress, state = null }: NetSheetProps) {
   const [price, setPrice] = useState(offerPrice)
   const [commissionRate, setCommissionRate] = useState(6)
-  const [closingCosts, setClosingCosts] = useState(offerPrice * 0.02)
+
+  // REGIONAL CLOSING-COST SECTION (keep-one: the seller closing-cost model
+  // supplies this calculator's closing-cost line; this surface stays the
+  // canonical portal net view). Recomputed as the price slider moves.
+  const closingCostSection = useMemo(
+    () => deriveNetSheetClosingCostSection(price, state),
+    [price, state],
+  )
+  const initialSection = deriveNetSheetClosingCostSection(offerPrice, state)
+  const [closingCosts, setClosingCosts] = useState(initialSection ? initialSection.midpoint : offerPrice * 0.02)
+  // Manual override preserved: once the seller edits the field, the regional
+  // default stops following the price slider.
+  const [closingCostsOverridden, setClosingCostsOverridden] = useState(false)
+  useEffect(() => {
+    if (!closingCostsOverridden && closingCostSection) setClosingCosts(closingCostSection.midpoint)
+  }, [closingCostSection, closingCostsOverridden])
+
   const [liens, setLiens] = useState(0)
   const [hoaFees, setHoaFees] = useState(0)
   const [prorations, setProrations] = useState(0)
@@ -104,7 +126,7 @@ export function NetSheetCalculator({ offerPrice, listPrice, currentMortgageBalan
             />
           </div>
 
-          {/* Closing Costs */}
+          {/* Closing Costs — regional band default when the state is known; the input is the manual override */}
           <div className="space-y-1">
             <div className="flex justify-between items-center">
               <Label htmlFor="closingCosts">Closing Costs (estimated)</Label>
@@ -112,11 +134,41 @@ export function NetSheetCalculator({ offerPrice, listPrice, currentMortgageBalan
                 id="closingCosts"
                 type="number"
                 value={closingCosts}
-                onChange={(e) => setClosingCosts(Number(e.target.value))}
+                onChange={(e) => {
+                  setClosingCostsOverridden(true)
+                  setClosingCosts(Number(e.target.value))
+                }}
                 className="w-32 text-right"
               />
             </div>
             <span className="text-red-600 text-right block text-sm">-{formatCurrency(closingCosts)}</span>
+            {closingCostSection && (
+              <div className="rounded-md border bg-muted/40 p-3 space-y-1">
+                <p className="text-xs font-semibold">
+                  Seller closing costs · {closingCostSection.regionLabel}
+                </p>
+                {closingCostSection.lines.map((l) => (
+                  <div key={l.label} className="flex items-baseline justify-between gap-3 text-xs text-muted-foreground">
+                    <span>{l.label}</span>
+                    <span className="tabular-nums whitespace-nowrap">
+                      {formatCurrency(l.low)}{l.high !== l.low ? `–${formatCurrency(l.high)}` : ""}
+                    </span>
+                  </div>
+                ))}
+                <div className="flex items-baseline justify-between gap-3 border-t pt-1 text-xs font-semibold">
+                  <span>Band total</span>
+                  <span className="tabular-nums whitespace-nowrap">
+                    {formatCurrency(closingCostSection.low)}–{formatCurrency(closingCostSection.high)}
+                  </span>
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-snug">
+                  The field above starts at this band's midpoint
+                  {closingCostsOverridden ? " (you've overridden it)" : ""} — a {closingCostSection.regionLabel},
+                  not a quote. Commission and mortgage payoff are their own lines. The settlement statement is
+                  the authority.
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Mortgage Payoff */}

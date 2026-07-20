@@ -29,6 +29,7 @@ import {
   type OfferNetInput,
   type SellerCosts,
 } from "@/lib/offers/net-sheet-calc"
+import type { NetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
 
 interface InteractiveNetSheetProps {
   listingAddress?: string | null
@@ -38,6 +39,11 @@ interface InteractiveNetSheetProps {
   initialCosts: Omit<SellerCosts, "buyerClosingCredit">
   /** When true, inputs are disabled (seller portal read-only view). */
   readOnly?: boolean
+  /** The regional seller closing-cost section (keep-one: derived by the caller
+   *  via lib/offers/seller-closing-costs when the listing's state is known).
+   *  Display + provenance only — "Other prorated fees" starts at the band's
+   *  midpoint and the field above stays editable (manual override preserved). */
+  closingCostSection?: NetSheetClosingCostSection | null
 }
 
 function fmt(n: number): string {
@@ -85,6 +91,7 @@ export function InteractiveNetSheet({
   offers,
   initialCosts,
   readOnly = false,
+  closingCostSection = null,
 }: InteractiveNetSheetProps) {
   // Commission held as a percent for the UI; converted to decimal for the engine.
   const [commissionPct, setCommissionPct] = useState(Math.round(initialCosts.commissionRate * 1000) / 10)
@@ -171,6 +178,38 @@ export function InteractiveNetSheet({
             <p className="mt-2 text-xs text-red-700">
               ⛔ Payoff is still $0 — every net figure above overstates what the seller keeps. Enter the real payoff before presenting.
             </p>
+          )}
+
+          {/* REGIONAL CLOSING-COST SECTION (keep-one: lib/offers/seller-closing-costs).
+              Provenance display for the "Other prorated fees" default — the field above
+              stays editable, so a manual override always wins. */}
+          {closingCostSection && (
+            <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50/50 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-indigo-900">
+                Seller closing costs · {closingCostSection.regionLabel}
+              </p>
+              <div className="mt-2 space-y-1">
+                {closingCostSection.lines.map((l) => (
+                  <div key={l.label} className="flex items-baseline justify-between gap-3 text-xs">
+                    <span className="text-muted-foreground">{l.label}</span>
+                    <span className="tabular-nums whitespace-nowrap font-medium">
+                      {fmt(l.low)}{l.high !== l.low ? `–${fmt(l.high)}` : ""}
+                    </span>
+                  </div>
+                ))}
+                <div className="flex items-baseline justify-between gap-3 border-t border-indigo-200 pt-1 text-xs font-semibold">
+                  <span>Band total</span>
+                  <span className="tabular-nums whitespace-nowrap">
+                    {fmt(closingCostSection.low)}–{fmt(closingCostSection.high)}
+                  </span>
+                </div>
+              </div>
+              <p className="mt-2 text-[11px] leading-snug text-indigo-900/80">
+                "Other prorated fees" starts at this band's midpoint ({fmt(closingCostSection.midpoint)}) — a{" "}
+                {closingCostSection.regionLabel}, not a quote. Edit the field to override; the settlement
+                statement is the authority.
+              </p>
+            </div>
           )}
         </div>
 

@@ -270,6 +270,17 @@ export function buyerShareFactor(payer: CustomaryPayer): { low: number; high: nu
   }
 }
 
+/** Seller's customary share of a payer-attributed cost — the exact COMPLEMENT
+ *  of buyerShareFactor on every payer except "none" (no such cost for either
+ *  side). Honest widths carry over: buyer "varies" spans 0–0.5, so the seller
+ *  spans 0.5–1 (sellerLow = 1 − buyerHigh, sellerHigh = 1 − buyerLow) — the
+ *  two sides can never double-claim or drop a cost between them. */
+export function sellerShareFactor(payer: CustomaryPayer): { low: number; high: number } {
+  if (payer === "none") return { low: 0, high: 0 }
+  const b = buyerShareFactor(payer)
+  return { low: 1 - b.high, high: 1 - b.low }
+}
+
 /** Months of property tax typically escrowed/prepaid at closing — heavier-tax
  *  states front-load a larger cushion. Convention band, not a lender quote. */
 export function taxEscrowMonths(conv: RegionalConventions): { low: number; high: number } {

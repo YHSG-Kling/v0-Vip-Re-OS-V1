@@ -220,10 +220,11 @@ export function defaultSellerCosts(args: {
 // ledger, applied to the seller's money.
 
 export type CostLineSource =
-  | "public_record"   // pulled from a records lookup (tax data)
-  | "confirmed"       // a human confirmed/entered the real figure
-  | "template"        // brokerage/market template value
-  | "default"         // heuristic starting point — an ESTIMATE, not a fact
+  | "public_record"      // pulled from a records lookup (tax data)
+  | "confirmed"          // a human confirmed/entered the real figure
+  | "template"           // brokerage/market template value
+  | "regional_estimate"  // state-convention band (lib/offers/seller-closing-costs) — a LABELED estimate
+  | "default"            // heuristic starting point — an ESTIMATE, not a fact
 
 export type CostLineKey = "commissionRate" | "mortgagePayoff" | "countyCityTaxes" | "hoaDuesProration" | "otherProratedFees"
 
@@ -269,7 +270,11 @@ export interface NetSheetPolicyVerdict {
  */
 export function decideNetSheetPolicy(prov: SellerCostProvenance): NetSheetPolicyVerdict {
   const confidence = netSheetConfidence(prov)
-  const needsConfirmation = (Object.keys(prov) as CostLineKey[]).filter((k) => prov[k] === "default")
+  // regional_estimate is BETTER than a blind default (labeled state-convention
+  // band) but it is still an estimate — it stays on the disclose-first list.
+  const needsConfirmation = (Object.keys(prov) as CostLineKey[]).filter(
+    (k) => prov[k] === "default" || prov[k] === "regional_estimate",
+  )
   if (confidence === "low") {
     return {
       decision: "red",

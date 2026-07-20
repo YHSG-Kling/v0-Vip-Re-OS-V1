@@ -39,6 +39,10 @@ import {
   defaultProvenance, decideNetSheetPolicy,
   type OfferNetInput, type SellerCosts, type OfferNetSheetResult,
 } from "@/lib/offers/net-sheet-calc"
+// The seller closing-cost model (round 36) — pure, supplies the net sheet's
+// closing-cost section from the same 50-state convention table the buyer
+// breakdown uses (keep-one: this runner stays the canonical seller surface).
+import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -76,7 +80,7 @@ export async function runOfferNetSheets(
   // OUR in-house listings: seller is a contact (has a portal) AND we have a listing agent.
   let listingsQuery = supabase
     .from("listings")
-    .select("id, address, list_price, agent_id, seller_contact_id, hoa_dues, commission_rate, brokerage_id")
+    .select("id, address, city, state, list_price, agent_id, seller_contact_id, hoa_dues, commission_rate, brokerage_id")
     .eq("brokerage_id", brokerageId)
     .not("seller_contact_id", "is", null)
     .not("agent_id", "is", null)
@@ -152,6 +156,24 @@ export async function runOfferNetSheets(
       provenance.otherProratedFees = "confirmed"
     } else if (lst.hoa_dues != null) {
       provenance.hoaDuesProration = "confirmed"
+    }
+
+    // REGIONAL CLOSING-COST SECTION (round 36, keep-one): the net sheet stays
+    // the canonical seller-money surface; lib/offers/seller-closing-costs
+    // supplies its CLOSING-COST section. When the listing's state is known,
+    // the flat 1%-of-price "other prorated fees" default is replaced by the
+    // midpoint of the state-convention seller band (transfer/deed tax seller
+    // share, owner's-title seller share, settlement share, deed + payoff-
+    // release recording), labeled regional_estimate — still an estimate on
+    // the disclose-first list, never presented as a fact. An injected
+    // costsResolver (live agent session / simulator) always wins.
+    if (!opts.costsResolver && lst.list_price != null) {
+      const addrState = /,\s*([A-Za-z]{2})\s+\d{5}/.exec(String(lst.address ?? ""))?.[1] ?? null
+      const section = deriveNetSheetClosingCostSection(Number(lst.list_price), (lst as any).state ?? addrState)
+      if (section) {
+        costs = { ...costs, otherProratedFees: section.midpoint }
+        provenance.otherProratedFees = "regional_estimate"
+      }
     }
 
     // PUBLIC-RECORD PRELOAD — the tax line arrives REAL when the records rail
