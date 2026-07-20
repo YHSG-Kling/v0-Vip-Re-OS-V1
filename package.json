@@ -512,7 +512,9 @@
     "test:mobile-readiness": "tsx scripts/mobile-readiness-simulator.ts",
     "test:meeting-recap": "tsx scripts/meeting-recap-simulator.ts",
     "test:launch-checklist": "tsx scripts/launch-checklist-simulator.ts",
-    "test:onboarding-readiness": "tsx scripts/onboarding-readiness-simulator.ts"
+    "test:onboarding-readiness": "tsx scripts/onboarding-readiness-simulator.ts",
+    "test:production-smoke": "tsx scripts/production-smoke-drill.ts",
+    "test:dispatcher-load": "tsx scripts/dispatcher-load-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
