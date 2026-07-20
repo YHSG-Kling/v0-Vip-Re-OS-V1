@@ -97,7 +97,14 @@ Per-classification extracted_fields shape:
   appraisal_report      → { appraiser_name, appraised_value, appraisal_date }
   title_report          → { title_company, report_date, key_exceptions[] }
   hoa_documents         → { hoa_name, dues_amount, dues_frequency }
-  closing_disclosure    → { closing_date, lender_name, loan_amount, cash_to_close }
+  closing_disclosure    → { closing_date, lender_name, loan_amount, cash_to_close,
+                            total_closing_costs, owner_title_premium, lender_title_premium,
+                            settlement_fee, transfer_taxes, recording_fees }
+                          (dollar figures are the BORROWER-paid amounts as stated on the
+                           document — page 2 sections B/C for title/settlement, section E
+                           for recording_fees + transfer_taxes, section J for
+                           total_closing_costs. Use null for ANY figure not explicitly
+                           stated; never estimate or total lines yourself.)
   wire_instructions     → { receiving_institution, account_number_last_4, beneficiary_name }
   agency_disclosure     → { brokerage_name, agent_name, signed_at }
   commission_agreement  → { commission_percentage, commission_payer, expires_at }
@@ -264,6 +271,24 @@ export async function scanUploadedDocument(params: {
     })
   } catch (err: any) {
     console.error("[scan] document-kernel hook failed (non-fatal):", err?.message ?? err)
+  }
+
+  // Post-scan hook 5 — CLOSING-COST ACCURACY FLYWHEEL: a Closing Disclosure just
+  // got scanned. If the deal is already CLOSED, grade the regional closing-cost
+  // estimate against the CD's provenance-checked extracted figures (one
+  // observation per deal; the recorder itself refuses non-closed deals, missing
+  // states, and unmappable figures — honest at every exit). The stage-progression
+  // CLOSED branch covers the deal-closes-after-scan ordering.
+  if (classification === "closing_disclosure" && (doc as any).transaction_id) {
+    try {
+      const { recordClosingCostAccuracy } = await import("@/lib/offers/closing-cost-accuracy")
+      await recordClosingCostAccuracy(supabase as any, {
+        transactionId: (doc as any).transaction_id as string,
+        brokerageId: doc.brokerage_id as string,
+      })
+    } catch (err: any) {
+      console.error("[scan] closing-cost accuracy hook failed (non-fatal):", err?.message ?? err)
+    }
   }
 
   return {

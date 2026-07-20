@@ -364,6 +364,42 @@ export async function advanceStage(params: {
       console.error("[stage-progression] commission finalize-on-close failed:", e)
     }
 
+    // ── CLOSING-COST ACCURACY FLYWHEEL (owner round 34, rec 5) ────────────────
+    // The deal just CLOSED. If a scanned Closing Disclosure is on the document
+    // kernel rail, grade the regional closing-cost estimate against the CD's
+    // provenance-checked extracted figures and record one accuracy observation
+    // (per-state report on the superadmin platform page arms the yearly finance
+    // review — the convention table itself stays code and is never auto-tuned).
+    // The recorder is honest at every exit (no CD / no state / no mappable
+    // figure → nothing recorded) and idempotent. Best-effort; never blocks close.
+    try {
+      const { recordClosingCostAccuracy } = await import("@/lib/offers/closing-cost-accuracy")
+      await recordClosingCostAccuracy(supabase as any, {
+        transactionId: params.transactionId,
+        brokerageId: params.brokerageId,
+      })
+    } catch (e) {
+      console.error("[stage-progression] closing-cost accuracy observation failed:", e)
+    }
+
+    // ── NET-SHEET SURPRISE GUARD at close (drift fix, round 34 audit) ─────────
+    // The guard's only previous trigger lived in lib/documents/auto-filer.ts,
+    // which has no runtime callers — so the seller estimate-vs-settlement
+    // reconciliation never actually fired. Close is the moment the final
+    // settlement figures exist; the runner is idempotent, read-only on the deal,
+    // and no-ops honestly when no settlement document/figures are on file.
+    try {
+      const { runNetSheetSurpriseGuard } = await import("@/lib/net-sheet/net-sheet-guard-runner")
+      // agentUserId intentionally omitted — the runner alerts the transaction's
+      // own agent (t.agent_id), not whoever clicked the stage change.
+      await runNetSheetSurpriseGuard({
+        brokerageId: params.brokerageId,
+        transactionId: params.transactionId,
+      })
+    } catch (e) {
+      console.error("[stage-progression] net-sheet surprise guard failed:", e)
+    }
+
     // ── Session D: Close Listing requirements ─────────────────────────────────
     // 1. Get transaction to find seller_contact_id and listing_id
     const { data: closedTxn } = await supabase
