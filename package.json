@@ -509,7 +509,8 @@
     "test:zoom-embed": "tsx --conditions=react-server scripts/zoom-embed-simulator.ts",
     "test:territory-marketplace": "tsx scripts/territory-marketplace-simulator.ts",
     "test:meeting-followthrough": "tsx scripts/meeting-followthrough-simulator.ts",
-    "test:mobile-readiness": "tsx scripts/mobile-readiness-simulator.ts"
+    "test:mobile-readiness": "tsx scripts/mobile-readiness-simulator.ts",
+    "test:meeting-recap": "tsx scripts/meeting-recap-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

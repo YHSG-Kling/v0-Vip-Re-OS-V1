@@ -235,6 +235,20 @@ export async function processZoomRecordingEvent(
     } catch (e) {
       console.error("[zoom-transcripts] meeting follow-through failed (non-blocking):", e)
     }
+
+    // THE CLIENT MEETING RECAP (round 41) — AFTER follow-through, so "what
+    // happens next" can cite the REAL proposals it just created. Composes
+    // "what we discussed / what happens next" in the tenant's voice and lands
+    // it on the human-approval gate (proposeClientMessage, channel 'portal',
+    // status 'proposed') — the client sees the approved card only, NEVER the
+    // transcript. One recap per meeting (deduped); best-effort — the attach,
+    // analysis, and follow-through stand even if the recap fails.
+    try {
+      const { composeMeetingRecap } = await import("@/lib/ai-isa/meeting-recap")
+      await composeMeetingRecap(svc, (callRow as any).id)
+    } catch (e) {
+      console.error("[zoom-transcripts] meeting recap failed (non-blocking):", e)
+    }
   }
 
   await stampTranscriptAttached(svc, (event as any).id, meta, meetingUuid, "contact")

@@ -234,15 +234,21 @@ export async function approveClientMessage(
           return await fail(supabase, messageId, "portal channel needs a recipient contact")
         }
       } else {
+      // MEETING RECAP (round 41): a recap proposal (entity_type 'meeting_recap',
+      // entity_id = the voice_calls meeting id) renders as the portal's DISTINCT
+      // "Meeting recap" card — its own update_type; the deterministic subject
+      // carries the meeting date. Only the human-approved authored recap ships;
+      // the transcript never leaves the internal ledger.
+      const isMeetingRecap = m.entity_type === "meeting_recap"
       const { error: cardErr } = await supabase.from("transparency_updates").insert({
         brokerage_id:           m.brokerage_id,
         contact_id:             m.recipient_contact_id,
         title:                  m.subject ?? "An update from your agent",
         plain_language_summary: m.body,
         message:                m.body,
-        update_type:            "agent_message",
+        update_type:            isMeetingRecap ? "meeting_recap" : "agent_message",
         is_visible_to_client:   true,
-        metadata:               { audience: m.audience, channel, human_approved: true, agent_client_message_id: messageId },
+        metadata:               { audience: m.audience, channel, human_approved: true, agent_client_message_id: messageId, ...(isMeetingRecap ? { meeting_voice_call_id: m.entity_id } : {}) },
         created_at:             new Date().toISOString(),
       })
       if (cardErr) return await fail(supabase, messageId, `portal card write failed: ${cardErr.message}`)

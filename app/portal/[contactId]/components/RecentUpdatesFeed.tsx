@@ -11,13 +11,21 @@ import Link from "next/link"
 import { Badge } from "@/app/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
-import { Bell, ArrowRight, MessageSquare, CheckCircle2, Share2 } from "lucide-react"
+import { Bell, ArrowRight, MessageSquare, CheckCircle2, Share2, Video } from "lucide-react"
 
 // Marketing-receipt card types whose content the SELLER can re-share from the
 // "Share My Home" surface (published posts only). The nudge deep-links to the
 // share rail's anchor on the portal home. Seller-only update_types — these
 // never appear on buyer/lifetime feeds.
 const SHAREABLE_UPDATE_TYPES = new Set(["listing_marketing_week", "listing_launch_seller"])
+
+// THE CLIENT MEETING RECAP (round 41): the human-approved "what we discussed /
+// what happens next" card composed after a meeting (agent-client-messages maps
+// entity_type 'meeting_recap' → this update_type on approval). Renders as a
+// first-class, visually distinct card — the title carries the meeting date; the
+// body is the AUTHORED recap only (the meeting transcript itself never reaches
+// this surface).
+const MEETING_RECAP_UPDATE_TYPE = "meeting_recap"
 
 export interface RecentUpdate {
   id: string
@@ -71,13 +79,24 @@ export function RecentUpdatesFeed({ contactId, updates, limit = 4, hideWhenEmpty
       </CardHeader>
       <CardContent className="space-y-3">
         {visible.map(u => (
-          <article key={u.id} className="rounded-lg border p-3 space-y-1">
+          <article
+            key={u.id}
+            className={`rounded-lg border p-3 space-y-1 ${u.update_type === MEETING_RECAP_UPDATE_TYPE ? "border-violet-200 bg-violet-50/50" : ""}`}
+          >
+            {u.update_type === MEETING_RECAP_UPDATE_TYPE && (
+              <div className="flex items-center gap-1.5 pb-0.5">
+                <Video className="h-3.5 w-3.5 text-violet-600" />
+                <Badge variant="outline" className="text-[10px] border-violet-300 text-violet-700">
+                  Meeting recap
+                </Badge>
+              </div>
+            )}
             <div className="flex items-start justify-between gap-2">
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium leading-tight">
                   {u.title ?? formatType(u.update_type)}
                 </p>
-                <p className="text-xs text-muted-foreground mt-0.5">
+                <p className={`text-xs text-muted-foreground mt-0.5 ${u.update_type === MEETING_RECAP_UPDATE_TYPE ? "whitespace-pre-line" : ""}`}>
                   {u.plain_language_summary ?? u.message ?? ""}
                 </p>
               </div>

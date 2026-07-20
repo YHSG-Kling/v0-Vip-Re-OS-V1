@@ -192,15 +192,15 @@ async function proposeSpokenCriteriaAlert(svc: any, call: {
   }
 }
 
-export interface VoiceIntelSweepResult { candidates: number; analyzed: number; skipped: number; errors: number; callbacksProposed: number; alertsProposed: number; followthroughActions: number }
+export interface VoiceIntelSweepResult { candidates: number; analyzed: number; skipped: number; errors: number; callbacksProposed: number; alertsProposed: number; followthroughActions: number; recapsProposed: number }
 
 /** Hourly sweep: recent completed AI calls with transcripts, not yet analyzed
  *  (keyed by voice_call_id), newest first, capped per run (LLM cost control). */
 export async function sweepVoiceCallIntelligence(svc: any, limit = 15): Promise<VoiceIntelSweepResult> {
-  const r: VoiceIntelSweepResult = { candidates: 0, analyzed: 0, skipped: 0, errors: 0, callbacksProposed: 0, alertsProposed: 0, followthroughActions: 0 }
+  const r: VoiceIntelSweepResult = { candidates: 0, analyzed: 0, skipped: 0, errors: 0, callbacksProposed: 0, alertsProposed: 0, followthroughActions: 0, recapsProposed: 0 }
   const since = new Date(Date.now() - 48 * 3_600_000).toISOString()
   const { data: calls } = await svc.from("voice_calls")
-    .select("id, brokerage_id, contact_id, agent_id, direction, duration_seconds, transcription, status")
+    .select("id, brokerage_id, contact_id, agent_id, direction, call_type, started_at, duration_seconds, transcription, status")
     .eq("status", "completed").not("transcription", "is", null)
     .gte("started_at", since).order("started_at", { ascending: false }).limit(80)
   const rows = (calls ?? []) as any[]
@@ -236,6 +236,17 @@ export async function sweepVoiceCallIntelligence(svc: any, limit = 15): Promise<
         const { runMeetingFollowthroughForCall } = await import("@/lib/ai-isa/meeting-followthrough")
         const ft = await runMeetingFollowthroughForCall(svc, call.id)
         if (ft.ok) r.followthroughActions += ft.proposed + ft.scheduled
+      } catch { /* best-effort — the analysis itself stands */ }
+      // THE CLIENT MEETING RECAP (round 41): AFTER follow-through so "what
+      // happens next" cites the real proposals. Only MEETING-length
+      // conversations recap — composeMeetingRecap enforces the conservative
+      // gate itself (zoom meetings always; a phone call ONLY when a calendar
+      // appointment sits near the call time). Human-approved, portal-only,
+      // deduped per call; never a direct send.
+      try {
+        const { composeMeetingRecap } = await import("@/lib/ai-isa/meeting-recap")
+        const rc = await composeMeetingRecap(svc, call.id)
+        if (rc.proposed) r.recapsProposed += 1
       } catch { /* best-effort — the analysis itself stands */ }
     } else r.errors += 1
   }
