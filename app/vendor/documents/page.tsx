@@ -1,7 +1,10 @@
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { getVendorDocuments } from "@/app/actions/vendor-documents"
+import { readVendorW9, type VendorW9Read } from "@/lib/vendors/w9"
+import { VendorW9Card } from "./w9-card"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import {
@@ -23,6 +26,21 @@ export default async function VendorDocumentsPage() {
   if (!user) redirect("/login")
 
   const summary = await getVendorDocuments()
+
+  // W-9 posture (owner round 43) — canonical vendor linkage is
+  // user_role_assignments.vendor_id (the same rail the invoice center uses).
+  let vendorId: string | null = null
+  let w9: VendorW9Read | null = null
+  const { data: ra } = await supabase
+    .from("user_role_assignments")
+    .select("vendor_id")
+    .eq("user_id", user.id)
+    .not("vendor_id", "is", null)
+    .maybeSingle()
+  if (ra?.vendor_id) {
+    vendorId = ra.vendor_id as string
+    w9 = await readVendorW9(createServiceClient(), vendorId).catch(() => null)
+  }
 
   // Group by category for display
   const grouped: Record<string, typeof summary.documents> = {}
@@ -55,6 +73,9 @@ export default async function VendorDocumentsPage() {
         <StatCard label="Deliverables" value={summary.byCategory.deliverable ?? 0} />
         <StatCard label="Agreements" value={summary.byCategory.agreement ?? 0} />
       </div>
+
+      {/* W-9 on file (owner round 43) — the payer-side tax-compliance basic. */}
+      {vendorId && w9 && <VendorW9Card vendorId={vendorId} w9={w9} />}
 
       {summary.totalCount === 0 ? (
         <Card>

@@ -375,7 +375,7 @@ export async function initiateVendorPayout(params: {
   method?: "stripe" | "cash_app" | "check" | "manual"
   cashAppReference?: string
   note?: string
-}): Promise<{ success: boolean; payoutId?: string; error?: string }> {
+}): Promise<{ success: boolean; payoutId?: string; error?: string; w9Warning?: string }> {
   const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
@@ -391,6 +391,18 @@ export async function initiateVendorPayout(params: {
 
   const svc = createServiceClient()
   const method = params.method ?? "stripe"
+
+  // ── W-9 SOFT gate (owner round 43): the payout NEVER hard-blocks on a
+  // missing W-9 (existing vendors have earned funds mid-flight) — it proceeds
+  // and surfaces the honest warning; the governed once-per-period reminder is
+  // triggered after the payout lands. Best-effort: a W-9 read failure
+  // (pre-migration m275) never touches the money path.
+  let w9Warning: string | undefined
+  try {
+    const { readVendorW9, w9SoftGateWarning } = await import("@/lib/vendors/w9")
+    const w9 = await readVendorW9(svc, params.vendorId)
+    w9Warning = w9SoftGateWarning(w9.status) ?? undefined
+  } catch { /* soft gate stays silent on read failure */ }
 
   // Verify caller-supplied earningIds also belong to caller's brokerage —
   // otherwise an attacker could "settle" another tenant's earnings rows
@@ -459,7 +471,24 @@ export async function initiateVendorPayout(params: {
       .eq("vendor_id", params.vendorId)
   }
 
-  return { success: true, payoutId: payout.id }
+  // THE CHASE: payout activity with no W-9 on file → governed b2b transactional
+  // reminder, deduped once per period inside maybeSendVendorW9Reminder.
+  // Best-effort — never blocks or fails the payout.
+  if (w9Warning) {
+    try {
+      const { maybeSendVendorW9Reminder } = await import("@/lib/vendors/w9")
+      await maybeSendVendorW9Reminder(svc, {
+        vendorId: params.vendorId,
+        brokerageId: ctx.brokerageId,
+        userId: ctx.userId,
+        trigger: "payout",
+      })
+    } catch (err) {
+      console.error("[initiateVendorPayout] W-9 reminder failed (non-blocking):", err)
+    }
+  }
+
+  return { success: true, payoutId: payout.id, w9Warning }
 }
 
 // ---------------------------------------------------------------------------
@@ -649,6 +678,9 @@ export interface VendorClientInvoiceResult {
    *  is visible in the client's portal regardless — this reports the email honestly. */
   emailSent?: boolean
   emailError?: string
+  /** W-9 SOFT gate (round 43): issuance is never blocked, but a missing/expired
+   *  W-9 surfaces this honest warning to the vendor. */
+  w9Warning?: string
   error?: string
 }
 
@@ -751,6 +783,24 @@ export async function createAndSendVendorClientInvoice(
     return { success: false, error: error?.message ?? "Failed to create invoice" }
   }
 
+  // ── W-9 SOFT gate (owner round 43): invoice issuance is NEVER blocked on a
+  // missing W-9 — the invoice went out; the vendor sees the honest warning and
+  // the governed once-per-period reminder fires. Best-effort throughout.
+  let w9Warning: string | undefined
+  try {
+    const { readVendorW9, w9SoftGateWarning, maybeSendVendorW9Reminder } = await import("@/lib/vendors/w9")
+    const w9 = await readVendorW9(svc, actor.vendorId)
+    w9Warning = w9SoftGateWarning(w9.status) ?? undefined
+    if (w9Warning) {
+      await maybeSendVendorW9Reminder(svc, {
+        vendorId: actor.vendorId,
+        brokerageId: actor.brokerageId,
+        userId: actor.userId,
+        trigger: "invoice",
+      })
+    }
+  } catch { /* soft gate never touches the invoice path */ }
+
   // ── Client notification — governed dispatchEmail, TRANSACTIONAL purpose ──────
   let emailSent = false
   let emailError: string | undefined
@@ -808,7 +858,7 @@ export async function createAndSendVendorClientInvoice(
     }
   }
 
-  return { success: true, invoiceId: invoice.id, emailSent, emailError }
+  return { success: true, invoiceId: invoice.id, emailSent, emailError, w9Warning }
 }
 
 // ---------------------------------------------------------------------------

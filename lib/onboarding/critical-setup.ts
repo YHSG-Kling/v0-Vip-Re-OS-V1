@@ -113,6 +113,7 @@ export interface CriticalSetupFacts {
     profileComplete: boolean         // vendors.category + phone
     payoutConnected: boolean         // vendor-owned financial/stripe credential
     booksConnected: boolean          // vendor-owned quickbooks credential
+    w9OnFile: boolean                // vendor_tax_documents derived status = 'on_file' (round 43)
   }
 }
 
@@ -138,7 +139,7 @@ export function emptyCriticalSetupFacts(tier: CriticalTier = "brokerage"): Criti
     listingsCount: 0,
     agent: { licenseOnFile: false, voicePrefSet: false, calendarConnected: false, pwaInstalled: false, contactsCount: 0 },
     teamLead: { teamConfigured: false, splitsSet: false, teamBooksConnected: false },
-    vendor: { profileComplete: false, payoutConnected: false, booksConnected: false },
+    vendor: { profileComplete: false, payoutConnected: false, booksConnected: false, w9OnFile: false },
   }
 }
 
@@ -312,6 +313,11 @@ export const CRITICAL_SETUP_ITEMS: CriticalSetupItem[] = [
     why: "Paid invoices stay out of your books until your vendor-scoped QuickBooks connection exists.",
     settingHref: "/vendor/connections",
     checker: (f) => f.vendor?.booksConnected ?? false },
+  { key: "vendor_w9", role: "vendor", category: "billing",
+    title: "Put your W-9 on file",
+    why: "Your brokerage partner must 1099-report payments to you — until a signed W-9 is on file every payout and invoice carries a tax-compliance warning on both sides.",
+    settingHref: "/vendor/documents",
+    checker: (f) => f.vendor?.w9OnFile ?? false },
 ]
 
 // ─── The composed readiness read (THE SETUP METER) ───────────────────────────
@@ -530,18 +536,28 @@ export async function loadCriticalSetupFacts(
 
   // ── vendor slice ───────────────────────────────────────────────────────────
   if (params.vendorId) {
-    const [{ data: v }, payout, qb] = await Promise.all([
-      svc.from("vendors").select("category, phone, status").eq("id", params.vendorId).maybeSingle(),
+    const [{ data: v }, payout, qb, taxDoc] = await Promise.all([
+      svc.from("vendors").select("category, phone, status, name").eq("id", params.vendorId).maybeSingle(),
       svc.from("platform_credentials").select("id").eq("owner_type", "vendor").eq("owner_id", params.vendorId)
         .eq("is_active", true).in("scope", ["financial"]).limit(1),
       svc.from("platform_credentials").select("id").eq("owner_type", "vendor").eq("owner_id", params.vendorId)
         .eq("platform", "quickbooks").eq("is_active", true).limit(1),
+      svc.from("vendor_tax_documents").select("status, vendor_name_at_filing")
+        .eq("vendor_id", params.vendorId).maybeSingle(),
     ])
     const vr = (v ?? {}) as any
+    // W-9 (round 43): same derivation as lib/vendors/w9.ts deriveW9Status —
+    // on_file only while the vendors.name still matches the filing snapshot
+    // (a legal-name change after filing expires the certification). A missing
+    // table (pre-migration m275) reads as an honest false.
+    const td = (taxDoc?.data ?? null) as any
+    const filedName = ((td?.vendor_name_at_filing as string | null) ?? "").trim().toLowerCase()
+    const currentName = ((vr.name as string | null) ?? "").trim().toLowerCase()
     facts.vendor = {
       profileComplete: !!vr.category && !!vr.phone,
       payoutConnected: ((payout.data ?? []) as any[]).length > 0,
       booksConnected: ((qb.data ?? []) as any[]).length > 0,
+      w9OnFile: td?.status === "on_file" && !(filedName && currentName && filedName !== currentName),
     }
   }
 

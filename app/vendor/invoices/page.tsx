@@ -7,7 +7,8 @@ import { readVendorQuickBooks } from "@/lib/connections/vendor-quickbooks"
 import { defaultQbReconciliationPeriod, loadVendorQbReconciliation } from "@/lib/finance/qb-reconciliation"
 import { QbReconciliationCard } from "@/app/settings/accounting/qb-reconciliation-card"
 import { Button } from "@/components/ui/button"
-import { Receipt, ArrowLeft } from "lucide-react"
+import { Receipt, ArrowLeft, AlertTriangle } from "lucide-react"
+import { readVendorW9, w9SoftGateWarning } from "@/lib/vendors/w9"
 import { VendorInvoicesClient, type VendorInvoiceRow } from "./invoices-client"
 
 export const dynamic = "force-dynamic"
@@ -55,6 +56,12 @@ export default async function VendorInvoicesPage() {
     vendorId,
     ...defaultQbReconciliationPeriod(),
   }).catch(() => null)
+
+  // W-9 SOFT gate (round 43) — invoicing works regardless; a missing/expired
+  // W-9 renders the honest warning banner below. Fail-soft pre-migration m275.
+  const w9Warning = await readVendorW9(svc, vendorId)
+    .then((w9) => w9SoftGateWarning(w9.status))
+    .catch(() => null)
 
   const [{ data: invoices }, stripeConnect, quickbooks] = await Promise.all([
     svc
@@ -115,6 +122,16 @@ export default async function VendorInvoicesPage() {
           </p>
         </div>
       </div>
+
+      {w9Warning && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+          <p>
+            {w9Warning}{" "}
+            <Link href="/vendor/documents" className="font-medium underline">Upload your W-9</Link>
+          </p>
+        </div>
+      )}
 
       <VendorInvoicesClient
         vendorId={vendorId}

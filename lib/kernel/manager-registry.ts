@@ -1145,6 +1145,7 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   net_sheet_calculations: "deal_coordinator",
   net_sheet_reconciliations: "deal_coordinator",
   closing_cost_accuracy_observations: "finance_manager", // round 34: the closing-cost flywheel ledger that arms Finance's yearly convention review
+  vendor_tax_documents: "finance_manager", // round 43: vendor W-9 posture (TIN type only — the TIN itself lives solely in the certified PDF)
   offer_comparison: "deal_coordinator",
   outbound_message_compliance_log: "deal_coordinator",
   required_disclosures: "deal_coordinator",

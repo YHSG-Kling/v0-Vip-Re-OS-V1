@@ -16,6 +16,7 @@ import {
 } from "./vendor-charges-panel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { findChargeAttribution, resolveVendorActorScope } from "@/lib/vendors/vendor-scope"
+import { readW9StatusMap, type W9Status } from "@/lib/vendors/w9"
 import {
   searchVendors,
   getAllVendorBookings,
@@ -161,6 +162,14 @@ export default async function VendorsPage() {
       chargeableVendorIds = (attributed ?? []).map((v: any) => v.id as string)
     } catch { /* pre-migration 1106 — no attributed vendors yet */ }
   }
+
+  // W-9 posture per vendor (owner round 43) — powers the on_file/missing badge
+  // so the brokerage can see who to chase for 1099 reporting. Fail-soft
+  // pre-migration m275: an empty map renders every vendor as 'missing' — the
+  // honest default (no W-9 has ever been captured).
+  const w9StatusMap: Map<string, W9Status> = await readW9StatusMap(
+    createServiceClient(), profile.brokerage_id
+  ).catch(() => new Map<string, W9Status>())
 
   const serviceTypes = [...new Set(vendors.map(v => v.category).filter(Boolean))]
   const assignedCount = assignedVendors?.length || 0
@@ -320,7 +329,11 @@ export default async function VendorsPage() {
                       className="flex items-center justify-between p-4 border rounded-lg hover:bg-muted/50 transition-colors"
                     >
                       <div className="space-y-1">
-                        <p className="font-medium">{v.name || "Vendor"}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium">{v.name || "Vendor"}</p>
+                          {/* W-9 badge (round 43) — soft visibility, never a block */}
+                          <W9Badge status={w9StatusMap.get(v.id) ?? "missing"} />
+                        </div>
                         <p className="text-sm text-muted-foreground">{v.category}</p>
                         <div className="flex gap-4 text-sm">
                           {v.phone && (
@@ -427,5 +440,20 @@ export default async function VendorsPage() {
         </TabsContent>
       </Tabs>
     </div>
+  )
+}
+
+/** W-9 posture badge (round 43): on_file green / missing amber / expired red. */
+function W9Badge({ status }: { status: W9Status }) {
+  const meta =
+    status === "on_file"
+      ? { label: "W-9 on file", cls: "bg-green-100 text-green-800" }
+      : status === "expired"
+        ? { label: "W-9 needs update", cls: "bg-red-100 text-red-800" }
+        : { label: "W-9 missing", cls: "bg-amber-100 text-amber-800" }
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${meta.cls}`}>
+      {meta.label}
+    </span>
   )
 }
