@@ -17,7 +17,16 @@
  *   is null below them, and both consumers (pitch kit, QBR) OMIT the section
  *   when the chip is absent.
  * Layer 4 (live, creds-gated): the aggregator runs against the real DB without
- *   throwing and returns the full 8-rail shape.
+ *   throwing and returns the full 12-rail shape.
+ *
+ * ROUND 36 (exclusion audit + accuracy-driven autonomy): four rails earned
+ * their way in — deal_outcome (ai_predictions close-time grader + frozen
+ * win-probability snapshots), home_value_avm (strict unique normalized
+ * address join), listing_propensity (immutable trigger ledger vs a real later
+ * listing), income_forecast (weighted_30 vs realized closed GCI). Plus the
+ * PREDICTIVE autonomy gate: accuracyGateVerdict / autonomyDecision precedence
+ * (halts win, human-approved bypasses, only an explicit 'autonomous' posture
+ * is accuracy-gated, the gate never grants).
  *
  * Fixtures live ONLY here — the library reads real ledgers exclusively.
  *
@@ -42,10 +51,31 @@ import {
   getPredictionAccuracyReport,
   TRUST_CHIP_MIN_OBSERVATIONS,
   TRUST_CHIP_NET_SHEET_MIN_WITHIN,
+  normalizeProbability,
+  normalizeAddressKey,
+  summarizeDealOutcomeRows,
+  summarizeHomeValueRows,
+  summarizePropensityRows,
+  summarizeIncomeForecastRows,
+  LISTING_PROPENSITY_HORIZON_DAYS,
   type RailAccuracy,
   type NetSheetReconRow,
   type PricePredictionPair,
+  type DealOutcomePredictionRow,
+  type AvmEstimateRow,
+  type SoldListingAddressRow,
+  type PropensityActionRow,
+  type ContactListingEvent,
+  type IncomeForecastSnapshotRow,
+  type ClosedDealGciRow,
 } from "../lib/analytics/prediction-accuracy"
+import {
+  ACCURACY_GATE_POLICIES,
+  MANAGER_ACCURACY_DOMAIN,
+  accuracyGateVerdict,
+  accuracyHold,
+} from "../lib/managers/accuracy-gate"
+import { autonomyDecision } from "../lib/managers/autonomy-gate"
 import { recruitingPitchSpec, type RecruitingPitchFacts } from "../lib/recruiting/recruiting-pitch-kit"
 import { composeQuarterlyReview, type QuarterFacts } from "../lib/intelligence/quarterly-review"
 
@@ -174,6 +204,174 @@ async function main() {
   check("content: median |delta| = 10 pts over 3 logged outcomes", content.available && content.observations === 3 && content.medianError?.value === 10, String(content.medianError?.value))
   check("content: empty log → available:false", summarizeContentRows([]).available === false)
 
+  // ═══ Layer 1b · the four round-36 rails (exclusion audit) ═══
+  console.log("\n[Layer 1b · round-36 rails — deal outcome, AVM join, propensity, income forecast]")
+
+  // — probability normalization —
+  check("normalizeProbability: 0..1 passes through", normalizeProbability(0.75) === 0.75)
+  check("normalizeProbability: 0..100 scaled", normalizeProbability(75) === 0.75)
+  check("normalizeProbability: out-of-range / junk refused", normalizeProbability(140) === null && normalizeProbability("x") === null && normalizeProbability(-1) === null)
+
+  // — deal outcome (first pre-outcome call per deal, real terminal events only) —
+  const doRow = (over: Partial<DealOutcomePredictionRow>): DealOutcomePredictionRow => ({
+    predictionType: "win_probability",
+    predictionValue: { win_probability: 0.8 },
+    actualOutcome: { outcome: "closed" },
+    outcomeDate: "2026-06-01T00:00:00Z",
+    createdAt: "2026-03-01T00:00:00Z",
+    entityId: "t1",
+    ...over,
+  })
+  const dealRail = summarizeDealOutcomeRows([
+    doRow({ entityId: "t1", createdAt: "2026-03-01T00:00:00Z", predictionValue: { win_probability: 0.8 } }),           // first call — graded (|0.8−1| = 0.2)
+    doRow({ entityId: "t1", createdAt: "2026-05-30T00:00:00Z", predictionValue: { win_probability: 0.99 } }),          // later converged call — ignored
+    doRow({ entityId: "t2", predictionValue: { closeProbability: 40 }, actualOutcome: { outcome: "lost" }, createdAt: "2026-02-01T00:00:00Z" }), // |0.4−0| = 0.4
+    doRow({ entityId: "t3", createdAt: "2026-07-01T00:00:00Z" }),                                                      // claim AFTER the outcome — hindsight, refused
+    doRow({ entityId: "t4", actualOutcome: { outcome: "pending" } }),                                                  // not a terminal event — refused
+  ])
+  check("deal outcome: first pre-outcome call per deal only (2 graded)", dealRail.available && dealRail.observations === 2, String(dealRail.observations))
+  // errors 0.2, 0.4 → fractional median 0.3 → 30 probability points
+  check("deal outcome: median = 30 probability pts", dealRail.medianError?.value === 30 && dealRail.medianError.unit === "probability_pts", String(dealRail.medianError?.value))
+  check("deal outcome: no minted within-rate", dealRail.withinRate === null)
+  check("deal outcome: empty → available:false", summarizeDealOutcomeRows([]).available === false)
+
+  // — AVM address join (strict, unique-only) —
+  check("address key: suffix + punctuation normalize to one key",
+    normalizeAddressKey("123 Main Street", "30301") === normalizeAddressKey("123 Main St.", "30301-4321") && normalizeAddressKey("123 Main Street", "30301") != null)
+  check("address key: unit designators stripped", normalizeAddressKey("123 Main St Apt 4B", "30301") === normalizeAddressKey("123 Main St", "30301"))
+  check("address key: no street number / no ZIP refused", normalizeAddressKey("Main St", "30301") === null && normalizeAddressKey("123 Main St", "GA") === null)
+  const est = (over: Partial<AvmEstimateRow>): AvmEstimateRow => ({
+    street: "123 Main Street", zip: "30301", brokerageId: "b1",
+    low: 380_000, mid: 400_000, high: 430_000, generatedAt: "2026-01-15T00:00:00Z", ...over,
+  })
+  const soldRow = (over: Partial<SoldListingAddressRow>): SoldListingAddressRow => ({
+    street: "123 Main St", zip: "30301", brokerageId: "b1", soldPrice: 410_000, soldDate: "2026-04-01", ...over,
+  })
+  const avm = summarizeHomeValueRows(
+    [
+      est({}),                                                                      // graded: sold 410k within [380k,430k]
+      est({ street: "77 Oak Ave", generatedAt: "2026-01-01T00:00:00Z", low: 100_000, mid: 120_000, high: 130_000 }), // ambiguous key → refused
+      est({ street: "9 Pine Dr", generatedAt: "2026-09-01T00:00:00Z" }),            // generated AFTER the sale → refused
+    ],
+    [
+      soldRow({}),
+      soldRow({ street: "77 Oak Avenue", soldPrice: 200_000 }),
+      soldRow({ street: "77 Oak Ave.", soldPrice: 210_000 }),                       // same key twice → ambiguity refused
+      soldRow({ street: "9 Pine Drive", soldDate: "2026-05-01" }),
+    ],
+  )
+  check("AVM: 1 graded (ambiguous + post-sale refused)", avm.available && avm.observations === 1, String(avm.observations))
+  check("AVM: within-rate uses the estimate's OWN band (1/1)", avm.withinRate?.rate === 1, JSON.stringify(avm.withinRate))
+  check("AVM: median error is |mid − sold| / sold", avm.medianError?.value === Math.round((10_000 / 410_000) * 10000) / 10000 && avm.medianError.unit === "pct_of_sale", String(avm.medianError?.value))
+  check("AVM: ambiguity is NAMED in the honest notes", avm.honestNotes.some((n) => n.includes("refused")), JSON.stringify(avm.honestNotes))
+  const avmCross = summarizeHomeValueRows([est({ brokerageId: "b2" })], [soldRow({})])
+  check("AVM: cross-brokerage same-address never joins", avmCross.available === false)
+
+  // — listing propensity (immutable trigger ledger vs a real later listing) —
+  const NOW = "2026-07-20T00:00:00Z"
+  const act = (over: Partial<PropensityActionRow>): PropensityActionRow => ({
+    contactId: "c1", brokerageId: "b1", createdAt: "2026-01-01T00:00:00Z", ...over,
+  })
+  const lev = (over: Partial<ContactListingEvent>): ContactListingEvent => ({
+    contactId: "c1", brokerageId: "b1", listedAt: "2026-03-01T00:00:00Z", ...over,
+  })
+  const prop = summarizePropensityRows(
+    [
+      act({ contactId: "c1" }),                                       // listed 2026-03-01, within 180d → hit
+      act({ contactId: "c1", createdAt: "2026-02-01T00:00:00Z" }),    // later duplicate trigger — first one wins
+      act({ contactId: "c2" }),                                       // no listing, window elapsed → miss
+      act({ contactId: "c3", createdAt: "2026-07-01T00:00:00Z" }),    // window still open → pending, not graded
+      act({ contactId: "c4" }),                                       // listing BEFORE the trigger → refused
+    ],
+    [
+      lev({ contactId: "c1" }),
+      lev({ contactId: "c4", listedAt: "2025-12-01T00:00:00Z" }),
+    ],
+    NOW,
+  )
+  check("propensity: 2 graded (1 hit + 1 elapsed miss), pending/pre-existing excluded", prop.available && prop.observations === 2, String(prop.observations))
+  check("propensity: hit rate 1/2 with the horizon NAMED in the label",
+    prop.withinRate?.rate === 0.5 && (prop.withinRate?.label ?? "").includes(String(LISTING_PROPENSITY_HORIZON_DAYS)), JSON.stringify(prop.withinRate))
+  check("propensity: pending + refused counted in honest notes",
+    prop.honestNotes.some((n) => n.includes("still inside the window")) && prop.honestNotes.some((n) => n.includes("refused")), JSON.stringify(prop.honestNotes))
+  const propPending = summarizePropensityRows([act({ contactId: "c9", createdAt: "2026-07-10T00:00:00Z" })], [], NOW)
+  check("propensity: open windows only → available:false (never graded early)", propPending.available === false && (propPending.why ?? "").includes("window"))
+
+  // — income forecast (weighted_30 vs realized closed GCI, snapshot's own band) —
+  const snap = (over: Partial<IncomeForecastSnapshotRow>): IncomeForecastSnapshotRow => ({
+    agentId: "a1", computedAt: "2026-01-01T00:00:00Z", weighted30: 10_000, lowBandPct: 25, highBandPct: 15, ...over,
+  })
+  const deal = (over: Partial<ClosedDealGciRow>): ClosedDealGciRow => ({
+    agentId: "a1", closeDate: "2026-01-15", gci: 9_000, ...over,
+  })
+  const inc = summarizeIncomeForecastRows(
+    [
+      snap({}),                                                        // realized 9,000 vs 10,000 → within [7,500, 11,500]
+      snap({ computedAt: "2026-01-20T00:00:00Z" }),                    // same agent+month — deduped (earliest wins)
+      snap({ agentId: "a2", weighted30: 20_000 }),                     // realized 0 → miss by 20,000, outside band
+      snap({ agentId: "a3", weighted30: 0 }),                          // zero forecast + zero realized → trivial, skipped
+      snap({ agentId: "a4", computedAt: "2026-07-10T00:00:00Z" }),     // window not elapsed → not graded
+    ],
+    [deal({}), deal({ agentId: "a1", closeDate: "2025-12-30", gci: 99_999 })], // pre-window close never counts
+    NOW,
+  )
+  check("income forecast: 2 graded (month-dedup, trivial + open-window skipped)", inc.available && inc.observations === 2, String(inc.observations))
+  // errors: |9,000−10,000| = 1,000 and |0−20,000| = 20,000 → medianOf rounds avg → 10,500
+  check("income forecast: median |realized − forecast| = $10,500", inc.medianError?.value === 10_500 && inc.medianError.unit === "usd", String(inc.medianError?.value))
+  check("income forecast: within-rate 1/2 against the snapshot's OWN band", inc.withinRate?.rate === 0.5, JSON.stringify(inc.withinRate))
+  check("income forecast: trivial zero-zero skip named in notes", inc.honestNotes.some((n) => n.includes("skipped")), JSON.stringify(inc.honestNotes))
+  check("income forecast: empty → available:false", summarizeIncomeForecastRows([], [], NOW).available === false)
+
+  // ═══ Layer 1c · ACCURACY-DRIVEN AUTONOMY (round 36, rec 4) ═══
+  console.log("\n[Layer 1c · accuracy gate — the predictive autonomy policy dispatch enforces]")
+
+  const pricingPolicy = ACCURACY_GATE_POLICIES.pricing
+  const strongPricing = summarizeListingPriceRows(Array.from({ length: 6 }, () =>
+    pair({ predictedPrice: 505_000, soldPrice: 500_000 }))) // 1% median error, 6 obs
+  const earned = accuracyGateVerdict(pricingPolicy, strongPricing)
+  check("gate: strong rail (6 obs, 1% median) → EARNED with measured evidence",
+    earned.state === "earned" && earned.observations === 6 && earned.reason.includes("1.0%"), earned.reason)
+  const thinPricing = summarizeListingPriceRows([pair({})])
+  const thin = accuracyGateVerdict(pricingPolicy, thinPricing)
+  check("gate: thin sample (< min obs) → SUPERVISED with the stated reason",
+    thin.state === "supervised" && thin.reason.includes(`${pricingPolicy.minObservations}`), thin.reason)
+  const wildPricing = summarizeListingPriceRows(Array.from({ length: 6 }, () =>
+    pair({ predictedPrice: 600_000, soldPrice: 500_000 }))) // 20% median error
+  const offBar = accuracyGateVerdict(pricingPolicy, wildPricing)
+  check("gate: off-the-bar rail (20% median) → SUPERVISED citing the measured miss",
+    offBar.state === "supervised" && offBar.reason.includes("20.0%"), offBar.reason)
+  const noRead = accuracyGateVerdict(pricingPolicy, null)
+  check("gate: unreadable rail → NO_SIGNAL (fail open, stated)", noRead.state === "no_signal" && accuracyHold(noRead).held === false)
+  const emptyRail = accuracyGateVerdict(pricingPolicy, summarizeListingPriceRows([]))
+  check("gate: readable-but-empty rail → SUPERVISED (accuracy is earned, not assumed)",
+    emptyRail.state === "supervised" && accuracyHold(emptyRail).held === true, emptyRail.reason)
+  check("gate: only listed managers are gated (mapped domains exist)",
+    MANAGER_ACCURACY_DOMAIN.listing_concierge === "pricing" && MANAGER_ACCURACY_DOMAIN.campaign_orchestrator === "marketing_content" && MANAGER_ACCURACY_DOMAIN.ai_isa === undefined)
+
+  // — the decision point: precedence proven on the EXACT pure fn dispatch runs —
+  const hold = accuracyHold(emptyRail)
+  const heldByAccuracy = autonomyDecision({ managerKey: "campaign_orchestrator", effective: "autonomous", accuracyGate: hold })
+  check("decision: 'autonomous' + supervised verdict → HELD with the measured reason",
+    !heldByAccuracy.allow && heldByAccuracy.held && heldByAccuracy.posture === "approval_required" && heldByAccuracy.reason === hold.reason)
+  check("decision: earned verdict changes nothing (never grants, never blocks)",
+    autonomyDecision({ managerKey: "campaign_orchestrator", effective: "autonomous", accuracyGate: accuracyHold(earned) }).allow === true)
+  check("decision: null / review_recommended postures are NOT accuracy-gated (no day-one regression)",
+    autonomyDecision({ managerKey: "campaign_orchestrator", effective: null, accuracyGate: hold }).allow === true &&
+    autonomyDecision({ managerKey: "campaign_orchestrator", effective: "review_recommended", accuracyGate: hold }).allow === true)
+  check("decision: HUMAN-APPROVED bypasses the accuracy gate (supervised means a human approves)",
+    autonomyDecision({ managerKey: "campaign_orchestrator", effective: "autonomous", humanApproved: true, accuracyGate: hold }).allow === true)
+  const haltWins = autonomyDecision({
+    managerKey: "campaign_orchestrator", effective: "autonomous",
+    platformHalt: { halted: true, reason: "platform emergency halt" }, accuracyGate: accuracyHold(earned),
+  })
+  check("decision: a HALT always wins — an earned accuracy verdict never overrides it",
+    !haltWins.allow && haltWins.reason === "platform emergency halt")
+  const tenantWins = autonomyDecision({
+    managerKey: "campaign_orchestrator", effective: "autonomous",
+    tenantHalt: { halted: true, reason: "staff paused this brokerage" }, accuracyGate: accuracyHold(earned),
+  })
+  check("decision: the tenant halt also beats the accuracy gate", !tenantWins.allow && tenantWins.reason === "staff paused this brokerage")
+
   // ═══ Layer 2 · static guarantees on the library + the two mounts ═══
   console.log("\n[Layer 2 · read-only, existing tables only, keep-one component]")
 
@@ -184,9 +382,34 @@ async function main() {
   // Every .from("table") literal must exist in the schema snapshot — no new tables.
   const snapshot = readFileSync(join(ROOT, "scripts/schema-snapshot.ts"), "utf8")
   const tables = [...libSrc.matchAll(/\.from\("([a-z_]+)"\)/g)].map((m) => m[1])
-  check("adapters actually read the ledgers (≥ 8 table reads)", tables.length >= 8, tables.join(","))
+  check("adapters actually read the ledgers (≥ 12 table reads)", tables.length >= 12, tables.join(","))
   const unknown = [...new Set(tables)].filter((t) => !new RegExp(`^\\s+${t}: \\[`, "m").test(snapshot))
   check("every table read exists in the schema snapshot (no new table literals)", unknown.length === 0, unknown.join(","))
+
+  // ── round-36 wiring: the outcome writer, the freezer, and the accuracy gate ──
+  const outcomesSrc = readFileSync(join(ROOT, "lib/analytics/ai-prediction-outcomes.ts"), "utf8")
+  check("outcome writer exists and grades only on terminal events (idempotent guard)",
+    outcomesSrc.includes("gradeTransactionPredictionOutcomes") && outcomesSrc.includes('.is("actual_outcome", null)'))
+  const stageSrc = readFileSync(join(ROOT, "lib/transactions/stage-progression.ts"), "utf8")
+  check("stage-progression grades ai_predictions at BOTH terminal stages (CLOSED and LOST)",
+    /outcome: "closed"/.test(stageSrc) && /outcome: "lost"/.test(stageSrc) && stageSrc.includes("gradeTransactionPredictionOutcomes"))
+  const coordSrc = readFileSync(join(ROOT, "app/actions/ai-transaction-coordinator.ts"), "utf8")
+  check("the single win_probability writer freezes every claim as a snapshot",
+    coordSrc.includes("captureWinProbabilitySnapshot") && coordSrc.includes("win_probability: analysis.winProbability"))
+  const gateSrc = readFileSync(join(ROOT, "lib/managers/accuracy-gate.ts"), "utf8")
+  check("accuracy gate consults the SAME rail loader the panel reads (no forked math)",
+    gateSrc.includes("loadRailAccuracy") && gateSrc.includes("accuracyGateVerdict"))
+  const dispatchSrc = readFileSync(join(ROOT, "lib/providers/dispatch.ts"), "utf8")
+  check("dispatch consults the accuracy gate ONLY for an explicit 'autonomous' posture",
+    dispatchSrc.includes("loadAccuracyHoldForManager") && /effective === "autonomous" && !humanApproved/.test(dispatchSrc))
+  const autonomySrc = readFileSync(join(ROOT, "lib/managers/autonomy-gate.ts"), "utf8")
+  check("the pure decision carries the accuracy gate BELOW both halts",
+    autonomySrc.indexOf("platformHalt?.halted") < autonomySrc.indexOf("accuracyGate?.held") &&
+    autonomySrc.indexOf("tenantHalt?.halted") < autonomySrc.indexOf("accuracyGate?.held"))
+  const trustPageSrc = readFileSync(join(ROOT, "app/dashboard/admin/manager-trust/page.tsx"), "utf8")
+  const trustClientSrc = readFileSync(join(ROOT, "app/dashboard/admin/manager-trust/manager-trust-client.tsx"), "utf8")
+  check("the autonomy governance panel shows the per-domain verdict + reason",
+    trustPageSrc.includes("loadAccuracyGateReport") && trustClientSrc.includes("accuracyGates") && trustClientSrc.includes("{g.reason}"))
 
   const superadminSrc = readFileSync(join(ROOT, "app/dashboard/superadmin/platform/page.tsx"), "utf8")
   const brokerSrc = readFileSync(join(ROOT, "app/dashboard/analytics/page.tsx"), "utf8")
@@ -253,7 +476,7 @@ async function main() {
   const { createServiceClient } = await import("../lib/supabase/service")
   const svc = createServiceClient()
   const live = await getPredictionAccuracyReport(svc as any)
-  check("live: full 8-rail shape returned without throwing", live.rails.length === 8, String(live.rails.length))
+  check("live: full 12-rail shape returned without throwing", live.rails.length === 12, String(live.rails.length))
   check("live: every rail is honest (available with numbers, or unavailable with a why)",
     live.rails.every((r: RailAccuracy) => (r.available && r.observations > 0) || (!r.available && !!r.why && r.medianError === null)),
     JSON.stringify(live.rails.map((r) => ({ rail: r.rail, available: r.available, obs: r.observations, why: r.why }))))

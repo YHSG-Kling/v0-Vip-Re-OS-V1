@@ -493,6 +493,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
             listPrice={listing.price || 0}
             currentMortgageBalance={listing.mortgage_balance || 0}
             propertyAddress={listing.address || ""}
+            state={listing.state ?? null}
           />
         </div>
       </div>

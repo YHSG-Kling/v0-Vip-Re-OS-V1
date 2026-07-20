@@ -104,6 +104,28 @@ export async function GET(req: NextRequest) {
         } catch (e) {
           console.error("[weekly-measure] content_winner signal failed:", e)
         }
+        // DELIBERATIVE EMITTER (round 36, organic_paid_content): the same strong week is a
+        // BUDGET question — double down on the proven organic winner or fund the paid push.
+        // Raise the governed referral so both managers ARGUE it from their own ledgers
+        // (social engagement vs campaign CPL), with one bounded rebuttal round and a stated
+        // resolution on the manager-trust surface. Deduped per measured week; best-effort.
+        try {
+          const { raiseReferralDeduped } = await import("@/lib/managers/cross-referral")
+          await raiseReferralDeduped({
+            brokerageId: row.brokerage_id,
+            fromManager: "marketing_agent",
+            toManager: "ads_manager",
+            collabDomain: "organic_paid_content",
+            ask: `Week of ${row.week_start} was an organic winner — ${measured.open_rate.toFixed(0)}% open / ${measured.click_rate.toFixed(0)}% click across ${measured.campaigns_sent} campaign(s). ` +
+              `Argue the next marketing dollar: double down on the proven organic motion vs fund the paid push while it's hot.`,
+            entityType: "marketing_week",
+            entityId: row.id,
+            payload: { week_start: row.week_start, open_rate: measured.open_rate, click_rate: measured.click_rate },
+            dedupe: { organic_week_id: row.id },
+          }, svc)
+        } catch (e) {
+          console.error("[weekly-measure] organic-vs-paid deliberative referral failed:", e)
+        }
       }
       results.push({ id: row.id, outcome: `measured:${score}` })
     } catch (e) {

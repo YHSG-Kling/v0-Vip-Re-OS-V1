@@ -312,6 +312,34 @@ async function runAppraisalGapDetection(args: {
   } catch (err) {
     console.error("[runAppraisalGapDetection] negotiation copilot failed (non-blocking):", err)
   }
+
+  // (d) DELIBERATIVE EMITTER (round 36, closing_money_and_risk): an appraisal gap is the
+  // canonical money-vs-close-date-vs-exposure tradeoff the registry marks deliberative —
+  // raise the governed cross-manager referral so the deal's co-managers ARGUE the response
+  // (seller reduces / buyer covers / split-or-reappraise) with grounded positions, one
+  // bounded rebuttal round, a stated resolution and honest dissent, all persisted on the
+  // referral row and rendered on the manager-trust surface. Recency-deduped per transaction
+  // over the bus ledger (the (already) idempotency gate above also protects re-marks).
+  // Best-effort — the humans were already informed by (a)/(b)/(c).
+  try {
+    const { raiseReferralDeduped } = await import("@/lib/managers/cross-referral")
+    const dealRow = tx as { deal_name?: string | null; property_address?: string | null }
+    const dealLabel = dealRow?.deal_name ?? dealRow?.property_address ?? "the deal"
+    await raiseReferralDeduped({
+      brokerageId: args.brokerageId,
+      fromManager: "deal_coordinator",
+      toManager: "finance_manager",
+      collabDomain: "closing_money_and_risk",
+      ask: `Appraisal on ${dealLabel} came in at ${usd(args.appraisalValue)} vs ${usd(contractPrice)} contract (${gapFraming} — ${usd(gapAmount)}, ${gapPct}%). ` +
+        `Argue the response: seller reduces vs buyer covers vs split-or-reappraise — the close date, the commission math, and the contingency exposure all pull differently.`,
+      entityType: "transaction",
+      entityId: args.transactionId,
+      payload: { appraisal_value: args.appraisalValue, gap_amount: gapAmount, gap_pct: gapPct },
+      dedupe: { appraisal_gap_txn: args.transactionId },
+    }, svc)
+  } catch (err) {
+    console.error("[runAppraisalGapDetection] deliberative referral failed (non-blocking):", err)
+  }
 }
 
 // ─── Appraisal ordered (the PREVENTION coaching moment) ──────────────────────

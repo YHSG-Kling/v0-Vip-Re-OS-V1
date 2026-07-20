@@ -4,6 +4,7 @@ import { OffersManagerClient } from "./offers-manager-client"
 import MultiOfferMatrixCard from "./components/multi-offer-matrix-card"
 import { InteractiveNetSheet } from "@/components/features/offers/interactive-net-sheet"
 import { defaultSellerCosts, type OfferNetInput } from "@/lib/kernel/offer-net-sheet"
+import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
 
 export default async function OffersPage({
   params,
@@ -93,6 +94,16 @@ export default async function OffersPage({
     commissionRateDecimal: (listing as any).commission_rate != null ? Number((listing as any).commission_rate) / 100 : 0.06,
     hoaDuesMonthly: (listing as any).hoa_dues != null ? Number((listing as any).hoa_dues) : null,
   })
+  // KEEP-ONE (round 36): the net sheet's closing-cost line derives from the
+  // seller closing-cost model when the listing's state is known — the flat
+  // "other prorated fees" default becomes the state-convention band midpoint,
+  // rendered with its regional provenance label. Still editable live (manual
+  // override preserved); unknown state → the flat default stands, unlabeled.
+  const closingCostSection = deriveNetSheetClosingCostSection(
+    listing.list_price != null ? Number(listing.list_price) : null,
+    (listing as any).state ?? null,
+  )
+  if (closingCostSection) netSheetCosts.otherProratedFees = closingCostSection.midpoint
 
   return (
     <>
@@ -109,6 +120,7 @@ export default async function OffersPage({
             listingAddress={listing.address}
             offers={netSheetOffers}
             initialCosts={netSheetCosts}
+            closingCostSection={closingCostSection}
           />
         </div>
       )}

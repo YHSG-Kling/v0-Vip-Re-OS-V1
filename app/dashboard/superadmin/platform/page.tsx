@@ -25,6 +25,13 @@ import { StatusNoticePanel } from "./status-notice-panel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getPredictionAccuracyReport, composePredictionTrustChip } from "@/lib/analytics/prediction-accuracy"
 import { PredictionAccuracyPanel } from "@/components/analytics/prediction-accuracy-panel"
+import {
+  ACCOUNTING_OFFERINGS,
+  PLATFORM_BOOKS_STORAGE_KEY,
+  PLATFORM_OWNER_ID,
+  readScopedAccounting,
+} from "@/lib/connections/accounting-scopes"
+import { ProviderConnectionCard } from "@/app/settings/accounting/provider-connection-card"
 
 export const dynamic = "force-dynamic"
 
@@ -105,6 +112,10 @@ export default async function SuperadminPlatformPage() {
   // superadmin-gated above. Never throws: unavailable rails carry their why.
   const predictionAccuracy = await getPredictionAccuracyReport(createServiceClient() as any)
 
+  // PLATFORM BOOKS — the company's own accounting connection (exact owner match on
+  // owner_type='platform', owner_id='platform', platform='platform_quickbooks').
+  const platformBooks = await readScopedAccounting(createServiceClient(), "platform", PLATFORM_OWNER_ID)
+
   if (!overviewRes.ok) return <div className="p-6 text-red-600">Failed: {overviewRes.error}</div>
 
   const { totals, rows, fair_use_violators, losing_money } = overviewRes
@@ -184,6 +195,38 @@ export default async function SuperadminPlatformPage() {
 
       {/* PLATFORM PROVIDERS — channel enablement + default vendors (read by resolveProvider at runtime) */}
       <PlatformProvidersPanel spec={PLATFORM_PROVIDER_SPEC} initial={platformProviders} />
+
+      {/* PLATFORM BOOKS — the COMPANY's own accounting connections (scope-aware; stored
+          under the distinct 'platform_quickbooks' key so the tenant credential cascade
+          can never resolve the company's QuickBooks). */}
+      <div className="space-y-3">
+        <div>
+          <h2 className="text-xl font-semibold">Platform Books</h2>
+          <p className="text-sm text-muted-foreground">
+            The platform&apos;s own company accounting — isolated from every tenant connection.
+          </p>
+        </div>
+        <div className="grid gap-6 md:grid-cols-2">
+          <ProviderConnectionCard
+            provider="quickbooks"
+            scope="platform"
+            status={platformBooks.quickbooks.offering.status}
+            connected={platformBooks.quickbooks.connected}
+            companyName={platformBooks.quickbooks.accountName ?? platformBooks.quickbooks.realmId}
+            connectPath={platformBooks.quickbooks.offering.connectPath}
+            note={platformBooks.quickbooks.offering.verdict}
+            storageKey={PLATFORM_BOOKS_STORAGE_KEY}
+          />
+          <ProviderConnectionCard
+            provider="stripe"
+            scope="platform"
+            status={ACCOUNTING_OFFERINGS.platform.stripe.status}
+            connected={false}
+            connectPath={ACCOUNTING_OFFERINGS.platform.stripe.connectPath}
+            note={ACCOUNTING_OFFERINGS.platform.stripe.verdict}
+          />
+        </div>
+      </div>
 
       {/* Vendor-spend governance — brokerage warning visibility control */}
       <BudgetWarningToggle initialEnabled={budgetWarningEnabled} />

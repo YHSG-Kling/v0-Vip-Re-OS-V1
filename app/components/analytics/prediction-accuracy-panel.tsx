@@ -28,6 +28,7 @@ function fmtMedianError(m: NonNullable<RailAccuracy["medianError"]>): string {
     case "days":         return `±${Math.round(m.value)} day${Math.round(m.value) === 1 ? "" : "s"}`
     case "people":       return `±${Math.round(m.value)} ${Math.round(m.value) === 1 ? "person" : "people"}`
     case "score_points": return `±${Math.round(m.value)} pts`
+    case "probability_pts": return `±${Math.round(m.value)} prob. pts`
   }
 }
 

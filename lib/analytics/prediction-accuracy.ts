@@ -33,21 +33,48 @@
 //   pattern_predictions  pattern_predictions.outcome (human-graded correct/incorrect)
 //   content_performance  prediction_accuracy_log (predicted vs actual content score)
 //
+// RAILS ADDED IN THE ROUND-36 EXCLUSION AUDIT (each earned its way in):
+//   deal_outcome         ai_predictions gained a REAL outcome writer: the
+//                        close-time grader in lib/analytics/ai-prediction-outcomes
+//                        stamps actual_outcome/outcome_date when a transaction
+//                        reaches a terminal stage (CLOSED/LOST — real events),
+//                        and transactions.win_probability is FROZEN onto the same
+//                        ledger at every AI write (snapshot rows, so the mutable
+//                        column can never grade itself in hindsight). Only the
+//                        FIRST pre-outcome call per deal is graded.
+//   home_value_avm       home_value_estimates joined to a SOLD listing by strict
+//                        normalized street+ZIP within the same brokerage — a key
+//                        that matches more than one sold listing (or none) is
+//                        REFUSED, never guessed. The estimate's own low–high band
+//                        is the source-defined tolerance.
+//   listing_propensity   the IMMUTABLE trigger ledger predictive_listing_actions
+//                        (score frozen at the moment the play fired) graded
+//                        against a real later listings row for the same contact
+//                        within a declared 180-day window. The mutable
+//                        predictive_listing_scores upsert row is NOT graded (its
+//                        history is overwritten — see exclusions).
+//   income_forecast      income_forecast_snapshots.weighted_30 reconciled against
+//                        the CLOSED-transaction GCI actually recorded in the 30
+//                        days after each snapshot; the snapshot's own
+//                        low/high-band percentages are the source tolerance.
+//
 // RAILS DELIBERATELY EXCLUDED (and why — auditable, not forgotten):
-//   ai_predictions               has an actual_outcome column but NO writer ever
-//                                sets it — outcomes don't genuinely exist.
-//   home_value_estimates (AVM)   no listing/transaction key — only a fuzzy
-//                                address join to a sale; the AVM-vs-sale story
-//                                is carried honestly by listing_price instead
-//                                (price_predictions has an exact listing_id join).
-//   buyer_behavior_predictions   predictions only; no outcome ledger.
-//   listing propensity scores    gated briefs, but no recorded listed/not-listed
-//                                outcome row to grade against.
-//   transactions.win_probability live mutable column that converges to the
-//                                outcome — no frozen snapshot ledger, so grading
-//                                it would be hindsight, not accuracy.
-//   income_forecast_snapshots    forecast-vs-GOAL gap exists; no realized-outcome
-//                                reconciliation ledger yet.
+//   buyer_behavior_predictions   UPSERT ON CONFLICT (contact_id) with a 24h
+//                                expires_at — every regeneration DESTROYS the
+//                                prior prediction, so by the time a 30–60-day
+//                                offer window has elapsed the surviving row is no
+//                                longer the prediction that was acted on. Grading
+//                                survivors would be selection-biased, not accuracy.
+//   predictive_listing_scores    same mutability problem (upsert per contact),
+//                                carried honestly by listing_propensity via the
+//                                immutable predictive_listing_actions ledger.
+//   ai_predictions lead_conversion rows — only the POSITIVE outcome (converted →
+//                                closed deal) is observable event-driven; the
+//                                negative needs a horizon sweep on the cron rail
+//                                (owned elsewhere this round). The close-time
+//                                grader records conversions for ledger
+//                                completeness, but a hit-rate over positives-only
+//                                would be survivorship, so the rail skips them.
 //   deal velocity                a measurement (decision→execution time), not a
 //                                prediction.
 
@@ -68,11 +95,15 @@ export type AccuracyRailId =
   | "offer_strategy"
   | "pattern_predictions"
   | "content_performance"
+  | "deal_outcome"
+  | "home_value_avm"
+  | "listing_propensity"
+  | "income_forecast"
 
 export interface RailMedianError {
   value: number
   /** unit of the median error value */
-  unit: "usd" | "pct_of_sale" | "days" | "people" | "score_points"
+  unit: "usd" | "pct_of_sale" | "days" | "people" | "score_points" | "probability_pts"
   /** human phrasing, e.g. "median |actual − estimate midpoint|" */
   label: string
 }
@@ -108,6 +139,9 @@ export interface RailAccuracy {
   outcomeSource: string
   detailHref: string | null
   breakdown?: RailBreakdownRow[]
+  /** ADDITIVE (round 36): buyer/seller split where the rail's ledger carries a
+   *  side discriminator (closing_costs). Absent everywhere else. */
+  sideBreakdown?: RailBreakdownRow[]
 }
 
 export interface PredictionAccuracyReport {
@@ -149,12 +183,51 @@ export function fractionalMedian(values: number[]): number {
   return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2
 }
 
+/** PURE: normalize a probability that may be stored 0..1 or 0..100 to 0..1.
+ *  Out-of-range / non-numeric → null (refused, never clamped into a claim). */
+export function normalizeProbability(v: unknown): number | null {
+  const n = num(v)
+  if (n == null || n < 0) return null
+  if (n <= 1) return n
+  if (n <= 100) return n / 100
+  return null
+}
+
+// Street-suffix / directional canonicalization for the honest address join.
+const STREET_TOKEN_CANON: Record<string, string> = {
+  street: "st", avenue: "ave", av: "ave", boulevard: "blvd", drive: "dr", lane: "ln",
+  road: "rd", court: "ct", circle: "cir", place: "pl", terrace: "ter", highway: "hwy",
+  parkway: "pkwy", trail: "trl", square: "sq", north: "n", south: "s", east: "e",
+  west: "w", northeast: "ne", northwest: "nw", southeast: "se", southwest: "sw",
+}
+
+/** PURE: strict normalized join key for the AVM rail — street line + 5-digit ZIP.
+ *  Refuses (null) anything without a leading street number and a real ZIP; unit /
+ *  suite designators are stripped so "Apt 2" never forks the key. */
+export function normalizeAddressKey(street: string | null | undefined, zip: string | null | undefined): string | null {
+  if (!street || !zip) return null
+  const zip5 = String(zip).trim().slice(0, 5)
+  if (!/^\d{5}$/.test(zip5)) return null
+  const tokens = String(street)
+    .toLowerCase()
+    .replace(/[.,#]/g, " ")
+    .replace(/\b(?:apt|apartment|unit|suite|ste)\b\s*\S*/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((t) => STREET_TOKEN_CANON[t] ?? t)
+  if (tokens.length < 2 || !/^\d+$/.test(tokens[0])) return null
+  return `${tokens.join(" ")}|${zip5}`
+}
+
 // ─── Rail 1: CLOSING COSTS (the round-34 flywheel, merged in keep-one) ───────
 
 export interface ClosingCostObsRow {
   state: string
   lines: AccuracyLine[]
   created_at: string | null
+  /** ADDITIVE (round 36): 'buyer' | 'seller'. Rows written before migration
+   *  1105 carry no side column — they are buyer-side by construction. */
+  side?: string | null
 }
 
 const CLOSING_COSTS_BASE = {
@@ -197,6 +270,26 @@ export function summarizeClosingCostRows(rows: ClosingCostObsRow[]): RailAccurac
     }))
     .sort((a, b) => b.observations - a.observations || a.group.localeCompare(b.group))
 
+  // BUYER/SELLER breakdown (round 36 — additive; the rail's shape is unchanged).
+  // Missing side = pre-1105 row = buyer-side by construction, never guessed.
+  const bySide = new Map<string, { lines: AccuracyLine[]; observations: number }>()
+  for (const r of graded) {
+    const side = r.side === "seller" ? "seller" : "buyer"
+    const bucket = bySide.get(side) ?? { lines: [], observations: 0 }
+    bucket.lines.push(...r.lines)
+    bucket.observations += 1
+    bySide.set(side, bucket)
+  }
+  const sideBreakdown: RailBreakdownRow[] = [...bySide.entries()]
+    .map(([side, b]) => ({
+      group: side,
+      observations: b.observations,
+      withinRate: round2(b.lines.filter((l) => l.withinBand).length / b.lines.length),
+      medianError: medianOf(b.lines.map((l) => Math.abs(l.deltaFromMid))),
+    }))
+    .sort((a, b) => a.group.localeCompare(b.group))
+  const sellerObs = bySide.get("seller")?.observations ?? 0
+
   return {
     ...CLOSING_COSTS_BASE,
     available: true,
@@ -213,18 +306,33 @@ export function summarizeClosingCostRows(rows: ClosingCostObsRow[]): RailAccurac
     },
     period: periodOf(graded.map((r) => r.created_at)),
     breakdown,
+    sideBreakdown,
+    honestNotes: [
+      ...CLOSING_COSTS_BASE.honestNotes,
+      ...(sellerObs > 0
+        ? ["Seller-side observations grade commission / title-and-settlement / transfer-tax lines against the settlement statement; buyer-side grades the CD's borrower-paid column."]
+        : []),
+    ],
   }
 }
 
 async function closingCostsAdapter(svc: Svc, brokerageId?: string): Promise<RailAccuracy> {
-  let q = svc.from("closing_cost_accuracy_observations")
-    .select("state, lines, created_at")
-    .order("created_at", { ascending: false })
-    .limit(2000)
-  if (brokerageId) q = q.eq("brokerage_id", brokerageId)
-  const { data, error } = await q
+  const buildQuery = (withSide: boolean) => {
+    let q = svc.from("closing_cost_accuracy_observations")
+      .select(withSide ? "state, lines, created_at, side" : "state, lines, created_at")
+      .order("created_at", { ascending: false })
+      .limit(2000)
+    if (brokerageId) q = q.eq("brokerage_id", brokerageId)
+    return q
+  }
+  let { data, error } = await buildQuery(true)
+  if (error) {
+    // Pre-1105 ledger has no side column — every row is buyer-side; retry the
+    // legacy shape so the rail keeps reporting instead of going dark.
+    ;({ data, error } = await buildQuery(false))
+  }
   if (error) return unavailable(CLOSING_COSTS_BASE, `ledger unreadable: ${error.message}`)
-  return summarizeClosingCostRows((data ?? []) as ClosingCostObsRow[])
+  return summarizeClosingCostRows((data ?? []) as unknown as ClosingCostObsRow[])
 }
 
 // ─── Rail 2: NET SHEET (promised seller net vs settled net) ──────────────────
@@ -664,6 +772,545 @@ async function contentAdapter(svc: Svc, brokerageId?: string): Promise<RailAccur
   return summarizeContentRows((data ?? []) as ContentAccuracyRow[])
 }
 
+// ─── Rail 9: DEAL OUTCOME (frozen probability calls vs the terminal event) ───
+//
+// ai_predictions gained its outcome writer in round 36: the close-time grader
+// (lib/analytics/ai-prediction-outcomes) stamps actual_outcome when a
+// transaction reaches CLOSED or LOST, and every write of the mutable
+// transactions.win_probability column is FROZEN as its own snapshot row on the
+// same ledger. This rail grades ONLY transaction-entity rows with a recorded
+// terminal outcome, taking the FIRST pre-outcome call per deal so a probability
+// that converged toward the outcome can never grade itself.
+
+export interface DealOutcomePredictionRow {
+  predictionType: string
+  predictionValue: unknown
+  actualOutcome: unknown
+  outcomeDate: string | null
+  createdAt: string | null
+  entityId: string
+}
+
+const DEAL_OUTCOME_BASE = {
+  rail: "deal_outcome" as const,
+  label: "Deal-outcome probability calls",
+  honestNotes: [
+    "Graded only against terminal transaction events (CLOSED / LOST) written by the close-time grader — never against the live mutable column.",
+    "Only the FIRST pre-outcome call per deal is graded, so probabilities that converge toward the outcome can't grade themselves.",
+  ],
+  predictionSource: "Frozen probability calls (ai_predictions: win_probability snapshots + deal_close_probability)",
+  outcomeSource: "Terminal transaction events (ai_predictions.actual_outcome, stamped at stage CLOSED/LOST)",
+  detailHref: "/dashboard/transactions",
+}
+
+/** PURE: extract the 0..1 probability claim from a prediction row's jsonb. */
+export function dealOutcomeProbability(row: DealOutcomePredictionRow): number | null {
+  const v = row.predictionValue as Record<string, unknown> | null
+  if (!v || typeof v !== "object") return null
+  return normalizeProbability(
+    (v as any).win_probability ?? (v as any).closeProbability ?? (v as any).close_probability,
+  )
+}
+
+/** PURE: deal-outcome rail — first pre-outcome call per deal vs the real terminal event. */
+export function summarizeDealOutcomeRows(rows: DealOutcomePredictionRow[]): RailAccuracy {
+  // Oldest-first so the FIRST call per deal wins.
+  const sorted = [...rows].sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")))
+  const seen = new Set<string>()
+  const graded: Array<{ p: number; y: 0 | 1; outcomeDate: string }> = []
+  for (const r of sorted) {
+    if (seen.has(r.entityId)) continue
+    const outcome = (r.actualOutcome as Record<string, unknown> | null)?.outcome
+    if (outcome !== "closed" && outcome !== "lost") continue // only real terminal events grade
+    if (!r.createdAt || !r.outcomeDate) continue
+    if (new Date(r.createdAt).getTime() >= new Date(r.outcomeDate).getTime()) continue // post-outcome claim: hindsight, refused
+    const p = dealOutcomeProbability(r)
+    if (p == null) continue
+    seen.add(r.entityId)
+    graded.push({ p, y: outcome === "closed" ? 1 : 0, outcomeDate: r.outcomeDate })
+  }
+  if (graded.length === 0) {
+    return unavailable(DEAL_OUTCOME_BASE,
+      "No frozen probability call has reached a terminal transaction outcome yet — the close-time grader records one when a deal closes or is lost.")
+  }
+  return {
+    ...DEAL_OUTCOME_BASE,
+    available: true,
+    why: null,
+    observations: graded.length,
+    medianError: {
+      value: Math.round(fractionalMedian(graded.map((g) => Math.abs(g.p - g.y))) * 1000) / 10,
+      unit: "probability_pts",
+      label: "median |predicted probability − outcome| in percentage points (outcome = 100 closed / 0 lost)",
+    },
+    withinRate: null, // no source-defined tolerance on a probability claim — nothing minted
+    period: periodOf(graded.map((g) => g.outcomeDate)),
+  }
+}
+
+async function dealOutcomeAdapter(svc: Svc, brokerageId?: string): Promise<RailAccuracy> {
+  let q = svc.from("ai_predictions")
+    .select("prediction_type, prediction_value, actual_outcome, outcome_date, created_at, entity_id")
+    .eq("entity_type", "transaction")
+    .not("actual_outcome", "is", null)
+    .order("created_at", { ascending: true })
+    .limit(2000)
+  if (brokerageId) q = q.eq("brokerage_id", brokerageId)
+  const { data, error } = await q
+  if (error) return unavailable(DEAL_OUTCOME_BASE, `ledger unreadable: ${error.message}`)
+  return summarizeDealOutcomeRows(((data ?? []) as any[]).map((r) => ({
+    predictionType: r.prediction_type,
+    predictionValue: r.prediction_value,
+    actualOutcome: r.actual_outcome,
+    outcomeDate: r.outcome_date,
+    createdAt: r.created_at,
+    entityId: r.entity_id,
+  })))
+}
+
+// ─── Rail 10: HOMEOWNER AVM (home-value estimate vs the eventual sale) ───────
+//
+// home_value_estimates has no listing key — the ONLY honest join is a strict
+// normalized street+ZIP match within the same brokerage, and ONLY when exactly
+// one sold listing carries that key. Ambiguity is refused, never guessed. The
+// estimate's own low–high range is the source-defined tolerance band.
+
+export interface AvmEstimateRow {
+  street: string | null
+  zip: string | null
+  brokerageId: string | null
+  low: number | null
+  mid: number | null
+  high: number | null
+  generatedAt: string | null
+}
+
+export interface SoldListingAddressRow {
+  street: string | null
+  zip: string | null
+  brokerageId: string | null
+  soldPrice: number | null
+  soldDate: string | null
+}
+
+const HOME_VALUE_BASE = {
+  rail: "home_value_avm" as const,
+  label: "Homeowner value estimates (AVM)",
+  honestNotes: [
+    "Joined by strict normalized street + ZIP within the same brokerage — a key matching zero or more than one sold listing is refused, never guessed.",
+    "Only estimates generated BEFORE the sale date are graded (last pre-sale estimate per address).",
+    "\"Within tolerance\" is the estimate's OWN quoted low–high range — no band is minted here.",
+  ],
+  predictionSource: "Homeowner value estimates (home_value_estimates low/mid/high)",
+  outcomeSource: "Recorded sales (listings.sold_price at the same normalized address)",
+  detailHref: "/dashboard/analytics",
+}
+
+/** PURE: AVM rail — unique-address pre-sale estimates vs the recorded sale. */
+export function summarizeHomeValueRows(estimates: AvmEstimateRow[], sold: SoldListingAddressRow[]): RailAccuracy {
+  // Sold listings by brokerage-scoped normalized key — ambiguous keys refused.
+  const soldByKey = new Map<string, SoldListingAddressRow[]>()
+  for (const s of sold) {
+    if ((num(s.soldPrice) ?? 0) <= 0 || !s.soldDate) continue
+    const key = normalizeAddressKey(s.street, s.zip)
+    if (!key) continue
+    const scoped = `${s.brokerageId ?? ""}|${key}`
+    soldByKey.set(scoped, [...(soldByKey.get(scoped) ?? []), s])
+  }
+  let ambiguousRefused = 0
+  const uniqueSold = new Map<string, SoldListingAddressRow>()
+  for (const [k, list] of soldByKey.entries()) {
+    if (list.length === 1) uniqueSold.set(k, list[0])
+    else ambiguousRefused += 1
+  }
+
+  // Last pre-sale estimate per unique key.
+  const bestByKey = new Map<string, { est: AvmEstimateRow; sale: SoldListingAddressRow }>()
+  for (const e of estimates) {
+    if ((num(e.mid) ?? 0) <= 0 || (num(e.low) ?? 0) <= 0 || (num(e.high) ?? 0) <= 0 || !e.generatedAt) continue
+    const key = normalizeAddressKey(e.street, e.zip)
+    if (!key) continue
+    const scoped = `${e.brokerageId ?? ""}|${key}`
+    const sale = uniqueSold.get(scoped)
+    if (!sale) continue
+    // sold_date is a date — grade estimates generated up to the end of that day.
+    const saleEnd = new Date(sale.soldDate as string).getTime() + 86_399_000
+    const genAt = new Date(e.generatedAt).getTime()
+    if (!Number.isFinite(genAt) || genAt > saleEnd) continue // post-sale estimate: hindsight, refused
+    const cur = bestByKey.get(scoped)
+    if (!cur || String(e.generatedAt) > String(cur.est.generatedAt)) bestByKey.set(scoped, { est: e, sale })
+  }
+
+  const graded = [...bestByKey.values()]
+  if (graded.length === 0) {
+    return unavailable(HOME_VALUE_BASE,
+      "No sold listing uniquely matches a pre-sale home-value estimate at the same normalized address yet — ambiguous or missing matches are refused, not guessed.")
+  }
+  const within = graded.filter(({ est, sale }) =>
+    (sale.soldPrice as number) >= (est.low as number) && (sale.soldPrice as number) <= (est.high as number)).length
+  return {
+    ...HOME_VALUE_BASE,
+    available: true,
+    why: null,
+    observations: graded.length,
+    medianError: {
+      value: round4(fractionalMedian(graded.map(({ est, sale }) =>
+        Math.abs((est.mid as number) - (sale.soldPrice as number)) / (sale.soldPrice as number)))),
+      unit: "pct_of_sale",
+      label: "median |estimate midpoint − sold price| as a share of the sale price",
+    },
+    withinRate: {
+      rate: round2(within / graded.length),
+      label: "sales that landed inside the estimate's own quoted low–high range",
+    },
+    period: periodOf(graded.map(({ sale }) => sale.soldDate)),
+    honestNotes: [
+      ...HOME_VALUE_BASE.honestNotes,
+      ...(ambiguousRefused > 0 ? [`${ambiguousRefused} address key${ambiguousRefused === 1 ? "" : "s"} matched more than one sold listing and ${ambiguousRefused === 1 ? "was" : "were"} refused.`] : []),
+    ],
+  }
+}
+
+async function homeValueAdapter(svc: Svc, brokerageId?: string): Promise<RailAccuracy> {
+  let eq = svc.from("home_value_estimates")
+    .select("property_address, estimated_value_low, estimated_value_mid, estimated_value_high, generated_at, valuation_request_id, brokerage_id")
+    .not("generated_at", "is", null)
+    .order("generated_at", { ascending: false })
+    .limit(1000)
+  if (brokerageId) eq = eq.eq("brokerage_id", brokerageId)
+  const { data: ests, error: eErr } = await eq
+  if (eErr) return unavailable(HOME_VALUE_BASE, `ledger unreadable: ${eErr.message}`)
+  const estRows = (ests ?? []) as any[]
+  if (estRows.length === 0) return unavailable(HOME_VALUE_BASE, "No home-value estimates recorded yet.")
+
+  // The estimate row carries the street line only — the ZIP lives on the intake request.
+  const vrIds = [...new Set(estRows.map((r) => r.valuation_request_id).filter(Boolean))] as string[]
+  const zipByVr = new Map<string, string | null>()
+  if (vrIds.length > 0) {
+    const { data: vrs, error: vErr } = await svc.from("valuation_requests")
+      .select("id, zip_code")
+      .in("id", vrIds)
+      .limit(1000)
+    if (vErr) return unavailable(HOME_VALUE_BASE, `ledger unreadable: ${vErr.message}`)
+    for (const v of (vrs ?? []) as any[]) zipByVr.set(v.id, v.zip_code ?? null)
+  }
+
+  let lq = svc.from("listings")
+    .select("address, zip, brokerage_id, sold_price, sold_date")
+    .not("sold_price", "is", null)
+    .not("sold_date", "is", null)
+    .order("sold_date", { ascending: false })
+    .limit(1000)
+  if (brokerageId) lq = lq.eq("brokerage_id", brokerageId)
+  const { data: soldRows, error: lErr } = await lq
+  if (lErr) return unavailable(HOME_VALUE_BASE, `ledger unreadable: ${lErr.message}`)
+
+  return summarizeHomeValueRows(
+    estRows.map((r) => ({
+      street: r.property_address ?? null,
+      zip: r.valuation_request_id ? (zipByVr.get(r.valuation_request_id) ?? null) : null,
+      brokerageId: r.brokerage_id ?? null,
+      low: num(r.estimated_value_low),
+      mid: num(r.estimated_value_mid),
+      high: num(r.estimated_value_high),
+      generatedAt: r.generated_at ?? null,
+    })),
+    ((soldRows ?? []) as any[]).map((l) => ({
+      street: l.address ?? null,
+      zip: l.zip ?? null,
+      brokerageId: l.brokerage_id ?? null,
+      soldPrice: num(l.sold_price),
+      soldDate: l.sold_date ?? null,
+    })),
+  )
+}
+
+// ─── Rail 11: LISTING PROPENSITY (ready-to-list triggers vs a real listing) ──
+//
+// The gradable ledger is predictive_listing_actions — IMMUTABLE rows freezing
+// the propensity score at the moment the play fired (the mutable
+// predictive_listing_scores upsert is NOT graded; its history is overwritten).
+// Outcome: a real listings row for the same contact. The 180-day window is a
+// grading constant declared HERE (the source defines no horizon) and is named
+// in the label so the number can't be misread.
+
+export const LISTING_PROPENSITY_HORIZON_DAYS = 180
+
+export interface PropensityActionRow {
+  contactId: string
+  brokerageId: string | null
+  createdAt: string | null
+}
+
+export interface ContactListingEvent {
+  contactId: string
+  brokerageId: string | null
+  listedAt: string | null
+}
+
+const PROPENSITY_BASE = {
+  rail: "listing_propensity" as const,
+  label: "Listing-propensity triggers",
+  honestNotes: [
+    `The ${LISTING_PROPENSITY_HORIZON_DAYS}-day window is a declared grading constant — the source system defines no horizon, so the label names it instead of implying one.`,
+    "Graded on the immutable trigger ledger (score frozen when the play fired); contacts who already had a listing before the trigger are refused.",
+  ],
+  predictionSource: "Ready-to-list triggers (predictive_listing_actions.triggering_pls_score)",
+  outcomeSource: "Recorded listings for the same contact (listings.listing_date)",
+  detailHref: "/dashboard/agent",
+}
+
+/** PURE: propensity rail — earliest trigger per contact vs a later real listing. */
+export function summarizePropensityRows(
+  actions: PropensityActionRow[],
+  listings: ContactListingEvent[],
+  nowIso: string,
+): RailAccuracy {
+  const horizonMs = LISTING_PROPENSITY_HORIZON_DAYS * 86_400_000
+  const now = new Date(nowIso).getTime()
+
+  // Earliest trigger per contact (rows sorted oldest-first).
+  const sorted = [...actions].sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")))
+  const firstByContact = new Map<string, PropensityActionRow>()
+  for (const a of sorted) {
+    if (!a.createdAt) continue
+    const key = `${a.brokerageId ?? ""}|${a.contactId}`
+    if (!firstByContact.has(key)) firstByContact.set(key, a)
+  }
+
+  const listedByContact = new Map<string, number[]>()
+  for (const l of listings) {
+    if (!l.listedAt) continue
+    const t = new Date(l.listedAt).getTime()
+    if (!Number.isFinite(t)) continue
+    const key = `${l.brokerageId ?? ""}|${l.contactId}`
+    listedByContact.set(key, [...(listedByContact.get(key) ?? []), t])
+  }
+
+  let hits = 0, misses = 0, pending = 0, refusedPreExisting = 0
+  const gradedDates: string[] = []
+  for (const [key, a] of firstByContact.entries()) {
+    const at = new Date(a.createdAt as string).getTime()
+    const events = (listedByContact.get(key) ?? []).sort((x, y) => x - y)
+    if (events.some((t) => t <= at)) { refusedPreExisting += 1; continue } // already listing — not a forecast
+    const firstAfter = events.find((t) => t > at)
+    if (firstAfter != null) {
+      if (firstAfter - at <= horizonMs) hits += 1
+      else misses += 1
+      gradedDates.push(a.createdAt as string)
+    } else if (now >= at + horizonMs) {
+      misses += 1 // the full window elapsed with no listing — an observed non-event
+      gradedDates.push(a.createdAt as string)
+    } else {
+      pending += 1 // window still open — never assumed either way
+    }
+  }
+
+  const graded = hits + misses
+  if (graded === 0) {
+    return unavailable(PROPENSITY_BASE,
+      pending > 0
+        ? `${pending} trigger${pending === 1 ? "" : "s"} fired but no ${LISTING_PROPENSITY_HORIZON_DAYS}-day window has fully elapsed yet — nothing is graded early.`
+        : "No ready-to-list trigger has fired yet — the auto-touch ledger is empty.")
+  }
+  return {
+    ...PROPENSITY_BASE,
+    available: true,
+    why: null,
+    observations: graded,
+    medianError: null,
+    withinRate: {
+      rate: round2(hits / graded),
+      label: `flagged homeowners who actually listed within ${LISTING_PROPENSITY_HORIZON_DAYS} days of the trigger`,
+    },
+    period: periodOf(gradedDates),
+    honestNotes: [
+      ...PROPENSITY_BASE.honestNotes,
+      ...(pending > 0 ? [`${pending} trigger${pending === 1 ? "" : "s"} still inside the window and not graded.`] : []),
+      ...(refusedPreExisting > 0 ? [`${refusedPreExisting} contact${refusedPreExisting === 1 ? "" : "s"} already had a listing before the trigger and ${refusedPreExisting === 1 ? "was" : "were"} refused.`] : []),
+    ],
+  }
+}
+
+async function propensityAdapter(svc: Svc, brokerageId?: string): Promise<RailAccuracy> {
+  let aq = svc.from("predictive_listing_actions")
+    .select("contact_id, brokerage_id, created_at")
+    .order("created_at", { ascending: true })
+    .limit(2000)
+  if (brokerageId) aq = aq.eq("brokerage_id", brokerageId)
+  const { data: acts, error: aErr } = await aq
+  if (aErr) return unavailable(PROPENSITY_BASE, `ledger unreadable: ${aErr.message}`)
+  const actRows = (acts ?? []) as any[]
+  if (actRows.length === 0) {
+    return unavailable(PROPENSITY_BASE, "No ready-to-list trigger has fired yet — the auto-touch ledger is empty.")
+  }
+  const ids = [...new Set(actRows.map((a) => a.contact_id).filter(Boolean))] as string[]
+  const [{ data: byContact, error: e1 }, { data: bySeller, error: e2 }] = await Promise.all([
+    svc.from("listings").select("contact_id, seller_contact_id, brokerage_id, listing_date, created_at").in("contact_id", ids).limit(2000),
+    svc.from("listings").select("contact_id, seller_contact_id, brokerage_id, listing_date, created_at").in("seller_contact_id", ids).limit(2000),
+  ])
+  if (e1 || e2) return unavailable(PROPENSITY_BASE, `ledger unreadable: ${(e1 ?? e2)!.message}`)
+  const idSet = new Set(ids)
+  const events: ContactListingEvent[] = []
+  for (const l of [...((byContact ?? []) as any[]), ...((bySeller ?? []) as any[])]) {
+    const cid = idSet.has(l.contact_id) ? l.contact_id : (idSet.has(l.seller_contact_id) ? l.seller_contact_id : null)
+    if (!cid) continue
+    events.push({ contactId: cid, brokerageId: l.brokerage_id ?? null, listedAt: l.listing_date ?? l.created_at ?? null })
+  }
+  return summarizePropensityRows(
+    actRows.map((a) => ({ contactId: a.contact_id, brokerageId: a.brokerage_id ?? null, createdAt: a.created_at ?? null })),
+    events,
+    new Date().toISOString(),
+  )
+}
+
+// ─── Rail 12: INCOME FORECAST (30-day forecast vs realized closed GCI) ───────
+//
+// income_forecast_snapshots carries the forecast (weighted_30 + its own
+// low/high band percentages); the realized side is the CLOSED-transaction GCI
+// recorded in the 30 days after the snapshot. One snapshot per agent per
+// calendar month (the earliest) is graded so daily reruns can't inflate the
+// observation count with autocorrelated rows.
+
+export interface IncomeForecastSnapshotRow {
+  agentId: string | null
+  computedAt: string | null
+  weighted30: number | null
+  lowBandPct: number | null
+  highBandPct: number | null
+}
+
+export interface ClosedDealGciRow {
+  agentId: string | null
+  closeDate: string | null
+  gci: number | null
+}
+
+const INCOME_FORECAST_BASE = {
+  rail: "income_forecast" as const,
+  label: "30-day income forecasts",
+  honestNotes: [
+    "Realized GCI = commission recorded on transactions that actually CLOSED inside the 30 days after the snapshot (commission_amount, frozen at close; estimated_commission only where no final figure exists).",
+    "One snapshot per agent per month (the earliest) is graded — daily reruns don't inflate the sample.",
+    "\"Within tolerance\" is the snapshot's OWN low/high band percentages — no band is minted here.",
+  ],
+  predictionSource: "Income forecast snapshots (income_forecast_snapshots.weighted_30)",
+  outcomeSource: "Closed-transaction GCI in the following 30 days (transactions.commission_amount)",
+  detailHref: "/dashboard/reports",
+}
+
+/** PURE: income-forecast rail — earliest snapshot per agent-month vs realized 30-day GCI. */
+export function summarizeIncomeForecastRows(
+  snapshots: IncomeForecastSnapshotRow[],
+  closedDeals: ClosedDealGciRow[],
+  nowIso: string,
+): RailAccuracy {
+  const now = new Date(nowIso).getTime()
+  const windowMs = 30 * 86_400_000
+
+  const sorted = [...snapshots].sort((a, b) => String(a.computedAt ?? "").localeCompare(String(b.computedAt ?? "")))
+  const firstByAgentMonth = new Map<string, IncomeForecastSnapshotRow>()
+  for (const s of sorted) {
+    if (!s.agentId || !s.computedAt) continue
+    const key = `${s.agentId}|${String(s.computedAt).slice(0, 7)}`
+    if (!firstByAgentMonth.has(key)) firstByAgentMonth.set(key, s)
+  }
+
+  const dealsByAgent = new Map<string, Array<{ t: number; gci: number }>>()
+  for (const d of closedDeals) {
+    if (!d.agentId || !d.closeDate) continue
+    const t = new Date(d.closeDate).getTime()
+    if (!Number.isFinite(t)) continue
+    dealsByAgent.set(d.agentId, [...(dealsByAgent.get(d.agentId) ?? []), { t, gci: num(d.gci) ?? 0 }])
+  }
+
+  let trivialSkipped = 0
+  const graded: Array<{ err: number; within: boolean; computedAt: string }> = []
+  for (const s of firstByAgentMonth.values()) {
+    const start = new Date(s.computedAt as string).getTime()
+    if (!Number.isFinite(start) || now < start + windowMs) continue // window not elapsed — never graded early
+    const forecast = num(s.weighted30) ?? 0
+    // close_date is a date — include deals closing through the end of the window day.
+    const realized = (dealsByAgent.get(s.agentId as string) ?? [])
+      .filter((d) => d.t > start && d.t <= start + windowMs + 86_399_000)
+      .reduce((sum, d) => sum + d.gci, 0)
+    if (forecast <= 0 && realized === 0) { trivialSkipped += 1; continue } // nothing forecast, nothing closed — not an observation
+    const lowPct = num(s.lowBandPct) ?? 25
+    const highPct = num(s.highBandPct) ?? 15
+    graded.push({
+      err: Math.abs(realized - forecast),
+      within: realized >= forecast * (1 - lowPct / 100) && realized <= forecast * (1 + highPct / 100),
+      computedAt: s.computedAt as string,
+    })
+  }
+
+  if (graded.length === 0) {
+    return unavailable(INCOME_FORECAST_BASE,
+      "No income-forecast snapshot has a fully elapsed 30-day window with real forecast-or-closing activity yet.")
+  }
+  return {
+    ...INCOME_FORECAST_BASE,
+    available: true,
+    why: null,
+    observations: graded.length,
+    medianError: {
+      value: medianOf(graded.map((g) => g.err)),
+      unit: "usd",
+      label: "median |realized 30-day closed GCI − forecast|",
+    },
+    withinRate: {
+      rate: round2(graded.filter((g) => g.within).length / graded.length),
+      label: "windows where realized GCI landed inside the forecast's own low/high band",
+    },
+    period: periodOf(graded.map((g) => g.computedAt)),
+    honestNotes: [
+      ...INCOME_FORECAST_BASE.honestNotes,
+      ...(trivialSkipped > 0 ? [`${trivialSkipped} zero-forecast/zero-close window${trivialSkipped === 1 ? "" : "s"} skipped — a trivially "right" nothing-predicted row is not an observation.`] : []),
+    ],
+  }
+}
+
+async function incomeForecastAdapter(svc: Svc, brokerageId?: string): Promise<RailAccuracy> {
+  const cutoff = new Date(Date.now() - 30 * 86_400_000).toISOString()
+  let sq = svc.from("income_forecast_snapshots")
+    .select("agent_id, computed_at, weighted_30, low_band_pct, high_band_pct")
+    .lte("computed_at", cutoff)
+    .order("computed_at", { ascending: true })
+    .limit(2000)
+  if (brokerageId) sq = sq.eq("brokerage_id", brokerageId)
+  const { data: snaps, error: sErr } = await sq
+  if (sErr) return unavailable(INCOME_FORECAST_BASE, `ledger unreadable: ${sErr.message}`)
+  const snapRows = (snaps ?? []) as any[]
+  if (snapRows.length === 0) {
+    return unavailable(INCOME_FORECAST_BASE, "No income-forecast snapshot is 30 days old yet — the first window has to elapse before anything is graded.")
+  }
+
+  let tq = svc.from("transactions")
+    .select("agent_id, close_date, commission_amount, estimated_commission")
+    .not("close_date", "is", null)
+    .or("stage.eq.CLOSED,status.eq.closed")
+    .limit(2000)
+  if (brokerageId) tq = tq.eq("brokerage_id", brokerageId)
+  const { data: deals, error: tErr } = await tq
+  if (tErr) return unavailable(INCOME_FORECAST_BASE, `ledger unreadable: ${tErr.message}`)
+
+  return summarizeIncomeForecastRows(
+    snapRows.map((s) => ({
+      agentId: s.agent_id ?? null,
+      computedAt: s.computed_at ?? null,
+      weighted30: num(s.weighted_30),
+      lowBandPct: num(s.low_band_pct),
+      highBandPct: num(s.high_band_pct),
+    })),
+    ((deals ?? []) as any[]).map((d) => ({
+      agentId: d.agent_id ?? null,
+      closeDate: d.close_date ?? null,
+      gci: num(d.commission_amount) ?? num(d.estimated_commission),
+    })),
+    new Date().toISOString(),
+  )
+}
+
 // ─── The unified read ────────────────────────────────────────────────────────
 
 async function pricePairsRails(svc: Svc, brokerageId?: string): Promise<[RailAccuracy, RailAccuracy]> {
@@ -694,7 +1341,7 @@ export async function getPredictionAccuracyReport(
   opts?: { brokerageId?: string },
 ): Promise<PredictionAccuracyReport> {
   const b = opts?.brokerageId
-  const [closingCosts, netSheet, priceRails, attendance, strategy, patterns, content] = await Promise.all([
+  const [closingCosts, netSheet, priceRails, attendance, strategy, patterns, content, dealOutcome, homeValue, propensity, incomeForecast] = await Promise.all([
     safeRail(closingCostsAdapter(svc, b), CLOSING_COSTS_BASE),
     safeRail(netSheetAdapter(svc, b), NET_SHEET_BASE),
     pricePairsRails(svc, b).catch((e): [RailAccuracy, RailAccuracy] => [
@@ -705,14 +1352,47 @@ export async function getPredictionAccuracyReport(
     safeRail(strategyAdapter(svc, b), STRATEGY_BASE),
     safeRail(patternAdapter(svc, b), PATTERN_BASE),
     safeRail(contentAdapter(svc, b), CONTENT_BASE),
+    safeRail(dealOutcomeAdapter(svc, b), DEAL_OUTCOME_BASE),
+    safeRail(homeValueAdapter(svc, b), HOME_VALUE_BASE),
+    safeRail(propensityAdapter(svc, b), PROPENSITY_BASE),
+    safeRail(incomeForecastAdapter(svc, b), INCOME_FORECAST_BASE),
   ])
-  const rails = [closingCosts, netSheet, priceRails[0], priceRails[1], attendance, strategy, patterns, content]
+  const rails = [closingCosts, netSheet, priceRails[0], priceRails[1], attendance, strategy, patterns, content, dealOutcome, homeValue, propensity, incomeForecast]
   return {
     scope: b ? "brokerage" : "platform",
     generatedAt: new Date().toISOString(),
     rails,
     gradedRails: rails.filter((r) => r.available).length,
     totalObservations: rails.reduce((s, r) => s + r.observations, 0),
+  }
+}
+
+/**
+ * ONE rail on demand — the accuracy-gate (lib/managers/accuracy-gate) consults a
+ * single domain rail before an autonomy-eligible action, without paying for the
+ * full 12-rail report on a send hot path. STRICTLY read-only like everything
+ * else in this module; failures degrade to an honest unavailable rail.
+ */
+export async function loadRailAccuracy(svc: Svc, rail: AccuracyRailId, brokerageId?: string): Promise<RailAccuracy> {
+  switch (rail) {
+    case "closing_costs": return safeRail(closingCostsAdapter(svc, brokerageId), CLOSING_COSTS_BASE)
+    case "net_sheet": return safeRail(netSheetAdapter(svc, brokerageId), NET_SHEET_BASE)
+    case "listing_price": return (await pricePairsRails(svc, brokerageId).catch((e): [RailAccuracy, RailAccuracy] => [
+      unavailable(LISTING_PRICE_BASE, `adapter failed: ${e instanceof Error ? e.message : String(e)}`),
+      unavailable(DOM_BASE, `adapter failed: ${e instanceof Error ? e.message : String(e)}`),
+    ]))[0]
+    case "days_on_market": return (await pricePairsRails(svc, brokerageId).catch((e): [RailAccuracy, RailAccuracy] => [
+      unavailable(LISTING_PRICE_BASE, `adapter failed: ${e instanceof Error ? e.message : String(e)}`),
+      unavailable(DOM_BASE, `adapter failed: ${e instanceof Error ? e.message : String(e)}`),
+    ]))[1]
+    case "open_house_attendance": return safeRail(attendanceAdapter(svc, brokerageId), ATTENDANCE_BASE)
+    case "offer_strategy": return safeRail(strategyAdapter(svc, brokerageId), STRATEGY_BASE)
+    case "pattern_predictions": return safeRail(patternAdapter(svc, brokerageId), PATTERN_BASE)
+    case "content_performance": return safeRail(contentAdapter(svc, brokerageId), CONTENT_BASE)
+    case "deal_outcome": return safeRail(dealOutcomeAdapter(svc, brokerageId), DEAL_OUTCOME_BASE)
+    case "home_value_avm": return safeRail(homeValueAdapter(svc, brokerageId), HOME_VALUE_BASE)
+    case "listing_propensity": return safeRail(propensityAdapter(svc, brokerageId), PROPENSITY_BASE)
+    case "income_forecast": return safeRail(incomeForecastAdapter(svc, brokerageId), INCOME_FORECAST_BASE)
   }
 }
 

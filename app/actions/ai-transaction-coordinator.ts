@@ -145,6 +145,26 @@ Analyze for:
       })
       .eq("id", params.transactionId)
 
+    // ── WIN-PROBABILITY FREEZER (owner round 36) ────────────────────────────
+    // transactions.win_probability is mutable and converges toward the outcome,
+    // so the accuracy flywheel refused to grade it. Freeze THIS claim as an
+    // immutable ai_predictions snapshot at the moment it's made — the close-time
+    // grader stamps the real outcome later and the deal_outcome rail grades the
+    // FIRST pre-outcome claim per deal. Best-effort; never blocks the analysis.
+    try {
+      const { captureWinProbabilitySnapshot } = await import("@/lib/analytics/ai-prediction-outcomes")
+      if (transaction.brokerage_id) {
+        await captureWinProbabilitySnapshot(supabase as any, {
+          transactionId: params.transactionId,
+          brokerageId: transaction.brokerage_id,
+          winProbability: analysis.winProbability,
+          moment: "ai_health_analysis",
+        })
+      }
+    } catch (e) {
+      console.error("[AI Transaction Coordinator] win-probability snapshot failed:", e)
+    }
+
     revalidatePath(`/transactions/${params.transactionId}`)
     return { success: true, analysis }
   } catch (error) {

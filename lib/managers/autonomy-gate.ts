@@ -60,6 +60,13 @@ export interface AutonomyDecisionInput {
    *  'autonomy' kill). Sits BETWEEN the god switch and the tenant's own broker-set posture: the broker's
    *  'autonomous' setting cannot override it; human-approved sends are unaffected. */
   tenantHalt?: { halted: boolean; reason: string | null }
+  /** PREDICTIVE ACCURACY GATE (round 36, accuracy-driven autonomy) — the domain's measured
+   *  prediction-accuracy verdict (lib/managers/accuracy-gate). Consulted ONLY when the effective
+   *  posture is an EXPLICIT 'autonomous' (granted autonomy becomes accuracy-contingent; the
+   *  "absence of data ⇒ allow" guarantee for unconfigured managers is preserved). Sits BELOW both
+   *  halts (they are checked first — accuracy never overrides a halt) and can only downgrade
+   *  allow → held; it never grants autonomy. */
+  accuracyGate?: { held: boolean; reason: string | null }
 }
 
 export interface AutonomyDecision {
@@ -110,6 +117,21 @@ export function autonomyDecision(input: AutonomyDecisionInput): AutonomyDecision
       reason: `${input.managerKey} is approval_required — autonomous send held; route to the approval queue for human review`,
     }
   }
+
+  // PREDICTIVE ACCURACY GATE — an EXPLICIT 'autonomous' posture must ALSO be backed by the
+  // domain's measured prediction accuracy (accuracy-driven autonomy, round 36). Checked AFTER
+  // both halts and the broker posture (never overrides a halt, never grants), and only for
+  // 'autonomous' — review_recommended / no-signal flows keep their standing behavior.
+  if (input.effective === "autonomous" && input.accuracyGate?.held) {
+    return {
+      allow: false,
+      held: true,
+      posture: "approval_required",
+      reason: input.accuracyGate.reason ??
+        `${input.managerKey} held — the domain's prediction-accuracy rail has not earned autonomous action yet; route to the approval queue.`,
+    }
+  }
+
   // autonomous / review_recommended (advisory only) / no-signal → allow.
   return { allow: true, held: false, posture: input.effective ?? null, reason: null }
 }

@@ -92,7 +92,22 @@ async function autonomyGate(args: {
   if (!managerKey) return null
   const humanApproved = args.humanApproved === true || args.systemSource === HUMAN_APPROVED_SYSTEM_SOURCE
   const effective = await resolveManagerAutonomy(args.brokerageId, managerKey)
-  const decision = autonomyDecision({ managerKey, effective, humanApproved })
+
+  // ── ACCURACY GATE (round 36, accuracy-driven autonomy): an EXPLICIT 'autonomous' posture must
+  // ALSO be backed by the domain's measured prediction-accuracy rail (lib/managers/accuracy-gate).
+  // Below the bar the send stays supervised (held → approval queue) with the measured reason.
+  // Consulted only for 'autonomous' + not-human-approved, so unconfigured managers and approved
+  // sends are untouched; halts already resolved into `effective` above and are never overridden.
+  // Fail-open on infra errors — a broken accuracy read never silently freezes outbound.
+  let accuracyGate: { held: boolean; reason: string | null } | undefined
+  if (effective === "autonomous" && !humanApproved) {
+    try {
+      const { loadAccuracyHoldForManager } = await import("@/lib/managers/accuracy-gate")
+      accuracyGate = await loadAccuracyHoldForManager(args.brokerageId, managerKey)
+    } catch { accuracyGate = undefined }
+  }
+
+  const decision = autonomyDecision({ managerKey, effective, humanApproved, accuracyGate })
   if (decision.allow) return null
   return { success: false, providerKey: "autonomy_gate", error: `Outbound held: ${decision.reason}` }
 }
