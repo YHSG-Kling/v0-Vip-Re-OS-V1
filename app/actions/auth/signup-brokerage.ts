@@ -50,6 +50,11 @@ export interface SignupBrokerageInput {
    *  Defaults to the /api/ref attribution cookie when omitted. Best-effort —
    *  attribution never fails a signup. */
   affiliateCode?:  string
+  /** TERRITORY MARKETPLACE carry (round 40, rec 4): the zip the prospect searched
+   *  on /pricing (/signup?zip=). Stored as a SUGGESTION under
+   *  billing_metadata.signup_intent for the onboarding market-setup prefill —
+   *  a market/claim is NEVER auto-created from it. Best-effort. */
+  territoryZip?:   string
 }
 
 export interface SignupBrokerageResult {
@@ -302,6 +307,41 @@ export async function signupBrokerageAction(
     }
   }
 
+  // TERRITORY MARKETPLACE carry (round 40, rec 4) — persist the /pricing-searched
+  // zip as a SUGGESTION under billing_metadata.signup_intent (the same jsonb
+  // carry-bag as the coupon: merge, never replace; read AFTER the coupon merge so
+  // neither clobbers the other). Onboarding market setup reads it back as the
+  // prefilled first market (lib/platform/territory-marketplace.ts →
+  // loadCarriedTerritoryZip). No market, claim, or service area is created here.
+  try {
+    const { cleanCarriedZip } = await import("@/lib/platform/territory-marketplace")
+    const carriedZip = cleanCarriedZip(input.territoryZip)
+    if (carriedZip) {
+      const { data: bmRow } = await service
+        .from("brokerages")
+        .select("billing_metadata")
+        .eq("id", brokerage.id)
+        .maybeSingle()
+      const existingBm = (bmRow as any)?.billing_metadata
+      const bm = existingBm && typeof existingBm === "object" ? existingBm : {}
+      await service
+        .from("brokerages")
+        .update({
+          billing_metadata: {
+            ...bm,
+            signup_intent: {
+              ...(bm.signup_intent && typeof bm.signup_intent === "object" ? bm.signup_intent : {}),
+              territory_zip: carriedZip,
+              captured_at:   new Date().toISOString(),
+              source:        "pricing_territory_marketplace",
+            },
+          },
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", brokerage.id)
+    }
+  } catch (err) { console.warn("[signupBrokerage] territory-zip carry failed (non-fatal):", (err as any)?.message) }
+
   // DAY-ONE ASSISTANT — seed the starter AI identity (name + generated headshot
   // + narration voice) so Aria answers the phone and hosts the first weekly show
   // immediately; the settings page becomes personalization, not setup. Best-effort.
@@ -339,6 +379,7 @@ export async function signupBrokerageAction(
         snapshot_name:    snapshotName,
         snapshot_applied: snapshotApplied ?? null,
         snapshot_error:   snapshotError ?? null,
+        territory_zip:    input.territoryZip?.trim() || null,
         coupon_code:      couponApplied?.code ?? (input.couponCode?.trim() || null),
         coupon_applied:   couponApplied ?? null,
         coupon_error:     couponError ?? null,

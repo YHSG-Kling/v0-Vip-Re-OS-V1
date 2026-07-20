@@ -32,6 +32,20 @@ export default async function MarketInsightsPage() {
   // Load market sources
   const sources = await getAgentMarketSources()
 
+  // TERRITORY MARKETPLACE prefill (round 40, rec 4): the zip the owner searched
+  // on /pricing rode through /signup?zip= into billing_metadata.signup_intent.
+  // Surface it here as the SUGGESTED first market (dialog prefill only — the
+  // user still creates the market; nothing is auto-created). Service read
+  // behind the auth guard above, same pattern as scrape-diagnostics.
+  let suggestedZip: string | null = null
+  if (brokerageId) {
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const { loadCarriedTerritoryZip } = await import("@/lib/platform/territory-marketplace")
+      suggestedZip = await loadCarriedTerritoryZip(createServiceClient(), brokerageId)
+    } catch { /* suggestion only — never blocks the page */ }
+  }
+
   // If there are sources, load data for the first one
   let initialInsight = null
   let initialMarketData = null
@@ -63,6 +77,7 @@ export default async function MarketInsightsPage() {
       initialMarketData={initialMarketData}
       initialTrends={initialTrends}
       initialCMAReports={initialCMAReports}
+      suggestedZip={suggestedZip}
     />
   )
 }

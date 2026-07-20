@@ -91,6 +91,9 @@ interface MarketInsightsDashboardClientProps {
   initialMarketData: any
   initialTrends: any[]
   initialCMAReports: any[]
+  /** Territory-marketplace carry (round 40): the zip searched on /pricing at
+   *  signup — prefills the Add Market dialog as a suggestion only. */
+  suggestedZip?: string | null
 }
 
 export function MarketInsightsDashboardClient({
@@ -102,6 +105,7 @@ export function MarketInsightsDashboardClient({
   initialMarketData,
   initialTrends,
   initialCMAReports,
+  suggestedZip = null,
 }: MarketInsightsDashboardClientProps) {
   const router = useRouter()
   const [sources, setSources] = useState(initialSources)
@@ -178,11 +182,13 @@ export function MarketInsightsDashboardClient({
     }
   }
 
+  // Territory-marketplace prefill: the carried signup zip seeds the dialog as a
+  // SUGGESTION — the user still reviews and clicks Add (never auto-created).
   const [newMarket, setNewMarket] = useState({
     marketArea: "",
     city: "",
     state: "",
-    zipCode: "",
+    zipCode: suggestedZip ?? "",
   })
 
   const [chartMode, setChartMode] = useState<"price" | "dom" | "inventory">("price")
@@ -357,6 +363,12 @@ export function MarketInsightsDashboardClient({
                         setNewMarket({ ...newMarket, zipCode: e.target.value })
                       }
                     />
+                    {suggestedZip && newMarket.zipCode === suggestedZip && (
+                      <p className="text-xs text-muted-foreground">
+                        Suggested from signup — the territory you searched on our pricing page.
+                        Edit freely; nothing is added until you save.
+                      </p>
+                    )}
                   </div>
                 </div>
                 <DialogFooter>

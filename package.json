@@ -506,7 +506,8 @@
     "test:accuracy-gate-telemetry": "tsx --conditions=react-server scripts/accuracy-gate-telemetry-simulator.ts",
     "test:territory-coverage": "tsx scripts/territory-coverage-simulator.ts",
     "test:zoom-lane": "tsx --conditions=react-server scripts/zoom-lane-simulator.ts",
-    "test:zoom-embed": "tsx --conditions=react-server scripts/zoom-embed-simulator.ts"
+    "test:zoom-embed": "tsx --conditions=react-server scripts/zoom-embed-simulator.ts",
+    "test:territory-marketplace": "tsx scripts/territory-marketplace-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",

@@ -11,6 +11,8 @@ import { serializeJsonLd } from "@/lib/geo/video-landing"
 import { siteUrl } from "@/lib/platform/site-url"
 import { redirect } from "next/navigation"
 import { refCaptureRedirect } from "@/lib/platform/affiliate-ref-capture"
+import { loadTerritoryMarketplace, cleanCarriedZip } from "@/lib/platform/territory-marketplace"
+import { TerritoryAvailability } from "./territory-availability"
 
 export const dynamic = "force-dynamic"
 
@@ -26,18 +28,29 @@ export async function generateMetadata(): Promise<Metadata> {
   }
 }
 
-export default async function PricingPage({ searchParams }: { searchParams: Promise<{ ref?: string }> }) {
+export default async function PricingPage({ searchParams }: { searchParams: Promise<{ ref?: string; zip?: string }> }) {
   // AFFILIATE ?ref CAPTURE — a server component cannot set cookies, so bounce
   // once through /api/ref (the one cookie-setter; 90-day AFFILIATE_REF_COOKIE)
-  // and land back here without the ref param (no loop).
+  // and land back here without the ref param (no loop). A territory search
+  // (?zip=) in flight is preserved through the bounce.
   const params = await searchParams
   if (params.ref) {
-    const capture = refCaptureRedirect(params.ref, "/pricing")
+    const zipQs = cleanCarriedZip(params.zip)
+    const capture = refCaptureRedirect(params.ref, `/pricing${zipQs ? `?zip=${zipQs}` : ""}`)
     if (capture) redirect(capture)
   }
 
   const svc = createServiceClient()
-  const [brand, tiers] = await Promise.all([loadProductBrand(svc), loadPublicTiers(svc)])
+  // TERRITORY MARKETPLACE (round 40, rec 4): the anonymized unclaimed-territory
+  // snapshot — real platform lead volume in zips no active subscriber claims,
+  // never tenant identities, never a claimed zip's numbers. ?zip= is the
+  // visitor's territory search (plain GET form — the page is force-dynamic).
+  const [brand, tiers, marketplace] = await Promise.all([
+    loadProductBrand(svc),
+    loadPublicTiers(svc),
+    loadTerritoryMarketplace(svc),
+  ])
+  const searchedZip = typeof params.zip === "string" && params.zip.trim() ? params.zip.trim().slice(0, 20) : null
   const base = siteUrl()
 
   // GEO: Product + per-tier Offer markup mirroring the public-site JSON-LD rail.
@@ -61,9 +74,31 @@ export default async function PricingPage({ searchParams }: { searchParams: Prom
       })),
   }
 
+  // GEO: honest ItemList of available (UNCLAIMED) territories — same
+  // serializeJsonLd idiom as the Product/Offer block above. Only rendered when
+  // real teaser rows exist; each item states exactly what the section states.
+  const territoryJsonLd =
+    marketplace.snapshot && marketplace.snapshot.teaser.length > 0
+      ? {
+          "@context": "https://schema.org",
+          "@type": "ItemList",
+          name: `Available territories on ${brand.name}`,
+          description: `Unclaimed zip codes with real platform-surfaced lead volume in ${marketplace.snapshot.periodLabel} — no active subscriber serves them yet.`,
+          itemListElement: marketplace.snapshot.teaser.map((z, i) => ({
+            "@type": "ListItem",
+            position: i + 1,
+            name: `${z.zip}${z.city ? ` (${z.city}${z.state ? `, ${z.state}` : ""})` : z.state ? ` (${z.state})` : ""} — ${z.leadCount}${marketplace.snapshot!.countsAreFloors ? "+" : ""} leads in ${z.periodLabel}, unclaimed`,
+            ...(base ? { url: `${base}/signup?zip=${z.zip}` } : {}),
+          })),
+        }
+      : null
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(productJsonLd) }} />
+      {territoryJsonLd && (
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeJsonLd(territoryJsonLd) }} />
+      )}
       <div className="max-w-5xl mx-auto px-6 py-14">
         <div className="text-center mb-10">
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight">Pricing</h1>
@@ -114,6 +149,14 @@ export default async function PricingPage({ searchParams }: { searchParams: Prom
             ))}
           </div>
         )}
+
+        {/* TERRITORY MARKETPLACE — anonymized unclaimed-territory availability
+            (beneath the tiers; the CTA carries the zip into /signup?zip=). */}
+        <TerritoryAvailability
+          snapshot={marketplace.snapshot}
+          error={marketplace.error}
+          searchedZip={searchedZip}
+        />
 
         <div className="mt-12 text-center space-y-2">
           <p className="text-sm text-muted-foreground">

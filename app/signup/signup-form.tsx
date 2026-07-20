@@ -23,7 +23,7 @@ export type SignupTier = PublicTier
 // Price formatting is shared with /pricing (keep-one).
 const fmtPrice = formatTierPrice
 
-export function SignupForm({ tiers = [], initialTier = null }: { tiers?: SignupTier[]; initialTier?: string | null }) {
+export function SignupForm({ tiers = [], initialTier = null, initialZip = null }: { tiers?: SignupTier[]; initialTier?: string | null; initialZip?: string | null }) {
   // /pricing hands off with ?tier=X — a validated match preselects that card.
   const defaultTier = (initialTier && tiers.some((t) => t.tierName === initialTier)
     ? initialTier
@@ -57,6 +57,9 @@ export function SignupForm({ tiers = [], initialTier = null }: { tiers?: SignupT
         tier, brokerageCity: city || undefined, brokerageState: state || undefined,
         brokerageOnPlatform: tier === "solo_agent" ? brokerageOnPlatform : undefined,
         teamOnPlatform:      tier === "solo_agent" ? teamOnPlatform : undefined,
+        // Territory marketplace carry — recorded as a SUGGESTION for onboarding
+        // market setup; nothing is claimed until they create the market.
+        territoryZip: initialZip ?? undefined,
       })
       if (!r.ok) {
         setFeedback({ kind: "error", message: r.error ?? "Sign-up failed." })
@@ -152,6 +155,15 @@ export function SignupForm({ tiers = [], initialTier = null }: { tiers?: SignupT
               <Input id="lastName" required value={lastName} onChange={e => setLastName(e.target.value)} />
             </div>
           </div>
+          {initialZip && (
+            <div className="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground flex items-start gap-2">
+              <MapPin className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <span>
+                Territory carried from pricing: <span className="font-medium text-foreground">{initialZip}</span>.
+                We&apos;ll suggest it as your first market during onboarding — nothing is claimed until you create the market.
+              </span>
+            </div>
+          )}
           <div>
             <Label htmlFor="email" className="flex items-center gap-1.5"><Briefcase className="h-3.5 w-3.5" /> Work email</Label>
             <Input id="email" type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="you@brokerage.com" />
