@@ -341,16 +341,19 @@ async function routeTeamCommand(
       return { ok: r.ok, spoken: r.spoken, data: r.data }
     }
 
-    // ── Round 36 broker lane — principal/manager-gated backends; each re-checks its
-    //    role guard server-side AND the canonical action re-runs its own gate. ──
-    case "promote_lead": {
-      // LEADS POLICY (round 33): brokerage principals + platform only — never
-      // agent-speakable. The backend refuses non-broker roles before touching data.
-      const { voicePromoteLead } = await import("@/lib/voice/broker-commands")
-      const r = await voicePromoteLead({
+    // ── Round 36 broker lane (corrected round 37) — principal/manager-gated
+    //    backends; each re-checks its role guard server-side AND the canonical
+    //    function re-runs its own gate. ──
+    case "convert_lead": {
+      // LEADS POLICY (round 33 + 37): brokerage principals + platform only —
+      // never agent-speakable. NOT a raw→lead door (raw records move only via
+      // the automatic pipeline): this converts an already-QUALIFIED lead to a
+      // contact through Engine 2, whose gate refuses unqualified leads.
+      const { voiceConvertLead } = await import("@/lib/voice/broker-commands")
+      const r = await voiceConvertLead({
         brokerageId: ctx.brokerageId,
         actorUserId: ctx.agentUserId,
-        rawRecordId: params.raw_record_id ? String(params.raw_record_id) : null,
+        leadId: params.lead_id ? String(params.lead_id) : null,
         nameQuery: String(params.name_query ?? params.person_query ?? params.query ?? "").trim() || null,
       }, svc)
       return { ok: r.ok, spoken: r.spoken, data: r.data }

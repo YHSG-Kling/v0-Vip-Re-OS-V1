@@ -27,6 +27,9 @@
  *
  * Run:  npx tsx scripts/lead-pipeline-simulator.ts   (npm run test:lead-pipeline)
  */
+import { readFileSync, readdirSync, statSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { calculateFuzzyMatch } from "../lib/lead-pipeline/fuzzy-matcher"
 import { evaluateCanonicalLeadEligibility } from "../lib/lead-pipeline/canonical-lead-eligibility"
 import { normalizeBatchDataProperty } from "../lib/external/batchdata-client"
@@ -34,6 +37,11 @@ import {
   recordMatchesTerritory, calculateSourceScore, resolveSourceKey,
   scoreToUrgencyLevel, getSourceSemantics, expandEnabledSources,
 } from "../lib/lead-pipeline/source-intent-map"
+import { engine2GatePasses, deriveQualificationSignals, qualificationScoreFor } from "../lib/ai-isa/qualification-core"
+import { validatePromotionEligibility } from "../lib/contact-promotion/promotion-eligibility"
+import { evaluateRuleConditions, pickRoundRobinAgent } from "../lib/lead-assignment/rule-matcher"
+import { BROKER_COMMANDS } from "../lib/voice/team-command-names"
+import { parseTeamCommandText } from "../lib/voice/parse-team-command"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -115,6 +123,160 @@ function testTerritoryAndScoring() {
     scoreToUrgencyLevel(80) === "hot" && scoreToUrgencyLevel(50) === "warm" && scoreToUrgencyLevel(30) === "cool" && scoreToUrgencyLevel(10) === "cold")
   const expanded = expandEnabledSources(["batchdata_motivated", "zenrows_zillow"])
   check("expandEnabledSources returns a Set", expanded instanceof Set && expanded.size > 0)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 3 — CANONICAL BUSINESS PROCESS (owner, round 37)
+//   "rawleads are platform only and can't be manually moved to leads (full
+//    automatic promotion). leads are qualified by the ai isa, converted to
+//    contacts once qualified, and auto-assigned per the admin's settings."
+// Static source conformance (no manual door anywhere) + the real pure gate
+// functions the auto chain runs. No DB, no mocks.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
+const src = (rel: string) => readFileSync(join(ROOT, rel), "utf8")
+
+/** Recursive walk of app/ + lib/ .ts(x) sources (skips node_modules by construction). */
+function walkSources(): Array<{ rel: string; text: string }> {
+  const out: Array<{ rel: string; text: string }> = []
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name)
+      const st = statSync(p)
+      if (st.isDirectory()) walk(p)
+      else if (/\.(ts|tsx)$/.test(name)) out.push({ rel: p.slice(ROOT.length + 1), text: readFileSync(p, "utf8") })
+    }
+  }
+  walk(join(ROOT, "app"))
+  walk(join(ROOT, "lib"))
+  return out
+}
+
+function testNoManualRawToLeadDoor() {
+  console.log("\n[Layer 3 · raw→lead: automatic pipeline is the ONLY door]")
+  const sources = walkSources()
+  const callers = (re: RegExp, allow: RegExp) =>
+    sources.filter((s) => re.test(s.text) && !allow.test(s.rel)).map((s) => s.rel)
+
+  // The old manual orchestration action is gone — nothing in app/ or lib/ calls it.
+  const promoteLeadCalls = callers(/\bpromoteLead\s*\(/, /^$/)
+  check("no promoteLead( caller anywhere in app/ or lib/", promoteLeadCalls.length === 0, promoteLeadCalls.join(", "))
+  const action = src("app/actions/lead-promotion/promote-lead.ts")
+  check("lead-promotion action exports NO manual promote verb (inspection listing only)",
+    !/export\s+async\s+function\s+promoteLead\b/.test(action) && /listRawLeadsForReview/.test(action))
+
+  // The promotion-insert lib is reachable only through lib/lead-promotion itself (+ test scripts).
+  const rawPromoteCalls = callers(/\bpromoteRawRecordToLead\s*\(/, /^lib[\/\\]lead-promotion[\/\\]/)
+  check("promoteRawRecordToLead has no production caller outside lib/lead-promotion", rawPromoteCalls.length === 0, rawPromoteCalls.join(", "))
+
+  // The dashboard bench is read-only; the on-demand broker POST trigger is gone.
+  const bench = src("app/dashboard/admin/lead-intake/raw-leads-review.tsx")
+  check("raw-leads bench has no promote button/import (read-only inspection)", !/promoteLead/.test(bench))
+  const route = src("app/api/leads/process-pipeline/route.ts")
+  check("process-pipeline route has no POST (stats GET only)", !/export\s+async\s+function\s+POST\b/.test(route) && /export\s+async\s+function\s+GET\b/.test(route))
+
+  // Voice: raw→lead is not speakable. The broker lead verb is convert_lead (qualified only).
+  check("voice BROKER_COMMANDS excludes promote_lead, includes convert_lead",
+    !BROKER_COMMANDS.has("promote_lead") && BROKER_COMMANDS.has("convert_lead"))
+  const brokerLane = src("lib/voice/broker-commands.ts")
+  check("voice broker lane never touches raw_scraped_leads", !/raw_scraped_leads/.test(brokerLane))
+  check("voice broker lane rides Engine 2 (evaluateAndAssignLead)", /evaluateAndAssignLead/.test(brokerLane))
+  const parsedPromote = parseTeamCommandText("promote the lead for John Smith")
+  const parsedConvert = parseTeamCommandText("convert the lead for John Smith")
+  check("spoken 'promote the lead …' now routes to convert_lead (no raw door)",
+    parsedPromote?.name === "convert_lead" && parsedConvert?.name === "convert_lead")
+
+  // The automatic pipeline runs from the cron and completes the platform lane.
+  const cron = src("app/api/cron/lead-scraping/route.ts")
+  check("lead-scraping cron runs the automatic promotion pass (processRawRecord)", /processRawRecord\(/.test(cron))
+  const pipeline = src("lib/lead-pipeline/pipeline-processor.ts")
+  check("pipeline carries source_origin and fires Engine 1 distribution itself",
+    /source_origin/.test(pipeline) && /distributePlatformLead/.test(pipeline))
+}
+
+function testAutoConvertChainLive() {
+  console.log("\n[Layer 3 · qualification → auto-convert → auto-assign chain]")
+  // The AI-ISA qualification hook: readiness triggers consent → qualified → Engine 2.
+  const evalSrc = src("lib/ai-isa/qualification-evaluator.ts")
+  check("qualification hook transitions consent via the kernel handler", /handleConsentReceived/.test(evalSrc))
+  check("qualification hook marks lead qualified + hands to Engine 2", /lead_stage:\s*'qualified'/.test(evalSrc) && /evaluateAndAssignLead/.test(evalSrc))
+  // Engine 2 assigns per admin policy then converts + notifies through the canonical handler.
+  const engine = src("lib/lead-assignment/assignment-engine.ts")
+  check("Engine 2 reads the admin's assignment_rules policy", /from\("assignment_rules"\)/.test(engine))
+  check("Engine 2 converts via handleLeadAssigned (no forked converter)", /handleLeadAssigned\(/.test(engine))
+  const handlers = src("lib/kernel/lead-acquisition-handlers.ts")
+  check("handleLeadAssigned converts through THE canonical createContactFromLead", /createContactFromLead/.test(handlers))
+  check("handleLeadAssigned emits LEAD_ASSIGNED + LEAD_CONVERTED_TO_CONTACT (agent notification fan-out)",
+    /KernelEvent\.LEAD_ASSIGNED/.test(handlers) && /LEAD_CONVERTED_TO_CONTACT/.test(handlers))
+
+  // The REAL pure gate the engine runs (Engine 2 Step 2 semantics).
+  check("engine2 gate: unqualified lead REFUSED", engine2GatePasses("new", "unconsented") === false)
+  check("engine2 gate: qualified but unconsented REFUSED", engine2GatePasses("qualified", "unconsented") === false)
+  check("engine2 gate: qualified + consented passes", engine2GatePasses("qualified", "consented") === true)
+
+  // Qualification core still derives readiness the hook keys off.
+  const ready = deriveQualificationSignals({
+    messageText: "we're ready to schedule asap", conversationCount: 3, timeline: "immediate", leadScore: 70,
+  })
+  check("ISA readiness derives from intent+urgency+engagement+score", ready.readinessForAgent === true && qualificationScoreFor(ready) === 85)
+  const notReady = deriveQualificationSignals({ messageText: "who is this?", conversationCount: 1, leadScore: 20 })
+  check("non-ready conversation stays with the ISA", notReady.readinessForAgent === false)
+}
+
+async function testConversionRefusesUnqualified() {
+  console.log("\n[Layer 3 · conversion refuses unqualified leads (server-side)]")
+  // THE canonical service eligibility (promoteLeadToContactService inherits this).
+  const unqual = await validatePromotionEligibility({
+    lead_stage: "new", agent_id: "a1", is_active: true, email: "x@y.com", first_name: "Maria",
+  })
+  check("service eligibility: unqualified lead REFUSED (even with agent + contact info)",
+    unqual.isEligible === false && /qualified/i.test(unqual.reason))
+  const qual = await validatePromotionEligibility({
+    lead_stage: "qualified", agent_id: "a1", is_active: true, email: "x@y.com", first_name: "Maria",
+  })
+  check("service eligibility: qualified + assigned lead passes", qual.isEligible === true)
+  const qualNoAgent = await validatePromotionEligibility({
+    lead_stage: "qualified", is_active: true, email: "x@y.com", first_name: "Maria",
+  })
+  check("service eligibility: qualified but unassigned still refused", qualNoAgent.isEligible === false)
+
+  // The kernel manual-conversion command carries the same refusal.
+  const crm = src("lib/kernel/crm.ts")
+  check("kernel convertLeadToContact refuses lead_stage !== 'qualified'",
+    /lead_stage[\s\S]{0,80}!==\s*"qualified"/.test(crm) && /has not been qualified/.test(crm))
+  // The ISA appointment lane stamps the qualification an appointment evidences (no bypass, no break).
+  const appt = src("lib/ai-isa/book-seller-appointment.ts")
+  check("ISA appointment lane stamps lead_stage='qualified' before its safety-convert",
+    /lead_stage:\s*"qualified"/.test(appt))
+}
+
+function testAssignmentPolicyConsumed() {
+  console.log("\n[Layer 3 · admin assignment policy → conversion path]")
+  // The settings surface the admin configures…
+  const ui = src("app/dashboard/admin/assignment-rules/page.tsx")
+  check("admin settings surface manages assignment_rules (with honest fallback copy)",
+    /assignment_rules/.test(ui) && /fallback/i.test(ui))
+  // …is evaluated by the SAME pure matcher the engine runs.
+  const lead = { source: "batchdata_motivated", lead_score: 80, property_zip_code: "33133" }
+  check("rule matcher: matching conditions fire", evaluateRuleConditions(lead as any, { min_score: 50 }) === true)
+  check("rule matcher: failing conditions do not", evaluateRuleConditions(lead as any, { min_score: 90 }) === false)
+  check("round-robin pick rotates deterministically",
+    pickRoundRobinAgent(["a", "b", "c"], 0) === "a" && pickRoundRobinAgent(["a", "b", "c"], 4) === "b")
+  // Track B (import-time contacts) shares the same policy chain.
+  const track2 = src("lib/lead-assignment/contact-assignment.ts")
+  check("contact capture lane consumes the same assignment_rules chain", /assignment_rules/.test(track2))
+}
+
+function testVisibilityGates() {
+  console.log("\n[Layer 3 · visibility gates (round 33) still hold]")
+  const action = src("app/actions/lead-promotion/promote-lead.ts")
+  check("raw-lead listing is platform-staff-only (tenants refused server-side)",
+    /platform_role/.test(action) && /platform-only/i.test(action))
+  const page = src("app/dashboard/admin/lead-intake/page.tsx")
+  check("lead-intake page renders the raw bench only for platform staff", /isPlatform\s*&&\s*<RawLeadsReviewPanel/.test(page))
+  const lifecycle = src("app/actions/lead-lifecycle.ts")
+  check("lead-desk verbs gated to brokerage-level roles + platform", /LEAD_DESK_ROLES/.test(lifecycle) && /superadmin/.test(lifecycle))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -239,9 +401,14 @@ async function testLivePromotion() {
 
 async function main() {
   console.log("══════════════════════════════════════════════════")
-  console.log(" Lead pipeline simulator (scrape → enrich → promote)")
+  console.log(" Lead pipeline simulator (scrape → enrich → promote → qualify → convert → assign)")
   console.log("══════════════════════════════════════════════════")
   testFuzzyDedup(); testEligibilityGate(); testBatchDataNormalize(); testTerritoryAndScoring()
+  testNoManualRawToLeadDoor()
+  testAutoConvertChainLive()
+  await testConversionRefusesUnqualified()
+  testAssignmentPolicyConsumed()
+  testVisibilityGates()
   await testLivePromotion()
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)

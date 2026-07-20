@@ -80,7 +80,7 @@ export async function bookSellerListingAppointment(
   // state up front so a lead under representation is refused either way.
   const { data: preLead } = await svc
     .from("leads")
-    .select("contact_id, is_active, lifecycle_state")
+    .select("contact_id, is_active, lifecycle_state, lead_stage")
     .eq("id", params.leadId)
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
@@ -95,6 +95,19 @@ export async function bookSellerListingAppointment(
   // We detect a FRESH conversion (to gate the one-time welcome) by reading whether
   // the lead was already linked to a contact BEFORE this call.
   const wasAlreadyConverted = !!preLead?.contact_id
+
+  // QUALIFICATION STAMP — a booked listing appointment IS a qualification
+  // outcome ('appointment_set' in the ai_isa_qualifications result enum). The
+  // canonical converter now REFUSES unqualified leads (owner round 37: leads
+  // convert once qualified), so record the qualification the appointment
+  // evidences before the safety-convert — same stamp acceptAIISAHandoff writes.
+  if (!wasAlreadyConverted && (preLead as { lead_stage?: string | null } | null)?.lead_stage !== "qualified") {
+    await svc
+      .from("leads")
+      .update({ lead_stage: "qualified", ai_isa_owner: false, updated_at: new Date().toISOString() })
+      .eq("id", params.leadId)
+      .eq("brokerage_id", params.brokerageId)
+  }
 
   const promotion = await promoteLeadToContactService(params.leadId)
   if (!promotion.success || !promotion.contactId) {

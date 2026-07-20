@@ -25,11 +25,14 @@ export const TEAM_ACTION_COMMANDS = new Set<string>([
 /** Read-only buyer commands — search inventory + the market for a buyer. */
 export const BUYER_COMMANDS = new Set<string>(["find_properties"])
 
-/** BROKER-LANE commands (round 36) — principal/manager-gated backends
- *  (lib/voice/broker-commands.ts); each re-checks its role guard server-side
- *  AND the canonical action re-runs its own gate. Leads policy: promote_lead
- *  is brokerage+platform only — never agent-speakable. Broadcast is in-app only. */
-export const BROKER_COMMANDS = new Set<string>(["promote_lead", "reassign_contact", "broadcast_announcement"])
+/** BROKER-LANE commands (round 36, corrected round 37) — principal/manager-gated
+ *  backends (lib/voice/broker-commands.ts); each re-checks its role guard
+ *  server-side AND the canonical function re-runs its own gate. Leads policy:
+ *  raw→lead promotion is NEVER speakable (raw leads move only via the automatic
+ *  pipeline — owner round 37); convert_lead converts an already-QUALIFIED lead
+ *  to a contact via Engine 2, whose gate refuses unqualified leads. Broker-only,
+ *  never agent-speakable. Broadcast is in-app only. */
+export const BROKER_COMMANDS = new Set<string>(["convert_lead", "reassign_contact", "broadcast_announcement"])
 
 /** All team-coordination commands the dispatcher routes (read-only + acting + buyer + broker). */
 export const TEAM_COMMANDS = new Set<string>([...TEAM_QUERY_COMMANDS, ...TEAM_ACTION_COMMANDS, ...BUYER_COMMANDS, ...BROKER_COMMANDS])

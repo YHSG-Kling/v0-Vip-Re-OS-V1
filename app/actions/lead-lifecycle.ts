@@ -176,6 +176,11 @@ export async function convertLeadToContact(params: {
   // contact creation (valid contact_type/persona) + leads.contact_id link +
   // lifecycle_state='assigned' + CONTACT_LEAD_CONVERTED event. The prior inline
   // insert here skipped the link/state/event and had no dedup (drift).
+  // QUALIFICATION GATE (owner, round 37): the kernel command REFUSES leads the
+  // AI ISA has not marked lead_stage='qualified' — a broker may convert an
+  // already-qualified lead, never an unqualified one. The refusal is RETURNED
+  // (not thrown) so the UI can show the real reason — production masks thrown
+  // server-action messages.
   const result = await kernelConvertLeadToContact({
     leadId,
     brokerageId,
@@ -184,7 +189,12 @@ export async function convertLeadToContact(params: {
     consentSource: 'manual_lead_conversion',
   })
   if (!result.success || !result.contactId) {
-    throw new Error(result.error ?? 'Failed to convert lead to contact')
+    return {
+      success: false as const,
+      contactId: undefined,
+      portalInviteCreated: false,
+      message: result.error ?? 'Failed to convert lead to contact',
+    }
   }
   const contact = { id: result.contactId }
 

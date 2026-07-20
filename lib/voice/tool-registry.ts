@@ -462,22 +462,25 @@ export const voiceTools: Record<string, VoiceTool> = {
     description: "Search inventory + the market for a buyer by voice — 'find the Hendersons a 3-bed under 500k in Austin'. Resolves the buyer by name or contact_id, runs the natural-language match across our listings + RentCast/IDX (Fair-Housing-sanitized; external results are display-only, no MLS facts stored), and reads back the top matches. Read-only.",
   },
 
-  // ── Round 36 broker lane — principal/manager-gated acting verbs. Each backend
-  //    (lib/voice/broker-commands.ts) re-checks its role guard server-side AND the
-  //    canonical action re-runs its own gate through the injected client. ──
-  promote_lead: {
-    name: "promote_lead",
+  // ── Round 36 broker lane (corrected round 37) — principal/manager-gated acting
+  //    verbs. Each backend (lib/voice/broker-commands.ts) re-checks its role guard
+  //    server-side AND the canonical function re-runs its own gate.
+  //    NOTE: the round-36 promote_lead (raw→lead by voice) is REMOVED — raw leads
+  //    can't be manually moved to leads (owner round 37); the automatic pipeline
+  //    is the only door. convert_lead below is the honest replacement. ──
+  convert_lead: {
+    name: "convert_lead",
     category: "stage",
     authority: "admin",       // LEADS POLICY (round 33): brokerage principals + platform
                               // only — never agent-speakable. The backend re-checks the
-                              // canonical PROMOTE_ROLES set from the DB.
-    gates: ["service_role"],  // Canonical promoteLead re-runs its own role + tenancy guard
-                              // through the injected client; raw-record content is never
-                              // spoken back (RAW LEADS = PLATFORM ONLY).
-    is_outbound: false,       // Promotion NEVER contacts the lead — pipeline trigger only.
+                              // lead-desk role set from the DB.
+    gates: ["service_role"],  // Engine 2 (evaluateAndAssignLead) re-runs the canonical
+                              // qualification gate server-side: unqualified leads are
+                              // REFUSED (owner round 37: leads convert once qualified).
+    is_outbound: false,       // Conversion NEVER contacts the lead — pipeline step only.
     is_telco_initiating: false,
     is_nar_regulated: false,
-    description: "Promote an un-promoted raw lead record into the Leads pipeline by voice — broker/admin only. Runs the canonical promoteLead orchestration (eligibility → promotion → scoring → platform distribution) with full audit trail. Never contacts the lead; never reads raw-record content aloud.",
+    description: "Convert an already-QUALIFIED lead into a contact by voice — broker/admin only. Rides Engine 2 (evaluateAndAssignLead): refuses unqualified leads server-side, assigns per the admin's assignment rules, converts through the canonical lossless contact creator, and notifies the receiving agent in-app. Raw leads are never speakable — the automatic pipeline is the only raw→lead door.",
   },
   reassign_contact: {
     name: "reassign_contact",

@@ -339,11 +339,14 @@ async function runTool(
     // sessionless-caller overload (lib/voice/showing-request.ts). The NAR-2024
     // BBA gate inside the action is absolute and fails closed.
     case "stage_showing":
-    // Round 36 broker lane — principal/manager-gated backends
-    // (lib/voice/broker-commands.ts). promote_lead honors the round-33 leads
-    // policy (brokerage principals + platform only — never agent-speakable);
+    // Round 36 broker lane (corrected round 37) — principal/manager-gated
+    // backends (lib/voice/broker-commands.ts). convert_lead honors the round-33
+    // leads policy (brokerage principals + platform only — never agent-speakable)
+    // AND the round-37 rule: it converts an already-QUALIFIED lead via Engine 2
+    // (unqualified refused server-side); raw→lead promotion is not speakable —
+    // the automatic pipeline is the only raw→lead door.
     // broadcast_announcement is in-app only by construction.
-    case "promote_lead":
+    case "convert_lead":
     case "reassign_contact":
     case "broadcast_announcement":
     case "find_properties": {

@@ -197,12 +197,16 @@ export function parseTeamCommandText(raw: string): ParsedTeamCommand | null {
     }
   }
 
-  // 1.12. promote_lead — "promote the lead for John Smith". Broker-only downstream
-  // (leads are never agent-speakable); raw-record content is never echoed back.
-  if (/\bpromote\b/.test(t) && /\blead\b/.test(t)) {
-    const m = text.match(/\blead\s+(?:for|from|named)\s+(.+)$/i) ?? text.match(/\bpromote\s+(.+?)(?:'s)?\s+(?:raw\s+)?lead\b/i)
+  // 1.12. convert_lead — "convert the lead for John Smith" (also catches spoken
+  // "promote the lead …"). Broker-only downstream (leads are never agent-speakable).
+  // NOT a raw→lead door: the backend converts an already-QUALIFIED lead to a
+  // contact via Engine 2, whose server-side gate refuses unqualified leads
+  // (owner round 37: raw leads move only via the automatic pipeline; leads
+  // convert once qualified).
+  if (/\b(convert|promote)\b/.test(t) && /\blead\b/.test(t)) {
+    const m = text.match(/\blead\s+(?:for|from|named)\s+(.+)$/i) ?? text.match(/\b(?:convert|promote)\s+(.+?)(?:'s)?\s+lead\b/i)
     const nm = m ? cleanEntity(m[1]) : ""
-    return { name: "promote_lead", params: nm && !["the", "a", "new"].includes(nm.toLowerCase()) ? { name_query: nm } : {} }
+    return { name: "convert_lead", params: nm && !["the", "a", "new"].includes(nm.toLowerCase()) ? { name_query: nm } : {} }
   }
 
   // 2. morning_standup — "what should I do today", "what's on my plate", "stand-up", "top 3".

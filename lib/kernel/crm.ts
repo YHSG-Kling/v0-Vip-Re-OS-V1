@@ -459,6 +459,14 @@ export async function createLeadOnlyRecordForAcquisitionSource(params: {
 /**
  * Converts a leads row to a full contacts row after consent is established.
  * Sets leads.contact_id, creates the contact, writes lifecycle events.
+ *
+ * QUALIFICATION GATE (owner, round 37): "leads are promoted and converted to
+ * contacts once qualified." This command is the canonical MANUAL conversion
+ * lane (lead-desk actions ride it), so it REFUSES any lead the AI ISA has not
+ * marked lead_stage='qualified'. The automatic lane (Engine 2 →
+ * handleLeadAssigned) enforces the same gate in assignment-engine Step 2 —
+ * both doors check server-side; neither can convert an unqualified lead.
+ * Idempotent: an already-converted lead returns its existing contact.
  */
 export async function convertLeadToContact(params: {
   leadId: string
@@ -472,13 +480,29 @@ export async function convertLeadToContact(params: {
 
   const { data: lead } = await supabase
     .from("leads")
-    .select("id, first_name, last_name, email, phone, phone_digits, lead_type, source, source_family, source_channel, source_subtype, motivation_type")
+    .select("id, first_name, last_name, email, phone, phone_digits, lead_type, source, source_family, source_channel, source_subtype, motivation_type, lead_stage, contact_id")
     .eq("id", params.leadId)
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
 
   if (!lead) {
     return { success: false, error: "Lead not found" }
+  }
+
+  // Idempotent short-circuit — already converted, return the existing contact.
+  if ((lead as { contact_id?: string | null }).contact_id) {
+    return { success: true, contactId: (lead as { contact_id?: string | null }).contact_id ?? undefined, isDuplicate: true }
+  }
+
+  // SERVER-SIDE REFUSAL of unqualified leads — conversion only once the AI ISA
+  // (or the canonical handoff acceptance) marked the lead qualified.
+  if ((lead as { lead_stage?: string | null }).lead_stage !== "qualified") {
+    return {
+      success: false,
+      error:
+        "Lead has not been qualified by the AI ISA — leads convert to contacts only once qualified " +
+        `(lead_stage='${(lead as { lead_stage?: string | null }).lead_stage ?? "new"}').`,
+    }
   }
 
   // Map lead_type → a VALID contacts.contact_type (CHECK: buyer|seller|both|

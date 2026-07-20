@@ -29,7 +29,7 @@
 // enforcing an equivalent-or-stricter guard server-side:
 //   • reject/counter/withdraw offer → lib/voice/deal-decision.ts (mirrored
 //     approvals-queue guard, kernel transitions via injected client)
-//   • promote lead / reassign contact / broadcast → lib/voice/broker-commands.ts
+//   • convert (qualified) lead / reassign contact / broadcast → lib/voice/broker-commands.ts
 //     (role guard re-checked from the DB here AND the canonical action re-runs
 //     its own gate through the injected client)
 //   • showing request → lib/voice/showing-request.ts (ownership here; the
@@ -230,16 +230,19 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
   },
 
   // ── LEADS ──────────────────────────────────────────────────────────────────
+  // Round-37 correction: raw→lead promotion is NOT speakable (and has no manual
+  // door anywhere) — raw leads move only via the automatic pipeline. The lead
+  // verb that remains speakable is converting an already-QUALIFIED lead.
   {
-    command: "app/actions/lead-promotion/promote-lead.promoteLead",
+    command: "lib/lead-assignment/assignment-engine.evaluateAndAssignLead (Engine 2 — qualified lead → contact)",
     domain: "leads",
     speakable: true,
-    toolName: "promote_lead",
+    toolName: "convert_lead",
     guard:
-      "authority 'admin' (round-33 LEADS POLICY: brokerage principals + platform only — NEVER agent-speakable) + the voice backend re-checks the canonical PROMOTE_ROLES set from the DB, AND promoteLead re-runs its own role + tenancy guard through the injected client (round-36 overload); raw-record CONTENT is never spoken back (RAW LEADS = PLATFORM ONLY)",
+      "authority 'admin' (round-33 LEADS POLICY: brokerage principals + platform only — NEVER agent-speakable) + the voice backend re-checks the lead-desk role set from the DB, AND Engine 2's server-side gate REFUSES any lead that is not lead_stage='qualified' + consented (owner round 37: leads convert once qualified — an unqualified lead can never be converted by voice)",
     auditParity:
-      `SAME canonical orchestration as the dashboard trigger (promoteLead: eligibility → promotion → scoring → platform distribution) — same activities/automation_errors audit trail; voice origin: ${VOICE_RECEIPT} + ${BUS_RECEIPT}`,
-    sayIt: "“Promote the lead for John Smith” (broker roles only)",
+      `SAME canonical lane as the AI ISA's qualification hook (evaluateAndAssignLead → handleLeadAssigned → createContactFromLead) — same assignment_log + lifecycle_events audit, same admin assignment_rules policy, same in-app agent notification; voice origin: ${VOICE_RECEIPT} + ${BUS_RECEIPT}`,
+    sayIt: "“Convert the lead for John Smith” (broker roles only; refused unless the AI ISA qualified them)",
   },
 
   // ── TASKS ──────────────────────────────────────────────────────────────────

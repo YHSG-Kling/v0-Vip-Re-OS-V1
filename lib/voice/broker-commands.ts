@@ -1,22 +1,27 @@
 // lib/voice/broker-commands.ts
 //
-// BROKER-LANE VOICE BACKENDS (round 36) — the spoken forms of three
-// principal/manager-gated actions. Each one:
+// BROKER-LANE VOICE BACKENDS (round 36, corrected round 37) — the spoken forms
+// of three principal/manager-gated actions. Each one:
 //
 //   • re-checks its role guard HERE (the run_team_command free-text lane has
 //     no per-tool registry gate), resolving the speaking user's role from the
 //     DB — never trusting the transcript;
-//   • then calls the CANONICAL action with the sessionless-caller overload
-//     ({ client, actorUserId }), so the action's OWN guard runs a second time
-//     against the same DB rows (equivalent-or-stricter, never bypassed);
+//   • then calls the CANONICAL function, so the canonical gate runs a second
+//     time against the same DB rows (equivalent-or-stricter, never bypassed);
 //   • surfaces a voice_action receipt on the manager bus (the webhook already
 //     writes the agent_assistant_tool_calls row for every call).
 //
 // Policies enforced:
+//   • RAW LEADS CAN'T BE MANUALLY MOVED (round-37 owner policy): the round-36
+//     voice promote_lead lane (raw→lead by voice) is REMOVED — raw records
+//     reach `leads` only through the automatic pipeline. The broker lead verb
+//     that remains is voiceConvertLead: converting an already-QUALIFIED lead
+//     to a contact through Engine 2 (evaluateAndAssignLead), whose server-side
+//     gate REFUSES unqualified leads — the owner's "converted once qualified"
+//     rule, enforced in the engine, matched by this lane.
 //   • LEADS ARE NOT AGENT-SPEAKABLE (round-33 owner policy: RAW LEADS =
-//     PLATFORM ONLY / LEADS = BROKERAGE + PLATFORM). voicePromoteLead admits
-//     only the broker/admin role set the canonical action admits, and NEVER
-//     speaks raw-record content back — only counts and the promotion result.
+//     PLATFORM ONLY / LEADS = BROKERAGE + PLATFORM). voiceConvertLead admits
+//     only the broker/admin lead-desk role set.
 //   • BROADCAST IS IN-APP ONLY — the canonical action writes notifications
 //     rows (channel "in_app") and never touches email/SMS; this backend adds
 //     no egress of its own.
@@ -37,8 +42,8 @@ interface BrokerCtx {
   actorUserId: string
 }
 
-/** Same role set the canonical promoteLead action admits (PROMOTE_ROLES). */
-const LEAD_PROMOTE_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "super_admin", "superadmin"])
+/** Same lead-desk role set the lead lifecycle actions admit (LEAD_DESK_ROLES). */
+const LEAD_DESK_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "super_admin", "superadmin"])
 
 /** Same manager set contact-reassignment's requireReassignAuthority admits. */
 const REASSIGN_MANAGER_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "superadmin"])
@@ -56,7 +61,7 @@ async function loadActor(svc: Svc, ctx: BrokerCtx): Promise<{ userType: string; 
 
 async function busReceipt(svc: Svc, input: {
   brokerageId: string
-  tool: "promote_lead" | "reassign_contact" | "broadcast_announcement"
+  tool: "convert_lead" | "reassign_contact" | "broadcast_announcement"
   message: string
   entityType: string
   entityId: string | null
@@ -70,84 +75,118 @@ async function busReceipt(svc: Svc, input: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PROMOTE LEAD — "promote the lead for John Smith"
+// CONVERT LEAD — "convert the lead for John Smith"
+//
+// The ONLY manual lead verb the corrected business process allows by voice:
+// converting an already-QUALIFIED lead to a contact. It rides Engine 2
+// (evaluateAndAssignLead), the SAME canonical lane the AI ISA's qualification
+// hook uses — its server-side gate refuses any lead that isn't
+// lead_stage='qualified' + consented, so an unqualified lead can never be
+// converted by voice. Assignment follows the admin-set assignment_rules policy
+// and conversion lands through handleLeadAssigned → createContactFromLead.
+// There is NO raw→lead voice verb: raw records move only via the automatic
+// pipeline (owner, round 37).
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface VoicePromoteLeadInput extends BrokerCtx {
-  /** Explicit raw_scraped_leads.id when the caller already has it. */
-  rawRecordId?: string | null
-  /** Spoken name hint — matched against un-promoted raw records in-tenancy. */
+export interface VoiceConvertLeadInput extends BrokerCtx {
+  /** Explicit leads.id when the caller already has it. */
+  leadId?: string | null
+  /** Spoken name hint — matched against un-converted leads in-tenancy. */
   nameQuery?: string | null
 }
 
-export async function voicePromoteLead(input: VoicePromoteLeadInput, client?: Svc): Promise<BrokerVoiceResult> {
+export async function voiceConvertLead(input: VoiceConvertLeadInput, client?: Svc): Promise<BrokerVoiceResult> {
   const svc = client ?? createServiceClient()
   if (!input.brokerageId || !input.actorUserId) return { ok: false, spoken: "I can't tell who's asking — reopen the assistant and try again." }
 
   // ── Guard 1 (this lane): broker/admin roles only — leads are NOT agent-speakable ──
   const actor = await loadActor(svc, input)
   if (!actor) return { ok: false, spoken: "Acting user not found." }
-  if (!LEAD_PROMOTE_ROLES.has(actor.userType)) {
-    return { ok: false, spoken: "Lead promotion is a broker call — it isn't available for your role by voice." }
+  if (!LEAD_DESK_ROLES.has(actor.userType)) {
+    return { ok: false, spoken: "Converting a lead is a broker call — it isn't available for your role by voice." }
   }
   if (actor.brokerageId !== input.brokerageId) {
-    return { ok: false, spoken: "Your account isn't in this brokerage, so I can't promote leads here." }
+    return { ok: false, spoken: "Your account isn't in this brokerage, so I can't convert leads here." }
   }
 
-  // ── Resolve the raw record (explicit id, else unique name match, in-tenancy,
-  //    un-promoted only). Raw-record CONTENT is never spoken back — counts only. ──
-  let rawRecordId = (input.rawRecordId ?? "").trim() || null
-  if (!rawRecordId) {
+  // ── Resolve the lead (explicit id, else unique name match, in-tenancy,
+  //    not-yet-converted only). ──
+  let leadId = (input.leadId ?? "").trim() || null
+  let leadRow: { id: string; lead_stage: string | null; contact_id: string | null } | null = null
+  if (leadId) {
+    const { data } = await svc
+      .from("leads")
+      .select("id, lead_stage, contact_id")
+      .eq("id", leadId)
+      .eq("brokerage_id", input.brokerageId)
+      .maybeSingle()
+    if (!data) return { ok: false, spoken: "I couldn't find that lead in your brokerage." }
+    leadRow = data as any
+  } else {
     const name = (input.nameQuery ?? "").trim()
     if (name.length < 2) {
-      return { ok: false, spoken: "Whose lead should I promote? Give me the name on the raw record." }
+      return { ok: false, spoken: "Whose lead should I convert? Give me the name on the lead." }
     }
     const tokens = name.split(/\s+/)
     let q = svc
-      .from("raw_scraped_leads")
-      .select("id")
+      .from("leads")
+      .select("id, lead_stage, contact_id")
       .eq("brokerage_id", input.brokerageId)
-      .is("lead_id", null)
+      .is("contact_id", null)
+      .eq("is_active", true)
       .limit(5)
     q = tokens.length >= 2
       ? q.ilike("first_name", `%${tokens[0]}%`).ilike("last_name", `%${tokens[tokens.length - 1]}%`)
       : q.or(`first_name.ilike.%${name}%,last_name.ilike.%${name}%`)
     const { data: matches } = await q
-    const rows = (matches ?? []) as Array<{ id: string }>
+    const rows = (matches ?? []) as Array<{ id: string; lead_stage: string | null; contact_id: string | null }>
     if (rows.length === 0) {
-      return { ok: false, spoken: `I don't see an un-promoted raw record matching "${name}" in your brokerage.` }
+      return { ok: false, spoken: `I don't see an un-converted lead matching "${name}" in your brokerage.` }
     }
     if (rows.length > 1) {
-      return { ok: false, spoken: `There are ${rows.length} un-promoted raw records matching "${name}" — use the Raw Leads bench to pick the exact one, or give me the full name.` }
+      return { ok: false, spoken: `There are ${rows.length} un-converted leads matching "${name}" — use the Leads list to pick the exact one, or give me the full name.` }
     }
-    rawRecordId = rows[0].id
+    leadRow = rows[0]
+    leadId = rows[0].id
   }
 
-  // ── Guard 2 (the canonical action's own gate, re-run through our client) ──
-  const { promoteLead } = await import("@/app/actions/lead-promotion/promote-lead")
-  const res = await promoteLead(rawRecordId, undefined, { client: svc, actorUserId: input.actorUserId })
+  if (leadRow?.contact_id) {
+    return { ok: true, spoken: "That lead is already a contact — nothing to convert.", data: { lead_id: leadId, contact_id: leadRow.contact_id } }
+  }
 
-  if (!res.success) {
+  // ── Guard 2 (canonical, server-side): Engine 2's gate REFUSES unqualified
+  //    leads (lead_stage='qualified' + consent required) and routes per the
+  //    admin's assignment_rules policy; handleLeadAssigned converts + notifies. ──
+  const { evaluateAndAssignLead } = await import("@/lib/lead-assignment/assignment-engine")
+  const res = await evaluateAndAssignLead({ leadId: leadId!, brokerageId: input.brokerageId })
+
+  if (!res.assigned) {
+    const unqualified = leadRow?.lead_stage !== "qualified"
+    const unconsented = /lifecycle_state/.test(res.reason) && !unqualified
     return {
       ok: false,
-      spoken: `The promotion didn't go through at the ${res.stage} step: ${res.message}`,
-      data: { raw_record_id: rawRecordId, stage: res.stage },
+      spoken: unqualified
+        ? "That lead hasn't been qualified by the AI ISA yet, so I can't convert it — conversion only happens once qualified. The ISA is still working it."
+        : unconsented
+        ? "That lead is qualified but hasn't consented yet — the canonical process converts once consent lands. The ISA keeps working it."
+        : `The conversion didn't go through: ${res.reason}`,
+      data: { lead_id: leadId, reason: res.reason },
     }
   }
 
   await busReceipt(svc, {
     brokerageId: input.brokerageId,
-    tool: "promote_lead",
-    message: `Voice admin promoted raw record ${rawRecordId} to lead ${res.leadId ?? "(id pending)"} — canonical promoteLead pipeline`,
+    tool: "convert_lead",
+    message: `Voice admin converted qualified lead ${leadId} to a contact via Engine 2 (${res.reason}) — canonical assignment policy + createContactFromLead`,
     entityType: "lead",
-    entityId: res.leadId ?? null,
-    payload: { raw_record_id: rawRecordId },
+    entityId: leadId,
+    payload: { agent_id: res.agentId ?? null, method: res.reason },
   })
 
   return {
     ok: true,
-    spoken: "Done — the lead is promoted. Scoring is running, and if it's a platform lead, distribution takes it from here. It'll show in the Leads list momentarily.",
-    data: { lead_id: res.leadId ?? null, raw_record_id: rawRecordId },
+    spoken: "Done — the qualified lead is now a contact, assigned per your assignment rules, and the receiving agent got an in-app heads-up.",
+    data: { lead_id: leadId, agent_id: res.agentId ?? null },
   }
 }
 

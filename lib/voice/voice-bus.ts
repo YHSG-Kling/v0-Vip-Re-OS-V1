@@ -14,7 +14,7 @@ export type VoiceActionTool =
   | "create_task" | "log_activity" | "send_portal_message" | "accept_offer"
   // Round 36 — the closed voice lanes announce on the same bus:
   | "reject_offer" | "counter_offer" | "withdraw_offer"
-  | "promote_lead" | "reassign_contact" | "broadcast_announcement" | "stage_showing"
+  | "convert_lead" | "reassign_contact" | "broadcast_announcement" | "stage_showing"
 
 /** PURE: the manager who OWNS a voice action (the "from" on the bus). */
 export function ownerManagerForVoiceAction(tool: VoiceActionTool): ManagerKey {
@@ -26,7 +26,7 @@ export function ownerManagerForVoiceAction(tool: VoiceActionTool): ManagerKey {
     case "reject_offer": return "deal_coordinator"       // same deal-decision family as accept
     case "counter_offer": return "deal_coordinator"
     case "withdraw_offer": return "deal_coordinator"
-    case "promote_lead": return "ai_isa"                 // lead pipeline — the ISA's domain
+    case "convert_lead": return "ai_isa"                 // lead pipeline — the ISA's domain (qualified lead → contact)
     case "reassign_contact": return "data_steward"       // book-of-record move (routes to deal_coordinator)
     case "broadcast_announcement": return "data_steward" // principal comms, kept on the record
     case "stage_showing": return "shopping_agent"        // buyer-side scheduling

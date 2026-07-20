@@ -1,13 +1,11 @@
 "use client"
 
-import { useState } from "react"
 import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Inbox, Loader2, ArrowRight } from "lucide-react"
-import { useToast } from "@/hooks/use-toast"
-import { promoteLead, type RawLeadReviewRow } from "@/app/actions/lead-promotion/promote-lead"
+import { Inbox } from "lucide-react"
+import type { RawLeadReviewRow } from "@/app/actions/lead-promotion/promote-lead"
 import { rawLeadReviewStatus, type RawLeadReviewTone } from "@/lib/lead-promotion/review-status"
 
 const TONE: Record<RawLeadReviewTone, string> = {
@@ -19,46 +17,30 @@ const TONE: Record<RawLeadReviewTone, string> = {
 }
 
 /**
- * Admin Raw Leads review — see scraped raw records and manually promote eligible ones
- * to leads (the gate: enrich + dedup + territory/identity guards run inside promoteLead).
+ * Platform Raw Leads bench — INSPECTION ONLY (owner, round 37): raw leads are
+ * platform-only and can't be manually moved to leads. Promotion is fully
+ * automatic (the lead-scraping cron's processRawRecord pass: enrich + dedup +
+ * territory/identity gates). This panel shows where each raw record stands in
+ * that automatic pipeline; there is no manual promote action.
  */
 export function RawLeadsReviewPanel({ initialRows }: { initialRows: RawLeadReviewRow[] }) {
-  const { toast } = useToast()
-  const [rows, setRows] = useState<RawLeadReviewRow[]>(initialRows)
-  const [busy, setBusy] = useState<string | null>(null)
-
-  async function promote(row: RawLeadReviewRow) {
-    setBusy(row.id)
-    try {
-      const r = await promoteLead(row.id)
-      if (r.success) {
-        toast({ title: "Promoted to lead", description: r.message })
-        setRows((cur) => cur.map((x) => (x.id === row.id ? { ...x, leadId: r.leadId ?? "promoted" } : x)))
-      } else {
-        toast({ title: `Not promoted (${r.stage})`, description: r.message, variant: "destructive" })
-        // Reflect an attempt/eligibility outcome so the row's status updates.
-        setRows((cur) => cur.map((x) => (x.id === row.id ? { ...x, promotionAttempts: (x.promotionAttempts ?? 0) + 1 } : x)))
-      }
-    } finally {
-      setBusy(null)
-    }
-  }
-
+  const rows = initialRows
   const name = (r: RawLeadReviewRow) => [r.firstName, r.lastName].filter(Boolean).join(" ") || "(no name)"
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base flex items-center gap-2"><Inbox className="h-4 w-4" />Raw Leads — Review &amp; Promote</CardTitle>
+        <CardTitle className="text-base flex items-center gap-2"><Inbox className="h-4 w-4" />Raw Leads — Pipeline Bench (read-only)</CardTitle>
         <CardDescription>
-          Scraped raw records for your brokerage. Promote eligible ones to leads — enrichment, dedup, and
-          territory/identity guards run automatically inside the promotion gate.
+          Scraped raw records awaiting the automatic promotion pipeline. Promotion is automatic only — the
+          scheduled gate (enrichment, dedup, territory/identity guards) moves eligible records to leads;
+          stranded records are retried by the daily re-enrich sweep. Nothing here can be promoted by hand.
         </CardDescription>
       </CardHeader>
       <CardContent>
         {rows.length === 0 ? (
           <p className="text-sm text-muted-foreground py-6 text-center">
-            No raw leads yet — this fills as the scraper bench lands records. They appear here for review before promotion.
+            No raw leads yet — this fills as the scraper bench lands records. The automatic pipeline promotes eligible ones to leads.
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -69,8 +51,8 @@ export function RawLeadsReviewPanel({ initialRows }: { initialRows: RawLeadRevie
                   <th className="py-2 pr-4 font-medium">Contact</th>
                   <th className="py-2 pr-4 font-medium">Location</th>
                   <th className="py-2 pr-4 font-medium">Source</th>
-                  <th className="py-2 pr-4 font-medium">Status</th>
-                  <th className="py-2 font-medium text-right">Action</th>
+                  <th className="py-2 pr-4 font-medium">Pipeline status</th>
+                  <th className="py-2 font-medium text-right">Lead</th>
                 </tr>
               </thead>
               <tbody>
@@ -90,12 +72,7 @@ export function RawLeadsReviewPanel({ initialRows }: { initialRows: RawLeadRevie
                       <td className="py-2 pr-4 text-muted-foreground">{r.source ?? r.sourceFamily ?? "—"}</td>
                       <td className="py-2 pr-4"><Badge className={TONE[review.tone]}>{review.label}</Badge></td>
                       <td className="py-2 text-right">
-                        {review.canPromote ? (
-                          <Button size="sm" onClick={() => promote(r)} disabled={busy === r.id}>
-                            {busy === r.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <ArrowRight className="h-3 w-3 mr-1" />}
-                            Promote
-                          </Button>
-                        ) : r.leadId ? (
+                        {r.leadId ? (
                           <Button size="sm" variant="ghost" asChild>
                             <Link href={`/leads/${r.leadId}`}>View lead</Link>
                           </Button>

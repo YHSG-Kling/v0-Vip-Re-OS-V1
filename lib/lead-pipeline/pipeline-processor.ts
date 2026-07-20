@@ -81,6 +81,8 @@ interface RawRecord {
   mailing_city?: string | null
   mailing_state?: string | null
   mailing_zip?: string | null
+  /** 'platform' (platform-scraped inventory, Engine 1 distributes) | 'brokerage'. */
+  source_origin?: 'platform' | 'brokerage' | null
   lead_id: string | null
   error_message: string | null
 }
@@ -432,6 +434,9 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       phone:                 enriched.phone        ?? phone,
       phone_secondary:       enriched.phone_secondary ?? null,
       source:                rec.source,
+      // Carry the platform/brokerage origin flag onto the lead — Engine 1
+      // (platform distribution below) keys off leads.source_origin.
+      source_origin:         rec.source_origin ?? 'brokerage',
       // STEP 5 + source-intent-map + AI intent fusion: source baseline, lifted by a confident
       // content read (lead_type filled when the source is ambiguous; score/urgency fused).
       lead_type:             fusedLeadType !== 'unknown' ? fusedLeadType : null,
@@ -510,6 +515,31 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     entityId:    rawRecordId,
     metadata:    { lead_id: newLead.id, source: rec.source },
   })
+
+  // ── Engine 1 — Platform Distribution (AUTOMATIC pipeline is the ONLY door) ──
+  // Platform-origin leads route to the next-in-rotation subscriber brokerage by
+  // zip service area; brokerage-origin leads skip (skip_non_platform_origin).
+  // This used to fire only from the (removed) manual promoteLead action — the
+  // canonical automatic pipeline now completes the platform lane itself.
+  // Awaited so the lead has its distributed brokerage before downstream ISA work.
+  if ((rec.source_origin ?? 'brokerage') === 'platform') {
+    try {
+      const { distributePlatformLead } = await import('@/lib/platform/distribution-engine')
+      const distResult = await distributePlatformLead({ leadId: newLead.id })
+      if (!distResult.success && distResult.reason !== 'skip_non_platform_origin') {
+        await supabase.from('automation_errors').insert({
+          workflow_name: 'platform_lead_distribution',
+          error_message: distResult.reason,
+          context_json: JSON.stringify({ leadId: newLead.id, rawRecordId }),
+          severity: 'high',
+          status: 'open',
+          created_at: new Date().toISOString(),
+        })
+      }
+    } catch (err: any) {
+      console.error(`[v0] Distribution engine failed for ${newLead.id}:`, err)
+    }
+  }
 
   return {
     success: true,

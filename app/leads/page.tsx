@@ -403,9 +403,15 @@ export default function LeadsPage() {
           : `${lead.first_name} converted — add email to send portal`
         toast.success(toastMsg)
         router.push(contactId ? `/crm?contact=${contactId}` : "/crm")
+      } else {
+        // Server-side refusal (e.g. lead not yet AI-ISA qualified) — show why.
+        toast.error((result as any).message ?? "Conversion refused")
       }
-    } catch {
-      // silent — conversion errors surface via the result.success check above
+    } catch (err) {
+      // Surface the server-side refusal honestly — the canonical converter now
+      // REFUSES unqualified leads (owner round 37: leads convert once the AI ISA
+      // qualifies them), and the broker should see why nothing happened.
+      toast.error(err instanceof Error ? err.message : "Conversion failed")
     }
     setConvertingId(null)
     setConvertConfirmLead(null)
