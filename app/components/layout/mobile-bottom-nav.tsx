@@ -21,7 +21,9 @@ export function MobileBottomNav({ items }: MobileBottomNavProps) {
   }
 
   return (
-    <nav className="flex items-center justify-around h-20 bg-white">
+    // pb-[env(safe-area-inset-bottom)] — keep tap targets above the iOS home
+    // indicator when installed as a PWA (root viewport uses viewport-fit=cover).
+    <nav className="flex items-center justify-around min-h-20 bg-white pb-[env(safe-area-inset-bottom)]">
       {items.map((item) => {
         if (!item.href) return null
         const isActive = pathname === item.href

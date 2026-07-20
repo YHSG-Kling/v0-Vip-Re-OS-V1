@@ -508,7 +508,8 @@
     "test:zoom-lane": "tsx --conditions=react-server scripts/zoom-lane-simulator.ts",
     "test:zoom-embed": "tsx --conditions=react-server scripts/zoom-embed-simulator.ts",
     "test:territory-marketplace": "tsx scripts/territory-marketplace-simulator.ts",
-    "test:meeting-followthrough": "tsx scripts/meeting-followthrough-simulator.ts"
+    "test:meeting-followthrough": "tsx scripts/meeting-followthrough-simulator.ts",
+    "test:mobile-readiness": "tsx scripts/mobile-readiness-simulator.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
