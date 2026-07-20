@@ -11,6 +11,10 @@ import {
   type PlacementInvoice,
 } from "./premium-placement-panel"
 import {
+  VendorChargesPanel,
+  type VendorChargeInvoice,
+} from "./vendor-charges-panel"
+import {
   searchVendors,
   getAllVendorBookings,
   getCompletedBookingsForRating,
@@ -105,6 +109,17 @@ export default async function VendorsPage() {
       .limit(100)
       .then(r => (r.data || []) as PlacementInvoice[]),
   ])
+
+  // General tenant→vendor charges (billed_to='vendor' — migration 1104). Safe
+  // pre-migration: the filter simply matches no rows.
+  const vendorCharges = await supabase
+    .from("vendor_invoices")
+    .select("id, vendor_id, invoice_number, status, total_amount, due_date, paid_at, notes")
+    .eq("brokerage_id", profile.brokerage_id)
+    .eq("billed_to", "vendor")
+    .order("created_at", { ascending: false })
+    .limit(100)
+    .then(r => (r.data || []) as VendorChargeInvoice[])
 
   const serviceTypes = [...new Set(vendors.map(v => v.category).filter(Boolean))]
   const assignedCount = assignedVendors?.length || 0
@@ -305,6 +320,17 @@ export default async function VendorsPage() {
           <PremiumPlacementPanel
             directoryEntries={directoryEntries}
             placementInvoices={placementInvoices}
+            userRole={profile.user_type ?? "agent"}
+          />
+
+          {/* General tenant→vendor charges (beyond placement) */}
+          <VendorChargesPanel
+            vendors={(preferredVendors ?? []).map((v: any) => ({
+              id: v.id,
+              name: v.name ?? null,
+              category: v.category ?? null,
+            }))}
+            charges={vendorCharges}
             userRole={profile.user_type ?? "agent"}
           />
         </TabsContent>

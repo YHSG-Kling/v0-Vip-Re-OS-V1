@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/select"
 import { Receipt, Loader2, CheckCircle2, X, MessageSquarePlus } from "lucide-react"
 import { VendorRequestDialog } from "./vendor-request-dialog"
-import { createVendorInvoice } from "@/app/actions/vendor-payments"
+import { createAndSendVendorClientInvoice } from "@/app/actions/vendor-payments"
 import {
   acceptVendorBookingAction,
   declineVendorBookingAction,
@@ -313,7 +313,9 @@ function InvoiceDialog({
     }
 
     startTransition(async () => {
-      const result = await createVendorInvoice({
+      // Issues the invoice (status 'submitted') and — for contact billing — notifies
+      // the buyer/seller by email with a link to their portal invoice surface.
+      const result = await createAndSendVendorClientInvoice({
         vendorId: booking.vendor_id ?? "",
         bookingId: booking.id,
         listingId: booking.listing_id ?? undefined,
@@ -333,6 +335,13 @@ function InvoiceDialog({
       })
 
       if (result.success) {
+        // Honest email reporting: the invoice IS issued (visible in the client's
+        // portal) even if the notification email did not go out.
+        if (billedTo === "contact" && !result.emailSent) {
+          window.alert(
+            `Invoice submitted and visible in the client's portal, but the email notification was not sent${result.emailError ? `: ${result.emailError}` : "."}`
+          )
+        }
         onInvoiced(booking.id)
         onClose()
       } else {

@@ -65,9 +65,14 @@ export default async function VendorDashboardPage() {
           <h1 className="text-2xl font-bold">Vendor Dashboard</h1>
           <p className="text-gray-500 text-sm">Manage your jobs, portfolio, and earnings</p>
         </div>
-        <Link href="/vendor/jobs">
-          <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white">View Jobs</Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link href="/vendor/invoices">
+            <Button size="sm" variant="outline">Invoices</Button>
+          </Link>
+          <Link href="/vendor/jobs">
+            <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white">View Jobs</Button>
+          </Link>
+        </div>
       </div>
 
       {/* OS Command Strip */}

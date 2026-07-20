@@ -173,6 +173,11 @@ export default async function ClientVendorsPage({
         </Button>
         <h1 className="text-3xl font-bold">{header.title}</h1>
         <p className="text-muted-foreground mt-1">{header.subtitle}</p>
+        <p className="text-sm mt-2">
+          <Link href={`/portal/${contactId}/invoices`} className="text-blue-600 hover:underline">
+            View invoices from your service providers →
+          </Link>
+        </p>
       </div>
 
       {/* Section 1: assigned vendors (only when there's an active transaction) */}
