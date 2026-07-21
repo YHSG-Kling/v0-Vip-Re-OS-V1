@@ -8,18 +8,17 @@
  * import from "@/lib/auth" instead.
  *
  * Canonical import paths for auth in Client Components:
- *   import { useAuth }      from "@/lib/auth/client"  — hook
- *   import { AuthProvider } from "@/lib/auth/client"  — provider (for providers.tsx)
+ *   import { useAuth }      from "@/lib/auth/client"  — context-backed hook
+ *   import { AuthProvider } from "@/lib/auth/client"  — provider
  */
 
-// ─── CANONICAL HOOK ───────────────────────────────────────────────────────────
-export { useAuth } from "./useAuth"
+// ─── CANONICAL CONTEXT ────────────────────────────────────────────────────────
+// AuthProvider owns the single canonical auth subscription for the app.
+// Consumers must read from that provider instead of instantiating lib/auth/useAuth
+// directly; otherwise every component creates its own Supabase auth listener and
+// session resolver, which can cascade into repeated renders/auth loops.
+export { AuthProvider, useAuth } from "@/contexts/AuthContext"
 export type { AuthState } from "./useAuth"
-
-// ─── PROVIDER ─────────────────────────────────────────────────────────────────
-// AuthProvider lives in contexts/AuthContext.tsx as a thin wrapper that uses
-// the canonical useAuth hook. Once migration is complete it can be inlined here.
-export { AuthProvider } from "@/contexts/AuthContext"
 
 // ─── CLIENT-SIDE PERMISSIONS ──────────────────────────────────────────────────
 export type { UserRole } from "./permissions-client"
