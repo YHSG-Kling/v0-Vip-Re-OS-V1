@@ -558,12 +558,15 @@ export function VendorDirectoryClient({
 
                 <div className="space-y-2">
                   <Label>Service Type</Label>
-                  <Select value={filterServiceType} onValueChange={setFilterServiceType}>
+                  <Select
+                    value={filterServiceType || "__all__"}
+                    onValueChange={(v) => setFilterServiceType(v === "__all__" ? "" : v)}
+                  >
                     <SelectTrigger>
                       <SelectValue placeholder="All types" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">All types</SelectItem>
+                      <SelectItem value="__all__">All types</SelectItem>
                       {serviceTypes.map((type) => (
                         <SelectItem key={type} value={type}>
                           {type}
@@ -575,12 +578,15 @@ export function VendorDirectoryClient({
 
                 <div className="space-y-2">
                   <Label>Min Rating</Label>
-                  <Select value={filterMinRating} onValueChange={setFilterMinRating}>
+                  <Select
+                    value={filterMinRating || "__any__"}
+                    onValueChange={(v) => setFilterMinRating(v === "__any__" ? "" : v)}
+                  >
                     <SelectTrigger>
                       <SelectValue placeholder="Any rating" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">Any rating</SelectItem>
+                      <SelectItem value="__any__">Any rating</SelectItem>
                       <SelectItem value="4">4+ stars</SelectItem>
                       <SelectItem value="3">3+ stars</SelectItem>
                       <SelectItem value="2">2+ stars</SelectItem>

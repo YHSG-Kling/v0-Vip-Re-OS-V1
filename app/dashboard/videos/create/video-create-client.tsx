@@ -1596,12 +1596,15 @@ export default function VideoCreatePage() {
                 {brandingPresets.length > 0 && (
                   <div className="space-y-3">
                     <Label>Branding Preset (Optional)</Label>
-                    <Select value={brandingPresetId} onValueChange={setBrandingPresetId}>
+                    <Select
+                      value={brandingPresetId || "__none__"}
+                      onValueChange={(v) => setBrandingPresetId(v === "__none__" ? "" : v)}
+                    >
                       <SelectTrigger>
                         <SelectValue placeholder="Select a branding preset" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="">No branding</SelectItem>
+                        <SelectItem value="__none__">No branding</SelectItem>
                         {brandingPresets.map((preset) => (
                           <SelectItem key={preset.id} value={preset.id}>
                             <div className="flex items-center gap-2">

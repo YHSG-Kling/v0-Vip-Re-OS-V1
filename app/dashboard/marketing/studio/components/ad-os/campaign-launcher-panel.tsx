@@ -249,15 +249,15 @@ export function CampaignLauncherPanel({ listings, agentId, brokerageId, onCampai
             <div className="space-y-1.5">
               <Label className="text-xs font-medium">Linked Listing (optional)</Label>
               <Select
-                value={selectedListingId}
-                onValueChange={setSelectedListingId}
+                value={selectedListingId || "__none__"}
+                onValueChange={(v) => setSelectedListingId(v === "__none__" ? "" : v)}
                 disabled={stage !== "form"}
               >
                 <SelectTrigger className="h-8 text-sm">
                   <SelectValue placeholder="No specific listing" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">No specific listing</SelectItem>
+                  <SelectItem value="__none__">No specific listing</SelectItem>
                   {listings.map((l) => (
                     <SelectItem key={l.id} value={l.id}>
                       {l.address}, {l.city}

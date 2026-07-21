@@ -262,17 +262,23 @@ export function CdaSetupPanel() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Input placeholder="Template name (required)" value={tplName} onChange={e => setTplName(e.target.value)} />
                 <Input placeholder="Description (optional)" value={tplDescription} onChange={e => setTplDescription(e.target.value)} />
-                <Select value={tplState} onValueChange={setTplState}>
+                <Select
+                  value={tplState || "__universal__"}
+                  onValueChange={(v) => setTplState(v === "__universal__" ? "" : v)}
+                >
                   <SelectTrigger><SelectValue placeholder="State (optional — universal if blank)" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Universal (any state)</SelectItem>
+                    <SelectItem value="__universal__">Universal (any state)</SelectItem>
                     {ALL_US_STATES.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
                   </SelectContent>
                 </Select>
-                <Select value={tplType} onValueChange={setTplType}>
+                <Select
+                  value={tplType || "__any__"}
+                  onValueChange={(v) => setTplType(v === "__any__" ? "" : v)}
+                >
                   <SelectTrigger><SelectValue placeholder="Transaction type (optional)" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Any type</SelectItem>
+                    <SelectItem value="__any__">Any type</SelectItem>
                     {TX_TYPES.map(t => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
                   </SelectContent>
                 </Select>
