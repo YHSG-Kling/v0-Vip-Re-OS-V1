@@ -171,6 +171,29 @@ const nextConfig: NextConfig = {
     // a real package and is installed.
     config.resolve = config.resolve || {}
     config.resolve.alias = { ...(config.resolve.alias || {}), '@zoom/download-manager': false }
+    if (isServer) {
+      // Force sharp to stay EXTERNAL on the server build: emit `require("sharp")`
+      // at runtime (resolved from node_modules, where its native
+      // @img/sharp-linux-x64 binary sits as a sibling) instead of BUNDLING sharp
+      // into a server chunk. A bundled sharp can't locate that binary and the
+      // build dies in "Collecting page data" with: Could not load the "sharp"
+      // module using the linux-x64 runtime.
+      //
+      // serverExternalPackages: ["sharp"] does exactly this and works in a plain
+      // `next build --webpack` (verified locally: 0 sharp warnings, full build).
+      // But on Vercel the "Applying modifyConfig from Vercel" step (composed with
+      // the withWorkflow wrapper) does not carry serverExternalPackages through,
+      // so sharp was still bundled there — the local-green / Vercel-red split.
+      // Pinning the external HERE, inside the webpack callback Next always runs,
+      // is not reachable by that config rewrite. The binary is installed under
+      // pnpm (@img/sharp-linux-x64 is in pnpm-lock.yaml); the only problem was
+      // bundling, which this prevents.
+      const existing = config.externals || []
+      config.externals = [
+        ...(Array.isArray(existing) ? existing : [existing]),
+        { sharp: 'commonjs sharp' },
+      ]
+    }
     // Reduce aggressive file watching to prevent duplicate dev server spawns
     if (!isServer) {
       config.watchOptions = {
