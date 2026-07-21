@@ -1,5 +1,5 @@
 {
-  "buildCommand": "pnpm install --no-frozen-lockfile && next build --webpack",
+  "buildCommand": "pnpm install --no-frozen-lockfile && NODE_OPTIONS='--max-old-space-size=10240' next build --webpack",
   "installCommand": "pnpm install --no-frozen-lockfile",
   "functions": {
     "app/api/cron/poll-did-videos/route.ts": {
