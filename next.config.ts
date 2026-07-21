@@ -122,6 +122,20 @@ const nextConfig: NextConfig = {
   //   @sparticuz/chromium-min, ffmpeg-static — also native + already
   //     handled via vercel.json's includeFiles override per route.
   serverExternalPackages: [
+    // sharp ships a native libvips binary loaded via @img/sharp-linux-x64.
+    // If webpack BUNDLES sharp into a server chunk, the bundled copy can't
+    // locate its sibling native binary at runtime — `next build` then dies in
+    // "Collecting page data" with: Could not load the "sharp" module using the
+    // linux-x64 runtime (first tripped by /api/cron/listing-promo-hybrid-composite,
+    // which imports lib/video/composite-attribution.ts → sharp). npm's FLAT
+    // node_modules happens to hoist the binary where bundled-sharp still finds
+    // it (CI passed), but pnpm's ISOLATED layout (what Vercel uses) hides it —
+    // the exact npm-green / pnpm-red split. Externalizing sharp makes Next
+    // require() it from its real node_modules location under BOTH package
+    // managers, where the native binary resolves. sharp is imported by
+    // composite-attribution, photo-intelligence, image-generation,
+    // listing-brochure — all server-only.
+    "sharp",
     "@remotion/bundler",
     "@remotion/renderer",
     "@remotion/compositor-darwin-arm64",
