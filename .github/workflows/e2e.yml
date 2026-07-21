@@ -15,6 +15,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      # `npm run type-check` (tsc --noEmit) on this app peaks above the default
+      # ~4 GB Node heap and OOM-crashes (exit 134, "Reached heap limit"). The
+      # guards workflow already runs the identical type-check with an 8 GB heap
+      # and passes; this job ran it with the default heap and crashed flakily
+      # (it sits right at the 4 GB edge). Match the proven guards config so the
+      # type-check step is memory-stable here too.
+      NODE_OPTIONS: --max-old-space-size=8192
       # Provided via repo Secrets; empty → simulators skip the live layer (still exit 0).
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
