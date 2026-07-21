@@ -227,13 +227,25 @@ Price-to-sale ratio: ${snapshot.avgListPrice && snapshot.avgSalePrice ? ((snapsh
 
 Generate insights that help this agent take action today.`
 
-    const { text } = await generateTextRouted({
-      feature: "market_insight_generation",
-      system: systemPrompt,
-      prompt: userPrompt,
-      maxTokens: 600,
-      temperature: 0.3,
-    })
+    let text: string
+    try {
+      const result = await generateTextRouted({
+        feature: "market_insight_generation",
+        system: systemPrompt,
+        prompt: userPrompt,
+        maxTokens: 600,
+        temperature: 0.3,
+      })
+      text = result.text
+    } catch (aiErr) {
+      // Convert non-serializable Error to plain message
+      const errorMessage = aiErr instanceof Error ? aiErr.message : String(aiErr)
+      console.error("[MarketInsights] AI generation failed:", errorMessage)
+      return {
+        insights: null,
+        error: "Market insights temporarily unavailable. Please try again later.",
+      }
+    }
 
     // ── 4. Parse AI response ──────────────────────────────────────────────────
 
@@ -311,7 +323,9 @@ Generate insights that help this agent take action today.`
 
     return { insights: result }
   } catch (err) {
-    console.error("[MarketInsights] generateMarketInsights failed:", err)
+    // Log safe message only — avoid serializing Error objects
+    const errorMessage = err instanceof Error ? err.message : String(err)
+    console.error("[MarketInsights] generateMarketInsights failed:", errorMessage)
     return {
       insights: null,
       error: "Unable to generate market insights. Please try again.",
