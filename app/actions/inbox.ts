@@ -19,10 +19,8 @@ import { buildActorContext } from "@/lib/kernel/actor-context"
 import {
   loadUniversalInbox,
   sendInboxReply,
-  type InboxChannel,
-  type InboxMessageRow,
-  type InboxThread,
 } from "@/lib/kernel/communications"
+import type { InboxChannel, InboxMessageRow, InboxThread } from "@/lib/kernel/communications"
 
 // ─── RE-EXPORT TYPES (safe to use in client components) ───────────────────────
 export type { InboxChannel, InboxMessageRow, InboxThread }
