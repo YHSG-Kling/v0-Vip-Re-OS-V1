@@ -20,10 +20,18 @@ import {
   loadUniversalInbox,
   sendInboxReply,
 } from "@/lib/kernel/communications"
-import type { InboxChannel, InboxMessageRow, InboxThread } from "@/lib/kernel/communications"
-
-// ─── RE-EXPORT TYPES (safe to use in client components) ───────────────────────
-export type { InboxChannel, InboxMessageRow, InboxThread }
+// NOTE: This file is a "use server" module — it may ONLY export async
+// functions. All inbox types/interfaces live in ./inbox-types and are
+// imported here as type-only imports. Consumers that need these types should
+// import them from "@/app/actions/inbox-types" (or directly from
+// "@/lib/kernel/communications"), never from this module.
+import type {
+  InboxMessageRow,
+  InboxThread,
+  GetInboxMessagesParams,
+  SendInboxMessageParams,
+  ForceComplianceOverrideParams,
+} from "@/app/actions/inbox-types"
 
 // ─── RESOLVE ACTOR CONTEXT (shared util) ─────────────────────────────────────
 
@@ -62,17 +70,6 @@ async function resolveActorContext() {
 }
 
 // ─── ACTION: getInboxMessages ─────────────────────────────────────────────────
-
-export interface GetInboxMessagesParams {
-  channel?: InboxChannel
-  contactId?: string
-  unreadOnly?: boolean
-  limit?: number
-  /** Restrict to one AI-ISA lead's conversation (leads are NOT contacts). */
-  leadId?: string
-  /** "lead" fetches only the AI-ISA lead lane. */
-  party?: "lead"
-}
 
 export async function getInboxMessages(params: GetInboxMessagesParams = {}): Promise<{
   success: boolean
@@ -113,12 +110,6 @@ export async function getInboxMessages(params: GetInboxMessagesParams = {}): Pro
 }
 
 // ─── ACTION: sendInboxMessage ─────────────────────────────────────────────────
-
-export interface SendInboxMessageParams {
-  contactId: string
-  body: string
-  channel: "sms" | "email" | "portal" | "chat"
-}
 
 export async function sendInboxMessage(params: SendInboxMessageParams): Promise<{
   success: boolean
@@ -162,13 +153,6 @@ export async function sendInboxMessage(params: SendInboxMessageParams): Promise<
 // These remain enforced because they're legal boundaries, not gating
 // suggestions. The override only bypasses brand voice / them-first /
 // fair-housing-wording gates.
-
-export interface ForceComplianceOverrideParams {
-  contactId:      string
-  body:           string
-  channel:        "sms" | "email" | "portal" | "chat"
-  overrideReason: string
-}
 
 export async function forceComplianceOverrideAndSend(
   params: ForceComplianceOverrideParams,
