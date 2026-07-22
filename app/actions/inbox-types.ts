@@ -18,7 +18,7 @@ export type {
 } from "@/lib/kernel/communications"
 
 export interface GetInboxMessagesParams {
-  channel?: import("@/lib/kernel/communications").InboxChannel
+  channel?: string
   contactId?: string
   unreadOnly?: boolean
   limit?: number
