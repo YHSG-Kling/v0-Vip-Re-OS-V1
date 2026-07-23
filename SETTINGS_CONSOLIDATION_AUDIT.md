@@ -698,3 +698,49 @@ Consolidate to one shared resolver in a later pass.
 
 Verified: `tsc --noEmit` clean (0 errors); `test:brand-voice-cascade` (8/0), `test:brand-cascade`
 (11/0), `no-dead-components`, `no-orphan-actions`, `use-server-exports` pass.
+
+## 17. Phone billing bundled into the tiers with metering (correction #4) + brand-voice RLS fix
+
+**Owner instruction:** "bundled into the tiers with metering." Closes §13's open
+SaaS phone-billing question with the owner's chosen model.
+
+**The model — bundle → metered overage → hard cap (`lib/billing/phone-plan.ts`, pure):**
+Every canonical tier BUNDLES a phone allowance — included numbers + AI-voice
+minutes + SMS segments. Usage inside the bundle is free; usage beyond it is
+metered overage (per-minute / per-segment / per-extra-number rates that track the
+platform's own metered cost with margin); `maxNumbers` is a runaway backstop
+(solo 3 / team 15 / brokerage 200 / multi_location unlimited). Per-tier DEFAULTS
+are the fallback — **pricing is not final**; Superadmin → Plans overrides them by
+writing `subscription_tiers.features.limits` (`included_phone_numbers` /
+`included_voice_minutes` / `included_sms_segments` / `overage_*_cents` /
+`max_phone_numbers`). `resolvePhoneAllowance` folds the override over the default;
+an unknown/legacy tier fails SAFE to the tightest (solo) bundle.
+
+**The gate (`lib/voice/number-provisioning.ts` + `lib/billing/phone-plan-resolve.ts`):**
+The ONE provisioning core gains `enforceTenantAllowance`. The tenant purchase path
+(`autoProvisionAgentPhone`) turns it ON — before any Twilio purchase,
+`evaluateTenantNumberProvisioning` counts the tenant's ACTIVE numbers and decides
+included-vs-overage; a number past the included count is billable, NOT forbidden
+(metered resale), blocked ONLY at the hard cap (`capReached`, honest upgrade
+pitch). The staff fleet console leaves enforcement OFF. Every purchased-number
+audit line stamps the billing disposition (`plan:included` / `plan:overage +$x/mo`).
+
+**The meter:** `loadTenantPhoneMeter` folds the SAME voice-usage rollup the
+phone-settings card reads (`vapi_voice_calls` minutes + `vapi_phone_numbers`
+active) plus the unified-inbox SMS count against the bundle into an
+included-vs-overage line.
+
+**Ownership:** `finance_manager` owns the P&L, `data_steward` owns provisioning;
+burn domain `phone_billing_bundle`, proof `test:phone-plan` (34 checks) wired into
+the guard chain.
+
+**Brand-voice RLS fix (VADE review, PR #49 line 190):** `resolveBrandVoice` read
+`brand_voice_profile` through the user-scoped RLS client, so the brokerage-base
+(`team_id`/`agent_id` null) and team rows were silently dropped — collapsing the
+cascade to the agent tier. Switched to `createServiceClient()`, matching
+`resolveBrandContext`. The cascade guard gained a check asserting the service
+client is used so it can't regress.
+
+Verified: `tsc --noEmit` clean (0 errors); `test:phone-plan` (34/0),
+`test:brand-voice-cascade` (9/0), `test:manager-ownership` (73/0). Commits
+`f7718cf` (feat) + the brand-voice fix. CI guards + build green.
