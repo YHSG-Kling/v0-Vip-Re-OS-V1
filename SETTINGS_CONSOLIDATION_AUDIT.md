@@ -466,3 +466,39 @@ the hub lacks, so a redirect+delete would lose a feature and can't be end-to-end
 environment. Correct sequence: port "Sync now" into the Connection Center CRM domain (additive),
 switch the phone domain to the number/forwarding model (§6f), THEN redirect and delete the dead
 pages/components with the guards (`orphan-routes`, `no-dead-components`, `no-orphan-actions`) green.
+
+---
+
+## 10. Tier-access sweep — remaining role-less config leaks fixed + guarded
+
+A thorough sweep for the §9b pattern (service-client read of brokerage-wide config gated only by
+`brokerage_id`, no role) found four more reads and one write. All fixed with the canonical
+broker-level gate; a new guard prevents recurrence.
+
+### 10a. Fixes
+
+| File | Function | Table | Was | Now |
+|---|---|---|---|---|
+| `brokerage-fees.ts` | `listFeeTypes` | `brokerage_fee_types` (fee schedule) | brokerage-only | `isBrokerRole` gate (matches create/toggle) |
+| `settings/list-email-templates.ts` | `listEmailTemplates` | `email_templates` | brokerage-only | `isAdminOrBroker` |
+| `settings/update-email-template.ts` | `updateEmailTemplate` (WRITE) | `email_templates` | brokerage-ownership only, **no role** | `isAdminOrBroker` |
+| `settings/global-settings-actions.ts` | `fetchWidgetScope` | `global_settings` | brokerage-only | `isAdminOrBroker` |
+| `settings/global-settings-actions.ts` | `updateWidgetScope` (WRITE) | `global_settings` | **no role** | `isAdminOrBroker` (Forbidden) |
+| `settings/global-settings-actions.ts` | `fetchWidgetAgentsAndTeams` | `users`+`teams` roster | brokerage-only | `isAdminOrBroker` |
+
+### 10b. The shared gate was legacy-incomplete (fixed)
+
+`isAdminOrBroker` (lib/auth/resolve-user-role) checked only `["admin","broker","broker_owner","superadmin"]`
+and `resolveUserRole` does NOT canonicalize — so a live `broker_admin` / `super_admin` user was
+wrongly denied (they canonicalize to broker / superadmin per lib/security/types.ts, and
+`create-email-template` + `brokerage-fees.isBrokerRole` already admit them). The helper now admits
+the legacy variants explicitly. It is used only by these settings actions, so the change is
+zero-blast-radius and strictly more correct.
+
+### 10c. Permanent guard
+
+`scripts/settings-authz-guard.ts` (`npm run test:settings-authz`, added to `npm run guard`, 13/0):
+any `app/actions/settings/*` (+ `brokerage-fees.ts`) file that uses `createServiceClient` must
+carry a role-gate token or be explicitly EXEMPT with a reason (only `public-site-links.ts`, which
+reads public data). New ungated service-client settings actions now fail CI — closing this leak
+class for good.

@@ -147,6 +147,11 @@ export async function toggleFeeType(params: {
 export async function listFeeTypes(): Promise<FeeType[]> {
   const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return []
+  // The fee schedule is broker-level financial config — gate the read to the
+  // same roles that create/toggle fees (createFeeType / setFeeTypeActive). This
+  // uses the service client (RLS-bypassing), so a brokerage_id check alone let
+  // any plain agent enumerate the whole fee structure.
+  if (!isBrokerRole(ctx.userType)) return []
 
   const svc = createServiceClient()
   const { data } = await svc

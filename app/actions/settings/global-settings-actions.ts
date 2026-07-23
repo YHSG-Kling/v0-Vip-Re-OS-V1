@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import {
   getGlobalSettings,
   updateGlobalSettings,
@@ -73,10 +74,12 @@ export async function fetchWidgetScope(): Promise<WidgetScope | null> {
 
   const { data: userRow } = await supabase
     .from("users")
-    .select("brokerage_id")
+    .select("brokerage_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
   if (!userRow?.brokerage_id) return null
+  // Widget scope is brokerage-wide admin config — gate the RLS-bypassing read.
+  if (!isAdminOrBroker(userRow)) return null
 
   const serviceClient = createServiceClient()
   const { data: gs } = await serviceClient
@@ -95,10 +98,12 @@ export async function updateWidgetScope(scope: WidgetScope): Promise<void> {
 
   const { data: userRow } = await supabase
     .from("users")
-    .select("brokerage_id")
+    .select("brokerage_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
   if (!userRow?.brokerage_id) throw new Error("Brokerage not found")
+  // Only broker/admin may change brokerage-wide widget scope.
+  if (!isAdminOrBroker(userRow)) throw new Error("Forbidden: insufficient permissions")
 
   const serviceClient = createServiceClient()
   const { data: gs } = await serviceClient
@@ -125,10 +130,13 @@ export async function fetchWidgetAgentsAndTeams(): Promise<{
 
   const { data: userRow } = await supabase
     .from("users")
-    .select("brokerage_id")
+    .select("brokerage_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
   if (!userRow?.brokerage_id) return { agents: [], teams: [] }
+  // The full brokerage roster is admin config for the widget scope picker —
+  // gate the RLS-bypassing read to broker/admin.
+  if (!isAdminOrBroker(userRow)) return { agents: [], teams: [] }
 
   const serviceClient = createServiceClient()
   const [agentsRes, teamsRes] = await Promise.all([

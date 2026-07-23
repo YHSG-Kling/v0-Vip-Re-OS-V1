@@ -67,9 +67,23 @@ export function requireRole(
   return allowedRoles.includes(resolveUserRole(profile))
 }
 
+// Broker-level access gate. Checks the RAW user_type against every broker/admin
+// variant INCLUDING the live legacy rows (broker_admin canonicalizes to broker,
+// super_admin to superadmin — see lib/security/types.ts). resolveUserRole does
+// not canonicalize, so the legacy variants are listed explicitly here; this keeps
+// the gate consistent with app/actions/brokerage-fees.ts#isBrokerRole and the
+// create/update settings actions that admit broker_admin.
+const BROKER_LEVEL_TYPES = new Set([
+  "admin",
+  "broker",
+  "broker_owner",
+  "broker_admin",
+  "superadmin",
+  "super_admin",
+])
 export function isAdminOrBroker(profile: {
   user_type?: string | null
   role?: string | null
 }): boolean {
-  return requireRole(profile, ["admin", "broker", "broker_owner", "superadmin"])
+  return BROKER_LEVEL_TYPES.has(profile.user_type ?? "")
 }

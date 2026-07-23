@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
+import { isAdminOrBroker } from '@/lib/auth/resolve-user-role';
 
 export async function updateEmailTemplate(id: string, updates: any) {
   const supabase = await createClient();
@@ -10,10 +11,13 @@ export async function updateEmailTemplate(id: string, updates: any) {
 
   const { data: userData } = await supabase
     .from('users')
-    .select('brokerage_id')
+    .select('brokerage_id, user_type')
     .eq('id', user.id)
     .maybeSingle();
   if (!userData?.brokerage_id) return { error: 'Unauthorized' };
+  // Email templates are broker-level config — the create side gates by role, so
+  // the update must too (this write used the service client, RLS-bypassing).
+  if (!isAdminOrBroker(userData)) return { error: 'Forbidden' };
 
   const svc = createServiceClient();
 
