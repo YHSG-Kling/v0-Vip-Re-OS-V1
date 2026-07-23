@@ -191,7 +191,7 @@ The Voice & AI Calling tab added earlier referenced "the Vapi voice engine." Sin
 decommissioned and the platform stack is **Twilio telephony + ElevenLabs voice**, the copy now
 says exactly that. No behavior change.
 
-### 5e. Platform vs tenant provider boundary — verify, don't assume
+### 5e. Platform vs tenant provider boundary — verify, don't assume (see §6 for the resolution)
 
 The platform holds direct mail, Vercel AI Gateway, D-ID + Remotion video, ElevenLabs voice,
 Twilio phone, RentCast default IDX, scrapers, and enrichment. `/settings/providers` currently
@@ -199,3 +199,119 @@ exposes tenant-level Email (`sendgrid`) and SMS (`twilio`) provider pickers. If 
 **platform-held** channel, a tenant-level Twilio SMS provider row is drift — confirm whether
 `/settings/providers` should show only tenant-BYO overrides (IDX, own SMTP) and hide
 platform-owned channels. Flagged for the provider-consolidation PR (§3.7), not changed here.
+
+---
+
+## 6. Full settings/provider audit + canonical information architecture
+
+Grounded in a 4-agent read-only sweep of every settings surface, the provider registry,
+the comms surfaces, and Twin Studio, plus `docs/PHONE-SYSTEM-SETUP.md` and
+`lib/providers/tenancy-matrix.ts`. **Audit-first**: the only code change in this pass is the
+Twin Studio voice-preview fix (§6e). Everything else is the plan.
+
+### 6a. The canonical authorities (single sources of truth)
+
+- **Routing / which vendor runs:** `resolveProvider()` + `SYSTEM_DEFAULTS` in
+  `lib/kernel/providers.ts`. Two tiers:
+  - **SYSTEM_ONLY (platform, superadmin-only):** `ai, video, avatar, voice_clone, ai_voice,
+    direct_mail, scraper, enrichment`. Tenants must NOT get pickers for these.
+  - **Per-tenant cascade (user→team→brokerage→superadmin→default):** `email, sms, phone,
+    social, calendar, payment, esign, transaction, crm, accounting, idx`.
+- **Ownership (platform-owned vs BYO):** `PROVIDER_TENANCY` in `lib/providers/tenancy-matrix.ts`
+  — `platform_metered` / `platform_subaccount` / `user_oauth` / `tenant_optional_key` /
+  `byo_top_tier`. Platform-owned (no tenant key): Twilio (subaccount), ElevenLabs, D-ID,
+  Remotion, all scrapers, RentCast, Stripe, AI Gateway, Supabase Storage.
+- **Connectable lists (the UI must derive from these, never hand-type):**
+  `PROVIDER_CATALOG` (esign/transaction) + `CONNECTOR_PROVIDERS`/`field-spec.ts` (Connection Center).
+
+**The "keep the accurate selection" rule:** a settings surface is correct **only** if its
+provider list and its `provider_type` key derive from the authorities above. The two surfaces
+that *hand-type* lists — `/settings/providers` and `/dashboard/settings/integrations` — are the
+primary drift and are the ones to retire, not preserve.
+
+### 6b. The one-home target already exists: the Connection Center
+
+`/settings/connections` (`connection-center-client.tsx` + `app/actions/connections/connection-center.ts`,
+driven by `lib/connections/field-spec.ts`) already renders Email, Phone/SMS, Calendar, Social,
+CRM, Financial, IDX, Transaction, E-Sign, Showings, Podcast, and Meetings/Zoom **on one page**,
+scope-gated per tier/role. This is the "one location, onboarding-simple" hub. Consolidation =
+**make it the only connector** and delete the competing dedicated pages.
+
+**Canonical Settings IA (one home per concern), all under `/settings/*`:**
+
+| Concern | Canonical home | Retire / redirect |
+|---|---|---|
+| App/general config | `/settings/global` | `/settings/general` (subset), dashboard/vertical stubs (already redirect) |
+| Branding + auto-website | `/settings/branding` (+ new website section, §6d) | — |
+| Users / team / SSO | `/settings/users` | `/dashboard/settings/teams` (redirects) |
+| **All provider connections** | `/settings/connections` (Connection Center) | `/settings/phone`, `/settings/crm`, `/settings/integrations`, `/settings/providers`, `/dashboard/settings/integrations`, `/dashboard/settings/calendar` |
+| AI Team (assistant + twins + call handling) | one `/settings/ai-team` area | scattered: `/dashboard/settings/assistant`, `/twin-studio`, `/widget`, `/ai-isa/settings`, `onboarding/ai-call-setup` |
+| Brand voice | `/settings/brand-voice` | 3 other edit surfaces (studio, admin/brand, onboarding) |
+| Notifications | `/settings/notifications` | `/dashboard/settings/notification-rules` (same kernel fn) |
+| Commission/financial | `/settings/commission` + `/settings/accounting` | — |
+
+### 6c. The provider-list conflicts to resolve (from the provider map)
+
+The same concern is offered with divergent lists across surfaces. Resolution = one list per
+concern, derived from the authorities in §6a:
+
+- **J1 (bug, most serious):** `/dashboard/settings/integrations` writes `provider_type='voice'`
+  and `'mls'`, but the kernel reads `'phone'` and `'idx'` → **overrides set there are silent
+  no-ops at dispatch.** Fix by retiring that surface (Connection Center replaces it).
+- **SMS/phone carriers:** three lists (twilio/signalwire/bandwidth · twilio/bandwidth/vonage ·
+  twilio/telnyx/bandwidth); dispatch implements **twilio only**. Keep the kernel/tenancy list;
+  since Twilio is platform-owned, tenants pick a **number**, not a carrier key (§6f).
+- **Email:** sendgrid/postmark/ses/smtp/mailgun vs sendgrid/mailgun/resend vs gmail/outlook
+  (OAuth). The tenant-facing accurate selection is **gmail/outlook OAuth** (Connection Center);
+  the SMTP-vendor lists are platform routing detail, not tenant choices.
+- **CRM:** ghl-only vs {gohighlevel,lofty,followupboss} vs {+hubspot}; kernel default is
+  follow_up_boss. Keep the Connection Center list; it's the superset and matches the kernel.
+- **MLS/IDX:** spark/rets/bridge exist only in the legacy dropdown and are unsupported —
+  drop them; keep **RentCast (platform default) + IDX Broker (tenant BYO)**.
+- **eSign/Transaction (J10):** already correct — both surfaces derive from `PROVIDER_CATALOG`.
+  **This is the template every other concern should copy.**
+
+### 6d. Auto-website: settings section is missing + a brand-source drift bug
+
+The public tenant sites (`/site/[slug]`, `/team/[slug]`, `/p/[agentSlug]`) are fully built and
+platform-hosted (no tenant DNS). But:
+- The only settings surface (`YourWebsiteCard` on `/settings/branding`) just shows the live URL
+  + custom-domain management. **Missing:** site on/off toggle, slug editor, about/recruiting-pitch
+  copy, and section selection. Add a real **Website** section under `/settings/branding`.
+- **Brand-source drift (bug):** `BrandingForm`/`saveBrandColors` writes `brokerage_brand_settings.*`,
+  but `/site/[slug]` reads `brokerages.primary_color/about_text/logo_url` — **different tables**,
+  so editing branding does not update the live site hero. Reconcile to one brand source.
+
+### 6e. Twin Studio voice preview — FIXED in this pass
+
+`listening-preferences-panel.tsx#previewVoice` called `/api/internal/voice-tts` with only
+`{text}` — the route ignores any voiceId and always synthesizes the caller's own self-voice, so
+the default-voice Preview played the wrong voice (or nothing without a clone). Now it calls the
+canonical, budget-gated `previewAssistantVoiceAction(voiceId)` (the same path the AI Identity
+picker uses) and plays the returned data URL. Also two smaller Twin Studio gaps to build later:
+avatar step has no "paste a self-recorded video link" path (upload only), and the voice step is
+record-only (no "upload an existing sample").
+
+### 6f. Phone/SMS: switch the tenant model from API-key to number/forwarding
+
+`docs/PHONE-SYSTEM-SETUP.md` + `tenancy-matrix.ts` are explicit: the platform owns Twilio and
+resells metered; tenants never enter carrier secrets. But `/settings/phone` and the Connection
+Center `phone` domain (`field-spec.ts:59-66`) ask for **Account SID + Auth Token**. The correct
+model already exists in `admin/phone-settings` (auto-provision + number/forwarding). Fix =
+change the Connection Center `phone` domain to number/forwarding, retire the API-key phone form,
+keep BYO-Twilio only for the multi-location top tier.
+
+### 6g. Phased execution plan (each = one PR, `npm run guard` green, no stubs)
+
+1. **This PR** — voice-preview fix + this audit/IA (done).
+2. **Rename + redirect** — sidebar "Email & Calendar" → "Connections"; `/settings/phone` and
+   `/settings/crm` become thin redirects into `/settings/connections`; retire `/settings/integrations`
+   (its Voice bridge moves into the Connection Center phone domain).
+3. **Phone model** — Connection Center `phone` domain → number/forwarding; delete the API-key form.
+4. **Provider de-drift** — retire the two hand-typed catalogues (`/settings/providers`,
+   `/dashboard/settings/integrations`); derive every list from the §6a authorities; close J1.
+5. **Website** — add the auto-website settings section; reconcile the brand-source table drift.
+6. **AI Team** — fold assistant/twin/widget/ai-call/ai-isa into one `/settings/ai-team` area.
+7. **Brand voice** — collapse the 4 edit surfaces into `/settings/brand-voice`.
+8. **Ops/tech-debt** — Vapi/HeyGen residue retirement (§5b), stale external cron scheduler (§5a),
+   orphaned cron routes (§5c), calendar Disconnect no-op button.

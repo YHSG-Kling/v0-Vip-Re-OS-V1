@@ -10,6 +10,7 @@ import {
   updateMyProspectVoice,
   type AgentVoiceAvatarPrefs,
 } from "@/app/actions/voice-avatar-settings"
+import { previewAssistantVoiceAction } from "@/app/actions/ai-identity"
 import type { GenericVoiceOption } from "@/lib/voice/voice-resolver"
 
 interface Props {
@@ -68,18 +69,22 @@ export function ListeningPreferencesPanel({ initialPrefs, genericVoices }: Props
   }
 
   async function previewVoice(voiceId: string) {
+    // Preview the SELECTED voice — synthesize THIS voiceId through the canonical
+    // budget-gated primitive (same path the AI Identity picker uses). The old
+    // /api/internal/voice-tts call ignored voiceId and always rendered the
+    // caller's own self-voice, so this preview played the wrong voice (or
+    // nothing when no clone existed).
+    setSaveError(null)
     setPreviewLoading(voiceId)
     try {
-      const res = await fetch("/api/internal/voice-tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: "Good morning. Here's your focus for today." }),
-      })
-      if (res.ok) {
-        const blob = await res.blob()
-        const url = URL.createObjectURL(blob)
-        new Audio(url).play().finally(() => setTimeout(() => URL.revokeObjectURL(url), 5000))
+      const res = await previewAssistantVoiceAction(voiceId)
+      if (res.success) {
+        await new Audio(res.audioDataUrl).play().catch(() => {})
+      } else {
+        setSaveError(res.error ?? "Preview failed")
       }
+    } catch {
+      setSaveError("Preview failed")
     } finally {
       setPreviewLoading(null)
     }
