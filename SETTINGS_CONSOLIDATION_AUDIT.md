@@ -635,3 +635,34 @@ the outreach subset.
 
 Verified: `test:campaign-channels` (18/0), `no-dead-components`, `no-orphan-actions`,
 `use-server-exports`, `vocabulary-drift` all pass.
+
+---
+
+## 15. Storage → Supabase buckets (CDA blob error fixed; migration started)
+
+**Root cause of the CDA blob error:** the CDA template PDF uploaded through
+`/api/blob/upload` (Vercel Blob), whose `onBeforeGenerateToken.allowedContentTypes` list
+**excluded `application/pdf`** (only images/video/audio) — so every CDA template upload was
+rejected. Owner rule: **all upload/download storage is Supabase buckets**, not a blob store.
+
+- **New shared helper `lib/storage/buckets.ts`** — `ensureBucket` + `uploadBufferToBucket`
+  (public → public URL; private → signed URL). One implementation every upload flow migrating
+  off Vercel Blob reuses (mirrors the existing `twin-studio-upload.ts` pattern).
+- **CDA template upload → Supabase** (`app/actions/cda-storage.ts#uploadCdaTemplateFile`,
+  broker/admin-gated, PDF-validated, bucket `cda-templates`); the setup panel reads the file as
+  base64 and calls the action instead of `@vercel/blob/client`.
+- **Filled CDA PDF → Supabase** (`cda-template-field-actions.ts`, bucket `cda-filled`,
+  behavior-preserving public URL).
+- **Guard `test:cda-storage`** (8/0, added to `npm run guard`) asserts the CDA flow is Supabase
+  and free of `@vercel/blob`.
+
+**Tracked follow-up — 23 files still use `@vercel/blob`** (documents, podcast, stock library,
+Remotion renders, direct mail, portal uploads, `lib/remotion/media-host`, `lib/did`, etc.). Each
+is a distinct upload/download flow that must be migrated to `uploadBufferToBucket` + a bucket and
+tested individually — a scoped sweep, now unblocked by the shared helper. Access-hardening for the
+**filled CDA** (commission data — private bucket + signed-on-access instead of a public URL) is a
+related follow-up; this pass preserved the existing public-URL behavior to avoid breaking the
+download/e-sign flow.
+
+Verified: `test:cda-storage` (8/0), `no-dead-components`, `no-orphan-actions`,
+`use-server-exports` pass.

@@ -250,7 +250,7 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
 
   const { buildCdaFillValues } = await import("@/lib/transactions/cda-pdf-fill")
   const { fillPdfForm } = await import("@/lib/forms/pdf-form-fill")
-  const { put } = await import("@vercel/blob")
+  const { uploadBufferToBucket } = await import("@/lib/storage/buckets")
 
   const plan = buildCdaFillValues(resolution.fields)
   if (plan.values.length === 0) return { success: false, error: "nothing_to_fill" }
@@ -271,18 +271,16 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
     return { success: false, error: e instanceof Error ? `pdf_fill_failed: ${e.message}` : "pdf_fill_failed" }
   }
 
-  // Store the filled PDF + record it on the CDA.
-  let url: string
-  try {
-    const blob = await put(`cda-filled/${cda.id}-${cda.transaction_id}.pdf`, Buffer.from(filledBytes), {
-      access: "public",
-      contentType: "application/pdf",
-      addRandomSuffix: true,
-    })
-    url = blob.url
-  } catch (e) {
-    return { success: false, error: e instanceof Error ? `pdf_store_failed: ${e.message}` : "pdf_store_failed" }
-  }
+  // Store the filled PDF in Supabase Storage (platform buckets) + record it on the CDA.
+  const stored = await uploadBufferToBucket({
+    bucket: "cda-filled",
+    path: `${cda.id}-${cda.transaction_id}-${crypto.randomUUID()}.pdf`,
+    buffer: Buffer.from(filledBytes),
+    contentType: "application/pdf",
+    public: true, // behavior-preserving (was a public blob URL); access-hardening is a follow-up
+  })
+  if (!stored.ok) return { success: false, error: `pdf_store_failed: ${stored.error}` }
+  const url: string = stored.url
 
   await supabase
     .from("closing_disclosure_agreement")

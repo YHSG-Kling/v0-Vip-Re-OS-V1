@@ -30,9 +30,19 @@ import {
   deactivateCdaTemplateAction,
 } from "@/app/actions/brokerage-cda-setup"
 import { ALL_US_STATES } from "@/lib/state-forms/registry"
-import { upload } from "@vercel/blob/client"
+import { uploadCdaTemplateFile } from "@/app/actions/cda-storage"
 import { toast } from "sonner"
 import { CdaFieldMappingEditor } from "./cda-field-mapping-editor"
+
+// Read a File as base64 (no data: prefix) for the server upload action.
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "")
+    reader.onerror = () => reject(new Error("Could not read file"))
+    reader.readAsDataURL(file)
+  })
+}
 
 type Template = {
   id: string
@@ -101,18 +111,20 @@ export function CdaSetupPanel() {
 
   async function handleUpload(file: File) {
     if (!tplName.trim()) { toast.error("Template name required"); return }
+    if (file.type !== "application/pdf") { toast.error("CDA templates must be PDF files."); return }
     setUploading(true)
     try {
-      const blob = await upload(`cda-templates/${file.name}`, file, {
-        access: "public",
-        handleUploadUrl: "/api/blob/upload",
-      })
+      // Supabase Storage (platform buckets), not Vercel Blob. Read the PDF as
+      // base64 and upload through the role-gated server action.
+      const base64 = await fileToBase64(file)
+      const up = await uploadCdaTemplateFile({ base64, mimeType: file.type, fileName: file.name })
+      if (!up.ok) { toast.error(up.error); return }
       const res = await uploadCdaTemplateAction({
         name:            tplName.trim(),
         description:     tplDescription.trim() || undefined,
         state:           tplState || undefined,
         transactionType: (tplType || undefined) as any,
-        pdfUrl:          blob.url,
+        pdfUrl:          up.url,
       })
       if (res.success) {
         toast.success("Template uploaded")
