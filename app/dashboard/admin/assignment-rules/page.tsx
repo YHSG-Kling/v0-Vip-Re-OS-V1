@@ -31,6 +31,11 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { previewRuleRouting, type MatchableRule } from "@/lib/lead-assignment/rule-matcher"
+import {
+  saveAssignmentRuleAction,
+  toggleAssignmentRuleAction,
+  deleteAssignmentRuleAction,
+} from "@/app/actions/admin/assignment-rules"
 
 type RuleType = "round_robin" | "load_balance" | "geo_based" | "specialization"
 
@@ -222,23 +227,22 @@ export default function AssignmentRulesPage() {
   function handleSave() {
     if (!brokerageId) return
     startTransition(async () => {
-      const payload = {
-        brokerage_id: brokerageId,
+      // Privileged write routes through the admin-gated server action (brokerage
+      // pinned server-side) — never a direct client write to assignment_rules.
+      const res = await saveAssignmentRuleAction({
+        id: editingRule?.id ?? null,
         name: form.name,
-        rule_type: form.rule_type,
+        ruleType: form.rule_type,
         conditions: buildConditions(),
-        agent_ids: form.agent_ids,
-        team_id: form.team_id || null,
+        agentIds: form.agent_ids,
+        teamId: form.team_id || null,
         priority: form.priority,
-        is_active: true,
+        isActive: editingRule?.is_active ?? true,
+      })
+      if (!res.ok) {
+        window.alert(res.error)
+        return
       }
-
-      if (editingRule) {
-        await supabase.from("assignment_rules").update(payload).eq("id", editingRule.id)
-      } else {
-        await supabase.from("assignment_rules").insert({ ...payload, times_triggered: 0 })
-      }
-
       setModalOpen(false)
       await load()
     })
@@ -246,10 +250,8 @@ export default function AssignmentRulesPage() {
 
   function handleToggleActive(rule: AssignmentRule) {
     startTransition(async () => {
-      await supabase
-        .from("assignment_rules")
-        .update({ is_active: !rule.is_active })
-        .eq("id", rule.id)
+      const res = await toggleAssignmentRuleAction(rule.id, !rule.is_active)
+      if (!res.ok) window.alert(res.error)
       await load()
     })
   }
@@ -257,7 +259,8 @@ export default function AssignmentRulesPage() {
   function handleDelete(rule: AssignmentRule) {
     if (!window.confirm(`Delete rule "${rule.name}"? Routing falls through to lower-priority rules / load-balance.`)) return
     startTransition(async () => {
-      await supabase.from("assignment_rules").delete().eq("id", rule.id)
+      const res = await deleteAssignmentRuleAction(rule.id)
+      if (!res.ok) window.alert(res.error)
       await load()
     })
   }
