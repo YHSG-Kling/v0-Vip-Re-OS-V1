@@ -137,3 +137,65 @@ The moat this codebase already leans toward — and should lean into harder — 
 The through-line: **consolidate the surface, centralize through the kernel, and make the
 governance/compliance/voice/creative rails visible.** That is what turns "a lot of features"
 into "an OS."
+
+---
+
+## 5. Framework & structure audit (log-driven, 2026-07-22 export)
+
+Audited the attached production log export (1,995 rows) against the platform/tier
+architecture. **Audit-only** — the one code change made here is correcting the voice-tab
+copy (§5d). Everything else is a finding + recommendation, not a change, per the
+"audit before making changes" directive.
+
+### 5a. The "401 storm" is the auth layer working, NOT a broken cron system
+
+1,532 of 1,995 log rows are `401` on individual `/api/cron/*` paths (574 alone on
+`/api/cron/poll-heygen-videos`). This looks alarming but is **correct behavior**:
+
+- There is exactly **one** Vercel cron: `/api/cron/dispatch` (`* * * * *` in `vercel.json`).
+- `lib/kernel/cron-dispatch.ts` computes what's due and fans out internal calls **with
+  `Bearer CRON_SECRET`** (line 298) — the same header Vercel sends.
+- `lib/cron-auth.ts` is hardened: missing secret → 500, mismatch → 401 (no fail-open, no
+  "Bearer undefined" bypass).
+
+The 401s are on a **preview** deployment (`njrlq6wvc.vercel.app`), where Vercel's scheduler
+does **not** run crons. So these are **direct hits to the old per-cron paths without the
+secret** — a **stale external scheduler** (or monitor) still pointed at the pre-dispatcher
+endpoints. **Action is ops, not code:** decommission the old external cron config so it stops
+hammering individual paths; the dispatcher architecture is sound and should be the only caller.
+
+### 5b. Vapi and HeyGen are already formally decommissioned — residual code remains
+
+`lib/platform/provider-posture.ts:566` — `DECOMMISSIONED_PROVIDERS = new Set(["vapi","heygen"])`
+— and `lib/marketing/video-provider-resolver.ts` **force-locks video to D-ID** (a stale
+`heygen` override can never render). So the platform already enforces "no HeyGen, Vapi is gone."
+
+What remains is **residual surface area** that should be cleaned in a dedicated pass (109 files
+reference `vapi`, 47 reference `heygen`, mostly ban-enforcement + gated legacy + the Twilio
+relay that replaced Vapi). Live `api.heygen.com` appears in only 2 files (one is the ban
+comment; `app/actions/video-generation.ts` has a legacy path to retire). **Do not bulk-delete** —
+each reference needs the dependency check the platform's guards demand. Concrete residue to
+retire first: the `poll-heygen-videos` cron path (route already gone; a stale scheduler still
+calls it) and the "VAPI number" wording on `/dashboard/onboarding/ai-call-setup`.
+
+### 5c. Orphaned cron routes (404s)
+
+`/api/cron/team-heatmap-snapshot`, `/api/cron/engagement-scores`, `/api/cron/earnings-rollup`
+return **404** — scheduled/called but the route no longer exists on disk. Either restore the
+route or remove it from whatever still calls it (same stale-scheduler cleanup as §5a). The
+in-repo `test:orphan-routes` / `test:cron-dispatch` guards are the right place to assert this.
+
+### 5d. Voice-tab copy corrected (the one change in this pass)
+
+The Voice & AI Calling tab added earlier referenced "the Vapi voice engine." Since Vapi is
+decommissioned and the platform stack is **Twilio telephony + ElevenLabs voice**, the copy now
+says exactly that. No behavior change.
+
+### 5e. Platform vs tenant provider boundary — verify, don't assume
+
+The platform holds direct mail, Vercel AI Gateway, D-ID + Remotion video, ElevenLabs voice,
+Twilio phone, RentCast default IDX, scrapers, and enrichment. `/settings/providers` currently
+exposes tenant-level Email (`sendgrid`) and SMS (`twilio`) provider pickers. If Twilio is a
+**platform-held** channel, a tenant-level Twilio SMS provider row is drift — confirm whether
+`/settings/providers` should show only tenant-BYO overrides (IDX, own SMTP) and hide
+platform-owned channels. Flagged for the provider-consolidation PR (§3.7), not changed here.

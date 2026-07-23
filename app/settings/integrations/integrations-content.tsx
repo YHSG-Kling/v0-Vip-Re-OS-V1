@@ -201,8 +201,9 @@ export default function IntegrationsContent() {
               <CardTitle>AI Voice Calling</CardTitle>
             </div>
             <CardDescription>
-              Phone numbers, BYOC carriers, IVR menus, the Vapi voice engine, and the
-              duty agent for inbound and outbound AI ISA calls are configured in ISA Calling.
+              Phone numbers, BYOC carriers, IVR menus, the platform voice engine
+              (Twilio telephony + ElevenLabs voice), and the duty agent for inbound
+              and outbound AI ISA calls are configured in ISA Calling.
             </CardDescription>
           </CardHeader>
           <CardContent>
