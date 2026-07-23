@@ -7,6 +7,11 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { getEngagementFeed, type EngagementFeedItem } from "@/app/actions/ai-isa"
 import type { ISACampaignRow } from "@/app/actions/ai-isa"
+import { OUTREACH_CHANNELS } from "@/lib/campaigns/channels"
+
+// One source of truth with the creation drawer — the channel filter mirrors the
+// canonical outreach channels so the feed and the campaign builder never drift.
+const CHANNEL_FILTERS = ["all", ...OUTREACH_CHANNELS.map((c) => c.key)]
 
 const CHANNEL_ICON: Record<string, React.ReactNode> = {
   email:       <Mail className="h-3.5 w-3.5 text-blue-500" />,
@@ -96,7 +101,7 @@ export function EngagementFeed({ brokerageId, campaigns, initialItems }: Props) 
           <Select value={filterChannel} onValueChange={setFilterChannel}>
             <SelectTrigger className="h-8 w-36 text-xs"><SelectValue placeholder="All Channels" /></SelectTrigger>
             <SelectContent>
-              {["all","email","sms","video","direct_mail","phone"].map(ch => (
+              {CHANNEL_FILTERS.map(ch => (
                 <SelectItem key={ch} value={ch}>{ch === "all" ? "All Channels" : ch.replace("_"," ")}</SelectItem>
               ))}
             </SelectContent>

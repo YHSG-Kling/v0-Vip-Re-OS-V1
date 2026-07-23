@@ -7,8 +7,24 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
-import { Mail, MessageSquare, Video, FileText } from "lucide-react"
+import { Mail, MessageSquare, Video, FileText, Phone } from "lucide-react"
 import { createISACampaign, type CampaignType } from "@/app/actions/ai-isa"
+import { OUTREACH_CHANNELS, type CampaignChannelKey } from "@/lib/campaigns/channels"
+
+const CHANNEL_ICON: Record<string, React.ReactNode> = {
+  email:       <Mail className="h-4 w-4 text-blue-500" />,
+  sms:         <MessageSquare className="h-4 w-4 text-green-500" />,
+  phone:       <Phone className="h-4 w-4 text-gray-500" />,
+  video:       <Video className="h-4 w-4 text-purple-500" />,
+  direct_mail: <FileText className="h-4 w-4 text-orange-500" />,
+}
+
+const CHANNEL_DESCRIPTION: Record<string, string> = {
+  sms:         "TCPA consent required per contact",
+  phone:       "TCPA consent required — the AI places the call",
+  video:       "Personalized AI video (D-ID + ElevenLabs)",
+  direct_mail: "Personalized postcard (Lob)",
+}
 
 const CAMPAIGN_TYPES: { value: CampaignType; label: string }[] = [
   { value: "fsbo", label: "FSBO" },
@@ -40,21 +56,31 @@ export function CreateCampaignDrawer({
   const [isPending, startTransition] = useTransition()
   const [name, setName]                 = useState("")
   const [campaignType, setCampaignType] = useState<CampaignType>("fsbo")
-  const [emailOn, setEmailOn]           = useState(true)           // always on
-  const [smsOn, setSmsOn]               = useState(false)
-  const [videoOn, setVideoOn]           = useState(false)
-  const [directMailOn, setDirectMailOn] = useState(false)
+  // Email is always on; the rest are opt-in from the canonical outreach channels.
+  const [selected, setSelected]         = useState<Set<CampaignChannelKey>>(new Set(["email"]))
   const [scoreThreshold, setScoreThreshold] = useState(50)
   const [maxTouches, setMaxTouches]         = useState(5)
   const [touchInterval, setTouchInterval]   = useState(3)
   const [error, setError]               = useState<string | null>(null)
 
+  // Which activation-gated channels the tenant has enabled (superadmin capability).
+  const activation: Record<string, boolean> = { video: videoEnabled, direct_mail: directMailEnabled }
+  const isLocked = (c: (typeof OUTREACH_CHANNELS)[number]) => !!c.requiresActivation && !activation[c.key]
+
+  function toggleChannel(key: CampaignChannelKey) {
+    if (key === "email") return // always on
+    setSelected((prev) => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
+
   function buildChannels() {
-    const ch: string[] = ["email"]
-    if (smsOn)        ch.push("sms")
-    if (videoOn && videoEnabled)      ch.push("video")
-    if (directMailOn && directMailEnabled) ch.push("direct_mail")
-    return ch
+    // Only enabled, unlocked channels are sent; email is guaranteed.
+    return OUTREACH_CHANNELS
+      .filter((c) => c.key === "email" || (selected.has(c.key) && !isLocked(c)))
+      .map((c) => c.key)
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -77,8 +103,8 @@ export function CreateCampaignDrawer({
       onCreated()
       onClose()
       // reset
-      setName(""); setCampaignType("fsbo"); setSmsOn(false); setVideoOn(false)
-      setDirectMailOn(false); setScoreThreshold(50); setMaxTouches(5); setTouchInterval(3)
+      setName(""); setCampaignType("fsbo"); setSelected(new Set(["email"]))
+      setScoreThreshold(50); setMaxTouches(5); setTouchInterval(3)
     })
   }
 
@@ -118,7 +144,7 @@ export function CreateCampaignDrawer({
             </Select>
           </div>
 
-          {/* Channels */}
+          {/* Channels — data-driven from the canonical outreach-channel registry */}
           <div className="flex flex-col gap-3">
             <Label>Channels</Label>
 
@@ -129,35 +155,24 @@ export function CreateCampaignDrawer({
               <span className="text-xs text-muted-foreground">Always on</span>
             </div>
 
-            {/* SMS */}
-            <ChannelToggle
-              icon={<MessageSquare className="h-4 w-4 text-green-500" />}
-              label="SMS"
-              description="TCPA consent required per contact"
-              enabled={smsOn}
-              locked={false}
-              onToggle={() => setSmsOn(v => !v)}
-            />
-
-            {/* Video */}
-            <ChannelToggle
-              icon={<Video className="h-4 w-4 text-purple-500" />}
-              label="Video (D-ID)"
-              description={videoEnabled ? "Personalized AI video" : "Requires superadmin activation — contact your platform admin"}
-              enabled={videoOn && videoEnabled}
-              locked={!videoEnabled}
-              onToggle={() => videoEnabled && setVideoOn(v => !v)}
-            />
-
-            {/* Direct Mail */}
-            <ChannelToggle
-              icon={<FileText className="h-4 w-4 text-orange-500" />}
-              label="Direct Mail (Lob)"
-              description={directMailEnabled ? "Personalized postcard" : "Requires superadmin activation — contact your platform admin"}
-              enabled={directMailOn && directMailEnabled}
-              locked={!directMailEnabled}
-              onToggle={() => directMailEnabled && setDirectMailOn(v => !v)}
-            />
+            {OUTREACH_CHANNELS.filter((c) => c.key !== "email").map((c) => {
+              const locked = isLocked(c)
+              return (
+                <ChannelToggle
+                  key={c.key}
+                  icon={CHANNEL_ICON[c.key]}
+                  label={c.label}
+                  description={
+                    locked
+                      ? "Requires superadmin activation — contact your platform admin"
+                      : CHANNEL_DESCRIPTION[c.key] ?? ""
+                  }
+                  enabled={selected.has(c.key) && !locked}
+                  locked={locked}
+                  onToggle={() => !locked && toggleChannel(c.key)}
+                />
+              )
+            })}
           </div>
 
           {/* Score Threshold */}

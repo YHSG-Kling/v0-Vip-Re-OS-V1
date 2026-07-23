@@ -234,6 +234,11 @@ export async function createISACampaign(params: {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
+  // Validate against the canonical outreach-channel taxonomy — an ISA campaign is
+  // 1:1 outreach, so unknown/broadcast keys are dropped. Email is always included.
+  const { sanitizeOutreachChannels } = await import("@/lib/campaigns/channels")
+  const cleanChannels = sanitizeOutreachChannels(["email", ...(params.channels ?? [])])
+
   const service = createServiceClient()
   const { data, error } = await service
     .from("ai_isa_campaigns")
@@ -241,7 +246,7 @@ export async function createISACampaign(params: {
       brokerage_id:   auth.brokerageId,
       name:           params.name,
       campaign_type:  params.campaignType.toLowerCase() as CampaignType,
-      channels:       params.channels,
+      channels:       cleanChannels,
       target_segment: params.targetSegment ?? {},
       status:         "draft",
       leads_targeted: 0,
@@ -261,7 +266,7 @@ export async function createISACampaign(params: {
     entity_id:     data.id,
     brokerage_id:  auth.brokerageId,
     actor_user_id: auth.userId,
-    metadata: { campaignType: params.campaignType, channels: params.channels },
+    metadata: { campaignType: params.campaignType, channels: cleanChannels },
     created_at:    new Date().toISOString(),
   })
 

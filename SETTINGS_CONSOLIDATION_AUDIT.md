@@ -604,3 +604,34 @@ with the bundle, add metered overage. **Manager ownership:** `finance_manager` o
 P&L + the metered rollup (it already owns `vendor_usage_tracking`/commissions); `data_steward` owns
 the connector/provisioning side. Implementation (Stripe add-on product + entitlement check in
 provisioning + overage meter) is a scoped follow-up — the rails are all present.
+
+---
+
+## 14. Campaign channels — one true-channel taxonomy (drift fixed)
+
+The ISA campaign **creation** offered `email/sms/video/direct_mail` while the **engagement feed**
+also showed `phone` — two hand-kept lists that drifted. Per the rule "channels should be true
+channels (email, direct mail, phone, ads, socials, blog, newsletter, podcast)":
+
+- **New canonical registry `lib/campaigns/channels.ts`** (pure, client+server safe): the true
+  channel set, each tagged `scope` (**outreach** = 1:1 to a lead/contact · **broadcast** = to an
+  audience) + the executing workflow adapter + `requiresActivation`. Outreach = email, sms, phone,
+  direct_mail, video; broadcast = social, ads, newsletter, blog, podcast.
+- **Wired both surfaces to it:** `CreateCampaignDrawer` renders its channel toggles from
+  `OUTREACH_CHANNELS` (data-driven, now includes the missing **phone**, keeps the video/direct-mail
+  superadmin gating); `EngagementFeed`'s channel filter derives from the same list. They can no
+  longer drift.
+- **Server validation:** `createISACampaign` runs `sanitizeOutreachChannels` (email always in,
+  broadcast/unknown keys dropped) so an ISA campaign only stores valid 1:1 channels.
+- **Removed dead drift:** the unused legacy `CreateCampaignModal` (zero importers, a stale duplicate
+  of the active Drawer) was deleted after a dependency check.
+- **Guard:** `test:campaign-channels` (18/0, added to `npm run guard`) asserts the taxonomy and that
+  both surfaces derive from the one registry.
+
+Note on scope: broadcast channels (social/ads/blog/newsletter/podcast) are 1-to-many marketing
+(campaign_orchestrator's domain), not 1:1 ISA outreach — they're registered here as the canonical
+taxonomy and used by the marketing-campaign surface, while the ISA builder correctly offers only
+the outreach subset.
+
+Verified: `test:campaign-channels` (18/0), `no-dead-components`, `no-orphan-actions`,
+`use-server-exports`, `vocabulary-drift` all pass.
