@@ -502,3 +502,31 @@ any `app/actions/settings/*` (+ `brokerage-fees.ts`) file that uses `createServi
 carry a role-gate token or be explicitly EXEMPT with a reason (only `public-site-links.ts`, which
 reads public data). New ungated service-client settings actions now fail CI — closing this leak
 class for good.
+
+---
+
+## 11. Phase 3 (build, don't delete) — "Sync now" built into the Connection Center, manager-owned
+
+Per the directive "don't delete components if it enhances the feature — build it instead," and
+"every change managed by one of the 14 managers, cross-collaborating":
+
+- **Built** the manual "Sync a contact now" tool INTO the Connection Center's CRM domain
+  (`connection-center-client.tsx` → `CrmSyncNowCard`), reusing the real `syncContactNowAction`.
+  The hub now has feature parity with the legacy `/settings/crm` page — nothing deleted; the
+  dedicated page stays until a later redirect can be done losslessly.
+- **Manager ownership:** the card is attributed to the **Data Steward** (the CRM/identity
+  steward) via the canonical `MANAGERS` registry chip. On a successful manual sync,
+  `syncContactNowAction` publishes a governed bus signal **`contact_crm_synced`
+  (data_steward → sphere_of_influence, feed_only)** so the push is visible in the Command
+  Center "managers talking" feed and cross-collaborates with the lifetime-relationship owner.
+  The autonomous per-update sync stays silent (no feed spam); only the human-triggered manual
+  sync surfaces. The announcement is best-effort — a bus hiccup never fails the CRM push.
+- **Registered + tested:** `contact_crm_synced` is catalogued in `SIGNAL_REGISTRY` (feed_only,
+  kind=update, matching `classifyCoordination`). `test:crm-sync-credential` extended (24/0) to
+  assert the registration, the valid route, the publish wiring, and that the tool is built into
+  the hub attributed to the Data Steward.
+
+Verified: `tsc --noEmit` clean (0 errors); `test:signal-integrity`, `test:manager-signals`,
+`test:manager-ownership` (73/0), `test:command-center`, `test:command-bar`,
+`test:crm-sync-credential` (24/0), `no-dead-components`, `no-orphan-actions`,
+`use-server-exports` all pass.

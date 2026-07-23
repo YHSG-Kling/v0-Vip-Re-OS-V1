@@ -14,6 +14,8 @@ import {
   type ConnectionCenter,
   type OwnerHint,
 } from "@/app/actions/connections/connection-center"
+import { syncContactNowAction } from "@/app/actions/crm-connect"
+import { MANAGERS } from "@/lib/kernel/manager-registry"
 
 const DOMAIN_LABELS: Record<string, string> = {
   email: "Email", phone: "Phone / SMS", calendar: "Calendar", social: "Social",
@@ -156,6 +158,56 @@ function ProviderRow({ domain, provider, fields, owner }: { domain: Domain["doma
   )
 }
 
+// "Sync a contact now" — the manual sync-out tool, BUILT INTO the Connection Center
+// (rather than stranded on the legacy /settings/crm page). It is a DATA STEWARD
+// operation (CRM/identity stewardship) and is labeled with that manager's identity;
+// on success the action announces contact_crm_synced on the manager bus to the
+// Sphere Manager, so the push is governed + visible in the Command Center feed.
+function CrmSyncNowCard() {
+  const steward = MANAGERS.data_steward
+  const [contactId, setContactId] = useState("")
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [pending, startTransition] = useTransition()
+
+  function syncNow() {
+    const id = contactId.trim()
+    if (!id) return
+    setMsg(null)
+    startTransition(async () => {
+      const res = await syncContactNowAction(id)
+      setMsg(res.ok
+        ? { ok: true, text: `Synced to ${res.providerKey}${res.action ? ` (${res.action})` : ""}` }
+        : { ok: false, text: res.error })
+    })
+  }
+
+  return (
+    <div className="mt-3 rounded-md border border-dashed p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-medium">Sync a contact now</span>
+        <Badge variant="outline" className={`text-[10px] ${steward.accent}`}>{steward.label}</Badge>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Push one contact OUT to your active CRM immediately. Sync-out only — nothing syncs back in.
+      </p>
+      <div className="flex items-center gap-2">
+        <Input
+          value={contactId}
+          onChange={(e) => setContactId(e.target.value)}
+          placeholder="Contact ID"
+          className="h-8 text-xs"
+        />
+        <Button size="sm" className="h-8 text-xs" disabled={pending || !contactId.trim()} onClick={syncNow}>
+          {pending ? "Syncing…" : "Sync now"}
+        </Button>
+      </div>
+      {msg && (
+        <p className={`text-xs ${msg.ok ? "text-green-600" : "text-red-600"}`}>{msg.text}</p>
+      )}
+    </div>
+  )
+}
+
 export function ConnectionCenterClient({ data, owner }: { data: ConnectionCenter; owner?: OwnerHint }) {
   if (!data.ok) {
     return <p className="text-sm text-muted-foreground">{data.error ?? "Unable to load connections."}</p>
@@ -178,6 +230,9 @@ export function ConnectionCenterClient({ data, owner }: { data: ConnectionCenter
             {d.providers.map((p) => (
               <ProviderRow key={p.provider} domain={d.domain} provider={p} fields={d.fields} owner={owner} />
             ))}
+            {/* Feature parity with the legacy /settings/crm page — the manual
+                sync-out tool now lives in the one Connection Center hub. */}
+            {d.domain === "crm" && <CrmSyncNowCard />}
           </CardContent>
         </Card>
       ))}

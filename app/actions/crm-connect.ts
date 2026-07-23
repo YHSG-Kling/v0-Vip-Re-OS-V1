@@ -148,6 +148,28 @@ export async function syncContactNowAction(contactId: string): Promise<
   if (!result.success) {
     return { ok: false, error: result.requiresConfiguration ? `${result.providerKey} is not connected` : (result.error ?? "Sync failed") }
   }
+
+  // Manager ownership: the manual push is a DATA STEWARD operation (CRM/identity
+  // stewardship). Announce it on the bus to the Sphere Manager (lifetime-relationship
+  // owner) so the Command Center feed shows the record was mirrored — feed-only,
+  // idempotent per contact. Best-effort: a bus hiccup never fails the sync itself.
+  // (Only the MANUAL sync surfaces here; the autonomous per-update sync stays silent.)
+  try {
+    const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+    const name = [contact.first_name, contact.last_name].filter(Boolean).join(" ").trim() || "a contact"
+    await publishManagerSignal({
+      brokerageId: member.brokerageId,
+      fromManager: "data_steward",
+      toManager: "sphere_of_influence",
+      signalType: "contact_crm_synced",
+      message: `Data Steward mirrored ${name} to ${result.providerKey} (manual sync-out).`,
+      entityType: "contact",
+      entityId: contact.id,
+      contactId: contact.id,
+      payload: { providerKey: result.providerKey, action: result.action ?? null, trigger: "manual-sync" },
+    })
+  } catch { /* the CRM push already succeeded — the feed announcement is best-effort */ }
+
   return { ok: true, providerKey: result.providerKey, action: result.action, contactId: result.contactId }
 }
 

@@ -14,6 +14,8 @@
 
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { classifyCoordination } from "../lib/kernel/coordination-kind"
+import { MANAGERS } from "../lib/kernel/manager-registry"
 
 let passed = 0
 let failed = 0
@@ -86,6 +88,33 @@ console.log("\n── SOURCE: goHighLevelService honors the override, env is onl
     ghl.includes("configOverride?: GHLConfig | null") && ghl.includes("configOverride ?? getGHLConfig()"))
   check("env still supported (platform default) — GHL_API_KEY read remains",
     ghl.includes("process.env.GHL_API_KEY"))
+}
+
+console.log("\n── MANAGER OWNERSHIP: the manual 'Sync now' is a governed Data Steward operation ──")
+{
+  const registry = src("lib/kernel/signal-registry.ts")
+  check("contact_crm_synced is catalogued as a feed_only signal",
+    /contact_crm_synced:\s*\{[^}]*disposition:\s*"feed_only"/.test(registry))
+
+  check("contact_crm_synced classifies to 'update' (matches the registry kind)",
+    classifyCoordination("contact_crm_synced") === "update")
+
+  check("data_steward → sphere_of_influence is a valid signal route (both registered, distinct)",
+    "data_steward" in MANAGERS && "sphere_of_influence" in MANAGERS)
+
+  const connect = src("app/actions/crm-connect.ts")
+  check("syncContactNowAction publishes contact_crm_synced from data_steward → sphere_of_influence",
+    connect.includes('signalType: "contact_crm_synced"') &&
+    connect.includes('fromManager: "data_steward"') &&
+    connect.includes('toManager: "sphere_of_influence"'))
+  check("the bus announcement is best-effort (a bus hiccup never fails the CRM push)",
+    /publishManagerSignal[\s\S]*?\}\s*catch\s*\{/.test(connect))
+
+  const cc = src("app/settings/connections/connection-center-client.tsx")
+  check("the manual sync tool is BUILT INTO the Connection Center CRM domain (feature parity, not deleted)",
+    cc.includes("CrmSyncNowCard") && cc.includes('d.domain === "crm"') && cc.includes("syncContactNowAction"))
+  check("the sync card is attributed to the Data Steward manager identity",
+    cc.includes("MANAGERS.data_steward"))
 }
 
 console.log(`\n RESULT: ${passed} passed, ${failed} failed`)
