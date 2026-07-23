@@ -56,25 +56,73 @@ async function requireBrokerAdmin(
   return { brokerageId: user.brokerage_id, userType: user.user_type }
 }
 
+// Seed values used the first time a brokerage opens its settings. One row per
+// brokerage; column defaults in the DB mirror these, but we set them explicitly
+// so the returned row is fully populated without a second round-trip.
+const DEFAULT_GLOBAL_SETTINGS = {
+  app_name: "VIP Real Estate OS",
+  app_logo_url: null,
+  primary_color: "#2563eb",
+  secondary_color: "#1e40af",
+  font_family: "system-ui",
+  fiscal_year_start: 1,
+  timezone: "America/New_York",
+  date_format: "MM/DD/YYYY" as const,
+  currency_symbol: "$",
+  email_notifications_enabled: true,
+  sms_notifications_enabled: false,
+  push_notifications_enabled: false,
+}
+
+// Returns the brokerage's settings row, creating it from defaults on first
+// access. This makes settings self-seeding: a brand-new brokerage no longer
+// hits "Settings not found" the first time an admin opens the page or saves.
+async function ensureGlobalSettingsRow(
+  brokerageId: string,
+  userId: string
+): Promise<GlobalSettingsRow> {
+  const supabase = await createClient()
+
+  const { data: existing } = await supabase
+    .from("global_settings")
+    .select("*")
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  if (existing) return existing as GlobalSettingsRow
+
+  const { data: inserted, error: insertError } = await supabase
+    .from("global_settings")
+    .insert({
+      ...DEFAULT_GLOBAL_SETTINGS,
+      brokerage_id: brokerageId,
+      created_by_user_id: userId,
+    })
+    .select("*")
+    .single()
+
+  if (inserted) return inserted as GlobalSettingsRow
+
+  // A concurrent request may have inserted the row first (unique brokerage_id).
+  // Re-read before giving up so the caller still gets a valid row.
+  const { data: reread } = await supabase
+    .from("global_settings")
+    .select("*")
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  if (reread) return reread as GlobalSettingsRow
+
+  throw insertError ?? new Error("Failed to initialize brokerage settings")
+}
+
 // ─── EXPORTED FUNCTIONS ───────────────────────────────────────────────────────
 
 export async function getGlobalSettings(params: {
   userId: string
 }): Promise<GlobalSettingsRow> {
   const { brokerageId } = await requireBrokerAdmin(params.userId)
-  const supabase = await createClient()
-
-  const { data: row, error } = await supabase
-    .from("global_settings")
-    .select("*")
-    .eq("brokerage_id", brokerageId)
-    .single()
-
-  if (error || !row) {
-    throw new Error("Settings not initialized for this brokerage")
-  }
-
-  return row as GlobalSettingsRow
+  return ensureGlobalSettingsRow(brokerageId, params.userId)
 }
 
 export async function updateGlobalSettings(params: {
@@ -100,6 +148,9 @@ export async function updateGlobalSettings(params: {
   // Note: SMTP + API keys are secrets — do NOT update via this function.
   // A separate hardened update function will handle those fields.
   const { brokerageId } = await requireBrokerAdmin(params.userId)
+  // Guarantee a row exists first so saving on a fresh brokerage creates it
+  // instead of silently updating zero rows.
+  await ensureGlobalSettingsRow(brokerageId, params.userId)
   const supabase = await createClient()
 
   const { error } = await supabase

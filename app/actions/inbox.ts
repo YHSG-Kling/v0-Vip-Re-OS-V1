@@ -26,12 +26,25 @@ import {
 // import them from "@/app/actions/inbox-types" (or directly from
 // "@/lib/kernel/communications"), never from this module.
 import type {
+  InboxChannel,
   InboxMessageRow,
   InboxThread,
   GetInboxMessagesParams,
   SendInboxMessageParams,
   ForceComplianceOverrideParams,
 } from "@/app/actions/inbox-types"
+
+// GetInboxMessagesParams.channel is a raw string (it comes straight off a query
+// string on the API route). Narrow it to a valid InboxChannel before passing it
+// to the kernel; anything unrecognized falls back to the "all" lane.
+const INBOX_CHANNELS: readonly InboxChannel[] = [
+  "all", "sms", "email", "voice", "portal", "chat", "ai", "vendor",
+]
+function toInboxChannel(value: string | undefined): InboxChannel {
+  return value && (INBOX_CHANNELS as readonly string[]).includes(value)
+    ? (value as InboxChannel)
+    : "all"
+}
 
 // ─── RESOLVE ACTOR CONTEXT (shared util) ─────────────────────────────────────
 
@@ -83,7 +96,7 @@ export async function getInboxMessages(params: GetInboxMessagesParams = {}): Pro
 
     const result = await loadUniversalInbox({
       actorContext,
-      channel: params.channel ?? "all",
+      channel: toInboxChannel(params.channel),
       contactId: params.contactId,
       unreadOnly: params.unreadOnly ?? false,
       limit: params.limit ?? 50,

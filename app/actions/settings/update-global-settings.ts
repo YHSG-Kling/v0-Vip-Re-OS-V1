@@ -1,43 +1,48 @@
 'use server';
 
 import { createClient } from '@/lib/supabase/server';
-import { createServiceClient } from '@/lib/supabase/service';
+import { updateGlobalSettings as kernelUpdateGlobalSettings } from '@/lib/kernel';
 
-export async function updateGlobalSettings(updates: any) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { error: 'Unauthorized' };
+// Non-secret fields the settings forms are allowed to write. SMTP + API keys are
+// handled by dedicated hardened actions, never here.
+const ALLOWED_FIELDS = [
+  'app_name',
+  'app_logo_url',
+  'primary_color',
+  'secondary_color',
+  'font_family',
+  'fiscal_year_start',
+  'timezone',
+  'date_format',
+  'currency_symbol',
+  'email_notifications_enabled',
+  'sms_notifications_enabled',
+  'push_notifications_enabled',
+] as const;
 
-  const { data: userData } = await supabase
-    .from('users')
-    .select('brokerage_id')
-    .eq('id', user.id)
-    .maybeSingle();
-  if (!userData?.brokerage_id) return { error: 'Unauthorized' };
+// Delegates to the kernel (single source of truth). The kernel is brokerage-scoped
+// and self-seeds the row, so this succeeds on a fresh brokerage instead of
+// returning "Settings not found". The client-supplied `id` is intentionally
+// ignored — the row is always resolved from the caller's brokerage.
+export async function updateGlobalSettings(updates: Record<string, unknown>) {
+  try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user?.id) return { error: 'Unauthorized' };
 
-  const svc = createServiceClient();
+    const clean: Record<string, unknown> = {};
+    for (const key of ALLOWED_FIELDS) {
+      if (updates[key] !== undefined) clean[key] = updates[key];
+    }
 
-  // Verify the settings row belongs to the caller's brokerage before mutating
-  const { data: existing } = await svc
-    .from('global_settings')
-    .select('brokerage_id')
-    .eq('id', updates.id)
-    .maybeSingle();
-  if (!existing) return { error: 'Settings not found' };
-  if (existing.brokerage_id !== userData.brokerage_id) return { error: 'Forbidden' };
-
-  const { data, error } = await svc
-    .from('global_settings')
-    .update({ ...updates, updated_at: new Date().toISOString() })
-    .eq('id', updates.id)
-    .eq('brokerage_id', userData.brokerage_id)
-    .select()
-    .single();
-
-  if (error) {
+    await kernelUpdateGlobalSettings({ userId: user.id, updates: clean as any });
+    return { data: true };
+  } catch (error) {
     console.error('[settings] Error updating global settings:', error);
-    return { error: 'Failed to update settings' };
+    const message =
+      error instanceof Error && error.message.startsWith('Forbidden')
+        ? 'You do not have permission to change these settings.'
+        : 'Failed to update settings';
+    return { error: message };
   }
-
-  return { data };
 }

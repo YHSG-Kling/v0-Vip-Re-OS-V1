@@ -1,14 +1,17 @@
 'use server';
 
-import { createServiceClient } from '@/lib/supabase/service';
+import { createClient } from '@/lib/supabase/server';
+import { getGlobalSettings as kernelGetGlobalSettings } from '@/lib/kernel';
 
-// Default settings when none exist
+// Default settings returned when the caller cannot load a real, brokerage-scoped
+// row (e.g. not signed in, or not an admin/broker). The settings pages that use
+// this render read-only defaults in that case rather than erroring.
 const DEFAULT_GLOBAL_SETTINGS = {
-  app_name: 'VIP Agents AI',
+  app_name: 'VIP Real Estate OS',
   app_logo_url: null,
   primary_color: '#2563eb',
   secondary_color: '#1e40af',
-  font_family: 'Inter',
+  font_family: 'system-ui',
   fiscal_year_start: 1,
   timezone: 'America/New_York',
   date_format: 'MM/DD/YYYY',
@@ -18,21 +21,18 @@ const DEFAULT_GLOBAL_SETTINGS = {
   push_notifications_enabled: false,
 };
 
+// Brokerage-scoped read that delegates to the kernel (single source of truth).
+// The kernel self-seeds the row on first access, so a fresh brokerage returns a
+// real row with an id instead of the old un-saveable defaults.
 export async function getGlobalSettings() {
-  const supabase = createServiceClient();
-  
-  const { data, error } = await supabase
-    .from('global_settings')
-    .select('*')
-    .limit(1)
-    .maybeSingle();
-    
-  if (error) {
-    console.error('[v0] Error fetching global settings:', error);
-    // Return defaults instead of throwing
+  try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user?.id) return DEFAULT_GLOBAL_SETTINGS;
+
+    return await kernelGetGlobalSettings({ userId: user.id });
+  } catch (error) {
+    console.error('[settings] Error fetching global settings:', error);
     return DEFAULT_GLOBAL_SETTINGS;
   }
-  
-  // Return data if exists, otherwise return defaults
-  return data ?? DEFAULT_GLOBAL_SETTINGS;
 }

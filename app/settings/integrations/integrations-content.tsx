@@ -7,7 +7,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Check, X, Loader2, AlertCircle, ExternalLink } from "lucide-react"
+import { Check, X, Loader2, AlertCircle, ExternalLink, Phone, Mail } from "lucide-react"
+import Link from "next/link"
 import {
   getAgentCredentials,
   saveServiceCredential,
@@ -167,6 +168,7 @@ export default function IntegrationsContent() {
       <TabsList>
         <TabsTrigger value="listing">Listing Provider</TabsTrigger>
         <TabsTrigger value="crm">CRM Sync</TabsTrigger>
+        <TabsTrigger value="voice">Voice & AI Calling</TabsTrigger>
         <TabsTrigger value="social">Social Media</TabsTrigger>
       </TabsList>
 
@@ -186,6 +188,53 @@ export default function IntegrationsContent() {
           onTest={() => handleTestConnection("ghl")}
           onSave={loadAll}
         />
+      </TabsContent>
+
+      {/* Voice & AI Calling Tab — bridges to the canonical voice/direct-mail
+          setup surfaces so app-wide "set up AI calling / Vapi / Lob" prompts
+          that route here no longer dead-end on a page without voice. */}
+      <TabsContent value="voice" className="space-y-4">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Phone className="h-5 w-5 text-muted-foreground" />
+              <CardTitle>AI Voice Calling</CardTitle>
+            </div>
+            <CardDescription>
+              Phone numbers, BYOC carriers, IVR menus, the Vapi voice engine, and the
+              duty agent for inbound and outbound AI ISA calls are configured in ISA Calling.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button asChild>
+              <Link href="/dashboard/settings/isa-calling">
+                Open ISA Calling setup
+                <ExternalLink className="ml-2 h-4 w-4" />
+              </Link>
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Mail className="h-5 w-5 text-muted-foreground" />
+              <CardTitle>Direct Mail (Lob)</CardTitle>
+            </div>
+            <CardDescription>
+              Connect Lob for automated postcards and letters. Presets, size preferences,
+              and print variants are managed in Direct Mail settings.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button asChild variant="outline">
+              <Link href="/settings/direct-mail">
+                Open Direct Mail setup
+                <ExternalLink className="ml-2 h-4 w-4" />
+              </Link>
+            </Button>
+          </CardContent>
+        </Card>
       </TabsContent>
 
       {/* Social Media Tab */}

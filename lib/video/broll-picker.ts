@@ -300,7 +300,11 @@ export async function pickBrollClips(
  */
 async function probeDurationSeconds(url: string): Promise<number | null> {
   try {
-    const mb: any = await import("mediabunny").catch(() => null)
+    // Optional runtime dependency: resolved via a variable specifier so the
+    // type-checker treats it as a dynamic optional import (it ships transitively
+    // with the Remotion encoder packages and is guarded by .catch below).
+    const mediabunnySpecifier = "mediabunny"
+    const mb: any = await import(mediabunnySpecifier).catch(() => null)
     if (!mb || !mb.Input || !mb.ALL_FORMATS || !mb.UrlSource) return null
     const input = new mb.Input({
       formats: mb.ALL_FORMATS,
