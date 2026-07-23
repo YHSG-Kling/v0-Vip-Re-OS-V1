@@ -315,3 +315,67 @@ keep BYO-Twilio only for the multi-location top tier.
 7. **Brand voice** — collapse the 4 edit surfaces into `/settings/brand-voice`.
 8. **Ops/tech-debt** — Vapi/HeyGen residue retirement (§5b), stale external cron scheduler (§5a),
    orphaned cron routes (§5c), calendar Disconnect no-op button.
+
+---
+
+## 7. Phase 2 execution + email model (investigation results)
+
+### 7a. Shipped: "Email & Calendar" → "Connections"
+
+`SettingsSidebar.tsx` — the hub entry that opens the multi-domain Connection Center was
+mislabeled "Email & Calendar" (its #1 confusion: clicking it shows phone/SMS/CRM too). Renamed
+to **"Connections"**, which is what the page actually is. Zero-risk label change.
+
+### 7b. The phone/CRM redirect is DEFERRED — credential-table mismatch (dependency finding)
+
+The plan was to redirect `/settings/phone` and `/settings/crm` into the Connection Center. The
+required dependency investigation shows that is **not safe yet**: the four connect surfaces write
+**three different credential tables**, and the CRM sync reads only two of them.
+
+| Surface | Writes | CRM sync (`lib/crm/sync.ts`) reads it? |
+|---|---|---|
+| `/settings/crm` (`crm-connect.ts`) | `brokerage_integrations` + `integration_credentials` | ✅ yes (brokerage default) |
+| `/settings/integrations` (GHL, `agent-credentials.ts`) | `agent_api_credentials` | ✅ yes (agent scope) |
+| `/settings/connections` (Connection Center, API-key providers) | **`platform_credentials`** | ❌ **no** |
+
+So a CRM connected through the Connection Center today would **not** be picked up by the sync.
+Redirecting the dedicated pages into it would silently break CRM sync. **Resolution order
+corrected:** credential-storage unification (make the Connection Center write — or the sync read —
+one canonical location per scope) must land **before** the redirects. This becomes the new
+Phase 2.5, ahead of the old Phase 2 redirect step.
+
+### 7c. Email model — CONFIRMED already correct (nothing to build)
+
+The intended model — **platform SendGrid protects transactional/offers email out; inbound email
+is captured so the offers system works** — is already implemented:
+
+- **Outbound transactional (protected):** `email` resolves to **sendgrid** by default
+  (`SYSTEM_DEFAULTS`), dispatched via `lib/providers/dispatch.ts`. Offers/system mail rides this,
+  not a tenant's personal box.
+- **Inbound capture:** `app/api/webhooks/inbound-mail/route.ts` handles BOTH classes in one
+  endpoint — **transactional (postmark/sendgrid/mailgun/resend, HMAC-verified)** for the
+  brokerage domain, AND **per-user Gmail/Outlook OAuth** (push→fetch) for independent agents.
+  `lib/inbound-mail/resolve-user-provider.ts` walks user→team→brokerage to pick the right box.
+- **Offers pipeline:** `lib/inbound-mail/offer-intake.ts#tryIngestInboundOffer` detects an offer
+  email, matches the listing by address, auto-creates the `offers` row when the sender is a known
+  contact, stores the PDF in Supabase Storage (`offer-documents`), and kicks AI extraction — with
+  a "confirm" fallback (a review notification) when the buyer isn't matched. No stubs.
+
+**So the email work is a SETTINGS-CLARITY task, not a build task:** the Connection Center's email
+domain should present two distinct ideas — (1) *personal relationship email* (Gmail/Outlook OAuth,
+what the agent sends 1:1 from) and (2) *the brokerage's transactional/offers email* (SendGrid,
+platform-managed, not a tenant setting) — so nobody accidentally routes offers mail through a
+personal box. Copy/labeling change, scheduled with the Connection Center consolidation; the
+routing itself is already correct and protected.
+
+### 7d. Revised phase order
+
+2. **Rename** "Email & Calendar" → "Connections" (done, 7a).
+2.5. **Credential-storage unification** (NEW, prerequisite) — one canonical credential location
+   per scope so every connect surface + the CRM sync agree (7b). Guard: add a check that the
+   sync's read tables ⊇ the Connection Center's write tables.
+3. **Redirect** `/settings/phone` + `/settings/crm` into the Connection Center (only after 2.5).
+4. Provider de-drift (retire hand-typed catalogues; close J1).
+5. Email settings-clarity copy (7c) — personal-OAuth vs platform-transactional split.
+6+. Website section + brand-source fix, AI Team consolidation, brand-voice single home, Vapi/
+   HeyGen/cron ops cleanup (as in §6g).

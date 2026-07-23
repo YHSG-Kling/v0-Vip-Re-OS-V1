@@ -10,7 +10,7 @@ const menuItems: Array<{ label: string; href: string; personal: boolean }> = [
   { label: 'Dashboard', href: '/settings', personal: true },
   { label: 'General', href: '/settings/general', personal: true },
   { label: 'Integrations', href: '/settings/integrations', personal: true },
-  { label: 'Email & Calendar', href: '/settings/connections', personal: true },
+  { label: 'Connections', href: '/settings/connections', personal: true },
   { label: 'CRM Sync', href: '/settings/crm', personal: true },
   { label: 'Phone / SMS', href: '/settings/phone', personal: true },
   { label: 'Brand Voice', href: '/settings/brand-voice', personal: true },
