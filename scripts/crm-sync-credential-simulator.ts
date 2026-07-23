@@ -126,8 +126,23 @@ console.log("\n── CONNECTION CENTER: phone/SMS is platform-provided (BYO car
     /bring your own carrier/i.test(cc))
 
   const action = src("app/actions/connections/connection-center.ts")
-  check("connectApiKeyProvider gates BYO phone carrier to the Multi-Location top tier (server-side)",
-    action.includes('params.domain === "phone"') && action.includes("multi_location") && action.includes("plan_tier"))
+  check("BYO phone is available on every plan — gated by the SUBSCRIBER policy, not the tier",
+    action.includes('params.domain === "phone"') &&
+    action.includes("isTenancyPrincipal") &&
+    action.includes("allow_user_byo_carrier") &&
+    !action.includes("multi_location"))
+  check("tenancy principals (solo agent / team lead / broker) may always BYO; managed agents need opt-in",
+    action.includes('actor.scope === "agent"') && action.includes("principal"))
+
+  const gs = src("app/actions/settings/global-settings-actions.ts")
+  check("subscriber toggle exists: setByoCarrierPolicy is broker-gated, getByoCarrierPolicy is member-readable",
+    gs.includes("export async function setByoCarrierPolicy") &&
+    gs.includes("export async function getByoCarrierPolicy") &&
+    /setByoCarrierPolicy[\s\S]*?isAdminOrBroker/.test(gs))
+
+  const cc2 = src("app/settings/connections/connection-center-client.tsx")
+  check("the subscriber sees a 'let your agents BYO' toggle in the phone panel",
+    cc2.includes("setByoCarrierPolicy") && cc2.includes("bring their own carrier"))
 }
 
 console.log(`\n RESULT: ${passed} passed, ${failed} failed`)

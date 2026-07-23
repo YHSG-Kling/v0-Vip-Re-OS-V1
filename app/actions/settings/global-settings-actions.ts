@@ -161,3 +161,52 @@ export async function fetchWidgetAgentsAndTeams(): Promise<{
     teams: (teamsRes.data ?? []).map((t) => ({ id: t.id, name: t.name ?? t.id })),
   }
 }
+
+// ─── BYO-CARRIER POLICY ──────────────────────────────────────────────────────
+// Whether the subscriber lets their MANAGED agents bring their own phone/SMS
+// carrier. Stored on global_settings.additional_settings.allow_user_byo_carrier.
+// Default OFF: the platform provisions + bills the number until the broker opts in.
+// (Tenancy principals — solo agents, team leads, brokers — may always BYO for
+// themselves regardless; this policy only governs managed agents.)
+
+/** Read the brokerage's BYO-carrier policy. Any brokerage member may read it (the
+ *  value is not sensitive — an agent needs to know whether they can BYO). */
+export async function getByoCarrierPolicy(): Promise<{ allowUserByo: boolean }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user?.id) return { allowUserByo: false }
+
+  const { data: userRow } = await supabase
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!userRow?.brokerage_id) return { allowUserByo: false }
+
+  const serviceClient = createServiceClient()
+  const { data: gs } = await serviceClient
+    .from("global_settings").select("additional_settings").eq("brokerage_id", userRow.brokerage_id).maybeSingle()
+  return { allowUserByo: !!((gs?.additional_settings as Record<string, unknown> | null)?.allow_user_byo_carrier) }
+}
+
+/** Set the brokerage's BYO-carrier policy. Broker/admin only (the subscriber's choice). */
+export async function setByoCarrierPolicy(allowUserByo: boolean): Promise<{ ok: boolean; error?: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user?.id) return { ok: false, error: "Unauthorized" }
+
+  const { data: userRow } = await supabase
+    .from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
+  if (!userRow?.brokerage_id) return { ok: false, error: "Brokerage not found" }
+  if (!isAdminOrBroker(userRow)) return { ok: false, error: "Forbidden" }
+
+  const serviceClient = createServiceClient()
+  const { data: gs } = await serviceClient
+    .from("global_settings").select("id, additional_settings").eq("brokerage_id", userRow.brokerage_id).maybeSingle()
+  if (!gs) return { ok: false, error: "Global settings not found" }
+
+  const existing = (gs.additional_settings as Record<string, unknown>) ?? {}
+  const { error } = await serviceClient
+    .from("global_settings")
+    .update({ additional_settings: { ...existing, allow_user_byo_carrier: allowUserByo } })
+    .eq("id", gs.id)
+  if (error) return { ok: false, error: "Failed to save" }
+  return { ok: true }
+}

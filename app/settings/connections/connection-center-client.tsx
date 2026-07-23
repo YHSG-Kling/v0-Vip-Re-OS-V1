@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -15,6 +15,7 @@ import {
   type OwnerHint,
 } from "@/app/actions/connections/connection-center"
 import { syncContactNowAction } from "@/app/actions/crm-connect"
+import { getByoCarrierPolicy, setByoCarrierPolicy } from "@/app/actions/settings/global-settings-actions"
 import { MANAGERS } from "@/lib/kernel/manager-registry"
 import Link from "next/link"
 
@@ -215,7 +216,27 @@ function CrmSyncNowCard() {
 // makes that the primary path and bridges to the number/forwarding surface; the
 // carrier API-key rows below are reframed as the ADVANCED "bring your own carrier"
 // option (only the top tier assumes its own carrier registration).
-function PlatformProvidedPhonePanel() {
+function PlatformProvidedPhonePanel({ scope }: { scope: string }) {
+  // The subscriber (broker/admin — "brokerage" scope) may let their MANAGED agents
+  // bring their own carrier; otherwise the platform provisions + bills the number.
+  const isSubscriber = scope === "brokerage"
+  const [allowByo, setAllowByo] = useState<boolean | null>(null)
+  const [saving, startSaving] = useTransition()
+
+  useEffect(() => {
+    if (!isSubscriber) return
+    getByoCarrierPolicy().then((r) => setAllowByo(r.allowUserByo)).catch(() => setAllowByo(false))
+  }, [isSubscriber])
+
+  function toggleByo() {
+    if (allowByo === null) return
+    const next = !allowByo
+    startSaving(async () => {
+      const res = await setByoCarrierPolicy(next)
+      if (res.ok) setAllowByo(next)
+    })
+  }
+
   return (
     <div className="rounded-md border bg-muted/40 p-3 space-y-2">
       <p className="text-sm font-medium">Your number is provided by the platform</p>
@@ -231,6 +252,27 @@ function PlatformProvidedPhonePanel() {
           <Link href="/dashboard/onboarding/ai-call-setup">AI call handling</Link>
         </Button>
       </div>
+      {isSubscriber && (
+        <div className="flex items-center justify-between border-t pt-2 mt-1">
+          <div>
+            <p className="text-xs font-medium">Let your agents bring their own carrier</p>
+            <p className="text-[11px] text-muted-foreground">
+              {allowByo
+                ? "Agents may connect their own Twilio (they bill their own usage)."
+                : "Agents use the platform-provided number (billed to you). You can always BYO for the brokerage."}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant={allowByo ? "default" : "outline"}
+            className="h-7 text-xs"
+            disabled={saving || allowByo === null}
+            onClick={toggleByo}
+          >
+            {allowByo === null ? "…" : allowByo ? "On" : "Off"}
+          </Button>
+        </div>
+      )}
     </div>
   )
 }
@@ -256,7 +298,7 @@ export function ConnectionCenterClient({ data, owner }: { data: ConnectionCenter
           <CardContent className="space-y-2">
             {/* Phone/SMS: platform-provided is the primary path; the carrier
                 API-key rows below are the advanced bring-your-own-carrier option. */}
-            {d.domain === "phone" && <PlatformProvidedPhonePanel />}
+            {d.domain === "phone" && <PlatformProvidedPhonePanel scope={data.scope} />}
             {d.domain === "phone" && d.providers.length > 0 && (
               <p className="text-[11px] font-medium text-muted-foreground pt-1">
                 Advanced — bring your own carrier (top tier)

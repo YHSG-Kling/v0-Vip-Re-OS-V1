@@ -215,15 +215,25 @@ export async function connectApiKeyProvider(params: {
   if (!actor.ownerId) return { ok: false, error: "Connection management for your account type isn't available here." }
   if (!actor.brokerageId) return { ok: false, error: "A brokerage is required to store this connection." }
 
-  // Bring-your-own CARRIER (phone/SMS) is a TOP-TIER capability: the platform
-  // provisions + bills the number for every other tier (docs/PHONE-SYSTEM-SETUP.md),
-  // so only the Multi-Location plan may store its own carrier secrets. Enforced
-  // server-side so a lower tier can't write carrier credentials even off-UI.
-  if (params.domain === "phone") {
-    const { data: brk } = await createServiceClient()
-      .from("brokerages").select("plan_tier").eq("id", actor.brokerageId).maybeSingle()
-    if (((brk as { plan_tier?: string | null } | null)?.plan_tier ?? "") !== "multi_location") {
-      return { ok: false, error: "Bring-your-own carrier is available on the Multi-Location plan — your calling/SMS number is platform-provided." }
+  // Bring-your-own CARRIER (phone/SMS) is available on EVERY plan, but the SUBSCRIBER
+  // decides whether their MANAGED agents may BYO — otherwise the platform provisions +
+  // bills the number (docs/PHONE-SYSTEM-SETUP.md). A tenancy PRINCIPAL (a solo agent —
+  // their own shop — a team lead, or a broker/admin) may always BYO for themselves; a
+  // managed agent may only when the brokerage's allow_user_byo_carrier policy is on.
+  // Enforced server-side so a managed agent can't store carrier secrets off-UI.
+  if (params.domain === "phone" && actor.scope === "agent") {
+    const { isTenancyPrincipal } = await import("@/lib/kernel/tenancy-principal")
+    const svcGate = createServiceClient()
+    const principal = await isTenancyPrincipal(svcGate, {
+      userId: actor.userId, brokerageId: actor.brokerageId, role: actor.userType,
+    })
+    if (!principal) {
+      const { data: gs } = await svcGate
+        .from("global_settings").select("additional_settings").eq("brokerage_id", actor.brokerageId).maybeSingle()
+      const allow = !!((gs?.additional_settings as Record<string, unknown> | null)?.allow_user_byo_carrier)
+      if (!allow) {
+        return { ok: false, error: "Your brokerage hasn't enabled bring-your-own carrier — your calling/SMS number is provided by the platform." }
+      }
     }
   }
 

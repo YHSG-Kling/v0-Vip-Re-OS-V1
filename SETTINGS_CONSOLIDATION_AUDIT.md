@@ -553,3 +553,54 @@ tenants who legitimately need it (BYO, top tier), but it's no longer the default
 
 Verified: `tsc --noEmit` clean (0 errors); `test:crm-sync-credential` (27/0),
 `no-dead-components`, `no-orphan-actions`, `tenant-scope` all pass.
+
+---
+
+## 13. BYO carrier is subscriber-controlled (correction) + SaaS phone-billing guidance
+
+### 13a. Correction — BYO on every plan, gated by the subscriber (not the tier)
+
+§12 gated BYO carrier to the Multi-Location tier. Corrected per the business rule: **BYO is
+available on every plan; the SUBSCRIBER chooses whether their MANAGED agents may BYO.**
+
+- **Gate (`connection-center.ts#connectApiKeyProvider`, phone domain):** a tenancy **principal**
+  (a solo agent — their own shop — a team lead, or a broker/admin, via `isTenancyPrincipal`) may
+  **always** BYO for themselves. A **managed agent** may BYO only when the brokerage's
+  `allow_user_byo_carrier` policy is on. Enforced server-side (a managed agent can't store carrier
+  secrets off-UI). No tier check — a solo/team subscriber can BYO exactly like a brokerage.
+- **Subscriber toggle (`global-settings-actions.ts`):** `setByoCarrierPolicy` (broker/admin-gated)
+  / `getByoCarrierPolicy` (member-readable), stored on `global_settings.additional_settings`.
+  Default **off** (platform-provided) until the broker opts in.
+- **UI:** the phone panel shows the broker ("brokerage" scope) a "Let your agents bring their own
+  carrier" toggle; agents see whether BYO is available to them.
+- **Tested:** `test:crm-sync-credential` (30/0) asserts the principal rule, the subscriber policy
+  gate (no tier), the broker-gated setter, and the toggle UI.
+
+### 13b. SaaS billing guidance — who bills whom for platform-provided phone
+
+**Principle: bill the SUBSCRIBER (the brokerage/account owner), never the individual agent.** The
+platform provisions numbers under the brokerage's Twilio *subaccount*, so usage rolls up to one
+billable tenant. Agents never see a bill; the broker does. (BYO is the only case where the agent's
+own carrier bills them directly — and the platform then meters nothing for telephony, only runs the
+compliance gates.)
+
+**Recommended model — an optional "Voice & SMS" add-on with metered overage** (rides the rails the
+repo already has: `tier.features.limits`, `lib/entitlements/resolve.ts`, the `voice_calls` /
+`vendor_usage_tracking` cost rollup, and Stripe usage-based billing / `@stripe/token-meter` noted in
+`docs/PHONE-SYSTEM-SETUP.md`):
+
+1. **Bundle (predictable, the SaaS default):** a per-seat monthly add-on — e.g. "Voice & SMS pack:
+   $X/seat/mo, includes N minutes + M SMS." Sold as a Stripe add-on product/price, toggled per
+   brokerage as a feature entitlement. Predictable, high-margin, easy to sell.
+2. **Metered overage (fair at scale):** usage beyond the bundle bills per-minute/per-SMS at $Y via
+   Stripe usage-based pricing, sourced from the existing `voice_calls` cost rollup — no new meter,
+   the numbers are already captured.
+3. **Entitlement gate:** number provisioning should check the phone-package entitlement before
+   provisioning (so we don't hand out platform numbers to brokerages who haven't bought the pack,
+   unless a tier bundles it). The vendor-budget auto-pause per brokerage already exists — reuse it.
+
+**Why not pure pass-through metering only:** it's fair but unpredictable and harder to sell; lead
+with the bundle, add metered overage. **Manager ownership:** `finance_manager` owns the add-on
+P&L + the metered rollup (it already owns `vendor_usage_tracking`/commissions); `data_steward` owns
+the connector/provisioning side. Implementation (Stripe add-on product + entitlement check in
+provisioning + overage meter) is a scoped follow-up — the rails are all present.
