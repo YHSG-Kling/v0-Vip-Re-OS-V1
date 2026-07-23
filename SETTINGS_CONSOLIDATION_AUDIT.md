@@ -666,3 +666,35 @@ download/e-sign flow.
 
 Verified: `test:cda-storage` (8/0), `no-dead-components`, `no-orphan-actions`,
 `use-server-exports` pass.
+
+---
+
+## 16. Brand cascade — brand VOICE now cascades like brand SETTINGS
+
+Your rule: every user has brand voice + brand settings, always the brokerage info (which content
+pulls from) plus team and agent. Findings + fix:
+
+- **Brand SETTINGS were already correct.** `lib/branding/resolve-brand-context.ts`
+  (`resolveBrandContext`) is the ONE resolver for logo/colors/name/tagline with a per-attribute
+  **team → brokerage → global_settings** cascade (agent contributes motto/phone/license),
+  `asset_manager`-owned, `test:brand-cascade`. Verified — satisfies the rule.
+- **Brand VOICE was the gap.** `lib/ai/pipeline.ts#resolveBrandVoice` read ONLY
+  `brokerages.brand_voice_profile` — a team's/agent's own voice never applied. Fixed to CASCADE:
+  the brokerage voice is always the base (the tenant of record content pulls from), then the TEAM
+  and AGENT voices overlay (their tone/tagline/preferred+prohibited words). `brand_voice_profile`
+  is already scoped by brokerage_id / team_id / agent_id (scripts 524 + 1049), so no schema
+  change. The call site threads `metadata.teamId` + `metadata.agentId` (already present); the
+  cache key now includes team + agent so scoped voices aren't cross-served.
+- **Guard fix (pre-existing drift):** `scripts/brand-cascade-simulator.ts` had a stale regex
+  (`.select("tagline")`) that no longer matched `setup-readiness.ts`'s
+  `.select("tagline, mission_statement, key_brand_messages")` — it was failing locally but is NOT
+  in the CI `guard` chain, so CI never caught it. Tolerant regex applied → 11/0.
+- **New guard `test:brand-voice-cascade`** (8/0, added to `npm run guard` so CI enforces it)
+  asserts the brokerage-base + team + agent cascade, the scoped cache key, and the threaded call site.
+
+Follow-up (tracked): there are two `resolveBrandVoice` implementations — the pipeline one (now
+cascading) and `app/actions/social/generate-social-post.ts` (already cascades brokerage/agent/team).
+Consolidate to one shared resolver in a later pass.
+
+Verified: `tsc --noEmit` clean (0 errors); `test:brand-voice-cascade` (8/0), `test:brand-cascade`
+(11/0), `no-dead-components`, `no-orphan-actions`, `use-server-exports` pass.

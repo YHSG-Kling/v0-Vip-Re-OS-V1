@@ -38,7 +38,7 @@ function sourceLayer() {
   const mi = src("app/actions/generate-marketing-image.ts")
   check("marketing-image gets the same global_settings brand fallback (logo + primary color)", /global_settings"\)\s*\.select\("app_logo_url,\s*primary_color"\)/.test(mi) && /primaryColor:\s*brokerage\?\.primary_color\s*\?\?\s*globalSettings\?\.primary_color/.test(mi))
   const sr = src("lib/onboarding/setup-readiness.ts")
-  check("setup-readiness exposes the solo-agent motto step + detects it", /key:\s*"agent_motto"/.test(sr) && /from\("brand_voice_profile"\)\.select\("tagline"\)\.eq\("agent_id",\s*agentId\)/.test(sr))
+  check("setup-readiness exposes the solo-agent motto step + detects it", /key:\s*"agent_motto"/.test(sr) && /from\("brand_voice_profile"\)\.select\("tagline[^"]*"\)\.eq\("agent_id",\s*agentId\)/.test(sr))
 
   console.log("\n[ownership + proof]")
   const reg = src("lib/kernel/manager-registry.ts")
