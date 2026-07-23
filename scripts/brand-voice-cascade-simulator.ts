@@ -34,6 +34,8 @@ check("the call site threads metadata.teamId + metadata.agentId into the resolve
   /resolveBrandVoice\(\s*\{\s*brokerageId:\s*request\.metadata\.brokerageId,\s*teamId:\s*request\.metadata\.teamId,\s*agentId:\s*request\.metadata\.agentId/.test(p))
 check("inline override still short-circuits the cascade",
   p.includes("brandVoiceOverride?.inlineBrandVoice"))
+check("resolves via the SERVICE client so RLS can't drop the brokerage-base + team tiers (VADE fix)",
+  /const supabase = createServiceClient\(\)/.test(p) && p.includes('import { createServiceClient } from "@/lib/supabase/service"'))
 
 console.log(`\n RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ❌ BRAND_VOICE_CASCADE_FAIL"); process.exit(1) }

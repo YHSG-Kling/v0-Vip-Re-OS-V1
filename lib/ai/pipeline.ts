@@ -18,6 +18,7 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import {
   generateAIResponse,
   type AIRequest,
@@ -187,7 +188,11 @@ async function resolveBrandVoice(
   if (cached && cached.expiresAt > Date.now()) return cached.snippet
 
   try {
-    const supabase = await createClient()
+    // SERVICE client — the cascade reads the brokerage-BASE and TEAM voice rows
+    // (scoped by brokerage_id / team_id, not the caller's agent_id), which the
+    // user-scoped RLS client silently drops. Mirrors resolveBrandContext, the
+    // brand SETTINGS resolver, which reads the same cross-scope rows via service.
+    const supabase = createServiceClient()
 
     const { data: brokerage } = await supabase.from("brokerages").select("id, name").eq("id", scope.brokerageId).single()
     if (!brokerage) return ""
