@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -56,34 +57,24 @@ async function requireBrokerAdmin(
   return { brokerageId: user.brokerage_id, userType: user.user_type }
 }
 
-// Seed values used the first time a brokerage opens its settings. One row per
-// brokerage; column defaults in the DB mirror these, but we set them explicitly
-// so the returned row is fully populated without a second round-trip.
-const DEFAULT_GLOBAL_SETTINGS = {
-  app_name: "VIP Real Estate OS",
-  app_logo_url: null,
-  primary_color: "#2563eb",
-  secondary_color: "#1e40af",
-  font_family: "system-ui",
-  fiscal_year_start: 1,
-  timezone: "America/New_York",
-  date_format: "MM/DD/YYYY" as const,
-  currency_symbol: "$",
-  email_notifications_enabled: true,
-  sms_notifications_enabled: false,
-  push_notifications_enabled: false,
-}
-
-// Returns the brokerage's settings row, creating it from defaults on first
-// access. This makes settings self-seeding: a brand-new brokerage no longer
-// hits "Settings not found" the first time an admin opens the page or saves.
+// Returns the brokerage's settings row, creating it on first access. This makes
+// settings self-seeding: a brand-new brokerage no longer hits "Settings not
+// found" the first time a broker/admin opens the page or saves.
+//
+// Authorization is enforced by requireBrokerAdmin() in the callers; the row I/O
+// here uses the SERVICE client deliberately. The global_settings RLS policies
+// are admin-only for writes (and exclude superadmin from reads), which is
+// stricter than the app's admin/broker/superadmin permission model — running
+// the seed through the user-scoped client would deny brokers the INSERT and
+// superadmins the SELECT. Gating in app code + service-client I/O is the same
+// pattern the other global_settings actions in this codebase already use.
 async function ensureGlobalSettingsRow(
   brokerageId: string,
   userId: string
 ): Promise<GlobalSettingsRow> {
-  const supabase = await createClient()
+  const svc = createServiceClient()
 
-  const { data: existing } = await supabase
+  const { data: existing } = await svc
     .from("global_settings")
     .select("*")
     .eq("brokerage_id", brokerageId)
@@ -91,10 +82,12 @@ async function ensureGlobalSettingsRow(
 
   if (existing) return existing as GlobalSettingsRow
 
-  const { data: inserted, error: insertError } = await supabase
+  // Insert only the identifying/audit columns; every other column falls back to
+  // its DB default (app_name, colors, timezone, notification toggles, etc.), so
+  // no brand/product identity is hardcoded in runtime code.
+  const { data: inserted, error: insertError } = await svc
     .from("global_settings")
     .insert({
-      ...DEFAULT_GLOBAL_SETTINGS,
       brokerage_id: brokerageId,
       created_by_user_id: userId,
     })
@@ -105,7 +98,7 @@ async function ensureGlobalSettingsRow(
 
   // A concurrent request may have inserted the row first (unique brokerage_id).
   // Re-read before giving up so the caller still gets a valid row.
-  const { data: reread } = await supabase
+  const { data: reread } = await svc
     .from("global_settings")
     .select("*")
     .eq("brokerage_id", brokerageId)
@@ -151,9 +144,12 @@ export async function updateGlobalSettings(params: {
   // Guarantee a row exists first so saving on a fresh brokerage creates it
   // instead of silently updating zero rows.
   await ensureGlobalSettingsRow(brokerageId, params.userId)
-  const supabase = await createClient()
+  // Service client for the same RLS reason as ensureGlobalSettingsRow: the write
+  // policy is admin-only, but this function is authorized for admin/broker/
+  // superadmin via requireBrokerAdmin above.
+  const svc = createServiceClient()
 
-  const { error } = await supabase
+  const { error } = await svc
     .from("global_settings")
     .update({
       ...params.updates,

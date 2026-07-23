@@ -7,11 +7,11 @@ import { getGlobalSettings as kernelGetGlobalSettings } from '@/lib/kernel';
 // row (e.g. not signed in, or not an admin/broker). The settings pages that use
 // this render read-only defaults in that case rather than erroring.
 const DEFAULT_GLOBAL_SETTINGS = {
-  app_name: 'VIP Real Estate OS',
+  app_name: 'VIP Agents AI',
   app_logo_url: null,
   primary_color: '#2563eb',
   secondary_color: '#1e40af',
-  font_family: 'system-ui',
+  font_family: 'Inter',
   fiscal_year_start: 1,
   timezone: 'America/New_York',
   date_format: 'MM/DD/YYYY',
