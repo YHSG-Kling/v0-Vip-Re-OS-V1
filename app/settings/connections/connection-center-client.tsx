@@ -23,6 +23,18 @@ const DOMAIN_LABELS: Record<string, string> = {
   meetings: "Video Meetings",
 }
 
+// Short clarifying notes under a domain title. Email is the important one: what
+// you connect here is your PERSONAL relationship inbox (Gmail/Outlook). The
+// brokerage's transactional + offers email is platform-managed (SendGrid) and is
+// NOT a tenant setting — so nobody routes offers mail through a personal box.
+const DOMAIN_NOTES: Record<string, string> = {
+  email:
+    "Connect your personal relationship inbox (Gmail or Outlook) for 1:1 email. Transactional and offer emails are sent by the platform (SendGrid) and captured for the offers system automatically — nothing to set up here.",
+  phone:
+    "Your calling/SMS number is provided and billed by the platform — you don't enter a carrier API key.",
+  crm: "One-way: contact updates are pushed OUT to your CRM. Nothing syncs back in.",
+}
+
 const PROVIDER_LABELS: Record<string, string> = {
   gmail: "Google", outlook: "Microsoft", twilio: "Twilio", telnyx: "Telnyx", bandwidth: "Bandwidth",
   meta: "Meta (Facebook & Instagram)", linkedin: "LinkedIn", twitter: "X / Twitter",
@@ -158,6 +170,9 @@ export function ConnectionCenterClient({ data, owner }: { data: ConnectionCenter
         <Card key={d.domain}>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm">{label(DOMAIN_LABELS, d.domain)}</CardTitle>
+            {DOMAIN_NOTES[d.domain] && (
+              <p className="text-xs text-muted-foreground mt-1">{DOMAIN_NOTES[d.domain]}</p>
+            )}
           </CardHeader>
           <CardContent className="space-y-2">
             {d.providers.map((p) => (

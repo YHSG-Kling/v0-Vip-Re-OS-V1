@@ -379,3 +379,46 @@ routing itself is already correct and protected.
 5. Email settings-clarity copy (7c) — personal-OAuth vs platform-transactional split.
 6+. Website section + brand-source fix, AI Team consolidation, brand-voice single home, Vapi/
    HeyGen/cron ops cleanup (as in §6g).
+
+---
+
+## 8. Phase 2.5 (credential unification) + email copy — done, with a §7b correction
+
+### 8a. Correction to §7b: the credential cascade was already unified
+
+§7b concluded the phone/CRM redirect would break CRM sync because the Connection Center writes
+`platform_credentials` while the sync reads other tables. **On deeper reading that was wrong.**
+`lib/connections/resolve-scoped.ts` (`resolveScopedConnection`) is "THE unified connection
+resolver": it reads `platform_credentials` by `(owner_type, owner_id)` — exactly where the
+Connection Center writes — and falls back to the legacy tables (`agent_api_credentials`,
+`integration_credentials`). `lib/crm/sync.ts` already resolves the CRM PROVIDER from all three
+tables (lines 98–127), and the Follow Up Boss / Lofty / HubSpot dispatch already pulls the
+CREDENTIAL through `resolveScopedConnection` (line 175). So a Connection-Center CRM connection is
+honored end-to-end for those providers. The redirect is therefore safer than §7b implied.
+
+### 8b. The one real gap closed: GoHighLevel credential resolution
+
+GHL — the system-default CRM — was the exception. `services/goHighLevelService.ts` resolved its
+key ONLY from `process.env.GHL_API_KEY` / `GHL_LOCATION_ID`, so a tenant that connected their own
+GHL (Connection Center or `/settings/crm`) had the provider resolved to GHL but then dispatched
+with the **platform env key**, ignoring their credential (a multi-tenant bug).
+
+Fix (additive, backward-compatible):
+- `syncContactToGHL(contact, credentialOverride?)` and `ghlFetch(endpoint, options, configOverride?)`
+  now accept an optional tenant credential; without it they fall back to env, so every existing
+  caller (`communications.ts`, `ghl-integration.ts`) is unchanged.
+- `lib/crm/sync.ts` GHL branch now resolves the tenant credential via `resolveScopedConnection("ghl", …)`
+  (apiKey + locationId from `accountId`/`config.locationId`/`config.location_id`) and passes it in;
+  env remains the platform-default fallback.
+
+Net: all four CRM providers (GHL, FUB, Lofty, HubSpot) now dispatch with the tenant's own
+credential resolved from one cascade — the credential-unification prerequisite for the phone/CRM
+redirect (§7d Phase 2.5) is satisfied for CRM.
+
+### 8c. Email settings-copy split (7c) shipped
+
+`connection-center-client.tsx` now shows per-domain clarifying notes: the **email** card states
+that what you connect is your **personal relationship inbox (Gmail/Outlook)**, while transactional
++ offer email is **platform-managed (SendGrid)** and captured for the offers system automatically —
+so offers mail is never routed through a personal box. Phone and CRM cards get matching one-liners
+(platform-provided number; sync-out-only).

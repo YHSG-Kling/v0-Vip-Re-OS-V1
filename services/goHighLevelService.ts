@@ -28,8 +28,11 @@ function getGHLConfig(): GHLConfig | null {
   return { apiKey, locationId }
 }
 
-async function ghlFetch(endpoint: string, options: RequestInit = {}) {
-  const config = getGHLConfig()
+async function ghlFetch(endpoint: string, options: RequestInit = {}, configOverride?: GHLConfig | null) {
+  // configOverride carries a TENANT's own GHL credential (resolved from the
+  // Connection Center / connection cascade). When absent we fall back to the
+  // platform env credential, preserving every existing caller's behavior.
+  const config = configOverride ?? getGHLConfig()
   if (!config) {
     return { success: false, error: "Go High Level not configured", mock: true }
   }
@@ -74,8 +77,11 @@ export interface GHLContact {
   postalCode?: string
 }
 
-export async function syncContactToGHL(contact: GHLContact) {
-  const config = getGHLConfig()
+export async function syncContactToGHL(contact: GHLContact, credentialOverride?: GHLConfig | null) {
+  // credentialOverride carries a TENANT's own GHL apiKey + locationId (resolved
+  // from the unified connection cascade in lib/crm/sync.ts). Without it we fall
+  // back to the platform env credential so existing callers are unchanged.
+  const config = credentialOverride ?? getGHLConfig()
   if (!config) {
     return { success: false, error: "GHL not configured. Add GHL_API_KEY and GHL_LOCATION_ID to environment variables.", requiresConfiguration: true }
   }
@@ -86,6 +92,8 @@ export async function syncContactToGHL(contact: GHLContact) {
     if (contact.email) {
       const searchResult = await ghlFetch(
         `/contacts/?locationId=${config.locationId}&email=${encodeURIComponent(contact.email)}`,
+        {},
+        config,
       )
       if (searchResult.contacts?.length > 0) {
         existingContact = searchResult.contacts[0]
@@ -100,7 +108,7 @@ export async function syncContactToGHL(contact: GHLContact) {
           ...contact,
           locationId: config.locationId,
         }),
-      })
+      }, config)
       return { success: true, contactId: existingContact.id, action: "updated", data: result }
     } else {
       // Create new contact
@@ -110,7 +118,7 @@ export async function syncContactToGHL(contact: GHLContact) {
           ...contact,
           locationId: config.locationId,
         }),
-      })
+      }, config)
       return { success: true, contactId: result.contact?.id, action: "created", data: result }
     }
   } catch (error: any) {
