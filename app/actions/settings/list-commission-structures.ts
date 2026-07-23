@@ -3,6 +3,12 @@
 import { createClient } from '@/lib/supabase/server';
 import { createServiceClient } from '@/lib/supabase/service';
 
+// Commission/rev-share structures are broker-level config — the same roles that
+// may CREATE them (create-commission-structure.ts) may read them. This read used
+// the service client (RLS-bypassing) gated only by brokerage, so any brokerage
+// member (a plain agent) could see the whole split table. Gate it by role.
+const VIEW_ROLES = ['broker', 'broker_owner', 'admin', 'superadmin'];
+
 export async function listCommissionStructures() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -10,10 +16,11 @@ export async function listCommissionStructures() {
 
   const { data: u } = await supabase
     .from('users')
-    .select('brokerage_id')
+    .select('brokerage_id, user_type')
     .eq('id', user.id)
     .maybeSingle();
   if (!u?.brokerage_id) return [];
+  if (!VIEW_ROLES.includes(u.user_type ?? '')) return [];
 
   const svc = createServiceClient();
   const { data, error } = await svc

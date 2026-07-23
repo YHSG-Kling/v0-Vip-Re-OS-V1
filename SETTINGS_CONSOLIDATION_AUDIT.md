@@ -422,3 +422,47 @@ that what you connect is your **personal relationship inbox (Gmail/Outlook)**, w
 + offer email is **platform-managed (SendGrid)** and captured for the offers system automatically —
 so offers mail is never routed through a personal box. Phone and CRM cards get matching one-liners
 (platform-provided number; sync-out-only).
+
+---
+
+## 9. Tier / role access verification across settings (with one fix)
+
+Goal: confirm every settings surface enforces the right access. Two access dimensions:
+**subscription tier** (solo/team/brokerage/multi → seats + invitable roles, `tier-role-matrix`)
+and **role/ownership scope** (agent/team/brokerage → what each may configure).
+
+### 9a. How access is enforced (the correct pattern)
+
+- `app/settings/layout.tsx` is a **client** component — its `hasAccess` redirect is **UX only**
+  (bypassable), NOT a security boundary. It correctly defers: personal-stack sections
+  (connections, phone, crm, branding, brand-voice, email-templates, notifications, general) are
+  open to any tier; brokerage-wide sections (users, global, commission, accounting, services,
+  providers, billing) are for broker/admin; developers is principal-gated server-side.
+- **Real enforcement is per page/action, server-side.** Verified correct: `/settings/users`
+  (server role check + redirect), `/settings/billing` (broker/admin gate), `/settings/accounting`
+  (role check), `/settings/global` (kernel `requireBrokerAdmin` on read+write),
+  `provider-settings-actions` (`requireBrokerAdmin`), `revenue-share-setting` (role gate with a
+  solo-tier exception), `create-commission-structure` (`CREATE_ROLES`). The Connection Center
+  gates connectable domains by `selfConnectableDomains(userType, scope)` and write scope by
+  `writeScopeFor` (agent writes agent scope; broker/admin writes brokerage scope). `tier-role-matrix`
+  seat limits are correct (solo 2 / team 5 / brokerage+multi unlimited) and `test:tier-entitlement`
+  passes (17/0).
+
+### 9b. Gap found + FIXED: commission read was role-less
+
+`list-commission-structures.ts` read commission/rev-share structures with the **service client**
+(RLS-bypassing) gated **only by brokerage_id — no role check**. The *write* was role-gated but the
+*read* was not, and `/settings/commission` is a client page (bypassable layout redirect), so any
+brokerage member (a plain agent) could enumerate the brokerage's split table. Fixed by gating the
+read to the same broker/admin roles as the write (`VIEW_ROLES`); the only caller is the admin
+commission page, so nothing legitimate regresses. Added to the doc as the pattern to watch:
+**service-client reads of brokerage-wide config must gate by role, not just brokerage_id.**
+
+### 9c. Phase 3 status (honest)
+
+The hard redirect of `/settings/phone` + `/settings/crm` into the Connection Center is **not done
+this pass**: `/settings/crm` carries a unique "Sync a contact now" tool (`syncContactNowAction`)
+the hub lacks, so a redirect+delete would lose a feature and can't be end-to-end tested in this
+environment. Correct sequence: port "Sync now" into the Connection Center CRM domain (additive),
+switch the phone domain to the number/forwarding model (§6f), THEN redirect and delete the dead
+pages/components with the guards (`orphan-routes`, `no-dead-components`, `no-orphan-actions`) green.
