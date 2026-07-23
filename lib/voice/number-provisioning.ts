@@ -130,16 +130,35 @@ export interface ProvisionNumberParams {
   eventNotes?: string | null
   /** Point the number's VoiceUrl/SmsUrl/StatusCallback at our AI lane after purchase. */
   bindToVoiceLane?: boolean
+  /** TENANT purchases enforce the plan's phone allowance (bundle → metered
+   *  overage → hard cap); the staff fleet console leaves this off (staff
+   *  provision on a tenant's behalf and see the numbers console directly). */
+  enforceTenantAllowance?: boolean
 }
 
 export type ProvisionNumberResult =
-  | { ok: true; phoneNumber: string; twilioSid: string | null; numberRowId: string | null; credTier: TwilioCreds["tier"]; bound: boolean; bindNote?: string }
-  | { ok: false; error: string; notConfigured?: boolean }
+  | { ok: true; phoneNumber: string; twilioSid: string | null; numberRowId: string | null; credTier: TwilioCreds["tier"]; bound: boolean; bindNote?: string; billing?: "included" | "overage"; monthlyOverageCents?: number }
+  | { ok: false; error: string; notConfigured?: boolean; capReached?: boolean }
 
 /** The full purchase pipeline — the ONE implementation both the tenant action
  *  and the staff console run. Failures are honest: a purchase that lands but
  *  fails to save is logged 'failed' with a reconcile note, never swallowed. */
 export async function provisionNumber(svc: any, params: ProvisionNumberParams): Promise<ProvisionNumberResult> {
+  // 0. Plan-allowance gate (tenant purchases only). The bundle is metered resale:
+  //    inside the included count is free, beyond it is billable overage, and the
+  //    hard cap is a runaway backstop — the ONLY case that blocks a purchase.
+  let billing: "included" | "overage" | undefined
+  let monthlyOverageCents = 0
+  if (params.enforceTenantAllowance) {
+    const { evaluateTenantNumberProvisioning } = await import("@/lib/billing/phone-plan-resolve")
+    const verdict = await evaluateTenantNumberProvisioning(svc, params.brokerageId)
+    if (!verdict.allowed) {
+      return { ok: false, error: verdict.reason ?? "Your plan's active-number limit has been reached", capReached: true }
+    }
+    billing = verdict.billing
+    monthlyOverageCents = verdict.monthlyOverageCents
+  }
+
   const creds = await resolveCreds(svc, params.brokerageId)
   if (!creds) return { ok: false, error: NOT_CONFIGURED, notConfigured: true }
 
@@ -194,11 +213,15 @@ export async function provisionNumber(svc: any, params: ProvisionNumberParams): 
   }
   const numberRowId = (inserted as any)?.id ?? null
 
-  // 4. The audit line.
+  // 4. The audit line — the billing disposition (bundle vs metered overage) is
+  //    stamped so finance can trace which numbers ride the plan and which bill.
+  const billingNote = billing
+    ? `plan:${billing}${billing === "overage" ? ` (+${(monthlyOverageCents / 100).toFixed(2)}/mo)` : ""}`
+    : null
   await logPhoneNumberEvent(svc, {
     brokerageId: params.brokerageId, agentId: params.agentId, phoneNumber: targetNumber,
     eventType: "purchased", source: params.eventSource, twilioSid: purchasedSid,
-    costUsd: 1.15, notes: params.eventNotes ?? null,
+    costUsd: 1.15, notes: [params.eventNotes, billingNote].filter(Boolean).join(" · ") || null,
   })
 
   // 5. Optional webhook binding onto the Twilio-native AI lane (best-effort:
@@ -214,7 +237,7 @@ export async function provisionNumber(svc: any, params: ProvisionNumberParams): 
     bindNote = "Purchased + saved, but the row id was not returned — bind the number from its row later"
   }
 
-  return { ok: true, phoneNumber: targetNumber, twilioSid: purchasedSid, numberRowId, credTier: creds.tier, bound, bindNote }
+  return { ok: true, phoneNumber: targetNumber, twilioSid: purchasedSid, numberRowId, credTier: creds.tier, bound, bindNote, billing, monthlyOverageCents }
 }
 
 // ─── Release (Twilio release → deactivate row → event) ───────────────────────

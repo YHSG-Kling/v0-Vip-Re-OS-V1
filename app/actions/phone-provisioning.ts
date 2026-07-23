@@ -135,6 +135,9 @@ export async function autoProvisionAgentPhone(params: {
     agentId: params.agentId,
     eventSource: "tenant_action",
     eventNotes: "Auto-provisioned via brokerage setting",
+    // Tenant purchase → enforce the plan's phone bundle (metered overage past
+    // the included count; blocked only at the runaway hard cap).
+    enforceTenantAllowance: true,
   })
   if (!result.ok) return { success: false, error: result.error }
   return { success: true, phoneNumber: result.phoneNumber, twilioSid: result.twilioSid ?? undefined }
