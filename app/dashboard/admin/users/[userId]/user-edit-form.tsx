@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { updateUser } from "@/app/actions/admin/update-user"
+import { updateAgentProfileAction, type AgentProfile, type OfficeOption } from "@/app/actions/admin/agent-profile"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -15,7 +16,9 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
-import { CheckCircle2, AlertCircle, Loader2 } from "lucide-react"
+import { CheckCircle2, AlertCircle, Loader2, ShieldCheck } from "lucide-react"
+import { ROLE_PERMISSIONS, ROLE_HIERARCHY, PERMISSION_DEFINITIONS } from "@/lib/security/permission-matrix"
+import { toCanonicalRole } from "@/lib/security/types"
 
 const USER_TYPE_OPTIONS = [
   { value: "agent", label: "Agent" },
@@ -43,6 +46,7 @@ interface UserData {
   id: string
   first_name: string | null
   last_name: string | null
+  phone: string | null
   email: string
   user_type: string | null
   role: string | null
@@ -56,18 +60,31 @@ interface Props {
   callerRole: string
   callerBrokerageId: string | null
   brokerages: { id: string; name: string }[]
+  agentProfile: AgentProfile | null
+  offices: OfficeOption[]
 }
 
-export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages }: Props) {
+const NO_OFFICE = "__none__"
+
+export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, agentProfile, offices }: Props) {
   const router = useRouter()
   const isSuperadmin = callerRole === "superadmin"
 
   const [form, setForm] = useState({
     first_name: user.first_name ?? "",
     last_name: user.last_name ?? "",
+    phone: user.phone ?? "",
     user_type: user.user_type ?? user.role ?? "",
     status: user.status ?? "active",
     brokerage_id: user.brokerage_id ?? "",
+  })
+  // Agent real-estate profile (present only when the user has an agent row).
+  const [agent, setAgent] = useState({
+    license_number: agentProfile?.licenseNumber ?? "",
+    license_state: agentProfile?.licenseState ?? "",
+    license_expiry: agentProfile?.licenseExpiry ?? "",
+    commission_split: agentProfile?.commissionSplit != null ? String(agentProfile.commissionSplit) : "",
+    location_id: agentProfile?.locationId ?? NO_OFFICE,
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -75,6 +92,12 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages }
 
   function set(field: keyof typeof form, value: string) {
     setForm((f) => ({ ...f, [field]: value }))
+    setSaved(false)
+    setError(null)
+  }
+
+  function setAgentField(field: keyof typeof agent, value: string) {
+    setAgent((a) => ({ ...a, [field]: value }))
     setSaved(false)
     setError(null)
   }
@@ -89,6 +112,7 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages }
       updates: {
         first_name: form.first_name || undefined,
         last_name: form.last_name || undefined,
+        phone: form.phone,
         user_type: form.user_type || undefined,
         role: form.user_type || undefined,
         status: form.status || undefined,
@@ -96,16 +120,42 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages }
       },
     })
 
-    setSaving(false)
-    if (result.success) {
-      setSaved(true)
-      router.refresh()
-    } else {
+    if (!result.success) {
+      setSaving(false)
       setError(result.error ?? "Save failed. Please try again.")
+      return
     }
+
+    // Save the agent real-estate profile too (one Save button for the whole
+    // person). Only fires when the user actually has an agent profile.
+    if (agentProfile) {
+      const agentRes = await updateAgentProfileAction({
+        targetUserId: user.id,
+        licenseNumber: agent.license_number,
+        licenseState: agent.license_state,
+        licenseExpiry: agent.license_expiry || null,
+        commissionSplit: agent.commission_split === "" ? null : Number(agent.commission_split),
+        locationId: agent.location_id === NO_OFFICE ? null : agent.location_id,
+      })
+      if (!agentRes.ok) {
+        setSaving(false)
+        setError(agentRes.error)
+        return
+      }
+    }
+
+    setSaving(false)
+    setSaved(true)
+    router.refresh()
   }
 
   const roleOptions = isSuperadmin ? USER_TYPE_OPTIONS : RESTRICTED_USER_TYPE_OPTIONS
+
+  // Read-only "what this role can do" — sourced from the canonical permission
+  // matrix (the live DB has no role_capabilities table; the matrix is the SSOT).
+  const canonicalRole = toCanonicalRole(form.user_type)
+  const rolePerms = canonicalRole ? ROLE_PERMISSIONS[canonicalRole] : null
+  const roleHierarchy = canonicalRole ? ROLE_HIERARCHY[canonicalRole] : null
 
   const statusBadgeVariant: Record<string, "default" | "secondary" | "outline"> = {
     active: "default",
@@ -139,10 +189,22 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages }
               />
             </div>
           </div>
-          <div className="space-y-1.5">
-            <Label>Email</Label>
-            <Input value={user.email} disabled className="text-muted-foreground" />
-            <p className="text-xs text-muted-foreground">Email cannot be changed here</p>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label>Email</Label>
+              <Input value={user.email} disabled className="text-muted-foreground" />
+              <p className="text-xs text-muted-foreground">Email cannot be changed here</p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="phone">Phone</Label>
+              <Input
+                id="phone"
+                type="tel"
+                placeholder="(555) 123-4567"
+                value={form.phone}
+                onChange={(e) => set("phone", e.target.value)}
+              />
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -170,6 +232,115 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages }
           </div>
         </CardContent>
       </Card>
+
+      {/* Role Capabilities — read-only, from the canonical permission matrix */}
+      {rolePerms && roleHierarchy && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+              What this role can do
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap gap-2 text-xs">
+              <Badge variant="outline">Data access: {roleHierarchy.canViewData}</Badge>
+              {roleHierarchy.canManage.length > 0 && (
+                <Badge variant="outline">Manages: {roleHierarchy.canManage.join(", ")}</Badge>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              {rolePerms.permissions.map((p) => (
+                <div key={p} className="flex items-start gap-2 text-sm">
+                  <CheckCircle2 className="h-3.5 w-3.5 mt-0.5 shrink-0 text-green-600" />
+                  <span>{PERMISSION_DEFINITIONS[p] ?? p}</span>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Permissions are defined by the role. Changing the role above changes what this
+              person can do across the OS.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Agent Profile — license / office / commission (only for agents) */}
+      {agentProfile && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Agent Profile</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="licenseNumber">License #</Label>
+                <Input
+                  id="licenseNumber"
+                  value={agent.license_number}
+                  onChange={(e) => setAgentField("license_number", e.target.value)}
+                  placeholder="e.g. 01234567"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="licenseState">License State</Label>
+                <Input
+                  id="licenseState"
+                  value={agent.license_state}
+                  onChange={(e) => setAgentField("license_state", e.target.value)}
+                  placeholder="e.g. CA"
+                  maxLength={2}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="licenseExpiry">License Expiry</Label>
+                <Input
+                  id="licenseExpiry"
+                  type="date"
+                  value={agent.license_expiry ?? ""}
+                  onChange={(e) => setAgentField("license_expiry", e.target.value)}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="commissionSplit">Commission Split (%)</Label>
+                <Input
+                  id="commissionSplit"
+                  type="number"
+                  min={0}
+                  max={100}
+                  step="0.5"
+                  value={agent.commission_split}
+                  onChange={(e) => setAgentField("commission_split", e.target.value)}
+                  placeholder="e.g. 70"
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Office / Location</Label>
+              <Select value={agent.location_id} onValueChange={(v) => setAgentField("location_id", v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="No office assigned" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_OFFICE}>No office assigned</SelectItem>
+                  {offices.map((o) => (
+                    <SelectItem key={o.id} value={o.id}>
+                      {o.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {offices.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  No offices yet — add them under Admin → Locations.
+                </p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Status */}
       <Card>

@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { ArrowLeft } from "lucide-react"
 import Link from "next/link"
 import { UserEditForm } from "./user-edit-form"
+import { getAgentProfileForUserAction, type AgentProfile, type OfficeOption } from "@/app/actions/admin/agent-profile"
 
 export const dynamic = "force-dynamic"
 
@@ -32,7 +33,7 @@ export default async function UserEditPage({ params }: Props) {
   // Load target user
   const { data: target } = await supabase
     .from("users")
-    .select("id, first_name, last_name, email, user_type, role, status, brokerage_id, created_at")
+    .select("id, first_name, last_name, phone, email, user_type, role, status, brokerage_id, created_at")
     .eq("id", userId)
     .single()
 
@@ -52,6 +53,17 @@ export default async function UserEditPage({ params }: Props) {
       .select("id, name")
       .order("name", { ascending: true })
     brokerages = data ?? []
+  }
+
+  // People-ops consolidation: the agent's real-estate profile (license / office /
+  // commission) + the brokerage's office list, loaded through the admin-gated
+  // action so the same authz applies. `agent` is null for non-agent users.
+  let agentProfile: AgentProfile | null = null
+  let offices: OfficeOption[] = []
+  const profileRes = await getAgentProfileForUserAction(userId)
+  if (profileRes.ok) {
+    agentProfile = profileRes.agent
+    offices = profileRes.offices
   }
 
   return (
@@ -78,6 +90,8 @@ export default async function UserEditPage({ params }: Props) {
         callerRole={callerRole}
         callerBrokerageId={caller?.brokerage_id ?? null}
         brokerages={brokerages}
+        agentProfile={agentProfile}
+        offices={offices}
       />
     </div>
   )

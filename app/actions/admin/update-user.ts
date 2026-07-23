@@ -12,6 +12,8 @@ export interface UpdateUserParams {
   updates: {
     first_name?: string
     last_name?: string
+    /** Contact phone (users.phone) — was previously not editable from the admin UI */
+    phone?: string
     /** Canonical role field — will sync to both user_type and user_role_assignments */
     user_type?: string
     /** Legacy alias — treated as user_type if user_type is not provided */
@@ -82,7 +84,7 @@ export async function updateUser({ userId, updates }: UpdateUserParams): Promise
   // ── 5. Snapshot current state for audit ──────────────────────────────────
   const { data: before } = await service
     .from("users")
-    .select("first_name, last_name, user_type, role, status, brokerage_id")
+    .select("first_name, last_name, phone, user_type, role, status, brokerage_id")
     .eq("id", userId)
     .maybeSingle()
 
@@ -121,6 +123,7 @@ export async function updateUser({ userId, updates }: UpdateUserParams): Promise
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
   if (updates.first_name !== undefined) patch.first_name = updates.first_name
   if (updates.last_name  !== undefined) patch.last_name  = updates.last_name
+  if (updates.phone      !== undefined) patch.phone      = updates.phone?.trim() || null
   if (updates.status     !== undefined) patch.status     = updates.status
 
   // Sync both user_type and legacy role column when role changes

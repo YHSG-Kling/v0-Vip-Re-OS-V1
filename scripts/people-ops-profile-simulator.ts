@@ -1,0 +1,85 @@
+// scripts/people-ops-profile-simulator.ts   (npm run test:people-ops-profile)
+// ─────────────────────────────────────────────────────────────────────────────
+// PEOPLE-OPS CONSOLIDATION — proves the brokerage-admin user-edit surface now
+// manages the WHOLE person in one place: contact phone (was missing), the agent's
+// real-estate profile (license #/state/expiry, office assignment, commission
+// split), and a read-only "what this role can do" view — instead of scattering
+// them across separate license-tracking / locations pages. Writes go through
+// admin-gated, brokerage-scoped server actions against the LIVE columns only.
+
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+
+let passed = 0, failed = 0
+function check(name: string, ok: boolean, detail?: string) {
+  if (ok) { passed++; console.log(`  ✓ ${name}`) }
+  else { failed++; console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
+}
+const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+
+console.log("\n── phone (contact) is now editable on the user ──")
+{
+  const a = src("app/actions/admin/update-user.ts")
+  check("updateUser accepts phone and patches users.phone",
+    a.includes("phone?: string") && a.includes("patch.phone"))
+  const form = src("app/dashboard/admin/users/[userId]/user-edit-form.tsx")
+  check("the edit form renders a phone field bound to form.phone",
+    form.includes('id="phone"') && form.includes('set("phone"'))
+  check("the form passes phone into updateUser",
+    form.includes("phone: form.phone"))
+}
+
+console.log("\n── the agent real-estate profile is managed inline (LIVE columns only) ──")
+{
+  const a = src("app/actions/admin/agent-profile.ts")
+  check("is a server module with load + update actions",
+    a.includes('"use server"') &&
+    a.includes("export async function getAgentProfileForUserAction") &&
+    a.includes("export async function updateAgentProfileAction"))
+  check("admin-gated via requireAdmin (broker/admin/superadmin/team_lead)",
+    a.includes("ADMIN_ROLES") && a.includes("requireAdmin"))
+  check("target agent is pinned to the caller's own brokerage",
+    a.includes('.eq("brokerage_id", auth.brokerageId)') && a.includes("belongs to a different brokerage"))
+  check("writes ONLY live columns (license_number/state/expiry, commission_split, location_id)",
+    a.includes("license_number") && a.includes("license_state") && a.includes("license_expiry") &&
+    a.includes("commission_split") && a.includes("location_id"))
+  check("does NOT write drift columns (mls_id / commission_tier not present live)",
+    !a.includes("patch.mls_id") && !a.includes("patch.commission_tier") &&
+    !/mls_id\s*=/.test(a) && !/commission_tier\s*=/.test(a))
+  check("office assignment validates the office belongs to the brokerage",
+    a.includes('.from("locations")') && a.includes("Office not found for this brokerage"))
+  check("commission split is validated to 0–100",
+    a.includes("between 0 and 100"))
+
+  const form = src("app/dashboard/admin/users/[userId]/user-edit-form.tsx")
+  check("the form shows the Agent Profile card only when an agent row exists",
+    form.includes("{agentProfile && (") && form.includes("Agent Profile"))
+  check("the form saves the agent profile via updateAgentProfileAction",
+    form.includes("updateAgentProfileAction"))
+  check("office dropdown is populated from the brokerage offices",
+    form.includes("offices.map"))
+}
+
+console.log("\n── read-only role capabilities are surfaced from the canonical matrix ──")
+{
+  const form = src("app/dashboard/admin/users/[userId]/user-edit-form.tsx")
+  check("imports the permission matrix (SSOT; live DB has no role_capabilities table)",
+    form.includes("ROLE_PERMISSIONS") && form.includes("PERMISSION_DEFINITIONS") && form.includes("ROLE_HIERARCHY"))
+  check("resolves the selected role to canonical before lookup",
+    form.includes("toCanonicalRole(form.user_type)"))
+  check("renders the 'What this role can do' card",
+    form.includes("What this role can do"))
+}
+
+console.log("\n── the page loads the profile through the gated action ──")
+{
+  const page = src("app/dashboard/admin/users/[userId]/page.tsx")
+  check("loads the agent profile + offices via getAgentProfileForUserAction",
+    page.includes("getAgentProfileForUserAction"))
+  check("passes agentProfile + offices to the form",
+    page.includes("agentProfile={agentProfile}") && page.includes("offices={offices}"))
+}
+
+console.log(`\n RESULT: ${passed} passed, ${failed} failed`)
+if (failed > 0) { console.log(" ❌ PEOPLE_OPS_PROFILE_FAIL"); process.exit(1) }
+console.log(" ✅ PEOPLE_OPS_PROFILE_PASS — one person, one surface: contact + license + office + commission + role view")
