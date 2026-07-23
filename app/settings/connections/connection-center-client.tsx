@@ -16,6 +16,7 @@ import {
 } from "@/app/actions/connections/connection-center"
 import { syncContactNowAction } from "@/app/actions/crm-connect"
 import { MANAGERS } from "@/lib/kernel/manager-registry"
+import Link from "next/link"
 
 const DOMAIN_LABELS: Record<string, string> = {
   email: "Email", phone: "Phone / SMS", calendar: "Calendar", social: "Social",
@@ -208,6 +209,32 @@ function CrmSyncNowCard() {
   )
 }
 
+// Phone/SMS is PLATFORM-PROVIDED for every tier except the multi-location top tier:
+// the platform owns Twilio, provisions the number, and bills it separately — the
+// tenant never enters a carrier API key (see docs/PHONE-SYSTEM-SETUP.md). This panel
+// makes that the primary path and bridges to the number/forwarding surface; the
+// carrier API-key rows below are reframed as the ADVANCED "bring your own carrier"
+// option (only the top tier assumes its own carrier registration).
+function PlatformProvidedPhonePanel() {
+  return (
+    <div className="rounded-md border bg-muted/40 p-3 space-y-2">
+      <p className="text-sm font-medium">Your number is provided by the platform</p>
+      <p className="text-xs text-muted-foreground">
+        We provision and bill your calling/SMS number (Twilio, platform-owned) — there's no
+        carrier API key to enter. Provision a number and set call forwarding in Phone setup.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <Button asChild size="sm" variant="outline" className="h-8 text-xs">
+          <Link href="/dashboard/admin/phone-settings">Provision number &amp; forwarding</Link>
+        </Button>
+        <Button asChild size="sm" variant="ghost" className="h-8 text-xs">
+          <Link href="/dashboard/onboarding/ai-call-setup">AI call handling</Link>
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 export function ConnectionCenterClient({ data, owner }: { data: ConnectionCenter; owner?: OwnerHint }) {
   if (!data.ok) {
     return <p className="text-sm text-muted-foreground">{data.error ?? "Unable to load connections."}</p>
@@ -227,6 +254,14 @@ export function ConnectionCenterClient({ data, owner }: { data: ConnectionCenter
             )}
           </CardHeader>
           <CardContent className="space-y-2">
+            {/* Phone/SMS: platform-provided is the primary path; the carrier
+                API-key rows below are the advanced bring-your-own-carrier option. */}
+            {d.domain === "phone" && <PlatformProvidedPhonePanel />}
+            {d.domain === "phone" && d.providers.length > 0 && (
+              <p className="text-[11px] font-medium text-muted-foreground pt-1">
+                Advanced — bring your own carrier (top tier)
+              </p>
+            )}
             {d.providers.map((p) => (
               <ProviderRow key={p.provider} domain={d.domain} provider={p} fields={d.fields} owner={owner} />
             ))}

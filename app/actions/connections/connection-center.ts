@@ -215,6 +215,18 @@ export async function connectApiKeyProvider(params: {
   if (!actor.ownerId) return { ok: false, error: "Connection management for your account type isn't available here." }
   if (!actor.brokerageId) return { ok: false, error: "A brokerage is required to store this connection." }
 
+  // Bring-your-own CARRIER (phone/SMS) is a TOP-TIER capability: the platform
+  // provisions + bills the number for every other tier (docs/PHONE-SYSTEM-SETUP.md),
+  // so only the Multi-Location plan may store its own carrier secrets. Enforced
+  // server-side so a lower tier can't write carrier credentials even off-UI.
+  if (params.domain === "phone") {
+    const { data: brk } = await createServiceClient()
+      .from("brokerages").select("plan_tier").eq("id", actor.brokerageId).maybeSingle()
+    if (((brk as { plan_tier?: string | null } | null)?.plan_tier ?? "") !== "multi_location") {
+      return { ok: false, error: "Bring-your-own carrier is available on the Multi-Location plan — your calling/SMS number is platform-provided." }
+    }
+  }
+
   const write = buildCredentialWrite(params.domain, params.fields)
   if (!write) return { ok: false, error: "Missing required credential fields." }
 

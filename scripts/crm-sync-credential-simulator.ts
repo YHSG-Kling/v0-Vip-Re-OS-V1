@@ -117,6 +117,19 @@ console.log("\n── MANAGER OWNERSHIP: the manual 'Sync now' is a governed Dat
     cc.includes("MANAGERS.data_steward"))
 }
 
+console.log("\n── CONNECTION CENTER: phone/SMS is platform-provided (BYO carrier is top-tier only) ──")
+{
+  const cc = src("app/settings/connections/connection-center-client.tsx")
+  check("phone domain renders the platform-provided panel (no carrier API key by default)",
+    cc.includes("PlatformProvidedPhonePanel") && cc.includes('d.domain === "phone"'))
+  check("the carrier API-key rows are reframed as advanced bring-your-own-carrier",
+    /bring your own carrier/i.test(cc))
+
+  const action = src("app/actions/connections/connection-center.ts")
+  check("connectApiKeyProvider gates BYO phone carrier to the Multi-Location top tier (server-side)",
+    action.includes('params.domain === "phone"') && action.includes("multi_location") && action.includes("plan_tier"))
+}
+
 console.log(`\n RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) { console.log(" ❌ CRM_SYNC_CREDENTIAL_FAIL"); process.exit(1) }
 console.log(" ✅ CRM_SYNC_CREDENTIAL_PASS — every CRM dispatches with the tenant's own credential; env is only the platform fallback")

@@ -530,3 +530,26 @@ Verified: `tsc --noEmit` clean (0 errors); `test:signal-integrity`, `test:manage
 `test:manager-ownership` (73/0), `test:command-center`, `test:command-bar`,
 `test:crm-sync-credential` (24/0), `no-dead-components`, `no-orphan-actions`,
 `use-server-exports` all pass.
+
+---
+
+## 12. Phone/SMS domain — platform-provided model + top-tier BYO gate
+
+Resolves §6f (the phone domain asked every tier for a Twilio Account SID + Auth Token,
+contradicting the platform-owned model). Build-don't-delete: the carrier form stays for the
+tenants who legitimately need it (BYO, top tier), but it's no longer the default.
+
+- **UI (`connection-center-client.tsx`):** the phone card now leads with a
+  `PlatformProvidedPhonePanel` — "your number is provided + billed by the platform, no carrier
+  API key" — bridging to number/forwarding setup (`/dashboard/admin/phone-settings`) and AI call
+  handling (`/dashboard/onboarding/ai-call-setup`). The carrier API-key rows are reframed below
+  as **"Advanced — bring your own carrier (top tier)."**
+- **Server gate (`connection-center.ts#connectApiKeyProvider`):** BYO carrier for the `phone`
+  domain is enforced to the **Multi-Location top tier** (`brokerages.plan_tier === "multi_location"`)
+  — a lower tier cannot store carrier secrets even off-UI. Existing connections still resolve
+  (read path untouched: `resolve-sms-provider` keeps reading api_key/auth_token/from_number).
+- **Tested:** `test:crm-sync-credential` extended (27/0) to assert the platform panel, the BYO
+  reframing, and the server-side top-tier gate.
+
+Verified: `tsc --noEmit` clean (0 errors); `test:crm-sync-credential` (27/0),
+`no-dead-components`, `no-orphan-actions`, `tenant-scope` all pass.
