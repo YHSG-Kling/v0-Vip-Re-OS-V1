@@ -7,8 +7,10 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Phone, Volume2, CheckCircle2, AlertCircle, Loader2, Plus, Search } from "lucide-react"
+import { Phone, Volume2, CheckCircle2, AlertCircle, Loader2, Plus, Search, Mic } from "lucide-react"
 import { A2pRegistrationCard } from "./a2p-card"
+import { VoiceRecorder } from "@/app/dashboard/settings/twin-studio/components/voice-recorder"
+import { uploadTwinVoiceSample } from "@/app/actions/twin-studio-upload"
 import {
   updateBrokeragePhoneSettings,
   getPhoneAllowanceStatusAction,
@@ -108,6 +110,52 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
         setError(result.error ?? "Save failed")
       }
     })
+  }
+
+  // ── Record a custom ISA voice (clone) ──
+  const [recording, setRecording] = useState(false)
+  const [cloning, setCloning] = useState(false)
+  const [voiceError, setVoiceError] = useState<string | null>(null)
+  const [voiceNote, setVoiceNote] = useState<string | null>(null)
+
+  function blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onloadend = () => resolve(String(reader.result).split(",")[1] ?? "")
+      reader.onerror = reject
+      reader.readAsDataURL(blob)
+    })
+  }
+
+  async function handleVoiceSample(blob: Blob, mimeType: string) {
+    setVoiceError(null); setVoiceNote(null); setCloning(true)
+    try {
+      // 1. Upload the recorded sample to the Supabase voice bucket.
+      const base64 = await blobToBase64(blob)
+      const up = await uploadTwinVoiceSample({ base64, mimeType })
+      if (!up.ok || !up.url) { setVoiceError(up.error ?? "Upload failed"); return }
+
+      // 2. Clone via ElevenLabs and save it as the brokerage's default ISA voice.
+      const res = await fetch("/api/elevenlabs/voice-clone", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Custom ISA Voice", sample_audio_urls: [up.url], isa_default: true }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setVoiceError(
+          res.status === 503
+            ? "Voice cloning isn't available yet (ElevenLabs isn't configured for the platform)."
+            : (data?.error ?? "Voice clone failed"),
+        )
+        return
+      }
+      setSettings((s) => ({ ...s, defaultIsaVoiceId: data.elevenlabs_voice_id }))
+      setRecording(false)
+      setVoiceNote("Your recorded voice is now the default ISA voice.")
+    } finally {
+      setCloning(false)
+    }
   }
 
   async function previewVoice(voiceId: string) {
@@ -349,6 +397,43 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
               Clear (use VAPI default)
             </Button>
           )}
+
+          {/* Record a custom voice → clone → set as ISA voice */}
+          <div className="mt-4 border-t pt-4">
+            {!recording ? (
+              <Button size="sm" variant="outline" className="gap-1.5" onClick={() => { setRecording(true); setVoiceError(null); setVoiceNote(null) }}>
+                <Mic className="h-4 w-4" />
+                Record a custom voice
+              </Button>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  Record ~30 seconds of clear speech. We’ll create a private voice clone (via
+                  ElevenLabs) and use it as your ISA voice.
+                </p>
+                {cloning ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Creating your voice clone…
+                  </div>
+                ) : (
+                  <VoiceRecorder onSampleReady={handleVoiceSample} />
+                )}
+                <Button size="sm" variant="ghost" className="text-xs" onClick={() => setRecording(false)} disabled={cloning}>
+                  Cancel
+                </Button>
+              </div>
+            )}
+            {voiceNote && (
+              <p className="text-sm text-green-700 flex items-center gap-2 mt-2">
+                <CheckCircle2 className="h-4 w-4" /> {voiceNote}
+              </p>
+            )}
+            {voiceError && (
+              <p className="text-sm text-red-600 flex items-center gap-2 mt-2">
+                <AlertCircle className="h-4 w-4" /> {voiceError}
+              </p>
+            )}
+          </div>
         </CardContent>
       </Card>
 

@@ -27,13 +27,16 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { name, sample_audio_urls, profile_id, twin_id } = body as {
+    const { name, sample_audio_urls, profile_id, twin_id, isa_default } = body as {
       name: string
       sample_audio_urls: string[]
       /** Legacy: writes the clone to agent_voice_profiles (per-agent default). */
       profile_id?: string
       /** Twin Studio: writes the clone to a specific agent_avatar_assets row. */
       twin_id?: string
+      /** ISA voice settings: saves the clone as the brokerage's default ISA voice
+       *  (brokerages.default_isa_voice_id). Broker/admin only. */
+      isa_default?: boolean
     }
 
     if (!name || !Array.isArray(sample_audio_urls) || sample_audio_urls.length < 1) {
@@ -42,11 +45,15 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       )
     }
-    if (!profile_id && !twin_id) {
+    if (!profile_id && !twin_id && !isa_default) {
       return NextResponse.json(
-        { error: "Either profile_id (legacy) or twin_id (Twin Studio) is required" },
+        { error: "One of profile_id (legacy), twin_id (Twin Studio), or isa_default is required" },
         { status: 400 }
       )
+    }
+    // Setting the brokerage-wide default ISA voice is a broker/admin action.
+    if (isa_default && !["broker", "broker_admin", "admin", "superadmin"].includes(auth.userType)) {
+      return NextResponse.json({ error: "Only broker / admin can set the default ISA voice" }, { status: 403 })
     }
 
     // ─── Usage cap on voice clone creation ──────────────────────────────────
@@ -91,6 +98,28 @@ export async function POST(request: NextRequest) {
 
     const elevenlabs_voice_id: string = elData.voice_id
     const sample_url = sample_audio_urls[0] ?? null
+
+    // ISA voice path: save the clone as the brokerage's default ISA voice, so the
+    // AI ISA speaks in this custom voice when no per-agent clone applies.
+    if (isa_default) {
+      await supabase
+        .from("brokerages")
+        .update({ default_isa_voice_id: elevenlabs_voice_id })
+        .eq("id", auth.brokerageId)
+
+      logMediaUsage({
+        brokerageId: auth.brokerageId,
+        metric: "voice_clones_created",
+        quantity: 1,
+        agentId: auth.agentId,
+        userId: auth.userId,
+        sessionRef: elevenlabs_voice_id,
+        feature: "isa_default_voice",
+        metadata: { isa_default: true },
+      }).catch(() => {})
+
+      return NextResponse.json({ success: true, elevenlabs_voice_id })
+    }
 
     // Twin Studio path: bind the clone to a specific twin row.
     // The twin's voice is promoted to agents.voice_id only when the user
