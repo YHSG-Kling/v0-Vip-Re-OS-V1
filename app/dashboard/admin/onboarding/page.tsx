@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { redirect } from "next/navigation"
 import { AdminOnboardingOsClient } from "./admin-onboarding-os-client"
+import { OnboardingCurriculumEditor } from "./onboarding-curriculum-editor"
 
 export const metadata = {
   title: "Onboarding Operations | Admin OS",
@@ -76,20 +77,26 @@ export default async function AdminOnboardingOsPage() {
   const totalIntegrations = integrations?.length || 0
 
   return (
-    <AdminOnboardingOsClient
-      userId={user.id}
-      brokerageId={userData.brokerage_id}
-      userRole={userData.user_type || "user"}
-      adoptionMetrics={{
-        avgCompletion,
-        activeAgents: adoptionMetrics?.filter(m => m.status === "in_progress").length || 0,
-        completedAgents: adoptionMetrics?.filter(m => m.status === "completed").length || 0,
-        stalledCount,
-      }}
-      setupBlockers={integrations?.filter(i => i.status !== "connected") || []}
-      trainingProgress={trainingProgress || []}
-      providers={providers || []}
-      recentOnboardings={recentOnboardings || []}
-    />
+    <div className="space-y-6">
+      <AdminOnboardingOsClient
+        userId={user.id}
+        brokerageId={userData.brokerage_id}
+        userRole={userData.user_type || "user"}
+        adoptionMetrics={{
+          avgCompletion,
+          activeAgents: adoptionMetrics?.filter(m => m.status === "in_progress").length || 0,
+          completedAgents: adoptionMetrics?.filter(m => m.status === "completed").length || 0,
+          stalledCount,
+        }}
+        setupBlockers={integrations?.filter(i => i.status !== "connected") || []}
+        trainingProgress={trainingProgress || []}
+        providers={providers || []}
+        recentOnboardings={recentOnboardings || []}
+      />
+      {/* Curriculum authoring — the write surface the monitoring console lacked */}
+      <div className="px-4 sm:px-6 pb-6">
+        <OnboardingCurriculumEditor />
+      </div>
+    </div>
   )
 }
