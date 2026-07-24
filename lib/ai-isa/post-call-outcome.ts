@@ -17,15 +17,19 @@
 //      for leads stays with routeLeadCallIntent (which runs alongside this).
 //   3. ai_isa_calls SCORING: lead_quality_score + appointment_set on the row.
 //   4. CONTACT-side routing (the gap routeLeadCallIntent never covered):
-//        negative → contacts DNC/call_stop_flag + activity + agent notify,
-//        positive → agent notify + an AUTO-DRAFTED follow-up staged for one-tap
-//        approval (proposeClientMessage — the client send stays on the same
-//        TCPA/consent/Fair-Housing dispatch rail every AI message rides).
+//        EXPLICIT caller opt-out (detectOptOutIntent, high-confidence, caller-only)
+//          → contacts DNC/call_stop_flag + activity + agent notify. DNC fires ONLY
+//          here — never on a loose substring or a merely negative mood.
+//        negative TONE (no opt-out) → notify the agent, NEVER auto-suppress.
+//        positive → agent notify + an AUTO-DRAFTED follow-up that AUTO-SENDS via
+//          dispatchSms/dispatchEmail (the live call is the engagement+consent
+//          context); the dispatch rail still enforces TCPA/consent/DNC/quiet-hours
+//          + Fair-Housing; a gate-blocked send degrades to a staged proposal.
 //
 // Never throws — the voice webhook must never 500 over post-call work.
 
 import { voiceSignalFor, signalScore, signalTemperature } from "./qualification-core"
-import { detectNegativeIntent } from "./conversation-handler"
+import { detectOptOutIntent } from "./opt-out-utils"
 import { isAnalyzableCall, analyzeVoiceCallRow } from "@/lib/voice/call-analysis"
 
 const POS_INTENT = /(appointment|schedul|book|ready to (buy|list|sell)|pre-?approv|tour|showing|see the (home|house|property)|make an offer)/i
@@ -49,6 +53,7 @@ export interface PostCallOutcome {
   branch?: "lead" | "contact" | "none"
   signal?: string
   negative?: boolean
+  optOut?: boolean
   positive?: boolean
   followUpProposed?: boolean
   error?: string
@@ -88,17 +93,22 @@ export async function routePostCallOutcome(svc: any, voiceCallId: string): Promi
       }
     }
 
-    // 2. Classify the outcome from the canonical insight vocabulary + an explicit
-    //    opt-out phrase floor. detectNegativeIntent runs ONLY over the CALLER's
-    //    own words (never the AI's spoken lines) + the analyzer-extracted
-    //    objections — a naive match over the full two-party transcript could flip
-    //    a contact to permanent DNC off the assistant's own speech.
-    const objText = (objections ?? []).join(" ")
+    // 2. Classify the outcome. DNC/call-stop is a STRONG, hard-to-reverse action,
+    //    so it triggers ONLY on an EXPLICIT, high-confidence opt-out from the
+    //    CALLER's own words — via detectOptOutIntent, the same deterministic,
+    //    confidence-scored detector the mid-call opt-out uses (its single-word
+    //    branch requires the WHOLE utterance to be the word, so "cancel my
+    //    reservation" / "bus stop" / "they stopped by" are NOT opt-outs). A merely
+    //    NEGATIVE-sentiment call (frustrated, bad news) notifies the agent but is
+    //    NEVER auto-suppressed. Never the AI's own spoken lines (caller-only).
+    void objections
     const callerText = callerUtterances(transcription)
-    const isNegative = sentiment === "negative" || detectNegativeIntent(`${callerText} ${objText}`)
-    const isPositive = !isNegative && (sentiment === "positive" || POS_INTENT.test(intentPrimary))
+    const opt = detectOptOutIntent(callerText)
+    const isOptOut = opt.isOptOut && opt.confidence === "high"
+    const isNegative = sentiment === "negative"
+    const isPositive = !isOptOut && !isNegative && (sentiment === "positive" || POS_INTENT.test(intentPrimary))
     const appointmentIntent = APPT_INTENT.test(intentPrimary)
-    const signal = voiceSignalFor({ urgencyScore, isPositiveOutcome: isPositive, isNegativeOutcome: isNegative })
+    const signal = voiceSignalFor({ urgencyScore, isPositiveOutcome: isPositive, isNegativeOutcome: isOptOut || isNegative })
 
     // 3. ai_isa_calls scoring (best-effort, isolated — the row exists for AI-ISA
     //    calls; a no-match update is a harmless no-op for non-ISA calls). A scoring
@@ -121,19 +131,25 @@ export async function routePostCallOutcome(svc: any, voiceCallId: string): Promi
           updated_at: new Date().toISOString(),
         }).eq("id", call.lead_id)
       } catch { /* best-effort rolling qualification */ }
-      return { ok: true, processed: true, branch: "lead", signal, negative: isNegative, positive: isPositive }
+      return { ok: true, processed: true, branch: "lead", signal, negative: isOptOut || isNegative, positive: isPositive }
     }
 
     // 4b. CONTACT call → the post-call routing routeLeadCallIntent never covered.
     if (call.contact_id) {
-      if (isNegative) {
+      if (isOptOut) {
+        // The ONLY DNC trigger: an explicit, high-confidence caller opt-out.
         await haltEngagementForNegativeContact(svc, call, summary)
-        return { ok: true, processed: true, branch: "contact", signal, negative: true }
+        return { ok: true, processed: true, branch: "contact", signal, optOut: true, negative: true }
       }
       if (isPositive) {
         await notifyAgentPositive(svc, call, summary, intentPrimary, urgencyScore)
-        const followUpProposed = await proposePostCallFollowUp(svc, call, summary, intentPrimary)
+        const followUpProposed = await sendPostCallFollowUp(svc, call, summary, intentPrimary)
         return { ok: true, processed: true, branch: "contact", signal, positive: true, followUpProposed }
+      }
+      if (isNegative) {
+        // Negative tone, but NO opt-out → flag for a human, never auto-suppress.
+        await notifyAgentCoolCall(svc, call, summary)
+        return { ok: true, processed: true, branch: "contact", signal, negative: true }
       }
       return { ok: true, processed: true, branch: "contact", signal }
     }
@@ -178,7 +194,7 @@ async function haltEngagementForNegativeContact(svc: any, call: any, summary: st
     await svc.from("activities").insert({
       contact_id: call.contact_id, brokerage_id: call.brokerage_id, activity_type: "call_negative_outcome",
       title: "Contact requested no further phone/SMS contact",
-      description: `${tag} AI heard a negative/opt-out signal on a call — Do Not Contact + call-stop set. ${summary ?? ""}`.slice(0, 500),
+      description: `${tag} Caller made an explicit opt-out request on a call — Do Not Contact + call-stop set. ${summary ?? ""}`.slice(0, 500),
       status: "completed",
     })
   } catch { /* best-effort */ }
@@ -189,11 +205,31 @@ async function haltEngagementForNegativeContact(svc: any, call: any, summary: st
       await svc.from("notifications").insert({
         user_id: notifUserId, brokerage_id: call.brokerage_id, type: "contact_opted_out",
         title: "A contact asked to stop being contacted",
-        body: "The AI heard an opt-out on a call and set Do Not Contact. Tap to review.",
+        body: "The caller made an explicit opt-out request on a call — Do Not Contact was set. Tap to review.",
         entity_type: "contact", entity_id: call.contact_id, is_read: false,
       })
     } catch { /* best-effort */ }
   }
+}
+
+/** Negative TONE with NO opt-out → flag the assigned agent for a human touch.
+ *  Deliberately NOT a suppression: a frustrated or bad-news call is not consent
+ *  to stop contact. Deduped per call. */
+async function notifyAgentCoolCall(svc: any, call: any, summary: string): Promise<void> {
+  const notifUserId = await resolveContactAgentUserId(svc, call.contact_id, call.agent_id)
+  if (!notifUserId) return
+  const tag = `[POST_CALL_COOL] [${call.id}]`
+  const { data: dup } = await svc.from("notifications").select("id")
+    .eq("entity_id", call.contact_id).eq("type", "isa_call_attention").ilike("body", `%${tag}%`).limit(1).maybeSingle()
+  if (dup) return
+  try {
+    await svc.from("notifications").insert({
+      user_id: notifUserId, brokerage_id: call.brokerage_id, type: "isa_call_attention",
+      title: "A call didn't go smoothly — you may want to reach out",
+      body: `${tag} The AI heard a negative tone (no opt-out — the contact was NOT suppressed). ${(summary || "").slice(0, 160)}`,
+      entity_type: "contact", entity_id: call.contact_id, is_read: false,
+    })
+  } catch { /* best-effort */ }
 }
 
 /** Positive call → tell the assigned agent (deduped per call). */
@@ -214,11 +250,106 @@ async function notifyAgentPositive(svc: any, call: any, summary: string, intentP
   } catch { /* best-effort */ }
 }
 
-/** Auto-DRAFT a warm post-call follow-up and STAGE it for one-tap approval. The
- *  agent does zero authoring work (automatic); the actual client send stays on
- *  the proposeClientMessage → approveClientMessage rail so TCPA/consent/quiet-
- *  hours/Fair-Housing all still gate it at dispatch. Deduped per call. */
-async function proposePostCallFollowUp(svc: any, call: any, summary: string, intentPrimary: string): Promise<boolean> {
+const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+
+/** AUTO-SEND the post-call follow-up (owner: 'yes auto on those since the
+ *  conversation ended live'). The live call IS the engagement + consent context,
+ *  so the AI both drafts AND sends — SMS first, email fallback. The send rides
+ *  dispatchSms/dispatchEmail, which enforce TCPA/consent/DNC/quiet-hours + the
+ *  Fair-Housing content backstop internally (autonomous ≠ ungated — an
+ *  autonomous send ARMS the FH hard-block). A DNC contact is never followed up.
+ *  If a gate BLOCKS the send (quiet hours / budget / FH), it degrades to a staged
+ *  proposal so the touch is never dropped. Deduped per call. */
+async function sendPostCallFollowUp(svc: any, call: any, summary: string, intentPrimary: string): Promise<boolean> {
+  try {
+    const sentTag = `[POST_CALL_SENT] [${call.id}]`
+    const { data: dup } = await svc.from("activities").select("id")
+      .eq("contact_id", call.contact_id).ilike("description", `${sentTag}%`).limit(1).maybeSingle()
+    if (dup) return true
+
+    const { data: contact } = await svc.from("contacts")
+      .select("first_name, contact_type, phone, email, dnc_status").eq("id", call.contact_id).maybeSingle()
+    if (!contact) return false
+    if ((contact as any).dnc_status) return false // never follow up a Do-Not-Contact
+
+    const ctype = (((contact as any).contact_type ?? "") as string).toLowerCase()
+    const audience: "buyer" | "seller" = ctype.includes("seller") ? "seller" : "buyer"
+    const agentUserId = await resolveContactAgentUserId(svc, call.contact_id, call.agent_id)
+
+    const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
+    const drafted = await generateClientMessage({
+      brokerageId: call.brokerage_id,
+      agentUserId,
+      audience,
+      recipientFirstName: (contact as any).first_name ?? null,
+      purpose: `Follow up warmly after today's phone call.${intentPrimary ? ` They talked about: ${intentPrimary}.` : ""} Recap the next step you agreed on and make it easy to continue.`,
+      facts: summary ? [{ label: "Call recap", value: summary.slice(0, 200) }] : [],
+      ctas: ["Reply here or grab a time to keep things moving"],
+      fallback: {
+        subject: "Following up on our call",
+        body: `Hi${(contact as any).first_name ? ` ${(contact as any).first_name}` : ""}, great talking with you today — I'll follow up on the next step we discussed. Reply any time and I'll take it from there.`,
+      },
+    })
+
+    // AUTO-SEND — SMS first (dispatch enforces every consumer-protection gate),
+    // email fallback. contactId is ALWAYS passed so the contact's consent/DNC is
+    // honored; systemSource attributes the touch.
+    let channel: "sms" | "email" | null = null
+    if ((contact as any).phone) {
+      const { dispatchSms } = await import("@/lib/providers/dispatch")
+      const r = await dispatchSms({
+        brokerageId: call.brokerage_id,
+        to: (contact as any).phone,
+        message: drafted.body.slice(0, 320),
+        contactId: call.contact_id,
+        agentId: call.agent_id ?? undefined,
+        systemSource: "ai_isa",
+        metadata: { voice_call_id: call.id, source: "ai_isa_post_call" },
+      })
+      if (r?.success) channel = "sms"
+    }
+    if (!channel && (contact as any).email) {
+      const { dispatchEmail } = await import("@/lib/providers/dispatch")
+      const r = await dispatchEmail({
+        brokerageId: call.brokerage_id,
+        from: "",
+        to: (contact as any).email,
+        subject: drafted.subject,
+        html: `<p>${escapeHtml(drafted.body).replace(/\n/g, "<br>")}</p>`,
+        text: drafted.body,
+        contactId: call.contact_id,
+        agentId: call.agent_id ?? undefined,
+        systemSource: "ai_isa",
+        channelPurpose: "conversation",
+        metadata: { voice_call_id: call.id, source: "ai_isa_post_call" },
+      })
+      if (r?.success) channel = "email"
+    }
+
+    if (channel) {
+      try {
+        await svc.from("activities").insert({
+          contact_id: call.contact_id, brokerage_id: call.brokerage_id, agent_id: call.agent_id ?? null,
+          activity_type: channel === "sms" ? "sms_sent" : "email_sent",
+          title: "AI post-call follow-up sent",
+          description: `${sentTag} auto-sent after a positive AI call (${channel}). ${drafted.subject}`.slice(0, 500),
+          status: "completed",
+        })
+      } catch { /* best-effort audit */ }
+      return true
+    }
+
+    // A gate blocked the send (quiet hours / budget / FH / no consent) OR the
+    // contact is unreachable → STAGE a proposal so the agent can send when it clears.
+    return await proposePostCallFollowUp(svc, call, summary, intentPrimary, drafted)
+  } catch {
+    return false
+  }
+}
+
+/** Fallback rail: STAGE the follow-up for one-tap approval (used when auto-send
+ *  is blocked by a gate). Deduped per call. */
+async function proposePostCallFollowUp(svc: any, call: any, summary: string, intentPrimary: string, pre?: { subject: string; body: string }): Promise<boolean> {
   try {
     const tag = `[POST_CALL_FOLLOWUP] [${call.id}]`
     const { data: dup } = await svc.from("agent_client_messages").select("id")

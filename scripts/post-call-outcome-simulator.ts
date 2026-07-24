@@ -15,6 +15,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { voiceSignalFor, signalScore, signalTemperature } from "../lib/ai-isa/qualification-core"
+import { detectOptOutIntent } from "../lib/ai-isa/opt-out-utils"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -42,11 +43,15 @@ console.log("\n── SOURCE: contact-side routing + the compliance posture ─�
 {
   const mod = src("lib/ai-isa/post-call-outcome.ts")
   check("negative → contact DNC + call_stop_flag + isa_reengage_allowed=false", mod.includes("dnc_status: true") && mod.includes("call_stop_flag: true") && mod.includes("isa_reengage_allowed: false"))
-  check("positive → agent notify + auto-drafted follow-up", mod.includes("notifyAgentPositive") && mod.includes("proposePostCallFollowUp"))
+  check("positive → agent notify + auto-SENT follow-up", mod.includes("notifyAgentPositive") && mod.includes("sendPostCallFollowUp"))
   check("rolling qualification on lead calls (lead_temperature + lead_score)", mod.includes("lead_temperature") && mod.includes("lead_score"))
   check("ai_isa_calls scoring (lead_quality_score + appointment_set)", mod.includes("lead_quality_score") && mod.includes("appointment_set"))
-  check("follow-up rides the GATED proposal rail, NOT a direct dispatch", mod.includes("proposeClientMessage") && !mod.includes("dispatchSms(") && !mod.includes("dispatchEmail("))
-  check("explicit opt-out floor reused (detectNegativeIntent)", mod.includes("detectNegativeIntent"))
+  check("follow-up AUTO-SENDS via the gated dispatch rail (TCPA/consent/FH enforced) with a proposal fallback",
+    mod.includes("dispatchSms") && mod.includes("dispatchEmail") && mod.includes("proposePostCallFollowUp") && mod.includes("contactId: call.contact_id"))
+  check("DNC fires ONLY on an explicit high-confidence opt-out (detectOptOutIntent), never a merely negative mood",
+    mod.includes("detectOptOutIntent") && !mod.includes("detectNegativeIntent")
+    && /isOptOut\s*=\s*opt\.isOptOut && opt\.confidence === "high"/.test(mod) && mod.includes("notifyAgentCoolCall"))
+  check("a Do-Not-Contact contact is never auto-followed-up", mod.includes("dnc_status") && mod.includes("never follow up a Do-Not-Contact"))
   check("sentiment/intent reused from the ONE extractor (no parallel classifier)", mod.includes("analyzeVoiceCallRow") && mod.includes("isAnalyzableCall"))
 }
 
@@ -69,23 +74,23 @@ console.log("\n── PURE: outcome classification + signal mapping ──")
   check("source POS_INTENT/APPT_INTENT kept in lockstep with this proof", mod.includes("ready to (buy|list|sell)") && mod.includes("APPT_INTENT"))
 }
 
-console.log("\n── PURE: opt-out matching sees ONLY the caller's words (never the AI's) ──")
+console.log("\n── PURE: DNC fires only on an explicit opt-out from the CALLER (no false-flips) ──")
 {
   // Local mirror of callerUtterances (asserted in lockstep with source below).
   const callerUtterances = (t: string) => t.split("\n").filter((l) => /^\s*Caller:/i.test(l)).map((l) => l.replace(/^\s*Caller:\s*/i, "")).join(" ")
-  const OPT_OUT = /(stop calling|not interested|remove me|do not call|unsubscribe|opt out|opt-out|go away)/i
+  const isHighOptOut = (t: string) => { const o = detectOptOutIntent(callerUtterances(t)); return o.isOptOut && o.confidence === "high" }
 
-  // The AI says "stop"; the caller is enthusiastic. Naive full-transcript matching
-  // would flip DNC — caller-only matching must not.
-  const t1 = "AI: If you'd ever like to stop hearing from us, just say the word.\nCaller: No no, I'm really interested, let's book a showing!"
-  check("AI's spoken 'stop' line does NOT count as a caller opt-out", !OPT_OUT.test(callerUtterances(t1)))
-  // A genuine caller opt-out IS still caught.
-  const t2 = "AI: Happy to help today.\nCaller: Please stop calling me and remove me from your list."
-  check("a genuine caller opt-out IS still caught", OPT_OUT.test(callerUtterances(t2)))
+  // The AI says "stop"; the caller is enthusiastic — caller-only + explicit-only means NO DNC.
+  check("AI's spoken 'stop' line does NOT flip DNC", !isHighOptOut("AI: If you'd ever like to stop, just say so.\nCaller: No no, I'm really interested, let's book a showing!"))
+  // Innocuous caller phrases that CONTAIN opt-out substrings must NOT flip DNC (the VADE cases).
+  check("'cancel my reservation' does NOT flip DNC", !isHighOptOut("Caller: I need to cancel my reservation for Saturday but still want to see the house."))
+  check("'they stopped by' / 'bus stop' do NOT flip DNC", !isHighOptOut("Caller: my friends stopped by near the bus stop and loved the neighborhood."))
+  // A genuine explicit opt-out IS still caught → DNC.
+  check("an explicit caller opt-out ('do not call me') DOES flip DNC", isHighOptOut("AI: Happy to help.\nCaller: Please do not call me again, take me off your list."))
 
   const mod = src("lib/ai-isa/post-call-outcome.ts")
-  check("source scopes opt-out to callerUtterances (not the full two-party transcript)",
-    mod.includes("export function callerUtterances") && mod.includes("detectNegativeIntent(`${callerText}") && !/detectNegativeIntent\(`\$\{transcription\}/.test(mod))
+  check("source scopes opt-out to callerUtterances via detectOptOutIntent (not the full transcript, not loose substrings)",
+    mod.includes("export function callerUtterances") && mod.includes("detectOptOutIntent(callerText)") && !/detectOptOutIntent\(`?\$\{transcription\}/.test(mod))
 }
 
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
