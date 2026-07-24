@@ -35,16 +35,35 @@ import { isAnalyzableCall, analyzeVoiceCallRow } from "@/lib/voice/call-analysis
 const POS_INTENT = /(appointment|schedul|book|ready to (buy|list|sell)|pre-?approv|tour|showing|see the (home|house|property)|make an offer)/i
 const APPT_INTENT = /(appointment|schedul|book|tour|showing)/i
 
-/** PURE: only the CALLER's words. The running transcript interleaves "Caller:"
- *  and "AI:" lines (appendTranscript), so opt-out matching must NEVER see the
- *  AI's own speech — the assistant reading a disclosure or saying "if you'd like
- *  to stop, just say so" must not flip the contact to permanent DNC. */
-export function callerUtterances(transcript: string | null | undefined): string {
+/** PURE: the CALLER's turns, ONE utterance per element. The running transcript
+ *  interleaves "Caller:"/"AI:" lines (appendTranscript). We keep only the caller
+ *  lines and NEVER join them — the opt-out detector runs PER TURN so a greedy
+ *  channel regex (e.g. /no.*call/) can't span unrelated turns, and the AI's own
+ *  spoken lines are excluded entirely. */
+export function callerTurns(transcript: string | null | undefined): string[] {
   return (transcript ?? "")
     .split("\n")
     .filter((line) => /^\s*Caller:/i.test(line))
-    .map((line) => line.replace(/^\s*Caller:\s*/i, ""))
-    .join(" ")
+    .map((line) => line.replace(/^\s*Caller:\s*/i, "").trim())
+    .filter(Boolean)
+}
+
+// Precise, word-boundaried opt-out phrases (NO greedy .*) for the irreversible
+// DNC decision — complements detectOptOutIntent's channel-"all" branch
+// (single-word + global phrases, also greedy-free). We deliberately do NOT trust
+// detectOptOutIntent's greedy per-channel regexes (/no.*call/, /stop.*sms/ …)
+// that a merely conversational turn ("no, call me tomorrow") could trip.
+const EXPLICIT_OPTOUT = /\b(stop calling|quit calling|do ?n[o']?t call me|stop contacting me|take me off (your|the) list|remove me from (your|the) list|do ?n[o']?t contact me|leave me alone)\b/i
+
+/** PURE: an EXPLICIT, high-confidence caller opt-out in ANY single turn. DNC is
+ *  irreversible, so this favors precision over recall — greedy per-channel
+ *  matches are ignored; only unambiguous global signals count. */
+export function isCallerOptOut(turns: string[]): boolean {
+  return turns.some((t) => {
+    const o = detectOptOutIntent(t)
+    if (o.isOptOut && o.confidence === "high" && o.channel === "all") return true
+    return EXPLICIT_OPTOUT.test(t)
+  })
 }
 
 export interface PostCallOutcome {
@@ -94,17 +113,13 @@ export async function routePostCallOutcome(svc: any, voiceCallId: string): Promi
     }
 
     // 2. Classify the outcome. DNC/call-stop is a STRONG, hard-to-reverse action,
-    //    so it triggers ONLY on an EXPLICIT, high-confidence opt-out from the
-    //    CALLER's own words — via detectOptOutIntent, the same deterministic,
-    //    confidence-scored detector the mid-call opt-out uses (its single-word
-    //    branch requires the WHOLE utterance to be the word, so "cancel my
-    //    reservation" / "bus stop" / "they stopped by" are NOT opt-outs). A merely
-    //    NEGATIVE-sentiment call (frustrated, bad news) notifies the agent but is
-    //    NEVER auto-suppressed. Never the AI's own spoken lines (caller-only).
+    //    so it triggers ONLY on an EXPLICIT opt-out in a SINGLE caller turn (never
+    //    the AI's lines, never spanning turns, never a greedy per-channel match —
+    //    so "cancel my reservation" / "bus stop" / "no, call me tomorrow" are NOT
+    //    opt-outs). A merely NEGATIVE-sentiment call (frustrated, bad news)
+    //    notifies the agent but is NEVER auto-suppressed.
     void objections
-    const callerText = callerUtterances(transcription)
-    const opt = detectOptOutIntent(callerText)
-    const isOptOut = opt.isOptOut && opt.confidence === "high"
+    const isOptOut = isCallerOptOut(callerTurns(transcription))
     const isNegative = sentiment === "negative"
     const isPositive = !isOptOut && !isNegative && (sentiment === "positive" || POS_INTENT.test(intentPrimary))
     const appointmentIntent = APPT_INTENT.test(intentPrimary)
