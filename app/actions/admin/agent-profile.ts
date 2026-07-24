@@ -160,6 +160,30 @@ export async function updateAgentProfileAction(
   const { error } = await svc.from("agents").update(patch).eq("id", (agent as { id: string }).id)
   if (error) return { ok: false, error: error.message }
 
+  // RULE-1 SYNC (single source of truth for commission structure). The commission
+  // ENGINES resolve an agent's split from agent_commission_profiles.split_percent
+  // (lib/brokerage/get-default-commission-structure), NOT from agents.commission_split
+  // — so historically a broker "setting the split" here never reached the math. Mirror
+  // the split onto the engine-authoritative profile so what the broker sets is what the
+  // engine uses. agents.commission_split is kept (it has non-engine readers: onboarding
+  // readiness, brokerage P&L rollup, the CDA display), so the two stay in lockstep.
+  // Upsert on the unique agent_id; is_active=true so the engine's active-profile read
+  // finds it; existing cap/fees on the profile are preserved (only split_percent is set).
+  if (input.commissionSplit !== undefined && input.commissionSplit !== null) {
+    const { error: profileErr } = await svc.from("agent_commission_profiles").upsert(
+      {
+        agent_id: (agent as { id: string }).id,
+        brokerage_id: auth.brokerageId,
+        split_percent: patch.commission_split as number,
+        is_active: true,
+      },
+      { onConflict: "agent_id" },
+    )
+    if (profileErr) {
+      return { ok: false, error: `Split saved but the commission engine did not pick it up: ${profileErr.message}` }
+    }
+  }
+
   revalidatePath(`/dashboard/admin/users/${input.targetUserId}`)
   return { ok: true }
 }

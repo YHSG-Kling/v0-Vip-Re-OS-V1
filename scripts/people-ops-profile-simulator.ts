@@ -50,6 +50,10 @@ console.log("\n── the agent real-estate profile is managed inline (LIVE colu
     a.includes('.from("locations")') && a.includes("Office not found for this brokerage"))
   check("commission split is validated to 0–100",
     a.includes("between 0 and 100"))
+  check("RULE-1 SYNC: the broker's split is mirrored onto the engine-authoritative agent_commission_profiles",
+    a.includes('.from("agent_commission_profiles").upsert(') && /split_percent: patch\.commission_split/.test(a) && a.includes('onConflict: "agent_id"'))
+  check("the sync sets is_active so the engine's active-profile read finds it",
+    /agent_commission_profiles[\s\S]*?is_active: true/.test(a))
 
   const form = src("app/dashboard/admin/users/[userId]/user-edit-form.tsx")
   check("the form shows the Agent Profile card only when an agent row exists",
