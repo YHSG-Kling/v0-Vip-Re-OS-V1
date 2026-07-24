@@ -8,7 +8,7 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { loadAvailableTransactionForms } from "@/lib/kernel/forms"
+import { loadAvailableTransactionForms, resolveTransactionFormsProvider } from "@/lib/kernel/forms"
 import type { FormContextType } from "@/lib/kernel/forms"
 
 const VALID_CONTEXT_TYPES: FormContextType[] = ["listing", "offer", "transaction"]
@@ -48,17 +48,27 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Agent record not found" }, { status: 403 })
     }
 
-    const result = await loadAvailableTransactionForms({
-      brokerage_id: agent.brokerage_id,
-      context_type,
-      state,
-    })
+    const [result, providerResult] = await Promise.all([
+      loadAvailableTransactionForms({
+        brokerage_id: agent.brokerage_id,
+        context_type,
+        state,
+      }),
+      // The connected e-sign provider (null/not_configured is fine — the loader
+      // still returns the standard template library so the UI is never empty).
+      resolveTransactionFormsProvider({ brokerage_id: agent.brokerage_id }).catch(() => null),
+    ])
 
     if (!result.success) {
       return NextResponse.json({ error: result.error }, { status: 500 })
     }
 
-    return NextResponse.json({ success: true, forms: result.data?.forms ?? [] }, { status: 200 })
+    const provider = providerResult?.success ? (providerResult.data?.provider_name ?? null) : null
+
+    return NextResponse.json(
+      { success: true, provider, forms: result.data?.forms ?? [] },
+      { status: 200 },
+    )
   } catch (error: any) {
     return NextResponse.json({ error: error.message ?? "Internal server error" }, { status: 500 })
   }
