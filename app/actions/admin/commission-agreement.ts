@@ -283,7 +283,10 @@ export async function sendCommissionAgreementAction(input: {
 
   if (canEsign) {
     // Notify the agent their agreement is ready to sign via the configured provider.
-    await svc.from("notifications").insert({
+    // Best-effort but sentinel-ledgered (never a raw silencer — the ratchet forbids
+    // swallowing a lost write; a lost notification shows up in the repair digest).
+    const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+    await sentinelWrite(svc, svc.from("notifications").insert({
       user_id: input.targetUserId,
       brokerage_id: auth.brokerageId,
       type: "commission_agreement_ready",
@@ -293,7 +296,7 @@ export async function sendCommissionAgreementAction(input: {
       entity_id: agentId,
       priority: "high",
       channel: "in_app",
-    }).then(() => {}, () => {})
+    }), { flow: "commission_agreement", table: "notifications", brokerageId: auth.brokerageId })
 
     // Inline provider send where wired (Dotloop today) — stamp the envelope id.
     if (providerName === "dotloop") {
