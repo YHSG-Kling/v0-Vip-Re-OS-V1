@@ -16,7 +16,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContext } from "@/lib/kernel/identity"
-import { provisionNumber, logPhoneNumberEvent } from "@/lib/voice/number-provisioning"
+import { provisionNumber, logPhoneNumberEvent, searchAvailableNumbers } from "@/lib/voice/number-provisioning"
+import { evaluateTenantNumberProvisioning } from "@/lib/billing/phone-plan-resolve"
 
 // ─── Brokerage-level settings ────────────────────────────────────────────────
 
@@ -215,6 +216,125 @@ export async function manuallyAddAgentPhone(params: {
   })
 
   return { success: true, phoneNumber: cleaned, twilioSid: params.twilioSid }
+}
+
+// ─── Tenant-facing "Add a Number": allowance status → search → purchase ──────
+// The AI-call settings had no way to CREATE a new number (only a BYO manual-add
+// and the auto-provision toggle). These wire the search+purchase flow to the ONE
+// provisioning core with the plan-allowance gate ON (bundle → metered overage →
+// hard cap), so a broker can buy a number and see exactly what it costs.
+
+export interface PhoneAllowanceStatus {
+  tier: string
+  activeNumbers: number
+  includedNumbers: number
+  maxNumbers: number | null
+  /** Is the NEXT number inside the bundle or billable overage? */
+  nextBilling: "included" | "overage"
+  /** Monthly USD-cents the next number adds when it's overage (0 when included). */
+  nextMonthlyOverageCents: number
+  /** Can another number be provisioned at all (false only at the hard cap)? */
+  canAddNumber: boolean
+  capReason?: string
+}
+
+/** Surface the plan's number allowance so the "Add a Number" card can show
+ *  "3 of 5 included · the next is +$2.50/mo" before the broker buys. */
+export async function getPhoneAllowanceStatusAction(): Promise<
+  { success: true; status: PhoneAllowanceStatus } | { success: false; error: string }
+> {
+  const ctx = await resolveWriteContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const svc = createServiceClient()
+  const v = await evaluateTenantNumberProvisioning(svc, ctx.brokerageId)
+  return {
+    success: true,
+    status: {
+      tier: v.tier,
+      activeNumbers: v.activeNumbers,
+      includedNumbers: v.includedNumbers,
+      maxNumbers: v.maxNumbers,
+      nextBilling: v.billing,
+      nextMonthlyOverageCents: v.monthlyOverageCents,
+      canAddNumber: v.allowed,
+      capReason: v.allowed ? undefined : v.reason,
+    },
+  }
+}
+
+export interface NumberCandidateView {
+  phoneNumber: string
+  locality: string | null
+  region: string | null
+}
+
+/** Search purchasable numbers for the tenant (broker/admin only). Honest about
+ *  a not-configured carrier — never fakes candidates. */
+export async function searchBrokerageNumbersAction(params: {
+  areaCode?: string
+  locality?: string
+}): Promise<{ success: true; candidates: NumberCandidateView[] } | { success: false; error: string; notConfigured?: boolean }> {
+  const ctx = await resolveWriteContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  if (!isBrokerRole(ctx.userType)) return { success: false, error: "Only broker / admin can search numbers" }
+
+  const svc = createServiceClient()
+  const res = await searchAvailableNumbers(svc, ctx.brokerageId, {
+    areaCode: params.areaCode ?? null,
+    locality: params.locality ?? null,
+    limit: 10,
+  })
+  if (!res.ok) return { success: false, error: res.error, notConfigured: res.notConfigured }
+  return {
+    success: true,
+    candidates: res.candidates.map((c) => ({ phoneNumber: c.phoneNumber, locality: c.locality, region: c.region })),
+  }
+}
+
+/** Purchase a specific number for the brokerage (or a named agent). Runs the ONE
+ *  provisioning core with the plan-allowance gate ON, so the buy is bundled or
+ *  metered-overage, and blocked only at the hard cap. */
+export async function purchaseBrokerageNumberAction(params: {
+  phoneNumber: string
+  /** Optional: assign to a specific agent (agents.id); else brokerage-scoped inventory. */
+  agentId?: string
+}): Promise<
+  | { success: true; phoneNumber: string; billing: "included" | "overage"; monthlyOverageCents: number }
+  | { success: false; error: string; capReached?: boolean }
+> {
+  const ctx = await resolveWriteContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  if (!isBrokerRole(ctx.userType)) return { success: false, error: "Only broker / admin can purchase numbers" }
+
+  const svc = createServiceClient()
+
+  // If an agent was named, resolve their auth user_id for the agent-scoped row.
+  let agentUserId: string | null = null
+  if (params.agentId) {
+    const { data: agent } = await svc.from("agents").select("user_id, brokerage_id").eq("id", params.agentId).maybeSingle()
+    if (!agent?.user_id) return { success: false, error: "Agent not found" }
+    if ((agent as any).brokerage_id !== ctx.brokerageId) return { success: false, error: "Agent belongs to a different brokerage" }
+    agentUserId = agent.user_id
+  }
+
+  const result = await provisionNumber(svc, {
+    brokerageId: ctx.brokerageId,
+    phoneNumber: params.phoneNumber,
+    scopeType: params.agentId ? "agent" : "brokerage",
+    agentUserId,
+    agentId: params.agentId ?? null,
+    eventSource: "tenant_action",
+    eventNotes: "Purchased via Add-a-Number in AI call settings",
+    bindToVoiceLane: true,
+    enforceTenantAllowance: true,
+  })
+  if (!result.ok) return { success: false, error: result.error, capReached: result.capReached }
+  return {
+    success: true,
+    phoneNumber: result.phoneNumber,
+    billing: result.billing ?? "included",
+    monthlyOverageCents: result.monthlyOverageCents ?? 0,
+  }
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

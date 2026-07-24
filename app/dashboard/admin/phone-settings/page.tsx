@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { getBrokeragePhoneSettings } from "@/app/actions/phone-provisioning"
+import { getBrokeragePhoneSettings, getPhoneAllowanceStatusAction } from "@/app/actions/phone-provisioning"
 import { getVoiceUsageAction } from "@/app/actions/voice-tenancy"
 import { GENERIC_VOICES } from "@/lib/voice/voice-resolver"
 import { PhoneSettingsClient } from "./phone-settings-client"
@@ -30,6 +30,8 @@ export default async function PhoneSettingsPage() {
   }
 
   const usageRes = await getVoiceUsageAction().catch(() => null)
+  const allowanceRes = await getPhoneAllowanceStatusAction().catch(() => null)
+  const allowanceStatus = allowanceRes?.success ? allowanceRes.status : null
 
   return (
     <div className="space-y-4">
@@ -52,7 +54,7 @@ export default async function PhoneSettingsPage() {
           </div>
         </div>
       )}
-      <PhoneSettingsClient initialSettings={settings} genericVoices={GENERIC_VOICES} />
+      <PhoneSettingsClient initialSettings={settings} genericVoices={GENERIC_VOICES} allowanceStatus={allowanceStatus} />
     </div>
   )
 }
