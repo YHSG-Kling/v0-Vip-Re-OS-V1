@@ -1,6 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { ShieldCheck, ShieldAlert, Send, Ban, Clock } from "lucide-react"
+import { ShieldCheck, ShieldAlert, Send, Ban, Clock, Download } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { generateAiDisclosureLedger } from "@/lib/compliance/ai-disclosure-ledger"
@@ -41,14 +41,24 @@ export default async function AiDisclosureLedgerPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold flex items-center gap-2">
-          <ShieldCheck className="h-6 w-6 text-green-600" /> AI Disclosure Ledger
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Every AI-generated client message in the last 30 days — the Claude manager that produced it,
-          the human who approved it, and the recipient&apos;s consent state. Proof of human oversight.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold flex items-center gap-2">
+            <ShieldCheck className="h-6 w-6 text-green-600" /> AI Disclosure Ledger
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Every AI-generated client message in the last 30 days — the Claude manager that produced it,
+            the human who approved it, and the recipient&apos;s consent state. Proof of human oversight.
+          </p>
+        </div>
+        {/* The exportable record counsel/regulators ask for — a real file. */}
+        <a
+          href="/api/admin/compliance/ai-disclosures/export"
+          className="shrink-0 inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted"
+          download
+        >
+          <Download className="h-4 w-4" /> Export CSV
+        </a>
       </div>
 
       {/* Governance headline — the invariant that makes this lawsuit-safe. */}
