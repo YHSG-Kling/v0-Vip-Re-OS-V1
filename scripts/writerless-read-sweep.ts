@@ -28,7 +28,7 @@ const SEEDED_REFERENCE = new Set([
   "subscription_tiers", "state_protected_classes", "state_appraiser_adjustment_rates",
   "tax_categories", "global_settings", "platform_settings", "achievements",
   "gamification_badges", "onboarding_steps", "milestone_template_items",
-  "training_courses", "training_videos", "onboarding_quizzes", "brokerage_fee_types",
+  "training_videos", "onboarding_quizzes", "brokerage_fee_types",
   "compliance_rules", "prohibited_phrases", "journey_blueprints",
   "offer_strategy_templates", "listing_task_templates", "transaction_milestone_templates",
   "email_templates", "newsletter_templates", "video_templates", "brand_templates",
