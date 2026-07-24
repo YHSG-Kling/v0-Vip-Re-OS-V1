@@ -212,23 +212,52 @@ export async function loadAvailableTransactionForms(input: {
       query = query.or(`state.eq.${input.state.toUpperCase()},state.is.null`)
     }
 
-    const { data: brokerageForms } = await query
+    // ALSO read brokerage_form_library — the PDF form library the broker/admin
+    // UPLOADS to (app/api/admin/transaction-forms) and the AI form-fill engine
+    // consults. It was invisible to the agent Forms Library because this loader
+    // only read brokerage_forms (whose transaction rows nothing populates), so an
+    // agent never saw the forms their broker uploaded. Merge both so the agent
+    // can see + fill them; its category is packet_type, matched to the context.
+    let libQuery = supabase
+      .from("brokerage_form_library")
+      .select("id, name, description, state, packet_type, pdf_url, is_active")
+      .eq("brokerage_id", input.brokerage_id)
+      .eq("is_active", true)
+      .in("packet_type", contextCategories[input.context_type])
+      .order("name")
+      .limit(50)
+    if (input.state) {
+      libQuery = libQuery.or(`state.eq.${input.state.toUpperCase()},state.is.null`)
+    }
 
-    if (brokerageForms && brokerageForms.length > 0) {
-      return {
-        success: true,
-        data: {
-          forms: brokerageForms.map((f: any) => ({
-            id:          f.id,
-            name:        f.form_name,
-            category:    f.form_category,
-            form_type:   f.form_type ?? f.form_category,
-            is_required: f.is_required ?? false,
-            description: f.document_url ? "Brokerage library form" : undefined,
-            state:       f.state ?? undefined,
-          })),
-        },
-      }
+    const [{ data: brokerageForms }, { data: libraryForms }] = await Promise.all([
+      query,
+      libQuery.then((r: any) => r, () => ({ data: [] })),
+    ])
+
+    const merged: FormTemplate[] = [
+      ...((brokerageForms ?? []) as any[]).map((f) => ({
+        id:          f.id,
+        name:        f.form_name,
+        category:    f.form_category,
+        form_type:   f.form_type ?? f.form_category,
+        is_required: f.is_required ?? false,
+        description: f.document_url ? "Brokerage library form" : undefined,
+        state:       f.state ?? undefined,
+      })),
+      ...((libraryForms ?? []) as any[]).map((f) => ({
+        id:          f.id,
+        name:        f.name,
+        category:    f.packet_type ?? input.context_type,
+        form_type:   f.packet_type ?? input.context_type,
+        is_required: false,
+        description: f.description ?? (f.pdf_url ? "Brokerage form library (PDF)" : undefined),
+        state:       f.state ?? undefined,
+      })),
+    ]
+
+    if (merged.length > 0) {
+      return { success: true, data: { forms: merged } }
     }
 
     // Fallback: return context-appropriate defaults so the UI is never empty
