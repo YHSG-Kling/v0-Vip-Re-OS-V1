@@ -14,6 +14,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveEducationContext } from "@/lib/portal/resolve-education-context"
 import { getEducationPlan, type EducationLesson, type AgeSegment } from "@/lib/kernel/education"
+import { staticLessonModuleId, isUuid, bridgeStaticLessonCompletion } from "@/lib/portal/static-lesson-bridge"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { PortalView } from "@/lib/kernel/portal"
@@ -191,10 +192,13 @@ export async function getLessonFeed(contactId: string): Promise<LessonFeedResult
     contactId,
   })
 
-  // Transform lessons to feed items
+  // Transform lessons to feed items.
+  // Completion lives on learning_assignments.module_id (uuids). A static lesson's
+  // durable identity is its DETERMINISTIC bridge module id, so map the string key
+  // to that uuid before checking completion — see lib/portal/static-lesson-bridge.
   const feedItems: LessonFeedItem[] = plan.lessons.map(lesson => ({
     ...lesson,
-    isCompleted: context.completedLessonKeys.includes(lesson.key),
+    isCompleted: context.completedLessonKeys.includes(staticLessonModuleId(access.brokerageId, lesson.key)),
     isMilestoneRelevant: lesson.milestoneKey === context.currentMilestone,
     category: getCategoryForLesson(lesson, context.portalView),
   }))
@@ -248,37 +252,58 @@ export async function getLessonFeed(contactId: string): Promise<LessonFeedResult
 
 export interface MarkLessonReadParams {
   contactId: string
-  /** learning_modules.id (uuid). Param name kept as lessonKey for caller stability. */
+  /** Either a canonical learning_modules.id (uuid) or a STATIC lesson key
+   *  ("buyer_pre_intro"). Static keys are bridged to a deterministic module id. */
   lessonKey: string
 }
 
 export async function markLessonRead(params: MarkLessonReadParams): Promise<{ success: boolean; error?: string }> {
-  const { contactId, lessonKey: moduleId } = params
+  const { contactId, lessonKey } = params
 
   const access = await requireContactAccess(contactId)
   if (!access.ok) return { success: false, error: "Forbidden" }
 
   const service = createServiceClient()
 
-  // Post-1043: completion lives on learning_assignments.
+  // Completion lives on learning_assignments.module_id — a uuid FK to learning_modules.
   try {
-    const { error: upsertError } = await service
-      .from("learning_assignments")
-      .upsert({
-        brokerage_id:   access.brokerageId,
-        module_id:      moduleId,
-        contact_id:     contactId,
-        signal_source:  "self:portal_read",
-        priority_score: 50,
-        status:         "completed",
-        completed_at:   new Date().toISOString(),
-      }, {
-        onConflict: "contact_id,module_id",
+    if (isUuid(lessonKey)) {
+      // Already a canonical module (e.g. an authored milestone module) — record directly.
+      const { error: upsertError } = await service
+        .from("learning_assignments")
+        .upsert({
+          brokerage_id:   access.brokerageId,
+          module_id:      lessonKey,
+          contact_id:     contactId,
+          signal_source:  "self:portal_read",
+          priority_score: 50,
+          status:         "completed",
+          completed_at:   new Date().toISOString(),
+        }, { onConflict: "contact_id,module_id" })
+      if (upsertError) {
+        console.error("[PortalEducation] Error marking module read:", upsertError)
+        return { success: false, error: "Failed to mark lesson as read" }
+      }
+    } else {
+      // STATIC lesson key — materialize it as a canonical module (deterministic id)
+      // and record completion against that uuid. Fixes the former FK/uuid corruption.
+      const lesson = await getLessonByKey(contactId, lessonKey)
+      if (!lesson) return { success: false, error: "Unknown lesson" }
+      const bridged = await bridgeStaticLessonCompletion(service, {
+        brokerageId: access.brokerageId,
+        contactId,
+        lesson: {
+          key: lesson.key,
+          title: lesson.title,
+          description: lesson.description,
+          milestoneKey: lesson.milestoneKey,
+          estimatedMinutes: lesson.estimatedMinutes,
+        },
       })
-
-    if (upsertError) {
-      console.error("[PortalEducation] Error marking lesson read:", upsertError)
-      return { success: false, error: "Failed to mark lesson as read" }
+      if (!bridged) {
+        console.error("[PortalEducation] Error bridging static lesson read:", lessonKey)
+        return { success: false, error: "Failed to mark lesson as read" }
+      }
     }
   } catch (err) {
     console.error("[PortalEducation] Exception marking lesson read:", err)
