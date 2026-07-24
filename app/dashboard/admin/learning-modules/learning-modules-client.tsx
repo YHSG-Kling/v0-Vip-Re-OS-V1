@@ -85,7 +85,22 @@ export function LearningModulesClient({ initialModules }: Props) {
   const [coverImageUrl, setCoverImageUrl] = useState("")
   const [estimatedMinutes, setEstimatedMinutes] = useState<string>("")
   const [displayPriority, setDisplayPriority] = useState<string>("0")
+  // Academy (staff training) vs Client Education (customer content) — the same
+  // learning_modules rail, switched by whether 'customer' is in audience_roles.
+  // This framing makes the split explicit at authoring time.
+  const [audienceType, setAudienceType] = useState<"academy" | "client" | "">("")
   const [audienceRoles, setAudienceRoles] = useState<string[]>([])
+
+  const STAFF_ROLES = ["agent", "tc", "compliance_officer", "team_lead"]
+  function chooseAudienceType(type: "academy" | "client") {
+    setAudienceType(type)
+    if (type === "academy") {
+      // default to all staff; the admin can narrow below
+      setAudienceRoles((prev) => prev.filter((r) => r !== "customer").length ? prev.filter((r) => r !== "customer") : ["agent"])
+    } else {
+      setAudienceRoles(["customer"])
+    }
+  }
   const [audiencePersonas, setAudiencePersonas] = useState<string[]>([])
   const [audienceGenerations, setAudienceGenerations] = useState<string[]>([])
   const [audienceAgeSegs, setAudienceAgeSegs] = useState<string[]>([])
@@ -100,7 +115,7 @@ export function LearningModulesClient({ initialModules }: Props) {
   function reset(): void {
     setTitle(""); setSummary(""); setBody(""); setCoverImageUrl("")
     setEstimatedMinutes(""); setDisplayPriority("0")
-    setAudienceRoles([]); setAudiencePersonas([])
+    setAudienceType(""); setAudienceRoles([]); setAudiencePersonas([])
     setAudienceGenerations([]); setAudienceAgeSegs([])
     setStageTagsCsv(""); setGapTagsCsv(""); setChannels([])
   }
@@ -232,9 +247,38 @@ export function LearningModulesClient({ initialModules }: Props) {
             </div>
 
             <div>
-              <Label className="text-sm font-medium">Audience roles</Label>
+              <Label className="text-sm font-medium">Who is this for?</Label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={() => chooseAudienceType("academy")}
+                  className={`rounded-md border p-3 text-left text-sm ${audienceType === "academy" ? "border-blue-500 bg-blue-50" : "border-border"}`}
+                >
+                  <div className="font-medium">Academy — my agents &amp; staff</div>
+                  <div className="text-xs text-muted-foreground">Training that shows in the team’s Academy (/academy).</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => chooseAudienceType("client")}
+                  className={`rounded-md border p-3 text-left text-sm ${audienceType === "client" ? "border-blue-500 bg-blue-50" : "border-border"}`}
+                >
+                  <div className="font-medium">Client Education — my customers</div>
+                  <div className="text-xs text-muted-foreground">Content that shows in your buyers’ &amp; sellers’ portal.</div>
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-sm font-medium">
+                {audienceType === "client" ? "Customer audience" : "Audience roles"}
+              </Label>
               <div className="flex flex-wrap gap-3 mt-2">
-                {AUDIENCE_ROLE_OPTIONS.map((r) => (
+                {(audienceType === "client"
+                  ? AUDIENCE_ROLE_OPTIONS.filter((r) => r.value === "customer")
+                  : audienceType === "academy"
+                  ? AUDIENCE_ROLE_OPTIONS.filter((r) => r.value !== "customer")
+                  : AUDIENCE_ROLE_OPTIONS
+                ).map((r) => (
                   <label key={r.value} className="flex items-center gap-2 text-sm">
                     <Checkbox
                       checked={audienceRoles.includes(r.value)}
