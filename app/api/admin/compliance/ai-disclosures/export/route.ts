@@ -11,9 +11,19 @@ import { generateAiDisclosureLedger } from "@/lib/compliance/ai-disclosure-ledge
  */
 const ALLOWED = ["broker", "broker_admin", "admin", "superadmin", "team_lead", "compliance_officer"]
 
-/** RFC-4180 CSV cell: always quoted, embedded quotes doubled. */
+/**
+ * RFC-4180 CSV cell: always quoted, embedded quotes doubled. Also neutralizes
+ * spreadsheet formula injection — a value beginning with a formula trigger
+ * (`=`, `+`, `-`, `@`, tab, CR) is prefixed with a single quote so Excel / Sheets
+ * render it as literal text instead of evaluating it. recipient_name / subject
+ * are sourced from externally-influenceable data (contact intake, message
+ * subjects) and this file is opened by counsel / regulators, so an unescaped
+ * `=HYPERLINK(...)` / `=cmd|...` must never execute.
+ */
 function cell(v: unknown): string {
-  return `"${String(v ?? "").replace(/"/g, '""')}"`
+  let s = String(v ?? "")
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
+  return `"${s.replace(/"/g, '""')}"`
 }
 
 export async function GET(request: NextRequest) {

@@ -21,18 +21,31 @@ const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 const ROUTE = "app/api/admin/compliance/ai-disclosures/export/route.ts"
 const PAGE = "app/dashboard/admin/compliance/ai-disclosures/page.tsx"
 
-console.log("\n── RFC-4180 escaping is correct (the pattern the route uses) ──")
+console.log("\n── RFC-4180 escaping + formula-injection neutralization (the route's cell()) ──")
 {
-  // Mirror the route's cell() to prove the escaping rule is right on the hard cases.
-  const cell = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`
+  // Mirror the route's cell() to prove the escaping + injection rules on the hard cases.
+  const cell = (v: unknown) => {
+    let s = String(v ?? "")
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
+    return `"${s.replace(/"/g, '""')}"`
+  }
   check("a plain value is quoted", cell("ai_isa") === '"ai_isa"')
   check("embedded quotes are DOUBLED (the subject case)", cell('Your "offer", reviewed') === '"Your ""offer"", reviewed"')
   check("embedded commas stay inside the quoted cell", cell("a,b,c").includes('"a,b,c"'))
   check("a newline stays inside the quoted cell", cell("line1\nline2") === '"line1\nline2"')
   check("null/undefined become an empty quoted cell", cell(null) === '""' && cell(undefined) === '""')
-  // Guard against drift: the route must use exactly this escaping.
-  check("the route escapes with the same .replace(/\"/g, '\"\"') rule",
-    src(ROUTE).includes(`.replace(/"/g, '""')`))
+
+  // FORMULA INJECTION — attacker-influenceable names/subjects must NOT execute in Excel/Sheets.
+  check("a leading = is neutralized with a single-quote prefix", cell("=HYPERLINK(\"http://evil\")").startsWith(`"'=`))
+  check("a leading + is neutralized", cell("+1+1").startsWith(`"'+`))
+  check("a leading - is neutralized", cell("-2+3").startsWith(`"'-`))
+  check("a leading @ is neutralized (the =cmd|... @ vector)", cell("@SUM(A1)").startsWith(`"'@`))
+  check("a leading tab is neutralized", cell("\tinjected").startsWith(`"'\t`))
+  check("a SAFE name is left untouched (no spurious prefix)", cell("Alice Buyer") === '"Alice Buyer"')
+
+  // Guard against drift: the route must carry BOTH the quote-doubling and the formula-trigger guard.
+  check("the route escapes with the same .replace(/\"/g, '\"\"') rule", src(ROUTE).includes(`.replace(/"/g, '""')`))
+  check("the route neutralizes formula triggers (= + - @ tab CR)", /\/\^\[=\+\\-@\\t\\r\]\//.test(src(ROUTE)))
 }
 
 console.log("\n── the export route is gated + shaped like a real file download ──")
