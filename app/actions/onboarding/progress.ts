@@ -199,10 +199,17 @@ export async function getAgentProgress(
   // course-taking runtime (agent_courses was never written), so it always rendered the
   // same three seed courses as permanently "not started" — a duplicate of the
   // certifications list. This shows the agent's REAL assigned + completed modules.
+  // learning_assignments.agent_user_id is a users.id. targetAgentId is NOT always a
+  // users.id: in the self-view path it is an agents.id (resolveAgentId returns the
+  // agents PK), while the explicit/admin paths pass a users.id. Resolve the target's
+  // users.id for this query so the course list is never silently empty.
+  const targetUserId = (!agentId || agentId === user.id)
+    ? user.id
+    : targetAgentId
   const { data: courseAssignments } = await supabase
     .from('learning_assignments')
     .select('module_id, status, quiz_score, completed_at, learning_modules!inner(title, stage_tags, required, audience_roles)')
-    .eq('agent_user_id', targetAgentId)
+    .eq('agent_user_id', targetUserId)
     .not('module_id', 'is', null)
 
   const mapCourseStatus = (s: string | null): CourseProgress['status'] =>
