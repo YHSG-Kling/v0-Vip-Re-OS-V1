@@ -2,7 +2,6 @@
 export {
   launchAIISACampaignService,
   queueAIISACallService,
-  handleVapiCallCompleteService,
   getAIISACampaignsService,
   getAIISACallsService,
   retryFailedCallsService,

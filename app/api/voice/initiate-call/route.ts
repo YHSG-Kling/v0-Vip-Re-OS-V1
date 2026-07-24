@@ -1,12 +1,13 @@
 /**
  * app/api/voice/initiate-call/route.ts
  * ─────────────────────────────────────────────────────────────────────────────
- * POST — Initiate an outbound VAPI AI call on behalf of an agent.
+ * POST — Initiate an outbound AI call on behalf of an agent (Twilio-native lane).
  *
- * Body: { phoneNumber, contactId?, scriptId?, agentId, brokerageId }
+ * Body: { phoneNumber, contactId?, leadId?, scriptId?, callPurpose? }
  *
- * Compliance: evaluateOutbound() is called when contactId is supplied.
- * If blocked → 403 { blocked: true, reason }.
+ * Compliance: evaluateOutbound() is called when contactId is supplied, plus a
+ * TCPA quiet-hours gate; placeOutboundAiCall re-runs the TCPA chokepoint and the
+ * vendor budget gate before any dial. If blocked → 403 { blocked: true, reason }.
  */
 
 import { NextRequest, NextResponse } from "next/server"
@@ -15,12 +16,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { buildCallContext } from "@/lib/ai-isa/build-call-context"
-import {
-  checkQuietHours,
-  withAiCallDisclosures,
-} from "@/lib/communication/call-compliance"
+import { checkQuietHours } from "@/lib/communication/call-compliance"
 import type { KernelContact } from "@/lib/kernel/types"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   // Auth guard — agentId and brokerageId always from session, never from body
@@ -45,7 +42,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // agentId and brokerageId always from session — never from body
   const agentId = auth.agentId ?? auth.userId
   const brokerageId = auth.brokerageId
-  const { phoneNumber, leadId, scriptId, callPurpose = 'isa_qualification' } = body
+  const { phoneNumber, leadId, callPurpose = 'isa_qualification' } = body
   // contactId may be provided directly OR resolved from the lead record below
   let contactId = body.contactId ?? null
 
@@ -163,115 +160,58 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     )
   }
 
-  // ── 3. POST to VAPI API ────────────────────────────────────────────────────
-  const vapiKey = process.env.VAPI_API_KEY
-  const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID
-
-  if (!vapiKey || !phoneNumberId) {
+  // ── 3. Place the call on the Twilio-native lane ─────────────────────────────
+  // placeOutboundAiCall re-runs the TCPA chokepoint + vendor budget gate, dials
+  // from the tenant's own number, and writes the voice_calls ledger row (the row
+  // IS the serverless turn session; the answer/turn webhooks rebuild the ISA
+  // brain from ai_notes). The persona (systemPrompt/firstMessage) travels with
+  // it; AI + recording disclosures are applied inside the turn engine.
+  const { placeOutboundAiCall } = await import("@/lib/voice/twilio-outbound")
+  const placed = await placeOutboundAiCall(supabase, {
+    toNumber: phoneNumber,
+    contactId: contactId ?? null,
+    brokerageId,
+    agentUserId: agentId,
+    initiatedBy: agentId,
+    objective:
+      callPurpose === "ghost_recovery"
+        ? "Re-engage a contact who went quiet: reconnect warmly, learn what changed, and offer to book time with the agent."
+        : "AI ISA outreach: understand where this person is in their journey (timeline, motivation) and offer to book time with the agent.",
+    firstMessage: callCtx.firstMessage ?? null,
+    systemPrompt: callCtx.systemPrompt ?? null,
+  })
+  if (!placed.ok) {
+    // Honest failure — blocked (TCPA/budget) or no tenant number/creds.
+    const status = placed.blocked ? 403 : 503
     return NextResponse.json(
-      {
-        error: "VAPI not configured",
-        vapiNotConfigured: true,
-        ctaMessage: "Configure VAPI to enable AI calling",
-        ctaLink: "/settings/integrations",
-      },
-      { status: 503 }
+      { error: placed.error, ...(placed.blocked ? { blocked: true, reason: placed.blockReason } : {}) },
+      { status }
     )
   }
 
-  let vapiResponse: { id: string; status: string; createdAt?: string }
-  try {
-    // LEGAL SHIELD: AI disclosure (FCC 2024 AI-voice ruling + state bot laws —
-    // never double-discloses if the context already identifies the AI) +
-    // recording disclosure (always played; 13 all-party-consent states
-    // require it, uniform posture costs ~3s).
-    const firstMessageWithDisclosure = withAiCallDisclosures(
-      callCtx.firstMessage,
-      { recipientPhone: phoneNumber, recorded: true }
-    )
-
-    const vapiBody: Record<string, unknown> = {
-      phoneNumberId,
-      customer: { number: phoneNumber },
-      assistant: {
-        firstMessage: firstMessageWithDisclosure,
-        transcriber: { provider: "deepgram" },
-        model: {
-          provider: "anthropic",
-          model: "claude-haiku-4-5",
-          systemPrompt: callCtx.systemPrompt,
-          temperature: callCtx.temperature,
-        },
-        // Voice config from identity profile when set
-        ...(callCtx.voiceConfig
-          ? {
-              voice: {
-                provider: callCtx.voiceConfig.provider,
-                voiceId: callCtx.voiceConfig.voiceId,
-                stability: callCtx.voiceConfig.stability,
-                similarityBoost: callCtx.voiceConfig.similarityBoost,
-              },
-            }
-          : {}),
-      },
-    }
-
-    const vapiRes = await callConnector({
-      connector: "vapi",
-      baseUrl: "https://api.vapi.ai",
-      path: "/call",
-      method: "POST",
-      auth: { style: "bearer", token: vapiKey },
-      body: vapiBody,
-    })
-
-    if (!vapiRes.ok) {
-      return NextResponse.json({ error: `VAPI error: ${vapiRes.error ?? `HTTP ${vapiRes.status}`}` }, { status: 502 })
-    }
-
-    vapiResponse = vapiRes.data
-  } catch {
-    return NextResponse.json({ error: "Failed to reach VAPI" }, { status: 502 })
+  // Attach the lead origin to the ledger row placeOutboundAiCall wrote (it does
+  // not know about lead_id / agent_id — set them here for lead-based routing).
+  if (placed.voiceCallId) {
+    await supabase
+      .from("voice_calls")
+      .update({ agent_id: agentId, lead_id: resolvedLeadId ?? null })
+      .eq("id", placed.voiceCallId)
   }
 
-  // ── 4. INSERT voice_calls ─────────────────────────────────────────���────────
-  // contact_id and lead_id are mutually exclusive per call origin:
-  //   contact_id set → call from a contact record
-  //   lead_id set    → call from a lead with no contact yet
-  const { data: voiceCallRow, error: vcInsertError } = await supabase
-    .from("voice_calls")
-    .insert({
-      brokerage_id: brokerageId,
-      agent_id: agentId,
-      contact_id: contactId ?? null,
-      lead_id: resolvedLeadId ?? null,
-      direction: "outbound",
-      status: "initiated",
-      call_type: "ai_isa_call",
-      phone_to: phoneNumber,
-      vapi_call_id: vapiResponse.id,
-    })
-    .select("id")
-    .single()
-
-  if (vcInsertError) {
-    console.error("[initiate-call] voice_calls insert error:", vcInsertError.message)
-  }
-
-  // ── 5. INSERT ai_isa_calls row — schema: brokerage_id, contact_id, lead_id, voice_call_id, script_used, appointment_set
+  // ── 4. INSERT ai_isa_calls row (placeOutboundAiCall already wrote voice_calls) ─
   const { error: isaInsertError } = await supabase.from("ai_isa_calls").insert({
     brokerage_id: brokerageId,
     contact_id: contactId ?? null,
     lead_id: resolvedLeadId ?? null,
-    voice_call_id: voiceCallRow?.id ?? null,
+    voice_call_id: placed.voiceCallId,
     script_used: callPurpose,
     appointment_set: false,
   })
 
   if (isaInsertError) {
-    // Non-fatal: the VAPI call is already live; log but do not abort
+    // Non-fatal: the call is already live; log but do not abort
     console.error("[initiate-call] ai_isa_calls insert error:", isaInsertError.message)
   }
 
-  return NextResponse.json({ callId: vapiResponse.id, status: "initiated" }, { status: 200 })
+  return NextResponse.json({ callId: placed.callSid, status: "initiated" }, { status: 200 })
 }

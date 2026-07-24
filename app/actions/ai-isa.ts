@@ -4,7 +4,6 @@ import { isValidUUID } from "@/lib/validations"
 import {
   launchAIISACampaignService,
   queueAIISACallService,
-  handleVapiCallCompleteService,
   getAIISACampaignsService,
   getAIISACallsService,
   retryFailedCallsService,
@@ -109,16 +108,6 @@ export async function queueAIISACall(campaignId: string, contactId: string, logi
     return await queueAIISACallService(campaignId, contactId, loginId)
   } catch (error: any) {
     console.error("[AI ISA] Call queueing failed:", error)
-    return { success: false, error: error.message }
-  }
-}
-
-// Handle Vapi call completion webhook
-export async function handleVapiCallComplete(payload: any) {
-  try {
-    return await handleVapiCallCompleteService(payload)
-  } catch (error: any) {
-    console.error("[AI ISA] Webhook handling failed:", error)
     return { success: false, error: error.message }
   }
 }

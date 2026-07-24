@@ -75,11 +75,14 @@ export async function POST(request: NextRequest) {
   let contactId: string | null = null
   let leadId: string | null = null
   let agentRowId: string | null = null
+  let callerDigits = ""
+  let classification = "unknown"
   try {
     const digits = from.replace(/\D/g, "")
+    callerDigits = digits
     const { data: existing } = await svc.from("contacts").select("id")
       .eq("brokerage_id", ctx.brokerageId).eq("phone_digits", digits).maybeSingle()
-    if (existing) contactId = (existing as any).id
+    if (existing) { contactId = (existing as any).id; classification = "existing_contact" }
     else {
       // Known LEAD calling in? Unconverted leads only (converted leads matched above).
       const { data: lead } = await svc.from("leads").select("id, agent_id")
@@ -104,6 +107,7 @@ export async function POST(request: NextRequest) {
           tcpa_consent_text: "Caller dialed the office line and spoke with the AI reception assistant.",
         })
         contactId = r.contactId
+        classification = "unknown" // a first-time caller — intent is learned in-conversation
       }
     }
     if (!agentRowId && ctx.agentUserId) {
@@ -111,6 +115,24 @@ export async function POST(request: NextRequest) {
       agentRowId = (agent as any)?.id ?? null
     }
   } catch { /* ledger is best-effort */ }
+
+  // INBOUND CALL CLASSIFICATION — the caller-routing decision, keyed to the
+  // resolved contact so it merges into the contact-timeline (seller-lifetime
+  // overview reads resulting_contact_id). The AI answered (ai_handled=true);
+  // transfer_reason is enriched later if the turn route hands off to a human.
+  // Best-effort — never blocks the answer. (This write moved from the retired
+  // Vapi function-tools onto the Twilio-native lane.)
+  if (contactId) {
+    await svc.from("inbound_call_classifications").insert({
+      brokerage_id: ctx.brokerageId,
+      caller_phone: from,
+      caller_phone_digits: callerDigits,
+      classification,
+      ai_handled: true,
+      resulting_contact_id: contactId,
+      classified_at: new Date().toISOString(),
+    }).then(undefined, () => {})
+  }
 
   if (contactId || leadId) {
     // Sentinel-tracked (pass 4): a lost call-ledger row used to vanish

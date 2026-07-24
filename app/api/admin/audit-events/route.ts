@@ -267,38 +267,35 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // 5. vapi_voice_calls (compliance sensitive)
+  // 5. voice_calls (compliance sensitive) — the single voice ledger. The AI
+  // voice lane records every call here (vapi_call_id holds the vendor CallSid);
+  // the legacy vapi_voice_calls billing table was retired.
   if (entityType === "all" || entityType === "voice_call" || complianceOnly) {
-    const { data: vapiCalls } = await supabase
-      .from("vapi_voice_calls")
-      .select("id, voice_call_id, vapi_call_id, created_at")
+    const { data: voiceCalls } = await supabase
+      .from("voice_calls")
+      .select("id, vapi_call_id, agent_id, contact_id, direction, status, created_at")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", startDate.toISOString())
       .lte("created_at", endDate.toISOString())
       .order("created_at", { ascending: false })
       .limit(500)
 
-    if (vapiCalls) {
-      for (const call of vapiCalls) {
-        // Get voice_call details
-        const { data: voiceCall } = call.voice_call_id 
-          ? await supabase.from("voice_calls").select("agent_id, contact_id, direction, status").eq("id", call.voice_call_id).single()
-          : { data: null }
-        
-        const actorName = voiceCall?.agent_id ? await getCachedAgentName(voiceCall.agent_id) : "System"
-        const contactName = voiceCall?.contact_id ? await getCachedContactName(voiceCall.contact_id) : ""
+    if (voiceCalls) {
+      for (const call of voiceCalls) {
+        const actorName = call.agent_id ? await getCachedAgentName(call.agent_id) : "System"
+        const contactName = call.contact_id ? await getCachedContactName(call.contact_id) : ""
 
         events.push({
           id: call.id,
           timestamp: call.created_at,
           entity_type: "voice_call",
-          entity_id: call.voice_call_id,
+          entity_id: call.id,
           event_type: "voice_call",
           actor_name: actorName,
           subject_name: contactName,
-          summary: `[${voiceCall?.direction || "unknown"}] call with ${contactName || "unknown contact"}`,
-          metadata_json: { vapi_call_id: call.vapi_call_id, status: voiceCall?.status },
-          source_table: "vapi_voice_calls",
+          summary: `[${call.direction || "unknown"}] call with ${contactName || "unknown contact"}`,
+          metadata_json: { vendor_call_id: call.vapi_call_id, status: call.status },
+          source_table: "voice_calls",
         })
       }
     }

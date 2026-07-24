@@ -56,7 +56,7 @@ export default async function MobileVoicePage() {
     .order("created_at", { ascending: false })
     .limit(5)
 
-  // Fetch recent voice calls via vapi_voice_calls joined to voice_calls
+  // Fetch recent voice calls from the canonical voice_calls ledger
   const { data: recentCalls } = await supabase
     .from("voice_calls")
     .select(`

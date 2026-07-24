@@ -292,13 +292,13 @@ console.log("\n── SOURCE: wiring ──")
     turn.includes("bookShowingFromCall") && turn.includes("twimlTransfer") && turn.includes("finishCall")
     && src("lib/voice/twilio-voice.ts").includes('from("showings")'))
   const binding = src("lib/voice/vapi-numbers.ts")
-  check("binding DEFAULTS to the Twilio lane; VOICE_ENGINE=vapi is legacy-only",
-    binding.includes('process.env.VOICE_ENGINE === "vapi" ? "vapi" : "twilio"') && binding.includes("bindNumberToTwilioLane"))
+  check("binding is Twilio-ONLY (VAPI retired — no VOICE_ENGINE flag, no vapi assistant/number-import)",
+    binding.includes("bindNumberToTwilioLane") && !binding.includes("VOICE_ENGINE") && !binding.includes("registerNumberWithVapi"))
   const bind = src("lib/voice/twilio-voice.ts")
   check("bind sets VoiceUrl via the TENANT's creds — no vendor assistant object",
     bind.includes("VoiceUrl") && bind.includes("resolveTenantTwilioCreds") && bind.includes("IncomingPhoneNumbers/"))
   const matrix = src("lib/providers/tenancy-matrix.ts")
-  check("matrix: vapi = LEGACY, twilio-native default (no new vapi)", matrix.includes("LEGACY voice lane") && matrix.includes("VOICE_ENGINE=vapi"))
+  check("matrix: vapi = RETIRED, twilio-native is the single voice lane", matrix.includes("RETIRED voice lane") && matrix.includes("fully replaced by Twilio-native"))
   check("registry burn domain twilio_voice_lane (ai_isa)",
     "twilio_voice_lane" in MAINTENANCE_DOMAINS && MAINTENANCE_DOMAINS.twilio_voice_lane.manager === "ai_isa")
   check("PLATFORM scope: inbound + turn routes branch by the platform's own number; ledger is platform_reception_calls",
@@ -329,8 +329,9 @@ console.log("\n── SOURCE: wiring ──")
   const statusRoute = src("app/api/voice/twilio/status/route.ts")
   check("status callback closes BOTH ledgers (voice_calls + platform_reception_calls) — no in_progress-forever rows",
     statusRoute.includes('from("voice_calls")') && statusRoute.includes('from("platform_reception_calls")') && statusRoute.includes("validateTwilioSignature"))
-  check("callers default to the Twilio lane (VOICE_ENGINE=vapi legacy-only): call-executor + AI-ISA",
-    src("lib/voice-engine/call-executor.ts").includes("placeOutboundAiCall") && src("lib/application/ai-isa.ts").includes("placeOutboundAiCall"))
+  check("callers place through the Twilio lane (VAPI retired — no flag branch): call-executor + AI-ISA",
+    src("lib/voice-engine/call-executor.ts").includes("placeOutboundAiCall") && src("lib/application/ai-isa.ts").includes("placeOutboundAiCall")
+    && !src("lib/voice-engine/call-executor.ts").includes("VOICE_ENGINE"))
 
   // ── INBOUND SMS → unified inbox wiring ──
   const smsLib = src("lib/voice/sms-inbound.ts")

@@ -50,9 +50,7 @@ export {
   initiateWhisperBridge,
   updateWhisperBridgeStatus,
   triggerVapiVoiceBot,
-  updateVapiCallStatus,
   getWhisperBridgeCalls,
-  getVapiVoiceCalls,
 } from "./voice-call-bridge"
 
 // Voice assistant (hands-free AI assistant)
@@ -69,7 +67,6 @@ export {
 export {
   launchAIISACampaign,
   queueAIISACall,
-  handleVapiCallComplete,
   getAIISACampaigns,
   getAIISACalls,
   retryFailedCalls,

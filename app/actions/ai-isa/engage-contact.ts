@@ -619,11 +619,6 @@ async function dispatchContactChannel(
       return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
         ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
     }
-    const vapiAssistantId = process.env.VAPI_ISA_ASSISTANT_ID
-    if (!vapiAssistantId) {
-      return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
-        ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
-    }
     const { buildCallContext } = await import('@/lib/ai-isa/build-call-context')
     const callContext = await buildCallContext({
       brokerageId, teamId: contact.team_id ?? null, agentId: contact.agent_id ?? null,
@@ -633,39 +628,32 @@ async function dispatchContactChannel(
       return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
         ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
     }
-    const { initiateCall } = await import('@/lib/voice/vapi-client')
-    let vapiResponse: { id: string; status: string }
-    try {
-      vapiResponse = await initiateCall({
-        phoneNumber: contact.phone, assistantId: vapiAssistantId, contactId: contact.id,
-        brokerageId, initiatedBy: contact.agent_id ?? null,
-        assistantOverrides: {
-          name: callContext.assistantName, firstMessage: callContext.firstMessage,
-          ...(callContext.voiceConfig?.voiceId
-            ? { voice: { provider: (callContext.voiceConfig.provider ?? 'elevenlabs') as any, voiceId: callContext.voiceConfig.voiceId, stability: callContext.voiceConfig.stability ?? 0.7, similarityBoost: callContext.voiceConfig.similarityBoost ?? 0.8 } }
-            : {}),
-          model: { systemPrompt: callContext.systemPrompt },
-          variableValues: callContext.variables ?? {},
-        },
-      })
-    } catch {
+    // ENGINE: Twilio-native (the single voice lane). placeOutboundAiCall runs
+    // the TCPA + budget gates and writes its own voice_calls ledger row; on any
+    // block/failure it returns { ok: false }, so the escalation ladder (voice
+    // drop → email) still lands the touch.
+    const { placeOutboundAiCall } = await import('@/lib/voice/twilio-outbound')
+    const placed = await placeOutboundAiCall(supabase, {
+      toNumber: contact.phone, contactId: contact.id, brokerageId,
+      agentUserId: contact.agent_id ?? null, initiatedBy: contact.agent_id ?? null,
+      objective: `AI ISA re-engagement (trigger: ${reason}): reconnect, understand where the contact is now, and offer to book time with the agent.`,
+      contactName: contact.first_name ?? null,
+      firstMessage: callContext.firstMessage ?? null,
+      systemPrompt: callContext.systemPrompt ?? null,
+    })
+    if (!placed.ok) {
       // Call couldn't be placed (TCPA block / provider) — drop a voicemail, else email.
       return (await tryVoiceDrop(contact, brokerageId, reason, supabase))
         ?? await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
     }
 
-    const voiceCallRow = await supabase.from('voice_calls').insert({
-      contact_id: contact.id, brokerage_id: brokerageId, agent_id: contact.agent_id ?? null,
-      vapi_call_id: vapiResponse.id, direction: 'outbound', call_type: 'ai_isa_call',
-      status: 'initiated', started_at: new Date().toISOString(),
-    }).select('id').single().then((r) => r.data, () => null)
     await supabase.from('ai_isa_calls').insert({
-      voice_call_id: (voiceCallRow as any)?.id ?? null, brokerage_id: brokerageId, contact_id: contact.id,
+      voice_call_id: placed.voiceCallId, brokerage_id: brokerageId, contact_id: contact.id,
       lead_id: null, isa_campaign_id: null, script_used: 'isa_reengagement', appointment_set: false,
     }).then(() => {}, () => {})
     await logISAOutreach({
       brokerageId, entity: { entityType: 'contact', contactId: contact.id },
-      channel: 'phone', subject: 'AI ISA call', bodySnippet: `AI-ISA outbound call initiated. VAPI call ID: ${vapiResponse.id}`,
+      channel: 'phone', subject: 'AI ISA call', bodySnippet: `AI-ISA outbound call initiated (Twilio). Call SID: ${placed.callSid}`,
     })
     await supabase.from('ai_isa_activities').insert({
       contact_id: contact.id, brokerage_id: brokerageId, channel: 'phone',
@@ -674,7 +662,7 @@ async function dispatchContactChannel(
     await supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id)
     await emitLifecycleEvent({
       eventType: 'AI_ISA_CONTACT_CALL_INITIATED', entityType: 'contact', entityId: contact.id,
-      actorId: actorId ?? brokerageId, brokerageId, metadata: { reason, channel: 'phone', vapi_call_id: vapiResponse.id },
+      actorId: actorId ?? brokerageId, brokerageId, metadata: { reason, channel: 'phone', call_sid: placed.callSid },
     })
     return { success: true, channel: 'phone' }
   }

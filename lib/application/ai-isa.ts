@@ -1,5 +1,4 @@
 import { createClient } from "@/lib/supabase/server"
-import { initiateCall } from "@/lib/voice/vapi-client"
 import { buildCallContext } from "@/lib/ai-isa/build-call-context"
 
 /**
@@ -39,14 +38,6 @@ export async function launchAIISACampaignService(params: {
 
   if (!contacts || contacts.length === 0) {
     return { success: false, error: "No contacts match the criteria" }
-  }
-
-  const vapiAssistantId = process.env.VAPI_ISA_ASSISTANT_ID
-  if (!vapiAssistantId) {
-    return {
-      success: false,
-      error: "VAPI_ISA_ASSISTANT_ID not configured in environment variables",
-    }
   }
 
   // Resolve brokerage_id from the agent's record — loginId is agent user id
@@ -149,102 +140,26 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
     return { success: false, error: `Call blocked: ${ctx.blockReason ?? "TCPA or call stop flag"}` }
   }
 
-  // Assemble assistantOverrides from buildCallContext output
-  const assistantOverrides: NonNullable<Parameters<typeof initiateCall>[0]["assistantOverrides"]> = {
-    name:         ctx.assistantName,
-    firstMessage: ctx.firstMessage,
-    model: {
-      systemPrompt: ctx.systemPrompt,
-    },
-    variableValues: {
-      contact_name:          contact.first_name,
-      contact_full_name:     `${contact.first_name} ${contact.last_name}`,
-      agent_name:            agent.first_name,
-      agent_full_name:       `${agent.first_name} ${agent.last_name}`,
-      brokerage_name:        (agent.brokerage as any)?.name ?? "your brokerage",
-      lead_stage:            contact.stage            ?? "prospect",
-      last_viewed_property:  "properties in your area",  // no last_property_viewed column on contacts
-      preferred_areas:       "your preferred areas",  // criteria live in property_preferences, not contacts
-    },
-  }
-
-  // Wire ElevenLabs voice config when present on the identity profile
-  if (ctx.voiceConfig?.voiceId) {
-    assistantOverrides.voice = {
-      provider:        (ctx.voiceConfig.provider as "elevenlabs" | "playht" | "deepgram" | "openai" | "azure") ?? "elevenlabs",
-      voiceId:         ctx.voiceConfig.voiceId,
-      stability:       ctx.voiceConfig.stability        ?? undefined,
-      similarityBoost: ctx.voiceConfig.similarityBoost ?? undefined,
-    }
-  }
-
-  // ── ENGINE: Twilio-native by default (owner: "no longer vapi"). The SAME
-  // per-call ISA persona (buildCallContext systemPrompt/firstMessage) rides the
-  // serverless turn engine; TCPA + budget gates run inside placeOutboundAiCall.
-  // VOICE_ENGINE=vapi selects the legacy lane only during migration.
-  let callData: { id: string; status: string; createdAt: string }
-  let placedVoiceCallId: string | null = null // Twilio lane writes its own ledger row
-  if (process.env.VOICE_ENGINE !== "vapi") {
-    const { placeOutboundAiCall } = await import("@/lib/voice/twilio-outbound")
-    const { createServiceClient } = await import("@/lib/supabase/service")
-    const placed = await placeOutboundAiCall(createServiceClient(), {
-      toNumber: contact.phone,
-      contactId,
-      brokerageId,
-      agentUserId: loginId,
-      initiatedBy: loginId,
-      objective: `ISA follow-up for the "${campaign.campaign_type}" campaign: reconnect, learn where they are in their journey, and offer to book time with ${agent.first_name}.`,
-      contactName: contact.first_name,
-      firstMessage: ctx.firstMessage ?? null,
-      systemPrompt: ctx.systemPrompt ?? null,
-    })
-    if (!placed.ok) return { success: false, error: placed.error }
-    callData = { id: placed.callSid, status: "initiated", createdAt: new Date().toISOString() }
-    placedVoiceCallId = placed.voiceCallId
-  } else {
-    callData = await initiateCall({
-      phoneNumber:      contact.phone,
-      assistantId:      process.env.VAPI_ISA_ASSISTANT_ID!,
-      assistantOverrides,
-      contactId,
-      brokerageId,
-      initiatedBy:      loginId,
-    })
-  }
-
-  // Ledger row — the Twilio lane already wrote its own (the row IS the turn
-  // session); only the legacy Vapi lane inserts here. ai_isa_calls FKs it.
-  let voiceCallRow: { id: string } | null = placedVoiceCallId ? { id: placedVoiceCallId } : null
-  if (!voiceCallRow) {
-    const voiceCallResult = await supabase
-      .from("voice_calls")
-      .insert({
-        contact_id:  contactId,
-        brokerage_id: brokerageId,
-        agent_id:    loginId,
-        vapi_call_id: callData.id,
-        direction:   "outbound",
-        call_type:   "ai_isa_call",
-        status:      "initiated",
-        started_at:  new Date().toISOString(),
-      })
-      .select("id")
-      .single()
-    voiceCallRow = voiceCallResult.data
-
-    // Write vapi_voice_calls billing row (Vapi lane only — Twilio usage is
-    // metered by the phone-tenancy rollup, not the Vapi ledger)
-    void supabase
-      .from("vapi_voice_calls")
-      .insert({
-        voice_call_id: voiceCallRow?.id ?? null,
-        brokerage_id:  brokerageId,
-        vapi_call_id:  callData.id,
-        assistant_id:  process.env.VAPI_ISA_ASSISTANT_ID ?? null,
-        agent_id:      loginId,
-        contact_id:    contactId,
-      })
-  }
+  // ── ENGINE: Twilio-native (the single voice lane). The per-call ISA persona
+  // (buildCallContext systemPrompt/firstMessage) rides the serverless turn
+  // engine; TCPA + budget gates run inside placeOutboundAiCall, which also
+  // writes its own voice_calls ledger row (the row IS the turn session).
+  const { placeOutboundAiCall } = await import("@/lib/voice/twilio-outbound")
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const placed = await placeOutboundAiCall(createServiceClient(), {
+    toNumber: contact.phone,
+    contactId,
+    brokerageId,
+    agentUserId: loginId,
+    initiatedBy: loginId,
+    objective: `ISA follow-up for the "${campaign.campaign_type}" campaign: reconnect, learn where they are in their journey, and offer to book time with ${agent.first_name}.`,
+    contactName: contact.first_name,
+    firstMessage: ctx.firstMessage ?? null,
+    systemPrompt: ctx.systemPrompt ?? null,
+  })
+  if (!placed.ok) return { success: false, error: placed.error }
+  const callData = { id: placed.callSid, status: "initiated", createdAt: new Date().toISOString() }
+  const voiceCallRow: { id: string } | null = placed.voiceCallId ? { id: placed.voiceCallId } : null
 
   // Write ai_isa_calls with correct build34 columns — no campaign_id/login_id/vapi_call_id/call_status/attempt_number
   const { data: isaCall, error: isaCallError } = await supabase
@@ -269,97 +184,6 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
     voice_call_id: voiceCallRow?.id ?? null,
     vapi_call_id: callData.id,
   }
-}
-
-// Handle Vapi call completion webhook
-export async function handleVapiCallCompleteService(payload: any) {
-  const supabase = await createClient()
-
-  const { call: callData, transcript, summary, analysis } = payload
-
-  // Resolve voice_calls row first — ai_isa_calls no longer stores vapi_call_id
-  const { data: voiceCall } = await supabase
-    .from("voice_calls")
-    .select("id, contact_id, agent_id, brokerage_id")
-    .eq("vapi_call_id", callData.id)
-    .maybeSingle()
-
-  if (!voiceCall) {
-    console.warn("[AI ISA] voice_calls row not found for vapi_call_id:", callData.id)
-    return { success: false, error: "Call not found" }
-  }
-
-  const { data: call } = await supabase
-    .from("ai_isa_calls")
-    .select("id, isa_campaign_id")
-    .eq("voice_call_id", voiceCall.id)
-    .maybeSingle()
-
-  if (call) {
-    await supabase
-      .from("ai_isa_calls")
-      .update({
-        ai_response_summary: (summary || analysis?.outcome || "").substring(0, 500) || null,
-      })
-      .eq("id", call.id)
-  }
-
-  // ai_isa_campaigns still has calls_completed — use rpc to increment safely
-  if (call?.isa_campaign_id) {
-    await supabase.rpc("increment_campaign_calls_completed", {
-      p_campaign_id: call.isa_campaign_id,
-    })
-  }
-
-  if (analysis?.outcome === "appointment_booked" && analysis?.appointment_time) {
-    const { data: showing } = await supabase
-      .from("showings")
-      .insert({
-        agent_id:      voiceCall.agent_id,
-        contact_id:    voiceCall.contact_id,
-        brokerage_id:  voiceCall.brokerage_id,
-        scheduled_at:  analysis.appointment_time,
-        duration_minutes: 30,
-        status: "scheduled",
-        notes: `Booked by AI ISA - ${summary || ""}`,
-      })
-      .select()
-      .single()
-
-    if (showing) {
-      if (call?.isa_campaign_id) {
-        await supabase.rpc("increment_campaign_appointments_booked", {
-          p_campaign_id: call.isa_campaign_id,
-        })
-      }
-
-      if (voiceCall.agent_id) {
-        await supabase.from("notifications").insert({
-          user_id:      voiceCall.agent_id,
-          brokerage_id: voiceCall.brokerage_id,
-          type:         "ai_isa_booked_appointment",
-          title:        "AI-ISA Booked Appointment",
-          body:         `Appointment with ${analysis.contact_name || "contact"} scheduled for ${new Date(analysis.appointment_time).toLocaleString()}`,
-          priority:     "high",
-        })
-      }
-    }
-  }
-
-  if (analysis?.qualification?.qualified && analysis?.outcome !== "appointment_booked") {
-    await supabase.from("tasks").insert({
-      assigned_to_agent_id: voiceCall.agent_id,
-      contact_id:           voiceCall.contact_id,
-      brokerage_id:         voiceCall.brokerage_id,
-      title:       "Follow up - AI-ISA qualified lead",
-      description: `Budget: $${analysis.qualification.budget || "N/A"}, Timeline: ${analysis.qualification.timeline || "N/A"}. ${analysis.qualification.notes || ""}`,
-      due_date:    new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString().split("T")[0],
-      priority:    "urgent",
-      status:      "pending",
-    })
-  }
-
-  return { success: true }
 }
 
 // Get AI ISA campaign stats

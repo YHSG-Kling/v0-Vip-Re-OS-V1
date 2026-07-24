@@ -103,9 +103,8 @@ const aiCallAdapter: ChannelAdapter = {
       return { status: "error", providerKey: "ai_call", error: "No contact phone for ai_call" }
     }
     const { initiateVoiceCall } = await import("@/lib/voice-engine/call-executor")
-    const vendor = process.env.VAPI_API_KEY ? "vapi_isa" : "twilio"
     const r = await initiateVoiceCall(
-      { contactId: contact.id as string, initiatorRole: "ai", callType: "outbound", vendor, agentId: agentId ?? undefined },
+      { contactId: contact.id as string, initiatorRole: "ai", callType: "outbound", vendor: "twilio", agentId: agentId ?? undefined },
       contact.phone as string,
     )
     return {

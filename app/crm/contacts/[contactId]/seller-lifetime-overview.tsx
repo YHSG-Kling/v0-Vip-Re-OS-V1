@@ -51,9 +51,9 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
        .eq("contact_id", contactId)
        .order("created_at", { ascending: false })
        .limit(10),
-    // Inbound call classifications — written by the voice AI when it routes a
-    // caller (lib/voice/vapi-function-tools.ts), keyed to this contact via
-    // resulting_contact_id. Merged into the activity feed as call entries.
+    // Inbound call classifications — written by the Twilio-native reception lane
+    // (app/api/voice/twilio/inbound) when it resolves a caller, keyed to this
+    // contact via resulting_contact_id. Merged into the activity feed as calls.
     svc.from("inbound_call_classifications")
        .select("id, classification, transfer_reason, ai_handled, classified_at")
        .eq("brokerage_id", brokerageId)

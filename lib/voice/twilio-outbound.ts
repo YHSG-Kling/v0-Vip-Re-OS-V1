@@ -180,3 +180,30 @@ export async function placeOutboundAiCall(svc: any, params: PlaceOutboundParams)
 
   return { ok: true, callSid: res.data.sid, voiceCallId: (row as any)?.id ?? null, fromNumber: fromRow.phone_number }
 }
+
+/**
+ * Terminate a live Twilio call from the agent UI ("End Call"). Resolves the
+ * tenant's creds and POSTs Status=completed to the call resource. Best-effort:
+ * a call Twilio already ended returns non-2xx, which is not a hard failure (the
+ * caller still closes the ledger row). No stub — a missing-creds/tenant case is
+ * surfaced honestly.
+ */
+export async function endOutboundAiCall(
+  svc: any, brokerageId: string, callSid: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const { resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
+  const creds = await resolveTenantTwilioCreds(svc, brokerageId)
+  if (!creds) return { ok: false, error: "Twilio not configured for this tenant" }
+  const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  const res = await callConnector<{ sid?: string }>({
+    connector: "twilio",
+    baseUrl: "https://api.twilio.com",
+    path: `/2010-04-01/Accounts/${creds.accountSid}/Calls/${callSid}.json`,
+    method: "POST",
+    bodyType: "form",
+    body: { Status: "completed" },
+    auth: { style: "basic", username: creds.accountSid, password: creds.authToken },
+  })
+  if (!res.ok) return { ok: false, error: `Twilio hangup failed (${res.status ?? "—"}): ${res.error ?? "unknown"}` }
+  return { ok: true }
+}

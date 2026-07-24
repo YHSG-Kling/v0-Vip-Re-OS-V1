@@ -36,14 +36,14 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   {
     provider: "twilio",
     models: ["platform_subaccount", "byo_top_tier"],
-    why: "Numbers + SMS are the product ('AI answers your phone'), and A2P 10DLC registration is a platform job — subaccounts isolate each tenant's numbers/usage under one parent. BYO only for enterprises with carrier contracts. STRATEGIC CONVERGENCE (owner decision): Twilio is the long-term home for the whole comms brain — ConversationRelay for conversational voice AI (retiring the separate Vapi dependency), Conversations for the UNIFIED INBOX including social messaging surfaces (WhatsApp/FB Messenger), Voice Intelligence for call semantics, and Verify/Lookup/SHAKEN-STIR for fraud protection. Migration is staged — Vapi stays operational until the Twilio lanes are proven.",
+    why: "Numbers + SMS are the product ('AI answers your phone'), and A2P 10DLC registration is a platform job — subaccounts isolate each tenant's numbers/usage under one parent. BYO only for enterprises with carrier contracts. STRATEGIC CONVERGENCE (owner decision, now DONE for voice): Twilio is the home for the whole comms brain — turn-based conversational voice AI + ConversationRelay (the separate Vapi dependency is RETIRED), Conversations for the UNIFIED INBOX including social messaging surfaces (WhatsApp/FB Messenger), Voice Intelligence for call semantics, and Verify/Lookup/SHAKEN-STIR for fraud protection.",
     envVars: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"],
   },
   {
     provider: "vapi",
     models: ["platform_metered"],
-    why: "LEGACY voice lane (owner decision — retired in favor of Twilio-native). The default engine is now TWILIO: inbound reception runs turn-based on pure Twilio (VoiceUrl → our webhook, <Gather input=speech> → the AI gateway → TwiML), no third-party voice-AI vendor, fully serverless. Vapi stays reachable ONLY behind VOICE_ENGINE=vapi for the migration window — new tenants bind to Twilio; nothing new is built on Vapi.",
-    envVars: ["VAPI_API_KEY", "VAPI_WEBHOOK_SECRET", "VAPI_PHONE_NUMBER_ID", "VAPI_ISA_ASSISTANT_ID"],
+    why: "RETIRED voice lane (owner decision — fully replaced by Twilio-native). The Vapi client, both webhook routes, the inbound-assistant/number-import wiring, and the vapi_voice_calls billing table were REMOVED; every inbound reception and outbound AI call now runs turn-based on pure Twilio (VoiceUrl → our webhook, <Gather input=speech> → the AI gateway → TwiML), no third-party voice-AI vendor, fully serverless. Retained here only as vendor-ownership history — nothing in the app calls Vapi.",
+    envVars: [],
   },
   {
     provider: "elevenlabs",

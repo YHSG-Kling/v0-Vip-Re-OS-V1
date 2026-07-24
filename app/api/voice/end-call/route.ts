@@ -1,13 +1,13 @@
 /**
  * app/api/voice/end-call/route.ts
- * POST /api/voice/end-call?callId=<vapiCallId>
- * Terminates an active VAPI call and updates voice_calls status.
+ * POST /api/voice/end-call?callId=<twilioCallSid>
+ * Terminates an active Twilio AI call and closes the voice_calls ledger row.
  */
 
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { endCall } from "@/lib/voice/vapi-client"
+import { endOutboundAiCall } from "@/lib/voice/twilio-outbound"
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   // Auth guard — user must be logged in
@@ -27,16 +27,23 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "callId query param is required" }, { status: 400 })
   }
 
-  // End via VAPI REST API
-  try {
-    await endCall(callId)
-  } catch (err) {
-    // Not a hard failure — VAPI may already have ended the call
-    console.error("[end-call] VAPI endCall error (non-fatal):", err)
+  const service = createServiceClient()
+
+  // Resolve the tenant that owns this call (vapi_call_id holds the Twilio CallSid
+  // on this lane) so we hang up on the correct subaccount.
+  const { data: call } = await service
+    .from("voice_calls")
+    .select("brokerage_id")
+    .eq("vapi_call_id", callId)
+    .maybeSingle()
+
+  // End via Twilio REST. Non-fatal — Twilio may already have ended the call.
+  if (call?.brokerage_id) {
+    const ended = await endOutboundAiCall(service, call.brokerage_id, callId)
+    if (!ended.ok) console.error("[end-call] Twilio hangup (non-fatal):", ended.error)
   }
 
-  // Update our DB record
-  const service = createServiceClient()
+  // Close our DB record
   await service
     .from("voice_calls")
     .update({

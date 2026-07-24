@@ -208,7 +208,6 @@
     "test:platform-gaps": "tsx scripts/platform-gaps-simulator.ts",
     "test:platform-ops": "tsx scripts/platform-ops-simulator.ts",
     "test:deal-play": "tsx scripts/deal-play-simulator.ts",
-    "test:voice-rail": "tsx scripts/voice-rail-simulator.ts",
     "test:voice-lane": "tsx scripts/voice-lane-simulator.ts",
     "test:self-book": "tsx scripts/self-book-simulator.ts",
     "test:crm-pull": "tsx scripts/crm-pull-simulator.ts",

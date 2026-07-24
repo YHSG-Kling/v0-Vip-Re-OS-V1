@@ -103,12 +103,15 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
     .eq("voice_call_id", callId)
     .single()
 
-  // Fetch Vapi metadata if exists
+  // Call cost — the canonical billing rail is usage_logs (the Twilio status
+  // route writes one 'voice_call' row per completed call, tagged with the
+  // voice_call_id). The retired vapi_voice_calls table no longer carries it.
   const { data: vapiCall } = await supabase
-    .from("vapi_voice_calls")
-    .select("id, vapi_call_id, cost_cents, ended_reason")
-    .eq("voice_call_id", callId)
-    .single()
+    .from("usage_logs")
+    .select("id, cost_cents")
+    .eq("usage_type", "voice_call")
+    .contains("metadata", { voice_call_id: callId })
+    .maybeSingle()
 
   // Fetch transcription
   const { data: transcription } = await supabase

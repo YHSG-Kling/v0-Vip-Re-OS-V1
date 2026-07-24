@@ -85,8 +85,8 @@ export async function evaluateTenantNumberProvisioning(
  * Fold a tenant's month-to-date phone usage against its plan bundle into an
  * included-vs-metered-overage meter — the line the finance P&L bills and the
  * tenant usage card shows. Voice minutes + active numbers come from the SAME
- * voice-usage rollup the phone-settings card already reads (vapi_voice_calls +
- * vapi_phone_numbers); SMS segments are counted from the unified inbox (messages
+ * voice-usage rollup the phone-settings card already reads (usage_logs 'voice_call'
+ * minutes + vapi_phone_numbers); SMS segments are counted from the unified inbox (messages
  * type='sms'). Fails SAFE — a read error meters zero usage rather than throwing.
  *
  * @param month YYYY-MM (defaults to the current calendar month).
