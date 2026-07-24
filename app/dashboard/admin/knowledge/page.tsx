@@ -1,5 +1,5 @@
 import { Suspense } from 'react'
-import { getKnowledgeArticles, getHelpTopicsAdmin, getEmbeddingQueueStatus } from '@/app/actions/knowledge/search'
+import { getKnowledgeArticles, getEmbeddingQueueStatus } from '@/app/actions/knowledge/search'
 import { KnowledgeManagementClient } from './knowledge-client'
 
 export const dynamic = 'force-dynamic'
@@ -10,14 +10,16 @@ export const metadata = {
 }
 
 async function KnowledgeData() {
-  const [articlesResult, topicsResult, queueStatus] = await Promise.all([
+  const [articlesResult, queueStatus] = await Promise.all([
     getKnowledgeArticles({ limit: 50 }),
-    getHelpTopicsAdmin({ limit: 100 }),
     getEmbeddingQueueStatus(),
   ])
 
   return (
-    <KnowledgeManagementClient />
+    <KnowledgeManagementClient
+      initialArticles={articlesResult.articles ?? []}
+      queueStatus={queueStatus}
+    />
   )
 }
 
