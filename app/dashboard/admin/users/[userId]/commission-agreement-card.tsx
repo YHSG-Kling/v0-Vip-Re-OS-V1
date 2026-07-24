@@ -37,12 +37,17 @@ export function CommissionAgreementCard({ targetUserId }: { targetUserId: string
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [okNote, setOkNote] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   async function refresh() {
     const [formsRes, statusRes] = await Promise.all([
       listCommissionAgreementFormsAction(),
       getCommissionAgreementStatusAction(targetUserId),
     ])
+    // Surface a load failure honestly — never present { ok:false } as an empty
+    // "no forms" state (that hides an auth/DB error behind a legitimate-looking UI).
+    const failure = !formsRes.ok ? formsRes.error : !statusRes.ok ? statusRes.error : null
+    setLoadError(failure)
     if (formsRes.ok) setForms(formsRes.forms)
     if (statusRes.ok) setStatus(statusRes.status)
     setLoading(false)
@@ -91,6 +96,10 @@ export function CommissionAgreementCard({ targetUserId }: { targetUserId: string
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading…
           </div>
+        ) : loadError ? (
+          <p className="text-sm text-red-600 flex items-center gap-2">
+            <AlertCircle className="h-4 w-4" /> Couldn’t load commission agreements: {loadError}
+          </p>
         ) : (
           <>
             {/* Current status */}
