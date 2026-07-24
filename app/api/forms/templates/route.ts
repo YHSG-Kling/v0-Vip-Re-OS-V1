@@ -37,26 +37,39 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    // Resolve brokerage_id from agent record
-    const { data: agent } = await supabase
-      .from("agents")
+    // Resolve brokerage_id. users.brokerage_id is the canonical source (a pure
+    // admin/broker/superadmin — the Forms Manager audience — often has NO agents
+    // row, so an agents-only lookup 403s exactly those users). Fall back to the
+    // agents record for agent accounts.
+    const { data: profile } = await supabase
+      .from("users")
       .select("brokerage_id")
-      .eq("user_id", user.id)
+      .eq("id", user.id)
       .maybeSingle()
 
-    if (!agent?.brokerage_id) {
-      return NextResponse.json({ error: "Agent record not found" }, { status: 403 })
+    let brokerageId: string | null = profile?.brokerage_id ?? null
+    if (!brokerageId) {
+      const { data: agent } = await supabase
+        .from("agents")
+        .select("brokerage_id")
+        .eq("user_id", user.id)
+        .maybeSingle()
+      brokerageId = agent?.brokerage_id ?? null
+    }
+
+    if (!brokerageId) {
+      return NextResponse.json({ error: "No brokerage associated with this account" }, { status: 403 })
     }
 
     const [result, providerResult] = await Promise.all([
       loadAvailableTransactionForms({
-        brokerage_id: agent.brokerage_id,
+        brokerage_id: brokerageId,
         context_type,
         state,
       }),
       // The connected e-sign provider (null/not_configured is fine — the loader
       // still returns the standard template library so the UI is never empty).
-      resolveTransactionFormsProvider({ brokerage_id: agent.brokerage_id }).catch(() => null),
+      resolveTransactionFormsProvider({ brokerage_id: brokerageId }).catch(() => null),
     ])
 
     if (!result.success) {
