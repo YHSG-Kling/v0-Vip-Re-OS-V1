@@ -713,6 +713,16 @@ export async function createEducationalResource(
     }
   })()
 
+  // No-duplicate guard: return an existing near-identical resource rather than
+  // publishing a second copy (owner: "no duplicates or noise").
+  {
+    const { findNearDuplicateModule } = await import("@/lib/education/dedup-guard")
+    const dup = await findNearDuplicateModule(supabase, input.brokerageId, input.title, null)
+    if (dup) {
+      return { resourceId: dup.id, success: true, createdAt: new Date().toISOString() }
+    }
+  }
+
   const { data, error } = await supabase
     .from("learning_modules")
     .insert({
@@ -963,6 +973,22 @@ export async function generateAIEducation(
     "",
     "AI-generated content — admin review required before publishing.",
   ].filter(Boolean).join("\n")
+
+  // No-duplicate guard (owner: "no duplicates or noise"): if a near-identical
+  // module already exists for this audience, return IT instead of authoring a
+  // second — idempotent, no duplicate row.
+  {
+    const { findNearDuplicateModule } = await import("@/lib/education/dedup-guard")
+    const dup = await findNearDuplicateModule(supabase, input.brokerageId, `AI: ${input.topic}`, input.audienceRoles ?? [])
+    if (dup) {
+      return {
+        resourceId: dup.id,
+        success: true,
+        status: "pending_review",
+        brandVoiceApplied: { brokerageAbout: false, brokerageBio: false, teamBio: false, brandVoice: false },
+      }
+    }
+  }
 
   const channels = input.contentType.includes("video") ? ["video"] : ["article"]
   const { data, error } = await supabase
