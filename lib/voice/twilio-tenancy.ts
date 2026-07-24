@@ -132,9 +132,13 @@ export async function loadVoiceUsage(svc: any, brokerageId: string, month: strin
   const start = `${month}-01`
   const end = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 1)).toISOString().slice(0, 10)
   const [{ data: calls }, { data: numbers }] = await Promise.all([
-    svc.from("vapi_voice_calls").select("minutes_billed, cost_cents")
-      .eq("brokerage_id", brokerageId).gte("created_at", start).lt("created_at", end).limit(5000),
+    // Canonical billing rail: usage_logs 'voice_call' rows (both the Twilio-native
+    // status route and the legacy vapi webhook write here). units_used = minutes.
+    svc.from("usage_logs").select("units_used, cost_cents")
+      .eq("brokerage_id", brokerageId).eq("usage_type", "voice_call")
+      .gte("recorded_at", start).lt("recorded_at", end).limit(5000),
     svc.from("vapi_phone_numbers").select("is_active").eq("brokerage_id", brokerageId),
   ])
-  return rollupVoiceUsage(month, (calls ?? []) as any[], (numbers ?? []) as any[])
+  const callRows = ((calls ?? []) as any[]).map((c) => ({ minutes_billed: c.units_used, cost_cents: c.cost_cents }))
+  return rollupVoiceUsage(month, callRows, (numbers ?? []) as any[])
 }

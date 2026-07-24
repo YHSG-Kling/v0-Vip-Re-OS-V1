@@ -73,5 +73,36 @@ export async function POST(request: NextRequest) {
       await routeLeadCallIntent(svc, leadRow.id)
     } catch { /* best-effort — never 500 a Twilio callback */ }
   }
+
+  // ── BILLING — the canonical usage_logs rail ─────────────────────────────────
+  // Close the pre-existing metering gap: the Twilio-native lane wrote NO per-call
+  // billing row, so tenant voice minutes were invisible to the phone-settings card,
+  // the finance P&L, and the provisioning quota (all of which meter from usage_logs).
+  // Record ONE 'voice_call' row per completed tenant call, idempotent on the CallSid
+  // so a re-posted callback can never double-bill. Best-effort — never 500 Twilio.
+  if (callStatus === "completed" && Number.isFinite(duration) && duration > 0) {
+    try {
+      const { data: vc } = await svc.from("voice_calls").select("id, agent_id").eq("vapi_call_id", callSid).maybeSingle()
+      if (vc) {
+        const { data: already } = await svc.from("usage_logs").select("id")
+          .eq("brokerage_id", ctx.brokerageId).eq("usage_type", "voice_call")
+          .contains("metadata", { call_sid: callSid }).maybeSingle()
+        if (!already) {
+          const minutesBilled = Math.max(1, Math.ceil(duration / 60))
+          const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+          const costCents = Math.round(estimatePlatformVendorCost("twilio_voice", minutesBilled) * 100)
+          await svc.from("usage_logs").insert({
+            brokerage_id: ctx.brokerageId,
+            agent_id: (vc as any).agent_id ?? null,
+            usage_type: "voice_call",
+            units_used: minutesBilled,
+            cost_cents: costCents,
+            recorded_at: new Date().toISOString(),
+            metadata: { call_sid: callSid, duration_seconds: duration, engine: "twilio", voice_call_id: (vc as any).id },
+          })
+        }
+      }
+    } catch { /* best-effort — never 500 a Twilio callback */ }
+  }
   return NextResponse.json({ ok: true })
 }
