@@ -30,6 +30,14 @@ export interface BrandVoicePromptContext {
    * call context). Pass the owning manager key for other rails.
    */
   managerKey?: string
+  /**
+   * When set, retrieves the top brokerage KNOWLEDGE-BASE matches (RAG, scoped to
+   * brokerageId) for this query and appends a "Relevant knowledge" block to
+   * systemBlock — so the AI answers from the brokerage's OWN uploaded facts, not
+   * generic boilerplate. Omit for query-agnostic outbound rails (no cost, no
+   * behavior change). Pass the inbound message / call objective as the query.
+   */
+  knowledgeQuery?: string
 }
 
 export interface BrandVoicePromptResult {
@@ -247,6 +255,29 @@ export async function loadBrandVoicePrompt(
       .map((o) => `Objection (${o.category}): "${o.objection}" → Response: "${o.response}"`)
       .join("\n")
     parts.push(`Handle these objections with the prepared responses:\n${objBlock}`)
+  }
+
+  // ── RAG: inject the brokerage's OWN knowledge base for THIS query ────────────
+  // The FAQ/objection blocks above are hand-entered on the identity profile; the
+  // knowledge base (uploaded articles + help topics, embedded) is the scalable
+  // corpus. When the caller passes a query (the inbound message / call objective),
+  // retrieve the top matches — SCOPED to this brokerage via ragSearch's
+  // p_brokerage_id param (never the cookie session, which is absent in webhook/
+  // cron contexts) — and inject them so the AI answers from the brokerage's real
+  // facts. Best-effort: a KB outage never breaks brand voice.
+  if (ctx.knowledgeQuery?.trim()) {
+    try {
+      const { ragSearch } = await import("@/lib/knowledge/embedding-service")
+      const kb = await ragSearch(ctx.knowledgeQuery.slice(0, 1000), {
+        brokerageId: ctx.brokerageId,
+        limit: 4,
+        threshold: 0.6,
+      })
+      if (kb.length > 0) {
+        const kbBlock = kb.map((r) => `### ${r.title}\n${r.content}`).join("\n\n")
+        parts.push(`Relevant knowledge from your brokerage's knowledge base — use these FIRST and do not contradict them:\n${kbBlock}`)
+      }
+    } catch { /* KB unavailable — brand voice still stands */ }
   }
 
   return {

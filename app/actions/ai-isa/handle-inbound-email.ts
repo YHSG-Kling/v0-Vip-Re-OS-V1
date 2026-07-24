@@ -284,9 +284,12 @@ export async function processInboundEmail(params: {
   }
 
   // ── Load brand voice for system prompt ────────────────────────────────────
+  // knowledgeQuery = the lead's actual message → the reply is grounded in the
+  // brokerage's OWN uploaded knowledge base (RAG), not generic boilerplate.
   const brandVoice = await loadBrandVoicePrompt({
     brokerageId: lead.brokerage_id,
     agentId: lead.agent_id ?? null,
+    knowledgeQuery: `${params.subject ?? ''} ${params.body ?? ''}`.trim(),
   })
 
   // ── Conversation context from the LEAD-class ledgers ─────────────────────

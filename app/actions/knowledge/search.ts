@@ -239,8 +239,13 @@ export async function createKnowledgeArticle(input: {
     throw new Error('Failed to create article')
   }
 
-  // Queue for embedding generation
-  await queueForEmbedding('knowledge_articles', data.id, data.content)
+  // Embed SYNCHRONOUSLY so the article is immediately retrievable by the AI
+  // (the embedding_queue has no cron drain); queue as a durable fallback.
+  try {
+    await updateArticleEmbedding(data.id)
+  } catch {
+    await queueForEmbedding('knowledge_articles', data.id, data.content)
+  }
 
   revalidatePath('/dashboard/admin/knowledge')
   return data
@@ -295,9 +300,13 @@ export async function updateKnowledgeArticle(
     throw new Error('Failed to update article')
   }
 
-  // Queue for embedding regeneration if content changed
+  // Re-embed synchronously if content changed (queue as durable fallback).
   if (input.content || input.title || input.excerpt || input.tags) {
-    await queueForEmbedding('knowledge_articles', data.id, data.content)
+    try {
+      await updateArticleEmbedding(data.id)
+    } catch {
+      await queueForEmbedding('knowledge_articles', data.id, data.content)
+    }
   }
 
   revalidatePath('/dashboard/admin/knowledge')
@@ -458,8 +467,12 @@ export async function createHelpTopic(input: {
     throw new Error('Failed to create help topic')
   }
 
-  // Queue for embedding generation
-  await queueForEmbedding('help_topics_kb', data.id, data.content)
+  // Embed synchronously so the topic is immediately retrievable (queue fallback).
+  try {
+    await updateHelpTopicEmbedding(data.id)
+  } catch {
+    await queueForEmbedding('help_topics_kb', data.id, data.content)
+  }
 
   revalidatePath('/dashboard/admin/knowledge')
   return data
@@ -498,9 +511,13 @@ export async function updateHelpTopic(
     throw new Error('Failed to update help topic')
   }
 
-  // Queue for embedding regeneration if content changed
+  // Re-embed synchronously if content changed (queue as durable fallback).
   if (input.content || input.title || input.tags) {
-    await queueForEmbedding('help_topics_kb', data.id, data.content)
+    try {
+      await updateHelpTopicEmbedding(data.id)
+    } catch {
+      await queueForEmbedding('help_topics_kb', data.id, data.content)
+    }
   }
 
   revalidatePath('/dashboard/admin/knowledge')
