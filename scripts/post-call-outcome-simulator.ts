@@ -69,6 +69,25 @@ console.log("\n── PURE: outcome classification + signal mapping ──")
   check("source POS_INTENT/APPT_INTENT kept in lockstep with this proof", mod.includes("ready to (buy|list|sell)") && mod.includes("APPT_INTENT"))
 }
 
+console.log("\n── PURE: opt-out matching sees ONLY the caller's words (never the AI's) ──")
+{
+  // Local mirror of callerUtterances (asserted in lockstep with source below).
+  const callerUtterances = (t: string) => t.split("\n").filter((l) => /^\s*Caller:/i.test(l)).map((l) => l.replace(/^\s*Caller:\s*/i, "")).join(" ")
+  const OPT_OUT = /(stop calling|not interested|remove me|do not call|unsubscribe|opt out|opt-out|go away)/i
+
+  // The AI says "stop"; the caller is enthusiastic. Naive full-transcript matching
+  // would flip DNC — caller-only matching must not.
+  const t1 = "AI: If you'd ever like to stop hearing from us, just say the word.\nCaller: No no, I'm really interested, let's book a showing!"
+  check("AI's spoken 'stop' line does NOT count as a caller opt-out", !OPT_OUT.test(callerUtterances(t1)))
+  // A genuine caller opt-out IS still caught.
+  const t2 = "AI: Happy to help today.\nCaller: Please stop calling me and remove me from your list."
+  check("a genuine caller opt-out IS still caught", OPT_OUT.test(callerUtterances(t2)))
+
+  const mod = src("lib/ai-isa/post-call-outcome.ts")
+  check("source scopes opt-out to callerUtterances (not the full two-party transcript)",
+    mod.includes("export function callerUtterances") && mod.includes("detectNegativeIntent(`${callerText}") && !/detectNegativeIntent\(`\$\{transcription\}/.test(mod))
+}
+
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
 if (fail > 0) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)); console.log(" ❌ POST_CALL_OUTCOME_FAIL"); process.exit(1) }
 console.log(" ✅ POST_CALL_OUTCOME_PASS — every completed AI call auto-routes; the client send stays compliance-gated")

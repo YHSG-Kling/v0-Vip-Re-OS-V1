@@ -31,6 +31,18 @@ import { isAnalyzableCall, analyzeVoiceCallRow } from "@/lib/voice/call-analysis
 const POS_INTENT = /(appointment|schedul|book|ready to (buy|list|sell)|pre-?approv|tour|showing|see the (home|house|property)|make an offer)/i
 const APPT_INTENT = /(appointment|schedul|book|tour|showing)/i
 
+/** PURE: only the CALLER's words. The running transcript interleaves "Caller:"
+ *  and "AI:" lines (appendTranscript), so opt-out matching must NEVER see the
+ *  AI's own speech — the assistant reading a disclosure or saying "if you'd like
+ *  to stop, just say so" must not flip the contact to permanent DNC. */
+export function callerUtterances(transcript: string | null | undefined): string {
+  return (transcript ?? "")
+    .split("\n")
+    .filter((line) => /^\s*Caller:/i.test(line))
+    .map((line) => line.replace(/^\s*Caller:\s*/i, ""))
+    .join(" ")
+}
+
 export interface PostCallOutcome {
   ok: boolean
   processed: boolean
@@ -77,9 +89,13 @@ export async function routePostCallOutcome(svc: any, voiceCallId: string): Promi
     }
 
     // 2. Classify the outcome from the canonical insight vocabulary + an explicit
-    //    opt-out phrase floor (detectNegativeIntent) over the transcript.
+    //    opt-out phrase floor. detectNegativeIntent runs ONLY over the CALLER's
+    //    own words (never the AI's spoken lines) + the analyzer-extracted
+    //    objections — a naive match over the full two-party transcript could flip
+    //    a contact to permanent DNC off the assistant's own speech.
     const objText = (objections ?? []).join(" ")
-    const isNegative = sentiment === "negative" || detectNegativeIntent(`${transcription} ${objText}`)
+    const callerText = callerUtterances(transcription)
+    const isNegative = sentiment === "negative" || detectNegativeIntent(`${callerText} ${objText}`)
     const isPositive = !isNegative && (sentiment === "positive" || POS_INTENT.test(intentPrimary))
     const appointmentIntent = APPT_INTENT.test(intentPrimary)
     const signal = voiceSignalFor({ urgencyScore, isPositiveOutcome: isPositive, isNegativeOutcome: isNegative })
