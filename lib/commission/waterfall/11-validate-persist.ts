@@ -86,6 +86,42 @@ export async function validateAndPersist(
   // Final mode - persist to database
   const supabase = createServiceClient()
 
+  // FINALIZATION LOCK (owner rule): once a transaction's commission is finalized
+  // (broker-signed CDA or uploaded final CD), it is IMMUTABLE — never re-persist it.
+  // Return the locked commission instead of inserting a second summary row (this is
+  // also what stops the duplicate-commissions-row bug on a re-run). The lock is set
+  // AFTER the close-time calc, so the first/authoritative calc is never blocked.
+  {
+    const { data: txn } = await supabase
+      .from('transactions')
+      .select('commission_finalized_at')
+      .eq('id', context.transactionId)
+      .maybeSingle()
+    if ((txn as { commission_finalized_at?: string | null } | null)?.commission_finalized_at) {
+      const { data: locked } = await supabase
+        .from('commissions')
+        .select('id, gross_commission, agent_commission, brokerage_commission')
+        .eq('transaction_id', context.transactionId)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+      if (locked) {
+        return {
+          success: true,
+          commissionId: (locked as { id: string }).id,
+          gross_commission: Number((locked as any).gross_commission),
+          net_to_agent: Number((locked as any).agent_commission),
+          net_to_brokerage: Number((locked as any).brokerage_commission),
+          cap_applied: context.capApplied,
+          cap_status: context.capStatus,
+          total_fees: centsToDollars(context.totalFeesCents),
+        }
+      }
+      // Finalized but no stored commission (shouldn't happen) — persist once so the
+      // locked deal still has its ledger rather than nothing.
+    }
+  }
+
   // 1. Insert summary into commissions table
   const { data: commission, error: commissionError } = await supabase
     .from('commissions')

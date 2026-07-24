@@ -818,6 +818,14 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
     }
   } catch { /* commission auto-approval is best-effort — the broker sign-off is the authoritative gate */ }
 
+  // FINALIZATION LOCK (owner rule): a broker-signed CDA finalizes the transaction's
+  // commission — it becomes immutable from here. First-writer-wins with the CD-upload
+  // trigger; best-effort so it never blocks the sign-off.
+  try {
+    const { finalizeTransactionCommission } = await import("@/lib/commission/finalization")
+    await finalizeTransactionCommission(supabase, cda.transaction_id, "cda_signed")
+  } catch { /* finalization is best-effort */ }
+
   await recordRevision({
     cdaId: cda.id,
     revisionNumber: cda.revision_number,
@@ -1260,7 +1268,7 @@ export async function uploadFinalCdAction(input: {
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
 
-  await supabase
+  const { data: cdaRow } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       final_cd_document_id:  input.documentId,
@@ -1270,6 +1278,19 @@ export async function uploadFinalCdAction(input: {
     })
     .eq("id", input.cdaId)
     .eq("brokerage_id", auth.brokerageId)
+    .select("transaction_id")
+    .maybeSingle()
+
+  // FINALIZATION LOCK (owner rule): an uploaded final CD finalizes the transaction's
+  // commission — immutable from here. First-writer-wins with the CDA-sign trigger;
+  // best-effort so it never blocks the upload.
+  const finalTxnId = (cdaRow as { transaction_id?: string | null } | null)?.transaction_id
+  if (finalTxnId) {
+    try {
+      const { finalizeTransactionCommission } = await import("@/lib/commission/finalization")
+      await finalizeTransactionCommission(supabase, finalTxnId, "cd_uploaded")
+    } catch { /* finalization is best-effort */ }
+  }
 
   return { success: true as const }
 }
