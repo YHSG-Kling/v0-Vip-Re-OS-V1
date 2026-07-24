@@ -576,12 +576,22 @@ export async function retakeCourse(
     return { success: false, error: 'Not authenticated' }
   }
 
-  // Reset the agent's completion on the canonical rail so the module can be retaken:
-  // clear the learning_assignments completion for (this agent, this module). Scoped to
-  // the caller's own user id — an agent can only reset their own coursework.
+  // Reset the agent's completion on the canonical rail so the module can be
+  // retaken — RESET the learning_assignments row back to 'open', don't DELETE it.
+  // Deleting made the course vanish from the progress dashboard entirely instead
+  // of showing as retakeable; the dashboard reads the row's status, so the row
+  // must survive. Clear the completion fields (completed_at, quiz_score, viewed_at,
+  // dismissed_at). Scoped to the caller's own user id — an agent can only reset
+  // their own coursework.
   const { error } = await supabase
     .from('learning_assignments')
-    .delete()
+    .update({
+      status: 'open',
+      completed_at: null,
+      quiz_score: null,
+      viewed_at: null,
+      dismissed_at: null,
+    })
     .eq('agent_user_id', user.id)
     .eq('module_id', courseId)
 
