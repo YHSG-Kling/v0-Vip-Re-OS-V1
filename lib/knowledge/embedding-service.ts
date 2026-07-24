@@ -4,7 +4,7 @@
  */
 
 import { embed, embedMany } from 'ai'
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { createHash } from 'crypto'
 
 // Configuration
@@ -53,7 +53,7 @@ export function hashContent(content: string): string {
  * Update embedding for a help topic
  */
 export async function updateHelpTopicEmbedding(topicId: string): Promise<void> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   // Fetch the topic
   const { data: topic, error: fetchError } = await supabase
@@ -94,7 +94,7 @@ export async function updateHelpTopicEmbedding(topicId: string): Promise<void> {
  * Update embedding for a knowledge article
  */
 export async function updateArticleEmbedding(articleId: string): Promise<void> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   // Fetch the article
   const { data: article, error: fetchError } = await supabase
@@ -141,7 +141,7 @@ export async function queueForEmbedding(
   sourceId: string,
   content: string
 ): Promise<void> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   const contentHash = hashContent(content)
 
   const { error } = await supabase
@@ -169,7 +169,7 @@ export async function processPendingEmbeddings(limit: number = 10): Promise<{
   processed: number
   failed: number
 }> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   // Fetch pending items
   const { data: pending, error: fetchError } = await supabase
@@ -238,7 +238,7 @@ export async function backfillHelpTopicEmbeddings(): Promise<{
   processed: number
   failed: number
 }> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   // Fetch all topics without embeddings
   const { data: topics, error } = await supabase
@@ -302,7 +302,7 @@ export async function semanticSearchHelpTopics(
   tags: string[]
   similarity: number
 }>> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   const { brokerageId, limit = 5, threshold = 0.7 } = options
 
   // Generate embedding for the query
@@ -345,7 +345,7 @@ export async function semanticSearchArticles(
   tags: string[]
   similarity: number
 }>> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   const { brokerageId, category, limit = 5, threshold = 0.7 } = options
 
   // Generate embedding for the query
