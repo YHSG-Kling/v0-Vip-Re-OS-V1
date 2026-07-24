@@ -1603,7 +1603,7 @@ async function main() {
       && src("app/dashboard/communications/inbox/components/ConversationList.tsx").includes("Lead · AI ISA")
       && src("app/api/voice/twilio/inbound/route.ts").includes('.is("contact_id", null)')          // lead match precedes new-contact capture
       && src("app/api/voice/twilio/inbound/route.ts").includes("lead_id: leadId")
-      && src("app/api/voice/twilio/turn/route.ts").includes("maybeRouteLeadIntent")
+      && src("app/api/voice/twilio/turn/route.ts").includes("maybeRoutePostCall")
       && src("app/api/voice/twilio/turn/route.ts").includes('entityType: (call as any).contact_id ? "contact" : "lead"')
       && src("app/api/voice/twilio/status/route.ts").includes("routeLeadCallIntent")
       && src("app/api/voice/twilio/status/route.ts").includes('.select("id, lead_id")')            // transition-gated, no double-fire

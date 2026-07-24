@@ -96,7 +96,7 @@ export async function POST(request: NextRequest) {
     const closer = "No problem — call back any time. Goodbye!"
     if (call) {
       await finishCall(svc, (call as any).id, appendTranscript(transcript, null, closer))
-      await maybeRouteLeadIntent(svc, call)
+      await maybeRoutePostCall(svc, call)
     }
     return new NextResponse(twimlHangup(closer), { headers: { "Content-Type": "text/xml" } })
   }
@@ -178,7 +178,7 @@ export async function POST(request: NextRequest) {
       await finishCall(svc, (call as any).id, newTranscript)
       // A LEAD's completed call routes through the inbound intent classifier —
       // positive direction converts the lead to a contact (canonical handoff).
-      await maybeRouteLeadIntent(svc, call)
+      await maybeRoutePostCall(svc, call)
     }
     return new NextResponse(twimlHangup(plan.say), { headers: { "Content-Type": "text/xml" } })
   }
@@ -186,13 +186,19 @@ export async function POST(request: NextRequest) {
   return new NextResponse(twimlGatherTurn(plan.say, url), { headers: { "Content-Type": "text/xml" } })
 }
 
-/** Lead call-ins: classify the closed call's transcript → convert / halt / nurture. */
-async function maybeRouteLeadIntent(svc: any, call: any): Promise<void> {
-  if (!call?.lead_id) return
+/** Post-call brain for a closed call: LEAD → classify transcript (convert / halt
+ *  / nurture); EVERY call → automatic outcome routing (contact DNC on negative,
+ *  agent notify + auto-drafted follow-up on positive, scoring + rolling
+ *  qualification). Best-effort — the voice webhook never 500s over post-call. */
+async function maybeRoutePostCall(svc: any, call: any): Promise<void> {
   try {
-    const { routeLeadCallIntent } = await import("@/lib/ai-isa/lead-call-intent")
-    await routeLeadCallIntent(svc, call.id)
-  } catch { /* best-effort — the voice webhook never 500s over classification */ }
+    if (call?.lead_id) {
+      const { routeLeadCallIntent } = await import("@/lib/ai-isa/lead-call-intent")
+      await routeLeadCallIntent(svc, call.id)
+    }
+    const { routePostCallOutcome } = await import("@/lib/ai-isa/post-call-outcome")
+    await routePostCallOutcome(svc, call.id)
+  } catch { /* best-effort — the voice webhook never 500s over post-call work */ }
 }
 
 async function finishCall(svc: any, callId: string, transcript: string, outcome = "completed"): Promise<void> {

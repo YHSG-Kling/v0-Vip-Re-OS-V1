@@ -123,15 +123,17 @@ export async function POST(request: NextRequest) {
   // Best-effort — never blocks the answer. (This write moved from the retired
   // Vapi function-tools onto the Twilio-native lane.)
   if (contactId) {
-    await svc.from("inbound_call_classifications").insert({
-      brokerage_id: ctx.brokerageId,
-      caller_phone: from,
-      caller_phone_digits: callerDigits,
-      classification,
-      ai_handled: true,
-      resulting_contact_id: contactId,
-      classified_at: new Date().toISOString(),
-    }).then(undefined, () => {})
+    try {
+      await svc.from("inbound_call_classifications").insert({
+        brokerage_id: ctx.brokerageId,
+        caller_phone: from,
+        caller_phone_digits: callerDigits,
+        classification,
+        ai_handled: true,
+        resulting_contact_id: contactId,
+        classified_at: new Date().toISOString(),
+      })
+    } catch { /* best-effort — never block the answer */ }
   }
 
   if (contactId || leadId) {
@@ -152,6 +154,23 @@ export async function POST(request: NextRequest) {
       transcription: appendTranscript(null, null, firstMessage),
       ai_notes: "engine:twilio",
     }), { table: "voice_calls", flow: "voice_call_ledger", brokerageId: ctx.brokerageId })
+
+    // ai_isa_calls lifecycle: an INBOUND AI call gets its scoring row now
+    // (outbound calls get theirs at placement) so the post-call brain can persist
+    // appointment_set + lead_quality_score against it. Best-effort.
+    const { data: vc } = await svc.from("voice_calls").select("id").eq("vapi_call_id", callSid).maybeSingle()
+    if ((vc as any)?.id) {
+      try {
+        await svc.from("ai_isa_calls").insert({
+          brokerage_id: ctx.brokerageId,
+          contact_id: contactId,
+          lead_id: leadId,
+          voice_call_id: (vc as any).id,
+          script_used: "inbound",
+          appointment_set: false,
+        })
+      } catch { /* best-effort — never block the answer */ }
+    }
   }
 
   const turnUrl = `${url.replace(/\/inbound$/, "/turn")}`

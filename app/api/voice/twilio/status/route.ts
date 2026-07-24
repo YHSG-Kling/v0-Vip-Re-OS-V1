@@ -64,13 +64,20 @@ export async function POST(request: NextRequest) {
     .select("id, lead_id")
     .then((r: any) => r, () => ({ data: null }))
 
-  // A LEAD's call that ended mid-conversation still gets intent-classified:
-  // positive direction converts the lead to a contact (canonical handoff).
-  const leadRow = (closed ?? []).find((r: any) => r.lead_id)
-  if (leadRow && callStatus === "completed") {
+  // Post-call brain — fires ONLY when THIS callback actually closed the row (no
+  // double-fire with the turn route's goodbye path, which closes first). A LEAD
+  // gets intent-classified (positive → canonical handoff); EVERY completed call
+  // gets the automatic outcome routing (contact DNC on negative, agent notify +
+  // auto-drafted follow-up on positive, scoring + rolling qualification).
+  const closedRow = (closed ?? [])[0]
+  if (closedRow && callStatus === "completed") {
     try {
-      const { routeLeadCallIntent } = await import("@/lib/ai-isa/lead-call-intent")
-      await routeLeadCallIntent(svc, leadRow.id)
+      if (closedRow.lead_id) {
+        const { routeLeadCallIntent } = await import("@/lib/ai-isa/lead-call-intent")
+        await routeLeadCallIntent(svc, closedRow.id)
+      }
+      const { routePostCallOutcome } = await import("@/lib/ai-isa/post-call-outcome")
+      await routePostCallOutcome(svc, closedRow.id)
     } catch { /* best-effort — never 500 a Twilio callback */ }
   }
 
