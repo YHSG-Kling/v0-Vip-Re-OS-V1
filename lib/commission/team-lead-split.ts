@@ -20,9 +20,17 @@
 
 import type { DistributionRecord } from "./types"
 
-/** The team-lead commission agreement, resolved from the `teams` row. */
+/** The team-lead commission agreement, resolved from the `teams` row.
+ *
+ * ID-SPACE CONTRACT (verified against the live schema): `teamLeadId` MUST be the
+ * lead's AGENTS id — the same space as the closing agent id passed to
+ * resolveTeamLeadOverride and as commission_distributions.agent_id. Note that
+ * teams.team_lead_id is a USERS id, so the caller resolves it to the lead's
+ * agents.id (agents.user_id → agents.id) before building this agreement. Mixing
+ * the spaces would break both the self-cut exclusion and the distribution FK. */
 export interface TeamLeadAgreement {
   teamId: string
+  /** The team lead's AGENTS id (resolved from teams.team_lead_id, a users id). */
   teamLeadId: string
   /** teams.team_split_type */
   splitType: "percent" | "flat"

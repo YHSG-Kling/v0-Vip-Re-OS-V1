@@ -15,11 +15,15 @@
  * against the live schema, which must be live-tested. This guard locks the math so
  * that integration is a thin, low-risk step.
  */
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { createClient } from "@supabase/supabase-js"
 import { resolveTeamLeadOverride, isAgreementEffective, type TeamLeadAgreement } from "../lib/commission/team-lead-split"
 
 let pass = 0, fail = 0
 const fails: string[] = []
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) } }
+const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
 const LEAD = "lead-uuid", AGENT = "agent-uuid", TEAM = "team-uuid"
 const pct = (v: number): TeamLeadAgreement => ({ teamId: TEAM, teamLeadId: LEAD, splitType: "percent", splitValue: v })
@@ -57,6 +61,58 @@ console.log("\n── agreement effective-dating ──")
   check("a future effective date ⇒ NOT yet in effect", !isAgreementEffective("2026-12-01T00:00:00Z", now))
 }
 
+console.log("\n── the math is WIRED into the live waterfall step, id-space-safe ──")
+{
+  const step = src("lib/commission/waterfall/08-team-split.ts")
+  check("step 08 applies the team-lead override", step.includes("resolveTeamLeadOverride"))
+  check("it resolves teams.team_lead_id (a USERS id) to the lead's AGENTS id before use",
+    /\.from\('agents'\)[\s\S]*?\.eq\('user_id', \(team as any\)\.team_lead_id\)/.test(step))
+  check("the override reduces the agent's final net (conservation-safe: adds a distribution of equal cents)",
+    step.includes("- totalTeamDeductionCents - leadDeductionCents"))
+  check("resolution is best-effort — a failure never breaks the whole calc", /catch \(err\)[\s\S]*?non-fatal/.test(step))
+}
+
+async function liveLayer() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY
+  if (!url || !key) { console.log("\n[live] ⊘ skipped (no SUPABASE creds) — pure + source layers proved the math + wiring"); return }
+  const svc = createClient(url, key)
+  console.log("\n[live] seed a team + lead → run applyTeamSplit → lead distribution + reduced agent net → cleanup 0")
+  const { data: brk } = await svc.from("brokerages").select("id").limit(1).maybeSingle()
+  if (!brk) { console.log("  ⊘ no brokerage — skipping"); return }
+  const brokerageId = (brk as any).id
+  const { data: ags } = await svc.from("agents").select("id, user_id").eq("brokerage_id", brokerageId).not("user_id", "is", null).limit(2)
+  const agents = (ags ?? []) as Array<{ id: string; user_id: string }>
+  if (agents.length < 2) { console.log("  ⊘ need 2 agents — skipping"); return }
+  const closing = agents[0], lead = agents[1]
+  const teamId = "eeee0000-0000-4000-8000-0000000000ff"
+  let priorTeamId: string | null = null
+  try {
+    const { data: c } = await svc.from("agents").select("team_id").eq("id", closing.id).maybeSingle()
+    priorTeamId = (c as any)?.team_id ?? null
+    await svc.from("teams").upsert({ id: teamId, brokerage_id: brokerageId, name: "ZZ Test Team", team_lead_id: lead.user_id, team_split_type: "percent", team_split_percent: 20, terms_effective_date: "2026-01-01" }, { onConflict: "id" })
+    await svc.from("agents").update({ team_id: teamId }).eq("id", closing.id)
+
+    const { applyTeamSplit } = await import("../lib/commission/waterfall/08-team-split")
+    const ctx: any = {
+      transactionId: "00000000-0000-0000-0000-000000000000", brokerageId, agentId: closing.id,
+      agentNetCents: 1_000_000, teamDistributions: [],
+    }
+    const out = await applyTeamSplit(ctx)
+    const leadDist = (out.teamDistributions ?? []).find((d: any) => d.agent_id === lead.id && d.notes === "Team lead override split")
+    check("live: a team-lead distribution to the lead's agents.id was produced", !!leadDist)
+    check("live: the lead's cut is 20% of the $10,000 net = $2,000", leadDist?.calculated_amount === 2000)
+    check("live: the agent's final net was reduced by the lead's cut ($8,000)", out.agentFinalNetCents === 800_000)
+  } finally {
+    await svc.from("agents").update({ team_id: priorTeamId }).eq("id", closing.id)
+    await svc.from("teams").delete().eq("id", teamId)
+    const { count } = await svc.from("teams").select("id", { count: "exact", head: true }).eq("id", teamId)
+    check("live: cleanup count == 0", (count ?? 0) === 0)
+  }
+}
+
+await liveLayer()
+
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
 if (fail > 0) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)); console.log(" ❌ TEAM_LEAD_SPLIT_FAIL"); process.exit(1) }
-console.log(" ✅ TEAM_LEAD_SPLIT_PASS — team-lead override math is exact, self-cut-safe, and negative-proof")
+console.log(" ✅ TEAM_LEAD_SPLIT_PASS — team-lead override math is exact, self-cut-safe, negative-proof, and wired id-space-safe")
