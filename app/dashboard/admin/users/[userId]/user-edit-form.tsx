@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge"
 import { CheckCircle2, AlertCircle, Loader2, ShieldCheck } from "lucide-react"
 import { ROLE_PERMISSIONS, ROLE_HIERARCHY, PERMISSION_DEFINITIONS } from "@/lib/security/permission-matrix"
 import { toCanonicalRole } from "@/lib/security/types"
+import { CommissionAgreementCard } from "./commission-agreement-card"
 
 const USER_TYPE_OPTIONS = [
   { value: "agent", label: "Agent" },
@@ -341,6 +342,9 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, 
           </CardContent>
         </Card>
       )}
+
+      {/* Commission Agreement — upload-driven form → e-sign → saved on profile */}
+      {agentProfile && <CommissionAgreementCard targetUserId={user.id} />}
 
       {/* Status */}
       <Card>
