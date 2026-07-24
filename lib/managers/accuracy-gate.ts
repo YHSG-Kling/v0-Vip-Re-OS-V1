@@ -260,6 +260,44 @@ export async function loadAccuracyGateReport(
   return Promise.all(domains.map((d) => loadAccuracyGateVerdict(brokerageId, d, client)))
 }
 
+// ─── COMMAND-CENTER GLANCE (the "one screen" governance mirror) ──────────────
+// The full per-domain report + hold rollup live on the Manager Trust page; the
+// Command Center — the operator's one screen — showed only the behavioral trust
+// meter and the earned-autonomy grants, never the PREDICTION-accuracy gate that
+// makes autonomy earned. This folds both loaders into one compact glance so the
+// governance is visible where the decisions are made, with a link to the full
+// view. PURE so the simulator can exhaust it without a DB.
+
+export interface AutonomyAccuracySummary {
+  /** Domains whose measured accuracy has EARNED autonomous action. */
+  earned: number
+  /** Domains acting but still SUPERVISED (accuracy not yet proven). */
+  supervised: number
+  /** Applicable domains still gathering signal (no_signal). */
+  gathering: number
+  /** Sends actually HELD by the gate in the window. */
+  held: number
+  holdWindowDays: number
+  /** True when any applicable domain has a real verdict — else "still learning". */
+  hasSignal: boolean
+}
+
+/** PURE: fold the per-domain verdicts + hold rollup into the Command Center glance. */
+export function summarizeAutonomyAccuracy(
+  verdicts: AccuracyGateVerdict[],
+  holds: AccuracyHoldRollup | null,
+): AutonomyAccuracySummary {
+  const applicable = verdicts.filter((v) => v.state !== "not_applicable")
+  return {
+    earned: applicable.filter((v) => v.state === "earned").length,
+    supervised: applicable.filter((v) => v.state === "supervised").length,
+    gathering: applicable.filter((v) => v.state === "no_signal").length,
+    held: holds?.totalHolds ?? 0,
+    holdWindowDays: holds?.windowDays ?? 30,
+    hasSignal: applicable.some((v) => v.state === "earned" || v.state === "supervised"),
+  }
+}
+
 /** Test seam / post-write invalidation. */
 export function __clearAccuracyGateCache(): void {
   verdictCache.clear()

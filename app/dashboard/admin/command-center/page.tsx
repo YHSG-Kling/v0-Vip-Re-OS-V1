@@ -8,6 +8,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { CommandCenterClient } from "./command-center-client"
 import { TrustMeter } from "./trust-meter"
 import { EarnedAutonomyPanel } from "./earned-autonomy-panel"
+import { AutonomyAccuracyCard } from "./autonomy-accuracy-card"
 import { QuarterlyReviewCard } from "./quarterly-review-card"
 import { ActingAsLog } from "./acting-as-log"
 import { CoverageCard } from "./coverage-card"
@@ -153,6 +154,22 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     ? await listEarnedAutonomyAction().catch(() => null)
     : null
 
+  // AUTONOMY-ACCURACY GLANCE — the governance mirror: autonomy is EARNED by
+  // measured prediction accuracy, not toggled. The full per-domain report lives
+  // on Manager Trust; this compact glance puts it on the operator's one screen.
+  let autonomyAccuracy: import("@/lib/managers/accuracy-gate").AutonomyAccuracySummary | null = null
+  if (brokerageId && userType !== "superadmin") {
+    try {
+      const { loadAccuracyGateReport, loadAccuracyHoldRollup, summarizeAutonomyAccuracy } =
+        await import("@/lib/managers/accuracy-gate")
+      const [verdicts, holds] = await Promise.all([
+        loadAccuracyGateReport(brokerageId),
+        loadAccuracyHoldRollup(brokerageId, 30),
+      ])
+      autonomyAccuracy = summarizeAutonomyAccuracy(verdicts, holds)
+    } catch { /* the glance is additive — never blocks the Command Center */ }
+  }
+
   // YOUR AI TEAMMATES — the tenant's own chartered identities on the manager
   // bench (the action enforces tier-parity principal access; others see nothing).
   const teammates = brokerageId && userType !== "superadmin"
@@ -256,6 +273,11 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       {earned?.ok && earned.grants && (
         <div className="mx-6 mt-4">
           <EarnedAutonomyPanel grants={earned.grants} />
+        </div>
+      )}
+      {autonomyAccuracy && (
+        <div className="mx-6 mt-4">
+          <AutonomyAccuracyCard summary={autonomyAccuracy} />
         </div>
       )}
       {teammates?.ok && (
