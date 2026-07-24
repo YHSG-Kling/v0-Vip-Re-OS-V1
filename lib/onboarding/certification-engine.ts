@@ -228,26 +228,17 @@ async function checkLeadManagementEligibility(
     }
   }
 
-  // Requirement 2: Lead Management Essentials course passed
-  const { data: leadCourse } = await supabase
-    .from('training_courses')
-    .select('id')
-    .eq('course_name', 'Lead Management Essentials')
-    .or(`brokerage_id.is.null,brokerage_id.eq.${brokerageId}`)
-    .maybeSingle()
-
-  if (leadCourse) {
-    const { data: courseProgress } = await supabase
-      .from('agent_courses')
-      .select('status, score')
-      .eq('agent_id', agentId)
-      .eq('training_course_id', leadCourse.id)
-      .maybeSingle()
-
-    if (!courseProgress || courseProgress.status !== 'passed') {
-      missingRequirements.push('Pass the Lead Management Essentials course')
-    }
-  }
+  // NOTE — the former "pass the Lead Management Essentials course" requirement
+  // read training_courses + agent_courses. Those tables are seed-only: nothing
+  // in the app ever WRITES agent_courses (the course-taking runtime was never
+  // built — superseded by the learning_modules / learning_assignments rail), so
+  // agent_courses.status could never become 'passed'. That made this the ONE
+  // permanently-unsatisfiable gate on a REQUIRED onboarding cert, which in turn
+  // made completeOnboarding() unreachable for every agent (all three required
+  // certs must be awarded). The live, writeable gate for lead-management
+  // competency is the required training_videos above (same pattern as the
+  // Platform Fundamentals and Compliance Basics certs); that is now the sole
+  // requirement, so the certification — and onboarding completion — is earnable.
 
   return {
     eligible: missingRequirements.length === 0,
