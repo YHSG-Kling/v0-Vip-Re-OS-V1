@@ -22,27 +22,28 @@ export default async function AutomationsPage() {
       .select("*")
       .eq("brokerage_id", ctx.brokerageId)
       .order("created_at", { ascending: false }),
+    // Automation errors come from the canonical automation_errors table (the
+    // retired Engine A's workflow_executions never recorded any).
     service
-      .from("workflow_executions")
-      .select("id, workflow_name, error_message, status, started_at")
+      .from("automation_errors")
+      .select("id, workflow_name, error_message, severity, status, context_json, created_at, resolved_at")
       .eq("brokerage_id", ctx.brokerageId)
-      .eq("status", "failed")
-      .order("started_at", { ascending: false })
+      .in("status", ["open", "failed"])
+      .order("created_at", { ascending: false })
       .limit(50),
   ])
 
   const automations = automationsResult.data ?? []
 
-  // Map workflow_executions failed rows to the AutomationError shape
-  const recentErrors = (errorsResult.data ?? []).map((e) => ({
+  const recentErrors = (errorsResult.data ?? []).map((e: any) => ({
     id: e.id,
     workflow_name: e.workflow_name ?? "Unknown workflow",
     error_message: e.error_message ?? "Unknown error",
-    severity: "high" as const,
-    status: "open",
-    context_json: undefined,
-    created_at: e.started_at ?? new Date().toISOString(),
-    resolved_at: null,
+    severity: (e.severity ?? "high") as const,
+    status: e.status ?? "open",
+    context_json: e.context_json ?? undefined,
+    created_at: e.created_at ?? new Date().toISOString(),
+    resolved_at: e.resolved_at ?? null,
   }))
 
   return (

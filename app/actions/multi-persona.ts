@@ -671,17 +671,20 @@ export async function createWorkflowAutomation(data: {
 export async function executeWorkflow(workflowId: string, contextData: any) {
   const supabase = await createClient()
 
+  // Runs a saved automation from workflow_automations — the canonical table the admin
+  // automations UI manages. (Previously this read the retired workflow_executions with
+  // an automation id — a table mismatch that made the Execute button a silent no-op.)
   const { data: workflow } = await supabase
-    .from("workflow_executions")
+    .from("workflow_automations")
     .select("*")
     .eq("id", workflowId)
     .single()
 
-  if (!workflow || workflow.status === "completed") {
-    return { success: false, reason: "Workflow not active" }
+  if (!workflow || workflow.is_active === false) {
+    return { success: false, reason: "Automation not active" }
   }
 
-  const actions: any[] = workflow.context?.actions || []
+  const actions: any[] = workflow.actions || []
 
   for (const action of actions) {
     switch (action.type) {
@@ -715,8 +718,8 @@ export async function executeWorkflow(workflowId: string, contextData: any) {
   }
 
   await supabase
-    .from("workflow_executions")
-    .update({ status: "completed", completed_at: new Date().toISOString() })
+    .from("workflow_automations")
+    .update({ execution_count: (workflow.execution_count ?? 0) + 1, last_executed_at: new Date().toISOString() })
     .eq("id", workflowId)
 
   return { success: true }

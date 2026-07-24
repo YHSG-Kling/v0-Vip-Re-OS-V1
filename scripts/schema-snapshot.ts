@@ -736,12 +736,9 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   website_visitors: ["agent_id", "brokerage_id", "contact_id", "first_seen_at", "id", "identified_at", "last_seen_at", "lead_id", "page_title", "page_url", "referrer", "session_id", "time_on_page_seconds", "utm_campaign", "utm_medium", "utm_source"],
   weekly_plans: ["agent_id", "brokerage_id", "created_at", "generated_at", "id", "plan_content", "week_start"],
   workflow_automations: ["actions", "assigned_to_role", "brokerage_id", "created_at", "created_by", "execution_count", "id", "is_active", "last_executed_at", "trigger_conditions", "trigger_event", "updated_at", "workflow_name", "workflow_type"],
-  workflow_executions: ["agent_id", "brokerage_id", "completed_at", "context", "error_message", "id", "started_at", "status", "workflow_id", "workflow_name"],
   workflow_intake_sessions: ["agent_user_id", "brokerage_id", "contact_id", "conversation", "created_at", "current_intake", "document_id", "id", "intake_type", "status", "updated_at"],
-  workflow_retries: ["brokerage_id", "created_at", "error_message", "executed", "executed_at", "execution_id", "id", "max_retries", "retry_after", "retry_count", "retry_reason", "scheduled_for", "status", "workflow_config"],
   workflow_run_steps: ["attempt_count", "completed_at", "error_message", "id", "output", "run_id", "started_at", "status", "step_index", "step_key", "step_label"],
   workflow_runs: ["agent_user_id", "brokerage_id", "chain_key", "completed_at", "contact_id", "current_step_index", "error_message", "failed_at", "id", "listing_id", "metadata", "started_at", "status", "step_outputs", "transaction_id", "trigger_event", "trigger_event_id", "updated_at"],
-  workflow_step_executions: ["action_type", "completed_at", "error_message", "execution_id", "id", "params", "result", "retry_count", "started_at", "status", "step_id", "step_name"],
   workflow_step_runs: ["attribution_source", "blocked_reason", "channel", "conversion_value_cents", "converted_at", "created_at", "duration_ms", "enrollment_id", "finished_at", "id", "output_variable_name", "provider_key", "provider_message_id", "started_at", "status", "step_id", "step_output"],
   workflow_webhook_events: ["brokerage_id", "contact_id", "event_type", "id", "payload", "received_at", "source"],
   // Live-schema conformance (MCP introspection): code-referenced live tables the snapshot had missed.

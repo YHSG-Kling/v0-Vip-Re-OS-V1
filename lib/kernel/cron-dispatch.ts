@@ -103,7 +103,6 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/presentation-section-drip"           , schedule: "*/15 * * * *" },
   { path: "/api/cron/publish-social-posts"                , schedule: "*/15 * * * *" },
   { path: "/api/cron/social-analytics-sync"               , schedule: "45 7 * * *" }, // real platform metrics for published posts → social_media_analytics (round 30)
-  { path: "/api/cron/workflow-retries"                    , schedule: "*/15 * * * *" },
   { path: "/api/property-alerts/run?frequency=instant"    , schedule: "*/15 * * * *" },
   { path: "/api/cron/intro-video-email-backfill"          , schedule: "*/2 * * * *" },
   { path: "/api/cron/listing-promo-hybrid-composite"      , schedule: "*/2 * * * *" },

@@ -527,36 +527,37 @@ export async function retryFailedWorkflow(
     if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
     if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
     const brokerageId = ctx.brokerageId
-    const agentId = ctx.agentId
+    void supabase
 
-    // Verify workflow ownership — the prior execution row holds brokerage_id.
-    // workflowId here is the workflow_executions.workflow_id text key; look up
-    // the most recent execution for that workflow in this brokerage to confirm
-    // the caller has the right to retry it.
+    // The retired Engine A's workflow_executions retry table is gone. A "failed
+    // workflow" is now an automation_errors row (the automations console). Verify
+    // ownership, then RESOLVE the error — the retry acknowledges + clears it.
+    // workflowId here is the automation_errors.id.
     const svc = createServiceClient()
-    const { data: priorExec } = await svc
-      .from("workflow_executions")
-      .select("brokerage_id")
-      .eq("workflow_id", workflowId)
+    const { data: errRow } = await svc
+      .from("automation_errors")
+      .select("id, brokerage_id")
+      .eq("id", workflowId)
       .eq("brokerage_id", brokerageId)
-      .limit(1)
       .maybeSingle()
-    if (!priorExec) {
+    if (!errRow) {
       return { success: false, error: "Forbidden" }
     }
 
-    const { data: retry } = await supabase
-      .from("workflow_executions")
-      .insert({
-        workflow_id: workflowId,
-        agent_id: agentId,
-        brokerage_id: brokerageId,
-        status: "retrying",
+    const { error: updErr } = await svc
+      .from("automation_errors")
+      .update({
+        status: "resolved",
+        resolved_at: new Date().toISOString(),
+        resolved_by: ctx.userId,
+        resolution_notes: "Retried from the automations console",
       })
-      .select()
-      .single()
+      .eq("id", workflowId)
+    if (updErr) {
+      return { success: false, error: updErr.message }
+    }
 
-    return { success: true, retryId: retry?.id }
+    return { success: true, retryId: workflowId }
   } catch (error: any) {
     return { success: false, error: error?.message ?? "Failed to retry workflow" }
   }
