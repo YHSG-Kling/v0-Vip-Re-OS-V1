@@ -39,7 +39,7 @@ export default async function AutomationsPage() {
     id: e.id,
     workflow_name: e.workflow_name ?? "Unknown workflow",
     error_message: e.error_message ?? "Unknown error",
-    severity: (e.severity ?? "high") as const,
+    severity: (e.severity ?? "high") as "critical" | "high" | "medium" | "low",
     status: e.status ?? "open",
     context_json: e.context_json ?? undefined,
     created_at: e.created_at ?? new Date().toISOString(),
