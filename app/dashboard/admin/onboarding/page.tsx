@@ -47,11 +47,19 @@ export default async function AdminOnboardingOsPage() {
     .select("provider_type, status")
     .eq("brokerage_id", userData.brokerage_id)
 
-  // Fetch training progress (agent_courses has score, not completion_percentage)
-  const { data: trainingProgress } = await service
-    .from("agent_courses")
-    .select("status, score")
+  // Training progress = agents' Academy module completion on the CANONICAL rail
+  // (learning_assignments). The legacy agent_courses table had no runtime writer, so this
+  // panel always showed 0% completed — this reflects real agent coursework, mapped to the
+  // panel's {status, score} shape (status CHECK: passed|in_progress|not_started).
+  const { data: trainingRows } = await service
+    .from("learning_assignments")
+    .select("status, quiz_score")
     .eq("brokerage_id", userData.brokerage_id)
+    .not("agent_user_id", "is", null)
+  const trainingProgress = (trainingRows || []).map((r: { status: string | null; quiz_score: number | null }) => ({
+    status: r.status === "completed" ? "passed" : r.status === "in_progress" ? "in_progress" : "not_started",
+    score: r.quiz_score,
+  }))
 
   // Fetch provider readiness
   const { data: providers } = await service

@@ -13,7 +13,7 @@ interface TrainingProgressPanelProps {
 }
 
 export function TrainingProgressPanel({ trainingProgress, brokerageId }: TrainingProgressPanelProps) {
-  // agent_courses status CHECK: not_started|in_progress|passed|failed
+  // Status is mapped from learning_assignments (canonical rail): passed|in_progress|not_started
   const completed = trainingProgress.filter(t => t.status === 'passed').length
   const inProgress = trainingProgress.filter(t => t.status === 'in_progress').length
   const notStarted = trainingProgress.filter(t => t.status === 'not_started').length

@@ -194,33 +194,40 @@ export async function getAgentProgress(
       : 0
   }
 
-  // Get courses
-  const { data: courses } = await supabase
-    .from('training_courses')
-    .select('id, course_name, category, is_required, passing_score, order_index')
-    .or(`brokerage_id.is.null,brokerage_id.eq.${targetBrokerageId}`)
-    .order('order_index', { ascending: true })
+  // Courses = the agent's Academy coursework on the CANONICAL rail (learning_modules +
+  // learning_assignments). The legacy training_courses/agent_courses spine had no
+  // course-taking runtime (agent_courses was never written), so it always rendered the
+  // same three seed courses as permanently "not started" — a duplicate of the
+  // certifications list. This shows the agent's REAL assigned + completed modules.
+  const { data: courseAssignments } = await supabase
+    .from('learning_assignments')
+    .select('module_id, status, quiz_score, completed_at, learning_modules!inner(title, stage_tags, required, audience_roles)')
+    .eq('agent_user_id', targetAgentId)
+    .not('module_id', 'is', null)
 
-  const { data: agentCourses } = await supabase
-    .from('agent_courses')
-    .select('training_course_id, status, score, completed_at')
-    .eq('agent_id', targetAgentId)
+  const mapCourseStatus = (s: string | null): CourseProgress['status'] =>
+    s === 'completed' ? 'passed' : s === 'in_progress' ? 'in_progress' : 'not_started'
 
-  const agentCourseMap = new Map((agentCourses || []).map(c => [c.training_course_id, c]))
-
-  const courseProgress: CourseProgress[] = (courses || []).map(course => {
-    const agentCourse = agentCourseMap.get(course.id)
-    return {
-      id: course.id,
-      courseName: course.course_name,
-      category: course.category,
-      status: agentCourse?.status || 'not_started',
-      score: agentCourse?.score || null,
-      completedAt: agentCourse?.completed_at,
-      isRequired: course.is_required,
-      passingScore: course.passing_score,
-    }
-  })
+  const courseProgress: CourseProgress[] = ((courseAssignments || []) as any[])
+    // Agent-facing coursework only — never a customer-audience module.
+    .filter(a => {
+      const m = Array.isArray(a.learning_modules) ? a.learning_modules[0] : a.learning_modules
+      const roles = m?.audience_roles ?? []
+      return roles.length === 0 || !roles.includes('customer')
+    })
+    .map(a => {
+      const m = Array.isArray(a.learning_modules) ? a.learning_modules[0] : a.learning_modules
+      return {
+        id: a.module_id as string,
+        courseName: (m?.title as string) ?? 'Course',
+        category: (m?.stage_tags?.[0] as string) ?? 'academy',
+        status: mapCourseStatus(a.status),
+        score: a.quiz_score ?? null,
+        completedAt: a.completed_at ?? undefined,
+        isRequired: (m?.required as boolean) ?? false,
+        passingScore: 80,
+      }
+    })
 
   // Update certification category based on earned certs
   const certStatus = await getCertificationStatus(targetAgentId, targetBrokerageId)
@@ -553,7 +560,7 @@ export async function dismissCelebration(): Promise<{ success: boolean; error?: 
 // ─── Retake Course ───────────────────────────────────────────────────────────
 
 export async function retakeCourse(
-  courseId: string
+  courseId: string  // a learning_modules.id on the canonical rail
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient()
 
@@ -562,13 +569,14 @@ export async function retakeCourse(
     return { success: false, error: 'Not authenticated' }
   }
 
-  // Delete the agent_courses record to allow retake
-  const agentId = await resolveAgentId(supabase, user.id)
+  // Reset the agent's completion on the canonical rail so the module can be retaken:
+  // clear the learning_assignments completion for (this agent, this module). Scoped to
+  // the caller's own user id — an agent can only reset their own coursework.
   const { error } = await supabase
-    .from('agent_courses')
+    .from('learning_assignments')
     .delete()
-    .eq('agent_id', agentId)
-    .eq('training_course_id', courseId)
+    .eq('agent_user_id', user.id)
+    .eq('module_id', courseId)
 
   if (error) {
     return { success: false, error: error.message }
