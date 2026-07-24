@@ -12,11 +12,21 @@
 alter table contract_signatures add column if not exists form_id uuid;
 alter table contract_signatures add column if not exists field_values jsonb;
 
--- contract_signatures is the agent onboarding-contract ledger (ICA, team agreement,
--- policy ack, NAR ethics). A brokerage commission agreement is the same kind of
--- agent-signed onboarding document, so it joins the contract_type set.
+-- contract_signatures is a SHARED ledger with two writers, so the contract_type
+-- CHECK must enumerate BOTH sets (recreating it with only one set would reject the
+-- other writer's sends):
+--   1. Agent onboarding contracts (ICA, team agreement, policy ack, NAR ethics) —
+--      app/actions/onboarding/license.ts. A brokerage commission agreement is the
+--      same kind of agent-signed onboarding document, so it joins this set.
+--   2. Transaction document e-sign — app/actions/transaction-document-signatures.ts
+--      writes contract_type = docType from lib/documents/signable-doc-types.ts
+--      (SIGNABLE_DOC_TYPES). Those values MUST be allowed too.
 alter table contract_signatures drop constraint if exists contract_signatures_contract_type_check;
 alter table contract_signatures add constraint contract_signatures_contract_type_check
   check (contract_type = any (array[
-    'independent_contractor','team_agreement','policy_acknowledgment','nar_code_of_ethics','commission_agreement'
+    -- onboarding contracts (+ commission_agreement, new)
+    'independent_contractor','team_agreement','policy_acknowledgment','nar_code_of_ethics','commission_agreement',
+    -- transaction documents (SIGNABLE_DOC_TYPES)
+    'purchase_agreement','contract','addendum','amendment','listing_agreement',
+    'buyer_representation_agreement','disclosure','escrow_instructions','counter_offer','acceptance'
   ]));

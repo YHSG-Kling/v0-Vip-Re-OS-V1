@@ -81,6 +81,14 @@ const nextConfig: NextConfig = {
   },
   experimental: {
     optimizePackageImports: ['lucide-react', 'zustand'],
+    // Server Actions default to a 1MB request body — a base64-encoded PDF (~+33%)
+    // caps real uploads at ~750KB, so CDA templates + brokerage commission-agreement
+    // forms (uploadCdaTemplateFile / uploadCommissionAgreementFormAction, which send
+    // the PDF as base64 through a Server Action) would fail for ordinary multi-page
+    // documents. Raise the ceiling to cover typical real-estate paperwork.
+    serverActions: {
+      bodySizeLimit: '8mb',
+    },
     // Cap Turbopack's compile-time memory. `next build` uses Turbopack (Rust),
     // which holds compile state in NATIVE memory; on this large app it climbed
     // to the full 16 GB of a standard CI/build container and the VM was killed
