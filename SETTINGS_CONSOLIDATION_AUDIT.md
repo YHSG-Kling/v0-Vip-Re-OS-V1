@@ -744,3 +744,46 @@ client is used so it can't regress.
 Verified: `tsc --noEmit` clean (0 errors); `test:phone-plan` (34/0),
 `test:brand-voice-cascade` (9/0), `test:manager-ownership` (73/0). Commits
 `f7718cf` (feat) + the brand-voice fix. CI guards + build green.
+
+## 18. Backlog build-out (recruiting/finance corrections) + forms-table drift found
+
+**Manager-ownership correction (owner):** user/people management is the RECRUITING
+MANAGER's domain (+ FINANCE for commission), not data_steward. `people_ops_profile`
+reassigned to `recruiting_manager` (commit e1b8903). `assignment_rules_authz` stays
+`data_steward` (it's the write-integrity of a data_steward-stewarded table).
+
+**Add-a-Number shipped (commit dea4b0a):** the AI-call settings had no way to CREATE a
+number. Three broker-gated tenant actions (`getPhoneAllowanceStatusAction`,
+`searchBrokerageNumbersAction`, `purchaseBrokerageNumberAction`) + an Add-a-Number card
+wire search→purchase to the plan-allowance-gated `provisionNumber` core (bundle vs metered
+overage, hard-cap block, honest not-configured path). `finance_manager` owns the billable
+surface; `data_steward` owns provisioning. Proof `test:add-number-ui` (13/0). Verdict
+live-verified (seed brokerage solo_agent/0 active → next included).
+
+**FORMS-TABLE DRIFT (found, not yet consolidated — needs a careful pass):** two brokerage-
+form base tables exist, both empty:
+- `brokerage_forms` (form_category / form_type / document_url / field_schema) — read by the
+  forms-kernel available-list + field-schema loader; documented as "the canonical home."
+  NO writer UI.
+- `brokerage_form_library` (packet_type / pdf_url / name / field_schema) — WRITTEN by the
+  transaction-forms admin upload UI and read by the form-fill-engine.
+LATENT BUG: a form uploaded via the admin UI (→ library) never appears in the forms-kernel
+fill list (← forms). RESOLUTION (recommended): keep `brokerage_forms` canonical (its
+category model generalizes to transaction + onboarding forms); repoint the transaction-forms
+upload route + page + form-fill-engine onto it as a separate tested pass, then drop the
+orphan `brokerage_form_library`. Both empty ⇒ zero data risk; the risk is code (the fill
+engine reads library columns), so it gets its own careful pass, not a rushed edit.
+
+**Commission-agreement plan (backlog #1) — sits on the clean table:** brokerage uploads its
+commission-agreement form → `brokerage_forms` (form_category='commission_agreement') →
+selected on the agent profile → fill `field_schema` → e-sign via the resolved provider
+(mirroring `dispatchCdaSignerEsign`'s honest in-app fallback) → `contract_signatures`
+(agent_id, contract_type='commission_agreement', provider_envelope_id) with new nullable
+`form_id`/`field_values` columns → `finalize-packet` webhook closes it → signed PDF surfaces
+on the profile. `recruiting_manager` owns onboarding paperwork; `compliance_officer` gates
+the e-sign; `finance_manager` owns the commission economics.
+
+**Remaining backlog (owner, sequenced):** #1 commission agreement (next), #2 ISA voice-sample
+recording (record → ElevenLabs clone), #3 onboarding steps/playbooks, #4 education for
+contacts + Academy for staff (accessible creation), #5 wrap campaign sequences inside
+workflows (drift-merge).
