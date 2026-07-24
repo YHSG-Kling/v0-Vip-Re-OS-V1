@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { Phone, Volume2, CheckCircle2, AlertCircle, Loader2, Plus, Search, Mic } from "lucide-react"
 import { A2pRegistrationCard } from "./a2p-card"
 import { VoiceRecorder } from "@/app/dashboard/settings/twin-studio/components/voice-recorder"
-import { uploadTwinVoiceSample } from "@/app/actions/twin-studio-upload"
+import { uploadBrokerageVoiceSample } from "@/app/actions/twin-studio-upload"
 import {
   updateBrokeragePhoneSettings,
   getPhoneAllowanceStatusAction,
@@ -132,7 +132,7 @@ export function PhoneSettingsClient({ initialSettings, genericVoices, allowanceS
     try {
       // 1. Upload the recorded sample to the Supabase voice bucket.
       const base64 = await blobToBase64(blob)
-      const up = await uploadTwinVoiceSample({ base64, mimeType })
+      const up = await uploadBrokerageVoiceSample({ base64, mimeType })
       if (!up.ok || !up.url) { setVoiceError(up.error ?? "Upload failed"); return }
 
       // 2. Clone via ElevenLabs and save it as the brokerage's default ISA voice.

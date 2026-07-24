@@ -103,3 +103,39 @@ export async function uploadTwinVoiceSample(params: {
   const { data: pub } = supabase.storage.from(VOICE_BUCKET).getPublicUrl(path)
   return { ok: true, url: pub.publicUrl }
 }
+
+/**
+ * Brokerage-scoped voice sample upload — for the ISA voice clone, which is a
+ * BROKERAGE-wide setting owned by broker/admin. Unlike uploadTwinVoiceSample
+ * (per-agent, requires an agents row), this requires only the brokerage context
+ * + a broker/admin role, so a pure admin with no agents row can still record the
+ * ISA voice. Stored under the same voice bucket at <brokerageId>/isa/<uuid>.
+ */
+export async function uploadBrokerageVoiceSample(params: {
+  base64: string
+  mimeType: string
+}): Promise<{ ok: boolean; url?: string; error?: string }> {
+  const ctx = await resolveWriteContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+  if (!["broker", "broker_admin", "admin", "superadmin"].includes(ctx.userType ?? "")) {
+    return { ok: false, error: "Only broker / admin can record the ISA voice" }
+  }
+  if (!params.mimeType.startsWith("audio/")) {
+    return { ok: false, error: "File must be audio" }
+  }
+
+  await ensureBucket(VOICE_BUCKET)
+
+  const supabase = createServiceClient()
+  const ext = extFromMime(params.mimeType, "mp3")
+  const path = `${ctx.brokerageId}/isa/${crypto.randomUUID()}.${ext}`
+  const buffer = Buffer.from(params.base64, "base64")
+
+  const { error } = await supabase.storage
+    .from(VOICE_BUCKET)
+    .upload(path, buffer, { contentType: params.mimeType, upsert: false })
+  if (error) return { ok: false, error: error.message }
+
+  const { data: pub } = supabase.storage.from(VOICE_BUCKET).getPublicUrl(path)
+  return { ok: true, url: pub.publicUrl }
+}

@@ -39,8 +39,8 @@ console.log("\n── the ISA voice settings surface can now RECORD → clone �
   const ui = src("app/dashboard/admin/phone-settings/phone-settings-client.tsx")
   check("reuses the EXISTING shared VoiceRecorder (no new recorder built)",
     ui.includes('from "@/app/dashboard/settings/twin-studio/components/voice-recorder"') && ui.includes("<VoiceRecorder"))
-  check("uploads the sample to the twin-voice-samples bucket via uploadTwinVoiceSample",
-    ui.includes("uploadTwinVoiceSample"))
+  check("uploads via the BROKERAGE-scoped voice upload (works for a pure admin with no agents row)",
+    ui.includes("uploadBrokerageVoiceSample"))
   check("POSTs the sample to the clone route with isa_default",
     ui.includes('"/api/elevenlabs/voice-clone"') && ui.includes("isa_default: true"))
   check("on success sets the recorded clone as the ISA voice",
