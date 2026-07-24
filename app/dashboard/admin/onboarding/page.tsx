@@ -3,6 +3,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { redirect } from "next/navigation"
 import { AdminOnboardingOsClient } from "./admin-onboarding-os-client"
 import { OnboardingCurriculumEditor } from "./onboarding-curriculum-editor"
+import { getBrokerageProviderReadiness } from "@/lib/platform/provider-posture"
 
 export const metadata = {
   title: "Onboarding Operations | Admin OS",
@@ -61,11 +62,12 @@ export default async function AdminOnboardingOsPage() {
     score: r.quiz_score,
   }))
 
-  // Fetch provider readiness
-  const { data: providers } = await service
-    .from("brokerage_integrations")
-    .select("provider_type, status, last_health_check_at")
-    .eq("brokerage_id", userData.brokerage_id)
+  // Provider readiness — derived from the canonical provider registry (the same
+  // engine the fleet posture uses), scoped to this brokerage. Reads BOTH the
+  // tenant's own connections AND platform-provided/keyless capabilities, so a
+  // solo admin relying on platform keys sees their live capability set instead
+  // of an empty 0% panel (raw brokerage_integrations was blind to those).
+  const providerReadiness = await getBrokerageProviderReadiness(service, userData.brokerage_id)
 
   // Fetch health metrics
   const { data: recentOnboardings } = await service
@@ -98,7 +100,7 @@ export default async function AdminOnboardingOsPage() {
         }}
         setupBlockers={integrations?.filter(i => i.status !== "connected") || []}
         trainingProgress={trainingProgress || []}
-        providers={providers || []}
+        providerReadiness={providerReadiness}
         recentOnboardings={recentOnboardings || []}
       />
       {/* Curriculum authoring — the write surface the monitoring console lacked */}

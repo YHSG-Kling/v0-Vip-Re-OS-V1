@@ -20,6 +20,7 @@ import {
 } from './components/os'
 import { getBrokerageAgentLicenseStatuses, reviewLicenseManually, type AgentLicenseStatus } from '@/app/actions/admin/license-tracking'
 import { CdaSetupPanel } from './components/os/cda-setup-panel'
+import type { BrokerageProviderReadiness } from '@/lib/platform/provider-posture'
 
 interface AdoptionMetrics {
   avgCompletion: number
@@ -38,12 +39,6 @@ interface TrainingProgress {
   score: number | null
 }
 
-interface Provider {
-  provider_type: string
-  status: string
-  last_health_check_at?: string
-}
-
 interface RecentOnboarding {
   id: string
   status: string
@@ -58,7 +53,7 @@ interface AdminOnboardingOsClientProps {
   adoptionMetrics: AdoptionMetrics
   setupBlockers: SetupBlocker[]
   trainingProgress: TrainingProgress[]
-  providers: Provider[]
+  providerReadiness: BrokerageProviderReadiness
   recentOnboardings: RecentOnboarding[]
 }
 
@@ -69,7 +64,7 @@ export function AdminOnboardingOsClient({
   adoptionMetrics,
   setupBlockers,
   trainingProgress,
-  providers,
+  providerReadiness,
   recentOnboardings,
 }: AdminOnboardingOsClientProps) {
   const [activeTab, setActiveTab] = useState('overview')
@@ -199,10 +194,7 @@ export function AdminOnboardingOsClient({
         <TabsContent value="setup" className="space-y-4">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <SetupBlockersPanel blockers={setupBlockers} />
-            <ProviderReadinessPanel
-              providers={providers}
-              brokerageId={brokerageId}
-            />
+            <ProviderReadinessPanel readiness={providerReadiness} />
           </div>
           {/* CDA setup — does the brokerage offer Commission Disbursement
               Authorizations? If yes, broker uploads template PDFs here. */}

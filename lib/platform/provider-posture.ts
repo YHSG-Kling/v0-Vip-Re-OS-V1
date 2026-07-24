@@ -1028,3 +1028,162 @@ export async function getFullProviderPosture(svc: any): Promise<FullProviderPost
     rows,
   }
 }
+
+// ── Brokerage-scoped readiness (the tenant "what can I actually use?" view) ────
+//
+// The onboarding readiness panel previously read brokerage_integrations RAW and
+// marked anything not status='connected' as "Pending". That is BLIND to two
+// whole classes of live capability: keyless free lanes, and platform-PROVIDED
+// providers (a platform env key the tenant never has to configure). A solo
+// admin who relies entirely on the platform's keys had ZERO integration rows —
+// so the panel showed 0% "nothing ready" while their whole capability set was
+// live. This derives readiness from the SAME canonical registry the fleet
+// posture uses, scoped to one brokerage, so the two surfaces cannot drift.
+
+export type BrokerageReadinessState =
+  | "live_connected"   // this brokerage's own active credentials
+  | "live_platform"    // provided by the platform (env key present), zero tenant setup
+  | "keyless"          // free lane, always on, no key at all
+  | "needs_connection" // tenant-BYO provider the brokerage has not connected yet
+  | "platform_dark"    // platform-scoped but the platform key is absent — staff's job, not the tenant's
+
+export interface BrokerageReadinessInput {
+  keyless: boolean
+  scope: ProviderScope
+  /** Platform env key present for this provider. null when it has no env home. */
+  envConfigured: boolean | null
+  /** This brokerage has an active credential/connection row for this provider. */
+  tenantConnected: boolean
+}
+
+/**
+ * PURE: the single source of truth for a provider's readiness state FOR A
+ * BROKERAGE. Kept pure + exported so the simulator can exhaust every branch
+ * without a DB or env. `ready` means "usable by this brokerage right now".
+ */
+export function resolveBrokerageReadinessState(
+  input: BrokerageReadinessInput,
+): { state: BrokerageReadinessState; ready: boolean } {
+  // A tenant's own connection always wins — it's the strongest, most explicit signal.
+  if (input.tenantConnected) return { state: "live_connected", ready: true }
+  if (input.keyless) return { state: "keyless", ready: true }
+  // Platform-provided: a present platform key means the tenant gets it for free.
+  if (input.envConfigured === true && (input.scope === "platform" || input.scope === "both")) {
+    return { state: "live_platform", ready: true }
+  }
+  // BYO lanes the tenant can still turn on themselves.
+  if (input.scope === "tenant_byo" || input.scope === "both") {
+    return { state: "needs_connection", ready: false }
+  }
+  // Platform-scoped but the key is absent — nothing the tenant can do; staff owns it.
+  return { state: "platform_dark", ready: false }
+}
+
+export interface BrokerageProviderReadinessRow {
+  provider: string
+  label: string
+  category: ProviderCategory
+  scope: ProviderScope
+  state: BrokerageReadinessState
+  ready: boolean
+  note: string
+}
+
+export interface BrokerageProviderReadiness {
+  generatedAt: string
+  total: number
+  /** Capabilities usable by this brokerage right now (connected + platform + keyless). */
+  ready: number
+  /** BYO lanes the brokerage can enable themselves. */
+  needsConnection: number
+  /** Platform-scoped rails not yet lit at the platform level (staff's job). */
+  platformDark: number
+  readinessPct: number
+  rows: BrokerageProviderReadinessRow[]
+}
+
+const READINESS_NOTE: Record<BrokerageReadinessState, string> = {
+  live_connected: "Connected — your own credentials are active.",
+  live_platform: "Included — provided by the platform, no setup needed.",
+  keyless: "Included — free data lane, always on.",
+  needs_connection: "Connect your account to switch this on.",
+  platform_dark: "Not yet enabled at the platform level.",
+}
+
+/**
+ * Brokerage-scoped provider readiness. Derives the full provider list from the
+ * canonical registry, checks THIS brokerage's active connections across the
+ * three credential stores + brokerage_integrations, and folds in platform env
+ * presence — so platform-provided and keyless capabilities read LIVE instead of
+ * "Pending". DB + env only, no vendor calls.
+ */
+export async function getBrokerageProviderReadiness(
+  svc: any,
+  brokerageId: string,
+): Promise<BrokerageProviderReadiness> {
+  const generatedAt = new Date().toISOString()
+  const registry = getPlatformProviderRegistry()
+
+  const aliasToCanon = new Map<string, string>()
+  for (const e of registry) {
+    aliasToCanon.set(e.provider, e.provider)
+    for (const al of e.storageAliases) aliasToCanon.set(al, e.provider)
+  }
+  const canonOf = (name: string | null | undefined): string | null => {
+    const lc = (name ?? "").trim().toLowerCase()
+    if (!lc) return null
+    return aliasToCanon.get(lc) ?? aliasToCanon.get(canonPostureKey(lc)) ?? null
+  }
+
+  const [intCreds, agentCreds, platCreds, brokIntegrations] = await Promise.all([
+    svc.from("integration_credentials").select("provider_name").eq("is_active", true).eq("brokerage_id", brokerageId),
+    svc.from("agent_api_credentials").select("service_name").eq("is_active", true).eq("brokerage_id", brokerageId),
+    svc.from("platform_credentials").select("platform").eq("is_active", true).eq("brokerage_id", brokerageId),
+    svc.from("brokerage_integrations").select("provider_type, provider_name, status").eq("brokerage_id", brokerageId),
+  ])
+
+  const connected = new Set<string>()
+  const markConnected = (name: string | null | undefined) => {
+    const canon = canonOf(name)
+    if (canon) connected.add(canon)
+  }
+  for (const r of ((intCreds.data ?? []) as any[])) markConnected(r.provider_name)
+  for (const r of ((agentCreds.data ?? []) as any[])) markConnected(r.service_name)
+  for (const r of ((platCreds.data ?? []) as any[])) markConnected(r.platform)
+  for (const r of ((brokIntegrations.data ?? []) as any[])) {
+    if (r.status === "connected") { markConnected(r.provider_type); markConnected(r.provider_name) }
+  }
+
+  const rows: BrokerageProviderReadinessRow[] = registry.map((e) => {
+    const envConfigured = e.envVars.length === 0 ? null : e.envVars.some((v) => !!process.env[v])
+    const { state, ready } = resolveBrokerageReadinessState({
+      keyless: e.keyless,
+      scope: e.scope,
+      envConfigured,
+      tenantConnected: connected.has(e.provider),
+    })
+    return { provider: e.provider, label: e.label, category: e.category, scope: e.scope, state, ready, note: READINESS_NOTE[state] }
+  })
+
+  // Ready first, then needs-connection (tenant-actionable) ahead of platform-dark, then by category.
+  const stateRank: Record<BrokerageReadinessState, number> = {
+    live_connected: 0, live_platform: 0, keyless: 0, needs_connection: 1, platform_dark: 2,
+  }
+  rows.sort((a, b) =>
+    stateRank[a.state] - stateRank[b.state] ||
+    CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category) ||
+    a.provider.localeCompare(b.provider))
+
+  const ready = rows.filter((r) => r.ready).length
+  const needsConnection = rows.filter((r) => r.state === "needs_connection").length
+  const platformDark = rows.filter((r) => r.state === "platform_dark").length
+  return {
+    generatedAt,
+    total: rows.length,
+    ready,
+    needsConnection,
+    platformDark,
+    readinessPct: rows.length > 0 ? Math.round((ready / rows.length) * 100) : 0,
+    rows,
+  }
+}
