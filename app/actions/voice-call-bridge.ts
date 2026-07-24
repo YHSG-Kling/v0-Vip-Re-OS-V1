@@ -251,16 +251,6 @@ export async function triggerVapiVoiceBot(params: {
       return { success: false, error: "Contact phone number not found" }
     }
 
-    const vapiApiKey = process.env.VAPI_API_KEY
-    const vapiAssistantId = process.env.VAPI_ASSISTANT_ID
-
-    if (!vapiApiKey || !vapiAssistantId) {
-      return {
-        success: false,
-        error: "Vapi not configured. Add VAPI_API_KEY and VAPI_ASSISTANT_ID to environment variables.",
-      }
-    }
-
     // Generate context-aware first message
     let firstMessage = customMessage
     if (!firstMessage) {
@@ -282,74 +272,43 @@ export async function triggerVapiVoiceBot(params: {
       }
     }
 
-    // Call Vapi.ai API through the connector-gateway
-    const response = await callConnector<{ id?: string; status?: string }>({
-      connector: "vapi",
-      baseUrl: "https://api.vapi.ai",
-      path: "/call/phone",
-      method: "POST",
-      auth: { style: "bearer", token: vapiApiKey },
-      body: {
-        phoneNumber: contact.phone,
-        assistantId: vapiAssistantId,
-        customer: {
-          name: `${contact.first_name} ${contact.last_name}`,
-        },
-        assistantOverrides: {
-          firstMessage,
-        },
-      },
+    // Place the outbound AI call on the TWILIO-NATIVE lane (owner: "no longer vapi").
+    // TCPA + vendor-budget gates run inside placeOutboundAiCall; the tenant's own
+    // number is the caller ID; the voice_calls row IS the turn session (billed via
+    // the usage_logs rail on the status callback). The former Vapi path is retired.
+    const { placeOutboundAiCall } = await import("@/lib/voice/twilio-outbound")
+    const placed = await placeOutboundAiCall(svc, {
+      toNumber: contact.phone,
+      contactId,
+      brokerageId: ctx.brokerageId,
+      agentUserId: ctx.userId ?? null,
+      initiatedBy: ctx.userId ?? null,
+      objective: `Hot-lead outreach (${triggerEvent}): reconnect, learn where they are, and offer to help or book time.`,
+      contactName: contact.first_name,
+      firstMessage: firstMessage ?? null,
     })
-
-    if (!response.ok) {
-      throw new Error(response.error || "Vapi API error")
+    if (!placed.ok) {
+      return { success: false, error: placed.error, blocked: (placed as any).blocked }
     }
 
-    const callData = response.data ?? {}
-
-    // Log Vapi call. `vapi_voice_calls` carries the billing + provider
-    // pointer; the conversational metadata (trigger_event, initial status)
-    // lives in raw_payload jsonb rather than as dedicated columns.
-    const { error: logError } = await supabase.from("vapi_voice_calls").insert({
-      vapi_call_id: callData.id,
-      contact_id: contactId,
-      brokerage_id: contactBroker.brokerage_id,
-      agent_id: ctx.agentId ?? null,
-      raw_payload: {
-        trigger_event: triggerEvent,
-        status: "initiated",
-        first_message: firstMessage,
-        initiated_at: new Date().toISOString(),
-      },
-    })
-
-    if (logError) {
-      console.error("[Vapi Voice] Failed to log call:", logError)
-    }
-
-    // Activities row — table requires brokerage_id, agent_id, title NOT NULL.
-    // Notes/metadata carry the trigger context.
+    // Activity trail (engine-agnostic).
     if (ctx.agentId) {
       await supabase.from("activities").insert({
         agent_id: ctx.agentId,
         brokerage_id: contactBroker.brokerage_id,
         contact_id: contactId,
         entity_type: "contact",
-        activity_type: "vapi_voice_initiated",
-        title: `AI voice bot initiated: ${triggerEvent}`,
-        description: `Vapi call ${callData.id} initiated from trigger ${triggerEvent}`,
-        metadata: { vapi_call_id: callData.id, trigger_event: triggerEvent },
+        activity_type: "ai_voice_initiated",
+        title: `AI voice call initiated: ${triggerEvent}`,
+        description: `Twilio AI call ${placed.callSid} initiated from trigger ${triggerEvent}`,
+        metadata: { call_sid: placed.callSid, trigger_event: triggerEvent },
         status: "completed",
       })
     }
 
-    return {
-      success: true,
-      callId: callData.id,
-      status: callData.status,
-    }
+    return { success: true, callId: placed.callSid, status: "initiated" }
   } catch (error: any) {
-    console.error("[Vapi Voice] Error:", error)
+    console.error("[AI Voice] Error:", error)
     return { success: false, error: error.message }
   }
 }
