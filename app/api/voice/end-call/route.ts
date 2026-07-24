@@ -7,18 +7,16 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireAuth } from "@/lib/kernel/api-auth"
 import { endOutboundAiCall } from "@/lib/voice/twilio-outbound"
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  // Auth guard — user must be logged in
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
+  // Auth guard — session + resolved brokerage from the session (never the body).
+  const authSupabase = await createClient()
+  const auth = await requireAuth(authSupabase)
+  if (!auth.ok) return auth.response
+  const brokerageId = auth.brokerageId
+  if (!brokerageId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
   const { searchParams } = new URL(req.url)
   const callId = searchParams.get("callId")
@@ -29,21 +27,28 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const service = createServiceClient()
 
-  // Resolve the tenant that owns this call (vapi_call_id holds the Twilio CallSid
-  // on this lane) so we hang up on the correct subaccount.
+  // TENANT SCOPE — the call must belong to the caller's brokerage. Without this
+  // an authenticated user of tenant A could terminate tenant B's live call by
+  // supplying its CallSid (vapi_call_id holds the Twilio CallSid on this lane).
   const { data: call } = await service
     .from("voice_calls")
-    .select("brokerage_id")
+    .select("id, brokerage_id")
     .eq("vapi_call_id", callId)
     .maybeSingle()
 
-  // End via Twilio REST. Non-fatal — Twilio may already have ended the call.
-  if (call?.brokerage_id) {
-    const ended = await endOutboundAiCall(service, call.brokerage_id, callId)
-    if (!ended.ok) console.error("[end-call] Twilio hangup (non-fatal):", ended.error)
+  if (!call) {
+    return NextResponse.json({ error: "Call not found" }, { status: 404 })
+  }
+  if (call.brokerage_id !== brokerageId) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
 
-  // Close our DB record
+  // End via Twilio REST on the OWNING tenant's subaccount. Non-fatal — Twilio
+  // may already have ended the call.
+  const ended = await endOutboundAiCall(service, brokerageId, callId)
+  if (!ended.ok) console.error("[end-call] Twilio hangup (non-fatal):", ended.error)
+
+  // Close our DB record — scoped to the owning brokerage.
   await service
     .from("voice_calls")
     .update({
@@ -52,6 +57,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       ended_at: new Date().toISOString(),
     })
     .eq("vapi_call_id", callId)
+    .eq("brokerage_id", brokerageId)
 
   return NextResponse.json({ success: true })
 }
