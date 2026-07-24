@@ -277,7 +277,39 @@ export async function getFormFieldsAction(formId: string): Promise<{
     .or(`brokerage_id.eq.${ctx.brokerage_id},brokerage_id.is.null`)
     .maybeSingle()
 
-  if (!form) return { success: false, error: "Form not found" }
+  // The agent-visible template list merges broker-uploaded library forms
+  // (brokerage_form_library) alongside brokerage_forms, so a form id may point
+  // at either table. If it isn't a brokerage_forms row, resolve it from the
+  // library — otherwise those forms hang forever on "Loading form fields…".
+  if (!form) {
+    const { data: libForm } = await supabase
+      .from("brokerage_form_library")
+      .select("field_schema, packet_type")
+      .eq("id", formId)
+      .or(`brokerage_id.eq.${ctx.brokerage_id},brokerage_id.is.null`)
+      .maybeSingle()
+
+    if (!libForm) return { success: false, error: "Form not found" }
+
+    // Library forms store field_schema as a text[] of field-LABEL strings
+    // (what the admin PDF-upload captures), not FormFieldDef objects. Lift each
+    // label into a real FormFieldDef so the renderer gets the shape it expects.
+    const libLabels = (libForm.field_schema as unknown as string[] | null) ?? []
+    const libFields: FormFieldDef[] = libLabels
+      .filter((l) => typeof l === "string" && l.trim().length > 0)
+      .map((label): FormFieldDef => ({
+        key: label.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""),
+        label: label.trim(),
+        type: "text",
+        section: "Fields",
+      }))
+    if (libFields.length > 0) {
+      return { success: true, fields: libFields }
+    }
+    const libCategory = (libForm.packet_type ?? "").toLowerCase().replace(/\s+/g, "_")
+    const libDefaults = CATEGORY_DEFAULT_FIELDS[libCategory] ?? CATEGORY_DEFAULT_FIELDS.purchase_agreement
+    return { success: true, fields: libDefaults }
+  }
 
   const schema = form.field_schema as FormFieldDef[] | null
   if (schema && Array.isArray(schema) && schema.length > 0) {
