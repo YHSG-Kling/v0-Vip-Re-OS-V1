@@ -16,6 +16,9 @@ export function isAiBillingError(err: unknown): boolean {
     msg.includes("billing") ||
     msg.includes("payment") ||
     msg.includes("free plan") ||
+    msg.includes("free tier") ||
+    msg.includes("do not have access to this model") ||
+    msg.includes("upgrade to paid") ||
     msg.includes("insufficient") ||
     msg.includes("quota") ||
     msg.includes("out of funds") ||

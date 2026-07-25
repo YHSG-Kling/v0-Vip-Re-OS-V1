@@ -565,7 +565,11 @@ export async function captureFormSubmission(
         const settingsBag = ((form as any).settings ?? {}) as Record<string, unknown>
         const legacyBag = ((form as any).landing_content ?? {}) as Record<string, unknown>
         const notifyByEmail = (settingsBag.notify_on_submission ?? legacyBag.notify_on_submission) === true
-        const agentEmail = (agentRow as any).users?.email as string | undefined
+        // PostgREST can return the users(...) embed as an object OR a single-element
+        // array depending on FK detection — handle both so the email never silently drops.
+        const usersEmbed = (agentRow as any).users
+        const agentUser = Array.isArray(usersEmbed) ? usersEmbed[0] : usersEmbed
+        const agentEmail = agentUser?.email as string | undefined
         if (notifyByEmail && agentEmail) {
           try {
             const { dispatchEmail } = await import("@/lib/providers/dispatch")
