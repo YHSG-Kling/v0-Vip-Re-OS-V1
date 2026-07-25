@@ -18,6 +18,11 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
+import {
+  BLOG_PENDING_PUBLISH_STATUS,
+  NEWSLETTER_PENDING_APPROVAL_STATUSES,
+  AD_CREATIVE_PENDING_APPROVAL_STATUSES,
+} from "./approval-pending"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -86,7 +91,7 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
     queue: "newsletter",
     table: "newsletter_campaigns",
     select: "id, brokerage_id, campaign_name, subject_line, content, send_date, is_ai_generated, status, created_at",
-    pending: (q) => q.eq("approval_status", "pending_review").not("status", "in", "(sent,sending)"),
+    pending: (q) => q.in("approval_status", [...NEWSLETTER_PENDING_APPROVAL_STATUSES]).not("status", "in", "(sent,sending)"),
     toAction: (n, now) => {
       const sla = evaluateApprovalSla(n.created_at ?? null, now, { deadlineIso: (n.send_date as string | null) ?? null })
       const body = String(n.content ?? "")
@@ -102,7 +107,7 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
       }
     },
     approve: () => ({ approval_status: "approved" }),
-    approveGuard: (q) => q.eq("approval_status", "pending_review"),
+    approveGuard: (q) => q.in("approval_status", [...NEWSLETTER_PENDING_APPROVAL_STATUSES]),
     reject: () => ({ approval_status: "rejected" }),
   },
 
@@ -135,7 +140,7 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
     queue: "ad_creative",
     table: "ad_creative_variations",
     select: "id, brokerage_id, ad_campaign_id, variation_name, headline, primary_text, description, call_to_action, media_asset_url, destination_url, created_at",
-    pending: (q) => q.in("approval_status", ["draft", "pending_review"]),
+    pending: (q) => q.in("approval_status", [...AD_CREATIVE_PENDING_APPROVAL_STATUSES]),
     toAction: (c, now) => {
       const sla = evaluateApprovalSla(c.created_at ?? null, now)
       return {
@@ -150,7 +155,7 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
       }
     },
     approve: () => ({ approval_status: "approved" }),
-    approveGuard: (q) => q.in("approval_status", ["draft", "pending_review"]),
+    approveGuard: (q) => q.in("approval_status", [...AD_CREATIVE_PENDING_APPROVAL_STATUSES]),
     reject: () => ({ approval_status: "rejected" }),
   },
 
@@ -271,8 +276,11 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
   blog: {
     queue: "blog",
     table: "blog_posts",
+    // Canonical: the stager writes publish_status='draft' (marketing.ts) — the
+    // prior 'pending_review' filter matched nothing, so B's blog source was dark
+    // AND its approve-guard could never fire. Both now use the shared constant.
     select: "id, brokerage_id, title, slug, excerpt, content, featured_image_url, publish_status, created_at",
-    pending: (q) => q.eq("publish_status", "pending_review"),
+    pending: (q) => q.eq("publish_status", BLOG_PENDING_PUBLISH_STATUS),
     toAction: (b, now) => {
       const sla = evaluateApprovalSla(b.created_at ?? null, now)
       const body = String(b.content ?? b.excerpt ?? "")

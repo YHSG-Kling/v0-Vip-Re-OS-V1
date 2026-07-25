@@ -47,6 +47,11 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import {
+  BLOG_PENDING_PUBLISH_STATUS,
+  NEWSLETTER_PENDING_APPROVAL_STATUSES,
+  AD_CREATIVE_PENDING_APPROVAL_STATUSES,
+} from "./approval-pending"
 
 export type ApprovalSource = "newsletter" | "email" | "ad_creative" | "video_snippet" | "blog" | "podcast" | "video" | "offer" | "property_alert" | "legacy"
 
@@ -208,7 +213,8 @@ export async function aggregatePendingApprovals(
         .eq("brokerage_id", brokerageId)
         // 'pending' is the legacy manual value; the AI stager (lib/kernel/
         // marketing.ts) writes 'pending_review' — both are awaiting a human.
-        .in("approval_status", ["pending", "pending_review"])
+        // Shared with the Command Center via approval-pending (no drift).
+        .in("approval_status", [...NEWSLETTER_PENDING_APPROVAL_STATUSES])
         .order("created_at", { ascending: false })
         .limit(PER_TABLE_LIMIT),
       svc
@@ -222,7 +228,8 @@ export async function aggregatePendingApprovals(
         .from("ad_creative_variations")
         .select("id, ad_campaign_id, variation_name, headline, primary_text, approval_status, created_at, updated_at")
         .eq("brokerage_id", brokerageId)
-        .eq("approval_status", "draft")
+        // Both pre-spend review states — shared with the Command Center (no drift).
+        .in("approval_status", [...AD_CREATIVE_PENDING_APPROVAL_STATUSES])
         .order("created_at", { ascending: false })
         .limit(PER_TABLE_LIMIT),
       svc
@@ -236,7 +243,8 @@ export async function aggregatePendingApprovals(
         .from("blog_posts")
         .select("id, agent_user_id, title, excerpt, publish_status, approval_status, created_at, updated_at")
         .eq("brokerage_id", brokerageId)
-        .eq("publish_status", "draft")
+        // Shared with the Command Center via approval-pending (no drift).
+        .eq("publish_status", BLOG_PENDING_PUBLISH_STATUS)
         // A dedicated-surface reject only flips approval_status — keep those
         // out so a rejected draft can't linger in this queue. (NULL-safe: a
         // plain NOT IN would also drop manual drafts with no approval_status.)
