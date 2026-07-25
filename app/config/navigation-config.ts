@@ -471,13 +471,11 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'transaction-propensity', label: 'Transaction Propensity', href: '/dashboard/admin/transaction-propensity', icon: 'Target' },
           { id: 'strategy-insights', label: 'Strategy Insights', href: '/dashboard/admin/strategy-insights', icon: 'Lightbulb' },
           { id: 'direct-mail-performance', label: 'Direct Mail Performance', href: '/dashboard/admin/direct-mail-performance', icon: 'Mail' },
-          { id: 'lead-intake', label: 'Lead Intake', href: '/dashboard/admin/lead-intake', icon: 'Inbox' },
-          { id: 'scrape-diagnostics', label: 'Scrape Diagnostics', href: '/dashboard/admin/scrape-diagnostics', icon: 'Radar' },
-          // Round 42: the markets SETUP surface (diagnostics only VIEWS them) — the scrape pipeline no-ops without one.
-          { id: 'lead-markets', label: 'Lead Markets', href: '/dashboard/admin/markets', icon: 'Map' },
+          // Lead Intake, Scrape Diagnostics, Cron Health are PLATFORM-only (the
+          // scraping/cron machinery is platform-owned infrastructure, not a
+          // tenant concern) — they live in the superadmin tree, not here.
           { id: 'ai-identity', label: 'AI Identity', href: '/dashboard/admin/ai-identity', icon: 'Bot' },
           { id: 'ai-disclosures', label: 'AI Disclosures', href: '/dashboard/admin/compliance/ai-disclosures', icon: 'FileCheck' },
-          { id: 'cron-health', label: 'Cron Health', href: '/dashboard/admin/cron-health', icon: 'HeartPulse' },
           // Orphan-route sweep: vendor approval queue was unreachable from any nav.
           { id: 'vendor-approvals', label: 'Vendor Approvals', href: '/dashboard/admin/vendor-approvals', icon: 'ShieldCheck' },
         ],
@@ -524,6 +522,10 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'compliance', label: 'Compliance', href: '/dashboard/compliance', icon: 'Shield' },
       { id: 'education', label: 'Education Library', href: '/dashboard/education', icon: 'GraduationCap' },
       { id: 'brand-compliance', label: 'Brand & Compliance', href: '/dashboard/admin/brand', icon: 'Shield' },
+      // Markets are part of the BRAND: a brokerage's target markets decide where
+      // the platform-owned scrapers hunt leads FOR that brand — so the tenant's
+      // market/territory setup lives here, beside Brand, not in the platform ops group.
+      { id: 'brand-markets', label: 'Markets', href: '/dashboard/admin/markets', icon: 'Map' },
       { id: 'tcpa-compliance', label: 'TCPA Compliance', href: '/dashboard/admin/compliance/tcpa', icon: 'Shield' },
       // Orphan-route sweep: per-state required-document settings were unreachable from any nav.
       { id: 'required-documents', label: 'Required Documents', href: '/dashboard/settings/required-documents', icon: 'FileCheck' },
@@ -770,6 +772,11 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'feature-governance', label: 'Feature Governance', href: '/dashboard/admin/feature-governance', icon: 'Shield' },
       { id: 'workflows', label: 'Workflow Monitor', href: '/workflows', icon: 'Workflow' },
       { id: 'divider3', divider: true },
+      // Platform-owned scraping/cron infrastructure — moved off the tenant admin
+      // tree; these are the platform's machinery, not a brokerage's concern.
+      { id: 'lead-intake', label: 'Lead Intake', href: '/dashboard/admin/lead-intake', icon: 'Inbox' },
+      { id: 'scrape-diagnostics', label: 'Scrape Diagnostics', href: '/dashboard/admin/scrape-diagnostics', icon: 'Radar' },
+      { id: 'cron-health', label: 'Cron Health', href: '/dashboard/admin/cron-health', icon: 'HeartPulse' },
       { id: 'system-health', label: 'System Health', href: '/dashboard/superadmin/observability', icon: 'Activity' },
       { id: 'ai-audit', label: 'AI Audit', href: '/dashboard/admin/ai-audit', icon: 'Eye' },
       { id: 'system-providers', label: 'API Providers', href: '/dashboard/admin/system/providers', icon: 'Server' },
