@@ -55,7 +55,6 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'brand-voice', label: 'BrandVoice Profile', href: '/dashboard/marketing/studio/brand-voice' },
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
-          { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/agent/lead-magnets' },
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
@@ -265,7 +264,6 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
           { id: 'market-intelligence', label: 'Market Intelligence', href: '/dashboard/marketing/intelligence' },
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
-          { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           // Nav-parity: agents and team leads could reach Newsletters; the broker could not.
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
@@ -491,7 +489,6 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
           { id: 'market-intelligence', label: 'Market Intelligence', href: '/dashboard/marketing/intelligence' },
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
-          { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
           { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/admin/lead-magnets' },

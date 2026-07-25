@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from "react"
 import { useToast } from "@/hooks/use-toast"
 import { StagedDraftBanner } from "@/app/components/shared/staged-draft-banner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { MarketingOpsPanel } from "./components/marketing-ops-panel"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -50,6 +51,7 @@ import {
   ExternalLink,
   Newspaper,
   Truck,
+  Activity,
 } from "lucide-react"
 import {
   getCampaigns,
@@ -1145,6 +1147,13 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
             >
               <Sparkles className="h-4 w-4" />
               <span className="text-xs">Omnichannel</span>
+            </TabsTrigger>
+            <TabsTrigger
+              value="ops"
+              className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
+            >
+              <Activity className="h-4 w-4" />
+              <span className="text-xs">Ops</span>
             </TabsTrigger>
           </TabsList>
 
@@ -2791,6 +2800,11 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                 </CardContent>
               </Card>
             </div>
+          </TabsContent>
+
+          {/* Ops — brokerage marketing health (consolidated from the retired Ops Center page) */}
+          <TabsContent value="ops" className="space-y-6">
+            <MarketingOpsPanel />
           </TabsContent>
 
         </Tabs>

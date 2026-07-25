@@ -179,7 +179,7 @@ export function AdminDashboardClient({ brokerageId, operationalSnapshot }: Admin
             {
               label:    'Failed Publishes',
               value:    snap.failedPublishes,
-              href:     '/dashboard/marketing/ops',
+              href:     '/dashboard/marketing/studio?tab=ops',
               icon:     Megaphone,
               status:   resolveStatus(snap.failedPublishes, { amber: 1, red: 5 }),
               hint:     snap.failedPublishes > 0 ? 'Social posts failed' : 'All posts published',
