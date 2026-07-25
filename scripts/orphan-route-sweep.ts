@@ -78,6 +78,7 @@ const EXEMPT: Record<string, string> = {
   "/dashboard/marketing": "legacy redirect stub (bookmark compatibility) → /dashboard/marketing/studio",
   "/dashboard/marketing/competitors": "legacy redirect stub (bookmark compatibility) → /dashboard/marketing/seo?tab=competitors (Competitors folded into the SEO / GEO section — seo_geo_consolidation)",
   "/dashboard/marketing/intelligence": "legacy redirect stub (bookmark compatibility) → /dashboard/marketing/seo?tab=trends (Market Intelligence folded into the SEO / GEO section — seo_geo_consolidation)",
+  "/compliance": "legacy redirect stub (bookmark compatibility) → /dashboard/compliance (the standalone Compliance & TRID dashboard was a duplicate of the Compliance Command Center — compliance_consolidation; the /compliance/* workflow sub-pages live on and are linked from the Command Center's Governance & records section)",
   "/portal/[contactId]/dashboard/[persona]": "legacy redirect stub (bookmark compatibility) → /portal/[contactId] — persona routing is now kernel-decided; portal links were sent to clients externally, so old deep links must not 404",
   "/auth/error": "legacy redirect stub (bookmark compatibility) → /login?message=… — possible OAuth error-redirect target in hosted Supabase auth config (not verifiable in-repo)",
 }

@@ -74,7 +74,7 @@ export async function generateComplianceBrief(params: {
       title: `${violations.length} compliance flag${violations.length === 1 ? "" : "s"} this week`,
       body: violations[0].blocked_reason ?? "Review violations dashboard",
       severity: "high",
-      ctas: [{ label: "Review violations", href: "/dashboard/compliance/violations" }],
+      ctas: [{ label: "Review violations", href: "/compliance/violations" }],
     })
   }
 

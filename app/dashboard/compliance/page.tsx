@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
-import { AlertTriangle, Shield, Award, ClipboardCheck, ExternalLink } from "lucide-react"
+import { AlertTriangle, Shield, Award, ClipboardCheck, ExternalLink, FileWarning, ScrollText, BookMarked, FileBarChart, Plus } from "lucide-react"
 import Link from "next/link"
 import { getPendingApprovals, getComplianceViolations, generateComplianceReport, trackCertificationExpiration } from "@/app/actions/compliance-monitoring"
 import { getAllTransactionComplianceLogs } from "@/app/actions/transaction-compliance"
@@ -159,6 +159,52 @@ export default async function ComplianceDashboardPage() {
             Risk-first compliance monitoring and content moderation
           </p>
         </div>
+      </div>
+
+      {/* Governance & records — the single hub for the compliance workflow
+          pages (the standalone /compliance dashboard was retired and now
+          redirects here; these sub-pages live on and are surfaced here). */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <Link
+          href="/compliance/violations"
+          className="group flex flex-col gap-1 rounded-lg border p-3 transition-colors hover:border-primary/50 hover:bg-muted/40"
+        >
+          <FileWarning className="h-4 w-4 text-red-600" />
+          <span className="text-sm font-medium">Violations log</span>
+          <span className="text-xs text-muted-foreground">Open compliance flags</span>
+        </Link>
+        <Link
+          href="/compliance/violations/new"
+          className="group flex flex-col gap-1 rounded-lg border p-3 transition-colors hover:border-primary/50 hover:bg-muted/40"
+        >
+          <Plus className="h-4 w-4 text-primary" />
+          <span className="text-sm font-medium">Log a violation</span>
+          <span className="text-xs text-muted-foreground">File a new flag</span>
+        </Link>
+        <Link
+          href="/compliance/audits"
+          className="group flex flex-col gap-1 rounded-lg border p-3 transition-colors hover:border-primary/50 hover:bg-muted/40"
+        >
+          <ScrollText className="h-4 w-4 text-primary" />
+          <span className="text-sm font-medium">Audit log</span>
+          <span className="text-xs text-muted-foreground">System audit trail</span>
+        </Link>
+        <Link
+          href="/compliance/policies"
+          className="group flex flex-col gap-1 rounded-lg border p-3 transition-colors hover:border-primary/50 hover:bg-muted/40"
+        >
+          <BookMarked className="h-4 w-4 text-primary" />
+          <span className="text-sm font-medium">Policies</span>
+          <span className="text-xs text-muted-foreground">Brokerage policy catalog</span>
+        </Link>
+        <Link
+          href="/compliance/reports"
+          className="group flex flex-col gap-1 rounded-lg border p-3 transition-colors hover:border-primary/50 hover:bg-muted/40"
+        >
+          <FileBarChart className="h-4 w-4 text-primary" />
+          <span className="text-sm font-medium">Reports</span>
+          <span className="text-xs text-muted-foreground">Compliance report</span>
+        </Link>
       </div>
 
       {/* Today's Focus — AI Brief */}

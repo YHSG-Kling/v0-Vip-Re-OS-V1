@@ -251,7 +251,7 @@ Focus on detecting:
     })
   }
 
-  revalidatePath("/compliance")
+  revalidatePath("/dashboard/compliance")
   return aiAnalysis
 }
 
@@ -606,7 +606,7 @@ export async function submitContentForApprovalService(data: {
 
   if (error) throw error
 
-  revalidatePath("/compliance")
+  revalidatePath("/dashboard/compliance")
   return approval
 }
 
@@ -675,7 +675,7 @@ export async function reviewContentApprovalService(data: {
     }
   }
 
-  revalidatePath("/compliance")
+  revalidatePath("/dashboard/compliance")
   return { success: true }
 }
 
