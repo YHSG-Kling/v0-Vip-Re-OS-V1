@@ -292,7 +292,7 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
       }
     },
     approve: () => ({ publish_status: "approved" }),
-    approveGuard: (q) => q.eq("publish_status", "pending_review"),
+    approveGuard: (q) => q.eq("publish_status", BLOG_PENDING_PUBLISH_STATUS),
     reject: () => ({ publish_status: "archived" }),
   },
 
