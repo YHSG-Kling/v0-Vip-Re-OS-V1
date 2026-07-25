@@ -95,8 +95,10 @@ const STACK_A_BASELINE = new Set([
   "generate_cma", "generate_net_sheet", "generate_presentation",
   "schedule_appointment", "schedule_media", "approve_media", "activate_coming_soon",
   "submit_to_mls", "activate_mls", "schedule_open_house", "approve_open_house_marketing",
-  "query_buyer_stage", "configure_buyer_search", "lender_confirm_financials",
-  "admin_override_financial_gate", "query_listing_status",
+  "configure_buyer_search", "lender_confirm_financials",
+  "admin_override_financial_gate",
+  // Phase 4 folded query_listing_status + query_buyer_stage into the canonical
+  // dispatcher (now in voiceTools, entity_owner-gated) — removed from the baseline.
 ])
 
 console.log("══════════════════════════════════════════════════")

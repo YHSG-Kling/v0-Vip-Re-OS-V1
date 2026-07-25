@@ -266,6 +266,33 @@ async function runTool(
     case "run_team_command":
       return runTeamCommandTool(String(params.command ?? "").trim(), session, supabase)
 
+    // ── Stack A fold-in (phase 4): read-only status queries, entity_owner-gated ──
+    case "query_listing_status": {
+      // entity_owner gate — the session's brokerage must own the listing (Stack A's
+      // validateListingAccess, ported into the canonical dispatch path). Without
+      // this, getListingCurrentStage(listingId) would read ANY brokerage's listing.
+      const listingId = String(params.listing_id ?? params.listingId ?? "").trim()
+      if (!listingId) return { error: "Which listing? I need the listing to check its stage." }
+      const { data: lst } = await supabase.from("listings").select("brokerage_id").eq("id", listingId).maybeSingle()
+      if (!lst || (lst as { brokerage_id?: string }).brokerage_id !== session.brokerage_id) {
+        return { error: "That listing isn't in your brokerage." }
+      }
+      const { getListingCurrentStage } = await import("@/app/actions/listing-lifecycle-core")
+      return getListingCurrentStage(listingId)
+    }
+
+    case "query_buyer_stage": {
+      // entity_owner gate — the session's brokerage must own the contact.
+      const contactId = String(params.contact_id ?? params.buyer_id ?? "").trim()
+      if (!contactId) return { error: "Which buyer? I need the contact to check their journey." }
+      const { data: ct } = await supabase.from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+      if (!ct || (ct as { brokerage_id?: string }).brokerage_id !== session.brokerage_id) {
+        return { error: "That contact isn't in your brokerage." }
+      }
+      const { getBuyerJourney } = await import("@/app/actions/buyer-execution")
+      return getBuyerJourney({ contactId, userId: session.user_id, source: "voice_assistant" })
+    }
+
     case "get_active_listings":
       return getActiveListings(session, supabase)
 

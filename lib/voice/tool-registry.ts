@@ -24,6 +24,10 @@ export type ComplianceGate =
   | "ai_fair_use"       // checkAIFairUse — per-tenant token quota (already wired in generateAIResponse)
   | "dnc_check"         // Direct DNC check (subset of TCPA — used for non-phone channels)
   | "service_role"      // Action runs with service client and skips RLS — must validate brokerage_id manually
+  | "entity_owner"      // Caller's brokerage must OWN the target entity (listing/contact) — the dispatcher
+                        //   loads the row and checks brokerage_id before the tool runs. Ports Stack A's
+                        //   validateListingAccess/validateContactAccess into the canonical dispatch path so a
+                        //   voice session can never read/act on another brokerage's entity by id.
 
 export type ToolAuthority =
   | "agent"             // The acting agent only — strictest scope
@@ -639,6 +643,32 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_telco_initiating: false,
     is_nar_regulated: false,
     description: "Stage an open-house event + its marketing by voice — enters review; promotion awaits human approval.",
+  },
+
+  // ── Phase 4 of the voice-admin consolidation: the FIRST Stack A commands folded
+  //    into the canonical dispatcher. Read-only status queries, gated by
+  //    entity_owner (the dispatcher verifies the session's brokerage owns the
+  //    listing/contact before the read — porting Stack A's entity-access check, so
+  //    a voice session can't read another brokerage's entity by id). ──
+  query_listing_status: {
+    name: "query_listing_status",
+    category: "lookup",
+    authority: "agent",
+    gates: ["entity_owner"],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Read a listing's current lifecycle stage by voice — 'what stage is 44 Birch at?'. Read-only; the listing must belong to your brokerage.",
+  },
+  query_buyer_stage: {
+    name: "query_buyer_stage",
+    category: "lookup",
+    authority: "agent",
+    gates: ["entity_owner"],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Read a buyer contact's journey stage by voice — 'where are the Hendersons in their buyer journey?'. Read-only; the contact must belong to your brokerage.",
   },
 }
 
