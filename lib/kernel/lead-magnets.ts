@@ -569,6 +569,7 @@ export async function captureFormSubmission(
         if (notifyByEmail && agentEmail) {
           try {
             const { dispatchEmail } = await import("@/lib/providers/dispatch")
+            const { DEFAULT_PRODUCT_BRAND } = await import("@/lib/platform/product-brand")
             const fromEmail = process.env.SENDGRID_FROM_EMAIL ?? "noreply@vip-re.com"
             const magnetName = ((form as any).name as string | undefined) ?? "your lead capture form"
             const contactLine = [data.email, data.phone].filter(Boolean).join(" · ")
@@ -577,7 +578,7 @@ export async function captureFormSubmission(
               agentId:        form.agent_id ?? undefined,
               systemSource:   "lead_magnet_notify",
               channelPurpose: "transactional",
-              from:           `VIP Real Estate OS <${fromEmail}>`,
+              from:           `${DEFAULT_PRODUCT_BRAND.name} <${fromEmail}>`,
               to:             agentEmail,
               subject:        `New lead: ${submitterName} submitted "${magnetName}"`,
               html:           `<p><strong>${submitterName}</strong> just submitted <strong>${magnetName}</strong>.</p>` +
