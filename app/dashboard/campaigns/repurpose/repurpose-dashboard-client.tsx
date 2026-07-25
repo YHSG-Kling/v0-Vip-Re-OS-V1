@@ -439,11 +439,7 @@ export function RepurposeDashboardClient({
         <TabsList className="mb-4">
           <TabsTrigger value="execute">
             <Play className="h-4 w-4 mr-2" />
-            Execute Pipeline
-          </TabsTrigger>
-          <TabsTrigger value="pipelines">
-            <Settings className="h-4 w-4 mr-2" />
-            Manage Pipelines ({pipelines.length})
+            Repurpose
           </TabsTrigger>
           <TabsTrigger value="history">
             <History className="h-4 w-4 mr-2" />
@@ -460,73 +456,105 @@ export function RepurposeDashboardClient({
         {/* ═══════════════════════════════════════════════════════════════════ */}
         <TabsContent value="execute">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Left Panel - Pipeline Selector */}
+            {/* Left Panel - Pipelines: select an active one to run, and manage
+                (create / activate / delete) inline — no separate tab. */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Zap className="h-5 w-5 text-amber-500" />
-                  Select Pipeline
-                </CardTitle>
-                <CardDescription>Choose a pipeline to transform your content</CardDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <Zap className="h-5 w-5 text-amber-500" />
+                      Pipelines
+                    </CardTitle>
+                    <CardDescription>Toggle a pipeline on, then select it to transform your content</CardDescription>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={() => setIsCreateDialogOpen(true)}>
+                    <Plus className="h-4 w-4 mr-1.5" />
+                    New Pipeline
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
-                {pipelines.filter((p) => p.is_active).length === 0 ? (
+                {pipelines.length === 0 ? (
                   <div className="text-center py-8 text-muted-foreground">
                     <Layers className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                    <p>No active pipelines found</p>
+                    <p>No pipelines yet</p>
                     <Button variant="link" onClick={() => setIsCreateDialogOpen(true)}>
                       Create your first pipeline
                     </Button>
                   </div>
                 ) : (
-                  <ScrollArea className="h-[300px]">
+                  <ScrollArea className="h-[320px]">
                     <div className="space-y-2">
-                      {pipelines
-                        .filter((p) => p.is_active)
-                        .map((pipeline) => {
-                          const sourceConfig = SOURCE_TYPE_CONFIG[pipeline.source_type as SourceType]
-                          const isSelected = selectedPipeline?.id === pipeline.id
-                          return (
-                            <div
-                              key={pipeline.id}
-                              onClick={() => {
-                                setSelectedPipeline(pipeline)
-                                setSelectedSource(null) // Reset source when pipeline changes
-                              }}
-                              className={`p-4 rounded-lg border cursor-pointer transition-all ${
-                                isSelected
-                                  ? "border-primary bg-primary/5"
-                                  : "border-border hover:border-primary/50"
-                              }`}
-                            >
-                              <div className="flex items-center justify-between mb-2">
-                                <span className="font-medium">{pipeline.pipeline_name}</span>
+                      {pipelines.map((pipeline) => {
+                        const sourceConfig = SOURCE_TYPE_CONFIG[pipeline.source_type as SourceType]
+                        const isSelected = selectedPipeline?.id === pipeline.id
+                        const selectable = pipeline.is_active
+                        return (
+                          <div
+                            key={pipeline.id}
+                            onClick={() => {
+                              if (!selectable) return // inactive pipelines aren't runnable
+                              setSelectedPipeline(pipeline)
+                              setSelectedSource(null) // Reset source when pipeline changes
+                            }}
+                            className={`p-4 rounded-lg border transition-all ${
+                              !selectable
+                                ? "border-dashed border-border opacity-60"
+                                : isSelected
+                                  ? "border-primary bg-primary/5 cursor-pointer"
+                                  : "border-border hover:border-primary/50 cursor-pointer"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between mb-2 gap-2">
+                              <span className="font-medium truncate">{pipeline.pipeline_name}</span>
+                              <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
                                 {isSelected && <CheckCircle className="h-4 w-4 text-primary" />}
-                              </div>
-                              <div className="flex items-center gap-2 mb-2">
-                                <Badge variant="secondary" className={sourceConfig?.color}>
-                                  {sourceConfig?.icon}
-                                  <span className="ml-1">{sourceConfig?.label}</span>
-                                </Badge>
-                              </div>
-                              <div className="flex flex-wrap gap-1">
-                                {(pipeline.output_config?.formats || []).slice(0, 4).map((format) => {
-                                  const formatConfig = OUTPUT_FORMAT_UI[format]
-                                  return (
-                                    <Badge key={format} variant="outline" className="text-xs">
-                                      {formatConfig?.label}
-                                    </Badge>
-                                  )
-                                })}
-                                {(pipeline.output_config?.formats || []).length > 4 && (
-                                  <Badge variant="outline" className="text-xs">
-                                    +{(pipeline.output_config?.formats || []).length - 4}
-                                  </Badge>
-                                )}
+                                {/* activate / deactivate */}
+                                <Switch
+                                  checked={pipeline.is_active}
+                                  onCheckedChange={() => handleTogglePipeline(pipeline.id, pipeline.is_active)}
+                                  disabled={isLoading}
+                                  aria-label="Pipeline active"
+                                />
+                                {/* delete */}
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  onClick={() => handleDeletePipeline(pipeline.id)}
+                                  disabled={isLoading}
+                                  aria-label="Delete pipeline"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                                </Button>
                               </div>
                             </div>
-                          )
-                        })}
+                            <div className="flex items-center gap-2 mb-2">
+                              <Badge variant="secondary" className={sourceConfig?.color}>
+                                {sourceConfig?.icon}
+                                <span className="ml-1">{sourceConfig?.label}</span>
+                              </Badge>
+                              {!selectable && <span className="text-[10px] text-muted-foreground">inactive</span>}
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              {(pipeline.output_config?.formats || []).slice(0, 4).map((format) => {
+                                const formatConfig = OUTPUT_FORMAT_UI[format]
+                                return (
+                                  <Badge key={format} variant="outline" className="text-xs">
+                                    {formatConfig?.label}
+                                  </Badge>
+                                )
+                              })}
+                              {(pipeline.output_config?.formats || []).length > 4 && (
+                                <Badge variant="outline" className="text-xs">
+                                  +{(pipeline.output_config?.formats || []).length - 4}
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
                   </ScrollArea>
                 )}
@@ -680,97 +708,6 @@ export function RepurposeDashboardClient({
         {/* ═══════════════════════════════════════════════════════════════════ */}
         {/* PIPELINES TAB */}
         {/* ═══════════════════════════════════════════════════════════════════ */}
-        <TabsContent value="pipelines">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle>Your Pipelines</CardTitle>
-                  <CardDescription>Manage your content repurposing workflows</CardDescription>
-                </div>
-                <Button onClick={() => setIsCreateDialogOpen(true)}>
-                  <Plus className="h-4 w-4 mr-2" />
-                  New Pipeline
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {pipelines.length === 0 ? (
-                <div className="text-center py-12 text-muted-foreground">
-                  <Layers className="h-16 w-16 mx-auto mb-4 opacity-50" />
-                  <h3 className="text-lg font-medium mb-2">No pipelines yet</h3>
-                  <p className="mb-4">Create your first pipeline to start repurposing content</p>
-                  <Button onClick={() => setIsCreateDialogOpen(true)}>
-                    <Plus className="h-4 w-4 mr-2" />
-                    Create Pipeline
-                  </Button>
-                </div>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Pipeline Name</TableHead>
-                      <TableHead>Source Type</TableHead>
-                      <TableHead>Output Formats</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Created</TableHead>
-                      <TableHead className="text-right">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {pipelines.map((pipeline) => {
-                      const sourceConfig = SOURCE_TYPE_CONFIG[pipeline.source_type as SourceType]
-                      return (
-                        <TableRow key={pipeline.id}>
-                          <TableCell className="font-medium">{pipeline.pipeline_name}</TableCell>
-                          <TableCell>
-                            <Badge variant="secondary" className={sourceConfig?.color}>
-                              {sourceConfig?.icon}
-                              <span className="ml-1">{sourceConfig?.label}</span>
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex flex-wrap gap-1">
-                              {(pipeline.output_config?.formats || []).slice(0, 3).map((format) => (
-                                <Badge key={format} variant="outline" className="text-xs">
-                                  {OUTPUT_FORMAT_UI[format]?.label}
-                                </Badge>
-                              ))}
-                              {(pipeline.output_config?.formats || []).length > 3 && (
-                                <Badge variant="outline" className="text-xs">
-                                  +{(pipeline.output_config?.formats || []).length - 3}
-                                </Badge>
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <Switch
-                              checked={pipeline.is_active}
-                              onCheckedChange={() => handleTogglePipeline(pipeline.id, pipeline.is_active)}
-                              disabled={isLoading}
-                            />
-                          </TableCell>
-                          <TableCell>{new Date(pipeline.created_at).toLocaleDateString()}</TableCell>
-                          <TableCell className="text-right">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => handleDeletePipeline(pipeline.id)}
-                              disabled={isLoading}
-                            >
-                              <Trash2 className="h-4 w-4 text-red-500" />
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      )
-                    })}
-                  </TableBody>
-                </Table>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
         {/* ══════════════════════════════════════════════════════════���════════ */}
         {/* HISTORY TAB */}
         {/* ═══════════════════════════════════════════════════════════════════ */}
