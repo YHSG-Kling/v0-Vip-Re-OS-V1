@@ -24,9 +24,49 @@ import {
 import { verifyCronAuth } from "@/lib/cron-auth"
 
 const DID_API_BASE = "https://api.d-id.com"
+// Same bucket the Twin wizard uses for the uploaded source photo/video.
+const AVATAR_BUCKET = "twin-avatars"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
+
+/**
+ * Download the finished D-ID avatar image and re-host it in our own Supabase
+ * bucket, returning the stable public URL. The owner's contract: we do not
+ * hot-link the D-ID CDN (its URLs expire) — once the avatar is ready we pull
+ * the bytes and serve the avatar from our bucket, and it's THAT url (not the
+ * D-ID id) the profile stores. Best-effort: returns null on any failure so the
+ * caller can fall back to the D-ID url and never break the poll.
+ */
+async function rehostAvatarImage(
+  supabase: ReturnType<typeof createServiceClient>,
+  assetId: string,
+  sourceUrl: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch(sourceUrl)
+    if (!res.ok) return null
+    const contentType = res.headers.get("content-type") ?? "image/jpeg"
+    const ext = contentType.includes("png")
+      ? "png"
+      : contentType.includes("webp")
+        ? "webp"
+        : contentType.includes("mp4")
+          ? "mp4"
+          : "jpg"
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    if (bytes.byteLength === 0) return null
+    const path = `rehosted/${assetId}.${ext}`
+    const { error } = await supabase.storage
+      .from(AVATAR_BUCKET)
+      .upload(path, bytes, { contentType, upsert: true })
+    if (error) return null
+    const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path)
+    return data?.publicUrl ?? null
+  } catch {
+    return null
+  }
+}
 
 export async function GET(request: NextRequest) {
   // Cron auth — see lib/cron-auth.ts
@@ -99,24 +139,36 @@ export async function GET(request: NextRequest) {
         const notifyUserId = asset.agent_id ? userByAgent.get(asset.agent_id) ?? null : null
 
         if (didStatus === "done" || didStatus === "ready") {
-          const thumbnailUrl: string | null = data.thumbnail_url ?? data.preview_url ?? null
+          const didAssetUrl: string | null =
+            data.thumbnail_url ?? data.preview_url ?? data.image_url ?? null
+
+          // Download the finished avatar and re-host it in our bucket so the
+          // profile URL is stable (D-ID CDN links expire). Fall back to the
+          // D-ID url if the re-host fails so the avatar is never left blank.
+          const rehostedUrl = didAssetUrl
+            ? await rehostAvatarImage(supabase, asset.id as string, didAssetUrl)
+            : null
+          const avatarUrl = rehostedUrl ?? didAssetUrl
 
           await supabase
             .from("agent_avatar_assets")
             .update({
               status: "ready",
-              thumbnail_url: thumbnailUrl,
+              thumbnail_url: avatarUrl,
+              avatar_url: avatarUrl, // the profile-facing, self-hosted avatar URL
               error_message: null,
               updated_at: new Date().toISOString(),
             })
             .eq("id", asset.id)
 
-          // Mirror the avatar_id onto agent_voice_profiles for default avatars
-          // so generate-video and chat-widget lookups get it on a single join
+          // Mirror onto agent_voice_profiles for default avatars so
+          // generate-video and chat-widget lookups get it on a single join.
+          // The PROFILE stores the bucket URL (avatar_url); did_avatar_id is
+          // kept only because clip generation still references the D-ID id.
           if (asset.is_default && asset.agent_id) {
             await supabase
               .from("agent_voice_profiles")
-              .update({ did_avatar_id: asset.did_avatar_id })
+              .update({ did_avatar_id: asset.did_avatar_id, avatar_url: avatarUrl })
               .eq("agent_id", asset.agent_id)
           }
 

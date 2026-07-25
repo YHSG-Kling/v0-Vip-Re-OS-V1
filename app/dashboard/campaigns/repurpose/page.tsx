@@ -17,8 +17,27 @@ export const metadata = {
   description: "Transform your content across all social platforms with AI-powered repurposing",
 }
 
-export default async function RepurposePage() {
+// Map the short ?source= token used by deep-links (e.g. the Podcast Studio's
+// "Send to Omnipresence") onto the canonical SourceType the client understands.
+const SOURCE_TOKEN_TO_TYPE: Record<string, string> = {
+  podcast: "podcast_episode",
+  podcast_episode: "podcast_episode",
+  video: "video_project",
+  video_project: "video_project",
+  blog: "blog_post",
+  blog_post: "blog_post",
+  script: "script",
+}
+
+export default async function RepurposePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ source?: string; episodeId?: string; sourceId?: string }>
+}) {
   try {
+    const sp = await searchParams
+    const initialSourceType = sp.source ? SOURCE_TOKEN_TO_TYPE[sp.source] ?? null : null
+    const initialSourceId = sp.episodeId ?? sp.sourceId ?? null
     const agentContext = await getAgentContext()
     const { userId, brokerageId } = agentContext
     const teamId: string | null = (agentContext as any).teamId ?? null
@@ -108,6 +127,8 @@ export default async function RepurposePage() {
           pipelines={pipelinesResult.success ? pipelinesResult.pipelines : []}
           history={historyResult.success ? historyResult.history : []}
           sources={sources}
+          initialSourceType={initialSourceType}
+          initialSourceId={initialSourceId}
         />
       </Suspense>
     )

@@ -504,7 +504,7 @@ export async function loadCriticalSetupFacts(
       // Twin (avatar + cloned voice) — the training-output mirror; agents.voice_id/
       // avatar_id below are the canonical use-this pointers. Either satisfies "set up".
       params.agentId
-        ? svc.from("agent_voice_profiles").select("elevenlabs_voice_id, did_avatar_id").eq("agent_id", params.agentId)
+        ? svc.from("agent_voice_profiles").select("elevenlabs_voice_id, did_avatar_id, avatar_url").eq("agent_id", params.agentId)
         : Promise.resolve({ data: [] } as any),
     ])
     const a = (agentRow.data ?? {}) as any
@@ -524,7 +524,9 @@ export async function loadCriticalSetupFacts(
       twinConfigured: (() => {
         const vps = (avp.data ?? []) as any[]
         const hasVoice = vps.some((v) => !!v.elevenlabs_voice_id) || !!a.voice_id
-        const hasAvatar = vps.some((v) => !!v.did_avatar_id) || !!a.avatar_id
+        // A re-hosted avatar_url (poll cron's download step) counts as "set up"
+        // too — it's the profile-facing signal; did_avatar_id is the raw D-ID id.
+        const hasAvatar = vps.some((v) => !!v.did_avatar_id || !!v.avatar_url) || !!a.avatar_id
         return hasVoice && hasAvatar
       })(),
     }

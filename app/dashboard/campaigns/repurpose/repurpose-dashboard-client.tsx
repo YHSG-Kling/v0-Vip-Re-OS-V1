@@ -4,7 +4,7 @@
 // Layer 9.11 — Omni-Presence Repurposer Dashboard Client
 // Two-panel layout: Pipeline Builder (left) + Source Picker & History (right)
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -135,6 +135,9 @@ interface RepurposeDashboardClientProps {
   pipelines: Pipeline[]
   history: HistoryItem[]
   sources: Sources
+  // Deep-link (e.g. Podcast Studio "Send to Omnipresence"): preselect a source.
+  initialSourceType?: string | null
+  initialSourceId?: string | null
 }
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -184,6 +187,8 @@ export function RepurposeDashboardClient({
   pipelines: initialPipelines,
   history: initialHistory,
   sources,
+  initialSourceType = null,
+  initialSourceId = null,
 }: RepurposeDashboardClientProps) {
   const router = useRouter()
   const [pipelines, setPipelines] = useState(initialPipelines)
@@ -211,6 +216,39 @@ export function RepurposeDashboardClient({
     outputs?: any[]
     error?: string
   } | null>(null)
+
+  // Deep-link handoff (e.g. Podcast Studio "Send to Omnipresence" →
+  // ?source=podcast&episodeId=…): land the user ON the Execute tab with the
+  // work pre-staged instead of a bare dashboard. If an active pipeline already
+  // matches the source type, auto-select it and preselect the exact source so
+  // one click executes; otherwise pre-seed the Create-Pipeline dialog with the
+  // right source type so the user builds the correct pipeline in one step.
+  useEffect(() => {
+    if (!initialSourceType) return
+    const type = initialSourceType as SourceType
+    const typedSources =
+      type === "video_project" ? sources.video_project
+      : type === "blog_post" ? sources.blog_post
+      : type === "podcast_episode" ? sources.podcast_episode
+      : type === "script" ? sources.script
+      : []
+    const match = initialSourceId
+      ? typedSources.find((s) => s.id === initialSourceId)
+      : undefined
+
+    setActiveTab("execute")
+
+    const activePipeline = initialPipelines.find((p) => p.is_active && p.source_type === type)
+    if (activePipeline) {
+      setSelectedPipeline(activePipeline)
+      if (match) setSelectedSource({ type, id: match.id, title: match.title })
+    } else {
+      // No pipeline yet — pre-seed creation with this source type.
+      setNewPipeline((prev) => ({ ...prev, sourceType: type, sourceId: match?.id ?? prev.sourceId }))
+    }
+    // Run once on mount for the deep-link; subsequent selection is user-driven.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Available formats for video vs text sources
   const VIDEO_FORMATS: OutputFormat[] = ["instagram_reels", "instagram_story", "tiktok", "youtube_shorts", "facebook_reels"]

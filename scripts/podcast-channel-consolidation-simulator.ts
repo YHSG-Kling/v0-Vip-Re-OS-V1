@@ -50,6 +50,21 @@ console.log("\n── the repurpose source list includes PUBLISHED podcast episo
     /podcast_episodes[\s\S]*?\.in\("status",\s*\[\s*"completed",\s*"published"\s*\]\)/.test(page))
 }
 
+console.log("\n── the 'Send to Omnipresence' deep-link is honored (no more dead-end) ──")
+{
+  const page = src("app/dashboard/campaigns/repurpose/page.tsx")
+  check("the page parses ?source / ?episodeId and passes them to the client",
+    page.includes("SOURCE_TOKEN_TO_TYPE") && page.includes("initialSourceType") && page.includes("initialSourceId"))
+
+  const client = src("app/dashboard/campaigns/repurpose/repurpose-dashboard-client.tsx")
+  check("the client preselects on the deep-link (Execute tab + matching pipeline/source)",
+    client.includes("initialSourceType") &&
+    /setActiveTab\("execute"\)/.test(client) &&
+    client.includes("setSelectedPipeline") && client.includes("setSelectedSource"))
+  check("with no pipeline yet it pre-seeds pipeline creation with the source type",
+    /setNewPipeline\(\(prev\)\s*=>\s*\(\{\s*\.\.\.prev,\s*sourceType: type/.test(client))
+}
+
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
 if (fail > 0) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)); console.log(" ❌ PODCAST_CHANNEL_CONSOLIDATION_FAIL"); process.exit(1) }
 console.log(" ✅ PODCAST_CHANNEL_CONSOLIDATION_PASS — one channel editor (Settings); the studio syndicates read-only; published episodes are repurposable")
