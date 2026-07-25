@@ -51,7 +51,6 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
-          { id: 'market-intelligence', label: 'Market Intelligence', href: '/dashboard/marketing/intelligence' },
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'brand-voice', label: 'BrandVoice Profile', href: '/dashboard/marketing/studio/brand-voice' },
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
@@ -59,9 +58,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/agent/lead-magnets' },
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
-          { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
+          { id: 'seo', label: 'SEO / GEO', href: '/dashboard/marketing/seo' },
           { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
-          { id: 'competitors', label: 'Competitors', href: '/dashboard/marketing/competitors' },
         ],
       },
       {
@@ -267,7 +265,6 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
-          { id: 'market-intelligence', label: 'Market Intelligence', href: '/dashboard/marketing/intelligence' },
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           // Nav-parity: agents and team leads could reach Newsletters; the broker could not.
@@ -275,9 +272,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/admin/lead-magnets' },
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
-          { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
+          { id: 'seo', label: 'SEO / GEO', href: '/dashboard/marketing/seo' },
           { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
-          { id: 'competitors', label: 'Competitors', href: '/dashboard/marketing/competitors' },
         ],
       },
       {
@@ -492,16 +488,14 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
-          { id: 'market-intelligence', label: 'Market Intelligence', href: '/dashboard/marketing/intelligence' },
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
           { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/admin/lead-magnets' },
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
-          { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
+          { id: 'seo', label: 'SEO / GEO', href: '/dashboard/marketing/seo' },
           { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
-          { id: 'competitors', label: 'Competitors', href: '/dashboard/marketing/competitors' },
         ],
       },
       {
@@ -852,9 +846,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'newsletters', label: 'Newsletters', href: '/newsletters/templates' },
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
-          { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
+          { id: 'seo', label: 'SEO / GEO', href: '/dashboard/marketing/seo' },
           { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
-          { id: 'competitors', label: 'Competitors', href: '/dashboard/marketing/competitors' },
         ],
       },
       {
