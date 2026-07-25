@@ -12,7 +12,7 @@ export const metadata = {
 
 const VALID_TABS = [
   "ad-os", "overview", "campaigns", "assets", "calendar",
-  "newsletters", "registry", "qr", "mail", "blog", "video",
+  "newsletters", "registry", "qr", "mail", "blog",
   "podcast", "omnichannel", "ops",
 ] as const
 

@@ -229,8 +229,6 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   const [isBlogLoading, setIsBlogLoading] = useState(false)
 
   // Video state
-  const [videoProjects, setVideoProjects] = useState<any[]>([])
-  const [isVideoLoading, setIsVideoLoading] = useState(false)
 
   // Podcast state
   const [podcastEpisodes, setPodcastEpisodes] = useState<any[]>([])
@@ -316,7 +314,6 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     if (activeTab === "newsletters") loadNewsletterData()
     if (activeTab === "ad-os")       loadAdOsData()
     if (activeTab === "blog")        loadBlogData()
-    if (activeTab === "video")       loadVideoData()
     if (activeTab === "podcast")     loadPodcastData()
     if (activeTab === "mail")        loadMailData()
   }, [activeTab, statusFilter])
@@ -470,27 +467,6 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
       console.error("[v0] loadBlogData error:", e)
     } finally {
       setIsBlogLoading(false)
-    }
-  }
-
-  async function loadVideoData() {
-    setIsVideoLoading(true)
-    try {
-      const resolvedBrokerageId = brokerageIdProp || brokerageId
-      if (!resolvedBrokerageId) return
-      const { createClient } = await import("@/lib/supabase/client")
-      const supabase = createClient()
-      const { data } = await supabase
-        .from("ai_video_projects")
-        .select("id, title, status, video_type, video_url, thumbnail_url, created_at")
-        .eq("brokerage_id", resolvedBrokerageId)
-        .order("created_at", { ascending: false })
-        .limit(20)
-      setVideoProjects(data || [])
-    } catch (e) {
-      console.error("[v0] loadVideoData error:", e)
-    } finally {
-      setIsVideoLoading(false)
     }
   }
 
@@ -1126,13 +1102,6 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
             >
               <Newspaper className="h-4 w-4" />
               <span className="text-xs">Blog</span>
-            </TabsTrigger>
-            <TabsTrigger
-              value="video"
-              className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
-            >
-              <Video className="h-4 w-4" />
-              <span className="text-xs">Video</span>
             </TabsTrigger>
             <TabsTrigger
               value="podcast"
@@ -2413,109 +2382,6 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                           <Button size="sm" className="bg-violet-600 hover:bg-violet-700" asChild>
                             <a href={`/dashboard/marketing/blog/${post.id}`}>
                               Preview &amp; Publish
-                            </a>
-                          </Button>
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            )}
-          </TabsContent>
-
-          {/* Video Tab */}
-          <TabsContent value="video" className="space-y-4">
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <div>
-                <h3 className="text-lg font-semibold">Video Projects</h3>
-                <p className="text-sm text-muted-foreground">Create and distribute AI-generated video content</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" asChild>
-                  <a href="/dashboard/videos/library">
-                    <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
-                    Video Library
-                  </a>
-                </Button>
-                <Button size="sm" className="bg-violet-600 hover:bg-violet-700" asChild>
-                  <a href="/dashboard/videos/create">
-                    <Plus className="h-3.5 w-3.5 mr-1.5" />
-                    New Video
-                  </a>
-                </Button>
-              </div>
-            </div>
-
-            {isVideoLoading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-              </div>
-            ) : videoProjects.length === 0 ? (
-              <Card className="border-dashed">
-                <CardContent className="py-12 text-center">
-                  <Video className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
-                  <p className="font-medium text-muted-foreground">No video projects yet</p>
-                  <Button size="sm" className="mt-4 bg-violet-600 hover:bg-violet-700" asChild>
-                    <a href="/dashboard/videos/create">Create Your First Video</a>
-                  </Button>
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {videoProjects.map((project: any) => (
-                  <Card key={project.id} className="hover:shadow-md transition-shadow">
-                    <CardContent className="pt-5">
-                      {project.thumbnail_url ? (
-                        <div className="relative mb-3 rounded-md overflow-hidden bg-black aspect-video">
-                          <img
-                            src={project.thumbnail_url}
-                            alt={project.title}
-                            className="w-full h-full object-cover opacity-80"
-                          />
-                          {project.status === "completed" && project.video_url && (
-                            <a
-                              href={project.video_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="absolute inset-0 flex items-center justify-center"
-                            >
-                              <div className="h-10 w-10 rounded-full bg-white/90 flex items-center justify-center">
-                                <Play className="h-5 w-5 text-violet-600 ml-0.5" />
-                              </div>
-                            </a>
-                          )}
-                        </div>
-                      ) : null}
-                      <div className="flex items-start justify-between mb-2">
-                        <Badge
-                          className={
-                            project.status === "completed"
-                              ? "bg-green-100 text-green-700"
-                              : project.status === "generating"
-                              ? "bg-blue-100 text-blue-700"
-                              : "bg-gray-100 text-gray-700"
-                          }
-                        >
-                          {project.status}
-                        </Badge>
-                        <Badge variant="outline" className="capitalize text-xs">{project.video_type}</Badge>
-                      </div>
-                      <h4 className="font-semibold line-clamp-1 mb-1">{project.title}</h4>
-                      <p className="text-xs text-muted-foreground">
-                        {format(new Date(project.created_at), "MMM d, yyyy")}
-                      </p>
-                      <div className="flex gap-2 mt-4">
-                        <Button size="sm" variant="outline" className="flex-1" asChild>
-                          <a href="/dashboard/videos/board">
-                            <Eye className="h-3.5 w-3.5 mr-1.5" />
-                            View
-                          </a>
-                        </Button>
-                        {project.status === "completed" && project.video_url && (
-                          <Button size="sm" className="bg-violet-600 hover:bg-violet-700" asChild>
-                            <a href={project.video_url} target="_blank" rel="noopener noreferrer">
-                              Distribute
                             </a>
                           </Button>
                         )}
