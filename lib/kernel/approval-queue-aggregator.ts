@@ -130,6 +130,17 @@ export async function applyMarketingAssetApproval(
       }
     }
   }
+  if (kind === "direct_mail") {
+    // Print-eligibility keys on the STATUS lifecycle (planning→approved→printed
+    // →mailed), NOT approval_status — so approve must advance status='approved'
+    // or the campaign never prints. (The base update above only set
+    // approval_status; without this, a direct-mail approval stranded at
+    // 'planning' — the same class as the podcast strand.)
+    await svc.from("direct_mail_campaigns")
+      .update({ status: "approved" })
+      .eq("id", id)
+      .eq("status", "planning")
+  }
 
   return { ok: true }
 }

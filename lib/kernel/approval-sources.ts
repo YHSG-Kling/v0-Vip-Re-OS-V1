@@ -366,6 +366,14 @@ export async function loadOneContentAction(
 
 export interface ContentApprovalResult { ok: boolean; status?: string; error?: string }
 
+/** Content queues whose approve/reject ride the ONE canonical marketing-asset
+ *  transition (applyMarketingAssetApproval/Rejection). They map 1:1 to
+ *  MarketingAssetKind, and each SENDER gates on a kind-specific lifecycle column
+ *  (newsletter→status='scheduled'+send_date; blog→publish_status; podcast→
+ *  publish_channels; direct_mail→status='approved'). Delegating here is what keeps
+ *  the Command Center and /approvals from writing different columns. */
+const MARKETING_ASSET_QUEUES = new Set<ContentQueue>(["newsletter", "blog", "podcast", "direct_mail"])
+
 /**
  * Approve (RELEASE) a content item from the Command Center. Brokerage-scoped
  * unless superadmin; idempotent via the source's pending guard. Returns the new
@@ -383,13 +391,17 @@ export async function approveContentSource(
   if (!row) return { ok: false, error: "not found" }
   if (!ctx.isSuperadmin && ctx.brokerageId && (row as any).brokerage_id !== ctx.brokerageId) return { ok: false, error: "outside your brokerage" }
 
-  // Podcast release rides the ONE canonical marketing transition (sets
-  // approval_status='approved' AND defaults publish_channels — a bare patch
-  // would leave channels empty and the distributor would never ship it). Tenant
-  // scope is already enforced above.
-  if (queue === "podcast") {
+  // Marketing-asset releases (newsletter/blog/podcast/direct_mail) ride the ONE
+  // canonical transition (applyMarketingAssetApproval) — the SAME function A's
+  // /approvals cascade and the marketing-approvals surface use. It sets
+  // approval_status AND the kind-specific lifecycle each SENDER actually gates on
+  // (newsletter→status='scheduled'+send_date; blog→publish_status='approved';
+  // podcast→publish_channels defaulted; direct_mail→status='approved'). A bare
+  // approval_status patch strands the asset — nothing ships. Tenant scope is
+  // already enforced above.
+  if (MARKETING_ASSET_QUEUES.has(queue)) {
     const { applyMarketingAssetApproval } = await import("./approval-queue-aggregator")
-    const res = await applyMarketingAssetApproval("podcast", id)
+    const res = await applyMarketingAssetApproval(queue as any, id)
     return res.ok ? { ok: true, status: "approved" } : { ok: false, error: res.error }
   }
 
@@ -412,11 +424,11 @@ export async function rejectContentSource(
   if (!row) return { ok: false, error: "not found" }
   if (!ctx.isSuperadmin && ctx.brokerageId && (row as any).brokerage_id !== ctx.brokerageId) return { ok: false, error: "outside your brokerage" }
 
-  // Podcast rejection rides the same canonical transition (approval_status=
-  // 'rejected'), so the two surfaces can't write different columns.
-  if (queue === "podcast") {
+  // Marketing-asset rejections ride the same canonical transition, so the two
+  // surfaces can't write different columns.
+  if (MARKETING_ASSET_QUEUES.has(queue)) {
     const { applyMarketingAssetRejection } = await import("./approval-queue-aggregator")
-    const res = await applyMarketingAssetRejection("podcast", id, "Rejected in Command Center")
+    const res = await applyMarketingAssetRejection(queue as any, id, "Rejected in Command Center")
     return res.ok ? { ok: true, status: "rejected" } : { ok: false, error: res.error }
   }
 
