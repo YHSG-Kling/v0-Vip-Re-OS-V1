@@ -57,7 +57,10 @@ export default async function RepurposePage() {
         .from("podcast_episodes")
         .select("id, title, status, duration_seconds, created_at")
         .eq("brokerage_id", brokerageId)
-        .eq("status", "completed")
+        // A finished episode is repurposable whether it's completed or already
+        // published — matches the Podcast Studio's own Repurpose tab, so an
+        // episode sent over via "Send to Omnipresence" actually appears here.
+        .in("status", ["completed", "published"])
         .order("created_at", { ascending: false })
         .limit(20),
       supabase
