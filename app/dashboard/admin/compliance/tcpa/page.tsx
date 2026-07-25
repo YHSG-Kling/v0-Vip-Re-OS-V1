@@ -4,6 +4,7 @@ import { ShieldCheck, ShieldAlert, Phone, MessageSquare, Mail } from "lucide-rea
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { redirect } from "next/navigation"
+import { ConsentPanel, type MissingConsentContact } from "./consent-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -74,6 +75,44 @@ export default async function TCPAComplianceDashboard() {
   const rows = logRows ?? []
   const blockRate = (total30 ?? 0) > 0 ? Math.round(((blocked30 ?? 0) / (total30 ?? 1)) * 100) : 0
 
+  // ── Suppression posture + actionable missing-consent list + consent audit ──
+  const [
+    { count: dncCount },
+    { count: smsOptOutCount },
+    { count: missingConsentCount },
+    { data: missingRows },
+    { data: consentEvents },
+  ] = await Promise.all([
+    svc.from("contacts").select("*", { count: "exact", head: true })
+      .eq("brokerage_id", profile.brokerage_id).eq("dnc_status", true),
+    svc.from("contacts").select("*", { count: "exact", head: true })
+      .eq("brokerage_id", profile.brokerage_id).eq("sms_opt_out", true),
+    svc.from("contacts").select("*", { count: "exact", head: true })
+      .eq("brokerage_id", profile.brokerage_id).not("phone", "is", null).neq("tcpa_consent", true),
+    // Actionable set: phone-reachable, no consent, not on DNC / opted-out.
+    svc.from("contacts")
+      .select("id, first_name, last_name, phone")
+      .eq("brokerage_id", profile.brokerage_id)
+      .not("phone", "is", null)
+      .neq("tcpa_consent", true)
+      .not("dnc_status", "is", true)
+      .not("sms_opt_out", "is", true)
+      .order("created_at", { ascending: false })
+      .limit(50),
+    svc.from("contact_consent_events")
+      .select("id, contact_id, consented, consent_source, created_at, contact:contacts(first_name, last_name)")
+      .eq("brokerage_id", profile.brokerage_id)
+      .order("created_at", { ascending: false })
+      .limit(25),
+  ])
+
+  const missingConsent: MissingConsentContact[] = (missingRows ?? []).map((c: any) => ({
+    id: c.id,
+    name: [c.first_name, c.last_name].filter(Boolean).join(" "),
+    phone: c.phone ?? null,
+  }))
+  const events = consentEvents ?? []
+
   // Group by block reason
   const blocksByReason: Record<string, number> = {}
   for (const r of rows) {
@@ -87,13 +126,60 @@ export default async function TCPAComplianceDashboard() {
       <div>
         <h1 className="text-2xl font-bold flex items-center gap-2">
           <ShieldCheck className="h-5 w-5 text-primary" />
-          TCPA compliance log
+          TCPA compliance
         </h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Every outbound SMS, call, and email is gated for TCPA + DNC + quiet hours.
-          Decisions retained for 7 years (class-action discovery + state RE commission audit).
+          Manage consent and suppression, and review every gated decision. Outbound SMS, call, and
+          email are gated for TCPA + DNC + quiet hours; decisions retained 7 years.
         </p>
       </div>
+
+      {/* Suppression posture — real counts from the contact book */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <Card className={(dncCount ?? 0) > 0 ? "border-red-200" : ""}><CardContent className="pt-4">
+          <p className="text-xs text-muted-foreground">On DNC</p>
+          <p className="text-3xl font-bold text-red-700">{dncCount ?? 0}</p>
+        </CardContent></Card>
+        <Card><CardContent className="pt-4">
+          <p className="text-xs text-muted-foreground">SMS opted-out</p>
+          <p className="text-3xl font-bold">{smsOptOutCount ?? 0}</p>
+        </CardContent></Card>
+        <Card className={(missingConsentCount ?? 0) > 0 ? "border-amber-200 bg-amber-50/30" : ""}><CardContent className="pt-4">
+          <p className="text-xs text-muted-foreground">Phone contacts w/o consent</p>
+          <p className="text-3xl font-bold text-amber-700">{missingConsentCount ?? 0}</p>
+        </CardContent></Card>
+      </div>
+
+      {/* Actionable: record express consent for phone-reachable contacts */}
+      <ConsentPanel initialMissing={missingConsent} />
+
+      {/* Consent audit trail */}
+      <Card>
+        <CardHeader className="pb-3"><CardTitle className="text-sm">Consent audit trail</CardTitle></CardHeader>
+        <CardContent className="p-0">
+          {events.length === 0 ? (
+            <p className="p-6 text-center text-sm text-muted-foreground">No consent events recorded yet.</p>
+          ) : (
+            <div className="divide-y">
+              {events.map((e: any) => {
+                const c = Array.isArray(e.contact) ? e.contact[0] : e.contact
+                return (
+                  <div key={e.id} className="flex items-center justify-between gap-2 px-4 py-2.5 text-sm">
+                    <span className="truncate">{c ? [c.first_name, c.last_name].filter(Boolean).join(" ") || "—" : "—"}</span>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <Badge className={e.consented ? "bg-emerald-100 text-emerald-800 text-xs" : "bg-red-100 text-red-800 text-xs"}>
+                        {e.consented ? "consented" : "revoked"}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">{e.consent_source}</span>
+                      <span className="text-xs text-muted-foreground">{new Date(e.created_at).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card><CardContent className="pt-4">
