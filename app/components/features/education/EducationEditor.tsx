@@ -89,6 +89,7 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
   const handleAIGenerate = () => {
     if (!agentId || !aiTopic) { toast.error('Enter a topic first'); return }
     startGenerating(async () => {
+      let text = ''
       if (aiMode === 'article') {
         const result = await generateText({
           agent_id: agentId,
@@ -101,7 +102,8 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
           toast.error(result.error ?? 'Failed to generate content')
           return
         }
-        setAiResult((result as any).content?.body ?? (result as any).body ?? '')
+        // The generator returns its text in content.raw_content (not .body).
+        text = (result as any).content?.raw_content ?? (result as any).content?.body ?? (result as any).body ?? ''
       } else {
         const result = await generateVideo({
           agent_id: agentId,
@@ -113,9 +115,13 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
           toast.error(result.error ?? 'Failed to generate content')
           return
         }
-        setAiResult((result as any).content?.script ?? (result as any).script ?? '')
+        // Video scripts also come back in content.raw_content (not .script).
+        text = (result as any).content?.raw_content ?? (result as any).content?.script ?? (result as any).script ?? ''
       }
-      toast.success('Content generated')
+      setAiResult(text)
+      // Only claim success when we actually captured content to show + save.
+      if (text.trim()) toast.success('Content generated')
+      else toast.error('The generator returned no content — try a different topic')
     })
   }
 

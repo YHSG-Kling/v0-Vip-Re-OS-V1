@@ -189,6 +189,12 @@ export async function getDefaultSequenceCatalog(brokerageId?: string): Promise<{
   if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized", items: [] }
   const targetBrokerageId = brokerageId ?? ctx.brokerageId
   if (!targetBrokerageId) return { success: false, error: "No brokerage in scope", items: [] }
+  // Same tenant boundary as seedDefaultSequences: a client-supplied brokerageId
+  // must be the caller's own (service client bypasses RLS) — only superadmin may
+  // read another tenant's install state.
+  if (brokerageId && brokerageId !== ctx.brokerageId && ctx.userType !== "superadmin") {
+    return { success: false, error: "Cannot read another brokerage", items: [] }
+  }
 
   const supabase = createServiceClient()
   const { data: existing } = await supabase

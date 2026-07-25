@@ -630,7 +630,6 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'audits', label: 'Audit Logs', href: '/compliance/audits', icon: 'Eye' },
       { id: 'policies', label: 'Policies', href: '/compliance/policies', icon: 'FileText' },
       { id: 'reports', label: 'Reports', href: '/compliance/reports', icon: 'BarChart3' },
-      { id: 'full-compliance', label: 'Full Compliance Center', href: '/dashboard/compliance', icon: 'Shield' },
       { id: 'compliance-queue', label: 'Compliance Queue', href: '/dashboard/compliance/queue', icon: 'ListChecks' },
       { id: 'comm-intel', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence', icon: 'Brain' },
       { id: 'approvals', label: 'Approvals Queue', href: '/approvals', icon: 'CheckSquare' },

@@ -545,8 +545,8 @@ export function BrandComplianceClient({
                             <p className="text-xs text-destructive mt-1">{compliance.error}</p>
                           )}
 
-                          {/* Auto-approve result */}
-                          {autoApprove?.eligible !== null && (
+                          {/* Auto-approve result (only after the on-demand check populates it) */}
+                          {autoApprove && autoApprove.eligible !== null && (
                             <p className="text-xs text-muted-foreground mt-0.5">
                               Auto-approve:{" "}
                               <span className={autoApprove.eligible ? "text-green-700 font-medium" : "text-foreground"}>

@@ -49,6 +49,14 @@ export async function renderPostcardPreviewAction(input: {
     .eq("id", ctx.userId)
     .maybeSingle()
   const agentName = [agent?.first_name, agent?.last_name].filter(Boolean).join(" ") || null
+  // The branded headshot lives on the agents row (photo_url → profile_image_url),
+  // joined by agents.user_id = users.id — same cascade the reel/social producers use.
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("photo_url, profile_image_url")
+    .eq("user_id", ctx.userId)
+    .maybeSingle()
+  const agentPhotoUrl = (agentRow?.photo_url as string | null) ?? (agentRow?.profile_image_url as string | null) ?? null
 
   try {
     const result = await renderPostcardBothSides4x6({
@@ -63,7 +71,7 @@ export async function renderPostcardPreviewAction(input: {
       } as any,
       qrScanUrl: null, // preview QR is a placeholder; the real send mints a slug
       agentName,
-      agentPhotoUrl: null, // agent headshot is optional on the render
+      agentPhotoUrl, // real branded headshot from the agents row
     })
 
     if (!result.ok) {

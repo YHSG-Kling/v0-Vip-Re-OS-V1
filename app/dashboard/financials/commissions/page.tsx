@@ -54,6 +54,29 @@ export default async function CommissionsPage() {
   const paidCount = commissionsData.filter((c: any) => c.status === 'paid').length
   const totalPending = commissionsData.filter((c: any) => c.status === 'pending').reduce((sum: number, c: any) => sum + (c.agent_commission || 0), 0)
 
+  // Summary + records for the Commission Intelligence panel (it expects a
+  // `summary` object and camelCase records — previously omitted, which crashed
+  // the page on `summary.pending`).
+  const sumBy = (status: string) =>
+    commissionsData.filter((c: any) => c.status === status).reduce((s: number, c: any) => s + (c.agent_commission || 0), 0)
+  const commissionSummary = {
+    pending: pendingCount,
+    approved: commissionsData.filter((c: any) => c.status === 'approved').length,
+    paid: paidCount,
+    held: commissionsData.filter((c: any) => c.status === 'held').length,
+    totalPending,
+    totalApproved: sumBy('approved'),
+    totalPaid: sumBy('paid'),
+  }
+  const commissionRecords = commissionsData.map((c: any) => ({
+    id: c.id,
+    transactionId: c.transaction_id ?? '',
+    grossCommission: c.gross_commission ?? 0,
+    agentNet: c.agent_commission ?? 0,
+    status: c.status ?? 'pending',
+    createdAt: c.created_at,
+  }))
+
   // Build action stack for commissions view
   const commissionActions: FinancialAction[] = []
   
@@ -132,7 +155,8 @@ export default async function CommissionsPage() {
       </div>
 
       {/* Commission Intelligence Panel */}
-      {(() => { const Panel = CommissionIntelligencePanel as any; return <Panel commissions={commissionsData} agentId={agentId} /> })()}
+      <CommissionIntelligencePanel commissions={commissionRecords} summary={commissionSummary} />
+
 
       {/* Commission Records Table */}
       <Card>
