@@ -76,6 +76,11 @@ export interface AvatarExplainerReadiness {
   elevenlabsConfigured: boolean
   /** The agent has a D-ID avatar source (actor id or photo/video). */
   presenterReady: boolean
+  /** True when a REAL talking-head AVATAR (D-ID actor id) is on file — the
+   *  explainer animates the avatar (/expressives). When false, only a still
+   *  photo exists and D-ID animates the photo (/talks); set up the Twin Studio
+   *  avatar for a true talking head. */
+  hasAvatar: boolean
   /** Where the narration voice will come from — labeled honestly. */
   voiceSource: ExplainerVoiceSource
   voiceId: string | null
@@ -159,6 +164,8 @@ export async function getAvatarExplainerReadiness(
     didConfigured,
     elevenlabsConfigured: elevenlabsKeyConfigured(),
     presenterReady: presenter.canRender,
+    // A real avatar (actor id) → talking head; only a photo → animated photo.
+    hasAvatar: !!presenter.actorId,
     voiceSource,
     voiceId,
     agentPhotoUrl: presenter.avatarImageUrl,
