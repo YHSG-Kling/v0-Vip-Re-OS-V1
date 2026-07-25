@@ -12,27 +12,17 @@
  *      entity. Called as a custom tool by Managed Agents AND as a server action by
  *      the portal chat backend so both surfaces share the same recall.
  *
- * Embedding model: OpenAI text-embedding-3-small (1536 dims) — matches the existing
- * `help_topics_kb` + `knowledge_articles` convention.
- *
- * Single-egress note: this helper uses the OpenAI SDK directly to match the existing
- * kb-search.ts pattern. A follow-up will migrate ALL embedding calls (kb + here) to
- * the Vercel AI Gateway's /v1/embeddings endpoint via callConnector.
+ * Embedding model: openai/text-embedding-3-small (1536 dims) via the ONE canonical
+ * embedder (lib/knowledge/embedding-service → Vercel AI Gateway) — the same
+ * pipeline the knowledge base uses. The raw-OpenAI second pipeline that used to
+ * live here was retired so contact + KB vectors never drift apart (same model,
+ * same dims, one egress).
  */
 import "server-only"
-import OpenAI from "openai"
+import { generateEmbedding } from "@/lib/knowledge/embedding-service"
 import { createServiceClient } from "@/lib/supabase/service"
 
-let _openai: OpenAI | null = null
-function getOpenAI(): OpenAI {
-  if (!_openai) {
-    _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  }
-  return _openai
-}
-
-const EMBEDDING_MODEL = "text-embedding-3-small"
-const EMBEDDING_DIMS  = 1536
+const EMBEDDING_DIMS = 1536
 
 export type MemoryKind =
   | "transparency_update"
@@ -69,9 +59,6 @@ export interface EmbedMemoryResult {
  * any failure so kernel fanout callers don't break primary writes.
  */
 export async function embedContactMemory(input: EmbedMemoryInput): Promise<EmbedMemoryResult> {
-  if (!process.env.OPENAI_API_KEY) {
-    return { ok: false, error: "OPENAI_API_KEY not configured" }
-  }
   const trimmed = (input.content ?? "").trim()
   if (!trimmed) return { ok: false, error: "empty content" }
   // Cap embedded input — long text degrades retrieval quality and costs more.
@@ -79,11 +66,7 @@ export async function embedContactMemory(input: EmbedMemoryInput): Promise<Embed
 
   let embedding: number[]
   try {
-    const res = await getOpenAI().embeddings.create({
-      model: EMBEDDING_MODEL,
-      input: truncated,
-    })
-    embedding = res.data[0]?.embedding ?? []
+    embedding = await generateEmbedding(truncated)
   } catch (e) {
     return { ok: false, error: `embedding failed: ${(e as Error).message}` }
   }
@@ -141,20 +124,13 @@ export interface RecallResult {
  * NON-NEGOTIABLE — never search across brokerages.
  */
 export async function recallContactMemory(input: RecallInput): Promise<RecallResult> {
-  if (!process.env.OPENAI_API_KEY) {
-    return { ok: false, memories: [], error: "OPENAI_API_KEY not configured" }
-  }
   const k     = Math.min(20, Math.max(1, input.k ?? 5))
   const query = (input.query ?? "").trim()
   if (!query) return { ok: true, memories: [] }
 
   let qEmbedding: number[]
   try {
-    const res = await getOpenAI().embeddings.create({
-      model: EMBEDDING_MODEL,
-      input: query,
-    })
-    qEmbedding = res.data[0]?.embedding ?? []
+    qEmbedding = await generateEmbedding(query)
   } catch (e) {
     return { ok: false, memories: [], error: `query embedding failed: ${(e as Error).message}` }
   }

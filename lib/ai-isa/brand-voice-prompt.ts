@@ -320,6 +320,30 @@ export async function loadBrandVoicePrompt(
     } catch { /* contact context unavailable — brand voice still stands */ }
   }
 
+  // ── Extended memory: RAG over THIS contact's accumulated history ─────────────
+  // Beyond the structured snapshot above, the contact has a growing vector memory
+  // (contact_memory: portal milestones, showing feedback, agent notes, persona
+  // signals) on the SAME canonical embedder as the KB. When a query is present,
+  // recall the most relevant memories for this contact and inject them so the AI
+  // stays consistent with what's happened before. Scoped to the brokerage+entity
+  // inside the RPC; best-effort — a memory miss never breaks brand voice.
+  if (ctx.contactId && ctx.knowledgeQuery?.trim()) {
+    try {
+      const { recallContactMemory } = await import("@/lib/agents/contact-memory")
+      const rec = await recallContactMemory({
+        brokerageId: ctx.brokerageId,
+        entityType: "contact",
+        entityId: ctx.contactId,
+        query: ctx.knowledgeQuery.slice(0, 1000),
+        k: 4,
+      })
+      if (rec.ok && rec.memories.length > 0) {
+        const memBlock = rec.memories.map((m) => `- ${m.content}`).join("\n")
+        parts.push(`Relevant history with this contact — recall and stay consistent with it:\n${memBlock}`)
+      }
+    } catch { /* memory unavailable — brand voice still stands */ }
+  }
+
   return {
     systemBlock: parts.join(" "),
     tone: resolvedTone,
