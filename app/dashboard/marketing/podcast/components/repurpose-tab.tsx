@@ -312,7 +312,7 @@ export function RepurposeTab({ episodes }: Props) {
                   Copy Markdown
                 </Button>
                 <Button asChild size="sm">
-                  <Link href={blogSavedId ? `/dashboard/blog?postId=${blogSavedId}` : "/dashboard/blog"}>
+                  <Link href={blogSavedId ? `/dashboard/marketing/blog/${blogSavedId}` : "/dashboard/marketing/blog"}>
                     Open in Blog Editor
                     <ExternalLink className="h-3.5 w-3.5 ml-1.5" />
                   </Link>

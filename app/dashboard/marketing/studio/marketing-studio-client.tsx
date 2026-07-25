@@ -2535,16 +2535,13 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                 <p className="text-sm text-muted-foreground">Create and distribute AI-powered podcast episodes</p>
               </div>
               <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" asChild>
-                  <a href="/dashboard/marketing/podcast">
-                    <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
-                    Podcast Studio
-                  </a>
-                </Button>
+                {/* One entry point — the Podcast Studio is where episodes are
+                    created; a second "New Episode" button here just navigated to
+                    the same place (duplicate). */}
                 <Button size="sm" className="bg-violet-600 hover:bg-violet-700" asChild>
                   <a href="/dashboard/marketing/podcast">
-                    <Plus className="h-3.5 w-3.5 mr-1.5" />
-                    New Episode
+                    <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+                    Open Podcast Studio
                   </a>
                 </Button>
               </div>
