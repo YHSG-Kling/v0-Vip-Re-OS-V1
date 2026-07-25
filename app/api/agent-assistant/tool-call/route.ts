@@ -277,8 +277,14 @@ async function runTool(
       if (!lst || (lst as { brokerage_id?: string }).brokerage_id !== session.brokerage_id) {
         return { error: "That listing isn't in your brokerage." }
       }
-      const { getListingCurrentStage } = await import("@/app/actions/listing-lifecycle-core")
-      return getListingCurrentStage(listingId)
+      // Read the stage through the passed-in SERVICE client (brokerage-scoped
+      // manually above) — NOT the getListingCurrentStage server action, which
+      // builds a cookie-based RLS client. This webhook is unauthenticated
+      // (secret-header only, no Supabase user session), so an RLS client has no
+      // auth.uid() and the activities SELECT returns zero rows → always null.
+      const { getCurrentLifecycleStage } = await import("@/lib/listing-lifecycle")
+      const currentStage = await getCurrentLifecycleStage(supabase, listingId)
+      return { success: true, currentStage }
     }
 
     case "query_buyer_stage": {
@@ -291,6 +297,53 @@ async function runTool(
       }
       const { getBuyerJourney } = await import("@/app/actions/buyer-execution")
       return getBuyerJourney({ contactId, userId: session.user_id, source: "voice_assistant" })
+    }
+
+    // ── Vendor/lender lane: lender confirms a buyer's financing by voice ──
+    // The per-role reach is enforced above (authorityAllows('vendor')); the
+    // per-CONTACT grant + financial scope is enforced INSIDE the executor
+    // (assertVendorAssignedToContact). Because it flips the financing gate, the
+    // dispatcher requires an explicit spoken confirm FIRST — the AI reads the
+    // amount back and only re-calls with confirm:true. Nothing changes state on
+    // the first utterance. (Human-in-the-loop, deliberately.)
+    case "lender_confirm_financials": {
+      const contactId = String(params.contact_id ?? params.buyer_id ?? "").trim()
+      if (!contactId) return { error: "Which buyer? I need the contact whose financing you're confirming." }
+      const rawType = String(params.verification_type ?? "preapproval").trim()
+      const verificationType = (["preapproval", "proof_of_funds", "lender_intro"].includes(rawType)
+        ? rawType
+        : "preapproval") as "preapproval" | "proof_of_funds" | "lender_intro"
+      const approvedAmount = params.approved_amount != null ? Number(params.approved_amount) : undefined
+
+      // Human-in-the-loop: require an explicit confirm before the state change.
+      const confirmRaw = String(params.confirm ?? "").toLowerCase()
+      const confirmed = params.confirm === true || confirmRaw === "true" || confirmRaw === "yes"
+      if (!confirmed) {
+        const amt = approvedAmount != null ? `$${approvedAmount.toLocaleString()}` : "the stated amount"
+        return {
+          needs_confirmation: true,
+          spoken_summary: `Just to confirm — mark this buyer's ${verificationType.replace(/_/g, " ")} as verified for ${amt}? Say "confirm" and I'll record it. Nothing changes until you do.`,
+        }
+      }
+
+      const { lenderConfirmBuyerFinancials } = await import("@/app/actions/buyer-execution")
+      const res = await lenderConfirmBuyerFinancials({
+        contactId,
+        lenderId: session.user_id,          // the acting lender/vendor USER
+        verificationType,
+        approvedAmount,
+        loanType: params.loan_type ? String(params.loan_type) : undefined,
+        interestRate: params.interest_rate != null ? Number(params.interest_rate) : undefined,
+        lenderName: params.lender_name ? String(params.lender_name) : undefined,
+        notes: params.notes ? String(params.notes) : undefined,
+      })
+      if (!("success" in res) || !res.success) {
+        return { error: (res as { error?: string }).error ?? "Could not confirm financing." }
+      }
+      return {
+        success: true,
+        spoken_summary: `Done — the buyer's ${verificationType.replace(/_/g, " ")} is recorded as verified. The agent's deal file and the financing gate are updated.`,
+      }
     }
 
     case "get_active_listings":

@@ -52,6 +52,7 @@ export type VoiceCoverageDomain =
   | "broadcast"         // brokerage-wide announcements
   | "reporting"         // read-only briefings + pipelines
   | "scheduling"        // calendar / open house
+  | "financial"         // lender/vendor financial-verification confirmations
 
 export interface VoiceCommandCoverageRow {
   /** The canonical kernel/action command this row is about (module.symbol). */
@@ -261,6 +262,21 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
     auditParity:
       `SAME canonical lane as the AI ISA's qualification hook (evaluateAndAssignLead → handleLeadAssigned → createContactFromLead) — same assignment_log + lifecycle_events audit, same admin assignment_rules policy, same in-app agent notification; voice origin: ${VOICE_RECEIPT} + ${BUS_RECEIPT}`,
     sayIt: "“Convert the lead for John Smith” (broker roles only; refused unless the AI ISA qualified them)",
+  },
+
+  // ── FINANCIAL (vendor/lender lane) ──────────────────────────────────────────
+  // The FIRST cross-party voice tool: a lender is a vendor-USER role, not a
+  // contact, and reaches a buyer only through an active vendor_contact_assignment.
+  {
+    command: "app/actions/buyer-execution.lenderConfirmBuyerFinancials → lib/buyer-execution/multi-party-updates.lenderConfirmFinancialVerification",
+    domain: "financial",
+    speakable: true,
+    toolName: "lender_confirm_financials",
+    guard:
+      "authority 'vendor' (tool-registry role gate at the route — lender/vendor user_type only, never staff) + the assigned_party gate INSIDE the executor (assertVendorAssignedToContact): resolves user_role_assignments.vendor_id and requires an ACTIVE, unexpired vendor_contact_assignment to THIS contact with 'financial' scope, plus the whole-vendor time box (vendors.access_expires_at) — fails closed; the dispatcher also requires an explicit spoken confirm before the state change (human-in-the-loop)",
+    auditParity:
+      `SAME executor as the lender portal action (lenderConfirmFinancialVerification) — same emitFinancialVerificationEvent + buyer.financial.lender_confirmed activity with actor_role='lender'; voice origin: ${VOICE_RECEIPT}`,
+    sayIt: "“Confirm the Hendersons' pre-approval for 480k” (lender/vendor users assigned to that buyer)",
   },
 
   // ── TASKS ──────────────────────────────────────────────────────────────────

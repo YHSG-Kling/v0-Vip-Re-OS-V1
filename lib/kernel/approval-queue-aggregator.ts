@@ -131,15 +131,30 @@ export async function applyMarketingAssetApproval(
     }
   }
   if (kind === "direct_mail") {
-    // Print-eligibility keys on the STATUS lifecycle (planning→approved→printed
-    // →mailed), NOT approval_status — so approve must advance status='approved'
-    // or the campaign never prints. (The base update above only set
-    // approval_status; without this, a direct-mail approval stranded at
-    // 'planning' — the same class as the podcast strand.)
-    await svc.from("direct_mail_campaigns")
-      .update({ status: "approved" })
-      .eq("id", id)
-      .eq("status", "planning")
+    // Direct-mail has TWO terminals, and they key on DIFFERENT status values —
+    // so approval must branch on whether the piece has a 1:1 recipient:
+    //
+    //   • 1:1 RECIPIENT pieces (contact_id or lead_id set — welcome kits,
+    //     AI-ISA lead-intro / nurture postcards, listing-appt-prep) are MAILED
+    //     by runDirectMailCampaignDrain, whose query REQUIRES status STILL
+    //     'planning' (+ approval_status 'approved'). Flipping status to
+    //     'approved' here would drop them out of the drain and they'd NEVER
+    //     mail. Leave status at 'planning' — the base approval_status='approved'
+    //     is exactly what the drain waits for.
+    //   • AUDIENCE / BATCH pieces (no recipient link — farm / motivated-seller
+    //     print runs) key print-eligibility on the STATUS lifecycle
+    //     (planning→approved→printed→mailed), so those must advance to
+    //     status='approved' or the campaign never prints.
+    const { data: dm } = await svc.from("direct_mail_campaigns")
+      .select("contact_id, lead_id").eq("id", id).maybeSingle()
+    const isOneToOne = !!(dm && ((dm as { contact_id?: string | null }).contact_id
+      || (dm as { lead_id?: string | null }).lead_id))
+    if (!isOneToOne) {
+      await svc.from("direct_mail_campaigns")
+        .update({ status: "approved" })
+        .eq("id", id)
+        .eq("status", "planning")
+    }
   }
 
   return { ok: true }

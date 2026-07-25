@@ -103,17 +103,19 @@ const STACK_A_BASELINE = new Set([
   "schedule_appointment", "schedule_media", "approve_media", "activate_coming_soon",
   "submit_to_mls", "activate_mls", "schedule_open_house", "approve_open_house_marketing",
   "configure_buyer_search",
-  // VENDOR/FINANCIAL — require an authority-model extension + an ASSIGNMENT-AWARE
-  // entity gate (owner's note: "if the lender is assigned to the contact they can
-  // see the transaction"). Model findings (2026-07): transactions has NO lender_id
-  // (retired, l16-s01); transaction_participants identifies parties by FREE TEXT
-  // (name/company/email/role), NOT users.id — so a lender USER (user_type 'vendor')
-  // is tied to a contact via the lender-application / vendor-assignment model, which
-  // must be mapped before the entity gate can grant an assigned lender access across
-  // the brokerage boundary. lender_confirm_financials is [vendor]-only (needs a new
-  // ToolAuthority tier); admin_override_financial_gate is [admin,broker]. These
-  // change financial state — fold with a human-approval step, deliberately.
-  "lender_confirm_financials", "admin_override_financial_gate",
+  // VENDOR/FINANCIAL — the assignment-aware vendor lane.
+  // lender_confirm_financials FOLDED IN (2026-07): the registry now carries a
+  // 'vendor' ToolAuthority tier + an 'assigned_party' ComplianceGate, and the
+  // executor (lib/buyer-execution/multi-party-updates.lenderConfirmFinancialVerification)
+  // enforces the ASSIGNMENT-AWARE gate — resolve user_role_assignments.vendor_id,
+  // require an ACTIVE vendor_contact_assignment to the contact with 'financial'
+  // scope (lib/vendor/assignment-access), plus the whole-vendor time box. The
+  // canonical dispatcher (agent-assistant/tool-call) also requires an explicit
+  // spoken confirm before the state change (human-in-the-loop). So it is now in
+  // voiceTools + dispatched — removed from this baseline (the ratchet).
+  // admin_override_financial_gate stays: it is [admin,broker] and, being an
+  // emergency override of the gate itself, is deliberately NOT voice-speakable.
+  "admin_override_financial_gate",
   // Phase 4 folded query_listing_status + query_buyer_stage into the canonical
   // dispatcher (now in voiceTools, entity_owner-gated) — removed from the baseline.
 ])

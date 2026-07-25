@@ -12,6 +12,7 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { emitFinancialVerificationEvent } from '@/lib/buyer-lifecycle'
 import { logBuyerExecutionEvent } from './buyer-execution-engine'
+import { assertVendorAssignedToContact } from '@/lib/vendor/assignment-access'
 
 export type ActorRole = 'agent' | 'lender' | 'admin' | 'broker'
 
@@ -40,22 +41,41 @@ export async function lenderConfirmFinancialVerification(params: {
   }
 }): Promise<{ success: boolean; error?: string }> {
   const { contactId, lenderId, verificationType, expiresAt, metadata } = params
-  
-  // Verify lender role
+
+  // Verify lender identity. A lender is a vendor-user role — key on user_type
+  // (the canonical column: real lender users carry user_type 'lender'|'vendor'
+  // and a null/inconsistent legacy `role`, so the old `role === 'lender'` check
+  // silently rejected genuine lenders). role is kept only as a legacy fallback.
   const supabase = createServiceClient()
   const { data: user } = await supabase
     .from('users')
-    .select('role')
+    .select('user_type, role')
     .eq('id', lenderId)
     .single()
-  
-  if (!user || user.role !== 'lender') {
+
+  const userType = String((user as { user_type?: string; role?: string } | null)?.user_type
+    ?? (user as { role?: string } | null)?.role ?? '').toLowerCase()
+  if (!user || (userType !== 'lender' && userType !== 'vendor')) {
     return {
       success: false,
-      error: 'Only lenders can confirm financial verification'
+      error: 'Only lender / vendor accounts can confirm financial verification'
     }
   }
-  
+
+  // ASSIGNMENT-AWARE GATE (l-vendor): a lender may confirm financials ONLY for a
+  // contact the brokerage has assigned to them, with 'financial' scope. Ports the
+  // vendor_contact_assignments model — "if the lender is assigned to the contact
+  // they can see the transaction, etc." Without this, ANY lender user could flip
+  // ANY contact's financing gate across the brokerage boundary. Fails closed.
+  const access = await assertVendorAssignedToContact(supabase, {
+    vendorUserId: lenderId,
+    contactId,
+    requiredScopes: ['financial'],
+  })
+  if (!access.ok) {
+    return { success: false, error: access.error ?? 'You are not assigned to this contact.' }
+  }
+
   // Emit verification event
   const result = await emitFinancialVerificationEvent({
     contactId,

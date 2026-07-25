@@ -28,12 +28,20 @@ export type ComplianceGate =
                         //   loads the row and checks brokerage_id before the tool runs. Ports Stack A's
                         //   validateListingAccess/validateContactAccess into the canonical dispatch path so a
                         //   voice session can never read/act on another brokerage's entity by id.
+  | "assigned_party"    // Caller is a vendor/lender USER who must be ASSIGNED to the target contact — the
+                        //   dispatcher resolves user_role_assignments.vendor_id and requires an ACTIVE,
+                        //   unexpired vendor_contact_assignment (with the needed scope) before the tool runs.
+                        //   The cross-brokerage-boundary version of entity_owner: the brokerage owns the
+                        //   contact, the vendor only reaches it through an assignment. (lib/vendor/assignment-access)
 
 export type ToolAuthority =
   | "agent"             // The acting agent only — strictest scope
   | "agent_or_isa"      // Agent or assigned ISA may act
   | "tenant_staff"      // Any agent/admin/team_lead in the brokerage
   | "admin"             // Broker / broker_admin / admin / superadmin
+  | "vendor"            // Vendor / lender platform users (user_type 'vendor'|'lender'). Reachability
+                        //   only — the PER-CONTACT grant is enforced by the assigned_party gate, never
+                        //   by role alone. A vendor can never touch a contact they aren't assigned to.
   | "any_authenticated" // Read-only utilities (lookup_contact, get_schedule)
 
 export interface VoiceTool {
@@ -670,6 +678,24 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_nar_regulated: false,
     description: "Read a buyer contact's journey stage by voice — 'where are the Hendersons in their buyer journey?'. Read-only; the contact must belong to your brokerage.",
   },
+
+  // ── Vendor / lender lane — the FIRST cross-party voice tool. A lender is a
+  //    vendor-USER role, not a contact; they reach a buyer only through an active
+  //    vendor_contact_assignment. authority 'vendor' gates reachability to
+  //    vendor/lender users; the assigned_party gate enforces the per-contact grant
+  //    (financial scope). Because it flips a financial-readiness gate, the
+  //    dispatcher requires an explicit spoken CONFIRM before it executes
+  //    (human-in-the-loop) — nothing changes state on the first utterance. ──
+  lender_confirm_financials: {
+    name: "lender_confirm_financials",
+    category: "stage",
+    authority: "vendor",
+    gates: ["assigned_party"],
+    is_outbound: false,       // Internal financial-verification state change — nothing leaves the platform.
+    is_telco_initiating: false,
+    is_nar_regulated: true,   // Financing verification is a regulated deal artifact.
+    description: "Lender confirms a buyer's financial verification by voice — 'confirm the Hendersons' pre-approval for 480k'. Authority 'vendor' (lender/vendor users only); the assigned_party gate requires an ACTIVE vendor_contact_assignment to that contact with financial scope. Flips the financing gate, so the dispatcher requires an explicit spoken confirm first — nothing changes on the first utterance.",
+  },
 }
 
 /**
@@ -700,6 +726,7 @@ export function authorityAllows(toolName: string, userType: string): boolean {
     case "agent_or_isa":      return ["agent", "isa", "team_lead", "broker", "broker_admin", "admin", "superadmin"].includes(userType)
     case "tenant_staff":      return ["agent", "isa", "tc", "team_lead", "broker", "broker_admin", "admin", "superadmin"].includes(userType)
     case "admin":             return ["broker", "broker_admin", "admin", "superadmin"].includes(userType)
+    case "vendor":            return ["vendor", "lender", "title"].includes(userType)  // reachability only — assigned_party gate enforces the per-contact grant
     default:                  return false
   }
 }
