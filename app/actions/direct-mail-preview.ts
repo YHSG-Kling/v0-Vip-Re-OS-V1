@@ -45,7 +45,7 @@ export async function renderPostcardPreviewAction(input: {
   const supabase = await createClient()
   const { data: agent } = await supabase
     .from("users")
-    .select("first_name, last_name, profile_image_url")
+    .select("first_name, last_name")
     .eq("id", ctx.userId)
     .maybeSingle()
   const agentName = [agent?.first_name, agent?.last_name].filter(Boolean).join(" ") || null
@@ -63,7 +63,7 @@ export async function renderPostcardPreviewAction(input: {
       } as any,
       qrScanUrl: null, // preview QR is a placeholder; the real send mints a slug
       agentName,
-      agentPhotoUrl: (agent?.profile_image_url as string | null) ?? null,
+      agentPhotoUrl: null, // agent headshot is optional on the render
     })
 
     if (!result.ok) {
