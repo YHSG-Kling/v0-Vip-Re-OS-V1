@@ -12,8 +12,10 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -96,6 +98,54 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
   const [busy, setBusy]             = useState(false)
   const [seedingDefaults, setSeedingDefaults] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  // Default-sequence picker: browse the catalog + choose which to install.
+  type CatalogItem = { name: string; description: string; sequenceType: string; triggerLabel: string; stepCount: number; installed: boolean }
+  const [defaultsOpen, setDefaultsOpen] = useState(false)
+  const [catalog, setCatalog] = useState<CatalogItem[]>([])
+  const [catalogLoading, setCatalogLoading] = useState(false)
+  const [pickedDefaults, setPickedDefaults] = useState<Set<string>>(new Set())
+
+  const openDefaultsPicker = useCallback(async () => {
+    setDefaultsOpen(true)
+    setCatalogLoading(true)
+    try {
+      const { getDefaultSequenceCatalog } = await import("@/app/actions/seed-default-sequences")
+      const res = await getDefaultSequenceCatalog(brokerageId)
+      if (res.success) {
+        setCatalog(res.items)
+        // Preselect the ones not yet installed.
+        setPickedDefaults(new Set(res.items.filter((i) => !i.installed).map((i) => i.name)))
+      } else {
+        toast.error(res.error ?? "Could not load defaults")
+      }
+    } finally {
+      setCatalogLoading(false)
+    }
+  }, [brokerageId])
+
+  const installPickedDefaults = useCallback(async () => {
+    const names = [...pickedDefaults]
+    if (names.length === 0) return
+    setSeedingDefaults(true)
+    try {
+      const { seedDefaultSequences } = await import("@/app/actions/seed-default-sequences")
+      const res = await seedDefaultSequences(brokerageId, names)
+      if (res.success) {
+        if (res.created > 0) {
+          toast.success(`Installed ${res.created} default sequence${res.created === 1 ? "" : "s"}`)
+          if (typeof window !== "undefined") window.location.reload()
+        } else {
+          toast.info("Those defaults are already installed")
+          setDefaultsOpen(false)
+        }
+      } else {
+        toast.error(res.error ?? "Install failed")
+      }
+    } finally {
+      setSeedingDefaults(false)
+    }
+  }, [brokerageId, pickedDefaults])
 
   // New sequence form state
   const [form, setForm] = useState({
@@ -311,34 +361,10 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
               variant="outline"
               className="gap-1.5"
               disabled={seedingDefaults}
-              onClick={async () => {
-                setSeedingDefaults(true)
-                try {
-                  const { seedDefaultSequences } = await import("@/app/actions/seed-default-sequences")
-                  const res = await seedDefaultSequences(brokerageId)
-                  if (res.success) {
-                    if (res.created > 0) {
-                      toast.success(`Installed ${res.created} default sequences`, {
-                        description: res.skipped ? `${res.skipped} were already present.` : undefined,
-                      })
-                      // Reload to show the newly seeded sequences.
-                      if (typeof window !== "undefined") window.location.reload()
-                    } else {
-                      // Idempotent no-op — say so plainly instead of "Installed 0".
-                      toast.info("All default sequences are already installed", {
-                        description: "Nothing new to add — your canonical nurture flows are in place.",
-                      })
-                    }
-                  } else {
-                    toast.error(res.error ?? "Seeding failed")
-                  }
-                } finally {
-                  setSeedingDefaults(false)
-                }
-              }}
+              onClick={openDefaultsPicker}
             >
               <Sparkles className="h-4 w-4" />
-              {seedingDefaults ? "Installing…" : "Install canonical defaults"}
+              Browse &amp; install defaults
             </Button>
           </div>
           <p className="text-[11px] text-muted-foreground/70 max-w-md mx-auto pt-1">
@@ -371,6 +397,70 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
       )}
 
       {/* Create dialog */}
+      {/* Default-sequence picker — see every canonical flow + choose which to install */}
+      <Dialog open={defaultsOpen} onOpenChange={setDefaultsOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Install default sequences</DialogTitle>
+            <DialogDescription>
+              Canonical nurture flows that fire automatically on the matching event. Pick the ones you
+              want — already-installed flows are checked and locked. Edit or delete any of them later.
+            </DialogDescription>
+          </DialogHeader>
+
+          {catalogLoading ? (
+            <p className="text-sm text-muted-foreground py-6 text-center">Loading defaults…</p>
+          ) : (
+            <div className="max-h-[50vh] overflow-y-auto space-y-2">
+              {catalog.map((item) => {
+                const checked = item.installed || pickedDefaults.has(item.name)
+                return (
+                  <label
+                    key={item.name}
+                    className={`flex items-start gap-3 rounded-lg border p-3 ${item.installed ? "opacity-70" : "cursor-pointer hover:border-primary/50"}`}
+                  >
+                    <Checkbox
+                      checked={checked}
+                      disabled={item.installed}
+                      onCheckedChange={(v) => {
+                        setPickedDefaults((prev) => {
+                          const next = new Set(prev)
+                          if (v) next.add(item.name)
+                          else next.delete(item.name)
+                          return next
+                        })
+                      }}
+                      className="mt-0.5"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium">{item.name}</span>
+                        {item.installed && <Badge variant="secondary" className="text-[10px]">Installed</Badge>}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5">{item.description}</p>
+                      <div className="flex items-center gap-2 mt-1 text-[11px] text-muted-foreground">
+                        <Badge variant="outline" className="text-[10px]">{item.triggerLabel}</Badge>
+                        <span>{item.stepCount} step{item.stepCount === 1 ? "" : "s"}</span>
+                      </div>
+                    </div>
+                  </label>
+                )
+              })}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDefaultsOpen(false)}>Cancel</Button>
+            <Button
+              onClick={installPickedDefaults}
+              disabled={seedingDefaults || pickedDefaults.size === 0}
+            >
+              {seedingDefaults ? "Installing…" : `Install ${pickedDefaults.size} selected`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={showCreate} onOpenChange={setShowCreate}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>

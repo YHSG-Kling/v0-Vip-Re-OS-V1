@@ -175,7 +175,46 @@ const DEFAULT_SEQUENCES: SeqSeed[] = [
   },
 ]
 
-export async function seedDefaultSequences(brokerageId?: string): Promise<{
+/**
+ * The default-sequence catalog with its install state for a brokerage, so the
+ * UI can SHOW the defaults and let the user pick which to install (instead of a
+ * blind "install all"). Read-only; auth-gated + brokerage-scoped.
+ */
+export async function getDefaultSequenceCatalog(brokerageId?: string): Promise<{
+  success: boolean
+  error?: string
+  items: Array<{ name: string; description: string; sequenceType: string; triggerLabel: string; stepCount: number; installed: boolean }>
+}> {
+  const ctx = await resolveWriteContext()
+  if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized", items: [] }
+  const targetBrokerageId = brokerageId ?? ctx.brokerageId
+  if (!targetBrokerageId) return { success: false, error: "No brokerage in scope", items: [] }
+
+  const supabase = createServiceClient()
+  const { data: existing } = await supabase
+    .from("campaign_sequences")
+    .select("name")
+    .eq("brokerage_id", targetBrokerageId)
+    .in("name", DEFAULT_SEQUENCES.map((s) => s.name))
+  const installedNames = new Set((existing ?? []).map((r: { name: string }) => r.name))
+
+  const { findTrigger } = await import("@/lib/workflow/triggers")
+  const items = DEFAULT_SEQUENCES.map((s) => ({
+    name: s.name,
+    description: s.description,
+    sequenceType: s.sequenceType,
+    triggerLabel: findTrigger(s.triggerEvent)?.label ?? s.triggerEvent,
+    stepCount: s.steps.length,
+    installed: installedNames.has(s.name),
+  }))
+  return { success: true, items }
+}
+
+export async function seedDefaultSequences(
+  brokerageId?: string,
+  /** When provided, install ONLY these catalog names; otherwise install all. */
+  names?: string[],
+): Promise<{
   success: boolean
   error?: string
   created: number
@@ -198,7 +237,11 @@ export async function seedDefaultSequences(brokerageId?: string): Promise<{
   let created = 0
   let skipped = 0
 
-  for (const seed of DEFAULT_SEQUENCES) {
+  // Optionally narrow to a selected subset (the picker passes chosen names).
+  const selected = names && names.length > 0 ? new Set(names) : null
+  const catalog = selected ? DEFAULT_SEQUENCES.filter((s) => selected.has(s.name)) : DEFAULT_SEQUENCES
+
+  for (const seed of catalog) {
     // Idempotency — skip if name already exists for the brokerage.
     const { data: existing } = await supabase
       .from("campaign_sequences")
