@@ -310,7 +310,7 @@ async function dispatchContactChannel(
   }
 
   // Brand voice — extend the AI's knowledge to cover THIS contact.
-  const brandVoice = await loadBrandVoicePrompt({ brokerageId, agentId: contact.agent_id ?? null, contactId })
+  const brandVoice = await loadBrandVoicePrompt({ brokerageId, agentId: contact.agent_id ?? null, contactId: contact.id })
 
   // Compliance gate
   const compliance = await evaluateOutbound({

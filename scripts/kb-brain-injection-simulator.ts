@@ -67,7 +67,7 @@ console.log("\n── the brain's knowledge now COVERS CONTACTS (not just broker
   const email = src("app/actions/ai-isa/handle-inbound-email.ts")
   check("inbound-email rail passes contactId (from the linked lead)", /loadBrandVoicePrompt\([\s\S]*?contactId: lead\.contact_id/.test(email))
   const engage = src("app/actions/ai-isa/engage-contact.ts")
-  check("engage-contact rail passes contactId", /loadBrandVoicePrompt\(\{[^}]*contactId\s*\}/.test(engage))
+  check("engage-contact rail passes contactId", /loadBrandVoicePrompt\(\{[^}]*contactId:\s*contact\.id/.test(engage))
   const call = src("lib/ai-isa/build-call-context.ts")
   check("voice/call-context rail passes contactId", /loadBrandVoicePrompt\(\{[\s\S]*?contactId: params\.contactId/.test(call))
 }
