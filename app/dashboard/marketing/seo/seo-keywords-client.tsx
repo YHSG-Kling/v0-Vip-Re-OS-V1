@@ -316,12 +316,13 @@ export function SeoKeywordsDashboardClient({
     const kw = encodeURIComponent(selectedDiscovered.keyword)
     if (contentType === "blog_post") {
       router.push(`/dashboard/marketing/blog?keyword=${kw}`)
-    } else if (contentType === "email_campaign") {
-      router.push(`/dashboard/marketing/campaigns?keyword=${kw}`)
+    } else if (contentType === "email_campaign" || contentType === "newsletter") {
+      // Both routed to non-existent pages (/dashboard/marketing/campaigns,
+      // /dashboard/marketing/newsletter → 404). The real email/newsletter surface
+      // is /newsletters.
+      router.push(`/newsletters?keyword=${kw}`)
     } else if (contentType === "social_post") {
       router.push(`/dashboard/marketing/studio?keyword=${kw}`)
-    } else if (contentType === "newsletter") {
-      router.push(`/dashboard/marketing/newsletter?keyword=${kw}`)
     } else {
       toast.success(`Keyword "${selectedDiscovered.keyword}" saved`)
     }
@@ -361,7 +362,7 @@ export function SeoKeywordsDashboardClient({
               <DialogTrigger asChild>
                 <Button variant="outline">
                   <Sparkles className="h-4 w-4 mr-2" />
-                  Discover with AI
+                  Research Keywords
                 </Button>
               </DialogTrigger>
               <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">

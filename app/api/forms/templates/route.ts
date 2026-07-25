@@ -16,10 +16,15 @@ const VALID_CONTEXT_TYPES: FormContextType[] = ["listing", "offer", "transaction
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = req.nextUrl
-    const context_type = searchParams.get("context_type") as FormContextType | null
+    const rawContextType = searchParams.get("context_type")
     const state        = searchParams.get("state") ?? undefined
 
-    if (!context_type || !VALID_CONTEXT_TYPES.includes(context_type)) {
+    // Default a MISSING context_type to "transaction" (this endpoint's only
+    // caller is the Transaction Forms tab) so a stale client bundle that predates
+    // the ?context_type= param can't reproduce a 400 error. A PRESENT-but-invalid
+    // value is still rejected — that's a real client bug, not a cache miss.
+    const context_type = (rawContextType ?? "transaction") as FormContextType
+    if (!VALID_CONTEXT_TYPES.includes(context_type)) {
       return NextResponse.json(
         { error: "context_type must be one of: listing, offer, transaction" },
         { status: 400 }
