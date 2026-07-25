@@ -10,6 +10,7 @@ import { generateStandupAudio } from "@/app/actions/standup-audio"
 import type { CommandCenterData, CommandCenterAction, CommandCenterSession } from "@/lib/kernel/command-center"
 import { MANAGERS } from "@/lib/kernel/manager-registry"
 import { ManagerTalkFeed } from "./manager-talk-feed"
+import { ManagerActivityFeed } from "./manager-activity-feed"
 import { CommandBar } from "./command-bar"
 
 const SESSION_BADGE: Record<string, string> = {
@@ -248,6 +249,11 @@ export function CommandCenterClient({
           and what the addressed manager did about it. Registry-driven identity +
           coordination-kind vocabulary (see manager-talk-feed.tsx). */}
       <ManagerTalkFeed talk={data.managerTalk ?? []} />
+
+      {/* What the managers did — the completed-work ledger: the third manager story
+          (alongside the pending queue + the talking feed). One chronological,
+          manager-attributed timeline composed from the per-manager stores. */}
+      <ManagerActivityFeed activity={data.managerActivity ?? []} />
 
       {/* Unified governed-deliverables rail — every loop's gate proposals in one glance.
           The proof-of-system view: N AI deliverables this week, every one human-approved

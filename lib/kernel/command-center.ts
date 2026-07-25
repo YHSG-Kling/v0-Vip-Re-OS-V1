@@ -148,6 +148,7 @@ export interface CommandCenterData {
   /** Managers talking — recent inter-manager signals (who told whom what, and what the
    *  addressed manager did about it). The bus made visible. */
   managerTalk:     import("@/lib/kernel/manager-signals").ManagerTalkLine[]
+  managerActivity: import("@/lib/kernel/manager-activity").ManagerActivityEntry[]
   /** CLIENT & DEAL-PARTY DECISIONS AWAITING EXECUTION — the decision-signal rail made
    *  top-of-fold: a seller hit Accept on an offer, a lender posted doc conditions, a
    *  vendor filed a request. Response-speed-to-a-client's-accept is the most
@@ -527,12 +528,19 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // Proposed AI ISA dial batches awaiting approval — surfaced as a one-tap callout.
   let dialBatches: CommandCenterData["dialBatches"] = []
   let managerTalk: import("@/lib/kernel/manager-signals").ManagerTalkLine[] = []
+  let managerActivity: import("@/lib/kernel/manager-activity").ManagerActivityEntry[] = []
   if (brokerageWide && brokerageId) {
     try {
       const { loadRecentManagerTalk } = await import("@/lib/kernel/manager-signals")
       managerTalk = await loadRecentManagerTalk(brokerageId, 12, supabase)
     } catch (err) {
       console.error("[command-center] manager talk failed:", err)
+    }
+    try {
+      const { loadManagerActivity } = await import("@/lib/kernel/manager-activity")
+      managerActivity = await loadManagerActivity(brokerageId, 40, supabase)
+    } catch (err) {
+      console.error("[command-center] manager activity failed:", err)
     }
     const { data: db } = await supabase
       .from("ai_isa_call_batches")
@@ -575,6 +583,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     weeklyExecPlan,
     dialBatches,
     managerTalk,
+    managerActivity,
     clientDecisions,
     decisionVelocity,
     summary: {
