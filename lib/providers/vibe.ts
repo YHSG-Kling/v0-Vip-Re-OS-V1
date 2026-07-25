@@ -181,8 +181,13 @@ export async function dispatchCtvCampaign(campaignId: string): Promise<CtvDispat
   }
   const videoUrl = cfg.creative_video_url
   if (!videoUrl) return { dispatched: false, reason: "staged campaign has no creative_video_url" }
-  const budgetUsd = Math.max(1, Math.round(Number(campaign.daily_budget ?? 0)))
-  if (!budgetUsd) return { dispatched: false, reason: "staged campaign has no daily budget" }
+  // Validate the RAW staged budget before clamping — otherwise a null/0
+  // daily_budget would silently launch a live CTV ad at the $1/day floor.
+  const rawBudgetUsd = Number(campaign.daily_budget ?? 0)
+  if (!Number.isFinite(rawBudgetUsd) || rawBudgetUsd <= 0) {
+    return { dispatched: false, reason: "staged campaign has no daily budget" }
+  }
+  const budgetUsd = Math.max(1, Math.round(rawBudgetUsd))
 
   // Vibe campaign names must be 10–100 chars.
   const rawName = (campaign.campaign_name as string) || "Streaming TV campaign"
