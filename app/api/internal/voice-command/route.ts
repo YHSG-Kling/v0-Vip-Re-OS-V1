@@ -33,6 +33,9 @@ type VoiceIntent =
   | "query_referral_income"
   | "draft_save_plays"
   | "create_tenant_user"
+  | "find_properties"
+  | "draft_offer"
+  | "draft_listing"
   | "general_query"
 
 interface CallQueueItem {
@@ -111,6 +114,9 @@ export async function POST(req: NextRequest) {
 - query_referral_income: asking about the agent's own AGENT-TO-AGENT referral income / earnings / how much they've earned referring clients ("how much have I earned in referrals", "my referral income", "what have my agent referrals paid me")
 - draft_save_plays: COMMANDING the assistant to DRAFT / write / prepare retention SAVE-PLAYS for the at-risk / flight-risk agents ("draft save-plays for everyone at flight risk", "write save-plays for my at-risk agents", "prepare retention outreach for the agents who are slipping")
 - create_tenant_user: a PLATFORM-ADMIN command to CREATE / add / invite a new USER / agent / admin / TC into a brokerage ("create a new agent named Jane Doe at jane@x.com", "add an admin to the Denver brokerage", "invite a TC to Coastal Realty")
+- find_properties: asking to FIND / SEARCH / pull PROPERTIES or LISTINGS for a named BUYER with criteria — beds/baths/price/area ("find the Hendersons a 3-bed under 500k in Austin", "search a 4 bedroom with a pool under 800 for Jordan", "what's on the market for the Garcias in Oakdale")
+- draft_offer: asking to DRAFT / write / prepare an OFFER for a named buyer on a property ("draft an offer for the Hendersons on 44 Birch at 450", "write up an offer for Jordan at 620 thousand", "start an offer for the Garcias")
+- draft_listing: asking to DRAFT / write / prepare a LISTING AGREEMENT for a named seller/property ("draft a listing agreement for the Garcias at 12 Oak", "write up the listing for 88 Maple", "start a listing agreement for Jordan's house")
 - general_query: anything else
 
 Respond with ONLY the intent string, nothing else.`,
@@ -701,6 +707,57 @@ Respond with ONLY the intent string, nothing else.`,
             }
           }
         }
+      }
+    } else if (intent === "find_properties") {
+      // "Find the Hendersons a 3-bed under 500k in Austin" — the SAME canonical
+      // find_properties backend (dispatchTeamCommand → searchPropertiesCore) the
+      // premium voice cockpit uses. Resolves the buyer, runs the NL match
+      // (inventory + IDX, Fair-Housing-sanitized), reads back the top matches.
+      // Read-only. Folded here so the always-on assistant shares one search brain.
+      const extract = await generateText({
+        model: resolveModel("openai/gpt-4o-mini"),
+        system: `From the property-search command extract two lines exactly:\nNAME: the buyer/person/family the search is for (or NONE)\nCRITERIA: the search criteria phrase — beds, baths, price, area, features (or NONE)`,
+        messages: [{ role: "user", content: transcript }],
+        maxOutputTokens: 80,
+      })
+      const nameMatch = extract.text.match(/NAME:\s*(.+)/)?.[1]?.trim()
+      const critMatch = extract.text.match(/CRITERIA:\s*([\s\S]+)/)?.[1]?.trim()
+      const personQuery = nameMatch && nameMatch.toUpperCase() !== "NONE" ? nameMatch : null
+      const criteria = critMatch && critMatch.toUpperCase() !== "NONE" ? critMatch : null
+      if (!personQuery || !criteria || !brokerageId) {
+        spokenResponse = "Who's the search for, and what are they after? Try 'find the Hendersons a 3-bed under 500k in Austin'."
+      } else {
+        const { dispatchTeamCommand } = await import("@/lib/voice/team-commands")
+        const r = await dispatchTeamCommand("find_properties", { person_query: personQuery, query: criteria }, { brokerageId, agentUserId: user.id, firstName: profile.first_name }, service)
+        spokenResponse = r.spoken
+        data = r.data ?? {}
+        action = r.ok ? "properties_found" : null
+      }
+    } else if (intent === "draft_offer") {
+      // "Draft an offer for the Hendersons on 44 Birch at 450" — the SAME canonical
+      // voice intake the mobile panel + premium voice use (voiceDraftOffer: extract →
+      // fill packet → documents DRAFT). Single-shot per turn; the spoken response asks
+      // for anything still missing. DRAFT ONLY — nothing dispatches for signature here.
+      if (!brokerageId) {
+        spokenResponse = "I can't draft an offer without a brokerage on your profile."
+      } else {
+        const { voiceDraftOffer } = await import("@/app/actions/voice-assistant/draft-offer-from-voice")
+        const r = await voiceDraftOffer({ voiceInput: transcript })
+        spokenResponse = r.kind === "error" ? r.error : r.spokenResponse
+        data = { kind: r.kind, sessionId: r.kind === "error" ? null : r.sessionId, documentId: r.kind === "finalized" ? r.documentId : null }
+        action = r.kind === "finalized" ? "offer_drafted" : r.kind === "error" ? null : "offer_intake_continuing"
+      }
+    } else if (intent === "draft_listing") {
+      // "Draft a listing agreement for the Garcias at 12 Oak" — the SAME canonical
+      // voiceDraftListing intake. Single-shot per turn; DRAFT ONLY.
+      if (!brokerageId) {
+        spokenResponse = "I can't draft a listing without a brokerage on your profile."
+      } else {
+        const { voiceDraftListing } = await import("@/app/actions/voice-assistant/draft-listing-from-voice")
+        const r = await voiceDraftListing({ voiceInput: transcript })
+        spokenResponse = r.kind === "error" ? r.error : r.spokenResponse
+        data = { kind: r.kind, sessionId: r.kind === "error" ? null : r.sessionId, documentId: r.kind === "finalized" ? r.documentId : null }
+        action = r.kind === "finalized" ? "listing_drafted" : r.kind === "error" ? null : "listing_intake_continuing"
       }
     } else {
       // General query — pass to the main AI chat endpoint context

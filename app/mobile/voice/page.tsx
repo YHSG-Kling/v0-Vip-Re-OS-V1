@@ -10,7 +10,6 @@ import Link from "next/link"
 import { VoiceSessionButton } from "./voice-session-button"
 import { QuickDialSearch } from "./quick-dial-search"
 import { MobileCommandStrip, QuickContactPanel } from "../components/os"
-import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
 
 export const dynamic = "force-dynamic"
 
@@ -93,12 +92,27 @@ export default async function MobileVoicePage() {
       </header>
 
       <main className="px-4 py-4 space-y-6">
-        {/* Voice Assistant Panel as Hero */}
-        <VoiceAssistantPanel
-          userId={userId ?? ""}
-          userRole="agent"
-          brokerageId={brokerageId ?? ""}
-        />
+        {/* Unified assistant hero — the separate VoiceAssistantPanel (a second
+            voice engine) was retired 2026-07. Its three flows — draft offer,
+            draft listing, and natural-language property search — now live in the
+            one always-on assistant (the mic/chat button, bottom-right), so mobile
+            and desktop share a single voice brain. */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Mic className="w-4 h-4" /> Talk to your AI assistant
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground space-y-1">
+            <p>Tap the assistant button (bottom-right) and speak or type:</p>
+            <ul className="list-disc list-inside space-y-0.5">
+              <li>&ldquo;Find the Hendersons a 3-bed under 500k in Austin&rdquo;</li>
+              <li>&ldquo;Draft an offer for the Hendersons on 44 Birch at 450&rdquo;</li>
+              <li>&ldquo;Draft a listing agreement for the Garcias at 12 Oak&rdquo;</li>
+              <li>&ldquo;What should I do today?&rdquo; · &ldquo;Follow up with Jordan&rdquo;</li>
+            </ul>
+          </CardContent>
+        </Card>
 
         {/* Mobile OS Command Strip */}
         <MobileCommandStrip agentId={agentId ?? ""} />
