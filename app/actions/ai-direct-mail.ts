@@ -110,21 +110,27 @@ export async function aiWritePostcardCopy(params: {
 
     const { object: copy } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
+      // NOTE: OpenAI strict structured-output (used by generateObject through the
+      // gateway) rejects string length constraints (.max → maxLength) and optional
+      // properties (.optional). Encode length as guidance in .describe() and use
+      // .nullable() (a required-but-null field) instead of .optional() — this is
+      // why the plain-string aiSuggestDesign schema below works and this one used
+      // to throw "invalid schema".
       schema: z.object({
-        headline: z.string().max(50).describe("Bold, attention-grabbing headline"),
-        subheadline: z.string().max(80).describe("Supporting text"),
-        bodyText: z.string().max(200).describe("Main message, keep scannable"),
-        callToAction: z.string().max(30).describe("Clear CTA text"),
-        testimonialPlaceholder: z.string().optional(),
-        agentTagline: z.string().max(50),
-        urgencyElement: z.string().optional(),
+        headline: z.string().describe("Bold, attention-grabbing headline (≤50 characters)"),
+        subheadline: z.string().describe("Supporting text (≤80 characters)"),
+        bodyText: z.string().describe("Main message, keep scannable (≤200 characters)"),
+        callToAction: z.string().describe("Clear CTA text (≤30 characters)"),
+        testimonialPlaceholder: z.string().nullable().describe("Optional testimonial placeholder, or null"),
+        agentTagline: z.string().describe("Short agent tagline (≤50 characters)"),
+        urgencyElement: z.string().nullable().describe("Optional urgency element, or null"),
         variants: z.array(
           z.object({
             headline: z.string(),
             bodyText: z.string(),
             style: z.string(),
           })
-        ),
+        ).describe("Two alternate copy variants with different approaches"),
       }),
       prompt: `Write compelling postcard copy for a real estate agent.
 

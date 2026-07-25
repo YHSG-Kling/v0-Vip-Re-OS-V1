@@ -317,12 +317,18 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
                   const { seedDefaultSequences } = await import("@/app/actions/seed-default-sequences")
                   const res = await seedDefaultSequences(brokerageId)
                   if (res.success) {
-                    toast.success(
-                      `Installed ${res.created} default sequences`,
-                      { description: res.skipped ? `${res.skipped} were already present.` : undefined },
-                    )
-                    // Reload to show the seeded sequences
-                    if (typeof window !== "undefined") window.location.reload()
+                    if (res.created > 0) {
+                      toast.success(`Installed ${res.created} default sequences`, {
+                        description: res.skipped ? `${res.skipped} were already present.` : undefined,
+                      })
+                      // Reload to show the newly seeded sequences.
+                      if (typeof window !== "undefined") window.location.reload()
+                    } else {
+                      // Idempotent no-op — say so plainly instead of "Installed 0".
+                      toast.info("All default sequences are already installed", {
+                        description: "Nothing new to add — your canonical nurture flows are in place.",
+                      })
+                    }
                   } else {
                     toast.error(res.error ?? "Seeding failed")
                   }

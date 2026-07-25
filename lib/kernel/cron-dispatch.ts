@@ -48,6 +48,10 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/recalculate-roi",                schedule: "15 1 * * *" }, // (staggered r43)
   { path: "/api/cron/review-request-on-close",        schedule: "0 16 * * *" },
   { path: "/api/cron/sync-facebook-audiences",        schedule: "0 */6 * * *" },
+  // GEO / AI-search visibility loop ingress — record citation observations for
+  // published reels + FAQ landing pages, then raise geo_visibility_gap signals
+  // that the manager-signals cron turns into gated regenerate_faq proposals.
+  { path: "/api/cron/geo-citation-monitor",           schedule: "37 8 * * *" },
   // Idle-hands initiative — managers fill silence with governed work (hourly).
   { path: "/api/cron/idle-hands",                     schedule: "5 * * * *" }, // (staggered r43)
   // Client Pulse — the weekly "what your team did for you" for sellers + buyers.

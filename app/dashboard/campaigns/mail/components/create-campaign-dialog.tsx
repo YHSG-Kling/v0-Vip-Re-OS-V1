@@ -553,6 +553,7 @@ export function CreateCampaignDialog({
                   body={formData.copyText || "Body copy will appear here…"}
                   cta="Scan to learn more"
                   qrImageUrl={null}
+                  colors={aiDesignSuggestion?.colorScheme}
                 />
               </div>
             )}
