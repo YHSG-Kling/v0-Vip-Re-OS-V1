@@ -58,6 +58,11 @@ export default function SettingsDashboard() {
             <p className="text-gray-600">Upload assets the render coordinator stitches into your videos</p>
           </SettingsCard>
         </Link>
+        <Link href="/dashboard/settings/twin-studio">
+          <SettingsCard title="AI Avatar & Voice" description="Your on-camera avatar + cloned voice">
+            <p className="text-gray-600">Set up your D-ID avatar and ElevenLabs voice clone in Twin Studio — used across your videos and AI calls</p>
+          </SettingsCard>
+        </Link>
       </div>
     </div>
   );

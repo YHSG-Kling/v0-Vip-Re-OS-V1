@@ -100,6 +100,7 @@ export interface CriticalSetupFacts {
   agent?: {
     licenseOnFile: boolean           // agent_licenses.license_number
     voicePrefSet: boolean            // agents.assistant_voice_id / voice_preference
+    twinConfigured: boolean          // avatar + cloned voice (Twin Studio) — agent_voice_profiles / agents.voice_id+avatar_id
     calendarConnected: boolean       // platform_credentials scope='calendar' / agent_api_credentials
     pwaInstalled: boolean            // push_subscriptions row (round-41 PWA + web push)
     contactsCount: number            // contacts rows in the tenant (portal-invite readiness)
@@ -137,7 +138,7 @@ export function emptyCriticalSetupFacts(tier: CriticalTier = "brokerage"): Criti
     trialEndsAt: null,
     brokerageProfileComplete: false,
     listingsCount: 0,
-    agent: { licenseOnFile: false, voicePrefSet: false, calendarConnected: false, pwaInstalled: false, contactsCount: 0 },
+    agent: { licenseOnFile: false, voicePrefSet: false, twinConfigured: false, calendarConnected: false, pwaInstalled: false, contactsCount: 0 },
     teamLead: { teamConfigured: false, splitsSet: false, teamBooksConnected: false },
     vendor: { profileComplete: false, payoutConnected: false, booksConnected: false, w9OnFile: false },
   }
@@ -251,6 +252,11 @@ export const CRITICAL_SETUP_ITEMS: CriticalSetupItem[] = [
     why: "Briefings and your AI assistant speak in a default voice until you pick one — your voice preference personalizes every readout.",
     settingHref: "/dashboard/settings/assistant",
     checker: (f) => f.agent?.voicePrefSet ?? false },
+  { key: "agent_twin", role: "agent", category: "voice",
+    title: "Set up your AI avatar & voice",
+    why: "Your on-camera videos and your AI ISA calls fall back to generic media until your avatar (D-ID) and cloned voice (ElevenLabs) exist — set them up once in Twin Studio.",
+    settingHref: "/dashboard/settings/twin-studio",
+    checker: (f) => f.agent?.twinConfigured ?? false },
   { key: "agent_calendar", role: "agent", category: "connections",
     title: "Connect your calendar",
     why: "Showings, appointments, and closings double-book blind until a calendar connection exists.",
@@ -480,9 +486,9 @@ export async function loadCriticalSetupFacts(
 
   // ── per-user agent slice (also serves tc/compliance inbox checks) ──────────
   if (params.userId) {
-    const [agentRow, lic, agentCal, staffCal, push, contacts] = await Promise.all([
+    const [agentRow, lic, agentCal, staffCal, push, contacts, avp] = await Promise.all([
       params.agentId
-        ? svc.from("agents").select("assistant_voice_id, voice_preference").eq("id", params.agentId).maybeSingle()
+        ? svc.from("agents").select("assistant_voice_id, voice_preference, voice_id, avatar_id").eq("id", params.agentId).maybeSingle()
         : Promise.resolve({ data: null } as any),
       params.agentId
         ? svc.from("agent_licenses").select("license_number").eq("agent_id", params.agentId).limit(1)
@@ -495,6 +501,11 @@ export async function loadCriticalSetupFacts(
         .eq("is_active", true).in("scope", ["calendar", "email"]).limit(1),
       svc.from("push_subscriptions").select("id").eq("user_id", params.userId).is("disabled_at", null).limit(1),
       svc.from("contacts").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId),
+      // Twin (avatar + cloned voice) — the training-output mirror; agents.voice_id/
+      // avatar_id below are the canonical use-this pointers. Either satisfies "set up".
+      params.agentId
+        ? svc.from("agent_voice_profiles").select("elevenlabs_voice_id, did_avatar_id").eq("agent_id", params.agentId)
+        : Promise.resolve({ data: [] } as any),
     ])
     const a = (agentRow.data ?? {}) as any
     const apiCal = params.agentId
@@ -510,6 +521,12 @@ export async function loadCriticalSetupFacts(
         ((apiCal.data ?? []) as any[]).length > 0,
       pwaInstalled: ((push.data ?? []) as any[]).length > 0,
       contactsCount: contacts.count ?? 0,
+      twinConfigured: (() => {
+        const vps = (avp.data ?? []) as any[]
+        const hasVoice = vps.some((v) => !!v.elevenlabs_voice_id) || !!a.voice_id
+        const hasAvatar = vps.some((v) => !!v.did_avatar_id) || !!a.avatar_id
+        return hasVoice && hasAvatar
+      })(),
     }
   }
 

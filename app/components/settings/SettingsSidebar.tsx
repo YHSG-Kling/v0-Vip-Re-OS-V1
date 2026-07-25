@@ -14,6 +14,7 @@ const menuItems: Array<{ label: string; href: string; personal: boolean }> = [
   { label: 'CRM Sync', href: '/settings/crm', personal: true },
   { label: 'Phone / SMS', href: '/settings/phone', personal: true },
   { label: 'Brand Voice', href: '/settings/brand-voice', personal: true },
+  { label: 'AI Avatar & Voice', href: '/dashboard/settings/twin-studio', personal: true },
   { label: 'Branding', href: '/settings/branding', personal: true },
   { label: 'Email Templates', href: '/settings/email-templates', personal: true },
   { label: 'Notifications', href: '/settings/notifications', personal: true },
