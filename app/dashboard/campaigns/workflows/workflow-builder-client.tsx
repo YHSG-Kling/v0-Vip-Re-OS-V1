@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
-import { WORKFLOW_TRIGGERS } from "@/lib/workflow/triggers"
+import { WORKFLOW_TRIGGERS, toTriggerSelectValue, fromTriggerSelectValue } from "@/lib/workflow/triggers"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Select,
@@ -295,13 +295,16 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
             </div>
             <div>
               <Label className="text-xs mb-1 block">Trigger</Label>
-              <Select value={triggerEvent} onValueChange={setTriggerEvent}>
+              <Select
+                value={toTriggerSelectValue(triggerEvent)}
+                onValueChange={(v) => setTriggerEvent(fromTriggerSelectValue(v))}
+              >
                 <SelectTrigger className="h-9 text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   {TRIGGER_EVENTS.map((t) => (
-                    <SelectItem key={t.value} value={t.value} className="text-xs">{t.label}</SelectItem>
+                    <SelectItem key={toTriggerSelectValue(t.value)} value={toTriggerSelectValue(t.value)} className="text-xs">{t.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>

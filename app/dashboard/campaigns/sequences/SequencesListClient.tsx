@@ -51,7 +51,7 @@ import {
 import type { CampaignSequence } from "@/lib/campaigns/sequence-constants"
 import { precheckSequenceCompliance, type SequenceStepCheck } from "@/app/actions/sequence-step-ai"
 import { AlertTriangle, ShieldCheck } from "lucide-react"
-import { WORKFLOW_TRIGGERS, groupedTriggers } from "@/lib/workflow/triggers"
+import { WORKFLOW_TRIGGERS, groupedTriggers, toTriggerSelectValue, fromTriggerSelectValue } from "@/lib/workflow/triggers"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -390,7 +390,10 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="seq-trigger">Trigger Event</Label>
-              <Select value={form.trigger_event} onValueChange={v => setForm(p => ({ ...p, trigger_event: v }))}>
+              <Select
+                value={toTriggerSelectValue(form.trigger_event)}
+                onValueChange={v => setForm(p => ({ ...p, trigger_event: fromTriggerSelectValue(v) }))}
+              >
                 <SelectTrigger id="seq-trigger">
                   <SelectValue placeholder="Select a trigger (optional)" />
                 </SelectTrigger>
@@ -399,7 +402,7 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
                     <SelectGroup key={category}>
                       <SelectLabel className="text-xs text-muted-foreground px-2 py-1">{category}</SelectLabel>
                       {triggers.map(t => (
-                        <SelectItem key={t.value || "__manual__"} value={t.value || "__manual__"}>
+                        <SelectItem key={toTriggerSelectValue(t.value)} value={toTriggerSelectValue(t.value)}>
                           {t.label}
                         </SelectItem>
                       ))}

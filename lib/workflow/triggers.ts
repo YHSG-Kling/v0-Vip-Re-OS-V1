@@ -125,3 +125,15 @@ export function findTrigger(value: string | null | undefined): WorkflowTrigger |
   if (!value) return WORKFLOW_TRIGGERS.find(t => t.value === "")
   return WORKFLOW_TRIGGERS.find(t => t.value === value)
 }
+
+/**
+ * The Manual trigger's canonical stored value is the empty string ("" = no
+ * auto-fire). Radix <Select.Item> THROWS on an empty-string value, so every
+ * dropdown must render Manual with this sentinel and convert back before save.
+ * (Legacy rows may store the literal "manual" — treat that as Manual too.)
+ */
+export const MANUAL_TRIGGER_VALUE = "__manual__"
+export const toTriggerSelectValue = (v: string | null | undefined): string =>
+  v && v.length > 0 && v !== "manual" ? v : MANUAL_TRIGGER_VALUE
+export const fromTriggerSelectValue = (v: string): string =>
+  v === MANUAL_TRIGGER_VALUE ? "" : v
