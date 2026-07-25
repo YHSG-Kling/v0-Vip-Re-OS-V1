@@ -370,7 +370,7 @@ export async function captureFormSubmission(
   // Verify form exists and is active
   const { data: form, error: formError } = await supabase
     .from("lead_capture_forms")
-    .select("id, is_active, agent_id, magnet_type")
+    .select("id, is_active, agent_id, magnet_type, name, settings, landing_content")
     .eq("id", input.formId)
     .eq("brokerage_id", input.brokerageId)
     .maybeSingle()
@@ -556,6 +556,40 @@ export async function captureFormSubmission(
           channel:     "in_app",
           created_at:  submittedAt,
         })
+
+        // EMAIL NOTIFICATION (was "coming soon") — the email twin of the in-app
+        // alert, opt-in per magnet via settings.notify_on_submission (the flag the
+        // builder writes). Sent to the AGENT (internal transactional; no contactId,
+        // so no outbound-to-contact compliance gate), best-effort — a mail failure
+        // never fails the capture the lead already completed.
+        const settingsBag = ((form as any).settings ?? {}) as Record<string, unknown>
+        const legacyBag = ((form as any).landing_content ?? {}) as Record<string, unknown>
+        const notifyByEmail = (settingsBag.notify_on_submission ?? legacyBag.notify_on_submission) === true
+        const agentEmail = (agentRow as any).users?.email as string | undefined
+        if (notifyByEmail && agentEmail) {
+          try {
+            const { dispatchEmail } = await import("@/lib/providers/dispatch")
+            const fromEmail = process.env.SENDGRID_FROM_EMAIL ?? "noreply@vip-re.com"
+            const magnetName = ((form as any).name as string | undefined) ?? "your lead capture form"
+            const contactLine = [data.email, data.phone].filter(Boolean).join(" · ")
+            await dispatchEmail({
+              brokerageId:    input.brokerageId,
+              agentId:        form.agent_id ?? undefined,
+              systemSource:   "lead_magnet_notify",
+              channelPurpose: "transactional",
+              from:           `VIP Real Estate OS <${fromEmail}>`,
+              to:             agentEmail,
+              subject:        `New lead: ${submitterName} submitted "${magnetName}"`,
+              html:           `<p><strong>${submitterName}</strong> just submitted <strong>${magnetName}</strong>.</p>` +
+                              (contactLine ? `<p>${contactLine}</p>` : "") +
+                              `<p>Open your dashboard to follow up.</p>`,
+              text:           `${submitterName} just submitted "${magnetName}". ${contactLine}`,
+              metadata:       { formId: input.formId, submissionId: submission.id, contactId },
+            })
+          } catch {
+            // Non-fatal — the in-app notification already landed.
+          }
+        }
       }
     } catch {
       // Non-fatal — submission already recorded

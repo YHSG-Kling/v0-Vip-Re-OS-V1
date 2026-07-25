@@ -36,14 +36,14 @@ export async function createLeadMagnetAction(input: {
       thankYouMessage: input.thank_you_message,
       tcpaDisclosureText: input.tcpa_text,
     })
-    // Persist the notification preference. There is NO `settings` column (the old write silently
-    // errored AND failed the whole create) — stash it in the landing_content jsonb bag (the public page
-    // ignores unknown keys). Non-fatal: the magnet exists regardless of whether the preference persists.
+    // Persist the notification preference into the dedicated `settings` jsonb bag
+    // (added in l40-s01) — NOT landing_content, which the AI-landing-copy save
+    // overwrites. Non-fatal: the magnet exists regardless of whether it persists.
     if (result.success && result.magnetId && input.notify_on_submission !== undefined) {
       const supabase = createServiceClient()
       const { error: notifyError } = await supabase
         .from("lead_capture_forms")
-        .update({ landing_content: { notify_on_submission: input.notify_on_submission } })
+        .update({ settings: { notify_on_submission: input.notify_on_submission } })
         .eq("id", result.magnetId)
       if (notifyError) console.warn("[lead-magnets] notify preference not saved:", notifyError.message)
     }
