@@ -10,6 +10,8 @@ import { getPendingApprovals, getComplianceViolations, generateComplianceReport,
 import { getAllTransactionComplianceLogs } from "@/app/actions/transaction-compliance"
 import { calculateComplianceRiskScore } from "@/app/actions/multi-persona"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { RegulatoryChangesPanel, type RegChangeRow } from "./regulatory-changes-panel"
 import SubmitContentForm from "@/app/components/shared/compliance/submit-content-form"
 import PendingApprovalsList from "@/app/components/shared/compliance/pending-approvals-list"
 import ViolationsDashboard from "@/app/components/shared/compliance/violations-dashboard"
@@ -61,6 +63,33 @@ export default async function ComplianceDashboardPage() {
       .eq("id", user.id)
       .maybeSingle()
     brokerageId = userRow?.brokerage_id ?? null
+  }
+
+  // Regulatory changes — the review UI over the weekly regulatory watcher
+  // (reg_change_observations is a compliance-officer/data-steward ledger, read
+  // via the service client scoped to this brokerage; the page already gated the
+  // user to their brokerage + a compliance role above).
+  let regChanges: RegChangeRow[] = []
+  if (brokerageId) {
+    const svc = createServiceClient()
+    const { data: regRows } = await svc
+      .from("reg_change_observations")
+      .select("id, title, source, url, severity_tier, effective_date, affected_surfaces, surface_detail, escalated_at, observed_at")
+      .eq("brokerage_id", brokerageId)
+      .order("observed_at", { ascending: false })
+      .limit(15)
+    regChanges = (regRows ?? []).map((r: any) => ({
+      id: r.id,
+      title: r.title ?? "Regulatory change",
+      source: r.source ?? null,
+      url: r.url ?? null,
+      severityTier: r.severity_tier ?? null,
+      effectiveDate: r.effective_date ?? null,
+      affectedSurfaces: Array.isArray(r.affected_surfaces) ? r.affected_surfaces : [],
+      surfaceDetail: Array.isArray(r.surface_detail) ? r.surface_detail : [],
+      escalatedAt: r.escalated_at ?? null,
+      observedAt: r.observed_at ?? null,
+    }))
   }
 
   const complianceBrief = user
@@ -288,6 +317,9 @@ export default async function ComplianceDashboardPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Regulatory changes — review UI over the weekly regulatory watcher */}
+      <RegulatoryChangesPanel changes={regChanges} />
 
       {/* OS Intelligence Grid - 3 Column Layout */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
