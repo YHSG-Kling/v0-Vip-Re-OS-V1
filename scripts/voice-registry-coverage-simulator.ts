@@ -92,11 +92,28 @@ function stackACommands(): Set<string> {
 // registered), and folding an A command into the canonical dispatcher must move it
 // out of this baseline into voiceTools (the ratchet).
 const STACK_A_BASELINE = new Set([
+  // ── Fold-in requirements (captured so the next slice doesn't re-investigate) ──
+  // CMA/report generators — multi-entity (listingId + contactId + agentId; net
+  // sheet also needs salePrice). Fold with entity_owner on BOTH the listing and
+  // the contact; category 'report'; authority 'agent'.
   "generate_cma", "generate_net_sheet", "generate_presentation",
+  // Listing-lifecycle MUTATIONS — change MLS/marketing state. Fold each with
+  // entity_owner on the listing + role parity ('agent'; activate_mls is [admin]).
+  // State-changing on a voice webhook: fold one-per-tested-commit, not in bulk.
   "schedule_appointment", "schedule_media", "approve_media", "activate_coming_soon",
   "submit_to_mls", "activate_mls", "schedule_open_house", "approve_open_house_marketing",
-  "configure_buyer_search", "lender_confirm_financials",
-  "admin_override_financial_gate",
+  "configure_buyer_search",
+  // VENDOR/FINANCIAL — require an authority-model extension + an ASSIGNMENT-AWARE
+  // entity gate (owner's note: "if the lender is assigned to the contact they can
+  // see the transaction"). Model findings (2026-07): transactions has NO lender_id
+  // (retired, l16-s01); transaction_participants identifies parties by FREE TEXT
+  // (name/company/email/role), NOT users.id — so a lender USER (user_type 'vendor')
+  // is tied to a contact via the lender-application / vendor-assignment model, which
+  // must be mapped before the entity gate can grant an assigned lender access across
+  // the brokerage boundary. lender_confirm_financials is [vendor]-only (needs a new
+  // ToolAuthority tier); admin_override_financial_gate is [admin,broker]. These
+  // change financial state — fold with a human-approval step, deliberately.
+  "lender_confirm_financials", "admin_override_financial_gate",
   // Phase 4 folded query_listing_status + query_buyer_stage into the canonical
   // dispatcher (now in voiceTools, entity_owner-gated) — removed from the baseline.
 ])
