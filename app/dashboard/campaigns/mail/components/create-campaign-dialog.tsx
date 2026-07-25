@@ -127,6 +127,9 @@ export function CreateCampaignDialog({
   const [aiCopyGenerated, setAiCopyGenerated] = useState(false)
   const [aiDesignSuggestion, setAiDesignSuggestion] = useState<any>(null)
   const [roiPrediction, setRoiPrediction] = useState<any>(null)
+  // Print-ready render (the real Lob-bound front/back images).
+  const [printLoading, setPrintLoading] = useState(false)
+  const [printPreview, setPrintPreview] = useState<{ frontUrl?: string; backUrl?: string } | null>(null)
 
   const [formData, setFormData] = useState({
     campaignName: "",
@@ -207,6 +210,28 @@ export function CreateCampaignDialog({
       toast.error("Design suggestion failed")
     } finally {
       setAiDesignLoading(false)
+    }
+  }
+
+  async function handleGeneratePrintPreview() {
+    setPrintLoading(true)
+    setPrintPreview(null)
+    try {
+      const { renderPostcardPreviewAction } = await import("@/app/actions/direct-mail-preview")
+      const result = await renderPostcardPreviewAction({
+        templateType: formData.templateType,
+        audienceSegment: formData.audienceSegment,
+      })
+      if (result.success) {
+        setPrintPreview({ frontUrl: result.frontUrl, backUrl: result.backUrl })
+        toast.success("Print-ready preview rendered — this is what Lob mails")
+      } else {
+        toast.error(result.error ?? "Could not render print preview")
+      }
+    } catch {
+      toast.error("Print preview render failed")
+    } finally {
+      setPrintLoading(false)
     }
   }
 
@@ -546,15 +571,45 @@ export function CreateCampaignDialog({
             {/* Mail Piece Preview */}
             {(formData.copyText || formData.campaignName) && (
               <div className="grid gap-2">
-                <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Preview</Label>
-                <MailPiecePreview
-                  pieceType={formData.pieceType}
-                  headline={formData.campaignName || "Your Campaign Headline"}
-                  body={formData.copyText || "Body copy will appear here…"}
-                  cta="Scan to learn more"
-                  qrImageUrl={null}
-                  colors={aiDesignSuggestion?.colorScheme}
-                />
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Preview</Label>
+                  {formData.pieceType === "postcard" && (
+                    <Button type="button" variant="outline" size="sm" onClick={handleGeneratePrintPreview} disabled={printLoading}>
+                      {printLoading ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <FileText className="h-3.5 w-3.5 mr-1.5" />}
+                      {printLoading ? "Rendering…" : "Generate print preview"}
+                    </Button>
+                  )}
+                </div>
+
+                {printPreview?.frontUrl ? (
+                  // The REAL front/back images Lob will mail (Remotion render on Blob).
+                  <div className="space-y-2">
+                    <p className="text-[11px] text-muted-foreground">Print-ready — this is exactly what Lob mails (front &amp; back).</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Front</p>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={printPreview.frontUrl} alt="Postcard front" className="w-full rounded-md border" />
+                      </div>
+                      {printPreview.backUrl && (
+                        <div className="space-y-1">
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Back</p>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={printPreview.backUrl} alt="Postcard back" className="w-full rounded-md border" />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <MailPiecePreview
+                    pieceType={formData.pieceType}
+                    headline={formData.campaignName || "Your Campaign Headline"}
+                    body={formData.copyText || "Body copy will appear here…"}
+                    cta="Scan to learn more"
+                    qrImageUrl={null}
+                    colors={aiDesignSuggestion?.colorScheme}
+                  />
+                )}
               </div>
             )}
 

@@ -49,6 +49,20 @@ console.log("\n── the design colors reach the preview ──")
     /setFormData\(\(f\)\s*=>\s*\(\{\s*\.\.\.f,\s*copyText:/.test(dialog))
 }
 
+console.log("\n── the print preview shows the REAL Lob-bound image (not just CSS) ──")
+{
+  const act = src("app/actions/direct-mail-preview.ts")
+  check("the preview action renders via the same renderer Lob is sent",
+    act.includes("renderPostcardBothSides4x6") && act.includes("frontUrl") && act.includes("backUrl"))
+  check("it is auth-gated + brokerage-scoped", act.includes("getAgentContext") && act.includes("brokerageId"))
+
+  const dialog = src("app/dashboard/campaigns/mail/components/create-campaign-dialog.tsx")
+  check("the dialog has a Generate-print-preview action wired to the render",
+    dialog.includes("handleGeneratePrintPreview") && dialog.includes("renderPostcardPreviewAction"))
+  check("it displays the rendered front (and back) images",
+    dialog.includes("printPreview?.frontUrl") && /alt="Postcard front"/.test(dialog))
+}
+
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
 if (fail > 0) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)); console.log(" ❌ DIRECT_MAIL_COPY_FAIL"); process.exit(1) }
 console.log(" ✅ DIRECT_MAIL_COPY_PASS — copy schema is strict-safe; the preview reflects generated copy + suggested colors")
