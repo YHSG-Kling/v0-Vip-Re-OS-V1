@@ -7,6 +7,7 @@
 // status moves draft → live ONLY through the human mark-as-launched action.
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import {
   stageCtvCampaign,
   type CtvLaunchPackage,
@@ -114,9 +115,11 @@ export async function markCtvCampaignLaunchedAction(
 }
 
 /**
- * Attempt API dispatch to Vibe. Always honest: today this returns
- * dispatched:false with the reason (not connected, or connected but the Vibe
- * API contract is not in hand yet). Never mutates campaign status.
+ * Dispatch a staged CTV campaign to Vibe end-to-end (advertiser → upload video
+ * creative → create campaign → strategy + geo targeting → PUBLISH). Honest:
+ * dispatched:true ONLY on a Vibe-confirmed PUBLISHED campaign — and only then is
+ * the row flipped to 'live' with the Vibe ids recorded. On any failure the row
+ * is untouched and the real reason is returned (the human-finalize path stays).
  */
 export async function dispatchCtvCampaignAction(
   campaignId: string,
@@ -128,12 +131,48 @@ export async function dispatchCtvCampaignAction(
   const supabase = await createClient()
   const { data: campaign, error: fetchError } = await supabase
     .from("ad_campaigns")
-    .select("id")
+    .select("id, targeting_config")
     .eq("id", campaignId)
     .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
   if (fetchError) return { dispatched: false, reason: fetchError.message }
   if (!campaign) return { dispatched: false, reason: "Campaign not found" }
 
-  return dispatchCtvCampaign(campaignId)
+  const result = await dispatchCtvCampaign(campaignId)
+
+  // Provider-confirmed launch → flip to live + record the Vibe ids. No fake
+  // live state: this only runs when Vibe returned a PUBLISHED campaign.
+  if (result.dispatched && result.vibeCampaignId) {
+    const service = createServiceClient()
+    await service
+      .from("ad_campaigns")
+      .update({
+        status: "live",
+        updated_at: new Date().toISOString(),
+        // ad_campaigns has no external-id columns; the Vibe ids live in the
+        // targeting_config jsonb alongside the staged play.
+        targeting_config: {
+          ...((campaign.targeting_config as Record<string, unknown>) ?? {}),
+          launched_via: "vibe_api",
+          launched_at: new Date().toISOString(),
+          vibe_campaign_id: result.vibeCampaignId,
+          vibe_strategy_id: result.vibeStrategyId ?? null,
+          vibe_creative_id: result.vibeCreativeId ?? null,
+        },
+      })
+      .eq("id", campaignId)
+      .eq("brokerage_id", actor.brokerageId)
+
+    // Ledger the launch the same way the human-confirm path does.
+    await service.from("lifecycle_events").insert({
+      brokerage_id: actor.brokerageId,
+      entity_type: "ad_campaign",
+      entity_id: campaignId,
+      event_type: "ad_campaign_launched",
+      actor_user_id: actor.userId,
+      metadata: { platform: "vibe_ctv", launched_via: "vibe_api", vibe_campaign_id: result.vibeCampaignId },
+    }).select("id").maybeSingle()
+  }
+
+  return result
 }
