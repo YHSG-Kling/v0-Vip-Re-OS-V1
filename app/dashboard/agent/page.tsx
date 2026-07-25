@@ -38,7 +38,6 @@ import { AgentFinancialIntelligence } from "./components/agent-financial-intelli
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
 import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
 import { NewlyConvertedContactsPanel } from "./components/conversion"
-import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
 import { PredictiveListingCard } from "./components/predictive-listing-card"
 import { getTopPredictiveSellers, listQueuedAutoTouches, type PredictiveSellerRow } from "@/app/actions/predictive-listing"
 import { DealRiskWidget } from "./components/deal-risk-widget"
@@ -420,12 +419,11 @@ export default function AgentDashboard() {
 
   return (
     <div className="min-h-screen bg-background relative">
-      {/* Voice Assistant Panel */}
-      <VoiceAssistantPanel
-        userId={agentId}
-        userRole="agent"
-        brokerageId={brokerageId}
-      />
+      {/* The floating AI assistant is mounted once, globally, by AppShell (the
+          typed ask+voice copilot + the gated premium voice tier) — the separate
+          VoiceAssistantPanel that used to stack a third FAB here was removed in
+          the 2026-07 assistant consolidation. (It still serves the mobile voice
+          page, /mobile/voice.) */}
 
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
 

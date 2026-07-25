@@ -16,7 +16,6 @@ import { ShellProvider, useShell } from './shell-context'
 import { UnifiedInboxSlideOut } from './unified-inbox-slideout'
 import { ImpersonationBanner } from './impersonation-banner'
 import { FloatingVoiceFAB } from './floating-voice-fab'
-import { FloatingChatFAB } from './floating-chat-fab'
 import { VoiceAssistantOverlay } from '@/app/components/features/agent-assistant/voice-assistant-overlay'
 import type { BadgeCounts } from '@/app/types/navigation'
 import type { NavigationConfig } from '@/app/types/navigation'
@@ -196,19 +195,19 @@ export function AppShell({ children }: AppShellProps) {
         {/* Universal Shell — unified inbox slide-out (press U or click header inbox button) */}
         <ShellInboxOutlet />
 
-        {/* Floating voice mic on every staff page */}
+        {/* ONE floating assistant surface (consolidation 2026-07): the typed
+            InternalAIAssistant above IS the ask+voice brain (text chat + browser
+            STT), launched from its own FAB. The premium ElevenLabs voice is the
+            second, access-gated tier below. The redundant text-chat FAB
+            (FloatingChatFAB, which merely re-opened the assistant) was removed.
+            The visual D-ID avatar deliberately does NOT mount here — the agent
+            doesn't want to see/hear their own clone (uncanny valley); customers
+            see it in their portal via PortalChatLauncher. */}
+
+        {/* Premium voice tier — the ElevenLabs Conversational AI mic + overlay,
+            access-gated (getVoiceAssistantAccess); shows only when voice is enabled. */}
         {showAIAssistant && <FloatingVoiceFAB />}
-
-        {/* On-the-go ElevenLabs Conversational AI overlay (Track B) */}
         {showAIAssistant && <VoiceAssistantOverlay />}
-
-        {/* Text-only AI chat FAB (Track C).
-            The visual D-ID avatar widget intentionally does NOT mount here —
-            the agent doesn't want to see/hear their own clone (uncanny valley).
-            Customers see the avatar in their portal via PortalChatLauncher.
-            The agent-side FAB toggles the existing typed InternalAIAssistant
-            panel via a window event. */}
-        {showAIAssistant && <FloatingChatFAB />}
       </div>
     </ShellProvider>
   )
