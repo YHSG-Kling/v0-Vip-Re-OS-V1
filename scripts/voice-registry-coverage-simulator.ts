@@ -35,24 +35,16 @@ const NON_TOOL_CASES = new Set([
 // dispatcher mechanism, not a registered capability.
 const BRIDGE_CASES = new Set(["run_team_command"])
 
-// BURN-DOWN BASELINE — tools the canonical dispatcher handles today that are not
-// yet in voiceTools. Each is a phased-merge TODO. This list may only SHRINK:
-// registering one of these in voiceTools removes it here; adding a NEW
-// unregistered dispatch is a CI failure. (Do not grow this list to silence a
-// new tool — register it in voiceTools instead.)
-const BASELINE_UNREGISTERED = new Set([
-  "get_contact_details",
-  "get_recent_messages",
-  "update_contact_status",
-  "stage_ad_campaign",
-  "stage_blog_draft",
-  "stage_direct_mail_campaign",
-  "stage_email_campaign",
-  "stage_newsletter_draft",
-  "stage_open_house",
-  "stage_podcast_episode",
-  "stage_video_project",
-])
+// BURN-DOWN BASELINE — tools the canonical dispatcher handles but which are not
+// yet in voiceTools. This list may only SHRINK: registering one in voiceTools
+// removes it here; a NEW unregistered dispatch is a CI failure. (Do not grow this
+// list to silence a new tool — register it in voiceTools instead.)
+//
+// Phase 2 registered all 11 original backlog tools (the reads, the CRM status
+// write, and the 8 content-staging tools) into voiceTools, so the registry now
+// covers every tool the canonical dispatcher handles — the baseline is EMPTY and
+// the guard enforces full registry⊇dispatcher coverage exactly.
+const BASELINE_UNREGISTERED = new Set<string>([])
 
 function registryKeys(): Set<string> {
   const src = readFileSync(REGISTRY, "utf8")

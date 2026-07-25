@@ -520,6 +520,126 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_nar_regulated: false,
     description: "Commission a GATED content calendar batch in one spoken command: plans N reels (which formats, which listings/topics, which dates) and stages them via the Video Director at pending_review. Nothing auto-publishes — every reel awaits human approval in the Content Studio. Example: 'book me a week of content', 'schedule a month of reels'.",
   },
+
+  // ── Phase 2 of the voice-admin consolidation: register the tools the canonical
+  //    dispatcher (agent-assistant/tool-call runTool) already handled but which
+  //    were NOT in this registry — so authorityAllows now gates them too (they
+  //    dispatched UNGATED before). Authorities are set to the full staff set that
+  //    reaches them today (no lockout), while blocking non-staff. Reads are
+  //    any_authenticated (matching the other lookups); the CRM write + content
+  //    staging require staff. Staging drafts land at pending_review — the approval
+  //    pipeline runs the outbound compliance gates downstream, so no gate fires at
+  //    the voice boundary. ──
+  get_contact_details: {
+    name: "get_contact_details",
+    category: "lookup",
+    authority: "any_authenticated",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Read a single contact's full CRM detail (stage, tags, recent touch, owner) by voice — 'tell me about Sarah Chen'. Read-only.",
+  },
+  get_recent_messages: {
+    name: "get_recent_messages",
+    category: "lookup",
+    authority: "any_authenticated",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Read the recent message history for a contact by voice — 'what did we last say to the Garcias?'. Read-only.",
+  },
+  update_contact_status: {
+    name: "update_contact_status",
+    category: "lookup",
+    authority: "agent_or_isa",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Advance a contact's pipeline status by voice — 'move Sarah to under contract'. Internal CRM state change; nothing leaves the platform.",
+  },
+  stage_newsletter_draft: {
+    name: "stage_newsletter_draft",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage an email newsletter DRAFT at pending_review by voice — it enters the content-approval queue; nothing sends until a human approves it there.",
+  },
+  stage_email_campaign: {
+    name: "stage_email_campaign",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage an email campaign DRAFT at pending_review by voice — enters the approval queue; nothing sends until approved.",
+  },
+  stage_blog_draft: {
+    name: "stage_blog_draft",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage a blog post DRAFT (publish_status draft) by voice — enters the approval queue; nothing publishes until approved.",
+  },
+  stage_podcast_episode: {
+    name: "stage_podcast_episode",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage a podcast episode at pending_review by voice — enters the approval queue; the distributor ships only after approval.",
+  },
+  stage_video_project: {
+    name: "stage_video_project",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage an AI video project at pending_review by voice — enters the approval queue; nothing publishes until approved.",
+  },
+  stage_direct_mail_campaign: {
+    name: "stage_direct_mail_campaign",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage a direct-mail campaign (status planning) by voice — enters the approval queue; nothing prints/mails until approved.",
+  },
+  stage_ad_campaign: {
+    name: "stage_ad_campaign",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage a paid-ad campaign draft by voice — the creative enters review; nothing spends until a human approves it.",
+  },
+  stage_open_house: {
+    name: "stage_open_house",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage an open-house event + its marketing by voice — enters review; promotion awaits human approval.",
+  },
 }
 
 /**
