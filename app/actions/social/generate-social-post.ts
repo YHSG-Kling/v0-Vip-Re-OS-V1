@@ -16,6 +16,7 @@
  */
 
 import { generateObject } from "@/lib/ai/generate"
+import { friendlyAiError } from "@/lib/ai/ai-error"
 import { z } from "zod"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"
@@ -262,7 +263,7 @@ export async function generateSocialPostContent(params: {
     return { success: true, data: object }
   } catch (error: any) {
     console.error("[generate-social-post] Error:", error)
-    return { success: false, error: error?.message ?? "Failed to generate post content" }
+    return { success: false, error: friendlyAiError(error, "Failed to generate post content") }
   }
 }
 
@@ -388,7 +389,9 @@ export async function generateWeeklyContentPlan(params: {
 
     return { success: true, data: object.plan }
   } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to generate weekly plan" }
+    // Never leak the raw AI-gateway billing/credit error ("-1 … free plan") to
+    // the user — map known infra failures to an honest, actionable message.
+    return { success: false, error: friendlyAiError(error, "Failed to generate weekly plan") }
   }
 }
 
@@ -473,7 +476,7 @@ export async function generateContextualDraft(params: {
 
     return { success: true, draft: object.draft }
   } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to generate draft" }
+    return { success: false, error: friendlyAiError(error, "Failed to generate draft") }
   }
 }
 

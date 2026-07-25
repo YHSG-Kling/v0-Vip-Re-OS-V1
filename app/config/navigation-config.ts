@@ -57,7 +57,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/agent/lead-magnets' },
-          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
+          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
           { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
           { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
@@ -212,6 +212,11 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'portal-clients', label: 'Portal Clients', href: '/crm/portal-clients', icon: 'DoorOpen' },
       { id: 'help-support', label: 'Help & Support', href: '/dashboard/help', icon: 'LifeBuoy' },
       { id: 'lead-intel', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
+      // The funnel cockpit (raw→gate→promoted aggregates + hot seller-intent). The
+      // page shows funnel + promoted leads to broker/broker_admin but withholds the
+      // RAW review bench (platform-staff only via its isPlatform gate), so this is
+      // a "view the leads, not the raw" surface for the brokerage-admin family.
+      { id: 'lead-funnel', label: 'Lead Funnel', href: '/dashboard/admin/lead-intake', icon: 'Filter' },
       { id: 'acquisition', label: 'Lead Acquisition', href: '/dashboard/acquisition', icon: 'Zap' },
       { id: 'analytics', label: 'Analytics', href: '/analytics', icon: 'BarChart3' },
       { id: 'transactions', label: 'All Transactions', href: '/dashboard/transactions', icon: 'FileText' },
@@ -268,7 +273,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           // Nav-parity: agents and team leads could reach Newsletters; the broker could not.
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
           { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/admin/lead-magnets' },
-          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
+          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
           { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
           { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
@@ -492,7 +497,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
           { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/admin/lead-magnets' },
-          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
+          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
           { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
           { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
@@ -845,7 +850,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'newsletters', label: 'Newsletters', href: '/newsletters/templates' },
-          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
+          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/studio?tab=blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
           { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
           { id: 'video-pages', label: 'Video Pages', href: '/dashboard/marketing/video-pages' },
