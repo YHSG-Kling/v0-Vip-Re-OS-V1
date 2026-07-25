@@ -22,6 +22,8 @@ import {
   BLOG_PENDING_PUBLISH_STATUS,
   NEWSLETTER_PENDING_APPROVAL_STATUSES,
   AD_CREATIVE_PENDING_APPROVAL_STATUSES,
+  PODCAST_PENDING_STATUS,
+  PODCAST_PENDING_APPROVAL_STATUS,
 } from "./approval-pending"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -297,12 +299,20 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
   },
 
   // ── Podcast episodes — generated, then deliverable-gated before distribution.
-  // Approve → 'scheduled' (the Transistor distributor ships it); reject → 'draft'.
+  // Canonical: the auto-producer stages status='completed' + approval_status=
+  // 'pending_review'; the distributor ships status='completed' AND approval_status
+  // ='approved'. So the REVIEW gate is approval_status (NOT status). The prior
+  // filter (status='completed') matched approved+un-approved alike, and the prior
+  // approve (status='scheduled') stranded the episode — it never set approval_status
+  // ='approved' and set a status the distributor ignores. Approve/reject now DELEGATE
+  // to the ONE canonical marketing transition (see approveContentSource) which sets
+  // approval_status + defaults publish_channels; the patches below are the
+  // column-correct fallback (approval_status-based, never the status column).
   podcast: {
     queue: "podcast",
     table: "podcast_episodes",
-    select: "id, brokerage_id, title, description, audio_url, status, created_at",
-    pending: (q) => q.eq("status", "completed"),
+    select: "id, brokerage_id, title, description, audio_url, status, approval_status, created_at",
+    pending: (q) => q.eq("status", PODCAST_PENDING_STATUS).eq("approval_status", PODCAST_PENDING_APPROVAL_STATUS),
     toAction: (p, now) => {
       const sla = evaluateApprovalSla(p.created_at ?? null, now)
       return {
@@ -312,9 +322,9 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
         status: "proposed", proposedAt: p.created_at ?? null, ageHours: sla.ageHours, slaLevel: sla.level,
       }
     },
-    approve: () => ({ status: "scheduled" }),
-    approveGuard: (q) => q.eq("status", "completed"),
-    reject: () => ({ status: "draft" }),
+    approve: () => ({ approval_status: "approved" }),
+    approveGuard: (q) => q.eq("approval_status", PODCAST_PENDING_APPROVAL_STATUS),
+    reject: () => ({ approval_status: "rejected" }),
   },
 }
 
@@ -373,6 +383,16 @@ export async function approveContentSource(
   if (!row) return { ok: false, error: "not found" }
   if (!ctx.isSuperadmin && ctx.brokerageId && (row as any).brokerage_id !== ctx.brokerageId) return { ok: false, error: "outside your brokerage" }
 
+  // Podcast release rides the ONE canonical marketing transition (sets
+  // approval_status='approved' AND defaults publish_channels — a bare patch
+  // would leave channels empty and the distributor would never ship it). Tenant
+  // scope is already enforced above.
+  if (queue === "podcast") {
+    const { applyMarketingAssetApproval } = await import("./approval-queue-aggregator")
+    const res = await applyMarketingAssetApproval("podcast", id)
+    return res.ok ? { ok: true, status: "approved" } : { ok: false, error: res.error }
+  }
+
   let q = svc.from(src.table).update(src.approve(ctx.userId)).eq("id", id)
   q = src.approveGuard(q)
   const { data: updated, error } = await q.select("id").maybeSingle()
@@ -391,6 +411,14 @@ export async function rejectContentSource(
   const { data: row } = await svc.from(src.table).select("id, brokerage_id").eq("id", id).maybeSingle()
   if (!row) return { ok: false, error: "not found" }
   if (!ctx.isSuperadmin && ctx.brokerageId && (row as any).brokerage_id !== ctx.brokerageId) return { ok: false, error: "outside your brokerage" }
+
+  // Podcast rejection rides the same canonical transition (approval_status=
+  // 'rejected'), so the two surfaces can't write different columns.
+  if (queue === "podcast") {
+    const { applyMarketingAssetRejection } = await import("./approval-queue-aggregator")
+    const res = await applyMarketingAssetRejection("podcast", id, "Rejected in Command Center")
+    return res.ok ? { ok: true, status: "rejected" } : { ok: false, error: res.error }
+  }
 
   const { error } = await svc.from(src.table).update(src.reject(ctx.userId)).eq("id", id)
   if (error) return { ok: false, error: error.message }

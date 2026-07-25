@@ -51,6 +51,8 @@ import {
   BLOG_PENDING_PUBLISH_STATUS,
   NEWSLETTER_PENDING_APPROVAL_STATUSES,
   AD_CREATIVE_PENDING_APPROVAL_STATUSES,
+  PODCAST_PENDING_STATUS,
+  PODCAST_PENDING_APPROVAL_STATUS,
 } from "./approval-pending"
 
 export type ApprovalSource = "newsletter" | "email" | "ad_creative" | "video_snippet" | "blog" | "podcast" | "video" | "offer" | "property_alert" | "legacy"
@@ -258,7 +260,11 @@ export async function aggregatePendingApprovals(
         .from("podcast_episodes")
         .select("id, agent_id, title, description, approval_status, created_at, updated_at")
         .eq("brokerage_id", brokerageId)
-        .eq("approval_status", "pending_review")
+        // status=completed (generation done) + approval_status=pending_review
+        // (awaiting release) — the same two-column predicate the Command Center
+        // and the distributor use (approval-pending, no drift).
+        .eq("status", PODCAST_PENDING_STATUS)
+        .eq("approval_status", PODCAST_PENDING_APPROVAL_STATUS)
         .order("created_at", { ascending: false })
         .limit(PER_TABLE_LIMIT),
       svc

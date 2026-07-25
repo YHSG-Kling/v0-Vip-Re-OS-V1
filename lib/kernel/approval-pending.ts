@@ -19,12 +19,16 @@
  *                  (marketing.ts:218); 'pending' is the legacy manual value.
  *                  Both are awaiting a human.
  *   - ad_creative: creatives sit at 'draft' or 'pending_review' before any spend.
- *
- * NOT covered here yet (deliberately): podcast_episodes — the two surfaces use
- * DIFFERENT columns (A: approval_status='pending_review'; B: status='completed')
- * and there is no live episode data to verify the correct canonical filter
- * against. Reconciling it needs its own careful pass with real data, so it is
- * left untouched rather than guessed at.
+ *   - podcast:     the auto-producer stages status='completed' (generation done)
+ *                  + approval_status='pending_review' (auto-producer.ts:152-154);
+ *                  the DISTRIBUTOR ships only status='completed' AND
+ *                  approval_status='approved' (distribute-podcast-episodes cron).
+ *                  So the review gate is approval_status; status='completed' is
+ *                  the ready gate. Both surfaces now use the same two-column
+ *                  predicate, and both approve via the ONE canonical transition
+ *                  (applyMarketingAssetApproval) that also defaults
+ *                  publish_channels — a bare approval_status patch would leave
+ *                  channels empty and the distributor would never ship it.
  */
 
 /** blog_posts.publish_status value that means "awaiting a human". */
@@ -37,3 +41,10 @@ export const NEWSLETTER_PENDING_APPROVAL_STATUSES = ["pending", "pending_review"
 /** ad_creative_variations.approval_status values that mean "awaiting a human"
  *  (a creative under review before any paid spend). */
 export const AD_CREATIVE_PENDING_APPROVAL_STATUSES = ["draft", "pending_review"] as const
+
+/** podcast_episodes: the READY gate (generation complete). */
+export const PODCAST_PENDING_STATUS = "completed" as const
+/** podcast_episodes: the REVIEW gate (awaiting a human release). The distributor
+ *  ships only when this is 'approved', so this — not status — is the approval
+ *  column both surfaces must key on. */
+export const PODCAST_PENDING_APPROVAL_STATUS = "pending_review" as const
