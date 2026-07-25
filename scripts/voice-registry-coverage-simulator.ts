@@ -25,6 +25,7 @@ import { join } from "node:path"
 const ROOT = process.cwd()
 const REGISTRY = join(ROOT, "lib/voice/tool-registry.ts")
 const DISPATCHER = join(ROOT, "app/api/agent-assistant/tool-call/route.ts")
+const STACK_A_COMMAND_MAP = join(ROOT, "app/actions/voice-assistant/helpers/command-map.ts")
 
 // `case "x":` labels in the dispatcher file that are NOT voice tools — they are
 // param-type coercion cases in a sibling switch. Excluded from the tool set.
@@ -67,8 +68,36 @@ function dispatchedTools(): Set<string> {
 }
 
 let failed = 0
+let passed = 0
 const fail = (msg: string) => { console.log(`  ✗ ${msg}`); failed++ }
-const pass = (msg: string) => console.log(`  ✓ ${msg}`)
+const pass = (msg: string) => { console.log(`  ✓ ${msg}`); passed++ }
+
+function stackACommands(): Set<string> {
+  const src = readFileSync(STACK_A_COMMAND_MAP, "utf8")
+  const start = src.indexOf("export const COMMAND_MAP")
+  const body = start >= 0 ? src.slice(start) : src
+  const keys = new Set<string>()
+  for (const m of body.matchAll(/^ {2}([a-z_]+):\s*\{/gm)) keys.add(m[1])
+  return keys
+}
+
+// STACK A FOLD-IN BACKLOG — the seller-listing / CMA / buyer-execution commands
+// Stack A (app/actions/voice-assistant/) executes through its OWN command map +
+// authority matrix, NOT the canonical voiceTools registry. They are NOT added to
+// voiceTools yet: the registry forbids "aspirational rows" (voice-command-coverage
+// requires every registry entry be dispatched by the canonical route), and some A
+// commands (e.g. lender_confirm_financials → [vendor]) can't be expressed in the
+// coarse ToolAuthority enum. So they are baselined here to FREEZE Stack A drift:
+// a NEW Stack A command must go through the canonical registry (be dispatchable +
+// registered), and folding an A command into the canonical dispatcher must move it
+// out of this baseline into voiceTools (the ratchet).
+const STACK_A_BASELINE = new Set([
+  "generate_cma", "generate_net_sheet", "generate_presentation",
+  "schedule_appointment", "schedule_media", "approve_media", "activate_coming_soon",
+  "submit_to_mls", "activate_mls", "schedule_open_house", "approve_open_house_marketing",
+  "query_buyer_stage", "configure_buyer_search", "lender_confirm_financials",
+  "admin_override_financial_gate", "query_listing_status",
+])
 
 console.log("══════════════════════════════════════════════════")
 console.log(" Voice-registry coverage guard (voiceTools is the single source)")
@@ -104,18 +133,40 @@ if (staleBaseline.length === 0) {
   fail(`backlog baseline lists tool(s) now in voiceTools — remove from BASELINE_UNREGISTERED: ${staleBaseline.join(", ")}`)
 }
 
-// 3. Report the remaining backlog for visibility (not a failure).
+// 3. Report the remaining C-dispatcher backlog for visibility (not a failure).
 const remaining = unregistered.filter((t) => BASELINE_UNREGISTERED.has(t))
-console.log(`\n[consolidation backlog — register these in voiceTools as the merge proceeds]`)
-console.log(`  ${remaining.length ? remaining.sort().join(", ") : "(none — registry is complete!)"}`)
+console.log(`\n[canonical-dispatcher backlog — register these in voiceTools as the merge proceeds]`)
+console.log(`  ${remaining.length ? remaining.sort().join(", ") : "(none — registry covers the whole dispatcher!)"}`)
+
+// ── Stack A drift-freeze: A's command map must be registered OR baselined ──
+console.log(`\n[Stack A ⇄ canonical registry (fold-in backlog)]`)
+const stackA = stackACommands()
+console.log(`  Stack A commands: ${stackA.size} · fold-in baseline: ${STACK_A_BASELINE.size}`)
+if (stackA.size < 10) fail(`Stack A command-map parse looks wrong (${stackA.size}) — check the regex/anchor`)
+else pass(`Stack A command map parsed (${stackA.size} commands)`)
+
+const aUnregistered = [...stackA].filter((c) => !registry.has(c))
+const aNewDrift = aUnregistered.filter((c) => !STACK_A_BASELINE.has(c))
+if (aNewDrift.length === 0) {
+  pass(`no NEW Stack A command outside the canonical registry (each is registered or baselined for fold-in)`)
+} else {
+  fail(`NEW Stack A command(s) not in voiceTools and not baselined: ${aNewDrift.join(", ")} — route it through the canonical registry`)
+}
+// Ratchet: an A command folded into the registry (now dispatchable) must leave the baseline.
+const aStaleBaseline = [...STACK_A_BASELINE].filter((c) => registry.has(c))
+if (aStaleBaseline.length === 0) {
+  pass(`Stack A baseline is honest (nothing folded-in still lingering)`)
+} else {
+  fail(`Stack A baseline lists command(s) now in voiceTools — remove from STACK_A_BASELINE: ${aStaleBaseline.join(", ")}`)
+}
 
 console.log("\n──────────────────────────────────────────────────")
 if (failed === 0) {
-  console.log(` RESULT: 5 passed, 0 failed`)
-  console.log(` ✅ Voice registry is the enforced source of truth — no new drift; backlog shrinks only.`)
+  console.log(` RESULT: ${passed} passed, 0 failed`)
+  console.log(` ✅ Voice registry is the enforced source of truth — no new drift (C dispatcher + Stack A frozen); backlogs shrink only.`)
   console.log(` VOICE_REGISTRY_COVERAGE_PASS`)
 } else {
-  console.log(` RESULT: ${5 - failed} passed, ${failed} failed`)
+  console.log(` RESULT: ${passed} passed, ${failed} failed`)
   console.log(` ✗ Voice-registry coverage FAILED`)
   process.exit(1)
 }
