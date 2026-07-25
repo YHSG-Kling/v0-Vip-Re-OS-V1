@@ -346,6 +346,67 @@ async function runTool(
       }
     }
 
+    // ── Staff financial lane: the brokerage's OWN staff read/record buyer
+    //    financials for their OWN contacts. Authority 'financial_staff' is
+    //    enforced above; the entity_owner gate (contact in the session's
+    //    brokerage) is enforced here — the agent/TC/compliance path that does
+    //    NOT require an assigned lender. ──
+    case "get_buyer_financials": {
+      const contactId = String(params.contact_id ?? params.buyer_id ?? "").trim()
+      if (!contactId) return { error: "Which buyer? I need the contact to check their financing." }
+      const { data: ct } = await supabase.from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+      if (!ct || (ct as { brokerage_id?: string }).brokerage_id !== session.brokerage_id) {
+        return { error: "That contact isn't in your brokerage." }
+      }
+      const { getBuyerFinancialStatus } = await import("@/app/actions/buyer-lifecycle-core")
+      const status = await getBuyerFinancialStatus(contactId)
+      return { success: true, financials: status }
+    }
+
+    case "confirm_buyer_financials": {
+      const contactId = String(params.contact_id ?? params.buyer_id ?? "").trim()
+      if (!contactId) return { error: "Which buyer? I need the contact whose financing you're recording." }
+      const { data: ct } = await supabase.from("contacts").select("brokerage_id").eq("id", contactId).maybeSingle()
+      if (!ct || (ct as { brokerage_id?: string }).brokerage_id !== session.brokerage_id) {
+        return { error: "That contact isn't in your brokerage." }
+      }
+      const rawType = String(params.verification_type ?? "preapproval").trim()
+      const verificationType = (["preapproval", "proof_of_funds", "lender_intro", "agent_confirmation"].includes(rawType)
+        ? rawType
+        : "preapproval") as "preapproval" | "proof_of_funds" | "lender_intro" | "agent_confirmation"
+      const approvedAmount = params.approved_amount != null ? Number(params.approved_amount) : undefined
+
+      // Human-in-the-loop: require an explicit confirm before the state change.
+      const confirmRaw = String(params.confirm ?? "").toLowerCase()
+      const confirmed = params.confirm === true || confirmRaw === "true" || confirmRaw === "yes"
+      if (!confirmed) {
+        const amt = approvedAmount != null ? `$${approvedAmount.toLocaleString()}` : "the stated amount"
+        return {
+          needs_confirmation: true,
+          spoken_summary: `Just to confirm — record this buyer's ${verificationType.replace(/_/g, " ")} as verified for ${amt}? Say "confirm" and I'll log it. Nothing changes until you do.`,
+        }
+      }
+
+      const { recordBuyerFinancialVerification } = await import("@/app/actions/buyer-lifecycle-core")
+      const res = await recordBuyerFinancialVerification({
+        contactId,
+        verificationType,
+        userId: session.user_id,          // the acting staff member
+        metadata: {
+          lender_name: params.lender_name ? String(params.lender_name) : undefined,
+          pre_approval_amount: approvedAmount,
+          recorded_via: "voice_assistant",
+        },
+      })
+      if (!res.success) {
+        return { error: res.error ?? "Could not record financing." }
+      }
+      return {
+        success: true,
+        spoken_summary: `Done — the buyer's ${verificationType.replace(/_/g, " ")} is recorded as verified. The deal file and the financing gate are updated.`,
+      }
+    }
+
     case "get_active_listings":
       return getActiveListings(session, supabase)
 

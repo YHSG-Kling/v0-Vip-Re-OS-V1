@@ -42,6 +42,12 @@ export type ToolAuthority =
   | "vendor"            // Vendor / lender platform users (user_type 'vendor'|'lender'). Reachability
                         //   only — the PER-CONTACT grant is enforced by the assigned_party gate, never
                         //   by role alone. A vendor can never touch a contact they aren't assigned to.
+  | "financial_staff"  // Deal-handling + oversight staff who may READ and CONFIRM a buyer's financial
+                        //   verification: agent / broker / broker_admin / admin / superadmin /
+                        //   compliance_officer / tc. Distinct from the lender lane (a lender is the
+                        //   authoritative confirmer via the assigned_party gate) — this is the
+                        //   brokerage's own staff, always paired with the entity_owner gate so a
+                        //   staff member only reaches THEIR brokerage's contacts. Excludes isa/team_lead.
   | "any_authenticated" // Read-only utilities (lookup_contact, get_schedule)
 
 export interface VoiceTool {
@@ -696,6 +702,34 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_nar_regulated: true,   // Financing verification is a regulated deal artifact.
     description: "Lender confirms a buyer's financial verification by voice — 'confirm the Hendersons' pre-approval for 480k'. Authority 'vendor' (lender/vendor users only); the assigned_party gate requires an ACTIVE vendor_contact_assignment to that contact with financial scope. Flips the financing gate, so the dispatcher requires an explicit spoken confirm first — nothing changes on the first utterance.",
   },
+
+  // ── Staff financial lane — the brokerage's OWN deal-handling + oversight staff
+  //    (agent/broker/admin/superadmin/compliance/tc) read AND record a buyer's
+  //    financial verification for THEIR OWN contacts. Distinct from the lender
+  //    lane above: authority 'financial_staff' + the entity_owner gate (their
+  //    brokerage owns the contact). The read is a status lookup; the confirm
+  //    flips the financing gate, so like the lender path it requires an explicit
+  //    spoken confirm first (human-in-the-loop). ──
+  get_buyer_financials: {
+    name: "get_buyer_financials",
+    category: "report",
+    authority: "financial_staff",
+    gates: ["entity_owner"],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Read a buyer's financial-verification status by voice — 'is the Hendersons' financing verified?'. Returns pre-approval / proof-of-funds / verification status + amount + expiry. Read-only; authority 'financial_staff' (agent/broker/admin/superadmin/compliance/tc) + entity_owner (the contact must belong to your brokerage).",
+  },
+  confirm_buyer_financials: {
+    name: "confirm_buyer_financials",
+    category: "stage",
+    authority: "financial_staff",
+    gates: ["entity_owner"],
+    is_outbound: false,       // Internal financial-verification state change — nothing leaves the platform.
+    is_telco_initiating: false,
+    is_nar_regulated: true,   // Financing verification is a regulated deal artifact.
+    description: "Staff records a buyer's financial verification by voice — 'mark the Hendersons pre-approved for 480k from the pre-approval letter'. For the brokerage's OWN staff (authority 'financial_staff') on THEIR contacts (entity_owner gate) — the agent/TC/compliance path that does NOT require an assigned lender (verifiedBy 'agent', source 'manual'). Flips the financing gate, so the dispatcher requires an explicit spoken confirm first.",
+  },
 }
 
 /**
@@ -727,6 +761,7 @@ export function authorityAllows(toolName: string, userType: string): boolean {
     case "tenant_staff":      return ["agent", "isa", "tc", "team_lead", "broker", "broker_admin", "admin", "superadmin"].includes(userType)
     case "admin":             return ["broker", "broker_admin", "admin", "superadmin"].includes(userType)
     case "vendor":            return ["vendor", "lender", "title"].includes(userType)  // reachability only — assigned_party gate enforces the per-contact grant
+    case "financial_staff":   return ["agent", "broker", "broker_admin", "admin", "superadmin", "compliance_officer", "tc", "transaction_coordinator"].includes(userType)  // entity_owner gate enforces brokerage ownership
     default:                  return false
   }
 }

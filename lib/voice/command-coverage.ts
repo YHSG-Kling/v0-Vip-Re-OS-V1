@@ -278,6 +278,27 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
       `SAME executor as the lender portal action (lenderConfirmFinancialVerification) — same emitFinancialVerificationEvent + buyer.financial.lender_confirmed activity with actor_role='lender'; voice origin: ${VOICE_RECEIPT}`,
     sayIt: "“Confirm the Hendersons' pre-approval for 480k” (lender/vendor users assigned to that buyer)",
   },
+  {
+    command: "app/actions/buyer-lifecycle-core.getBuyerFinancialStatus",
+    domain: "financial",
+    speakable: true,
+    toolName: "get_buyer_financials",
+    guard:
+      "authority 'financial_staff' (tool-registry role gate at the route — agent/broker/broker_admin/admin/superadmin/compliance_officer/tc) + entity_owner gate at the route: the session's brokerage must own the contact before the read",
+    auditParity: VOICE_RECEIPT,
+    sayIt: "“Is the Hendersons' financing verified?”",
+  },
+  {
+    command: "app/actions/buyer-lifecycle-core.recordBuyerFinancialVerification",
+    domain: "financial",
+    speakable: true,
+    toolName: "confirm_buyer_financials",
+    guard:
+      "authority 'financial_staff' (tool-registry role gate at the route — the brokerage's own staff, NOT an assigned lender) + entity_owner gate at the route (the contact must belong to your brokerage); flips the financing gate, so the dispatcher requires an explicit spoken confirm first (human-in-the-loop)",
+    auditParity:
+      `SAME core the agent/dashboard confirm calls (recordBuyerFinancialVerification → emitFinancialVerificationEvent, verifiedBy 'agent', source 'manual'); voice origin: ${VOICE_RECEIPT}`,
+    sayIt: "“Mark the Hendersons pre-approved for 480k from the pre-approval letter”",
+  },
 
   // ── TASKS ──────────────────────────────────────────────────────────────────
   {

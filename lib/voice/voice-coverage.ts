@@ -10,7 +10,7 @@
 import { voiceTools, type VoiceTool, type ComplianceGate, type ToolAuthority } from "./tool-registry"
 
 const VALID_CATEGORIES = new Set<VoiceTool["category"]>(["lookup", "draft", "send", "schedule", "stage", "report"])
-const VALID_AUTHORITIES = new Set<ToolAuthority>(["agent", "agent_or_isa", "tenant_staff", "admin", "vendor", "any_authenticated"])
+const VALID_AUTHORITIES = new Set<ToolAuthority>(["agent", "agent_or_isa", "tenant_staff", "admin", "vendor", "financial_staff", "any_authenticated"])
 const VALID_GATES = new Set<ComplianceGate>(["active_bba", "tcpa_outbound", "evaluate_outbound", "ai_fair_use", "dnc_check", "service_role", "entity_owner", "assigned_party"])
 
 /**
