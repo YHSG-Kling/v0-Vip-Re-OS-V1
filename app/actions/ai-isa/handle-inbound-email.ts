@@ -290,6 +290,8 @@ export async function processInboundEmail(params: {
     brokerageId: lead.brokerage_id,
     agentId: lead.agent_id ?? null,
     knowledgeQuery: `${params.subject ?? ''} ${params.body ?? ''}`.trim(),
+    // Extend the AI's knowledge to THIS contact when the lead is linked to one.
+    contactId: lead.contact_id ?? undefined,
   })
 
   // ── Conversation context from the LEAD-class ledgers ─────────────────────

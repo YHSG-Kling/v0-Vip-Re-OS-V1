@@ -38,6 +38,15 @@ export interface BrandVoicePromptContext {
    * behavior change). Pass the inbound message / call objective as the query.
    */
   knowledgeQuery?: string
+  /**
+   * When set, the AI's knowledge is extended to COVER THIS CONTACT: their notes,
+   * AI summary, personality tips, persona, and recent interaction history are
+   * loaded (scoped to the brokerage) and injected as a "What we know about this
+   * contact" block, so the assistant writes with the relationship's real context
+   * instead of cold. Deterministic (no embedding); best-effort — a miss never
+   * breaks brand voice. Omit for contactless rails.
+   */
+  contactId?: string
 }
 
 export interface BrandVoicePromptResult {
@@ -278,6 +287,37 @@ export async function loadBrandVoicePrompt(
         parts.push(`Relevant knowledge from your brokerage's knowledge base — use these FIRST and do not contradict them:\n${kbBlock}`)
       }
     } catch { /* KB unavailable — brand voice still stands */ }
+  }
+
+  // ── Contact coverage: extend the KNOWLEDGE to THIS contact ───────────────────
+  // The KB block above covers the brokerage's facts; this covers the specific
+  // person the AI is writing to — their persona, segment, qualification, AI
+  // insights and notes — so the assistant writes with the relationship's real
+  // context instead of cold. Scoped to the brokerage (never another tenant's
+  // contact); deterministic (no embedding); best-effort — a miss never breaks
+  // brand voice. Recent conversation turns are loaded by the rails themselves.
+  if (ctx.contactId) {
+    try {
+      const { data: c } = await supabase
+        .from("contacts")
+        .select("first_name, contact_persona, lead_temperature, lifetime_segment, qualification_summary, ai_insights, notes")
+        .eq("id", ctx.contactId)
+        .eq("brokerage_id", ctx.brokerageId)
+        .maybeSingle()
+      if (c) {
+        const lines: string[] = []
+        if (c.contact_persona) lines.push(`Persona: ${c.contact_persona}`)
+        if (c.lead_temperature) lines.push(`Temperature: ${c.lead_temperature}`)
+        if (c.lifetime_segment) lines.push(`Lifetime segment: ${c.lifetime_segment}`)
+        if (c.qualification_summary) lines.push(`Qualification: ${c.qualification_summary}`)
+        if (c.ai_insights) lines.push(`AI insights: ${c.ai_insights}`)
+        if (c.notes) lines.push(`Notes: ${c.notes}`)
+        if (lines.length > 0) {
+          const name = (c.first_name ?? "").trim()
+          parts.push(`What we know about this contact${name ? ` (${name})` : ""} — reference this naturally and never contradict it:\n${lines.join("\n")}`)
+        }
+      }
+    } catch { /* contact context unavailable — brand voice still stands */ }
   }
 
   return {

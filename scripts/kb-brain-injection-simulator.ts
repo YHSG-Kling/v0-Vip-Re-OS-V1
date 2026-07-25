@@ -50,6 +50,28 @@ console.log("\n── uploads embed SYNCHRONOUSLY so the KB is immediately usabl
     /updateHelpTopicEmbedding\(data\.id\)[\s\S]*?catch[\s\S]*?queueForEmbedding\('help_topics_kb'/.test(s))
 }
 
+console.log("\n── the brain's knowledge now COVERS CONTACTS (not just brokerage articles) ──")
+{
+  const bv = src("lib/ai-isa/brand-voice-prompt.ts")
+  check("BrandVoicePromptContext gains an optional contactId", /contactId\?:\s*string/.test(bv))
+  check("when contactId is set, a 'What we know about this contact' block is injected",
+    bv.includes("What we know about this contact"))
+  check("the contact read is SCOPED to the brokerage (cross-tenant safe: id AND brokerage_id)",
+    /from\("contacts"\)[\s\S]*?\.eq\("id", ctx\.contactId\)[\s\S]*?\.eq\("brokerage_id", ctx\.brokerageId\)/.test(bv))
+  check("it reads the REAL live contact-knowledge columns (persona/qualification/insights/notes), not the migration-only ai_summary/ai_personality_tips",
+    bv.includes("qualification_summary") && bv.includes("ai_insights") && bv.includes("contact_persona") &&
+    !bv.includes("ai_personality_tips"))
+  check("best-effort — a contact-context miss never breaks brand voice (try/catch)",
+    /if \(ctx\.contactId\)[\s\S]*?try \{[\s\S]*?from\("contacts"\)[\s\S]*?\} catch/.test(bv))
+
+  const email = src("app/actions/ai-isa/handle-inbound-email.ts")
+  check("inbound-email rail passes contactId (from the linked lead)", /loadBrandVoicePrompt\([\s\S]*?contactId: lead\.contact_id/.test(email))
+  const engage = src("app/actions/ai-isa/engage-contact.ts")
+  check("engage-contact rail passes contactId", /loadBrandVoicePrompt\(\{[^}]*contactId\s*\}/.test(engage))
+  const call = src("lib/ai-isa/build-call-context.ts")
+  check("voice/call-context rail passes contactId", /loadBrandVoicePrompt\(\{[\s\S]*?contactId: params\.contactId/.test(call))
+}
+
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
 if (fail > 0) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)); console.log(" ❌ KB_BRAIN_INJECTION_FAIL"); process.exit(1) }
 console.log(" ✅ KB_BRAIN_INJECTION_PASS — uploaded knowledge reaches the AI's brand-voice brain, scoped + grounded")

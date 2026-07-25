@@ -138,6 +138,8 @@ export async function buildCallContext(params: {
       brokerageId: params.brokerageId,
       agentId: params.agentId ?? null,
       teamId: params.teamId ?? null,
+      // Extend the AI's knowledge to cover THIS contact on the voice rail too.
+      contactId: params.contactId ?? undefined,
     }),
 
     // Brokerage row — name (display) + default_isa_voice_id (voice fallback)
