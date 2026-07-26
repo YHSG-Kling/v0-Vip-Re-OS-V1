@@ -566,7 +566,16 @@ function Step1Context({ mode, state, update }: { mode: "offer" | "listing"; stat
           </div>
           <div className="col-span-2 space-y-1">
             <Label>Property Type</Label>
-            <Input placeholder="Single Family, Condo…" value={state.propertyType ?? ""} onChange={e => update("propertyType", e.target.value)} />
+            <select
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+              value={state.propertyType ?? ""}
+              onChange={e => update("propertyType", e.target.value)}
+            >
+              <option value="">Select property type…</option>
+              {["Single Family", "Condo", "Townhouse", "Multi-Family", "Land", "Manufactured", "Commercial", "Other"].map(t => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
           </div>
         </div>
       )}
