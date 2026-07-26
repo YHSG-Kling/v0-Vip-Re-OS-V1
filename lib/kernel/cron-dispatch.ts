@@ -29,7 +29,6 @@ export const CRON_REGISTRY: CronEntry[] = [
   // vercel.json (found by this registry's drift check). Documented schedules honored;
   // undocumented ones get conservative cadences. All carry their own verifyCronAuth.
   { path: "/api/cron/daily-briefing",                 schedule: "0 6 * * *" },    // documented in route header
-  { path: "/api/cron/team-daily-briefing",            schedule: "30 6 * * *" },   // AI team morning huddle → manager-signals bus (documented in route header)
   { path: "/api/cron/contingency-scan",               schedule: "0 13 * * *" },   // documented
   { path: "/api/cron/generate-brokerage-fee-charges", schedule: "0 6 * * *" },    // documented
   { path: "/api/cron/listing-presentation-prep",      schedule: "0 17 * * *" },   // documented

@@ -1784,7 +1784,6 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/manager-eval": "data_steward",
   "/api/cron/manager-learning": "data_steward",
   "/api/cron/manager-signals": "cron_manager",
-  "/api/cron/team-daily-briefing": "cron_manager",
   "/api/cron/prompt-calibration": "data_steward",
   "/api/cron/pattern-scan": "data_steward",
   "/api/cron/weekly-ai-metrics": "data_steward",
