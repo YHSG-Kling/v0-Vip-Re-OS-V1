@@ -118,7 +118,19 @@ export default function BusinessCardsPage() {
   }, [])
 
   const processFile = useCallback(async (file: File) => {
-    if (!agentId || !brokerageId) return
+    // Don't silently swallow the drop ("file won't add" from the walkthrough) — a
+    // signed-in but not-yet-provisioned account (agent record / brokerage still
+    // being set up by the login-time self-heal) gets clear feedback instead of
+    // nothing. Once /dashboard has provisioned the records, the ids resolve and
+    // the scan works.
+    if (!agentId || !brokerageId) {
+      toast({
+        title: "Finishing your account setup",
+        description: "We're still setting up your agent profile — refresh in a moment, then add your card.",
+        variant: "destructive",
+      })
+      return
+    }
     setScanning(true)
     setResult(null)
     try {
