@@ -88,7 +88,9 @@ export async function addRequiredDocument(
   const stateCode = input.stateCode ? input.stateCode.toUpperCase() : null
 
   // Idempotent per (brokerage, scope, scopeId, classification, deal_type, state).
-  const { data: existing } = await svc
+  // state_code needs different PostgREST operators: .is(null) for the US-baseline
+  // rows, .eq(value) for state-specific ones (.is() rejects a non-null string).
+  let dupQ = svc
     .from("brokerage_required_documents")
     .select("id")
     .eq("brokerage_id", actor.brokerageId)
@@ -96,8 +98,8 @@ export async function addRequiredDocument(
     .eq("scope_id", input.scopeId)
     .eq("classification", input.classification)
     .eq("deal_type", input.dealType)
-    .is("state_code", stateCode as any)
-    .maybeSingle()
+  dupQ = stateCode === null ? dupQ.is("state_code", null) : dupQ.eq("state_code", stateCode)
+  const { data: existing } = await dupQ.maybeSingle()
   if (existing?.id) return { ok: true, id: existing.id as string, duplicate: true }
 
   const { data: inserted, error } = await svc
