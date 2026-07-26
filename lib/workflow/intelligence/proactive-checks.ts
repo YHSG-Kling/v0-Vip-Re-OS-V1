@@ -464,10 +464,10 @@ export async function completenessGate(input: {
           ethicsDueDate: (agent as any).ethics_due_date ?? null,
         })
         for (const b of readiness.blockers) {
-          blockers.push({ severity: "blocker", category: "compliance", title: b.title, detail: b.detail, action: { label: "Update license & CE", href: "/dashboard/settings/profile" } })
+          blockers.push({ severity: "blocker", category: "compliance", title: b.title, detail: b.detail, action: { label: "Update license & CE", href: "/dashboard/settings/license-ce" } })
         }
         for (const w of readiness.warnings) {
-          findings.push({ severity: "warning", category: "compliance", title: w.title, detail: w.detail, recommendation: "Handle before it blocks a transaction.", action: { label: "Update license & CE", href: "/dashboard/settings/profile" } })
+          findings.push({ severity: "warning", category: "compliance", title: w.title, detail: w.detail, recommendation: "Handle before it blocks a transaction.", action: { label: "Update license & CE", href: "/dashboard/settings/license-ce" } })
         }
       }
     } catch { /* best-effort */ }

@@ -6,7 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { User } from "lucide-react"
 import { getAgentSettings } from "@/app/actions/agent-settings"
 import { getSocialAccounts } from "@/app/actions/social-publishing"
-import { VideoSettingsCard, SocialAccountsCard } from "./profile-settings-client"
+import { getMyProfile } from "@/app/actions/user-profile"
+import { VideoSettingsCard, SocialAccountsCard, PersonalWebsiteCard } from "./profile-settings-client"
 
 export const metadata = { title: "My Profile | Settings" }
 
@@ -26,9 +27,10 @@ export default async function AgentProfilePage() {
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
-  const [agentSettings, socialAccounts] = await Promise.all([
+  const [agentSettings, socialAccounts, myProfile] = await Promise.all([
     getAgentSettings(user.id),
     getSocialAccounts(user.id, profile.user_type ?? profile.role ?? "agent"),
+    getMyProfile(),
   ])
 
   return (
@@ -65,6 +67,9 @@ export default async function AgentProfilePage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Personal real-estate website (canonical embed origin + blog byline) */}
+      <PersonalWebsiteCard initialUrl={myProfile.profile?.personal_website_url ?? null} />
 
       {/* Personal email signature */}
       <AgentSignaturePanel currentSignature={profile.email_signature ?? null} />

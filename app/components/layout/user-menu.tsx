@@ -38,7 +38,7 @@ export function UserMenu({ userContext }: UserMenuProps) {
           <p className="text-xs text-gray-600">{userContext.email}</p>
         </div>
         <DropdownMenuSeparator className="bg-gray-200" />
-        <DropdownMenuItem onClick={() => router.push('/settings?tab=profile')} className="text-gray-700">
+        <DropdownMenuItem onClick={() => router.push('/dashboard/profile')} className="text-gray-700">
           My Profile
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => router.push('/settings')} className="text-gray-700">

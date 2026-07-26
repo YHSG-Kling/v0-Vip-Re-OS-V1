@@ -170,7 +170,7 @@ export const SETUP_ITEMS: SetupItem[] = [
     href: "/settings/brand-voice", detect: (s) => s.hasAdditionalBrand },
   { key: "personal_website", label: "Add your personal website", roles: AGENTISH, required: false, category: "growth",
     why: "Links from your marketing and QR codes back to your own site.",
-    href: "/settings/profile", detect: (s) => s.hasPersonalWebsite },
+    href: "/dashboard/profile", detect: (s) => s.hasPersonalWebsite },
   { key: "social_accounts", label: "Connect social accounts", roles: AGENTISH, required: false, category: "growth",
     why: "Lets the Campaign Orchestrator publish approved posts to your channels.",
     href: "/dashboard/profile", detect: (s) => s.hasSocialAccount },
