@@ -11,7 +11,6 @@ import {
   AlertCircle,
   CheckCircle2,
   Clock,
-  DollarSign,
   Eye,
   Star,
   Activity,
@@ -38,7 +37,6 @@ interface ReportsClientProps {
   userId: string
   monthStart: string
   initialCampaignData: any
-  initialFinancialData: any
   initialReputationData: any
   initialSourceData: any
 }
@@ -50,12 +48,33 @@ export function ReportsClient({
   userId,
   monthStart,
   initialCampaignData,
-  initialFinancialData,
   initialReputationData,
   initialSourceData,
 }: ReportsClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
+
+  // Summary is a PERFORMANCE snapshot built from the analytics already loaded —
+  // commission is intentionally NOT shown here (it lives in Financials →
+  // Commission Tracker; duplicating it made Reports read as a commission rehash).
+  const sources   = initialSourceData?.sources ?? []
+  const campaigns = initialCampaignData?.campaigns ?? []
+  const totalLeads    = sources.reduce((s: number, x: any) => s + (x.contact_count ?? 0), 0)
+  const avgCloseRate  = sources.length
+    ? sources.reduce((s: number, x: any) => s + (x.close_rate ?? 0), 0) / sources.length
+    : 0
+  const avgRoi = campaigns.length
+    ? campaigns.reduce((s: number, x: any) => s + (x.roi_percentage ?? x.roi ?? 0), 0) / campaigns.length
+    : 0
+  const avgRating   = initialReputationData?.avgRating ?? null
+  const totalReviews = initialReputationData?.totalReviews ?? 0
+  const topSource = [...sources].sort(
+    (a: any, b: any) => (b.revenue ?? b.totalRevenue ?? 0) - (a.revenue ?? a.totalRevenue ?? 0),
+  )[0] ?? null
+  const topCampaign = [...campaigns].sort(
+    (a: any, b: any) => (b.roi_percentage ?? b.roi ?? 0) - (a.roi_percentage ?? a.roi ?? 0),
+  )[0] ?? null
+  const hasSummaryData = sources.length > 0 || campaigns.length > 0 || !!initialReputationData
 
   // Email dialog state
   const [emailDialogOpen, setEmailDialogOpen] = useState(false)
@@ -206,99 +225,106 @@ export function ReportsClient({
           </TabsTrigger>
         </TabsList>
 
-        {/* Summary Tab */}
+        {/* Summary Tab — performance snapshot (NOT commission; that's in Financials) */}
         <TabsContent value="summary" className="space-y-4">
           <div className="grid gap-4 md:grid-cols-4">
-            {initialFinancialData && (
-              <>
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium text-muted-foreground">YTD Revenue</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-2xl font-bold">
-                      ${(initialFinancialData.ytdGrossCommission ?? initialFinancialData.totalCommission ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {(initialFinancialData.recentCommissions?.length ?? initialFinancialData.commission_count ?? 0)} commissions
-                    </p>
-                  </CardContent>
-                </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                  <TrendingUp className="h-4 w-4" /> Total Leads
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{totalLeads.toLocaleString("en-US")}</div>
+                <p className="text-xs text-muted-foreground mt-1">across {sources.length} source{sources.length === 1 ? "" : "s"}</p>
+              </CardContent>
+            </Card>
 
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium text-muted-foreground">Total Expenses</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-2xl font-bold">
-                      ${(initialFinancialData.ytdExpenses ?? initialFinancialData.totalExpenses ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {(initialFinancialData.recentExpenses?.length ?? initialFinancialData.expense_count ?? 0)} entries
-                    </p>
-                  </CardContent>
-                </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                  <CheckCircle2 className="h-4 w-4" /> Avg Close Rate
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{(avgCloseRate * 100).toFixed(0)}%</div>
+                <p className="text-xs text-muted-foreground mt-1">lead → closed, blended</p>
+              </CardContent>
+            </Card>
 
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium text-muted-foreground">Net Profit</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-2xl font-bold text-green-600">
-                      ${(
-                        initialFinancialData.ytdNetIncome ??
-                        ((initialFinancialData.ytdGrossCommission ?? initialFinancialData.totalCommission ?? 0) -
-                         (initialFinancialData.ytdExpenses ?? initialFinancialData.totalExpenses ?? 0))
-                      ).toLocaleString("en-US", { maximumFractionDigits: 0 })}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">YTD net income</p>
-                  </CardContent>
-                </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                  <Activity className="h-4 w-4" /> Campaign ROI
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className={`text-2xl font-bold ${avgRoi >= 0 ? "text-green-600" : "text-red-600"}`}>{avgRoi.toFixed(0)}%</div>
+                <p className="text-xs text-muted-foreground mt-1">avg across {campaigns.length} campaign{campaigns.length === 1 ? "" : "s"}</p>
+              </CardContent>
+            </Card>
 
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium text-muted-foreground">Agent Commission</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-2xl font-bold">
-                      ${(initialFinancialData.ytdAgentCommission ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">after splits</p>
-                  </CardContent>
-                </Card>
-              </>
-            )}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                  <Star className="h-4 w-4" /> Avg Rating
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{avgRating != null ? avgRating.toFixed(1) : "N/A"}</div>
+                <p className="text-xs text-muted-foreground mt-1">{totalReviews} review{totalReviews === 1 ? "" : "s"}</p>
+              </CardContent>
+            </Card>
           </div>
 
           <Card>
             <CardHeader>
-              <CardTitle>Recent Commissions</CardTitle>
-              <CardDescription>Latest closed commissions this year</CardDescription>
+              <CardTitle>Highlights</CardTitle>
+              <CardDescription>Your best-performing channels this year — open a tab for the full breakdown</CardDescription>
             </CardHeader>
             <CardContent>
-              {initialFinancialData?.recentCommissions && initialFinancialData.recentCommissions.length > 0 ? (
+              {hasSummaryData ? (
                 <div className="space-y-3">
-                  {initialFinancialData.recentCommissions.map((row: any) => (
-                    <div key={row.id} className="flex items-center justify-between p-3 border rounded-lg">
+                  {topSource && (
+                    <div className="flex items-center justify-between p-3 border rounded-lg">
                       <div>
-                        <div className="font-medium text-sm">
-                          {row.close_date ? new Date(row.close_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "No close date"}
-                        </div>
+                        <div className="font-medium text-sm capitalize">Top source · {topSource.source ?? topSource.source_family ?? "Unknown"}</div>
                         <div className="text-xs text-muted-foreground">
-                          Agent: ${(row.agent_commission ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                          {(topSource.contact_count ?? 0)} contacts &bull; {((topSource.close_rate ?? 0) * 100).toFixed(0)}% close rate
                         </div>
                       </div>
-                      <div className="text-right">
-                        <div className="font-medium">
-                          ${(row.gross_commission ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
-                        </div>
-                        <div className="text-xs text-muted-foreground">gross</div>
+                      <div className="text-right text-sm font-medium">
+                        ${(topSource.revenue ?? topSource.totalRevenue ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                        <div className="text-xs text-muted-foreground font-normal">influenced revenue</div>
                       </div>
                     </div>
-                  ))}
+                  )}
+                  {topCampaign && (
+                    <div className="flex items-center justify-between p-3 border rounded-lg">
+                      <div>
+                        <div className="font-medium text-sm">Top campaign · {topCampaign.campaign_name ?? topCampaign.name ?? "Unnamed"}</div>
+                        <div className="text-xs text-muted-foreground">{topCampaign.total_leads ?? topCampaign.leadsGenerated ?? 0} leads generated</div>
+                      </div>
+                      <div className="text-right text-sm font-medium">
+                        {(topCampaign.roi_percentage ?? topCampaign.roi ?? 0).toFixed(0)}% ROI
+                      </div>
+                    </div>
+                  )}
+                  {initialReputationData && (
+                    <div className="flex items-center justify-between p-3 border rounded-lg">
+                      <div>
+                        <div className="font-medium text-sm">Reputation</div>
+                        <div className="text-xs text-muted-foreground">{totalReviews} reviews · {initialReputationData.responseRate?.toFixed(0) ?? 0}% response rate</div>
+                      </div>
+                      <div className="text-right text-sm font-medium flex items-center gap-1">
+                        <Star className="h-3.5 w-3.5 fill-yellow-500 text-yellow-500" />
+                        {avgRating != null ? avgRating.toFixed(1) : "N/A"}
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
-                <p className="text-muted-foreground">No commission data available</p>
+                <p className="text-muted-foreground">No performance data yet — as leads, campaigns, and reviews come in, your snapshot builds here.</p>
               )}
             </CardContent>
           </Card>

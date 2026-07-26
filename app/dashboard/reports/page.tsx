@@ -4,7 +4,6 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { ReportsClient } from "./reports-client"
 import {
   generateCampaignROIReport,
-  generateFinancialSummaryReport,
   generateReputationReport,
   generateSourcePerformanceReport,
 } from "@/lib/kernel/reporting"
@@ -46,11 +45,12 @@ export default async function ReportsPage() {
     userType:    agentCtx.role ?? "agent",
   }
 
-  // Prefetch all report types in parallel — gives client zero loading flash
-  const [campaignResult, financialResult, reputationResult, sourceResult, autonomyResult, coachingResult] =
+  // Prefetch report types in parallel — gives client zero loading flash.
+  // NOTE: commission/financials are intentionally NOT loaded here — they live in
+  // Financials → Commission Tracker; Reports is analytics only.
+  const [campaignResult, reputationResult, sourceResult, autonomyResult, coachingResult] =
     await Promise.all([
       generateCampaignROIReport({ ctx }),
-      generateFinancialSummaryReport({ ctx, dateFrom: ytdStart }),
       generateReputationReport({ ctx }),
       generateSourcePerformanceReport({ ctx, dateFrom: ytdStart }),
       generateAutonomyImpactReport({ ctx }),
@@ -99,7 +99,6 @@ export default async function ReportsPage() {
       userId={user.id}
       monthStart={monthStart}
       initialCampaignData={campaignResult.data ?? null}
-      initialFinancialData={financialResult.data ?? null}
       initialReputationData={reputationResult.data ?? null}
       initialSourceData={sourceResult.data ?? null}
     />
