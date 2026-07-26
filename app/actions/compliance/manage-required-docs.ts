@@ -124,6 +124,75 @@ export async function addRequiredDocument(
   return { ok: true, id: inserted.id as string }
 }
 
+// ── TEMPLATE FORM link (keep-one: brokerage_form_library is the ONE upload path) ──
+
+/**
+ * Attach (or detach with formId null) a brokerage_form_library template to a
+ * required-doc rule — the agent-facing checklist can then hand out the exact
+ * blank form the brokerage requires. Same authz as edits; the form must belong
+ * to the caller's brokerage and be active.
+ */
+export async function setRequiredDocTemplate(
+  input: { id: string; formId: string | null },
+): Promise<{ ok: boolean; error?: string }> {
+  const actor = await resolveActor()
+  if ("error" in actor) return { ok: false, error: actor.error }
+  if (!isValidUUID(input.id)) return { ok: false, error: "Invalid id" }
+  if (input.formId !== null && !isValidUUID(input.formId)) return { ok: false, error: "Invalid form id" }
+
+  const svc = createServiceClient()
+  const { data: row } = await svc
+    .from("brokerage_required_documents")
+    .select("id, brokerage_id, scope_type, scope_id")
+    .eq("id", input.id)
+    .maybeSingle()
+  if (!row || row.brokerage_id !== actor.brokerageId) return { ok: false, error: "Not found in your brokerage" }
+  if (!canManage(actor, row.scope_type as Scope, row.scope_id as string)) return { ok: false, error: "Forbidden for your role/scope" }
+
+  if (input.formId) {
+    const { data: form } = await svc
+      .from("brokerage_form_library")
+      .select("id, brokerage_id, is_active")
+      .eq("id", input.formId)
+      .maybeSingle()
+    if (!form || form.brokerage_id !== actor.brokerageId) return { ok: false, error: "Form not found in your library" }
+    if (!form.is_active) return { ok: false, error: "That form is inactive — reactivate it in Transaction Forms first" }
+  }
+
+  const { error } = await svc
+    .from("brokerage_required_documents")
+    .update({ template_form_id: input.formId })
+    .eq("id", input.id)
+    .eq("brokerage_id", actor.brokerageId)
+  if (error) return { ok: false, error: error.message }
+
+  revalidatePath("/dashboard/settings/required-documents")
+  return { ok: true }
+}
+
+/** The brokerage's active form library, light shape for the template picker. */
+export async function listTemplateFormOptions(): Promise<
+  { ok: true; forms: Array<{ id: string; name: string; state: string; packetType: string }> } | { ok: false; error: string }
+> {
+  const actor = await resolveActor()
+  if ("error" in actor) return { ok: false, error: actor.error }
+  const svc = createServiceClient()
+  const { data, error } = await svc
+    .from("brokerage_form_library")
+    .select("id, name, state, packet_type")
+    .eq("brokerage_id", actor.brokerageId)
+    .eq("is_active", true)
+    .order("name")
+    .limit(200)
+  if (error) return { ok: false, error: error.message }
+  return {
+    ok: true,
+    forms: (data ?? []).map((f: any) => ({
+      id: f.id, name: f.name, state: f.state, packetType: f.packet_type,
+    })),
+  }
+}
+
 // ── TOGGLE blocking ↔ warning ──────────────────────────────────────────────────
 
 export async function setRequiredDocBlocking(

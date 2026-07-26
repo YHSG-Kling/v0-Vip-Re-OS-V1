@@ -30,13 +30,31 @@ export default async function RequiredDocsSettingsPage() {
     )
   }
 
-  // List all rules visible to this brokerage
-  const { data: rules } = await supabase
-    .from("brokerage_required_documents")
-    .select("id, scope_type, scope_id, classification, deal_type, state_code, is_required, block_on_missing, description, created_at")
-    .eq("brokerage_id", profile.brokerage_id)
-    .order("scope_type", { ascending: false })
-    .order("classification", { ascending: true })
+  // List all rules visible to this brokerage + the active form library for the
+  // template picker (keep-one: Transaction Forms is the ONE upload pipeline).
+  const [{ data: rules }, { data: libraryForms }] = await Promise.all([
+    supabase
+      .from("brokerage_required_documents")
+      .select("id, scope_type, scope_id, classification, deal_type, state_code, is_required, block_on_missing, description, template_form_id, created_at")
+      .eq("brokerage_id", profile.brokerage_id)
+      .order("scope_type", { ascending: false })
+      .order("classification", { ascending: true }),
+    supabase
+      .from("brokerage_form_library")
+      .select("id, name, state, packet_type, pdf_url")
+      .eq("brokerage_id", profile.brokerage_id)
+      .eq("is_active", true)
+      .order("name")
+      .limit(200),
+  ])
+
+  const formOptions = (libraryForms ?? []).map((f: any) => ({
+    id: f.id as string,
+    name: f.name as string,
+    state: f.state as string,
+    packetType: f.packet_type as string,
+  }))
+  const formById = new Map((libraryForms ?? []).map((f: any) => [f.id as string, f]))
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
@@ -44,7 +62,9 @@ export default async function RequiredDocsSettingsPage() {
         <h1 className="text-2xl font-semibold">Required documents</h1>
         <p className="text-sm text-muted-foreground">
           The documents your deals must have on file before submitting to compliance. Rules cascade
-          agent → team → brokerage (most specific wins per classification).
+          agent → team → brokerage (most specific wins per classification). Attach a blank template
+          to any rule so agents grab the exact form you require — upload new form files in{" "}
+          <a href="/dashboard/admin/transaction-forms" className="text-primary underline underline-offset-2">Transaction Forms</a>.
         </p>
       </div>
 
@@ -72,8 +92,28 @@ export default async function RequiredDocsSettingsPage() {
                         : <Badge className="bg-amber-100 text-amber-900 text-xs">warning</Badge>}
                     </div>
                     {r.description && <p className="text-xs text-muted-foreground mt-1">{r.description}</p>}
+                    {r.template_form_id && (() => {
+                      const form = formById.get(r.template_form_id as string)
+                      return form ? (
+                        <p className="text-xs mt-1">
+                          <span className="text-muted-foreground">Template: </span>
+                          {form.pdf_url ? (
+                            <a href={form.pdf_url as string} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2">
+                              {form.name as string}
+                            </a>
+                          ) : (
+                            <span>{form.name as string}</span>
+                          )}
+                        </p>
+                      ) : null
+                    })()}
                   </div>
-                  <RequiredDocRowActions id={r.id as string} blockOnMissing={!!r.block_on_missing} />
+                  <RequiredDocRowActions
+                    id={r.id as string}
+                    blockOnMissing={!!r.block_on_missing}
+                    templateFormId={(r.template_form_id as string | null) ?? null}
+                    formOptions={formOptions}
+                  />
                 </li>
               ))}
             </ul>

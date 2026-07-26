@@ -37,6 +37,8 @@ export interface ResolvedRequiredDoc {
   scope:             "agent" | "team" | "brokerage"
   block_on_missing:  boolean
   description?:      string | null
+  /** brokerage_form_library id of the blank template attached to the winning rule. */
+  template_form_id?: string | null
 }
 
 export interface ResolveContext {
@@ -56,7 +58,7 @@ export async function resolveRequiredDocuments(
   // Pull all rows for the brokerage matching deal_type (+ optional state)
   let q = supabase
     .from("brokerage_required_documents")
-    .select("classification, scope_type, scope_id, block_on_missing, description, deal_type, state_code")
+    .select("classification, scope_type, scope_id, block_on_missing, description, deal_type, state_code, template_form_id")
     .eq("brokerage_id", ctx.brokerageId)
     .eq("is_required",  true)
     .or(`deal_type.eq.${ctx.dealType},deal_type.eq.dual`)
@@ -89,6 +91,7 @@ export async function resolveRequiredDocuments(
     scope:            r.scope_type as ResolvedRequiredDoc["scope"],
     block_on_missing: !!r.block_on_missing,
     description:      r.description ?? null,
+    template_form_id: r.template_form_id ?? null,
   }))
 }
 
