@@ -47,6 +47,8 @@ export default function AcademyPage() {
   const [generatingPath, setGeneratingPath] = useState(false)
   const [completedContent, _setCompletedContent] = useState<any[]>([])
   const [inProgressContent, _setInProgressContent] = useState<any[]>([])
+  // "My Templates" toggle — flips the marketplace grid to the user's own authored templates
+  const [showMineOnly, setShowMineOnly] = useState(false)
 
   useEffect(() => {
     loadViewer()
@@ -54,7 +56,7 @@ export default function AcademyPage() {
 
   useEffect(() => {
     loadData()
-  }, [searchQuery])
+  }, [searchQuery, showMineOnly])
 
   async function loadViewer() {
     try {
@@ -104,7 +106,7 @@ export default function AcademyPage() {
     setLoading(true)
     const [content, marketplace, topContributors] = await Promise.all([
       getAcademyContent({ searchQuery }),
-      getMarketplaceTemplates({ searchQuery }),
+      getMarketplaceTemplates({ searchQuery, mineOnly: showMineOnly }),
       getTopContributors(),
     ])
     setAcademyContent(content)
@@ -269,12 +271,14 @@ export default function AcademyPage() {
         <TabsContent value="marketplace" className="space-y-4">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h3 className="text-lg font-semibold">Browse Templates</h3>
-              <p className="text-sm text-muted-foreground">Clone and customize proven workflows</p>
+              <h3 className="text-lg font-semibold">{showMineOnly ? "My Templates" : "Browse Templates"}</h3>
+              <p className="text-sm text-muted-foreground">
+                {showMineOnly ? "Templates you've authored" : "Clone and customize proven workflows"}
+              </p>
             </div>
-            <Button>
+            <Button variant={showMineOnly ? "default" : "outline"} onClick={() => setShowMineOnly((v) => !v)}>
               <TrendingUp className="mr-2 h-4 w-4" />
-              My Templates
+              {showMineOnly ? "Browse All" : "My Templates"}
             </Button>
           </div>
 
@@ -282,7 +286,11 @@ export default function AcademyPage() {
             {loading ? (
               <p className="text-muted-foreground col-span-full">Loading templates...</p>
             ) : templates.length === 0 ? (
-              <p className="text-muted-foreground col-span-full">No templates found</p>
+              <p className="text-muted-foreground col-span-full">
+                {showMineOnly
+                  ? "You haven't authored any templates yet. Clone a marketplace template or publish one to see it here."
+                  : "No templates found"}
+              </p>
             ) : (
               templates.map((template) => (
                 <TemplateCard key={template.id} template={template} onClone={() => handleCloneTemplate(template.id)} />

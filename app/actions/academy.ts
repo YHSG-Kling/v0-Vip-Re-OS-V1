@@ -136,6 +136,8 @@ export async function getMarketplaceTemplates(filters?: {
   tags?:        string[]
   searchQuery?: string
   sortBy?:      "popular" | "recent" | "top_rated"
+  /** When true, return only templates the CURRENT user authored (any visibility). */
+  mineOnly?:    boolean
 }) {
   const supabase = await createClient()
 
@@ -143,7 +145,16 @@ export async function getMarketplaceTemplates(filters?: {
   let query = supabase
     .from("template_marketplace")
     .select("id, name:template_name, description:template_body, template_type, visibility, average_rating:rating, clone_count:usage_count, metadata, created_at, updated_at")
-    .in("visibility", ["global", "brokerage_only"])
+
+  if (filters?.mineOnly) {
+    // "My Templates" — the user's OWN authored templates, regardless of visibility
+    // (their private drafts should surface here even though the marketplace hides them).
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return []
+    query = query.eq("author_user_id", user.id)
+  } else {
+    query = query.in("visibility", ["global", "brokerage_only"])
+  }
 
   // NOTE: live template_marketplace has no `tags` column — tag filtering is a no-op.
   if (filters?.searchQuery) {
