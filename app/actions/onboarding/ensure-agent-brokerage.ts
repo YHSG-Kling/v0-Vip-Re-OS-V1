@@ -61,13 +61,16 @@ export async function ensureAgentBrokerage(): Promise<EnsureAgentBrokerageResult
   // Pending-invite guard — an invited agent must accept + join, not fork off.
   const email = String(u.email ?? "").toLowerCase()
   if (email) {
+    // NOTE: use limit(1)+array, not maybeSingle(). maybeSingle() ERRORS (data=null)
+    // when a user has MORE than one pending invitation — which would silently bypass
+    // this guard and fork them off their intended tenant. Any pending row blocks.
     const { data: pending } = await svc
       .from("user_invitations")
       .select("id")
       .eq("email", email)
       .eq("status", "pending")
-      .maybeSingle()
-    if (pending) return { ok: false, error: "A brokerage invitation is pending — accept it to join, instead of creating a solo account." }
+      .limit(1)
+    if (pending && pending.length > 0) return { ok: false, error: "A brokerage invitation is pending — accept it to join, instead of creating a solo account." }
   }
 
   // 1. Personal brokerage-of-one — same shape a solo self-serve signup produces.
@@ -100,9 +103,14 @@ export async function ensureAgentBrokerage(): Promise<EnsureAgentBrokerageResult
 
   // 3. Canonical domain records (agents + commission + onboarding + RBAC),
   //    tier-aware — the SAME repair path signup + login-time repair use.
+  // Use the user's ACTUAL role (agent OR team_lead) — both are AGENT_ROLES so the
+  // agents row is still provisioned, and the RBAC row matches users.user_type.
+  // Hardcoding "agent" for a team_lead would write a divergent role="agent" row, and
+  // the login-time repairIncompleteAccountSetup (which reads the real user_type) would
+  // then upsert a SECOND role="team_lead" row on (user_id, role).
   await createOrRepairUserDomainRecords({
     userId: u.id,
-    userType: "agent",
+    userType: u.user_type,
     brokerageId: brokerage.id,
     teamId: null,
     tier: "solo_agent",
