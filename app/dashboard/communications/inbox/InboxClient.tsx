@@ -98,17 +98,7 @@ export default function InboxClient({
   const isLeadThread = selectedConvo?.party === "lead"
   const [convertingLead, setConvertingLead] = useState(false)
 
-  // Auto-select the first conversation on initial load so the reply composer
-  // (ComposeBar, which only renders for a selected conversation) is visible right
-  // away — the walkthrough opened the inbox with nothing selected and reported
-  // "no window to type something". Runs once; after that the user drives selection.
   const didInitialSelect = useRef(false)
-  useEffect(() => {
-    if (!didInitialSelect.current && !selectedId && conversations.length > 0) {
-      didInitialSelect.current = true
-      setSelectedId(conversations[0].id)
-    }
-  }, [conversations, selectedId])
 
   // ── Supabase Realtime — subscribe to new messages in selected conversation ──
   useEffect(() => {
@@ -242,6 +232,19 @@ export default function InboxClient({
       )
     })
   }, [loadThread, loadLeadThread])
+
+  // Auto-select the first conversation once on load so the reply composer is visible
+  // immediately (the walkthrough's "no window to type"). Must LOAD the thread too —
+  // setting selectedId alone left the thread blank (VADE). No mobileView change (mobile
+  // still lands on the list) and no auto mark-read (don't mutate read state unopened).
+  useEffect(() => {
+    if (didInitialSelect.current || selectedId || conversations.length === 0) return
+    didInitialSelect.current = true
+    const firstId = conversations[0].id
+    setSelectedId(firstId)
+    if (firstId.startsWith("lead:")) loadLeadThread(firstId.slice(5))
+    else loadThread(firstId)
+  }, [conversations, selectedId, loadThread, loadLeadThread])
 
   const handleConvertLead = useCallback(async () => {
     if (!selectedConvo?.lead_id) return
