@@ -98,6 +98,18 @@ export default function InboxClient({
   const isLeadThread = selectedConvo?.party === "lead"
   const [convertingLead, setConvertingLead] = useState(false)
 
+  // Auto-select the first conversation on initial load so the reply composer
+  // (ComposeBar, which only renders for a selected conversation) is visible right
+  // away — the walkthrough opened the inbox with nothing selected and reported
+  // "no window to type something". Runs once; after that the user drives selection.
+  const didInitialSelect = useRef(false)
+  useEffect(() => {
+    if (!didInitialSelect.current && !selectedId && conversations.length > 0) {
+      didInitialSelect.current = true
+      setSelectedId(conversations[0].id)
+    }
+  }, [conversations, selectedId])
+
   // ── Supabase Realtime — subscribe to new messages in selected conversation ──
   useEffect(() => {
     const supabase = createClient()
