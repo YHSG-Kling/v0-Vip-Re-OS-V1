@@ -8,12 +8,10 @@ export const dynamic = "force-dynamic"
 export default async function GoalsPage() {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
+  // Incomplete/brokerage-less account → /dashboard self-heals the agent record and
+  // re-routes ("contact your admin" was a dead end, and wrong for a solo agent).
   if (!ctx.agentId || !ctx.brokerageId) {
-    return (
-      <div className="p-8 text-center text-muted-foreground">
-        Agent profile not found. Contact your admin.
-      </div>
-    )
+    redirect("/dashboard")
   }
 
   const { data: goals } = await getAgentGoals({

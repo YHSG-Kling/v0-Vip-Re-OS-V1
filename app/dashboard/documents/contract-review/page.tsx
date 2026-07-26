@@ -11,11 +11,14 @@ export default async function ContractReviewPage() {
   } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+  // maybeSingle(), not single(): single() THROWS when the users row is missing or
+  // not-yet-provisioned, crashing the page ("Contract — page won't load"). The
+  // brokerage_id guard below handles the null case by self-healing via /dashboard.
   const { data: userRow } = await supabase
     .from("users")
     .select("brokerage_id, role")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
   if (!userRow?.brokerage_id) redirect("/dashboard")
 
   // Agent row (for agentId)

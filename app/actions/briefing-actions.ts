@@ -26,9 +26,13 @@ export async function getTodaysBriefing(): Promise<{
   try {
     const context = await getAgentContext()
     if (!context?.agentId || !isValidUUID(context.agentId)) {
-      return { briefing: null, error: "Agent context not available" }
+      // Incomplete account (no agent record yet) — this is the READ path feeding the
+      // briefing card, which renders null as a clean "No briefing for today" empty
+      // state. Surfacing a raw "Agent context not available" error made the card read
+      // "failed to load" instead. Degrade gracefully.
+      return { briefing: null }
     }
-    
+
     const { agentId, brokerageId } = context
     const supabase = await createClient()
     const today = new Date().toISOString().split("T")[0]
