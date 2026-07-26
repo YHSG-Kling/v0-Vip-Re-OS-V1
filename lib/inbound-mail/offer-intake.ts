@@ -79,8 +79,8 @@ export async function tryIngestInboundOffer(
     const { data: up, error: upErr } = await svc.storage
       .from("offer-documents").upload(path, buf, { contentType: "application/pdf", upsert: false })
     if (upErr || !up) return { handled: false }
-    const { data: pub } = svc.storage.from("offer-documents").getPublicUrl(up.path)
-    const publicUrl = pub.publicUrl
+    const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
+    const publicUrl = await signedDocUrl(svc, "offer-documents", up.path)
     if (!publicUrl) return { handled: false }
 
     const { data: offer } = await svc.from("offers").insert({

@@ -13,8 +13,10 @@
 --           client-documents, transaction-documents, offer-documents
 --
 -- Writes require an authenticated session (mirrors the existing listing-media
--- convention). Per-tenant path scoping is a later hardening pass; this unblocks
--- uploads securely without exposing sensitive documents to anonymous URL access.
+-- convention). The private buckets are read via signed URLs (lib/storage/
+-- signed-doc-url.ts) instead of getPublicUrl, so persisted document links resolve
+-- without exposing sensitive files to anonymous URL access. Per-tenant path
+-- scoping + sign-on-read (short-lived per-view URLs) are a later hardening pass.
 
 insert into storage.buckets (id, name, public) values
   ('business-cards',        'business-cards',        true),

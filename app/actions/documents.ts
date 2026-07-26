@@ -236,9 +236,9 @@ export async function uploadDocument(
     publicUrl = `data:${file.type};base64,${file.base64.substring(0, 100)}...` // Truncated for DB
     console.log("[v0] Using database fallback for document storage")
   } else {
-    // Get public URL from storage
-    const { data } = supabase.storage.from("client-documents").getPublicUrl(filePath)
-    publicUrl = data.publicUrl
+    // Signed URL — client-documents is a PRIVATE bucket (m278); a public URL 403s.
+    const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
+    publicUrl = await signedDocUrl(supabase, "client-documents", filePath)
   }
 
   // Create document record - supports both contact_id (clients) and user_id (agents)

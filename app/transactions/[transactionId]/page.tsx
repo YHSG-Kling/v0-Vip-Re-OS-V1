@@ -215,7 +215,8 @@ export default function AgentTransactionDetailPage() {
       setUploadingDoc(false)
       return
     }
-    const { data: urlData } = supabase.storage.from("transaction-documents").getPublicUrl(path)
+    const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
+    const storageUrl = await signedDocUrl(supabase, "transaction-documents", path)
     const { data: inserted } = await supabase
       .from("transaction_documents")
       .insert({
@@ -223,7 +224,7 @@ export default function AgentTransactionDetailPage() {
         doc_label: file.name,
         doc_type: "upload",
         status: "requested",
-        storage_url: urlData.publicUrl,
+        storage_url: storageUrl,
         uploaded_at: new Date().toISOString(),
       })
       .select("id, doc_type, doc_label, status, storage_url, uploaded_at, uploaded_by, notes")

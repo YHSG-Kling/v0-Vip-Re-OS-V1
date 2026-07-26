@@ -69,10 +69,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: storageError.message }, { status: 500 })
   }
 
-  // Get public URL for the AI extractor
-  const { data: { publicUrl } } = serviceClient.storage
-    .from("offer-documents")
-    .getPublicUrl(storageData.path)
+  // Signed URL for the AI extractor — offer-documents is a PRIVATE bucket, so a
+  // public URL would 403 and the extraction would silently fail (m278).
+  const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
+  const publicUrl = await signedDocUrl(serviceClient, "offer-documents", storageData.path)
 
   // ── 2. INSERT offers row with ai_extraction_status='pending' ──────────────
   const { data: offer, error: insertError } = await supabase

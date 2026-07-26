@@ -81,9 +81,8 @@ export function LenderDocumentUpload({
           return
         }
 
-        const { data: { publicUrl } } = supabase.storage
-          .from("transaction-documents")
-          .getPublicUrl(filePath)
+        const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
+        const publicUrl = await signedDocUrl(supabase, "transaction-documents", filePath)
 
         await uploadLenderDocument({
           transactionId,

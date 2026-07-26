@@ -525,7 +525,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'tcpa-compliance', label: 'TCPA Compliance', href: '/dashboard/admin/compliance/tcpa', icon: 'Shield' },
       // Orphan-route sweep: per-state required-document settings were unreachable from any nav.
       { id: 'required-documents', label: 'Required Documents', href: '/dashboard/settings/required-documents', icon: 'FileCheck' },
-      { id: 'feature-governance', label: 'Feature Governance', href: '/dashboard/admin/feature-governance', icon: 'Shield' },
+      // Feature Governance is PLATFORM-owned (enrollment flags aren't tenant-editable) —
+      // it lives in the superadmin tree, not the brokerage admin's sidebar. (2026-07 walkthrough)
       { id: 'workflows', label: 'Workflow Monitor', href: '/workflows', icon: 'Workflow' },
       { id: 'video-analytics', label: 'Video Analytics', href: '/dashboard/videos/analytics', icon: 'Video' },
       { id: 'sla-monitor', label: 'SLA Monitor', href: '/dashboard/admin/sla-monitor', icon: 'Clock' },
@@ -543,7 +544,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'logs', label: 'Audit Trail', href: '/compliance/audits', icon: 'Eye' },
       { id: 'ai-audit', label: 'AI Audit', href: '/dashboard/admin/ai-audit', icon: 'Sparkles' },
       { id: 'error-handler', label: 'Error Handler', href: '/dashboard/admin/error-handler', icon: 'AlertTriangle' },
-      { id: 'whats-new', label: "What's New & Status", href: '/dashboard/whats-new', icon: 'Megaphone' },
+      // "What's New & Status" is a PLATFORM release/status surface — held out of the tenant
+      // admin nav until the OS launches; it lives in the superadmin tree. (2026-07 walkthrough)
       { id: 'settings', label: 'Settings', href: '/settings', icon: 'Settings' },
     ],
     topNavItems: [
@@ -774,6 +776,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'cron-health', label: 'Cron Health', href: '/dashboard/admin/cron-health', icon: 'HeartPulse' },
       { id: 'system-health', label: 'System Health', href: '/dashboard/superadmin/observability', icon: 'Activity' },
       { id: 'ai-audit', label: 'AI Audit', href: '/dashboard/admin/ai-audit', icon: 'Eye' },
+      // Platform release/status surface — relocated out of the tenant admin nav (kept reachable here).
+      { id: 'whats-new', label: "What's New & Status", href: '/dashboard/whats-new', icon: 'Megaphone' },
       { id: 'system-providers', label: 'API Providers', href: '/dashboard/admin/system/providers', icon: 'Server' },
       { id: 'integrations', label: 'Integrations', href: '/dashboard/superadmin/connectors', icon: 'Plug' },
       { id: 'settings', label: 'Settings', href: '/admin/settings', icon: 'Settings' },

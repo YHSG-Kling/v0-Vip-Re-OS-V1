@@ -64,13 +64,14 @@ export async function uploadProfilePhoto(
       return { success: false, error: uploadError.message }
     }
 
-    // Get public URL
-    const { data: urlData } = supabase.storage.from("client-documents").getPublicUrl(filePath)
+    // Signed URL — client-documents is a PRIVATE bucket (m278); getPublicUrl 403s.
+    const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
+    const avatarUrl = await signedDocUrl(supabase, "client-documents", filePath)
 
     // Update contact with new avatar URL
     const { error: updateError } = await supabase
       .from("contacts")
-      .update({ avatar_url: urlData.publicUrl })
+      .update({ avatar_url: avatarUrl })
       .eq("id", contactId)
 
     if (updateError) {
@@ -80,7 +81,7 @@ export async function uploadProfilePhoto(
     revalidatePath(`/portal/${contactId}`)
     revalidatePath(`/portal/${contactId}/settings`)
 
-    return { success: true, url: urlData.publicUrl }
+    return { success: true, url: avatarUrl }
   } catch (error) {
     console.error("Error uploading profile photo:", error)
     return { success: false, error: "Failed to upload photo" }

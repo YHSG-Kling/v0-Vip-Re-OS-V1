@@ -88,8 +88,8 @@ export async function uploadVendorW9Action(input: UploadVendorW9Input): Promise<
   if (uploadError) {
     return { success: false, error: `Upload failed: ${uploadError.message}` }
   }
-  const { data: pub } = supabase.storage.from("client-documents").getPublicUrl(filePath)
-  const documentUrl = pub.publicUrl
+  const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
+  const documentUrl = await signedDocUrl(supabase, "client-documents", filePath)
 
   // The client_documents row — same table the vendor documents surface already
   // reads (fetchVendorAgreements matches uploaded_by = vendor user).
