@@ -2,6 +2,7 @@ import { Suspense } from "react"
 import { redirect } from "next/navigation"
 import { Loader2 } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
+import { ensureAgentBrokerage } from "@/app/actions/onboarding/ensure-agent-brokerage"
 import { listIsaPhoneNumbers } from "@/app/actions/isa-phone-numbers"
 import { getAIISASettings } from "@/app/actions/ai-isa-settings"
 import {
@@ -25,16 +26,29 @@ async function IsaCallingContent() {
   } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+  // Heal an incomplete account IN PLACE before reading the brokerage — don't bounce
+  // the user off the ISA Calling settings they're configuring.
+  await ensureAgentBrokerage()
+
   const { data: profile } = await supabase
     .from("users")
     .select("id, brokerage_id, user_type")
     .eq("id", user.id)
     .maybeSingle()
 
-  // A signed-in but brokerage-less account is incomplete, not a dead end — /dashboard
-  // self-heals a personal brokerage (solo) or routes an invited agent to join theirs.
+  // Heal genuinely couldn't complete (pending invite / non-agent) — honest in-place
+  // notice instead of a bounce.
   if (!profile?.brokerage_id) {
-    redirect("/dashboard")
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center max-w-md p-8">
+          <h2 className="text-xl font-semibold text-foreground mb-2">Finishing setup</h2>
+          <p className="text-muted-foreground">
+            We&rsquo;re provisioning your brokerage — refresh in a moment to configure ISA calling.
+          </p>
+        </div>
+      </div>
+    )
   }
 
   const [phoneNumbers, isaSettings] = await Promise.all([

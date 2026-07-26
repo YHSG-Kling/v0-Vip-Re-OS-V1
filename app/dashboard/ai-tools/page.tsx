@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { AIToolsClient } from "./ai-tools-client"
 
 export const dynamic = "force-dynamic"
@@ -11,11 +11,19 @@ export default async function AIToolsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
   
-  // User is already known-authenticated (guard above); a context-resolution error
-  // is a data problem, not a sign-in one → /dashboard (self-heals), never /login.
-  let context: any = null
-  try { context = await getAgentContext() } catch { redirect("/dashboard") }
-  
+  // Heal an incomplete account IN PLACE — don't bounce off the AI Toolkit page.
+  const context = await ensureAgentContextInPlace()
+
+  // Heal genuinely couldn't complete (pending invite / non-agent) — honest in-place
+  // notice instead of the page failing to load.
+  if (!context.agentId) {
+    return (
+      <div className="p-8 text-center text-sm text-muted-foreground">
+        Finishing your account setup — refresh in a moment to open the AI Toolkit.
+      </div>
+    )
+  }
+
   return (
     <AIToolsClient
       agentId={context.agentId}

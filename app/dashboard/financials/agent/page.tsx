@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { EarningsKPIRow } from "@/app/components/financials/EarningsKPIRow"
@@ -40,20 +40,22 @@ export const dynamic = "force-dynamic"
 export default async function AgentFinancialsPage() {
   const supabase = await createClient()
 
-  // Get agent context with identity resolution. A resolution ERROR for a
-  // signed-in user must NOT bounce to /login — that loops (the login page sees
-  // them authenticated and sends them right back, the exact bounce the
-  // walkthrough hit). Send them to /dashboard, which self-heals missing domain
-  // records and re-routes correctly.
-  let context
-  try {
-    context = await getAgentContext()
-  } catch {
-    redirect("/dashboard")
-  }
+  // Heal an incomplete account IN PLACE (provision the agent/brokerage records
+  // right here) rather than bouncing the user off the Financials page they're on.
+  const context = await ensureAgentContextInPlace()
 
   // Genuinely signed out → the login page is the correct destination.
   if (!context.isAuthenticated) redirect("/login")
+
+  // Heal genuinely couldn't complete (pending invite / non-agent user type) — show
+  // an honest in-place notice instead of a bounce.
+  if (!context.agentId || !context.brokerageId) {
+    return (
+      <div className="max-w-2xl mx-auto p-6 text-sm text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your financials.
+      </div>
+    )
+  }
 
   const { agentId: agentIdRaw, brokerageId: brokerageIdRaw } = context
   const agentId = agentIdRaw!

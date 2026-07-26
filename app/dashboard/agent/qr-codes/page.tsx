@@ -1,24 +1,28 @@
 import { notFound, redirect } from 'next/navigation'
-import { getAgentContext } from '@/lib/identity'
 import { toCanonicalRoleOrDefault } from '@/lib/security'
 import { createClient } from '@/lib/supabase/server'
+import { ensureAgentContextInPlace } from '@/lib/identity/ensure-agent-context'
 import QRCodesClient from './QRCodesClient'
 
 export default async function AgentQRCodesPage() {
-  // Kernel OS: getAgentContext — canonical identity
-  const ctx = await getAgentContext()
-  // Signed out → login (not a hard 404 dead-end).
+  // Kernel OS identity, self-healing an incomplete account IN PLACE so a
+  // brokerage-less agent never hits the old "Qr codes-404" and is never bounced
+  // off the page to /dashboard — the records get provisioned right here.
+  const ctx = await ensureAgentContextInPlace()
   if (!ctx.isAuthenticated) redirect('/login')
 
   const userRole = toCanonicalRoleOrDefault(ctx.userType, 'agent')
   if (!['agent', 'team_lead', 'admin', 'broker', 'superadmin'].includes(userRole)) notFound()
-  // A signed-in but brokerage-less account (fresh / seed / incomplete) must NOT hit a
-  // hard 404 ("Qr codes-404" from the walkthrough) — send them to /dashboard, which
-  // self-heals the missing domain records and re-routes.
-  if (!ctx.brokerageId) redirect('/dashboard')
 
-  // Agent record is required to create/view QR codes — redirect to setup if missing
-  if (!ctx.agentId) redirect('/dashboard/agent/setup')
+  // Heal genuinely couldn't complete (pending invite / non-agent) — honest in-place
+  // notice, not a 404 or a bounce.
+  if (!ctx.brokerageId || !ctx.agentId) {
+    return (
+      <div className="p-8 text-center text-sm text-muted-foreground">
+        Finishing your account setup — refresh in a moment to manage your QR codes.
+      </div>
+    )
+  }
 
   const supabase = await createClient()
 

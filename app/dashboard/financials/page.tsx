@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -78,14 +78,16 @@ async function getFinancialOverview(agentId: string, brokerageId: string) {
 }
 
 export default async function FinancialsPage() {
-  const context = await getAgentContext()
-
-  // Signed out → /login. Signed IN but missing an agent row (a fresh / seed /
-  // incomplete account) → /dashboard, which self-heals the domain records and
-  // re-routes. Never bounce an authenticated user to /login — that loops (the
-  // walkthrough's "Financials → login bounce").
+  // Heal an incomplete account IN PLACE — don't bounce the user off Financials.
+  const context = await ensureAgentContextInPlace()
   if (!context.isAuthenticated) redirect("/login")
-  if (!context.agentId) redirect("/dashboard")
+  if (!context.agentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground text-sm">
+        Finishing your account setup — refresh in a moment to view your financials.
+      </div>
+    )
+  }
 
   const financials = await getFinancialOverview(context.agentId, context.brokerageId || "")
 

@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import { getAgentContext } from '@/lib/identity/get-agent-context'
+import { ensureAgentContextInPlace } from '@/lib/identity/ensure-agent-context'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -22,12 +22,18 @@ export default async function CommissionsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  // The user is already known-authenticated (guard above). A context-resolution
-  // error here is a data problem, not a sign-in one — send them to /dashboard
-  // (which self-heals missing domain records), never back to /login (that loops).
-  let context: any = null
-  try { context = await getAgentContext() } catch { redirect('/dashboard') }
+  // Heal an incomplete account IN PLACE — don't bounce off the Commissions page.
+  const context = await ensureAgentContextInPlace()
+  if (!context.isAuthenticated) redirect('/login')
   const { agentId, brokerageId, role } = context
+  // Heal genuinely couldn't complete (pending invite / non-agent) — honest notice.
+  if (!agentId) {
+    return (
+      <div className="p-8 text-center text-sm text-muted-foreground">
+        Finishing your account setup — refresh in a moment to view your commissions.
+      </div>
+    )
+  }
   const isBrokerAdmin = role === 'broker' || role === 'broker_admin' || role === 'admin' || role === 'superadmin'
 
   const currentYear = new Date().getFullYear()
