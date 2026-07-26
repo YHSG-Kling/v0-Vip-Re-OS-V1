@@ -7,11 +7,15 @@ import QRCodesClient from './QRCodesClient'
 export default async function AgentQRCodesPage() {
   // Kernel OS: getAgentContext — canonical identity
   const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) notFound()
+  // Signed out → login (not a hard 404 dead-end).
+  if (!ctx.isAuthenticated) redirect('/login')
 
   const userRole = toCanonicalRoleOrDefault(ctx.userType, 'agent')
-  if (!['agent', 'admin', 'broker', 'superadmin'].includes(userRole)) notFound()
-  if (!ctx.brokerageId) notFound()
+  if (!['agent', 'team_lead', 'admin', 'broker', 'superadmin'].includes(userRole)) notFound()
+  // A signed-in but brokerage-less account (fresh / seed / incomplete) must NOT hit a
+  // hard 404 ("Qr codes-404" from the walkthrough) — send them to /dashboard, which
+  // self-heals the missing domain records and re-routes.
+  if (!ctx.brokerageId) redirect('/dashboard')
 
   // Agent record is required to create/view QR codes — redirect to setup if missing
   if (!ctx.agentId) redirect('/dashboard/agent/setup')

@@ -26,14 +26,11 @@ export default async function HomeValuePageBuilderPage() {
     .eq("user_id", user.id)
     .maybeSingle()
 
+  // A signed-in user with no agent record is an incomplete/brokerage-less account —
+  // NOT a dead end, and "contact your broker" is wrong for a solo agent (their own
+  // broker). Send them to /dashboard, which self-heals the agent record and re-routes.
   if (!agentRow?.id) {
-    return (
-      <div className="p-8">
-        <p className="text-muted-foreground text-sm">
-          No agent record found for your account. Contact your broker to get set up.
-        </p>
-      </div>
-    )
+    redirect("/dashboard")
   }
 
   const agentSlug = agentRow.user_id

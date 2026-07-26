@@ -514,7 +514,7 @@ export default function BriefingPage() {
                           </p>
                         </div>
                         <Button variant="outline" size="sm" asChild>
-                          <a href={`/dashboard/showings/${showing.id}`}>
+                          <a href={`/dashboard/showings/prep/${showing.id}`}>
                             View
                             <ArrowRight className="h-4 w-4 ml-1" />
                           </a>

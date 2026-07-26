@@ -31,20 +31,10 @@ async function IsaCallingContent() {
     .eq("id", user.id)
     .maybeSingle()
 
+  // A signed-in but brokerage-less account is incomplete, not a dead end — /dashboard
+  // self-heals a personal brokerage (solo) or routes an invited agent to join theirs.
   if (!profile?.brokerage_id) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-center max-w-md p-8">
-          <h2 className="text-xl font-semibold text-foreground mb-2">
-            Brokerage required
-          </h2>
-          <p className="text-muted-foreground">
-            ISA calling configuration is set per brokerage. Join or create a
-            brokerage to continue.
-          </p>
-        </div>
-      </div>
-    )
+    redirect("/dashboard")
   }
 
   const [phoneNumbers, isaSettings] = await Promise.all([
