@@ -255,7 +255,16 @@ export default function VideoCreatePage() {
 
   useEffect(() => {
     async function loadData() {
-      if (!brokerage?.id) return
+      // The whole wizard is gated on `loading` (initialised true). If we return
+      // here WITHOUT clearing it, the page hangs on the spinner forever — which is
+      // exactly what happened when brokerage.id hadn't resolved yet or the account
+      // was brokerage-less ("New Video → infinite spinner" from the walkthrough).
+      // Clear the gate on every early exit; the effect re-runs (dep: brokerage?.id)
+      // and loads the real data once the brokerage resolves.
+      if (!brokerage?.id) {
+        setLoading(false)
+        return
+      }
 
       try {
         // Platform video engine is D-ID + ElevenLabs ONLY (HeyGen removed).

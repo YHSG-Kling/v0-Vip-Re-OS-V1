@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import {
   getSubscriptionTiers,
   getCurrentSubscription,
@@ -30,8 +31,10 @@ export default async function BillingSettingsPage() {
     .eq("id", user.id)
     .maybeSingle()
 
-  // Role gate: broker + admin only
-  if (!profile?.brokerage_id || !["broker", "admin"].includes(profile.user_type || "")) {
+  // Role gate: broker-level only — use the CANONICAL set (isAdminOrBroker), not a
+  // hand-typed ["broker","admin"] that silently excluded superadmin / broker_admin
+  // / broker_owner and bounced the actual owner off their own billing page.
+  if (!profile?.brokerage_id || !isAdminOrBroker(profile)) {
     redirect("/dashboard")
   }
 
