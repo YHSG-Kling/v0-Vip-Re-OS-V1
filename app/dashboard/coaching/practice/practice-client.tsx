@@ -7,14 +7,16 @@ import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import {
   Sparkles, MessageSquare, Loader2, Trophy, CheckCircle2, AlertCircle,
-  ArrowRight, Volume2, RotateCcw, Mic,
+  ArrowRight, Volume2, RotateCcw, Mic, PhoneCall, Wand2,
 } from "lucide-react"
 import {
   startObjectionPracticeSession,
   submitPracticeTurn,
   endPracticeSession,
+  generateObjectionScenariosFromCalls,
   type PracticeSession,
 } from "@/app/actions/objection-training"
+import { toast } from "sonner"
 import type { ObjectionScenario } from "@/lib/training/objection-scenarios"
 import { VoicePracticeOverlay } from "./voice-practice-overlay"
 
@@ -44,6 +46,9 @@ export function PracticeClient({ scenarios, pastSessions }: Props) {
   const [agentInput, setAgentInput] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [starting, setStarting] = useState(false)
+  // Scenarios AI-generated from the agent's own mishandled-objection calls
+  const [callScenarios, setCallScenarios] = useState<ObjectionScenario[]>([])
+  const [generating, setGenerating] = useState(false)
   // Track C — live voice practice (separate from typed flow)
   const [voiceScenario, setVoiceScenario] = useState<ObjectionScenario | null>(null)
   const [finishedSummary, setFinishedSummary] = useState<{
@@ -77,9 +82,33 @@ export function PracticeClient({ scenarios, pastSessions }: Props) {
     } catch {}
   }
 
+  async function generateFromCalls() {
+    setGenerating(true)
+    try {
+      const result = await generateObjectionScenariosFromCalls({ limit: 3 })
+      if (result.success) {
+        setCallScenarios(result.scenarios ?? [])
+        if ((result.scenarios ?? []).length === 0) {
+          toast.info(result.message ?? "No call-sourced scenarios available yet.")
+        } else {
+          toast.success(`Built ${result.scenarios!.length} scenario${result.scenarios!.length === 1 ? "" : "s"} from your recent calls.`)
+        }
+      } else {
+        toast.error(result.error ?? "Could not generate scenarios from your calls.")
+      }
+    } finally {
+      setGenerating(false)
+    }
+  }
+
   async function startSession(scenario: ObjectionScenario) {
     setStarting(true)
-    const result = await startObjectionPracticeSession({ scenarioKey: scenario.key })
+    // Call-sourced scenarios aren't in the static library — pass the full
+    // definition so the server persists it as the session's scenario snapshot.
+    const result = await startObjectionPracticeSession({
+      scenarioKey: scenario.key,
+      scenario: scenario.source === "call" ? scenario : undefined,
+    })
     setStarting(false)
     if (result.success && result.sessionId) {
       setActiveScenario(scenario)
@@ -165,6 +194,9 @@ export function PracticeClient({ scenarios, pastSessions }: Props) {
       {stage === "select" && (
         <SelectStage
           scenarios={scenarios}
+          callScenarios={callScenarios}
+          onGenerate={generateFromCalls}
+          generating={generating}
           onStart={startSession}
           onStartVoice={(s) => setVoiceScenario(s)}
           starting={starting}
@@ -210,9 +242,12 @@ export function PracticeClient({ scenarios, pastSessions }: Props) {
 // ---------------------------------------------------------------------------
 
 function SelectStage({
-  scenarios, onStart, onStartVoice, starting, pastSessions,
+  scenarios, callScenarios, onGenerate, generating, onStart, onStartVoice, starting, pastSessions,
 }: {
   scenarios: ObjectionScenario[]
+  callScenarios: ObjectionScenario[]
+  onGenerate: () => void
+  generating: boolean
   onStart: (s: ObjectionScenario) => void
   onStartVoice: (s: ObjectionScenario) => void
   starting: boolean
@@ -220,6 +255,71 @@ function SelectStage({
 }) {
   return (
     <div className="space-y-6">
+      {/* From your calls — AI-built from objections you actually handled poorly */}
+      <div className="rounded-lg border border-purple-200 bg-purple-50/40 p-4">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div>
+            <h2 className="text-sm font-semibold flex items-center gap-2">
+              <PhoneCall className="h-4 w-4 text-purple-600" />
+              Drill your real objections
+            </h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Build practice scenarios from your own recent calls where an objection didn&apos;t land well.
+            </p>
+          </div>
+          <Button size="sm" onClick={onGenerate} disabled={generating} className="gap-1 bg-purple-600 hover:bg-purple-700 shrink-0">
+            {generating ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wand2 className="h-3 w-3" />}
+            {callScenarios.length > 0 ? "Regenerate" : "Generate from my calls"}
+          </Button>
+        </div>
+
+        {callScenarios.length === 0 ? (
+          <p className="text-xs text-muted-foreground italic">
+            {generating
+              ? "Analyzing your recent calls…"
+              : "No scenarios yet — click Generate to turn your recent calls into practice reps."}
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {callScenarios.map((s) => (
+              <Card key={s.key} className="border-purple-200 bg-background">
+                <CardHeader className="pb-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <CardTitle className="text-base">{s.label}</CardTitle>
+                    <Badge variant="outline" className={`text-xs capitalize ${DIFFICULTY_COLOR[s.difficulty]}`}>
+                      {s.difficulty}
+                    </Badge>
+                  </div>
+                  <CardDescription className="text-xs">{s.persona}</CardDescription>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <p className="text-xs text-muted-foreground italic mb-2 line-clamp-2">"{s.openingLine}"</p>
+                  {s.sourceObjections && s.sourceObjections.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mb-3">
+                      {s.sourceObjections.slice(0, 3).map((o, i) => (
+                        <span key={i} className="text-[10px] bg-purple-100 text-purple-700 rounded px-1.5 py-0.5">
+                          {o}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1"
+                    onClick={() => onStart(s)}
+                    disabled={starting}
+                  >
+                    {starting ? <Loader2 className="h-3 w-3 animate-spin" /> : <MessageSquare className="h-3 w-3" />}
+                    Practice this
+                  </Button>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div>
         <h2 className="text-sm font-semibold mb-3">Pick a scenario</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

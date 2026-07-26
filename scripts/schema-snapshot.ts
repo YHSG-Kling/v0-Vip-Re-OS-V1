@@ -449,7 +449,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   notification_rules: ["brokerage_id", "created_at", "id", "is_active", "notification_type", "recipient_role", "rule_name", "trigger_event", "updated_at"],
   notifications: ["activity_id", "body", "brokerage_id", "channel", "compliance_event_id", "contact_id", "created_at", "delivered_at", "dismissed_at", "entity_id", "entity_type", "id", "is_read", "lifecycle_event_id", "priority", "read_at", "title", "type", "user_id"],
   objection_scenario_agents: ["agent_id", "brokerage_id", "conv_ai_agent_id", "created_at", "prospect_voice_id", "scenario_key", "updated_at"],
-  objection_training_sessions: ["agent_user_id", "brokerage_id", "completed_at", "difficulty", "id", "improvements", "persona", "scenario_key", "scenario_label", "started_at", "status", "strengths", "summary", "total_score"],
+  objection_training_sessions: ["agent_user_id", "brokerage_id", "completed_at", "difficulty", "id", "improvements", "persona", "scenario_key", "scenario_label", "scenario_snapshot", "started_at", "status", "strengths", "summary", "total_score"],
   objection_training_turns: ["audio_url", "created_at", "feedback", "id", "session_id", "speaker", "text", "turn_index", "turn_score"],
   offer_comparison: ["agent_id", "ai_analysis_notes", "ai_recommendation", "brokerage_id", "comparison_matrix", "created_at", "created_by", "id", "listing_id", "net_to_seller_by_offer", "offer_ids", "recommended_offer_id"],
   offer_strategy_templates: ["brokerage_id", "contingency_recommendations", "created_at", "description", "earnest_money_guidance", "id", "is_active", "market_condition", "price_guidance", "risk_level", "strategy_type", "success_rate_estimate", "template_name"],

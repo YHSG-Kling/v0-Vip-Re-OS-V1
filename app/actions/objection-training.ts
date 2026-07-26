@@ -15,6 +15,9 @@
 import { resolveWriteContext } from "@/lib/kernel/identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
+import { generateObject } from "@/lib/ai/generate"
+import { resolveModel } from "@/lib/ai/resolve-model"
+import { z } from "zod"
 import { getScenarioByKey, OBJECTION_SCENARIOS } from "@/lib/training/objection-scenarios"
 import type { ObjectionScenario } from "@/lib/training/objection-scenarios"
 
@@ -50,17 +53,67 @@ export interface PracticeTurn {
   feedback: string | null
 }
 
+// ─── Scenario resolution ─────────────────────────────────────────────────────
+
+/**
+ * Resolve the scenario definition for a session. Call-sourced scenarios (key
+ * `call:<id>`) aren't in the static library, so we persist the full definition
+ * in scenario_snapshot at start time and read it back here. Falls back to the
+ * static library for older sessions / library scenarios without a snapshot.
+ */
+function scenarioFromSession(session: any): ObjectionScenario | undefined {
+  const snap = session?.scenario_snapshot
+  if (snap && typeof snap === "object" && snap.systemPrompt && Array.isArray(snap.successCriteria)) {
+    return snap as ObjectionScenario
+  }
+  return getScenarioByKey(session?.scenario_key)
+}
+
+/** Validate + clamp a client-supplied (AI-generated) scenario before it drives an LLM role-play. */
+function sanitizeClientScenario(raw: any): ObjectionScenario | null {
+  if (!raw || typeof raw !== "object") return null
+  const str = (v: any, max: number) => (typeof v === "string" ? v.slice(0, max) : "")
+  const key = str(raw.key, 120)
+  const openingLine = str(raw.openingLine, 1000)
+  const systemPrompt = str(raw.systemPrompt, 4000)
+  if (!key || !openingLine || !systemPrompt) return null
+  const difficulty = ["easy", "medium", "hard"].includes(raw.difficulty) ? raw.difficulty : "medium"
+  const category = ["listing", "buyer", "fsbo", "investor", "negotiation"].includes(raw.category) ? raw.category : "listing"
+  const successCriteria = Array.isArray(raw.successCriteria)
+    ? raw.successCriteria.filter((c: any) => typeof c === "string").slice(0, 6).map((c: string) => c.slice(0, 300))
+    : []
+  const sourceObjections = Array.isArray(raw.sourceObjections)
+    ? raw.sourceObjections.filter((c: any) => typeof c === "string").slice(0, 10).map((c: string) => c.slice(0, 200))
+    : undefined
+  return {
+    key,
+    label: str(raw.label, 200) || "Call-sourced objection",
+    category: category as ObjectionScenario["category"],
+    persona: str(raw.persona, 400) || "Prospect from a recent call",
+    difficulty: difficulty as ObjectionScenario["difficulty"],
+    openingLine,
+    systemPrompt,
+    successCriteria: successCriteria.length ? successCriteria : ["Acknowledge the objection", "Lead with specific value", "Secure a clear next step"],
+    source: "call",
+    sourceObjections,
+  }
+}
+
 // ─── Start session ───────────────────────────────────────────────────────────
 
 export async function startObjectionPracticeSession(params: {
   scenarioKey: string
+  /** Full scenario for AI-generated (call-sourced) scenarios not in the static library. */
+  scenario?: ObjectionScenario
 }): Promise<{ success: boolean; sessionId?: string; openingLine?: string; error?: string }> {
   const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated || !ctx.userId) {
     return { success: false, error: "Unauthorized" }
   }
 
-  const scenario = getScenarioByKey(params.scenarioKey)
+  // Call-sourced scenarios arrive as a full definition (sanitized); library
+  // scenarios resolve by key from the static catalog.
+  const scenario = params.scenario ? sanitizeClientScenario(params.scenario) : getScenarioByKey(params.scenarioKey)
   if (!scenario) return { success: false, error: "Unknown scenario" }
 
   const svc = createServiceClient()
@@ -73,6 +126,9 @@ export async function startObjectionPracticeSession(params: {
       scenario_label: scenario.label,
       persona: scenario.persona,
       difficulty: scenario.difficulty,
+      // Persist the full definition so submit/end can resolve call-sourced
+      // scenarios that don't exist in the static library.
+      scenario_snapshot: scenario,
       status: "active",
     })
     .select("id")
@@ -124,7 +180,7 @@ export async function submitPracticeTurn(params: {
   if (!session) return { success: false, error: "Session not found" }
   if (session.status !== "active") return { success: false, error: "Session already ended" }
 
-  const scenario = getScenarioByKey(session.scenario_key)
+  const scenario = scenarioFromSession(session)
   if (!scenario) return { success: false, error: "Scenario disappeared" }
 
   const { data: priorTurns } = await svc
@@ -208,7 +264,7 @@ export async function endPracticeSession(params: {
     .maybeSingle()
   if (!session) return { success: false, error: "Session not found" }
 
-  const scenario = getScenarioByKey(session.scenario_key)
+  const scenario = scenarioFromSession(session)
   if (!scenario) return { success: false, error: "Scenario gone" }
 
   const { data: turns } = await svc
@@ -275,6 +331,138 @@ export async function listPracticeSessions(): Promise<PracticeSession[]> {
     strengths: s.strengths,
     improvements: s.improvements,
   }))
+}
+
+// ─── Generate scenarios from real calls ──────────────────────────────────────
+
+const GeneratedScenarioSchema = z.object({
+  label: z.string().describe("Short title for the scenario, e.g. 'Seller anchored on Zestimate'"),
+  category: z.enum(["listing", "buyer", "fsbo", "investor", "negotiation"]),
+  persona: z.string().describe("One line describing who the prospect is and their emotional state"),
+  difficulty: z.enum(["easy", "medium", "hard"]),
+  openingLine: z.string().describe("The prospect's opening objection line — 1-2 sentences, in their voice"),
+  systemPrompt: z.string().describe("Instructions that shape the AI's behavior as this prospect throughout the role-play"),
+  successCriteria: z.array(z.string()).min(2).max(5).describe("What the agent should accomplish to handle this objection well"),
+})
+
+/**
+ * generateObjectionScenariosFromCalls
+ *
+ * Turns the agent's OWN real calls where an objection was handled poorly
+ * (call_analyses.objections non-empty AND a low coaching_score) into practice
+ * scenarios — so agents drill the objections THEY actually keep getting wrong,
+ * grounded in the real transcript, instead of only the canned library.
+ *
+ * On-demand (an explicit agent action, LLM cost) and capped per run. Returns the
+ * scenarios in-memory; starting a session persists the chosen one as a snapshot.
+ */
+export async function generateObjectionScenariosFromCalls(params?: {
+  limit?: number
+}): Promise<{ success: boolean; scenarios?: ObjectionScenario[]; message?: string; error?: string }> {
+  const ctx = await resolveWriteContext()
+  if (!ctx.isAuthenticated || !ctx.userId) return { success: false, error: "Unauthorized" }
+  if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+
+  const svc = createServiceClient()
+
+  // Resolve the caller's agent id (calls are agent-scoped) — null for non-agents.
+  const { data: agentRow } = await svc
+    .from("agents")
+    .select("id")
+    .eq("user_id", ctx.userId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+  const agentId = agentRow?.id ?? null
+
+  // Analyzed calls that had objections AND a low coaching score (the objection
+  // wasn't served well). Lowest coaching score first — the worst-handled calls.
+  const { data: analyses } = await svc
+    .from("call_analyses")
+    .select("voice_call_id, objections, coaching_score, intent_primary, summary")
+    .eq("brokerage_id", ctx.brokerageId)
+    .not("objections", "is", null)
+    .lte("coaching_score", 60)
+    .order("coaching_score", { ascending: true })
+    .limit(25)
+
+  const withObjections = (analyses ?? []).filter(
+    (a: any) => Array.isArray(a.objections) && a.objections.length > 0,
+  )
+  if (withObjections.length === 0) {
+    return {
+      success: true,
+      scenarios: [],
+      message: "No recent calls with mishandled objections found — your coaching scores are holding up. Practice a library scenario below.",
+    }
+  }
+
+  // Pull transcripts for those calls, agent-scoped when we have an agent id.
+  let vcQuery = svc
+    .from("voice_calls")
+    .select("id, transcription, direction, call_type, agent_id")
+    .in("id", withObjections.map((a: any) => a.voice_call_id))
+  if (agentId) vcQuery = vcQuery.eq("agent_id", agentId)
+  const { data: calls } = await vcQuery
+  const callMap = new Map((calls ?? []).map((c: any) => [c.id, c]))
+
+  const eligible = withObjections
+    .filter((a: any) => {
+      const c = callMap.get(a.voice_call_id)
+      return c && typeof c.transcription === "string" && c.transcription.trim().length > 40
+    })
+    .slice(0, Math.min(params?.limit ?? 3, 5))
+
+  if (eligible.length === 0) {
+    return {
+      success: true,
+      scenarios: [],
+      message: "Found calls with objections, but none had a transcript long enough to build a scenario yet. Try again after your next few calls are analyzed.",
+    }
+  }
+
+  const scenarios: ObjectionScenario[] = []
+  for (const a of eligible) {
+    const call = callMap.get(a.voice_call_id)
+    const transcript = String(call.transcription).slice(0, 4000)
+    const objections = (a.objections as string[]).slice(0, 6)
+    try {
+      const { object } = await generateObject({
+        model: resolveModel("openai/gpt-4o-mini"),
+        schema: GeneratedScenarioSchema,
+        prompt: `A real estate agent had a call where these objections were raised and NOT handled well (low coaching score). Build a practice role-play scenario so the agent can rehearse this exact situation.
+
+OBJECTIONS THE PROSPECT RAISED:
+${objections.map((o, i) => `  ${i + 1}. ${o}`).join("\n")}
+
+WHAT THE CALLER WANTED: ${a.intent_primary ?? "unknown"}
+CALL SUMMARY: ${a.summary ?? "n/a"}
+
+REAL CALL TRANSCRIPT (ground the prospect's voice and objection in this):
+${transcript}
+
+Produce a scenario where the AI role-plays THIS prospect raising THIS objection. The openingLine should be the prospect leading with their strongest objection in their own words. The systemPrompt should tell the AI to stay in character, push back on generic answers, and only soften for specific, value-led responses. successCriteria should be the concrete things the agent needed to do to handle this objection well. Keep it realistic to the transcript — do not invent facts not implied by it.`,
+      })
+      scenarios.push({
+        key: `call:${a.voice_call_id}`,
+        label: object.label,
+        category: object.category,
+        persona: object.persona,
+        difficulty: object.difficulty,
+        openingLine: object.openingLine,
+        systemPrompt: object.systemPrompt,
+        successCriteria: object.successCriteria,
+        source: "call",
+        sourceObjections: objections,
+      })
+    } catch {
+      // Skip a call whose synthesis failed — never emit a partial scenario.
+    }
+  }
+
+  if (scenarios.length === 0) {
+    return { success: false, error: "Could not generate scenarios from your calls — please try again." }
+  }
+  return { success: true, scenarios }
 }
 
 // ─── AI helpers ──────────────────────────────────────────────────────────────
