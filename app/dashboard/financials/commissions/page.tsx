@@ -22,8 +22,11 @@ export default async function CommissionsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
+  // The user is already known-authenticated (guard above). A context-resolution
+  // error here is a data problem, not a sign-in one — send them to /dashboard
+  // (which self-heals missing domain records), never back to /login (that loops).
   let context: any = null
-  try { context = await getAgentContext() } catch { redirect('/login') }
+  try { context = await getAgentContext() } catch { redirect('/dashboard') }
   const { agentId, brokerageId, role } = context
   const isBrokerAdmin = role === 'broker' || role === 'broker_admin' || role === 'admin' || role === 'superadmin'
 

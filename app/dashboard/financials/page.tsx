@@ -79,10 +79,13 @@ async function getFinancialOverview(agentId: string, brokerageId: string) {
 
 export default async function FinancialsPage() {
   const context = await getAgentContext()
-  
-  if (!context?.agentId) {
-    redirect("/login")
-  }
+
+  // Signed out → /login. Signed IN but missing an agent row (a fresh / seed /
+  // incomplete account) → /dashboard, which self-heals the domain records and
+  // re-routes. Never bounce an authenticated user to /login — that loops (the
+  // walkthrough's "Financials → login bounce").
+  if (!context.isAuthenticated) redirect("/login")
+  if (!context.agentId) redirect("/dashboard")
 
   const financials = await getFinancialOverview(context.agentId, context.brokerageId || "")
 

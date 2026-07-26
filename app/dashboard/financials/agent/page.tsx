@@ -40,13 +40,20 @@ export const dynamic = "force-dynamic"
 export default async function AgentFinancialsPage() {
   const supabase = await createClient()
 
-  // Get agent context with identity resolution
+  // Get agent context with identity resolution. A resolution ERROR for a
+  // signed-in user must NOT bounce to /login — that loops (the login page sees
+  // them authenticated and sends them right back, the exact bounce the
+  // walkthrough hit). Send them to /dashboard, which self-heals missing domain
+  // records and re-routes correctly.
   let context
   try {
     context = await getAgentContext()
   } catch {
-    redirect("/login")
+    redirect("/dashboard")
   }
+
+  // Genuinely signed out → the login page is the correct destination.
+  if (!context.isAuthenticated) redirect("/login")
 
   const { agentId: agentIdRaw, brokerageId: brokerageIdRaw } = context
   const agentId = agentIdRaw!
@@ -54,13 +61,43 @@ export default async function AgentFinancialsPage() {
   const currentYear = new Date().getFullYear()
 
   // Load agent financial summary via kernel command (replaces 16 individual DB queries)
-const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
-  agentId,
-  brokerageId,
-})
+  const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
+    agentId,
+    brokerageId,
+  })
 
+  // A DATA failure (context/summary couldn't load) is NOT an auth failure — never
+  // bounce a signed-in agent to /login. Show an honest, in-place state instead.
   if (!financialSummaryResult.success) {
-    redirect("/login")
+    return (
+      <div className="max-w-2xl mx-auto p-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <AlertCircle className="h-5 w-5 text-amber-500" />
+              Financials aren&rsquo;t available right now
+            </CardTitle>
+            <CardDescription>
+              You&rsquo;re still signed in — this is a data issue, not a sign-in problem.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm text-muted-foreground">
+            <p>
+              {financialSummaryResult.error ??
+                "We couldn't load your financial summary. Please try again in a moment."}
+            </p>
+            <div className="flex gap-3">
+              <a href="/dashboard/financials/agent" className="text-blue-600 hover:underline">
+                Retry
+              </a>
+              <a href="/dashboard" className="text-blue-600 hover:underline">
+                Back to dashboard
+              </a>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    )
   }
 
   const summary = financialSummaryResult.data!

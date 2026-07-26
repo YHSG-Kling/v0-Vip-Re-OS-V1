@@ -11,8 +11,10 @@ export default async function AIToolsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
   
+  // User is already known-authenticated (guard above); a context-resolution error
+  // is a data problem, not a sign-in one → /dashboard (self-heals), never /login.
   let context: any = null
-  try { context = await getAgentContext() } catch { redirect("/login") }
+  try { context = await getAgentContext() } catch { redirect("/dashboard") }
   
   return (
     <AIToolsClient
