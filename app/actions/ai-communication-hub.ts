@@ -328,7 +328,7 @@ export async function getMessageThread(conversationId: string) {
     // Verify conversation belongs to caller's brokerage
     const { data: convo } = await supabase
       .from("conversations")
-      .select("brokerage_id")
+      .select("brokerage_id, contact_id")
       .eq("id", conversationId)
       .maybeSingle()
     if (!convo) return { success: false, error: "Conversation not found", messages: [] }
@@ -342,7 +342,51 @@ export async function getMessageThread(conversationId: string) {
 
     if (error) throw error
 
-    return { success: true, messages: messages ?? [] }
+    // Unified inbox: fold this contact's CALL TRANSCRIPTS into the thread so the
+    // agent sees calls inline alongside email/sms/chat ("see call transcripts"),
+    // instead of leaving the inbox to find them. Read-only, brokerage-scoped; only
+    // calls that actually have a transcript or summary are shown.
+    let callRows: any[] = []
+    if (convo.contact_id) {
+      const { data: calls } = await supabase
+        .from("voice_calls")
+        .select("id, direction, status, duration_seconds, transcription, summary, sentiment, started_at, ended_at, created_at")
+        .eq("contact_id", convo.contact_id)
+        .eq("brokerage_id", auth.brokerageId)
+      callRows = (calls ?? [])
+        .filter((c: any) => (c.transcription && c.transcription.trim()) || (c.summary && c.summary.trim()))
+        .map((c: any) => {
+          const mins = c.duration_seconds ? ` · ${Math.max(1, Math.round(c.duration_seconds / 60))} min` : ""
+          const dir = c.direction === "outbound" ? "Outbound call" : "Inbound call"
+          const body = [
+            `📞 ${dir}${c.status ? ` · ${c.status}` : ""}${mins}`,
+            c.summary ? `\nSummary: ${c.summary.trim()}` : null,
+            c.transcription ? `\n\nTranscript:\n${c.transcription.trim()}` : null,
+          ].filter(Boolean).join("")
+          return {
+            id: `call-${c.id}`,
+            conversation_id: conversationId,
+            contact_id: convo.contact_id,
+            type: "voice",
+            direction: c.direction ?? "inbound",
+            sender_type: "ai_assistant",
+            subject: "Call transcript",
+            body,
+            content: body,
+            sentiment: c.sentiment ?? null,
+            status: "read",
+            is_call_transcript: true,
+            created_at: c.ended_at ?? c.started_at ?? c.created_at,
+          }
+        })
+    }
+
+    const merged = [...(messages ?? []), ...callRows].sort(
+      (a: any, b: any) =>
+        new Date(a.created_at ?? 0).getTime() - new Date(b.created_at ?? 0).getTime(),
+    )
+
+    return { success: true, messages: merged }
   } catch (error) {
     return handleError(error, "getMessageThread")
   }
