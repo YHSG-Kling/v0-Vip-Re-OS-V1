@@ -52,23 +52,27 @@ export function GeneralSettingsForm({ initialData }: GeneralSettingsFormProps) {
   };
 
   return (
-    <SettingsCard title="General Settings">
+    <SettingsCard title="Brokerage Info">
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">App Name</label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Company / Brokerage Name</label>
+          <p className="text-xs text-gray-500 mb-2">
+            The name your clients and agents see across the workspace, client portal, and outgoing
+            emails and documents.
+          </p>
           <input
             type="text"
             name="app_name"
             value={formData.app_name}
             onChange={handleChange}
-            placeholder="e.g., My Real Estate Brokerage"
+            placeholder="e.g., VIP Premier Realty"
             required
             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
           />
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">Timezone</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">Time Zone</label>
           <select
             name="timezone"
             value={formData.timezone}

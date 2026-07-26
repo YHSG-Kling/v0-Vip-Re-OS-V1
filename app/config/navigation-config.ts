@@ -90,9 +90,19 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'market-insights', label: 'Market Insights', href: '/dashboard/market-insights', icon: 'TrendingUp' },
       { id: 'patterns', label: 'Behavioral Patterns', href: '/dashboard/patterns', icon: 'Activity' },
       { id: 'stale', label: 'Stale Queue', href: '/dashboard/stale', icon: 'AlertCircle' },
-      { id: 'financials', label: 'My Financials', href: '/dashboard/financials/agent', icon: 'DollarSign' },
-      // Orphan-route sweep: open brokerage-fee charges page was unreachable.
-      { id: 'financials-fees', label: 'My Fees', href: '/dashboard/financials/agent/fees', icon: 'DollarSign' },
+      // One "Financials" umbrella — earnings/commissions and the fees you owe the
+      // brokerage were two separate top-level items; grouped so money lives in one place.
+      {
+        id: 'financials',
+        label: 'Financials',
+        icon: 'DollarSign',
+        href: '/dashboard/financials/agent',
+        children: [
+          { id: 'my-financials', label: 'Earnings & Commissions', href: '/dashboard/financials/agent' },
+          // Orphan-route sweep: open brokerage-fee charges page must stay reachable.
+          { id: 'financials-fees', label: 'My Fees', href: '/dashboard/financials/agent/fees' },
+        ],
+      },
       { id: 'credit-pipeline', label: 'Credit Pipeline', href: '/credit-pipeline', icon: 'CreditCard' },
       {
         id: 'sphere',

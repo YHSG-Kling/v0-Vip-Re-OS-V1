@@ -35,8 +35,11 @@ export default function GeneralSettingsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">General Settings</h1>
-        <p className="text-gray-600 mt-2">Configure basic application settings</p>
+        <h1 className="text-3xl font-bold text-gray-900">General</h1>
+        <p className="text-gray-600 mt-2">
+          Your brokerage&rsquo;s name, time zone, and date format — used across your workspace and
+          every client-facing surface (portal, emails, documents).
+        </p>
       </div>
       <GeneralSettingsForm initialData={settings} />
     </div>
