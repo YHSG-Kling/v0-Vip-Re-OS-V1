@@ -690,16 +690,10 @@ export default function AgentDashboard() {
             {motivatedSellers.length > 0 && (
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-sm flex items-center justify-between">
-                    <span className="flex items-center gap-1.5">
-                      Motivated Seller Alerts
-                    </span>
-                    <Link
-                      href="/leads?tab=intelligence"
-                      className="text-xs text-primary font-normal underline underline-offset-2 hover:no-underline"
-                    >
-                      View all
-                    </Link>
+                  {/* No link out — /leads is a broker/admin desk; agents work contacts.
+                      The alerts themselves render right here. */}
+                  <CardTitle className="text-sm flex items-center gap-1.5">
+                    Motivated Seller Alerts
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">

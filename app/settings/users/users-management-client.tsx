@@ -137,9 +137,16 @@ export function UsersManagementClient({ users: initialUsers, currentUserId, brok
             Manage roles and access for {users.length} user{users.length !== 1 ? "s" : ""} in your brokerage.
           </p>
         </div>
-        {/* Tier-aware invite — the same seat-gated dialog as /dashboard/admin/users.
-            This surface previously had NO invite path at all. */}
-        <InviteUserButton callerRole={callerRole} brokerageId={brokerageId} tier={tier} />
+        <div className="flex items-center gap-2">
+          {/* Pending invites live on the admin console's invitations list —
+              linked here so the invite lifecycle is one click away. */}
+          <Button variant="outline" size="sm" asChild>
+            <a href="/dashboard/admin/users/invitations">Pending invitations</a>
+          </Button>
+          {/* Tier-aware invite — the same seat-gated dialog as /dashboard/admin/users.
+              This surface previously had NO invite path at all. */}
+          <InviteUserButton callerRole={callerRole} brokerageId={brokerageId} tier={tier} />
+        </div>
       </div>
 
       <Card>

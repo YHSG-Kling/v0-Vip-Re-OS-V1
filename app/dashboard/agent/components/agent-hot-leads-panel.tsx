@@ -68,9 +68,10 @@ export function AgentHotLeadsPanel({
         <CardContent>
           <div className="text-center py-6">
             <CheckCircle2 className="h-10 w-10 text-green-500 mx-auto mb-2" />
-            <p className="text-sm text-muted-foreground">All high-intent leads have been actioned — great work.</p>
-            <Link href="/leads" className="text-sm text-primary hover:underline mt-2 inline-block">
-              View All Leads →
+            <p className="text-sm text-muted-foreground">All high-intent contacts have been actioned — great work.</p>
+            {/* Agents work CONTACTS — /leads is the broker/admin desk. */}
+            <Link href="/crm" className="text-sm text-primary hover:underline mt-2 inline-block">
+              View your contacts →
             </Link>
           </div>
         </CardContent>
