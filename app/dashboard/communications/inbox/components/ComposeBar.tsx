@@ -20,9 +20,14 @@ interface ComposeBarProps {
   agentId: string
   contactId: string
   channel: "email" | "sms" | "in_app"
-  /** Raw conversation type — used to detect social_dm_* threads (which have no
-   *  live outbound DM dispatcher, so the composer stays honest about it). */
+  /** Raw conversation type — used to detect social_dm_* threads. */
   conversationType?: string
+  /** True when this social thread's platform can really deliver (FB/IG/WhatsApp
+   *  through the tenant's connected account). False → honest log-only composer. */
+  socialDispatchable?: boolean
+  /** Friendly platform name resolved by the parent (handles generic social_dm
+   *  threads whose platform lives in context_data, not the type string). */
+  socialPlatformName?: string
   lifecycleState?: string
   /** null = unknown/not set, true = consented, false = explicitly not consented */
   tcpaConsent?: boolean | null
@@ -59,6 +64,8 @@ export default function ComposeBar({
   contactId,
   channel: defaultChannel,
   conversationType,
+  socialDispatchable = false,
+  socialPlatformName,
   lifecycleState,
   tcpaConsent,
   emailTemplates = [],
@@ -67,7 +74,9 @@ export default function ComposeBar({
   disabled,
 }: ComposeBarProps) {
   const isSocial = (conversationType ?? "").toLowerCase().startsWith("social")
-  const platform = socialPlatformLabel(conversationType)
+  const platform = socialPlatformName ?? socialPlatformLabel(conversationType)
+  // Log-only social = a platform whose API refuses DM sends (LinkedIn/X).
+  const isSocialLogOnly = isSocial && !socialDispatchable
   const [body, setBody]           = useState("")
   const [subject, setSubject]     = useState("")
   // Sync channel when the selected conversation type changes
@@ -169,15 +178,26 @@ export default function ComposeBar({
         </div>
       )}
 
-      {/* Social DM honesty banner — no live outbound DM dispatcher exists, so
-          the reply is logged to this thread (keeping the record complete) but is
-          NOT auto-delivered to the platform. Never claim a send we can't make. */}
-      {isSocial && (
+      {/* Social DM posture banner. Dispatch-capable platforms (FB/IG/WhatsApp)
+          send through the tenant's connected account inside the platform's
+          24-hour reply window. Log-only platforms (LinkedIn/X refuse DM sends
+          for standard apps) keep the honest logged-not-delivered notice. */}
+      {isSocial && socialDispatchable && (
+        <div className="flex items-start gap-2 text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
+          <AtSign size={12} className="shrink-0 mt-0.5" />
+          <span>
+            <strong>{platform} DM.</strong> Replies send through your connected {platform} account.
+            Platforms allow replies within 24 hours of the contact&apos;s last message — outside
+            that window the send is refused and you&apos;ll see why.
+          </span>
+        </div>
+      )}
+      {isSocialLogOnly && (
         <div className="flex items-start gap-2 text-[11px] text-blue-800 bg-blue-50 border border-blue-200 rounded-md px-3 py-2">
           <AtSign size={12} className="shrink-0 mt-0.5" />
           <span>
             <strong>{platform} DM.</strong> Your reply is logged to this thread so the
-            conversation stays complete, but auto-send to {platform} isn&apos;t connected —
+            conversation stays complete, but {platform} doesn&apos;t allow API sends —
             send it from your {platform} inbox to reach the contact.
           </span>
         </div>
@@ -251,9 +271,11 @@ export default function ComposeBar({
         placeholder={
           isTCPABlocked
             ? "SMS blocked — consent required"
-            : isSocial
+            : isSocialLogOnly
               ? `Log your ${platform} reply to this thread… (⌘+Enter)`
-              : `Reply via ${CHANNEL_LABELS[channel] ?? channel}… (⌘+Enter to send)`
+              : isSocial
+                ? `Reply on ${platform}… (⌘+Enter to send)`
+                : `Reply via ${CHANNEL_LABELS[channel] ?? channel}… (⌘+Enter to send)`
         }
         className="min-h-[72px] max-h-[180px] resize-none text-sm"
         disabled={isPending || disabled || isAuthorityBlocked || isTCPABlocked}
@@ -284,8 +306,8 @@ export default function ComposeBar({
           disabled={!body.trim() || isPending || isAuthorityBlocked || isTCPABlocked || disabled}
           className="h-7 gap-1 text-xs"
         >
-          {isPending ? <Loader2 size={12} className="animate-spin" /> : isSocial ? <FileText size={12} /> : <Send size={12} />}
-          {isSocial ? "Log reply" : "Send"}
+          {isPending ? <Loader2 size={12} className="animate-spin" /> : isSocialLogOnly ? <FileText size={12} /> : <Send size={12} />}
+          {isSocialLogOnly ? "Log reply" : "Send"}
         </Button>
       </div>
 

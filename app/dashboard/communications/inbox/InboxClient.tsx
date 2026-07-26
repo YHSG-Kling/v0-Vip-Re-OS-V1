@@ -14,6 +14,8 @@ import {
   generateSmartResponse,
 } from "@/app/actions/ai-communication-hub"
 import { getLeadThreadMessages, convertLeadFromInbox } from "@/app/actions/inbox"
+import { sendSocialDmReply } from "@/app/actions/social-dm"
+import { socialDmSupport } from "@/lib/social/dm-support"
 import { analyzeConversation } from "@/app/actions/ai-predictions"
 import { Sparkles, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -40,22 +42,35 @@ type Conversation = {
     call_stop_flag?: boolean | null
   } | null
   last_message_preview?: string
+  /** Social threads: {page_id, sender_id, platform} stamped by the DM webhooks. */
+  context_data?: any
   // AI-ISA LEAD threads (leads are NOT contacts): id is `lead:<leads.id>`
   party?: "lead"
   lead_id?: string
   lead_name?: string
 }
 
+const PLATFORM_NICE: Record<string, string> = {
+  instagram: "Instagram", facebook: "Facebook", linkedin: "LinkedIn",
+  twitter: "X / Twitter", x: "X / Twitter", whatsapp: "WhatsApp",
+}
+
+/** Platform slug for a social thread — context_data.platform (meta-dm webhook
+ *  threads are generic 'social_dm') wins over the type suffix. */
+function socialPlatformOf(type?: string, contextData?: any): string {
+  const t = (type ?? "").toLowerCase()
+  if (!t.startsWith("social")) return ""
+  const fromCtx = String(contextData?.platform ?? "").toLowerCase()
+  if (fromCtx) return fromCtx
+  return t.replace(/^social_dm_?/, "").replace(/^social_?/, "")
+}
+
 /** Humanize a conversation type for the thread header (social_dm_instagram → "Instagram DM"). */
-function channelLabel(type?: string): string {
+function channelLabel(type?: string, contextData?: any): string {
   const t = (type ?? "email").toLowerCase()
   if (t.startsWith("social")) {
-    const platform = t.replace(/^social_dm_?/, "").replace(/^social_?/, "")
-    const nice: Record<string, string> = {
-      instagram: "Instagram", facebook: "Facebook", linkedin: "LinkedIn",
-      twitter: "X / Twitter", x: "X / Twitter", whatsapp: "WhatsApp",
-    }
-    return platform ? `${nice[platform] ?? platform} DM` : "Social DM"
+    const platform = socialPlatformOf(type, contextData)
+    return platform ? `${PLATFORM_NICE[platform] ?? platform} DM` : "Social DM"
   }
   if (t === "in_app" || t === "in-app") return "In-App"
   if (t === "sms") return "SMS"
@@ -114,6 +129,14 @@ export default function InboxClient({
   const contact = selectedConvo?.contacts ?? null
   const isLeadThread = selectedConvo?.party === "lead"
   const [convertingLead, setConvertingLead] = useState(false)
+
+  // Social thread send posture: FB/IG/WhatsApp replies dispatch through the
+  // tenant's connected account; LinkedIn/X stay log-only (no DM API access).
+  const isSocialThread = (selectedConvo?.type ?? "").toLowerCase().startsWith("social")
+  const socialPlatform = isSocialThread
+    ? socialPlatformOf(selectedConvo?.type, selectedConvo?.context_data)
+    : ""
+  const socialDispatchable = isSocialThread && !!socialPlatform && socialDmSupport(socialPlatform).supported
 
   const didInitialSelect = useRef(false)
 
@@ -291,6 +314,31 @@ export default function InboxClient({
     channel?: string
   ): Promise<{ success: boolean; error?: string }> => {
     if (!selectedId) return { success: false, error: "No conversation selected" }
+
+    // Social threads with a dispatch-capable platform send through the tenant's
+    // connected account (works even without a contact — the thread carries the
+    // platform recipient). A failed dispatch shows the honest platform reason.
+    if (isSocialThread && socialDispatchable) {
+      const res = await sendSocialDmReply({ conversationId: selectedId, body })
+      if (res.success) {
+        setMessages(prev => [...prev, res.message ?? {
+          id:          crypto.randomUUID(),
+          body,
+          content:     body,
+          direction:   "outbound",
+          sender_type: "agent",
+          created_at:  new Date().toISOString(),
+          type:        selectedConvo?.type ?? "social_dm",
+          channel:     "social_dm",
+        }])
+        return { success: true }
+      }
+      toast.error("DM not delivered", {
+        description: res.error ?? "The platform rejected the message.",
+      })
+      return { success: false, error: res.error }
+    }
+
     if (!contact?.id) return { success: false, error: "Contact record missing — cannot send message" }
 
     const resolvedChannel = (channel ?? selectedConvo?.type ?? "email") as "email" | "sms" | "in_app"
@@ -328,7 +376,7 @@ export default function InboxClient({
     }
 
     return { success: result.success, error: result.error }
-  }, [selectedId, contact?.id, agentId, selectedConvo?.type])
+  }, [selectedId, contact?.id, agentId, selectedConvo?.type, isSocialThread, socialDispatchable])
 
   const handleDraft = useCallback(async (currentText: string): Promise<string> => {
     // If the AI Reply Coach has injected an accepted draft, consume it first
@@ -426,7 +474,7 @@ export default function InboxClient({
                 <p className="text-xs text-muted-foreground">
                   {isLeadThread
                     ? "Lead · AI ISA nurturing"
-                    : `${channelLabel(selectedConvo.type)} · ${contact?.lifecycle_state?.replace(/_/g, " ") ?? ""}`}
+                    : `${channelLabel(selectedConvo.type, selectedConvo.context_data)} · ${contact?.lifecycle_state?.replace(/_/g, " ") ?? ""}`}
                 </p>
               </div>
               {isLeadThread && (
@@ -504,6 +552,8 @@ export default function InboxClient({
                   ? selectedConvo.type
                   : "email") as "email" | "sms" | "in_app"}
                 conversationType={selectedConvo.type}
+                socialDispatchable={socialDispatchable}
+                socialPlatformName={socialPlatform ? (PLATFORM_NICE[socialPlatform] ?? socialPlatform) : undefined}
                 lifecycleState={contact?.lifecycle_state}
                 tcpaConsent={contact?.tcpa_consent ?? null}
                 emailTemplates={emailTemplates}
