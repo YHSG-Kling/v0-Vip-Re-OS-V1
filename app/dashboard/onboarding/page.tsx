@@ -6,6 +6,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { ensureAgentBrokerage } from '@/app/actions/onboarding/ensure-agent-brokerage'
 import { getAgentOnboardingDashboard } from '@/lib/kernel/agent-onboarding'
 import { OnboardingDashboardClient } from './OnboardingDashboardClient'
 import { CriticalSetupMeter } from '@/app/components/onboarding/critical-setup-meter'
@@ -25,6 +26,12 @@ export default async function OnboardingPage() {
   if (!user) {
     redirect('/login')
   }
+
+  // Self-heal a brokerage-less agent/team_lead the same way /dashboard does — many
+  // surfaces bounce an incomplete account here, and previously it only fell through
+  // to /dashboard/agent (still no brokerage), so those pages "bounced back" forever.
+  // Idempotent + guarded (no-op for an already-anchored user or a non-agent type).
+  await ensureAgentBrokerage()
 
   // Get user details including type — maybeSingle() never throws on missing row
   const { data: userData } = await supabase
