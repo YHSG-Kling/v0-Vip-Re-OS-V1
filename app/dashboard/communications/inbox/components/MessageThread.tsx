@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef } from "react"
-import { Mail, Phone, MessageSquare, Radio } from "lucide-react"
+import { Mail, Phone, MessageSquare, Radio, AtSign } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 type Message = {
@@ -24,11 +24,15 @@ interface MessageThreadProps {
   loading: boolean
 }
 
-const CHANNEL_ICON: Record<string, React.ReactNode> = {
-  email:    <Mail size={12} />,
-  voice:    <Phone size={12} />,
-  sms:      <MessageSquare size={12} />,
-  "in-app": <Radio size={12} />,
+/** Per-message channel icon — folds social_dm_* and in_app/in-app spellings. */
+function channelIcon(channel?: string): React.ReactNode {
+  const c = (channel ?? "").toLowerCase()
+  if (c.startsWith("social")) return <AtSign size={12} />
+  if (c === "voice" || c === "call") return <Phone size={12} />
+  if (c === "sms") return <MessageSquare size={12} />
+  if (c === "in_app" || c === "in-app" || c === "chat") return <Radio size={12} />
+  if (c === "email") return <Mail size={12} />
+  return null
 }
 
 function formatTime(iso: string) {
@@ -145,7 +149,7 @@ export default function MessageThread({ messages, contactName, loading }: Messag
                     <div className={cn("flex items-center gap-1 text-[10px] text-muted-foreground", isOutbound ? "flex-row-reverse" : "flex-row")}>
                       <span>{formatTime(msg.created_at)}</span>
                       {isAI && <span className="bg-indigo-100 text-indigo-700 px-1 rounded text-[9px] font-medium">AI</span>}
-                      {msgChannel && CHANNEL_ICON[msgChannel]}
+                      {channelIcon(msgChannel)}
                     </div>
                   </div>
                 </div>

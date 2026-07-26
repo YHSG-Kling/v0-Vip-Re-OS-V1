@@ -46,6 +46,23 @@ type Conversation = {
   lead_name?: string
 }
 
+/** Humanize a conversation type for the thread header (social_dm_instagram → "Instagram DM"). */
+function channelLabel(type?: string): string {
+  const t = (type ?? "email").toLowerCase()
+  if (t.startsWith("social")) {
+    const platform = t.replace(/^social_dm_?/, "").replace(/^social_?/, "")
+    const nice: Record<string, string> = {
+      instagram: "Instagram", facebook: "Facebook", linkedin: "LinkedIn",
+      twitter: "X / Twitter", x: "X / Twitter", whatsapp: "WhatsApp",
+    }
+    return platform ? `${nice[platform] ?? platform} DM` : "Social DM"
+  }
+  if (t === "in_app" || t === "in-app") return "In-App"
+  if (t === "sms") return "SMS"
+  if (t === "voice" || t === "call") return "Voice"
+  return t.charAt(0).toUpperCase() + t.slice(1)
+}
+
 type EmailTemplate = {
   id: string
   name: string
@@ -406,10 +423,10 @@ export default function InboxClient({
               </button>
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-sm text-foreground truncate">{contactName}</p>
-                <p className="text-xs text-muted-foreground capitalize">
+                <p className="text-xs text-muted-foreground">
                   {isLeadThread
                     ? "Lead · AI ISA nurturing"
-                    : `${selectedConvo.type ?? "email"} · ${contact?.lifecycle_state?.replace(/_/g, " ") ?? ""}`}
+                    : `${channelLabel(selectedConvo.type)} · ${contact?.lifecycle_state?.replace(/_/g, " ") ?? ""}`}
                 </p>
               </div>
               {isLeadThread && (
@@ -483,7 +500,10 @@ export default function InboxClient({
                 conversationId={selectedId!}
                 agentId={agentId}
                 contactId={contact?.id ?? ""}
-                channel={(selectedConvo.type ?? "email") as "email" | "sms" | "in_app"}
+                channel={(["email", "sms", "in_app"].includes(selectedConvo.type ?? "")
+                  ? selectedConvo.type
+                  : "email") as "email" | "sms" | "in_app"}
+                conversationType={selectedConvo.type}
                 lifecycleState={contact?.lifecycle_state}
                 tcpaConsent={contact?.tcpa_consent ?? null}
                 emailTemplates={emailTemplates}

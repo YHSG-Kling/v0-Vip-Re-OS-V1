@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { Send, Loader2, Sparkles, AlertTriangle, ChevronDown, FileText } from "lucide-react"
+import { Send, Loader2, Sparkles, AlertTriangle, ChevronDown, FileText, AtSign } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
@@ -20,6 +20,9 @@ interface ComposeBarProps {
   agentId: string
   contactId: string
   channel: "email" | "sms" | "in_app"
+  /** Raw conversation type — used to detect social_dm_* threads (which have no
+   *  live outbound DM dispatcher, so the composer stays honest about it). */
+  conversationType?: string
   lifecycleState?: string
   /** null = unknown/not set, true = consented, false = explicitly not consented */
   tcpaConsent?: boolean | null
@@ -27,6 +30,16 @@ interface ComposeBarProps {
   onSend: (body: string, subject?: string, channel?: string) => Promise<{ success: boolean; error?: string }>
   onDraft?: (content: string) => Promise<string>
   disabled?: boolean
+}
+
+/** Friendly platform name from a social_dm_* conversation type. */
+function socialPlatformLabel(type?: string): string {
+  const p = (type ?? "").toLowerCase().replace(/^social_dm_?/, "").replace(/^social_?/, "")
+  const nice: Record<string, string> = {
+    instagram: "Instagram", facebook: "Facebook", linkedin: "LinkedIn",
+    twitter: "X / Twitter", x: "X / Twitter", whatsapp: "WhatsApp",
+  }
+  return nice[p] ?? "the platform"
 }
 
 /** These lifecycle states completely block AI ISA outreach — broker compliance rule */
@@ -45,6 +58,7 @@ export default function ComposeBar({
   agentId,
   contactId,
   channel: defaultChannel,
+  conversationType,
   lifecycleState,
   tcpaConsent,
   emailTemplates = [],
@@ -52,6 +66,8 @@ export default function ComposeBar({
   onDraft,
   disabled,
 }: ComposeBarProps) {
+  const isSocial = (conversationType ?? "").toLowerCase().startsWith("social")
+  const platform = socialPlatformLabel(conversationType)
   const [body, setBody]           = useState("")
   const [subject, setSubject]     = useState("")
   // Sync channel when the selected conversation type changes
@@ -88,7 +104,10 @@ export default function ComposeBar({
     if (!body.trim() || isPending || isAuthorityBlocked || isTCPABlocked) return
     setError(null)
     startTransition(async () => {
-      const result = await onSend(body.trim(), subject.trim() || undefined, channel)
+      // Social threads log to the conversation under their real platform type
+      // (no live DM dispatcher) — every other channel sends on its own channel.
+      const sendChannel = isSocial ? (conversationType ?? channel) : channel
+      const result = await onSend(body.trim(), subject.trim() || undefined, sendChannel)
       if (result.success) {
         setBody("")
         setSubject("")
@@ -150,19 +169,35 @@ export default function ComposeBar({
         </div>
       )}
 
+      {/* Social DM honesty banner — no live outbound DM dispatcher exists, so
+          the reply is logged to this thread (keeping the record complete) but is
+          NOT auto-delivered to the platform. Never claim a send we can't make. */}
+      {isSocial && (
+        <div className="flex items-start gap-2 text-[11px] text-blue-800 bg-blue-50 border border-blue-200 rounded-md px-3 py-2">
+          <AtSign size={12} className="shrink-0 mt-0.5" />
+          <span>
+            <strong>{platform} DM.</strong> Your reply is logged to this thread so the
+            conversation stays complete, but auto-send to {platform} isn&apos;t connected —
+            send it from your {platform} inbox to reach the contact.
+          </span>
+        </div>
+      )}
+
       {/* Channel selector + Template picker row */}
       <div className="flex items-center gap-2">
-        {/* Channel selector */}
-        <select
-          value={channel}
-          onChange={e => setChannel(e.target.value as typeof channel)}
-          disabled={isPending || disabled}
-          className="text-xs border border-border rounded-md px-2 py-1 bg-background text-foreground h-7"
-        >
-          <option value="email">Email</option>
-          <option value="sms">SMS</option>
-          <option value="in_app">In-App</option>
-        </select>
+        {/* Channel selector — hidden for social threads (fixed to the platform) */}
+        {!isSocial && (
+          <select
+            value={channel}
+            onChange={e => setChannel(e.target.value as typeof channel)}
+            disabled={isPending || disabled}
+            className="text-xs border border-border rounded-md px-2 py-1 bg-background text-foreground h-7"
+          >
+            <option value="email">Email</option>
+            <option value="sms">SMS</option>
+            <option value="in_app">In-App</option>
+          </select>
+        )}
 
         {/* Template picker */}
         {availableTemplates.length > 0 && (
@@ -216,7 +251,9 @@ export default function ComposeBar({
         placeholder={
           isTCPABlocked
             ? "SMS blocked — consent required"
-            : `Reply via ${CHANNEL_LABELS[channel] ?? channel}… (⌘+Enter to send)`
+            : isSocial
+              ? `Log your ${platform} reply to this thread… (⌘+Enter)`
+              : `Reply via ${CHANNEL_LABELS[channel] ?? channel}… (⌘+Enter to send)`
         }
         className="min-h-[72px] max-h-[180px] resize-none text-sm"
         disabled={isPending || disabled || isAuthorityBlocked || isTCPABlocked}
@@ -247,8 +284,8 @@ export default function ComposeBar({
           disabled={!body.trim() || isPending || isAuthorityBlocked || isTCPABlocked || disabled}
           className="h-7 gap-1 text-xs"
         >
-          {isPending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
-          Send
+          {isPending ? <Loader2 size={12} className="animate-spin" /> : isSocial ? <FileText size={12} /> : <Send size={12} />}
+          {isSocial ? "Log reply" : "Send"}
         </Button>
       </div>
 
