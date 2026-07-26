@@ -16,7 +16,7 @@ import {
 } from "@/app/actions/academy"
 import { generateLearningPath } from "@/app/actions/ai-training-coaching"
 import { getAgentPointsAndTier } from "@/app/actions/gamification"
-import { getAcademyViewer, getFeaturedModule } from "@/app/actions/academy-learning"
+import { getAcademyViewer, getFeaturedModule, getMyLearningProgress } from "@/app/actions/academy-learning"
 import { useRouter } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
 import {
@@ -45,13 +45,19 @@ export default function AcademyPage() {
   const [currentPoints, setCurrentPoints] = useState<number | undefined>(undefined)
   const [currentTier, setCurrentTier] = useState<string | undefined>(undefined)
   const [generatingPath, setGeneratingPath] = useState(false)
-  const [completedContent, _setCompletedContent] = useState<any[]>([])
-  const [inProgressContent, _setInProgressContent] = useState<any[]>([])
+  // Real learner progress from learning_assignments (was hardcoded empty).
+  const [completedContent, setCompletedContent] = useState<any[]>([])
+  const [inProgressContent, setInProgressContent] = useState<any[]>([])
   // "My Templates" toggle — flips the marketplace grid to the user's own authored templates
   const [showMineOnly, setShowMineOnly] = useState(false)
 
   useEffect(() => {
     loadViewer()
+    // Deep links (e.g. a learning-path step without a linked module) prime the
+    // library search via /academy?search=<term>. Read on mount — no Suspense
+    // requirement, unlike useSearchParams in a client page.
+    const q = new URLSearchParams(window.location.search).get("search")
+    if (q) setSearchQuery(q)
   }, [])
 
   useEffect(() => {
@@ -78,6 +84,9 @@ export default function AcademyPage() {
         }
       }
       setFeatured(await getFeaturedModule())
+      const progress = await getMyLearningProgress()
+      setCompletedContent(progress.completed)
+      setInProgressContent(progress.inProgress)
     } catch (error) {
       console.error("Error loading academy viewer:", error)
     }

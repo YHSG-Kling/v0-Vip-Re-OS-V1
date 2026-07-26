@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -32,6 +33,7 @@ export function LearningPathPanel({
   experienceLevel: initialLevel = "new",
   focusAreas: initialFocus = [],
 }: LearningPathPanelProps) {
+  const router = useRouter()
   const [learningPath, setLearningPath] = useState<any[]>([])
   const [generating, setGenerating] = useState(false)
   const [experienceLevel, setExperienceLevel] = useState<"new" | "intermediate" | "experienced">(initialLevel)
@@ -61,10 +63,15 @@ export function LearningPathPanel({
   }
 
   const handleStartStep = async (step: any) => {
+    // Steps with a linked module open the in-app reader (which records the
+    // view + serves the quiz); steps without one land on the Learning Center
+    // search primed with the step title — never a button that goes nowhere.
     if (step.content_id) {
       await incrementViewCount(step.content_id)
+      router.push(`/academy/module/${step.content_id}`)
+    } else {
+      router.push(`/academy?search=${encodeURIComponent(step.title ?? "")}`)
     }
-    // Navigate to relevant content or open modal
   }
 
   const priorityColors: Record<string, string> = {
