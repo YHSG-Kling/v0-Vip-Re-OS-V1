@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { RequiredDocsSettingsClient } from "./required-docs-settings-client"
+import { RequiredDocRowActions } from "./required-doc-row-actions"
 import { getSupportedPresetStates } from "@/lib/compliance/required-doc-presets"
 
 export const dynamic = "force-dynamic"
@@ -72,6 +73,7 @@ export default async function RequiredDocsSettingsPage() {
                     </div>
                     {r.description && <p className="text-xs text-muted-foreground mt-1">{r.description}</p>}
                   </div>
+                  <RequiredDocRowActions id={r.id as string} blockOnMissing={!!r.block_on_missing} />
                 </li>
               ))}
             </ul>
