@@ -3,7 +3,9 @@ import { createClient } from "@/lib/supabase/server"
 import { ArrowLeft } from "lucide-react"
 import Link from "next/link"
 import { UserEditForm } from "./user-edit-form"
+import { Agent360Panels } from "./agent-360-panels"
 import { getAgentProfileForUserAction, type AgentProfile, type OfficeOption } from "@/app/actions/admin/agent-profile"
+import { getAgent360Action, type Agent360 } from "@/app/actions/admin/agent-360"
 
 export const dynamic = "force-dynamic"
 
@@ -66,8 +68,17 @@ export default async function UserEditPage({ params }: Props) {
     offices = profileRes.offices
   }
 
+  // Agent 360 — the manager's full read of this agent (production, goals,
+  // payments, gamification). null for non-agent users; the page stays an
+  // edit form for them.
+  let agent360: Agent360 | null = null
+  if (agentProfile) {
+    const r360 = await getAgent360Action(userId)
+    if (r360.ok) agent360 = r360.data
+  }
+
   return (
-    <div className="p-6 max-w-2xl mx-auto space-y-6">
+    <div className={`p-6 mx-auto space-y-6 ${agent360 ? "max-w-6xl" : "max-w-2xl"}`}>
       <div className="flex items-center gap-3">
         <Link
           href="/dashboard/admin/users"
@@ -79,20 +90,23 @@ export default async function UserEditPage({ params }: Props) {
       </div>
 
       <div>
-        <h1 className="text-2xl font-bold">Edit User</h1>
+        <h1 className="text-2xl font-bold">{agent360 ? "Agent Profile" : "Edit User"}</h1>
         <p className="text-sm text-muted-foreground mt-1">
           {target.email}
         </p>
       </div>
 
-      <UserEditForm
-        user={target}
-        callerRole={callerRole}
-        callerBrokerageId={caller?.brokerage_id ?? null}
-        brokerages={brokerages}
-        agentProfile={agentProfile}
-        offices={offices}
-      />
+      <div className={agent360 ? "grid grid-cols-1 lg:grid-cols-2 gap-6 items-start" : ""}>
+        <UserEditForm
+          user={target}
+          callerRole={callerRole}
+          callerBrokerageId={caller?.brokerage_id ?? null}
+          brokerages={brokerages}
+          agentProfile={agentProfile}
+          offices={offices}
+        />
+        {agent360 && <Agent360Panels data={agent360} />}
+      </div>
     </div>
   )
 }
