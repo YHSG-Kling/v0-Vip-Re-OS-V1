@@ -164,12 +164,17 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       },
       { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell' },
       { id: 'divider3', divider: true },
+      // Walkthrough [44/45] "Profile goes settings / Settings goes to settings" — My
+      // Profile was filed INSIDE the Settings group, so both nav paths landed in
+      // settings and the agent had no distinct place that was about them. Their
+      // identity (name, license, bio, photo, voice) is not app configuration, so it
+      // sits at the top level beside Settings rather than inside it.
+      { id: 'my-profile', label: 'My Profile', href: '/dashboard/profile', icon: 'User' },
       {
         id: 'settings',
         label: 'Settings',
         icon: 'Settings',
         children: [
-          { id: 'my-profile', label: 'My Profile', href: '/dashboard/profile' },
           { id: 'settings-general', label: 'General', href: '/dashboard/settings/general' },
           { id: 'settings-calendar', label: 'Calendar Sync', href: '/dashboard/settings/calendar' },
           { id: 'settings-branding', label: 'Branding', href: '/dashboard/settings/branding' },

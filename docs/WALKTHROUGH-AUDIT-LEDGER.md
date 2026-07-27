@@ -77,7 +77,7 @@ residue. Locked by `test:identity-self-heal` (21 checks), owned by `data_steward
 | 36–37 | Notifications, commission calculation | CLOSED | Present and wired |
 | 38 | Agent downline? | CLOSED | Referral downline in Agent 360, tenant-gated on the recruiting program |
 | 43 | User Management + Invite can only change Roles | CLOSED | `d46dc92`/`6eff902` Agent 360 · `770838f` Staff 360 — full user view, not just role edit |
-| 44–45 | Profile goes to settings / Settings goes to settings | OPEN | Nav destinations need separating |
+| 44–45 | Profile goes to settings / Settings goes to settings | CLOSED | Two causes: My Profile was filed *inside* the Settings nav group, and the page itself was a settings page whose only identity card was read-only ("edit via admin"). My Profile is now a top-level nav item, and the page leads with an editable identity card — name, phone, license #/state/expiry, years, bio — all on existing columns. Round-trip verified live on a real agent, then restored to its exact original state |
 | 46 | Inbox has no window to type in | CLOSED | Unified inbox compose + outbound social DM (`7e2f551`) |
 | 47 | Can't bring up an agent's account and apply/remove onboarding | CLOSED | `6eff902` — `OnboardingControl` on the Agent 360 panel |
 | 49 | Property type should be a selection | OPEN | Free-text → constrained select, tenant-scoped to target area |
