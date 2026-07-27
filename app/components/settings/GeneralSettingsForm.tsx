@@ -16,6 +16,10 @@ export function GeneralSettingsForm({ initialData }: GeneralSettingsFormProps) {
     app_name: initialData?.app_name || '',
     timezone: initialData?.timezone || 'America/New_York',
     date_format: initialData?.date_format || 'MM/DD/YYYY',
+    // Moved here from the orphaned /settings/global page, which was a superset
+    // duplicating this form and the Branding form. Currency belongs with the other
+    // workspace-formatting choices, not on a second page editing the same row.
+    currency_symbol: initialData?.currency_symbol || '$',
   });
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -98,6 +102,22 @@ export function GeneralSettingsForm({ initialData }: GeneralSettingsFormProps) {
             <option value="DD/MM/YYYY">DD/MM/YYYY</option>
             <option value="YYYY-MM-DD">YYYY-MM-DD</option>
           </select>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">Currency Symbol</label>
+          <p className="text-xs text-gray-500 mb-2">
+            Shown on prices, commissions and financial reports across the workspace.
+          </p>
+          <input
+            type="text"
+            name="currency_symbol"
+            value={formData.currency_symbol}
+            onChange={handleChange}
+            maxLength={3}
+            placeholder="$"
+            className="w-24 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+          />
         </div>
 
         {error && (

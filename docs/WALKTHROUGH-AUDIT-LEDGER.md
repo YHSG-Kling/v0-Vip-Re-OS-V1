@@ -297,11 +297,46 @@ white-glove migration and Connections, rather than the card silently vanishing.
 
 ### (b) and (c) — recorded, not yet built
 
-- **(b)** `/settings/global` = platform/global users; `/settings/general` = everyone; neither may
-  overlap the other or duplicate another settings surface (branding belongs to the Branding page).
+### (b) settings/global vs settings/general — resolved by retiring `global`
+
+> *"settings global is for the platform/global users (manager of this complete app/os) and
+> settings/general is for everyone but both should not overlap or be duplicates of other
+> setting types."*
+
+Investigating the intent against the live code changed the answer. **`/settings/global` was never
+a platform surface.** `global_settings` is per-brokerage (there is a `UNIQUE(brokerage_id)`
+migration on it), so every field on that page belonged to one tenant. The genuine
+platform/global surface — settings for whoever runs the whole OS — already exists at
+`/dashboard/superadmin/platform`, platform-gated, and always did. Promoting `/settings/global`
+into a second one would have created exactly the duplicate the ruling forbids.
+
+So the page is retired, and its fields went to the surfaces that own their category. Mapping
+every field first mattered: three of them existed **only** there, and deleting the page without
+moving them would have removed working functionality.
+
+| Field | Already owned by | Action |
+|---|---|---|
+| `app_name`, `timezone`, `date_format` | `GeneralSettingsForm` | duplicate — dropped from `global` |
+| `primary_color`, `secondary_color`, `font_family` | `BrandingForm` | duplicate — dropped from `global`. **This answers the branding half of the ruling: they were already on the Branding page; `global` was the copy.** |
+| `currency_symbol` | nothing | **moved → `/settings/general`** (workspace formatting, same family as timezone) |
+| `email/sms/push_notifications_enabled` | nothing | **moved → `/settings/notifications`** as `NotificationChannelsCard` — master switches above the per-event rules they gate |
+| Chat widget scope + embed code | nothing (`updateWidgetScope` had no other caller) | **moved → `/dashboard/settings/widget`** as `ChatWidgetScopeCard` — that page owns the launcher's look; this owns whose identity the conversation carries |
+
+`/settings/global` now redirects to `/settings/general`, with the mapping recorded in the file so
+the next person can see where each field went rather than guessing.
+
+A near-miss worth recording: my first pass grepped only the route directories and concluded
+Branding had no colour fields. They were in `app/components/settings/BrandingForm.tsx`. Searching
+the route folder rather than the whole surface is the same directory-blindness that hid
+`services/` from both schema guards — a one-directory search answers a one-directory question.
+
+Live-verified: seeded a `global_settings` row, wrote every relocated field from the columns its
+new home saves, confirmed all nine round-trip (including the three that existed only on the
+retired page), then deleted the row to restore the tenant's prior state.
+
 - **(c)** Target-area scoping is **brokerage-level** — it tells the platform which territories are
   active so the scrapers know where to look. `farm_territories` is a *different* concept: what a
-  user picks for their own marketing. They are not to be merged.
+  user picks for their own marketing. They are not to be merged. **Recorded, not yet built.**
 
 ## Cross-tenant defects from free-text matching
 
