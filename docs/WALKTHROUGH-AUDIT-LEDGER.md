@@ -545,6 +545,48 @@ with the real number in front of them rather than a discovery someone repeats. T
 certainly a mix of genuinely-scoped-another-way and genuinely-unscoped; separating them is the work,
 and it is a session of its own.
 
+## Three review findings on `4c49b15` — all self-inflicted, fixed in `3332c0a`
+
+VADE reviewed the branch and raised three defects. All three verified against the code, and all
+three were introduced by earlier commits **on this branch** — this is the audit auditing itself.
+
+1. **The crm-pull guard was dead.** `d867a82` moved the pull UI to the superadmin tenant panel;
+   the guard still read `app/dashboard/admin/import/crm-pull-card.tsx` and crashed `ENOENT`
+   *before reaching half its checks*. The two assertions it did reach pinned the removed
+   `processImportRows` call and `ctx.brokerageId`. Repointed at the migrated symbols, plus the
+   checks the migration should have carried with it (the platform-staff gate on an explicit
+   target tenant, and the pagination rule in 3).
+
+2. **Recruit names rendered `undefined undefined`.** The embedded-column burndown (`c20032e`)
+   correctly repointed the select at `agents.users(first_name, last_name)` — `agents` carries
+   neither column — but left both consumers reading `agents.first_name`. The ROI table
+   interpolated with no fallback, so the literal string reached the page; the acquisition page
+   used `?? ""` and rendered blank instead.
+
+3. **An all-invalid CRM page aborted the whole migration.** Worse than it reads: the `break`
+   fired *before* `cursor = page.nextCursor`, so the returned cursor pointed back at the same bad
+   page and every resume re-fetched it — permanently stuck. Those rows are already counted in
+   `failed`, and the genuinely fatal cases (brokerage missing, no owner agent, dedupe scan
+   failure) all sit *after* the `parsed.rows.length === 0` early return, so they can only arise
+   once there were importable rows. Gated on exactly that.
+
+**The structural finding underneath them.** `test:crm-pull` was **never in the `guard` chain** —
+49 assertions about the white-glove import gate had been running nowhere, which is why a crashing
+guard never surfaced. Wired in next to `test:crm-sync-credential`; it now runs in CI and passes.
+This is the same failure mode as the `services/` blind spot above: a guard that exists is not a
+guard that runs.
+
+Two things found while verifying, that the review did not flag:
+
+- **`agents` has no `status` column** and the select never requested one, so the ROI table's
+  status badge had *always* read `Unknown`, on `main` too. `is_active` is the real signal.
+- **One assertion was already failing on `main`** before this PR — it pinned `SUNSET LANE` in the
+  tenancy matrix, wording the Vapi retirement replaced. Updated to the current text rather than
+  left as a permanently-red check.
+
+Verified on `3332c0a`: `type-check`, `crm-pull` (49/49, was crashing), `schema-drift`,
+`tenant-scope`, `settings-authz`, `crm-sync-credential`. All five CI checks green.
+
 ## Cannot be closed headless
 
 Two loops need a preview environment with real credentials, and are honestly still open:
