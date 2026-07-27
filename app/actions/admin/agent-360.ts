@@ -143,9 +143,13 @@ export async function getAgent360Action(
       .eq("agent_id", agent.id)
       .eq("year", year)
       .order("goal_type"),
-    svc.from("commissions")
+    // KEEP-ONE (m283): agent_commissions is the canonical commission ledger —
+    // 25 consumers, the full dispute/approval lifecycle, and now a superset of
+    // the retired `commissions` columns (fees/net/cap + deposit lifecycle).
+    svc.from("agent_commissions")
       .select("id, status, agent_commission, gross_commission, deposit_received_at, created_at")
       .eq("agent_id", agent.id)
+      .eq("brokerage_id", caller.brokerage_id)
       .order("created_at", { ascending: false })
       .limit(50),
     svc.from("agent_badges")
