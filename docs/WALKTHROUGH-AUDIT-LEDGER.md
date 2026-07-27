@@ -95,7 +95,7 @@ residue. Locked by `test:identity-self-heal` (21 checks), owned by `data_steward
 | 107 | Credit pipeline — unclear budget figures | OPEN | Needs a real read of what the numbers mean |
 | 109 | Academy — My Template and My Path buttons go nowhere | CLOSED | Tasks 19, 50 — education/academy split and content generation |
 | 110–111 | AI Command center, Monthly Intelligence Report — bump | CLOSED (class) | `24e7e55` |
-| 113 | AI Toolkit — page can't load | OPEN | Needs its own trace; not the identity class |
+| 113 | AI Toolkit — page can't load | CLOSED | Not the identity class — a real render crash. `getAIToolUsageStats` returns an OBJECT of totals, but the client assigned it whole (behind an `as any`) to array state and called `.sort()` on it at render, outside the try/catch: `TypeError: usageStats.sort is not a function`, reproduced verbatim. The action now returns per-tool counts on `.by_tool` keyed on the real `tool_name` column. Also fixed a dead `groupByCategory` reading a nonexistent `tool_category` (every row fell to one "other" bucket) and a `.sort()` mutating state during render |
 | 114 | AI Chat — no unified box | CLOSED | Task 54 — three floating assistants merged into one |
 | 115 | Voice assistant speaks as admin to an agent | OPEN | Persona must follow the viewer's role |
 | 116 | Daily briefing — agent context not available | CLOSED (class) | `24e7e55` |

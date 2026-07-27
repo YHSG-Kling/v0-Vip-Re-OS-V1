@@ -340,8 +340,12 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
         getBrandVoiceProfile(agentId),
       ])
 
-      if (favResult) setFavorites(favResult as any)
-      if (statsResult) setUsageStats(statsResult as any)
+      if (favResult) setFavorites(Array.isArray(favResult) ? favResult : [])
+      // getAIToolUsageStats returns an OBJECT of totals; the per-tool counts the
+      // "Recently Used" row needs live on .by_tool. Assigning the whole object here
+      // (behind an `as any`) is what made this page crash: the next render called
+      // .sort() on an object and threw before anything painted.
+      setUsageStats(Array.isArray(statsResult?.by_tool) ? statsResult.by_tool : [])
       if (voiceResult) setBrandVoice(voiceResult)
     } catch (error) {
       console.error("Error loading AI tools data:", error)
@@ -456,8 +460,9 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
     setTimeout(() => setCopiedId(null), 2000)
   }
 
-  // Get top 3 recently used tools
-  const recentlyUsedTools = usageStats
+  // Get top 3 recently used tools. Copy before sorting — .sort() mutates in place,
+  // and mutating state during render is how you get inconsistent paints.
+  const recentlyUsedTools = [...usageStats]
     .sort((a, b) => b.count - a.count)
     .slice(0, 3)
     .map((stat) => TOOLS.find((t) => t.id === stat.toolName))

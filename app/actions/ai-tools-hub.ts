@@ -461,17 +461,32 @@ export async function getAIToolUsageStats(userId: string, dateRange?: { start: s
     total_tokens: totalTokens,
     time_saved_hours: Math.round(timeSavedHours * 10) / 10,
     avg_execution_time_ms: Math.round(avgExecutionTime),
-    tools_by_category: groupByCategory(data || []),
+    // Per-tool counts, most-used first. The AI Toolkit's "Recently Used" row needs an
+    // ARRAY of {toolName, count} and previously tried to .sort() this whole object,
+    // which crashed the page. Keyed on tool_name — the real column on ai_tool_usage.
+    by_tool: groupByTool(data || []),
   }
 }
 
-function groupByCategory(usage: any[]) {
-  const grouped: any = {}
+/**
+ * Count usage per tool from the REAL column (ai_tool_usage.tool_name).
+ *
+ * This replaces a groupByCategory helper that read `item.tool_category` — a column that
+ * does not exist on ai_tool_usage — so every row fell to "other" and the returned
+ * tools_by_category was always a single meaningless bucket. Nothing consumed it. Tool
+ * categories live in the client's TOOLS constant, not in the table, so grouping by
+ * category cannot be done here honestly; per-tool counts are what the caller wants.
+ */
+function groupByTool(usage: any[]): Array<{ toolName: string; count: number }> {
+  const counts = new Map<string, number>()
   for (const item of usage) {
-    const category = item.tool_category || "other"
-    grouped[category] = (grouped[category] || 0) + 1
+    const name = item?.tool_name
+    if (!name) continue
+    counts.set(name, (counts.get(name) ?? 0) + 1)
   }
-  return grouped
+  return [...counts.entries()]
+    .map(([toolName, count]) => ({ toolName, count }))
+    .sort((a, b) => b.count - a.count)
 }
 
 // Placeholder implementations for remaining tools
