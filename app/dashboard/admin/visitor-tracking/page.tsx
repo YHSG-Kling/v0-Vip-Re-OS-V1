@@ -79,13 +79,21 @@ export default function VisitorTrackingPage() {
     }
   }
 
-  const snippet = profile
+  // The pixel must be ABSOLUTE. This snippet is pasted into someone else's website, so a
+  // relative '/api/track/pixel' resolved against THEIR origin — the request went to
+  // https://their-site.com/api/track/pixel, 404'd there, and nothing was ever recorded.
+  // The snippet looked right, copied cleanly, and could not work. NEXT_PUBLIC_APP_URL is
+  // the canonical origin used elsewhere in the codebase for exactly this.
+  const trackingOrigin = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
+
+  const snippet = profile && trackingOrigin
     ? `<script>
 (function(b,a){
   var s=localStorage.getItem('_vip')||Math.random().toString(36).slice(2);
   localStorage.setItem('_vip',s);
-  new Image().src='/api/track/pixel?b='+b+'&a='+a+'&s='+s
-    +'&p='+encodeURIComponent(location.href);
+  new Image().src='${trackingOrigin}/api/track/pixel?b='+b+'&a='+a+'&s='+s
+    +'&p='+encodeURIComponent(location.href)
+    +'&'+location.search.replace(/^\\?/,'');
 })('${profile.brokerage_id}','${profile.agent_id}');
 </script>`
     : ''
@@ -98,6 +106,12 @@ export default function VisitorTrackingPage() {
   }
 
   const total       = visitors.length
+  // Most recent activity across the loaded sessions — answers "is the snippet live?".
+  const lastSeen = visitors.reduce<string | null>((acc, v) => {
+    const t = v.last_seen_at ?? v.first_seen_at
+    if (!t) return acc
+    return !acc || new Date(t) > new Date(acc) ? t : acc
+  }, null)
   const identified  = visitors.filter(v => v.identified_at).length
   const anonymous   = total - identified
 
@@ -157,13 +171,58 @@ export default function VisitorTrackingPage() {
             {copied ? 'Copied!' : 'Copy'}
           </button>
         </div>
-        <pre className="text-xs bg-muted p-3 rounded overflow-x-auto whitespace-pre-wrap break-all">
-          {snippet}
-        </pre>
-        <p className="text-xs text-muted-foreground">
-          Paste this snippet into the {'<head>'} of your website. The BROKERAGE_ID is pre-filled.
-          Replace AGENT_ID if you want attribution to a specific agent.
-        </p>
+        {snippet ? (
+          <pre className="text-xs bg-muted p-3 rounded overflow-x-auto whitespace-pre-wrap break-all">
+            {snippet}
+          </pre>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {profile
+              ? "This snippet needs the app's public URL (NEXT_PUBLIC_APP_URL) to be configured before it can be installed — without it the pixel would point at your own website and record nothing."
+              : "Loading your brokerage details…"}
+          </p>
+        )}
+
+        {/* Real directions. The previous copy told the installer to "replace AGENT_ID",
+            but both IDs are already filled in — it described a different snippet than the
+            one on screen, which is the walkthrough's "snippet code but no directions". */}
+        {snippet && (
+          <div className="text-xs text-muted-foreground space-y-2 pt-1">
+            <p className="font-medium text-foreground">How to install</p>
+            <ol className="list-decimal ml-4 space-y-1">
+              <li>Copy the snippet above — your brokerage and agent IDs are already filled in, nothing to edit.</li>
+              <li>
+                Paste it into your website&apos;s {'<head>'}, on every page you want tracked. On
+                WordPress that is Appearance → Theme File Editor → header.php, or any
+                header-scripts plugin; on Squarespace, Settings → Advanced → Code Injection → Header;
+                on Wix, Settings → Custom Code → Add Code to Head.
+              </li>
+              <li>Publish the site, then open one of those pages in a normal browser tab.</li>
+              <li>Come back here and press Refresh — a new session should appear within a few seconds.</li>
+            </ol>
+            <p>
+              Nothing appearing? The three usual causes are the snippet landing in the body
+              instead of the {'<head>'}, the page being cached and serving the old markup, or an
+              ad-blocker on the browser you tested with.
+            </p>
+          </div>
+        )}
+
+        {/* Is it actually working? The page already loads the sessions, so it can answer
+            the question the installer really has instead of leaving them guessing. */}
+        <div className="border-t pt-2 mt-1">
+          {total > 0 ? (
+            <p className="text-xs text-emerald-700">
+              Receiving traffic — {total} {total === 1 ? "session" : "sessions"} recorded
+              {lastSeen ? `, most recently ${fmt(lastSeen)}` : ""}.
+            </p>
+          ) : (
+            <p className="text-xs text-amber-700">
+              No sessions recorded yet. Until the snippet is installed and a page is visited,
+              this stays empty — that is expected, not an error.
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Visitor table */}

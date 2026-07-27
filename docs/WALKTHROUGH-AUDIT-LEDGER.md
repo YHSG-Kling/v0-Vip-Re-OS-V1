@@ -68,7 +68,7 @@ residue. Locked by `test:identity-self-heal` (21 checks), owned by `data_steward
 | 4 | Feature governance — can't change enrollment, not really functional | OPEN | Platform-tier surface; needs a real enrollment write path |
 | 6 | Video analytics looks old / plain | CLOSED | `afade62` — distribution vs hook vs missing-ask diagnosis |
 | 8 | SLA monitor — plain dashboard | CLOSED | `ccfe9b1` — leads with silent (un-notified) breaches |
-| 10 | Visitor tracking — snippet with no directions | OPEN | Needs install instructions + verification ping |
+| 10 | Visitor tracking — snippet with no directions | CLOSED | The snippet also **could not work**: it used a relative `/api/track/pixel`, which resolves against the *installer's* origin, so every hit 404'd on their own domain. Now absolute via `NEXT_PUBLIC_APP_URL`, and it forwards UTM params the route already read but the snippet never sent. Real per-platform install steps replace copy that described placeholders the snippet doesn't contain, plus a live "is it receiving traffic?" line. `website_visitors` has 0 rows, consistent with a pixel that never fired |
 | 12 | Billing navigation knocked me to login | CLOSED (class) | `24e7e55` — identity bounce |
 | 14 | Usage meter — monitor AI/storage/voice consumption | OPEN | Confirm platform-only placement, then give it a read |
 | 16 | System intelligence says all providers up with none configured | CLOSED | `2cdf615` — the panel invented `enabled ?? true` with no override on file. Now reads the canonical credential-backed `getBrokerageProviderReadiness` (a duplicate-status merge, keeping the advanced). Measured on the walkthrough tenant: old claimed 7/7 active; truth is 4/63 usable, 36 waiting on the broker, 23 on platform staff |
