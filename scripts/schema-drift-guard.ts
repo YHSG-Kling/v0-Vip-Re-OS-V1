@@ -25,6 +25,7 @@ import { resolveTableManager } from "../lib/kernel/manager-registry"
 
 const BASELINE_PATH = join(process.cwd(), "scripts/schema-drift-baseline.json")
 const UNGUARDED_BASELINE_PATH = join(process.cwd(), "scripts/schema-drift-unguarded-baseline.json")
+const EMBED_BASELINE_PATH = join(process.cwd(), "scripts/schema-drift-embed-baseline.json")
 const vkey = (v: { file: string; table: string; op: string; column: string }) => `${v.file}::${v.table}.${v.column}::${v.op}`
 
 let passed = 0, failed = 0
@@ -270,6 +271,40 @@ function matchParen(s: string, open: number): number {
   }
   return -1
 }
+
+/**
+ * Columns requested INSIDE an embedded relation: `embedded_table (a, b, c)`.
+ *
+ * parseSelectColumns deliberately strips embeds, because their columns belong to a
+ * different table than the .from(). Stripping is right — but nothing then checked
+ * them, and PostgREST rejects the ENTIRE query when an embed names a column its table
+ * lacks. That is how `lead_scraping_property_params (id, is_active, target_sites, …)`
+ * shipped against a table with neither column: the scrape-territory resolver's select
+ * could not succeed, the error was discarded, and every run reported "no active
+ * territories" — an outage that reads like an idle pipeline.
+ *
+ * Returns [embeddedTable, column] pairs for embeds whose target we can name. An embed
+ * written `alias:fk_column(...)` is skipped: the alias is not the table name, and
+ * guessing would produce false positives.
+ */
+export function parseEmbeddedSelects(literal: string): Array<{ table: string; column: string }> {
+  const out: Array<{ table: string; column: string }> = []
+  const re = /([A-Za-z_][\w]*)\s*(?:!\w+)?\s*\(/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(literal))) {
+    const name = m[1]
+    // `alias:table(...)` — the captured word is the alias only when a ':' precedes it.
+    const before = literal.slice(0, m.index).trimEnd()
+    if (before.endsWith(":")) continue
+    const open = m.index + m[0].length - 1
+    const close = matchParen(literal, open)
+    if (close <= open) continue
+    const inner = literal.slice(open + 1, close)
+    for (const col of parseSelectColumns(inner)) out.push({ table: name, column: col })
+    re.lastIndex = close
+  }
+  return out
+}
 function matchBrace(s: string, open: number): number {
   let d = 0
   for (let i = open; i < s.length; i++) {
@@ -335,6 +370,18 @@ function testPure() {
       near.includes("right_col") && !near.includes("wrong_col"))
   }
 
+  // Embedded-select columns must be checked against the EMBEDDED table, not skipped.
+  {
+    const emb = parseEmbeddedSelects("id, name, lead_scraping_property_params (id, is_active, min_price)")
+    check("parseEmbeddedSelects: finds embedded table + its columns",
+      emb.some((e) => e.table === "lead_scraping_property_params" && e.column === "is_active"))
+    check("parseEmbeddedSelects: aliased embeds (alias:fk(...)) are skipped — alias is not a table",
+      parseEmbeddedSelects("agent:agent_id(id, license_number)").length === 0)
+    check("parseEmbeddedSelects: the scrape-territory outage shape is caught",
+      parseEmbeddedSelects("lead_scraping_property_params (id, is_active, target_sites, min_price)")
+        .filter((e) => !SCHEMA_SNAPSHOT.lead_scraping_property_params?.includes(e.column)).length === 2)
+  }
+
   // The exact bug we fixed must be caught:
   const badSel = parseSelectColumns("preferred_price_max, preferred_features, inferred_max_price")
   check("catches the legacy phantom column (preferred_features ∉ property_preferences)",
@@ -365,7 +412,19 @@ function scanFile(file: string, src: string): Violation[] {
     const set = new Set(cols)
     // SELECT columns
     const sel = collectSelectArg(src, m.index)
-    if (sel) for (const c of parseSelectColumns(sel)) if (!set.has(c)) v.push({ file, table, op: "select", column: c })
+    if (sel) {
+      for (const c of parseSelectColumns(sel)) if (!set.has(c)) v.push({ file, table, op: "select", column: c })
+      // Embedded relations are a DIFFERENT table's columns — checked against that
+      // table's snapshot, because a bad embed column fails the whole query.
+      for (const e of parseEmbeddedSelects(sel)) {
+        if (!GUARDED.has(e.table)) continue
+        // `related_table(count)` is PostgREST's related-row aggregate, not a column.
+        if (e.column === "count") continue
+        if (!new Set(SCHEMA_SNAPSHOT[e.table]).has(e.column)) {
+          v.push({ file, table: e.table, op: "select(embed)", column: e.column })
+        }
+      }
+    }
     // INSERT / UPSERT object keys — only when chained to THIS from() (before the next .from()).
     const after = src.slice(m.index)
     const nextFrom = after.slice(1).search(/\.from\(/)
@@ -440,12 +499,35 @@ function testScan() {
   // Baseline ratchet: known PRE-EXISTING legacy violations are tolerated (burn-down list);
   // any NEW violation fails the guard immediately. Regenerate with GUARD_WRITE_BASELINE=1.
   if (process.env.GUARD_WRITE_BASELINE === "1") {
-    writeFileSync(BASELINE_PATH, JSON.stringify(all.map(vkey).sort(), null, 2) + "\n")
-    console.log(`  ⚙  wrote baseline: ${all.length} known violations → scripts/schema-drift-baseline.json`)
+    writeFileSync(BASELINE_PATH, JSON.stringify(all.filter((v) => v.op !== "select(embed)").map(vkey).sort(), null, 2) + "\n")
+    console.log(`  ⚙  wrote baseline: ${all.filter((v) => v.op !== "select(embed)").length} known direct-column violations → scripts/schema-drift-baseline.json`)
   }
+  // Embedded-relation columns are a NEWLY added check (see parseEmbeddedSelects). They
+  // get their OWN ratchet: the direct-column baseline is held at zero-zero on purpose,
+  // and folding a new check's pre-existing findings into it would erase that standard.
+  // New check, own burn-down, same rule — nothing new may be added.
+  const embedAll = all.filter((v) => v.op === "select(embed)")
+  const directAll = all.filter((v) => v.op !== "select(embed)")
+
+  if (process.env.GUARD_WRITE_BASELINE === "1") {
+    writeFileSync(EMBED_BASELINE_PATH, JSON.stringify(embedAll.map(vkey).sort(), null, 2) + "\n")
+    console.log(`  ⚙  wrote embed baseline: ${embedAll.length} known embedded-column violations`)
+  }
+  const embedBaseline = new Set<string>(existsSync(EMBED_BASELINE_PATH) ? JSON.parse(readFileSync(EMBED_BASELINE_PATH, "utf8")) : [])
+  const embedFresh = embedAll.filter((v) => !embedBaseline.has(vkey(v)))
+  check(`no NEW embedded-relation column drift (burn-down: ${embedBaseline.size} pre-existing — each one fails its ENTIRE query)`,
+    embedFresh.length === 0,
+    embedFresh.slice(0, 20).map((x) => `${x.file}: ${x.table}.${x.column}`).join(" | "))
+  if (embedBaseline.size > 0) {
+    console.log(`  ⚠  ${embedBaseline.size} embedded-column violations remain. PostgREST rejects the WHOLE`)
+    console.log("     query when an embed names a missing column, so each is a silent dead surface:")
+    for (const k of [...embedBaseline].sort()) console.log(`       ${k.replace("::select(embed)", "")}`)
+  }
+
+  const all2 = directAll
   const baseline = new Set<string>(existsSync(BASELINE_PATH) ? JSON.parse(readFileSync(BASELINE_PATH, "utf8")) : [])
-  const fresh = all.filter((v) => !baseline.has(vkey(v)))
-  const fixed = [...baseline].filter((k) => !all.some((v) => vkey(v) === k))
+  const fresh = all2.filter((v) => !baseline.has(vkey(v)))
+  const fixed = [...baseline].filter((k) => !all2.some((v) => vkey(v) === k))
 
   check(`scanned ${files.length} files — NO NEW schema drift (baseline: ${baseline.size} legacy, burn-down)`, fresh.length === 0,
     fresh.slice(0, 20).map((x) => `${x.file}: ${x.table}.${x.column} (${x.op}) [owner: ${resolveTableManager(x.table).label}]`).join(" | "))

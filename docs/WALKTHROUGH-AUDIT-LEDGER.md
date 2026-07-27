@@ -334,9 +334,67 @@ Live-verified: seeded a `global_settings` row, wrote every relocated field from 
 new home saves, confirmed all nine round-trip (including the three that existed only on the
 retired page), then deleted the row to restore the tenant's prior state.
 
-- **(c)** Target-area scoping is **brokerage-level** — it tells the platform which territories are
-  active so the scrapers know where to look. `farm_territories` is a *different* concept: what a
-  user picks for their own marketing. They are not to be merged. **Recorded, not yet built.**
+### (c) Target areas are brokerage-level — and the scrapers could not read one
+
+> *"the target area scoping is brokerage level because it gives the platform/global the active
+> brokerage territories that the scrappers need to find leads. farm areas is what the users
+> determine for their marketing."*
+
+The distinction is already modelled correctly and needed no merge:
+
+| Table | Scope | Purpose |
+|---|---|---|
+| `lead_scraping_markets` (+ `lead_scraping_property_params`) | brokerage | what the scrapers may scrape — already resolved by active subscription and brokerage |
+| `farm_territories` | agent | the user's own marketing farm, with its own monthly budget |
+| `subscriber_service_areas` | brokerage / team / agent | where the subscriber operates |
+
+Checking the ruling against the code found something much worse than a scoping question.
+
+**The lead scrapers could not return a single territory.** `SCRAPE_TERRITORY_SELECT` requested
+`lead_scraping_property_params (id, is_active, target_sites, min_price, max_price)`. That table has
+**neither `is_active` nor `target_sites`** — verified against the live schema. PostgREST rejects the
+**entire** query when an embedded select names a column the embedded table lacks, and the caller
+discarded the error:
+
+```ts
+const { data: markets } = await supabase...   // error never checked
+```
+
+So `markets` was null, `territories` came back `[]`, and the resolver reported
+`no_active_territories` — which reads as *"nobody has configured a market yet"* rather than *"this
+query cannot succeed"*. The top of the entire funnel, dead by construction, reporting as idle.
+
+Fixed: the two phantom columns dropped, the real params selected (**including `property_types`,
+which already existed on the brokerage-level params row and was simply never read** — that is
+walkthrough [49]'s second half, brokerage-scoped exactly as ruled), and a `territory_query_failed`
+reason added so a broken query can never again look like an empty pipeline. The identical phantom
+`is_active` in `lib/kernel/scraping.ts` was fixed with it.
+
+### The guard blind spot this exposed — embedded selects
+
+`parseSelectColumns` deliberately **strips** embedded relations, because their columns belong to a
+different table. Stripping is correct; checking nothing afterwards was not. `parseEmbeddedSelects`
+now resolves `embedded_table (a, b, c)` and checks each column against *that* table's snapshot.
+Aliased embeds (`alias:fk(...)`) are skipped — the alias is not a table name — and
+`related(count)` is exempt as PostgREST's aggregate.
+
+The first run found **27 more of the same defect** across 15 files. Each one fails its whole query,
+so each is a silently dead surface. Confirmed phantom against live schema:
+`transactions.sale_price` (live: `purchase_price`), `transactions.property_type`,
+`listings.sale_price` (live: `sold_price`), `listings.property_address`, `listings.listing_price`,
+`messages.content`, `agents.first_name`/`last_name` (those live on `users`),
+`brokerages.compliance_rules`, `brokerages.code`, `showing_feedback.feedback_text`/`rating`/
+`sentiment`, `ai_isa_qualifications.created_at`/`qualification_notes`, and others.
+
+**These are recorded, not fixed.** Each needs its consumer checked as well as its select, which is
+per-file judgement rather than a rename. They are in `scripts/schema-drift-embed-baseline.json`, and
+the guard prints every one on each run.
+
+The new check got its **own ratchet** rather than joining the existing baseline. The direct-column
+ratchet is deliberately held at **zero-zero** (a guard asserts it), and folding a newly-added
+check's pre-existing findings into that file would have erased a standard the project set on
+purpose. Same rule, separate list: nothing new may be added.
+
 
 ## Cross-tenant defects from free-text matching
 

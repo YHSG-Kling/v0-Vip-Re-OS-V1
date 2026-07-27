@@ -49,7 +49,8 @@ export interface ScrapingMarket {
   last_scraped_at: string | null
   lead_scraping_property_params: Array<{
     id: string
-    is_active: boolean
+    // NOTE: this table has no is_active column — the property params are active
+    // whenever the row exists. Selecting it made PostgREST reject the whole query.
     min_price?: number | null
     max_price?: number | null
     min_beds?: number | null
@@ -310,7 +311,7 @@ export async function runScrapeSourcesChronologically(
         id, brokerage_id, name, city, state, zip_codes, counties,
         enabled_sources, monthly_budget_usd, spend_this_month,
         max_records_per_run, priority, last_scraped_at,
-        lead_scraping_property_params (id, is_active, min_price, max_price, min_beds, max_beds, days_on_market_min, property_types),
+        lead_scraping_property_params (id, min_price, max_price, min_beds, max_beds, days_on_market_min, property_types),
         lead_scraping_motivated_params (id, is_active, signal_types, lookback_days, facebook_group_urls, reddit_subreddits)
       `)
       .eq('is_active', true)
