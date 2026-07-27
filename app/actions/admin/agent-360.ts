@@ -202,11 +202,18 @@ export async function getAgent360Action(
     depositReceivedAt: c.deposit_received_at ?? null,
     createdAt: c.created_at,
   }))
-  // Live commissions.status CHECK vocabulary is pending | paid | disputed.
-  // Only 'pending' is genuinely OWED — a disputed commission is contested, not
-  // payable, so folding it into pending would overstate what the agent is due.
+  // Live agent_commissions.status CHECK vocabulary is pending | approved | paid |
+  // disputed, and the lifecycle is pending → approved → paid (lib/kernel/financial.ts:
+  // COMMISSION_TRANSITIONS). BOTH pending and approved are genuinely OWED — 'approved'
+  // means authorized to disburse but not yet disbursed, which is still money the agent
+  // is due. Every other consumer already pairs them (financial-kernel's agent summary,
+  // auto-dispute's eligibility filter, loadCommissionQueue's workflow list); this panel
+  // was the outlier, and treating approved as neither owed nor paid dropped those rows
+  // out of the manager's view entirely. A disputed commission is contested rather than
+  // payable, so it keeps its own bucket and stays out of the owed total.
+  const OWED_STATUSES = new Set(["pending", "approved"])
   const paid = allCommissions.filter(c => c.status === "paid")
-  const pending = allCommissions.filter(c => c.status === "pending")
+  const pending = allCommissions.filter(c => OWED_STATUSES.has(c.status))
   const disputed = allCommissions.filter(c => c.status === "disputed")
 
   const badges = (badgesRes.data ?? []).map((b: any): Agent360Badge => {

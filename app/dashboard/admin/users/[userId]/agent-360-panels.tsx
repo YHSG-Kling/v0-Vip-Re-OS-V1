@@ -111,6 +111,11 @@ export function Agent360Panels({ data, targetUserId }: { data: Agent360; targetU
                     <Badge className="bg-emerald-100 text-emerald-800 text-xs shrink-0">Paid</Badge>
                   ) : c.status === "disputed" ? (
                     <Badge className="bg-red-100 text-red-800 text-xs shrink-0">Disputed</Badge>
+                  ) : c.status === "approved" ? (
+                    // Authorized to disburse but not yet paid — owed, and further along
+                    // than a pending row. Showing it as "Awaiting deposit" would misread
+                    // the stage the money is actually at.
+                    <Badge className="bg-indigo-100 text-indigo-800 text-xs shrink-0">Approved — awaiting payout</Badge>
                   ) : c.depositReceivedAt ? (
                     <Badge className="bg-blue-100 text-blue-800 text-xs shrink-0">Deposit received</Badge>
                   ) : (
