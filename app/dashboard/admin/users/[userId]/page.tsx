@@ -105,7 +105,7 @@ export default async function UserEditPage({ params }: Props) {
           agentProfile={agentProfile}
           offices={offices}
         />
-        {agent360 && <Agent360Panels data={agent360} />}
+        {agent360 && <Agent360Panels data={agent360} targetUserId={userId} />}
       </div>
     </div>
   )

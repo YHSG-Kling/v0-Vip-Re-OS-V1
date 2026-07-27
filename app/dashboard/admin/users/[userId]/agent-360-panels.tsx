@@ -1,7 +1,8 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { DollarSign, Target, Trophy, TrendingUp, Receipt } from "lucide-react"
+import { DollarSign, Target, Trophy, TrendingUp, Receipt, GraduationCap, Users, ClipboardCheck } from "lucide-react"
 import type { Agent360 } from "@/app/actions/admin/agent-360"
+import { AssignAcademyControl, OnboardingControl } from "./agent-360-controls"
 
 /**
  * Agent 360 — the manager's read of one agent, rendered server-side beside the
@@ -23,7 +24,7 @@ const GOAL_LABELS: Record<string, string> = {
   avg_days_to_close: "Avg Days to Close",
 }
 
-export function Agent360Panels({ data }: { data: Agent360 }) {
+export function Agent360Panels({ data, targetUserId }: { data: Agent360; targetUserId: string }) {
   const p = data.production
   const capPct = p.capAmount && p.capAmount > 0 && p.capProgress != null
     ? Math.min(100, Math.round((p.capProgress / p.capAmount) * 100))
@@ -151,6 +152,117 @@ export function Agent360Panels({ data }: { data: Agent360 }) {
                   +{r.points} — {r.reason ?? "activity"} · {new Date(r.createdAt).toLocaleDateString()}
                 </p>
               ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Onboarding — where the agent is, with apply/pause/resume (walkthrough [47]) */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <ClipboardCheck className="h-4 w-4 text-indigo-600" />
+            Onboarding
+            {data.onboarding && (
+              <Badge variant="outline" className="ml-auto text-xs capitalize">
+                {data.onboarding.certified ? "Certified" : data.onboarding.status.replace(/_/g, " ")}
+              </Badge>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {data.onboarding ? (
+            <div>
+              <div className="flex items-center justify-between text-sm mb-1">
+                <span className="text-muted-foreground">
+                  Day {data.onboarding.currentDay ?? 1} · {data.onboarding.completionPercentage}% complete
+                </span>
+              </div>
+              <div className="h-2 bg-muted rounded-full overflow-hidden">
+                <div className="h-full rounded-full bg-indigo-500" style={{ width: `${Math.min(100, data.onboarding.completionPercentage)}%` }} />
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Onboarding hasn&apos;t been started for this agent.</p>
+          )}
+          <OnboardingControl targetUserId={targetUserId} status={data.onboarding?.status ?? null} />
+        </CardContent>
+      </Card>
+
+      {/* Academy — current assignments + assign a class */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <GraduationCap className="h-4 w-4 text-purple-600" />
+            Academy
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {data.academy.assignments.length > 0 ? (
+            <div className="divide-y">
+              {data.academy.assignments.map(a => (
+                <div key={a.moduleId} className="py-1.5 flex items-center justify-between gap-2 text-sm">
+                  <span className="truncate">{a.title}</span>
+                  <Badge
+                    variant="outline"
+                    className={`text-xs capitalize shrink-0 ${a.status === "completed" ? "bg-emerald-100 text-emerald-800" : ""}`}
+                  >
+                    {a.status}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No classes assigned yet.</p>
+          )}
+          <AssignAcademyControl
+            targetUserId={targetUserId}
+            availableModules={data.academy.availableModules}
+            assignedModuleIds={data.academy.assignments.map(a => a.moduleId)}
+          />
+        </CardContent>
+      </Card>
+
+      {/* Referral downline — tenant-configured program (recruiting split/fee) */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Users className="h-4 w-4 text-teal-600" />
+            Referral Downline
+            {data.downline.programOffered && (
+              <span className="ml-auto text-xs font-normal text-muted-foreground">
+                {data.downline.splitToAgent}% to recruiter
+                {data.downline.monthlyFee != null ? ` · ${usd(data.downline.monthlyFee)}/mo program` : ""}
+              </span>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {!data.downline.programOffered ? (
+            <p className="text-sm text-muted-foreground">
+              Your brokerage hasn&apos;t enabled an agent-referral program — set the recruiter split in
+              Brokerage settings to offer one.
+            </p>
+          ) : data.downline.recruits.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No referred agents yet — this agent&apos;s referral link is on their Refer page.</p>
+          ) : (
+            <div className="divide-y">
+              {data.downline.recruits.map((r, i) => (
+                <div key={i} className="py-1.5 flex items-center justify-between gap-2 text-sm">
+                  <span className="truncate">{r.name}</span>
+                  <span className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs text-muted-foreground">{new Date(r.createdAt).toLocaleDateString()}</span>
+                    {r.provisioned || r.status === "joined" ? (
+                      <Badge className="bg-emerald-100 text-emerald-800 text-xs">Joined</Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-xs capitalize">{r.status.replace(/_/g, " ")}</Badge>
+                    )}
+                  </span>
+                </div>
+              ))}
+              <p className="pt-2 text-xs text-muted-foreground">
+                {data.downline.joinedCount} joined of {data.downline.recruits.length} referred
+              </p>
             </div>
           )}
         </CardContent>

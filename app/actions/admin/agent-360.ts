@@ -25,6 +25,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { revalidatePath } from "next/cache"
 
 const MANAGER_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
 
@@ -73,6 +74,26 @@ export interface Agent360 {
     badges: Agent360Badge[]
     recentPoints: Array<{ points: number; reason: string | null; createdAt: string }>
   }
+  /** agent_onboarding row (null = never started — "apply" creates it). */
+  onboarding: {
+    status: string
+    completionPercentage: number
+    currentDay: number | null
+    certified: boolean
+  } | null
+  /** Agent-recruiting downline — the tenant decides the program via
+   *  brokerages.recruiting_split_to_agent / recruiting_monthly_fee. */
+  downline: {
+    programOffered: boolean
+    splitToAgent: number | null
+    monthlyFee: number | null
+    joinedCount: number
+    recruits: Array<{ name: string; status: string; provisioned: boolean; createdAt: string }>
+  }
+  academy: {
+    assignments: Array<{ moduleId: string; title: string; status: string }>
+    availableModules: Array<{ id: string; title: string }>
+  }
 }
 
 /** Same tier ladder getAgentPointsAndTier computes (thresholds in code, no table). */
@@ -112,7 +133,8 @@ export async function getAgent360Action(
   if (!agent) return { ok: true, data: null }
 
   const year = new Date().getFullYear()
-  const [goalsRes, commissionsRes, badgesRes, pointsLogRes, activeTxRes] = await Promise.all([
+  const [goalsRes, commissionsRes, badgesRes, pointsLogRes, activeTxRes,
+         onboardingRes, brokerageRes, recruitsRes, assignmentsRes, modulesRes] = await Promise.all([
     svc.from("agent_goals")
       .select("goal_type, target_value, current_value, year")
       .eq("agent_id", agent.id)
@@ -137,6 +159,32 @@ export async function getAgent360Action(
       .select("id", { count: "exact", head: true })
       .eq("agent_id", agent.id)
       .in("status", ["active", "under_contract", "closing"]),
+    svc.from("agent_onboarding")
+      .select("status, completion_percentage, current_day, certification_achieved")
+      .eq("agent_id", agent.id)
+      .eq("brokerage_id", caller.brokerage_id)
+      .maybeSingle(),
+    svc.from("brokerages")
+      .select("recruiting_split_to_agent, recruiting_monthly_fee")
+      .eq("id", caller.brokerage_id)
+      .maybeSingle(),
+    svc.from("recruits")
+      .select("first_name, last_name, status, provisioned, created_at")
+      .eq("recruiter_agent_id", agent.id)
+      .eq("brokerage_id", caller.brokerage_id)
+      .order("created_at", { ascending: false })
+      .limit(25),
+    svc.from("learning_assignments")
+      .select("module_id, status, learning_modules ( title )")
+      .eq("agent_user_id", targetUserId)
+      .eq("brokerage_id", caller.brokerage_id)
+      .limit(50),
+    svc.from("learning_modules")
+      .select("id, title")
+      .eq("brokerage_id", caller.brokerage_id)
+      .eq("status", "published")
+      .order("title")
+      .limit(100),
   ])
 
   const allCommissions = (commissionsRes.data ?? []).map((c: any): Agent360Payment => ({
@@ -195,6 +243,143 @@ export async function getAgent360Action(
           createdAt: p.created_at,
         })),
       },
+      onboarding: onboardingRes.data
+        ? {
+            status: (onboardingRes.data.status as string) ?? "in_progress",
+            completionPercentage: Number(onboardingRes.data.completion_percentage) || 0,
+            currentDay: onboardingRes.data.current_day != null ? Number(onboardingRes.data.current_day) : null,
+            certified: !!onboardingRes.data.certification_achieved,
+          }
+        : null,
+      downline: {
+        // The tenant offers the program by setting a split — no split, no program.
+        programOffered: brokerageRes.data?.recruiting_split_to_agent != null,
+        splitToAgent: brokerageRes.data?.recruiting_split_to_agent != null
+          ? Number(brokerageRes.data.recruiting_split_to_agent) : null,
+        monthlyFee: brokerageRes.data?.recruiting_monthly_fee != null
+          ? Number(brokerageRes.data.recruiting_monthly_fee) : null,
+        joinedCount: (recruitsRes.data ?? []).filter((r: any) => r.provisioned || r.status === "joined").length,
+        recruits: (recruitsRes.data ?? []).map((r: any) => ({
+          name: `${r.first_name ?? ""} ${r.last_name ?? ""}`.trim() || "Recruit",
+          status: r.status ?? "new",
+          provisioned: !!r.provisioned,
+          createdAt: r.created_at,
+        })),
+      },
+      academy: {
+        assignments: (assignmentsRes.data ?? []).map((a: any) => {
+          const mod = Array.isArray(a.learning_modules) ? a.learning_modules[0] : a.learning_modules
+          return { moduleId: a.module_id as string, title: mod?.title ?? "Module", status: a.status ?? "open" }
+        }),
+        availableModules: (modulesRes.data ?? []).map((m: any) => ({ id: m.id as string, title: m.title as string })),
+      },
     },
   }
+}
+
+// ── Mutations — assign academy classes + apply/pause onboarding ───────────────
+
+async function requireManager(): Promise<
+  | { ok: true; brokerageId: string; userId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthenticated" }
+  const { data: caller } = await supabase
+    .from("users").select("user_type, role, brokerage_id").eq("id", user.id).maybeSingle()
+  const role = (caller?.user_type ?? caller?.role ?? "") as string
+  if (!MANAGER_ROLES.has(role)) return { ok: false, error: "Forbidden" }
+  if (!caller?.brokerage_id) return { ok: false, error: "No brokerage on your profile" }
+  return { ok: true, brokerageId: caller.brokerage_id as string, userId: user.id }
+}
+
+/**
+ * Assign a published academy module to the agent. Upsert on the live
+ * UNIQUE(agent_user_id, module_id) — re-assigning an existing assignment is a
+ * friendly no-op, never a duplicate row. Status vocabulary is the live CHECK:
+ * new assignments open as 'open'.
+ */
+export async function assignAcademyModuleAction(
+  input: { targetUserId: string; moduleId: string },
+): Promise<{ ok: boolean; error?: string; duplicate?: boolean }> {
+  const auth = await requireManager()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+
+  const { data: mod } = await svc
+    .from("learning_modules")
+    .select("id, brokerage_id, status")
+    .eq("id", input.moduleId)
+    .maybeSingle()
+  if (!mod || mod.brokerage_id !== auth.brokerageId) return { ok: false, error: "Module not found in your academy" }
+  if (mod.status !== "published") return { ok: false, error: "Module isn't published yet" }
+
+  const { data: existing } = await svc
+    .from("learning_assignments")
+    .select("id")
+    .eq("agent_user_id", input.targetUserId)
+    .eq("module_id", input.moduleId)
+    .maybeSingle()
+  if (existing) return { ok: true, duplicate: true }
+
+  const { error } = await svc.from("learning_assignments").insert({
+    brokerage_id: auth.brokerageId,
+    module_id: input.moduleId,
+    agent_user_id: input.targetUserId,
+    signal_source: "manager_assigned",
+    status: "open",
+  })
+  if (error) return { ok: false, error: error.message }
+  revalidatePath(`/dashboard/admin/users/${input.targetUserId}`)
+  return { ok: true }
+}
+
+/**
+ * Apply / pause / resume onboarding for the agent ("apply or remove
+ * onboarding" — walkthrough [47]). Applying with no row creates one; the live
+ * status vocabulary is in_progress | completed | paused, so "remove" is pause.
+ */
+export async function setAgentOnboardingStatusAction(
+  input: { targetUserId: string; status: "in_progress" | "paused" },
+): Promise<{ ok: boolean; error?: string }> {
+  const auth = await requireManager()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+
+  const { data: agent } = await svc
+    .from("agents").select("id")
+    .eq("user_id", input.targetUserId)
+    .eq("brokerage_id", auth.brokerageId)
+    .maybeSingle()
+  if (!agent) return { ok: false, error: "No agent record for this user" }
+
+  const { data: existing } = await svc
+    .from("agent_onboarding")
+    .select("id, status")
+    .eq("agent_id", agent.id)
+    .eq("brokerage_id", auth.brokerageId)
+    .maybeSingle()
+
+  if (!existing) {
+    if (input.status === "paused") return { ok: false, error: "Onboarding was never started for this agent" }
+    const { error } = await svc.from("agent_onboarding").insert({
+      agent_id: agent.id,
+      user_id: input.targetUserId,
+      brokerage_id: auth.brokerageId,
+      status: "in_progress",
+      current_day: 1,
+      completion_percentage: 0,
+      start_date: new Date().toISOString(),
+    })
+    if (error) return { ok: false, error: error.message }
+  } else {
+    if (existing.status === "completed") return { ok: false, error: "Onboarding is already completed" }
+    const { error } = await svc.from("agent_onboarding")
+      .update({ status: input.status, updated_at: new Date().toISOString() })
+      .eq("id", existing.id)
+    if (error) return { ok: false, error: error.message }
+  }
+  revalidatePath(`/dashboard/admin/users/${input.targetUserId}`)
+  return { ok: true }
 }
