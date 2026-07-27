@@ -481,6 +481,42 @@ instead of erroring. Probe rows deleted — zero residue.
 (free text as a foreign-key substitute) and `collaborative_search_members.email` (scoped to a
 tenant-owned search id, so bounded — flagged as shape, not a leak).
 
+## `addContactNote` ×3 — investigated, needs the owner's call
+
+Three exports share the name. Two are real; one is a delegate.
+
+| Where | Writes to | Reached from |
+|---|---|---|
+| `app/actions/contacts.ts:300` | **`activities`** (`activity_type: "note"`) | `app/crm/page.tsx` — the note box a user actually types into |
+| `app/actions/communications.ts:311` | **`contact_notes`** (+ syncs the note out to GHL) | `app/actions/crm.ts:434`, a thin `@deprecated` delegate |
+
+**The duplication is not the two functions — it is the two tables.** A note lands in `activities`
+or in `contact_notes` depending on which entry point was used.
+
+What I checked before concluding anything: the contact timeline (`crm.ts`) reads **both**
+`activities` and `contact_notes` and merges them, so **no note is invisible to the user today**.
+This is drift, not an outage — worth stating plainly, because the same shape elsewhere in this
+audit *was* an outage and it would be easy to overclaim here.
+
+Why it still matters:
+- `contact_notes` carries **`is_private`** and `author_user_id`. `activities` has no equivalent, so
+  a private broker note is only expressible on one of the two paths.
+- Editing or deleting a note has to know which table it came from.
+- Only the `contact_notes` path syncs the note out to GHL.
+
+**This is the owner's call, and I am not making it**, because the two candidates trade off against
+each other rather than one being strictly better:
+- Keep **`contact_notes`**: purpose-built, has the privacy flag, already syncs outward. Cost —
+  `activities` is the ledger the AI managers read for context, so notes would need to be surfaced
+  into that context deliberately.
+- Keep **`activities`**: one ledger, already read by 173 files and by the AI managers. Cost —
+  `is_private` and `author_user_id` must be added, and the GHL sync re-attached.
+
+My recommendation, for what it is worth: keep **`contact_notes`** as the store and write a
+lightweight `activities` row alongside it so the managers still see that a note happened. That
+preserves the privacy flag and the outbound sync without blinding the AI context. But it is a
+data-model decision with a customer-visible privacy feature attached, so it should be yours.
+
 ## Cannot be closed headless
 
 Two loops need a preview environment with real credentials, and are honestly still open:
