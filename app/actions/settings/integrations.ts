@@ -35,12 +35,48 @@ export type ProviderOverride = {
   updated_at: string
 }
 
+/** Roles allowed to see or change a brokerage's provider credentials. */
+const CREDENTIAL_ADMIN_ROLES = ["admin", "broker", "broker_admin", "superadmin"]
+
+/**
+ * Resolve the caller's brokerage AND enforce that they may administer its provider
+ * credentials.
+ *
+ * This file previously had NO authorization on any export. platform_credentials holds
+ * provider API keys, access tokens and account bindings, and provider_overrides decides
+ * which provider each capability routes through — yet every producing agent in a
+ * brokerage could read them, and upsertPlatformCredential / togglePlatformCredential /
+ * upsertProviderOverride let them write. The surface is also reachable from the AGENT
+ * navigation ("Settings → Integrations"), so this was not a theoretical path.
+ *
+ * Scope was never the problem — every query is already brokerage-scoped, so this was
+ * never cross-tenant. It was privilege: credential administration is the broker's, not
+ * an individual agent's. Same role set and fail-closed shape as the requireBrokerAdmin
+ * used by the sibling provider-settings and global-settings actions.
+ *
+ * `role` is read alongside `user_type` because user_type is canonical but older rows
+ * carry the value in role — matching how the rest of the codebase resolves this.
+ */
 async function getBrokerageId(supabase: Awaited<ReturnType<typeof createClient>>) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
-  const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
+  const { data: profile } = await supabase
+    .from("users")
+    .select("brokerage_id, user_type, role")
+    .eq("id", user.id)
+    .maybeSingle()
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
-  return { userId: user.id, brokerageId: profile.brokerage_id }
+
+  const resolvedRole = String(
+    (profile as { user_type?: string | null; role?: string | null }).user_type ??
+      (profile as { role?: string | null }).role ??
+      "",
+  )
+  if (!CREDENTIAL_ADMIN_ROLES.includes(resolvedRole)) {
+    throw new Error("Forbidden: provider credentials are managed by your broker or admin")
+  }
+
+  return { userId: user.id, brokerageId: profile.brokerage_id as string }
 }
 
 export async function getPlatformCredentials(): Promise<PlatformCredential[]> {

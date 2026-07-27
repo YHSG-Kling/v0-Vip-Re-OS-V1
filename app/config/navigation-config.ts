@@ -178,7 +178,12 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'settings-general', label: 'General', href: '/dashboard/settings/general' },
           { id: 'settings-calendar', label: 'Calendar Sync', href: '/dashboard/settings/calendar' },
           { id: 'settings-branding', label: 'Branding', href: '/dashboard/settings/branding' },
-          { id: 'settings-integrations', label: 'Integrations', href: '/dashboard/settings/integrations' },
+          // Walkthrough [28]: this AGENT entry pointed at the brokerage's provider
+          // CREDENTIAL surface (platform_credentials API keys, provider overrides) — a
+          // broker/admin responsibility, not an individual agent's. Agents connect their
+          // own accounts in the Connection Center; the credential surface stays in the
+          // admin navigation, where it is reached by roles that may actually manage it.
+          { id: 'settings-connections', label: 'Connections', href: '/settings/connections' },
           { id: 'settings-isa-calling', label: 'ISA Calling', href: '/dashboard/settings/isa-calling' },
           { id: 'settings-notification-rules', label: 'Notification Rules', href: '/dashboard/settings/notification-rules' },
           { id: 'settings-assistant', label: 'Assistant Voice', href: '/dashboard/settings/assistant' },
