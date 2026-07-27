@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { listEmailTemplates } from '@/app/actions/settings/list-email-templates';
 import { EmailTemplateEditor } from '@/app/components/settings/EmailTemplateEditor';
 import { SettingsCard } from '@/app/components/settings/SettingsCard';
+import { TemplatePreview } from './template-preview';
 
 export default function EmailTemplatesPage() {
   const [templates, setTemplates] = useState<any[]>([]);
@@ -57,6 +58,30 @@ export default function EmailTemplatesPage() {
         template={selected ?? undefined}
         onSuccess={() => { setSelected(null); loadTemplates(); }}
       />
+
+      {/* Walkthrough [35] "no place to view them" — a name list is not viewing a
+          template. This renders the selected template as the email it will send, and
+          flags merge fields that would reach a client unresolved. */}
+      {selected && (
+        <TemplatePreview
+          subject={selected.subject ?? ''}
+          body={selected.body ?? ''}
+          variables={selected.variables}
+        />
+      )}
+
+      {loading && (
+        <p className="text-sm text-gray-500">Loading your templates…</p>
+      )}
+
+      {!loading && templates.length === 0 && (
+        <SettingsCard title="Existing Templates">
+          <p className="text-sm text-gray-600">
+            No templates yet — the form above creates your first one. Saved templates appear
+            here, and clicking one opens it with a live preview.
+          </p>
+        </SettingsCard>
+      )}
 
       {!loading && templates.length > 0 && (
         <SettingsCard title="Existing Templates">

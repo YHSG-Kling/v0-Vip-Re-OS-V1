@@ -73,7 +73,7 @@ residue. Locked by `test:identity-self-heal` (21 checks), owned by `data_steward
 | 27 | General settings names the *app*, not the tenant | OPEN | Should carry tenant identity, not app naming |
 | 30 | Facebook OAuth connect button failed → bounced to profile | OPEN | Needs a live OAuth round trip; cannot close headless |
 | 31–34 | CRM sync / phone-SMS / brand voice / brand settings | CLOSED | Advanced connections surface retained per the keep-the-advanced rule |
-| 35 | Email templates — no place to view them | OPEN | List/preview view missing |
+| 35 | Email templates — no place to view them | CLOSED | A name list is not viewing a template. Selecting one now renders the actual email — subject and body with merge tokens resolved — and flags tokens that would reach a client as literal text. Also added the missing empty and loading states (the list was hidden entirely at zero templates). Verified live: the shipped helper caught `{{property_address}}` as unresolved on a real seeded template; probe removed, 0 residue |
 | 36–37 | Notifications, commission calculation | CLOSED | Present and wired |
 | 38 | Agent downline? | CLOSED | Referral downline in Agent 360, tenant-gated on the recruiting program |
 | 43 | User Management + Invite can only change Roles | CLOSED | `d46dc92`/`6eff902` Agent 360 · `770838f` Staff 360 — full user view, not just role edit |
