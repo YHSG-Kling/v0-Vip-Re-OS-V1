@@ -3,6 +3,7 @@ import { createClient }           from "@/lib/supabase/server"
 import { startOfferDraft }        from "@/app/actions/buyer-offers"
 import { canBuyerSubmitOffers }   from "@/app/actions/buyer-lifecycle-core"
 import { NewOfferPageClient }     from "./new-offer-page-client"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 interface Props {
   params:      Promise<{ contactId: string }>
@@ -38,6 +39,13 @@ export default async function NewOfferPage({ params, searchParams }: Props) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Load agent profile for brokerage_id
   const { data: profile } = await supabase
     .from("users")

@@ -8,6 +8,7 @@ import {
   getGhostRecoveryQueue,
 } from "@/app/actions/ai-isa"
 import { ISACampaignsClient } from "./components/ISACampaignsClient"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const metadata = {
   title: "ISA Campaigns | VIP Real Estate AI OS",
@@ -19,6 +20,13 @@ export default async function ISACampaignsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/auth/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Resolve brokerage_id from user profile
   const { data: profile } = await supabase
     .from("users")

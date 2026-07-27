@@ -10,6 +10,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { FormsLibraryClient } from "./FormsLibraryClient"
 import type { Metadata } from "next"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const metadata: Metadata = {
   title: "Forms Library",
@@ -24,6 +25,13 @@ export default async function FormsLibraryPage() {
   const { data: { user }, error: authErr } = await supabase.auth.getUser()
   if (authErr || !user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Resolve actor identity (kernel pattern: agents table is source of truth for role-scoped data)
   const { data: agentRow } = await supabase
     .from("agents")

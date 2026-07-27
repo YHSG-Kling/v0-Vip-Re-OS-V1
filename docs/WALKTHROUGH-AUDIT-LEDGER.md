@@ -45,6 +45,13 @@ landing on a work page that redirects them away instead of repairing the account
    because the one function that could fix it declined to look. It now runs the canonical
    `createOrRepairUserDomainRecords` for that state, using the brokerage's real `plan_tier`.
 
+**Correction (later in the same session):** the first pass fixed only 14 pages — the ones resolving
+through `getAgentContext`. A shape-based sweep found the MAJORITY of pages read `users.brokerage_id`
+directly and redirect on it, a second spelling of the identical bounce. **95 pages** now self-heal.
+Several items below were marked CLOSED (class) before that was true — including [98] Inbox,
+[121] Voice intelligence and [133] ISA calling. They are genuinely closed now. The guard was
+rewritten to scan every page by shape rather than by a fixed list, so neither spelling can regress.
+
 Verified against the live schema, not asserted: the broken state was confirmed to **exist on real
 accounts** (6 users with no brokerage; 4 agent-type users with no `agents` row — real accounts, left
 untouched). A disposable probe reproduced the state, the repair resolved both `brokerage_id` and

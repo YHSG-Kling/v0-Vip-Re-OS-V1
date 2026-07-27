@@ -10,6 +10,7 @@ import {
   ISA_CAPABILITY_CATALOG,
 } from "@/lib/ai-isa/settings-types"
 import { IsaCallingClient } from "./isa-calling-client"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const metadata = {
   title: "ISA Calling | Settings",
@@ -26,6 +27,13 @@ async function IsaCallingContent() {
   } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Heal an incomplete account IN PLACE before reading the brokerage — don't bounce
   // the user off the ISA Calling settings they're configuring.
   await ensureAgentBrokerage()

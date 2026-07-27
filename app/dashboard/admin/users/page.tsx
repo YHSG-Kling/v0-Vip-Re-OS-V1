@@ -8,6 +8,7 @@ import { Users, AlertTriangle, CheckCircle2, Building2, ArrowRight } from "lucid
 import { InviteUserButton } from "./invite-user-button"
 import { EditUserButton } from "./edit-user-button"
 import { SEAT_ROLES, effectiveSeatLimit, parseSeatOverride, tierLabel } from "@/lib/kernel/tier-role-matrix"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = "force-dynamic"
 
@@ -35,6 +36,13 @@ export default async function AdminUsersPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Auth gate — use user_type (canonical), check maybeSingle to avoid throwing
   const { data: profile } = await supabase
     .from("users")

@@ -14,7 +14,7 @@
 //   2. ensureAgentBrokerage repairs an account that IS anchored to a brokerage but is MISSING its
 //      agents row. That state used to return early as "nothing to heal" and stayed broken forever.
 
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 
 const ROOT = process.cwd()
@@ -50,6 +50,37 @@ for (const p of SELF_HEALING_PAGES) {
   const s = src(p)
   check(`${p.replace("app/", "")} resolves via ensureAgentContextInPlace`,
     /ensureAgentContextInPlace\(\)/.test(s) && !/\bawait getAgentContext\(\)/.test(s))
+}
+
+// The first pass of this guard only knew about pages resolving through getAgentContext.
+// The MAJORITY of pages read users.brokerage_id directly and redirect on it — a second
+// spelling of the same bounce that the original sweep walked straight past. This check
+// is shape-based rather than a fixed list, so a new page written either way is caught.
+console.log("\n[no page bounces on a brokerage it could have provisioned]")
+{
+  const walk = (dir: string, out: string[] = []): string[] => {
+    for (const e of readdirSync(dir)) {
+      const p = join(dir, e)
+      if (statSync(p).isDirectory()) walk(p, out)
+      else if (e === "page.tsx") out.push(p)
+    }
+    return out
+  }
+  const pages = walk(join(ROOT, "app"))
+  const offenders: string[] = []
+  for (const p of pages) {
+    const s = readFileSync(p, "utf8")
+    const bouncesOnBrokerage =
+      /!(?:userRow|profile|userData|ctx|context)\?\.brokerage_id/.test(s) && /redirect\(/.test(s)
+    if (bouncesOnBrokerage && !s.includes("ensureAgentContextInPlace")) {
+      offenders.push(p.replace(ROOT + "/", ""))
+    }
+  }
+  check(
+    `every page that redirects on a missing brokerage_id first tries to provision it (${pages.length} pages scanned)`,
+    offenders.length === 0,
+  )
+  if (offenders.length) for (const o of offenders.slice(0, 10)) console.log(`      ${o}`)
 }
 
 console.log("\n[the resolver actually provisions]")

@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge"
 import { RequiredDocsSettingsClient } from "./required-docs-settings-client"
 import { RequiredDocRowActions } from "./required-doc-row-actions"
 import { getSupportedPresetStates } from "@/lib/compliance/required-doc-presets"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = "force-dynamic"
 
@@ -15,6 +16,13 @@ export default async function RequiredDocsSettingsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const { data: profile } = await supabase
     .from("users")
     .select("brokerage_id, team_id, user_type, first_name, last_name")

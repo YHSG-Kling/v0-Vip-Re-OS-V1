@@ -51,6 +51,7 @@ import { BrokerRecruitingActionBar } from "./components/broker-recruiting-action
 import { BrokerProviderHealthActions } from "./components/broker-provider-health-actions"
 import { BrokerTeamAssignmentBar } from "./components/broker-team-assignment-bar"
 import { SetupReadinessCard } from "@/app/components/onboarding/setup-readiness-card"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export default async function BrokerageDashboard({
   searchParams,
@@ -65,6 +66,13 @@ export default async function BrokerageDashboard({
 
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   let brokerageId = params.brokerageId
   if (!brokerageId) {
     // Look up via users.brokerage_id — brokerages table has no owner_id column

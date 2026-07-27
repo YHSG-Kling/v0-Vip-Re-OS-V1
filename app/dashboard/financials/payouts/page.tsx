@@ -12,6 +12,7 @@ import {
 } from '../components/os'
 import { loadCommissionQueueAction } from '@/app/actions/financial-kernel'
 import { CommissionDisputeQueue } from '../components/commission-dispute-queue'
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const dynamic = 'force-dynamic'
 
@@ -20,6 +21,13 @@ export default async function PayoutsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // user_type not role
   const { data: profile } = await supabase
     .from('users')
