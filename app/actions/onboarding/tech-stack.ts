@@ -36,6 +36,47 @@ export interface IntegrationStatusResult {
 
 // ─── GET INTEGRATION STATUS ───────────────────────────────────────────────────
 
+/**
+ * Roles allowed to administer the BROKERAGE's shared provider credentials.
+ *
+ * Every export in this file already verified that the caller belongs to the brokerage
+ * they passed — so this was never cross-tenant. What it did not check was PRIVILEGE:
+ * these rows are written with owner_type "brokerage", so any producing agent could
+ * overwrite or delete the credentials the whole tenant runs on. Same defect, and same
+ * fix, as app/actions/settings/integrations.ts.
+ */
+const TECH_STACK_ADMIN_ROLES = ["admin", "broker", "broker_admin", "superadmin"]
+
+/** Authenticate, confirm tenant membership, AND confirm the caller may administer it. */
+async function requireBrokerageAdmin(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  brokerageId: string,
+): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
+  if (authError || !user) return { ok: false, error: "Unauthorized" }
+
+  const { data: userData } = await supabase
+    .from("users")
+    .select("brokerage_id, user_type, role")
+    .eq("id", user.id)
+    .maybeSingle()
+
+  if (!userData || userData.brokerage_id !== brokerageId) {
+    return { ok: false, error: "Unauthorized: Brokerage mismatch" }
+  }
+
+  const resolvedRole = String(
+    (userData as { user_type?: string | null; role?: string | null }).user_type ??
+      (userData as { role?: string | null }).role ??
+      "",
+  )
+  if (!TECH_STACK_ADMIN_ROLES.includes(resolvedRole)) {
+    return { ok: false, error: "Forbidden: provider credentials are managed by your broker or admin" }
+  }
+
+  return { ok: true, userId: user.id }
+}
+
 export async function getIntegrationStatus(
   brokerageId: string
 ): Promise<{ data: IntegrationStatusResult | null; error: string | null }> {
@@ -43,21 +84,8 @@ export async function getIntegrationStatus(
     const supabase = await createClient()
 
     // Verify session
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { data: null, error: "Unauthorized" }
-    }
-
-    // Verify user belongs to brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData || userData.brokerage_id !== brokerageId) {
-      return { data: null, error: "Unauthorized: Brokerage mismatch" }
-    }
+    const gate = await requireBrokerageAdmin(supabase, brokerageId)
+    if (!gate.ok) return { data: null, error: gate.error }
 
     // Get all brokerage_integrations records
     const { data: integrations } = await supabase
@@ -126,21 +154,8 @@ export async function saveCredentials(
     const supabase = await createClient()
 
     // Verify session
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    // Verify user belongs to brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData || userData.brokerage_id !== brokerageId) {
-      return { success: false, error: "Unauthorized: Brokerage mismatch" }
-    }
+    const gate = await requireBrokerageAdmin(supabase, brokerageId)
+    if (!gate.ok) return { success: false, error: gate.error }
 
     const metadata = PROVIDER_METADATA[provider]
     if (!metadata) {
@@ -214,21 +229,8 @@ export async function deleteCredentials(
     const supabase = await createClient()
 
     // Verify session
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    // Verify user belongs to brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData || userData.brokerage_id !== brokerageId) {
-      return { success: false, error: "Unauthorized: Brokerage mismatch" }
-    }
+    const gate = await requireBrokerageAdmin(supabase, brokerageId)
+    if (!gate.ok) return { success: false, error: gate.error }
 
     // Delete platform_credentials
     const { error: credError } = await supabase
@@ -270,21 +272,8 @@ export async function markTechStackComplete(
     const supabase = await createClient()
 
     // Verify session
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    // Verify user belongs to brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData || userData.brokerage_id !== brokerageId) {
-      return { success: false, error: "Unauthorized: Brokerage mismatch" }
-    }
+    const gate = await requireBrokerageAdmin(supabase, brokerageId)
+    if (!gate.ok) return { success: false, error: gate.error }
 
     // Verify required integrations are connected
     const { data: statusData, error: statusError } = await getIntegrationStatus(brokerageId)
@@ -297,7 +286,7 @@ export async function markTechStackComplete(
     }
 
     // Resolve agent ID
-    const agentId = await resolveAgentId(supabase, user.id)
+    const agentId = await resolveAgentId(supabase, gate.userId)
 
     // Insert agent_step_completions
     const { error: stepError } = await supabase
@@ -342,7 +331,7 @@ export async function markTechStackComplete(
         entityId: onboarding.id,
         fromState: onboarding.status || "brand_configured",
         toState: "integrations_configured",
-        actorUserId: user.id,
+        actorUserId: gate.userId,
         eventType: "integrations_configured",
         metadata: {
           connectedCount: statusData.connectedCount,
@@ -378,21 +367,8 @@ export async function getMaskedCredentials(
     const supabase = await createClient()
 
     // Verify session
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { data: null, error: "Unauthorized" }
-    }
-
-    // Verify user belongs to brokerage
-    const { data: userData } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .single()
-
-    if (!userData || userData.brokerage_id !== brokerageId) {
-      return { data: null, error: "Unauthorized: Brokerage mismatch" }
-    }
+    const gate = await requireBrokerageAdmin(supabase, brokerageId)
+    if (!gate.ok) return { data: null, error: gate.error }
 
     // Get credentials
     const { data: credential } = await supabase
