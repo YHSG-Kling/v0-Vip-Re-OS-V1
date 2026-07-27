@@ -13,6 +13,7 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { resolveTransactionProvider } from "@/lib/integrations/transaction-providers/resolve-transaction-provider"
 import { z } from "zod"
+import { PROPERTY_TYPES } from "@/lib/constants"
 
 // ============================================
 // AI LISTING INTAKE SYSTEM
@@ -68,7 +69,7 @@ interface ListingIntakeData {
   city: string
   state: string
   zipCode: string
-  propertyType: "single_family" | "condo" | "townhouse" | "multi_family" | "land" | "commercial"
+  propertyType: (typeof PROPERTY_TYPES)[number]
   sellerId?: string | null
   listPrice?: number
   propertyDetails?: any
@@ -107,7 +108,7 @@ Provide realistic estimates in JSON format:
   "stories": number,
   "garage": number,
   "pool": boolean,
-  "propertyType": "single_family" | "condo" | "townhouse",
+  "propertyType": "single_family" | "condo" | "townhouse" | "multi_family" | "land" | "commercial" | "other",
   "style": "modern" | "traditional" | "craftsman" | "mediterranean" | "contemporary",
   "roofType": string,
   "hvac": string,
@@ -129,7 +130,11 @@ Provide realistic estimates in JSON format:
         stories: z.number(),
         garage: z.number(),
         pool: z.boolean(),
-        propertyType: z.enum(["single_family", "condo", "townhouse"]),
+        // Canonical vocabulary (lib/constants PROPERTY_TYPES). This enum used to be
+        // narrowed to three values while the surrounding types allowed six, so a
+        // multi-family, land or commercial listing was forced to one of the three and
+        // silently mis-typed. One list, used everywhere.
+        propertyType: z.enum(PROPERTY_TYPES),
         style: z.string(),
         roofType: z.string(),
         hvac: z.string(),
@@ -860,7 +865,7 @@ export async function runCompleteListingIntake(params: {
   state: string
   zipCode: string
   sellerId: string
-  propertyType: "single_family" | "condo" | "townhouse" | "multi_family" | "land" | "commercial"
+  propertyType: (typeof PROPERTY_TYPES)[number]
   hasHoa?: boolean
   hasPool?: boolean
 }) {
