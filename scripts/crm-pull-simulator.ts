@@ -110,8 +110,8 @@ console.log("\n── SOURCE: tenant connections hub ──")
   check("settings page: forwarding instructions + last-30d proof counts per portal",
     page.includes("auto-forward") && page.includes("last 30 days"))
   const matrix = src("lib/providers/tenancy-matrix.ts")
-  check("strategy recorded: Twilio convergence (ConversationRelay/Conversations/Voice Intelligence/fraud) + Vapi sunset lane + zyte backup + sinch/plivo/plaid/buffer dropped",
-    matrix.includes("ConversationRelay") && matrix.includes("SUNSET LANE") && matrix.includes("BACKUP scraper lane") && matrix.includes("DROPPED by owner decision"))
+  check("strategy recorded: Twilio convergence (ConversationRelay/Conversations/Voice Intelligence/fraud) + Vapi RETIRED + zyte backup + sinch/plivo/plaid/buffer dropped",
+    matrix.includes("ConversationRelay") && matrix.includes("RETIRED voice lane") && matrix.includes("BACKUP scraper lane") && matrix.includes("DROPPED by owner decision"))
   check("registry burn domain tenant_connections_hub", "tenant_connections_hub" in MAINTENANCE_DOMAINS)
 }
 
@@ -140,12 +140,22 @@ console.log("\n── SOURCE: one pipeline, gated end to end ──")
   check("all vendor egress via the connector gateway (no bespoke fetch)", pull.includes("callConnector") && !/\bfetch\(/.test(pull))
   check("cursor-resumable pages (honest 'more remain')", pull.includes("nextCursor"))
   const actions = src("app/actions/lead-import/crm-pull-actions.ts")
-  check("the pull feeds processImportRows — the SAME gated pipeline as CSV", actions.includes("processImportRows({ importId, rows: page.rows })"))
+  check("the pull feeds importParsedContacts — the SAME gated pipeline as the CSV white-glove import",
+    actions.includes("parseContactRecords(page.rows)") && actions.includes("importParsedContacts({"))
   check("per-run cap with resumable cursor reported honestly", actions.includes("MAX_PAGES_PER_RUN") && actions.includes("nextCursor: cursor"))
-  check("tenant-keyed credentials (platform_credentials, brokerage-scoped)", actions.includes('.eq("brokerage_id", ctx.brokerageId)') && actions.includes("platform_credentials"))
-  const card = src("app/dashboard/admin/import/crm-pull-card.tsx")
-  check("import wizard hosts the pull card with the gate explained to the user", card.includes("same") && card.includes("notes") && card.includes("Consent is never assumed"))
-  check("card mounted on the import page", src("app/dashboard/admin/import/page.tsx").includes("<CrmPullCard />"))
+  check("tenant-keyed credentials (platform_credentials, scoped to the TARGET brokerage)",
+    actions.includes('.eq("brokerage_id", input.brokerageId)') && actions.includes("platform_credentials"))
+  check("pulling is a PLATFORM-STAFF operation on an explicit target tenant (not a tenant self-serve button)",
+    actions.includes('gateStaffAction("tenants")') && actions.includes("auditStaffAction") && actions.includes("brokerageId: string"))
+  // An all-invalid page must NOT abort the run: those rows are already counted in
+  // `failed`, and breaking here strands the cursor on the same page forever.
+  check("an all-invalid page keeps paginating; only errors raised WITH importable rows are fatal",
+    /if \(!r\.ok && r\.error && parsed\.rows\.length > 0\)/.test(actions))
+  const panel = src("app/dashboard/superadmin/brokerages/[id]/tenant-crm-pull-panel.tsx")
+  check("superadmin tenant panel hosts the pull with the gate explained to the operator",
+    panel.includes("same safeguards") && panel.includes("consent is never imported as opted-in"))
+  check("panel mounted on the superadmin brokerage page",
+    src("app/dashboard/superadmin/brokerages/[id]/page.tsx").includes("<TenantCrmPullPanel brokerageId={brokerage.id} />"))
 
   const cron = src("app/api/cron/open-house-followup/route.ts")
   check("open-house post-event cron: 1–25h window + completed-flip idempotency", cron.includes("25 * 3_600_000") && cron.includes("processEventFollowups"))

@@ -390,7 +390,8 @@ export default async function AcquisitionPage() {
                       {(recruitROIByRecruit as any[]).map((r: any) => (
                         <tr key={r.id} className="hover:bg-muted/50">
                           <td className="py-2 px-2 font-medium">
-                            {r.agents ? `${r.agents.first_name ?? ""} ${r.agents.last_name ?? ""}`.trim() : "Unknown"}
+                            {/* Names come from users — agents carries no first_name/last_name. */}
+                            {`${r.agents?.users?.first_name ?? ""} ${r.agents?.users?.last_name ?? ""}`.trim() || "Unknown"}
                           </td>
                           <td className="py-2 px-2 text-right text-red-600">${(r.total_recruiting_cost ?? 0).toLocaleString()}</td>
                           <td className="py-2 px-2 text-right text-green-600">${(r.lifetime_brokerage_net ?? 0).toLocaleString()}</td>

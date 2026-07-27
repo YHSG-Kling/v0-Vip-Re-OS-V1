@@ -129,7 +129,14 @@ export async function runCrmImportAction(input: {
       created += r.inserted
       skippedDuplicates += r.skippedDuplicates
       failed += r.errors.length
-      if (!r.ok && r.error) { pullError = r.error; break }
+      // A page whose rows ALL fail validation (parsed.rows.length === 0 → "No
+      // importable rows") is NOT fatal: those failures are already counted in
+      // `failed`, and later pages may still hold valid contacts. Aborting here
+      // would also strand the run — we break before `cursor = page.nextCursor`,
+      // so the returned cursor points back at the same bad page forever.
+      // Genuinely fatal errors (brokerage missing, no owner agent, dedupe scan
+      // failure) can only arise once there WERE importable rows, so gate on that.
+      if (!r.ok && r.error && parsed.rows.length > 0) { pullError = r.error; break }
     }
 
     pages += 1
