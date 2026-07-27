@@ -116,3 +116,65 @@ if (newViolations > 0) {
   process.exit(1)
 }
 console.log(" ✅ TENANT_SCOPE_PASS — no new unscoped tenant-table queries (the surface can only shrink)")
+
+// ── CHECK 2: binding a FREE-TEXT-identified user into the caller's tenant ─────
+//
+// A different shape from the unscoped-table reads above, and one this guard used to
+// miss entirely. Three surfaces in this codebase resolved a user from an
+// attacker-supplied string — an email typed into a form field — with NO brokerage
+// filter, then wrote a row carrying the CALLER's brokerage_id and that foreign
+// user_id. The row looks correctly scoped in isolation; the binding is what crosses
+// the tenant line. (Academy assign-to-agent, academy assign-to-staff, and the
+// feature-governance trial grant were the three; all now scope the lookup.)
+//
+// Some global lookups are correct and must NOT be forced to scope — you cannot filter
+// by tenant before the user has one. Each exemption below names WHY, so a future
+// reader can challenge it rather than assume it was rubber-stamped.
+const GLOBAL_LOOKUP_EXEMPT: Record<string, string> = {
+  "app/actions/demo-login.ts":
+    "login — identity is being established, there is no caller tenant to scope by",
+  "app/actions/auth/signup-brokerage.ts":
+    "signup — the tenant does not exist yet",
+  "app/actions/privacy/data-subject-requests.ts":
+    "DSAR intake resolves WHICH tenant the subject belongs to; fulfillment is separately role-gated",
+  "app/actions/superadmin/platform-staff.ts":
+    "platform staff administration is global BY DEFINITION and is superadmin-gated",
+  "app/api/recruiting/provision-agent/route.ts":
+    "looks up by recruit.email where the recruit row is already brokerage-scoped; auth emails are global",
+  "lib/kernel/users.ts":
+    "resolveEmailHolder MUST search globally — users.email is unique platform-wide and a stale holder would break the invite. The BINDING is what needed guarding, and inviteTenantMember now refuses to re-home a user who already belongs to another brokerage unless the caller is a superadmin.",
+}
+
+{
+  const offenders: string[] = []
+  const LOOKUP_RE = /from\((["'])users\1\)([\s\S]{0,300}?)\.eq\((["'])(email|phone|username)\3/g
+
+  const scanDirs = ["app", "lib"]
+  const allFiles: string[] = []
+  for (const d of scanDirs) for (const abs of walk(join(root, d))) allFiles.push(abs)
+
+  for (const file of allFiles) {
+    const rel = relative(root, file)
+    if (GLOBAL_LOOKUP_EXEMPT[rel]) continue
+    const src = readFileSync(file, "utf8")
+    LOOKUP_RE.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = LOOKUP_RE.exec(src))) {
+      const window = m[2] + src.slice(LOOKUP_RE.lastIndex, LOOKUP_RE.lastIndex + 300)
+      if (!/\.eq\((["'])brokerage_id\1/.test(window)) {
+        offenders.push(`${rel} :: users.${m[4]}`)
+      }
+    }
+  }
+
+  console.log(`\n── TENANT-BINDING GUARD ──`)
+  console.log(`  free-text user lookups must be tenant-scoped (${Object.keys(GLOBAL_LOOKUP_EXEMPT).length} documented global exemptions)`)
+  if (offenders.length > 0) {
+    console.log(`  ✗ ${offenders.length} unscoped free-text user lookup(s) — add .eq("brokerage_id", ...) or document why global is correct:`)
+    for (const o of [...new Set(offenders)]) console.log(`     - ${o}`)
+    console.log(" ❌ TENANT_BINDING_FAIL — a user resolved from a typed string must belong to the caller's tenant")
+    process.exit(1)
+  }
+  console.log("  ✅ TENANT_BINDING_PASS — no surface binds a foreign user via a typed identifier")
+}
+

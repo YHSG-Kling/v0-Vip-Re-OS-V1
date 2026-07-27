@@ -683,6 +683,49 @@ export async function inviteTenantMember(params: TenantMemberParams): Promise<Te
   const { authUserId: linked, orphanToMerge } = await resolveEmailHolder(service, email)
   let authUserId = linked
 
+  // CROSS-TENANT CAPTURE GUARD.
+  //
+  // resolveEmailHolder searches users.email GLOBALLY — it has to, because that column is
+  // unique across the platform and a stale holder would otherwise break the invite. But
+  // when it returns an existing auth-linked user, the upsert below rewrites that row's
+  // brokerage_id to the INVITER's. So a broker who typed the email of an agent at another
+  // brokerage did not "invite" them — they moved them, silently, out of their tenant and
+  // into their own, taking the agents/onboarding/RBAC provisioning with them. Every
+  // broker, admin and team_lead with invite rights could do it knowing only an email.
+  //
+  // An invite may legitimately RE-invite someone already in this brokerage (idempotent),
+  // and a superadmin may legitimately move a user between tenants — that is what the
+  // superadmin tenant-users path is for. Anything else is refused.
+  if (authUserId) {
+    const { data: holder } = await service
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", authUserId)
+      .maybeSingle()
+    const holderBrokerageId = (holder as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+
+    if (holderBrokerageId && holderBrokerageId !== brokerageId) {
+      const { data: caller } = await service
+        .from("users")
+        .select("user_type, platform_role")
+        .eq("id", callerUserId)
+        .maybeSingle()
+      const callerType = (caller as { user_type?: string | null } | null)?.user_type ?? ""
+      const callerPlatformRole = (caller as { platform_role?: string | null } | null)?.platform_role ?? ""
+      const isSuperadmin = callerType === "superadmin" || callerPlatformRole === "superadmin"
+
+      if (!isSuperadmin) {
+        return {
+          success: false,
+          userId: null,
+          agentId: null,
+          error:
+            "That email already belongs to a user at another brokerage. They must leave it before they can be invited here.",
+        }
+      }
+    }
+  }
+
   if (!authUserId) {
     try {
       const { data, error } = await service.auth.admin.inviteUserByEmail(email, {

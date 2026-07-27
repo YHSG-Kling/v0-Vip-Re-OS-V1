@@ -124,6 +124,34 @@ residue. Locked by `test:identity-self-heal` (21 checks), owned by `data_steward
 
 ---
 
+## Cross-tenant sweep (found by re-auditing my own claims, not from the document)
+
+Three surfaces resolved a user from an attacker-supplied **email typed into a form field**
+and then wrote a row carrying the *caller's* `brokerage_id` with that foreign `user_id`.
+The row looks correctly scoped in isolation — the **binding** is what crosses the line.
+
+| Surface | Fixed in |
+|---|---|
+| Academy assign-to-agent · assign-to-staff | `2647700` (VADE-reported) |
+| Feature-governance trial grant | `447d7cd` |
+| **`inviteTenantMember` — a full tenant CAPTURE, not just a binding** | this commit |
+
+The invite path was the worst of the three. `resolveEmailHolder` searches `users.email`
+globally — it must, the column is unique platform-wide. But when it found an existing
+auth-linked user, the upsert below rewrote **that user's `brokerage_id` to the inviter's**.
+A broker who typed the email of an agent at another brokerage did not invite them, they
+*moved* them — silently, along with agents/onboarding/RBAC provisioning. Reachable by any
+broker, admin or team_lead with invite rights, knowing only an email.
+
+Now refused unless the caller is a superadmin (who legitimately moves users between tenants
+via the superadmin path). Verified on real accounts: the test broker is REFUSED, the
+platform superadmin is still allowed.
+
+Locked by a new TENANT-BINDING check inside `test:tenant-scope`, written by shape with six
+documented global exemptions — each naming *why* global is correct there, so a future reader
+can challenge it rather than assume it was rubber-stamped. That check found the invite
+capture itself: my own hand-run sweep had only walked `app/`, missing `lib/`.
+
 ## Duplicate sweep
 
 Per the owner's rule — *"we either merge them or keep one and let the others removed but only after
