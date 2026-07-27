@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -149,6 +150,92 @@ export default function VideoAnalyticsPage() {
             </Select>
           </div>
         </div>
+
+        {/* ── Your AI team's read ────────────────────────────────────────────
+            Deterministic diagnosis over the SAME stats the cards below show —
+            video marketing has known failure signatures, so the dashboard
+            names which one you have instead of leaving you to infer it.
+            Signal ownership: video/render assets are the asset_manager's
+            domain (lib/kernel/manager-registry.ts); this read composes that
+            manager's existing production signal and mints nothing new. */}
+        {stats && (() => {
+          const reads: Array<{ severity: "urgent" | "warn" | "good"; text: string; cta?: string; href?: string }> = []
+          const views = stats.totalViews ?? 0
+          const completion = stats.avgCompletionRate ?? 0
+          const ctr = stats.avgClickThroughRate ?? 0
+
+          if (stats.videoCount === 0) {
+            reads.push({
+              severity: "warn",
+              text: "No videos published yet — listing tours and market explainers are the fastest trust-builders your AI team can produce.",
+              cta: "Create a video", href: "/dashboard/videos/create",
+            })
+          } else if (views === 0) {
+            reads.push({
+              severity: "urgent",
+              text: `${stats.videoCount} video${stats.videoCount === 1 ? "" : "s"} produced but zero views — this is a DISTRIBUTION problem, not a content problem. The work is done; it just isn't reaching anyone.`,
+              cta: "Push to social", href: "/dashboard/marketing",
+            })
+          } else {
+            if (views >= 50 && stats.totalLeadConversions === 0) {
+              reads.push({
+                severity: "urgent",
+                text: `${views.toLocaleString()} views and zero lead conversions — people are watching but nothing asks them to act. Every video needs a single clear next step (book a tour, get the home value).`,
+                cta: "Review campaigns", href: "/dashboard/marketing",
+              })
+            }
+            if (views >= 25 && completion > 0 && completion < 30) {
+              reads.push({
+                severity: "warn",
+                text: `Average completion is ${Math.round(completion)}% — viewers leave early, which is almost always the first three seconds. Lead with the address, the price drop, or the question, not a logo.`,
+              })
+            }
+            if (views >= 25 && completion >= 60 && ctr < 2) {
+              reads.push({
+                severity: "warn",
+                text: `Strong ${Math.round(completion)}% completion but only ${ctr.toFixed(1)}% click-through — the content holds attention and then lets it go. The ask is missing or buried.`,
+              })
+            }
+            const top = stats.topPerforming?.[0]
+            if (top && top.totalViews > 0) {
+              reads.push({
+                severity: "good",
+                text: `"${top.title}" is your best performer — ${top.totalViews.toLocaleString()} views, ${Math.round(top.completionRate)}% completion${top.leadConversions > 0 ? `, ${top.leadConversions} lead${top.leadConversions === 1 ? "" : "s"}` : ""}. Make more in this format.`,
+                cta: "Repurpose it", href: "/dashboard/videos/create",
+              })
+            }
+          }
+
+          const STYLE: Record<string, string> = {
+            urgent: "border-red-200 bg-red-50/60", warn: "border-amber-200 bg-amber-50/60", good: "border-emerald-200 bg-emerald-50/60",
+          }
+          const DOT: Record<string, string> = { urgent: "bg-red-500", warn: "bg-amber-500", good: "bg-emerald-500" }
+
+          return (
+            <Card className="border-indigo-200 mb-8">
+              <CardContent className="p-4 space-y-2">
+                <p className="text-sm font-semibold mb-1">Your AI team&apos;s read</p>
+                {reads.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    Video performance is healthy across the board — nothing needs attention this period.
+                  </p>
+                ) : reads.map((r, i) => (
+                  <div key={i} className={`flex items-start justify-between gap-3 rounded-lg border px-3 py-2.5 ${STYLE[r.severity]}`}>
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      <span className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${DOT[r.severity]}`} />
+                      <p className="text-sm leading-relaxed">{r.text}</p>
+                    </div>
+                    {r.cta && r.href && (
+                      <Link href={r.href} className="shrink-0">
+                        <Button size="sm" variant="outline" className="h-8 text-xs">{r.cta}</Button>
+                      </Link>
+                    )}
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )
+        })()}
 
         {/* Overview Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4 mb-8">
