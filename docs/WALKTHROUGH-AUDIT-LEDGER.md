@@ -610,3 +610,59 @@ target area"*. That reads two ways, and they build differently:
 Reading 2 adds a dimension someone then has to maintain per territory. I have not guessed
 between them, because the choice determines the schema. The vocabulary work above is the
 precondition either way and is done.
+
+---
+
+## The guard chain covers 22% of the guards — measured, not wired
+
+`test:crm-pull` turned out not to be a one-off. Auditing every `test:`/`check:`/`harness:`
+script in `package.json` against what CI actually invokes:
+
+| | count |
+|---|---|
+| `test:` / `check:` / `harness:` scripts declared | 548 |
+| reachable from a CI entry point | **119** |
+| never run by anything | **429** |
+
+CI has exactly four entry points — `guard` and `guard:compliance` (`guards.yml`),
+`test:e2e:flows` (`e2e.yml`), and `test:production-smoke` (`post-deploy-smoke.yml`). The other
+429 simulators are invoked by nothing: not a workflow, not a chain, not another script.
+
+**That headline number overstates the problem, and the split is the point.** 275 of the orphans
+open a Supabase client and seed/assert/cleanup against the live database. Those cannot run in
+GitHub Actions without a seeded tenant and service-role credentials, and leaving them out is a
+defensible call rather than an oversight. The remaining **150 are pure in-memory simulators** —
+no client, no network, no fixtures — and there is no cost argument for their absence.
+
+So I ran all 150 rather than guessing:
+
+- **147 pass.** Seconds each, no environment, no credentials.
+- **3 fail** — `manager-governance` (24/25), `stripe-writethrough` (22/23), `cda-pdf-fill` (7/13).
+
+**The three reds are pre-existing, not this branch.** Each fails identically on `origin/main`
+(`f18bce1`) — same assertion, same counts — so they have been red for as long as they have been
+unwired, which is the whole reason nobody noticed:
+
+- `manager-governance` — one manager is not fully GOVERNED; the other 24 checks pass.
+- `stripe-writethrough` — the entitlement engine does not read both spellings of an override
+  value tolerantly. It *writes* the canonical one correctly, so this is a read-path gap.
+- `cda-pdf-fill` — the worst of the three. Six failures: mapped values are not written onto the
+  PDF, and agent commission and split do not round-trip. The guard's own honest cases (a value
+  targeting a non-existent field is skipped, never invented) pass.
+
+**Deliberately not wired in.** Adding 147 green scripts to `guard` is a real improvement, but it
+is a CI-time and ownership decision, and the 3 reds each describe a live product gap that wants
+triage rather than a `|| true`. The measurement is the deliverable; the wiring is the owner's
+call. Same reasoning as the 74 tenant-scope sites above — measured and left visible rather than
+baselined unreviewed.
+
+Four scripts resolve to no simulator file, and none is a coverage gap:
+
+- `test:e2e` / `test:e2e:ui` — Playwright against a running server; `e2e.yml` runs
+  `test:e2e:flows` instead.
+- `harness:integrity` — an alias for 11 guards that are **all already in `guard`**. Redundant,
+  not missing.
+- `check:kernel-client-leaks` — a bare `rg` with no pass/fail semantics. It exits 0 on 58
+  matches, most of them legitimate server-side `processKernelEvent` imports in API routes. It
+  cannot be wired as a guard until someone gives it an assertion; as written it would either
+  always pass or always fail depending on how you read the exit code.
