@@ -64,7 +64,7 @@ residue. Locked by `test:identity-self-heal` (21 checks), owned by `data_steward
 | 10 | Visitor tracking — snippet with no directions | OPEN | Needs install instructions + verification ping |
 | 12 | Billing navigation knocked me to login | CLOSED (class) | `24e7e55` — identity bounce |
 | 14 | Usage meter — monitor AI/storage/voice consumption | OPEN | Confirm platform-only placement, then give it a read |
-| 16 | System intelligence says all providers up with none configured | OPEN | Readiness must distinguish *up* from *unconfigured* |
+| 16 | System intelligence says all providers up with none configured | CLOSED | `2cdf615` — the panel invented `enabled ?? true` with no override on file. Now reads the canonical credential-backed `getBrokerageProviderReadiness` (a duplicate-status merge, keeping the advanced). Measured on the walkthrough tenant: old claimed 7/7 active; truth is 4/63 usable, 36 waiting on the broker, 23 on platform staff |
 | 18 | Audit trail — basic reporting | CLOSED | `87f8698` — honest capped-window limitation stated |
 | 20 | AI audit trail — plain | CLOSED | `c7e5a10` — unreviewed AI output + age of oldest |
 | 22 | Error handler — plain dashboard | CLOSED | `5a0ae11` — "one broken thing repeating" triage |
@@ -129,6 +129,7 @@ a full investigation of dependencies and business process"*:
 | Market Studio vs Ops Center | **Merged** | Tasks 26, 38 |
 | Three floating AI assistants | **Merged into one** | Task 54 |
 | Two KB embedding pipelines | **Merged into one** | Task 18 |
+| Provider status: System Intelligence's own vs `getBrokerageProviderReadiness` | **Kept the readiness evaluator** (credential-backed) | `2cdf615` — the panel's private notion defaulted unconfigured providers to "on"; the evaluator reads four credential stores plus env presence |
 
 ## Cannot be closed headless
 
