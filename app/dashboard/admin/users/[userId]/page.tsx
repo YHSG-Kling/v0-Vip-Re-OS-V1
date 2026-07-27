@@ -6,6 +6,8 @@ import { UserEditForm } from "./user-edit-form"
 import { Agent360Panels } from "./agent-360-panels"
 import { getAgentProfileForUserAction, type AgentProfile, type OfficeOption } from "@/app/actions/admin/agent-profile"
 import { getAgent360Action, type Agent360 } from "@/app/actions/admin/agent-360"
+import { Staff360Panels } from "./staff-360-panels"
+import { getStaff360Action, type Staff360 } from "@/app/actions/admin/staff-360"
 
 export const dynamic = "force-dynamic"
 
@@ -77,8 +79,18 @@ export default async function UserEditPage({ params }: Props) {
     if (r360.ok) agent360 = r360.data
   }
 
+  // Staff 360 — the same depth for NON-agent staff (TC, ISA, compliance,
+  // admin, broker): their queue, work trail, and academy assignments. Every
+  // user type gets a full operating view, not just a role dropdown.
+  let staff360: Staff360 | null = null
+  if (!agent360) {
+    const rStaff = await getStaff360Action(userId)
+    if (rStaff.ok) staff360 = rStaff.data
+  }
+  const hasWideView = !!agent360 || !!staff360
+
   return (
-    <div className={`p-6 mx-auto space-y-6 ${agent360 ? "max-w-6xl" : "max-w-2xl"}`}>
+    <div className={`p-6 mx-auto space-y-6 ${hasWideView ? "max-w-6xl" : "max-w-2xl"}`}>
       <div className="flex items-center gap-3">
         <Link
           href="/dashboard/admin/users"
@@ -90,13 +102,15 @@ export default async function UserEditPage({ params }: Props) {
       </div>
 
       <div>
-        <h1 className="text-2xl font-bold">{agent360 ? "Agent Profile" : "Edit User"}</h1>
+        <h1 className="text-2xl font-bold">
+          {agent360 ? "Agent Profile" : staff360 ? "Staff Profile" : "Edit User"}
+        </h1>
         <p className="text-sm text-muted-foreground mt-1">
           {target.email}
         </p>
       </div>
 
-      <div className={agent360 ? "grid grid-cols-1 lg:grid-cols-2 gap-6 items-start" : ""}>
+      <div className={hasWideView ? "grid grid-cols-1 lg:grid-cols-2 gap-6 items-start" : ""}>
         <UserEditForm
           user={target}
           callerRole={callerRole}
@@ -106,6 +120,7 @@ export default async function UserEditPage({ params }: Props) {
           offices={offices}
         />
         {agent360 && <Agent360Panels data={agent360} targetUserId={userId} />}
+        {!agent360 && staff360 && <Staff360Panels data={staff360} targetUserId={userId} />}
       </div>
     </div>
   )
