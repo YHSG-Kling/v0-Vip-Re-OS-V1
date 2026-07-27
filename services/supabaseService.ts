@@ -38,7 +38,10 @@ export const supabaseService = {
   async healthCheck() {
     try {
       const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("contacts").select("count").limit(1)
+      // `select("count")` asked PostgREST for a column named "count", which contacts
+      // does not have — the health check reported "not connected" whenever the database
+      // was perfectly healthy. head+exact is the real row-count probe and touches no columns.
+      const { error } = await supabase.from("contacts").select("*", { count: "exact", head: true })
       if (error) throw error
       return { success: true, connected: true }
     } catch (error) {
@@ -927,33 +930,56 @@ export const supabaseService = {
   // FINANCIAL
   // =====================================================
 
-  async getCommissions(agentId?: string) {
-    try {
-      const supabase = getSupabaseAdmin()
-      let query = supabase.from("commissions").select("*, transactions(*)")
-
-      if (agentId) {
-        query = query.eq("agent_id", agentId)
-      }
-
-      const { data, error } = await query.order("created_at", { ascending: false })
-      if (error) throw error
-
-      return data || []
-    } catch (error) {
-      console.error("[Supabase Service] Error fetching commissions:", error)
-      return []
+  /**
+   * Commission rows for a bounded scope.
+   *
+   * Reads `agent_commissions`. The `commissions` twin this used to select from was
+   * dropped in m284, and because the failure landed in a catch that returned `[]`,
+   * every caller read "this agent has no commissions" instead of "this is broken".
+   * Errors now propagate — a caller that cannot load commissions must say so rather
+   * than render an empty statement.
+   *
+   * The scope is required. This runs on the service-role client, so an unbounded
+   * select reaches across brokerages; callers pass the agents (or the brokerage)
+   * they have already established the viewer is entitled to.
+   */
+  async getCommissions(scope: { agentId?: string; agentIds?: string[]; brokerageId?: string }) {
+    const agentIds = (scope.agentIds ?? []).filter(Boolean)
+    if (!scope.agentId && agentIds.length === 0 && !scope.brokerageId) {
+      throw new Error("getCommissions requires a scope (agentId, agentIds or brokerageId)")
     }
+
+    const supabase = getSupabaseAdmin()
+    let query = supabase.from("agent_commissions").select("*, transactions(*)")
+
+    if (scope.brokerageId) query = query.eq("brokerage_id", scope.brokerageId)
+    if (scope.agentId) query = query.eq("agent_id", scope.agentId)
+    else if (agentIds.length > 0) query = query.in("agent_id", agentIds)
+
+    const { data, error } = await query.order("created_at", { ascending: false })
+    if (error) throw error
+
+    return data || []
   },
 
-  async getBusinessExpenses(agentId?: string) {
+  /**
+   * Business expenses for a bounded scope — the same contract as getCommissions above,
+   * and required for the same reason: this is the service-role client, so a call with
+   * no scope returns every brokerage's expenses.
+   */
+  async getBusinessExpenses(scope: { agentId?: string; agentIds?: string[]; brokerageId?: string }) {
     try {
+      const agentIds = (scope.agentIds ?? []).filter(Boolean)
+      if (!scope.agentId && agentIds.length === 0 && !scope.brokerageId) {
+        throw new Error("getBusinessExpenses requires a scope (agentId, agentIds or brokerageId)")
+      }
+
       const supabase = getSupabaseAdmin()
       let query = supabase.from("business_expenses").select("*")
 
-      if (agentId) {
-        query = query.eq("agent_id", agentId)
-      }
+      if (scope.brokerageId) query = query.eq("brokerage_id", scope.brokerageId)
+      if (scope.agentId) query = query.eq("agent_id", scope.agentId)
+      else if (agentIds.length > 0) query = query.in("agent_id", agentIds)
 
       const { data, error } = await query.order("expense_date", { ascending: false })
       if (error) throw error
@@ -1095,22 +1121,11 @@ export const supabaseService = {
   // DOCUMENTS & MILESTONES
   // =====================================================
 
-  async getTransactionMilestones(transactionId: string) {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase
-        .from("transaction_milestones")
-        .select("*")
-        .eq("transaction_id", transactionId)
-        .order("milestone_date", { ascending: true })
-
-      if (error) throw error
-      return data || []
-    } catch (error) {
-      console.error("[Supabase Service] Error fetching transaction milestones:", error)
-      return []
-    }
-  },
+  // getTransactionMilestones() lived here as a second copy that ordered by
+  // `milestone_date` — not a column on transaction_milestones, so the query errored and
+  // the catch returned []. It had no callers: the live one is
+  // getTransactionMilestones() in lib/application/transactions.ts, which orders by the
+  // real `target_date` and is what app/actions/transactions.ts calls.
 
   async getClientDocuments(contactId?: string, transactionId?: string) {
     try {
@@ -1328,15 +1343,26 @@ export const supabaseService = {
     }
   },
 
-  // Interaction History Operations (from existing code)
+  /**
+   * A contact's logged activity, newest first.
+   *
+   * Reads `activities` — the live activity spine that 173 other files already use.
+   * This method previously read `interaction_history`, a table that has never existed
+   * in this database, ordered by an `interaction_date` column that came with it. The
+   * catch below turned that into `[]`, so /api/credit/status returned an empty credit
+   * log rather than reporting that it could not read one.
+   *
+   * `activity_type` replaces the old `interaction_type`; callers filtering by type
+   * should read that field.
+   */
   async getInteractionHistory(contactId: string) {
     try {
       const supabase = getSupabaseAdmin()
       const { data, error } = await supabase
-        .from("interaction_history")
+        .from("activities")
         .select("*")
         .eq("contact_id", contactId)
-        .order("interaction_date", { ascending: false })
+        .order("created_at", { ascending: false })
 
       if (error) throw error
 
@@ -1347,19 +1373,8 @@ export const supabaseService = {
     }
   },
 
-  async createInteraction(interaction: any) {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("interaction_history").insert(interaction).select().single()
-
-      if (error) throw error
-
-      return data
-    } catch (error) {
-      console.error("[Supabase Service] Error creating interaction:", error)
-      return null
-    }
-  },
+  // createInteraction() wrote to the same never-existent `interaction_history` table and
+  // had no callers. Removed rather than repointed — `activities` already has writers.
 
   // Property Interests Operations (from existing code)
   async getPropertyInterests(contactId: string) {
@@ -1486,106 +1501,33 @@ export const supabaseService = {
   },
 
   // =====================================================
-  // SPHERE / SOI
+  // SPHERE / BADGES / LEADERBOARD  — removed, see below
   // =====================================================
-
-  async getSphere(agentId?: string) {
-    try {
-      const supabase = getSupabaseAdmin()
-      let query = supabase.from("sphere_of_influence").select("*, contacts(*)")
-
-      if (agentId) {
-        query = query.eq("agent_id", agentId)
-      }
-
-      const { data, error } = await query.order("relationship_strength", { ascending: false })
-      if (error) throw error
-
-      return data || []
-    } catch (error) {
-      console.error("[Supabase Service] Error fetching sphere:", error)
-      return []
-    }
-  },
-
-  // =====================================================
-  // BADGES & LEADERBOARD
-  // =====================================================
-
-  async getBadges(userId?: string) {
-    try {
-      const supabase = getSupabaseAdmin()
-      let query = supabase.from("user_badges").select("*, badge_definitions(*)")
-
-      if (userId) {
-        query = query.eq("user_id", userId)
-      }
-
-      const { data, error } = await query.order("awarded_at", { ascending: false })
-      if (error) throw error
-
-      return data || []
-    } catch (error) {
-      console.error("[Supabase Service] Error fetching badges:", error)
-      return []
-    }
-  },
-
-  async getLeaderboard() {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase
-        .from("agent_leaderboard")
-        .select("*, agents(*)")
-        .order("points", { ascending: false })
-        .limit(50)
-
-      if (error) throw error
-
-      return data || []
-    } catch (error) {
-      console.error("[Supabase Service] Error fetching leaderboard:", error)
-      return []
-    }
-  },
+  //
+  // getSphere() / getBadges() / getLeaderboard() read `sphere_of_influence`,
+  // `user_badges` and `agent_leaderboard`. None of those tables has ever existed in
+  // this database, so all three returned `[]` through their catch on every call and
+  // could not have worked. Their only entry point was the useDataAccess hook, which
+  // nothing mounts.
+  //
+  // Each already has a live counterpart carrying the real data — sphere_engagement_scores,
+  // agent_badges / gamification_badges, and leaderboard_rankings — and the surfaces that
+  // show this data to users read those directly. Removed rather than repointed: adding a
+  // second, service-role, unscoped path to data that already has a working one is the
+  // duplication that produced this in the first place.
 
   // =====================================================
   // FINANCIALS
   // =====================================================
 
-  async getFinancials(type: "commissions" | "marketing") {
-    try {
-      const supabase = getSupabaseAdmin()
-
-      if (type === "commissions") {
-        const { data, error } = await supabase.from("commissions").select("*").order("created_at", { ascending: false })
-
-        if (error) {
-          console.error("[Supabase Service] Error fetching commissions:", error)
-          return []
-        }
-        return data || []
-      }
-
-      if (type === "marketing") {
-        const { data, error } = await supabase
-          .from("business_expenses")
-          .select("*")
-          .order("created_at", { ascending: false })
-
-        if (error) {
-          console.error("[Supabase Service] Error fetching marketing:", error)
-          return []
-        }
-        return data || []
-      }
-
-      return []
-    } catch (error) {
-      console.error("[Supabase Service] Error in getFinancials:", error)
-      return []
-    }
-  },
+  // getFinancials("commissions" | "marketing") used to live here as a second, unscoped
+  // way to read the same two tables — it selected EVERY row on the service-role client
+  // and left the tenant filtering to the caller's JS. Its commission half read the
+  // `commissions` table dropped in m284, so it returned `[]` forever and the missing
+  // scope never showed. Removed rather than repointed: reviving it against a live table
+  // would have turned a dead path into a cross-brokerage read. Its one caller
+  // (dataAccessService.getFinancials) now scopes in the query via getCommissions /
+  // getBusinessExpenses.
 
   // =====================================================
   // BULK IMPORT

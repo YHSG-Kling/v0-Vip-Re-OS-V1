@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Agent profile not found" }, { status: 403 })
     }
 
-    const expenses = await supabaseService.getBusinessExpenses(agentId)
+    const expenses = await supabaseService.getBusinessExpenses({ agentId })
 
     console.log("[v0] API fetched expenses:", expenses?.length || 0)
 

@@ -167,6 +167,66 @@ a full investigation of dependencies and business process"*:
 | Two KB embedding pipelines | **Merged into one** | Task 18 |
 | Provider status: System Intelligence's own vs `getBrokerageProviderReadiness` | **Kept the readiness evaluator** (credential-backed) | `2cdf615` — the panel's private notion defaulted unconfigured providers to "on"; the evaluator reads four credential stores plus env presence |
 
+## The `services/` blind spot (found by a PR review comment, then by widening the guards)
+
+A review comment flagged that two live service methods still queried the `commissions` table
+dropped in `m284`. It was right, and chasing *why no guard caught it* was worth more than the fix.
+
+**Both guards that should have caught it were built the way I was told never to build one.**
+
+| Guard | How its coverage was defined | Consequence |
+|---|---|---|
+| `legacy-tables-retired-simulator.ts` | `RETIRED` was a **hand-written list of 5 tables** | `commissions` was dropped and nobody typed it in, so the guard was not looking for the broken thing |
+| `legacy-tables-retired-simulator.ts` | walked `["lib","app"]` | `services/` was invisible |
+| `schema-drift-guard.ts` | walked `["app","lib"]` (twice) | same blind spot, independently |
+
+Ten top-level directories ship TypeScript. Two were being checked.
+
+**Both inputs are now derived from the repo instead of typed into it** (`scripts/runtime-roots.ts`):
+
+- `RETIRED` = every table named in a `DROP TABLE` across the migrations, **minus** any table still
+  in the live-schema snapshot. Drop-then-recreate is a non-event automatically; a future drop is
+  covered the moment its migration lands.
+- `ROOTS` = every top-level directory containing TypeScript, minus two documented non-shipping ones
+  (`scripts`, `e2e`). A new directory is covered the moment it holds a `.ts` file.
+
+Coverage went from 5 hand-listed tables to **40 derived**, and from ~2,900 files to **4,354**.
+A derived list can silently become an *empty* list, so the guard now carries canaries that fail if
+the derivation resolves to nothing.
+
+### What the widened reach found — all in `services/`, none previously scanned
+
+Every one was **dead by construction**, and every one was fixed rather than baselined:
+
+| Defect | Table / column | Reachable from | Fix |
+|---|---|---|---|
+| `getCommissions` | `commissions` (dropped) | `/api/financial/commissions` — live | Repointed to `agent_commissions`; **scope now required** (was service-role and unbounded); errors propagate instead of returning `[]` |
+| `getFinancials("commissions")` | `commissions` (dropped) | `dataAccessService` | **Removed.** It selected every row service-role and left tenant filtering to caller JS — for an admin/broker that filter was a no-op. Reviving it against a live table would have turned a dead path into a cross-brokerage read |
+| `getInteractionHistory` | `interaction_history` — **never existed** | `/api/credit/status` — live | Repointed to `activities`. The route's `interaction_type` filter was doubly dead: verified live that column does not exist on `activities` either |
+| `createInteraction` | `interaction_history` | nothing | Removed |
+| `getTransactionMilestones` | `.order("milestone_date")` — not a column | nothing | Removed; `lib/application/transactions.ts` is the live one and orders by the real `target_date` |
+| `getSphere` / `getBadges` / `getLeaderboard` | `sphere_of_influence`, `user_badges`, `agent_leaderboard` — **none ever existed** | unmounted hook | Removed with their wrappers. Live counterparts already carry this data (`sphere_engagement_scores`, `agent_badges`/`gamification_badges`, `leaderboard_rankings`) |
+| `healthCheck` | `.select("count")` — not a column | health probe | The health check reported "not connected" on a perfectly healthy database. Now `head + count:exact` |
+| `video_branding_presets` | dropped table | manager registry | Stale `TABLE_MANAGER` ownership row removed — caught by the widened guard, confirmed dropped live |
+
+`getBusinessExpenses` got the same required-scope treatment as `getCommissions`: it is the
+sibling method with the identical unbounded-service-role shape, and `dataAccessService`'s
+marketing branch needed a brokerage scope that did not exist.
+
+Live-verified on real data (probe rows inserted, then deleted to zero residue — `agent_commissions`
+back to 0 rows): agent scope returns only that agent's row, brokerage scope returns both rows at
+that brokerage, a foreign brokerage scope returns nothing.
+
+Both guards now pass with **zero baselining** — no finding was tolerated as pre-existing.
+
+### Still open from this thread
+
+`app/actions/communications.ts:24` does `const supabaseService = _supabaseService as any`. That cast
+hides **five methods called on it that do not exist**: `getContactActivities`, `logActivity`,
+`addContactNote`, `getUserById`, and `.client`. Each is a runtime `TypeError`, not a silent empty,
+and `tsc` cannot see any of them through the cast. Investigated but not yet fixed — tracked as the
+next commit rather than folded into this one.
+
 ## Cannot be closed headless
 
 Two loops need a preview environment with real credentials, and are honestly still open:

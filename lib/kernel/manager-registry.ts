@@ -1540,7 +1540,6 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   studio_sessions: "asset_manager",
   training_videos: "asset_manager",
   video_assets: "asset_manager",
-  video_branding_presets: "asset_manager",
   video_completion_tracking: "asset_manager",
   video_content: "asset_manager",
   video_engagement_events: "asset_manager",

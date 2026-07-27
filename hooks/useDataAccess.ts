@@ -58,11 +58,8 @@ export function useDataAccess() {
       getOpenHouses: () => dataAccessService.getOpenHouses(context),
 
       // Gamification
-      getBadges: () => dataAccessService.getBadges(context),
-      getLeaderboard: () => dataAccessService.getLeaderboard(context),
 
       // Sphere
-      getSphere: () => dataAccessService.getSphere(context),
     }),
     [context],
   )

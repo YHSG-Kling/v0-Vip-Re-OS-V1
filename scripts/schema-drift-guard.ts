@@ -18,6 +18,7 @@
  * Run: npx tsx scripts/schema-drift-guard.ts  (npm run test:schema-drift)
  */
 import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "node:fs"
+import { runtimeRoots } from "./runtime-roots"
 import { join } from "node:path"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 import { resolveTableManager } from "../lib/kernel/manager-registry"
@@ -425,7 +426,7 @@ function testScan() {
   console.log("\n[Layer 2 · repo scan against the live-schema snapshot]")
   const root = process.cwd()
   const files: string[] = []
-  for (const d of ["app", "lib"]) { try { walk(join(root, d), files) } catch {} }
+  for (const d of runtimeRoots(root)) { try { walk(join(root, d), files) } catch {} }
   const all: Violation[] = []
   for (const f of files) {
     let src = ""
@@ -477,7 +478,7 @@ function testCoverage() {
   console.log("\n[Layer 3 · table coverage ratchet]")
   const root = process.cwd()
   const files: string[] = []
-  for (const d of ["app", "lib"]) { try { walk(join(root, d), files) } catch {} }
+  for (const d of runtimeRoots(root)) { try { walk(join(root, d), files) } catch {} }
   const referenced = new Set<string>()
   const fromRe = /\.from\(\s*["'`]([a-z_][a-z0-9_]*)["'`]\s*\)/g
   // Only a SUPABASE query counts — `.from("x")` immediately chained to a PostgREST verb. This excludes

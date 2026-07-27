@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Agent profile not found" }, { status: 403 })
     }
 
-    const commissions = await supabaseService.getCommissions(agentId)
+    const commissions = await supabaseService.getCommissions({ agentId })
 
     console.log("[v0] API fetched commissions:", commissions?.length || 0)
 

@@ -321,65 +321,49 @@ export const dataAccessService = {
   // FINANCIALS
   // =====================================================
 
+  /**
+   * The scope goes into the query, not a filter after it.
+   *
+   * This used to ask supabaseService for every commission (or expense) row in the
+   * database and narrow the result in JS. For an admin or broker that narrowing was a
+   * no-op — the branch returned the unfiltered set — so the read crossed brokerage
+   * lines. It never surfaced because the commission half pointed at a table dropped in
+   * m284 and came back empty every time.
+   */
   async getFinancials(ctx: UserAccessContext, type: string) {
-    const financials = await supabaseService.getFinancials(type as "commissions" | "marketing")
+    if (type !== "commissions" && type !== "marketing") return []
 
-    // Admin/Broker: See all financials
+    const read = (scope: { agentId?: string; agentIds?: string[]; brokerageId?: string }) =>
+      type === "commissions"
+        ? supabaseService.getCommissions(scope)
+        : supabaseService.getBusinessExpenses(scope)
+
+    // Admin/Broker: everything in their OWN brokerage. Without one there is no scope to
+    // read under, so they get nothing rather than everyone's.
     if (permissionsService.isAdminOrBroker(ctx.role)) {
-      return financials
+      return ctx.brokerageId ? read({ brokerageId: ctx.brokerageId }) : []
     }
 
-    // Agent: See only their own financials
+    // Agent: only their own
     if (ctx.role === UserRole.AGENT && ctx.agentId) {
-      return financials.filter((f: any) => f.agent_id === ctx.agentId)
+      return read({ agentId: ctx.agentId })
     }
 
-    // TC: See financials for their managed transactions
+    // TC: the agents they manage
     if (ctx.role === UserRole.TC) {
-      return financials.filter((f: any) => ctx.managedAgentIds?.includes(f.agent_id))
+      const managed = (ctx.managedAgentIds ?? []).filter(Boolean)
+      return managed.length > 0 ? read({ agentIds: managed }) : []
     }
 
     // Other roles don't see financials
     return []
   },
 
-  // =====================================================
-  // GAMIFICATION & BADGES
-  // =====================================================
-
-  async getBadges(ctx: UserAccessContext) {
-    // Admin/Broker: See all badges
-    if (permissionsService.isAdminOrBroker(ctx.role)) {
-      return supabaseService.getBadges?.() || []
-    }
-
-    // Agent: See only their own badges
-    if (ctx.role === UserRole.AGENT && ctx.agentId) {
-      return supabaseService.getBadges?.(ctx.agentId) || []
-    }
-
-    // Others: See own badges by userId
-    return supabaseService.getBadges?.(ctx.userId) || []
-  },
-
-  async getLeaderboard(ctx: UserAccessContext) {
-    // Admin/Broker: See full leaderboard
-    if (permissionsService.isAdminOrBroker(ctx.role)) {
-      return supabaseService.getLeaderboard?.() || []
-    }
-
-    // Agent: See leaderboard with limited info
-    if (ctx.role === UserRole.AGENT) {
-      const leaderboard = (await supabaseService.getLeaderboard?.()) || []
-      // Highlight own position
-      return leaderboard.map((entry: any) => ({
-        ...entry,
-        isCurrentUser: entry.agent_id === ctx.agentId,
-      }))
-    }
-
-    return []
-  },
+  // getBadges() / getLeaderboard() were wrappers over supabaseService methods that read
+  // `user_badges` and `agent_leaderboard` — tables that have never existed here. Both
+  // rounds of role-scoping ran on an array that was always empty. Removed with the
+  // methods they wrapped; the surfaces that actually show badges and rankings read the
+  // live agent_badges / gamification_badges / leaderboard_rankings tables directly.
 
   // =====================================================
   // SHOWINGS & OPEN HOUSES
@@ -421,23 +405,8 @@ export const dataAccessService = {
     }
   },
 
-  // =====================================================
-  // SPHERE / SOI
-  // =====================================================
-
-  async getSphere(ctx: UserAccessContext) {
-    // Admin/Broker: See all sphere data
-    if (permissionsService.isAdminOrBroker(ctx.role)) {
-      return supabaseService.getSphere?.() || []
-    }
-
-    // Agent: See only their sphere
-    if (ctx.role === UserRole.AGENT && ctx.agentId) {
-      return supabaseService.getSphere?.(ctx.agentId) || []
-    }
-
-    return []
-  },
+  // getSphere() is gone for the same reason — `sphere_of_influence` does not exist;
+  // sphere_engagement_scores is the live table and has its own readers.
 
   // =====================================================
   // USERS

@@ -30,7 +30,9 @@ export async function GET(request: Request) {
       success: true,
       lead: contact,
       creditStatus,
-      creditLog: interactionHistory.filter((i) => i.interaction_type === "credit-related"),
+      // `activity_type` on the live activities table — the old `interaction_type` came
+      // from a table that never existed, so this filter could only ever match nothing.
+      creditLog: interactionHistory.filter((i) => i.activity_type === "credit-related"),
     })
   } catch (error: any) {
     console.error("[v0] Error fetching credit status:", error)
