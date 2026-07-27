@@ -168,6 +168,16 @@ export async function assignAcademyModuleToStaffAction(
   if (!caller?.brokerage_id) return { ok: false, error: "No brokerage on your profile" }
 
   const svc = createServiceClient()
+
+  // CROSS-TENANT GUARD: the TARGET must belong to the caller's brokerage.
+  // Verifying only the module let a manager write a learning_assignments row
+  // for a user in another tenant (VADE security finding).
+  const { data: targetUser } = await svc
+    .from("users").select("id, brokerage_id").eq("id", input.targetUserId).maybeSingle()
+  if (!targetUser || targetUser.brokerage_id !== caller.brokerage_id) {
+    return { ok: false, error: "User not found in your brokerage" }
+  }
+
   const { data: mod } = await svc
     .from("learning_modules").select("id, brokerage_id, status").eq("id", input.moduleId).maybeSingle()
   if (!mod || mod.brokerage_id !== caller.brokerage_id) return { ok: false, error: "Module not found in your academy" }

@@ -89,7 +89,8 @@ export function Agent360Panels({ data, targetUserId }: { data: Agent360; targetU
             <Receipt className="h-4 w-4 text-blue-600" />
             Payments
             <span className="ml-auto text-xs font-normal text-muted-foreground">
-              {usd(data.payments.totalPaid)} paid · {usd(data.payments.totalPending)} pending
+              {usd(data.payments.totalPaid)} paid · {usd(data.payments.totalPending)} owed
+              {data.payments.totalDisputed > 0 && ` · ${usd(data.payments.totalDisputed)} disputed`}
             </span>
           </CardTitle>
         </CardHeader>
@@ -98,7 +99,7 @@ export function Agent360Panels({ data, targetUserId }: { data: Agent360; targetU
             <p className="text-sm text-muted-foreground">No commission records yet.</p>
           ) : (
             <div className="divide-y">
-              {[...data.payments.pending.slice(0, 5), ...data.payments.paid.slice(0, 10)].map(c => (
+              {[...data.payments.disputed.slice(0, 3), ...data.payments.pending.slice(0, 5), ...data.payments.paid.slice(0, 10)].map(c => (
                 <div key={c.id} className="py-2 flex items-center justify-between gap-3 text-sm">
                   <div className="min-w-0">
                     <span className="font-medium">{usd(c.agentCommission)}</span>
@@ -108,6 +109,8 @@ export function Agent360Panels({ data, targetUserId }: { data: Agent360; targetU
                   </div>
                   {c.status === "paid" ? (
                     <Badge className="bg-emerald-100 text-emerald-800 text-xs shrink-0">Paid</Badge>
+                  ) : c.status === "disputed" ? (
+                    <Badge className="bg-red-100 text-red-800 text-xs shrink-0">Disputed</Badge>
                   ) : c.depositReceivedAt ? (
                     <Badge className="bg-blue-100 text-blue-800 text-xs shrink-0">Deposit received</Badge>
                   ) : (

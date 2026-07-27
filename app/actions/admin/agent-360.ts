@@ -64,9 +64,12 @@ export interface Agent360 {
   goals: Agent360Goal[]
   payments: {
     paid: Agent360Payment[]
+    /** Genuinely OWED (status 'pending') — disputed rows are tracked separately. */
     pending: Agent360Payment[]
+    disputed: Agent360Payment[]
     totalPaid: number
     totalPending: number
+    totalDisputed: number
   }
   gamification: {
     points: number
@@ -195,8 +198,12 @@ export async function getAgent360Action(
     depositReceivedAt: c.deposit_received_at ?? null,
     createdAt: c.created_at,
   }))
+  // Live commissions.status CHECK vocabulary is pending | paid | disputed.
+  // Only 'pending' is genuinely OWED — a disputed commission is contested, not
+  // payable, so folding it into pending would overstate what the agent is due.
   const paid = allCommissions.filter(c => c.status === "paid")
-  const pending = allCommissions.filter(c => c.status !== "paid")
+  const pending = allCommissions.filter(c => c.status === "pending")
+  const disputed = allCommissions.filter(c => c.status === "disputed")
 
   const badges = (badgesRes.data ?? []).map((b: any): Agent360Badge => {
     const def = Array.isArray(b.gamification_badges) ? b.gamification_badges[0] : b.gamification_badges
@@ -230,8 +237,10 @@ export async function getAgent360Action(
       payments: {
         paid,
         pending,
+        disputed,
         totalPaid: paid.reduce((s, c) => s + c.agentCommission, 0),
         totalPending: pending.reduce((s, c) => s + c.agentCommission, 0),
+        totalDisputed: disputed.reduce((s, c) => s + c.agentCommission, 0),
       },
       gamification: {
         points,
@@ -306,6 +315,18 @@ export async function assignAcademyModuleAction(
   const auth = await requireManager()
   if (!auth.ok) return auth
   const svc = createServiceClient()
+
+  // CROSS-TENANT GUARD: the TARGET must belong to the caller's brokerage.
+  // Verifying only the module let a manager write a learning_assignments row
+  // for a user in another tenant (VADE security finding).
+  const { data: targetUser } = await svc
+    .from("users")
+    .select("id, brokerage_id")
+    .eq("id", input.targetUserId)
+    .maybeSingle()
+  if (!targetUser || targetUser.brokerage_id !== auth.brokerageId) {
+    return { ok: false, error: "User not found in your brokerage" }
+  }
 
   const { data: mod } = await svc
     .from("learning_modules")
