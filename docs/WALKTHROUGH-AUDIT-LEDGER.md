@@ -462,6 +462,25 @@ Proved destructive on live data before fixing: an unguarded upsert from tenant B
 slug rewrote **both the content and the `brokerage_id`** of A's published page. Probe rows deleted —
 zero residue.
 
+## Tier 3 — RLS-bound free-text lookups
+
+| Surface | Defect | Fix |
+|---|---|---|
+| `sendPropertyToContact` (voice assistant) | matched `listings.address` with `ilike` and **no tenant filter — while already taking `brokerageId` as a parameter and never using it**. A spoken address could resolve to another tenant's listing, and the `activities` row then joined THEIR `listing_id` to this caller's brokerage and contact | scoped to `brokerageId`; `.single()` → `.maybeSingle()` so a miss is a miss, not a throw |
+| `/portal` | resolved a contact by `email` with `.single()` and no tenant filter. A person who is a client of two brokerages got an arbitrary tenant's portal — and `.single()` **hard-errored on >1 row**, so the dual-tenant client saw a crash | takes the match only when unambiguous, then falls through to the `contact_user_id` / `user_id` lookups, which were always the reliable paths |
+| `/api/sms/inbound-optout` | the fallback comment said the brokerage came from *"the `to` number's provider config"* — **the query never used `to`**. It took the first `twilio` row in `integration_credentials`, so an unknown number's STOP was suppressed under an arbitrary tenant | resolves the owning brokerage of the `to` number through `phone_number_events`; if the number can't be attributed, logs and does nothing rather than suppressing under a brokerage that never messaged them |
+
+The cross-tenant phone suppression *above* that fallback (`.or(phone.eq…)` across all brokerages)
+is intentional and documented — a STOP should suppress everywhere — and was left alone.
+
+Live-verified with a third brokerage, one person known to both and one address listed by both:
+the voice lookup narrowed 2 tenants → 1, and the portal now sees the ambiguity and falls through
+instead of erroring. Probe rows deleted — zero residue.
+
+**Still open from the sweep:** `neighborhood-report` matching `home_value_estimates.property_address`
+(free text as a foreign-key substitute) and `collaborative_search_members.email` (scoped to a
+tenant-owned search id, so bounded — flagged as shape, not a leak).
+
 ## Cannot be closed headless
 
 Two loops need a preview environment with real credentials, and are honestly still open:

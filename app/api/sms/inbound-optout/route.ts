@@ -64,13 +64,27 @@ export async function POST(req: NextRequest) {
         )
       )
     } else {
-      // Phone not in contacts — add a brokerage-agnostic suppression by phone only
-      // Use a sentinel brokerage lookup via the "to" number's provider config
-      const { data: providerConfig } = await supabase
-        .from('integration_credentials')
+      // Phone not in contacts. The comment here used to say the brokerage came from the
+      // "to" number's provider config — but the query never used `to`. It took the FIRST
+      // twilio credential row in the table, so an unknown number's STOP was suppressed
+      // under an arbitrary tenant.
+      //
+      // `to` IS the tenant's own number, and phone_number_events records which brokerage
+      // provisioned it. Resolve through that; if the number cannot be attributed, log and
+      // do nothing rather than suppress under a brokerage that never messaged them.
+      const { data: numberOwner } = await supabase
+        .from('phone_number_events')
         .select('brokerage_id')
-        .eq('provider_name', 'twilio')
+        .eq('phone_number', to)
+        .not('brokerage_id', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(1)
         .maybeSingle()
+
+      const providerConfig = numberOwner as { brokerage_id?: string | null } | null
+      if (!providerConfig?.brokerage_id) {
+        console.warn(`[sms-optout] STOP from unknown number to unattributable number ${to} — not suppressed`)
+      }
 
       if (providerConfig?.brokerage_id) {
         await addSuppression({

@@ -726,13 +726,18 @@ async function addContactNote(contactId: string, _noteText: string, _agentId: st
 
 async function sendPropertyToContact(address: string, contactId: string, agentId: string, brokerageId: string | null) {
   const supabase = await createClient()
-  // Find property by address
+  // Find property by address WITHIN the caller's brokerage. brokerageId was already a
+  // parameter here and simply never used in the query — a spoken address could resolve
+  // to another tenant's listing, and the activities row below then joined THEIR
+  // listing_id to this caller's brokerage and contact.
+  if (!brokerageId) return null
   const { data: property } = await supabase
     .from("listings")
     .select("id")
+    .eq("brokerage_id", brokerageId)
     .ilike("address", `%${address}%`)
     .limit(1)
-    .single()
+    .maybeSingle()
 
   if (property) {
     // pass 14: property_shares was a PHANTOM table — the share rides the

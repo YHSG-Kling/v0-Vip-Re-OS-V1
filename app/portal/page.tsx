@@ -18,15 +18,23 @@ export default async function PortalPage() {
     redirect(`/portal/${contactId}`)
   }
 
-  // Try to find a contact by email
-  const { data: contactByEmail } = await supabase
+  // Try to find a contact by email.
+  //
+  // An email address is not unique across tenants: the same person can be a client of
+  // two brokerages. This used .single(), which both picked an arbitrary tenant's row
+  // AND hard-errored when there was more than one — so a genuinely dual-tenant client
+  // saw a crash rather than a portal. Take the match only when it is unambiguous; the
+  // id-based lookups below (contact_user_id / user_id) are the reliable paths and run
+  // either way.
+  const { data: emailMatches } = await supabase
     .from('contacts')
-    .select('id')
+    .select('id, brokerage_id')
     .eq('email', user.email)
-    .single()
+    .limit(2)
 
-  if (contactByEmail) {
-    redirect(`/portal/${contactByEmail.id}`)
+  const emailRows = (emailMatches ?? []) as Array<{ id: string; brokerage_id: string | null }>
+  if (emailRows.length === 1) {
+    redirect(`/portal/${emailRows[0].id}`)
   }
 
   // Fallback 1: look up by contact_user_id
