@@ -200,15 +200,30 @@ export function FeatureGovernanceClient({
     }
     setGrantPending(true)
 
-    // Look up user_id by email
+    // Who is actually granting this. The row previously recorded created_by as the
+    // TARGET user ("caller id not exposed — use target for now"), so every override on
+    // this governance surface read as if the recipient had granted it to themselves.
+    // On an audit trail, a wrong actor is worse than a missing one.
+    const { data: { user: caller } } = await supabase.auth.getUser()
+    if (!caller) {
+      toast.error("Your session expired — sign in again to grant access")
+      setGrantPending(false)
+      return
+    }
+
+    // Look up user_id by email — SCOPED TO THIS BROKERAGE. The lookup was previously
+    // global, so an email from another tenant resolved and produced an override row
+    // binding a foreign user_id to this brokerage_id: a cross-tenant write through a
+    // plain text field.
     const { data: userRow, error: userErr } = await supabase
       .from("users")
       .select("id")
       .eq("email", grantEmail.trim().toLowerCase())
+      .eq("brokerage_id", brokerageId)
       .maybeSingle()
 
     if (userErr || !userRow) {
-      toast.error("User not found with that email")
+      toast.error("No user in your brokerage has that email")
       setGrantPending(false)
       return
     }
@@ -225,7 +240,7 @@ export function FeatureGovernanceClient({
         override_type: "grant_trial",
         trial_ends_at: trialEnd.toISOString(),
         notes: grantNotes || null,
-        created_by: userRow.id, // caller id not exposed — use target for now
+        created_by: caller.id,
       })
       .select("id, user_id, brokerage_id, team_id, feature_key, override_type, trial_ends_at, notes, created_at, users(email)")
       .single()
@@ -254,7 +269,9 @@ export function FeatureGovernanceClient({
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Feature Governance</h1>
             <p className="text-sm text-muted-foreground">
-              Manage feature flags, trial access grants, and usage analytics
+              {isSuperadmin
+                ? "Manage feature flags, trial access grants, and usage analytics"
+                : "See which capabilities your tenant has, and grant early access to your own people"}
             </p>
           </div>
         </div>
@@ -274,6 +291,26 @@ export function FeatureGovernanceClient({
 
         {/* ── TAB 1: Feature Flags ───────────────────────────────────────── */}
         <TabsContent value="flags" className="mt-4 space-y-6">
+          {/* Walkthrough [4]: "this is for platform and can't change enrollment so not
+              really functional". The page admits admin/broker but every switch here is
+              disabled={!isSuperadmin}, so a broker met a wall of dead controls with no
+              explanation — indistinguishable from a broken page. Flag DEFINITIONS are
+              genuinely platform-level (they decide what exists for every tenant, so one
+              brokerage must not flip them). What a broker CAN do lives on the next tab,
+              and this now says so instead of leaving them to guess. */}
+          {!isSuperadmin && (
+            <div className="rounded-lg border bg-muted/40 p-3 text-sm">
+              <p className="font-medium">This tab is read-only for your role</p>
+              <p className="text-muted-foreground mt-1">
+                Feature flags decide what exists across every tenant on the platform, so they
+                are set by platform staff — not per brokerage. Use it to see what your tier
+                includes and how much your people are using it. To switch a capability on for
+                someone in your brokerage early, use{" "}
+                <span className="font-medium text-foreground">Access Overrides</span>, which
+                you can change.
+              </p>
+            </div>
+          )}
           {categories.map((cat) => (
             <div key={cat}>
               <div className="flex items-center gap-2 mb-3">
