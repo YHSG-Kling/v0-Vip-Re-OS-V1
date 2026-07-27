@@ -107,10 +107,29 @@ export async function syncShowingTimeShowings(params: {
   const fallbackAgentId = (fallbackListing as any)?.agent_id ?? null
 
   let skippedNoParty = 0
+  let skippedForeignShowingId = 0
   for (const s of stShowings) {
     const rowContactId = s.contactId ?? fallbackContactId
     const rowAgentId = s.agentId ?? fallbackAgentId
     if (!rowContactId || !rowAgentId) { skippedNoParty++; continue } // honest skip — never a fake FK ref
+
+    // showingtime_id is UNIQUE across the whole table, but a ShowingTime id is only
+    // unique within a ShowingTime ACCOUNT. Two brokerages on different accounts can
+    // legitimately produce the same id, and this upsert conflicts on it — which
+    // repointed the other tenant's showing row (listing_id, contact_id, agent_id) to
+    // this caller's listing. Refuse rather than repoint; an external id is not proof
+    // of ownership.
+    const { data: existing } = await supabase
+      .from("showings")
+      .select("id, brokerage_id")
+      .eq("showingtime_id", s.id)
+      .maybeSingle()
+    const existingBrokerageId = (existing as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    if (existingBrokerageId && existingBrokerageId !== auth.brokerageId) {
+      skippedForeignShowingId++
+      continue
+    }
+
     await supabase
       .from("showings")
       .upsert(
@@ -136,7 +155,12 @@ export async function syncShowingTimeShowings(params: {
   }
 
   revalidatePath(`/dashboard/listings/${params.listingId}/showings`)
-  return { success: true, synced: stShowings.length - skippedNoParty, skippedNoParty }
+  return {
+    success: true,
+    synced: stShowings.length - skippedNoParty - skippedForeignShowingId,
+    skippedNoParty,
+    skippedForeignShowingId,
+  }
 }
 
 // ─── SHOWINGTIME MODE: per-showing actions ────────────────────────────────────

@@ -400,10 +400,22 @@ schema. What the dead queries were costing:
 | Auth permissions | `brokerages.code` (live: `slug`) — in the **permission-resolution path**, ×3 |
 | Marketing review, transaction service, link-to-video | `listings.property_address` → `address`, `listings.listing_price` → `list_price`, `brokerages.compliance_rules` (no equivalent) |
 
-**One remains, deliberately.** `tc-compliance-lender-vendor.ts` filters on
-`transactions.assigned_tc_id`, and `transactions` has **no transaction-coordinator column at all**.
-That is a schema gap, not a rename — filtering a TC's transactions needs a real column or a join
-table, and inventing one would be a guess. It is annotated in the code and left on the ratchet.
+**Burned down to 0.** The last one I first called a schema gap: `tc-compliance-lender-vendor.ts`
+filters on `transactions.assigned_tc_id`, which does not exist, and I concluded there was no
+transaction-coordinator column at all. **That was wrong** — `coordinator_id` is the column, and the
+closings query *six lines above in the same function* already filters on it correctly. I had checked
+the schema for names I guessed at (`assigned_tc_id`, `tc_id`) instead of reading the working query
+next to the broken one. The at-risk half of the TC's brief was empty while the closings half worked,
+which is exactly the asymmetry that should have pointed at the answer.
+
+### A guard-shaped footgun worth recording
+
+Adding an explanatory comment between `.from("transactions")` and its chain turned the tenant-scope
+guard red — twice, including on a pushed commit. The guard examines a fixed **500-character window**
+after `.from(...)` for scoping evidence; a long comment pushes that evidence out of the window, so
+the query reads as unscoped. Moving the comment out of the chain was not enough — it had to be
+short. Documentation near a query is not free, and the failure mode is a guard that fails for a
+reason that has nothing to do with the code's behaviour.
 
 The new check got its **own ratchet** rather than joining the existing baseline. The direct-column
 ratchet is deliberately held at **zero-zero** (a guard asserts it), and folding a newly-added
@@ -430,6 +442,25 @@ silently resolved. All probe rows deleted — zero residue.
 
 Tiers 2 and 3 (13 findings — global slug conflict targets, external-id upserts, RLS-bound
 free-text lookups) are triaged and recorded but not yet fixed.
+
+## Cross-tenant slug and external-id capture (Tier 2)
+
+Correcting the sweep's framing first: `listing_landing_pages.slug`, `lead_capture_forms.slug` and
+`qr_codes.slug` are **globally unique on purpose** — they resolve public URLs (`/listing/[slug]`,
+`/forms/[slug]`, `/qr/[slug]`), and one address must mean one page. An unscoped *read* is therefore
+correct and was not changed.
+
+The defect is the **write**: an upsert whose conflict target is that global key lets one tenant take
+another's row.
+
+| Surface | Fix |
+|---|---|
+| `generateListingLandingPage` — `upsert(..., { onConflict: "slug" })` with a **caller-supplied** slug | Resolve the slug's current holder first; refuse if it belongs to another brokerage |
+| ShowingTime sync — `upsert(..., { onConflict: "showingtime_id" })` | A ShowingTime id is unique only within a ShowingTime *account*, so two brokerages can collide. Foreign-owned ids are now skipped and counted (`skippedForeignShowingId`) rather than repointed |
+
+Proved destructive on live data before fixing: an unguarded upsert from tenant B against tenant A's
+slug rewrote **both the content and the `brokerage_id`** of A's published page. Probe rows deleted —
+zero residue.
 
 ## Cannot be closed headless
 

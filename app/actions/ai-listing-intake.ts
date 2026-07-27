@@ -1121,6 +1121,26 @@ export async function generateListingLandingPage(params: {
 
     const pageSlug = params.slug ?? `listing-${Math.random().toString(36).slice(2, 9)}`
 
+    // listing_landing_pages.slug is GLOBALLY unique — correctly so, since it resolves a
+    // public URL (/listing/[slug]) and one address must mean one page. But the upsert
+    // below conflicts on that global key with a CALLER-SUPPLIED slug, so passing another
+    // brokerage's slug silently overwrote their published page: content, listing_id,
+    // contact_id and brokerage_id all rewritten to the caller's.
+    //
+    // The read staying global is right. The write must not cross tenants.
+    const { data: slugHolder } = await supabase
+      .from("listing_landing_pages")
+      .select("brokerage_id")
+      .eq("slug", pageSlug)
+      .maybeSingle()
+    const holderBrokerageId = (slugHolder as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    if (holderBrokerageId && holderBrokerageId !== params.brokerageId) {
+      return {
+        success: false,
+        error: `The address "${pageSlug}" already has a landing page at another brokerage. Choose a different link name.`,
+      }
+    }
+
     // Fetch listing data if linked
     let listingData: Record<string, unknown> = {}
     if (params.listingId) {
