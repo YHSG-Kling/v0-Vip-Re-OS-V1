@@ -219,13 +219,36 @@ that brokerage, a foreign brokerage scope returns nothing.
 
 Both guards now pass with **zero baselining** — no finding was tolerated as pre-existing.
 
+### The `as any` cast that hid five more
+
+`app/actions/communications.ts` opened with `const supabaseService = _supabaseService as any`.
+That one cast turned off type checking for every call the file made against the service, and it was
+hiding **five members that do not exist on it at all**: `logActivity`, `getContactActivities`,
+`addContactNote`, `getUserById`, and a `.client` accessor. Each is a runtime `TypeError`, not a
+silent empty — and `sendNotificationToAgent` is called twice by `lib/orchestrator/internal.ts`, so
+those orchestrator events were throwing.
+
+The cast is removed, so `tsc` checks this file now. It immediately found four more real errors that
+had been invisible behind it. The five members are implemented against live column names:
+
+| Member | Written to | What the old call would have done even if it existed |
+|---|---|---|
+| `logActivity` | `activities` | passed `user_id`; the column is `agent_user_id`. `brokerage_id` is NOT NULL and no call site knows it, so it is resolved from the contact or the user rather than pushed onto callers |
+| `getContactActivities` | `activities` | this is the method the credit route also needed — one name, one implementation, two callers |
+| `addContactNote` | `contact_notes` | passed `note`, `category`, `ghl_note_id`; **none is a column**. Text goes to `body`; the external note id has nowhere to persist and is still returned to the caller |
+| `getUserById` | `users` | — (the guard caught my own first draft selecting `full_name`, which is not a column; it is `first_name`/`last_name`) |
+| `createNotification` | `notifications` | replaces reaching for a raw service-role client, which is a wider door than the one write needs |
+
+Verified against the live database with real rows for each write, then deleted to zero residue.
+The PostgREST layer itself was not exercised — the sandbox has no Supabase credentials — so this
+checks the column names and NOT NULL constraints, which are the failure modes that produced every
+defect above.
+
 ### Still open from this thread
 
-`app/actions/communications.ts:24` does `const supabaseService = _supabaseService as any`. That cast
-hides **five methods called on it that do not exist**: `getContactActivities`, `logActivity`,
-`addContactNote`, `getUserById`, and `.client`. Each is a runtime `TypeError`, not a silent empty,
-and `tsc` cannot see any of them through the cast. Investigated but not yet fixed — tracked as the
-next commit rather than folded into this one.
+`addContactNote` now exists in **three** places: `app/actions/communications.ts`, `app/actions/crm.ts`
+(marked `@deprecated` in favour of the communications one), and `app/actions/contacts.ts` — which is
+the one `app/crm/page.tsx` actually imports. A three-way keep-one merge, not started.
 
 ## Cannot be closed headless
 

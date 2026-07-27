@@ -20,8 +20,10 @@ import {
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { dispatchSms, dispatchEmail } from "@/lib/providers/dispatch"
-import { supabaseService as _supabaseService } from "@/services/supabaseService"
-const supabaseService = _supabaseService as any
+// Imported directly, NOT through an `as any` cast. The cast that used to sit here hid
+// five members this file calls that did not exist on the service at all — tsc could not
+// see a single one, and each call was a runtime TypeError.
+import { supabaseService } from "@/services/supabaseService"
 import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 
 // =====================================================
@@ -330,13 +332,17 @@ export async function addContactNote(params: {
   // Add note to GHL
   const ghlResult = await addGHLContactNote(ghlContactId, params.note)
 
-  // Also save locally
+  // Also save locally. `category` and `ghl_note_id` are dropped here rather than passed:
+  // contact_notes has no column for either, so they were never going to persist. The
+  // external note id still comes back to the caller below.
   const localResult = await supabaseService.addContactNote({
     contact_id: params.contactId,
     note: params.note,
-    category: params.category,
-    ghl_note_id: ghlResult.noteId,
   })
+
+  if (!localResult) {
+    return { success: false, error: "Note synced externally but could not be saved locally" }
+  }
 
   return {
     success: true,
@@ -521,23 +527,14 @@ export async function sendNotificationToAgent(
   }
 
   // Write in-app notification to notifications table
-  const { data: notifRecord, error: notifError } = await supabaseService.client
-    .from("notifications")
-    .insert({
-      user_id: userId,
-      type: "agent_notification",
-      title: notification.title,
-      body: notification.message,
-      priority: notification.priority || "medium",
-      is_read: false,
-      channel: "in_app",
-    })
-    .select("id")
-    .single()
-
-  if (notifError) {
-    console.error("[v0] Failed to write notification:", notifError.message)
-  }
+  const notifRecord = await supabaseService.createNotification({
+    user_id: userId,
+    type: "agent_notification",
+    title: notification.title,
+    body: notification.message,
+    priority: notification.priority || "medium",
+    channel: "in_app",
+  })
 
   // Log to activity table
   await supabaseService.logActivity({

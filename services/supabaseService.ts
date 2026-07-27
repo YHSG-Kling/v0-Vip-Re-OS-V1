@@ -1354,8 +1354,12 @@ export const supabaseService = {
    *
    * `activity_type` replaces the old `interaction_type`; callers filtering by type
    * should read that field.
+   *
+   * Named getContactActivities because that is the name app/actions/communications.ts
+   * already called (through an `any` cast, so nothing checked that it existed). One
+   * method, one name — /api/credit/status calls the same one.
    */
-  async getInteractionHistory(contactId: string) {
+  async getContactActivities(contactId: string) {
     try {
       const supabase = getSupabaseAdmin()
       const { data, error } = await supabase
@@ -1375,6 +1379,186 @@ export const supabaseService = {
 
   // createInteraction() wrote to the same never-existent `interaction_history` table and
   // had no callers. Removed rather than repointed — `activities` already has writers.
+
+  // =====================================================
+  // ACTIVITY LOG / NOTES / USERS
+  // =====================================================
+  //
+  // logActivity, getUserById, addContactNote and a `client` accessor were all CALLED on
+  // supabaseService from app/actions/communications.ts but never existed on it. That file
+  // casts its import to `any`, so tsc could not see a single one and every call was a
+  // runtime TypeError — including the two the orchestrator makes through
+  // sendNotificationToAgent. The cast is gone; these are the real implementations,
+  // written against the live column names.
+
+  async getUserById(userId: string) {
+    try {
+      const supabase = getSupabaseAdmin()
+      const { data, error } = await supabase
+        .from("users")
+        .select("id, email, first_name, last_name, user_type, brokerage_id")
+        .eq("id", userId)
+        .maybeSingle()
+
+      if (error) throw error
+      return data
+    } catch (error) {
+      console.error("[Supabase Service] Error fetching user:", error)
+      return null
+    }
+  },
+
+  /**
+   * Append a line to the activity log.
+   *
+   * `activities.brokerage_id` is NOT NULL, and no call site knows it — they hold a
+   * contact or a user. It is resolved from whichever is present rather than pushed onto
+   * callers, because an activity insert that fails its NOT NULL is exactly the kind of
+   * write that disappears without anyone noticing.
+   */
+  async logActivity(entry: {
+    contact_id?: string
+    user_id?: string
+    agent_id?: string
+    brokerage_id?: string
+    activity_type: string
+    description?: string
+    title?: string
+    metadata?: Record<string, unknown>
+  }) {
+    try {
+      const supabase = getSupabaseAdmin()
+
+      let brokerageId = entry.brokerage_id ?? null
+      if (!brokerageId && entry.contact_id) {
+        const { data } = await supabase.from("contacts").select("brokerage_id").eq("id", entry.contact_id).maybeSingle()
+        brokerageId = (data as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+      }
+      if (!brokerageId && entry.user_id) {
+        const { data } = await supabase.from("users").select("brokerage_id").eq("id", entry.user_id).maybeSingle()
+        brokerageId = (data as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+      }
+      if (!brokerageId) {
+        console.error("[Supabase Service] logActivity: no brokerage could be resolved; not logging", entry.activity_type)
+        return null
+      }
+
+      const { data, error } = await supabase
+        .from("activities")
+        .insert({
+          brokerage_id: brokerageId,
+          contact_id: entry.contact_id ?? null,
+          agent_id: entry.agent_id ?? null,
+          // the column is agent_user_id — `user_id` is not on this table
+          agent_user_id: entry.user_id ?? null,
+          activity_type: entry.activity_type,
+          title: entry.title ?? null,
+          description: entry.description ?? null,
+          metadata: entry.metadata ?? null,
+        })
+        .select("id")
+        .single()
+
+      if (error) throw error
+      return data
+    } catch (error) {
+      console.error("[Supabase Service] Error logging activity:", error)
+      return null
+    }
+  },
+
+  /**
+   * Write a contact note.
+   *
+   * The live table is contact_notes(contact_id, brokerage_id, author_user_id, body,
+   * is_private). The old call passed `note`, `category` and `ghl_note_id` — none of which
+   * are columns here, so this would have failed on shape even if the method had existed.
+   * The note text goes to `body`; there is nowhere on this table to persist the external
+   * note id, and the caller already returns it to its own caller.
+   */
+  async addContactNote(params: {
+    contact_id: string
+    note: string
+    author_user_id?: string
+    brokerage_id?: string
+    is_private?: boolean
+  }) {
+    try {
+      const supabase = getSupabaseAdmin()
+
+      let brokerageId = params.brokerage_id ?? null
+      if (!brokerageId) {
+        const { data } = await supabase.from("contacts").select("brokerage_id").eq("id", params.contact_id).maybeSingle()
+        brokerageId = (data as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+      }
+
+      const { data, error } = await supabase
+        .from("contact_notes")
+        .insert({
+          contact_id: params.contact_id,
+          brokerage_id: brokerageId,
+          author_user_id: params.author_user_id ?? null,
+          body: params.note,
+          is_private: params.is_private ?? false,
+        })
+        .select("id")
+        .single()
+
+      if (error) throw error
+      return data
+    } catch (error) {
+      console.error("[Supabase Service] Error adding contact note:", error)
+      return null
+    }
+  },
+
+  /**
+   * Write an in-app notification.
+   *
+   * communications.ts reached for a `supabaseService.client` accessor that does not
+   * exist, to run this insert itself. Exposing the raw service-role client to callers is
+   * a wider door than the one write needs, so the write lives here instead.
+   */
+  async createNotification(params: {
+    user_id: string
+    type: string
+    title: string
+    body?: string
+    priority?: string
+    channel?: string
+    brokerage_id?: string
+  }) {
+    try {
+      const supabase = getSupabaseAdmin()
+
+      let brokerageId = params.brokerage_id ?? null
+      if (!brokerageId) {
+        const { data } = await supabase.from("users").select("brokerage_id").eq("id", params.user_id).maybeSingle()
+        brokerageId = (data as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+      }
+
+      const { data, error } = await supabase
+        .from("notifications")
+        .insert({
+          user_id: params.user_id,
+          brokerage_id: brokerageId,
+          type: params.type,
+          title: params.title,
+          body: params.body ?? null,
+          priority: params.priority ?? "medium",
+          is_read: false,
+          channel: params.channel ?? "in_app",
+        })
+        .select("id")
+        .single()
+
+      if (error) throw error
+      return data
+    } catch (error) {
+      console.error("[Supabase Service] Error creating notification:", error)
+      return null
+    }
+  },
 
   // Property Interests Operations (from existing code)
   async getPropertyInterests(contactId: string) {

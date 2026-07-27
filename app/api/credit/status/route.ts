@@ -24,7 +24,7 @@ export async function GET(request: Request) {
 
     const contact = await supabaseService.getContactById(leadId)
     const creditStatus = await supabaseService.getCreditStatus(leadId)
-    const interactionHistory = await supabaseService.getInteractionHistory(leadId)
+    const interactionHistory = await supabaseService.getContactActivities(leadId)
 
     return NextResponse.json({
       success: true,
@@ -32,7 +32,7 @@ export async function GET(request: Request) {
       creditStatus,
       // `activity_type` on the live activities table — the old `interaction_type` came
       // from a table that never existed, so this filter could only ever match nothing.
-      creditLog: interactionHistory.filter((i) => i.activity_type === "credit-related"),
+      creditLog: interactionHistory.filter((i: { activity_type?: string | null }) => i.activity_type === "credit-related"),
     })
   } catch (error: any) {
     console.error("[v0] Error fetching credit status:", error)
