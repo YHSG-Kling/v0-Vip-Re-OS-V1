@@ -93,6 +93,27 @@ console.log("\n── the onboarding page + panel are wired to the honest readin
     !panel.includes('status === "connected"'))
 }
 
+
+// ── System Intelligence panel: no invented status ────────────────────────────
+// The live walkthrough reported "says all providers are up but we do not have any
+// configured yet". The panel defaulted `enabled ?? true` with no override row on file,
+// so a tenant that had configured NOTHING read as fully active. It now reads the SAME
+// credential-backed evaluator as the onboarding panel — one notion of provider status,
+// not two.
+{
+  const sys = src("app/dashboard/system/components/os/provider-health-panel.tsx")
+  check("System Intelligence reads the canonical getBrokerageProviderReadiness",
+    /getBrokerageProviderReadiness\(svc, brokerageId\)/.test(sys))
+  check("it no longer defaults an unconfigured provider to enabled (the 'all up' bug)",
+    !/enabled: override\?\.enabled \?\? true/.test(sys) && !/getProviderStatus/.test(sys))
+  check("it no longer carries its own hardcoded provider list",
+    !/default: 'sendgrid'/.test(sys) && !/providerTypes/.test(sys))
+  check("it separates the broker's work from platform staff's work",
+    /needsConnection/.test(sys) && /platformDark/.test(sys))
+  check("it counts usable-right-now from the evaluator, not from an assumption",
+    /readiness\.ready\}\/\{readiness\.total/.test(sys))
+}
+
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
 if (fail > 0) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)); console.log(" ❌ PROVIDER_READINESS_FAIL"); process.exit(1) }
 console.log(" ✅ PROVIDER_READINESS_PASS — brokerage readiness is registry-derived, brokerage-scoped, and counts live capabilities")
