@@ -145,7 +145,14 @@ export default function GlobalSettingsPage() {
 
       <div className="space-y-4">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">App Name</label>
+          {/* Not the product's name — the TENANT's. This value is rendered as the
+              brokerage on the open-house sign-in kiosk and inside the TCPA consent text
+              a lead agrees to, so labelling it "App Name" invited brokers to leave the
+              product default in a place their clients read. */}
+          <label className="block text-sm font-medium text-gray-700 mb-1">Company / Brokerage Name</label>
+          <p className="text-xs text-gray-500 mb-2">
+            Shown to your clients on the portal, open-house sign-in, and consent text.
+          </p>
           <input
             type="text"
             value={settings.app_name}

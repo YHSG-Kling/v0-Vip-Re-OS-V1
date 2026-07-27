@@ -82,14 +82,31 @@ async function ensureGlobalSettingsRow(
 
   if (existing) return existing as GlobalSettingsRow
 
-  // Insert only the identifying/audit columns; every other column falls back to
-  // its DB default (app_name, colors, timezone, notification toggles, etc.), so
-  // no brand/product identity is hardcoded in runtime code.
+  // app_name is THIS TENANT'S client-facing name, not the product's. It is rendered
+  // as the brokerage on the open-house sign-in kiosk and, more seriously, inside the
+  // TCPA consent text a lead agrees to (app/open-house/[eventId]/signin), plus the
+  // client portal. Letting it fall to the column default meant a fresh brokerage
+  // inherited the PRODUCT's own name from that default and showed it to their clients
+  // as their own — the walkthrough's "this is supposed to be the tenants info not what
+  // to name the app". Seed it from the brokerage's real name so it is correct on the
+  // first load and the broker edits their own name rather than adopting ours.
+  //
+  // Every OTHER column still falls back to its DB default (colors, timezone,
+  // notification toggles), so no brand identity beyond the tenant's own name is
+  // hardcoded here.
+  const { data: brokerage } = await svc
+    .from("brokerages")
+    .select("name")
+    .eq("id", brokerageId)
+    .maybeSingle()
+  const tenantName = ((brokerage as { name?: string | null } | null)?.name ?? "").trim()
+
   const { data: inserted, error: insertError } = await svc
     .from("global_settings")
     .insert({
       brokerage_id: brokerageId,
       created_by_user_id: userId,
+      ...(tenantName ? { app_name: tenantName } : {}),
     })
     .select("*")
     .single()
