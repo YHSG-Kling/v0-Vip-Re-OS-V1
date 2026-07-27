@@ -121,7 +121,7 @@ export async function aiGenerateTouchpoint(params: {
       .from("contacts")
       .select(`
         *,
-        transactions(property_address, close_date, sale_price),
+        transactions(property_address, close_date, purchase_price),
         interactions(interaction_type, notes, interaction_date)
       `)
       .eq("id", params.contactId)
@@ -214,7 +214,7 @@ export async function aiOptimizeReferralAsk(params: {
     // Load contact — load referrals separately to avoid FK name guessing
     const { data: contact } = await supabase
       .from("contacts")
-      .select("*, transactions(close_date, sale_price)")
+      .select("*, transactions(close_date, purchase_price)")
       .eq("id", params.contactId)
       .single()
 
@@ -228,7 +228,7 @@ export async function aiOptimizeReferralAsk(params: {
     }
 
     const pastReferrals = referrals?.length || 0
-    const transactionValue = contact.transactions?.[0]?.sale_price || 0
+    const transactionValue = contact.transactions?.[0]?.purchase_price || 0
 
     const { object: referralStrategy } = await generateObject({
       model: "openai/gpt-4o",
@@ -388,7 +388,7 @@ export async function aiSegmentSphere(params: { agentId: string }) {
       .from("contacts")
       .select(`
         *,
-        transactions(sale_price, property_type, close_date),
+        transactions(purchase_price, close_date),
         referrals:referrals!referrer_contact_id(id)
       `)
       .eq("agent_id", params.agentId)
@@ -415,7 +415,7 @@ export async function aiSegmentSphere(params: { agentId: string }) {
       prompt: `Segment this sphere of influence for targeted marketing:
 
 Contacts:
-${contacts.map(c => `- ${c.first_name} ${c.last_name}: ${c.contact_type}, ${c.transactions?.length || 0} transactions, ${c.referrals?.length || 0} referrals, avg price: $${(c.transactions?.[0]?.sale_price || 0).toLocaleString()}`).join("\n")}
+${contacts.map(c => `- ${c.first_name} ${c.last_name}: ${c.contact_type}, ${c.transactions?.length || 0} transactions, ${c.referrals?.length || 0} referrals, avg price: $${(c.transactions?.[0]?.purchase_price || 0).toLocaleString()}`).join("\n")}
 
 Create strategic segments based on:
 1. Transaction history and value

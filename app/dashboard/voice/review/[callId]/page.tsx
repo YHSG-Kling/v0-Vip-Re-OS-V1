@@ -79,8 +79,7 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
       ),
       agents (
         id,
-        first_name,
-        last_name
+        users(first_name, last_name)
       )
     `)
     .eq("id", callId)
@@ -184,7 +183,8 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
   }
 
   const contact = voiceCall.contacts as unknown as { id: string; first_name: string; last_name: string; phone: string } | null
-  const agent = voiceCall.agents as unknown as { id: string; first_name: string; last_name: string } | null
+  // agents carries no name columns — they live on users, reached through agents.user_id.
+  const agent = voiceCall.agents as unknown as { id: string; users?: { first_name: string | null; last_name: string | null } | null } | null
 
   return (
     <div className="container max-w-5xl py-6 space-y-6">
@@ -256,7 +256,7 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
               <div className="flex items-center gap-2">
                 <User className="h-4 w-4" />
                 <span>
-                  {agent.first_name} {agent.last_name}
+                  {agent.users?.first_name} {agent.users?.last_name}
                 </span>
               </div>
             )}

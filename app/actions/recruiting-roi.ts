@@ -40,7 +40,7 @@ export async function getRecruitROIByRecruit(brokerageId: string) {
       lifetime_brokerage_net,
       roi_pct,
       breakeven_month,
-      agents!recruited_agent_id(first_name, last_name, created_at)
+      agents!recruited_agent_id(created_at, users(first_name, last_name))
     `)
     .eq("brokerage_id", brokerageId)
     .order("roi_pct", { ascending: false })

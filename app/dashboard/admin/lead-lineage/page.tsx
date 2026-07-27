@@ -64,8 +64,8 @@ export default async function LeadLineagePage() {
         id,
         qualification_score,
         stage,
-        qualification_notes,
-        created_at,
+        notes,
+        qualified_at,
         last_outreach_at,
         assigned_to_agent_id
       ),

@@ -315,6 +315,11 @@ async function generateTcLikeBrief(params: {
       .limit(10),
     supabase
       .from("deal_health_scores")
+      // KNOWN BROKEN — needs a schema decision, not a rename. `transactions` has NO
+      // transaction-coordinator column at all (no assigned_tc_id, no tc_id), so this
+      // embed fails the whole query and the TC's compliance brief is empty by
+      // construction. Filtering a TC's transactions requires either a real column on
+      // transactions or a join table; inventing one here would be a guess.
       .select("transaction_id, overall_score, risk_level, transactions!inner(property_address, assigned_tc_id)")
       .eq("transactions.assigned_tc_id", params.userId)
       .in("risk_level", ["critical", "at_risk"])

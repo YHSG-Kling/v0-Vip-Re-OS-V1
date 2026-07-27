@@ -109,7 +109,7 @@ export async function getCurrentUserContext(): Promise<UserWithRole | null> {
       .maybeSingle(),
     supabase
       .from("user_role_assignments")
-      .select("id, role, brokerage_id, brokerages(id, name, code)")
+      .select("id, role, brokerage_id, brokerages(id, name, slug)")
       .eq("user_id", user.id)
       .maybeSingle(),
   ])
@@ -175,27 +175,27 @@ export async function getUserBrokerages(): Promise<BrokerageContext[]> {
 
   const { data: userBrokerages, error } = await supabase
     .from("user_role_assignments")
-    .select("brokerages(id, name, code)")
+    .select("brokerages(id, name, slug)")
     .eq("user_id", user.id)
 
   if (error || !userBrokerages) {
     // Fallback to users table for single brokerage
     const { data: userData } = await supabase
       .from("users")
-      .select("brokerage_id, brokerages(id, name, code)")
+      .select("brokerage_id, brokerages(id, name, slug)")
       .eq("id", user.id)
       .maybeSingle()
     if (!userData?.brokerage_id) return []
     const b = Array.isArray((userData as any).brokerages)
       ? (userData as any).brokerages[0]
       : (userData as any).brokerages
-    return b ? [{ id: b.id, name: b.name ?? "", code: b.code ?? "" }] : []
+    return b ? [{ id: b.id, name: b.name ?? "", code: b.slug ?? "" }] : []
   }
 
   return userBrokerages
     .map((ub: any) => {
       const brokerage = Array.isArray(ub.brokerages) ? ub.brokerages[0] : ub.brokerages
-      return brokerage ? { id: brokerage.id, name: brokerage.name ?? "", code: brokerage.code ?? "" } : null
+      return brokerage ? { id: brokerage.id, name: brokerage.name ?? "", code: brokerage.slug ?? "" } : null
     })
     .filter((b): b is BrokerageContext => !!b)
 }

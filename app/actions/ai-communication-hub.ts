@@ -275,7 +275,7 @@ export async function getConversations(params: {
         *,
         contacts(id, first_name, last_name, email, phone, lifecycle_state, lead_score, tcpa_consent, preferred_channel, call_stop_flag),
         agents(id, user_id, users(first_name, last_name)),
-        messages!messages_conversation_id_fkey(body, content, created_at, direction)
+        messages!messages_conversation_id_fkey(body, created_at, direction)
       `)
       .eq("brokerage_id", auth.brokerageId)
       .order("last_message_at", { ascending: false })
@@ -303,7 +303,7 @@ export async function getConversations(params: {
       const sorted = [...msgs].sort(
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       )
-      const preview = sorted[0]?.body ?? sorted[0]?.content ?? null
+      const preview = sorted[0]?.body ?? null
       return { ...c, last_message_preview: preview, messages: undefined }
     })
 
@@ -533,7 +533,7 @@ ${agentProfile ? `
 ` : "Use professional, friendly tone"}
 
 RECENT CONVERSATION:
-${recentMessages?.map(m => `${m.direction === "inbound" ? "Client" : "Agent"}: ${(m.body ?? m.content ?? "").substring(0, 100)}`).join("\n") || "No history"}
+${recentMessages?.map(m => `${m.direction === "inbound" ? "Client" : "Agent"}: ${(m.body ?? "").substring(0, 100)}`).join("\n") || "No history"}
 
 REQUIREMENTS:
 - Channel: ${params.channel} (max ${charLimit} characters)
@@ -657,7 +657,7 @@ CONVERSATION STATS:
 - Conversation span: ${getConversationSpan(messages)} days
 
 RECENT MESSAGES (last 10):
-${messages.slice(-10).map(m => `[${m.direction}] ${m.content?.substring(0, 100)}`).join("\n")}
+${messages.slice(-10).map(m => `[${m.direction}] ${m.body?.substring(0, 100)}`).join("\n")}
 
 Assess:
 1. Overall relationship health
@@ -707,7 +707,7 @@ export async function prioritizeInbox(params: {
     const prioritized = await Promise.all(
       messages.map(async (msg) => {
         const sentiment = await analyzeMessageSentiment({
-          message: msg.content || "",
+          message: msg.body || "",
           contactId: msg.contact_id,
           agentId: effAgentId,
         })
@@ -793,7 +793,7 @@ export async function generateCommunicationSummary(params: {
       prompt: `Summarize this client communication history for an agent's quick reference:
 
 MESSAGES (${messages.length} total):
-${messages.map(m => `[${new Date(m.created_at).toLocaleDateString()}] ${m.direction === "inbound" ? "CLIENT" : "AGENT"}: ${m.content?.substring(0, 200)}`).join("\n\n")}
+${messages.map(m => `[${new Date(m.created_at).toLocaleDateString()}] ${m.direction === "inbound" ? "CLIENT" : "AGENT"}: ${m.body?.substring(0, 200)}`).join("\n\n")}
 
 Provide:
 1. Brief summary of key discussion points

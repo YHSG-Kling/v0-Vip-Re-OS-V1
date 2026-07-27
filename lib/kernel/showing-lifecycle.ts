@@ -13,9 +13,11 @@
 //       suppression-list / DNC / de-conflict / content backstop / budget at the
 //       dispatch layer, quiet hours in the inner TCPA gate).
 //       Deduped per showing via client_portal_messages.metadata.
-//   (c) VIRTUAL TOUR woven in (audit #4): when the listing carries a
-//       virtual_tour_url/matterport_url, the reminder invites a pre-visit walk-
-//       through — the static link finally works for the buyer journey.
+//   (c) VIRTUAL TOUR invitation: NOT ACTIVE. It was written against
+//       listings.virtual_tour_url / matterport_url, neither of which exists — and
+//       naming them in the embed failed the entire reminder query, so (a) and (b)
+//       never ran either. The reminder now sends without a tour link; restoring the
+//       invitation needs those columns (or their real equivalent) to exist first.
 // ShowingTime (#2) decision, recorded: the schema stays (sync-in vocabulary,
 // scheduling_method 'showingtime'), the phantom webhook expectation is retired —
 // wiring requires a ShowingTime partnership; nothing pretends otherwise.
@@ -89,7 +91,7 @@ export async function runShowingLifecycle(svc: any, now: Date = new Date()): Pro
   const from = new Date(now.getTime() + 20 * 3_600_000).toISOString()
   const to = new Date(now.getTime() + 28 * 3_600_000).toISOString()
   const { data: upcoming } = await svc.from("showings")
-    .select("id, brokerage_id, contact_id, agent_id, scheduled_at, is_confirmed, listings(address, virtual_tour_url, matterport_url), contacts(phone, first_name)")
+    .select("id, brokerage_id, contact_id, agent_id, scheduled_at, is_confirmed, listings(address), contacts(phone, first_name)")
     .gte("scheduled_at", from).lte("scheduled_at", to)
     .eq("is_confirmed", true).in("status", ["scheduled", "confirmed"]).limit(200)
   for (const s of (upcoming ?? []) as any[]) {
@@ -100,7 +102,11 @@ export async function runShowingLifecycle(svc: any, now: Date = new Date()): Pro
         .contains("metadata", { kind: "showing_reminder", showing_id: s.id }).limit(1).maybeSingle()
       if (already) { r.skipped += 1; continue }
       const address = s.listings?.address ?? "your showing"
-      const tourUrl = s.listings?.virtual_tour_url ?? s.listings?.matterport_url ?? null
+      // No tour link: `listings` has neither virtual_tour_url nor matterport_url —
+      // selecting them made PostgREST reject this whole query, so the reminder job
+      // never ran at all. composeShowingReminder already handles a null link by
+      // omitting the walk-through invitation.
+      const tourUrl: string | null = null
       const body = composeShowingReminder(address, s.scheduled_at, tourUrl)
       const { error } = await svc.from("client_portal_messages").insert({
         contact_id: s.contact_id, brokerage_id: s.brokerage_id, agent_id: s.agent_id,

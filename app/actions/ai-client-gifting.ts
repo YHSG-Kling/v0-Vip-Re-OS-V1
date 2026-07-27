@@ -35,7 +35,7 @@ export async function aiRecommendGift(params: {
       .from("contacts")
       .select(`
         *,
-        transactions(sale_price, property_type, close_date)
+        transactions(purchase_price, close_date)
       `)
       .eq("id", params.contactId)
       .maybeSingle()
@@ -55,7 +55,7 @@ export async function aiRecommendGift(params: {
       .order("created_at", { ascending: false })
       .limit(10)
 
-    const transactionValue = contact.transactions?.[0]?.sale_price || 0
+    const transactionValue = contact.transactions?.[0]?.purchase_price || 0
     const defaultBudget = {
       closing: { min: 50, max: Math.min(transactionValue * 0.001, 500) },
       anniversary: { min: 25, max: 75 },
@@ -96,7 +96,6 @@ Client: ${contact.first_name} ${contact.last_name}
 Occasion: ${params.occasion}
 Budget: $${budget.min} - $${budget.max}
 Transaction value: $${transactionValue.toLocaleString()}
-Property type: ${contact.transactions?.[0]?.property_type || "Unknown"}
 Notes about client: ${contact.notes || "None"}
 Interests mentioned: ${contact.interests || "Unknown"}
 
@@ -145,7 +144,7 @@ export async function aiPlanBulkGifting(params: {
       .from("contacts")
       .select(`
         id, first_name, last_name, contact_type,
-        transactions(sale_price, close_date)
+        transactions(purchase_price, close_date)
       `)
       .eq("agent_id", params.agentId)
       .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere", "referral_partner"])
@@ -185,7 +184,7 @@ Number of contacts: ${contacts.length}
 
 Contacts by value:
 ${contacts.map(c => {
-  const txValue = c.transactions?.[0]?.sale_price || 0
+  const txValue = c.transactions?.[0]?.purchase_price || 0
   return `- ${c.first_name} ${c.last_name}: ${c.contact_type}, $${txValue.toLocaleString()}`
 }).join("\n")}
 

@@ -112,7 +112,7 @@ export async function loadMarketingReview(params: {
     .from("listing_media")
     .select(`
       id, listing_id, media_type, file_url, thumbnail_url, created_at,
-      listings!listing_id(property_address, agent_id)
+      listings!listing_id(address, agent_id)
     `)
     .eq("brokerage_id", params.brokerageId)
     .eq("approval_required", true)
@@ -177,7 +177,7 @@ export async function loadMarketingReview(params: {
     .map((m: any) => ({
       id:            m.id,
       listing_id:    m.listing_id,
-      listing_label: m.listings?.property_address ?? null,
+      listing_label: m.listings?.address ?? null,
       media_type:    m.media_type,
       file_url:      m.file_url,
       thumbnail_url: m.thumbnail_url ?? null,

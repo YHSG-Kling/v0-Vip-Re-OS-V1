@@ -235,7 +235,7 @@ export async function aiCalculateCommission(params: CommissionEntry) {
       .from("transactions")
       .select(`
         *,
-        listings(address, city, sale_price)
+        listings(address, city, sold_price)
       `)
       .eq("id", params.transactionId)
       .maybeSingle()

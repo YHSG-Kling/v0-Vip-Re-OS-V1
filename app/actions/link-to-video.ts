@@ -160,7 +160,7 @@ export async function checkCompliance(videoQueueId: string) {
   try {
     const { data: video } = await supabase
       .from("video_generation_queue")
-      .select("*, brokerages(compliance_rules)")
+      .select("*")  // brokerages has no compliance_rules column — the embed failed the whole query
       .eq("id", videoQueueId)
       .single()
 

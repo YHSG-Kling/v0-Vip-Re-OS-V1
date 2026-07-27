@@ -34,8 +34,10 @@ interface AIISAQualification {
   id: string
   qualification_score: number | null
   stage: string | null
-  qualification_notes: string | null
-  created_at: string
+  /** live column is `notes` — `qualification_notes` never existed */
+  notes: string | null
+  /** live column is `qualified_at` — this table has no created_at */
+  qualified_at: string | null
   last_outreach_at: string | null
   assigned_to_agent_id: string | null
 }
@@ -144,7 +146,7 @@ function buildSummary(leads: Lead[], brokerageId: string) {
       (l) =>
         l.ai_isa_qualifications?.some((q) => q.stage === 'qualified') &&
         l.ai_isa_qualifications.some(
-          (q) => q.created_at && new Date(q.created_at) >= todayStart,
+          (q) => q.qualified_at && new Date(q.qualified_at) >= todayStart,
         ),
     ).length,
     awaitingAssignment: leads.filter(
@@ -308,8 +310,8 @@ function LeadDetail({ lead }: { lead: Lead }) {
               {q.last_outreach_at && (
                 <p className="text-muted-foreground">Last touch: <span className="text-foreground">{new Date(q.last_outreach_at).toLocaleDateString()}</span></p>
               )}
-              {q.qualification_notes && (
-                <p className="text-muted-foreground text-xs">{q.qualification_notes}</p>
+              {q.notes && (
+                <p className="text-muted-foreground text-xs">{q.notes}</p>
               )}
             </div>
           ))

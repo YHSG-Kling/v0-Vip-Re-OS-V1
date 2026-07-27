@@ -254,7 +254,7 @@ export async function getShowingInsights(contactId: string) {
     .select(`
       id, showing_date:scheduled_at, status, notes,
       contact:contacts(id, first_name, last_name),
-      showing_feedback(id, feedback_text, sentiment, rating, created_at)
+      showing_feedback(id, additional_notes, overall_impression, presentation_rating, created_at)
     `)
     .eq("listing_id", listingId)
     .order("scheduled_at", { ascending: false })
@@ -277,11 +277,20 @@ export async function getShowingInsights(contactId: string) {
   }
 
   // Calculate sentiment breakdown
+  // showing_feedback has no `sentiment` column — it records `overall_impression`, whose
+  // vocabulary is fixed by a CHECK constraint: loved_it | liked_it | neutral |
+  // not_interested. The old select also named `feedback_text` and `rating`, neither of
+  // which exists, so PostgREST rejected the WHOLE showings query and this page's
+  // feedback was empty by construction rather than by absence of feedback.
+  const POSITIVE = new Set(["loved_it", "liked_it"])
+  const NEGATIVE = new Set(["not_interested"])
   const sentimentBreakdown = { positive: 0, neutral: 0, negative: 0 }
   for (const fb of allFeedback) {
-    if ((fb as any).sentiment === "positive") sentimentBreakdown.positive++
-    else if ((fb as any).sentiment === "neutral") sentimentBreakdown.neutral++
-    else if ((fb as any).sentiment === "negative") sentimentBreakdown.negative++
+    const impression = (fb as any).overall_impression as string | null
+    if (!impression) continue
+    if (POSITIVE.has(impression)) sentimentBreakdown.positive++
+    else if (NEGATIVE.has(impression)) sentimentBreakdown.negative++
+    else sentimentBreakdown.neutral++
   }
 
   // Calculate weekly showing stats (last 8 weeks)

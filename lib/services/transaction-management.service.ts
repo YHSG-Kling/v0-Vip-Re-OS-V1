@@ -156,7 +156,7 @@ export async function getAgentTransactions(agentId: string, filters?: {
       .select(`
         *,
         contacts(id, first_name, last_name, email),
-        listings(id, address, city, listing_price)
+        listings(id, address, city, list_price)
       `)
       .eq("agent_id", agentId)
 

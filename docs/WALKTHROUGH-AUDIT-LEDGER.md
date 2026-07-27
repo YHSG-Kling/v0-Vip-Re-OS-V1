@@ -386,9 +386,24 @@ so each is a silently dead surface. Confirmed phantom against live schema:
 `brokerages.compliance_rules`, `brokerages.code`, `showing_feedback.feedback_text`/`rating`/
 `sentiment`, `ai_isa_qualifications.created_at`/`qualification_notes`, and others.
 
-**These are recorded, not fixed.** Each needs its consumer checked as well as its select, which is
-per-file judgement rather than a rename. They are in `scripts/schema-drift-embed-baseline.json`, and
-the guard prints every one on each run.
+**Burned down 27 → 1.** Each fix repointed the select AND its consumers, verified against the live
+schema. What the dead queries were costing:
+
+| Surface | Was |
+|---|---|
+| Seller portal showing feedback | whole showings query failed — `feedback_text`, `sentiment`, `rating` are all phantom. Real columns: `additional_notes`, `overall_impression` (CHECK: `loved_it`/`liked_it`/`neutral`/`not_interested`), `presentation_rating`. Sentiment now buckets off that constraint's own vocabulary instead of comparing to strings that could never appear |
+| Showing reminder job | `listings(address, virtual_tour_url, matterport_url)` — neither URL column exists, so the **entire reminder cron** failed. Reminders never sent at all, not just without a tour link. Header comment corrected: the virtual-tour invitation is not active and needs those columns to exist first |
+| Client gifting + sphere management | `transactions.sale_price` (live: `purchase_price`), `transactions.property_type` (no equivalent — a prompt line that could only ever say "Unknown" was removed rather than left) |
+| AI communication hub | `messages.content` (live: `body`) — several consumers already read `m.body ?? m.content`, a half-finished rename that hid it |
+| Lead lineage | `ai_isa_qualifications.qualification_notes`/`created_at` (live: `notes`/`qualified_at`); the client-side type declared the phantom names too, so tsc caught the second half |
+| Voice call review + recruiting ROI | `agents.first_name`/`last_name` — agents has no name columns; they live on `users`, now embedded through it |
+| Auth permissions | `brokerages.code` (live: `slug`) — in the **permission-resolution path**, ×3 |
+| Marketing review, transaction service, link-to-video | `listings.property_address` → `address`, `listings.listing_price` → `list_price`, `brokerages.compliance_rules` (no equivalent) |
+
+**One remains, deliberately.** `tc-compliance-lender-vendor.ts` filters on
+`transactions.assigned_tc_id`, and `transactions` has **no transaction-coordinator column at all**.
+That is a schema gap, not a rename — filtering a TC's transactions needs a real column or a join
+table, and inventing one would be a guess. It is annotated in the code and left on the ratchet.
 
 The new check got its **own ratchet** rather than joining the existing baseline. The direct-column
 ratchet is deliberately held at **zero-zero** (a guard asserts it), and folding a newly-added
