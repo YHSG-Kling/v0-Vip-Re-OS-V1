@@ -517,6 +517,34 @@ lightweight `activities` row alongside it so the managers still see that a note 
 preserves the privacy flag and the outbound sync without blinding the AI context. But it is a
 data-model decision with a customer-visible privacy feature attached, so it should be yours.
 
+## A known weakness in the tenant-scope guard — measured, not shipped
+
+Four of today's cross-tenant findings had the same signature: **the tenant id was already in scope
+and simply not used in the query** (the scraping dedupe took `brokerageId` and never referenced it;
+`sendPropertyToContact` took `brokerageId` and never referenced it; two comments described scoping
+the code did not do). That is mechanically detectable, so I went looking for why
+`tenant-scope-guard` had not caught them.
+
+**The mechanism:** `SCOPE_EVIDENCE` lists parent ids — `contact_id`, `listing_id`, `agent_id`,
+`transaction_id` — as **bare substrings**, and the guard passes a query if any appears within a
+500-character window. So `contact_id: contactId` sitting in an INSERT payload *after* the query
+counts as evidence that the query was scoped. That is precisely how `sendPropertyToContact`'s
+unscoped `listings` lookup read as safe: the tenant evidence was in the next statement.
+
+**Tightening it to require the filter form** (`.eq("contact_id"`, `.in("listing_id"`, …) is a
+two-line change. I made it, measured it, and **reverted it**: it surfaces **74 additional sites**.
+
+I am not shipping that, in either available form:
+- Failing CI with 74 findings blocks the branch on work nobody has reviewed.
+- Baselining 74 unreviewed entries (the tenant-scope guard tolerates debt — currently 5) would be
+  the silent truncation this audit has spent the day removing. A number that large recorded as
+  "known" is indistinguishable from a number that large ignored.
+
+Recorded here instead, with the exact change and the exact count, so it is a decision someone makes
+with the real number in front of them rather than a discovery someone repeats. The 74 are almost
+certainly a mix of genuinely-scoped-another-way and genuinely-unscoped; separating them is the work,
+and it is a session of its own.
+
 ## Cannot be closed headless
 
 Two loops need a preview environment with real credentials, and are honestly still open:
