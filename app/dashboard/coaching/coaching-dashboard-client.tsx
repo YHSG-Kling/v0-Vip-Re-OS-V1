@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useTransition } from "react"
 import { useRouter } from "next/navigation"
+import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -287,17 +288,26 @@ export function CoachingDashboardClient({
   const [goalCoaching, setGoalCoaching] = useState<any>(null)
   const [goalCoachingLoading, setGoalCoachingLoading] = useState(false)
   const [goalCoachingLoaded, setGoalCoachingLoaded] = useState(false)
+  // Why the analysis produced nothing. The action distinguishes "No goals set for this
+  // year" from a genuine failure, and the two need different offers — re-running the
+  // analysis cannot help an agent who has no goals yet.
+  const [goalCoachingError, setGoalCoachingError] = useState<string | null>(null)
 
   // AI Insights tab state
   const [aiInsights, setAiInsights] = useState<any>(null)
   const [aiInsightsLoading, setAiInsightsLoading] = useState(false)
   const [aiInsightsLoaded, setAiInsightsLoaded] = useState(false)
 
-  function loadGoalCoaching() {
-    if (goalCoachingLoaded) return
+  // `force` lets an explicit retry re-run. Without it the tab click set
+  // goalCoachingLoaded=true, so the retry button in the empty state hit the guard on
+  // the first line and returned immediately — a button that could never do anything.
+  function loadGoalCoaching(force = false) {
+    if (goalCoachingLoaded && !force) return
     setGoalCoachingLoading(true)
     aiCoachGoalProgress({ agentId, brokerageId }).then((res) => {
-      setGoalCoaching((res as any).success ? (res as any).data : null)
+      const ok = (res as any).success
+      setGoalCoaching(ok ? (res as any).data : null)
+      setGoalCoachingError(ok ? null : ((res as any).error ?? "Goal analysis failed"))
       setGoalCoachingLoaded(true)
       setGoalCoachingLoading(false)
     })
@@ -508,7 +518,9 @@ export function CoachingDashboardClient({
                     <Home className="h-3.5 w-3.5" />
                     Sellers ({sellerCoaching.length})
                   </TabsTrigger>
-                  <TabsTrigger value="goals" className="text-xs gap-1" onClick={loadGoalCoaching}>
+                  {/* Arrow, not a bare reference — a bare handler would pass the
+                      MouseEvent as `force` (truthy) and refetch on every tab click. */}
+                  <TabsTrigger value="goals" className="text-xs gap-1" onClick={() => loadGoalCoaching()}>
                     <TrendingUp className="h-3.5 w-3.5" />
                     Goal Coaching
                   </TabsTrigger>
@@ -566,11 +578,35 @@ export function CoachingDashboardClient({
                   ) : !goalCoaching ? (
                     <div className="py-12 text-center space-y-3">
                       <TrendingUp className="mx-auto h-12 w-12 text-muted-foreground/40" />
-                      <p className="text-muted-foreground text-sm">No goals set for this year yet.</p>
-                      <Button size="sm" variant="outline" onClick={loadGoalCoaching}>
-                        <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-                        Analyze Goals
-                      </Button>
+                      {/* Two different dead ends, two different offers. Re-running the
+                          analysis is useless when the cause is that no goals exist —
+                          the agent has to set them first. */}
+                      {/^No goals set/i.test(goalCoachingError ?? "") ? (
+                        <>
+                          <p className="text-muted-foreground text-sm">
+                            No goals set for {new Date().getFullYear()} yet — your coach needs targets
+                            before it can tell you how you&apos;re tracking.
+                          </p>
+                          <Button size="sm" variant="outline" asChild>
+                            <Link href="/dashboard/goals">
+                              <Target className="h-3.5 w-3.5 mr-1.5" />
+                              Set your goals
+                            </Link>
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-muted-foreground text-sm">
+                            {goalCoachingError
+                              ? `Couldn't analyze your goals: ${goalCoachingError}`
+                              : "Goal analysis hasn't run yet."}
+                          </p>
+                          <Button size="sm" variant="outline" onClick={() => loadGoalCoaching(true)}>
+                            <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                            Try again
+                          </Button>
+                        </>
+                      )}
                     </div>
                   ) : (
                     <>

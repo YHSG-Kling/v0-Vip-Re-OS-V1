@@ -100,7 +100,7 @@ residue. Locked by `test:identity-self-heal` (21 checks), owned by `data_steward
 | 115 | Voice assistant speaks as admin to an agent | OPEN | Persona must follow the viewer's role |
 | 116 | Daily briefing — agent context not available | CLOSED (class) | `24e7e55` |
 | 117 | Pipeline analytics plain | OPEN | Candidate for the "dashboard reads itself" pattern |
-| 118 | Trains & Coaching — analyze-goals button goes nowhere | OPEN | Unwired button |
+| 118 | Trains & Coaching — analyze-goals button goes nowhere | CLOSED | The button was genuinely dead: `loadGoalCoaching` early-returned on `goalCoachingLoaded`, which the tab click had already set, so the retry could never fire. It also offered the wrong action — re-analysis cannot help an agent with no goals. Now `force` bypasses the guard for an explicit retry, and the empty state distinguishes "no goals set" (→ Set your goals) from a real failure (→ Try again, showing the error). Both branches verified against live data |
 | 119 | Objection practice hard-coded cards | CLOSED | Task 56 — scenarios generated from real mishandled-objection calls |
 | 120–121 | My goals / voice intelligence bounce | CLOSED (class) | `24e7e55` |
 | 122 | Motivations — well built | — | Owner marked this good |
