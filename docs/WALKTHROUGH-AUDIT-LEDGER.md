@@ -88,7 +88,7 @@ residue. Locked by `test:identity-self-heal` (21 checks), owned by `data_steward
 | 44–45 | Profile goes to settings / Settings goes to settings | CLOSED | Two causes: My Profile was filed *inside* the Settings nav group, and the page itself was a settings page whose only identity card was read-only ("edit via admin"). My Profile is now a top-level nav item, and the page leads with an editable identity card — name, phone, license #/state/expiry, years, bio — all on existing columns. Round-trip verified live on a real agent, then restored to its exact original state |
 | 46 | Inbox has no window to type in | CLOSED | Unified inbox compose + outbound social DM (`7e2f551`) |
 | 47 | Can't bring up an agent's account and apply/remove onboarding | CLOSED | `6eff902` — `OnboardingControl` on the Agent 360 panel |
-| 49 | Property type should be a selection | CLOSED | `m285` + intake consolidation. It was free text at every layer: no CHECK on the column, and FOUR different lists in the app — `lib/constants` PROPERTY_TYPES (7), the intake's type union (6), its AI extraction zod enum (**3**), and state-forms field-defs (5). A multi-family, land or commercial listing was forced into one of three buckets and silently mis-typed. All app paths now resolve to the one canonical constant; `m285` closes the data side. Verified live: 7 canonical values accepted, `mansion` and empty string rejected, 0 rows left dirty |
+| 49 | Property type should be a selection | CLOSED (vocabulary) · OPEN (target-area scoping) | `m285` constrained the column and unified the intake. Going after the *selection* found **seven** lists, two of which stored Title Case DISPLAY strings while listings store canonical values. The property-alert matcher compares with `.toLowerCase()` on both sides — which looks defensive but only fixes case, not the separator — so **Single Family and Multi-Family silently scored zero on every listing** while Condo/Townhouse/Land/Commercial matched. A filter that works for some values is worse than one that works for none. One `PROPERTY_TYPE_OPTIONS` + `canonicalPropertyType()` now drive every selector and both sides of the match; already-saved rows work with no data migration. Proven: all 6 types match after, 2 missed before. **Still open:** scoping the list to the subscriber's target area — see note below |
 | 50 | Upload errors with no bucket | CLOSED | `m278` — 11 buckets provisioned, verified live |
 | 51–56 | Agent portal / open house / showing prep / documentation authz | CLOSED (class) | `24e7e55` |
 | 57–77 | Brokerage plan onboarding chain (license, E&O, phone, connects, twins) | PARTIAL | Twin Studio surfaced (task 39); the connect legs need live OAuth to close |
@@ -174,3 +174,19 @@ Two loops need a preview environment with real credentials, and are honestly sti
 1. **Social DM live-fire** — the send path is built and guarded (`7e2f551`), but proving a real
    outbound DM requires live OAuth tokens on a connected account.
 2. **Countersigned commission-agreement webhook return** — needs a real e-sign provider callback.
+
+---
+
+## Open design question — [49]'s second half
+
+The document says the property-type selection *"should be selected by the subscriber in
+target area"*. That reads two ways, and they build differently:
+
+1. **Brokerage-level** — the subscriber picks which property types they transact; every
+   selector offers that subset. One list per tenant.
+2. **Per-territory** — the subset varies by `farm_territories` row (which already exists,
+   brokerage+agent scoped with zips/city/state, but carries no property-type dimension).
+
+Reading 2 adds a dimension someone then has to maintain per territory. I have not guessed
+between them, because the choice determines the schema. The vocabulary work above is the
+precondition either way and is done.

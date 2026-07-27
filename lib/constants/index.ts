@@ -98,6 +98,53 @@ export const PROPERTY_TYPES = [
 ] as const
 export type PropertyType = (typeof PROPERTY_TYPES)[number]
 
+/** Human labels for the canonical values — the ONE place a property type is named. */
+export const PROPERTY_TYPE_LABELS: Record<PropertyType, string> = {
+  single_family: "Single Family",
+  condo:         "Condo",
+  townhouse:     "Townhouse",
+  multi_family:  "Multi-Family",
+  land:          "Land / Lot",
+  commercial:    "Commercial",
+  other:         "Other",
+}
+
+/** Ready-made {value,label} options for any selector. */
+export const PROPERTY_TYPE_OPTIONS: Array<{ value: PropertyType; label: string }> =
+  PROPERTY_TYPES.map((value) => ({ value, label: PROPERTY_TYPE_LABELS[value] }))
+
+/**
+ * Coerce any historical spelling of a property type to its canonical value.
+ *
+ * Several surfaces stored the DISPLAY string ("Single Family", "Multi-Family") while
+ * listings store the canonical value ("single_family"). The property-alert matcher
+ * compares with `.toLowerCase()` on both sides, which LOOKS defensive but only fixes
+ * case — the separator still differs, so "single family" never equalled "single_family".
+ * The effect was a partially-working filter: Condo, Townhouse, Land and Commercial
+ * matched because they are single words, while Single Family and Multi-Family — the two
+ * most common residential types — silently scored zero on every listing. A filter that
+ * works for some values is more misleading than one that works for none.
+ *
+ * Returns null for anything unrecognised rather than guessing, so a caller can decide
+ * whether to ignore the value or surface it.
+ */
+export function canonicalPropertyType(raw: string | null | undefined): PropertyType | null {
+  const key = String(raw ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_")
+  if (!key) return null
+  if ((PROPERTY_TYPES as readonly string[]).includes(key)) return key as PropertyType
+  // Historical spellings that never had a canonical home.
+  const ALIASES: Record<string, PropertyType> = {
+    mobile_home:   "other",   // the home-value form offered this; no canonical equivalent
+    manufactured:  "other",
+    condo_townhome: "condo",
+    townhome:      "townhouse",
+    single_family_home: "single_family",
+    multifamily:   "multi_family",
+    lot:           "land",
+  }
+  return ALIASES[key] ?? null
+}
+
 export const LISTING_STATUSES = ["coming_soon", "active", "pending", "sold", "off_market", "expired"] as const
 export type ListingStatus = (typeof LISTING_STATUSES)[number]
 

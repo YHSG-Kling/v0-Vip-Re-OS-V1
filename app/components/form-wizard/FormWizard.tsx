@@ -44,6 +44,7 @@ import { submitForSignature } from "@/app/actions/buyer-offer/submit-for-signatu
 import { prefillStorageFormAction } from "@/app/actions/buyer-offer/prefill-storage-form"
 import { buildEsignAnchorPlanAction } from "@/app/actions/buyer-offer/esign-anchor-plan"
 import Link from "next/link"
+import { PROPERTY_TYPE_OPTIONS } from "@/lib/constants"
 
 type TransactionProvider = "dotloop" | "docusign" | "skyslope" | "authentisign"
 
@@ -572,8 +573,12 @@ function Step1Context({ mode, state, update }: { mode: "offer" | "listing"; stat
               onChange={e => update("propertyType", e.target.value)}
             >
               <option value="">Select property type…</option>
-              {["Single Family", "Condo", "Townhouse", "Multi-Family", "Land", "Manufactured", "Commercial", "Other"].map(t => (
-                <option key={t} value={t}>{t}</option>
+              {/* Canonical value/label pairs. This list stored its DISPLAY string, so a
+                  wizard answer of "Single Family" never equalled a listing's
+                  "single_family"; it also offered "Manufactured", which has no canonical
+                  equivalent (canonicalPropertyType folds it to "other"). */}
+              {PROPERTY_TYPE_OPTIONS.map(pt => (
+                <option key={pt.value} value={pt.value}>{pt.label}</option>
               ))}
             </select>
           </div>

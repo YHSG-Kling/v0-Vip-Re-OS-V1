@@ -62,7 +62,10 @@ interface ResultRecord {
 const FREQUENCY_LABELS: Record<string, string> = {
   instant: "Every 15 min", twice_daily: "Twice Daily", daily: "Daily", weekly: "Weekly"
 }
-const PROPERTY_TYPE_OPTIONS = ["Single Family", "Condo", "Townhouse", "Multi-Family", "Land", "Commercial"]
+// Canonical {value,label} options. This list previously held DISPLAY strings and saved
+// them verbatim, so an alert for "Single Family" could never match a listing stored as
+// "single_family" (see canonicalPropertyType).
+import { PROPERTY_TYPE_OPTIONS } from "@/lib/constants"
 
 export default function BuyerAlertsPage() {
   const params  = useParams()
@@ -547,15 +550,15 @@ export default function BuyerAlertsPage() {
                 <div className="flex flex-wrap gap-2">
                   {PROPERTY_TYPE_OPTIONS.map(pt => (
                     <button
-                      key={pt}
+                      key={pt.value}
                       type="button"
-                      onClick={() => togglePropType(pt)}
+                      onClick={() => togglePropType(pt.value)}
                       className={`text-xs px-3 py-1 rounded-full border transition-colors ${
-                        form.propertyTypes.includes(pt)
+                        form.propertyTypes.includes(pt.value)
                           ? "bg-primary text-primary-foreground border-primary"
                           : "bg-background border-border text-foreground hover:bg-muted"
                       }`}
-                    >{pt}</button>
+                    >{pt.label}</button>
                   ))}
                 </div>
               </div>

@@ -1,6 +1,8 @@
 // Property alert scoring engine — exact spec weights
 // Price+location must match for minimum qualifying score of 40
 
+import { canonicalPropertyType } from "@/lib/constants"
+
 export interface AlertProperty {
   mls_number: string
   property_address: string
@@ -132,9 +134,16 @@ export function scorePropertyForAlert(
 
   // ── Property type: 10pts ──────────────────────────────────────────────────
   if (criteria.property_types && criteria.property_types.length > 0 && property.property_type) {
-    const typeMatch = criteria.property_types.some(
-      t => t.toLowerCase() === property.property_type!.toLowerCase()
-    )
+    // Compare CANONICAL values on both sides. The previous `.toLowerCase()` on each side
+    // looked defensive but only normalised case — saved criteria hold display strings
+    // ("Single Family", "Multi-Family") while listings hold canonical values
+    // ("single_family"), so the separator still differed. Condo/Townhouse/Land/Commercial
+    // matched because they are single words; Single Family and Multi-Family — the two most
+    // common residential types — silently scored zero on every listing. Normalising both
+    // sides also keeps ALREADY-SAVED rows working without a data migration.
+    const wanted = criteria.property_types.map(canonicalPropertyType).filter(Boolean)
+    const actual = canonicalPropertyType(property.property_type)
+    const typeMatch = actual !== null && wanted.includes(actual)
     if (typeMatch) {
       score += 10
       reasons.push(`${property.property_type} matches type preference`)
