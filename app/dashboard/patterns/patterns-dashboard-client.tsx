@@ -349,16 +349,24 @@ export function PatternsDashboardClient({
               </span>
               <span className="text-sm text-muted-foreground">pattern accuracy</span>
             </div>
+            {/* Walkthrough [101–103]: these two buttons pointed at
+                ?filter=agent and ?filter=campaign, which returned nothing. Not a broken
+                filter — this subsystem has no agent or campaign entity AT THE SCHEMA
+                LEVEL: pattern_detections.entity_type is CHECK'd to contact|listing and
+                behavioral_patterns.entity_type to buyer|seller|negotiation. No filter
+                value could ever populate those lenses. Agent behaviour and campaign
+                performance are real questions, they are just answered by other surfaces
+                — so the buttons now go where the answer actually is. */}
             <div className="ml-auto flex items-center gap-2">
-              <Link href="/dashboard/patterns?filter=agent">
+              <Link href="/dashboard/coaching">
                 <Button variant="ghost" size="sm" className="h-7 text-xs">
-                  Agent Patterns
+                  Agent Performance
                   <ExternalLink className="h-3 w-3 ml-1" />
                 </Button>
               </Link>
-              <Link href="/dashboard/patterns?filter=campaign">
+              <Link href="/dashboard/campaigns/roi">
                 <Button variant="ghost" size="sm" className="h-7 text-xs">
-                  Campaign Patterns
+                  Campaign Performance
                   <ExternalLink className="h-3 w-3 ml-1" />
                 </Button>
               </Link>
