@@ -33,6 +33,8 @@ import { defaultQbReconciliationPeriod, loadAgentQbReconciliation } from "@/lib/
 import { ProviderConnectionCard } from "@/app/settings/accounting/provider-connection-card"
 import { QbReconciliationCard } from "@/app/settings/accounting/qb-reconciliation-card"
 import { AgentFinancialsClient } from "./agent-financials-client"
+import { AgentNetPositionCard } from "./agent-net-position-card"
+import { getMyOpenCharges } from "@/app/actions/brokerage-fees"
 import { loadAgentFinancialDashboardSummaryAction } from "@/app/actions/financial-kernel"
 
 export const dynamic = "force-dynamic"
@@ -142,6 +144,11 @@ export default async function AgentFinancialsPage() {
         ...defaultQbReconciliationPeriod(),
       }).catch(() => null)
     : null
+
+  // Fee charges — the SAME source the fees detail page reads, so the net-position
+  // summary and the per-charge ledger can never disagree. Best-effort: a failed read
+  // renders an empty fee side rather than breaking the earnings page.
+  const feeCharges = await getMyOpenCharges().catch(() => [])
 
   // Load the agent's saved budget for the current year (latest if regenerated)
   const { data: budgetRow, error: budgetError } = await supabase
@@ -336,6 +343,15 @@ export default async function AgentFinancialsPage() {
           Track your commissions, cap progress, and financial performance
         </p>
       </div>
+
+      {/* NET POSITION — walkthrough [106]: "my fees ... own brokerage separate from
+          commissions (this should be under one umbrella)". Grouping the two pages under
+          one nav item was only half of it: an agent still had to visit two screens and
+          do the subtraction themselves to learn what they actually clear. What they
+          take home is earnings MINUS what they owe the brokerage, so the fees figure
+          belongs on the earnings page. The per-charge detail stays on its own page —
+          this is the summary line, not a second copy of the ledger. */}
+      <AgentNetPositionCard ytdNet={ytdEarnings?.agent_net || 0} charges={feeCharges} />
 
       <AgentFinancialsClient
         agentId={agentId}

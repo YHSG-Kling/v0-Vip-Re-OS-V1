@@ -91,7 +91,7 @@ residue. Locked by `test:identity-self-heal` (21 checks), owned by `data_steward
 | 98 | Inbox / AI Outreach / Comm Intelligence / Handoff all bounced | CLOSED (class) | `24e7e55` |
 | 99–103 | Market insights setup, behavioral/agent/campaign patterns | OPEN | Pattern filters return nothing for the agent lens |
 | 104–105 | Stale queue bounce, financials kicks to login | CLOSED (class) | `24e7e55` |
-| 106 | My fees separate from commissions — should be one umbrella | OPEN | Directly adjacent to the commission keep-one (`m283`/`m284`); the fee ledger should fold into the same spine |
+| 106 | My fees separate from commissions — should be one umbrella | CLOSED | Nav already grouped the two screens; the substantive half was that an agent had to open both and subtract in their head. A net-position card now sits on the earnings page reading the SAME `agent_fee_charges` source as the fee detail. Live-verified the math on seeded charges across all five statuses: owed counts only open+overdue ($500), not the naive all-status sum ($1,900) — waived, disputed and paid are correctly excluded. Test rows removed, 0 residue |
 | 107 | Credit pipeline — unclear budget figures | OPEN | Needs a real read of what the numbers mean |
 | 109 | Academy — My Template and My Path buttons go nowhere | CLOSED | Tasks 19, 50 — education/academy split and content generation |
 | 110–111 | AI Command center, Monthly Intelligence Report — bump | CLOSED (class) | `24e7e55` |
