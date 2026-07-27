@@ -113,7 +113,8 @@ const ENTITY_MAP: Record<
   offer:       { table: "offers",         stateColumn: "status"        },
   tour:        { table: "tours",          stateColumn: "status"        },
   repair:      { table: "property_upgrades", stateColumn: "status"    },
-  financial:   { table: "commissions",    stateColumn: "status"        },
+  // KEEP-ONE (m283/m284): agent_commissions is the one commission ledger.
+  financial:   { table: "agent_commissions", stateColumn: "status"      },
   lead:        { table: "leads",          stateColumn: "lifecycle_state" },
   journey:     { table: "journey_states", stateColumn: "current_stage" },
   showing:     { table: "showings",       stateColumn: "status"        },

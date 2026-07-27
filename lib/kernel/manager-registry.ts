@@ -1138,7 +1138,6 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   commission_distributions: "finance_manager",
   commission_splits: "finance_manager",
   commission_structures: "finance_manager",
-  commissions: "finance_manager",
   compliance_alerts: "compliance_officer",
   compliance_checklists: "compliance_officer",
   compliance_checks: "compliance_officer",

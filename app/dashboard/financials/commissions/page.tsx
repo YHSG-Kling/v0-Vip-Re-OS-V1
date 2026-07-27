@@ -40,8 +40,11 @@ export default async function CommissionsPage() {
 
   const [commissions, transactions] = await Promise.all([
     supabase
-      .from('commissions')
-      .select('id, gross_commission, agent_commission, status, created_at, transaction_id, deposit_received_at')
+      // KEEP-ONE (m283/m284): agent_commissions is the one commission ledger.
+      // net_to_agent is the post-fee take-home when the waterfall engine wrote
+      // the row; agent_commission is the generated pre-fee split fallback.
+      .from('agent_commissions')
+      .select('id, gross_commission, agent_commission, net_to_agent, status, created_at, transaction_id, deposit_received_at')
       .eq('agent_id', agentId)
       .gte('created_at', `${currentYear}-01-01`)
       .order('created_at', { ascending: false })
@@ -56,7 +59,13 @@ export default async function CommissionsPage() {
       .limit(50),
   ])
 
-  const commissionsData = commissions.data || []
+  // Normalize the agent's take-home once: prefer the waterfall's post-fee
+  // net_to_agent, fall back to the generated pre-fee split. Every total and row
+  // below reads agent_commission, so this is the single place it's resolved.
+  const commissionsData = (commissions.data || []).map((c: any) => ({
+    ...c,
+    agent_commission: c.net_to_agent ?? c.agent_commission ?? 0,
+  }))
   const totalGross = commissionsData.reduce((sum: number, c: any) => sum + (c.gross_commission || 0), 0)
   const totalAgent = commissionsData.reduce((sum: number, c: any) => sum + (c.agent_commission || 0), 0)
   const pendingCount = commissionsData.filter((c: any) => c.status === 'pending').length

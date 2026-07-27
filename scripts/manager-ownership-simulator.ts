@@ -143,7 +143,7 @@ check("COMPLIANCE: compliance_flags (transaction + Fair Housing checks) → Comp
 check("COMPLIANCE: the regulatory-change watcher is owned by the Compliance Officer it escalates to",
   resolveMaintenanceManager("regulatory_change_watcher").key === "compliance_officer")
 check("FINANCE: the commission ledger → Finance Manager (disbursement is back-office, not the TC)",
-  resolveTableManager("commissions").key === "finance_manager")
+  resolveTableManager("agent_commissions").key === "finance_manager")
 check("FINANCE: brokerage P&L → Finance Manager",
   resolveTableManager("brokerage_p_l").key === "finance_manager")
 check("DEAL boundary intact: transactions still → Deal Coordinator (commissions moved, the deal didn't)",

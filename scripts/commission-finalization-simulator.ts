@@ -34,7 +34,8 @@ console.log("\n── both triggers finalize; the engine refuses to re-persist a
   check("uploadFinalCdAction finalizes with source 'cd_uploaded' (resolving the txn id)", /finalizeTransactionCommission\(supabase, finalTxnId, "cd_uploaded"\)/.test(cda))
 
   const persist = src("lib/commission/waterfall/11-validate-persist.ts")
-  check("final persist checks commission_finalized_at BEFORE inserting", /commission_finalized_at[\s\S]*?from\('commissions'\)/.test(persist))
+  // KEEP-ONE (m283/m284): the ledger the persist step writes is agent_commissions.
+  check("final persist checks commission_finalized_at BEFORE inserting", /commission_finalized_at[\s\S]*?from\('agent_commissions'\)/.test(persist))
   check("a finalized deal returns the LOCKED commission instead of inserting a 2nd row",
     persist.includes("commissionId: (locked as { id: string }).id"))
 

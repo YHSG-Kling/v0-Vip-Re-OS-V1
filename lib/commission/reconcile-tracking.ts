@@ -8,9 +8,13 @@
 //                   (what the agent will receive). 'approved' = authorized to disburse (the CDA
 //                   broker-sign for CDA brokerages; auto at close for non-CDA). 'paid' = the agent
 //                   actually received their disbursement.
-//   • THE LEDGER  — commissions + commission_distributions (pending → paid, + deposit_received_at):
-//                   the MONEY MOVEMENT. A brokerage RECEIVES the commission deposit at closing, then
-//                   DISBURSES the agent's split.
+//   • THE LEDGER  — commission_distributions (pending → paid; deposit_received_at lives on the
+//                   summary row): the MONEY MOVEMENT, line by line. A brokerage RECEIVES the
+//                   commission deposit at closing, then DISBURSES each split.
+//
+// KEEP-ONE (m283/m284): the `commissions` summary twin was merged INTO agent_commissions, so the
+// bridge row and the summary row are now one record. The two trackings that can still drift are that
+// summary row and its per-line distributions.
 //
 // CLOSE (final CD, both signed) freezes the AMOUNT — it does NOT pay. After close the ledger tracks
 // the deposit, then the disbursement. DISBURSEMENT is the ONE LOCK: both trackings go 'paid' together
@@ -48,7 +52,7 @@ export function detectCommissionTrackingDrift(input: {
 }
 
 /**
- * PURE: aggregate many commissions rows for one transaction into a single ledger status. Paid only
+ * PURE: aggregate many ledger rows for one transaction into a single ledger status. Paid only
  * when at least one row exists and every non-cancelled row is paid; otherwise 'pending'. Returns null
  * when there is no ledger row at all (bridge-only — not drift, a separate leak concern).
  */
@@ -120,8 +124,8 @@ export async function recordCommissionDepositReceived(
 }
 
 /**
- * THE ONE LOCK AT DISBURSEMENT — the agent was paid, so lock the LEDGER (commissions +
- * commission_distributions) to paid alongside the earnings record, so the two trackings converge on
+ * THE ONE LOCK AT DISBURSEMENT — the agent was paid, so lock the LEDGER (the agent_commissions
+ * summary row + its commission_distributions) to paid together, so the two trackings converge on
  * 'paid' at the SAME real event (disbursement), never at close. Reuses the canonical payment-tracker
  * per ledger row (correct distribution rows + commission.paid event). Idempotent; best-effort.
  */
@@ -142,7 +146,19 @@ export async function reconcileCommissionDisbursement(
     const { markCommissionPaid } = await import("./payment-tracker")
     for (const row of rows) {
       const status = (row.status ?? "").toLowerCase()
-      if (status === "paid" || status === "cancelled" || status === "voided") continue
+      if (status === "cancelled" || status === "voided") continue
+      // A summary row that is ALREADY paid still needs work when its per-line
+      // distributions lag behind — that is exactly the drift the reaper heals.
+      // Skipping on summary-status alone would make the heal a no-op.
+      if (status === "paid") {
+        const { data: dists } = await svc
+          .from("commission_distributions")
+          .select("status")
+          .eq("commission_id", row.id)
+          .eq("brokerage_id", params.brokerageId)
+        const distStatus = aggregateLedgerStatus((dists ?? []) as Array<{ status?: string | null }>)
+        if (distStatus == null || distStatus === "paid") continue
+      }
       const res = await markCommissionPaid({
         commissionId: row.id,
         brokerageId: params.brokerageId,

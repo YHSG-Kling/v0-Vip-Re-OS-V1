@@ -91,16 +91,21 @@ export async function validateAndPersist(
   // Return the locked commission instead of inserting a second summary row (this is
   // also what stops the duplicate-commissions-row bug on a re-run). The lock is set
   // AFTER the close-time calc, so the first/authoritative calc is never blocked.
+  const { data: txn } = await supabase
+    .from('transactions')
+    .select('commission_finalized_at, close_date')
+    .eq('id', context.transactionId)
+    .maybeSingle<{ commission_finalized_at: string | null; close_date: string | null }>()
+
   {
-    const { data: txn } = await supabase
-      .from('transactions')
-      .select('commission_finalized_at')
-      .eq('id', context.transactionId)
-      .maybeSingle()
-    if ((txn as { commission_finalized_at?: string | null } | null)?.commission_finalized_at) {
+    if (txn?.commission_finalized_at) {
+      // KEEP-ONE (m283/m284): agent_commissions is the one commission ledger.
+      // net_to_agent/net_to_brokerage are the post-fee waterfall results — the
+      // generated agent_commission/brokerage_commission columns are the pre-fee
+      // split, so read the net columns back, not the generated ones.
       const { data: locked } = await supabase
-        .from('commissions')
-        .select('id, gross_commission, agent_commission, brokerage_commission')
+        .from('agent_commissions')
+        .select('id, gross_commission, net_to_agent, net_to_brokerage, total_fees')
         .eq('transaction_id', context.transactionId)
         .order('created_at', { ascending: true })
         .limit(1)
@@ -110,11 +115,11 @@ export async function validateAndPersist(
           success: true,
           commissionId: (locked as { id: string }).id,
           gross_commission: Number((locked as any).gross_commission),
-          net_to_agent: Number((locked as any).agent_commission),
-          net_to_brokerage: Number((locked as any).brokerage_commission),
+          net_to_agent: Number((locked as any).net_to_agent),
+          net_to_brokerage: Number((locked as any).net_to_brokerage),
           cap_applied: context.capApplied,
           cap_status: context.capStatus,
-          total_fees: centsToDollars(context.totalFeesCents),
+          total_fees: Number((locked as any).total_fees ?? centsToDollars(context.totalFeesCents)),
         }
       }
       // Finalized but no stored commission (shouldn't happen) — persist once so the
@@ -122,16 +127,28 @@ export async function validateAndPersist(
     }
   }
 
-  // 1. Insert summary into commissions table
+  // 1. Insert the summary row into the one commission ledger.
+  // KEEP-ONE (m283/m284): agent_commissions absorbed the `commissions` twin.
+  // agent_commission/brokerage_commission there are GENERATED from
+  // gross_commission * agent_split_percent — they cannot be written, and they
+  // describe the PRE-fee split. The waterfall's post-fee results belong in
+  // net_to_agent / net_to_brokerage / total_fees (the columns m283 ported over).
   const { data: commission, error: commissionError } = await supabase
-    .from('commissions')
+    .from('agent_commissions')
     .insert({
       transaction_id: context.transactionId,
       brokerage_id: context.brokerageId,
       agent_id: context.agentId,
       gross_commission: centsToDollars(context.grossCommissionCents),
-      agent_commission: centsToDollars(context.agentFinalNetCents),
-      brokerage_commission: centsToDollars(context.brokerageFinalCents),
+      agent_split_percent: context.agentSplitPercent,
+      net_to_agent: centsToDollars(context.agentFinalNetCents),
+      net_to_brokerage: centsToDollars(context.brokerageFinalCents),
+      total_fees: centsToDollars(context.totalFeesCents),
+      cap_applied: context.capApplied,
+      // close_date is NOT NULL on the ledger; fall back to today when the deal
+      // has no recorded close (a preview-then-finalize race, not a normal path).
+      close_date: txn?.close_date ?? new Date().toISOString().slice(0, 10),
+      status: 'pending',
       calculation_version: CURRENT_ENGINE_VERSION,
       created_at: new Date().toISOString()
     })
