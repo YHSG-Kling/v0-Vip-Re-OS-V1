@@ -1,4 +1,4 @@
-import { getAgentContext } from '@/lib/identity/get-agent-context'
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { AdminDashboardClient } from './admin-dashboard-client'
@@ -28,7 +28,12 @@ export type OperationalSnapshot = {
 }
 
 export default async function AdminPage() {
-  const context = await getAgentContext()
+  // Self-healing identity: an agent who reached this page without a brokerage/agents row is
+  // PROVISIONED in place rather than bounced to onboarding (the "bounce" class in the live
+  // walkthrough). The redirect below now only fires for an account that genuinely cannot
+  // self-provision — a pending brokerage invite, or a staff user whose brokerage comes from
+  // their org. Idempotent: a no-op for an already-anchored user.
+  const context = await ensureAgentContextInPlace()
 
   // Verify user is authenticated
   if (!context?.isAuthenticated) {

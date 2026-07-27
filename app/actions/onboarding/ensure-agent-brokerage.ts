@@ -50,8 +50,39 @@ export async function ensureAgentBrokerage(): Promise<EnsureAgentBrokerageResult
     .maybeSingle()
   if (!u) return { ok: false, error: "User not found" }
 
-  // Already anchored — nothing to heal.
-  if (u.brokerage_id) return { ok: true, brokerageId: u.brokerage_id as string, created: false }
+  // Already anchored to a brokerage — but "anchored" is not the same as "complete".
+  // A user can carry a brokerage_id and still be MISSING their agents row (a legacy seed, a
+  // partially-applied invite, a hand-created row). That is the account state behind the
+  // "agent profile not found" / "no agent record found for your account" bounces in the live
+  // walkthrough, and returning early here left it permanently unhealed. Repair the domain
+  // records in place instead — createOrRepairUserDomainRecords is idempotent and is the SAME
+  // path signup and login-time repair use, so there is no drift.
+  if (u.brokerage_id) {
+    const brokerageId = u.brokerage_id as string
+    if (["agent", "team_lead"].includes(String(u.user_type))) {
+      const { data: existingAgent } = await svc
+        .from("agents")
+        .select("id")
+        .eq("user_id", u.id)
+        .maybeSingle()
+      if (!existingAgent) {
+        const { data: brk } = await svc
+          .from("brokerages")
+          .select("plan_tier")
+          .eq("id", brokerageId)
+          .maybeSingle()
+        await createOrRepairUserDomainRecords({
+          userId: u.id,
+          userType: u.user_type,
+          brokerageId,
+          teamId: null,
+          tier: (brk?.plan_tier as string) ?? "solo_agent",
+          callerUserId: u.id,
+        } as any)
+      }
+    }
+    return { ok: true, brokerageId, created: false }
+  }
 
   // Only agent / team_lead OWNERS get a personal brokerage-of-one.
   if (!["agent", "team_lead"].includes(String(u.user_type))) {

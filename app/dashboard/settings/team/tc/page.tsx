@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { getAgentContext } from "@/lib/identity"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { toCanonicalRoleOrDefault } from "@/lib/security"
 import { TCSettingsClient } from "./tc-settings-client"
 
@@ -8,7 +8,12 @@ export const metadata = { title: "Transaction Coordinators | Team Settings" }
 
 export default async function TCSettingsPage() {
   // Kernel OS: getAgentContext — canonical identity resolution
-  const ctx = await getAgentContext()
+  // Self-healing identity: an agent who reached this page without a brokerage/agents row is
+  // PROVISIONED in place rather than bounced to onboarding (the "bounce" class in the live
+  // walkthrough). The redirect below now only fires for an account that genuinely cannot
+  // self-provision — a pending brokerage invite, or a staff user whose brokerage comes from
+  // their org. Idempotent: a no-op for an already-anchored user.
+  const ctx = await ensureAgentContextInPlace()
   if (!ctx.isAuthenticated) redirect("/login")
 
   const userRole = toCanonicalRoleOrDefault(ctx.userType, "agent")

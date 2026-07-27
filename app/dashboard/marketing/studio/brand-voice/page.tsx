@@ -1,12 +1,17 @@
 import { redirect } from "next/navigation"
-import { getAgentContext } from "@/lib/identity"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { loadBrandVoiceProfileAction } from "@/app/actions/brand-voice"
 import { BrandVoiceEditor } from "./brand-voice-editor"
 
 export const dynamic = "force-dynamic"
 
 export default async function BrandVoicePage() {
-  const ctx = await getAgentContext()
+  // Self-healing identity: an agent who reached this page without a brokerage/agents row is
+  // PROVISIONED in place rather than bounced to onboarding (the "bounce" class in the live
+  // walkthrough). The redirect below now only fires for an account that genuinely cannot
+  // self-provision — a pending brokerage invite, or a staff user whose brokerage comes from
+  // their org. Idempotent: a no-op for an already-anchored user.
+  const ctx = await ensureAgentContextInPlace()
   if (!ctx.isAuthenticated) redirect("/login")
   // Page requires an agent context. Agents must have a resolved agentId.
   // Brokers/admins acting on behalf of agents need a brokerageId at minimum.

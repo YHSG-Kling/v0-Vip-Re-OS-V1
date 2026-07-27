@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { getChallenges } from "@/app/actions/challenges"
 import { ChallengesClient } from "./challenges-client"
 
@@ -8,7 +8,12 @@ export const dynamic = "force-dynamic"
 const ADMIN_ROLES = new Set(["broker", "broker_owner", "broker_admin", "admin", "superadmin"])
 
 export default async function ChallengesPage() {
-  const ctx = await getAgentContext()
+  // Self-healing identity: an agent who reached this page without a brokerage/agents row is
+  // PROVISIONED in place rather than bounced to onboarding (the "bounce" class in the live
+  // walkthrough). The redirect below now only fires for an account that genuinely cannot
+  // self-provision — a pending brokerage invite, or a staff user whose brokerage comes from
+  // their org. Idempotent: a no-op for an already-anchored user.
+  const ctx = await ensureAgentContextInPlace()
   if (!ctx.isAuthenticated) redirect("/login")
   if (!ctx.brokerageId) redirect("/dashboard/onboarding")
 
