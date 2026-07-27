@@ -34,7 +34,7 @@ export async function reapCommissionTrackingDrift(
 
   const ledgerStatusFor = async (transactionId: string): Promise<string | null> => {
     const { data } = await svc
-      .from("commissions")
+      .from("agent_commissions")
       .select("status")
       .eq("transaction_id", transactionId)
       .eq("brokerage_id", brokerageId)
@@ -64,7 +64,7 @@ export async function reapCommissionTrackingDrift(
 
   // ── Direction 2: ledger PAID, bridge lagging → ESCALATE ──────────────────────
   const { data: paidLedger } = await svc
-    .from("commissions")
+    .from("agent_commissions")
     .select("transaction_id")
     .eq("brokerage_id", brokerageId)
     .eq("status", "paid")

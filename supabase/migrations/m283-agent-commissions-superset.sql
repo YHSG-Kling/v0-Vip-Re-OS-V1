@@ -25,3 +25,24 @@ ALTER TABLE agent_commissions
   ADD COLUMN IF NOT EXISTS calculation_version text,
   ADD COLUMN IF NOT EXISTS deposit_received_at timestamptz,
   ADD COLUMN IF NOT EXISTS deposit_received_by text;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- STEP 2 STATUS: all 7 code consumers are repointed to agent_commissions (this
+-- change), so NOTHING in the app reads or writes `commissions` anymore. The
+-- table itself is deliberately NOT dropped yet — a live dependency sweep found
+-- three objects still bound to it, and CASCADE would silently destroy them:
+--
+--   1. commission_distributions.commission_id  FK -> commissions(id)
+--   2. earnings_history.commission_id          FK -> commissions(id)
+--   3. financial_dashboard_view                view selects from commissions
+--
+-- Dropping safely requires, in order: repoint both FKs at agent_commissions(id)
+-- (both tables are currently empty, so this is a constraint swap, not a data
+-- migration), rewrite financial_dashboard_view against agent_commissions, THEN
+-- backfill + drop. The backfill is written and verified against the live column
+-- contract (agent_commission / brokerage_commission are GENERATED on the keeper
+-- and must be omitted; paid_date -> paid_at, split_percentage ->
+-- agent_split_percent) and is ready to run once the three dependents move.
+--
+-- Leaving the orphaned table in place is SAFE (no code path touches it) and is
+-- strictly better than a CASCADE that takes a view and two FKs with it.

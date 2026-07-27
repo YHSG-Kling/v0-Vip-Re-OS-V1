@@ -92,11 +92,13 @@ export async function POST(request: NextRequest) {
       if (sync_type === "commission" || sync_type === "full") {
         // Sync commissions
         const { data: commissions } = await supabase
-          .from("commissions")
-          .select("id, gross_commission, agent_commission, brokerage_commission, status, paid_date")
+          // KEEP-ONE (m283): agent_commissions is the canonical ledger.
+          // Column translation: commissions.paid_date -> paid_at.
+          .from("agent_commissions")
+          .select("id, gross_commission, agent_commission, brokerage_commission, status, paid_at")
           .eq("brokerage_id", profile.brokerage_id)
           .eq("status", "paid")
-          .is("paid_date", null)
+          .is("paid_at", null)
           .limit(100)
 
         if (commissions) {

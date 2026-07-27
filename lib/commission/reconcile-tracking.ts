@@ -109,7 +109,7 @@ export async function recordCommissionDepositReceived(
 ): Promise<{ stamped: number }> {
   const at = params.at ?? new Date().toISOString()
   const { data, error } = await svc
-    .from("commissions")
+    .from("agent_commissions")
     .update({ deposit_received_at: at, deposit_received_by: params.actorUserId })
     .eq("transaction_id", params.transactionId)
     .eq("brokerage_id", params.brokerageId)
@@ -131,7 +131,7 @@ export async function reconcileCommissionDisbursement(
 ): Promise<{ ledgerRowsFound: number; ledgerRowsLocked: number }> {
   const paidAt = params.paidAt ?? new Date().toISOString()
   const { data: ledgerRows } = await svc
-    .from("commissions")
+    .from("agent_commissions")
     .select("id, status")
     .eq("transaction_id", params.transactionId)
     .eq("brokerage_id", params.brokerageId)

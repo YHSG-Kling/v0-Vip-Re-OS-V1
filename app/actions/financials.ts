@@ -418,8 +418,10 @@ export async function updateCommissionStatus(
   }
 
   const { error } = await supabase
-    .from("commissions")
-    .update({ status, paid_date: status === "paid" ? new Date().toISOString().split("T")[0] : null })
+    // KEEP-ONE (m283): agent_commissions is the canonical ledger.
+    // Column translation: commissions.paid_date (date) -> paid_at (timestamptz).
+    .from("agent_commissions")
+    .update({ status, paid_at: status === "paid" ? new Date().toISOString() : null })
     .eq("id", commissionId)
     .eq("brokerage_id", context.brokerageId!)
 

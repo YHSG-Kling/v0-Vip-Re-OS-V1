@@ -158,7 +158,7 @@ export async function GET(request: NextRequest) {
 
       case "commissions": {
         const { data: commissions } = await supabase
-          .from("commissions")
+          .from("agent_commissions")
           .select("*, transactions(*)")
           .eq("agent_id", agentId)
           .eq("brokerage_id", brokerageId)

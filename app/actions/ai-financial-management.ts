@@ -632,7 +632,7 @@ export async function aiCreateBudget(params: {
       .lte("expense_date", `${lastYear}-12-31`)
 
     const { data: lastYearCommissions } = await supabase
-      .from("commissions")
+      .from("agent_commissions")
       .select("agent_commission")
       .eq("agent_id", params.agentId)
       .gte("created_at", `${lastYear}-01-01`)
