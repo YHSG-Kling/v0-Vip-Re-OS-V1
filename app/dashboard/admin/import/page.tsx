@@ -1,7 +1,6 @@
 'use client'
 
 import React, { useCallback, useRef, useState, useTransition } from 'react'
-import { CrmPullCard } from "./crm-pull-card"
 import { createImportRecord, runImport, listImports } from '@/app/actions/lead-import/import-actions'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -397,7 +396,17 @@ export default function ImportPage() {
       </section>
 
       {/* Bring your database with you — old-CRM pull through the SAME gate */}
-      <CrmPullCard />
+      {/* Pulling a book of business out of another CRM is a white-glove migration the
+          platform runs for a subscriber, not something a tenant points at itself — it
+          now lives on the subscriber's console. A tenant's own CRM link runs the other
+          way (sync-OUT only) and is on Connections. This page stays the tenant's own
+          CSV upload. */}
+      <p className="mt-6 text-xs text-muted-foreground">
+        Moving in from another CRM? Your onboarding contact can pull Follow Up Boss, Lofty,
+        HubSpot or GoHighLevel directly into your account — ask them to run the migration.
+        To keep an outside CRM in sync going forward, connect it on{' '}
+        <a href="/settings/connections" className="text-blue-600 hover:underline">Connections</a>.
+      </p>
     </main>
   )
 }

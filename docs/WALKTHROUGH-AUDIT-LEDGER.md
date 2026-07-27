@@ -250,6 +250,79 @@ defect above.
 (marked `@deprecated` in favour of the communications one), and `app/actions/contacts.ts` — which is
 the one `app/crm/page.tsx` actually imports. A three-way keep-one merge, not started.
 
+## Owner rulings applied
+
+### (a) CRM pull is a platform operation, not a tenant one
+
+> *"crm pulls should only be done by the platform/global superadmin and staff because that is
+> taking someone's books and importing. tenants can only sync out to their outside crm."*
+
+Half of this was already true and half was inverted:
+
+- **Sync-OUT** (`app/actions/crm-connect.ts`) is already tenant-facing and already outbound-only —
+  its own header says *"SYNC-OUT ONLY — the app pushes contact updates out; no CRM syncs back IN."*
+  Correct as-is, untouched.
+- **Pull** admitted `agent` and `team_lead`, and imported into whatever brokerage the *caller*
+  belonged to — while stamping the saved credential `owner_type: 'brokerage'`. The role set and the
+  ownership claim disagreed, which is what the ruling resolves.
+
+The pull could not simply be re-gated. It ran through `processImportRows`, which **derives the
+brokerage from the caller's session by design** — a deliberately closed hole ("was previously
+trusting caller-supplied brokerageId, letting any signed-in user bulk-create contacts in any
+brokerage"). Gating that to platform staff would have landed the subscriber's book in the *staff
+member's* tenant.
+
+So the pull moved onto the lane that already does this correctly:
+
+| | Before | After |
+|---|---|---|
+| Who | broker/admin/superadmin/**team_lead/agent** | platform staff with the `tenants` capability |
+| Target tenant | the caller's own | an explicit `brokerageId` argument |
+| Import lane | `processImportRows` (session-scoped) | `importParsedContacts` — the same lane the CSV white-glove uses |
+| Audit | none | `superadmin_audit_log`, every run, honest counts |
+| UI | a card on the tenant's own import page, ungated | `TenantCrmPullPanel` on `/dashboard/superadmin/brokerages/[id]`, beside the CSV panel |
+
+**Consolidations this produced** (removals, not additions):
+- `lib/platform/tenant-import.ts` — `importContacts` split into parse + `importParsedContacts`.
+  One INSERT lane, two row sources (CSV text, vendor API). Dedupe, owner-agent resolution and the
+  never-import-consent rule now provably identical for both.
+- `lib/platform/tenant-import-parser.ts` — `parseContactFields` extracted; `parseContactRecords`
+  added for object rows. One definition of "what a valid imported contact is".
+- `lib/platform/staff-action-gate.ts` — `gateStaffAction` + `auditStaffAction`, replacing the
+  private `gate()`/`audit()` pair inside `tenant-import.ts`. A staff action against a tenant cannot
+  now be written without the audit trail being the path of least resistance.
+
+The tenant's import page keeps its own CSV upload and gains an honest pointer to both the
+white-glove migration and Connections, rather than the card silently vanishing.
+
+### (b) and (c) — recorded, not yet built
+
+- **(b)** `/settings/global` = platform/global users; `/settings/general` = everyone; neither may
+  overlap the other or duplicate another settings surface (branding belongs to the Branding page).
+- **(c)** Target-area scoping is **brokerage-level** — it tells the platform which territories are
+  active so the scrapers know where to look. `farm_territories` is a *different* concept: what a
+  user picks for their own marketing. They are not to be merged.
+
+## Cross-tenant defects from free-text matching
+
+A shape-based sweep (free-text value used as a lookup/join/conflict key with no tenant predicate)
+returned 16 findings. Tier 1 — service-role clients, cross-tenant reads AND writes — is fixed:
+
+| # | Defect | Reach | Fix |
+|---|---|---|---|
+| 1 | `provision-agent` upserts `users` with `onConflict: "email"` after an unscoped email lookup | live API route | A recruit whose email belongs to another brokerage silently had their user row, agents row and commission profile rewritten into the recruiting tenant. Now refused with a 409 and logged to `tenant_transition_log` — the same guard `lib/kernel/users.ts` already carried, which this route was missing |
+| 2 | `dedupRawAgainstLeadAndContact` matched on email / phone / name with **no tenant filter** across 5 queries | kernel, reachable | It already **took `brokerageId` and never used it**. Another tenant's lead became the "duplicate" and their row id was returned to the promotion path; the name-only fallback (score 0.80) made that likely, not theoretical |
+| 3 | inbound-mail webhook let a foreign tenant's contact **decide the brokerage** for the whole flow | live webhook | One shared email address filed offers and documents into the wrong tenant. Now resolves within the credential's tenant, and refuses to guess when an address is claimed by more than one |
+| 4 | SendGrid webhook wrote `email_tracking` and updated `messages.status` on rows found by recipient email alone | live webhook | Engagement attributed to whichever tenant sorted first, and a status **write** onto another tenant's message. Now derives the tenant from the provider id — the only authoritative link — and correlates only within it |
+| 5 | `getVendors` / `getVideoAssets` filtered by `category`, a free-text label, on the service-role client | `/api/vendors/list` — live | Every authenticated agent received **every tenant's** vendor directory, contact details included. `brokerageId` is now required; the route reads it from the caller's profile, never the request |
+
+Live-verified with a second brokerage and one person deliberately known to both: every fixed shape
+went from 2 tenants exposed to 1, and the inbound-mail ambiguity case is now detected rather than
+silently resolved. All probe rows deleted — zero residue.
+
+Tiers 2 and 3 (13 findings — global slug conflict targets, external-id upserts, RLS-bound
+free-text lookups) are triaged and recorded but not yet fixed.
+
 ## Cannot be closed headless
 
 Two loops need a preview environment with real credentials, and are honestly still open:

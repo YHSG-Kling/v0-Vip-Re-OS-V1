@@ -61,12 +61,37 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Recruit must be in 'joined' status before provisioning" }, { status: 422 })
     }
 
-    // Check for existing user with this email to avoid duplicate auth record
+    // Check for existing user with this email to avoid duplicate auth record.
+    //
+    // brokerage_id is selected, not just id, because the upsert below conflicts on
+    // `email` — a GLOBAL key — while setting brokerage_id to the recruit's. Without
+    // this check, provisioning a recruit whose email already belongs to a user at
+    // ANOTHER brokerage silently rewrites that person's row into this one, and takes
+    // their agents row and commission profile with it. Same cross-tenant capture that
+    // createOrRepairUserDomainRecords guards in lib/kernel/users.ts; the rule matches:
+    // the person must leave their current brokerage first, and only a platform admin
+    // may move them deliberately.
     const { data: existingUser } = await service
       .from("users")
-      .select("id")
+      .select("id, brokerage_id")
       .eq("email", recruit.email)
       .maybeSingle()
+
+    const holderBrokerageId = (existingUser as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    if (holderBrokerageId && holderBrokerageId !== recruit.brokerage_id && !isPlatformAdmin) {
+      await service.from("tenant_transition_log").insert({
+        actor_user_id: user.id,
+        action: "provision_recruit_denied_email_belongs_to_other_brokerage",
+        entity_type: "recruit",
+        entity_id: recruit.id,
+        from_brokerage_id: holderBrokerageId,
+        to_brokerage_id: recruit.brokerage_id,
+        metadata: { reason: "email_holder_at_other_brokerage" },
+      }).then(() => {}, () => {})
+      return NextResponse.json({
+        error: "That email already belongs to a user at another brokerage. They must leave it before they can be provisioned here.",
+      }, { status: 409 })
+    }
 
     let newUserId: string | null = existingUser?.id ?? null
 

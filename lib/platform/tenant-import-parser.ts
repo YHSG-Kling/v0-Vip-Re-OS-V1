@@ -188,47 +188,95 @@ export function parseContactsCsv(csvText: string): ParseContactsCsvResult {
       if (val !== null && field[key] == null) field[key] = val
     }
 
-    // full_name → first/last when no explicit name columns filled
-    let firstName = field.first_name ?? null
-    let lastName = field.last_name ?? null
-    if (!firstName && !lastName && field.full_name) {
-      const parts = field.full_name.split(/\s+/)
-      firstName = parts[0] ?? null
-      lastName = parts.length > 1 ? parts.slice(1).join(" ") : null
-    }
-
-    const email = field.email ? field.email.toLowerCase() : null
-    if (email && !EMAIL_RE.test(email)) {
-      errors.push({ line, problem: `Invalid email: "${field.email}"` })
-      continue
-    }
-
-    const phone = field.phone ?? null
-    const digits = phone ? phone.replace(/\D/g, "") : ""
-    const phoneDigits = digits.length >= 7 ? digits : null
-
-    if (!firstName && !lastName && !email && !phoneDigits) {
-      errors.push({ line, problem: "Row has no name, email, or usable phone" })
-      continue
-    }
-
-    const tags = field.tags
-      ? field.tags.split(/[;,]/).map((t) => t.trim()).filter(Boolean)
-      : null
-
-    rows.push({
-      line, firstName, lastName, email, phone, phoneDigits,
-      address: field.address ?? null,
-      city: field.city ?? null,
-      state: field.state ?? null,
-      zip: field.zip ?? null,
-      source: field.source ?? null,
-      notes: field.notes ?? null,
-      tags: tags && tags.length > 0 ? tags : null,
-    })
+    const out = parseContactFields(field, line)
+    if ("problem" in out) errors.push(out)
+    else rows.push(out)
   }
 
   return { rows, errors, headers, unmappedHeaders, totalDataRows: records.length - 1 }
+}
+
+/**
+ * PURE: one already-header-mapped record → a row or the reason it cannot be one.
+ *
+ * Extracted so a CSV file and a vendor-API pull produce contacts through the SAME
+ * validation. The CRM pull used to run a second, separate pipeline; this is the
+ * single definition of "what a valid imported contact is".
+ */
+export function parseContactFields(
+  field: Record<string, string | null>,
+  line: number,
+): ParsedContactRow | CsvRowError {
+  // full_name → first/last when no explicit name columns filled
+  let firstName = field.first_name ?? null
+  let lastName = field.last_name ?? null
+  if (!firstName && !lastName && field.full_name) {
+    const parts = field.full_name.split(/\s+/)
+    firstName = parts[0] ?? null
+    lastName = parts.length > 1 ? parts.slice(1).join(" ") : null
+  }
+
+  const email = field.email ? field.email.toLowerCase() : null
+  if (email && !EMAIL_RE.test(email)) {
+    return { line, problem: `Invalid email: "${field.email}"` }
+  }
+
+  const phone = field.phone ?? null
+  const digits = phone ? phone.replace(/\D/g, "") : ""
+  const phoneDigits = digits.length >= 7 ? digits : null
+
+  if (!firstName && !lastName && !email && !phoneDigits) {
+    return { line, problem: "Row has no name, email, or usable phone" }
+  }
+
+  const tags = field.tags
+    ? field.tags.split(/[;,]/).map((t) => t.trim()).filter(Boolean)
+    : null
+
+  return {
+    line, firstName, lastName, email, phone, phoneDigits,
+    address: field.address ?? null,
+    city: field.city ?? null,
+    state: field.state ?? null,
+    zip: field.zip ?? null,
+    source: field.source ?? null,
+    notes: field.notes ?? null,
+    tags: tags && tags.length > 0 ? tags : null,
+  }
+}
+
+/**
+ * Same contract as parseContactsCsv, for rows that arrive as objects rather than
+ * CSV text — a vendor API pull. Keys are that vendor's CSV-export header names, so
+ * they run through the identical CONTACT_HEADER_ALIASES mapping; `line` is the
+ * 1-based position in the pulled page, for error reporting.
+ */
+export function parseContactRecords(records: Record<string, unknown>[]): ParseContactsCsvResult {
+  const rows: ParsedContactRow[] = []
+  const errors: CsvRowError[] = []
+  const headerSet = new Set<string>()
+  const unmapped = new Set<string>()
+
+  records.forEach((rec, i) => {
+    const field: Record<string, string | null> = {}
+    for (const [rawKey, rawVal] of Object.entries(rec)) {
+      headerSet.add(rawKey)
+      const key = CONTACT_HEADER_ALIASES[normHeader(rawKey)] ?? null
+      if (!key) { unmapped.add(rawKey); continue }
+      const val = clean(rawVal == null ? "" : String(rawVal))
+      if (val !== null && field[key] == null) field[key] = val
+    }
+    const out = parseContactFields(field, i + 1)
+    if ("problem" in out) errors.push(out)
+    else rows.push(out)
+  })
+
+  return {
+    rows, errors,
+    headers: [...headerSet],
+    unmappedHeaders: [...unmapped],
+    totalDataRows: records.length,
+  }
 }
 
 // ─── Listings ────────────────────────────────────────────────────────────────

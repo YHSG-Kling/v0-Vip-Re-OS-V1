@@ -15,10 +15,20 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Agent profile not found" }, { status: 403 })
     }
 
+    // The vendor directory is per-brokerage. This route used to pass only `category`
+    // to a service-role query, so any authenticated agent received every tenant's
+    // vendors. The brokerage comes from the caller's own profile — never the request.
+    const { data: profile } = await supabase
+      .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+    const brokerageId = (profile as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    if (!brokerageId) {
+      return NextResponse.json({ success: false, error: "No brokerage" }, { status: 403 })
+    }
+
     const { searchParams } = new URL(request.url)
     const category = searchParams.get("category") || undefined
 
-    const vendors = await supabaseService.getVendors(category)
+    const vendors = await supabaseService.getVendors(brokerageId, category)
 
     console.log("[v0] API fetched vendors:", vendors?.length || 0)
 

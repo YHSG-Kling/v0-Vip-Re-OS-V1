@@ -357,10 +357,19 @@ export const supabaseService = {
   // VENDORS
   // =====================================================
 
-  async getVendors(category?: string) {
+  /**
+   * A brokerage's vendor directory.
+   *
+   * brokerageId is REQUIRED. This ran on the service-role client filtered only by
+   * `category` — a free-text column — so /api/vendors/list handed every authenticated
+   * agent every tenant's vendor list, contact details included. `category` narrows
+   * within a tenant; it is not a tenant boundary.
+   */
+  async getVendors(brokerageId: string, category?: string) {
     try {
+      if (!brokerageId) throw new Error("getVendors requires a brokerageId")
       const supabase = getSupabaseAdmin()
-      let query = supabase.from("vendors").select("*")
+      let query = supabase.from("vendors").select("*").eq("brokerage_id", brokerageId)
 
       if (category) {
         query = query.eq("category", category)
@@ -535,10 +544,13 @@ export const supabaseService = {
     }
   },
 
-  async getVideoAssets(category?: string) {
+  /** A brokerage's video assets. brokerageId REQUIRED — same reason as getVendors:
+   *  `category` is a free-text label, not a tenant boundary. */
+  async getVideoAssets(brokerageId: string, category?: string) {
     try {
+      if (!brokerageId) throw new Error("getVideoAssets requires a brokerageId")
       const supabase = getSupabaseAdmin()
-      let query = supabase.from("video_assets").select("*")
+      let query = supabase.from("video_assets").select("*").eq("brokerage_id", brokerageId)
 
       if (category) {
         query = query.eq("category", category)

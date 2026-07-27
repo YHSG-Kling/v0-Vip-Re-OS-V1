@@ -45,6 +45,10 @@ const GATE_MARKERS = [
   "requireBrokerAdmin",
   "requireBrokerageAdmin",
   "requirePlatformCapability",
+  // The action-layer sibling of requirePlatformCapability: resolves the platform
+  // role AND the actor identity, because every staff action against a tenant is
+  // audited. Used by the white-glove migration pair (CSV + CRM pull).
+  "gateStaffAction",
   "isPlatformStaff",
   "requireAdminMaintenanceAccess",
   "CREDENTIAL_ADMIN_ROLES",

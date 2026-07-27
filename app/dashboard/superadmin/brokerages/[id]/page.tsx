@@ -14,6 +14,7 @@ import { TenantEntitlementsPanel } from "./tenant-entitlements-panel"
 import { TenantAutonomyPanel } from "./tenant-autonomy-panel"
 import { TenantSnapshotsPanel } from "./tenant-snapshots-panel"
 import { TenantImportPanel } from "./tenant-import-panel"
+import { TenantCrmPullPanel } from "./tenant-crm-pull-panel"
 import { PortalClientsPanel } from "./portal-clients-panel"
 
 export const dynamic = "force-dynamic"
@@ -98,6 +99,9 @@ export default async function SuperadminBrokerageDetailPage(
           CSV (contacts / draft listings) in THIS tenant. Inbound mirror of the
           export card below. */}
       <TenantImportPanel brokerageId={brokerage.id} />
+
+      {/* The API half of the same white-glove migration — CSV above, vendor pull here. */}
+      <TenantCrmPullPanel brokerageId={brokerage.id} />
 
       {/* Offboarding — the tenant's data, downloadable. Export never deletes;
           retention-law records stay put regardless of tenancy. */}

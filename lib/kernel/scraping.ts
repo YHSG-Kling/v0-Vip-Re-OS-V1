@@ -670,6 +670,11 @@ function deriveSourceFamily(source: string): string {
 export async function dedupRawAgainstLeadAndContact(
   params: DedupRawParams,
 ): Promise<DedupResult> {
+  // EVERY query below is scoped to params.brokerageId. It always carried the tenant and
+  // never used it: on the service-role client, matching a scraped lead on email, phone or
+  // name alone made ANOTHER tenant's lead or contact the "duplicate", and handed their row
+  // id back as matchId to the promotion path. The name-only fallback (score 0.80) made
+  // that likely rather than theoretical — two tenants can easily both know a John Smith.
   const supabase = createServiceClient()
 
   const noMatch: DedupResult = {
@@ -687,6 +692,7 @@ export async function dedupRawAgainstLeadAndContact(
       const { data: lead } = await supabase
         .from('leads')
         .select('id, enrichment_confidence, email, phone')
+        .eq('brokerage_id', params.brokerageId)
         .eq('email', params.email)
         .eq('is_active', true)
         .maybeSingle()
@@ -710,6 +716,7 @@ export async function dedupRawAgainstLeadAndContact(
         const { data: lead } = await supabase
           .from('leads')
           .select('id, enrichment_confidence, email, phone')
+          .eq('brokerage_id', params.brokerageId)
           .eq('phone_digits', digits)
           .eq('is_active', true)
           .maybeSingle()
@@ -733,6 +740,7 @@ export async function dedupRawAgainstLeadAndContact(
       const { data: contact } = await supabase
         .from('contacts')
         .select('id, engagement_score, email, phone')
+        .eq('brokerage_id', params.brokerageId)
         .eq('email', params.email)
         .is('deleted_at', null)
         .maybeSingle()
@@ -769,6 +777,7 @@ export async function dedupRawAgainstLeadAndContact(
       const { data: rawCandidates } = await supabase
         .from('raw_scraped_leads')
         .select('id, lead_id, processing_status, created_at')
+        .eq('brokerage_id', params.brokerageId)
         .or(identityFilters)
         .neq('id', params.rawRecordId)
         .limit(25)
@@ -797,6 +806,7 @@ export async function dedupRawAgainstLeadAndContact(
       const { data: leads } = await supabase
         .from('leads')
         .select('id, enrichment_confidence, first_name, last_name, email, phone')
+        .eq('brokerage_id', params.brokerageId)
         .eq('first_name', params.firstName)
         .eq('last_name', params.lastName)
         .eq('is_active', true)

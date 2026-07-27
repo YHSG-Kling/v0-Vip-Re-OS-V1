@@ -126,14 +126,41 @@ export async function POST(request: NextRequest) {
     let contactId: string | null = null
 
     if (email.fromEmail) {
-      const { data: c } = await supabase
-        .from("contacts")
-        .select("id, brokerage_id")
-        .eq("email", email.fromEmail)
-        .maybeSingle()
-      if (c) {
-        contactId = c.id as string
-        if (!brokerageId) brokerageId = c.brokerage_id as string
+      if (brokerageId) {
+        // Tenant already established by the credential — resolve the sender WITHIN it.
+        const { data: c } = await supabase
+          .from("contacts")
+          .select("id")
+          .eq("brokerage_id", brokerageId)
+          .eq("email", email.fromEmail)
+          .maybeSingle()
+        if (c) contactId = c.id as string
+      } else {
+        // No credential-derived tenant, so the sender's email is all we have to go on.
+        // An email address is not unique across tenants: the same person can be a
+        // contact at two brokerages, and .maybeSingle() would have handed us whichever
+        // row came back first — which then became `brokerageId` for the entire flow
+        // below (offer intake, document upload, transaction routing). One shared
+        // address filed another tenant's documents.
+        //
+        // Take the match only when it is UNAMBIGUOUS. Two or more tenants claiming the
+        // sender means we cannot know whose mail this is, and guessing is the bug.
+        const { data: matches } = await supabase
+          .from("contacts")
+          .select("id, brokerage_id")
+          .eq("email", email.fromEmail)
+          .limit(2)
+        const rows = (matches ?? []) as Array<{ id: string; brokerage_id: string }>
+        const tenants = new Set(rows.map((r) => r.brokerage_id))
+        if (rows.length === 1 || (rows.length > 1 && tenants.size === 1)) {
+          contactId = rows[0].id
+          brokerageId = rows[0].brokerage_id
+        } else if (tenants.size > 1) {
+          console.warn(
+            `[inbound-mail] sender ${email.fromEmail} is a contact at ${tenants.size} brokerages — ` +
+            "refusing to guess a tenant; skipping this message",
+          )
+        }
       }
     }
     if (!contactId && email.toEmail && brokerageId) {

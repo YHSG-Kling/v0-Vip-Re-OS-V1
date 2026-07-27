@@ -76,12 +76,17 @@ export async function POST(request: NextRequest) {
       // Exact correlation when the send stored the provider id.
       const sgId = String(ev?.sg_message_id ?? "").split(".")[0]
       let matched = false
+      // The provider id is the ONLY authoritative link between an event and a tenant.
+      // Everything below is scoped to the brokerage it yields, because a recipient
+      // email address is not unique across tenants.
+      let eventBrokerageId: string | null = null
       if (sgId) {
         const { data: exact } = await svc.from("messages")
-          .select("id, status")
+          .select("id, status, brokerage_id")
           .contains("metadata", { sg_message_id: sgId })
           .limit(1).maybeSingle()
         if (exact) {
+          eventBrokerageId = ((exact as any).brokerage_id as string | null) ?? null
           await svc.from("messages").update({ status, updated_at: new Date().toISOString() }).eq("id", (exact as any).id)
           matched = true
         }
@@ -92,9 +97,15 @@ export async function POST(request: NextRequest) {
       // (brokerage stamped from the contact); email_send_id stays NULL when the
       // send didn't record a provider id — honest partial correlation.
       const trackingType = TRACKING_EVENT[kind]
-      const { data: trackContacts } = await svc.from("contacts")
-        .select("id, brokerage_id").ilike("email", email).limit(1)
-      const trackContact = ((trackContacts ?? []) as any[])[0] ?? null
+      // Was .ilike("email", …).limit(1) with no tenant predicate, so an open/click was
+      // attributed to whichever tenant's contact happened to sort first. Scope to the
+      // brokerage the send came from; without one, only an unambiguous match counts.
+      let trackQuery = svc.from("contacts").select("id, brokerage_id").ilike("email", email)
+      if (eventBrokerageId) trackQuery = trackQuery.eq("brokerage_id", eventBrokerageId)
+      const { data: trackContacts } = await trackQuery.limit(2)
+      const trackRows = (trackContacts ?? []) as Array<{ id: string; brokerage_id: string | null }>
+      const trackTenants = new Set(trackRows.map((r) => r.brokerage_id))
+      const trackContact = trackTenants.size === 1 ? trackRows[0] : null
       if (trackingType && trackContact) {
         await svc.from("email_tracking").insert({
           contact_id: trackContact.id,
@@ -111,9 +122,15 @@ export async function POST(request: NextRequest) {
       // 'read' never downgrades to 'delivered'; terminal failures always win.
       if (!matched) {
         const since = new Date(Date.now() - 72 * 3_600_000).toISOString()
-        const { data: contacts } = await svc.from("contacts")
-          .select("id").ilike("email", email).limit(5)
-        const ids = ((contacts ?? []) as any[]).map((c) => c.id)
+        // Same rule for the recency fallback: contact ids collected across tenants were
+        // fed straight into a messages UPDATE, so a status write could land on another
+        // tenant's row. Only correlate within a known brokerage.
+        let contactQuery = svc.from("contacts").select("id, brokerage_id").ilike("email", email)
+        if (eventBrokerageId) contactQuery = contactQuery.eq("brokerage_id", eventBrokerageId)
+        const { data: contacts } = await contactQuery.limit(5)
+        const contactRows = (contacts ?? []) as Array<{ id: string; brokerage_id: string | null }>
+        const fallbackTenants = new Set(contactRows.map((c) => c.brokerage_id))
+        const ids = fallbackTenants.size === 1 ? contactRows.map((c) => c.id) : []
         if (ids.length > 0) {
           const { data: msg } = await svc.from("messages")
             .select("id, status")
