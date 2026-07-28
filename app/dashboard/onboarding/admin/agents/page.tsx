@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { loadOnboardingRoster } from '@/lib/onboarding/onboarding-roster'
 import { 
   Users, 
   AlertTriangle, 
@@ -30,146 +31,16 @@ import {
 
 export const dynamic = 'force-dynamic'
 
-interface AgentOnboardingStatus {
-  agentId: string
-  agentName: string
-  email: string
-  status: string
-  percentComplete: number
-  currentDay: number
-  certsEarned: number
-  lastActivityAt: string | null
-  isStalled: boolean
-  daysSinceStart: number
-}
-
-async function getAdminOnboardingData(brokerageId: string) {
-  const supabase = await createClient()
-
-  // Get all agent onboarding records for this brokerage
-  const { data: onboardings } = await supabase
-    .from('agent_onboarding')
-    .select(`
-      id,
-      agent_id,
-      status,
-      completion_percentage,
-      current_day,
-      start_date,
-      certified_at,
-      updated_at
-    `)
-    .eq('brokerage_id', brokerageId)
-
-  if (!onboardings || onboardings.length === 0) {
-    return {
-      agents: [],
-      completedThisMonth: 0,
-      stalledCount: 0,
-      avgDaysToComplete: 0,
-      inProgressCount: 0,
-    }
-  }
-
-  // Get agent details
-  const agentIds = onboardings.map(o => o.agent_id)
-  const { data: users } = await supabase
-    .from('users')
-    .select('id, first_name, last_name, email')
-    .in('id', agentIds)
-
-  const userMap = new Map((users || []).map(u => [u.id, u]))
-
-  // Get certification counts
-  const { data: certs } = await supabase
-    .from('agent_certifications')
-    .select('agent_id')
-    .in('agent_id', agentIds)
-    .eq('cert_type', 'onboarding')
-
-  const certCounts = new Map<string, number>()
-  for (const cert of certs || []) {
-    certCounts.set(cert.agent_id, (certCounts.get(cert.agent_id) || 0) + 1)
-  }
-
-  // Get latest step completions for activity tracking
-  const { data: completions } = await supabase
-    .from('agent_step_completions')
-    .select('agent_id, completed_at')
-    .in('agent_id', agentIds)
-    .eq('completed', true)
-    .order('completed_at', { ascending: false })
-
-  const latestActivityMap = new Map<string, string>()
-  for (const c of completions || []) {
-    if (!latestActivityMap.has(c.agent_id) && c.completed_at) {
-      latestActivityMap.set(c.agent_id, c.completed_at)
-    }
-  }
-
-  const now = new Date()
-  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
-
-  const agents: AgentOnboardingStatus[] = onboardings.map(o => {
-    const user = userMap.get(o.agent_id)
-    const lastActivity = latestActivityMap.get(o.agent_id)
-    const startDate = o.start_date ? new Date(o.start_date) : now
-    const daysSinceStart = Math.ceil((now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24))
-
-    const isStalled = o.status === 'in_progress' && (
-      !lastActivity || new Date(lastActivity) < sevenDaysAgo
-    )
-
-    return {
-      agentId: o.agent_id,
-      agentName: user ? `${user.first_name || ''} ${user.last_name || ''}`.trim() || 'Unknown' : 'Unknown',
-      email: user?.email || '',
-      status: o.status,
-      percentComplete: o.completion_percentage || 0,
-      currentDay: o.current_day || 1,
-      certsEarned: certCounts.get(o.agent_id) || 0,
-      lastActivityAt: lastActivity || null,
-      isStalled,
-      daysSinceStart,
-    }
-  })
-
-  // Calculate stats
-  const completedThisMonth = onboardings.filter(o => 
-    o.status === 'completed' && 
-    o.certified_at && 
-    new Date(o.certified_at) >= startOfMonth
-  ).length
-
-  const stalledCount = agents.filter(a => a.isStalled).length
-  const inProgressCount = agents.filter(a => a.status === 'in_progress').length
-
-  const completedOnboardings = onboardings.filter(o => 
-    o.status === 'completed' && o.start_date && o.certified_at
-  )
-  const avgDaysToComplete = completedOnboardings.length > 0
-    ? Math.round(
-        completedOnboardings.reduce((sum, o) => {
-          const start = new Date(o.start_date!)
-          const end = new Date(o.certified_at!)
-          return sum + Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24))
-        }, 0) / completedOnboardings.length
-      )
-    : 0
-
-  return {
-    agents: agents.sort((a, b) => {
-      // Stalled first, then by percent complete descending
-      if (a.isStalled !== b.isStalled) return a.isStalled ? -1 : 1
-      return b.percentComplete - a.percentComplete
-    }),
-    completedThisMonth,
-    stalledCount,
-    avgDaysToComplete,
-    inProgressCount,
-  }
-}
+// The roster + the stall rule live in ONE place now. This page and the
+// Onboarding Operations console (/dashboard/admin/onboarding) both read agent
+// onboarding, and they had drifted into two different answers: this page derived
+// `isStalled` from real step activity while the console filtered on a status
+// value the CHECK constraint forbids, so the console's stalled count was always 0.
+//
+// The local loader this replaces also had an id-class bug of its own: it looked
+// agent names up with `users.id IN (agent_onboarding.agent_id …)`, but that
+// column is an agents(id) FK, so every row rendered "Unknown" with a blank email.
+// loadOnboardingRoster hops through agents.user_id.
 
 export default async function AdminAgentsPage() {
   const supabase = await createClient()
@@ -201,7 +72,7 @@ export default async function AdminAgentsPage() {
     redirect('/dashboard/onboarding')
   }
 
-  const data = await getAdminOnboardingData(userData.brokerage_id)
+  const data = await loadOnboardingRoster(supabase, userData.brokerage_id)
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return 'Never'

@@ -26,7 +26,14 @@ interface AdoptionMetrics {
   avgCompletion: number
   activeAgents: number
   completedAgents: number
+  /**
+   * DERIVED by loadOnboardingRoster — in_progress with no completed step in the
+   * last 7 days. It used to be `status === 'stalled'`, a value the
+   * agent_onboarding.status CHECK (in_progress|completed|paused) forbids, so
+   * this was permanently 0 and the whole intervention path was unreachable.
+   */
   stalledCount: number
+  stalledAgentIds: string[]
 }
 
 interface SetupBlocker {
@@ -68,7 +75,7 @@ export function AdminOnboardingOsClient({
   recentOnboardings,
 }: AdminOnboardingOsClientProps) {
   const [activeTab, setActiveTab] = useState('overview')
-  const [selectedBatch, setSelectedBatch] = useState<string[]>([])
+  const [batchPreselect, setBatchPreselect] = useState<string[] | undefined>(undefined)
   const [licenseStatuses, setLicenseStatuses] = useState<AgentLicenseStatus[]>([])
   const [licenseLoading, setLicenseLoading] = useState(false)
   const [reviewingId, setReviewingId] = useState<string | null>(null)
@@ -105,8 +112,11 @@ export function AdminOnboardingOsClient({
 
   const needsReviewCount = licenseStatuses.filter((a) => a.needsManualReview).length
 
-  const handleBatchAction = useCallback((_action: string, _agentIds: string[]) => {
-    // Batch actions handled by OnboardingBatchActionsPanel
+  // Quick Actions hands its selection to the Actions tab rather than owning a
+  // second, divergent copy of the batch UI.
+  const handleOpenBatchActions = useCallback((preselectAgentIds?: string[]) => {
+    setBatchPreselect(preselectAgentIds)
+    setActiveTab('actions')
   }, [])
 
   return (
@@ -120,10 +130,7 @@ export function AdminOnboardingOsClient({
       </div>
 
       {/* Command Strip */}
-      <OnboardingCommandStrip
-        brokerageId={brokerageId}
-        userId={userId}
-      />
+      <OnboardingCommandStrip />
 
       {/* Adoption Radar & Key Metrics */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -184,9 +191,9 @@ export function AdminOnboardingOsClient({
               avgCompletion={adoptionMetrics.avgCompletion}
             />
             <OnboardingActionStack
-              brokerageId={brokerageId}
-              userId={userId}
               stallCount={adoptionMetrics.stalledCount}
+              stalledAgentIds={adoptionMetrics.stalledAgentIds}
+              onOpenBatchActions={handleOpenBatchActions}
             />
           </div>
         </TabsContent>
@@ -333,11 +340,7 @@ export function AdminOnboardingOsClient({
         </TabsContent>
 
         <TabsContent value="actions" className="space-y-4">
-          <OnboardingBatchActionsPanel
-            brokerageId={brokerageId}
-            userId={userId}
-            onBatchAction={handleBatchAction}
-          />
+          <OnboardingBatchActionsPanel preselectAgentIds={batchPreselect} />
         </TabsContent>
       </Tabs>
     </div>

@@ -2278,3 +2278,85 @@ alone (their ids are not agents ids), and catches the write side, not just the f
 21 checks, 0 failures.
 
 `tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.
+
+---
+
+## Onboarding Operations: a console that could not count, and could not act
+
+`TrainingProgressPanel` appeared three times, which is what put this on the list. Two of
+the three are legitimately different components that share a name — an Academy "My
+Progress" card and a broker aggregate. The third belonged to
+`app/dashboard/onboarding/components/os/`, an **eight-component directory with zero
+importers**: not one file in the repo imports that barrel or any component in it. It had
+been built as an "OS" layer for the agent onboarding dashboard and never mounted, while a
+same-named set under `app/dashboard/admin/onboarding/components/os/` is what actually
+ships.
+
+Comparing them is what exposed the state of the shipping console.
+
+### Nothing on it worked
+
+| | shipped | actually |
+|---|---|---|
+| "Stalled" metric card | red count + intervention button | **always 0** |
+| Actions tab | batch panel | selection nothing populates; both buttons permanently disabled |
+| `onBatchAction` handler | — | empty body, comment: *"Batch actions handled by OnboardingBatchActionsPanel"* |
+| Quick Actions | 3 buttons | **no `onClick` on any of them** |
+| Command strip | 4 links | 2 are **404s**; a third points at the agent's own page |
+
+The stalled count is the interesting one. `agent_onboarding.status` has a live CHECK
+admitting exactly `in_progress`, `completed`, `paused`. The console filtered
+`status === "stalled"` — a value the constraint forbids, so it could never be non-zero,
+and the `stallCount > 0` branch guarding the "N Stalled Agents · Need intervention"
+button was unreachable code. The whole intervention path was decoration on decoration.
+
+Meanwhile `/dashboard/onboarding/admin/agents` — a second broker-facing onboarding
+surface — had the honest rule all along: `in_progress` and no completed step in 7 days.
+
+### One roster, one stall rule
+
+`lib/onboarding/onboarding-roster.ts` is now the single loader for both surfaces, with
+`isOnboardingStalled` exported pure so a guard can pin it without a database. The roster
+page's local copy is gone.
+
+That page's loader also carried an id-class bug of its own: it resolved agent names with
+`users.id IN (agent_onboarding.agent_id …)`, but that column is an `agents(id)` FK. Live
+against production, with three seeded onboardings under three real agents:
+
+```
+old lookup  users.id IN (agents ids)   → 0 hits on every row   ("Unknown", blank email)
+new lookup  agents.user_id → users     → Jennifer Torres, Marcus Williams, Alex Rivera
+stall rule  30d idle in_progress → stalled ✓   1d idle → not ✓   completed → not ✓
+```
+
+Every agent in the broker's roster table had been rendering as "Unknown".
+
+### Actions that act
+
+- **Batch panel** rebuilt over the real roster: checkboxes, select-all, per-agent progress,
+  stall badges, idle days. `nudgeOnboardingAgentsAction` writes real `notifications` rows —
+  admin/broker gated, targets re-read from the caller's own brokerage so a client-supplied
+  id that is not in it simply does not appear. Live-verified the exact payload lands and
+  satisfies both CHECK vocabularies (`channel = in_app`, `priority = medium`).
+- **Agents with no linked user account** are badged and counted as skipped, not silently
+  dropped — the toast says how many.
+- **Quick Actions** now hands its selection to the Actions tab; the stalled button
+  preselects exactly the stalled agents.
+- **Command strip** rebuilt on three routes that exist. "View All Agents" points at the
+  broker roster rather than the agent's own progress page.
+
+Two things were deliberately **not** carried over. "Enroll in Training" had no enrolment
+backend, and "Create Training Campaign" had no campaign backend — a button that pretends
+to assign coursework is worse than no button, and the curriculum editor already on this
+page is the real authoring surface. The orphan directory's `onResetProgress` prop was
+likewise not ported: it was a signature with no implementation anywhere, and resetting
+another agent's onboarding is not something to invent on the way past.
+
+`scripts/onboarding-ops-simulator.ts` (25 checks) pins all of it, including that no
+surface may filter on the impossible `'stalled'` literal again. Its source assertions
+strip comments first — these files document the strings they assert absent, and without
+that the guard would flag its own explanations.
+
+Test data cleaned to baseline: 1 pre-existing onboarding, 0 completions, 0 notifications.
+
+`tsc --noEmit`: 0. `npm run guard`: 99 simulators, exit 0.

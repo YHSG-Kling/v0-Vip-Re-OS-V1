@@ -4,6 +4,7 @@ import { redirect } from "next/navigation"
 import { AdminOnboardingOsClient } from "./admin-onboarding-os-client"
 import { OnboardingCurriculumEditor } from "./onboarding-curriculum-editor"
 import { getBrokerageProviderReadiness } from "@/lib/platform/provider-posture"
+import { loadOnboardingRoster } from "@/lib/onboarding/onboarding-roster"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
 export const metadata = {
@@ -42,11 +43,11 @@ export default async function AdminOnboardingOsPage() {
     redirect("/dashboard")
   }
 
-  // Fetch adoption metrics
-  const { data: adoptionMetrics } = await service
-    .from("agent_onboarding")
-    .select("completion_percentage, status")
-    .eq("brokerage_id", userData.brokerage_id)
+  // ONE roster for both broker-facing onboarding surfaces (this console and the
+  // /dashboard/onboarding/admin/agents table). It also derives `isStalled`
+  // honestly: agent_onboarding.status can only be in_progress|completed|paused,
+  // so the old `status === "stalled"` filter here was permanently 0.
+  const roster = await loadOnboardingRoster(service, userData.brokerage_id)
 
   // Fetch setup blockers (incomplete integrations)
   // brokerage_integrations real cols: provider_type, status (connected/error/not_configured),
@@ -85,15 +86,6 @@ export default async function AdminOnboardingOsPage() {
     .order("created_at", { ascending: false })
     .limit(10)
 
-  const avgCompletion = adoptionMetrics?.length 
-    ? Math.round(adoptionMetrics.reduce((sum, m) => sum + (m.completion_percentage || 0), 0) / adoptionMetrics.length)
-    : 0
-
-  const stalledCount = adoptionMetrics?.filter(m => m.status === "stalled").length || 0
-  
-  const configuredIntegrations = integrations?.filter(i => i.status === "connected").length || 0
-  const totalIntegrations = integrations?.length || 0
-
   return (
     <div className="space-y-6">
       <AdminOnboardingOsClient
@@ -101,10 +93,11 @@ export default async function AdminOnboardingOsPage() {
         brokerageId={userData.brokerage_id}
         userRole={userData.user_type || "user"}
         adoptionMetrics={{
-          avgCompletion,
-          activeAgents: adoptionMetrics?.filter(m => m.status === "in_progress").length || 0,
-          completedAgents: adoptionMetrics?.filter(m => m.status === "completed").length || 0,
-          stalledCount,
+          avgCompletion: roster.avgCompletion,
+          activeAgents: roster.inProgressCount,
+          completedAgents: roster.completedCount,
+          stalledCount: roster.stalledCount,
+          stalledAgentIds: roster.agents.filter((a) => a.isStalled).map((a) => a.agentId),
         }}
         setupBlockers={integrations?.filter(i => i.status !== "connected") || []}
         trainingProgress={trainingProgress || []}
@@ -112,7 +105,7 @@ export default async function AdminOnboardingOsPage() {
         recentOnboardings={recentOnboardings || []}
       />
       {/* Curriculum authoring — the write surface the monitoring console lacked */}
-      <div className="px-4 sm:px-6 pb-6">
+      <div id="onboarding-curriculum" className="px-4 sm:px-6 pb-6">
         <OnboardingCurriculumEditor />
       </div>
     </div>
