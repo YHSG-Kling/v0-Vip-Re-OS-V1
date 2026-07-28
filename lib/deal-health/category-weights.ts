@@ -44,10 +44,18 @@ export const CATEGORY_WEIGHTS: Record<HealthCategory, number> = {
  * NOT the HealthCategory keys. Weighting a stored row therefore means SUMMING the
  * categories that collapsed into it.
  *
- * The four cover 80 of the 100 weight: COMMUNICATION (6), DOCUMENTS (8) and
- * PARTICIPANTS (6) have no FACTOR_TYPE mapping and are never persisted. The
- * weakest-link ranking is still correct — it compares what was actually scored —
- * but it cannot see those three.
+ * These now cover the FULL 100. COMMUNICATION (6), DOCUMENTS (8) and
+ * PARTICIPANTS (6) used to have no FACTOR_TYPE mapping and were never persisted —
+ * scored in memory, dropped at write time. deal_health_factors.factor_type already
+ * admitted communication_recency and party_responsiveness, so closing the gap was
+ * a matter of adding three lines to the scorer's map, not a migration.
+ *
+ * A bucket weight is the SUM of the categories that collapse into it, so it is the
+ * right weight for a bucket but the WRONG weight for a single row when two
+ * categories share a bucket (EARNEST_MONEY and LENDER both persist as
+ * financing_status; each row would otherwise be ranked as if it carried all 28).
+ * The scorer stores the true category in `detail.category` — prefer
+ * weightForCategory() when a caller can read it.
  *
  * NOTE: transaction_health_factors is a DIFFERENT table and only ever stores
  * factor_type 'comprehensive' (one aggregate row, no per-category breakdown), so it
@@ -57,7 +65,10 @@ export const PERSISTED_FACTOR_WEIGHTS: Record<string, number> = {
   financing_status:      CATEGORY_WEIGHTS.EARNEST_MONEY + CATEGORY_WEIGHTS.LENDER,      // 28
   deadline_proximity:    CATEGORY_WEIGHTS.INSPECTION + CATEGORY_WEIGHTS.DEADLINES,      // 22
   timeline_adherence:    CATEGORY_WEIGHTS.MILESTONES,                                    // 10
-  document_completeness: CATEGORY_WEIGHTS.TITLE + CATEGORY_WEIGHTS.COMPLIANCE,          // 20
+  document_completeness: CATEGORY_WEIGHTS.TITLE + CATEGORY_WEIGHTS.COMPLIANCE
+                       + CATEGORY_WEIGHTS.DOCUMENTS,                                     // 28
+  communication_recency: CATEGORY_WEIGHTS.COMMUNICATION,                                 // 6
+  party_responsiveness:  CATEGORY_WEIGHTS.PARTICIPANTS,                                  // 6
 }
 
 /** Human label for a persisted factor_type — the raw value is not seller-readable. */
@@ -66,6 +77,19 @@ export const PERSISTED_FACTOR_LABEL: Record<string, string> = {
   deadline_proximity:    "Deadlines",
   timeline_adherence:    "Timeline",
   document_completeness: "Documents & title",
+  communication_recency: "Communication",
+  party_responsiveness:  "Party responsiveness",
+}
+
+/**
+ * EXACT weight for a single scored row, when the caller can recover the original
+ * HealthCategory (the scorer writes it into detail.category). This avoids charging a
+ * row the whole bucket's weight when two categories collapsed into that bucket.
+ * Unknown → 0 so the caller can fall back to weightForFactorType.
+ */
+export function weightForCategory(category: string | null | undefined): number {
+  if (!category) return 0
+  return CATEGORY_WEIGHTS[String(category).toUpperCase() as HealthCategory] ?? 0
 }
 
 /**

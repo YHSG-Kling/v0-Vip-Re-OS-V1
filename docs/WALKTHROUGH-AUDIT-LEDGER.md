@@ -3004,3 +3004,45 @@ no accessor, nothing to scope.
 `is_platform_admin()`.
 
 `tsc --noEmit`: 0. `npm run guard`: 105 simulators, exit 0.
+
+---
+
+## Deal health: 20 of the 100 weight was scored and then dropped
+
+The open item said the deal-health vocabulary covered only 80 of 100 — COMMUNICATION (6),
+DOCUMENTS (8) and PARTICIPANTS (6) "have no FACTOR_TYPE mapping and are never persisted",
+with the implication that closing it needed schema work.
+
+It did not. `deal_health_factors.factor_type` already admits **eight** values:
+
+```
+timeline_adherence | communication_recency | document_completeness | task_completion
+financing_status   | deadline_proximity    | agent_responsiveness  | party_responsiveness
+```
+
+`communication_recency` and `party_responsiveness` were sitting there unused — homes for two
+of the three orphans, already legal. The scorer's `FACTOR_TYPE` map simply had seven entries
+for ten categories. All three now map (`DOCUMENTS` joins `document_completeness`), so the
+scorer persists 100 of 100. Live-verified that the constraint accepts both new values and
+still rejects an invented one.
+
+### The double-count underneath it
+
+Closing that exposed a second, quieter problem. The persisted `factor_type` is a *bucket* —
+`EARNEST_MONEY` and `LENDER` both write `financing_status` — and `PERSISTED_FACTOR_WEIGHTS`
+gives a bucket the SUM of its categories (28). The transaction page weighted every *row* by
+its bucket, so two financing rows were each ranked as if they carried the full 28, and the
+weakest-link verdict over-weighted financing against everything else.
+
+The fix was already in the data: the scorer writes the true category into
+`detail.category`. The page now parses that JSON — which also recovers the real `issues`
+array it had been stringifying whole — and weights by `weightForCategory()`, falling back to
+the bucket only when the detail is unreadable. Exact per-row weights, no double-count.
+
+So the item was mis-stated in two directions at once: the missing 20 was easier than filed
+(three lines, no migration), and there was a ranking bug next to it that the note never
+mentioned.
+
+Live rows cleaned to 0.
+
+`tsc --noEmit`: 0. `npm run guard`: 105 simulators, exit 0.

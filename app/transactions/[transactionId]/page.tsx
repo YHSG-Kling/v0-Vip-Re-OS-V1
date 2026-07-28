@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useMemo } from "react"
 // Pure + client-safe: the weights live in a sibling of health-scorer because that
 // module imports the service client and cannot cross into a client component.
 import { distillDealConfidence } from "@/lib/kernel/deal-confidence"
-import { weightForFactorType, PERSISTED_FACTOR_LABEL } from "@/lib/deal-health/category-weights"
+import { weightForFactorType, weightForCategory, PERSISTED_FACTOR_LABEL } from "@/lib/deal-health/category-weights"
 import { useParams, useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -308,12 +308,29 @@ export default function AgentTransactionDetailPage() {
   // protective action. Reuses the persisted scores; never recomputes them.
   const dealConfidence = useMemo(() => {
     const components = dealFactors
-      .map((f) => ({
-        category: String(f.factor_type ?? ""),
-        score: Number(f.factor_value ?? 0),
-        weight: weightForFactorType(f.factor_type),
-        issues: f.detail ? [String(f.detail)] : [],
-      }))
+      .map((f) => {
+        // detail is JSON {issues, category} written by the scorer. The ORIGINAL
+        // HealthCategory in there is the exact weight for this row; factor_type is a
+        // bucket that several categories collapse into, so weighting by the bucket
+        // charged each of two financing rows the full 28 and over-ranked that bucket.
+        let detailCategory: string | null = null
+        let issues: string[] = []
+        if (f.detail) {
+          try {
+            const d = JSON.parse(String(f.detail)) as { category?: string; issues?: string[] }
+            detailCategory = d.category ?? null
+            issues = Array.isArray(d.issues) ? d.issues.map(String) : []
+          } catch {
+            issues = [String(f.detail)]
+          }
+        }
+        return {
+          category: detailCategory || String(f.factor_type ?? ""),
+          score: Number(f.factor_value ?? 0),
+          weight: weightForCategory(detailCategory) || weightForFactorType(f.factor_type),
+          issues,
+        }
+      })
       .filter((c) => c.category && c.weight > 0)
     if (components.length === 0) return null
     return distillDealConfidence(Number(healthScore), components)

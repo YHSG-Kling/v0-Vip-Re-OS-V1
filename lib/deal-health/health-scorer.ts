@@ -864,6 +864,11 @@ export async function calculateDealHealth(params: {
     // component categories — map each component to its canonical factor kind
     // (caught by live-fire before this write ever shipped; detail keeps the
     // original category for fidelity).
+    // All TEN categories map now. deal_health_factors.factor_type already admitted
+    // communication_recency and party_responsiveness — COMMUNICATION (6),
+    // PARTICIPANTS (6) and DOCUMENTS (8) simply had no entry here, so 20 of the
+    // 100 weight was scored in memory and then dropped on the floor at persist
+    // time. Nothing about the constraint had to change.
     const FACTOR_TYPE: Record<string, string> = {
       EARNEST_MONEY: "financing_status",
       LENDER:        "financing_status",
@@ -872,6 +877,9 @@ export async function calculateDealHealth(params: {
       MILESTONES:    "timeline_adherence",
       TITLE:         "document_completeness",
       COMPLIANCE:    "document_completeness",
+      DOCUMENTS:     "document_completeness",
+      COMMUNICATION: "communication_recency",
+      PARTICIPANTS:  "party_responsiveness",
     }
     await supabase.from("deal_health_factors").delete().eq("transaction_id", transactionId)
     if (components.length > 0) {
