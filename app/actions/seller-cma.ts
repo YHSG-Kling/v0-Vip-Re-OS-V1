@@ -5,6 +5,9 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { scoreAllComps } from "@/lib/cma/ai-cma-engine"
 import { generatePricePrediction } from "@/lib/pricing/predictive-pricing"
 import { generateNetSheet } from "@/app/actions/cma-presentation/net-sheet-calculator"
+import { resolveAgreedCommission } from "@/lib/offers/net-sheet-calc"
+import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -173,6 +176,9 @@ interface NetSheetCalc {
   seller_concessions: number | null
   /** Flat seller transaction fee used on this saved sheet (m287). */
   transaction_fee: number | null
+  /** Agreed commission was a flat dollar fee, not a percentage (m289). */
+  commission_is_flat_fee: boolean | null
+  commission_flat_amount: number | null
   gross_proceeds: number | null
   total_costs: number | null
   net_proceeds: number | null
@@ -420,6 +426,10 @@ export async function saveNetSheet(params: {
   sellerConcessions?: number
   /** Flat brokerage transaction fee charged to the SELLER (m286/m287). */
   transactionFee?: number
+  /** Agreed commission is a flat dollar fee, not a percentage (m289). */
+  commissionIsFlatFee?: boolean
+  /** The flat commission in dollars when commissionIsFlatFee (m289). */
+  commissionFlatAmount?: number
 }): Promise<{ success: boolean; netSheetId?: string; error?: string }> {
   const supabase = await createClient()
 
@@ -434,28 +444,118 @@ export async function saveNetSheet(params: {
 
   if (!profile?.brokerage_id) return { success: false, error: "No brokerage found" }
 
-  // Save to net_sheet_calculations using live schema columns
   const svc = createServiceClient()
-  const totalCommission =
-    (params.salePrice * ((params.listingCommissionRate ?? 3) / 100)) +
-    (params.salePrice * ((params.buyerCommissionRate ?? 3) / 100))
-  const closingCosts = params.closingCosts ?? params.salePrice * 0.02
-  const totalCosts =
-    totalCommission +
-    closingCosts +
+
+  // net_sheet_calculations.agent_id FKs agents(id), NOT users(id). This wrote
+  // user.user.id straight in, so every insert was rejected by the foreign key and
+  // the action returned an error — net_sheet_calculations had ZERO rows on the live
+  // database. The Save button on the seller net sheet had never once worked.
+  //
+  // The FK pass that fixed 60+ of these missed this site. lib/kernel/agent-identity
+  // states the rule outright: "NEVER do: agentId = user.id".
+  const agentId = await resolveAgentId(svc, user.user.id)
+  if (!agentId) {
+    return { success: false, error: "No agent profile for this user — complete onboarding before saving a net sheet." }
+  }
+
+  // ── Persist the sheet that was SHOWN, not a second guess at it ──────────────
+  //
+  // This used to re-derive the totals with its own fallbacks — `?? 3` for each
+  // commission side and `salePrice * 0.02` for closing costs — none of which the
+  // displayed sheet uses. Three ways a SAVED sheet could disagree with the sheet
+  // the seller was actually shown:
+  //
+  //   1. FLAT FEE ERASED. The tab charges a flat agreement fee as-is (buyer side
+  //      zero). There was no field to send it, so a $4,995 flat fee reloaded as
+  //      3% + 3% of the sale price. m289 adds the columns; the params carry it.
+  //   2. REGIONAL CLOSING COSTS DISCARDED. The tab defaults the closing-cost line
+  //      to deriveNetSheetClosingCostSection — itemized title fees and doc stamps
+  //      for the listing's state. It sends `undefined` when the agent hasn't typed
+  //      an override, and the flat 2% silently replaced the county-customary math.
+  //      Now derived here with the SAME helper, from the listing's own state.
+  //   3. COMMISSION GUESSED AT 3+3. When rates are absent the agreed commission is
+  //      resolved from the listing agreement through resolveAgreedCommission —
+  //      the same resolver the offers page and the cron runner already use —
+  //      instead of a house number that matches no agreement.
+  const { data: listingRow } = await svc
+    .from("listings")
+    .select("id, state, commission_rate")
+    .eq("id", params.listingId)
+    .eq("brokerage_id", profile.brokerage_id)
+    .maybeSingle()
+
+  const { data: agreement } = await svc
+    .from("listing_agreements")
+    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount")
+    .eq("listing_id", params.listingId)
+    .eq("brokerage_id", profile.brokerage_id)
+    .maybeSingle()
+
+  // Commission: explicit caller values win (the agent may have edited them on the
+  // sheet); otherwise fall back to the agreement via the canonical resolver.
+  const agreed = resolveAgreedCommission({
+    agreement: agreement ?? null,
+    listingCommissionRatePercent: (listingRow?.commission_rate as number | null) ?? null,
+    referencePrice: params.salePrice,
+  })
+
+  const isFlatFee = params.commissionIsFlatFee ?? agreed.isFlatFee
+  const flatAmount = params.commissionFlatAmount ?? agreed.flatAmount ?? null
+
+  // A flat fee is charged as-is and the buyer side is folded into it — mirrors the
+  // tab exactly (listComm = flatAmount, buyerComm = 0).
+  const listingRate = isFlatFee ? 0 : params.listingCommissionRate ?? agreed.rate * 100
+  const buyerRate = isFlatFee ? 0 : params.buyerCommissionRate ?? 0
+  const totalCommission = isFlatFee
+    ? Number(flatAmount ?? 0)
+    : params.salePrice * (listingRate / 100) + params.salePrice * (buyerRate / 100)
+
+  // Closing costs: an explicit override wins; else the county-customary midpoint
+  // for the listing's state; else (state unknown) the legacy 2%.
+  const closingSection = deriveNetSheetClosingCostSection(
+    params.salePrice,
+    (listingRow?.state as string | null) ?? null,
+  )
+  const closingCosts =
+    params.closingCosts ?? closingSection?.midpoint ?? params.salePrice * 0.02
+
+  // Costs that do NOT move with the sale price. A payoff, a tax bill, HOA dues,
+  // agreed repair credits and a flat transaction fee are the same dollars at any
+  // price — only commission (and the percentage-based closing costs) scale.
+  const fixedCosts =
     (params.mortgagePayoffAmount ?? params.mortgageBalance ?? 0) +
     (params.propertyTaxes ?? 0) +
     (params.hoaFees ?? 0) +
     (params.repairCredits ?? 0) +
     (params.sellerConcessions ?? 0) +
     (params.transactionFee ?? 0)
+
+  const totalCosts = totalCommission + closingCosts + fixedCosts
   const netProceeds = params.salePrice - totalCosts
 
-  // Multi-scenario array stored in scenarios jsonb
+  /**
+   * Scenario net at a different price. The old version multiplied the ENTIRE cost
+   * stack by the scenario factor, which shrank the mortgage payoff, the tax bill
+   * and the flat transaction fee by 5% on a quick sale — flattering the number by
+   * whatever those happened to total. Only the price-proportional lines move.
+   */
+  function scenarioNet(factor: number): { salePrice: number; netProceeds: number } {
+    const price = Math.round(params.salePrice * factor)
+    const commission = isFlatFee
+      ? Number(flatAmount ?? 0)
+      : price * (listingRate / 100) + price * (buyerRate / 100)
+    const closing =
+      params.closingCosts != null
+        ? params.closingCosts * factor // an explicit override is a % of price in practice
+        : deriveNetSheetClosingCostSection(price, (listingRow?.state as string | null) ?? null)?.midpoint ??
+          price * 0.02
+    return { salePrice: price, netProceeds: Math.round(price - (commission + closing + fixedCosts)) }
+  }
+
   const scenarios = [
     { name: "Recommended", salePrice: params.salePrice, netProceeds },
-    { name: "Quick Sale (-5%)", salePrice: Math.round(params.salePrice * 0.95), netProceeds: Math.round(params.salePrice * 0.95 - totalCosts * 0.95) },
-    { name: "Premium (+5%)", salePrice: Math.round(params.salePrice * 1.05), netProceeds: Math.round(params.salePrice * 1.05 - totalCosts * 1.05) },
+    { name: "Quick Sale (-5%)", ...scenarioNet(0.95) },
+    { name: "Premium (+5%)", ...scenarioNet(1.05) },
   ]
 
   const expires = new Date()
@@ -467,10 +567,12 @@ export async function saveNetSheet(params: {
       brokerage_id: profile.brokerage_id,
       listing_id: params.listingId,
       contact_id: params.contactId,
-      agent_id: user.user.id,
+      agent_id: agentId,
       sale_price: params.salePrice,
-      listing_commission_rate: params.listingCommissionRate ?? 3,
-      buyer_commission_rate: params.buyerCommissionRate ?? 3,
+      listing_commission_rate: listingRate,
+      buyer_commission_rate: buyerRate,
+      commission_is_flat_fee: isFlatFee,
+      commission_flat_amount: isFlatFee ? flatAmount : null,
       closing_costs: closingCosts,
       transaction_fee: params.transactionFee ?? 0,
       mortgage_balance: params.mortgageBalance ?? 0,

@@ -1583,3 +1583,83 @@ path. It is registered, gated and running, so collapsing it needs its own invest
 rather than a deletion buried in a scoping commit.
 
 `tsc --noEmit`: 0. `npm run guard`: 97 simulators, exit 0.
+
+---
+
+## The seller net sheet's Save button had never worked
+
+Item #2 on the open list was "saveNetSheet recomputes totals with `?? 3` and `salePrice * 0.02`,
+so a SAVED sheet can disagree with the sheet that was saved." That was true, and it was the
+smaller half.
+
+### Three ways the saved sheet disagreed
+
+Measured against a REAL live listing (FL, $485,000) with a REAL flat-fee agreement seeded on it
+($4,995 commission, $395 seller transaction fee), running the ACTUAL helpers:
+
+| line | saved (recomputed) | shown (as the seller saw it) |
+|---|---|---|
+| commission | $29,100 (3% + 3%) | **$4,995** (flat fee per agreement) |
+| closing costs | $9,700 (flat 2%) | **$6,350** (FL county-customary itemization) |
+| total costs | $355,795 | $328,340 |
+| **net proceeds** | **$129,205** | **$156,660** |
+
+A seller shown **$156,660** would reload the saved sheet and see **$129,205** — a **$27,455**
+swing, against them, with no indication anything had changed.
+
+1. **Flat fee erased.** `net_sheet_calculations` could only store two percentages. A flat-fee
+   agreement had nowhere to land, and `?? 3` then reinstated 3% + 3%. **m289** adds
+   `commission_is_flat_fee` + `commission_flat_amount`, named to match `listing_agreements` so
+   the agreement and the sheet derived from it read identically.
+2. **Regional closing costs discarded.** The tab defaults that line to
+   `deriveNetSheetClosingCostSection` — itemized title fees and doc stamps for the listing's
+   state. It sends `undefined` when the agent hasn't typed an override, and the flat 2% replaced
+   the county-customary math. Now derived server-side with the same helper.
+3. **Commission guessed.** When rates are absent it now resolves from the listing agreement
+   through `resolveAgreedCommission` — the resolver the offers page and cron runner already use.
+
+### And a scenario-math bug underneath
+
+`netProceeds: salePrice * 0.95 - totalCosts * 0.95` scaled the **entire** cost stack, shrinking
+the mortgage payoff, the tax bill, HOA dues and the flat transaction fee by 5% on a quick sale.
+Only commission and percentage-based closing costs move with price. On the same real listing the
+old formula reported a Quick Sale net of **$148,827** against a true **$132,675** — overstating
+by **$16,152**, and making a quick sale look *better* than the recommended price.
+
+### The bug the live test actually found
+
+Seeding the round-trip, the INSERT was rejected:
+
+```
+23503: insert or update on table "net_sheet_calculations" violates foreign key constraint
+Key (agent_id)=(a0000000-…-0001) is not present in table "agents".
+```
+
+`net_sheet_calculations.agent_id` FKs **agents(id)**. `saveNetSheet` was writing
+`user.user.id` — a **users.id**. Live check: **0 of 5** agents have an id that is also a
+users.id, so the FK could never be satisfied. `net_sheet_calculations` contained **0 rows**.
+
+**The Save button on the seller net sheet has never once worked.** The `?? 3` / `* 0.02` drift
+was real but downstream of an insert that always failed — which is also why nobody noticed the
+drift: there was never a saved sheet to reload and compare.
+
+`lib/kernel/agent-identity.ts` states the rule in its own header — *"NEVER do: agentId =
+user.id"* — and the registry records an FK pass that fixed 60+ of these. This site was missed.
+Now resolved through `resolveAgentId`, with an honest refusal when the user has no agent profile
+rather than a silent failure.
+
+**Verified end-to-end on the live database**, then cleaned to 0/0: flat fee survived the reload
+(`commission_is_flat_fee` true, `4995`), closing costs persisted at the regional `6350` rather
+than the `9700` flat 2%, and the stored Quick Sale scenario is now correctly *lower* than the
+recommended net. Both seeded rows deleted; `net_sheet_calculations` and `listing_agreements` are
+back to their original counts.
+
+### Same class, still open
+
+Sweeping the live FK map (193 columns referencing `agents(id)`) against every insert/update
+payload found **15 more sites** writing a user-id expression into an agents-FK column — including
+`activities.agent_id`, `tasks.assigned_to_agent_id`, `contacts.agent_id` and
+`social_posts.agent_id`. Each needs its own check (some params are misleadingly named and do
+carry an agents.id), so they are being worked separately rather than bulk-patched.
+
+`tsc --noEmit`: 0. schema-drift, tenant-scope, use-server-exports, no-orphan-actions: all pass.

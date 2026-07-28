@@ -175,6 +175,10 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
         repairCredits: Number(repairCredits) || undefined,
         sellerConcessions: Number(sellerConcessions) || undefined,
         transactionFee: txFee || undefined,
+        // A flat-fee agreement has no percentage to send. Without these the saved
+        // sheet fell back to rates and the flat fee vanished on reload (m289).
+        commissionIsFlatFee: isFlatFee || undefined,
+        commissionFlatAmount: isFlatFee ? flatAmount : undefined,
       })
       setSavedMsg(result.success ? "Net sheet saved." : result.error ?? "Save failed.")
     })
