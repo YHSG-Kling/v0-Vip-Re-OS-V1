@@ -71,6 +71,34 @@ function* walk(dir: string): Generator<string> {
 }
 
 /**
+ * TOP-LEVEL keys of an object literal, as `name: "literal"` pairs. Values that are
+ * themselves objects or arrays are skipped entirely.
+ *
+ * This matters more than it sounds. Rows here routinely carry a `metadata` /
+ * `settings` / `payload` JSONB bag, and those bags contain arbitrary keys — `source`,
+ * `status`, `type` — that collide with real column names. `lifecycle_events.source`
+ * is a four-value provenance CHECK (ui|webhook|system|cron), and every one of the
+ * eight "violations" this guard first reported for it was a `source:` inside a
+ * `metadata: { ... }`, which is free-form JSON the constraint never sees.
+ */
+export function topLevelPairs(objText: string): Array<{ key: string; value: string }> {
+  const out: Array<{ key: string; value: string }> = []
+  let depth = 0
+  let i = 0
+  while (i < objText.length) {
+    const c = objText[i]
+    if (c === "{" || c === "[") { depth++; i++; continue }
+    if (c === "}" || c === "]") { depth--; i++; continue }
+    if (depth === 1) {
+      const m = /^([A-Za-z_$][\w$]*)\s*:\s*(["'])([^"'\n]*)\2/.exec(objText.slice(i))
+      if (m) { out.push({ key: m[1], value: m[3] }); i += m[0].length; continue }
+    }
+    i++
+  }
+  return out
+}
+
+/**
  * The balanced argument text of every `.insert(` / `.upsert(` / `.update(` in a chain
  * window. Brace/paren matching, so a nested object stays inside its own payload and an
  * unrelated literal that merely sits nearby does not leak in.
@@ -120,9 +148,9 @@ export function scanCheckVocabulary(rawSrc: string, file: string): VocabViolatio
           // keys that belong to something else entirely. Three of this guard's first
           // findings were exactly that, so the payload scan is now argument-scoped.
           for (const arg of mutationArgs(win)) {
-            const re = new RegExp(`\\b${column}\\s*:\\s*["']([^"'\\n]*)["']`, "g")
-            let m: RegExpExecArray | null
-            while ((m = re.exec(arg))) flag(m[1], "write")
+            for (const pair of topLevelPairs(arg)) {
+              if (pair.key === column) flag(pair.value, "write")
+            }
           }
 
           // Filters: .eq("column", "value") / .neq(...)
@@ -197,6 +225,14 @@ check("a payload for ANOTHER table nearby is not attributed to this one",
     `await svc.from("transactions").select("id").eq("id", txId)`, "t").length === 0)
 check("but the chain's OWN payload is still scanned",
   scanCheckVocabulary(`svc.from("transactions").insert({ status: "pending" })`, "t").length === 1)
+check("a key inside a metadata bag is NOT treated as a column",
+  scanCheckVocabulary(
+    `svc.from("lifecycle_events").insert({ event_type: "x", metadata: { source: "qr_scan" } })`, "t").length === 0)
+check("but the same key AS a column is still flagged",
+  scanCheckVocabulary(`svc.from("lifecycle_events").insert({ source: "qr_scan" })`, "t").length === 1)
+check("topLevelPairs skips nested objects and arrays",
+  topLevelPairs(`{ a: "1", bag: { a: "2" }, list: ["a"], b: "3" }`).map((p) => p.key).join(",") === "a,b")
+
 check("mutationArgs keeps a nested object inside its own payload",
   mutationArgs(`.insert({ a: { b: 1 }, status: "x" })`).length === 1)
 

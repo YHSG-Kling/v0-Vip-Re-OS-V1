@@ -2811,9 +2811,62 @@ Baseline: **138 → 129**.
 
 ### A note on verification after the container restart
 
-`npm run guard` starts with `tsc --noEmit`, and after the restart wiped its incremental
-cache tsc exhausted even the 8 GB heap CI allocates. `npx tsc --noEmit` run on its own passed
-clean, and the 107 simulators run as a chain passed with exit 0 — so both halves of the guard
-are verified, just not inside one process. Recording it because "guard: exit 0" would not have
-been an accurate claim for this commit.
+`npm run guard` starts with `tsc --noEmit`, which began exhausting even the 8 GB heap CI
+allocates, so that commit was verified in two halves (tsc alone, then the 107 simulators as a
+chain) rather than as one `npm run guard`.
 
+**The diagnosis in that paragraph was wrong** and is corrected here: it was not a lost
+incremental cache. The container restart killed a `npm run build` midway and left a 239 MB
+partial `.next/`, whose generated `.next/types/**/*.ts` files tsc then type-checked — thousands
+of extra files, several of them referencing a Next internal that no longer resolved. Deleting
+`.next` restored `tsc --noEmit` to exit 0 at the *default* heap, and `npm run guard` runs clean
+as a single command again. The lesson is narrow but real: a killed build leaves type-checkable
+debris, and "tsc is OOMing" is a symptom worth diagnosing rather than working around.
+
+
+---
+
+## lifecycle_events.source: eight findings, eight false positives
+
+`lifecycle_events.source` is a four-value provenance CHECK — `ui | webhook | system | cron`
+— and the guard reported eight sites writing feature names into it: `qr_scan`, `widget`,
+`open_house`, `listing_landing_page`, `ai_isa_qualification`, `cda_contract_discrepancy`.
+That reads like eight event emitters silently losing their events off the kernel ledger.
+
+Every one was the guard's fault. They are all `source:` keys **inside a `metadata: { … }`
+bag** — free-form JSONB the constraint never sees:
+
+```ts
+await svc.from("lifecycle_events").insert({
+  event_type: KernelEvent.SHOWING_REQUESTED,
+  metadata: { listing_id, contact_id, source: "listing_landing_page" },  // ← flagged
+})
+```
+
+The payload scan was already argument-scoped after the last round, but it still matched keys
+at any depth inside the payload. Rows here routinely carry a `metadata` / `settings` /
+`payload` bag, and those bags contain arbitrary keys — `source`, `status`, `type` — that
+collide with real column names constantly. `topLevelPairs()` now extracts only depth-1 keys of
+the payload object, skipping nested objects and arrays entirely.
+
+That retired 8 more findings and cleared the cluster to zero.
+
+### What the guard's own error rate looks like now
+
+Two rounds of tightening, both on the WRITE side:
+
+```
+289  initial
+ -56  payload scan was not argument-scoped   (a Dotloop API body, transaction_milestones rows)
+  -8  payload scan matched nested bag keys   (metadata.source)
+```
+
+64 of 289 — **22%** — were the scanner misreading a payload. The FILTER side
+(`.eq` / `.neq` / `.in` / `.or`) has produced **no** false positives across four clusters:
+every filter finding investigated so far has been a real query that could never match. That
+asymmetry is worth knowing when triaging what remains — a flagged filter has been reliable
+evidence, a flagged write deserves a look at where the key actually sits.
+
+Baseline: **129 → 121**.
+
+`tsc --noEmit`: 0. `npm run guard`: 105 simulators, exit 0 (single command, `.next` cleared).
