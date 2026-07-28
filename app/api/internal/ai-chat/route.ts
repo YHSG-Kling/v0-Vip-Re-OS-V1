@@ -376,13 +376,20 @@ export async function POST(req: NextRequest) {
       else if (role === "superadmin") return loadSuperadminContext(service)
       return {}
     })(),
-    service
-      .from("ai_identity_profiles")
-      .select("assistant_name, persona_label, tone, formality_level")
-      .eq("scope_type", "agent")
-      .eq("scope_id", user.id)
-      .eq("active", true)
-      .maybeSingle(),
+    // scope_id at scope_type 'agent' is an agents.id (the editor writes it, and the
+    // widget / voice / video / ISA readers all resolve it that way) — filtering by
+    // the raw auth user id, as this did, could never match a saved persona.
+    (async () => {
+      const scopeAgentId = await resolveAgentId(service as any, user.id)
+      if (!scopeAgentId) return { data: null }
+      return service
+        .from("ai_identity_profiles")
+        .select("assistant_name, persona_label, tone, formality_level")
+        .eq("scope_type", "agent")
+        .eq("scope_id", scopeAgentId)
+        .eq("active", true)
+        .maybeSingle()
+    })(),
   ])
 
   if (contextResult.status === "fulfilled") ctx = contextResult.value ?? {}

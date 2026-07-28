@@ -2206,3 +2206,75 @@ file, every persona's nav on the single route, no client-supplied `agentId` in t
 the library, fail-closed scope, and the QR `purpose`/`agent_id` contract.
 
 `tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.
+
+---
+
+## AI Identity: the persona an agent configures reached almost nothing
+
+`ai-identity` was the last persona-prefixed twin left (`/dashboard/admin` vs
+`/dashboard/agent`, plus `/dashboard/team`). **Not a duplicate** — three scopes of one
+cascade, all three rendering the same `AIIdentityEditor` with a different `scope`,
+`scopeId` and `parentProfile`. Correct composition; recorded as a false alarm.
+
+The check that cleared it found something worse.
+
+### An untyped column, and a twelve-way split
+
+`ai_identity_profiles.scope_id` is a bare `uuid` with **no foreign key** — it is
+polymorphic across `brokerage` / `team` / `agent` scopes. Nothing in the database
+constrains it, so nothing rejected a wrong id, and the FK-driven scanners in
+`test:agent-id-class` were structurally blind to it. At `scope_type = 'agent'` the
+consumers split:
+
+| reads `agents.id` | reads the auth `users.id` |
+|---|---|
+| public agent profile `/p/[agentSlug]` | `app/dashboard/agent/ai-identity` (**the writer**) |
+| the embeddable widget (2 routes) | `app/api/internal/ai-chat` |
+| Twilio voice greeting | `getUserAvatarConfig` (video) |
+| video identity resolver | |
+| portal AI chat | |
+| ISA brand-voice prompt | |
+| widget settings page | |
+| `lib/ai/pipeline.ts` | |
+
+Nine to three — and the majority is the right one on the merits, not just the count:
+`saveAIIdentityProfile` authorises an agent-scope write by looking the `scopeId` up in
+`agents`, and `lib/voice/vapi-numbers.ts` resolves a stored `scope_id` back through
+`agents.user_id`. Both are only coherent if `scope_id` is an `agents.id`.
+
+Which means the writer never wrote anything:
+
+```
+agents lookup for the id the page passed (auth user id)   → 0 rows → "Forbidden"
+agents lookup for the id the page passes now (agents.id)  → 1 row  → authorised
+```
+
+An agent could open **My AI Identity**, fill in the assistant's name, tone, guardrails,
+FAQ and objection library, press Save — and get an authorisation error. Had a row ever
+landed, nine of the twelve consumers would not have found it. The AI's persona is the
+product; it was configurable and inert.
+
+Three sites moved onto `agents.id`: the page (resolved from `agents.user_id`, redirecting
+when there is genuinely no agent seat), and the internal AI-chat route (through the
+`resolveAgentId` helper it already imports). The third, `getUserAvatarConfig`, was
+**deleted** — zero callers in a `"use server"` module, so a live RPC endpoint nobody
+used, and wrong twice over: it looked up both `ai_identity_profiles.scope_id` *and*
+`agent_voice_profiles.agent_id` (also an `agents(id)` FK) with the auth user id, so it
+could only ever return `isConfigured: false`. `lib/video/video-identity.ts` is the
+canonical resolver — right class, full agent → team → brokerage cascade, honest fallbacks.
+
+Live-verified on production: both reader predicates resolve the agents.id row and never
+the users.id row; the save-authorisation lookup returns 1 for the new shape and 0 for the
+old. Zero agent-scope rows existed, so there is nothing to migrate — the whole feature
+had never once been used successfully. Seeded rows cleaned to 0.
+
+### The guard grew a fourth family
+
+`test:agent-id-class` now scans **untyped polymorphic scope columns**, and scans **reads
+as well as writes** — with no FK to reject a bad write, a mismatched read is exactly as
+silent and exactly as fatal. Four new pure checks pin the detector: it flags the auth user
+id at agent scope, accepts a resolved `agents.id`, leaves the team and brokerage scopes
+alone (their ids are not agents ids), and catches the write side, not just the filter.
+21 checks, 0 failures.
+
+`tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.

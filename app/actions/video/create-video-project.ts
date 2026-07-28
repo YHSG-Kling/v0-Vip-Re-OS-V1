@@ -545,48 +545,13 @@ export async function retryVideoGeneration(
   return { success: true }
 }
 
-// ─── GET USER AVATAR CONFIG ─────────────────────────────────────────────────
-
-export async function getUserAvatarConfig(userId: string, brokerageId: string) {
-  if (!isValidUUID(userId)) return null
-
-  const supabase = await createClient()
-
-  // Check ai_identity_profiles for avatar + voice config
-  const { data: profile } = await supabase
-    .from("ai_identity_profiles")
-    .select("id, avatar_url, scope_id, scope_type, persona_label, assistant_name")
-    .eq("brokerage_id", brokerageId)
-    .eq("scope_id", userId)
-    .eq("scope_type", "agent")
-    .eq("active", true)
-    .maybeSingle()
-
-  // CANONICAL sources (video_branding_presets was DROPPED, l38-s01): the
-  // agent's D-ID avatar + ElevenLabs clone live on agent_voice_profiles (the
-  // Twin Studio's output); brand colors/logo come from the brokerage brand.
-  const { data: vp } = await supabase
-    .from("agent_voice_profiles")
-    .select("id, did_avatar_id, elevenlabs_voice_id")
-    .eq("agent_id", userId)
-    .eq("is_default", true)
-    .maybeSingle()
-  const { data: brok } = await supabase
-    .from("brokerages")
-    .select("primary_color, logo_url")
-    .eq("id", brokerageId)
-    .maybeSingle()
-
-  return {
-    avatarUrl: profile?.avatar_url ?? null,
-    avatarId: vp?.did_avatar_id ?? null,
-    voiceId: vp?.elevenlabs_voice_id ?? null,
-    brandingPresetId: vp?.id ?? null,
-    primaryColor: brok?.primary_color ?? null,
-    logoUrl: brok?.logo_url ?? null,
-    isConfigured: !!(vp?.did_avatar_id && vp?.elevenlabs_voice_id),
-  }
-}
+// getUserAvatarConfig was REMOVED. It had zero callers while sitting in a
+// "use server" module, so it was a live RPC endpoint nobody used — and it was
+// wrong twice over: it looked up ai_identity_profiles.scope_id and
+// agent_voice_profiles.agent_id (both agents.id) with the AUTH USER id, so it
+// could only ever report isConfigured:false. lib/video/video-identity.ts is the
+// canonical resolver — right id class, and the full agent → team → brokerage
+// cascade with honest fallbacks.
 
 // ─── GET SOCIAL ACCOUNTS ─────────────────────────────────────────────────────
 

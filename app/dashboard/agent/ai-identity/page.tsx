@@ -35,8 +35,27 @@ export default async function AgentAIIdentityPage() {
   }
 
   const brokerageId = profile.brokerage_id
-  const agentId = user.id
   const teamId = profile.team_id
+
+  // agents.id, NOT the auth user id. ai_identity_profiles.scope_id at scope_type
+  // 'agent' is an agents.id everywhere that matters: the public profile page, the
+  // widget, the Twilio voice greeting, video identity and the ISA brand voice all
+  // resolve it that way, and saveAIIdentityProfile authorises the write by looking
+  // the scopeId up in `agents`. This page passed user.id, so every save came back
+  // "Forbidden" and — had one landed — none of those surfaces would have read it.
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .maybeSingle()
+
+  if (!agentRow?.id) {
+    // ensureAgentContextInPlace ran above, so this is an account that genuinely
+    // cannot self-provision (pending invite, or staff whose seat is not an agent).
+    redirect("/dashboard")
+  }
+
+  const agentId = agentRow.id
 
   // Get brokerage and team names (if available)
   const [{ data: brokerage }, { data: team }] = await Promise.all([

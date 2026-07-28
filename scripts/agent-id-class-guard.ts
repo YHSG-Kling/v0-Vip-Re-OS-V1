@@ -115,6 +115,48 @@ export function scanSourceReverse(src: string, file: string): WrongClassWrite[] 
   return out
 }
 
+/**
+ * PURE — the FOURTH family: an UNTYPED polymorphic scope column.
+ *
+ * ai_identity_profiles.scope_id is a bare uuid with no foreign key at all, so the
+ * FK-driven scanners above are structurally blind to it — which is precisely why
+ * it drifted the longest. At scope_type 'agent' it is an agents.id: that is what
+ * the public profile page, the widget, the Twilio greeting, video identity and the
+ * ISA brand-voice prompt all read, and saveAIIdentityProfile authorises the write
+ * by looking the scope_id up in `agents`. Three call sites used the auth user id
+ * instead, so the agent's own assistant persona could never be saved and would not
+ * have been read by nine of twelve consumers if it had been.
+ *
+ * Both reads AND writes are scanned here — with no FK to reject a bad write, a
+ * mismatched READ is just as silent and just as fatal.
+ */
+export function scanSourceScopeId(src: string, file: string): WrongClassWrite[] {
+  const out: WrongClassWrite[] = []
+  const needle = `.from("ai_identity_profiles")`
+  const altNeedle = `.from('ai_identity_profiles')`
+  for (const n of [needle, altNeedle]) {
+    let i = src.indexOf(n)
+    while (i !== -1) {
+      const rest = src.slice(i + n.length)
+      const nextFrom = rest.search(/\.from\(/)
+      const win = n + (nextFrom >= 0 ? rest.slice(0, nextFrom) : rest.slice(0, 1200))
+      // Only the agent scope is an agents.id — team/brokerage scopes are their own ids.
+      if (/scope_type['"]?\s*[,:]\s*['"]agent['"]/.test(win)) {
+        const re = /scope_id['"]?\s*[,:]\s*([^,)\n}]+)/g
+        let m: RegExpExecArray | null
+        while ((m = re.exec(win))) {
+          const expr = m[1].trim().replace(/['"]/g, "")
+          if (USER_ID_EXPR.test(expr) && !RESOLVED.test(expr)) {
+            out.push({ file, table: "ai_identity_profiles", column: "scope_id (scope_type=agent)", expr: expr.slice(0, 80) })
+          }
+        }
+      }
+      i = src.indexOf(n, i + 1)
+    }
+  }
+  return out
+}
+
 /** A LEAD id — never valid in a contacts(id) FK. */
 const LEAD_ID_EXPR = /\b(leadId|lead_id|lead\.id|\w*[Ll]ead\.id|rawLead\.id|scrapedLead\.id)\b/
 /** A genuine contact id (some params are named leadId but resolve a contact). */
@@ -192,6 +234,16 @@ check("accepts the repo's correct shape (null + entity_type/entity_id)",
 check("accepts a param named leadId that is validated as a contact",
   scanSourceLead('await svc.from("conversations").insert({ contact_id: data.leadId && isValidUUID(data.leadId) ? data.leadId : null })', "t.ts").length === 0)
 
+console.log("\n[pure — an UNTYPED polymorphic scope column]")
+check("flags the auth user id as an agent-scope scope_id",
+  scanSourceScopeId(`svc.from("ai_identity_profiles").select("*").eq("scope_type","agent").eq("scope_id", user.id)`, "t").length === 1)
+check("accepts a resolved agents.id there",
+  scanSourceScopeId(`svc.from("ai_identity_profiles").select("*").eq("scope_type","agent").eq("scope_id", agent.id)`, "t").length === 0)
+check("leaves the team + brokerage scopes alone (their ids are not agents.id)",
+  scanSourceScopeId(`svc.from("ai_identity_profiles").select("*").eq("scope_type","brokerage").eq("scope_id", user.id)`, "t").length === 0)
+check("catches the WRITE side too (upsert payload, not just a filter)",
+  scanSourceScopeId(`svc.from("ai_identity_profiles").upsert({ scope_type: "agent", scope_id: userId })`, "t").length === 1)
+
 console.log("\n[repo scan]")
 const files: string[] = []
 for (const d of ["app", "lib", "services"]) for (const f of walk(join(root, d))) files.push(f)
@@ -230,6 +282,18 @@ console.log(`  · ${CONTACT_FK_TABLES.length} tables carry a contacts(id) FK on 
 check("no LEAD id is written into a contacts(id) FK column",
   leadHits.length === 0,
   leadHits.map((o) => `${o.file}: ${o.table}.${o.column} = ${o.expr}`).join("; "))
+
+const scopeHits: WrongClassWrite[] = []
+for (const f of files) {
+  let src = ""
+  try { src = readFileSync(f, "utf8") } catch { continue }
+  if (!src.includes("ai_identity_profiles")) continue
+  scopeHits.push(...scanSourceScopeId(src, relative(root, f).replace(/\\/g, "/")))
+}
+console.log(`  · ai_identity_profiles.scope_id carries NO foreign key — the FK maps cannot see it`)
+check("no auth user id is used as an agent-scope ai_identity_profiles.scope_id",
+  scopeHits.length === 0,
+  scopeHits.map((o) => `${o.file}: ${o.column} = ${o.expr}`).join("; "))
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
