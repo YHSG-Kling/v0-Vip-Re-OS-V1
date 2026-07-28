@@ -2430,3 +2430,58 @@ files document the words they retired. It was **not on the guard chain**; it is 
 Test rows cleaned to 0 scores, 0 alerts.
 
 `tsc --noEmit`: 0. `npm run guard`: 100 simulators, exit 0.
+
+---
+
+## Two property-alert engines, both on the cron dispatcher
+
+`lib/alerts/` (496 lines, 5 files) and `lib/property-alerts/` (786 lines, 6 files). Same
+table, same three writes (`property_alerts`, `property_alert_results`,
+`property_alert_delivery_log`), same job: search IDX → score → dedup → deliver → log.
+
+Both were **scheduled**. `CRON_REGISTRY` carried `/api/alerts/cron` at `6,21,36,51 * * * *`
+*and* `/api/property-alerts/run` at four per-frequency schedules. Every active buyer alert
+was being processed twice an hour by two independent code paths with different matchers.
+
+The one thing that kept buyers from being mailed the same listing twice is that both
+dedup against `property_alert_results.mls_number` — whichever engine got there first
+inserted, the other skipped. That is a shared table doing the work a shared engine should
+have been doing.
+
+| | `lib/property-alerts` | `lib/alerts` |
+|---|---|---|
+| IDX search | dedicated module; logs `api_called`, `response_time_ms` | inline query builder |
+| matcher | `{ qualifies, score, reasons }`, 200 lines | bare number, threshold 40 |
+| dedup | mls + **re-send on a NEW price reduction** | mls only — a price drop never re-notifies |
+| `max_results_per_alert` | honoured | ignored |
+| delivery log | batch_id, channels, api timing | partial |
+| extras | first-look consent, assistant suggestion | — |
+| **buyer snooze** | **ignored** | honoured |
+
+`lib/property-alerts` wins on every row but the last, and the last one matters: `snoozed_until`
+is a column on `property_alerts`, set by the buyer, and the surviving engine **did not read it**.
+A buyer who muted their search kept getting alerts from it. Ported across as
+`lib/property-alerts/alert-cadence.ts` and applied in both entry points — `runAlert` refuses a
+snoozed alert outright, so an agent's manual run cannot override a buyer's mute either.
+
+Also ported: the retired engine's **batch cap** (50 per run). It is not a silent truncation —
+anything over the cap is counted, returned as `deferred`, logged by name and picked up by the
+next run of that frequency.
+
+Deliberately **not** ported: `shouldRunNow(frequency, now)`, the retired engine's own cadence
+clock. It was a second copy of a schedule `CRON_REGISTRY` already declares — instant `*/15`,
+daily `0 8`, weekly `0 8 * * 1`, twice_daily `0 8,17` — and two clocks for one cadence is the
+drift being removed. The registry is the clock; `/api/property-alerts/run` is called with the
+frequency it is due for. All four frequencies are valid values of the live
+`property_alerts.frequency` CHECK (`instant | twice_daily | daily | weekly | paused`).
+
+`test:alert-cadence-snooze` was rewritten to assert cadence against the **registry** rather
+than a second implementation of the rule, plus three checks that the surviving engine actually
+applies the snooze it inherited and reports what it deferred. It had a package script but was
+**not on the guard chain**; it is now. 24 checks.
+
+Live-verified on production: a snoozed and an unsnoozed daily alert seeded under a real
+contact and agent, the batch query returning both with `snoozed_now` true/false as expected —
+the predicate the filter uses. Cleaned to 0.
+
+`tsc --noEmit`: 0. `npm run guard`: 101 simulators, exit 0.

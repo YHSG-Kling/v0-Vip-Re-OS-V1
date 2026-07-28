@@ -1625,7 +1625,6 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/tour-optimizer": "shopping_agent",
   "/api/cron/investor-offmarket-refresh": "shopping_agent",
   "/api/property-alerts/run": "shopping_agent",
-  "/api/alerts/cron": "shopping_agent",
   // ── Listing Concierge — the seller side ──
   "/api/cron/listing-health-scan": "listing_concierge",
   "/api/cron/listing-presentation-prep": "listing_concierge",

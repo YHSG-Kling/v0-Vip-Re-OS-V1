@@ -98,7 +98,6 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/document-retention-scan"             , schedule: "54 6 * * 1" }, // (staggered r43)
   { path: "/api/cron/context-spine-refresh"               , schedule: "24 */4 * * *" }, // (staggered r43)
   { path: "/api/cron/marketing-image-regen"               , schedule: "*/10 * * * *" },
-  { path: "/api/alerts/cron"                              , schedule: "6,21,36,51 * * * *" }, // (staggered r43)
   { path: "/api/cron/audience-sync-runner"                , schedule: "*/15 * * * *" },
   { path: "/api/cron/buyer-reel-deliver"                  , schedule: "*/15 * * * *" },
   { path: "/api/cron/enrichment-processor"                , schedule: "11,26,41,56 * * * *" }, // (staggered r43)

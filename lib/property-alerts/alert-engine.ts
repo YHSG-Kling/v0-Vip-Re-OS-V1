@@ -1,10 +1,24 @@
 // Alert engine — orchestrates search → score → dedup → deliver → log
+//
+// THE ONE property-alert engine. lib/alerts/ carried a second, independently
+// scheduled one (runAlertEngine, /api/alerts/cron at :06/:21/:36/:51) over these
+// same three tables, with its own IDX query builder, its own matcher and its own
+// cadence clock. Every active alert was being processed twice an hour by two
+// different code paths; only the shared property_alert_results dedup kept buyers
+// from being mailed the same listing twice.
+//
+// This one won on merit — it honours max_results_per_alert, re-sends on a NEW
+// price reduction, logs api_called / response_time_ms / batch_id, and runs the
+// first-look consent gate. The one thing the other had that this lacked was the
+// buyer SNOOZE, ported below: without it, a buyer who muted their search kept
+// receiving alerts from this path regardless.
 import { createServiceClient } from "@/lib/supabase/service"
 import { emitKernelEvent }     from "@/lib/kernel/emit"
 import { searchIDXForAlert } from "./idx-alert-search"
 import { scorePropertyForAlert } from "./alert-matcher"
 import { deliverAlertResults } from "./alert-notifier"
 import type { AlertProperty } from "./alert-matcher"
+import { isSnoozed } from "./alert-cadence"
 
 export interface RunAlertResult {
   success: boolean
@@ -28,6 +42,12 @@ export async function runAlert(alertId: string): Promise<RunAlertResult> {
 
   if (alertErr || !alert) {
     return { success: false, alertId, propertiesChecked: 0, propertiesMatched: 0, propertiesSent: 0, error: "alert_not_found" }
+  }
+
+  // A buyer's snooze is a mute, not a pause: it auto-expires. Ported from the
+  // retired lib/alerts engine, which was the only path that honoured it.
+  if (isSnoozed((alert as any).snoozed_until)) {
+    return { success: false, alertId, propertiesChecked: 0, propertiesMatched: 0, propertiesSent: 0, error: "snoozed" }
   }
 
   const brokerageId: string = alert.brokerage_id
@@ -165,15 +185,27 @@ export async function runAlert(alertId: string): Promise<RunAlertResult> {
   return { success: true, alertId, propertiesChecked, propertiesMatched, propertiesSent }
 }
 
+/** Alerts processed per run, per frequency. See the cap note below. */
+const RUN_BATCH_LIMIT = 50
+
 export async function runAllActiveAlerts(
   frequency: string,
   brokerageId?: string
-): Promise<{ total: number; succeeded: number; failed: number; errors: string[] }> {
+): Promise<{
+  total: number
+  succeeded: number
+  failed: number
+  /** Alerts skipped because the buyer has them snoozed. */
+  skippedSnoozed: number
+  /** Alerts that were due but over the per-run cap — the next run takes them. */
+  deferred: number
+  errors: string[]
+}> {
   const supabase = createServiceClient()
 
   const query = supabase
     .from("property_alerts")
-    .select("id")
+    .select("id, snoozed_until")
     .eq("frequency", frequency)
     .eq("is_active", true)
 
@@ -181,20 +213,37 @@ export async function runAllActiveAlerts(
 
   const { data: alerts } = await query
 
-  if (!alerts?.length) return { total: 0, succeeded: 0, failed: 0, errors: [] }
+  if (!alerts?.length) return { total: 0, succeeded: 0, failed: 0, skippedSnoozed: 0, deferred: 0, errors: [] }
+
+  const now = new Date()
+  const due = (alerts as Array<{ id: string; snoozed_until: string | null }>)
+    .filter((a) => !isSnoozed(a.snoozed_until, now))
+  const skippedSnoozed = alerts.length - due.length
+
+  // BATCH CAP, ported from the retired engine (which capped at 50 per brokerage
+  // per run). One run must not be able to exhaust the IDX rate limit for
+  // everyone else. Anything over the cap is NOT silently dropped — it is counted
+  // and logged, and the next run of this frequency picks it up.
+  const batch = due.slice(0, RUN_BATCH_LIMIT)
+  const deferred = due.length - batch.length
+  if (deferred > 0) {
+    console.warn(
+      `[property-alerts] ${frequency}: ${due.length} due, running ${batch.length} (cap ${RUN_BATCH_LIMIT}), ${deferred} deferred to the next run`,
+    )
+  }
 
   let succeeded = 0
   let failed = 0
   const errors: string[] = []
 
   // Sequential per spec — not parallel to avoid IDX rate limits
-  for (const { id } of alerts) {
+  for (const { id } of batch) {
     const result = await runAlert(id)
     if (result.success) succeeded++
     else { failed++; if (result.error) errors.push(`${id}: ${result.error}`) }
   }
 
-  return { total: alerts.length, succeeded, failed, errors }
+  return { total: batch.length, succeeded, failed, skippedSnoozed, deferred, errors }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
