@@ -3281,3 +3281,61 @@ Probe rows for both measurements were deleted; `automation_errors` and
 
 Vocabulary baseline: **94 → 89**. Chain: **111 simulators**. `tsc --noEmit`: 0.
 `npm run guard`: exit 0.
+
+---
+
+## A lead who asked to be left alone was not marked as having asked
+
+`leads.lifecycle_state`:
+
+```
+CHECK (lifecycle_state = ANY (ARRAY['raw','unconsented','consented','isa_qualifying',
+       'assigned','appointment','representation','long_term_nurture']))
+DEFAULT 'raw'   (nullable)
+```
+
+It does not admit `converted`, `qualified`, or `do_not_contact`. All three were in the code.
+
+**1. The opt-out was thrown away.** `haltEngagementForNegativeReply` fires when the ISA detects
+a negative inbound reply. It wrote:
+
+```ts
+.update({ call_stop_flag: true, ai_isa_owner: false, lifecycle_state: 'do_not_contact' })
+```
+
+A rejected UPDATE writes *none* of its columns, not just the offending one. Measured on the
+live database with a probe lead: after that update, `call_stop_flag` was still **false**. The
+lead had asked to be left alone and nothing recorded it — no suppression flag, no ISA handback.
+supabase-js reports this in `{ error }`; the call site discarded the result.
+
+Suppression is a **flag**, not a funnel stage. `dnc_status` and `call_stop_flag` carry it, and
+the reactivation enroller already honours `dnc_status`. The lifecycle write was not just
+invalid, it was the wrong shape. It now sets both flags, hands the ISA back, and checks the
+error.
+
+**2. The timeline entry could never be written.** The same function logged the opt-out to
+`activities` with `contact_id: params.leadId`. `activities.contact_id` FKs `contacts(id)`, so a
+lead id raises `foreign_key_violation` — verified live. The agent was never shown that their
+lead opted out. Leads travel on `entity_type` / `entity_id`, which the rest of the codebase
+already does (`lib/ai-isa/email-generator.ts` even carries a comment saying so).
+
+**3. The ISA kept auto-replying to handed-off leads.** `shouldStopAutoResponding` tested
+`'do_not_contact'` and `'qualified'`. The only live arm of that condition was `'consented'`, so
+a lead already **assigned**, booked for an **appointment**, or under **representation** kept
+getting robot replies.
+
+**4. Three sweeps silently dropped every null-state lead.** Warmth ranking, persona-drift and
+reactivation-enrolment each filtered `neq('lifecycle_state','converted')`. Besides naming a
+state that cannot exist, `col <> 'x'` is NULL for a NULL column in SQL — which filters the row
+**out**. The column is nullable. Measured live over two probe leads (one `isa_qualifying`, one
+NULL): the old filter returned **1**, the null-safe one returned **2**.
+
+**One vocabulary.** `lib/lead-pipeline/lead-lifecycle.ts` owns the eight states, the default,
+`LEAD_CONVERTED_STATE = 'representation'` (the real terminal state), the null-safe
+`NOT_CONVERTED_FILTER`, `isLeadHandedOff()` and `isLeadSuppressed()`. All four sites import it.
+
+`npm run test:lead-lifecycle` — 42 checks, pure, on the chain. Probe leads and probe activity
+rows deleted; `leads` and `activities` carry no leftover test data.
+
+Vocabulary baseline: **89 → 85**. Chain: **112 simulators**. `tsc --noEmit`: 0.
+`npm run guard`: exit 0.

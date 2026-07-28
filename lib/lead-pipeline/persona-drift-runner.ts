@@ -8,6 +8,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { DEFAULT_MAX_AGE_DAYS } from "./persona-drift"
+import { NOT_CONVERTED_FILTER } from "@/lib/lead-pipeline/lead-lifecycle"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -77,7 +78,7 @@ export async function runPersonaDriftRefresh(input: PersonaDriftRunInput, client
     .eq("brokerage_id", input.brokerageId)
     .not("last_enriched_at", "is", null)
     .lt("last_enriched_at", cutoff)
-    .neq("lifecycle_state", "converted")
+    .or(NOT_CONVERTED_FILTER)
     .limit(limit)
   for (const l of (leads ?? []) as any[]) {
     out.scanned++

@@ -13,6 +13,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { ensureReactivationSequence } from "./reactivation-sequence-installer"
 import { enrollContact } from "@/lib/campaign-sequences/enrollment-engine"
 import { followupSuppresses } from "./reactivation-cadence"
+import { NOT_CONVERTED_FILTER } from "@/lib/lead-pipeline/lead-lifecycle"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -75,7 +76,7 @@ export async function runReactivationEnrollment(input: ReactivationEnrollInput, 
     .select("id, status, lifecycle_state, last_contacted_at, created_at, next_followup_at, dnc_status")
     .eq("brokerage_id", input.brokerageId)
     .eq("ai_isa_owner", true)
-    .neq("lifecycle_state", "converted")
+    .or(NOT_CONVERTED_FILTER)
     .not("dnc_status", "is", true) // m233: leads now carry DNC — never reactivate a suppressed lead
     .not("status", "in", '("archived","inactive","dead")')
     .limit(limit)

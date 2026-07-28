@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { isLeadHandedOff, isLeadSuppressed } from '@/lib/lead-pipeline/lead-lifecycle'
 
 // Inbound-email orchestration lives in app/actions/ai-isa/handle-inbound-email.ts
 // (uses generateTextRouted with kernel-validated tools from lib/ai-isa/tools.ts).
@@ -37,16 +38,26 @@ export async function haltEngagementForNegativeReply(params: {
 
   const supabase = createServiceClient()
 
-  // Set call_stop_flag and dnc on the lead — prevents any future AI outreach
-  await supabase
+  // Set call_stop_flag and dnc on the lead — prevents any future AI outreach.
+  //
+  // This used to also write lifecycle_state: 'do_not_contact', which the column's
+  // CHECK does not admit. supabase-js reports a rejected update in { error }
+  // instead of throwing, and the result was discarded — so the WHOLE update was
+  // lost, call_stop_flag included. A lead who asked to be left alone was not
+  // marked as having asked. Suppression belongs on the flags; lifecycle_state has
+  // no value for it and is not a suppression column.
+  const { error: suppressError } = await supabase
     .from('leads')
     .update({
       call_stop_flag: true,
+      dnc_status: true,
       ai_isa_owner: false,
-      lifecycle_state: 'do_not_contact',
       updated_at: new Date().toISOString(),
     })
     .eq('id', params.leadId)
+  if (suppressError) {
+    console.error('[haltEngagementForNegativeReply] lead suppression failed:', suppressError)
+  }
 
   // If a contact record is linked, set dnc_status too
   const { data: lead } = await supabase
@@ -68,7 +79,12 @@ export async function haltEngagementForNegativeReply(params: {
 
   // Log an activity so the agent sees this clearly in the timeline
   await supabase.from('activities').insert({
-    contact_id: params.leadId,
+    // activities.contact_id FKs contacts(id) — a lead id here violates the FK and
+    // the insert is rejected, so the timeline entry the agent is supposed to see
+    // was never written. Leads travel on entity_type/entity_id.
+    contact_id: null,
+    entity_type: 'lead',
+    entity_id: params.leadId,
     brokerage_id: params.brokerageId,
     activity_type: 'lead_opted_out',
     title: 'Lead requested no further contact',
@@ -98,18 +114,20 @@ export async function shouldStopAutoResponding(leadId: string): Promise<boolean>
 
   const { data: lead } = await supabase
     .from('leads')
-    .select('lead_stage, lead_score, call_stop_flag, lifecycle_state')
+    .select('lead_stage, lead_score, call_stop_flag, dnc_status, lifecycle_state')
     .eq('id', leadId)
     .single()
 
   if (!lead) return true
 
-  // Stop immediately if DNC, call_stop_flag, or already qualified/handed off
+  // Stop immediately if suppressed, or already handed off to a human.
+  // 'do_not_contact' and 'qualified' were tested here and neither is in the
+  // lifecycle vocabulary — the only live arm of this condition was 'consented',
+  // so a lead already assigned, booked, or under representation kept getting
+  // auto-replies from the ISA.
   if (
-    lead.call_stop_flag ||
-    lead.lifecycle_state === 'do_not_contact' ||
-    lead.lifecycle_state === 'qualified' ||
-    lead.lifecycle_state === 'consented' ||
+    isLeadSuppressed(lead) ||
+    isLeadHandedOff(lead.lifecycle_state) ||
     lead.lead_stage === 'qualified' ||
     lead.lead_score > 75
   ) {
