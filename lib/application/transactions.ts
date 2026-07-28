@@ -1239,7 +1239,7 @@ export async function getTransactionStats(agentId?: string) {
   let activeQuery = supabase
     .from("transactions")
     .select("id", { count: "exact", head: true })
-    .in("status", ["new", "negotiation", "under_contract", "inspection", "financing"])
+    .in("status", ["under_contract"])
   if (agentId) activeQuery = activeQuery.eq("agent_id", agentId)
   if (brokerageId) activeQuery = activeQuery.eq("brokerage_id", brokerageId)
   const { count: activeCount } = await activeQuery

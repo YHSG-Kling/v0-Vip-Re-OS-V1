@@ -87,7 +87,7 @@ export async function GET(request: NextRequest) {
       .from("transactions")
       .select("id, brokerage_id")
       .not("brokerage_id", "is", null)
-      .in("status", ["under_contract", "pending"])
+      .in("status", ["under_contract"])
 
     const txnsByBrokerage = new Map<string, string[]>()
     for (const txn of (transactions || []) as Array<{ id: string; brokerage_id: string }>) {

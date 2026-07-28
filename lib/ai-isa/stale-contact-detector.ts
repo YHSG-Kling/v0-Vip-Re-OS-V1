@@ -101,7 +101,7 @@ export async function detectStaleContacts(
         .from('transactions')
         .select('contact_id')
         .in('contact_id', ids)
-        .in('status', ['active', 'under_contract', 'closing', 'pending'])
+        .in('status', ['active', 'under_contract', 'closing'])
     : { data: [] }
 
   const blockedIds = new Set((activeTxContacts ?? []).map((t: any) => t.contact_id))
@@ -216,7 +216,7 @@ export async function detectGhostedContacts(
         .from('transactions')
         .select('contact_id')
         .in('contact_id', ids)
-        .in('status', ['active', 'under_contract', 'closing', 'pending'])
+        .in('status', ['active', 'under_contract', 'closing'])
     : { data: [] }
 
   const blockedIds = new Set((activeTxContacts ?? []).map((t: any) => t.contact_id))

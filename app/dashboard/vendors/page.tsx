@@ -79,7 +79,7 @@ export default async function VendorsPage() {
       .from("transactions")
       .select("id, property_address, stage")
       .eq("brokerage_id", profile.brokerage_id)
-      .in("status", ["active", "pending"])
+      .in("status", ["active", "under_contract", "closing"])
       .order("created_at", { ascending: false })
       .limit(50)
       .then(r => r.data || []),

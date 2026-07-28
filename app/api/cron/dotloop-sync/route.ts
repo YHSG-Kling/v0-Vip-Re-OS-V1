@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
     const { data: transactions, error: txError } = await supabase
       .from("transactions")
       .select("id, external_provider_transaction_id, buyer_contact_id, seller_contact_id")
-      .in("status", ["under_contract", "pending", "contingent"])
+      .in("status", ["under_contract"])
       .eq("external_provider_source", "dotloop")
       .not("external_provider_transaction_id", "is", null)
 

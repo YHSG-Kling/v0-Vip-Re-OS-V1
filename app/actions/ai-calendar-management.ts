@@ -809,7 +809,7 @@ export async function generateWeeklyPlan(params: {
       .from("transactions")
       .select("*")
       .eq("agent_id", params.agentId)
-      .in("status", ["under_contract", "inspection", "financing", "appraisal", "closing"])
+      .in("status", ["under_contract", "closing"])
 
     const { data: goals } = await supabase
       .from("agent_goals")

@@ -114,7 +114,7 @@ export function ClosingWorkflowTab({ contactId, agentId, brokerageId }: Props) {
         .from("transactions")
         .select("id, status, close_date, buyer_contact_id, seller_contact_id")
         .or(`contact_id.eq.${contactId},buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
-        .in("status", ["under_contract", "pending", "closing", "active"])
+        .in("status", ["under_contract", "closing", "active"])
         .order("close_date", { ascending: true, nullsFirst: false })
         .limit(1)
 

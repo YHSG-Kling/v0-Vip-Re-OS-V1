@@ -70,6 +70,29 @@ function* walk(dir: string): Generator<string> {
   }
 }
 
+/**
+ * The balanced argument text of every `.insert(` / `.upsert(` / `.update(` in a chain
+ * window. Brace/paren matching, so a nested object stays inside its own payload and an
+ * unrelated literal that merely sits nearby does not leak in.
+ */
+export function mutationArgs(win: string): string[] {
+  const out: string[] = []
+  const re = /\.(insert|upsert|update)\s*\(/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(win))) {
+    let depth = 0
+    for (let i = m.index + m[0].length - 1; i < win.length; i++) {
+      const c = win[i]
+      if (c === "(") depth++
+      else if (c === ")") {
+        depth--
+        if (depth === 0) { out.push(win.slice(m.index + m[0].length, i)); break }
+      }
+    }
+  }
+  return out
+}
+
 /** PURE — exported so the checks below can exercise it directly. */
 export function scanCheckVocabulary(rawSrc: string, file: string): VocabViolation[] {
   const src = stripComments(rawSrc)
@@ -90,11 +113,16 @@ export function scanCheckVocabulary(rawSrc: string, file: string): VocabViolatio
             if (!ok.has(value)) out.push({ file, table, column, value, kind })
           }
 
-          // Payload literal: `column: "value"` — only inside a mutating chain.
-          if (/\.(insert|upsert|update)\s*\(/.test(win)) {
+          // Payload literal: `column: "value"` — ONLY inside the balanced argument of
+          // this chain's own .insert/.upsert/.update. Scanning the whole window was
+          // wrong: a plain object literal built nearby (a Dotloop API request body, a
+          // transaction_milestones row assembled before its own .from()) contributed
+          // keys that belong to something else entirely. Three of this guard's first
+          // findings were exactly that, so the payload scan is now argument-scoped.
+          for (const arg of mutationArgs(win)) {
             const re = new RegExp(`\\b${column}\\s*:\\s*["']([^"'\\n]*)["']`, "g")
             let m: RegExpExecArray | null
-            while ((m = re.exec(win))) flag(m[1], "write")
+            while ((m = re.exec(arg))) flag(m[1], "write")
           }
 
           // Filters: .eq("column", "value") / .neq(...)
@@ -163,6 +191,15 @@ check("ignores a variable (only literals are checkable)",
   scanCheckVocabulary(`svc.from("agent_onboarding").update({ status: nextStatus })`, "t").length === 0)
 check("never reads its own documentation",
   scanCheckVocabulary(`// svc.from("agent_onboarding").eq("status", "stalled")`, "t").length === 0)
+check("a payload for ANOTHER table nearby is not attributed to this one",
+  scanCheckVocabulary(
+    `const rows = milestones.map((m) => ({ milestone_name: m.name, status: "pending" }))\n` +
+    `await svc.from("transactions").select("id").eq("id", txId)`, "t").length === 0)
+check("but the chain's OWN payload is still scanned",
+  scanCheckVocabulary(`svc.from("transactions").insert({ status: "pending" })`, "t").length === 1)
+check("mutationArgs keeps a nested object inside its own payload",
+  mutationArgs(`.insert({ a: { b: 1 }, status: "x" })`).length === 1)
+
 check("leaves a column with no CHECK alone",
   scanCheckVocabulary(`svc.from("agent_onboarding").update({ current_day: "12" })`, "t").length === 0)
 

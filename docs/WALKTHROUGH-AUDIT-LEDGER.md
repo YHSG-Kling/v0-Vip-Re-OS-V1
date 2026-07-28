@@ -2611,3 +2611,78 @@ Largest remaining clusters, for the burn-down: `transactions.status` (42),
 stage-vs-status confusion the transactions cluster shows — and none is being touched blind.
 
 `tsc --noEmit`: 0. `npm run guard`: 102 simulators, exit 0.
+
+---
+
+## Burning down the CHECK-vocabulary baseline: transactions.status, and a guard that was wrong 19% of the time
+
+First cluster off the new baseline: `transactions.status`, 42 entries across 26 files — the
+deal pipeline. `transactions.status` admits
+`lead | qualifying | active | under_contract | closing | closed | lost | archived`.
+The flagged literals fell into recognisable families:
+
+- **stage names on the status column** — `inspection`, `financing`, `appraisal`,
+  `closing_prep`. Those are `transactions.stage` values (`INSPECTION`, `FINANCING_PENDING`,
+  …), lowercased and applied to the wrong column.
+- **`pending` (18)** — the industry word for under contract. `listings.status` has it;
+  `transactions.status` expresses the same state as `under_contract`.
+- **other vocabularies** — `new`, `negotiation`, `in_review`, `contingent`, `completed`,
+  `sold`, and one `'Active'` capitalisation.
+
+### Twenty-three were harmless. Three were not.
+
+Same shape as the `broker_admin` cluster: almost every one is an `.in([...])` list where the
+impossible word sits **beside** a valid one, so the query still returns the right rows and
+the dead literal is noise. Stripped from 23 lists — behaviour-preserving by construction,
+since a value the column cannot hold can never have matched.
+
+Three were different, and they are real defects. Their lists were `["active", "pending"]` —
+`pending` was the *only* thing covering an under-contract deal, and it covers nothing:
+
+| | effect |
+|---|---|
+| `app/dashboard/vendors/page.tsx` | the vendor page showed only `active` deals — every deal under contract, exactly when inspection/appraisal/repair vendors are needed, was invisible |
+| `app/api/ai/video-recommendations/route.ts` | seller-video recommendations skipped every deal past acceptance |
+| `lib/kernel/financial.ts` | an agent's financial rollup excluded under-contract and closing deals entirely |
+
+The financial one is the sharpest: production currently holds two transactions, `closing=1`
+and `under_contract=1`, so that rollup was reading **zero of the two real deals**. All three
+widened to `["active", "under_contract", "closing"]`.
+
+Deliberately NOT widened: the pipeline lists like
+`["new", "negotiation", "under_contract", "inspection", "financing"]`. Four of those five are
+impossible, so the effective behaviour was always `under_contract` alone — which is what they
+now say. Widening them to include `active`/`closing` would be guessing at intent, not fixing
+a defect. The lists now read as what they always did.
+
+### The guard was wrong about 56 of its own findings
+
+Three `transactions.status` entries survived the cluster fix, and chasing them found a
+defect in the guard rather than the code: a Dotloop **API request body** (`status: "Active"`,
+`deal_type: "Purchase"`) and two **`transaction_milestones`** payloads
+(`milestone_name: "inspection_deadline"`, `status: "pending"`) were being attributed to
+`transactions` because they sat inside its `.from(` window.
+
+The window cut was right; the payload scan was too greedy — it matched `column: "value"`
+anywhere in the window rather than inside the chain's own mutation argument.
+`mutationArgs()` now extracts the balanced argument of each `.insert`/`.upsert`/`.update`,
+and only those are scanned. Three new pure checks pin it, including that a nearby object
+literal for another table is not attributed to this one.
+
+That single fix retired **56 findings**. The baseline sequence, all verifiable:
+
+```
+289  initial
+265  after removing broker_admin from 24 recipient lists
+226  after the transactions.status cluster (23 stripped, 3 widened)
+170  after the payload scan was argument-scoped — 56 were never real
+```
+
+So roughly one in five of the guard's first findings was its own false positive. Worth
+stating: a ratchet that cries wolf gets switched off, and the fix belonged in the scanner.
+`transactions.status` is now fully clear.
+
+Largest remaining clusters: `listings.status` (11), `listings.lifecycle_stage` (11),
+`direct_mail_campaigns.status` (10), `transactions.stage` (9), `lifecycle_events.source` (8).
+
+`tsc --noEmit`: 0. `npm run guard`: 102 simulators, exit 0.

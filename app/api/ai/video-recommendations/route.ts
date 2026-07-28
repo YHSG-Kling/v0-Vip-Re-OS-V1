@@ -149,7 +149,7 @@ export async function GET(request: NextRequest) {
       .select("*, leads(*)")
       .eq("agent_id", agentId)
       .eq("deal_type", "seller")
-      .in("status", ["active", "pending"])
+      .in("status", ["active", "under_contract", "closing"])
       .limit(5)
 
     for (const txn of seniorSellers || []) {

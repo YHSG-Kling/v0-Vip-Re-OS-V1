@@ -723,7 +723,7 @@ export async function getAgentStats(userIdOrAgentId: string) {
       .from("transactions")
       .select("*", { count: "exact", head: true })
       .eq("agent_id", agentId)
-      .in("status", ["new", "negotiation", "under_contract", "inspection", "financing"])
+      .in("status", ["under_contract"])
     activeTransactions = count || 0
   } catch (e) {
     // Table may not exist
@@ -825,7 +825,7 @@ export async function getBrokerageStats(brokerageId?: string) {
     let dealsQuery = supabase
       .from("transactions")
       .select("id", { count: "exact", head: true })
-      .in("status", ["new", "negotiation", "under_contract", "inspection", "financing"])
+      .in("status", ["under_contract"])
 
     if (brokerageId) {
       dealsQuery = dealsQuery.eq("brokerage_id", brokerageId)

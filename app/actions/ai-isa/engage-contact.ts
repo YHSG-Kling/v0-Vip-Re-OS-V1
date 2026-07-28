@@ -124,7 +124,7 @@ export async function engageContact(
       .from('transactions')
       .select('id, status')
       .eq('contact_id', contactId)
-      .in('status', ['active', 'under_contract', 'closing', 'pending'])
+      .in('status', ['active', 'under_contract', 'closing'])
       .limit(1)
       .maybeSingle()
 

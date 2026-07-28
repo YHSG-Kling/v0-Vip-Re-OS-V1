@@ -1626,7 +1626,7 @@ async function getTransactionsInProgress(
     .from("transactions")
     .select("id, deal_name, status, stage, property_address, close_date, contact_id, purchase_price")
     .eq("agent_id", session.agent_id)
-    .in("status", ["under_contract", "inspection", "appraisal", "financing", "closing_prep"])
+    .in("status", ["under_contract"])
     .is("deleted_at", null)
     .order("close_date", { ascending: true })
     .limit(10)

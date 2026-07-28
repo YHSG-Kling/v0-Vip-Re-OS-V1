@@ -83,7 +83,7 @@ export async function GET() {
             .from("transactions")
             .select("id", { count: "exact", head: true })
             .eq("brokerage_id", brokerageId)
-            .in("status", ["active", "pending", "under_contract"])
+            .in("status", ["active", "under_contract"])
         : Promise.resolve({ count: 0 }),
 
       // Vendor pending jobs (vendor role only)

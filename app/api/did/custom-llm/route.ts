@@ -146,7 +146,7 @@ async function loadContactContext(contactId: string): Promise<ContactContext | n
     .from("transactions")
     .select("id, status, stage, deal_type, close_date, property_address")
     .eq("contact_id", contactId)
-    .in("status", ["under_contract", "pending", "active"])
+    .in("status", ["under_contract", "active"])
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()

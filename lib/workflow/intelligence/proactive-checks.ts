@@ -389,7 +389,7 @@ export async function scanContingenciesNearingDeadline(input: {
     let query = svc
       .from("transactions")
       .select("id, contact_id, agent_id, property_address, status, inspection_deadline, appraisal_deadline, financing_deadline, inspection_contingency_removed_at, appraisal_contingency_removed_at, financing_contingency_removed_at")
-      .in("status", ["under_contract", "pending"])
+      .in("status", ["under_contract"])
 
     if (input.brokerageId) query = query.eq("brokerage_id", input.brokerageId)
 

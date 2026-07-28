@@ -516,7 +516,7 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
             .from("transactions")
             .select("id, status")
             .eq("contact_id", docRecord.contact_id)
-            .in("status", ["pending", "under_contract", "active"])
+            .in("status", ["under_contract", "active"])
             .order("created_at", { ascending: false })
             .limit(1)
             .maybeSingle()

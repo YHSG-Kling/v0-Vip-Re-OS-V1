@@ -434,7 +434,7 @@ export async function loadReportingWorkspace(
       .select("id, purchase_price")
       .eq("brokerage_id", ctx.brokerageId)
       .eq("agent_id", ctx.agentId)
-      .in("status", ["active", "pending", "under_contract", "in_review"])
+      .in("status", ["active", "under_contract"])
 
     const pendingPipelineValue = (pipeline ?? []).reduce(
       (s, t) => s + (t.purchase_price ?? 0), 0

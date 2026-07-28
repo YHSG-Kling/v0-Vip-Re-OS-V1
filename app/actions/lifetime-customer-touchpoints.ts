@@ -269,7 +269,7 @@ export async function getLifetimeCustomerContacts() {
     .from("transactions")
     .select("id, contact_id, status, close_date, sale_price:purchase_price")
     .in("contact_id", contactIds)
-    .in("status", ["closed", "sold"])
+    .in("status", ["closed"])
 
   if (transError) {
     console.error("Error fetching transactions:", transError)

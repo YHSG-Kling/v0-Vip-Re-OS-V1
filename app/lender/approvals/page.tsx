@@ -16,7 +16,7 @@ export default async function LenderApprovalsPage() {
   const { data: transactions } = await supabase
     .from('transactions')
     .select('id, property_address, status, client_name, close_date, contract_price:purchase_price')
-    .in('status', ['pending', 'under_contract'])
+    .in('status', ['under_contract'])
     .order('close_date', { ascending: true })
     .limit(30)
 

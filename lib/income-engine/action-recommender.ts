@@ -117,7 +117,7 @@ export async function recommendActionsForAgent(params: {
     .from("transactions")
     .select("id, property_address, stage, status, estimated_close_date, purchase_price, commission_amount")
     .eq("agent_id", params.agentId)
-    .in("status", ["pending", "active", "under_contract"])
+    .in("status", ["active", "under_contract"])
     .not("estimated_close_date", "is", null)
     .order("estimated_close_date", { ascending: true })
     .limit(10)

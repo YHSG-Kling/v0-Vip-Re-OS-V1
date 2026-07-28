@@ -1427,7 +1427,7 @@ export async function loadAgentFinancialDashboardSummary(
         .from("transactions")
         .select("*")
         .eq("agent_id", input.agentId)
-        .in("status", ["active", "pending"]),
+        .in("status", ["active", "under_contract", "closing"]),
 
       service
         .from("agent_commissions")
