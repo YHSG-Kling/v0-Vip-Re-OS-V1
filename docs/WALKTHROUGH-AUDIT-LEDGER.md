@@ -2735,3 +2735,49 @@ Baseline: **170 → 150**. Two `listings` entries remain, both in
 `app/api/dashboard/reporting/route.ts`, which needs its own read.
 
 `tsc --noEmit`: 0. `npm run guard`: 102 simulators, exit 0.
+
+---
+
+## Direct mail spoke a vocabulary the table never had
+
+Third cluster: `direct_mail_campaigns.status`, which admits
+`planning | approved | printed | mailed | cancelled | failed`. The code around it used
+`draft`, `pending`, `pending_approval`, `queued`, `printing` and `sent` — a parallel
+lifecycle nobody reconciled with the constraint.
+
+The canonical creator was fine: `app/actions/direct-mail.ts` inserts `planning`, and
+`ai-marketing-automation.ts` does too. So the feature works — which is exactly why the rest
+went unnoticed.
+
+| | was | effect |
+|---|---|---|
+| `neighbor-notifications` | INSERT `status: 'queued'` | **the insert was rejected** — the "notify the neighbours" campaign row was never created |
+| `direct-mail-performance` ×2 | `status = 'sent'` | direct-mail performance reporting read zero campaigns |
+| `marketing-agent` ×4 | `'pending'` ×2, `'sent'` ×2 | the agent's direct-mail counters were all zero |
+| `marketing-agent-actions` | cancel where `status IN ('pending','queued','draft')` | a bulk cancel that matched nothing and cancelled nothing |
+| `marketing-ops` | `IN ('draft','pending_approval','approved','printing')` | only `approved` is real, so the ops view silently showed approved campaigns only |
+
+Mapping used, stated: `sent → mailed`, `pending`/`queued`/`draft`/`pending_approval → planning`,
+`printing → printed`. The cancellable set is `planning, approved` — a printed or mailed piece
+cannot be recalled. The ops in-flight set is `planning, approved, printed`.
+
+### Two blanket replaces over-matched, and that is worth recording
+
+The first pass edited by string rather than by query. `status: "queued"` also matched a
+`neighbor_notification_recipients` update and a `delivery_status` field; `.eq("status","sent")`
+also matched a **`newsletter_campaigns`** query, where `sent` is perfectly valid. It broke the
+build, which is the good outcome — a silent mis-edit on the newsletter rail would have been a
+new defect introduced by a cleanup commit.
+
+Both files were reverted and redone by resolving each literal's owning table from the nearest
+preceding `.from(`, then patching by line number. `newsletter_campaigns.status = 'sent'` and
+the recipients update were left exactly as they were. This is the same failure mode as the
+`agent_id: user.id` regression earlier in this sweep, and the same lesson: the unit of edit is
+the query, never the string.
+
+Baseline: **150 → 138**. `listings` finished too — the reporting route's "Closed listings in
+period" filtered `status = 'closed'` (permanently 0, the terminal status is `sold`), and
+`multi-listing-priority` excluded `status = 'deleted'`, a value no row can hold, when
+`listings.deleted_at` is the actual soft-delete column.
+
+`tsc --noEmit`: 0. `npm run guard`: 102 simulators, exit 0.

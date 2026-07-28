@@ -203,7 +203,7 @@ export async function launchNeighborNotification(params: {
         campaign_name: `Neighbor Notification — ${(campaign as { listing_id: string }).listing_id}`,
         target_audience: "neighbors_of_new_listing",
         piece_type: "postcard",
-        status: "queued",
+        status: "planning",  // "queued" is not in the CHECK — this INSERT was rejected outright
         copy_text: "Your neighbor just listed their home — know anyone who'd love to live nearby?",
       })
       .select("id")

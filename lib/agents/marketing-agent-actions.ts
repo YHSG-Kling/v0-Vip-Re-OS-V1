@@ -392,7 +392,10 @@ async function runHandler(
         .update({ status: "cancelled" }, { count: "exact" })
         .eq("id", campaignId)
         .eq("brokerage_id", brokerageId)
-        .in("status", ["pending", "queued", "draft"])
+        // The cancellable states: a printed or mailed piece cannot be recalled.
+        // All three values this used are absent from the CHECK, so the bulk
+        // cancel matched nothing and cancelled nothing.
+        .in("status", ["planning", "approved"])
       if (error) return { status: "failed", result: { error: error.message } }
       if ((count ?? 0) === 0) {
         return { status: "skipped", result: { reason: "row not in pending/queued/draft or tenant mismatch" } }

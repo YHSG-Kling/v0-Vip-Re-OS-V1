@@ -62,7 +62,9 @@ export async function getMarketingOpsSnapshot(): Promise<
         .from("direct_mail_campaigns")
         .select("id, campaign_name, status, quantity, created_at")
         .eq("brokerage_id", brokerageId)
-        .in("status", ["draft", "pending_approval", "approved", "printing"])
+        // In-flight = not yet mailed. Of the four this listed, only "approved"
+        // exists, so the ops view silently showed approved campaigns only.
+        .in("status", ["planning", "approved", "printed"])
         .limit(20),
       fetchReadinessStatistics(thirtyDaysAgo.toISOString(), now.toISOString()).catch(() => null),
       supabase

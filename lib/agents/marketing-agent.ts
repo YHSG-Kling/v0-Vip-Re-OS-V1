@@ -638,11 +638,11 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
       svc.from("direct_mail_campaigns")
         .select("id", { count: "exact", head: true })
         .eq("brokerage_id", brokerageId)
-        .eq("status", "pending"),
+        .eq("status", "planning"),  // direct_mail_campaigns has no "pending"
       svc.from("direct_mail_campaigns")
         .select("id", { count: "exact", head: true })
         .eq("brokerage_id", brokerageId)
-        .eq("status", "sent")
+        .eq("status", "mailed")   // direct_mail_campaigns has no "sent"
         .gte("created_at", since28d),
       svc.from("direct_mail_campaigns")
         .select("id", { count: "exact", head: true })
@@ -662,7 +662,7 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
       svc.from("direct_mail_campaigns")
         .select("id, created_at")
         .eq("brokerage_id", brokerageId)
-        .eq("status", "pending")
+        .eq("status", "planning") // direct_mail_campaigns has no "pending"
         .order("created_at", { ascending: true })
         .limit(1)
         .maybeSingle(),
@@ -695,7 +695,7 @@ async function buildMarketingSnapshot(brokerageId: string): Promise<MarketingSna
       .from("direct_mail_campaigns")
       .select("id, qr_code_id, per_piece_cost, pieces_mailed, contact_id, target_audience")
       .eq("brokerage_id", brokerageId)
-      .eq("status", "sent")
+      .eq("status", "mailed")   // direct_mail_campaigns has no "sent"
       .gte("mailing_date", since28d.slice(0, 10))
       .limit(2000)
     type CRow = {

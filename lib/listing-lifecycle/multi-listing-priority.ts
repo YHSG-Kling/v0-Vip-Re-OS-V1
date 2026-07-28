@@ -104,7 +104,9 @@ export async function resolvePrimaryListing(
     .from("listings")
     .select("id, address")
     .eq("contact_id", contactId)
-    .neq("status", "deleted")
+    // Soft-delete lives on listings.deleted_at, not on status — there is no
+    // "deleted" status, so this excluded nothing at all.
+    .is("deleted_at", null)
   
   if (!listings || listings.length === 0) {
     return {
@@ -279,7 +281,9 @@ export async function getContactsWithMultipleListings(
     .from("listings")
     .select("id, contact_id")
     .eq("brokerage_id", brokerageId)
-    .neq("status", "deleted")
+    // Soft-delete lives on listings.deleted_at, not on status — there is no
+    // "deleted" status, so this excluded nothing at all.
+    .is("deleted_at", null)
   
   if (!listings) {
     return []
