@@ -69,7 +69,6 @@
   "lib/kernel/manager-signals.ts::content_topic_uses.asset_type=situational_reel",
   "lib/kernel/reporting-autonomy.ts::transaction_deadlines.status=at_risk",
   "lib/kernel/reputation.ts::referrals.status=new",
-  "lib/lead-pipeline/reactivation-sequence-installer.ts::campaign_sequences.sequence_type=reactivation",
   "lib/managers/cross-referral.ts::ad_campaigns.status=active",
   "lib/managers/cross-referral.ts::manager_signals.status=pending",
   "lib/managers/deliberation.ts::ad_campaigns.status=active",

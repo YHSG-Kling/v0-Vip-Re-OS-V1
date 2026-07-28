@@ -3489,3 +3489,62 @@ onboarding's tech-stack surface even had the correct union typed inline.
 
 Vocabulary baseline: **82 → 79**. Chain: **115 simulators**. `tsc --noEmit`: 0.
 `npm run guard`: exit 0.
+
+---
+
+## The AI-ISA reactivation sequence could never be installed
+
+`ensureReactivationSequence` is the installer for the whole AI-ISA reactivation rail. It wrote:
+
+```ts
+export const REACTIVATION_TRIGGER = "ai_isa_reactivation"
+…
+trigger_event: REACTIVATION_TRIGGER,
+sequence_type: "reactivation",
+```
+
+`campaign_sequences.trigger_event` admits 14 values and `ai_isa_reactivation` is not one of
+them; `sequence_type` admits drip / nurture / post_close / re_engagement / transaction and
+`reactivation` is not one of those either. Verified live: that insert raises
+`check_violation`. The installer returns `{ sequenceId: null, error }` and every caller treats
+it as non-fatal, so the rail simply never had a sequence — and **`campaign_sequences` is empty
+in production**, which is exactly what that predicts.
+
+The CHECK already had precise words for both: `reengagement_started` and `re_engagement`. Both
+constants are now exported and used by the lookup and the insert, so they cannot drift apart.
+Verified live: the corrected row inserts and the installer's own idempotency lookup finds it.
+
+Note the guard blind spot again — `trigger_event` was written through a *constant*
+(`REACTIVATION_TRIGGER`), so the vocabulary scanner never saw the literal. Only
+`sequence_type` was in the baseline. Constant indirection joins variable table names
+(`svc.from(table)`) on the list of things the `.from(`-anchored scanner cannot resolve.
+
+### Triaged one of the 424 while here
+
+`test:reactivation-sequence` existed and was **unwired** — it covers exactly this installer.
+Run cold it passed, but for two bad reasons: its Layer 2 (live install/enroll/reply-stop) skips
+without credentials, and its closing banner claimed all of that had been "verified" anyway.
+Its one live assertion still keyed on the dead `"ai_isa_reactivation"` literal.
+
+Fixed rather than bulk-wired: a new credential-free **Layer 0** pins both constants against the
+schema snapshot and names the two rejected literals, the stale literal now reads the exported
+constant, and the banner states plainly when Layer 2 did not run. That layer is the half CI can
+actually execute, and it is the half that would have caught this.
+
+Wired: unwired baseline **424 → 423**. Vocabulary baseline: **79 → 78**. Chain: **118
+simulators**. Probe row deleted. `tsc --noEmit`: 0. `npm run guard`: exit 0.
+
+### Two left for the owner, deliberately not changed
+
+The other two `campaign_sequences` reads are orphan hooks with no installer behind them:
+
+* `app/actions/home-value.ts` looks for `trigger_event = 'home_value_submitted'` OR
+  `sequence_type = 'seller_nurture'`
+* `lib/kernel/lead-magnets.ts` looks for `sequence_type = 'lead_magnet'`
+
+None of those four literals is in either CHECK, and the table has no persona/audience column to
+discriminate on. Rewriting them to a real value (`nurture`, `drip`) would make them match an
+**arbitrary** sequence of that type — a buyer drip could enrol a home-value seller. That is a
+worse failure than not firing, so the literals stand until one of two calls is made: add
+`home_value_submitted` / a lead-magnet trigger to the `trigger_event` CHECK, or give these two
+hooks real installers the way reactivation has one.

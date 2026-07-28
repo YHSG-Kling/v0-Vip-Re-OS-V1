@@ -285,7 +285,6 @@
   "test:quarterly-tax-concierge",
   "test:rate-lock",
   "test:raw-lead-promotion",
-  "test:reactivation-sequence",
   "test:readiness-gate",
   "test:reaper-net",
   "test:recruit-outreach",
