@@ -74,9 +74,9 @@ const ALLOWED: Record<string, string> = {
   user_roles: "role vocabulary",
 
   // (b) no tenant anchor — tracked, not blessed
-  long_form_videos: "NO ANCHOR: parent is `scripts`, itself global; no brokerage_id/agent_id/user_id",
-  marketing_stats: "NO ANCHOR: no FK and no tenant column",
-  transparency_videos: "NO ANCHOR: no FK and no tenant column",
+  long_form_videos: "DEAD SCHEMA: 0 rows, no writer, and its only reader (a cross-tenant service-client select) was deleted — nothing to scope",
+  marketing_stats: "DEAD SCHEMA: 0 rows, no writer, and its only reader (a cross-tenant service-client select) was deleted — nothing to scope",
+  transparency_videos: "DEAD SCHEMA: 0 rows, no writer, and its only reader (a cross-tenant service-client select) was deleted — nothing to scope",
   demo_persona_contacts: "platform demo fixture; writes already restricted to is_platform_admin()",
 }
 

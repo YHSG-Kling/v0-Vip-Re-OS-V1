@@ -739,21 +739,21 @@ export const supabaseService = {
     }
   },
 
-  async getTransparencyVideos() {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase
-        .from("transparency_videos")
-        .select("*")
-        .order("created_at", { ascending: false })
 
-      if (error) throw error
-      return data || []
-    } catch (error) {
-      console.error("[Supabase Service] Error fetching transparency videos:", error)
-      return []
-    }
-  },
+  // getTransparencyVideos / getLongFormVideos / getMarketingStats were REMOVED.
+  //
+  // Each did `getSupabaseAdmin().from(<table>).select("*")` with NO tenant filter —
+  // a cross-tenant read on the RLS-bypassing service client — and each had ZERO
+  // callers anywhere in the app. The three tables (transparency_videos,
+  // long_form_videos, marketing_stats) hold no rows, have no writer, and have no
+  // reader now that these are gone.
+  //
+  // They were on the child-tenant-scope allowlist as "NO ANCHOR" — tables with no
+  // brokerage_id and no FK to anything that has one. Bolting a brokerage_id and an
+  // RLS policy onto a table nothing reads or writes would turn that guard green
+  // without making anything safer. Deleting the only accessors removes the hazard
+  // at its source instead: whoever wires these tables up later starts from nothing
+  // and has to scope them then.
 
   // =====================================================
   // SCRIPTS & CONTENT
@@ -838,20 +838,6 @@ export const supabaseService = {
     }
   },
 
-  async getLongFormVideos() {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase
-        .from("long_form_videos")
-        .select("*")
-        .order("created_at", { ascending: false })
-      if (error) throw error
-      return data || []
-    } catch (error) {
-      console.error("[Supabase Service] Error fetching long form videos:", error)
-      return []
-    }
-  },
 
   async getNewsletterCampaigns() {
     try {
@@ -1015,21 +1001,6 @@ export const supabaseService = {
     }
   },
 
-  async getMarketingStats() {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase
-        .from("marketing_stats")
-        .select("*")
-        .order("date", { ascending: false })
-        .limit(30)
-      if (error) throw error
-      return data || []
-    } catch (error) {
-      console.error("[Supabase Service] Error fetching marketing stats:", error)
-      return []
-    }
-  },
 
   // =====================================================
   // AI TOOLS & SUGGESTIONS

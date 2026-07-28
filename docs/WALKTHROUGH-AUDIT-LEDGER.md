@@ -2956,3 +2956,51 @@ those `platform_social_tiktok` and has no bare `google`.
 Baseline: **105 → 100**.
 
 `tsc --noEmit`: 0. `npm run guard`: exit 0.
+
+---
+
+## The four "anchorless" tables were the wrong question
+
+The open item read: *four permissive tables with no tenant anchor — `long_form_videos`,
+`marketing_stats`, `transparency_videos`, `demo_persona_contacts` — need a schema decision.*
+It was filed as needing the owner's call on whether to add `brokerage_id`.
+
+Investigating first answered it without one. All four are:
+
+- **0 rows** in production
+- **0 writers** anywhere in the codebase
+- **0 callers** — the only readers were three methods on `services/supabaseService.ts`
+  (`getTransparencyVideos`, `getLongFormVideos`, `getMarketingStats`), each with zero call
+  sites in the entire app; `demo_persona_contacts` had no reader at all
+
+And those three readers were the actual hazard, not the missing column:
+
+```ts
+const supabase = getSupabaseAdmin()          // RLS-bypassing service client
+const { data } = await supabase
+  .from("transparency_videos")
+  .select("*")                                // no brokerage filter, no agent filter
+  .order("created_at", { ascending: false })
+```
+
+A cross-tenant `select("*")` on the service client. Harmless today because the tables are
+empty — and a live leak the moment anyone wires one of these functions to a route and starts
+writing tenant data.
+
+**So the fix is not a tenant anchor.** Bolting a `brokerage_id` and an RLS policy onto a table
+that nothing reads and nothing writes turns the guard green without making anything safer —
+box-ticking of exactly the kind this sweep keeps finding. The three zero-caller accessors were
+deleted instead, which removes the hazard at its source: whoever builds these features later
+starts from nothing and has to scope them at that point. Same shape as the `gbpAutoPostsCronTick`
+and `getUserAvatarConfig` removals earlier in this sweep — take the endpoint away rather than
+guard it.
+
+The tables themselves are left in place, empty and now completely unreferenced. The
+child-tenant-scope allowlist entries were rewritten from `"NO ANCHOR: no FK and no tenant
+column"` — which read like a tolerated gap — to state what is actually true: dead schema with
+no accessor, nothing to scope.
+
+`demo_persona_contacts` keeps its existing verdict; its writes were already restricted to
+`is_platform_admin()`.
+
+`tsc --noEmit`: 0. `npm run guard`: 105 simulators, exit 0.
