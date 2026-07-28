@@ -3339,3 +3339,51 @@ rows deleted; `leads` and `activities` carry no leftover test data.
 
 Vocabulary baseline: **89 → 85**. Chain: **112 simulators**. `tsc --noEmit`: 0.
 `npm run guard`: exit 0.
+
+---
+
+## The demo tenant could not seed itself
+
+`seedDemoData` inserts seven row sets in FK-safe order and bails on the first error:
+
+```ts
+for (const [table, rows] of inserts) {
+  const { error } = await svc.from(table).insert(rows as never)
+  if (error) return { ok: false, error: `Seed failed on ${table}: ${error.message}` }
+}
+```
+
+`contacts` first, then `leads`. Six literals in that plan sat outside their columns' live
+CHECK vocabularies:
+
+| column | plan wrote | CHECK admits |
+| --- | --- | --- |
+| `leads.urgency_level` | `high` / `medium` / `low` | cold, cool, hot, warm |
+| `leads.lifecycle_state` | `new` / `converted` | raw … representation |
+| `listings.property_type` | `townhome` | townhouse |
+
+Verified live: a lead with `urgency_level='high', lifecycle_state='new'` raises
+`check_violation`, and the corrected row inserts. Same for `townhome` vs `townhouse`.
+
+So **every demo brokerage seeded its contacts, died on leads, and stopped** — no leads, no
+listings, no transactions, no conversations, no messages, no activities. `seedDemoData`
+returned the failure honestly; nothing downstream had ever run it.
+
+**Why the vocabulary guard missed it.** `scripts/check-vocabulary-guard.ts` resolves a
+literal's owning table from the nearest preceding `.from("<table>")`. This seeder writes
+`svc.from(table).insert(rows)` — the table name is a *variable*, and the row literals are
+declared a hundred lines earlier — so there is no `.from(` to resolve against and the entire
+file is invisible to it. That is a real blind spot in the scanner, recorded here rather than
+papered over: the general fix (tracking a variable back to the array it iterates) is a
+different piece of work.
+
+`npm run test:demo-seed-vocabulary` — 27 checks, pure, on the chain. It maps each
+`const <name> = [...]` block in the plan to the table it is inserted into and checks every
+string literal against the generated snapshot, so a new bad literal in the seed fails CI
+whether or not the scanner can see the file. It also pins the seeder's shape: if
+`svc.from(table).insert(...)` or a plan block name changes, the guard says so instead of
+silently checking nothing.
+
+Probe rows for both measurements deleted; `leads` and `listings` carry no leftover test data.
+
+Chain: **113 simulators**. `tsc --noEmit`: 0. `npm run guard`: exit 0.
