@@ -3097,3 +3097,39 @@ compliance rule rather than a formatting detail.
 Both are on the guard chain now: **107 simulators**.
 
 `tsc --noEmit`: 0. `npm run guard`: exit 0.
+
+---
+
+## How many simulators does CI actually run?
+
+Having found two red simulators that CI never invoked, the obvious question is how many more
+there are. Measured:
+
+```
+test:* scripts defined in package.json            550
+  reachable from guard / guard:compliance / harness:integrity   122
+  NOT on any chain                                  428
+  of those, pointing at a real scripts/*.ts         425
+```
+
+**425 simulator files that CI has never run.** The note that opened this item guessed ~138;
+the real number is three times that. And the two sampled from it — the only two anyone had
+looked at — were *both* red and stale. There is no reason to assume the rest are healthier.
+
+That is a substantial piece of work, not a bolt-on: each red one needs the same judgement the
+two triaged here did (is the assertion stale, or is the code broken?), and bulk-wiring 425
+files would turn a green chain red with no way to tell rot from regression. Filed as its own
+item, with the shape it needs: run in batches, wire the green, judge the red one at a time,
+and finish with a ratchet that fails CI when a new `test:*` script is defined without being
+chained.
+
+### One of the 425 was mine
+
+`test:back-on-market-promo` — the simulator I added eleven checks to earlier in this sweep,
+for the GBP catch-up collapse — **was not on the chain**. Those checks have never run in CI.
+I wrote "a test CI does not run is not a test, it is a file" two commits ago and had done
+exactly that myself, in this session, without noticing.
+
+Wired now (29 checks, green). The chain is at **108 simulators**.
+
+`tsc --noEmit`: 0. `npm run guard`: exit 0.
