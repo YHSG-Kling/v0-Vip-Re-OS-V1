@@ -9,6 +9,9 @@ import { generateTextRouted } from "@/lib/ai/models"
 
 export type SourceFamily = "raw" | "lead" | "contact_direct"
 
+// The wording-vs-quality discriminator (pure).
+import { diagnoseSource } from "@/lib/lead-pipeline/source-wording-diagnostic"
+
 export interface SourceMetrics {
   source: string
   source_family: SourceFamily
@@ -47,6 +50,12 @@ export interface SourceMetrics {
 
   created_at_oldest: string | null
   created_at_newest: string | null
+
+  /**
+   * Is a weak source actually BAD, or is our copy not landing? Downranking a good
+   * source over a fixable opener throws away real leads. Null below min volume.
+   */
+  diagnostic: { verdict: string; recommendation: string; why: string } | null
 }
 
 export interface SourcePerformanceResult {
@@ -274,6 +283,7 @@ export async function getSourcePerformance(
           contact_to_appt_rate: 0,
           appt_to_transaction_rate: 0,
           close_rate: 0,
+          diagnostic: null,
           total_spend: 0,
           revenue_attributed: 0,
           roi_multiple: 0,
@@ -323,9 +333,12 @@ export async function getSourcePerformance(
 
     // Process contacts
     const contactAgentCounts: Record<string, Record<string, number>> = {}
+    // contact_id → the sourceMap key, so engagement can be attributed per source.
+    const contactSourceKey = new Map<string, string>()
     contacts?.forEach(c => {
       const family = (c.source_family as SourceFamily) ?? "contact_direct"
       const m = getOrCreate(c.source ?? "website", family, c.source_channel, c.source_subtype)
+      contactSourceKey.set(c.id, `${m.source}::${m.source_family}`)
       m.contact_count++
       m.total_spend += c.cost_per_record ?? 0
       if (c.campaign_attribution_id && !m.campaign_id) {
@@ -409,7 +422,59 @@ export async function getSourcePerformance(
       }
     }
 
+    // ── Engagement per source: replies to our outbound touches ────────────────
+    // The discriminator is ENGAGEMENT vs DOWNSTREAM CONVERSION. Open tracking does
+    // not exist on messages, so reply rate carries it (the stronger signal anyway).
+    const sentBySource = new Map<string, number>()
+    const repliedBySource = new Map<string, number>()
+    const allContactIds = [...contactSourceKey.keys()]
+    if (allContactIds.length > 0) {
+      const { data: msgs } = await supabase
+        .from("messages")
+        .select("contact_id, direction")
+        .eq("brokerage_id", brokerageId)
+        .in("contact_id", allContactIds.slice(0, 1000))
+        .gte("created_at", fromDate)
+      for (const m of (msgs ?? []) as Array<{ contact_id: string; direction: string | null }>) {
+        const src = contactSourceKey.get(m.contact_id)
+        if (!src) continue
+        const bucket = m.direction === "inbound" ? repliedBySource : sentBySource
+        bucket.set(src, (bucket.get(src) ?? 0) + 1)
+      }
+    }
+
     let sources = Array.from(sourceMap.values())
+
+    // Brokerage medians — "low" must be relative to this brokerage, not absolute.
+    const median = (xs: number[]) => {
+      const v = xs.filter((n) => Number.isFinite(n)).sort((a, b) => a - b)
+      return v.length === 0 ? 0 : v[Math.floor(v.length / 2)]
+    }
+    const benchmarks = {
+      leadToContactRate: median(sources.map((x) => x.lead_to_contact_rate)),
+      contactToApptRate: median(sources.map((x) => x.contact_to_appt_rate)),
+      earlyStepReplyRate: median(
+        sources.map((x) => {
+          const k = `${x.source}::${x.source_family}`
+          const sent = sentBySource.get(k) ?? 0
+          return sent > 0 ? (repliedBySource.get(k) ?? 0) / sent : 0
+        }),
+      ),
+    }
+    for (const m of sources) {
+      const key = `${m.source}::${m.source_family}`
+      const sent = sentBySource.get(key) ?? 0
+      m.diagnostic = diagnoseSource({
+        leadToContactRate: m.lead_to_contact_rate,
+        contactToApptRate: m.contact_to_appt_rate,
+        closeRate: m.close_rate,
+        earlyStepOpenRate: null,
+        earlyStepReplyRate: sent > 0 ? (repliedBySource.get(key) ?? 0) / sent : null,
+        sentVolume: sent,
+        benchmarks,
+      })
+    }
+
 
     // Sort
     const sortFn: Record<string, (a: SourceMetrics, b: SourceMetrics) => number> = {

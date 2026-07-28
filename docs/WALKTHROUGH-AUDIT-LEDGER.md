@@ -1129,3 +1129,39 @@ ledger already flags an unconfirmed payoff rather than hiding it.
 
 The method generalises: grep for the magic constant a shared model was built to replace. Every one
 of these is a surface that predates the model and never got repointed.
+
+---
+
+## Source wording-vs-quality diagnostic — the one that protects lead spend
+
+Fifth dark module, onto `/dashboard/analytics/source`, which already computes the funnel rates it
+needs (`lead_to_contact_rate`, `contact_to_appt_rate`, `close_rate`) and had nowhere to say what
+they MEAN.
+
+The question it answers is the one that costs real money: a source with poor outcomes looks
+identical whether the leads are bad or the opener is bad — and downranking it in the second case
+throws away good leads over a fixable copy problem.
+
+The discriminator is ENGAGEMENT vs DOWNSTREAM CONVERSION. `messages` has no open tracking, so
+reply rate carries it (the stronger signal regardless): outbound vs inbound messages to that
+source's contacts, attributed through a `contact_id → source::family` map built inside the existing
+contacts loop, so nothing is re-queried. Benchmarks are **brokerage medians**, not absolute
+thresholds — "low" has to mean low *here*.
+
+Verified against the cases that matter:
+
+| scenario | verdict |
+|---|---|
+| low replies, healthy downstream | **wording_issue** — "the leads are good, the opener isn't landing. Test a different copy angle, don't downrank." |
+| leads never qualify to contacts | targeting_issue — adjust cadence before judging the source |
+| replies at/above benchmark | healthy — copy is landing |
+| 4 touches sent | insufficient_data — refuses to judge below 25 |
+
+The verdict renders under each source's close rate, with the full reasoning on hover, and only when
+it is NOT healthy — a clean source stays visually quiet.
+
+`test:source-wording` wired into the `guard` chain.
+
+**Dark capabilities: 10 found, 5 resolved.** Remaining: seller-listing-timeline, deal-confidence,
+outcome-autopsy, plus ken-burns-plan (reachable through the Director, flagged only because `app/`
+does not import it directly) and comps-animation-spec (a consolidation call, not a wiring one).

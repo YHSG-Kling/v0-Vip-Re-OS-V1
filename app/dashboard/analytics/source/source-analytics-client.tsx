@@ -206,6 +206,28 @@ function SourceRow({
         <span className={`text-sm font-medium ${source.close_rate >= 10 ? "text-emerald-600" : source.close_rate >= 3 ? "text-amber-600" : "text-muted-foreground"}`}>
           {source.close_rate}%
         </span>
+        {/* Wording-vs-quality verdict. A weak source with a fixable opener must NOT
+            be downranked — that throws away good leads over a copy problem. */}
+        {source.diagnostic && source.diagnostic.verdict !== "healthy" && (
+          <div
+            className={`mt-1 text-[10px] leading-tight ${
+              source.diagnostic.verdict === "wording_issue"
+                ? "text-amber-700"
+                : source.diagnostic.verdict === "insufficient_data"
+                  ? "text-muted-foreground"
+                  : "text-red-600"
+            }`}
+            title={source.diagnostic.why}
+          >
+            {source.diagnostic.verdict === "wording_issue"
+              ? "copy, not source — test new opener"
+              : source.diagnostic.verdict === "source_quality_issue"
+                ? "source quality — consider downranking"
+                : source.diagnostic.verdict === "targeting_issue"
+                  ? "targeting/cadence mismatch"
+                  : "not enough touches to judge"}
+          </div>
+        )}
       </TableCell>
       <TableCell>
         <span className={`text-sm font-medium ${source.roi_multiple >= 5 ? "text-emerald-600" : source.roi_multiple >= 2 ? "text-amber-600" : "text-red-500"}`}>
