@@ -52,6 +52,10 @@ type Svc = ReturnType<typeof createServiceClient>
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+// Time-to-list annotation. The radar scores HOW motivated; this adds WHEN, so the ISA
+// works the right seller at the right MOMENT rather than only the hottest one.
+import { computeSellerListingTimeline, timelineRank, type SellerTimeline } from "@/lib/kernel/seller-listing-timeline"
+
 /** The REAL seller-intent signals the bench already scraped, normalized for scoring.
  *  Every field is OPTIONAL — different sources populate different subsets; the scorer
  *  only credits what is actually present (no fabrication, no assumed values). */
@@ -103,6 +107,14 @@ export interface SellerLeadCandidate {
 }
 
 export interface ScoredSellerLead extends SellerLeadCandidate {
+  /**
+   * WHEN this owner is likely to list, on top of HOW motivated they are. Different
+   * distress carries different known clocks: pre-foreclosure is a forced 30–90 day
+   * auction, probate runs a 6–12 month court timeline, a fresh expired is a 0–90 day
+   * window, FSBO is selling now. Annotation only — promotion still runs through the
+   * gate below, unchanged.
+   */
+  timeline: SellerTimeline
   /** 0..1 intent score from scoreSellerIntent. */
   intentScore: number
   /** The signal labels that earned the score (audit trail, no fabrication). */
@@ -251,9 +263,32 @@ export function rankSellerLeads(candidates: SellerLeadCandidate[]): ScoredSeller
   return candidates
     .map((c) => {
       const { score, reasons } = scoreSellerIntent(c.signals)
-      return { ...c, intentScore: score, reasons }
+      const timeline = computeSellerListingTimeline({
+        // The same real signals the scorer credits — motivation type, quickLists and
+        // intentSignals joined; nothing invented for the timeline's benefit.
+        tags: [
+          c.signals.source ?? "",
+          c.signals.motivationType ?? "",
+          ...(c.signals.quickLists ?? []),
+          ...(c.signals.intentSignals ?? []),
+          c.signals.isFsbo ? "fsbo" : "",
+          c.signals.isAbsentee ? "absentee" : "",
+          c.signals.isVacant ? "vacant" : "",
+        ].filter(Boolean),
+        expiredDaysAgo: c.signals.expiredDaysAgo ?? null,
+        tenureYears: c.signals.ownershipLengthYears ?? null,
+        equityPct: c.signals.equityPercent ?? null,
+      })
+      return { ...c, intentScore: score, reasons, timeline }
     })
-    .sort((a, b) => (b.intentScore - a.intentScore) || a.rawLeadId.localeCompare(b.rawLeadId))
+    // Intent still leads — a hot seller outranks a merely imminent one. Timeline
+    // breaks ties, so among equally motivated owners the nearest clock comes first.
+    .sort(
+      (a, b) =>
+        (b.intentScore - a.intentScore) ||
+        (timelineRank(a.timeline) - timelineRank(b.timeline)) ||
+        a.rawLeadId.localeCompare(b.rawLeadId),
+    )
 }
 
 // ─── Mapping the persisted scrape row → scoring signals (pure) ────────────────────

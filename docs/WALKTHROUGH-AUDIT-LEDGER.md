@@ -1275,3 +1275,45 @@ And two near-twin pairs in the same domain: `lib/fatigue/fatigue-calculator.ts` 
 Recorded rather than resolved: each needs the same investigate-first treatment the seller decision
 room got, where the "duplicate" turned out to be one shipped feature plus one unique capability.
 `generateVideoScript` × 7 is the highest-value thread to pull.
+
+---
+
+## Seller time-to-list — the radar knew HOW motivated, never WHEN
+
+Seventh dark module, into `lib/kernel/listing-inventory-radar.ts`, which already scores seller
+intent from real scraped signals and ranks the bench.
+
+The gap it fills: intent answers *how motivated*, not *when*. Different distress carries different
+KNOWN clocks, and working the most motivated owner is not the same as working the right owner
+today. Verified against realistic candidates:
+
+| candidate | class | window | why |
+|---|---|---|---|
+| pre-foreclosure | forced | 30–90d | forced auction clock |
+| FSBO | active | 0–45d | already selling |
+| fresh expired (5d) | opportunity | 7–60d | imminent re-list |
+| probate | opportunity | 120–365d | court-paced |
+| long tenure + high equity | eventual | 90–365d | likely downsizer |
+| no signal | unknown | — | refuses to guess |
+
+**It annotates; it does not promote.** The module's own header is explicit that the canonical gate
+(`listing-inventory-radar → raw_scraped_leads → processRawRecord`) still decides what becomes a
+lead, and nothing here touches that path — `ScoredSellerLead` simply carries a `timeline` field now.
+
+**Intent still leads the sort.** Timeline is a TIE-BREAKER, not a re-rank: a hot seller outranks a
+merely imminent one, and among equally motivated owners the nearest clock comes first. Inverting
+that would have quietly changed which sellers the ISA works — a behaviour change dressed as an
+annotation.
+
+The tags come from the same real signals the scorer credits (source, motivationType, quickLists,
+intentSignals, plus the fsbo/absentee/vacant booleans), with expiry recency, tenure and equity
+passed through. Nothing invented for the timeline's benefit.
+
+`test:seller-timeline` wired into the `guard` chain.
+
+**Dark capabilities: 10 found, 7 resolved.** Remaining: outcome-autopsy, plus ken-burns-plan (not a
+real gap — reachable via the Director) and comps-animation-spec (a consolidation call).
+
+**The full `guard` chain was run locally end to end for the first time this session: exit 0.** All
+six newly added entries (manager-governance, seller-decision, price-advisor, source-wording,
+deal-confidence, seller-timeline) pass inside the real chain, not just individually.
