@@ -32,6 +32,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { WEALTH_ACTIVE_STATUSES } from "@/lib/wealth-advisor/recommendation-status"
 
 // ─── Tunables (in one place so the model can be refined per brokerage) ────
 
@@ -143,7 +144,10 @@ export async function scoreContactNpv(input: {
       .select("id, opportunity_type, monthly_savings_estimate, one_time_proceeds_estimate, status")
       .eq("contact_id", input.contactId)
       .eq("brokerage_id", input.brokerageId)
-      .in("status", ["new", "pushed", "reviewed", "acknowledged"]),
+      // open | presented | reviewed — the live CHECK vocabulary. This asked for
+      // new/pushed/acknowledged, none of which the column admits, so the wealth
+      // signal contributed exactly zero to every score.
+      .in("status", [...WEALTH_ACTIVE_STATUSES]),
   ])
 
   const contact = contactRes.data

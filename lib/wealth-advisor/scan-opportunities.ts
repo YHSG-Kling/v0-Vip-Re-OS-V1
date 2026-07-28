@@ -28,6 +28,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import { getCurrentAvm } from "@/lib/avm/provider-chain"
+import { WEALTH_STATUS_DEFAULT } from "@/lib/wealth-advisor/recommendation-status"
 
 const REFI_OPPORTUNITY_BPS_THRESHOLD = 100   // 1.0% rate drop
 const EQUITY_MILESTONES = [100_000, 250_000, 500_000, 1_000_000]
@@ -194,8 +195,13 @@ async function processBrokerageWealthScan(
           .from("wealth_advisor_recommendations")
           .insert({
             contact_id: c.id,
+            // contacts.agent_id → agents(id); every reader of this table filters
+            // on an agents.id, so the class matches.
             agent_id: c.agent_id,
             brokerage_id: brokerageId,
+            // Explicit rather than leaning on the column default, so the one
+            // place that owns this vocabulary is the same one the readers use.
+            status: WEALTH_STATUS_DEFAULT,
             opportunity_type: opp.type,
             current_avm_value: opp.currentAvm,
             estimated_equity: opp.estimatedEquity,

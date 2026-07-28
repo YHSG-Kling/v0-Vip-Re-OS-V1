@@ -3169,3 +3169,59 @@ The guard is pure — `reachableScripts` and `unwiredSimulators` take plain obje
 injected `fileExists`, and are exercised on fixtures before the repo is touched. No DB.
 
 Chain: **109 simulators**. `tsc --noEmit`: 0. `npm run guard`: exit 0.
+
+---
+
+## The Wealth Advisor: three readers, three vocabularies, zero rows
+
+`wealth_advisor_recommendations.status` carries a live CHECK:
+
+```
+CHECK (status = ANY (ARRAY['open','reviewed','presented','converted','dismissed','stale']))
+DEFAULT 'open'
+```
+
+The daily scan (`lib/wealth-advisor/scan-opportunities.ts`) inserts these rows and set no
+status at all, so every row an agent could ever see was `'open'`. Three readers each carried
+their own idea of what the column held, and **not one of them contained `'open'`**:
+
+| reader | asked for |
+| --- | --- |
+| `app/actions/predictive-surfaces.ts` | `in(status, [pending_review, ready_to_push, pushed])` |
+| `app/dashboard/wealth/actions.ts` | `status === 'new' \|\| status === 'active'` |
+| `lib/lifetime-customer-npv/scorer.ts` | `in(status, [new, pushed, reviewed, acknowledged])` |
+
+Only `reviewed` is a real value, and nothing writes it. Measured against the live database
+with a probe row inserted as `'open'`, driven through the lifecycle, and deleted:
+
+```
+old predictive filter → 0 rows      new → 1
+old NPV wealth signal → 0 rows      new → 1
+```
+
+So: the Wealth Advisor card on the predictive dashboard was structurally empty; the agent's
+by-type opportunity grid — the thing `/dashboard/wealth` is built around — sorted every live
+opportunity into the "already acted on" history list and rendered no cards; and the wealth
+component of every lifetime-NPV score was a constant zero. None of it throws. A filter on an
+impossible value is an empty result set, and an empty result set reads as "no opportunities
+yet" forever.
+
+**One vocabulary.** `lib/wealth-advisor/recommendation-status.ts` now owns the six values,
+the default, the active/closed split, and `isWealthActive()`. All three readers import it,
+and so does the scan — which now writes `status: WEALTH_STATUS_DEFAULT` explicitly rather
+than inheriting a default the readers had no visibility into.
+
+**Push-to-portal became a real transition.** It used to move `pushed_to_portal_at` and
+nothing else, so a presented opportunity was indistinguishable from an untouched one
+everywhere but that column. It now writes `status: 'presented'` — the value the CHECK had
+been holding for exactly this — guarded by `.in("status", ACTIVE)` so it can never resurrect
+a converted or dismissed row back into the agent's queue. Verified live, all four
+transitions: `open → presented`, presented still active, `→ converted`, and pushing a
+converted row is a no-op that leaves it converted.
+
+`npm run test:wealth-lifecycle` — 33 checks, pure, on the chain. It pins the module against
+the schema snapshot in both directions (no value the CHECK admits is missing, none it
+rejects is declared) and names all six dead literals so none can come back.
+
+Vocabulary baseline: **100 → 94**. Chain: **110 simulators**. `tsc --noEmit`: 0.
+`npm run guard`: exit 0.

@@ -5,12 +5,26 @@
  *
  * Reads:   wealth_advisor_recommendations (filled daily by the
  *          wealth-opportunity-scan cron). Agent sees opportunities still
- *          actionable: status='new', not expired.
+ *          actionable — open | presented | reviewed — and not expired.
  * Writes:  status transitions (mark-acted, dismiss, push-to-portal).
+ *
+ * The active set used to be status === 'new' || 'active'. Neither value is in
+ * the column's CHECK vocabulary and the scan inserts no status at all, so every
+ * row arrived as the column default 'open' and fell straight through to the
+ * "already acted on" list — the by-type grid this page is built around never
+ * rendered a single card. The vocabulary now lives in one place:
+ * lib/wealth-advisor/recommendation-status.ts.
  */
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import {
+  WEALTH_ACTIVE_STATUSES,
+  WEALTH_STATUS_CONVERTED,
+  WEALTH_STATUS_DISMISSED,
+  WEALTH_STATUS_PRESENTED,
+  isWealthActive,
+} from "@/lib/wealth-advisor/recommendation-status"
 
 export type OpportunityType =
   | "refinance_opportunity"
@@ -107,7 +121,7 @@ export async function loadWealthOpportunities(): Promise<{ data: WealthLoad } | 
   const acted: WealthRow[] = []
   for (const r of (rows ?? []) as any[]) {
     const v = rowToView(r)
-    if (v.status === "new" || v.status === "active") {
+    if (isWealthActive(v.status)) {
       const bucket = (byType[v.opportunityType] ??= [])
       bucket.push(v)
     } else {
@@ -129,7 +143,7 @@ export async function markWealthActed(recId: string): Promise<{ success: boolean
 
   const { error } = await svc
     .from("wealth_advisor_recommendations")
-    .update({ status: "converted", reviewed_by_user_id: user.id, reviewed_at: new Date().toISOString() })
+    .update({ status: WEALTH_STATUS_CONVERTED, reviewed_by_user_id: user.id, reviewed_at: new Date().toISOString() })
     .eq("id", recId)
     .eq("agent_id", agentRow.id)
   if (error) return { success: false, error: error.message }
@@ -148,7 +162,7 @@ export async function dismissWealthOpportunity(recId: string, reason: string): P
   const { error } = await svc
     .from("wealth_advisor_recommendations")
     .update({
-      status:               "dismissed",
+      status:               WEALTH_STATUS_DISMISSED,
       dismissed_reason:     reason || "agent_dismissed",
       reviewed_by_user_id:  user.id,
       reviewed_at:          new Date().toISOString(),
@@ -171,12 +185,18 @@ export async function pushWealthToPortal(recId: string): Promise<{ success: bool
   const { error } = await svc
     .from("wealth_advisor_recommendations")
     .update({
+      // Pushing to the client portal IS the 'presented' transition. Only the
+      // timestamp used to move, so a pushed opportunity stayed indistinguishable
+      // from an untouched one everywhere except this one column.
+      status:               WEALTH_STATUS_PRESENTED,
       pushed_to_portal_at:  new Date().toISOString(),
       reviewed_by_user_id:  user.id,
       reviewed_at:          new Date().toISOString(),
     })
     .eq("id", recId)
     .eq("agent_id", agentRow.id)
+    // Never resurrect a converted/dismissed/stale row back into the active list.
+    .in("status", [...WEALTH_ACTIVE_STATUSES])
   if (error) return { success: false, error: error.message }
   return { success: true }
 }

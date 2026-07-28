@@ -14,6 +14,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContext } from "@/lib/kernel/identity"
+import { WEALTH_ACTIVE_STATUSES } from "@/lib/wealth-advisor/recommendation-status"
 
 // ─── Sphere Resonance ────────────────────────────────────────────────────────
 
@@ -129,7 +130,10 @@ export async function getWealthAdvisorSurface(): Promise<WealthSurface> {
       "id, contact_id, opportunity_type, estimated_equity, monthly_savings_estimate, one_time_proceeds_estimate, ai_narrative, status, expires_at"
     )
     .eq("agent_id", ctx.agentId)
-    .in("status", ["pending_review", "ready_to_push", "pushed"])
+    // open | presented | reviewed — the live CHECK vocabulary. This filter used
+    // to ask for pending_review/ready_to_push/pushed, none of which the column
+    // admits, so the surface was permanently empty.
+    .in("status", [...WEALTH_ACTIVE_STATUSES])
     .gte("expires_at", today)
     .order("monthly_savings_estimate", { ascending: false, nullsFirst: false })
     .limit(20)
