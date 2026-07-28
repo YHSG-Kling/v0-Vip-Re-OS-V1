@@ -1690,7 +1690,7 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/social-cadence-tick": "marketing_agent",
   "/api/cron/publish-social-posts": "marketing_agent",
   "/api/cron/social-analytics-sync": "marketing_agent", // real metrics writer for social_media_analytics (round 30)
-  "/api/cron/gbp-auto-posts": "marketing_agent",
+  "/api/cron/listing-promo-catchup": "marketing_agent",
   "/api/cron/geo-reel-autopublish": "marketing_agent",
   "/api/cron/listing-promo-social-publish": "marketing_agent",
   "/api/cron/farm-mail-weekly": "marketing_agent",

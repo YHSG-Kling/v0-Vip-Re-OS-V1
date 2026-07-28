@@ -129,7 +129,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/automation-error-monitor"            , schedule: "0 * * * *" },
   { path: "/api/cron/connector-auto-applier"              , schedule: "0 * * * *" },
   { path: "/api/cron/consent-recovery"                    , schedule: "47 * * * *" }, // (staggered r43)
-  { path: "/api/cron/gbp-auto-posts"                      , schedule: "0 * * * *" },
+  { path: "/api/cron/listing-promo-catchup"                      , schedule: "0 * * * *" },
   { path: "/api/cron/open-house-reminder"                 , schedule: "0 * * * *" },
   { path: "/api/cron/predictive-listing-execute"          , schedule: "0 * * * *" },
   { path: "/api/cron/publish-newsletters"                 , schedule: "0 * * * *" },

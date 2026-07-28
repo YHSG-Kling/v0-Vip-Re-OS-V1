@@ -60,7 +60,9 @@ for (const f of files) {
 // generateQuarterlyHomeValueReportsCronTick emailing past clients, and
 // gbpAutoPostsCronTick posting to Google Business Profile). Both moved to lib/,
 // which REMOVES the endpoint instead of guarding it — the shape
-// lib/showings/showing-brief.ts already used.
+// lib/showings/showing-brief.ts already used. The GBP sweep has since been
+// collapsed into the canonical lifecycle-promo path and now sweeps as
+// listingPromoCatchupCronTick, still in lib/.
 //
 // Name-based on purpose: "CronTick" is this repo's settled name for a sweep
 // entrypoint, so the rule reads as a naming convention with teeth. A sweep that
@@ -86,7 +88,7 @@ for (const f of files) {
 
 // Pure checks for the detector itself.
 const detectorOk =
-  cronTickExports('export async function gbpAutoPostsCronTick() {}').length === 1 &&
+  cronTickExports('export async function listingPromoCatchupCronTick() {}').length === 1 &&
   cronTickExports('export function generateAnnualHomeValueReportsCronTick() {}').length === 1 &&
   cronTickExports('export async function getCronHealth() {}').length === 0 &&
   cronTickExports('async function privateCronTick() {}').length === 0

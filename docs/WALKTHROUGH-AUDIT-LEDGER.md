@@ -2485,3 +2485,63 @@ contact and agent, the batch query returning both with `snoozed_now` true/false 
 the predicate the filter uses. Cleaned to 0.
 
 `tsc --noEmit`: 0. `npm run guard`: 101 simulators, exit 0.
+
+---
+
+## The GBP sweep collapses into the canonical promo path — and it had never matched a row
+
+`lib/marketing/gbp-auto-posts.ts` carried its own note deferring this:
+
+> *"FOLLOW-UP, deliberately NOT done here: gbpAutoPostsCronTick below overlaps that same
+> lifecycle-promo path. It is registered, gated and running, so collapsing it needs its own
+> investigation rather than a silent deletion in a scoping commit."*
+
+It was hourly, platform-wide, and posted a hand-written template to **Google Business
+Profile only** — outside `lifecycle_promo_policy`, outside the compliance gate — while
+`/api/cron/listing-promo-social-publish` was already publishing `google_business` alongside
+seven other platforms through both gates. Two announcements of the same listing, one of them
+never compliance-checked.
+
+### It could not have posted anything
+
+The sweep's two predicates were `lifecycle_stage = 'active'` and `status = 'closed'`.
+Checked against the live CHECK constraints:
+
+```
+listings.lifecycle_stage ∈ LEAD … COMING_SOON_ACTIVE, MLS_ACTIVE, UNDER_CONTRACT, CLOSED …   ← UPPER_SNAKE
+listings.status          ∈ draft | coming_soon | active | pending | sold | expired | withdrawn
+
+old just-listed  lifecycle_stage = 'active'  → 0 rows
+old just-sold    status = 'closed'           → 0 rows      ('closed' is not a status at all)
+new just-listed  MLS_ACTIVE or status active → 1 row
+new just-sold    CLOSED or status sold       → 0 rows (none in this tenant yet)
+```
+
+Both halves matched zero rows on every run since it shipped. The "overlap" it was flagged
+for was theoretical; the poster was inert. That does not change the verdict — a second
+uncompliance-gated poster should not exist either way — but it is why nothing was ever
+double-posted in production.
+
+### What survives
+
+`lib/marketing/listing-promo-catchup.ts` keeps the one thing the GBP tick genuinely added:
+a **catch-up**. The canonical path is event-driven across thirteen call sites; a sweep
+catches what an event misses — a bulk import, an MLS sync that writes the row without
+raising the lifecycle event, a dispatch that failed at the time. It now dispatches through
+`dispatchListingPromoVideo`, so the policy gate, the compliance gate and the eight-platform
+fan-out all apply.
+
+Re-firing is safe by construction, verified live: `listing_promo_videos` carries
+`UNIQUE (listing_id, event_type)`, and a second pass over an already-handled listing returns
+`23505 → already_queued` with the row count unchanged at 1. Listings with no brokerage or
+agent are counted as skipped rather than dispatched blind.
+
+`/api/cron/gbp-auto-posts` → `/api/cron/listing-promo-catchup`, same hourly schedule,
+repointed in `CRON_REGISTRY` and the manager registry. Eleven checks added to
+`test:back-on-market-promo`, including that neither impossible literal can come back.
+
+Live-verified end to end against production: the corrected predicate finds the real listing,
+its `agents.id` resolves to the `users.id` the ledger FK needs, the ledger row lands, and the
+retry is idempotent. Cleaned to 0 promos.
+
+`tsc --noEmit`: 0. `npm run guard`: 101 simulators, exit 0.
