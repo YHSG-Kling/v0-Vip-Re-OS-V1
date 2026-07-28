@@ -3133,3 +3133,39 @@ exactly that myself, in this session, without noticing.
 Wired now (29 checks, green). The chain is at **108 simulators**.
 
 `tsc --noEmit`: 0. `npm run guard`: exit 0.
+
+---
+
+## The unwired population is now frozen
+
+Triaging 425 stale simulators is a long job. Letting a 426th appear while that job is
+underway is not a job at all — it is the same rot, arriving faster than it is paid down.
+So the durable half of that item lands first, on its own:
+
+`scripts/simulator-wiring-guard.ts` (`npm run test:simulator-wiring`, on the `guard` chain)
+walks `package.json` from the three chains CI actually invokes — `guard`,
+`guard:compliance`, `harness:integrity` — following chain-to-chain references transitively,
+and lists every `test:*` script that is unreachable *and* points at a file that exists on
+disk. That list is the baseline:
+
+```
+551 test:* scripts · 124 reachable from CI · 424 unwired with a real file
+```
+
+(424 rather than the 425 measured a commit ago: `test:back-on-market-promo` was wired in
+between. The three-script gap between 551 and 124+424 is scripts whose target file is gone.)
+
+The guard fails when a name appears that is **not** in the baseline — i.e. when someone
+defines a new `test:*` script and forgets to chain it. Wiring an old one simply shrinks the
+list. The population can be paid down and cannot grow.
+
+It deliberately does **not** demand that all 424 be wired. Bulk-wiring them would turn the
+chain red with no way to distinguish a simulator whose assertions rotted from one that is
+catching a real regression — which is exactly the distinction the two triaged by hand
+required, and both turned out to be rot rather than defect. That judgement still has to be
+made one file at a time; this guard only guarantees the pile stops growing while it happens.
+
+The guard is pure — `reachableScripts` and `unwiredSimulators` take plain objects and an
+injected `fileExists`, and are exercised on fixtures before the repo is touched. No DB.
+
+Chain: **109 simulators**. `tsc --noEmit`: 0. `npm run guard`: exit 0.
