@@ -295,7 +295,7 @@ export function VideoContextPicker({
           .from("contacts")
           .select("id, first_name, last_name, email, phone, contact_type, address")
           .eq("brokerage_id", brokerageId)
-          .eq("contact_type", "homeowner")
+          .eq("contact_type", "seller")  // contacts.contact_type has no "homeowner"
           .or(`first_name.ilike.%${value}%,last_name.ilike.%${value}%,address.ilike.%${value}%`)
           .order("created_at", { ascending: false })
           .limit(8)

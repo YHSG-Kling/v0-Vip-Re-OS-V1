@@ -106,7 +106,7 @@ export async function canAdvanceStage(
       .select("id, flag_type:violation_type, severity, status")
       .eq("contact_id", txn.contact_id)
       .eq("severity", "deal_breaker")
-      .in("status", ["unresolved", "flagged"])
+      .in("status", ["flagged"])
 
     if (dealBreakerFlags && dealBreakerFlags.length > 0) {
       for (const flag of dealBreakerFlags) {

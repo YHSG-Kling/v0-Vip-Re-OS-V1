@@ -75,7 +75,9 @@ export async function GET() {
         .from("compliance_flags")
         .select("id", { count: "exact", head: true })
         .eq("user_id", user.id)
-        .in("status", ["open", "pending"]),
+        // compliance_flags.status is flagged|reviewed|resolved|overridden — neither
+        // "open" nor "pending" exists, so this badge count was always 0.
+        .in("status", ["flagged"]),
 
       // Active deals (transactions coordinator — TC/broker/admin only)
       ["tc", "broker", "admin", "team_lead"].includes(userType)

@@ -2870,3 +2870,42 @@ evidence, a flagged write deserves a look at where the key actually sits.
 Baseline: **129 → 121**.
 
 `tsc --noEmit`: 0. `npm run guard`: 105 simulators, exit 0 (single command, `.next` cleared).
+
+---
+
+## Six counters that could only ever show zero
+
+Fifth pass, working the tail of the baseline across five core tables at once. The triage
+splits the same way every time — most flagged literals sit beside a valid one and are inert,
+a minority are the only thing a query had to match on.
+
+**Six that matched nothing:**
+
+| | was | vocabulary | effect |
+|---|---|---|---|
+| `agents.ts` | `status = 'open'` | `flagged\|reviewed\|resolved\|overridden` | an agent's compliance-flag count was 0 |
+| `badge-counts` | `status IN ('open','pending')` | same | the **compliance badge** on the dashboard was 0 |
+| `vendor-command-strip` ×3 | `'pending'`, `'scheduled'`, `('active','in_progress')` | `booked\|confirmed\|completed\|cancelled\|no_show` | **all three of a vendor's counters** — pending jobs, today's jobs, active jobs — were 0 |
+| `business-context` | `contact_type = 'homeowner'` | no `homeowner` in the 14-value set | the homeowner video-context search returned nothing |
+
+The vendor command strip is the one worth pausing on: a vendor logs in and the entire strip
+reads 0 / 0 / 0, because three different queries each picked a plausible English word instead
+of the one the column admits. `booked` and `confirmed` were right there.
+
+**Eight that were dead weight**, stripped without behaviour change: `'pending'` beside
+`'in_progress'` on four admin onboarding surfaces, `'unresolved'` beside `'flagged'`,
+`'closed'` beside `'sphere'`, and — twice — **`'Buyer'` beside `'buyer'`**. A capitalisation
+that has been sitting in two queries doing nothing.
+
+### The same editing mistake, a third time
+
+`.in("status", ["open", "pending"])` → my replacement appended `// …exists on compliance_flags`
+to a line whose trailing `,` then landed *inside* the comment, breaking the build again. Same
+shape as the direct-mail pass. Fixed by putting the note on its own line above, and that is
+now the rule for these edits: never append a trailing comment to a line that ends a call
+argument. Three occurrences is not bad luck, it is a bad habit, and it is worth the two extra
+lines to avoid.
+
+Baseline: **121 → 105**.
+
+`tsc --noEmit`: 0. `npm run guard`: 105 simulators, exit 0.

@@ -858,7 +858,7 @@ export async function getBrokerageStats(brokerageId?: string) {
     let riskQuery = supabase
       .from("compliance_flags")
       .select("id", { count: "exact", head: true })
-      .eq("status", "open")
+      .eq("status", "flagged")  // compliance_flags has no "open"; unresolved IS "flagged"
 
     if (brokerageId) {
       riskQuery = riskQuery.eq("brokerage_id", brokerageId)

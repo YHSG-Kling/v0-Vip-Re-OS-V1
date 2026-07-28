@@ -92,7 +92,7 @@ export async function generateMarketInsights(): Promise<{
           .from("contacts")
           .select("id, contact_type, buyer_stage, status")
           .eq("agent_id", agentId)
-          .in("contact_type", ["buyer", "Buyer"]),
+          .in("contact_type", ["buyer"]),
       ])
 
     // ── 2. Process results ────────────────────────────────────────────────────

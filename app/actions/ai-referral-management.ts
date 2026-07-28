@@ -37,7 +37,7 @@ export async function identifyReferralOpportunities(agentId: string) {
         referrals(*)
       `)
       .eq("agent_id", agentId)
-      .in("contact_type", ["closed", LIFETIME_CUSTOMER_TYPE, "sphere"])
+      .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere"])
       .order("last_contacted_at", { ascending: false })
       .limit(100)
 
