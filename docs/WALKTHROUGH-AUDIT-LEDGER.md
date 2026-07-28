@@ -1082,3 +1082,50 @@ the change was safe; verified 8/8 still pass.
 
 **Dark capabilities: 10 found, 4 resolved.** Remaining: seller-listing-timeline, deal-confidence,
 outcome-autopsy, source-wording-diagnostic, ken-burns-plan (one hop from live), comps-animation-spec.
+
+---
+
+## Sweeping for the closing-fees pattern found a worse one on the same screen
+
+Owner asked whether other code files were half-mounted the way the regional closing-cost model was.
+Ran a targeted sweep for **inline money math** — a surface computing a figure a shared model already
+owns — across `app/` and `lib/`. 44 sites; most are noise (`limit ?? 3`, image padding, lead-rate
+estimates). One is serious.
+
+**`lib/workflow/intelligence/multi-offer-matrix.ts` priced net-to-seller at a flat 6%.**
+
+```
+const estimatedSellerCosts = offerPrice * 0.06   // "commission + closing"
+```
+
+That single constant stood in for the agreed commission, the regional closing lines, the
+transaction fee — and **the mortgage payoff**, which is normally the largest deduction of all and
+was simply absent.
+
+Why it matters more than the CMA closing-cost gap: this is the **same card**. `MultiOfferMatrixCard`
+renders "Best net to seller" from this number, the deterministic recommendation added in `b27bde3`
+directly above it from the real cost lines, and `InteractiveNetSheet` sits immediately below using
+the same real lines. Three figures on one screen, one of them computed differently — so the matrix
+column could name a different winner than the recommendation two inches above it.
+
+Now uses `computeNetProceeds` with the same `defaultSellerCosts` + `resolveAgreedCommission` +
+`deriveNetSheetClosingCostSection` inputs as its neighbours. Mortgage payoff still defaults to 0 —
+unknowable server-side — but that now matches the net sheet's own default and its provenance
+ledger already flags an unconfirmed payoff rather than hiding it.
+
+**Also surfaced, recorded not yet fixed:**
+
+- `app/actions/seller-cma.ts` `saveNetSheet` recomputes `totalCosts` server-side with `?? 3`
+  commission defaults and `salePrice * 0.02` closing costs. The agent now sees agreed commission +
+  regional lines on screen, so a **saved** sheet's `total_costs`/`net_proceeds` can disagree with
+  the sheet that was saved. The rendered figures are right; the persisted ones can be stale.
+- `app/actions/ai-listing-presentation.ts:265` and `lib/kernel/transactions.ts:1323` carry their own
+  `?? 3` commission fallbacks.
+- Revenue proxies disagree with each other: `lib/kernel/reporting.ts` and `app/actions/source-analytics.ts`
+  use `purchase_price * 0.03`, while `lib/financials/revenue-projection.ts`,
+  `lib/income-engine/action-recommender.ts` and `lib/agent-action-queue/composer.ts` use `* 0.025`.
+  Analytics proxies rather than seller-facing money, but two different house rates for the same
+  concept is the same drift in a lower-stakes place.
+
+The method generalises: grep for the magic constant a shared model was built to replace. Every one
+of these is a surface that predates the model and never got repointed.

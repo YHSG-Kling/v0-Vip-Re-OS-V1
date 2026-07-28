@@ -19,6 +19,14 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import { scoreBuyerStrength, labelStrength } from "@/lib/offers/offer-strength"
+// Share the ONE net-proceeds engine. This card renders next to the interactive
+// net sheet and (since b27bde3) the deterministic recommendation — three numbers
+// on one screen must not disagree about which offer nets more.
+import {
+  computeNetProceeds, defaultSellerCosts, resolveAgreedCommission,
+  type AgreementCommissionFields,
+} from "@/lib/offers/net-sheet-calc"
+import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
 
 // ───────────────────────────────────────────────────────────────────────────
 // Multi-offer comparison matrix
@@ -56,7 +64,7 @@ export async function buildMultiOfferMatrix(input: {
 
   const { data: listing } = await svc
     .from("listings")
-    .select("id, address, list_price")
+    .select("id, address, list_price, state, hoa_dues, commission_rate, brokerage_id")
     .eq("id", input.listingId)
     .maybeSingle()
 
@@ -66,6 +74,33 @@ export async function buildMultiOfferMatrix(input: {
     .select("id, contact_id, offer_price, earnest_money, down_payment_percent, financing_type, closing_date, contingencies, escalation_cap, closing_cost_contribution, status, created_at")
     .eq("listing_id", input.listingId)
     .in("status", ["pending", "submitted", "countered"])
+
+  // Agreed terms + regional closing costs — the same inputs the net sheet uses.
+  const { data: agreementRow } = await svc
+    .from("listing_agreements")
+    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee")
+    .eq("listing_id", input.listingId)
+    .eq("brokerage_id", (listing as any)?.brokerage_id ?? "")
+    .order("fully_executed_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle()
+
+  const agreed = resolveAgreedCommission({
+    agreement: agreementRow as AgreementCommissionFields | null,
+    listingCommissionRatePercent: (listing as any)?.commission_rate ?? null,
+    referencePrice: (listing as any)?.list_price != null ? Number((listing as any).list_price) : null,
+  })
+  const sellerCosts = defaultSellerCosts({
+    listPrice: (listing as any)?.list_price != null ? Number((listing as any).list_price) : null,
+    commissionRateDecimal: agreed.rate,
+    hoaDuesMonthly: (listing as any)?.hoa_dues != null ? Number((listing as any).hoa_dues) : null,
+    transactionFee: (agreementRow as any)?.seller_transaction_fee ?? null,
+  })
+  const closingSection = deriveNetSheetClosingCostSection(
+    (listing as any)?.list_price != null ? Number((listing as any).list_price) : null,
+    (listing as any)?.state ?? null,
+  )
+  if (closingSection) sellerCosts.otherProratedFees = closingSection.midpoint
 
   const rows: OfferRow[] = []
   for (const off of (offers ?? [])) {
@@ -78,8 +113,14 @@ export async function buildMultiOfferMatrix(input: {
 
     const offerPrice = (off as any).offer_price ?? 0
     const concessions = (off as any).closing_cost_contribution ?? 0
-    const estimatedSellerCosts = offerPrice * 0.06   // realistic conservative est. (commission + closing)
-    const netToSeller = offerPrice - concessions - estimatedSellerCosts
+    // Was a blanket offerPrice * 0.06 standing in for commission AND closing — it
+    // ignored the agreed rate, the regional closing lines, the transaction fee and
+    // the mortgage payoff, so this column could name a different winner than the
+    // net sheet on the same screen.
+    const netToSeller = computeNetProceeds(
+      { offerPrice, buyerClosingCredit: concessions },
+      sellerCosts,
+    )
 
     const closeDate = (off as any).closing_date
     const closeDateDays = closeDate
