@@ -2360,3 +2360,73 @@ that the guard would flag its own explanations.
 Test data cleaned to baseline: 1 pre-existing onboarding, 0 completions, 0 notifications.
 
 `tsc --noEmit`: 0. `npm run guard`: 99 simulators, exit 0.
+
+---
+
+## Two buyer-fatigue scorers, and only one of them could write
+
+`lib/fatigue/` held `fatigue-calculator.ts` (323 lines) and `fatigue-scorer.ts` (192).
+Not a naming coincidence: same inputs, same two tables (`buyer_fatigue_scores`,
+`fatigue_alerts`), same five factors, same 0–100 scale. Both live, both wired, exported
+side by side from the same barrel — with **different thresholds and different words**:
+
+| | calculator | scorer |
+|---|---|---|
+| bands | 25 / 50 / 75 | 35 / 60 / 80 |
+| vocabulary | fresh · moderate · high · critical | fresh · **watch** · **warning** · critical |
+| engagement trend | stable · declining · increasing | stable · declining · **slowing** |
+| alert type | `fatigue_threshold_crossed` | **`fatigue_warning`** / **`fatigue_critical`** |
+
+Every bolded value is rejected by a live CHECK constraint. Proven against production by
+attempting each literal:
+
+```
+risk_level        moderate/high/critical/fresh → ACCEPTED     watch/warning → REJECTED 23514
+engagement_trend  stable/declining/increasing/stopped → OK    slowing       → REJECTED 23514
+alert_type        fatigue_threshold_crossed → ACCEPTED        fatigue_warning/_critical → REJECTED
+```
+
+So the scorer could persist a score only when it landed below 35 or at 80+. Everything in
+the **35–79 band vanished**, every `slowing` trend vanished, and every alert it raised
+vanished. Not an error anyone would see — supabase-js resolves with `{ error }`, and none
+of its callers checked.
+
+It got worse downstream. Two UI surfaces were built on the scorer's vocabulary — the
+brokerage fatigue dashboard's **Watch** and **Warning** columns and filter tabs, and the
+contact fatigue widget's risk config — filtering for values the database cannot hold. Both
+were permanently empty. `fatigue-display.ts`, the pure "is it safe to reach out?" helper,
+mirrored the same thresholds, so the badge an agent sees described a row that could never
+exist.
+
+The calculator is the survivor: it speaks the vocabulary the database admits, and it is
+also the more complete one (AI-authored alert copy, `smart_assistant_suggestions`, a
+lifecycle sub-event, batch scoring). Retired with the scorer: **`app/actions/fatigue.ts`**,
+a second action module duplicating four of `buyer-fatigue.ts`'s exports over the same
+tables — one consumer against the survivor's eight.
+
+Ported into the survivor before deletion, per keep-the-advanced-one:
+
+- the **AI recovery plan** at high/critical (the scorer's genuinely-additional step),
+  best-effort so a plan failure never fails the score
+- **`getBuyerFatigueAlert`**, the singular-active-alert reader `ContactFatigueGuard` needs
+- `recovery-generator.ts` retyped onto `FatigueResult`
+
+Three further defects fell out of the sweep:
+
+1. `lifecycle_events.actor_user_id` is a `users(id)` FK; the calculator stamped
+   `contact.agent_id`, an `agents.id`. The alert beside it resolved the owning agent's user
+   id correctly — the sub-event just never reused it, so it FK-threw while the alert landed.
+2. The fatigue cron passed `contact.agent_id ?? contact.brokerage_id` as the actor — a
+   **brokerage id as a user id** whenever the contact had no agent. `calculateFatigue`
+   resolves the owner itself, so the argument is gone.
+3. The contact widget titled its alert from `alert_type === "fatigue_critical"` — a value
+   the CHECK forbids — so a critical alert always rendered as "Fatigue Warning". Severity
+   now reads `risk_level`.
+
+`test:fatigue` grew a vocabulary section (43 checks total) that walks all nine fatigue
+source files and fails on any CHECK-rejected literal — comments stripped first, since these
+files document the words they retired. It was **not on the guard chain**; it is now.
+
+Test rows cleaned to 0 scores, 0 alerts.
+
+`tsc --noEmit`: 0. `npm run guard`: 100 simulators, exit 0.

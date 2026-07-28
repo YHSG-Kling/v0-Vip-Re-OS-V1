@@ -6,12 +6,14 @@
  * the agent sees on the contact detail surface. NO Supabase, NO React — so it can be
  * unit-simulated and reused by any rendering surface.
  *
- * This deliberately mirrors the warning thresholds the scorer writes (watch>=35,
- * warning>=60, critical>=80) rather than re-deriving them, so the badge an agent sees
- * never disagrees with the alert the scorer fired.
+ * VOCABULARY: fresh | moderate | high | critical — the values the live CHECK on
+ * buyer_fatigue_scores.risk_level actually admits. This module previously spoke
+ * watch/warning at 35/60/80, mirroring a second scorer whose writes the database
+ * rejected outright, so the badge described a row that could never exist. The cut
+ * points below are calculateFatigue's own (critical>=75, high>=50, moderate>=25).
  */
 
-export type FatigueRiskLevel = "fresh" | "watch" | "warning" | "critical"
+export type FatigueRiskLevel = "fresh" | "moderate" | "high" | "critical"
 
 /** Minimal shape this module needs from a buyer_fatigue_scores row. */
 export interface FatigueScoreInput {
@@ -30,7 +32,7 @@ export interface FatigueAlertInput {
 export interface ReachoutGuard {
   /** Normalized risk level (falls back to score thresholds if the stored level is junk). */
   level:        FatigueRiskLevel
-  /** Whether an agent should feel free to reach out now. False at warning / critical. */
+  /** Whether an agent should feel free to reach out now. False at high / critical. */
   safeToReachOut: boolean
   /** One-line human reason the agent reads next to the send action. */
   reason:       string
@@ -42,25 +44,25 @@ export interface ReachoutGuard {
 
 const LABELS: Record<FatigueRiskLevel, string> = {
   fresh:    "Fresh",
-  watch:    "Watch",
-  warning:  "Over-contacted",
+  moderate: "Watch",
+  high:     "Over-contacted",
   critical: "Critical fatigue",
 }
 
 /**
- * Derive a risk level from a numeric score using the SAME cut points the scorer uses
- * (critical>=80, warning>=60, watch>=35, else fresh). Exported so the simulator and any
- * caller that only has a raw number can agree with the badge.
+ * Derive a risk level from a numeric score using the SAME cut points calculateFatigue
+ * uses (critical>=75, high>=50, moderate>=25, else fresh). Exported so the simulator and
+ * any caller that only has a raw number can agree with the badge.
  */
 export function deriveRiskLevel(score: number): FatigueRiskLevel {
-  if (score >= 80) return "critical"
-  if (score >= 60) return "warning"
-  if (score >= 35) return "watch"
+  if (score >= 75) return "critical"
+  if (score >= 50) return "high"
+  if (score >= 25) return "moderate"
   return "fresh"
 }
 
 function normalizeLevel(stored: string | null, score: number): FatigueRiskLevel {
-  if (stored === "fresh" || stored === "watch" || stored === "warning" || stored === "critical") {
+  if (stored === "fresh" || stored === "moderate" || stored === "high" || stored === "critical") {
     return stored
   }
   // Stored level missing/unknown → trust the number.
@@ -87,10 +89,10 @@ export function buildReachoutGuard(
 
   const numeric = Math.max(0, Math.min(100, score.fatigue_score))
   const level   = normalizeLevel(score.risk_level, numeric)
-  const safe    = level === "fresh" || level === "watch"
+  const safe    = level === "fresh" || level === "moderate"
 
   // Prefer the alert's own message when an alert is active — it's the most specific
-  // signal the scorer chose to surface. Otherwise build a reason from the score factors.
+  // signal the calculator chose to surface. Otherwise build a reason from the factors.
   let reason: string
   if (alert?.message && alert.message.trim() !== "") {
     reason = alert.message.trim()

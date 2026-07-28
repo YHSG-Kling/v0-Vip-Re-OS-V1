@@ -269,7 +269,10 @@ export async function calculateFatigue(
         entity_type:    "buyer_lifecycle",
         entity_id:      contactId,
         event_type:     KernelEvent.BUYER_FATIGUE_DETECTED,
-        actor_user_id:  contact?.agent_id ?? null,
+        // lifecycle_events.actor_user_id FKs users(id) — contact.agent_id is an
+        // agents.id, so the raw stamp FK-threw and the sub-event was lost even
+        // though the alert beside it landed. Reuse the id already resolved above.
+        actor_user_id:  fatigueAgentUserId,
         metadata: {
           fatigue_score:   score,
           risk_level:      riskLevel,
