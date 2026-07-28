@@ -5,6 +5,7 @@ import MultiOfferMatrixCard from "./components/multi-offer-matrix-card"
 import { InteractiveNetSheet } from "@/components/features/offers/interactive-net-sheet"
 import { defaultSellerCosts, type OfferNetInput } from "@/lib/kernel/offer-net-sheet"
 import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
+import { buildSellerDecisionRoom, type DecisionOffer } from "@/lib/kernel/seller-decision-room"
 
 export default async function OffersPage({
   params,
@@ -105,11 +106,39 @@ export default async function OffersPage({
   )
   if (closingCostSection) netSheetCosts.otherProratedFees = closingCostSection.midpoint
 
+  // Deterministic seller recommendation, computed from the SAME cost lines the net
+  // sheet uses (including the state-derived closing-cost midpoint above). This is the
+  // auditable counterpart to the matrix's LLM-written summary: "which offer should I
+  // take" is advice with legal weight, so the recommendation itself is rule-based and
+  // reproducible. Rendered inside the existing matrix card — not a fourth card.
+  const asDays = (d: string | null | undefined): number | null => {
+    if (!d) return null
+    const ms = new Date(d).getTime() - Date.now()
+    return Number.isFinite(ms) ? Math.max(0, Math.round(ms / 86_400_000)) : null
+  }
+  const toList = (c: unknown): string[] =>
+    Array.isArray(c) ? c.map(String) : typeof c === "string" && c.trim() ? [c] : []
+
+  const decisionOffers: DecisionOffer[] = activeOffers.map((o, i) => ({
+    offerId: o.id,
+    buyerName: o.buyer_agent?.full_name ?? `Offer ${String.fromCharCode(65 + i)}`,
+    offerPrice: Number(o.offer_price ?? 0),
+    financingType: o.financing_type ?? null,
+    downPaymentPercent: o.down_payment_percent != null ? Number(o.down_payment_percent) : null,
+    contingencies: toList(o.contingencies),
+    emd: o.earnest_money != null ? Number(o.earnest_money) : null,
+    buyerClosingCredit: o.closing_cost_contribution != null ? Number(o.closing_cost_contribution) : 0,
+    closeDateDays: asDays(o.closing_date as string | null),
+  }))
+  const decision = decisionOffers.length >= 2
+    ? buildSellerDecisionRoom(decisionOffers, netSheetCosts)
+    : null
+
   return (
     <>
       {/* Multi-offer matrix card — renders only when 2+ active offers exist.
           Server component; runs in parallel with the existing client tree below. */}
-      <MultiOfferMatrixCard listingId={listingId} activeOfferCount={activeOfferCount} />
+      <MultiOfferMatrixCard listingId={listingId} activeOfferCount={activeOfferCount} decision={decision} />
 
       {/* Interactive net sheet — side-by-side net proceeds the agent adjusts live with
           the seller (commission/payoff/taxes/HOA/other). Surfaces which offer NETS the

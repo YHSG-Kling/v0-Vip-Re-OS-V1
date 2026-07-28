@@ -843,3 +843,58 @@ Verified end-to-end, not just compiled: a real 2-week voice-studio plan schedule
 concept explainer" slot resolving to `ExplainerAnimReel`, with zero undefined composition hints,
 on both the supplied-topics and fallback paths. All 15 kinds return defined values from all six
 mappers.
+
+---
+
+## The seller decision room was a duplicate — merged, not wired
+
+Second of the ten dark capabilities. The plan was to wire `lib/kernel/seller-decision-room.ts`
+into the listing offers surface. Investigating first changed the answer.
+
+**`app/dashboard/listings/[id]/offers` already ships the comparison.** `MultiOfferMatrixCard`
+(via `lib/workflow/intelligence/multi-offer-matrix.ts`) renders "Highest price", "Best net to
+seller", "Most likely to close" and a full matrix — exactly what the decision room was built to
+produce. Adding it as a third card would have been the drift this ledger keeps refusing.
+
+But deleting it would have thrown away the one thing it has that the shipped path does not:
+
+| | shipped matrix | decision room |
+|---|---|---|
+| comparison table | yes | duplicate |
+| three superlatives | yes | duplicate |
+| **single recommendation** | **LLM `aiSummary`** | **deterministic rule** |
+| **highest-net ≠ highest-price flag** | no | `netBeatsPrice` |
+
+So the resolution is a MERGE. The deterministic recommendation and the `netBeatsPrice` insight
+now render inside the existing matrix card; nothing else from the module is surfaced, because the
+rest already exists.
+
+**Why keep a rule-based recommendation next to an AI one.** "Which offer should I accept" is
+advice with legal weight. The matrix's recommendation is an LLM-written three-paragraph summary;
+this one is reproducible from the inputs and can be replayed in an audit. That is the same
+argument the governance scorecard above makes — for the questions that carry liability, bounded
+and deterministic beats fluent. Both now render, labelled, side by side.
+
+**Three defects found by actually running it rather than trusting the guard's 11 green checks:**
+
+1. **A duplicated `SellerCosts` interface.** The module declared its own five-field copy of the
+   canonical type in `lib/offers/net-sheet-calc.ts`. It is now
+   `Omit<NetSheetSellerCosts, "buyerClosingCredit">` — the exact shape `computeNetProceeds`
+   accepts, so the two cannot drift.
+2. **Ungrammatical seller-facing prose.** The outcome line interpolated `The ${tag}.`, and the
+   neutral branch's tag is "in the mix" — so any offer that was neither top-net nor top-certainty
+   told the seller "The in the mix." Tags are full sentences now.
+3. **A raw enum leaked into prose** — `very_strong` rendered verbatim in "Buyer looks very_strong".
+
+None of the three were caught by `test:seller-decision`, which passed 11/11 throughout: it
+asserted the ranking maths, never the strings a seller reads.
+
+Verified on a realistic two-offer case: a $612,000 cash offer with no closing credit nets $319,880
+against a $620,000 financed offer asking $15,000 back, which nets $312,400 — lower sticker, more
+money, `netBeatsPrice: true`. Empty input still returns empty (no fabrication).
+
+`test:seller-decision` is wired into the `guard` chain, same principle as `manager-governance`:
+the guard covering a live surface runs in CI.
+
+**Dark capabilities: 10 → 7 closed or resolved** (governance scorecard surfaced, explainer-diagram
+wired, decision room merged).
