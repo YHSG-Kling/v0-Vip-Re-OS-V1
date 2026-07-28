@@ -1317,3 +1317,54 @@ real gap — reachable via the Director) and comps-animation-spec (a consolidati
 **The full `guard` chain was run locally end to end for the first time this session: exit 0.** All
 six newly added entries (manager-governance, seller-decision, price-advisor, source-wording,
 deal-confidence, seller-timeline) pass inside the real chain, not just individually.
+
+---
+
+## Win/loss autopsy — the last dark module
+
+Onto `lib/lead-pipeline/source-lifetime-health-runner.ts`, which already walks every converted
+contact and reads its live relationship-health band. Same walk, different axis: that runner grades
+**sources** by lifetime health; the autopsy grades **channels** by which one earned the last
+engagement before the relationship forked.
+
+Why it is not the reply-rate signal already in the codebase: reply rate says what gets *opened*.
+This says what preceded the *outcome* — a channel can be replied to constantly and still be the
+last thing said before a relationship goes dormant. Verified on exactly that shape: five contacts
+where every one replied to email, but the wins all ended on a call —
+
+```
+  call    wins=2  losses=0  winRate=100%
+  email   wins=0  losses=2  winRate=0%
+```
+
+Reply rate alone would have rated email fine.
+
+**Only the decided ends count.** Thriving is a win, dormant is a loss; the middle bands are still
+in play and would dilute the signal, so they are excluded rather than bucketed. A contact that
+never replied credits no channel at all — verified — instead of silently crediting the last touch
+we happened to send.
+
+The touch mapping is honest about what the data supports: `messages.type` is the channel and an
+INBOUND message *is* the reply, which is precisely what `replied_at` marks. No inference pairing
+outbound sends to later inbounds.
+
+`test:outcome-autopsy` wired into the `guard` chain.
+
+**Dark capability burndown complete: 10 found, 8 resolved.** The remaining two are not gaps —
+`ken-burns-plan` is reachable through the Video Director (the analyzer flagged it only because
+`app/` does not import it directly, `remotion/` does), and `comps-animation-spec` is a
+consolidation call against `cma-reel-data` where the unused module uniquely produces the fair-value
+read: keep the richer one, do not delete.
+
+### Still open, recorded, owner's call
+
+- **The fourth net sheet** (`app/actions/cma-presentation/net-sheet-calculator.ts`) — fold
+  `financial_defaults.closing_cost_percent` into the canonical resolver as a tier above the
+  regional estimate and below a real agreement, then repoint five callers including voice commands.
+- **`saveNetSheet` recomputes totals** with `?? 3` and `salePrice * 0.02`, so a saved sheet can
+  disagree with the sheet that was saved.
+- **`generateVideoScript` × 7**, `markCommissionPaid` × 4, `completeMilestone` × 4,
+  `calculateLeadScore` × 3, `TrainingProgressPanel` × 3, `fatigue-calculator` vs `fatigue-scorer`,
+  two `alert-engine`s — each needs the investigate-first treatment, not a bulk merge.
+- **Tenant-scope guard burn-down** — the 74 sites, with the INSERT-payload caveat.
+- **`stripe-writethrough` (22/23) and `cda-pdf-fill` (7/13)** — pre-existing on `main`.

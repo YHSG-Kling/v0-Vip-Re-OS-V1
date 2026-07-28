@@ -14,6 +14,9 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { aggregateSourceHealth, type SourceHealthInput, type SourceHealthSummary } from "./source-health"
 import { getHealthPrioritizedContacts } from "@/lib/intelligence/health-prioritizer-runner"
 import { recordLearningOutcome } from "@/lib/intelligence/learning-outcomes-runner"
+// Same walk, different axis: this runner grades SOURCES by lifetime health; the
+// autopsy grades CHANNELS by which one earned the last engagement before the fork.
+import { outcomeAutopsy, aggregateAutopsyByChannel, type AutopsyRecord, type AutopsyTouch, type ChannelOutcomeStat } from "@/lib/intelligence/outcome-autopsy"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -24,6 +27,12 @@ export interface SourceLifetimeHealthResult {
   /** sources that produce relationships that LAST (lasting). */
   lasting: string[]
   outcomesRecorded: number
+  /**
+   * Which CHANNEL earned the last engagement before a relationship reached thriving
+   * (win) or churned to dormant (loss). Reply rate says what gets opened; this says
+   * what actually preceded the outcome.
+   */
+  channelOutcomes: ChannelOutcomeStat[]
 }
 
 /**
@@ -39,7 +48,7 @@ export async function loadSourceLifetimeHealth(
   client?: Svc,
 ): Promise<SourceLifetimeHealthResult> {
   const svc = client ?? createServiceClient()
-  const empty: SourceLifetimeHealthResult = { summaries: [], fading: [], lasting: [], outcomesRecorded: 0 }
+  const empty: SourceLifetimeHealthResult = { summaries: [], fading: [], lasting: [], outcomesRecorded: 0, channelOutcomes: [] }
   const since = new Date(Date.now() - (opts.sinceDays ?? 180) * 86_400_000).toISOString()
 
   // 1. The arc's first leg: which CONVERTED contact each source produced.
@@ -90,10 +99,43 @@ export async function loadSourceLifetimeHealth(
     }
   }
 
+  // 5. WIN/LOSS AUTOPSY — only the decided ends of the band count as an outcome; the
+  //    middle is still in play and would dilute the signal.
+  const decided: Array<{ contactId: string; outcome: "win" | "loss" }> = []
+  for (const r of ranked) {
+    if (r.band === "thriving") decided.push({ contactId: r.contactId, outcome: "win" })
+    else if (r.band === "dormant") decided.push({ contactId: r.contactId, outcome: "loss" })
+  }
+  let channelOutcomes: ChannelOutcomeStat[] = []
+  if (decided.length > 0) {
+    const ids = decided.map((d) => d.contactId).slice(0, 1000)
+    const { data: msgs } = await svc
+      .from("messages")
+      .select("contact_id, type, direction, created_at")
+      .eq("brokerage_id", brokerageId)
+      .in("contact_id", ids)
+    const touchesByContact = new Map<string, AutopsyTouch[]>()
+    for (const m of (msgs ?? []) as any[]) {
+      const list = touchesByContact.get(m.contact_id) ?? []
+      // An INBOUND message IS the reply — that is what replied_at marks here.
+      list.push({
+        channel: m.type ?? null,
+        at: m.created_at ?? null,
+        replied_at: m.direction === "inbound" ? (m.created_at ?? null) : null,
+      })
+      touchesByContact.set(m.contact_id, list)
+    }
+    const records: AutopsyRecord[] = decided
+      .filter((d) => touchesByContact.has(d.contactId))
+      .map((d) => outcomeAutopsy(touchesByContact.get(d.contactId)!, d.outcome))
+    channelOutcomes = aggregateAutopsyByChannel(records)
+  }
+
   return {
     summaries,
     fading: summaries.filter((s) => s.verdict === "cheap_but_fading").map((s) => s.source),
     lasting: summaries.filter((s) => s.verdict === "lasting").map((s) => s.source),
     outcomesRecorded,
+    channelOutcomes,
   }
 }
