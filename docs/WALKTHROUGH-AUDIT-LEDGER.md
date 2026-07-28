@@ -1368,3 +1368,52 @@ read: keep the richer one, do not delete.
   two `alert-engine`s — each needs the investigate-first treatment, not a bulk merge.
 - **Tenant-scope guard burn-down** — the 74 sites, with the INSERT-payload caveat.
 - **`stripe-writethrough` (22/23) and `cda-pdf-fill` (7/13)** — pre-existing on `main`.
+
+---
+
+## VADE on `f0442e7` — both findings correct, both mine, both worse than reported
+
+Two findings, on code written in this session. Verified against live data before touching anything;
+both confirmed, and the second was larger than the review stated.
+
+**1. The neighborhood-report home-value fallback was dead code.** The commission-key work keyed on
+`listings.contact_id`. Live: `contact_id` is populated on **0 of 3** listings, `seller_contact_id`
+on 1. The column exists, so it type-checked and passed every guard — it simply is not the seller.
+The reasoning in that ledger entry was right ("the listing hangs off the seller contact"); the
+column name was wrong, which made the guard short-circuit and the whole fallback unreachable.
+Repointed to `seller_contact_id`.
+
+**2. The Deal Confidence panel could never render — and the table was wrong, not just the filter.**
+VADE reported the `weight > 0` filter dropping every stored factor. True, but the cause is deeper:
+
+- The page reads **`transaction_health_factors`**, which only ever stores
+  `factor_type: 'comprehensive'` — one aggregate row, no per-category breakdown. There is no
+  weakest link to find in it at all.
+- The per-category rows live in a **different table**, `deal_health_factors`, written by
+  `health-scorer.ts` — and under a **narrower vocabulary**: its `FACTOR_TYPE` map collapses the ten
+  `HealthCategory` keys into four (`financing_status`, `deadline_proximity`, `timeline_adherence`,
+  `document_completeness`).
+
+So `weightForFactorType` was matching stored values against a vocabulary that is never persisted.
+Every component scored weight 0, every one was filtered, and the panel showed its empty state on
+every transaction — replacing three fabricated percentages with a permanently blank card.
+
+Fixed properly rather than patched: `PERSISTED_FACTOR_WEIGHTS` sums the categories that collapsed
+into each stored type (financing_status = EARNEST_MONEY + LENDER = 28, deadline_proximity =
+INSPECTION + DEADLINES = 22, timeline_adherence = 10, document_completeness = TITLE + COMPLIANCE =
+20). The page now reads `deal_health_factors` for the distillation and keeps
+`transaction_health_factors` for its narrative/red-flag list, which is what that table is good for.
+`PROTECTIVE_ACTION` gained entries for the four persisted types, each covering the categories that
+collapsed into it, so the action is specific instead of generic filler. Verified: 4 of 4 components
+now survive the filter (was 0), financing wins the weighted shortfall at impact 1540 vs timeline's
+300, and `comprehensive` still resolves to weight 0 — correctly unusable.
+
+**Honest limitation recorded in the code:** the four persisted types cover 80 of the 100 weight.
+`COMMUNICATION` (6), `DOCUMENTS` (8) and `PARTICIPANTS` (6) have no `FACTOR_TYPE` mapping and are
+never written, so the weakest-link ranking is correct over what was actually scored but cannot see
+those three.
+
+**The lesson, twice in one review.** Both bugs type-checked, passed every guard, and passed my own
+verification — because I verified the *pure function* against synthetic inputs rather than against
+the shape the database actually stores. A guard that never runs against real rows cannot catch a
+wrong column or a wrong table.

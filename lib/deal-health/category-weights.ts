@@ -36,10 +36,49 @@ export const CATEGORY_WEIGHTS: Record<HealthCategory, number> = {
 }
 
 /**
- * transaction_health_factors.factor_type is stored lower_snake_case; the weight map
- * is UPPER. One normaliser so the UI never has to guess.
+ * PERSISTED factor vocabulary — deliberately NARROWER than HealthCategory.
+ *
+ * health-scorer.ts collapses its ten categories into four before writing them to
+ * deal_health_factors (its FACTOR_TYPE map), so the stored values are
+ * financing_status / deadline_proximity / timeline_adherence / document_completeness —
+ * NOT the HealthCategory keys. Weighting a stored row therefore means SUMMING the
+ * categories that collapsed into it.
+ *
+ * The four cover 80 of the 100 weight: COMMUNICATION (6), DOCUMENTS (8) and
+ * PARTICIPANTS (6) have no FACTOR_TYPE mapping and are never persisted. The
+ * weakest-link ranking is still correct — it compares what was actually scored —
+ * but it cannot see those three.
+ *
+ * NOTE: transaction_health_factors is a DIFFERENT table and only ever stores
+ * factor_type 'comprehensive' (one aggregate row, no per-category breakdown), so it
+ * cannot feed a weakest-link at all. Read deal_health_factors for that.
+ */
+export const PERSISTED_FACTOR_WEIGHTS: Record<string, number> = {
+  financing_status:      CATEGORY_WEIGHTS.EARNEST_MONEY + CATEGORY_WEIGHTS.LENDER,      // 28
+  deadline_proximity:    CATEGORY_WEIGHTS.INSPECTION + CATEGORY_WEIGHTS.DEADLINES,      // 22
+  timeline_adherence:    CATEGORY_WEIGHTS.MILESTONES,                                    // 10
+  document_completeness: CATEGORY_WEIGHTS.TITLE + CATEGORY_WEIGHTS.COMPLIANCE,          // 20
+}
+
+/** Human label for a persisted factor_type — the raw value is not seller-readable. */
+export const PERSISTED_FACTOR_LABEL: Record<string, string> = {
+  financing_status:      "Financing",
+  deadline_proximity:    "Deadlines",
+  timeline_adherence:    "Timeline",
+  document_completeness: "Documents & title",
+}
+
+/**
+ * Weight for a row as PERSISTED. Accepts the narrow stored vocabulary first, then
+ * falls back to a direct HealthCategory match for any caller holding live component
+ * scores rather than persisted rows. Unknown → 0 (the caller filters those out).
  */
 export function weightForFactorType(factorType: string | null | undefined): number {
   if (!factorType) return 0
-  return CATEGORY_WEIGHTS[String(factorType).toUpperCase() as HealthCategory] ?? 0
+  const raw = String(factorType)
+  return (
+    PERSISTED_FACTOR_WEIGHTS[raw.toLowerCase()] ??
+    CATEGORY_WEIGHTS[raw.toUpperCase() as HealthCategory] ??
+    0
+  )
 }

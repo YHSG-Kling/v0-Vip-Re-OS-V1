@@ -135,21 +135,17 @@ export default async function NeighborhoodReportPage({
             source: "cma" as const,
           }
         }
-        // Fallback: home_value_estimates (filled by the consumer valuation flow).
-        // That table carries NO listing_id, so there is no direct FK. The only
-        // structural key is contact_id — the seller who requested the valuation
-        // is the same contact the listing hangs off. Matching on property_address
-        // alone is free text: it misses "123 Main St" vs "123 Main Street" and can
-        // hit a different property that happens to share an address string.
-        // Always tenant-scope; address is a tiebreak, never the key.
-        if (!listing.contact_id || !listing.brokerage_id) return null
+        // Fallback: home_value_estimates. No listing_id on that table, so the only
+        // structural key is the SELLER contact — listings.seller_contact_id, NOT
+        // contact_id, which exists but is never populated for listings.
+        if (!listing.seller_contact_id || !listing.brokerage_id) return null
         const hveCols =
           "estimated_value_low, estimated_value_mid, estimated_value_high, ai_narrative, market_trend, confidence_score, comps_json, generated_at"
         const hve = await supabase
           .from("home_value_estimates")
           .select(hveCols)
           .eq("brokerage_id", listing.brokerage_id)
-          .eq("contact_id", listing.contact_id)
+          .eq("contact_id", listing.seller_contact_id)
           .order("generated_at", { ascending: false })
           .limit(1)
           .maybeSingle()

@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useMemo } from "react"
 // Pure + client-safe: the weights live in a sibling of health-scorer because that
 // module imports the service client and cannot cross into a client component.
 import { distillDealConfidence } from "@/lib/kernel/deal-confidence"
-import { weightForFactorType } from "@/lib/deal-health/category-weights"
+import { weightForFactorType, PERSISTED_FACTOR_LABEL } from "@/lib/deal-health/category-weights"
 import { useParams, useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -79,6 +79,29 @@ export default function AgentTransactionDetailPage() {
       }
     }
     loadData()
+  }, [transactionId])
+
+  // deal_health_factors holds the PER-CATEGORY breakdown (health-scorer writes it).
+  // transaction_health_factors, loaded below for its narrative/red-flag detail, only
+  // ever carries factor_type 'comprehensive' — one aggregate row, so it can never
+  // yield a weakest link.
+  const [dealFactors, setDealFactors] = useState<any[]>([])
+  useEffect(() => {
+    const supabase = createClient()
+    supabase
+      .from("deal_health_factors")
+      .select("id, factor_type, factor_value, risk_contribution, detail, scored_at")
+      .eq("transaction_id", transactionId)
+      .order("scored_at", { ascending: false })
+      .limit(40)
+      .then(({ data: rows }: { data: any[] | null }) => {
+        const latestByType = new Map<string, any>()
+        for (const row of rows ?? []) {
+          if (!latestByType.has(row.factor_type)) latestByType.set(row.factor_type, row)
+        }
+        setDealFactors([...latestByType.values()])
+      })
+      .catch(() => setDealFactors([]))
   }, [transactionId])
 
   // Load the latest health factor per factor_type for the breakdown list
@@ -284,20 +307,17 @@ export default function AgentTransactionDetailPage() {
   // Distil the scored factors into a verdict + the single weakest link + the one
   // protective action. Reuses the persisted scores; never recomputes them.
   const dealConfidence = useMemo(() => {
-    const components = healthFactors
+    const components = dealFactors
       .map((f) => ({
         category: String(f.factor_type ?? ""),
-        score: Number(f.factor_score ?? 0),
+        score: Number(f.factor_value ?? 0),
         weight: weightForFactorType(f.factor_type),
-        issues: [
-          ...(Array.isArray(f.red_flags) ? f.red_flags.map(String) : []),
-          ...(Array.isArray(f.warning_signs) ? f.warning_signs.map(String) : []),
-        ],
+        issues: f.detail ? [String(f.detail)] : [],
       }))
       .filter((c) => c.category && c.weight > 0)
     if (components.length === 0) return null
     return distillDealConfidence(Number(healthScore), components)
-  }, [healthFactors, healthScore])
+  }, [dealFactors, healthScore])
 
   return (
     <div className="container mx-auto py-6 space-y-6">
@@ -461,7 +481,7 @@ export default function AgentTransactionDetailPage() {
                       <div className="flex items-baseline justify-between gap-3 text-sm">
                         <span className="text-muted-foreground">Weakest link</span>
                         <span className="font-medium capitalize text-right">
-                          {dealConfidence.weakestLink.category.replace(/_/g, " ")} ({dealConfidence.weakestLink.score}/100)
+                          {PERSISTED_FACTOR_LABEL[dealConfidence.weakestLink.category] ?? dealConfidence.weakestLink.category.replace(/_/g, " ")} ({dealConfidence.weakestLink.score}/100)
                         </span>
                       </div>
                     )}

@@ -73,8 +73,12 @@ export async function getNeighborhoodReport(listingId: string): Promise<{
     city: string
     state: string
     zip_code: string
-    /** Seller contact — the only structural key into home_value_estimates. */
-    contact_id: string | null
+    /**
+      * Seller contact — the only structural key into home_value_estimates.
+      * listings.seller_contact_id, NOT contact_id: contact_id exists on the table
+      * but is not populated for listings, so keying on it made this fallback dead.
+      */
+    seller_contact_id: string | null
     brokerage_id: string | null
   } | null
   priceHistory: PriceHistoryPoint[]
@@ -86,7 +90,7 @@ export async function getNeighborhoodReport(listingId: string): Promise<{
   // Get the listing
   const { data: listing } = await supabase
     .from("listings")
-    .select("id, address, city, state, zip, contact_id, brokerage_id")
+    .select("id, address, city, state, zip, seller_contact_id, brokerage_id")
     .eq("id", listingId)
     .eq("brokerage_id", brokerageId)
     .single()
@@ -129,7 +133,7 @@ export async function getNeighborhoodReport(listingId: string): Promise<{
           city: listing.city,
           state: listing.state,
           zip_code: listing.zip,
-          contact_id: listing.contact_id ?? null,
+          seller_contact_id: listing.seller_contact_id ?? null,
           brokerage_id: listing.brokerage_id ?? null,
         }
       : null,
