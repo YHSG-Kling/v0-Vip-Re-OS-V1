@@ -1467,3 +1467,119 @@ rather than assumed: `test:crm-pull` runs 49/0 (the simulator it pointed at exis
 `commissions` reads were removed and repointed at `getCommissions`/`getBusinessExpenses` with the
 scope in the query, and both recruit-name consumers read `agents.users.first_name` behind an
 `|| "Unknown"` fallback. The inbox auto-select effect carries a comment naming VADE as its source.
+
+---
+
+## Tenant scope, part 2: the sweeps that were RPCs and the children nobody scoped
+
+Continuing the tenant-scope burn-down, this time asking two questions the existing guard
+could not answer: *what does the guard accept that it shouldn't*, and *what about the
+child tables*.
+
+### The guard accepted a selected column as a filter
+
+`test:tenant-scope` passes a query chain if a 500-character window merely **contains** the
+string `brokerage_id`. `.select("id, brokerage_id, agent_id")` contains it. So a query that
+selects the column while filtering by nothing at all reads as scoped.
+
+Measuring it took three passes, and the first two were wrong in opposite directions:
+
+| probe | rule | count | why it was wrong |
+|---|---|---|---|
+| 1 | narrow 500-char window | 68 | the window truncates real filters that sit further down the chain |
+| 2 | wide window, filters only | 356 | dropped `brokerage_id:` INSERT payloads, which **are** legitimate scoping |
+| 3 | wide window, strip `.select(...)`, keep payloads | **57** | correct |
+
+The owner's constraint — *an INSERT payload carrying `brokerage_id` IS legitimate scoping* —
+is exactly what probe 2 violated, and it inflated the number six-fold.
+
+Then the split that mattered: **which client**. All 19 tenant tables have RLS enabled with
+policies (verified live), so a `createClient()` chain is backstopped by the database even
+with no app filter. A `createServiceClient()` chain is not. Of the 57: 7 RLS, 31 service,
+11 injected/unknown. Most of the 31 are cron routes that legitimately sweep every tenant and
+fan out per-row.
+
+### The real defect: a platform-wide sweep exposed as an RPC
+
+Three of the service-client sweeps were not cron routes. They were exports of top-level
+`"use server"` modules — which makes every one of them an RPC endpoint any authenticated
+session can call:
+
+- `generateAnnualHomeValueReportsCronTick` — reads **every** brokerage's closed transactions
+  and **emails past clients**
+- `generateQuarterlyHomeValueReportsCronTick` — same
+- `gbpAutoPostsCronTick` — reads every brokerage's listings and posts publicly on their behalf
+
+Each cron ROUTE gates on `verifyCronAuth`. That gate protects the route, not the function:
+importing the action and calling it directly walked straight past it. Any logged-in user
+could trigger a cross-tenant email run.
+
+Both modules moved to `lib/`, which **removes** the endpoint instead of guarding it —
+the shape `lib/showings/showing-brief.ts` already used for its own cron tick.
+`annual-home-value-report.ts` moved wholesale: it had zero UI callers, so the `"use server"`
+directive bought nothing and cost two ungated platform-wide endpoints.
+
+`app/actions/cron-kernel.ts` was left alone — it already does a documented soft auth check
+and only writes telemetry. A previous pass reasoned about it; that reasoning still holds.
+
+**Guard:** `use-server-export-guard.ts` gained a second check — no `*CronTick*` may be
+exported from a `"use server"` module. Negative-tested by re-adding one (guard failed naming
+the file), then reverted.
+
+### The children: what migration 063 left open
+
+The app-layer guard lints ~20 named tables in TypeScript. It structurally cannot see a child
+table that holds tenant rows, has no `brokerage_id` of its own, and is protected only by an
+RLS policy. Only `pg_policies` knows.
+
+Walking the live FK graph found **5 children of tenant tables with no `brokerage_id`**. One,
+`collaborative_search_properties`, is scoped **correctly** — through an `EXISTS` on its
+parent — and became the model for the rest.
+
+The root cause is migration **063**, which fixed a genuine outage: ~44 tables had RLS enabled
+with **zero** policies, which denies everything, so those features were silently dead. It
+unblocked them with `USING (TRUE)`. Right for platform reference data; wrong wherever the
+table carried tenant rows. Worst case: `open_house_analytics` had `SELECT USING(true)` **and**
+`UPDATE USING(true)` on live per-event data (attendance, `avg_lead_score`,
+`serious_buyers_count`) — any authenticated user could read and rewrite every brokerage's.
+
+**m288** scoped ten tables: seven through their parent (`open_house_analytics`,
+`cma_comparables`, `cma_price_adjustments`, `campaign_sequence_steps`,
+`objection_training_turns`, `newsletter_seo_scores`, `tool_shares`) and three on their own
+`brokerage_id` (`ai_suggestions`, `newsletter_scheduled_sends`, `newsletter_sections`).
+All ten were empty at the time, so this tightened a boundary rather than revoking access.
+
+**The step that nearly made it a no-op.** Five of the `DROP POLICY` statements named policies
+that don't exist — the 063-era names differ from the convention used elsewhere
+(`ai_suggestions_update`, not `ai_suggestions_upd`; `nlss_upd`/`nlsec_upd`/`nlseo_upd`;
+`tool_shares_update`). Postgres OR's permissive policies together, so each new correctly-scoped
+policy sat **beside** a surviving `USING (true)` and changed nothing. Re-querying `pg_policies`
+after applying — rather than trusting `success: true` — is the only reason this was caught.
+Five tables read as fixed while still being world-writable.
+
+**Guard:** `test:child-tenant-scope` (new, live-DB, creds-gated). A table is *tenant-anchored*
+if it has its own `brokerage_id` or an FK to a table that does; an anchored table may not carry
+a permissive SELECT/UPDATE policy. The facts come from a SECURITY DEFINER
+`tenant_scope_facts()` (same shape as m269's `assert_tenant_isolation()`), and the **judgement
+stays in TypeScript** as a reasoned allowlist — 23 global-reference entries plus 4 marked
+`NO ANCHOR` (`long_form_videos`, `marketing_stats`, `transparency_videos`,
+`demo_persona_contacts`), which are tracked, not blessed. Verified live: 723 anchored tables,
+27 permissive, 6 both — all 6 on the allowlist, so offenders **0**.
+
+### What the orphan guard then caught
+
+Moving the cron tick out left `app/actions/gbp-auto-posts.ts` with zero importers, and
+`test:no-orphan-actions` failed. The two remaining actions had **always** been dead — masked
+only because the cron route imported the file for a different export.
+
+Investigated before removing, per keep-one: `lifecycle-promo-policy.ts` already auto-spawns
+`just_listed` and `just_sold` with cooldowns, per-(listing,trigger) idempotency and a
+compliance gate, and `/api/cron/listing-promo-social-publish` already publishes
+`google_business` alongside seven other platforms. The orphans were a narrower duplicate of
+the advanced path, so they went rather than being wired up a second time.
+
+**Flagged, not silently done:** `gbpAutoPostsCronTick` overlaps that same lifecycle-promo
+path. It is registered, gated and running, so collapsing it needs its own investigation
+rather than a deletion buried in a scoping commit.
+
+`tsc --noEmit`: 0. `npm run guard`: 97 simulators, exit 0.

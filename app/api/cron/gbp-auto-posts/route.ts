@@ -13,7 +13,7 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
-import { gbpAutoPostsCronTick } from "@/app/actions/gbp-auto-posts"
+import { gbpAutoPostsCronTick } from "@/lib/marketing/gbp-auto-posts"
 import { verifyCronAuth } from "@/lib/cron-auth"
 
 export const dynamic = "force-dynamic"

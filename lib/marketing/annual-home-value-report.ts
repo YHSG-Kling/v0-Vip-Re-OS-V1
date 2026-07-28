@@ -1,7 +1,5 @@
-"use server"
-
 /**
- * app/actions/annual-home-value-report.ts
+ * lib/marketing/annual-home-value-report.ts
  *
  * Home-value report generated for every lifetime customer:
  *   - on each closing anniversary (1y / 2y / 3y / ...)
@@ -15,6 +13,19 @@
  *
  * No new tables — uses existing transactions, contacts,
  * lifetime_customer_touchpoints.
+ *
+ * WHY lib/ AND NOT app/actions/: the two CronTick entrypoints below are
+ * PLATFORM-WIDE sweeps — they read every brokerage's closed transactions on the
+ * service client (RLS bypassed) and EMAIL past clients. This module used to
+ * carry a top-level "use server" directive, which turns every export into an
+ * RPC endpoint reachable by any authenticated session. The cron ROUTES gate on
+ * verifyCronAuth; calling the action directly skipped that gate entirely, so any
+ * logged-in user could trigger a cross-tenant email run.
+ *
+ * Nothing in this module was ever called from the UI — the only callers were
+ * the two cron routes — so the "use server" directive bought nothing and cost a
+ * pair of ungated platform-wide endpoints. Living in lib/ removes the endpoints
+ * rather than guarding them, matching lib/showings/showing-brief.ts.
  */
 
 import { createServiceClient } from "@/lib/supabase/service"

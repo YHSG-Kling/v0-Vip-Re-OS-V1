@@ -1,28 +1,44 @@
-"use server"
-
 /**
- * app/actions/gbp-auto-posts.ts
+ * lib/marketing/gbp-auto-posts.ts
  *
  * Google Business Profile (GBP) auto-posts for "Just Listed" and "Just Sold"
  * milestones. Reuses the existing createSocialPost flow — GBP is just one
  * more platform on social_media_accounts. The compliance gate runs for free.
  *
- * Two triggers:
- *   • triggerJustListedAutoPostAction(listingId)   — fired by the listing
- *     lifecycle when stage transitions to "active". Idempotent — checks
- *     for an existing GBP post on the listing first.
- *   • triggerJustSoldAutoPostAction(listingId)     — fired on "closed".
+ * WHY THIS IS lib/ AND NOT app/actions/:
+ * gbpAutoPostsCronTick is a PLATFORM-WIDE sweep — it reads every brokerage's
+ * listings on the service client (RLS bypassed) and posts publicly on their
+ * behalf. It used to live in a top-level "use server" module, which turns every
+ * export into an RPC endpoint reachable by any authenticated session. The cron
+ * ROUTE gates on verifyCronAuth; calling the action directly skipped that gate
+ * entirely, so any logged-in user could trigger a cross-tenant posting run.
  *
- * Agent can disable per-brokerage via brokerage_settings.gbp_auto_post_enabled
- * (defaults to true if column is absent — fail-open since this is opt-in).
+ * A platform-wide sweep has no business being callable by a session. Living in
+ * lib/ means only server-side callers (the gated cron route) can reach it —
+ * the endpoint is removed rather than guarded. lib/showings/showing-brief.ts
+ * (generateShowingBriefingsCronTick) already followed this shape; this brings
+ * the GBP sweep in line with it.
+ *
+ * THE TWO PER-LISTING ACTIONS THAT USED TO SIT BESIDE THIS WERE REMOVED.
+ * triggerJustListedAutoPostAction / triggerJustSoldAutoPostAction had ZERO callers
+ * — the orphan-action guard only surfaced them once the cron route stopped
+ * importing the module for a different export. They were a second, narrower path
+ * for something the canonical lifecycle-promo system already does:
+ * lifecycle-promo-policy.ts auto-spawns `just_listed` and `just_sold` with
+ * cooldowns, per-(listing,trigger) idempotency and a compliance gate, and
+ * /api/cron/listing-promo-social-publish already publishes `google_business`
+ * alongside its seven other platforms. Keep-one: the lifecycle promo system is the
+ * advanced path, so the unwired duplicate went rather than being wired up twice.
+ *
+ * FOLLOW-UP, deliberately NOT done here: gbpAutoPostsCronTick below overlaps that
+ * same lifecycle-promo path. It is registered, gated and running, so collapsing it
+ * needs its own investigation rather than a silent deletion in a scoping commit.
  */
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { requireAuth } from "@/lib/kernel/api-auth"
 import { createSocialPost } from "@/app/actions/social-publishing"
 
-type Trigger = "just_listed" | "just_sold"
+export type Trigger = "just_listed" | "just_sold"
 
 const COPY_TEMPLATES: Record<Trigger, (l: ListingPayload) => string> = {
   just_listed: (l) =>
@@ -31,7 +47,7 @@ const COPY_TEMPLATES: Record<Trigger, (l: ListingPayload) => string> = {
     `🎉 Just sold in ${l.city ?? "your neighborhood"}! Helping another family ${l.list_price ? "find their next chapter" : "close on a great home"}. Curious what your home would sell for? Let's talk.`,
 }
 
-interface ListingPayload {
+export interface ListingPayload {
   id: string
   brokerage_id: string
   agent_id: string | null
@@ -47,7 +63,7 @@ interface ListingPayload {
   cover_photo_url: string | null
 }
 
-async function loadListing(listingId: string): Promise<ListingPayload | null> {
+export async function loadListing(listingId: string): Promise<ListingPayload | null> {
   const supabase = createServiceClient()
   const { data: listing } = await supabase
     .from("listings")
@@ -96,7 +112,7 @@ async function alreadyPosted(listingId: string, trigger: Trigger): Promise<boole
   return (count ?? 0) > 0
 }
 
-async function autoPost(listing: ListingPayload, trigger: Trigger, userId: string) {
+export async function autoPost(listing: ListingPayload, trigger: Trigger, userId: string) {
   if (!(await gbpEnabledFor(listing.brokerage_id))) {
     return { success: false as const, skipped: "brokerage_disabled" }
   }
@@ -126,31 +142,14 @@ async function autoPost(listing: ListingPayload, trigger: Trigger, userId: strin
   return { success: true as const, post }
 }
 
-export async function triggerJustListedAutoPostAction(input: { listingId: string }) {
-  const supabase = await createClient()
-  const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false, error: "unauthenticated" }
-
-  const listing = await loadListing(input.listingId)
-  if (!listing || listing.brokerage_id !== auth.brokerageId) {
-    return { success: false, error: "not_found" }
-  }
-  return autoPost(listing, "just_listed", auth.userId)
-}
-
-export async function triggerJustSoldAutoPostAction(input: { listingId: string }) {
-  const supabase = await createClient()
-  const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false, error: "unauthenticated" }
-
-  const listing = await loadListing(input.listingId)
-  if (!listing || listing.brokerage_id !== auth.brokerageId) {
-    return { success: false, error: "not_found" }
-  }
-  return autoPost(listing, "just_sold", auth.userId)
-}
-
-/** Cron-friendly version — runs without an authenticated session. */
+/**
+ * PLATFORM-WIDE sweep — every brokerage, service client, no session. Reachable
+ * only from the verifyCronAuth-gated /api/cron/gbp-auto-posts route.
+ *
+ * Each listing carries its own brokerage_id and the post is attributed to that
+ * listing's own agent, so the fan-out stays inside the row's tenant even though
+ * the SELECT deliberately spans tenants.
+ */
 export async function gbpAutoPostsCronTick() {
   const supabase = createServiceClient()
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
