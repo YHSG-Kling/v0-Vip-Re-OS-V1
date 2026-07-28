@@ -447,7 +447,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'ai-call-setup', label: 'AI Call Handling', href: '/dashboard/onboarding/ai-call-setup', icon: 'PhoneCall' },
       { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
       { id: 'forms', label: 'Forms Manager', href: '/dashboard/admin/forms', icon: 'FileText' },
-      { id: 'knowledge', label: 'Knowledge Base', href: '/dashboard/admin/knowledge', icon: 'BookOpen' },
+      { id: 'knowledge', label: 'Knowledge Base', href: '/dashboard/settings/knowledge-base', icon: 'BookOpen' },
       { id: 'lead-lineage', label: 'Lead Lineage', href: '/dashboard/admin/lead-lineage', icon: 'GitBranch' },
       { id: 'locations', label: 'Office Locations', href: '/dashboard/admin/locations', icon: 'Building2' },
       { id: 'manager-trust', label: 'Manager Trust', href: '/dashboard/admin/manager-trust', icon: 'ShieldCheck' },

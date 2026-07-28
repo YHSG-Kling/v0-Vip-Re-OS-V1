@@ -44,7 +44,7 @@ const NAV_ITEMS = [
   { label: "AI Usage & Cost", href: "/dashboard/admin/ai-usage", icon: Sparkles, group: "Admin" },
   { label: "Automation Events", href: "/dashboard/admin/events", icon: Activity, group: "Admin" },
   { label: "Agent Onboarding", href: "/dashboard/admin/onboarding", icon: UserPlus, group: "Admin" },
-  { label: "Knowledge Base", href: "/dashboard/admin/knowledge", icon: BookOpen, group: "Admin" },
+  { label: "Knowledge Base", href: "/dashboard/settings/knowledge-base", icon: BookOpen, group: "Admin" },
   { label: "Settings", href: "/settings", icon: Settings, group: "Settings" },
   { label: "Brand Voice", href: "/settings/brand-voice", icon: Mic, group: "Settings" },
   { label: "Integrations", href: "/settings/integrations", icon: Settings, group: "Settings" },

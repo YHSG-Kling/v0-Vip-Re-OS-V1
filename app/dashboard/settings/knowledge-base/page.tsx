@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { KnowledgeBaseClient } from './knowledge-base-client'
+import { getEmbeddingQueueStatus } from '@/app/actions/knowledge/search'
 
 export const dynamic = 'force-dynamic'
 
@@ -49,12 +50,19 @@ export default async function KnowledgeBasePage() {
     'general',
   ]
 
+  // KEEP-ONE: the embedding-queue monitor came from /dashboard/admin/knowledge, a
+  // SECOND "Knowledge Base" screen (same nav label, same admin audience). That page
+  // was removed; this was the one thing it had that this page did not, so it is
+  // ported here rather than lost. Same getEmbeddingQueueStatus source.
+  const queueStatus = await getEmbeddingQueueStatus()
+
   return (
     <KnowledgeBaseClient
       initialArticles={articles || []}
       categories={categories}
       brokerageId={userData.brokerage_id}
       userType={userData.user_type}
+      queueStatus={queueStatus}
     />
   )
 }

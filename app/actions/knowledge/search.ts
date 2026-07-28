@@ -247,7 +247,7 @@ export async function createKnowledgeArticle(input: {
     await queueForEmbedding('knowledge_articles', data.id, data.content)
   }
 
-  revalidatePath('/dashboard/admin/knowledge')
+  revalidatePath('/dashboard/settings/knowledge-base')
   return data
 }
 
@@ -309,7 +309,7 @@ export async function updateKnowledgeArticle(
     }
   }
 
-  revalidatePath('/dashboard/admin/knowledge')
+  revalidatePath('/dashboard/settings/knowledge-base')
   return data
 }
 
@@ -331,7 +331,7 @@ export async function deleteKnowledgeArticle(id: string) {
     throw new Error('Failed to delete article')
   }
 
-  revalidatePath('/dashboard/admin/knowledge')
+  revalidatePath('/dashboard/settings/knowledge-base')
   return { success: true }
 }
 
@@ -474,7 +474,7 @@ export async function createHelpTopic(input: {
     await queueForEmbedding('help_topics_kb', data.id, data.content)
   }
 
-  revalidatePath('/dashboard/admin/knowledge')
+  revalidatePath('/dashboard/settings/knowledge-base')
   return data
 }
 
@@ -520,7 +520,7 @@ export async function updateHelpTopic(
     }
   }
 
-  revalidatePath('/dashboard/admin/knowledge')
+  revalidatePath('/dashboard/settings/knowledge-base')
   return data
 }
 
@@ -542,7 +542,7 @@ export async function deleteHelpTopic(id: string) {
     throw new Error('Failed to delete help topic')
   }
 
-  revalidatePath('/dashboard/admin/knowledge')
+  revalidatePath('/dashboard/settings/knowledge-base')
   return { success: true }
 }
 

@@ -2087,3 +2087,51 @@ Three same-persona duplicate labels remain unexamined and are NOT being touched 
 (`/dashboard/superadmin/observability` vs `/dashboard/system`) — the muddled one.
 
 `tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.
+
+---
+
+## Two "Knowledge Base" screens — same merge, second instance
+
+Same duplicate-label sweep, second real hit. Both admin-facing, both managing the same
+`help_topics_kb` articles, both labelled **Knowledge Base** in the nav — three placements across
+three personas pointing at two different screens.
+
+| | `/dashboard/settings/knowledge-base` | `/dashboard/admin/knowledge` |
+|---|---|---|
+| size | 609 lines | 402 lines |
+| nav placements | 2 personas | 1 |
+| search / category / delete | ✅ | ✅ |
+| **article editing + bulk** | ✅ | absent |
+| **embedding-queue monitor** | **absent** | ✅ |
+
+The settings surface is the survivor — larger, richer, already linked from two personas. But it
+had **zero** references to the embedding queue, and that monitor is not cosmetic: an article is
+only searchable by the AI once its embedding lands, so a stuck queue is the difference between
+"I uploaded it" and "the assistant still doesn't know it". Deleting the admin page without it
+would have removed the only place that failure is visible.
+
+Ported as a sidebar card fed by the same `getEmbeddingQueueStatus`, and deliberately quiet: it
+renders only when something is pending, processing or failed, with failures in red. A healthy
+idle queue shows nothing rather than a row of zeros.
+
+**Eight inbound references**, not one. The nav entry was the obvious one; the sweep also found
+the command palette, a `Link` in the admin knowledge-ops panel, and **six `revalidatePath`
+calls** inside `app/actions/knowledge/search.ts`. Those six are the ones worth noting — they are
+invisible to a nav audit, and leaving them would have meant every create/update/delete
+revalidated a route that no longer exists while the surviving page served stale content. All
+repointed.
+
+### The false alarms this sweep produced
+
+Worth recording, because the sweep is only useful if its noise is understood:
+
+- **`System` / `System Health`** — these labels sit on *both* `/dashboard/system` (tenant) and
+  `/dashboard/superadmin/observability` (platform). Not duplicate screens: they are correctly
+  separated tenant vs platform surfaces, and the nav already carries a comment about a
+  "tenant-parity fix" for exactly this. The defect is **label collision**, not a duplicate UI.
+- **44 routes carry more than one label** — `Team`/`My Team`/`View Team`, `Deals`/`Transactions`.
+  Almost all are benign: a command-palette phrasing differing from a sidebar label is normal.
+- **`Lead Magnets`** (`admin` vs `agent`) — left alone; an admin-scope and an agent-scope view of
+  the same feature is a plausible legitimate split and needs its own check.
+
+`tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.

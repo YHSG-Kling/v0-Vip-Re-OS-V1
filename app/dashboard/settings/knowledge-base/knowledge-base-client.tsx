@@ -57,11 +57,20 @@ interface KBArticle {
   updated_at: string
 }
 
+interface EmbeddingQueueStatus {
+  pending: number
+  processing: number
+  completed: number
+  failed: number
+}
+
 interface KnowledgeBaseClientProps {
   initialArticles: KBArticle[]
   categories: string[]
   brokerageId: string
   userType: string
+  /** Embedding-queue counts — ported from the removed admin Knowledge page. */
+  queueStatus?: EmbeddingQueueStatus
 }
 
 const fetcher = async (url: string) => {
@@ -79,6 +88,7 @@ export function KnowledgeBaseClient({
   categories,
   brokerageId,
   userType,
+  queueStatus,
 }: KnowledgeBaseClientProps) {
   const [selectedCategory, setSelectedCategory] = useState('all')
   const [isSheetOpen, setIsSheetOpen] = useState(false)
@@ -277,6 +287,30 @@ export function KnowledgeBaseClient({
     <div className="flex h-full">
       {/* Left Sidebar - Category Filter */}
       <div className="w-64 shrink-0 border-r bg-muted/30 p-4">
+        {/* EMBEDDING QUEUE — ported from the removed /dashboard/admin/knowledge, the
+            second "Knowledge Base" screen. An article is only searchable by the AI
+            once its embedding lands, so a stuck queue explains "I uploaded it and
+            the assistant still doesn't know it". Failures are called out in red;
+            an idle, healthy queue stays quiet. */}
+        {queueStatus && (queueStatus.pending + queueStatus.processing + queueStatus.failed) > 0 && (
+          <div className="mb-4 rounded-md border bg-background p-3 text-xs">
+            <div className="mb-2 font-semibold">Embedding queue</div>
+            <div className="space-y-1">
+              {queueStatus.processing > 0 && (
+                <div className="flex justify-between"><span className="text-muted-foreground">Processing</span><span className="font-medium">{queueStatus.processing}</span></div>
+              )}
+              {queueStatus.pending > 0 && (
+                <div className="flex justify-between"><span className="text-muted-foreground">Pending</span><span className="font-medium">{queueStatus.pending}</span></div>
+              )}
+              {queueStatus.failed > 0 && (
+                <div className="flex justify-between"><span className="text-muted-foreground">Failed</span><span className="font-semibold text-red-600">{queueStatus.failed}</span></div>
+              )}
+            </div>
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Articles become AI-searchable once embedded.
+            </p>
+          </div>
+        )}
         <h2 className="mb-4 text-sm font-semibold">Categories</h2>
         <div className="space-y-1">
           {categories.map((category) => (
