@@ -320,3 +320,100 @@ export function counterScenario(
         : `Countering at ${fmtUsd(counterPrice)} would net ${fmtUsd(-delta)} less than the offer as written.`
   return { counterPrice, netProceeds: counterNet, deltaVsOffer: delta, explanation }
 }
+
+// ─── AGREED COMMISSION RESOLUTION ────────────────────────────────────────────
+//
+// Every net sheet must price the commission the seller ACTUALLY agreed to, not a
+// house default. The agreed terms live on listing_agreements (rates stored as
+// PERCENT values — 3 means 3% — matching lib/revenue-protection/scorer.ts and
+// app/actions/seller-cma.ts). The seller normally pays BOTH sides, so a single
+// listing-side rate understates the commission and OVERSTATES the seller's net.
+//
+// One resolver, used by every sheet, so the CMA tab and the offers tab cannot
+// quote a seller two different numbers for the same listing.
+
+export interface AgreementCommissionFields {
+  listing_commission_rate: number | null
+  buyer_commission_rate: number | null
+  total_commission_rate: number | null
+  commission_is_flat_fee: boolean | null
+  commission_flat_amount: number | null
+}
+
+export interface AgreedCommission {
+  /** Decimal rate to apply to the sale price (0.055 = 5.5%). */
+  rate: number
+  isFlatFee: boolean
+  flatAmount: number | null
+  source: CostLineSource
+  /** Short provenance label for the UI — never present an estimate as a fact. */
+  label: string
+  /** True when no executed listing agreement backed the number. */
+  isEstimate: boolean
+}
+
+/** The house fallback when nothing is on file. Matches defaultSellerCosts. */
+export const FALLBACK_TOTAL_COMMISSION_RATE = 0.06
+
+/**
+ * PURE. Resolve the commission rate a seller net sheet should charge.
+ * Precedence: flat fee → total rate → listing+buyer rates → listings.commission_rate
+ * → house default. Anything below an executed agreement is flagged as an estimate.
+ */
+export function resolveAgreedCommission(args: {
+  agreement: AgreementCommissionFields | null | undefined
+  /** listings.commission_rate, a PERCENT value (listing side only). */
+  listingCommissionRatePercent: number | null | undefined
+  /** Price the flat fee is expressed against (list price or the offer price). */
+  referencePrice: number | null | undefined
+}): AgreedCommission {
+  const a = args.agreement
+  const price = Number(args.referencePrice ?? 0)
+
+  if (a?.commission_is_flat_fee && a.commission_flat_amount != null) {
+    const flat = Number(a.commission_flat_amount)
+    return {
+      rate: price > 0 ? flat / price : 0,
+      isFlatFee: true,
+      flatAmount: flat,
+      source: "confirmed",
+      label: "Flat fee per listing agreement",
+      isEstimate: false,
+    }
+  }
+
+  if (a?.total_commission_rate != null) {
+    return {
+      rate: Number(a.total_commission_rate) / 100,
+      isFlatFee: false, flatAmount: null, source: "confirmed",
+      label: "Total rate per listing agreement", isEstimate: false,
+    }
+  }
+
+  if (a && (a.listing_commission_rate != null || a.buyer_commission_rate != null)) {
+    const listing = Number(a.listing_commission_rate ?? 0)
+    const buyer = Number(a.buyer_commission_rate ?? 0)
+    return {
+      rate: (listing + buyer) / 100,
+      isFlatFee: false, flatAmount: null, source: "confirmed",
+      label: `Listing ${listing}% + buyer ${buyer}% per listing agreement`,
+      isEstimate: false,
+    }
+  }
+
+  if (args.listingCommissionRatePercent != null) {
+    return {
+      rate: Number(args.listingCommissionRatePercent) / 100,
+      isFlatFee: false, flatAmount: null, source: "template",
+      label: "Listing-side rate only — no executed agreement on file",
+      isEstimate: true,
+    }
+  }
+
+  return {
+    rate: FALLBACK_TOTAL_COMMISSION_RATE,
+    isFlatFee: false, flatAmount: null, source: "default",
+    label: "Estimate — no commission terms on file",
+    isEstimate: true,
+  }
+}

@@ -5,6 +5,7 @@ import MultiOfferMatrixCard from "./components/multi-offer-matrix-card"
 import { InteractiveNetSheet } from "@/components/features/offers/interactive-net-sheet"
 import { defaultSellerCosts, type OfferNetInput } from "@/lib/kernel/offer-net-sheet"
 import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
+import { resolveAgreedCommission } from "@/lib/offers/net-sheet-calc"
 import { buildSellerDecisionRoom, type DecisionOffer } from "@/lib/kernel/seller-decision-room"
 
 export default async function OffersPage({
@@ -90,9 +91,27 @@ export default async function OffersPage({
     financingType: o.financing_type ?? null,
     buyerClosingCredit: o.closing_cost_contribution != null ? Number(o.closing_cost_contribution) : 0,
   }))
+  // Agreed commission terms. Scoped to the validated listing's brokerage.
+  const { data: agreement } = await supabase
+    .from("listing_agreements")
+    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, fully_executed_at")
+    .eq("listing_id", listingId)
+    .eq("brokerage_id", listing.brokerage_id)
+    .order("fully_executed_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle()
+
+  // The seller pays BOTH sides, so a listing-side-only rate understates the
+  // commission and overstates the net — on the screen where they pick an offer.
+  const agreed = resolveAgreedCommission({
+    agreement,
+    listingCommissionRatePercent: (listing as any).commission_rate ?? null,
+    referencePrice: listing.list_price != null ? Number(listing.list_price) : null,
+  })
+
   const netSheetCosts = defaultSellerCosts({
     listPrice: listing.list_price != null ? Number(listing.list_price) : null,
-    commissionRateDecimal: (listing as any).commission_rate != null ? Number((listing as any).commission_rate) / 100 : 0.06,
+    commissionRateDecimal: agreed.rate,
     hoaDuesMonthly: (listing as any).hoa_dues != null ? Number((listing as any).hoa_dues) : null,
   })
   // KEEP-ONE (round 36): the net sheet's closing-cost line derives from the
@@ -145,6 +164,19 @@ export default async function OffersPage({
           seller most, not just the highest price. Renders whenever there's an open offer. */}
       {netSheetOffers.length > 0 && (
         <div className="mb-4">
+          {/* Commission provenance — same discipline as the CMA net sheet: never
+              present a default as the agreed rate. */}
+          <div
+            className={`flex items-center gap-2 text-xs rounded px-3 py-2 border mb-2 ${
+              agreed.isEstimate
+                ? "text-amber-800 bg-amber-50 border-amber-200"
+                : "text-blue-700 bg-blue-50 border-blue-200"
+            }`}
+          >
+            {agreed.isEstimate ? "⚠ Commission is an estimate — " : "Commission per listing agreement — "}
+            {agreed.label}
+            {!agreed.isFlatFee && ` (${(agreed.rate * 100).toFixed(2)}% total)`}
+          </div>
           <InteractiveNetSheet
             listingAddress={listing.address}
             offers={netSheetOffers}

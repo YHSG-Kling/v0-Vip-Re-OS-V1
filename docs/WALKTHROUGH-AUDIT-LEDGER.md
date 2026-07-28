@@ -898,3 +898,54 @@ the guard covering a live surface runs in CI.
 
 **Dark capabilities: 10 → 7 closed or resolved** (governance scorecard surfaced, explainer-diagram
 wired, decision room merged).
+
+---
+
+## Owner ruling: the agreed commission and fees belong in EVERY net sheet
+
+Two net sheets existed and they disagreed about the seller's money.
+
+| | commission source | flat fee | both sides |
+|---|---|---|---|
+| CMA tab (`cma/tabs/net-sheet-tab.tsx`) | `listing_agreements` rates | **ignored** | yes |
+| Offers tab (`offers/page.tsx`) | `listings.commission_rate`, else **6%** | ignored | **no** |
+
+The offers sheet was the worse of the two, and it is the screen where the seller actually picks
+an offer. It applied a single listing-side rate. The seller normally pays **both** sides, so the
+commission was understated and the net **overstated** — on a $600,000 sale, a 3% listing-side rate
+against an agreed 5.5% total understates by **$15,000**. That number then fed the deterministic
+recommendation added in `b27bde3`, so the recommendation was being computed on an inflated net.
+
+**One resolver, not a third interpretation.** `resolveAgreedCommission` now lives in
+`lib/offers/net-sheet-calc.ts` — the canonical net-sheet module — with this precedence:
+
+1. flat fee (`commission_is_flat_fee` + `commission_flat_amount`) → the amount IS the commission
+2. `total_commission_rate`
+3. `listing_commission_rate + buyer_commission_rate` (both sides)
+4. `listings.commission_rate` — listing side only, **flagged as an estimate**
+5. house default 6% — **flagged as an estimate**
+
+Rates are stored as PERCENT values (3 means 3%), matching `lib/revenue-protection/scorer.ts` and
+`app/actions/seller-cma.ts`. Steps 4 and 5 carry `isEstimate: true` and a label, because
+`scorer.ts` already treats a listing with no executed agreement as a **critical data-integrity
+finding** — silently quoting 6% as if it were agreed is exactly what that guard exists to catch.
+The offers page now renders an amber "Commission is an estimate" strip in those cases and a blue
+"per listing agreement" strip otherwise.
+
+**The CMA sheet had its own two gaps**, fixed here rather than left for later:
+
+- **Flat fee was ignored entirely** — a flat-fee listing was charged a percentage of price. On a
+  $600k sale with a $12,000 flat fee, the sheet showed $36,000 of commission. The flat amount is
+  now charged as-is, the percentage inputs are replaced by the agreed amount (editing a percent
+  under a flat fee moved nothing), and the row reads "Commission (flat fee per agreement)".
+- **`total_commission_rate` was ignored** — an agreement recording only a total fell through to
+  the 3/3 default and quoted 6%. The total now lands on the listing line with the buyer line at 0,
+  so the two still sum to the agreed figure.
+
+The pre-fill notice also fired only on an explicit listing-side rate, so flat-fee and total-only
+agreements looked like un-agreed defaults. It now covers all three.
+
+Verified across all seven precedence branches, including the degenerate flat-fee-with-zero-price
+case (returns 0, no divide-by-zero). `test:offer-net-sheet`, `test:net-sheet-surprise`,
+`test:cma-presentation`, `test:cma-data`, `test:seller-closing-costs`, `test:commission-disclosure`,
+`test:seller-decision`, `test:tenant-scope`, `test:schema-drift` all pass; type-check clean.
