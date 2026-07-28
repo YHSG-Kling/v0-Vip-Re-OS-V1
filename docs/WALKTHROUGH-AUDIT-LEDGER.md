@@ -1165,3 +1165,46 @@ it is NOT healthy — a clean source stays visually quiet.
 **Dark capabilities: 10 found, 5 resolved.** Remaining: seller-listing-timeline, deal-confidence,
 outcome-autopsy, plus ken-burns-plan (reachable through the Director, flagged only because `app/`
 does not import it directly) and comps-animation-spec (a consolidation call, not a wiring one).
+
+---
+
+## Deal confidence — and three fabricated percentages on the transaction page
+
+Sixth dark module, onto `app/transactions/[transactionId]`, which already renders the health score
+and the per-factor breakdown from `transaction_health_factors`.
+
+**What was actually there.** Between the score and the factor list sat three hardcoded rows:
+
+```
+Timeline Adherence   92%
+Document Completion  85%
+Client Engagement    78%
+```
+
+Static literals, identical on every transaction in the system, rendered in the same visual language
+as the real scored factors directly beneath them. Not a missing wire — fabricated data presented as
+measurement. They are gone.
+
+In their place, `distillDealConfidence` over the REAL factors: the verdict, the single weakest link,
+and the one protective action. Weakest link is the largest **weighted** shortfall — `(100 − score) ×
+weight` — so a 40/100 lender (impact 840) outranks a 70/100 documents (impact 240) rather than
+whichever number simply looks lowest. With no scored factors it says so instead of inventing a
+verdict.
+
+**A client/server split had to come first.** `lib/deal-health/health-scorer.ts` owns
+`CATEGORY_WEIGHTS` but imports `createServiceClient`, so a `"use client"` page cannot reach it — and
+a second copy of the weights in the UI is precisely the drift this ledger keeps recording. Extracted
+to `lib/deal-health/category-weights.ts`, client-safe, with the scorer importing from it: one
+source, no copy. Same split `lib/offers/net-sheet-calc` made from `lib/kernel/offer-net-sheet`, for
+the same reason.
+
+`weightForFactorType` normalises the stored `lower_snake` `factor_type` to the UPPER weight keys, so
+the UI never guesses. Verified: weights sum to 100, an unknown factor type scores 0 weight (and is
+filtered out rather than silently weighted), and the empty case returns "nothing is dragging this
+deal".
+
+`test:deal-confidence` wired into the `guard` chain.
+
+**Dark capabilities: 10 found, 6 resolved.** Remaining: seller-listing-timeline, outcome-autopsy,
+plus ken-burns-plan (reachable via the Director — an analyzer artifact, not a real gap) and
+comps-animation-spec (a consolidation call).

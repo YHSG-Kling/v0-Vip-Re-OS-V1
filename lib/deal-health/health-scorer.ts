@@ -43,17 +43,8 @@ import { gatewayChat }         from "@/lib/ai/gateway-chat"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type HealthCategory =
-  | "EARNEST_MONEY"
-  | "INSPECTION"
-  | "LENDER"
-  | "TITLE"
-  | "MILESTONES"
-  | "DEADLINES"
-  | "COMPLIANCE"
-  | "COMMUNICATION"
-  | "DOCUMENTS"
-  | "PARTICIPANTS"
+export type { HealthCategory } from "./category-weights"
+import { CATEGORY_WEIGHTS, type HealthCategory } from "./category-weights"
 
 export interface ComponentScore {
   category:    HealthCategory
@@ -93,18 +84,8 @@ export interface DealHealthResult {
 // ─── Category Weights (sum = 100) ─────────────────────────────────────────────
 
 // Weights adjusted to sum to 100 with 10 categories
-const CATEGORY_WEIGHTS: Record<HealthCategory, number> = {
-  EARNEST_MONEY:   14,
-  INSPECTION:      12,
-  LENDER:          14,
-  TITLE:           10,
-  MILESTONES:      10,
-  DEADLINES:       10,
-  COMPLIANCE:      10,
-  COMMUNICATION:    6,
-  DOCUMENTS:        8,
-  PARTICIPANTS:     6,
-}
+// Weights + vocabulary now live in the client-safe sibling so the UI can rank the
+// same shortfall without importing this server module. One source, no copy.
 
 // ─── Scorer Functions ─────────────────────────────────────────────────────────
 

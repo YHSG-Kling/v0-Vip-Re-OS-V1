@@ -1,6 +1,10 @@
 "use client"
 
-import { useEffect, useState, useRef } from "react"
+import { useEffect, useState, useRef, useMemo } from "react"
+// Pure + client-safe: the weights live in a sibling of health-scorer because that
+// module imports the service client and cannot cross into a client component.
+import { distillDealConfidence } from "@/lib/kernel/deal-confidence"
+import { weightForFactorType } from "@/lib/deal-health/category-weights"
 import { useParams, useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -277,6 +281,24 @@ export default function AgentTransactionDetailPage() {
 
   const healthScore = data.team?.[0]?.transactions?.health_score || 75
 
+  // Distil the scored factors into a verdict + the single weakest link + the one
+  // protective action. Reuses the persisted scores; never recomputes them.
+  const dealConfidence = useMemo(() => {
+    const components = healthFactors
+      .map((f) => ({
+        category: String(f.factor_type ?? ""),
+        score: Number(f.factor_score ?? 0),
+        weight: weightForFactorType(f.factor_type),
+        issues: [
+          ...(Array.isArray(f.red_flags) ? f.red_flags.map(String) : []),
+          ...(Array.isArray(f.warning_signs) ? f.warning_signs.map(String) : []),
+        ],
+      }))
+      .filter((c) => c.category && c.weight > 0)
+    if (components.length === 0) return null
+    return distillDealConfidence(Number(healthScore), components)
+  }, [healthFactors, healthScore])
+
   return (
     <div className="container mx-auto py-6 space-y-6">
       {/* "Deal feels shaky" — the agent's gut suspends earned autonomy on this file */}
@@ -418,20 +440,40 @@ export default function AgentTransactionDetailPage() {
                   <p className="text-sm text-muted-foreground">Overall Health Score</p>
                 </div>
                 <Separator />
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span>Timeline Adherence</span>
-                    <span className="font-medium">92%</span>
+                {/* Replaced three HARDCODED percentages (92/85/78) that rendered as
+                    real health data. This is derived from the scored factors. */}
+                {dealConfidence ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">Verdict</span>
+                      <span
+                        className={cn(
+                          "font-medium capitalize",
+                          dealConfidence.verdict === "on_track" ? "text-emerald-600"
+                            : dealConfidence.verdict === "watch" ? "text-amber-600"
+                            : "text-red-600",
+                        )}
+                      >
+                        {dealConfidence.verdict.replace(/_/g, " ")}
+                      </span>
+                    </div>
+                    {dealConfidence.weakestLink && (
+                      <div className="flex items-baseline justify-between gap-3 text-sm">
+                        <span className="text-muted-foreground">Weakest link</span>
+                        <span className="font-medium capitalize text-right">
+                          {dealConfidence.weakestLink.category.replace(/_/g, " ")} ({dealConfidence.weakestLink.score}/100)
+                        </span>
+                      </div>
+                    )}
+                    <p className="text-xs bg-muted/50 rounded p-2 leading-snug">
+                      {dealConfidence.protectiveAction}
+                    </p>
                   </div>
-                  <div className="flex justify-between text-sm">
-                    <span>Document Completion</span>
-                    <span className="font-medium">85%</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span>Client Engagement</span>
-                    <span className="font-medium">78%</span>
-                  </div>
-                </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No scored health factors yet — nothing to distil.
+                  </p>
+                )}
                 {healthFactors.length > 0 && (
                   <>
                     <Separator />
