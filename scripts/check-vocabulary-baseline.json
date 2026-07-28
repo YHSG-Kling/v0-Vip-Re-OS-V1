@@ -9,7 +9,6 @@
   "app/actions/ai-showing-management.ts::showings.sync_source=ai_scheduler",
   "app/actions/assistant.ts::video_scripts_library.approval_status=pending",
   "app/actions/blog.ts::platform_credentials.platform=wordpress",
-  "app/actions/crm-connect.ts::brokerage_integrations.status=active",
   "app/actions/financials.ts::agent_earnings.period_type=annual",
   "app/actions/home-value.ts::campaign_sequences.sequence_type=seller_nurture",
   "app/actions/home-value.ts::campaign_sequences.trigger_event=home_value_submitted",
@@ -52,7 +51,6 @@
   "lib/billing/dunning.ts::subscriptions.status=unpaid",
   "lib/compliance/required-documents.ts::brokerage_required_documents.deal_type=${ctx.dealType}",
   "lib/connections/zoom-transcripts.ts::voice_calls.call_type=zoom_meeting",
-  "lib/crm/sync.ts::brokerage_integrations.status=active",
   "lib/errors/auto-retry.ts::error_resolution_log.retry_result=scheduled",
   "lib/farm-mail/dispatch-farm-mail.ts::content_topic_uses.asset_type=direct_mail_postcard",
   "lib/intelligence/manager-standup.ts::remotion_composition_renders.render_status=completed",
@@ -79,6 +77,5 @@
   "lib/onboarding/critical-setup.ts::platform_credentials.platform=zoom",
   "lib/pricing/predictive-pricing.ts::price_trend_alerts.alert_type=price_gap",
   "lib/pricing/predictive-pricing.ts::pricing_history.price_type=ai_prediction",
-  "lib/workflow/adapters/schedule-showing.ts::brokerage_integrations.status=active",
   "lib/workflow/adapters/schedule-showing.ts::showings.sync_source=workflow_sequence"
 ]

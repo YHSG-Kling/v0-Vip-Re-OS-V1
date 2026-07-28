@@ -14,6 +14,7 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 import { syncContactToCRM } from "@/lib/crm/sync"
+import { INTEGRATION_STATUS_CONNECTED, INTEGRATION_STATUS_NOT_CONFIGURED } from "@/lib/integrations/integration-status"
 
 export type CrmProvider = "gohighlevel" | "lofty" | "followupboss"
 const CRM_PROVIDERS: CrmProvider[] = ["gohighlevel", "lofty", "followupboss"]
@@ -94,7 +95,10 @@ export async function connectCrmAction(params: {
   const { error: intErr } = await supabase
     .from("brokerage_integrations")
     .upsert(
-      { brokerage_id: member.brokerageId, provider_type: "crm", provider_name: params.provider, status: "active", metadata: { configured_by: member.userId } },
+      // brokerage_integrations.status ∈ (connected, error, not_configured).
+      // This wrote 'active', which the CHECK rejects — so the credential landed
+      // and the integration row did not, and the caller saw a failed connect.
+      { brokerage_id: member.brokerageId, provider_type: "crm", provider_name: params.provider, status: INTEGRATION_STATUS_CONNECTED, metadata: { configured_by: member.userId } },
       { onConflict: "brokerage_id,provider_name" },
     )
   if (intErr) return { ok: false, error: intErr.message }
@@ -114,7 +118,7 @@ export async function disconnectCrmAction(provider: CrmProvider): Promise<{ ok: 
     await supabase.from("agent_api_credentials").update({ is_active: false }).eq("agent_id", member.agentId).eq("service_name", provider)
   } else {
     await supabase.from("integration_credentials").update({ is_active: false }).eq("brokerage_id", member.brokerageId).eq("provider_name", provider)
-    await supabase.from("brokerage_integrations").update({ status: "not_configured" }).eq("brokerage_id", member.brokerageId).eq("provider_name", provider)
+    await supabase.from("brokerage_integrations").update({ status: INTEGRATION_STATUS_NOT_CONFIGURED }).eq("brokerage_id", member.brokerageId).eq("provider_name", provider)
   }
   revalidatePath("/settings/crm")
   return { ok: true }
@@ -203,7 +207,7 @@ export async function getCrmStatusAction(): Promise<
     .select("provider_name, status")
     .eq("brokerage_id", member.brokerageId)
     .eq("provider_type", "crm")
-    .eq("status", "active")
+    .eq("status", INTEGRATION_STATUS_CONNECTED)
     .maybeSingle()
   const connected = (creds ?? []).filter((c) => c.is_active).map((c) => c.provider_name as CrmProvider)
   return { ok: true, scope: "brokerage", active: active?.provider_name ?? null, connected }

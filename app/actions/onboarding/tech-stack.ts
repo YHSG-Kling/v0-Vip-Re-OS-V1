@@ -13,6 +13,7 @@ import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { PROVIDER_METADATA, type ProviderName } from "@/lib/onboarding/integration-tester"
+import type { IntegrationStatus } from "@/lib/integrations/integration-status"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -20,7 +21,7 @@ export interface ProviderStatus {
   provider: ProviderName
   displayName: string
   providerType: string
-  status: "connected" | "error" | "not_configured"
+  status: IntegrationStatus
   lastTestedAt: string | null
   lastError: string | null
   hasCredentials: boolean

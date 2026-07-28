@@ -3446,3 +3446,46 @@ Probe vendors deleted; `vendors` carries no leftover test data.
 
 Vocabulary baseline: **85 → 82**. Chain: **114 simulators**. `tsc --noEmit`: 0.
 `npm run guard`: exit 0.
+
+---
+
+## Connecting a brokerage CRM could not succeed
+
+`brokerage_integrations.status`:
+
+```
+CHECK (status = ANY (ARRAY['connected','error','not_configured']))
+```
+
+There is no `'active'`. `connectCrmAction` upserted exactly that:
+
+```ts
+.upsert({ …, status: "active", … })
+if (intErr) return { ok: false, error: intErr.message }
+```
+
+Verified live: that insert raises `check_violation`. The **credential** upsert runs first and
+succeeds, so a brokerage that clicked Connect ended up with the CRM credential stored, no
+integration row, and an error message — a half-connected state with no way to tell from the UI
+which half landed. Unlike most of this class the failure was at least visible; what it was not
+was recoverable, since retrying repeats the same rejection.
+
+Three reads asked for the same impossible value, and those failed silently:
+
+| reader | consequence |
+| --- | --- |
+| `crm-connect.ts` `getCrmStatus` | the CRM settings page always reported no active integration |
+| `lib/crm/sync.ts` | never resolved a brokerage-level provider; every sync fell back |
+| `lib/workflow/adapters/schedule-showing.ts` | never found the ShowingTime API key; every showing took the manual path |
+
+Measured live with a probe integration row stored as `'connected'`: the old filter returned
+**0**, the corrected one **1**.
+
+The rest of the codebase already had this right — the OAuth callback writes `'connected'`, and
+onboarding's tech-stack surface even had the correct union typed inline.
+`lib/integrations/integration-status.ts` is the one copy now; that inline union imports it.
+
+`npm run test:integration-status` — 24 checks, pure, on the chain. Probe row deleted.
+
+Vocabulary baseline: **82 → 79**. Chain: **115 simulators**. `tsc --noEmit`: 0.
+`npm run guard`: exit 0.

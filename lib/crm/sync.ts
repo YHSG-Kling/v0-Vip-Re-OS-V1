@@ -14,6 +14,7 @@ import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { syncContactToFollowUpBoss } from "@/lib/crm/providers/followupboss"
 import { syncContactToLofty } from "@/lib/crm/providers/lofty"
 import { syncContactToHubSpot } from "@/lib/crm/providers/hubspot"
+import { INTEGRATION_STATUS_CONNECTED } from "@/lib/integrations/integration-status"
 
 export interface CRMContactPayload {
   firstName: string
@@ -88,7 +89,7 @@ export async function syncContactToCRM(
         .select("provider_name, status")
         .eq("brokerage_id", brokerageId)
         .eq("provider_type", "crm")
-        .eq("status", "active")
+        .eq("status", INTEGRATION_STATUS_CONNECTED)
         .maybeSingle()
       if (integration?.provider_name) {
         providerKey = integration.provider_name
