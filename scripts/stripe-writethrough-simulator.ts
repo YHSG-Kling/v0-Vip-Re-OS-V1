@@ -59,8 +59,21 @@ function sourceLayer() {
   check("new primitives: extendTrialAction + pauseSubscriptionAction", /export async function extendTrialAction/.test(bm) && /export async function pauseSubscriptionAction/.test(bm))
   const ops = src("lib/billing/stripe-subscription-ops.ts")
   check("Stripe ops call the SDK when configured, skip cleanly otherwise", /isStripeConfigured\(\)/.test(ops) && /stripe\.subscriptions\.update/.test(ops))
+  // The tolerance layer moved when the resolution order was consolidated into
+  // lib/entitlements/resolve.ts — it is isTrial/isDisable there, not
+  // isTrialOverride/isDisableOverride in 0.1-feature-access.ts. This assertion
+  // chased the pre-consolidation names in the pre-consolidation file and had been
+  // failing ever since; the behaviour it guards was present and correct the whole
+  // time. Now it asserts the tolerance itself, and that the resolver consumes it.
+  const res = src("lib/entitlements/resolve.ts")
+  check("the entitlement resolver READS tolerant-of-both spellings",
+    /const isTrial = .*"grant_trial".*\|\|.*"trial"/.test(res) &&
+    /const isDisable = .*"disable".*\|\|.*"disabled"/.test(res))
+  check("and the resolution order actually applies the override",
+    /if \(isTrial\(i\.override\?\.type\)\)/.test(res) && /if \(isDisable\(i\.override\?\.type\)\)/.test(res))
   const fa = src("lib/kernel/0.1-feature-access.ts")
-  check("the entitlement engine READS tolerant-of-both spellings", /isTrialOverride\(override\?\.override_type\)/.test(fa) && /isDisableOverride\(override\?\.override_type\)/.test(fa))
+  check("feature-access hands the override to that one resolver",
+    /resolveEntitlement\(\{/.test(fa) && /\n\s*override,/.test(fa))
   check("the entitlement engine WRITES the canonical DB-valid values", /override_type:\s*"grant_trial"/.test(fa) && /override_type:\s*"disable"/.test(fa) && !/override_type:\s*"disabled"/.test(fa) && !/override_type:\s*"trial"/.test(fa))
   const ui = src("app/dashboard/superadmin/brokerages/[id]/brokerage-actions.tsx")
   check("the tenant actions card has extend-trial + pause controls", /extendTrialAction/.test(ui) && /pauseSubscriptionAction/.test(ui))

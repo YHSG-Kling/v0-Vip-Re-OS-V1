@@ -3046,3 +3046,54 @@ mentioned.
 Live rows cleaned to 0.
 
 `tsc --noEmit`: 0. `npm run guard`: 105 simulators, exit 0.
+
+---
+
+## Two red simulators nobody could see
+
+`stripe-writethrough` (22/23) and `cda-pdf-fill` (7/13) were failing. Both had a package
+script and neither was on the `guard` chain — so CI never ran them, and they had been red for
+however long it took the code to move underneath them. That is the whole finding: a test that
+CI does not run is not a test, it is a file.
+
+**Neither failure was a real defect.** Both were assertions that outlived the code they guarded.
+
+### stripe-writethrough — a refactor the test didn't follow
+
+It asserted the entitlement engine calls `isTrialOverride(...)` / `isDisableOverride(...)` in
+`lib/kernel/0.1-feature-access.ts`. Those names exist nowhere. The tolerance layer is real, but
+it moved when the resolution order was consolidated into `lib/entitlements/resolve.ts`:
+
+```ts
+const isTrial   = (t) => t === "grant_trial" || t === "trial"
+const isDisable = (t) => t === "disable"     || t === "disabled"
+```
+
+Same behaviour, different names, different file. Before concluding that, I checked whether
+overrides were applied at all — `feature_access_overrides` is loaded and passed along, and for
+a moment it looked like a superadmin's grant-trial might be inert. It is not; `resolve.ts`
+consumes it at steps 5 and 6 of the documented order. The check now asserts the tolerance
+itself and that the resolver applies it, which is a stronger claim than the original made.
+
+### cda-pdf-fill — a test asserting behaviour the product deliberately removed
+
+Six failures, all the same shape: it expected `agent_net` to auto-fill onto the PDF as
+`$14,000.00`. The resolver refuses, on purpose, and says so:
+
+> *"The agent FILLS THE CDA IN — no autofill of the money. A waterfall field is NEVER
+> pre-filled from the computed value: the agent must type it in, and the computed value is
+> retained only as the EXPECTED baseline the AI audits the entry against."*
+
+A CDA is a disbursement authorization; the figures on it have to be the agent's own entry, not
+a number the system quietly wrote for them. The simulator was guarding the pre-rule behaviour
+and failing against the rule.
+
+Rewritten to guard the rule: a waterfall field is **not** pre-filled and lands in `unmapped`,
+its computed baseline survives in `expectedFormatted` for the audit hint, objective transaction
+facts still pre-fill, and — a case the old file never covered — the agent's **own entry** does
+reach the PDF, formatted, and round-trips. 16 checks, up from 13, and it now protects a
+compliance rule rather than a formatting detail.
+
+Both are on the guard chain now: **107 simulators**.
+
+`tsc --noEmit`: 0. `npm run guard`: exit 0.
