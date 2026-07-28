@@ -470,7 +470,10 @@ export async function loadCriticalSetupFacts(
   facts.autonomyPostureReviewed = ((managed.data ?? []) as any[])
     .some((m) => { const c = m?.config; return c && typeof c === "object" && !!(c as any).autonomy_tier })
   const emailCred = await svc.from("platform_credentials").select("id")
-    .eq("brokerage_id", brokerageId).eq("is_active", true).eq("scope", "email").limit(1)
+    // platform_credentials.scope is the OWNERSHIP level (brokerage|team|agent), not a
+// provider family — filtering it by "email"/"calendar"/"financial" matched nothing, so
+// this setup check could never be satisfied no matter what the tenant connected.
+    .eq("brokerage_id", brokerageId).eq("is_active", true).in("platform", ["sendgrid", "resend", "postmark", "mailgun", "gmail", "outlook"]).limit(1)
   facts.emailProviderConfigured = !!(g.from_email || g.smtp_host) || ((emailCred.data ?? []) as any[]).length > 0
   facts.smsProviderConfigured = ((smsCred.data ?? []) as any[]).length > 0
   facts.zoomConnected = ((zoomCred.data ?? []) as any[]).length > 0
@@ -495,10 +498,10 @@ export async function loadCriticalSetupFacts(
         : Promise.resolve({ data: [] } as any),
       params.agentId
         ? svc.from("platform_credentials").select("id").eq("owner_type", "agent").eq("owner_id", params.agentId)
-            .eq("is_active", true).in("scope", ["calendar", "email"]).limit(1)
+            .eq("is_active", true).in("platform", ["google_calendar", "gmail", "outlook", "sendgrid", "resend", "postmark", "mailgun"]).limit(1)
         : Promise.resolve({ data: [] } as any),
       svc.from("platform_credentials").select("id").eq("agent_user_id", params.userId)
-        .eq("is_active", true).in("scope", ["calendar", "email"]).limit(1),
+        .eq("is_active", true).in("platform", ["google_calendar", "gmail", "outlook", "sendgrid", "resend", "postmark", "mailgun"]).limit(1),
       svc.from("push_subscriptions").select("id").eq("user_id", params.userId).is("disabled_at", null).limit(1),
       svc.from("contacts").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId),
       // Twin (avatar + cloned voice) — the training-output mirror; agents.voice_id/
@@ -558,7 +561,7 @@ export async function loadCriticalSetupFacts(
     const [{ data: v }, payout, qb, taxDoc] = await Promise.all([
       svc.from("vendors").select("category, phone, status, name").eq("id", params.vendorId).maybeSingle(),
       svc.from("platform_credentials").select("id").eq("owner_type", "vendor").eq("owner_id", params.vendorId)
-        .eq("is_active", true).in("scope", ["financial"]).limit(1),
+        .eq("is_active", true).in("platform", ["stripe", "plaid", "quickbooks"]).limit(1),
       svc.from("platform_credentials").select("id").eq("owner_type", "vendor").eq("owner_id", params.vendorId)
         .eq("platform", "quickbooks").eq("is_active", true).limit(1),
       svc.from("vendor_tax_documents").select("status, vendor_name_at_filing")

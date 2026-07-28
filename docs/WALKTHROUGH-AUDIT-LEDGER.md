@@ -2909,3 +2909,50 @@ lines to avoid.
 Baseline: **121 → 105**.
 
 `tsc --noEmit`: 0. `npm run guard`: 105 simulators, exit 0.
+
+---
+
+## Setup checks that could never be satisfied
+
+`platform_credentials.scope` is the **ownership level** — `brokerage | team | agent`. Five
+predicates in the onboarding readiness registry used it as a **provider family**, filtering
+`scope IN ('email','calendar')` and `scope = 'financial'`. Neither word is in the constraint,
+so every one of those queries returned nothing regardless of what the tenant had connected.
+
+That registry is described in its own header as "28 items, every checker a derived DB
+predicate, no aspirational rows". Five of its checkers were structurally incapable of ever
+returning true:
+
+- `emailProviderConfigured` — the credential half never contributed (it survived only because
+  it also ORs against `from_email`/`smtp_host` on the brokerage settings row)
+- the agent's calendar/email item, and the staff equivalent
+- the vendor payout item
+- `setup-readiness`'s `hasEmailOrCalendar` for non-agent staff
+
+An agent connects Gmail and the setup meter still says they haven't. The meter is mounted on
+the Command Center, on onboarding step 1 and on the agent strip, so this was visible in three
+places at once. Repointed to `platform`, which is where the provider actually lives —
+`gmail | outlook | google_calendar | sendgrid | resend | postmark | mailgun` for the mail and
+calendar families, `stripe | plaid | quickbooks` for the financial one.
+
+### Two integrations that exist only as a question
+
+`platform = 'wordpress'` (blog publishing) and `platform = 'zoom'` (the `zoomConnected` setup
+fact) are absent from the 51-value platform vocabulary, and **nothing anywhere writes either
+one** — no OAuth route, no connect action, no insert. So these are not broken reads of real
+data; they are reads of a credential type the system cannot create. The blog WordPress publish
+path and the Zoom setup item are unbuilt, and their checks report "not configured" forever,
+which is accidentally honest.
+
+Left alone deliberately. Fixing them means either widening the CHECK and building the
+connector, or removing the check — both product decisions, not cleanups, and the registry's
+own rule ("no aspirational rows") says the Zoom item probably should not be on the list at
+all. Flagged here rather than guessed at.
+
+Also stripped as dead weight: `xero` beside `quickbooks`, and `google`/`tiktok` beside the
+real ad platforms — left in place where they sit beside a valid value, since the enum spells
+those `platform_social_tiktok` and has no bare `google`.
+
+Baseline: **105 → 100**.
+
+`tsc --noEmit`: 0. `npm run guard`: exit 0.

@@ -449,7 +449,9 @@ export async function loadSetupReadiness(params: {
     if (isStaff) {
       const { data } = await svc.from("agent_api_credentials").select("id").eq("brokerage_id", brokerageId ?? "").eq("is_active", true).limit(50)
       // agent_api_credentials is keyed by agent_id; for non-agent staff we accept a user-scoped platform cred instead.
-      const pc = await svc.from("platform_credentials").select("id").eq("agent_user_id", userId).eq("is_active", true).in("scope", ["email", "calendar"]).limit(1)
+      // platform_credentials.scope is the OWNERSHIP level (brokerage|team|agent), not a
+      // provider family — filtering it by "email"/"calendar"/"financial" matched nothing.
+      const pc = await svc.from("platform_credentials").select("id").eq("agent_user_id", userId).eq("is_active", true).in("platform", ["google_calendar", "gmail", "outlook", "sendgrid", "resend", "postmark", "mailgun"]).limit(1)
       snap.hasEmailOrCalendar = ((data ?? []).length > 0 && !!agentId) || has(pc)
     }
 
