@@ -245,7 +245,7 @@ export function AdminDashboardClient({ brokerageId, operationalSnapshot }: Admin
             { label: 'Users & Roles',      hint: 'Invite, edit roles, deactivate',        href: '/dashboard/admin/users',           icon: Users },
             { label: 'Support Tickets',    hint: 'Triage & reply to your agents',         href: '/dashboard/admin/support-tickets', icon: LifeBuoy },
             { label: 'Financial Reports',  hint: 'Income reporting & report history',     href: '/dashboard/financials/reports',    icon: FileText },
-            { label: 'Brokerage P&L',      hint: 'Profit & loss statement',               href: '/dashboard/admin/brokerage-pnl',   icon: DollarSign },
+            { label: 'Brokerage P&L',      hint: 'Profit & loss statement',               href: '/dashboard/financials/brokerage',   icon: DollarSign },
             { label: 'Usage',              hint: 'Platform usage across the brokerage',   href: '/dashboard/admin/usage',           icon: BarChart3 },
             { label: 'Recruiting',         hint: 'Pipeline & recruiting ROI',             href: '/dashboard/recruiting-roi',        icon: Target },
           ].map(({ label, hint, href, icon: Icon }) => (

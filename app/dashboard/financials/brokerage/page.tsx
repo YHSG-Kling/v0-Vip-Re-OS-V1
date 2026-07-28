@@ -5,6 +5,8 @@ import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Suspense } from "react"
+import { generateBrokeragePnl } from "@/lib/intelligence/brokerage-pnl"
+import { Handshake } from "lucide-react"
 import {
   DollarSign,
   TrendingUp,
@@ -718,7 +720,68 @@ export default async function BrokeragePLPage() {
 
       {/* ─── SECTION 9: AGENT P&L TRUTH ENGINE ────────────────────────────────── */}
       {/* Per-agent net ROI: GCI – agent_payout – AI costs – fees = true brokerage margin */}
+      {/* ─── SECTION 8: RECRUITING & REFERRAL ECONOMICS ────────────────────────
+          KEEP-ONE. /dashboard/admin/brokerage-pnl rendered a second "Brokerage P&L"
+          — same nav label, same owner audience, a fraction of the depth (134 lines
+          against this page's 1,421). It was removed, but NOT before porting the two
+          things it had that this page did not: recruiting ROI and referral value.
+          A grep for recruit|referral across this directory previously returned
+          nothing, so deleting the smaller page without this section would have lost
+          the owner's whole recruiting-economics view. Same generateBrokeragePnl
+          source, so the numbers agree with what that page showed. */}
+      <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+        <RecruitingAndReferralEconomics brokerageId={profile.brokerage_id} />
+      </Suspense>
+
       <AgentPLTruthSection brokerageId={profile.brokerage_id} />
+    </div>
+  )
+}
+
+/**
+ * Recruiting + referral economics — the owner's two questions this P&L could not
+ * answer: did recruiting pay for itself, and what are referral partners worth.
+ */
+async function RecruitingAndReferralEconomics({ brokerageId }: { brokerageId: string }) {
+  const pnl = await generateBrokeragePnl({ brokerageId })
+  const usd = (n: number | null | undefined) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
+      .format(Number(n ?? 0))
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Users className="h-5 w-5" /> Recruiting economics
+          </CardTitle>
+          <CardDescription>Did recruiting pay for itself</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-1 text-sm">
+          <div className="flex justify-between"><span className="text-muted-foreground">Recruited agents</span><span className="font-medium">{pnl.recruiting.recruitedAgentCount}</span></div>
+          <div className="flex justify-between"><span className="text-muted-foreground">Total recruiting cost</span><span className="font-medium">{usd(pnl.recruiting.totalRecruitingCost)}</span></div>
+          <div className="flex justify-between"><span className="text-muted-foreground">Lifetime brokerage net</span><span className="font-medium">{usd(pnl.recruiting.lifetimeBrokerageNet)}</span></div>
+          <div className="flex justify-between border-t pt-1 mt-1">
+            <span className="text-muted-foreground">Blended ROI</span>
+            <span className={"font-semibold " + ((pnl.recruiting.blendedRoiPct ?? 0) >= 0 ? "text-green-700" : "text-red-700")}>
+              {pnl.recruiting.blendedRoiPct === null ? "—" : `${pnl.recruiting.blendedRoiPct}%`}
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Handshake className="h-5 w-5" /> Referral economics
+          </CardTitle>
+          <CardDescription>What partner relationships are worth</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-1 text-sm">
+          <div className="flex justify-between"><span className="text-muted-foreground">Active partners</span><span className="font-medium">{pnl.referrals.activePartners}</span></div>
+          <div className="flex justify-between"><span className="text-muted-foreground">Partner value generated</span><span className="font-medium">{usd(pnl.referrals.partnerValueGenerated)}</span></div>
+          <p className="text-xs text-muted-foreground pt-2">Credited automatically by the referral closing loop as deals close.</p>
+        </CardContent>
+      </Card>
     </div>
   )
 }

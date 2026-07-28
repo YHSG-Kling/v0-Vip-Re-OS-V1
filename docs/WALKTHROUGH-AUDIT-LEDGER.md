@@ -2028,3 +2028,62 @@ Repo scan: 185 agents-FK tables, 50 agent-ish users-FK tables, 57 contacts-FK ta
 **0 offenders across all three**.
 
 `tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.
+
+---
+
+## Two "Brokerage P&L" screens — merge, then remove
+
+The owner reported two UI surfaces doing the same thing. Rather than guess, the check was
+mechanical: parse `navigation-config.ts` and find **labels that point at more than one href**.
+481 nav entries, 14 duplicate labels.
+
+Ten were false alarms — `Dashboard`, `Settings`, `Documents`, `Approvals`, `Connections` and
+`More` legitimately exist once per persona (lender, title, vendor, portal, compliance each get
+their own). Same word, different audience, not a duplicate.
+
+### The settings trees were already consolidated
+
+The PR body still calls `app/settings/*` vs `app/dashboard/settings/*` "the largest structural
+drift". It is no longer true on this branch, and verifying that mattered before touching
+anything:
+
+- `/dashboard/settings/general` → a 6-line `redirect("/settings/general")`
+- `/dashboard/settings/branding` → a redirect to `/settings/branding`
+- `/settings/integrations` → a redirect to `/settings/connections`, carrying a KEEP-ONE note
+  that `/dashboard/settings/integrations` (platform credentials, provider overrides, IDX
+  Broker, lead sources) is a **different** surface and stays
+
+Three redirects, one documented exception. Nothing to squash.
+
+### The real one
+
+| | `/dashboard/financials/brokerage` | `/dashboard/admin/brokerage-pnl` |
+|---|---|---|
+| size | 1,421 lines across 5 files | 134 lines |
+| content | P&L line items, agent P&L table, 12-month trend, 6-month forecast, margin breakdown | YTD GCI, company dollar, production by agent |
+| **recruiting ROI** | **absent** | present |
+| **referral value** | **absent** | present |
+
+Same nav label, same owner audience, same question — two screens. The larger one is obviously
+the survivor, and deleting the smaller one on that basis alone would have **silently removed
+the owner's entire recruiting-economics view**: a grep for `recruit|referral` across
+`app/dashboard/financials/brokerage/` returned nothing at all.
+
+So, merge first. `RecruitingAndReferralEconomics` now renders on the surviving page from the
+**same** `generateBrokeragePnl` source, so the numbers agree with what the deleted page showed:
+recruited agent count, total recruiting cost, lifetime brokerage net, blended ROI (green/red),
+active partners, partner value generated.
+
+Then remove: `app/dashboard/admin/brokerage-pnl/page.tsx` deleted, and both inbound links
+repointed — the nav child entry and the admin dashboard tile. A grep confirms the only
+surviving mention of the old path is the KEEP-ONE comment explaining where it went.
+
+### Still on the list
+
+Three same-persona duplicate labels remain unexamined and are NOT being touched blind:
+`Knowledge Base` (`/dashboard/admin/knowledge` vs `/dashboard/settings/knowledge-base`),
+`Lead Magnets` (admin vs agent — possibly a legitimate scope split), and
+`System` / `System Health`, where **two different labels** point at the same pair
+(`/dashboard/superadmin/observability` vs `/dashboard/system`) — the muddled one.
+
+`tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.

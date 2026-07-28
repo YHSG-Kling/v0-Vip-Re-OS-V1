@@ -485,7 +485,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Brokerage Ops & Insights',
         icon: 'Gauge',
         children: [
-          { id: 'brokerage-pnl', label: 'Brokerage P&L', href: '/dashboard/admin/brokerage-pnl', icon: 'TrendingUp' },
+          { id: 'brokerage-pnl', label: 'Brokerage P&L', href: '/dashboard/financials/brokerage', icon: 'TrendingUp' },
           { id: 'agent-scorecard', label: 'Agent Scorecard', href: '/dashboard/admin/agent-scorecard', icon: 'Award' },
           { id: 'transaction-propensity', label: 'Transaction Propensity', href: '/dashboard/admin/transaction-propensity', icon: 'Target' },
           { id: 'strategy-insights', label: 'Strategy Insights', href: '/dashboard/admin/strategy-insights', icon: 'Lightbulb' },
