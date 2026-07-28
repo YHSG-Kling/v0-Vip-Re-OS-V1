@@ -92,6 +92,10 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
   const [sellerConcessions, setSellerConcessions] = useState(
     String(latestNetSheet?.seller_concessions ?? 0)
   )
+  // Saved sheet wins (the agent may have overridden it), else the agreed fee.
+  const [transactionFee, setTransactionFee] = useState(
+    String(latestNetSheet?.transaction_fee ?? agreement?.seller_transaction_fee ?? 0)
+  )
 
   const [activeScenario, setActiveScenario] = useState<"recommended" | "quick" | "premium">("recommended")
   const [savedMsg, setSavedMsg] = useState<string | null>(null)
@@ -122,7 +126,10 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
   const hoa = Number(hoaFees) || 0
   const repairs = Number(repairCredits) || 0
   const concessions = Number(sellerConcessions) || 0
-  const totalCosts = listComm + buyerComm + closing + payoff + taxes + hoa + repairs + concessions
+  // Agreed flat brokerage transaction fee charged to the SELLER (m283). Editable,
+  // pre-filled from the listing agreement. NOT the agent-side transaction fee.
+  const txFee = Number(transactionFee) || 0
+  const totalCosts = listComm + buyerComm + closing + payoff + taxes + hoa + repairs + concessions + txFee
   const netProceeds = price - totalCosts
 
   const isExpired =
@@ -136,6 +143,7 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
     mortgagePayoff: payoff,
     agentCommission: listComm + buyerComm,
     closingCosts: closing,
+    transactionFee: txFee,
     estimatedNet: netProceeds,
   }
 
@@ -155,6 +163,7 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
         hoaFees: Number(hoaFees) || undefined,
         repairCredits: Number(repairCredits) || undefined,
         sellerConcessions: Number(sellerConcessions) || undefined,
+        transactionFee: txFee || undefined,
       })
       setSavedMsg(result.success ? "Net sheet saved." : result.error ?? "Save failed.")
     })
@@ -392,6 +401,16 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
                 />
               </div>
               <div>
+                <Label className="text-xs text-muted-foreground">Transaction Fee (flat)</Label>
+                <Input
+                  type="number"
+                  step="1"
+                  value={transactionFee}
+                  onChange={(e) => setTransactionFee(e.target.value)}
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+              <div>
                 <Label className="text-xs text-muted-foreground">Seller Concessions</Label>
                 <Input
                   type="number"
@@ -469,6 +488,7 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
             {hoa > 0 && <Row label="HOA Fees" value={`-${fmt(hoa)}`} negative />}
             {repairs > 0 && <Row label="Repair Credits" value={`-${fmt(repairs)}`} negative />}
             {concessions > 0 && <Row label="Seller Concessions" value={`-${fmt(concessions)}`} negative />}
+            {txFee > 0 && <Row label="Transaction Fee" value={`-${fmt(txFee)}`} negative />}
             <Separator />
             <div className="flex justify-between font-semibold text-base pt-1">
               <span>Net Proceeds</span>

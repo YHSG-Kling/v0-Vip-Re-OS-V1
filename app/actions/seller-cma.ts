@@ -120,6 +120,7 @@ interface ListingAgreement {
   total_commission_rate: number | null
   commission_is_flat_fee: boolean | null
   commission_flat_amount: number | null
+  seller_transaction_fee: number | null
   has_commission_adjustment: boolean | null
   adjustment_type: string | null
   adjustment_value: number | null
@@ -170,6 +171,8 @@ interface NetSheetCalc {
   hoa_fees: number | null
   repair_credits: number | null
   seller_concessions: number | null
+  /** Flat seller transaction fee used on this saved sheet (m284). */
+  transaction_fee: number | null
   gross_proceeds: number | null
   total_costs: number | null
   net_proceeds: number | null
@@ -203,7 +206,7 @@ export async function loadCMAPageData(listingId: string): Promise<CMAPageData> {
     supabase
       .from("listing_agreements")
       .select(
-        "id, listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_notes, esign_status, fully_executed_at"
+        "id, listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_notes, esign_status, fully_executed_at"
       )
       .eq("listing_id", listingId)
       .order("created_at", { ascending: false })
@@ -288,7 +291,7 @@ export async function loadNetSheetPageData(listingId: string): Promise<NetSheetP
     supabase
       .from("listing_agreements")
       .select(
-        "id, listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_notes, esign_status, fully_executed_at"
+        "id, listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_notes, esign_status, fully_executed_at"
       )
       .eq("listing_id", listingId)
       .order("created_at", { ascending: false })
@@ -415,6 +418,8 @@ export async function saveNetSheet(params: {
   hoaFees?: number
   repairCredits?: number
   sellerConcessions?: number
+  /** Flat brokerage transaction fee charged to the SELLER (m283/m284). */
+  transactionFee?: number
 }): Promise<{ success: boolean; netSheetId?: string; error?: string }> {
   const supabase = await createClient()
 
@@ -442,7 +447,8 @@ export async function saveNetSheet(params: {
     (params.propertyTaxes ?? 0) +
     (params.hoaFees ?? 0) +
     (params.repairCredits ?? 0) +
-    (params.sellerConcessions ?? 0)
+    (params.sellerConcessions ?? 0) +
+    (params.transactionFee ?? 0)
   const netProceeds = params.salePrice - totalCosts
 
   // Multi-scenario array stored in scenarios jsonb
@@ -466,6 +472,7 @@ export async function saveNetSheet(params: {
       listing_commission_rate: params.listingCommissionRate ?? 3,
       buyer_commission_rate: params.buyerCommissionRate ?? 3,
       closing_costs: closingCosts,
+      transaction_fee: params.transactionFee ?? 0,
       mortgage_balance: params.mortgageBalance ?? 0,
       mortgage_payoff_amount: params.mortgagePayoffAmount ?? params.mortgageBalance ?? 0,
       property_taxes: params.propertyTaxes ?? 0,

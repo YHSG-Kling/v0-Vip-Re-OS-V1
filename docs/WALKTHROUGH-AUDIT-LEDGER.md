@@ -960,3 +960,40 @@ disclose-first policy (`decideNetSheetPolicy`) sees an unbacked commission for w
 
 All three sheets — CMA tab, offers tab, portal cron — now price from one resolver. There is no
 fourth: `net_sheet_calculations` is a persisted result, not a second calculator.
+
+---
+
+## Owner ruling: a flat transaction fee is a net-sheet line
+
+`SellerCosts` had no line for a brokerage transaction fee charged to the seller at closing, so
+every net sheet overstated the seller's proceeds by it.
+
+**The trap this had to avoid.** `agent_commission_profiles.transaction_fee`, `agents.transaction_fee`
+and `transaction_fee_type/value` already exist — and they are **agent-side**: what the agent pays
+the brokerage out of their own split. Reusing them would have deducted the agent's desk cost from
+the seller's proceeds. Different payer, different column. `listing_agreements.seller_transaction_fee`
+(m283) is the seller-side term, flat dollars only; a percentage charge is commission and belongs in
+the rate columns.
+
+Added as a **required** field on `SellerCosts` rather than optional, which made the compiler
+enumerate every consumer instead of letting some silently keep the old total: the interactive sheet,
+the equity estimator, and three simulators. All updated; the pre-listing equity estimate passes 0
+deliberately (no listing agreement exists yet to set one).
+
+It flows through all three sheets, the provenance ledger (`transactionFee` is a `CostLineKey`,
+defaulting to `template` — a brokerage fee is policy, and zero is a real answer), and the
+deterministic seller recommendation, which shares the same cost lines.
+
+**Persistence, because a vanishing edit is the bug I keep finding.** Every other editable line on
+the CMA sheet persists; a transaction fee that reset on reload would have been the same class of
+half-wire. m284 adds `net_sheet_calculations.transaction_fee`, the saved sheet wins over the
+agreement default, and `saveNetSheet` carries it into the total.
+
+Two smaller things fixed in passing: the CMA tab's `currentNetSheet` — the payload shared to the
+**seller's portal** and fed to the AI explanation — omitted the fee while `netProceeds` included
+it, so the seller's own numbers would not have reconciled; and `saveNetSheet`'s `totalCosts` had to
+include it or the persisted net would disagree with the rendered one.
+
+Verified: the fee is flat, reduces net by exactly its amount, and stays $495 at double the sale
+price rather than scaling like a percentage. Both migrations applied live and recorded in the
+snapshot; `schema-drift` green.

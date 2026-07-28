@@ -94,7 +94,7 @@ export default async function OffersPage({
   // Agreed commission terms. Scoped to the validated listing's brokerage.
   const { data: agreement } = await supabase
     .from("listing_agreements")
-    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, fully_executed_at")
+    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, fully_executed_at")
     .eq("listing_id", listingId)
     .eq("brokerage_id", listing.brokerage_id)
     .order("fully_executed_at", { ascending: false, nullsFirst: false })
@@ -113,6 +113,7 @@ export default async function OffersPage({
     listPrice: listing.list_price != null ? Number(listing.list_price) : null,
     commissionRateDecimal: agreed.rate,
     hoaDuesMonthly: (listing as any).hoa_dues != null ? Number((listing as any).hoa_dues) : null,
+    transactionFee: (agreement as any)?.seller_transaction_fee ?? null,
   })
   // KEEP-ONE (round 36): the net sheet's closing-cost line derives from the
   // seller closing-cost model when the listing's state is known — the flat

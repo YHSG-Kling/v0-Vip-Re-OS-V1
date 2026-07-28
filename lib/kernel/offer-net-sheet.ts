@@ -133,7 +133,7 @@ export async function runOfferNetSheets(
     // Agreed commission terms for this listing.
     const { data: agreementRow } = await supabase
       .from("listing_agreements")
-      .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount")
+      .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee")
       .eq("listing_id", lst.id)
       .eq("brokerage_id", brokerageId)
       .order("fully_executed_at", { ascending: false, nullsFirst: false })
@@ -159,6 +159,7 @@ export async function runOfferNetSheets(
           listPrice: lst.list_price != null ? Number(lst.list_price) : null,
           commissionRateDecimal,
           hoaDuesMonthly: lst.hoa_dues != null ? Number(lst.hoa_dues) : null,
+          transactionFee: (agreementRow as any)?.seller_transaction_fee ?? null,
         })
 
     // PROVENANCE — every line knows where its number came from. HOA from the

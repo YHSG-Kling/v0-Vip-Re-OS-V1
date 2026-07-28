@@ -19,6 +19,13 @@ export interface SellerCosts {
   countyCityTaxes: number
   hoaDuesProration: number
   otherProratedFees: number
+  /**
+   * Brokerage transaction fee charged to the SELLER at closing — a flat dollar
+   * amount, never a percentage. Distinct from agent_commission_profiles.transaction_fee
+   * and agents.transaction_fee, which are AGENT-side (paid out of the agent's split)
+   * and must never reduce the seller's proceeds.
+   */
+  transactionFee: number
   /** the buyer's requested closing-cost credit (offers.closing_cost_contribution) */
   buyerClosingCredit: number
 }
@@ -41,6 +48,7 @@ export interface OfferNetLine {
   countyCityTaxes: number
   hoaDuesProration: number
   otherProratedFees: number
+  transactionFee: number
   buyerClosingCredit: number
   netProceeds: number
 }
@@ -82,7 +90,8 @@ export function computeNetProceeds(
     costs.mortgagePayoff -
     costs.countyCityTaxes -
     costs.hoaDuesProration -
-    costs.otherProratedFees
+    costs.otherProratedFees -
+    costs.transactionFee
   )
 }
 
@@ -97,6 +106,7 @@ export function buildNetLine(offer: OfferNetInput, costs: SellerCosts): OfferNet
       countyCityTaxes: costs.countyCityTaxes,
       hoaDuesProration: costs.hoaDuesProration,
       otherProratedFees: costs.otherProratedFees,
+      transactionFee: costs.transactionFee,
     },
   )
   return {
@@ -109,6 +119,7 @@ export function buildNetLine(offer: OfferNetInput, costs: SellerCosts): OfferNet
     countyCityTaxes: costs.countyCityTaxes,
     hoaDuesProration: costs.hoaDuesProration,
     otherProratedFees: costs.otherProratedFees,
+    transactionFee: costs.transactionFee,
     buyerClosingCredit,
     netProceeds,
   }
@@ -201,6 +212,8 @@ export function defaultSellerCosts(args: {
   listPrice: number | null
   commissionRateDecimal: number
   hoaDuesMonthly: number | null
+  /** Brokerage transaction fee charged to the seller — flat dollars, default 0. */
+  transactionFee?: number | null
 }): Omit<SellerCosts, "buyerClosingCredit"> {
   const price = args.listPrice ?? 0
   return {
@@ -209,6 +222,7 @@ export function defaultSellerCosts(args: {
     countyCityTaxes: Math.round(price * 0.005),
     hoaDuesProration: args.hoaDuesMonthly ? Math.round(args.hoaDuesMonthly) : 0,
     otherProratedFees: Math.round(price * 0.01),
+    transactionFee: args.transactionFee != null ? Math.round(Number(args.transactionFee)) : 0,
   }
 }
 
@@ -226,7 +240,7 @@ export type CostLineSource =
   | "regional_estimate"  // state-convention band (lib/offers/seller-closing-costs) — a LABELED estimate
   | "default"            // heuristic starting point — an ESTIMATE, not a fact
 
-export type CostLineKey = "commissionRate" | "mortgagePayoff" | "countyCityTaxes" | "hoaDuesProration" | "otherProratedFees"
+export type CostLineKey = "commissionRate" | "mortgagePayoff" | "countyCityTaxes" | "hoaDuesProration" | "otherProratedFees" | "transactionFee"
 
 export type SellerCostProvenance = Record<CostLineKey, CostLineSource>
 
@@ -238,6 +252,9 @@ export function defaultProvenance(): SellerCostProvenance {
     countyCityTaxes: "default",
     hoaDuesProration: "default",
     otherProratedFees: "default",
+    // A brokerage transaction fee is policy, not a guess — but it defaults to
+    // zero, and zero is a real answer (many brokerages charge none).
+    transactionFee: "template",
   }
 }
 

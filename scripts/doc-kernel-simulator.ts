@@ -366,9 +366,9 @@ async function main() {
       netSheetConfidence({ ...base, mortgagePayoff: "confirmed" }) === "medium"
       && decideNetSheetPolicy({ ...base, mortgagePayoff: "confirmed" }).decision === "amber"
       && decideNetSheetPolicy({ ...base, mortgagePayoff: "confirmed" }).needsConfirmation.includes("countyCityTaxes")
-      && netSheetConfidence({ commissionRate: "template", mortgagePayoff: "confirmed", countyCityTaxes: "public_record", hoaDuesProration: "confirmed", otherProratedFees: "default" }) === "high")
+      && netSheetConfidence({ commissionRate: "template", mortgagePayoff: "confirmed", countyCityTaxes: "public_record", hoaDuesProration: "confirmed", otherProratedFees: "default", transactionFee: "template" }) === "high")
     const cs = counterScenario({ offerPrice: 500_000, buyerClosingCredit: 5_000 }, 515_000,
-      { commissionRate: 0.06, mortgagePayoff: 200_000, countyCityTaxes: 2_500, hoaDuesProration: 300, otherProratedFees: 5_000 })
+      { commissionRate: 0.06, mortgagePayoff: 200_000, countyCityTaxes: 2_500, hoaDuesProration: 300, otherProratedFees: 5_000, transactionFee: 0 })
     check("counter what-if: recomputed net + honest delta + risk-aware explanation (no persuasion on a downside)",
       cs.deltaVsOffer === Math.round(15_000 * 0.94) && cs.explanation.includes("if the buyer accepts"))
     check("the records parser adopts ONLY positive finite figures across BatchData's shapes; garbage yields nulls",
