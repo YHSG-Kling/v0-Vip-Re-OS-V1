@@ -1042,30 +1042,37 @@ export async function getAgentVideoProfile(agentId: string) {
 // ORIGINAL VIDEO GENERATION FUNCTIONS
 // ============================================
 
+/**
+ * PERSONALIZED CONTACT-MESSAGE scripts — welcome / thank-you / holiday /
+ * personalized buyer + seller / open-house invite, addressed to a named contact.
+ *
+ * NOT the same function as app/actions/video/generate-script.ts despite the shared
+ * name. That one writes MARKETING videos from a video type (property_tour,
+ * agent_intro, listing_presentation …) against the shared script-structure
+ * vocabulary, with word-count targeting and the evaluateOutbound compliance gate.
+ * This one writes a one-to-one message from a purpose + persona. Two products, one
+ * unfortunate name — nine functions in this repo are called generateVideoScript and
+ * most are genuinely distinct (library authoring, URL repurposing, project-based,
+ * the generic content pipeline, and a private hardcoded template).
+ *
+ * The second parameter shape that used to live here — agentId, brokerageId,
+ * targetDurationSeconds, listingContext, saveToLibrary — was labelled "used by
+ * /dashboard/videos/create". That page imports the OTHER generateVideoScript, and
+ * none of those five params was ever read in this body. It was dead surface area
+ * that made two distinct functions look like duplicates of each other. Removed.
+ * videoType and description stay: both are read below as fallbacks.
+ */
 export async function generateVideoScript(params: {
-  // Original prompt-driven shape
   purpose?: string
   persona?: string
   contactName?: string
   tone?: string
   length?: string
-  // Identity / context shape used by /dashboard/videos/create caller
   userId?: string  // ignored — derived from session
-  brokerageId?: string  // ignored — derived from session
-  agentId?: string
-  description?: string
+  /** Fallback when no `purpose` is given. */
   videoType?: string
-  targetDurationSeconds?: number
-  listingContext?: {
-    address?: string
-    city?: string
-    state?: string
-    listPrice?: number
-    bedrooms?: number | null
-    bathrooms?: number | null
-    sqft?: number | null
-  }
-  saveToLibrary?: boolean
+  /** Free-text fallback when the purpose key is unrecognised. */
+  description?: string
 }) {
   // Auth gate — this function burns paid Claude inference under our API
   // key. Previously open: any caller could trigger script generation.

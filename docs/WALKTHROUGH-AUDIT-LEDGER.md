@@ -1769,3 +1769,65 @@ regional band tracks the scenario price, rather than a single figure being scale
 
 All four seller net sheets now resolve commission, closing costs and the transaction fee through
 one set of functions. `tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.
+
+---
+
+## Duplicate consolidation, round 1: two of the three "duplicates" weren't
+
+The open item listed seven duplicate families. Investigating the first three changed what
+the list means.
+
+### `generateVideoScript` ×9 — a name collision, not nine copies
+
+Nine functions share the name. Comparing signatures and bodies, they are mostly **distinct
+products**: library authoring (`video-content.ts`, writes `video_scripts_library`), listing
+highlight reels (`ai-listing-presentation.ts`), URL→script repurposing (`link-to-video.ts`),
+project-based generation (`lib/kernel/video.ts`, updates `ai_video_projects`), the generic
+content pipeline (`content-generator.ts`, one `content_type` among many), and a private
+hardcoded template string (`presentation-assembler.ts` — not even AI-generated).
+
+Renaming seven live functions would be churn with real regression risk and no user benefit.
+
+**One real defect did surface.** `video-generation.ts`'s version carried a second parameter
+shape commented *"Identity / context shape used by /dashboard/videos/create caller"* —
+`agentId`, `brokerageId`, `targetDurationSeconds`, `listingContext`, `saveToLibrary`. That page
+imports the **other** `generateVideoScript` (`app/actions/video/generate-script.ts`), and none
+of those five params is read anywhere in the body. Dead surface area that made two distinct
+functions look like copies of each other. Removed; `videoType` and `description` stay because
+both are genuinely read as fallbacks. Both live callers pass only the original prompt shape.
+
+The two are now documented as what they are: **personalized one-to-one contact messages**
+(welcome, thank-you, holiday, open-house invite) versus **marketing videos** driven by a video
+type against the shared script-structure vocabulary, with word-count targeting and the
+`evaluateOutbound` compliance gate.
+
+### `markCommissionPaid` / `completeMilestone` — the premise was wrong
+
+`app/actions/transactions.ts` and `lib/application/transactions.ts` define both with
+**identical signatures**, which reads as a copy. It isn't. The action file imports the lib file
+as `TransactionService` and delegates to it after validating UUIDs. That is correct two-layer
+architecture — a thin validating server-action shell over an application service — and
+collapsing it would have deleted the validation layer.
+
+### What the investigation actually found: two commission ledgers, two UI surfaces
+
+Chasing the remaining implementations surfaced something the "duplicate" framing was hiding:
+
+| surface | path | table | guarded |
+|---|---|---|---|
+| `PayoutButton` | `financial-kernel` → `lib/kernel/financial.ts` | `agent_commissions` | role gate + `.eq(brokerage_id)` |
+| transaction detail view | `app/actions/transactions.ts` → `lib/application/transactions.ts` | `transaction_commissions` | UUID validation only |
+| reconciler | `reconcile-tracking` → `lib/commission/payment-tracker.ts` | `agent_commissions` | server-side, no user role exists |
+
+**Marking a commission paid in the transaction detail view does not mark it paid in the
+`agent_commissions` ledger, and vice versa.** Both write a `status='paid'` transition to
+*different* tables.
+
+Live check: both tables are currently **empty** (0 rows, 0 paid), so nothing has diverged yet —
+the split is latent, not damaging. That is what makes it a design decision rather than a data
+repair, and it is why it is NOT being resolved in a refactor commit: `manager-registry.ts`
+already records this as a finance-owned consolidation target ("FOUR split formulas … across
+THREE table families"), and picking one ledger is a schema and business-process call, not a
+rename.
+
+`tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.
