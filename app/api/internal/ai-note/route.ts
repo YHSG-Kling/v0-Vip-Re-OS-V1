@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { NextRequest, NextResponse } from "next/server"
@@ -178,11 +179,15 @@ Rules:
     const noteId = noteRow.id
 
     // ── 2. activities (always) ────────────────────────────────────────────────
+    // activities.agent_id and tasks.assigned_to_agent_id both FK agents(id), not
+    // users(id) — writing user.id FK-rejected the row. Resolved once, reused below.
+    const actingAgentId = await resolveAgentId(service, user.id)
+
     const { data: activityRow } = await service
       .from("activities")
       .insert({
         brokerage_id: brokerageId,
-        agent_id: user.id,
+        agent_id: actingAgentId,
         contact_id: contactId,
         transaction_id: transactionId,
         activity_type: "ai_assistant_note",
@@ -263,13 +268,16 @@ Rules:
 
     // ── 7. tasks (human-confirmed, optional) ──────────────────────────────────
     let taskId: string | null = null
-    if (createTask && taskTitle?.trim()) {
+    // tasks.assigned_to_agent_id is NOT NULL and FKs agents(id) — a caller with no
+    // agent profile cannot be assigned a task, so skip it rather than write an id
+    // the foreign key will reject anyway.
+    if (createTask && taskTitle?.trim() && actingAgentId) {
       const dueDate = new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0]
       const { data: task } = await service
         .from("tasks")
         .insert({
           brokerage_id: brokerageId,
-          assigned_to_agent_id: user.id,
+          assigned_to_agent_id: actingAgentId,
           contact_id: contactId,
           transaction_id: transactionId,
           title: taskTitle.trim(),

@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import { STAGE_TRANSITIONS, CRITICAL_MILESTONES, TransactionStage, STAGE_TO_STATUS_MAP } from "./transaction-stages"
 import { getMilestones } from "./milestone-service"
@@ -472,7 +473,8 @@ export async function advanceStage(params: {
           contact_id: closedTxn.seller_contact_id,
           module_key: "sold_listing",
           is_enabled: true,
-          enabled_by_agent_id: params.userId,
+          // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
+          enabled_by_agent_id: await resolveAgentId(supabase, params.userId),
           enabled_at: new Date().toISOString(),
         }, { onConflict: "contact_id,module_key" })
     }
@@ -507,7 +509,8 @@ export async function advanceStage(params: {
         const sendDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)
         await supabase.from("activities").insert({
           brokerage_id: params.brokerageId,
-          agent_id: params.userId,
+          // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
+          agent_id: await resolveAgentId(supabase, params.userId),
           activity_type: "review_request_scheduled",
           title: "Review request ready to send",
           notes: `Auto-generated review request draft created. Recommend sending on ${sendDate.toLocaleDateString()}.`,

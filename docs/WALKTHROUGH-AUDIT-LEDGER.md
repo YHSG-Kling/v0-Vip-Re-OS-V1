@@ -1663,3 +1663,58 @@ payload found **15 more sites** writing a user-id expression into an agents-FK c
 carry an agents.id), so they are being worked separately rather than bulk-patched.
 
 `tsc --noEmit`: 0. schema-drift, tenant-scope, use-server-exports, no-orphan-actions: all pass.
+
+---
+
+## The id-class burn-down, and the sweep that lied the first time
+
+`saveNetSheet` writing a users.id into an agents(id) FK was not a one-off. Sweeping
+the live FK map against every insert/update payload closed the class.
+
+### The sweep was wrong before it was right
+
+First pass reported **15** wrong-class writes. Six were false, and the reason matters:
+the scan window was a fixed 900 characters from `.from(table)`, which spills past the
+end of that query into the NEXT one and attributes its payload to the wrong table. It
+flagged `newsletter_scheduled_sends.agent_id = user.id` as a bug — and that write is
+**correct**, because that column FKs **users(id)**, not agents.
+
+Cutting the window at the next `.from(` gives **9** real sites. Checking rather than
+bulk-patching is what the owner asked for, and it was load-bearing: a bulk fix would
+have broken a working newsletter write.
+
+Each of the 9 was confirmed a users.id before being touched — `distribute-video.ts`
+settles its own case by writing `params.userId` to **both** `user_id:` and `agent_id:`
+in one payload.
+
+| file | column | nullable |
+|---|---|---|
+| `buyer-financial.ts` | `activities.agent_id` | yes |
+| `cma-presentation/net-sheet-calculator.ts` ×2 | `activities.agent_id` | yes |
+| `video/distribute-video.ts` ×3 | `activities` / `client_portal_messages` / `social_posts` | mixed |
+| `api/internal/ai-chat/route.ts` | `client_portal_messages.agent_id` | **NOT NULL** |
+| `transactions/gift-order-trigger.ts` | `activities.agent_id` | yes |
+| `transactions/stage-progression.ts` ×2 | `activities` / `contact_portal_modules` | yes |
+| `api/internal/ai-note/route.ts` ×2 | `activities` / `tasks.assigned_to_agent_id` | **NOT NULL** |
+
+Nullability decided the shape of each fix. Nullable columns resolve-or-null. The two
+NOT NULL ones cannot: `tasks.assigned_to_agent_id` now **skips creating the task**
+when the caller has no agent profile rather than writing an id the FK will reject, and
+`ai-chat`'s `contact.agent_id ?? user.id` fallback — where the first branch was already
+a correct agents.id — resolves instead of falling back to the wrong class.
+
+### The guard
+
+`test:agent-id-class` (new, pure, in the chain). `scripts/agent-fk-columns.ts` commits
+the FK map — 185 tables — snapshotted from the live database so the guard runs offline
+and the map is reviewable in a diff. The header says plainly why it exists: the column
+NAME tells you nothing, since `newsletter_scheduled_sends.agent_id` is a users.id and
+`net_sheet_calculations.agent_id` is an agents.id.
+
+Six pure checks pin the detector's behaviour, including the two that cost the first
+sweep its credibility: it must ignore a users-FK `agent_id`, and it must not spill into
+the next query's payload. **Negative-tested** by restoring the original
+`agent_id: user.user.id` in `saveNetSheet` — the guard failed and named the exact
+file, table and column — then reverted.
+
+`tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.

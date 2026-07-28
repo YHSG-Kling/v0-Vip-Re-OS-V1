@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
 
 export type DistributeVideoAction =
@@ -41,6 +42,9 @@ export async function distributeVideo(
   }
 
   const supabase = await createClient()
+  // activities / social_posts / client_portal_messages agent_id all FK agents(id).
+  // params.userId is a users.id — it is written to user_id in the same payloads.
+  const actingAgentId = await resolveAgentId(supabase, params.userId)
 
   // Load project to get video_url and metadata
   const { data: project, error: loadError } = await supabase
@@ -82,7 +86,7 @@ export async function distributeVideo(
         .insert({
           brokerage_id: params.brokerageId,
           user_id: params.userId,
-          agent_id: params.userId,
+          agent_id: actingAgentId,
           platform: params.platform,
           post_type: "custom",
           content: project.script_content?.slice(0, 280) ?? project.title ?? "Check out my latest video!",
@@ -109,7 +113,7 @@ export async function distributeVideo(
       // Log activity
       await supabase.from("activities").insert({
         brokerage_id: params.brokerageId,
-        agent_id: params.userId,
+        agent_id: actingAgentId,
         activity_type: "video_distributed",
         title: `Video distributed to ${params.platform}`,
         description: `"${project.title}" scheduled for ${params.platform}`,
@@ -126,7 +130,7 @@ export async function distributeVideo(
         .insert({
           brokerage_id: params.brokerageId,
           user_id: params.userId,
-          agent_id: params.userId,
+          agent_id: actingAgentId,
           platform: params.platform ?? "instagram",
           post_type: "custom",
           content: project.script_content?.slice(0, 280) ?? project.title ?? "",
@@ -188,7 +192,7 @@ export async function distributeVideo(
       // Also write a client_portal_messages entry
       await supabase.from("client_portal_messages").insert({
         brokerage_id: params.brokerageId,
-        agent_id: params.userId,
+        agent_id: actingAgentId,
         contact_id: params.contactId,
         direction: "agent_to_client",
         body: `${subject}\n\n${body}`,

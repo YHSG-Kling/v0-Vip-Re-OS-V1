@@ -1,4 +1,5 @@
 "use server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 
 /**
  * System 5.3: CMA & Listing Presentation Engine
@@ -303,7 +304,8 @@ export async function shareNetSheetToPortal(params: {
     const { error } = await supabase.from("transparency_updates").insert({
       listing_id: params.listingId,
       contact_id: params.contactId,
-      agent_id: user.id,
+      // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
+      agent_id: await resolveAgentId(supabase, user.id),
       update_type: "net_sheet",
       title: "Your Estimated Net Proceeds",
       message,
@@ -320,7 +322,8 @@ export async function shareNetSheetToPortal(params: {
     await supabase.from("activities").insert({
       activity_type: "net_sheet_shared_to_portal",
       contact_id: params.contactId,
-      agent_id: user.id,
+      // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
+      agent_id: await resolveAgentId(supabase, user.id),
       brokerage_id: agent?.brokerage_id ?? null,
       title: "Net sheet shared to seller portal",
       description: `Estimated net: ${formatCurrency(params.netSheetData.estimatedNet)}`,

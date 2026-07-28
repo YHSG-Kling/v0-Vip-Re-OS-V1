@@ -24,6 +24,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { requireWriteContext } from "@/lib/kernel/identity"
 import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
 
@@ -303,7 +304,8 @@ export async function connectBuyerToLender(params: {
   // 4. Log activity
   await supabase.from("activities").insert({
     brokerage_id:  access.brokerageId,
-    agent_id:      access.userId,
+    // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
+    agent_id:      await resolveAgentId(supabase, access.userId),
     contact_id:    params.contactId,
     activity_type: "lender.introduced",
     title:         `Lender introduction sent to ${params.partnerName}`,

@@ -530,7 +530,9 @@ export async function POST(req: NextRequest) {
           .from("client_portal_messages")
           .insert({
             contact_id,
-            agent_id: contact.agent_id ?? user.id,
+            // contact.agent_id IS an agents.id; the old `?? user.id` fallback was the
+            // wrong class on a NOT NULL agents(id) FK. Resolve instead.
+            agent_id: contact.agent_id ?? (await resolveAgentId(service as any, user.id)),
             brokerage_id: brokerageId,
             direction: "agent_to_client",
             channel: "portal",
