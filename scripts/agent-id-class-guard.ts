@@ -26,7 +26,7 @@
  */
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join, relative } from "node:path"
-import { AGENT_FK_COLUMNS, USERS_FK_AGENTISH_COLUMNS } from "./agent-fk-columns"
+import { AGENT_FK_COLUMNS, USERS_FK_AGENTISH_COLUMNS, CONTACT_FK_TABLES } from "./agent-fk-columns"
 
 const root = process.cwd()
 
@@ -115,6 +115,37 @@ export function scanSourceReverse(src: string, file: string): WrongClassWrite[] 
   return out
 }
 
+/** A LEAD id — never valid in a contacts(id) FK. */
+const LEAD_ID_EXPR = /\b(leadId|lead_id|lead\.id|\w*[Ll]ead\.id|rawLead\.id|scrapedLead\.id)\b/
+/** A genuine contact id (some params are named leadId but resolve a contact). */
+const CONTACT_ID_OK = /\b(contactId|contact\.id|\w*[Cc]ontactId|promotedContactId)\b/
+
+/** PURE — a LEAD id written into a contacts(id) FK. */
+export function scanSourceLead(src: string, file: string): WrongClassWrite[] {
+  const out: WrongClassWrite[] = []
+  for (const table of CONTACT_FK_TABLES) {
+    const needle = `.from("${table}")`
+    let i = src.indexOf(needle)
+    while (i !== -1) {
+      const rest = src.slice(i + needle.length)
+      const nextFrom = rest.search(/\.from\(/)
+      const win = needle + (nextFrom >= 0 ? rest.slice(0, nextFrom) : rest.slice(0, 1200))
+      if (/\.(insert|upsert|update)\s*\(/.test(win)) {
+        const re = /\bcontact_id\s*:\s*([^,\n}]+)/g
+        let m: RegExpExecArray | null
+        while ((m = re.exec(win))) {
+          const expr = m[1].trim()
+          if (LEAD_ID_EXPR.test(expr) && !CONTACT_ID_OK.test(expr) && !/isValidUUID/.test(expr)) {
+            out.push({ file, table, column: "contact_id", expr: expr.slice(0, 80) })
+          }
+        }
+      }
+      i = src.indexOf(needle, i + 1)
+    }
+  }
+  return out
+}
+
 let passed = 0, failed = 0
 const failures: string[] = []
 const check = (name: string, ok: boolean, detail?: string) => {
@@ -153,6 +184,14 @@ check("accepts a genuine users.id there",
 check("accepts an already-normalised agentUserId",
   scanSourceReverse('await svc.from("listing_promo_videos").insert({ agent_id: agentUserId })', "t.ts").length === 0)
 
+console.log("\n[pure — a LEAD is not a CONTACT]")
+check("flags a lead id in a contacts(id) FK",
+  scanSourceLead('await svc.from("activities").insert({ contact_id: ctx.leadId })', "t.ts").length === 1)
+check("accepts the repo's correct shape (null + entity_type/entity_id)",
+  scanSourceLead('await svc.from("activities").insert({ contact_id: null, entity_type: "lead", entity_id: ctx.leadId })', "t.ts").length === 0)
+check("accepts a param named leadId that is validated as a contact",
+  scanSourceLead('await svc.from("conversations").insert({ contact_id: data.leadId && isValidUUID(data.leadId) ? data.leadId : null })', "t.ts").length === 0)
+
 console.log("\n[repo scan]")
 const files: string[] = []
 for (const d of ["app", "lib", "services"]) for (const f of walk(join(root, d))) files.push(f)
@@ -179,6 +218,18 @@ console.log(`  · ${Object.keys(USERS_FK_AGENTISH_COLUMNS).length} tables carry 
 check("no agents-id expression is written to a users(id) FK column",
   reverse.length === 0,
   reverse.map((o) => `${o.file}: ${o.table}.${o.column} = ${o.expr}`).join("; "))
+
+const leadHits: WrongClassWrite[] = []
+for (const f of files) {
+  let src = ""
+  try { src = readFileSync(f, "utf8") } catch { continue }
+  if (!src.includes(".from(")) continue
+  leadHits.push(...scanSourceLead(src, relative(root, f).replace(/\\/g, "/")))
+}
+console.log(`  · ${CONTACT_FK_TABLES.length} tables carry a contacts(id) FK on contact_id`)
+check("no LEAD id is written into a contacts(id) FK column",
+  leadHits.length === 0,
+  leadHits.map((o) => `${o.file}: ${o.table}.${o.column} = ${o.expr}`).join("; "))
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)

@@ -76,7 +76,12 @@ export function buildISATools(ctx: ISAToolContext) {
         }
         // Always log on the lead so the conversation timeline shows it.
         await supabase.from("activities").insert({
-          contact_id: ctx.leadId,
+          // activities.contact_id FKs contacts(id); ctx.leadId is a LEAD id, so this
+          // was FK-rejected and the escalation never reached the timeline it claims
+          // to write to. entity_type/entity_id carry the lead (same shape as above).
+          contact_id: null,
+          entity_type: "lead",
+          entity_id: ctx.leadId,
           brokerage_id: ctx.brokerageId,
           activity_type: "ai_isa_escalation",
           title: `ISA escalation (${urgency})`,
@@ -114,7 +119,9 @@ export function buildISATools(ctx: ISAToolContext) {
           .eq("id", ctx.leadId)
           .eq("brokerage_id", ctx.brokerageId)
         await supabase.from("activities").insert({
-          contact_id: ctx.leadId,
+          contact_id: null,
+          entity_type: "lead",
+          entity_id: ctx.leadId,
           brokerage_id: ctx.brokerageId,
           activity_type: "ai_isa_qualification",
           title: `ISA marked lead ${signal}`,
@@ -142,7 +149,9 @@ export function buildISATools(ctx: ISAToolContext) {
       execute: async ({ meeting_type, preferred_window, notes }) => {
         const supabase = createServiceClient()
         await supabase.from("activities").insert({
-          contact_id: ctx.leadId,
+          contact_id: null,
+          entity_type: "lead",
+          entity_id: ctx.leadId,
           brokerage_id: ctx.brokerageId,
           agent_id: ctx.agentId,
           activity_type: "appointment_request",

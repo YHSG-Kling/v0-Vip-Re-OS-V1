@@ -1971,3 +1971,60 @@ In three of the four, a confident code comment asserted the opposite of what the
 key said. The schema is the authority; comments are hearsay.
 
 `tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.
+
+---
+
+## A lead is not a contact — the third id-class family
+
+Having closed agents↔users in both directions, the registry names one more split-brain:
+*"leads are NOT contacts"*, with a pass recorded as fixing it. Sweeping the live FK map found
+**three sites that survived that pass**, plus one false positive worth as much as the fixes.
+
+### The three real ones
+
+`activities.contact_id` FKs `contacts(id)`. A lead id there is FK-rejected and the row is
+silently lost — these inserts sit behind best-effort wrappers, so nothing surfaced.
+
+| file | what never got logged |
+|---|---|
+| `lib/ai-isa/inbound-intent-classifier.ts` | every ambiguous inbound reply — the "kept nurturing" touch |
+| `lib/ai-isa/tools.ts` ×3 | ISA escalations, lead qualifications, appointment requests |
+| `lib/lead-readiness/readiness-logger.ts` | every lead-readiness state transition |
+
+The most telling detail: `inbound-intent-classifier.ts` uses the **correct** shape at its
+conversion branch — `entity_type: "lead", entity_id: params.leadId` — and the wrong one forty
+lines later. The right answer was already in the file. All four now use the repo's own shape:
+`contact_id: null`, with the lead on `entity_type`/`entity_id`.
+
+`lib/ai-isa/tools.ts` claims in a comment to "always log on the lead so the conversation
+timeline shows it." It never did.
+
+### The false positive, and why it matters
+
+`app/actions/ai-chat.ts` writes `conversations.contact_id = data.leadId`. That reads like the
+same bug. It is not: the field is gated by `requirePermission("view", "contact", …)` and
+resolved with `.from("contacts").eq("id", …)`. **It is a contact id with a misleading
+parameter name.**
+
+That is the third time this session a misleading name produced a false positive — after
+`newsletter_scheduled_sends.agent_id` (correctly a users.id) and the window-spill hits. Left
+named `leadId` because it is a public server-action parameter, but now documented inline
+specifically so a future sweep does not "fix" a working path into a broken one.
+
+### The guard now covers all three families
+
+`test:agent-id-class`, 16 checks, three scanners:
+
+1. a user-id expression into an **agents(id)** FK
+2. an agents-id expression into a **users(id)** FK
+3. a lead id into a **contacts(id)** FK
+
+`CONTACT_FK_TABLES` (57 tables) joins the two FK maps in `scripts/agent-fk-columns.ts`, all
+snapshotted from live. The lead scanner is pure-checked against the exact shapes that matter:
+it flags `contact_id: ctx.leadId`, accepts `contact_id: null` + `entity_type`/`entity_id`, and
+accepts the `ai-chat.ts` false positive so the guard cannot manufacture the bug it prevents.
+
+Repo scan: 185 agents-FK tables, 50 agent-ish users-FK tables, 57 contacts-FK tables —
+**0 offenders across all three**.
+
+`tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.

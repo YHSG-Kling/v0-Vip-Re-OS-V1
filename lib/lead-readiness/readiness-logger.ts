@@ -17,7 +17,12 @@ export async function logReadinessTransition(
   console.log("[ReadinessLogger] Logging readiness transition for lead:", leadId, evaluation.state)
 
   const { error } = await supabase.from("activities").insert({
-    contact_id: leadId,
+    // activities.contact_id FKs contacts(id) — leadId is a LEAD id, so every
+    // readiness transition was FK-rejected and never logged. entity_type/entity_id
+    // carry the lead; contact_id stays honestly null.
+    contact_id: null,
+    entity_type: "lead",
+    entity_id: leadId,
     activity_type: "readiness_evaluation",
     title: `Readiness State: ${evaluation.state}`,
     description: evaluation.explanation,

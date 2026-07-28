@@ -393,7 +393,12 @@ export async function classifyAndRouteInbound(
   // AMBIGUOUS / no clear intent → NO conversion. Record a nurture touch, keep nurturing.
   if (!classified) {
     await svc.from("activities").insert({
-      contact_id: params.leadId,
+      // activities.contact_id FKs contacts(id) — a LEAD id is FK-rejected, so this
+      // insert was silently lost. The lead rides on entity_type/entity_id, the shape
+      // already used at the conversion branch above; contact_id stays honestly null.
+      contact_id: null,
+      entity_type: "lead",
+      entity_id: params.leadId,
       brokerage_id: params.brokerageId,
       activity_type: "ai_isa_inbound_nurture",
       title: "Inbound reply — no conversion intent",

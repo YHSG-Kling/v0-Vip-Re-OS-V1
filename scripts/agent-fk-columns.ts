@@ -268,3 +268,72 @@ export const USERS_FK_AGENTISH_COLUMNS: Record<string, string[]> = {
   workflow_intake_sessions: ["agent_user_id"],
   workflow_runs: ["agent_user_id"],
 }
+
+/**
+ * Tables whose `contact_id` FKs public.contacts(id), snapshotted from live.
+ *
+ * A LEAD is not a CONTACT. Writing a lead id here is FK-rejected and the row is
+ * silently lost — the registry records a pass that fixed this, but three sites
+ * survived it: the ISA inbound-intent nurture log, three ISA tool writes, and every
+ * lead-readiness transition. The repo's own correct shape is
+ * `contact_id: null, entity_type: "lead", entity_id: <leadId>`.
+ */
+export const CONTACT_FK_TABLES: string[] = [
+  "activities",
+  "ai_assistant_notes",
+  "ai_autopilot_plans",
+  "ai_isa_activities",
+  "ai_isa_calls",
+  "ai_isa_engagement_tracking",
+  "ai_isa_qualifications",
+  "ai_message_drafts",
+  "appointments",
+  "behavioral_signals",
+  "calculator_history",
+  "call_analyses",
+  "chat_sessions",
+  "client_portal_messages",
+  "communication_audit_log",
+  "communications",
+  "compliance_flags",
+  "contact_consent_events",
+  "contact_notes",
+  "conversation_insights",
+  "conversation_logs",
+  "conversations",
+  "copilot_plans",
+  "documents",
+  "drip_campaigns",
+  "email_sends",
+  "email_tracking",
+  "fair_housing_logs",
+  "fatigue_alerts",
+  "form_submissions",
+  "generated_content",
+  "isa_outreach_log",
+  "journey_states",
+  "lead_enrichment_queue",
+  "lead_score_history",
+  "lead_scores",
+  "lead_value_journey",
+  "message_threads",
+  "messages",
+  "notifications",
+  "property_alerts",
+  "property_interests",
+  "property_search_log",
+  "property_views",
+  "scheduled_touchpoints",
+  "sequence_enrollments",
+  "sequence_step_executions",
+  "signal_reactivations",
+  "site_activity",
+  "smart_showing_recommendations",
+  "tasks",
+  "transactions",
+  "unified_lead_profile",
+  "usage_events",
+  "voice_calls",
+  "website_visitors",
+  "workflow_runs",
+]

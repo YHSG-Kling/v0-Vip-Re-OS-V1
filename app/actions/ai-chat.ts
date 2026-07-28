@@ -101,6 +101,11 @@ export async function createChatSession(data: {
     .from("conversations")
     .insert({
       agent_id: data.agentId,
+      // NOT a lead id despite the name: the field is validated above via
+      // requirePermission("view","contact", …) and resolved with
+      // .from("contacts").eq("id", …). conversations.contact_id FKs contacts(id),
+      // so this is CORRECT. Left named leadId because it is a public server-action
+      // parameter; documented here so an id-class sweep does not "fix" it into a bug.
       contact_id: data.leadId && isValidUUID(data.leadId) ? data.leadId : null,
       type: data.sessionType,
       context_data: contextData,
