@@ -297,28 +297,38 @@ export async function archiveContact(contactId: string) {
 
 // ─── addContactNote ───────────────────────────────────────────────────────────
 
-export async function addContactNote(contactId: string, noteText: string) {
+/**
+ * Canonical contact-note writer. Owner ruling: contact_notes is the store of
+ * record — it carries is_private and author_user_id, which `activities` has no
+ * column for. Every note path (CRM note box, GHL-sync path, voice assistant)
+ * lands here so a note has exactly ONE row and the timeline cannot double-count.
+ *
+ * agentId is deliberately NOT required: contact_notes attributes to
+ * author_user_id, so brokers/admins with no `agents` row can leave notes too.
+ */
+export async function addContactNote(contactId: string, noteText: string, isPrivate = false) {
   try {
-    const { agentId, brokerageId, isAuthenticated } = await getAgentContext()
+    const { userId, brokerageId, isAuthenticated } = await getAgentContext()
     const supabase = await createClient()
 
-    if (!isAuthenticated || !agentId || !brokerageId) {
+    if (!isAuthenticated || !brokerageId) {
       return { success: false, error: "Not authenticated" }
     }
     if (!noteText?.trim()) {
       return { success: false, error: "Note cannot be empty" }
     }
 
-    const { error } = await supabase.from("activities").insert({
-      brokerage_id:  brokerageId,
-      agent_id:      agentId,     // agents.id — kernel-resolved
-      contact_id:    contactId,
-      activity_type: "note",
-      title:         "Note",
-      description:   noteText.trim(),
-      entity_type:   "contact",
-      status:        "completed",
-    })
+    const { data, error } = await supabase
+      .from("contact_notes")
+      .insert({
+        brokerage_id:   brokerageId,
+        contact_id:     contactId,
+        author_user_id: userId,
+        body:           noteText.trim(),
+        is_private:     isPrivate,
+      })
+      .select("id")
+      .maybeSingle()
 
     if (error) {
       return { success: false, error: error.message }
@@ -327,7 +337,7 @@ export async function addContactNote(contactId: string, noteText: string) {
     revalidatePath("/crm")
     revalidatePath("/dashboard")
 
-    return { success: true }
+    return { success: true, noteId: data?.id ?? null }
   } catch (error: any) {
     return { success: false, error: error.message }
   }

@@ -712,16 +712,13 @@ async function getTodayAppointments(agentUserId: string) {
 }
 
 async function addContactNote(contactId: string, _noteText: string, _agentId: string) {
-  const supabase = await createClient()
-  // contact_notes uses body (not content), author_user_id (not agent_id), is_private.
-  // The voice-assistant flow doesn't carry the auth user id directly, so derive it.
-  const { data: { user } } = await supabase.auth.getUser()
-  return await supabase.from("contact_notes").insert({
-    contact_id: contactId,
-    author_user_id: user?.id ?? null,
-    body: _noteText,
-    is_private: false,
-  })
+  // Delegates to the canonical writer in app/actions/contacts.ts. The local
+  // insert this replaced never set brokerage_id, and contact_notes_select gates
+  // on has_brokerage_access(brokerage_id) — which is FALSE for NULL. Every
+  // voice-dictated note was therefore invisible to the whole brokerage,
+  // including the agent who dictated it.
+  const { addContactNote: recordNote } = await import("./contacts")
+  return await recordNote(contactId, _noteText)
 }
 
 async function sendPropertyToContact(address: string, contactId: string, agentId: string, brokerageId: string | null) {

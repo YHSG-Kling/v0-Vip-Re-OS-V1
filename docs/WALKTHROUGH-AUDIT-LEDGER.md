@@ -666,3 +666,101 @@ Four scripts resolve to no simulator file, and none is a coverage gap:
   matches, most of them legitimate server-side `processKernelEvent` imports in API routes. It
   cannot be wired as a guard until someone gives it an assertion; as written it would either
   always pass or always fail depending on how you read the exit code.
+
+---
+
+## Owner rulings applied — notes, matching keys, collaborative search
+
+**`addContactNote` — owner ruled: keep `contact_notes`.** Applied, but *not* the way this
+ledger previously recommended. The earlier note ("write a light `activities` row alongside") was
+wrong, and checking before implementing is what caught it: `getContactTimeline` (`app/actions/crm.ts:152`)
+already reads **both** tables and concatenates them. Writing both would have shown every note
+twice. There is now exactly one writer and one row per note.
+
+What the consolidation actually found — **a fourth note path, and a real bug**:
+
+| path | wrote to | outcome |
+|---|---|---|
+| `contacts.ts` (CRM note box) | `activities` | no `is_private` / `author_user_id` |
+| `crm.ts` → `communications.ts` | `contact_notes` + GHL | correct |
+| `voice-assistant.ts` (local copy) | `contact_notes`, **no `brokerage_id`** | **invisible to everyone** |
+
+`contact_notes_select` gates on `has_brokerage_access(brokerage_id)`, and that function is
+`target_brokerage_id IS NOT NULL AND … ` — so it returns FALSE for NULL. Every voice-dictated
+note was written successfully and then readable by nobody in the brokerage, including the agent
+who dictated it. Not a leak; a disappearance. The local copy is gone and delegates to the
+canonical writer.
+
+Two smaller corrections came with it: the canonical writer no longer requires an `agents` row
+(`contact_notes` attributes to `author_user_id`, so brokers/admins can leave notes), and the CRM
+contact pane (`app/crm/page.tsx`) now reads `contact_notes` alongside `activities` — it read only
+`activities`, so moving the write without this would have made saved notes vanish from that pane
+on refresh.
+
+**The neighborhood-report matching key — answered.** There is no FK to find:
+`home_value_estimates` carries `brokerage_id`, `contact_id`, `valuation_request_id`,
+`property_address` — and **no `listing_id`**. `valuation_requests` has no `listing_id` either, so
+there is no join path from a listing at all. The honest key is `contact_id`: a listing hangs off
+the seller contact, and the valuation was requested by that same contact. That is a real foreign
+key, and it is now what the query matches on, scoped by `brokerage_id`. Matching bare
+`property_address` missed `"123 Main St"` vs `"123 Main Street"` and could hit a different
+property sharing an address string. Both tables are empty today, so this is preventive.
+
+**`collaborative_search_members` — closed, by design and correctly enforced.** Owner: this is a
+family collaborative on a subscriber's customer's property search. The committed migrations look
+alarming (`063-rpcs-and-rls-fixes.sql` has `css_select … USING (TRUE)`), but that is **not** the
+live policy — it has been superseded. Live `member_read_cs_members` requires either portal
+membership of that search or that the parent `collaborative_searches.brokerage_id` is one of
+yours. The table has no `brokerage_id` of its own and does not need one: it inherits scope from
+its parent. No action.
+
+## What the 147 unwired simulators actually cover
+
+Ran a reachability analysis rather than reading 147 files: built the import graph over
+`app/ lib/ components/ services/ hooks/` (4,300 modules), took every Next.js-served file as a root
+(993 of them), and computed what is reachable. Then, for each unwired simulator, resolved the
+modules it imports or names and asked whether **the app can reach them**.
+
+The framing question — "is this feature present in the OS?" — turned out to be the wrong one.
+Every one of the 147 green simulators asserts against code that **already exists**: they import
+real modules, so a missing subject would throw rather than pass. The question that discriminates
+is whether a *user* can reach it.
+
+| | count |
+|---|---|
+| all subject modules reachable from a route | **136** |
+| partially reachable | 4 |
+| **no subject module reachable — built, tested, dark** | **10** |
+
+The 136 need nothing but a decision about CI time. The **10 dark capability engines** are the
+finding, and they are not junk — each is a deliberate, documented, unit-tested engine:
+
+- **Video/animation rail** — `lib/charts/explainer-diagram.ts` (393 lines, the in-stack answer to
+  Manim), `lib/video/ken-burns-plan.ts` (flat MLS photos → moving tour),
+  `lib/video/comps-animation-spec.ts`, `lib/charts/geometry.ts`.
+- **Seller decision intelligence** — `seller-listing-timeline.ts` (*when* a homeowner will list,
+  not just how motivated), `seller-decision-room.ts` (which offer is genuinely best for the
+  seller), `listing-price-advisor.ts` (the recommended new price, not just "this is stale").
+- **Deal + relationship intelligence** — `deal-confidence.ts` (weakest link + the one protective
+  action), `outcome-autopsy.ts` (learn from wins/losses, not just replies).
+- **Lead-source diagnostics** — `source-wording-diagnostic.ts` (is the source bad, or is our copy
+  not landing? — the difference between discarding a good source and fixing an opener).
+
+Two of these are sharper than "unreferenced":
+
+1. **`ExplainerAnimReel` is registered but unselectable.** It is a live Remotion composition in
+   `remotion/Root.tsx`, and `lib/charts/explainer-diagram.ts` is its concept engine — but
+   `lib/video/video-director.ts` lists eleven selectable `compositionId`s and that is not one of
+   them. No agent-facing path can ever choose it. `PhotoWalkthroughReel`, by contrast, *is* in the
+   Director's list, so `ken-burns-plan.ts` is only one hop from live.
+2. **Two comps→chart shapes exist and one is unused.** `lib/charts/cma-reel-data.ts` feeds
+   `CMAReel`; `lib/video/comps-animation-spec.ts` is referenced by nothing but its own simulator.
+   Not pure duplication — the unused one additionally produces the *fair-value read*
+   (below/at/above market + confidence) that the agent's offer narrative wants, and
+   `cma-reel-data` does not. Consolidation should keep the richer output, not delete it.
+
+Also checked and dismissed: `app/manifest.ts` reported unreachable is analyzer noise — Next.js
+serves it as a special file and my root pattern did not list it. Recorded so nobody re-finds it.
+
+**Not wiring any of this yet.** Where each belongs is a product decision about which domain
+surface owns it, and the whole point of the exercise was to avoid scattering wires.

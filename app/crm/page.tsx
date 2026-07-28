@@ -586,15 +586,38 @@ export default function CRMPage() {
     activitiesGenRef.current += 1
     const gen = activitiesGenRef.current
     const supabase = createClient()
-    supabase
-      .from("activities")
-      .select("id, activity_type, title, description, notes, created_at, contact_id")
-      .eq("contact_id", selectedContactId)
-      .order("created_at", { ascending: false })
-      .limit(20)
-      .then(({ data }: { data: any[] | null }) => {
+    // Notes live in contact_notes (the store of record), everything else in
+    // activities. Read both and merge, or saved notes vanish from this pane.
+    Promise.all([
+      supabase
+        .from("activities")
+        .select("id, activity_type, title, description, notes, created_at, contact_id")
+        .eq("contact_id", selectedContactId)
+        .order("created_at", { ascending: false })
+        .limit(20),
+      supabase
+        .from("contact_notes")
+        .select("id, body, created_at, contact_id")
+        .eq("contact_id", selectedContactId)
+        .order("created_at", { ascending: false })
+        .limit(20),
+    ])
+      .then(([acts, notes]: [{ data: any[] | null }, { data: any[] | null }]) => {
         if (gen !== activitiesGenRef.current) return  // stale
-        setContactActivities(data || [])
+        const noteRows = (notes.data ?? []).map((n: any) => ({
+          id: n.id,
+          activity_type: "note",
+          title: "Note",
+          description: n.body,
+          notes: n.body,
+          created_at: n.created_at,
+          contact_id: n.contact_id,
+        }))
+        setContactActivities(
+          [...(acts.data ?? []), ...noteRows]
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+            .slice(0, 20)
+        )
       })
       .catch(() => {
         if (gen !== activitiesGenRef.current) return

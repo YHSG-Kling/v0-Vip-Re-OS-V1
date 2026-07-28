@@ -68,7 +68,15 @@ export interface PriceHistoryPoint {
 
 export async function getNeighborhoodReport(listingId: string): Promise<{
   report: NeighborhoodReport | null
-  listing: { address: string; city: string; state: string; zip_code: string } | null
+  listing: {
+    address: string
+    city: string
+    state: string
+    zip_code: string
+    /** Seller contact — the only structural key into home_value_estimates. */
+    contact_id: string | null
+    brokerage_id: string | null
+  } | null
   priceHistory: PriceHistoryPoint[]
   dataSources: DataSource[]
 }> {
@@ -78,7 +86,7 @@ export async function getNeighborhoodReport(listingId: string): Promise<{
   // Get the listing
   const { data: listing } = await supabase
     .from("listings")
-    .select("id, address, city, state, zip")
+    .select("id, address, city, state, zip, contact_id, brokerage_id")
     .eq("id", listingId)
     .eq("brokerage_id", brokerageId)
     .single()
@@ -115,7 +123,16 @@ export async function getNeighborhoodReport(listingId: string): Promise<{
 
   return {
     report: report as NeighborhoodReport | null,
-    listing: listing ? { address: listing.address, city: listing.city, state: listing.state, zip_code: listing.zip } : null,
+    listing: listing
+      ? {
+          address: listing.address,
+          city: listing.city,
+          state: listing.state,
+          zip_code: listing.zip,
+          contact_id: listing.contact_id ?? null,
+          brokerage_id: listing.brokerage_id ?? null,
+        }
+      : null,
     priceHistory: (priceHistory || []).map(p => ({
       generated_at: p.generated_at,
       price_per_sqft: p.price_per_sqft,
