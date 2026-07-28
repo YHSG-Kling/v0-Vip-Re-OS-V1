@@ -12,6 +12,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { computeVendorSla, slaTier } from "@/lib/kernel/vendor-sla"
+import type { BenchVendorCategory } from "@/lib/kernel/vendor-categories"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -19,7 +20,7 @@ type Svc = ReturnType<typeof createServiceClient>
  *  thin data — an unproven vendor is presumed reliable, not a breacher). */
 export const COVERAGE_MIN_SAMPLE = 3
 
-export type VendorCategory = "Lender" | "Inspector" | "Title Company" | "Contractor" | "Stager"
+export type VendorCategory = BenchVendorCategory
 
 /** Which vendor categories each live pipeline stage implies over the near term. Aligned with the
  *  orchestration stage→gap logic, but forward-looking (ALL categories the stage will need, not just the

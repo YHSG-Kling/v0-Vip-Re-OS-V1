@@ -26,11 +26,12 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
+import type { VendorCategory as CanonicalVendorCategory } from "@/lib/kernel/vendor-categories"
 
 type Svc = ReturnType<typeof createServiceClient>
 
 /** The vendor categories on the bench (vendors.category CHECK). */
-export type VendorCategory = "Lender" | "Inspector" | "Title Company" | "Contractor" | "Stager" | "Other"
+export type VendorCategory = CanonicalVendorCategory
 
 /** Live transaction stages (transactions.stage CHECK). */
 export type DealStage =

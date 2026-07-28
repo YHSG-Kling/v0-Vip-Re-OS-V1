@@ -13,13 +13,15 @@
 //
 // Pure core (testable); the service actions (submit/approve/reject) live in app/actions/vendor-verification.
 
+import { VENDOR_CATEGORIES } from "@/lib/kernel/vendor-categories"
+
 export const AUTO_OK_THRESHOLD = 70
 export const REJECT_HINT_THRESHOLD = 40
 
 export type VerificationRecommendation = "auto_ok" | "review" | "reject_recommended"
 
 /** The allowed service categories for the operational bench (mirrors the vendors.category CHECK). */
-const VALID_CATEGORIES = new Set(["Lender", "Inspector", "Title Company", "Contractor", "Stager", "Other"])
+const VALID_CATEGORIES = new Set<string>(VENDOR_CATEGORIES)
 
 export interface VendorApplicationSignals {
   name: string | null | undefined

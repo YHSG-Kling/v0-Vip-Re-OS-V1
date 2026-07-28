@@ -12,6 +12,7 @@ import {
   ExternalDocStatusPanel,
   ExternalBatchActionsPanel,
 } from '../../(external-portal)/components/os'
+import { VENDOR_CATEGORY_TITLE } from "@/lib/kernel/vendor-categories"
 
 export const dynamic = 'force-dynamic'
 
@@ -33,7 +34,7 @@ export default async function TitleDashboardPage() {
         .from('vendors')
         .select('id')
         .eq('id', ra.vendor_id)
-        .eq('category', 'title')
+        .eq('category', VENDOR_CATEGORY_TITLE)
         .maybeSingle()
     : { data: null }
 

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { DollarSign, Clock, CheckCircle, AlertTriangle, ArrowRight } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import Link from "next/link"
+import { VENDOR_CATEGORY_LENDER } from "@/lib/kernel/vendor-categories"
 
 interface LenderStatusPanelProps {
   brokerageId: string
@@ -28,12 +29,13 @@ export function LenderStatusPanel({ brokerageId }: LenderStatusPanelProps) {
     async function loadMetrics() {
       const supabase = createClient()
 
-      // Get active lenders (vendors with category = 'lender')
+      // vendors.category is Title Case in the CHECK. This asked for 'lender'
+      // and Postgres compares case-sensitively, so the panel showed 0 lenders.
       const { data: lenders, count: lenderCount } = await supabase
         .from("vendors")
         .select("id, name", { count: "exact" })
         .eq("brokerage_id", brokerageId)
-        .eq("category", "lender")
+        .eq("category", VENDOR_CATEGORY_LENDER)
         .eq("status", "active")
 
       // Get loan applications from lender_applications table

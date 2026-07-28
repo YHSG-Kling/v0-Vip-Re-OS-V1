@@ -14,21 +14,29 @@
  * override either way. NOT server-only (simulator-driven).
  */
 
+import type { VendorCategory } from "@/lib/kernel/vendor-categories"
+
 export type CardTarget = "contact" | "vendor" | "recruit"
 
 export interface CardClassification {
   target: CardTarget
   /** vendors.category CHECK value — set only when target is vendor. */
-  category: "Lender" | "Inspector" | "Title Company" | "Contractor" | "Stager" | "Other" | null
+  category: VendorCategory | null
 }
 
+// These are STEMS, matched at a word boundary on the LEFT only — the way the
+// Inspector family always was. A trailing \b broke every stem in the list: it
+// requires the word to END there, so "photographer", "landscaper", "appraiser",
+// "roofing", "electrician", "remodeling" and "moving company" all failed to
+// match, and those cards silently fell through to the CRM contact path instead
+// of the vendor book. The left boundary still prevents mid-word hits.
 const VENDOR_FAMILIES: Array<{ category: CardClassification["category"]; pattern: RegExp }> = [
-  { category: "Lender", pattern: /\b(lender|mortgage|loan officer|nmls|home loans|lending)\b/ },
+  { category: "Lender", pattern: /\b(lender|mortgage|loan officer|nmls|home loans|lending)/ },
   { category: "Inspector", pattern: /\b(inspect)/ },
-  { category: "Title Company", pattern: /\b(title|escrow)\b/ },
-  { category: "Contractor", pattern: /\b(contractor|plumb|roof|hvac|electric|handyman|builder|remodel|renovat|construction)\b/ },
-  { category: "Stager", pattern: /\b(stag(er|ing)|interior design)\b/ },
-  { category: "Other", pattern: /\b(photograph|videograph|clean(er|ing)|landscap|mover|moving compan|attorney|law firm|insurance|apprais|pest|survey(or|ing)|locksmith|organizer)\b/ },
+  { category: "Title Company", pattern: /\b(title|escrow)/ },
+  { category: "Contractor", pattern: /\b(contractor|plumb|roof|hvac|electric|handyman|builder|remodel|renovat|construction)/ },
+  { category: "Stager", pattern: /\b(stag(er|ing)|interior design)/ },
+  { category: "Other", pattern: /\b(photograph|videograph|clean(er|ing)|landscap|mover|moving compan|attorney|law firm|insurance|apprais|pest|survey(or|ing)|locksmith|organizer)/ },
 ]
 
 /** a fellow agent's card is a RECRUIT — agents are USERS of this platform

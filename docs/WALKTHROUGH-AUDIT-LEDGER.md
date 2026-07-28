@@ -3387,3 +3387,62 @@ silently checking nothing.
 Probe rows for both measurements deleted; `leads` and `listings` carry no leftover test data.
 
 Chain: **113 simulators**. `tsc --noEmit`: 0. `npm run guard`: exit 0.
+
+---
+
+## The partner panels could not see their own bench
+
+`vendors.category` is Title Case, and the title category is two words:
+
+```
+CHECK (category = ANY (ARRAY['Contractor','Inspector','Lender','Other','Stager','Title Company']))
+```
+
+Three partner-facing surfaces asked for it in lowercase — `eq(category,'lender')`,
+`eq(category,'title')`, `eq(category,'title')`. Postgres compares strings case-sensitively.
+Measured live with two probe vendors (`Lender` and `Title Company`, both active):
+
+```
+eq(category,'lender') → 0      eq(category,'Lender')        → 1
+eq(category,'title')  → 0      eq(category,'Title Company') → 1
+```
+
+The broker's lender panel reported **0 lenders** on a bench that had them, the title pipeline
+panel reported **0 title companies**, and the title partner's *own* dashboard could not confirm
+that its vendor row was a title company — it fell through to the not-a-title-partner branch and
+showed the visitor nothing.
+
+**The vocabulary had been copied five times**, each slightly different:
+
+| copy | shape |
+| --- | --- |
+| `lib/kernel/vendor-orchestration.ts` | `type VendorCategory` — 6 values |
+| `lib/kernel/vendor-coverage-forecast.ts` | `type VendorCategory` — 5, no `Other` |
+| `lib/kernel/vendor-verification.ts` | `VALID_CATEGORIES` Set — 6 |
+| `lib/kernel/lender-linkage.ts` | a lone constant, plus a comment claiming the column is free text |
+| `lib/contacts/card-classifier.ts` | an inline union in the return type |
+
+`lib/kernel/vendor-categories.ts` is the one copy now — the six values, the five-value bench
+set (`Other` is a catch-all no pipeline stage ever forecasts), the two partner constants,
+`isVendorCategory()` and `toVendorCategory()`, which repairs the loose spellings that were
+actually in the codebase and returns **null** rather than guessing. All five import it. The
+stale "free-text" comment is gone; the column has had a CHECK all along.
+
+### The simulator found a second defect on the way in
+
+Writing the business-card cases turned up a bug in `card-classifier.ts` that had nothing to do
+with case. Its vendor families are **stems** wrapped in `\b(...)\b` — and a *trailing* `\b`
+requires the word to end at the stem. So `photograph` never matched "photographer",
+`landscap` never matched "landscaping", `apprais` never matched "appraiser", `roof` never
+matched "roofing", `electric` never matched "electrician", `remodel` never matched
+"remodeling", and `moving compan` never matched "moving company". Every one of those cards fell
+through to the CRM contact path instead of the vendor book. The Inspector family had it right
+all along (`/\b(inspect)/`, left boundary only); the rest now match it.
+
+`npm run test:vendor-categories` — 52 checks, pure, on the chain, including thirteen real card
+titles routed end to end through the classifier into a value the column accepts.
+
+Probe vendors deleted; `vendors` carries no leftover test data.
+
+Vocabulary baseline: **85 → 82**. Chain: **114 simulators**. `tsc --noEmit`: 0.
+`npm run guard`: exit 0.

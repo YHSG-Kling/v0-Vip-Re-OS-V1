@@ -17,9 +17,12 @@
 // appraisal, rate-lock, conditions) live on transaction_lenders — the alive
 // capability layer, keyed by transaction_id and preserved untouched.
 
-/** The vendor category that IS a lender. vendors.category is free-text; this is
- *  the canonical spelling the bench (financing-pit-stop, vendor-orchestration) uses. */
-export const LENDER_VENDOR_CATEGORY = "Lender"
+import { VENDOR_CATEGORY_LENDER } from "@/lib/kernel/vendor-categories"
+
+/** The vendor category that IS a lender. vendors.category carries a live CHECK
+ *  (Contractor|Inspector|Lender|Other|Stager|Title Company) — it is NOT free text,
+ *  whatever this comment used to say. One spelling, from one module. */
+export const LENDER_VENDOR_CATEGORY = VENDOR_CATEGORY_LENDER
 
 export function isLenderVendorCategory(category: string | null | undefined): boolean {
   const c = (category ?? "").trim().toLowerCase()
