@@ -20,6 +20,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { collectError } from '@/lib/errors/collect-error'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 import {
   generatePersonalizedEmail,
@@ -54,6 +55,10 @@ export async function initiateAIISAEngagement(
   opts?: { forceChannel?: 'email' | 'sms' | 'phone' | 'direct_mail' }
 ) {
   const supabase = createServiceClient()
+  // Hoisted so the catch can anchor the error row to a tenant. Every console that
+  // reads automation_errors filters on brokerage_id — an unanchored row is written
+  // and then invisible, which is the same outcome as not writing it.
+  let brokerageId: string | null = null
 
   try {
     // ── AUTH GATE ────────────────────────────────────────────────────────
@@ -89,6 +94,7 @@ export async function initiateAIISAEngagement(
     if (hasSession && ctx.brokerageId && lead.brokerage_id !== ctx.brokerageId) {
       return { success: false, reason: 'Forbidden' }
     }
+    brokerageId = (lead.brokerage_id as string) ?? null
 
     if (lead.agent_id) {
       return { success: false, reason: 'Lead already assigned to agent' }
@@ -236,13 +242,15 @@ export async function initiateAIISAEngagement(
     )
   } catch (error: any) {
     console.error('[AIISAEngagement] Error:', error)
-    await supabase.from('automation_errors').insert({
-      workflow_name: 'ai_isa_engagement',
-      error_message: error.message,
-      context_json: JSON.stringify({ leadId }),
+    await collectError({
+      workflowName: 'ai_isa_engagement',
+      errorMessage: error.message,
+      stack: error.stack,
       severity: 'high',
-      status: 'new',
-      created_at: new Date().toISOString(),
+      brokerageId: brokerageId ?? undefined,
+      leadId,
+      context: { leadId },
+      client: supabase,
     })
     return { success: false, error: error.message }
   }

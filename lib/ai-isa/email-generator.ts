@@ -1,6 +1,7 @@
 'use server'
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { collectError } from '@/lib/errors/collect-error'
 import { buildFirstTouchEmail } from '@/lib/ai-isa/first-touch-copy'
 import { generationalCohortFromAge, type GenerationalCohort } from '@/lib/kernel/education'
 
@@ -84,13 +85,14 @@ export async function logEmailActivity(
   })
 
   if (!emailSent && errorMessage) {
-    await supabase.from('automation_errors').insert({
-      workflow_name: 'ai_isa_first_email',
-      error_message: errorMessage,
-      context_json: JSON.stringify({ leadId }),
+    await collectError({
+      workflowName: 'ai_isa_first_email',
+      errorMessage,
       severity: 'medium',
-      status: 'new',
-      created_at: new Date().toISOString()
+      brokerageId,
+      leadId,
+      context: { leadId },
+      client: supabase,
     })
   }
 }

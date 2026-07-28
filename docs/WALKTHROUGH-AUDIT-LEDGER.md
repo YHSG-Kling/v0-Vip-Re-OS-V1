@@ -3225,3 +3225,59 @@ rejects is declared) and names all six dead literals so none can come back.
 
 Vocabulary baseline: **100 → 94**. Chain: **110 simulators**. `tsc --noEmit`: 0.
 `npm run guard`: exit 0.
+
+---
+
+## Every AI-ISA failure was reported to the operator and written nowhere
+
+`automation_errors` is the table that exists to be the record of automation failure.
+Its `status` column:
+
+```
+CHECK (status = ANY (ARRAY['open','investigating','resolved','dismissed']))
+DEFAULT 'open'
+```
+
+Four AI-ISA call sites hand-rolled their own insert with `status: 'new'`:
+
+```
+app/actions/ai-isa/engage-contact.ts
+app/actions/ai-isa/initiate-engagement.ts
+app/actions/ai-isa/initiate-contact-engagement.ts
+lib/ai-isa/email-generator.ts
+```
+
+Verified on the live database: that insert raises `check_violation`. supabase-js resolves a
+rejected insert with `{ error }` rather than throwing, and all four discarded the result. So
+every AI-ISA engagement failure — the contact engine, the lead engine, both wrappers, and the
+first-touch email generator — was `console.error`'d into a serverless log and recorded
+nowhere. The table had no record of the loudest failures in the product.
+
+They also set no `brokerage_id`, and every console that reads this table filters on it.
+Fixing only the status would have moved the failure from *rejected* to *written and
+invisible*, which is not a fix.
+
+**The console read had the mirror defect.** `/dashboard/admin/automations` asked for
+`in(status, ['open','failed'])`. `'failed'` is not in the vocabulary; asking for it instead of
+`'investigating'` meant an error someone had actually picked up dropped off the list.
+Measured live on a probe row: `'investigating'` scores **0** on the old filter, **1** on the new.
+
+**One writer.** `lib/errors/collect-error.ts` was already canonical and already got all of
+this right — the status, the tenant anchor, the stack trace in `error_stack_traces`, the
+opening `error_resolution_log` entry, and the `SYSTEM_HEALTH_ALERT` kernel event on critical
+severity. Its only gap was that it took the RLS-scoped server client, which an engine running
+without a session cannot use. It now accepts an injected client, and the four sites pass their
+service client through. The two thin wrappers hoist `brokerageId` out of the `try` so the
+`catch` can still anchor the row.
+
+`npm run test:automation-errors` — 38 checks, pure, on the chain. Beyond pinning the four
+sites it carries a shrink-only baseline of the **20** files that still insert into this table
+directly: a new hand-rolled insert fails CI, routing an old one through the collector shrinks
+the list. Most of the 20 are not wrong today — they omit status and inherit `'open'` — but
+each is a place the vocabulary can drift again.
+
+Probe rows for both measurements were deleted; `automation_errors` and
+`wealth_advisor_recommendations` carry no leftover test data.
+
+Vocabulary baseline: **94 → 89**. Chain: **111 simulators**. `tsc --noEmit`: 0.
+`npm run guard`: exit 0.

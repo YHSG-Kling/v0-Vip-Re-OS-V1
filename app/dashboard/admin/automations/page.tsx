@@ -33,7 +33,10 @@ export default async function AutomationsPage() {
       .from("automation_errors")
       .select("id, workflow_name, error_message, severity, status, context_json, created_at, resolved_at")
       .eq("brokerage_id", ctx.brokerageId)
-      .in("status", ["open", "failed"])
+      // automation_errors.status ∈ (open, investigating, resolved, dismissed).
+      // This asked for 'failed', which the CHECK does not admit — dead weight
+      // that hid the fact 'investigating' rows were being filtered out too.
+      .in("status", ["open", "investigating"])
       .order("created_at", { ascending: false })
       .limit(50),
   ])

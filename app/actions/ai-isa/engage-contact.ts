@@ -19,6 +19,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { collectError } from '@/lib/errors/collect-error'
 import {
   generatePersonalizedEmail,
   embedVideoInEmail,
@@ -265,13 +266,14 @@ export async function engageContact(
     return await dispatchContactChannel(channel, contact, brokerageId, reason, actorId, supabase)
   } catch (error: any) {
     console.error('[engageContact] Error:', error)
-    await supabase.from('automation_errors').insert({
-      workflow_name: 'ai_isa_contact_engagement',
-      error_message: error.message,
-      context_json: JSON.stringify({ contactId, brokerageId, reason }),
+    await collectError({
+      workflowName: 'ai_isa_contact_engagement',
+      errorMessage: error.message,
+      stack: error.stack,
       severity: 'high',
-      status: 'new',
-      created_at: new Date().toISOString(),
+      brokerageId,
+      context: { contactId, reason },
+      client: supabase,
     })
     return { success: false, error: error.message }
   }

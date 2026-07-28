@@ -1,6 +1,19 @@
 /**
- * Central Error Collection Utility
- * 
+ * Central Error Collection Utility — the ONE writer for automation_errors.
+ *
+ * automation_errors.status carries a live CHECK admitting exactly
+ * open / investigating / resolved / dismissed, and defaults to 'open'. Four
+ * AI-ISA call sites hand-rolled their own insert with `status: 'new'`, which the
+ * constraint rejects. supabase-js resolves a rejected insert with `{ error }`
+ * instead of throwing, and all four discarded the result — so every AI-ISA
+ * engagement failure was reported to the operator, written nowhere, and lost.
+ * They also set no brokerage_id, and every console that reads this table filters
+ * on it, so even an accepted row would have been invisible.
+ *
+ * Going through here instead gets the vocabulary, the tenant anchor, the stack
+ * trace, the resolution-log entry and the critical-severity kernel alert, all of
+ * which a hand-rolled insert skips.
+ *
  * Usage examples:
  * In a server action:
  *   import { collectError } from '@/lib/errors/collect-error'
@@ -38,6 +51,13 @@ export interface CollectErrorParams {
   leadId?: string
   fileInfo?: { path: string; line: number; function: string }
   errorType?: string
+  /**
+   * The Supabase client to write with. Defaults to the RLS-scoped server client,
+   * which is correct for a session-authenticated server action. Callers running
+   * without a session — crons, webhooks, the AI-ISA engines — must pass their
+   * service client, or the insert has no identity to satisfy RLS with.
+   */
+  client?: { from: (table: string) => any }
 }
 
 /**
@@ -47,8 +67,8 @@ export interface CollectErrorParams {
  */
 export async function collectError(params: CollectErrorParams): Promise<string | null> {
   try {
-    const supabase = await createClient()
-    
+    const supabase = params.client ?? (await createClient())
+
     const {
       workflowName,
       errorMessage,

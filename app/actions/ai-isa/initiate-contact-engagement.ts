@@ -2,6 +2,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
+import { collectError } from '@/lib/errors/collect-error'
 import { engageContact } from './engage-contact'
 
 /**
@@ -34,6 +35,10 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
   error?: string
 }> {
   const supabase = createServiceClient()
+  // Hoisted so the catch can anchor the error row to a tenant. Every console that
+  // reads automation_errors filters on brokerage_id — an unanchored row is written
+  // and then invisible, which is the same outcome as not writing it.
+  let brokerageId: string | null = null
 
   try {
     // ── AUTH GATE ────────────────────────────────────────────────────────
@@ -60,6 +65,7 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
     if (hasSession && ctx.brokerageId && contact.brokerage_id !== ctx.brokerageId) {
       return { success: false, reason: 'Forbidden' }
     }
+    brokerageId = (contact.brokerage_id as string) ?? null
     // Converted contacts have an assigned agent; nurture runs on the contact.
     if (!contact.agent_id) {
       return { success: false, reason: 'Contact not yet assigned to agent' }
@@ -85,17 +91,15 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
     const message = error instanceof Error ? error.message : String(error)
     console.error('[initiateAIISAContactEngagement] Error:', message)
 
-    // automation_errors: no entity_type/entity_id columns — use context_json
-    await createServiceClient()
-      .from('automation_errors')
-      .insert({
-        workflow_name:  'ai_isa_contact_engagement',
-        error_message:  message,
-        context_json:   JSON.stringify({ contactId }),
-        severity:       'high',
-        status:         'new',
-      })
-      .then(() => void 0)
+    await collectError({
+      workflowName: 'ai_isa_contact_engagement',
+      errorMessage: message,
+      stack: error instanceof Error ? error.stack : undefined,
+      severity: 'high',
+      brokerageId: brokerageId ?? undefined,
+      context: { contactId },
+      client: supabase,
+    })
 
     return { success: false, error: message }
   }
