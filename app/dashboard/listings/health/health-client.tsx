@@ -197,6 +197,48 @@ export function ListingHealthBoardClient({ board }: Props) {
                   </p>
                 )}
 
+                {row.priceAdvice && (
+                  <div
+                    className={cn(
+                      "rounded p-3 border",
+                      row.priceAdvice.recommend
+                        ? "bg-emerald-50/70 border-emerald-200"
+                        : "bg-muted/40 border-muted",
+                    )}
+                  >
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Price advice
+                    </p>
+                    {row.priceAdvice.recommend && row.priceAdvice.recommendedPrice != null ? (
+                      <>
+                        <p className="text-sm font-medium mt-1">
+                          Recommend ${row.priceAdvice.recommendedPrice.toLocaleString()}
+                          {row.priceAdvice.dropAmount != null && (
+                            <span className="text-muted-foreground font-normal">
+                              {" "}— down ${row.priceAdvice.dropAmount.toLocaleString()}
+                              {row.priceAdvice.dropPct != null && ` (${row.priceAdvice.dropPct}%)`}
+                            </span>
+                          )}
+                        </p>
+                        <Badge className="bg-slate-100 text-slate-700 text-[10px] mt-1">
+                          {row.priceAdvice.confidence} confidence
+                        </Badge>
+                        <ul className="mt-2 space-y-0.5">
+                          {row.priceAdvice.justification.map((j, i) => (
+                            <li key={i} className="text-xs text-muted-foreground">• {j}</li>
+                          ))}
+                        </ul>
+                        <p className="text-[11px] text-muted-foreground mt-2">
+                          A price change needs the seller&apos;s agreement — this is a recommendation, not a change.
+                        </p>
+                      </>
+                    ) : (
+                      // The advisor declining is INFORMATION: it means price is not the problem.
+                      <p className="text-sm mt-1 text-muted-foreground">{row.priceAdvice.reason}</p>
+                    )}
+                  </div>
+                )}
+
                 {row.flags.length > 0 && (
                   <div className="space-y-1">
                     <p className="text-xs font-semibold uppercase text-muted-foreground tracking-wide">Flags</p>

@@ -21,6 +21,7 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { computePriceDropRecommendation } from "@/lib/kernel/listing-price-advisor"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 
@@ -43,6 +44,16 @@ export interface ListingHealthRow {
   flags:             string[]
   aiNarrative:       string | null
   recommendedActions: Array<{ action: string; reasoning: string; impactEstimate?: string }>
+  /** Recommended price move — null when the advisor honestly declines. */
+  priceAdvice: {
+    recommend:        boolean
+    recommendedPrice: number | null
+    dropAmount:       number | null
+    dropPct:          number | null
+    justification:    string[]
+    confidence:       "low" | "medium" | "high"
+    reason:           string
+  } | null
   interventions: Array<{
     id:               string
     severity:         "low" | "medium" | "high" | "critical"
@@ -109,6 +120,39 @@ export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { e
     interventionsByListing.set(i.listing_id, list)
   }
 
+  // Price-advice inputs. Showing VELOCITY (last 14d vs the prior 14d) and the
+  // comp median are what turn "this listing is stale" into "list it at $X".
+  const showingsRecent = new Map<string, number>()
+  const showingsPrior = new Map<string, number>()
+  const compMedianByListing = new Map<string, number>()
+  if (listingIds.length > 0) {
+    const now = Date.now()
+    const d14 = new Date(now - 14 * 86_400_000).toISOString()
+    const d28 = new Date(now - 28 * 86_400_000).toISOString()
+    const { data: showRows } = await svc
+      .from("showings")
+      .select("listing_id, scheduled_date")
+      .in("listing_id", listingIds)
+      .eq("brokerage_id", agentRow.brokerage_id)
+      .gte("scheduled_date", d28)
+    for (const r of (showRows ?? []) as any[]) {
+      const when = String(r.scheduled_date ?? "")
+      const bucket = when >= d14 ? showingsRecent : showingsPrior
+      bucket.set(r.listing_id, (bucket.get(r.listing_id) ?? 0) + 1)
+    }
+    const { data: cmaRows } = await svc
+      .from("cma_reports")
+      .select("listing_id, recommended_price, created_at")
+      .in("listing_id", listingIds)
+      .eq("brokerage_id", agentRow.brokerage_id)
+      .order("created_at", { ascending: false })
+    for (const r of (cmaRows ?? []) as any[]) {
+      if (r.recommended_price != null && !compMedianByListing.has(r.listing_id)) {
+        compMedianByListing.set(r.listing_id, Number(r.recommended_price))
+      }
+    }
+  }
+
   // Risk-level ordering for sorting: critical first, then at_risk, watch, healthy.
   const RISK_ORDER: Record<RiskLevel, number> = { critical: 0, at_risk: 1, watch: 2, healthy: 3 }
 
@@ -135,6 +179,16 @@ export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { e
       recommendedActions: Array.isArray(s.recommended_actions)
         ? (s.recommended_actions as Array<{ action: string; reasoning: string; impactEstimate?: string }>)
         : [],
+      priceAdvice:
+        l.list_price != null && s.days_on_market != null
+          ? computePriceDropRecommendation({
+              listPrice: Number(l.list_price),
+              daysOnMarket: Number(s.days_on_market),
+              showingsRecent: showingsRecent.get(l.id) ?? 0,
+              showingsPrior: showingsPrior.get(l.id) ?? 0,
+              compMedian: compMedianByListing.get(l.id) ?? null,
+            })
+          : null,
       interventions: ivs.map((iv) => ({
         id:               iv.id,
         severity:         iv.severity,

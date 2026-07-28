@@ -1043,3 +1043,42 @@ boundary was crossed.
 
 All three sheets now price commission, the transaction fee, and regional closing costs from the
 same models.
+
+---
+
+## Price advisor — NOT a duplicate, and the first consumer found a unit trap
+
+Fourth dark module. Investigating first was again the right call, but this time the verdict flipped
+the other way: `lib/kernel/listing-price-advisor.ts` is genuinely missing capability, not a copy.
+
+Three things exist and only two of them were built:
+
+| | question answered | exists |
+|---|---|---|
+| `pattern-detector` `price_reduction_likely` | *is* a reduction likely? (DOM/showings/offers) | yes |
+| `price_predictions` → `/dashboard/listings/ai-pricing` | what is this worth? (an AVM) | yes |
+| `listing-price-advisor` | **what price, and why — or is price not the problem?** | dark |
+
+The third is the one an agent actually needs to open a seller conversation, and its honesty is the
+point: it anchors to the comp median and never recommends below it, and it **declines** when the
+listing is already priced at comps — "the issue is exposure or condition, not price" — which is
+information, not a non-answer.
+
+**Home: the listing health board** (`/dashboard/listings/health`), which already ranks listings by
+how worried the agent should be and had `days_on_market` but no showings velocity and no comp
+anchor. Both now come from real rows — `showings` bucketed last-14d vs prior-14d for the velocity
+trend, and the newest `cma_reports.recommended_price` as the comp median — each tenant-scoped to
+the agent's brokerage. No new route; the advice renders inside the existing card, and a decline
+renders too so the agent learns price is not the lever.
+
+**`dropPct` returned a fraction.** It was computed as `dropAmount / currentPrice`, so a 5% cut came
+back as `0.05` under a field named `Pct` — and the very first consumer (this one) rendered
+"0.05%". Nothing else consumed the module, so the name was made true rather than the trap
+documented: it now returns 5.0, matching the repo convention where stored rates are percent values
+(`listing_agreements` holds 3 for 3%). The simulator only compared `dropPct` values relatively, so
+the change was safe; verified 8/8 still pass.
+
+`test:price-advisor` wired into the `guard` chain — the guard for a live surface runs in CI.
+
+**Dark capabilities: 10 found, 4 resolved.** Remaining: seller-listing-timeline, deal-confidence,
+outcome-autopsy, source-wording-diagnostic, ken-burns-plan (one hop from live), comps-animation-spec.
