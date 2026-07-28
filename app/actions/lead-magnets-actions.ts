@@ -4,12 +4,39 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { listLeadMagnets, createLeadMagnet, publishLeadMagnet } from "@/lib/kernel/lead-magnets"
 
-export async function listLeadMagnetsAction(options?: { brokerageId?: string; agentId?: string }) {
+/** Roles whose Lead Magnets view is the whole brokerage rather than just their own. */
+const BROKERAGE_WIDE_ROLES = ["admin", "broker", "superadmin"]
+
+/**
+ * Scope is resolved HERE, from the session — never from a client-supplied id.
+ *
+ * It used to take `agentId` from the caller, and every caller passed the AUTH
+ * USER id. lead_capture_forms.agent_id is a FK to agents(id), not users(id), so
+ * the filter matched nothing and the library rendered "0 lead magnets" for
+ * every user in the product. Resolving from getAgentContext() (whose .agentId
+ * IS agents.id) both fixes it and removes the parameter that made the mistake
+ * possible — a client cannot ask to see another agent's magnets.
+ *
+ * Broker/admin/superadmin get the brokerage-wide list; everyone else gets their
+ * own. Fail-closed: a session with no agents row sees nothing rather than the
+ * unfiltered brokerage.
+ */
+export async function listLeadMagnetsAction(options?: { scope?: "mine" | "brokerage" }) {
   try {
     const ctx = await getAgentContext()
     const bId = ctx.brokerageId
     if (!bId) return { success: false as const, error: "Not authenticated" }
-    return listLeadMagnets({ brokerageId: bId, agentId: options?.agentId })
+
+    const wantsBrokerageWide =
+      options?.scope !== "mine" && BROKERAGE_WIDE_ROLES.includes(ctx.role)
+
+    if (wantsBrokerageWide) {
+      return listLeadMagnets({ brokerageId: bId })
+    }
+    if (!ctx.agentId) {
+      return { success: false as const, error: "No agent profile for this user — complete onboarding to use lead magnets." }
+    }
+    return listLeadMagnets({ brokerageId: bId, agentId: ctx.agentId })
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to list magnets" }
   }
@@ -168,10 +195,17 @@ export async function generateQRCodeAction(input: { magnetId: string; url: strin
       .from("qr_codes")
       .insert({
         brokerage_id: ctx.brokerageId,
+        // qr_codes.agent_id is a FK to agents(id) — ctx.agentId is that PK.
+        agent_id: ctx.agentId,
         label: `Lead Magnet QR: ${input.magnetId}`,
         slug,
         target_url: input.url,
-        purpose: "general",
+        // Was "general", but EVERY reader of a lead-magnet QR filters on
+        // purpose = 'lead_magnet' (the detail tab's existing-code lookup and
+        // listLeadMagnets' scan-count join). Writing "general" meant a freshly
+        // generated QR was never found again: the tab kept offering "Generate",
+        // and the library never showed a scan count.
+        purpose: "lead_magnet",
         destination_type: "landing_page",
       })
       .select("id, slug, target_url")

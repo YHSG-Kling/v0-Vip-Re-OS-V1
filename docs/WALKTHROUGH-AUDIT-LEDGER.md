@@ -2135,3 +2135,74 @@ Worth recording, because the sweep is only useful if its noise is understood:
   the same feature is a plausible legitimate split and needs its own check.
 
 `tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.
+
+---
+
+## Three "Lead Magnets" screens — and the reason the feature had never worked
+
+The last flagged duplicate label, left alone twice as "a plausible legitimate scope split".
+It was not. It was three copies of one screen, and the split the admin copy's header
+promised was never implemented.
+
+| | `app/dashboard/agent/lead-magnets` | `app/dashboard/admin/lead-magnets` | `app/actions/lead-magnets.tsx` |
+|---|---|---|---|
+| lines | 228 | 219 | 221 |
+| reachable | agent nav | broker + admin nav | **nothing imports it** |
+| Google Business tab (`PublishGuideToGbp`) | ✅ | absent | absent |
+| reads `magnet_type` | ✅ | absent | absent |
+| list scope | own | **own** (despite the header) | own |
+
+The third copy is the tell: a full page component parked in `app/actions/`, where the App
+Router will never route it, carrying a role gate nobody could reach. Three files drifting
+apart one feature at a time — only one of them ever gained the GBP tab.
+
+Keep-the-advanced-one: the agent copy survives, with the brokerage-wide list the admin
+copy was supposed to provide. It moved to `/dashboard/marketing/lead-magnets`, because all
+three personas reach it from the same **Marketing & Content** nav group and a shared screen
+should not live behind one persona's path prefix.
+
+### The list was empty for every user in the product
+
+`lead_capture_forms.agent_id` is a FK to **`agents(id)`**. All three pages built their
+context as `agentId: user.id` — the **auth user id** — and passed it to
+`listLeadMagnetsAction`, which forwarded it into `.eq("agent_id", …)`. The two id classes
+never collide, so the filter matched nothing:
+
+```
+broker scope (no agent filter)          → 2 magnets
+agent scope by agents.id                → 1 magnet  (the right one)
+agent scope by the auth user id         → 0         ← what the UI actually did
+```
+
+Live-run against production with two seeded magnets under two different agents, then
+cleaned to residue 0. This is the **sixth** feature killed by this one bug class, and the
+first where the wrong id was laundered through a React prop rather than written inline —
+which is why the `test:agent-id-class` scanners could not see it.
+
+The fix removes the parameter, not just the value: `listLeadMagnetsAction` now takes
+`{ scope?: "mine" | "brokerage" }` and resolves `agents.id` from `getAgentContext()`.
+Broker/admin/superadmin get the brokerage; everyone else gets their own; a session with no
+`agents` row gets an honest refusal rather than the unfiltered brokerage. A client can no
+longer ask to see another agent's magnets, and cannot supply an id at all. The dead
+`agentId` props on `MagnetBuilder` and `QRCodeGenerator` — both already resolving the right
+id server-side, both never reading the prop — were deleted for the same reason.
+
+### And the QR codes were written where nothing looks for them
+
+Found on the way through: `generateQRCodeAction` inserted `purpose: "general"`, while every
+reader of a lead-magnet QR filters `purpose = 'lead_magnet'` — the detail tab's existing-code
+lookup and the scan-count join in `listLeadMagnets`. A generated QR was never found again:
+the tab kept offering "Generate", and the library never showed a scan count. Now written as
+`lead_magnet` with `agent_id` stamped from the session's `agents.id`; live-verified that the
+join lands (`scanCount: 7` on the seeded row).
+
+The detail tab's QR lookup deliberately does **not** filter by `agent_id` — brokerage plus
+slug is already exact, and the agent copy's extra `.eq("agent_id", ctx.agentId)` was the same
+wrong id class, hiding every QR that had been generated. Taking the admin copy's unfiltered
+lookup into the survivor is the merge rule working in the less obvious direction.
+
+Seven new checks on `test:lead-magnet-flow` hold all of it: exactly one Lead Magnets page
+file, every persona's nav on the single route, no client-supplied `agentId` in the action or
+the library, fail-closed scope, and the QR `purpose`/`agent_id` contract.
+
+`tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.

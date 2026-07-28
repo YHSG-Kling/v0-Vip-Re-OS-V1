@@ -23,7 +23,9 @@ import { Bell, CheckCircle2, Loader2, Sparkles } from "lucide-react"
 
 interface Props {
   brokerageId: string
-  agentId: string
+  // No agentId prop: createLeadMagnetAction resolves agents.id server-side from
+  // the session. The prop was never read, and every caller was passing the auth
+  // user id — the wrong id class for lead_capture_forms.agent_id.
   onCreated?: (magnetId: string, slug: string) => void
 }
 
@@ -44,7 +46,7 @@ const PUBLISH_CHANNELS = [
   { id: "social",       label: "Social Media" },
 ] as const
 
-export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
+export function MagnetBuilder({ brokerageId, onCreated }: Props) {
   const [step, setStep] = useState<"configure" | "publish" | "done">("configure")
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)

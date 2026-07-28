@@ -189,7 +189,10 @@ export function enumerateDomainRoutes(input: EnumerateRoutesInput): EnumerateRou
     { id: "admin-billing", path: "/dashboard/admin/billing", title: "Billing & Tiering", domain: "billing", accessLevel: "superadmin", kernelOwner: "lib/kernel/billing.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
     { id: "admin-vendors", path: "/dashboard/admin/vendors", title: "Vendor Marketplace", domain: "vendors", accessLevel: "broker", kernelOwner: "lib/kernel/vendors.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
     { id: "admin-forms", path: "/dashboard/admin/forms", title: "Forms Management", domain: "forms", accessLevel: "broker", kernelOwner: "lib/kernel/forms.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
-    { id: "admin-lead-magnets", path: "/dashboard/admin/lead-magnets", title: "Lead Magnets", domain: "lead_magnets", accessLevel: "broker", kernelOwner: "lib/kernel/lead-magnets.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
+    // Moved off /dashboard/admin: agents, brokers and admins all reach this from the
+    // same "Marketing & Content" nav group, and the persona copies under
+    // /dashboard/agent and /dashboard/admin were consolidated into this one page.
+    { id: "lead-magnets", path: "/dashboard/marketing/lead-magnets", title: "Lead Magnets", domain: "lead_magnets", accessLevel: "agent", kernelOwner: "lib/kernel/lead-magnets.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
     { id: "admin-education", path: "/dashboard/education", title: "Education Library", domain: "education", accessLevel: "broker", kernelOwner: "lib/kernel/education.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
     { id: "admin-video", path: "/dashboard/video", title: "Video Studio", domain: "video", accessLevel: "broker", kernelOwner: "lib/kernel/video.ts", classification: "canonical", isPersonaSpecific: false, verified: true },
     { id: "admin-compliance", path: "/dashboard/admin/compliance", title: "Compliance", domain: "compliance", accessLevel: "broker", kernelOwner: "lib/kernel/communication-compliance.ts", classification: "canonical", isPersonaSpecific: false, verified: true },

@@ -13,7 +13,9 @@ interface Props {
   magnetId: string
   magnetSlug: string
   brokerageId: string
-  agentId: string
+  // No agentId prop: generateQRCodeAction stamps qr_codes.agent_id from the
+  // session's agents.id. Callers only have the auth user id, which is the wrong
+  // id class for that FK.
   existingQrCodeId?: string
   existingQrImageUrl?: string
 }
@@ -22,7 +24,6 @@ export function QRCodeGenerator({
   magnetId,
   magnetSlug,
   brokerageId,
-  agentId,
   existingQrCodeId,
   existingQrImageUrl,
 }: Props) {
