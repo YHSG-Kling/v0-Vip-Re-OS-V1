@@ -81,7 +81,9 @@ export async function generateMarketInsights(): Promise<{
           .from("transactions")
           .select("id, purchase_price, close_date, stage")
           .eq("agent_id", agentId)
-          .in("stage", ["closed", "funded"])
+          // transactions.stage is UPPER_SNAKE — ["closed","funded"] matched nothing,
+          // so market insights were computed over zero closed deals.
+          .in("stage", ["CLOSED"])
           .gte("close_date", thirtyDaysAgo.toISOString().split("T")[0])
           .limit(200),
 

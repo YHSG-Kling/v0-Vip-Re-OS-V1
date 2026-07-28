@@ -160,7 +160,9 @@ export default async function BrokerageDashboard({
       .from("transactions")
       .select("id, property_address, close_date, agent_id, contact_id")
       .eq("brokerage_id", brokerageId)
-      .in("stage", ["active", "pending", "contingent"]),
+      // The in-flight stages, in the vocabulary the column admits. The old
+      // ["active","pending","contingent"] matched nothing and this metric read 0.
+      .in("stage", ["UNDER_CONTRACT", "INSPECTION", "APPRAISAL", "FINANCING_PENDING", "CLOSING_PREP"]),
     // Provider health status
     getSystemProviderStatus().catch(() => ({ directMailEnabled: true, videoEnabled: true })),
     // Unassigned leads count — leads' assignment column is agent_id (assigned_agent_id

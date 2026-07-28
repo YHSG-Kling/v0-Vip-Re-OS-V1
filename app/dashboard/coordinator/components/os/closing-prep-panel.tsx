@@ -30,7 +30,9 @@ export function ClosingPrepPanel({ brokerageId }: ClosingPrepPanelProps) {
             purchase_price
           `)
           .eq('brokerage_id', brokerageId)
-          .eq('stage', 'closing')
+          // The stage is CLOSING_PREP — 'closing' is not in the CHECK, so the
+          // coordinator's closing-prep queue never listed a single deal.
+          .eq('stage', 'CLOSING_PREP')
           .order('close_date', { ascending: true })
           .limit(12)
 

@@ -2781,3 +2781,39 @@ period" filtered `status = 'closed'` (permanently 0, the terminal status is `sol
 `listings.deleted_at` is the actual soft-delete column.
 
 `tsc --noEmit`: 0. `npm run guard`: 102 simulators, exit 0.
+
+---
+
+## transactions.stage: four surfaces that could never show a deal
+
+Fourth cluster, and the cleanest of them. `transactions.stage` is UPPER_SNAKE —
+`UNDER_CONTRACT | INSPECTION | APPRAISAL | FINANCING_PENDING | CLOSING_PREP | CLOSED | LOST`.
+All four call sites used lowercase words. Not one value in any of the four lists exists, so
+each query matched **nothing**, always:
+
+| | was | what it fed |
+|---|---|---|
+| `market-insights` | `['closed','funded']` | market insights computed over zero closed deals |
+| `brokerage/page` | `['active','pending','contingent']` | a brokerage dashboard metric that read 0 |
+| `closing-prep-panel` | `'closing'` | **the coordinator's closing-prep queue never listed a single deal** |
+| `serviceDeliveryMetrics` | `['under_contract','contingent','pending']` | service-delivery metrics saw no in-flight deals |
+
+The closing-prep panel is the one that would have been noticed first by a real user — a
+transaction coordinator's whole job queue, permanently empty — and it was one lowercase word
+away from working.
+
+Mapped to the live vocabulary: `CLOSED` for the terminal case, `CLOSING_PREP` for the panel,
+and `UNDER_CONTRACT, INSPECTION, APPRAISAL, FINANCING_PENDING, CLOSING_PREP` for the two
+in-flight lists. Patched by line number rather than by string, per the lesson from the
+direct-mail pass.
+
+Baseline: **138 → 129**.
+
+### A note on verification after the container restart
+
+`npm run guard` starts with `tsc --noEmit`, and after the restart wiped its incremental
+cache tsc exhausted even the 8 GB heap CI allocates. `npx tsc --noEmit` run on its own passed
+clean, and the 107 simulators run as a chain passed with exit 0 — so both halves of the guard
+are verified, just not inside one process. Recording it because "guard: exit 0" would not have
+been an accurate claim for this commit.
+
