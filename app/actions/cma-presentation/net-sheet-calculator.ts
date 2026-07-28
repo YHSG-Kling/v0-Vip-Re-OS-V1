@@ -359,8 +359,9 @@ export async function shareNetSheetToPortal(params: {
     const { error } = await supabase.from("transparency_updates").insert({
       listing_id: params.listingId,
       contact_id: params.contactId,
-      // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
-      agent_id: await resolveAgentId(supabase, user.id),
+      // transparency_updates.agent_id FKs USERS(id) — NOT agents(id), despite the
+      // name. A resolved agents.id is FK-rejected here. Verified against pg_constraint.
+      agent_id: user.id,
       update_type: "net_sheet",
       title: "Your Estimated Net Proceeds",
       message,

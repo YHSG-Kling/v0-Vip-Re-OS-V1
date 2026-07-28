@@ -26,7 +26,7 @@
  */
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join, relative } from "node:path"
-import { AGENT_FK_COLUMNS } from "./agent-fk-columns"
+import { AGENT_FK_COLUMNS, USERS_FK_AGENTISH_COLUMNS } from "./agent-fk-columns"
 
 const root = process.cwd()
 
@@ -34,6 +34,17 @@ const root = process.cwd()
 const USER_ID_EXPR = /\b(user\.user\.id|user\.id|userId|session\.user\.id|authUserId|currentUserId)\b/
 /** Already routed through the canonical resolver (or a value known to be an agents.id). */
 const RESOLVED = /resolveAgentId|requireAgentId|actingAgentId|\bagentId\b|agent\.id|agentRow/
+
+/**
+ * Expressions that ARE an agents.id — the REVERSE-direction hazard. Writing one of
+ * these into a users(id) FK is exactly as broken as the forward case, and it cost
+ * more: listing_promo_videos.agent_id killed the whole lifecycle-promo path, and
+ * listing_health_scores/interventions.agent_id meant the listing-health scorer had
+ * never persisted a single row.
+ */
+const AGENT_ID_EXPR = /\b(resolveAgentId|requireAgentId|agentRecordId|actingAgentId|\w*[Ll]isting\.agent_id|\w*[Cc]ontact\.agent_id|\w*[Tt]ransaction\.agent_id|listings\.agent_id|l\.agent_id)\b/
+/** A plain users.id — correct for a users(id) FK. */
+const USER_ID_OK = /\b(user\.user\.id|user\.id|userId|agentUserId|\w*[Uu]serId|session\.user\.id)\b/
 
 function* walk(dir: string): Generator<string> {
   let entries: string[]
@@ -76,6 +87,34 @@ export function scanSource(src: string, file: string): WrongClassWrite[] {
   return out
 }
 
+/** PURE — the REVERSE direction: an agents.id written into a users(id) FK. */
+export function scanSourceReverse(src: string, file: string): WrongClassWrite[] {
+  const out: WrongClassWrite[] = []
+  for (const [table, cols] of Object.entries(USERS_FK_AGENTISH_COLUMNS)) {
+    const needle = `.from("${table}")`
+    let i = src.indexOf(needle)
+    while (i !== -1) {
+      const rest = src.slice(i + needle.length)
+      const nextFrom = rest.search(/\.from\(/)
+      const win = needle + (nextFrom >= 0 ? rest.slice(0, nextFrom) : rest.slice(0, 1200))
+      if (/\.(insert|upsert|update)\s*\(/.test(win)) {
+        for (const col of cols) {
+          const re = new RegExp(`\\b${col}\\s*:\\s*([^,\\n}]+)`, "g")
+          let m: RegExpExecArray | null
+          while ((m = re.exec(win))) {
+            const expr = m[1].trim()
+            if (AGENT_ID_EXPR.test(expr) && !USER_ID_OK.test(expr)) {
+              out.push({ file, table, column: col, expr: expr.slice(0, 80) })
+            }
+          }
+        }
+      }
+      i = src.indexOf(needle, i + 1)
+    }
+  }
+  return out
+}
+
 let passed = 0, failed = 0
 const failures: string[] = []
 const check = (name: string, ok: boolean, detail?: string) => {
@@ -104,6 +143,16 @@ check("does not spill into the NEXT query's payload",
 check("ignores a read-only chain (no insert/update)",
   scanSource('await svc.from("activities").select("agent_id").eq("agent_id", user.id)', "t.ts").length === 0)
 
+console.log("\n[pure — the REVERSE detector]")
+check("flags a resolved agents.id on a users(id) FK",
+  scanSourceReverse('await svc.from("listing_promo_videos").insert({ agent_id: await resolveAgentId(svc, x) })', "t.ts").length === 1)
+check("flags listings.agent_id on a users(id) FK",
+  scanSourceReverse('await svc.from("listing_health_scores").insert({ agent_id: listing.agent_id })', "t.ts").length === 1)
+check("accepts a genuine users.id there",
+  scanSourceReverse('await svc.from("transparency_updates").insert({ agent_id: user.id })', "t.ts").length === 0)
+check("accepts an already-normalised agentUserId",
+  scanSourceReverse('await svc.from("listing_promo_videos").insert({ agent_id: agentUserId })', "t.ts").length === 0)
+
 console.log("\n[repo scan]")
 const files: string[] = []
 for (const d of ["app", "lib", "services"]) for (const f of walk(join(root, d))) files.push(f)
@@ -118,6 +167,18 @@ console.log(`  · ${files.length} files scanned · ${Object.keys(AGENT_FK_COLUMN
 check("no user-id expression is written to an agents(id) FK column",
   offenders.length === 0,
   offenders.map((o) => `${o.file}: ${o.table}.${o.column} = ${o.expr}`).join("; "))
+
+const reverse: WrongClassWrite[] = []
+for (const f of files) {
+  let src = ""
+  try { src = readFileSync(f, "utf8") } catch { continue }
+  if (!src.includes(".from(")) continue
+  reverse.push(...scanSourceReverse(src, relative(root, f).replace(/\\/g, "/")))
+}
+console.log(`  · ${Object.keys(USERS_FK_AGENTISH_COLUMNS).length} tables carry an agent-ISH users(id) FK`)
+check("no agents-id expression is written to a users(id) FK column",
+  reverse.length === 0,
+  reverse.map((o) => `${o.file}: ${o.table}.${o.column} = ${o.expr}`).join("; "))
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)

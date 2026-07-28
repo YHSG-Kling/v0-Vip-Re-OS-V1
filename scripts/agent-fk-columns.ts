@@ -201,3 +201,70 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   voice_calls: ["agent_id"],
   website_visitors: ["agent_id"],
 }
+
+/**
+ * Columns that FK public.users(id) but whose NAME reads agent-ish — the confusable
+ * half of the split-brain. Snapshotted from the live database.
+ *
+ * These are the REVERSE-direction hazard: writing a resolved agents.id here is just
+ * as broken as writing a user.id into an agents(id) FK. listing_promo_videos.agent_id
+ * is the case that killed the entire lifecycle-promo path, and
+ * listing_health_scores.agent_id / listing_health_interventions.agent_id are why the
+ * listing-health scorer had never persisted a score.
+ *
+ * Only agent-ish NAMES are listed. A column called `created_by` or `uploaded_by` is
+ * not going to be confused for an agents.id, and listing every users FK would bury
+ * the ones that actually mislead.
+ */
+export const USERS_FK_AGENTISH_COLUMNS: Record<string, string[]> = {
+  activities: ["agent_user_id"],
+  ad_campaigns: ["agent_user_id"],
+  agent_intro_videos: ["agent_id"],
+  agent_social_shares: ["agent_user_id"],
+  ai_isa_qualifications: ["assigned_to_agent_id"],
+  ai_message_drafts: ["agent_user_id"],
+  ai_video_projects: ["agent_id"],
+  blog_posts: ["agent_user_id"],
+  buyer_financial_profiles: ["agent_user_id"],
+  buyer_intake_tokens: ["agent_user_id"],
+  campaign_calendar: ["agent_user_id"],
+  closing_disclosure: ["title_agent_id"],
+  closing_disclosure_agreement: ["agent_id"],
+  conversation_logs: ["agent_id"],
+  fatigue_alerts: ["agent_user_id"],
+  income_forecast_snapshots: ["agent_id"],
+  learning_assignments: ["agent_user_id"],
+  lifetime_customer_npv_scores: ["agent_id"],
+  listing_agreements: ["agent_user_id"],
+  listing_health_interventions: ["agent_id"],
+  listing_health_scores: ["agent_id"],
+  listing_packet_jobs: ["agent_user_id"],
+  listing_presentations: ["agent_user_id"],
+  listing_promo_videos: ["agent_id"],
+  marketing_assets: ["agent_user_id"],
+  marketing_campaigns: ["agent_user_id"],
+  message_threads: ["agent_user_id"],
+  negotiation_strategies: ["agent_user_id"],
+  neighbor_notification_campaigns: ["agent_user_id"],
+  newsletter_scheduled_sends: ["agent_id"],
+  newsletter_video_renders: ["agent_id"],
+  objection_training_sessions: ["agent_user_id"],
+  pattern_adoptions: ["agent_id"],
+  platform_credentials: ["agent_user_id"],
+  podcast_auto_runs: ["agent_id"],
+  podcast_episodes: ["agent_id"],
+  podcast_templates: ["agent_id"],
+  portal_event_stream: ["agent_user_id"],
+  property_alerts: ["agent_user_id"],
+  property_interests: ["agent_user_id"],
+  property_preferences: ["agent_id"],
+  repurpose_pipelines: ["agent_user_id"],
+  revenue_protection_snapshots: ["agent_id"],
+  review_requests: ["agent_id"],
+  seo_keywords: ["agent_user_id"],
+  strategy_recommendations: ["agent_user_id"],
+  studio_sessions: ["agent_id"],
+  transparency_updates: ["agent_id"],
+  workflow_intake_sessions: ["agent_user_id"],
+  workflow_runs: ["agent_user_id"],
+}

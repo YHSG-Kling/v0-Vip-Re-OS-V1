@@ -1904,3 +1904,70 @@ the REVERSE direction — an agents.id written into a users-FK column — which 
 model. Extending it needs the users-FK column map alongside the agents one.
 
 `tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.
+
+---
+
+## The id-class contract, both directions — and the regression I shipped
+
+The previous entry said a guard was owed for the REVERSE direction: an agents.id written
+into a users(id) FK. Building it found three more instances, **one of which I had introduced
+myself two commits earlier.**
+
+### The regression
+
+Fixing the fourth net sheet, I replaced `agent_id: user.id` in
+`cma-presentation/net-sheet-calculator.ts` — but that file has **two** such lines, and my
+replacement hit both:
+
+| site | column FKs | `user.id` was | my edit |
+|---|---|---|---|
+| `activities.agent_id` | **agents** | wrong | correct fix |
+| `transparency_updates.agent_id` | **users** | **already correct** | **broke it** |
+
+`transparency_updates.agent_id` is named like an agents reference and is not one. I made
+exactly the mistake this guard exists to prevent, in the commit where I was fixing the same
+class elsewhere, and no type-check or existing guard could see it. Reverted to `user.id` with
+the FK documented inline.
+
+### Two more, in a feature that had never persisted anything
+
+`lib/listing-health/health-scorer.ts` wrote `listing.agent_id` — an agents.id — into
+`listing_health_scores.agent_id` and `listing_health_interventions.agent_id`, both of which FK
+**users**. Live: both tables hold **0 rows**. The listing-health scorer has never persisted a
+score or an intervention.
+
+That is the fourth flagship flow this session found dead from this one bug class, after the
+seller net sheet's Save button, the nine wrong-class writes, and the entire lifecycle-promo
+path. Fixed by resolving `listings.agent_id → agents.user_id` once, after the listing fetch.
+
+### The guard now models the split-brain
+
+`scripts/agent-fk-columns.ts` gained `USERS_FK_AGENTISH_COLUMNS` — 50 tables whose
+users(id) FK column has an **agent-ish name**, snapshotted from the live database. Only
+agent-ish names are listed: nobody confuses `created_by` for an agents.id, and listing every
+users FK would bury the ones that actually mislead.
+
+`test:agent-id-class` now runs both scanners, 12 checks:
+
+- forward — a user-id expression into an agents(id) FK
+- reverse — an agents.id expression (`resolveAgentId(...)`, `agentRecordId`,
+  `listing.agent_id`) into a users(id) FK, while accepting a genuine `user.id` or an
+  already-normalised `agentUserId`
+
+Both directions are pure-checked against the two cases that actually shipped:
+`listing_promo_videos.agent_id` and `listing_health_scores.agent_id`. Repo scan: 4,291 files,
+185 agents-FK tables, 50 agent-ish users-FK tables, **0 offenders in either direction**.
+
+### What this class has cost
+
+Four features that type-checked, passed every guard, and had never executed once:
+
+1. seller net sheet Save (`net_sheet_calculations` — 0 rows)
+2. the lifecycle-promo path (`listing_promo_videos` — 0 rows)
+3. the listing-health scorer (`listing_health_scores` / `_interventions` — 0 rows)
+4. nine assorted activity/task/message writes
+
+In three of the four, a confident code comment asserted the opposite of what the live foreign
+key said. The schema is the authority; comments are hearsay.
+
+`tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.
