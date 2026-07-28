@@ -997,3 +997,49 @@ include it or the persisted net would disagree with the rendered one.
 Verified: the fee is flat, reduces net by exactly its amount, and stays $495 at double the sale
 price rather than scaling like a percentage. Both migrations applied live and recorded in the
 snapshot; `schema-drift` green.
+
+---
+
+## Title fees and doc stamps were missing from the CMA net sheet only
+
+Owner: "title fees and/or doc stamps have been left off net sheets — I thought I did that in
+another pass." Both halves are right. The work was done; it was mounted on two of the three sheets.
+
+`lib/offers/regional-closing-costs.ts` is a 50-state + DC convention table that already models the
+seller's customary share as the exact complement of the buyer's (`sellerShareFactor`, so the two
+sides can never double-claim or drop a cost), including the county-level realities in its notes —
+FL doc stamps at $0.70/$100 with the Miami-Dade surtax, CA county documentary transfer tax, MD
+county transfer + recordation, NV by county (Clark $2.55/$500), IL state + county with Chicago's
+buyer-paid city portion. `deriveNetSheetClosingCostSection` turns it into itemized lines.
+
+Mounted on the **offers** net sheet and the **seller portal** calculator. **Not** on the CMA net
+sheet — the one an agent uses at the listing appointment, which fell back to `price * 0.02`.
+
+**A blind 2% is wrong in both directions.** On a $600,000 sale it charges $12,000 against real
+regional midpoints of:
+
+| | midpoint | vs the flat 2% |
+|---|---|---|
+| CA | $3,985 | overstated by ~$8,000 |
+| TX | $4,215 | overstated by ~$7,800 |
+| NY | $5,000 | overstated by ~$7,000 |
+| MD | $5,800 | overstated by ~$6,200 |
+| NV | $6,165 | overstated by ~$5,800 |
+| WA | $11,205 | roughly right |
+
+Overstating closing costs **understates the seller's net** — so the sheet was quoting a listing
+appointment a number that was thousands of dollars pessimistic in most states, and the seller was
+never shown what the money was for.
+
+The CMA sheet now mounts the same section: itemized Transfer/deed tax (seller share), Owner's title
+insurance (seller share), Settlement/escrow (seller share), Recording — deed & payoff release, each
+as a low–high band under the Closing Costs row, recomputed as the scenario price moves, with the
+settlement statement named as the authority and the field still editable. Unknown state → the flat
+2% stands, honestly unlabeled, exactly as the other sheets behave.
+
+`listing.state` was already reaching the CMA client; only the tab's local `Listing` interface
+failed to declare it. The module is pure and client-safe (its only import is a type), so no server
+boundary was crossed.
+
+All three sheets now price commission, the transaction fee, and regional closing costs from the
+same models.

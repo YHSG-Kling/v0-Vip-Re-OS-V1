@@ -22,12 +22,19 @@ import {
   saveNetSheetEmailDraft,
 } from "@/app/actions/cma-presentation/net-sheet-calculator"
 import type { NetSheetPageData } from "@/app/actions/seller-cma"
+// Pure, client-safe: the same 50-state + DC convention table the offers net sheet
+// and the seller portal already use. Title fees and transfer/doc-stamp taxes were
+// simply never mounted here — this sheet fell back to a blind 2% of price.
+import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
 
 interface Listing {
   id: string
   address: string | null
   list_price: number | null
   seller_contact_id?: string | null
+  /** Drives the regional closing-cost band (title, transfer/doc stamps). */
+  state?: string | null
+  city?: string | null
 }
 
 interface Props {
@@ -120,7 +127,11 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
   // Flat fee is charged as-is; percentage rates only apply when it isn't one.
   const listComm = isFlatFee ? flatAmount : price * (Number(listingRate) / 100)
   const buyerComm = isFlatFee ? 0 : price * (Number(buyerRate) / 100)
-  const closing = Number(closingCosts) || price * 0.02
+  // Regional seller closing costs — itemized title + transfer/doc-stamp lines for
+  // the listing's state, recomputed as the scenario price moves. Falls back to the
+  // old flat 2% only when the state is unknown.
+  const closingSection = deriveNetSheetClosingCostSection(price, listing.state ?? null)
+  const closing = Number(closingCosts) || closingSection?.midpoint || price * 0.02
   const payoff = Number(mortgagePayoff) || 0
   const taxes = Number(propertyTaxes) || 0
   const hoa = Number(hoaFees) || 0
@@ -483,6 +494,25 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
               </>
             )}
             <Row label="Closing Costs" value={`-${fmt(closing)}`} negative />
+            {closingSection && (
+              <div className="ml-3 pl-3 border-l border-muted space-y-1">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  {closingSection.regionLabel} — customary seller share
+                </p>
+                {closingSection.lines.map((l) => (
+                  <div key={l.label} className="flex items-baseline justify-between gap-3 text-xs">
+                    <span className="text-muted-foreground">{l.label}</span>
+                    <span className="tabular-nums whitespace-nowrap">
+                      {fmt(l.low)}{l.high !== l.low ? `–${fmt(l.high)}` : ""}
+                    </span>
+                  </div>
+                ))}
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  Regional estimate — the settlement statement is the authority. Edit Closing
+                  Costs above to override.
+                </p>
+              </div>
+            )}
             {payoff > 0 && <Row label="Mortgage Payoff" value={`-${fmt(payoff)}`} negative />}
             {taxes > 0 && <Row label="Property Taxes" value={`-${fmt(taxes)}`} negative />}
             {hoa > 0 && <Row label="HOA Fees" value={`-${fmt(hoa)}`} negative />}
