@@ -764,3 +764,35 @@ serves it as a special file and my root pattern did not list it. Recorded so nob
 
 **Not wiring any of this yet.** Where each belongs is a product decision about which domain
 surface owns it, and the whole point of the exercise was to avoid scattering wires.
+
+---
+
+## The governance scorecard was dark — surfaced, and one red guard was unsatisfiable
+
+Acting on the evaluation above rather than banking it. `lib/compliance/manager-governance-scorecard.ts`
+was the single highest-value dark module: it maps each of the 14 named managers' authority scope to
+the supervisory dimensions it must satisfy (FINRA-2026 autonomous-agent, OWASP LLM-01, GDPR/CCPA/TCPA)
+and, for each, names the concrete guard in this repo that enforces it. Nothing rendered it.
+
+**It did not need a new page.** `app/dashboard/admin/compliance-eval` already surfaces
+`runManagerEval` — the *behavioural* red-team harness. The scorecard is its *structural* companion:
+the eval proves the managers behave, the scorecard proves their authority is bounded. They belong on
+one page, and now they are. No new route, no new nav entry, no scattered wire.
+
+**`test:manager-governance` was not reporting a governance gap — it could never pass.** The
+assertion read `s.governed === 13 && s.gaps === 0` while the line directly above it asserted
+`s.totalManagers === 14`. Since `governed + gaps === totalManagers` by construction, that pair is
+arithmetically unsatisfiable: it went stale the moment a 14th manager was added. All 14 managers
+are, and were, fully governed. Corrected to assert the invariant (`s.governed === s.totalManagers`)
+rather than a headcount literal, so adding manager 15 cannot re-break it. 24/25 → **25/25**.
+
+This corrects what the previous ledger entry implied — that one manager was ungoverned. It was a
+stale test, not a product gap. Two of the three long-red guards remain: `stripe-writethrough` (22/23,
+entitlement engine reads only one spelling of an override) and `cda-pdf-fill` (7/13, the real one).
+
+Verified the surface renders real data, not empty shells: 14 cards, 0 malformed, genuine counts
+(Deal Coordinator: 69 owned tables, 13 scheduled jobs, 4 catalogued signals, 48 burn domains).
+
+`test:manager-governance` is now wired into the `guard` chain — a single deliberate entry for the
+guard covering the surface just shipped, not the mass-wire that was refused. The other 146 remain
+the owner's CI-time decision.
