@@ -65,8 +65,11 @@ export type ListingPromoEventType = LifecycleEventType
 export interface ListingPromoInput {
   brokerageId:  string
   listingId:    string
-  /** users.id of the listing agent. Resolved from listings.agent_id (which
-   *  on the live schema is already a users.id). */
+  /** The listing agent. Callers may pass EITHER an agents.id (what
+   *  listings.agent_id actually holds — it FKs agents(id)) or a users.id;
+   *  dispatchListingPromoVideo normalises to a users.id before use. The previous
+   *  comment here claimed listings.agent_id was "already a users.id", which is
+   *  false on the live schema and is what broke the ledger insert. */
   agentUserId:  string
   eventType:    ListingPromoEventType
   /** Wave 27 — when true, skip the lifecycle_promo_policy auto_spawn check
@@ -111,6 +114,29 @@ export async function dispatchListingPromoVideo(
 ): Promise<ListingPromoResult> {
   const svc = createServiceClient()
 
+  // ── ID-CLASS NORMALISATION (resolve-or-keep) ───────────────────────────────
+  //
+  // listing_promo_videos.agent_id FKs users(id). listings.agent_id FKs AGENTS(id)
+  // — verified live: 3 of 3 listing rows match agents.id, 0 match users.id. The
+  // doc comment on ListingPromoInput.agentUserId asserted the opposite ("already
+  // a users.id"), and most of the 13 call sites feed it listings.agent_id
+  // straight through. The ledger insert below therefore FK-failed every time, and
+  // listing_promo_videos held ZERO rows: the whole lifecycle-promo path — policy
+  // gate, compliance gate, 8-platform social fan-out — had never once fired.
+  //
+  // Fixed HERE rather than at each caller: one seam covers all 13, and it is safe
+  // for the callers that already pass a genuine users.id. If the value resolves to
+  // an agents row, translate to that agent's user_id; otherwise keep it as given.
+  let agentUserId = input.agentUserId
+  if (agentUserId) {
+    const { data: agentRow } = await svc
+      .from("agents")
+      .select("user_id")
+      .eq("id", agentUserId)
+      .maybeSingle()
+    if (agentRow?.user_id) agentUserId = agentRow.user_id as string
+  }
+
   // 1. Load listing facts — these populate the script. The fact list is
   //    AUTHORITATIVE; the prompt instructs the model to use only these.
   const { data: listing } = await svc
@@ -139,7 +165,7 @@ export async function dispatchListingPromoVideo(
   //     clicks during a 24h window still debounce.)
   if (!input.bypassPolicy) {
     const policy = await resolveLifecycleAutoSpawn(
-      { agentUserId: input.agentUserId, brokerageId: input.brokerageId },
+      { agentUserId, brokerageId: input.brokerageId },
       input.eventType,
     )
     if (!policy.autoSpawn) {
@@ -163,7 +189,7 @@ export async function dispatchListingPromoVideo(
     .insert({
       brokerage_id: input.brokerageId,
       listing_id:   input.listingId,
-      agent_id:     input.agentUserId,
+      agent_id:     agentUserId,
       event_type:   input.eventType,
       status:       "queued",
     })
@@ -181,7 +207,7 @@ export async function dispatchListingPromoVideo(
   // agent_voice_profiles.agent_id FKs to agents(id); resolve users.id
   // → agents.id via the canonical helper.
   const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
-  const agentRecordId = await resolveUserIdToAgentRecord(input.agentUserId, input.brokerageId)
+  const agentRecordId = await resolveUserIdToAgentRecord(agentUserId, input.brokerageId)
   const { data: profile } = agentRecordId
     ? await svc
         .from("agent_voice_profiles")
@@ -204,7 +230,7 @@ export async function dispatchListingPromoVideo(
       draft: ({ violations }) => draftScript({ facts, eventType: input.eventType, eventContext: input.eventContext, violations }),
       gate: async (s) => {
         const r = await evaluateOutbound({
-          actorContext: { brokerageId: input.brokerageId, userId: input.agentUserId, role: "system" },
+          actorContext: { brokerageId: input.brokerageId, userId: agentUserId, role: "system" },
           journeyType:  "seller",
           persona:      "other",
           messageType:  "social",

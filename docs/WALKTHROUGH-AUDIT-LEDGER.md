@@ -1831,3 +1831,76 @@ THREE table families"), and picking one ledger is a schema and business-process 
 rename.
 
 `tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.
+
+---
+
+## The lifecycle-promo path had never fired either — so the "duplicate" was the only one working
+
+Item #69 was "collapse `gbpAutoPostsCronTick` into the canonical lifecycle-promo path." Under
+the merge-then-remove rule the first job is to establish which one is actually the advanced
+path. On paper it is not close. The canonical path has:
+
+- a policy gate resolving agent → team → brokerage → platform default for `(event_type, scope)`
+- a cooldown gate so three price edits in a day produce one promo
+- an idempotency ledger with a unique constraint
+- a tenant check
+- the compliance gate (Brand voice + Fair Housing + Them-First)
+- per-platform tailored captions across **eight** platforms, `google_business` among them
+
+The GBP cron has none of that. It posts to one platform with its own copy, and `gbpEnabledFor`
+returns `true` unconditionally — so it **ignores the agent's lifecycle-promo policy entirely**.
+An agent who switched `just_sold` off still gets a Google Business post.
+
+So: keep the reactor, port the GBP cron's one genuine capability (a 24h `updated_at` catch-up
+sweep, which the event-driven reactor lacks), delete the rest.
+
+### Then the live check inverted it
+
+`ListingPromoInput.agentUserId` was documented as *"users.id of the listing agent. Resolved
+from listings.agent_id (which on the live schema is already a users.id)."*
+
+That is false. Live:
+
+| check | result |
+|---|---|
+| `listings.agent_id` FK | → **agents(id)** |
+| `listing_promo_videos.agent_id` FK | → **users(id)** |
+| listings whose `agent_id` matches an `agents.id` | **3 of 3** |
+| listings whose `agent_id` matches a `users.id` | **0** |
+| rows in `listing_promo_videos` | **0** |
+
+Most of the 13 call sites feed `listings.agent_id` straight through, so the ledger insert
+FK-failed every time. **The canonical lifecycle-promo path had never once fired** — no policy
+gate, no compliance gate, no eight-platform fan-out, ever. `social_posts` has zero
+`google_business` rows, confirming the GBP cron never produced anything either.
+
+Deleting the GBP cron on the strength of the doc comment would have removed a path in favour of
+one that does not run. **This is the third instance of the same bug class this session** — after
+the net-sheet Save button and the nine wrong-class writes — and the second time a confident code
+comment was contradicted by the live foreign keys.
+
+### The fix
+
+Normalised inside `dispatchListingPromoVideo` rather than at each of the 13 call sites: one seam
+covers them all and is safe for callers already passing a genuine users.id. Resolve-or-keep — if
+the value matches an `agents` row, translate to that agent's `user_id`; otherwise keep it. The
+same shape the registry records for `qr_codes`. All three downstream uses (`resolveUserIdToAgentRecord`,
+the `actorContext.userId`, and the ledger insert) now consume the normalised value, and the
+misleading doc comment has been replaced with what the schema actually says.
+
+**Proven against the live database**, then cleaned to 0 rows: inserting `listings.agent_id`
+into `listing_promo_videos.agent_id` raises `foreign_key_violation`; inserting the normalised
+`agents.user_id` succeeds.
+
+### Still open on #69
+
+The consolidation itself is now *unblocked but not done*. With the canonical path able to run
+for the first time, the remaining work is to port the 24h catch-up sweep into it and retire the
+GBP-only poster. That deserves its own pass — and it should be verified by watching the reactor
+actually produce ledger rows and social drafts, which was impossible until now.
+
+**A guard is owed here.** `test:agent-id-class` catches user-id → agents-FK writes. This bug is
+the REVERSE direction — an agents.id written into a users-FK column — which that guard does not
+model. Extending it needs the users-FK column map alongside the agents one.
+
+`tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.
