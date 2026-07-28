@@ -151,14 +151,13 @@ export default function VideoAssistantPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-4 mt-6">
+          {/* "AI Accuracy 98%" used to sit here — a literal, identical for every user,
+              between two real counts so it read as measured. Nothing measures script
+              accuracy, so it is gone rather than replaced with another guess. */}
+          <div className="grid grid-cols-2 gap-4 mt-6">
             <div className="p-4 rounded-lg bg-blue-50 border border-blue-200">
               <p className="text-sm text-blue-700 mb-1">Scripts Generated</p>
               <p className="text-2xl font-bold text-blue-900">{scripts.length}</p>
-            </div>
-            <div className="p-4 rounded-lg bg-green-50 border border-green-200">
-              <p className="text-sm text-green-700 mb-1">AI Accuracy</p>
-              <p className="text-2xl font-bold text-green-900">98%</p>
             </div>
             <div className="p-4 rounded-lg bg-purple-50 border border-purple-200">
               <p className="text-sm text-purple-700 mb-1">Videos Created</p>

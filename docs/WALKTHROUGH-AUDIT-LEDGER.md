@@ -1208,3 +1208,70 @@ deal".
 **Dark capabilities: 10 found, 6 resolved.** Remaining: seller-listing-timeline, outcome-autopsy,
 plus ken-burns-plan (reachable via the Director — an analyzer artifact, not a real gap) and
 comps-animation-spec (a consolidation call).
+
+---
+
+## Generalising the sweep past money — and a correction
+
+The money sweep worked by grepping for the magic constant a shared model was built to replace.
+Generalised it to three domain-agnostic signals across `app/` and `lib/`.
+
+### Fabricated metrics rendered as measurement
+
+Two, both real, both fixed:
+
+- **`app/video-assistant/page.tsx`** — `AI Accuracy  98%`, a literal sitting between
+  `{scripts.length}` and `{scripts.filter(s => s.video_url).length}`. Two real counts either side
+  made it read as measured; nothing in this system measures script accuracy. Removed rather than
+  replaced with a different guess, and the grid is 2-up now.
+- **`app/components/shared/compliance/violations-dashboard.tsx`** — `100%` for
+  `coldLeadChannelCompliance`. Not fabricated (a real boolean drives it) but a boolean rendered as
+  a percentage implies a measured rate, on a compliance surface where that matters. Now reads
+  "Compliant".
+
+Combined with the three hardcoded percentages on the transaction page (`160b688`), that is the
+whole of this class the sweep can see: literals adjacent to real metrics. It cannot see a
+*plausible-looking but wrong* computed value — only a human reading the math catches those.
+
+### CORRECTION: there IS a fourth net sheet
+
+An earlier entry claimed "there is no fourth: `net_sheet_calculations` is a persisted result, not a
+second calculator." That was wrong. **`app/actions/cma-presentation/net-sheet-calculator.ts`**
+(457 lines, `generateNetSheet`) is a fourth calculator, with five caller files including the voice
+assistant's command executors. The near-twin sweep found it; the money sweep missed it because it
+does not hardcode a constant — it reads its numbers from config.
+
+It is not simply behind, which is why this needs the owner rather than a quick merge:
+
+| | canonical (`lib/offers/net-sheet-calc`) | `net-sheet-calculator.ts` |
+|---|---|---|
+| commission | agreed terms from `listing_agreements` (flat fee / total / both sides) | brokerage `getDefaultCommissionStructure` |
+| closing costs | itemised 50-state regional bands | `financial_defaults.closing_cost_percent` |
+| transaction fee | yes (m283/m284) | no |
+| provenance + disclose-first policy | yes | no |
+| brokerage-configured defaults | **no** | **yes** |
+| multi-scenario | via callers | built in |
+
+The canonical model is more accurate and more honest; the fourth has one capability it lacks — a
+**brokerage-level configured closing-cost percent**. "Keep the advanced one" therefore means
+folding `financial_defaults.closing_cost_percent` into the canonical resolver as a tier that
+outranks the regional estimate but yields to a real agreement, then repointing all five callers.
+That is a real piece of work with voice-command blast radius, not a rename.
+
+### Duplicate exported names — 229 groups, mostly layering
+
+Most are legitimate (`app/actions` → `lib/services` → `lib/kernel` for one concept). The ones that
+look like genuine triplication rather than layering:
+
+- `TrainingProgressPanel` — the same component in three directories (academy, admin onboarding,
+  dashboard onboarding).
+- `calculateLeadScore` × 3 (`ai-auto-response`, `multi-factor-scorer`, `lead-management.service`).
+- `markCommissionPaid` × 4, `completeMilestone` × 4, `generateVideoScript` × 7.
+
+And two near-twin pairs in the same domain: `lib/fatigue/fatigue-calculator.ts` vs
+`lib/fatigue/fatigue-scorer.ts` (same directory), and `lib/alerts/alert-engine.ts` vs
+`lib/property-alerts/alert-engine.ts`.
+
+Recorded rather than resolved: each needs the same investigate-first treatment the seller decision
+room got, where the "duplicate" turned out to be one shipped feature plus one unique capability.
+`generateVideoScript` × 7 is the highest-value thread to pull.

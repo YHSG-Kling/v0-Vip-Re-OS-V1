@@ -70,7 +70,7 @@ export default function ViolationsDashboard({ initialViolations, report }: Viola
               {report.coldLeadChannelCompliance ? (
                 <>
                   <CheckCircle className="w-5 h-5 text-green-600" />
-                  <span className="text-2xl font-bold text-green-600">100%</span>
+                  <span className="text-2xl font-bold text-green-600">Compliant</span>
                 </>
               ) : (
                 <>
