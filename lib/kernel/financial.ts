@@ -29,6 +29,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
+import { syncAgentLedgerToStamp } from "@/lib/commission/ledger-sync"
 
 
 // ─── CONSTANTS & ENUMS ────────────────────────────────────────────────────────
@@ -714,6 +715,13 @@ export async function markCommissionApproved(
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
     await supabase.from("commission_splits").update({ status: "approved", updated_at: approvedAt }).eq("commission_id", commissionId)
 
+    // …and onto the deal stamp, so approval is visible on the retained record too.
+    await syncAgentLedgerToStamp(supabase, {
+      transaction_id: (commission as { transaction_id?: string | null }).transaction_id ?? null,
+      agent_id:       (commission as { agent_id: string }).agent_id,
+      status:         newStatus,
+    })
+
     // Emit lifecycle event
     await supabase
       .from("lifecycle_events")
@@ -780,6 +788,16 @@ export async function markCommissionPaid(
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
     await supabase.from("commission_splits").update({ status: "paid", paid_at: paidAt, updated_at: paidAt }).eq("commission_id", commissionId)
+
+    // Mirror onto the DEAL STAMP (transaction_commissions) — the record real-estate
+    // retention keeps for seven years. Paying the agent here without stamping the
+    // deal leaves that record saying "pending" forever, which is a false record.
+    await syncAgentLedgerToStamp(supabase, {
+      transaction_id: (commission as { transaction_id?: string | null }).transaction_id ?? null,
+      agent_id:       (commission as { agent_id: string }).agent_id,
+      status:         newStatus,
+      paid_at:        paidAt,
+    })
 
     // Emit lifecycle event
     await supabase

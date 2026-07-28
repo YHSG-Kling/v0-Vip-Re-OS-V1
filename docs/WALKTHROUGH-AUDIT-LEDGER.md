@@ -3548,3 +3548,54 @@ discriminate on. Rewriting them to a real value (`nurture`, `drip`) would make t
 worse failure than not firing, so the literals stand until one of two calls is made: add
 `home_value_submitted` / a lead-magnet trigger to the `trigger_event` CHECK, or give these two
 hooks real installers the way reactivation has one.
+
+---
+
+## OWNER RULING: two commission ledgers, kept in lockstep
+
+The open question all session was whether `agent_commissions` or `transaction_commissions`
+should survive. The answer is **both**, and they are not duplicates:
+
+| table | what it is |
+| --- | --- |
+| `transaction_commissions` | the **stamp on the deal** — every recipient, what they were owed, what was disbursed. Real-estate retention is **seven years**; this is what an audit reads long after the agent has left the brokerage. |
+| `agent_commissions` | the agent's **payable ledger** — split, cap, fees, net-to-agent, disputes, QuickBooks export. |
+
+> "whatever gets stamped on the transaction commission needs to be synced to the agent commission"
+
+Two surfaces marked commissions paid and neither knew about the other — `PayoutButton →
+lib/kernel/financial.ts → agent_commissions`, and the transaction detail view →
+`lib/application/transactions.ts → transaction_commissions`. Both tables were empty, so
+nothing had diverged yet. `lib/commission/ledger-sync.ts` closes it before it can.
+
+**It syncs both ways, deliberately.** The ruling names stamp → payable, and that is the
+primary direction. But a stamp reading `pending` while the agent has already been paid is a
+*false* record, and a false record is worse than no record when you are required to keep it
+for seven years — so `markCommissionPaid`/`markCommissionApproved` in the kernel now stamp
+the deal too.
+
+**Why this is a mirror and not a mapping:** both columns carry the *identical* live CHECK —
+`pending | approved | paid | disputed`. The column *shapes* differ and that conversion is not
+optional: `transaction_commissions.paid_date` is a `date`, `agent_commissions.paid_at` is a
+`timestamptz`.
+
+**The id-class trap, avoided.** `transaction_commissions.recipient_id` has **no foreign key**.
+On the `agent` row it holds an `agents.id`; on the `brokerage` row it holds a `brokerages.id`
+— confirmed live that this id is *not* in `agents`. A sync that did not gate on
+`recipient_type` would pair a brokerage payout against whatever agent shared the id space. The
+gate is the first thing both functions check, and the simulator pins it.
+
+Verified live on a probe transaction carrying both ledger rows plus the brokerage stamp:
+
+```
+stamp → paid    ⇒ payable paid, paid_at set,   brokerage stamp untouched
+payable → paid  ⇒ stamp paid,   paid_date set, brokerage stamp untouched
+```
+
+Probe transaction, both commission rows and the calculation row deleted; `agent_commissions`
+and `transaction_commissions` are back to 0/0.
+
+`npm run test:commission-ledger-sync` — 36 checks, pure, on the chain, driving both sync
+functions through a recording fake client so the *filters* are asserted, not just the result.
+
+Chain: **119 simulators**. `tsc --noEmit`: 0. `npm run guard`: exit 0.

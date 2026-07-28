@@ -4,6 +4,7 @@ import { milestoneJourneyFor } from "@/lib/transactions/milestone-catalog"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { runPipelineSimple } from "@/lib/ai"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { syncStampToAgentLedger } from "@/lib/commission/ledger-sync"
 
 // ============================================
 // HELPERS
@@ -1093,6 +1094,19 @@ export async function markCommissionPaid(commissionId: string, paidDate: string,
     .eq("id", commissionId)
     .select()
     .single()
+
+  // The stamp is the seven-year record; the agent's payable ledger has to agree
+  // with it. Before this, marking paid here left agent_commissions on 'pending'
+  // and the two surfaces disagreed about whether the agent had been paid.
+  if (data) {
+    await syncStampToAgentLedger(supabase, {
+      transaction_id: (data as { transaction_id: string }).transaction_id,
+      recipient_type: (data as { recipient_type: string }).recipient_type,
+      recipient_id:   (data as { recipient_id?: string | null }).recipient_id ?? null,
+      status:         "paid",
+      paid_date:      paidDate,
+    })
+  }
 
   if (error) {
     console.error("Error marking commission paid:", error)
