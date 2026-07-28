@@ -949,3 +949,14 @@ Verified across all seven precedence branches, including the degenerate flat-fee
 case (returns 0, no divide-by-zero). `test:offer-net-sheet`, `test:net-sheet-surprise`,
 `test:cma-presentation`, `test:cma-data`, `test:seller-closing-costs`, `test:commission-disclosure`,
 `test:seller-decision`, `test:tenant-scope`, `test:schema-drift` all pass; type-check clean.
+
+**Third net sheet — the seller's own portal card.** `runOfferNetSheets`
+(`lib/kernel/offer-net-sheet.ts`, the cron behind the portal card and the agent summary) carried
+the identical `lst.commission_rate ?? 0.06` line. That is the most seller-visible of the three:
+the number a seller reads in their portal without an agent present. Now resolved through the same
+`resolveAgreedCommission`, and the runner's existing per-line provenance ledger records the
+commission line as `confirmed` / `template` / `default` to match, so the sheet's own
+disclose-first policy (`decideNetSheetPolicy`) sees an unbacked commission for what it is.
+
+All three sheets — CMA tab, offers tab, portal cron — now price from one resolver. There is no
+fourth: `net_sheet_calculations` is a persisted result, not a second calculator.
