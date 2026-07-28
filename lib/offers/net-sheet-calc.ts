@@ -434,3 +434,85 @@ export function resolveAgreedCommission(args: {
     isEstimate: true,
   }
 }
+
+// ── Closing-cost tiering (owner ruling, round 4) ─────────────────────────────
+
+export interface ResolvedClosingCosts {
+  amount: number
+  source: CostLineSource
+  /** Seller-readable provenance — never present an estimate as a fact. */
+  label: string
+  isEstimate: boolean
+}
+
+/** The house fallback when a brokerage has configured nothing and the state is unknown. */
+export const FALLBACK_CLOSING_COST_PERCENT = 0.02
+
+/**
+ * PURE. Resolve the seller's closing-cost line, with provenance.
+ *
+ * Precedence (owner's ruling): a real, entered figure → the BROKERAGE's configured
+ * percent → the county-customary regional band → the 2% house default.
+ *
+ * THE SUBTLETY THAT MAKES THIS HONEST. brokerage_settings.financial_defaults
+ * .closing_cost_percent has a hardcoded fallback of 0.02 in get-brokerage-settings,
+ * so a brokerage that never configured it reports exactly the same 0.02 as one that
+ * deliberately chose it. Ranking that above the regional band would let the house
+ * default masquerade as brokerage policy AND outrank real county title/doc-stamp
+ * math — the precise dishonesty this provenance system exists to prevent.
+ *
+ * So the brokerage tier only applies when its percent DIFFERS from the house
+ * fallback. At exactly 2% it is indistinguishable from "unset", and the regional
+ * band — which is strictly better information — wins and is labelled as the
+ * estimate it is.
+ */
+export function resolveClosingCosts(args: {
+  /** An agent-entered or agreement figure, in dollars. */
+  explicitAmount: number | null | undefined
+  /** brokerage financial_defaults.closing_cost_percent, a FRACTION (0.02 = 2%). */
+  brokerageClosingCostPercent: number | null | undefined
+  /** deriveNetSheetClosingCostSection(...).midpoint, in dollars. */
+  regionalMidpoint: number | null | undefined
+  salePrice: number
+}): ResolvedClosingCosts {
+  const price = Number(args.salePrice) || 0
+
+  const explicit = args.explicitAmount
+  if (explicit != null && Number.isFinite(Number(explicit))) {
+    return {
+      amount: Number(explicit),
+      source: "confirmed",
+      label: "Closing costs as entered",
+      isEstimate: false,
+    }
+  }
+
+  const pct = Number(args.brokerageClosingCostPercent)
+  const brokerageConfigured =
+    Number.isFinite(pct) && pct > 0 && Math.abs(pct - FALLBACK_CLOSING_COST_PERCENT) > 1e-9
+  if (brokerageConfigured) {
+    return {
+      amount: price * pct,
+      source: "template",
+      label: `Brokerage default (${(pct * 100).toFixed(2).replace(/\.?0+$/, "")}%)`,
+      isEstimate: true,
+    }
+  }
+
+  const regional = Number(args.regionalMidpoint)
+  if (Number.isFinite(regional) && regional > 0) {
+    return {
+      amount: regional,
+      source: "regional_estimate",
+      label: "County-customary estimate for this state",
+      isEstimate: true,
+    }
+  }
+
+  return {
+    amount: price * FALLBACK_CLOSING_COST_PERCENT,
+    source: "default",
+    label: "Estimated at 2% — no state or brokerage figure on file",
+    isEstimate: true,
+  }
+}

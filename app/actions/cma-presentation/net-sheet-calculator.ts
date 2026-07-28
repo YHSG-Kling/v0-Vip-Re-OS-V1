@@ -1,5 +1,7 @@
 "use server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { resolveAgreedCommission, resolveClosingCosts } from "@/lib/offers/net-sheet-calc"
+import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
 
 /**
  * System 5.3: CMA & Listing Presentation Engine
@@ -124,6 +126,31 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
 
     const closingCostPercent = financialDefaults.closing_cost_percent
 
+    // ── Money correctness: this sheet used to price NOTHING the seller agreed to.
+    // It charged the brokerage's DEFAULT commission rates, defaulted closing costs
+    // to a flat brokerage percent, and had no transaction-fee line at all — so a
+    // flat-fee listing or a $395 brokerage fee simply did not appear. The three
+    // other net sheets already resolve these; this one now shares their resolvers.
+    const [{ data: nsListing }, { data: nsAgreement }] = await Promise.all([
+      supabase.from("listings").select("state, commission_rate").eq("id", input.listingId).maybeSingle(),
+      supabase
+        .from("listing_agreements")
+        .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee")
+        .eq("listing_id", input.listingId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ])
+
+    const nsAgreed = resolveAgreedCommission({
+      agreement: nsAgreement ?? null,
+      listingCommissionRatePercent: (nsListing?.commission_rate as number | null) ?? null,
+      referencePrice: input.salePrice,
+    })
+    // The AGREED seller transaction fee — a flat dollar charge that does not scale.
+    const nsTransactionFee = Number(nsAgreement?.seller_transaction_fee ?? 0) || 0
+    const nsListingState = (nsListing?.state as string | null) ?? null
+
     // Emit start event
     await supabase.from("activities").insert({
       activity_type: "seller.net_sheet.started",
@@ -140,18 +167,19 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
     const scenarios: NetSheetScenario[] = []
     
     // Primary scenario
-    scenarios.push(calculateScenario("Primary Scenario", input.salePrice, input, commissionStructure, closingCostPercent))
+    const nsCtx = { agreed: nsAgreed, transactionFee: nsTransactionFee, state: nsListingState, brokeragePercent: closingCostPercent }
+    scenarios.push(calculateScenario("Primary Scenario", input.salePrice, input, commissionStructure, closingCostPercent, nsCtx))
     
     // Alternate scenario if provided
     if (input.alternatePrice && input.alternatePrice > 0) {
-      scenarios.push(calculateScenario("Alternate Scenario", input.alternatePrice, input, commissionStructure, closingCostPercent))
+      scenarios.push(calculateScenario("Alternate Scenario", input.alternatePrice, input, commissionStructure, closingCostPercent, nsCtx))
     }
     
     // Conservative scenario (-5%)
-    scenarios.push(calculateScenario("Conservative (-5%)", input.salePrice * 0.95, input, commissionStructure, closingCostPercent))
+    scenarios.push(calculateScenario("Conservative (-5%)", input.salePrice * 0.95, input, commissionStructure, closingCostPercent, nsCtx))
     
     // Optimistic scenario (+5%)
-    scenarios.push(calculateScenario("Optimistic (+5%)", input.salePrice * 1.05, input, commissionStructure, closingCostPercent))
+    scenarios.push(calculateScenario("Optimistic (+5%)", input.salePrice * 1.05, input, commissionStructure, closingCostPercent, nsCtx))
 
     // Calculate expiration (90 days)
     const expiresAt = new Date()
@@ -199,14 +227,35 @@ function calculateScenario(
   input: NetSheetInput,
   commissionStructure: Awaited<ReturnType<typeof getDefaultCommissionStructure>>,
   closingCostPercent: number,
+  ctx?: {
+    agreed: ReturnType<typeof resolveAgreedCommission>
+    transactionFee: number
+    state: string | null
+    brokeragePercent: number
+  },
 ): NetSheetScenario {
   // Commission Engine 8.0 will compute final values.
   // Pure arithmetic lives in @/lib/cma/net-sheet-math (computeNetSheetScenario).
+  //
+  // Closing costs are tiered by the canonical resolver, recomputed PER SCENARIO so
+  // the regional band tracks the scenario price instead of being scaled after the
+  // fact: entered figure → brokerage percent (only when actually configured) →
+  // county-customary band → 2% house default.
+  const resolvedClosing = ctx
+    ? resolveClosingCosts({
+        explicitAmount: input.closingCosts,
+        brokerageClosingCostPercent: ctx.brokeragePercent,
+        regionalMidpoint: deriveNetSheetClosingCostSection(salePrice, ctx.state)?.midpoint ?? null,
+        salePrice,
+      })
+    : null
+
   return computeNetSheetScenario(
     scenarioName,
     salePrice,
     {
-      closingCosts: input.closingCosts,
+      closingCosts: resolvedClosing ? resolvedClosing.amount : input.closingCosts,
+      transactionFee: ctx?.transactionFee ?? 0,
       mortgagePayoffAmount: input.mortgagePayoffAmount,
       mortgageBalance: input.mortgageBalance,
       propertyTaxes: input.propertyTaxes,
@@ -214,9 +263,15 @@ function calculateScenario(
       repairCredits: input.repairCredits,
       sellerConcessions: input.sellerConcessions,
     },
-    commissionStructure?.agentListingSideRate ?? 0,
-    commissionStructure?.agentBuyerSideRate ?? 0,
+    // An executed agreement outranks the brokerage's default rates.
+    ctx && !ctx.agreed.isEstimate && !ctx.agreed.isFlatFee
+      ? ctx.agreed.rate
+      : commissionStructure?.agentListingSideRate ?? 0,
+    ctx && !ctx.agreed.isEstimate && !ctx.agreed.isFlatFee
+      ? 0
+      : commissionStructure?.agentBuyerSideRate ?? 0,
     closingCostPercent,
+    ctx?.agreed.isFlatFee ? ctx.agreed.flatAmount : null,
   )
 }
 

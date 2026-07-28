@@ -1718,3 +1718,54 @@ the next query's payload. **Negative-tested** by restoring the original
 file, table and column — then reverted.
 
 `tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.
+
+---
+
+## The fourth net sheet priced nothing the seller had agreed to
+
+`app/actions/cma-presentation/net-sheet-calculator.ts` — five callers including the voice
+command executors — was the last net sheet outside the canonical resolvers. It charged the
+brokerage's **default** commission rates, defaulted closing costs to a flat brokerage percent,
+and had **no transaction-fee line at all**. A flat-fee listing and a $395 brokerage fee simply
+did not appear on it.
+
+It now shares the resolvers the other three already use: `resolveAgreedCommission` for the
+commission (an executed agreement outranks brokerage defaults; a flat fee is charged as-is with
+the buyer side folded in) and the new `resolveClosingCosts` for the closing line. The agreed
+`seller_transaction_fee` is read from the listing agreement and carried as a fixed cost.
+
+### The tier the owner asked for, and the trap in it
+
+The ruling was to fold `financial_defaults.closing_cost_percent` in **above** the regional
+estimate and **below** a real agreement. Implemented as: entered figure → brokerage percent →
+county-customary band → 2% house default.
+
+The trap: `get-brokerage-settings` hardcodes `closing_cost_percent: 0.02` as its fallback, so a
+brokerage that never configured it reports **exactly the same 0.02** as one that deliberately
+chose it. Ranking that above the regional band would let the house default masquerade as
+brokerage policy *and* outrank real county title/doc-stamp math — the precise dishonesty this
+provenance system exists to prevent.
+
+So the brokerage tier applies only when its percent **differs** from the house fallback. At
+exactly 2% it is indistinguishable from unset, and the regional band wins. Verified on a real
+FL listing at $485,000:
+
+| case | amount | source | labelled |
+|---|---|---|---|
+| entered figure | $7,250 | `confirmed` | **fact** |
+| brokerage configured 2.5% | $12,125 | `template` | estimate |
+| brokerage at exactly 2% | **$6,350** | `regional_estimate` | estimate — county-customary wins |
+| no state, no brokerage figure | $9,700 | `default` | estimate, honestly labelled |
+
+The FL county-customary midpoint is $6,350 against a flat 2% of $9,700 — a $3,350 difference on
+one listing, previously invisible on this sheet.
+
+### Two more corrections in the shared math
+
+`computeNetSheetScenario` gained `transactionFee` (a fixed cost that does **not** scale with
+price) and `flatCommissionAmount`. Closing costs are now resolved **per scenario** so the
+regional band tracks the scenario price, rather than a single figure being scaled after the fact
+— the same class of error as the `totalCosts * 0.95` bug fixed in `saveNetSheet`.
+
+All four seller net sheets now resolve commission, closing costs and the transaction fee through
+one set of functions. `tsc --noEmit`: 0. `npm run guard`: 98 simulators, exit 0.
