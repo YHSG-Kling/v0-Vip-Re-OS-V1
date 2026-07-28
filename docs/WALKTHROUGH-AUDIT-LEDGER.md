@@ -972,7 +972,7 @@ every net sheet overstated the seller's proceeds by it.
 and `transaction_fee_type/value` already exist — and they are **agent-side**: what the agent pays
 the brokerage out of their own split. Reusing them would have deducted the agent's desk cost from
 the seller's proceeds. Different payer, different column. `listing_agreements.seller_transaction_fee`
-(m283) is the seller-side term, flat dollars only; a percentage charge is commission and belongs in
+(m286) is the seller-side term, flat dollars only; a percentage charge is commission and belongs in
 the rate columns.
 
 Added as a **required** field on `SellerCosts` rather than optional, which made the compiler
@@ -986,7 +986,7 @@ deterministic seller recommendation, which shares the same cost lines.
 
 **Persistence, because a vanishing edit is the bug I keep finding.** Every other editable line on
 the CMA sheet persists; a transaction fee that reset on reload would have been the same class of
-half-wire. m284 adds `net_sheet_calculations.transaction_fee`, the saved sheet wins over the
+half-wire. m287 adds `net_sheet_calculations.transaction_fee`, the saved sheet wins over the
 agreement default, and `saveNetSheet` carries it into the total.
 
 Two smaller things fixed in passing: the CMA tab's `currentNetSheet` — the payload shared to the
@@ -1247,7 +1247,7 @@ It is not simply behind, which is why this needs the owner rather than a quick m
 |---|---|---|
 | commission | agreed terms from `listing_agreements` (flat fee / total / both sides) | brokerage `getDefaultCommissionStructure` |
 | closing costs | itemised 50-state regional bands | `financial_defaults.closing_cost_percent` |
-| transaction fee | yes (m283/m284) | no |
+| transaction fee | yes (m286/m287) | no |
 | provenance + disclose-first policy | yes | no |
 | brokerage-configured defaults | **no** | **yes** |
 | multi-scenario | via callers | built in |
@@ -1417,3 +1417,53 @@ those three.
 verification — because I verified the *pure function* against synthetic inputs rather than against
 the shape the database actually stores. A guard that never runs against real rows cannot catch a
 wrong column or a wrong table.
+
+---
+
+## Two migrations named `m283`, two named `m284`
+
+Chasing three older VADE findings that had never been confirmed resolved, the migrations directory
+turned up a collision of my own making. Two threads of work on this branch each reached for the
+next free number and both landed:
+
+| number | one file | the other |
+|---|---|---|
+| `m283` | `agent-commissions-superset` (Jul 27 04:40) | `listing-agreement-seller-transaction-fee` (Jul 28 03:21) |
+| `m284` | `drop-commissions-twin` (Jul 27 05:04) | `net-sheet-transaction-fee` (Jul 28 03:21) |
+
+`m285` was already taken by the property-type vocabulary, so the transaction-fee pair was written
+*after* `m285` and still reused two lower numbers.
+
+**No outage, and that is the point.** The four touch disjoint tables and were applied by hand, so
+nothing broke. What broke is that the code says things like "the `commissions` table dropped in
+m284" — and there are now two m284s. A migration number is the only thing ordering the SQL we ship;
+"which m284?" is not a question it should be able to raise, and the next collision may not land on
+disjoint tables.
+
+**Verified applied before renaming**, against the live database rather than the snapshot: the
+`commissions` table is gone, `agent_commissions` exists, `listing_agreements.seller_transaction_fee`
+and `net_sheet_calculations.transaction_fee` are both present and numeric. All four had run, so
+renumbering is a file-naming change with no schema consequence.
+
+The transaction-fee pair (authored last) became `m286`/`m287`. Their SQL headers and the six code
+and doc comments that cited them by number moved with them; the comments citing `m283`/`m284` for
+the *commission keep-one* work are still correct and were left alone.
+
+**The durable half — Layer 4 of the schema-drift guard.** Nothing enforced uniqueness, which is why
+this shipped. `duplicateMigrationNumbers` now fails the guard when a number names more than one
+migration. Two details matter:
+
+- **Both prefix eras share one number space.** The early files are bare `NNN-`, the later ones
+  `mNNN-`. My first cut only parsed `mNNN-`, which silently skipped 42 older migrations — the same
+  class of mistake as the bug being fixed. An `m` is decoration, not a namespace, so `063-x.sql`
+  and `m63-y.sql` now collide. Leading zeros are insignificant.
+- **Gaps are allowed.** A number can be abandoned; the invariant is uniqueness, not density.
+
+All 234 migrations pass. **Negative-tested**: dropping a second `m287-` into the directory fails the
+guard with both filenames named; probe removed and the directory re-verified clean.
+
+**The three VADE findings that prompted the look were all already fixed** — checked in the tree
+rather than assumed: `test:crm-pull` runs 49/0 (the simulator it pointed at exists), the
+`commissions` reads were removed and repointed at `getCommissions`/`getBusinessExpenses` with the
+scope in the query, and both recruit-name consumers read `agents.users.first_name` behind an
+`|| "Unknown"` fallback. The inbox auto-select effect carries a comment naming VADE as its source.

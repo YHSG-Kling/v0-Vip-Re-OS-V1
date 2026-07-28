@@ -137,7 +137,7 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
   const hoa = Number(hoaFees) || 0
   const repairs = Number(repairCredits) || 0
   const concessions = Number(sellerConcessions) || 0
-  // Agreed flat brokerage transaction fee charged to the SELLER (m283). Editable,
+  // Agreed flat brokerage transaction fee charged to the SELLER (m286). Editable,
   // pre-filled from the listing agreement. NOT the agent-side transaction fee.
   const txFee = Number(transactionFee) || 0
   const totalCosts = listComm + buyerComm + closing + payoff + taxes + hoa + repairs + concessions + txFee

@@ -1,4 +1,4 @@
--- m283 — the SELLER-side brokerage transaction fee, agreed on the listing agreement.
+-- m286 — the SELLER-side brokerage transaction fee, agreed on the listing agreement.
 --
 -- Every net sheet must price the terms the seller actually agreed to. The
 -- commission already lives here (listing_commission_rate / buyer_commission_rate /

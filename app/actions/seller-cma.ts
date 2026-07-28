@@ -171,7 +171,7 @@ interface NetSheetCalc {
   hoa_fees: number | null
   repair_credits: number | null
   seller_concessions: number | null
-  /** Flat seller transaction fee used on this saved sheet (m284). */
+  /** Flat seller transaction fee used on this saved sheet (m287). */
   transaction_fee: number | null
   gross_proceeds: number | null
   total_costs: number | null
@@ -418,7 +418,7 @@ export async function saveNetSheet(params: {
   hoaFees?: number
   repairCredits?: number
   sellerConcessions?: number
-  /** Flat brokerage transaction fee charged to the SELLER (m283/m284). */
+  /** Flat brokerage transaction fee charged to the SELLER (m286/m287). */
   transactionFee?: number
 }): Promise<{ success: boolean; netSheetId?: string; error?: string }> {
   const supabase = await createClient()

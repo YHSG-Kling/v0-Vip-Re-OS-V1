@@ -592,6 +592,63 @@ function testCoverage() {
   if (nowGuarded.length > 0) console.log(`  ↘  ${nowGuarded.length} acknowledged tables are now guarded/unused — run GUARD_WRITE_BASELINE=1 to tighten.`)
 }
 
+// ── Layer 4: migration numbering ─────────────────────────────────────────────────────────
+// A migration number is the only thing that orders the SQL we ship, and nothing enforced that
+// it was unique. Two parallel threads of work in one branch both reached for the next free
+// number and BOTH landed: m283 and m284 each named two unrelated migrations (the commission
+// keep-one pair and the transaction-fee pair). It caused no outage — the four touch different
+// tables and were applied by hand — but "which m284?" is not a question a migration number
+// should be able to raise, and the next collision may not be on disjoint tables.
+//
+// Uniqueness only. Gaps are fine (a number can be abandoned), and the numeric sequence needn't
+// start at 1 — the invariant is that a number names exactly one migration.
+//
+// Two prefix eras ship here: the early files are bare `NNN-` and the later ones `mNNN-`. Both
+// are read as the same number space, so `063-x.sql` and `m63-y.sql` would collide — an `m` is
+// decoration, not a namespace, and reading them separately would leave the older era unchecked.
+// Leading zeros are insignificant: 023 and 23 are one number.
+export function duplicateMigrationNumbers(filenames: string[]): { num: string; files: string[] }[] {
+  const byNum = new Map<string, string[]>()
+  for (const f of filenames) {
+    const m = /^m?(\d+)[-._]/.exec(f)
+    if (!m) continue
+    const key = String(Number(m[1]))
+    if (!byNum.has(key)) byNum.set(key, [])
+    byNum.get(key)!.push(f)
+  }
+  return [...byNum.entries()]
+    .filter(([, fs]) => fs.length > 1)
+    .map(([num, files]) => ({ num, files: files.sort() }))
+    .sort((a, b) => Number(a.num) - Number(b.num))
+}
+
+function testMigrationNumbers() {
+  console.log("\n[Layer 4 · migration numbering]")
+  // pure
+  check("duplicate detector: unique numbers are clean",
+    duplicateMigrationNumbers(["m1-a.sql", "m2-b.sql", "m10-c.sql"]).length === 0)
+  check("duplicate detector: a reused number is reported with both files",
+    JSON.stringify(duplicateMigrationNumbers(["m3-a.sql", "m3-b.sql", "m4-c.sql"])) ===
+      JSON.stringify([{ num: "3", files: ["m3-a.sql", "m3-b.sql"] }]))
+  check("duplicate detector: gaps are allowed",
+    duplicateMigrationNumbers(["m1-a.sql", "m9-b.sql"]).length === 0)
+  check("duplicate detector: the bare-NNN era shares the mNNN number space",
+    duplicateMigrationNumbers(["023-a.sql", "m23-b.sql"]).length === 1)
+
+  // repo
+  const dir = join(process.cwd(), "supabase/migrations")
+  if (!existsSync(dir)) { check("supabase/migrations exists", false); return }
+  const sql = readdirSync(dir).filter((f) => f.endsWith(".sql"))
+  const unnumbered = sql.filter((f) => !/^m?\d+[-._]/.test(f)).sort()
+  const dupes = duplicateMigrationNumbers(sql)
+  console.log(`  · ${sql.length} migrations on disk`)
+  check("every migration number names exactly one migration",
+    dupes.length === 0,
+    dupes.map((d) => `${d.num}: ${d.files.join(" + ")}`).join("; "))
+  check("every migration filename opens with its number (mNNN- or the older bare NNN-)",
+    unnumbered.length === 0, unnumbered.join(", "))
+}
+
 async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Schema-drift guard (no code may reference a column the live table lacks)")
@@ -599,6 +656,7 @@ async function main() {
   testPure()
   testScan()
   testCoverage()
+  testMigrationNumbers()
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
