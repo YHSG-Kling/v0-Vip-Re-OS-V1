@@ -21,7 +21,7 @@ async function resolveAdSpendOwners(svc: Svc, brokerageId: string): Promise<stri
     .from("users")
     .select("id, user_type")
     .eq("brokerage_id", brokerageId)
-    .in("user_type", ["broker", "broker_admin", "admin"])
+    .in("user_type", ["broker", "admin"])
     .limit(20)
   return ((data ?? []) as Array<{ id: string }>).map((u) => u.id)
 }

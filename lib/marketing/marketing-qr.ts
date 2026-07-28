@@ -106,7 +106,7 @@ async function notifyOwnerToAssignUrl(
       const { data: admins } = await svc
         .from("users").select("id")
         .eq("brokerage_id", args.brokerageId)
-        .in("user_type", ["broker_admin", "admin", "broker", "superadmin"])
+        .in("user_type", ["admin", "broker", "superadmin"])
       for (const u of admins ?? []) recipients.push(u.id)
     }
 

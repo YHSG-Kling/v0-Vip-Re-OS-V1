@@ -482,7 +482,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const agentId = (signal.payload?.agent_id as string | undefined) ?? null
     if (!agentId) return null
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
     const managerIds = (mgrs ?? []) as Array<{ id: string }>
     if (managerIds.length === 0) return "no broker/admin to surface the recruiting proof to"
     let notified = 0
@@ -506,7 +506,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const agentId = (signal.payload?.agent_id as string | undefined) ?? null
     if (!agentId) return null
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
     const managerIds = (mgrs ?? []) as Array<{ id: string }>
     if (managerIds.length === 0) return "no broker/admin to route the coaching prompt to"
     let notified = 0
@@ -697,7 +697,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }
     // Brokerage managers (broker/admin) — so a failure surfaces to the people who own it.
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
     for (const m of (mgrs ?? []) as Array<{ id: string }>) {
       const { error } = await ctx.supabase.from("notifications").insert({
         user_id: m.id, brokerage_id: ctx.brokerageId, type: "video_compliance_failed",
@@ -1898,7 +1898,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
 
     // Notify broker/admins so the coaching prompt reaches the people who develop agents.
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(10)
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
     let notified = 0
     for (const m of (mgrs ?? []) as Array<{ id: string }>) {
       const { error } = await ctx.supabase.from("notifications").insert({

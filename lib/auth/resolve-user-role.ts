@@ -68,11 +68,20 @@ export function requireRole(
 }
 
 // Broker-level access gate. Checks the RAW user_type against every broker/admin
-// variant INCLUDING the live legacy rows (broker_admin canonicalizes to broker,
+// variant, INCLUDING legacy spellings (broker_admin canonicalizes to broker,
 // super_admin to superadmin — see lib/security/types.ts). resolveUserRole does
 // not canonicalize, so the legacy variants are listed explicitly here; this keeps
 // the gate consistent with app/actions/brokerage-fees.ts#isBrokerRole and the
 // create/update settings actions that admit broker_admin.
+//
+// The legacy spellings stay HERE and only here. This function judges a value a
+// CALLER hands in, which can be anything; it is not a query. They were also
+// sitting in 24 `.in("user_type", [...])` RECIPIENT lookups, where they were
+// provably dead: users_user_type_check admits fifteen values and broker_admin is
+// not one of them, and the constraint is VALIDATED, so no row was grandfathered
+// either. Those were harmless — every list also carried broker/admin, so the
+// lookups still found their recipients — but they read as though broker_admin
+// were a thing you could be. Removed there, kept here.
 const BROKER_LEVEL_TYPES = new Set([
   "admin",
   "broker",

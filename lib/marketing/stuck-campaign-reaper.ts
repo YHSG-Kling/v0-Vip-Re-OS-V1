@@ -46,7 +46,7 @@ export async function reapStuckCampaigns(
     .from("users")
     .select("id")
     .eq("brokerage_id", brokerageId)
-    .in("user_type", ["broker", "broker_admin", "admin", "superadmin"])
+    .in("user_type", ["broker", "admin", "superadmin"])
     .limit(10)
   const adminIds = ((admins ?? []) as Array<{ id: string }>).map((a) => a.id)
   if (adminIds.length === 0) {

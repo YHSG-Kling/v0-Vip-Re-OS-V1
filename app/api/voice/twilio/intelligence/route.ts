@@ -123,7 +123,7 @@ export async function POST(request: NextRequest) {
         }).then(undefined, () => {})
         const { data: reviewers } = await svc.from("users").select("id")
           .eq("brokerage_id", brokerageId)
-          .in("user_type", ["compliance_officer", "admin", "broker", "broker_admin"]).limit(10)
+          .in("user_type", ["compliance_officer", "admin", "broker"]).limit(10)
         for (const r of (reviewers ?? []) as any[]) {
           await svc.from("notifications").insert({
             user_id: r.id, brokerage_id: brokerageId, type: "call_compliance_watch",

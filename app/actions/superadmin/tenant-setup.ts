@@ -38,7 +38,7 @@ export async function getTenantSetupReadinessAction(brokerageId: string): Promis
   const { data: owner } = await svc.from("users")
     .select("id, user_type, first_name, last_name")
     .eq("brokerage_id", brokerageId)
-    .in("user_type", ["broker", "broker_owner", "admin", "broker_admin"])
+    .in("user_type", ["broker", "broker_owner", "admin"])
     .is("deleted_at", null)
     .order("created_at", { ascending: true })
     .limit(1).maybeSingle()

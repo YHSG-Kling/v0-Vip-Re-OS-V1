@@ -2545,3 +2545,69 @@ its `agents.id` resolves to the `users.id` the ledger FK needs, the ledger row l
 retry is idempotent. Cleaned to 0 promos.
 
 `tsc --noEmit`: 0. `npm run guard`: 101 simulators, exit 0.
+
+---
+
+## The bug class behind four of this sweep's defects becomes a ratchet
+
+Four defects in this sweep were the same shape, and none of them looked wrong in review:
+
+| literal | column | consequence |
+|---|---|---|
+| `'stalled'` | `agent_onboarding.status` | a metric card permanently 0; the branch behind it unreachable |
+| `'watch'` / `'warning'` | `buyer_fatigue_scores.risk_level` | the whole 35–79 band of scores failed to persist |
+| `'fatigue_critical'` | `fatigue_alerts.alert_type` | critical alerts always rendered as warnings |
+| `'active'` / `'closed'` | `listings.lifecycle_stage` / `.status` | an hourly sweep matched zero rows since it shipped |
+
+Postgres CHECK constraints are live vocabularies. supabase-js resolves with `{ error }`
+rather than throwing and most writes here are best-effort, so a rejected value loses the
+row in silence; on the read side a filter for an impossible value returns zero rows and
+reads as "no data yet" forever.
+
+There *is* a `test:vocabulary-drift`. It compares handler-switch cases against TypeScript
+enums — **code against code**. Nothing compared code against the database. That is why a
+prior round's manual "CHECK-vocabulary sweep" found a batch, fixed them, and four more
+shipped afterwards: an audit is not a ratchet.
+
+### `test:check-vocabulary`
+
+`scripts/check-vocabularies.ts` snapshots every single-column enum CHECK in `public` —
+**730 columns across 428 tables**, including nullable variants — the same shape
+`agent-fk-columns.ts` uses for foreign keys. The guard scans every `.from(t)` chain and
+flags any literal written to, or filtered on, a column of `t` that the constraint does not
+admit: payload keys on insert/upsert/update, and `.eq` / `.neq` / `.in` / PostgREST `.or`
+filters. The window is cut at the next `.from(` — mandatory here, because names like
+`status` and `type` exist on hundreds of tables.
+
+**289 findings across 102 (table, column) pairs.** A sample of eight was checked against
+the live constraints before anything was baselined; all eight were real —
+`platform_credentials.platform = 'xero'` (no xero in the vocabulary),
+`learning_assignments.status = 'in_progress'` (the set is open/viewed/completed/dismissed/
+superseded), `agent_onboarding.status = 'pending'`, and four `transactions.status` values
+that are actually *stage* names. Zero false positives in the sample.
+
+### The largest cluster was benign, and saying so is the point
+
+`users.user_type = 'broker_admin'` appeared 24 times and looked like a catastrophe:
+recipient lookups across dunning, signature chase, license verification, board packet,
+manager signals, the reapers. Every one of them resolving to nobody would have been the
+worst finding of the session.
+
+It was not. **Every one is an `.in([...])` list where `broker_admin` sits beside `broker`,
+`admin`, `broker_owner` or `superadmin`** — not one is a bare `.eq`. The lookups all still
+find their recipients. `broker_admin` was simply a legacy spelling left in the lists after
+it stopped being storable: `users_user_type_check` admits fifteen values, `broker_admin` is
+not among them, and the constraint is **VALIDATED**, so nothing was grandfathered either.
+
+Removed from all 24 lists as provably-dead weight — the change cannot alter a result, and
+the lists no longer imply `broker_admin` is a thing you can be. It stays in
+`isAdminOrBroker`'s `BROKER_LEVEL_TYPES`, which judges a value a *caller* hands in rather
+than querying for one; the stale comment there claiming "live legacy rows" is corrected.
+
+Baseline after that cleanup: **265**, shrink-only. A new violation fails CI.
+Largest remaining clusters, for the burn-down: `transactions.status` (42),
+`direct_mail_campaigns.status` (14), `listings.status` (11), `listings.lifecycle_stage` (11),
+`lifecycle_events.source` (10). Each needs its own verdict — several are likely the same
+stage-vs-status confusion the transactions cluster shows — and none is being touched blind.
+
+`tsc --noEmit`: 0. `npm run guard`: 102 simulators, exit 0.

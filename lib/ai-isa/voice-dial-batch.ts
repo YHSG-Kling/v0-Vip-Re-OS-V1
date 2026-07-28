@@ -298,7 +298,7 @@ export async function enqueueDialBatchNotifications(
   if (rows.length === 0) return { agentAlerts: 0, managerEscalations: 0 }
 
   const { data: mgrs } = await supabase.from("users").select("id")
-    .eq("brokerage_id", brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(20)
+    .eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin"]).limit(20)
   const managerIds = ((mgrs ?? []) as Array<{ id: string }>).map((m) => m.id)
 
   const already = async (userId: string, batchId: string, type: string) => {

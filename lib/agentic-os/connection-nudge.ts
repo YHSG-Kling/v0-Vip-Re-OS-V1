@@ -39,7 +39,7 @@ export async function runConnectionNudge(svc: any, brokerageId: string): Promise
 
   // Notify the brokerage's owners/admins (the ones who can reconnect).
   const { data: owners } = await svc.from("users").select("id")
-    .eq("brokerage_id", brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(5)
+    .eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin"]).limit(5)
   const recipients = ((owners ?? []) as Array<{ id: string }>).map((u) => u.id)
   if (recipients.length === 0) return { notified: 0, skipped: true }
 

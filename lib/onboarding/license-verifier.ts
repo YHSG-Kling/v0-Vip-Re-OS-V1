@@ -446,7 +446,7 @@ async function handleVerificationFailure(
       .from("users")
       .select("id")
       .eq("brokerage_id", params.brokerageId)
-      .in("user_type", ["compliance_officer", "admin", "broker", "broker_admin"])
+      .in("user_type", ["compliance_officer", "admin", "broker"])
     if (error) throw error
     const portalLine = result.portalUrl ? ` Check the state portal: ${result.portalUrl}` : ""
     for (const r of reviewers ?? []) {

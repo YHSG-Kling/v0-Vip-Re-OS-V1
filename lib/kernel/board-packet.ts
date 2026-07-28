@@ -173,7 +173,7 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
       const { data: pub } = svc.storage.from("documents").getPublicUrl(path)
 
       const { data: admins } = await svc.from("users").select("id")
-        .eq("brokerage_id", b.id).in("user_type", ["broker", "broker_admin", "admin"]).limit(5)
+        .eq("brokerage_id", b.id).in("user_type", ["broker", "admin"]).limit(5)
       for (const u of (admins ?? []) as any[]) {
         await svc.from("notifications").insert({
           user_id: u.id, brokerage_id: b.id, type: "board_packet_ready",

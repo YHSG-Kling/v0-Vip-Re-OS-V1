@@ -62,7 +62,7 @@ export async function runSignatureChase(svc: any, now: Date = new Date()): Promi
     if (tier === "nudge" && agentUserId) recipients = [agentUserId]
     else {
       const { data: brokers } = await svc.from("users").select("id")
-        .eq("brokerage_id", brokerageId).in("user_type", ["broker", "broker_admin", "admin"]).limit(3)
+        .eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin"]).limit(3)
       recipients = ((brokers ?? []) as any[]).map((u) => u.id)
       if (tier === "escalate" && agentUserId && !recipients.includes(agentUserId)) recipients.push(agentUserId)
     }

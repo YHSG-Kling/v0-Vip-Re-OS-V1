@@ -140,7 +140,7 @@ export async function runDunningSweep(svc: any, now: Date = new Date()): Promise
       const { data: admins } = await svc
         .from("users").select("id, email")
         .eq("brokerage_id", sub.brokerage_id)
-        .in("user_type", ["broker", "broker_admin", "admin"]).limit(20)
+        .in("user_type", ["broker", "admin"]).limit(20)
       const adminRows = (admins ?? []) as Array<{ id: string; email: string | null }>
       if (adminRows.length > 0) {
         await svc.from("notifications").insert(adminRows.map((a) => ({

@@ -113,7 +113,7 @@ ${kbContext || 'No specific documentation found for this query.'}`
               .from('users')
               .select('id')
               .eq('brokerage_id', brokerageId)
-              .in('user_type', ['admin', 'broker', 'broker_admin', 'superadmin'])
+              .in('user_type', ['admin', 'broker', 'superadmin'])
             for (const adm of admins ?? []) {
               await service.from('notifications').insert({
                 user_id: adm.id,

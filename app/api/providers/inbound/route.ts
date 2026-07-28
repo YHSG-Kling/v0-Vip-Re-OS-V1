@@ -276,7 +276,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           .from("users")
           .select("id")
           .eq("brokerage_id", inbound.brokerageId)
-          .in("user_type", ["compliance_officer", "admin", "broker", "broker_admin"])
+          .in("user_type", ["compliance_officer", "admin", "broker"])
         for (const r of reviewers ?? []) {
           await supabase.from("notifications").insert({
             user_id: r.id,

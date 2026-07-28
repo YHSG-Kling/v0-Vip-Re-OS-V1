@@ -282,7 +282,7 @@ export async function approveSentinelActionAction(id: string, opts: { send?: boo
   const [{ data: admins }, { data: brk }] = await Promise.all([
     svc.from("users").select("email")
       .eq("brokerage_id", row.brokerage_id)
-      .in("user_type", ["broker", "broker_admin", "admin"])
+      .in("user_type", ["broker", "admin"])
       .is("deleted_at", null).limit(20),
     svc.from("brokerages").select("email").eq("id", row.brokerage_id).maybeSingle(),
   ])

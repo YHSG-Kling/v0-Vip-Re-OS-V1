@@ -589,7 +589,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
       .from("users")
       .select("id")
       .eq("brokerage_id", cda.brokerage_id)
-      .in("user_type", ["compliance_officer", "admin", "broker", "broker_admin"])
+      .in("user_type", ["compliance_officer", "admin", "broker"])
 
     for (const u of complianceUsers ?? []) {
       await supabase.from("notifications").insert({
@@ -710,7 +710,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
     .from("users")
     .select("id")
     .eq("brokerage_id", cda.brokerage_id)
-    .in("user_type", ["broker", "broker_admin", "admin"])
+    .in("user_type", ["broker", "admin"])
     .limit(10)
   for (const b of (brokers ?? []) as Array<{ id: string }>) {
     await supabase.from("notifications").insert({
