@@ -12,6 +12,9 @@
  *   real ai_video_projects row carrying the selected composition + assembly + QR,
  *   then reverse-deletes and asserts cleanup count == 0.
  */
+import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
+import { dirname, join } from "node:path"
 import {
   selectVideoFormat,
   assemblySpec,
@@ -39,12 +42,49 @@ const report = () => {
 const ALL_KINDS: SituationKind[] = [
   "new_listing", "price_drop", "just_sold", "open_house", "coming_soon",
   "market_update", "cma", "explainer", "presentation", "anniversary",
-  "testimonial", "neighborhood",
+  "testimonial", "neighborhood", "photo_walkthrough", "lead_intro",
+  "concept_animation",
 ]
+
+/**
+ * The union is a TYPE — erased at runtime — so this list cannot be derived by
+ * importing it, and a hand-maintained copy silently under-covers: photo_walkthrough
+ * and lead_intro were added to SituationKind and never added here, so the Director's
+ * proof skipped them entirely. Read the union back out of the source and prove the
+ * list is complete, so kind 16 cannot repeat it.
+ *
+ * This matters more than it looks: tsconfig has noImplicitReturns OFF, so a switch
+ * that misses a kind returns undefined instead of failing to compile. tsc will not
+ * catch the gap — only this will.
+ */
+function declaredKinds(): string[] {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../lib/video/video-director.ts"), "utf8")
+  const block = src.match(/export type SituationKind =([\s\S]*?)\n\n/)
+  if (!block) return []
+  return Array.from(block[1].matchAll(/\|\s*"([a-z_]+)"/g)).map((m) => m[1])
+}
 const ALL_CHANNELS: TargetChannel[] = ["tiktok", "instagram", "youtube", "facebook", "email", "portal"]
 
 async function main() {
   console.log("══ Video Director simulator ══\n[Layer 1 · format selection (which video wins this situation)]")
+
+  // Completeness FIRST — every assertion below iterates ALL_KINDS, so an incomplete
+  // list makes the whole layer look green while skipping situations.
+  const declared = declaredKinds()
+  const uncovered = declared.filter((k) => !(ALL_KINDS as string[]).includes(k))
+  const phantom = (ALL_KINDS as string[]).filter((k) => !declared.includes(k))
+  check(`ALL_KINDS covers every declared SituationKind (${declared.length} declared)`,
+    declared.length > 0 && uncovered.length === 0, uncovered.join(", "))
+  check("ALL_KINDS contains no kind that SituationKind no longer declares",
+    phantom.length === 0, phantom.join(", "))
+
+  // No mapper may fall through to undefined — tsc cannot catch this (noImplicitReturns off).
+  check("every situation resolves a defined format, mood, QR kind and hook",
+    ALL_KINDS.every((k) =>
+      selectVideoFormat({ kind: k, tier: "solo_agent", targetChannel: "instagram" })?.compositionId !== undefined &&
+      musicMoodForSituation(k) !== undefined &&
+      qrKindForSituation(k) !== undefined &&
+      defaultHookForSituation(k) !== undefined))
 
   // Every situation × channel resolves to a real composition id with coherent flags.
   let combos = 0

@@ -100,6 +100,9 @@ export function compositionHintFor(kind: SituationKind, channel: TargetChannel):
     case "market_update": return "MarketUpdateReel"
     case "cma":           return "CMAReel"
     case "explainer":     return "AgentExplainerReel"
+    // The DRAWN explainer — same teaching job, animated diagram instead of a
+    // talking head, so the voice studio can schedule it as its own topic.
+    case "concept_animation": return "ExplainerAnimReel"
     case "lead_intro":    return "AgentExplainerReel"
     case "presentation":  return "ListingSectionReel"
     case "anniversary":   return "EquityReportReel"
@@ -144,6 +147,22 @@ export function daysForLabel(label: string): number {
  * The plan is deterministic per (context, durationLabel) — same inputs produce
  * the same plan. No randomness, no fabrication.
  */
+/**
+ * The evergreen topic rotation. ONE list: the voice studio passes it as
+ * context.topics, and planStudioSession falls back to it when a caller supplies
+ * none. Previously the fallback was a second hardcoded array that silently
+ * disagreed with the caller's list.
+ */
+export const DEFAULT_EVERGREEN_TOPICS: Array<{ kind: SituationKind; label: string }> = [
+  { kind: "market_update", label: "local market update" },
+  { kind: "neighborhood",  label: "neighborhood spotlight" },
+  { kind: "explainer",     label: "buyer/seller explainer" },
+  // The DRAWN explainer sits alongside the avatar-led one so a plan alternates
+  // talking-head and animated-diagram teaching instead of repeating one look.
+  { kind: "concept_animation", label: "animated concept explainer" },
+  { kind: "testimonial",   label: "client testimonial" },
+]
+
 export function planStudioSession(
   durationLabel: string,
   context: StudioSessionContext,
@@ -156,7 +175,9 @@ export function planStudioSession(
   // Priority: listing-promotional kinds for brokerage's active listings, then
   // evergreen topics to fill any remaining slots.
   const listingKinds: SituationKind[] = ["new_listing", "open_house", "just_sold", "coming_soon"]
-  const evergreenKinds: SituationKind[] = ["market_update", "neighborhood", "explainer", "testimonial"]
+  // Fallback only (used when the caller supplies no topics). Derived from the one
+  // DEFAULT_EVERGREEN_TOPICS list so this cannot drift out of sync with it.
+  const evergreenKinds: SituationKind[] = DEFAULT_EVERGREEN_TOPICS.map((t) => t.kind)
 
   // Build a work queue: interleave listing promos with evergreen content so the
   // content calendar is varied (not all listing reels, not all evergreen).
@@ -549,12 +570,7 @@ export async function voiceStudioSession(
     .map((l) => ({ id: l.id, address: l.address! }))
 
   // Default evergreen topic set — always non-empty so the planner always has slots
-  const defaultTopics: Array<{ kind: SituationKind; label: string }> = [
-    { kind: "market_update", label: "local market update" },
-    { kind: "neighborhood",  label: "neighborhood spotlight" },
-    { kind: "explainer",     label: "buyer/seller explainer" },
-    { kind: "testimonial",   label: "client testimonial" },
-  ]
+  const defaultTopics = DEFAULT_EVERGREEN_TOPICS
 
   const today = new Date().toISOString().slice(0, 10)
 

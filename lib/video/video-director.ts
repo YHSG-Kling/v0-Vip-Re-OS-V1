@@ -81,6 +81,12 @@ export type SituationKind =
   // Asset Manager (video director). Avatar-led + persona-matched; CTA is "book a consult"
   // (book_meeting QR), NOT a listing. Never broadcast — it distributes 1:1 over email only.
   | "lead_intro"
+  // The ANIMATED concept explainer — the same teaching job as "explainer", but the
+  // concept is DRAWN rather than narrated by an avatar: an equity curve, a rate-buydown
+  // payment comparison, a closing timeline, animated from lib/charts/explainer-diagram.ts.
+  // Distinct kind rather than a flag on "explainer" because the treatment differs at every
+  // layer (no avatar, charts on, no b-roll) — the same reason lead_intro is its own kind.
+  | "concept_animation"
 
 export type CompositionTierLite =
   | "solo_agent" | "team" | "brokerage" | "multi_location" | "platform"
@@ -308,6 +314,15 @@ export function selectVideoFormat(situation: VideoSituation): SelectedFormat {
         aspect: "square",
         targetChannels: socialFeed,
       }
+
+    case "concept_animation":
+      return {
+        compositionId: "ExplainerAnimReel",
+        needsAvatar: false,  // the animation IS the visual (finish-spec: CHART_REEL, broll none)
+        needsBroll: false, needsCharts: true, needsSlides: false,
+        aspect: "square",
+        targetChannels: socialFeed,
+      }
   }
 }
 
@@ -444,6 +459,7 @@ export function musicMoodForSituation(kind: SituationKind): MusicMood {
     case "market_update":
     case "anniversary":
     case "explainer":
+    case "concept_animation":  // teaching cut — music must never fight the narration
     case "lead_intro":    return "calm"
     case "cma":
     case "presentation":  return "none"
@@ -468,7 +484,10 @@ export function qrKindForSituation(kind: SituationKind): VideoQrKind {
     case "coming_soon":   return "coming_soon"
     case "market_update": return "market_update"
     case "cma":           return "cma"
-    case "explainer":     return "explainer"
+    case "explainer":
+    // Same teaching destination as the avatar-led explainer — NOT the listing page
+    // the default falls back to.
+    case "concept_animation": return "explainer"
     case "testimonial":   return "testimonial"
     case "neighborhood":  return "neighborhood"
     case "photo_walkthrough":
@@ -487,6 +506,7 @@ export function qrCaptionForSituation(kind: SituationKind): string {
     case "market_update":  return "Scan for the full market report"
     case "cma":            return "Scan for your home value"
     case "explainer":      return "Scan to book a consult"
+    case "concept_animation": return "Scan to book a consult"
     case "lead_intro":     return "Scan to book a consult"
     case "presentation":   return "Scan for the full tour"
     case "anniversary":    return "Scan for your equity report"
@@ -513,6 +533,7 @@ export function defaultHookForSituation(kind: SituationKind): string {
     case "photo_walkthrough": return "Step Inside"
     case "cma":           return "What Your Home Is Worth"
     case "explainer":     return "What You Should Know"
+    case "concept_animation": return "Let Me Show You"
     case "presentation":  return "Your Listing Strategy"
     case "anniversary":   return "A Year In Your Home"
     case "testimonial":   return "What Clients Say"
@@ -675,6 +696,9 @@ function videoTypeForSituation(kind: SituationKind): string {
     case "photo_walkthrough": return "listing_promo"
     case "cma":           return "pre_appointment"
     case "explainer":     return "education"
+    // Reuses the SAME video_type CHECK value as the avatar-led explainer — this maps
+    // to a DB enum, so a new literal here would be rejected by the constraint.
+    case "concept_animation": return "education"
     case "lead_intro":    return "education"
     case "presentation":  return "presentation_chapter"
     case "anniversary":   return "memory_video"

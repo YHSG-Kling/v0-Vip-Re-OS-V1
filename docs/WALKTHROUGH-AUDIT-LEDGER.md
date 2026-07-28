@@ -796,3 +796,50 @@ Verified the surface renders real data, not empty shells: 14 cards, 0 malformed,
 `test:manager-governance` is now wired into the `guard` chain — a single deliberate entry for the
 guard covering the surface just shipped, not the mass-wire that was refused. The other 146 remain
 the owner's CI-time decision.
+
+---
+
+## ExplainerAnimReel is selectable — and the Director's own proof was under-covering
+
+The animated explainer was the cheapest of the ten dark capabilities: a registered Remotion
+composition (`remotion/Root.tsx`) with a 393-line tested concept engine
+(`lib/charts/explainer-diagram.ts`), which `lib/video/video-director.ts` could never choose
+because it was not among the eleven selectable `compositionId`s.
+
+Added as its own `SituationKind` (`concept_animation`) rather than a flag on `explainer`, matching
+the precedent `lead_intro` already set — the treatment differs at every layer (no avatar, charts
+on, no b-roll, per `finish-spec`'s `CHART_REEL, broll: "none"`).
+
+**It was not one array entry.** `SituationKind` feeds seven switches, and wiring only the format
+map would have left the rest returning `undefined`:
+
+- `musicMoodForSituation` → `calm` (teaching cut; music must not fight narration)
+- `qrKindForSituation` → `explainer`. The `default` here is `just_listed`, so falling through
+  would have pointed a concept explainer's outro QR at a listing page.
+- `qrCaptionForSituation` → "Scan to book a consult" (default was "Scan to see the listing")
+- `defaultHookForSituation` → "Let Me Show You"
+- `videoTypeForSituation` → `education`, reusing the existing `ai_video_projects.video_type`
+  CHECK value; a new literal would be rejected by the constraint
+- `compositionHintFor` (voice studio) → `ExplainerAnimReel`
+
+**tsc caught exactly one of those six.** `tsconfig` has `noImplicitReturns` OFF, so a switch that
+misses a kind returns `undefined` rather than failing to compile. Only `compositionHintFor` errored
+(its return type excludes undefined). The type checker is not a safety net here — the switches were
+found by reading each one.
+
+**Two pre-existing defects surfaced while doing it:**
+
+1. **The Director's guard was testing 12 of 14 kinds.** `ALL_KINDS` in
+   `scripts/video-director-simulator.ts` is hand-maintained, and `photo_walkthrough` and
+   `lead_intro` were added to the type and never added there — so every assertion in that layer
+   silently skipped them. Now 15 kinds and 90 situation×channel combos (was 72). The guard now
+   reads the `SituationKind` union back out of the source and asserts `ALL_KINDS` covers it, plus
+   asserts no mapper returns `undefined` — the check tsc cannot perform.
+2. **Two disagreeing evergreen lists.** `planStudioSession` had its own hardcoded
+   `evergreenKinds` fallback that had drifted from the `defaultTopics` the voice studio passes in.
+   Collapsed to one exported `DEFAULT_EVERGREEN_TOPICS`; the fallback now derives from it.
+
+Verified end-to-end, not just compiled: a real 2-week voice-studio plan schedules an "animated
+concept explainer" slot resolving to `ExplainerAnimReel`, with zero undefined composition hints,
+on both the supplied-topics and fallback paths. All 15 kinds return defined values from all six
+mappers.
