@@ -51,7 +51,7 @@ export async function searchIDXForAlert(
     .from("listings")
     .select("id, mls_number, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, status, listing_date, brokerage_id")
     .eq("brokerage_id", brokerageId)
-    .in("lifecycle_stage", ["MLS_ACTIVE", "COMING_SOON_ACTIVE", "OPEN_HOUSE_ACTIVE"])
+    .in("lifecycle_stage", ["MLS_ACTIVE", "COMING_SOON_ACTIVE"])
     .is("deleted_at", null)
 
   if (criteria.min_price) internalQuery.gte("list_price", criteria.min_price)

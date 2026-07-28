@@ -72,7 +72,7 @@ export async function generateMarketInsights(): Promise<{
           .from("listings")
           .select("id, list_price, sold_price, status")
           .eq("agent_id", agentId)
-          .in("status", ["sold", "closed"])
+          .in("status", ["sold"])
           .gte("updated_at", thirtyDaysAgoStr)
           .limit(200),
 

@@ -285,7 +285,7 @@ export function VideoContextPicker({
           .select("id, address, city, state, list_price, bedrooms, bathrooms, sqft, status, listing_photos:photos")
           .eq("brokerage_id", brokerageId)
           .or(`address.ilike.%${value}%,city.ilike.%${value}%`)
-          .in("status", ["active", "pending", "under_contract"])
+          .in("status", ["active", "pending"])
           .order("created_at", { ascending: false })
           .limit(8)
 

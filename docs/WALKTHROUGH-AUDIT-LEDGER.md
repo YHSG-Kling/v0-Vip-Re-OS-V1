@@ -2686,3 +2686,52 @@ Largest remaining clusters: `listings.status` (11), `listings.lifecycle_stage` (
 `direct_mail_campaigns.status` (10), `transactions.stage` (9), `lifecycle_events.source` (8).
 
 `tsc --noEmit`: 0. `npm run guard`: 102 simulators, exit 0.
+
+---
+
+## The listings vocabulary: a cron that never ran, and two KPIs that were always zero
+
+Second cluster off the baseline: `listings.status` (11) and `listings.lifecycle_stage` (11),
+across 12 files. This is the vocabulary the retired GBP sweep got wrong, and it was wrong in
+more places than that.
+
+`listings.status` admits `draft | coming_soon | active | pending | sold | expired | withdrawn`.
+`listings.lifecycle_stage` is a 34-value UPPER_SNAKE machine (`…COMING_SOON_PREP, MEDIA_CAPTURE,
+MLS_READY, MLS_ACTIVE, OFFERS_RECEIVED, NEGOTIATION, UNDER_CONTRACT, CLOSED…`). Code kept
+reaching for the lowercase MLS words, or for `status` when it meant `lifecycle_stage`.
+
+### Five that were not dead weight
+
+| | was | effect |
+|---|---|---|
+| `/api/cron/seller-updates` | `lifecycle_stage IN ('active','under_contract')` | **both lowercase, neither exists** — the seller-update cron selected zero listings on every run since it shipped. No seller ever got an update. |
+| admin dashboard | `lifecycle_stage IN ('launch_ready','prep','intake')` | none of the three exist — the "Listings Ready to Launch" card read 0 / "Nothing queued" regardless of how many were queued |
+| `brokerKPIs` signed listings | `status = 'signed_agreement'` | a *lifecycle* stage on the *status* column — the signed-listings KPI was permanently 0 |
+| `brokerKPIs` active deals | `status IN ('active_listing','contingent','pending','under_contract')` | only `pending` is real, so an agent's active-deal count was silently just their pending listings |
+| `exception-recovery-limits` | `.neq('status','closed')` | an exclusion that excluded nothing — recovery limits were computed over sold listings too |
+
+The seller-update cron is the same shape as the GBP sweep retired earlier in this sweep:
+scheduled, gated, running, and structurally incapable of finding a row. Two independent
+crons with the same defect is what turned this from a fix into a guard.
+
+The video context picker was a third variant — its `LIFECYCLE_LABEL` and `LIFECYCLE_COLOR`
+maps *and* its filter were all keyed on `ACTIVE / COMING_SOON / PREP / PENDING / SOLD`, of
+which only `UNDER_CONTRACT` existed. The filter returned almost nothing, and anything that
+did arrive fell through to the default badge. All three remapped together, so the labels and
+the query cannot drift apart again.
+
+### The rest were dead weight
+
+`under_contract` on `status` (three files), `closed` beside `sold`, `OPEN_HOUSE_ACTIVE`
+beside two real stages, `deleted` in a `.neq` that excluded a value no row can hold —
+stripped, behaviour-preserving.
+
+**Mapping choices, stated rather than buried.** "Ready to Launch" became the six pre-MLS
+stages (`LISTING_AGREEMENT_SIGNED` → `MLS_READY`), matching the author's evident
+ready+prep+intake intent. The picker's "Pending" became `OFFERS_RECEIVED` + `NEGOTIATION`,
+the pre-contract offer stages. Both are judgement calls on intent, not derivations.
+
+Baseline: **170 → 150**. Two `listings` entries remain, both in
+`app/api/dashboard/reporting/route.ts`, which needs its own read.
+
+`tsc --noEmit`: 0. `npm run guard`: 102 simulators, exit 0.

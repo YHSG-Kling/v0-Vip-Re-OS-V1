@@ -158,7 +158,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
         "id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, lifecycle_stage, status, showing_count, mls_number, listing_date"
       )
       .eq("seller_contact_id", contactId)
-      .in("status", ["active", "pending", "coming_soon", "under_contract"])
+      .in("status", ["active", "pending", "coming_soon"])
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle()

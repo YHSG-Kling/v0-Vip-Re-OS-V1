@@ -24,22 +24,28 @@ interface VideoContextPickerProps {
   onSelectContext: (id: string, type: ContextType, data: any) => void
 }
 
+// Keyed on listings.lifecycle_stage as the CHECK actually defines it. The old keys
+// (ACTIVE / COMING_SOON / PREP / PENDING / SOLD) were invented — only UNDER_CONTRACT
+// existed — so the filter below returned almost nothing and every badge that did
+// arrive fell through to the default label and colour.
 const LIFECYCLE_LABEL: Record<string, string> = {
-  ACTIVE:           "Active",
-  COMING_SOON:      "Coming Soon",
-  PREP:             "Prep",
-  PENDING:          "Pending",
-  UNDER_CONTRACT:   "Under Contract",
-  SOLD:             "Sold",
+  MLS_ACTIVE:         "Active",
+  COMING_SOON_ACTIVE: "Coming Soon",
+  COMING_SOON_PREP:   "Prep",
+  OFFERS_RECEIVED:    "Pending",
+  NEGOTIATION:        "Pending",
+  UNDER_CONTRACT:     "Under Contract",
+  CLOSED:             "Sold",
 }
 
 const LIFECYCLE_COLOR: Record<string, string> = {
-  ACTIVE:           "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
-  COMING_SOON:      "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-  PREP:             "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
-  PENDING:          "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
-  UNDER_CONTRACT:   "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
-  SOLD:             "bg-gray-100 text-gray-800 dark:bg-gray-800/50 dark:text-gray-300",
+  MLS_ACTIVE:         "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+  COMING_SOON_ACTIVE: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
+  COMING_SOON_PREP:   "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
+  OFFERS_RECEIVED:    "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
+  NEGOTIATION:        "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
+  UNDER_CONTRACT:     "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
+  CLOSED:             "bg-gray-100 text-gray-800 dark:bg-gray-800/50 dark:text-gray-300",
 }
 
 export function VideoContextPicker({
@@ -76,7 +82,7 @@ export function VideoContextPicker({
             .from("listings")
             .select("id, address, city, state, list_price, lifecycle_stage")
             .eq("brokerage_id", brokerageId)
-            .in("lifecycle_stage", ["ACTIVE", "COMING_SOON", "PREP", "PENDING", "SOLD", "UNDER_CONTRACT"])
+            .in("lifecycle_stage", ["MLS_ACTIVE", "COMING_SOON_ACTIVE", "COMING_SOON_PREP", "OFFERS_RECEIVED", "NEGOTIATION", "UNDER_CONTRACT", "CLOSED"])
             .order("created_at", { ascending: false })
             .limit(50)
           setListings(data || [])

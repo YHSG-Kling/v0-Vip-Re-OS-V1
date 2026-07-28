@@ -51,7 +51,9 @@ export async function getBrokerKPIs(brokerageId: string, timeRange = "7d"): Prom
     .from("listings")
     .select("id")
     .eq("brokerage_id", brokerageId)
-    .eq("status", "signed_agreement")
+    // "signed" is a LIFECYCLE stage, not a status — listings.status has no
+    // signed_agreement, so this KPI was permanently 0.
+    .eq("lifecycle_stage", "LISTING_AGREEMENT_SIGNED")
     .gte("created_at", startDate.toISOString())
 
   // Query closings (sold listings)
@@ -67,7 +69,7 @@ export async function getBrokerKPIs(brokerageId: string, timeRange = "7d"): Prom
     .from("listings")
     .select("id")
     .eq("brokerage_id", brokerageId)
-    .in("status", ["contingent", "pending"])
+    .in("status", ["pending"])  // "contingent" is not a listings status
     .gte("updated_at", startDate.toISOString())
 
   // Calculate GCI from closings
@@ -134,7 +136,9 @@ export async function getAgentPerformance(brokerageId: string, timeRange = "30d"
       .from("listings")
       .select("id")
       .eq("agent_id", agentId)
-      .in("status", ["active_listing", "contingent", "pending", "under_contract"])
+      // Of the four this used, only "pending" exists — the agent's active-deal
+      // count was silently just their pending listings.
+      .in("status", ["active", "pending"])
 
     // Closed deals
     const { data: closedDeals } = await supabase

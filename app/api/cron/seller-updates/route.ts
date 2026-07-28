@@ -44,7 +44,10 @@ export async function GET(req: NextRequest) {
     const { data: listings, error } = await supabase
       .from("listings")
       .select("id, agent_id, brokerage_id, seller_contact_id, contact_id, address, city, state, lifecycle_stage")
-      .in("lifecycle_stage", ["active", "under_contract"])
+      // listings.lifecycle_stage is UPPER_SNAKE. This read ["active","under_contract"],
+      // neither of which is in the CHECK vocabulary, so this cron selected ZERO
+      // listings on every run and no seller ever received an update.
+      .in("lifecycle_stage", ["MLS_ACTIVE", "UNDER_CONTRACT"])
       .limit(50)
 
     if (error) {

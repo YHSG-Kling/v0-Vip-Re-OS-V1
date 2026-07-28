@@ -85,7 +85,10 @@ export default async function AdminPage() {
       .from('listings')
       .select('id', { count: 'exact', head: true })
       .eq('brokerage_id', brokerageId)
-      .in('lifecycle_stage', ['launch_ready', 'prep', 'intake']),
+      // The pre-MLS pipeline, in the vocabulary the column actually admits. This
+      // read ['launch_ready','prep','intake'] — none of the three exist, so the
+      // card read 0 / 'Nothing queued' no matter how many listings were queued.
+      .in('lifecycle_stage', ['LISTING_AGREEMENT_SIGNED', 'MLS_DATE_CONFIRMED', 'COMING_SOON_PREP', 'MEDIA_CAPTURE', 'MEDIA_APPROVED', 'MLS_READY']),
     supabase
       .from('transactions')
       .select('id', { count: 'exact', head: true })
