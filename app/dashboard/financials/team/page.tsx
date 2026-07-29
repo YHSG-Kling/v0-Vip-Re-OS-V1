@@ -346,7 +346,7 @@ export default async function TeamFinancialsPage() {
             <p className="text-muted-foreground text-center py-4">No leaderboard data for this period</p>
           )}
           <div className="mt-4 text-center">
-            <Link href="/dashboard/leaderboard" className="text-blue-600 hover:underline text-sm">
+            <Link href="/dashboard/motivation" className="text-blue-600 hover:underline text-sm">
               View Full Leaderboard
             </Link>
           </div>

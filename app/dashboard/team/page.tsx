@@ -284,7 +284,7 @@ export default async function TeamDashboard() {
               </Button>
             </Link>
           )}
-          <Link href="/dashboard/leaderboard">
+          <Link href="/dashboard/motivation">
             <Button size="sm" variant="outline" className="text-xs gap-1.5">
               <Award className="h-3 w-3" />
               Leaderboard
@@ -434,7 +434,7 @@ export default async function TeamDashboard() {
                     <Award className="h-4 w-4" />
                     30-Day GCI Leaderboard
                   </CardTitle>
-                  <Link href="/dashboard/leaderboard">
+                  <Link href="/dashboard/motivation">
                     <Button variant="ghost" size="sm" className="text-xs gap-1 h-7">
                       Full Board <ArrowRight className="h-3 w-3" />
                     </Button>

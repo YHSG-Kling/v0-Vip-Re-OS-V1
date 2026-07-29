@@ -138,7 +138,7 @@ export default async function AnalyticsPage() {
                 Financial Reports
               </Button>
             </Link>
-            <Link href="/dashboard/leaderboard">
+            <Link href="/dashboard/motivation">
               <Button size="sm" variant="outline" className="text-xs gap-1">
                 <BarChart3 className="h-3 w-3" />
                 Leaderboard

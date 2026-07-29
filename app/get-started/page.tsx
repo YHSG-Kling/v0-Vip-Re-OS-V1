@@ -7,6 +7,7 @@ import { loadPublicTiers } from "@/lib/platform/public-tiers"
 import { liveFunnelSnapshots } from "@/lib/platform/trial-funnel"
 import { redirect } from "next/navigation"
 import { refCaptureRedirect } from "@/lib/platform/affiliate-ref-capture"
+import { cleanCarriedZip } from "@/lib/platform/territory-marketplace"
 
 export const dynamic = "force-dynamic"
 export const metadata = { title: "Start your free trial — get started" }
@@ -19,7 +20,7 @@ export const metadata = { title: "Start your free trial — get started" }
 // the day-one website comes up branded. No snapshots / no coupons configured ⇒
 // the page still works as a plain signup. The prospect-capture form stays below
 // for people who want a walkthrough before starting a trial.
-export default async function GetStartedPage({ searchParams }: { searchParams: Promise<{ utm_source?: string; utm_campaign?: string; tier?: string; ref?: string }> }) {
+export default async function GetStartedPage({ searchParams }: { searchParams: Promise<{ utm_source?: string; utm_campaign?: string; tier?: string; ref?: string; zip?: string }> }) {
   const params = await searchParams
 
   // AFFILIATE ?ref CAPTURE — a server component cannot set cookies, so bounce
@@ -30,6 +31,7 @@ export default async function GetStartedPage({ searchParams }: { searchParams: P
     if (params.tier) keep.set("tier", params.tier)
     if (params.utm_source) keep.set("utm_source", params.utm_source)
     if (params.utm_campaign) keep.set("utm_campaign", params.utm_campaign)
+    if (params.zip) keep.set("zip", params.zip)
     const qs = keep.toString()
     const capture = refCaptureRedirect(params.ref, `/get-started${qs ? `?${qs}` : ""}`)
     if (capture) redirect(capture)
@@ -46,6 +48,11 @@ export default async function GetStartedPage({ searchParams }: { searchParams: P
     Object.entries(snapshotsByTier).map(([tier, s]) => [tier, { id: s.id, name: s.name }]),
   )
   const initialTier = tiers.some((t) => t.tierName === params.tier) ? params.tier! : null
+  // TERRITORY MARKETPLACE carry — ported from /signup when the two public
+  // funnels were merged. /pricing's territory CTA hands off with ?zip=; the
+  // validated zip rides through signup and is suggested as the tenant's first
+  // market during onboarding. Nothing is claimed until they create the market.
+  const initialZip = cleanCarriedZip(params.zip)
   const source = params.utm_source
     ? `utm:${params.utm_source}${params.utm_campaign ? `:${params.utm_campaign}` : ""}`.slice(0, 80)
     : "get_started"
@@ -67,7 +74,7 @@ export default async function GetStartedPage({ searchParams }: { searchParams: P
           </p>
         </div>
 
-        <TrialFunnelForm tiers={tiers} funnelSnapshots={funnelSnapshots} initialTier={initialTier} />
+        <TrialFunnelForm tiers={tiers} funnelSnapshots={funnelSnapshots} initialTier={initialTier} initialZip={initialZip} />
 
         <div className="mt-14 border-t pt-10 max-w-2xl mx-auto">
           <div className="text-center mb-4">

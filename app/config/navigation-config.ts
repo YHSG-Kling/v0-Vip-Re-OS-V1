@@ -342,7 +342,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'sphere-gift-studio', label: 'Gift Studio', href: '/dashboard/gifts' },
         ],
       },
-      { id: 'leaderboard', label: 'Leaderboard', href: '/dashboard/leaderboard', icon: 'Award' },
+      { id: 'leaderboard', label: 'Leaderboard', href: '/dashboard/motivation', icon: 'Award' },
       { id: 'workflows', label: 'Workflow Monitor', href: '/workflows', icon: 'Workflow' },
       { id: 'usage-metrics', label: 'Usage Metrics', href: '/dashboard/admin/usage', icon: 'Activity' },
       { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
@@ -835,7 +835,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
       { id: 'agent-roster', label: 'My Team', href: '/dashboard/team', icon: 'UserCheck' },
       { id: 'team-heatmap', label: 'Team Heatmap', href: '/dashboard/team-heatmap', icon: 'Map' },
-      { id: 'leaderboard', label: 'Leaderboard', href: '/dashboard/leaderboard', icon: 'Award' },
+      { id: 'leaderboard', label: 'Leaderboard', href: '/dashboard/motivation', icon: 'Award' },
       { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare' },
       // Tenant-parity: a team-tier principal (team lead) owns the subscription's
       // operations — Command Center + Monthly Intelligence Report are their surfaces

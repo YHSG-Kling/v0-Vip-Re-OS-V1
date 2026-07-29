@@ -141,7 +141,7 @@ export function LeaderboardPanel({
           </>
         )}
 
-        <Link href="/dashboard/leaderboard">
+        <Link href="/dashboard/motivation">
           <Button variant="outline" size="sm" className="w-full gap-2">
             View Full Leaderboard
             <ArrowRight className="h-4 w-4" />

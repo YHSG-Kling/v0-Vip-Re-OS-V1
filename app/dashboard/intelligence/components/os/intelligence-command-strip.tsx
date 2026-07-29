@@ -103,7 +103,7 @@ export function IntelligenceCommandStrip({
             Patterns
           </Button>
         </Link>
-        <Link href="/dashboard/leaderboard">
+        <Link href="/dashboard/motivation">
           <Button variant="outline" size="sm" className="gap-2">
             <Trophy className="h-4 w-4" />
             Leaderboard

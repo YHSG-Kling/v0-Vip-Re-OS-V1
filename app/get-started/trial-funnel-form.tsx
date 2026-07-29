@@ -35,10 +35,11 @@ type CouponState =
   | { status: "valid"; code: string; summary: string }
   | { status: "invalid"; message: string }
 
-export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier = null }: {
+export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier = null, initialZip = null }: {
   tiers?: PublicTier[]
   funnelSnapshots?: FunnelSnapshotMap
   initialTier?: string | null
+  initialZip?: string | null
 }) {
   const defaultTier = (initialTier && tiers.some((t) => t.tierName === initialTier)
     ? initialTier
@@ -96,6 +97,8 @@ export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier 
         // Send the validated code when we have one, else whatever was typed —
         // the server re-validates and reports the outcome honestly either way.
         couponCode: coupon.status === "valid" ? coupon.code : (couponInput.trim() || undefined),
+        // Territory carry from /pricing (merged in from the retired /signup form).
+        territoryZip: initialZip ?? undefined,
       })
       if (!r.ok) { setError(r.error ?? "Sign-up failed."); return }
       setSuccess(r)
@@ -260,6 +263,15 @@ export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier 
               <Input id="gs-lastName" required value={lastName} onChange={(e) => setLastName(e.target.value)} />
             </div>
           </div>
+          {initialZip && (
+            <div className="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground flex items-start gap-2">
+              <MapPin className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+              <span>
+                Territory carried from pricing: <span className="font-medium text-foreground">{initialZip}</span>.
+                We&apos;ll suggest it as your first market during onboarding — nothing is claimed until you create the market.
+              </span>
+            </div>
+          )}
           <div>
             <Label htmlFor="gs-email" className="flex items-center gap-1.5"><Briefcase className="h-3.5 w-3.5" /> Work email</Label>
             <Input id="gs-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@brokerage.com" />

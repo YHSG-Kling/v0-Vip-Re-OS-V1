@@ -155,7 +155,7 @@ export function MotivationRail({
           </div>
         </div>
 
-        <Link href="/dashboard/leaderboard">
+        <Link href="/dashboard/motivation">
           <Button variant="outline" size="sm" className="w-full gap-2">
             View Leaderboard
             <ArrowRight className="h-4 w-4" />

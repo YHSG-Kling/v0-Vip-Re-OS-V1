@@ -71,12 +71,12 @@ async function main() {
   // /pricing) and the assertions kept failing on code that was CORRECT — they
   // pinned the shape of the implementation, not the promise. The promise is:
   // prices come from the DB and no dollar figure is written into the page.
-  const pageSrc = readFileSync(join(process.cwd(), "app/signup/page.tsx"), "utf8")
+  const pageSrc = readFileSync(join(process.cwd(), "app/get-started/page.tsx"), "utf8")
   const tiersSrc = readFileSync(join(process.cwd(), "lib/platform/public-tiers.ts"), "utf8")
   check("signup page loads prices from subscription_tiers (source of truth)",
     /loadPublicTiers/.test(pageSrc) && /from\("subscription_tiers"\)/.test(tiersSrc)
     && /monthly_price_cents/.test(tiersSrc))
-  const formSrc = readFileSync(join(process.cwd(), "app/signup/signup-form.tsx"), "utf8")
+  const formSrc = readFileSync(join(process.cwd(), "app/get-started/trial-funnel-form.tsx"), "utf8")
   check("signup form renders DB prices, NO hardcoded price strings",
     /monthlyCents/.test(formSrc) && !/price:\s*"\$/.test(formSrc)
     && !/\$\d{2,}/.test(formSrc))

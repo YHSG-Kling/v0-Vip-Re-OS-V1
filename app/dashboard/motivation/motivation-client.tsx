@@ -50,6 +50,10 @@ interface MotivationClientProps {
   agentId: string
   brokerageId: string
   userId: string
+  /** Seeded from the URL so a filtered board is shareable — see the state below. */
+  initialScope?: "agent" | "team" | "brokerage" | null
+  initialMetric?: "points" | "revenue" | "transactions" | "referrals" | null
+  initialPeriod?: string | null
 }
 
 const POINT_VALUES = {
@@ -108,7 +112,7 @@ const MOTIVATIONAL_MESSAGES: Record<string, string> = {
   platinum: "Legendary performance — you're the benchmark",
 }
 
-export function MotivationClient({ agentId, brokerageId, userId }: MotivationClientProps) {
+export function MotivationClient({ agentId, brokerageId, userId, initialScope = null, initialMetric = null, initialPeriod = null }: MotivationClientProps) {
   const [loading, setLoading] = useState(true)
   const [pointsData, setPointsData] = useState<{
     points: number
@@ -120,9 +124,14 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
   const [widgetData, setWidgetData] = useState<any>(null)
 
   // Filter states
-  const [selectedScope, setSelectedScope] = useState<"agent" | "team" | "brokerage">("brokerage")
-  const [selectedMetric, setSelectedMetric] = useState<"points" | "revenue" | "transactions" | "referrals">("points")
-  const [selectedPeriod, setSelectedPeriod] = useState<string>("This Month")
+  // URL-ADDRESSABLE FILTERS, ported from /dashboard/leaderboard when it merged
+  // in. That page drove scope/metric/period off searchParams, which made a
+  // filtered view shareable — "here's the team revenue board" as a link. This
+  // page had the same three dimensions but only as local state, so the view
+  // could not be linked to. Seeded from the URL, then interactive as before.
+  const [selectedScope, setSelectedScope] = useState<"agent" | "team" | "brokerage">(initialScope ?? "brokerage")
+  const [selectedMetric, setSelectedMetric] = useState<"points" | "revenue" | "transactions" | "referrals">(initialMetric ?? "points")
+  const [selectedPeriod, setSelectedPeriod] = useState<string>(initialPeriod ?? "This Month")
   const [badgeFilter, setBadgeFilter] = useState<"all" | "earned" | "in-progress">("all")
   const [showPointsInfo, setShowPointsInfo] = useState(false)
   const [leaderboardLoading, setLeaderboardLoading] = useState(false)
@@ -138,16 +147,26 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
   async function loadData() {
     setLoading(true)
     try {
+      // STANDINGS WITHOUT A PERSONAL RECORD.
+      // This surface serves two audiences since /dashboard/leaderboard merged
+      // into it: an AGENT sees their own points/badges/tier alongside the
+      // standings, while a BROKER or TEAM LEAD is here for the standings and may
+      // have no agents row at all. Points/badges/widget are all keyed on an
+      // agentId, so with an empty one they are skipped rather than queried with
+      // "" — the leaderboard itself is brokerage-scoped and renders for
+      // everyone. Also protects an agent whose agents row has not been created
+      // yet, which previously sent empty-string ids straight at the actions.
+      const hasAgentRecord = !!agentId
       const [pointsResult, badgesResult, leaderboardResult, widgetResult] = await Promise.all([
-        getAgentPointsAndTier(agentId),
-        getAgentBadges(agentId),
+        hasAgentRecord ? getAgentPointsAndTier(agentId) : Promise.resolve(null),
+        hasAgentRecord ? getAgentBadges(agentId) : Promise.resolve([]),
         getLeaderboard({
           scope: selectedScope,
           metricType: selectedMetric,
           periodLabel: selectedPeriod,
           limit: 10,
         }),
-        getLeaderboardWidget({ agentId }),
+        hasAgentRecord ? getLeaderboardWidget({ agentId }) : Promise.resolve(null),
       ])
 
       setPointsData(pointsResult ? { points: pointsResult.points, tier: pointsResult.currentTier } : null)
@@ -156,7 +175,7 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
       setWidgetData(widgetResult)
 
       // Check for new badges
-      if (pointsResult?.points) {
+      if (agentId && pointsResult?.points) {
         const newBadges = await checkAndAwardBadges(agentId, pointsResult.points)
         if (newBadges && newBadges.length > 0) {
           newBadges.forEach((badge: any) => {
