@@ -30,14 +30,25 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { previewRuleRouting, type MatchableRule } from "@/lib/lead-assignment/rule-matcher"
+import {
+  previewRuleRouting,
+  RULE_TYPES,
+  RULE_TYPE_LABELS,
+  RULE_TYPE_HELP,
+  type MatchableRule,
+  type RuleType as MatcherRuleType,
+} from "@/lib/lead-assignment/rule-matcher"
 import {
   saveAssignmentRuleAction,
   toggleAssignmentRuleAction,
   deleteAssignmentRuleAction,
 } from "@/app/actions/admin/assignment-rules"
 
-type RuleType = "round_robin" | "load_balance" | "geo_based" | "specialization"
+// The five methods a broker can choose, from the routing module — the same
+// values assignment_rules.rule_type admits. 'manual' was admitted by the column
+// and offered by no picker, so a broker could not choose to hold leads for a
+// person at all.
+type RuleType = MatcherRuleType
 
 interface AssignmentRule {
   id: string
@@ -62,12 +73,10 @@ interface AgentOption {
   users?: { first_name: string | null; last_name: string | null } | null
 }
 
-const RULE_TYPE_LABELS: Record<RuleType, string> = {
-  round_robin: "Round Robin",
-  load_balance: "Load Balance",
-  geo_based: "Geographic",
-  specialization: "Specialization",
-}
+// Labels and help come from the routing module, so what the picker PROMISES and
+// what the engine DOES cannot drift. They did: until this change every method
+// except round_robin fell through to pool[0], so "Load Balance" and
+// "Specialization" both meant "always the first agent in the list".
 
 function conditionsSummary(conditions: Record<string, unknown>): string {
   const parts: string[] = []
@@ -553,12 +562,14 @@ export default function AssignmentRulesPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="round_robin">Round Robin</SelectItem>
-                    <SelectItem value="load_balance">Load Balance</SelectItem>
-                    <SelectItem value="geo_based">Geographic</SelectItem>
-                    <SelectItem value="specialization">Specialization</SelectItem>
+                    {RULE_TYPES.map((t) => (
+                      <SelectItem key={t} value={t}>{RULE_TYPE_LABELS[t]}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground">
+                  {RULE_TYPE_HELP[form.rule_type]}
+                </p>
               </div>
 
               <div className="space-y-1">

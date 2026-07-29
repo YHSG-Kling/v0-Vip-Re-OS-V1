@@ -1,0 +1,225 @@
+#!/usr/bin/env tsx
+/**
+ * scripts/assignment-method-simulator.ts (npm run test:assignment-method)
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE BROKER CHOSE AN ASSIGNMENT METHOD AND ONLY ONE OF THEM DID ANYTHING.
+ *
+ * assignment_rules.rule_type admits round_robin | load_balance | geo_based |
+ * specialization | manual. Both routers branched on ONE of them:
+ *
+ *     rule.rule_type === "round_robin" ? rotate(pool) : pool[0]
+ *
+ * So a broker who created "Load balance my buyer leads" sent every matching
+ * lead to the first agent in the list, forever — and the same for a Geographic
+ * or a Specialization rule. The picker promised four behaviours and delivered
+ * two. Sharpest of all: a real capacity-aware balancer (selectAgentByCapacity,
+ * shared with the Capacity Guardian) already existed on the FALLBACK path, and
+ * the rule type of the same name never called it.
+ *
+ * 'manual' was worse than wrong — it was admitted by the column, offered by no
+ * picker, and would have silently behaved as pool[0] if anyone had set it in the
+ * database. A broker could not choose to hold leads for a person at all.
+ *
+ * ── THE THIRD IMPLEMENTATION ────────────────────────────────────────────────
+ * lib/lead-governance/agent-selector.ts picked agents for the whole governance
+ * rail and never queried assignment_rules. It sorted by id.localeCompare, took
+ * the first, and wrote an activities row claiming selectionMethod
+ * 'load_balanced' — a false entry in an audit record, which its own comment
+ * conceded ("In production, you'd query leads table for counts"). Deleted; its
+ * one real idea (prefer a specialist) is now a method the broker can choose.
+ *
+ * What this proves: each method DECIDES DIFFERENTLY, the pure layer never
+ * invents a second load metric, a manual rule assigns nobody and says so, and
+ * the picker offers exactly what the column admits.
+ */
+import { readFileSync, existsSync } from "node:fs"
+import { join } from "node:path"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import {
+  pickAgentForRule,
+  previewRuleRouting,
+  RULE_TYPES,
+  RULE_TYPE_LABELS,
+  RULE_TYPE_HELP,
+  isRuleType,
+  toRoutingProfiles,
+  type MatchableRule,
+} from "../lib/lead-assignment/rule-matcher"
+
+let pass = 0, fail = 0
+const fails: string[] = []
+const check = (n: string, c: boolean, detail?: string) => {
+  if (c) { pass++; console.log(`  ✓ ${n}`) }
+  else { fail++; fails.push(n + (detail ? ` — ${detail}` : "")); console.log(`  ✗ ${n}${detail ? ` — ${detail}` : ""}`) }
+}
+const src = (p: string) => (existsSync(join(process.cwd(), p)) ? readFileSync(join(process.cwd(), p), "utf8") : "")
+
+console.log("══════════════════════════════════════════════════")
+console.log(" Assignment method — the broker's choice actually routes")
+console.log("══════════════════════════════════════════════════")
+
+const rule = (over: Partial<MatchableRule> = {}): MatchableRule => ({
+  id: "r1", name: "Rule", rule_type: "round_robin", conditions: {},
+  agent_ids: ["a", "b", "c"], priority: 10, is_active: true, times_triggered: 0,
+  ...over,
+})
+const POOL = ["a", "b", "c"]
+const PROFILES = toRoutingProfiles([
+  { id: "a", specializations: ["Luxury"], location_id: "L1", zip_codes: ["78704"] },
+  { id: "b", specializations: ["First-Time Buyers"], location_id: "L2", zip_codes: ["78745"] },
+  { id: "c", specializations: null, location_id: null, zip_codes: null },
+])
+
+console.log("\n[the vocabulary the broker picks from IS the column's]")
+{
+  const live = CHECK_VOCABULARIES.assignment_rules?.rule_type ?? []
+  check(`the column admits ${live.length} methods`, live.length > 0)
+  check("the module offers exactly those",
+    RULE_TYPES.length === live.length && RULE_TYPES.every((t) => live.includes(t)))
+  check("'manual' is one of them — it was admitted and offered nowhere",
+    live.includes("manual") && RULE_TYPES.includes("manual"))
+  check("every method has a label and a plain-words explanation",
+    RULE_TYPES.every((t) => !!RULE_TYPE_LABELS[t] && !!RULE_TYPE_HELP[t]))
+  check("the owner's word for it is what a broker reads",
+    RULE_TYPE_LABELS.specialization === "Expertise")
+  check("isRuleType rejects a value the column would refuse", !isRuleType("whatever"))
+}
+
+console.log("\n[each method decides DIFFERENTLY — this is the whole bug]")
+{
+  // round_robin: rotation, deterministic on times_triggered.
+  const r0 = pickAgentForRule(rule({ times_triggered: 0 }), POOL, {}, PROFILES)
+  const r1 = pickAgentForRule(rule({ times_triggered: 1 }), POOL, {}, PROFILES)
+  const r2 = pickAgentForRule(rule({ times_triggered: 4 }), POOL, {}, PROFILES)
+  check("round robin rotates through the pool",
+    r0.kind === "agent" && r0.agentId === "a" &&
+    r1.kind === "agent" && r1.agentId === "b" &&
+    r2.kind === "agent" && r2.agentId === "b")
+
+  // load_balance: defers to the DB picker over the WHOLE pool — it does not
+  // name pool[0], and it does not invent a second load metric here.
+  const lb = pickAgentForRule(rule({ rule_type: "load_balance" }), POOL, {}, PROFILES)
+  check("load balance defers to the capacity picker over the whole pool",
+    lb.kind === "capacity" && lb.candidates.length === 3 && lb.method === "load_balance")
+  check("…and does NOT silently name the first agent",
+    lb.kind !== "agent")
+
+  // specialization: narrows to the matching agent, then capacity.
+  const sp = pickAgentForRule(
+    rule({ rule_type: "specialization" }), POOL,
+    { motivation_type: "first_time_buyers" }, PROFILES)
+  check("expertise narrows to the agent whose specialization matches",
+    sp.kind === "capacity" && sp.candidates.length === 1 && sp.candidates[0] === "b")
+  check("…matching is spelling-tolerant ('First-Time Buyers' ≈ 'first_time_buyers')",
+    sp.kind === "capacity" && sp.candidates[0] === "b")
+
+  // A specialization rule that matches nobody must still route.
+  const spNone = pickAgentForRule(
+    rule({ rule_type: "specialization" }), POOL,
+    { motivation_type: "divorce" }, PROFILES)
+  check("an expertise rule matching nobody falls back to the pool, honestly labelled",
+    spNone.kind === "capacity" && spNone.candidates.length === 3 &&
+    spNone.method === "specialization_no_match")
+
+  // geo_based: narrows by ZIP farm.
+  const geo = pickAgentForRule(
+    rule({ rule_type: "geo_based" }), POOL, { property_zip_code: "78704" }, PROFILES)
+  check("geographic narrows to the agent who farms that ZIP",
+    geo.kind === "capacity" && geo.candidates.length === 1 && geo.candidates[0] === "a")
+  const geoNone = pickAgentForRule(
+    rule({ rule_type: "geo_based" }), POOL, { property_zip_code: "99999" }, PROFILES)
+  check("…and an unfarmed ZIP falls back to the pool, honestly labelled",
+    geoNone.kind === "capacity" && geoNone.method === "geo_based_no_match")
+
+  // manual: assign NOBODY, and never fall through.
+  const man = pickAgentForRule(rule({ rule_type: "manual" }), POOL, {}, PROFILES)
+  check("manual assigns nobody — a deliberate hold, not a pick", man.kind === "manual")
+
+  // The four non-manual methods must not all collapse to the same answer.
+  const answers = new Set(
+    (["round_robin", "load_balance", "geo_based", "specialization"] as const).map((t) => {
+      const p = pickAgentForRule(rule({ rule_type: t }), POOL, { property_zip_code: "78704", motivation_type: "luxury" }, PROFILES)
+      if (p.kind === "agent") return `agent:${p.agentId}`
+      if (p.kind === "manual") return "manual"
+      return `capacity:${p.candidates.join("+")}`
+    }),
+  )
+  check("the four automatic methods do not all produce the same answer", answers.size >= 3,
+    [...answers].join(" | "))
+}
+
+console.log("\n[the preview tells the truth about what it cannot know]")
+{
+  // It used to report pool[0] as "the agent this rule would pick" for three of
+  // the four methods — a confident answer that was simply wrong.
+  const rules = [rule({ rule_type: "load_balance" })]
+  const p = previewRuleRouting(rules, {}, { profiles: PROFILES })
+  check("a capacity-decided rule previews the SHORTLIST, not a fabricated winner",
+    p.rule?.id === "r1" && p.agentId === null && (p.candidates ?? []).length === 3)
+  check("…and names the strategy so the broker can see which one ran",
+    p.strategy === "load_balance")
+
+  const pr = previewRuleRouting([rule({ rule_type: "round_robin", times_triggered: 1 })], {}, { profiles: PROFILES })
+  check("a round-robin rule still previews the exact agent (it is knowable)",
+    pr.agentId === "b" && pr.strategy === "round_robin")
+
+  const pm = previewRuleRouting([rule({ rule_type: "manual" })], {}, { profiles: PROFILES })
+  check("a manual rule previews as matched-but-unassigned",
+    pm.rule?.id === "r1" && pm.agentId === null && pm.strategy === "manual")
+
+  const pn = previewRuleRouting([], {})
+  check("no rule at all still falls through to load balance", pn.method === "load_balance")
+}
+
+console.log("\n[one resolver — the third implementation is gone]")
+{
+  check("lib/lead-governance/agent-selector.ts is deleted",
+    !existsSync(join(process.cwd(), "lib/lead-governance/agent-selector.ts")))
+  const barrel = src("lib/lead-governance/index.ts")
+  check("…and the barrel no longer exports selectAgentForLead",
+    !/export \{ selectAgentForLead \}/.test(barrel))
+
+  const gov = src("app/actions/lead-governance/govern-lead.ts")
+  check("governance routes through the canonical rule resolver",
+    /resolveAgentByRules/.test(gov))
+  check("…so the broker's rules apply on the governance path at last",
+    !/selectAgentForLead/.test(gov))
+  check("…and its fallback is the SHARED capacity picker, not a private heuristic",
+    /selectAgentByCapacity/.test(gov) && /resolveBrokerageMaxLoad/.test(gov))
+  check("a manual hold is RECORDED, never a silent non-assignment",
+    /Held for Manual Assignment/.test(gov))
+
+  const engine = src("lib/lead-assignment/assignment-engine.ts")
+  check("the resolver is exported from the assignment spine",
+    /export async function resolveAgentByRules/.test(engine))
+
+  // The literal shape of the bug, in both routers.
+  for (const f of [
+    "lib/lead-assignment/assignment-engine.ts",
+    "lib/lead-assignment/contact-assignment.ts",
+    "lib/lead-assignment/rule-matcher.ts",
+  ]) {
+    const s = src(f)
+    check(`${f}: no "round_robin ? rotate : pool[0]" left`,
+      !/rule_type === ["']round_robin["'][\s\S]{0,160}?:\s*(pool\[0\]|0\b)/.test(s))
+  }
+}
+
+console.log("\n[the picker offers every method the column admits]")
+{
+  const page = src("app/dashboard/admin/assignment-rules/page.tsx")
+  check("the picker DERIVES its options from the routing module",
+    /RULE_TYPES\.map/.test(page))
+  check("…and no longer restates them as hardcoded <SelectItem>s",
+    !/<SelectItem value="round_robin">/.test(page))
+  check("…and shows what the chosen method actually does",
+    /RULE_TYPE_HELP\[form\.rule_type\]/.test(page))
+  check("the labels come from the module too, so list and table cannot disagree",
+    /RULE_TYPE_LABELS/.test(page) && !/const RULE_TYPE_LABELS: Record<RuleType, string> = \{/.test(page))
+}
+
+console.log("\n──────────────────────────────────────────────────")
+if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
+console.log(` RESULT: ${pass} passed, ${fail} failed`)
+if (fail > 0) { console.log(" ❌ ASSIGNMENT_METHOD_FAIL"); process.exit(1) }
+console.log(" ✅ ASSIGNMENT_METHOD_PASS — every method the broker can pick changes where the lead goes")

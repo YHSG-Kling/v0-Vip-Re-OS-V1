@@ -7,8 +7,15 @@ export type { RoutingPolicy, RoutingDecision } from "./routing-evaluator"
 export { evaluateRoutingEligibility } from "./routing-evaluator"
 
 // ─── AGENT SELECTOR ───────────────────────────────────────────────────────────
-export type { AgentSelectionResult } from "./agent-selector"
-export { selectAgentForLead } from "./agent-selector"
+// selectAgentForLead / agent-selector.ts removed. It was a THIRD agent-picking
+// implementation that never read assignment_rules, so the broker's configured
+// method was bypassed on the governance path entirely; it sorted candidates by
+// id.localeCompare and took the first, then reported selectionMethod
+// 'load_balanced' in the activities ledger — a false audit entry its own comment
+// admitted ("In production, you'd query leads table for counts"). Its one real
+// idea, preferring a specialist, is now the 'specialization' rule_type a broker
+// can choose. lib/lead-assignment/assignment-engine.ts resolveAgentByRules is
+// the one resolver.
 
 // ─── SLA MONITOR ──────────────────────────────────────────────────────────────
 export type { SLAStatus } from "./sla-monitor"

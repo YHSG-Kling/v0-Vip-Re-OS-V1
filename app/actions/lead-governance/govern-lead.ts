@@ -29,11 +29,19 @@ import { createServiceClient } from '@/lib/supabase/service'
 import {
   calculateLeadScore,
   evaluateRoutingEligibility,
-  selectAgentForLead,
   evaluateSLA,
   logEscalation,
   evaluatePromotionReadiness,
 } from '@/lib/lead-governance'
+// The agent PICK comes from the canonical assignment spine, not from a private
+// selector. lib/lead-governance/agent-selector.ts used to own it: it never
+// queried assignment_rules at all, so the broker's configured method — round
+// robin, priorities, ZIP farms, team scoping — was bypassed entirely on this
+// path. It sorted candidates by id.localeCompare, took the first, and then
+// wrote an activities row claiming selectionMethod 'load_balanced'. Its one real
+// idea, filtering by specialization, is now a rule_type the broker can choose.
+import { resolveAgentByRules } from '@/lib/lead-assignment/assignment-engine'
+import { selectAgentByCapacity, resolveBrokerageMaxLoad } from '@/lib/lead-assignment/capacity-pick'
 
 export interface GovernanceResult {
   success: boolean
@@ -139,13 +147,53 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
 
     // STEP 6: ASSIGN AGENT IF ELIGIBLE
     if (routingEligibility.eligible) {
-      const agentSelection = await selectAgentForLead(lead, lead.brokerage_id)
-      
-      if (agentSelection.selectedAgentId) {
+      // The broker's own assignment rules decide, through the same resolver
+      // Engine 2 uses — priorities, team scoping, and the chosen method (round
+      // robin / load balance / geographic / expertise / manual).
+      const ruled = await resolveAgentByRules(supabase, lead.brokerage_id, lead)
+
+      // No rule matched: fall back to the capacity-aware balancer rather than
+      // stranding the lead. This is the SAME picker the Capacity Guardian uses,
+      // so a lead never lands on an agent already over their ceiling.
+      let selectedAgentId = ruled.agentId
+      let selectionReason = ruled.method
+        ? `Assigned by rule via ${ruled.method}.`
+        : ''
+      if (!ruled.held && !selectedAgentId) {
+        const { data: actives } = await supabase
+          .from('agents')
+          .select('id')
+          .eq('brokerage_id', lead.brokerage_id)
+          .eq('is_active', true)
+        const pool = (actives ?? []).map((a: { id: string }) => a.id)
+        if (pool.length > 0) {
+          const maxLoad = await resolveBrokerageMaxLoad(supabase, lead.brokerage_id)
+          selectedAgentId = await selectAgentByCapacity(supabase, lead.brokerage_id, pool, maxLoad)
+          selectionReason = `No rule matched — assigned to the agent with the most headroom (of ${pool.length} active).`
+        }
+      }
+
+      if (ruled.held) {
+        // A manual rule matched: the broker asked for this lead to wait for a
+        // person. Recording it is the point — a silent non-assignment is
+        // indistinguishable from a broken router.
+        await supabase.from('activities').insert({
+          activity_type: 'routing_decision',
+          title: 'Held for Manual Assignment',
+          description: ruled.reason ?? 'A manual assignment rule matched this lead.',
+          status: 'completed',
+          priority: 'normal',
+          agent_id: actorAgentId || lead.agent_id,
+          brokerage_id: lead.brokerage_id || brokerageId,
+          entity_type: 'lead',
+          created_at: new Date().toISOString(),
+        })
+        console.log(`[LeadGovernance] Lead ${leadId} held for manual assignment`)
+      } else if (selectedAgentId) {
         await supabase
           .from('leads')
           .update({
-            agent_id: agentSelection.selectedAgentId,
+            agent_id: selectedAgentId,
             lead_stage: 'assigned',
             stage_entered_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -153,13 +201,14 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
           .eq('id', leadId)
           .eq('brokerage_id', brokerageId)
 
-        agentAssigned = agentSelection.selectedAgentId
+        agentAssigned = selectedAgentId
 
-        // Log assignment decision
+        // The description records what ACTUALLY decided. The retired selector
+        // wrote "using load balancing" for a pick made by sorting on id.
         await supabase.from('activities').insert({
           activity_type: 'agent_assignment',
           title: 'Agent Assigned via Governance',
-          description: agentSelection.reason,
+          description: selectionReason,
           status: 'completed',
           priority: 'normal',
           agent_id: agentAssigned || actorAgentId || lead.agent_id,

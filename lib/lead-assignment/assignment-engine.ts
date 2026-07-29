@@ -37,8 +37,16 @@ interface LeadRow {
 // Consolidated into lib/lead-assignment/rule-matcher.ts (pure) — the SAME matcher
 // powers this engine, the settings UI's routing preview, and the simulator, so
 // what the broker previews is exactly what the engine does.
-import { evaluateRuleConditions, pickRoundRobinAgent } from "./rule-matcher"
+import {
+  evaluateRuleConditions,
+  pickAgentForRule,
+  toRoutingProfiles,
+  ROUTING_PROFILE_COLUMNS,
+  type AgentProfileForRouting,
+} from "./rule-matcher"
 import { selectAgentByCapacity, resolveBrokerageMaxLoad } from "./capacity-pick"
+import { loadRoutingProfiles } from "./routing-profiles"
+
 
 // ─── LOAD-BALANCE FALLBACK ────────────────────────────────────────────────────
 // CAPACITY-AWARE — shares the SAME picker as resolveAgentForContact + the Capacity
@@ -59,6 +67,99 @@ async function loadBalanceFallback(brokerageId: string): Promise<string | null> 
 
   const maxLoad = await resolveBrokerageMaxLoad(supabase, brokerageId)
   return selectAgentByCapacity(supabase, brokerageId, agents.map((a) => a.id), maxLoad)
+}
+
+
+/** What the rule pass decided for a lead. */
+export interface RuleResolution {
+  agentId: string | null
+  ruleId: string | null
+  method: string | null
+  /** A matched rule chose MANUAL: assign nobody, and do not fall through. */
+  held?: boolean
+  reason?: string
+  error?: string
+}
+
+/**
+ * THE canonical assignment-rule pass. Engine 2 and the lead-governance rail both
+ * call it, so the broker's configured method applies wherever a lead is routed.
+ *
+ * Governance used to bypass rules entirely: lib/lead-governance/agent-selector.ts
+ * sorted active agents by id and took the first, then logged it as
+ * "load_balanced". Any brokerage that had configured a round-robin or a ZIP farm
+ * saw none of it on that path.
+ */
+export async function resolveAgentByRules(
+  supabase: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  lead: LeadRow,
+): Promise<RuleResolution> {
+  const { data: rules, error: rulesError } = await supabase
+    .from("assignment_rules")
+    .select("id, brokerage_id, name, rule_type, conditions, agent_ids, team_id, priority, is_active, times_triggered")
+    .eq("brokerage_id", brokerageId)
+    .eq("is_active", true)
+    .order("priority", { ascending: false })
+
+  if (rulesError) {
+    return { agentId: null, ruleId: null, method: null, error: `Failed to load rules: ${rulesError.message}` }
+  }
+
+  // Team-scoped rules outrank brokerage-wide rules at equal priority — the
+  // canonical precedence: agent → team → brokerage → platform.
+  const orderedRules = ((rules ?? []) as Array<AssignmentRule & { team_id: string | null }>)
+    .sort((a, b) =>
+      b.priority - a.priority !== 0
+        ? b.priority - a.priority
+        : Number(!!b.team_id) - Number(!!a.team_id),
+    )
+
+  for (const rule of orderedRules) {
+    if (!evaluateRuleConditions(lead, rule.conditions ?? {})) continue
+
+    let pool = rule.agent_ids ?? []
+    if (pool.length === 0 && rule.team_id) {
+      const { data: members } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("brokerage_id", brokerageId)
+        .eq("team_id", rule.team_id)
+        .eq("is_active", true)
+      pool = (members ?? []).map((m) => m.id)
+    }
+    if (pool.length === 0) continue
+
+    // Apply the rule's METHOD. Every branch except round_robin used to be
+    // pool[0], so a broker who chose "Load Balance" or "Specialization" sent
+    // every matching lead to the same agent, forever.
+    const pick = pickAgentForRule(rule as never, pool, lead, await loadRoutingProfiles(supabase, brokerageId, pool))
+
+    if (pick.kind === "manual") {
+      // A deliberate hold, not a routing failure. Falling through to
+      // load-balance would defeat the whole point of choosing it.
+      return {
+        agentId: null, ruleId: rule.id, method: "manual", held: true,
+        reason: `Rule "${rule.name}" is set to manual assignment — the lead is held for a person to route.`,
+      }
+    }
+
+    const agentId = pick.kind === "agent"
+      ? pick.agentId
+      : await selectAgentByCapacity(
+          supabase, brokerageId, pick.candidates,
+          await resolveBrokerageMaxLoad(supabase, brokerageId),
+        )
+    if (!agentId) continue   // nobody in this rule's pool is routable
+
+    return {
+      agentId,
+      ruleId: rule.id,
+      method: rule.team_id ? `team_${pick.method}` : pick.method,
+    }
+  }
+
+  return { agentId: null, ruleId: null, method: null }
 }
 
 // ─── evaluateAndAssignLead ────────────────────────────────────────────────────
@@ -103,61 +204,20 @@ export async function evaluateAndAssignLead(params: {
     }
   }
 
-  // Step 3: Fetch active rules — team-scoped rules (team tier / multi-location
-  // office) outrank brokerage-wide rules at equal priority. A team rule without
-  // explicit agent_ids routes within the team's active members.
-  const { data: rules, error: rulesError } = await supabase
-    .from("assignment_rules")
-    .select("id, brokerage_id, name, rule_type, conditions, agent_ids, team_id, priority, is_active, times_triggered")
-    .eq("brokerage_id", brokerageId)
-    .eq("is_active", true)
-    .order("priority", { ascending: false })
-
-  if (rulesError) {
-    return { assigned: false, reason: `Failed to load rules: ${rulesError.message}` }
+  // Step 3+4: the canonical rule pick — shared with the lead-governance rail so
+  // both honour the broker's configured method rather than each rolling its own.
+  const ruled = await resolveAgentByRules(supabase, brokerageId, typedLead0)
+  if (ruled.held) {
+    return { assigned: false, reason: ruled.reason ?? "Held for manual assignment." }
+  }
+  if (ruled.error) {
+    return { assigned: false, reason: ruled.error }
   }
 
   const typedLead = typedLead0
-  let matchedAgentId: string | null = null
-  let matchedRuleId: string | null = null
-  let matchedMethod = "load_balance"
-
-  // Step 4: Evaluate rules in priority order (team rules first at equal priority —
-  // canonical precedence: agent → team → brokerage → platform)
-  const orderedRules = ((rules ?? []) as Array<AssignmentRule & { team_id: string | null }>)
-    .sort((a, b) =>
-      b.priority - a.priority !== 0
-        ? b.priority - a.priority
-        : Number(!!b.team_id) - Number(!!a.team_id),
-    )
-  for (const rule of orderedRules) {
-    const matched = evaluateRuleConditions(typedLead, rule.conditions ?? {})
-    if (!matched) continue
-
-    let pool = rule.agent_ids ?? []
-    if (pool.length === 0 && rule.team_id) {
-      const { data: members } = await supabase
-        .from("agents")
-        .select("id")
-        .eq("brokerage_id", brokerageId)
-        .eq("team_id", rule.team_id)
-        .eq("is_active", true)
-      pool = (members ?? []).map((m) => m.id)
-    }
-    if (pool.length === 0) continue
-
-    // Pick agent based on rule type
-    if (rule.rule_type === "round_robin") {
-      matchedAgentId = pickRoundRobinAgent(pool, rule.times_triggered)
-    } else {
-      // geo_based / specialization / load_balance — use first agent in pool as default
-      matchedAgentId = pool[0]
-    }
-
-    matchedRuleId = rule.id
-    matchedMethod = rule.team_id ? `team_${rule.rule_type}` : rule.rule_type
-    break
-  }
+  let matchedAgentId: string | null = ruled.agentId
+  const matchedRuleId: string | null = ruled.ruleId
+  let matchedMethod = ruled.method ?? "load_balance"
 
   // Step 5: Load-balance fallback if no rule matched
   if (!matchedAgentId) {

@@ -171,7 +171,16 @@ function testRuleRouting() {
       times_triggered: 0, agent_ids: ["A7"], conditions: {} },
   ]
   const hot = previewRuleRouting(rules, { lead_score: 88, motivation_type: "seller_motivated", property_zip_code: "33133" })
-  check("highest-priority matching rule wins", hot.rule?.id === "r-hot" && hot.agentId === "A5")
+  check("highest-priority matching rule wins", hot.rule?.id === "r-hot")
+  // r-hot is a SPECIALIZATION rule. It used to resolve to pool[0] — which is
+  // how "Specialization" came to mean "always the first agent listed". It now
+  // narrows to a shortlist and the working-load picker chooses from it in the
+  // database, so the preview reports candidates rather than naming a winner it
+  // cannot know. With a one-agent pool the shortlist is still exactly A5.
+  check("…and a specialization rule hands a SHORTLIST to the capacity picker",
+    hot.agentId === null && (hot.candidates ?? []).join() === "A5")
+  check("…labelled honestly when no agent's expertise matched the lead",
+    hot.strategy === "specialization_no_match")
   check("inactive rules never fire (priority 99 skipped)", hot.rule?.id !== "r-off")
   const zip = previewRuleRouting(rules, { lead_score: 40, property_zip_code: "33133" })
   check("score gate fails → next matching rule (zip farm)", zip.rule?.id === "r-zip")

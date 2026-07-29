@@ -30,8 +30,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { teamScopeAllows } from "./rule-matcher"
+import {
+  teamScopeAllows,
+  pickAgentForRule,
+  toRoutingProfiles,
+  ROUTING_PROFILE_COLUMNS,
+  type AgentProfileForRouting,
+} from "./rule-matcher"
 import { selectAgentByCapacity, resolveBrokerageMaxLoad } from "./capacity-pick"
+import { loadRoutingProfiles } from "./routing-profiles"
 
 export interface ResolveAgentForContactInput {
   brokerageId: string
@@ -53,10 +60,12 @@ export interface ResolveAgentForContactResult {
     | "team_load_balance"
     | "team_lead"
     | "load_balance"
+    | "manual_hold"
     | "none"
   ruleId?: string | null
   teamId?: string | null
 }
+
 
 const RULE_FIELDS =
   "id, brokerage_id, rule_type, conditions, agent_ids, team_id, priority, is_active, times_triggered"
@@ -160,9 +169,28 @@ export async function resolveAgentForContact(
     }
     if (pool.length === 0) continue
 
-    const idx =
-      rule.rule_type === "round_robin" ? (rule.times_triggered ?? 0) % pool.length : 0
-    const candidate = pool[idx]
+    // Same fix as Engine 2: every method other than round_robin used to be
+    // pool[0]. At contact-creation time the only hints available are source and
+    // ZIP (no score or persona yet), so an expertise rule will usually find no
+    // match and fall back to capacity — which is the honest outcome, and still
+    // far better than always handing the contact to the first agent listed.
+    const pick = pickAgentForRule(
+      rule as never,
+      pool,
+      { source, property_zip_code: propertyZipCode },
+      await loadRoutingProfiles(supabase, brokerageId, pool),
+    )
+
+    if (pick.kind === "manual") {
+      return { agentId: null, method: "manual_hold", ruleId: rule.id, teamId: rule.team_id ?? teamHint }
+    }
+
+    const candidate = pick.kind === "agent"
+      ? pick.agentId
+      : await selectAgentByCapacity(
+          supabase, brokerageId, pick.candidates,
+          await resolveBrokerageMaxLoad(supabase, brokerageId),
+        )
     if (!candidate) continue
 
     // Verify the candidate is an active agent in the brokerage.
