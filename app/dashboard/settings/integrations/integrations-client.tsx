@@ -28,6 +28,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import { getEsignProviders, getTransactionFormProviders } from "@/lib/integrations/providers/catalog"
+import { CREDENTIAL_PLATFORMS } from "@/lib/integrations/credential-platforms"
 
 // ── Provider catalogue ─────────────────────────────────────────────────────
 const PROVIDER_TYPES = ["esign", "transaction", "sms", "email", "voice", "calendar", "mls", "accounting", "crm"] as const
@@ -69,6 +70,8 @@ const PLATFORM_LABELS: Record<string, string> = {
   rentcast:     "Rentcast (no IDX needed)",
   quickbooks:   "QuickBooks",
   xero:         "Xero",
+  wordpress:    "WordPress",
+  idxbroker:    "IDX Broker",   // the CREDENTIAL key; idx_broker above is the provider-override key
   gohighlevel:  "GoHighLevel",
   none:         "None (Disabled)",
 }
@@ -367,12 +370,21 @@ export function IntegrationsClient({
           <div className="space-y-4 py-2">
             <div>
               <label className="text-xs font-medium text-gray-600 block mb-1.5">Platform *</label>
+              {/* The column is CHECK-constrained; this field was free text with
+                  no hint of what it accepts, so a near-miss came back as a raw
+                  Postgres constraint string. The list is the real vocabulary. */}
               <Input
                 value={credForm.platform}
                 onChange={e => setCredForm(f => ({ ...f, platform: e.target.value }))}
                 placeholder="e.g. dotloop, twilio, sendgrid"
                 className="h-9"
+                list="credential-platform-options"
               />
+              <datalist id="credential-platform-options">
+                {CREDENTIAL_PLATFORMS.map(p => (
+                  <option key={p} value={p}>{PLATFORM_LABELS[p] ?? p}</option>
+                ))}
+              </datalist>
             </div>
             <div>
               <label className="text-xs font-medium text-gray-600 block mb-1.5">API Key</label>

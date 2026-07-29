@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { CREDENTIAL_PLATFORMS, isCredentialPlatform } from "@/lib/integrations/credential-platforms"
 
 export type PlatformCredential = {
   id: string
@@ -149,6 +150,18 @@ export async function upsertPlatformCredential(params: {
 }): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient()
   const { brokerageId } = await getBrokerageId(supabase)
+
+  // The form takes `platform` as FREE TEXT and this wrote it straight into a
+  // CHECK-constrained column, so a value slightly off — or one of the three
+  // finished integrations the CHECK did not admit before m297 — came back as a
+  // raw Postgres constraint string that does not say which platforms are valid.
+  // Fail here instead, naming the vocabulary.
+  if (!isCredentialPlatform(params.platform)) {
+    return {
+      success: false,
+      error: `'${params.platform}' is not a supported platform. Supported: ${CREDENTIAL_PLATFORMS.join(", ")}`,
+    }
+  }
 
   // Owner-keyed update-or-insert (unique key is (owner_type, owner_id, platform)).
   const credRow = {

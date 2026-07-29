@@ -1,9 +1,7 @@
 [
-  "app/actions/accounting-sync.ts::platform_credentials.platform=xero",
   "app/actions/ai-calendar-management.ts::calendar_sync_logs.direction=both",
   "app/actions/ai-listing-packet.ts::listing_packet_jobs.job_type=full_packet",
   "app/actions/assistant.ts::video_scripts_library.approval_status=pending",
-  "app/actions/blog.ts::platform_credentials.platform=wordpress",
   "app/actions/financials.ts::agent_earnings.period_type=annual",
   "app/actions/portal-lifetime.ts::lifetime_customer_touchpoints.touchpoint_type=anniversary",
   "app/actions/seller-listing/execution-engine.ts::commission_adjustments.applies_to=listing",
@@ -33,8 +31,6 @@
   "lib/connections/zoom-transcripts.ts::voice_calls.call_type=zoom_meeting",
   "lib/errors/auto-retry.ts::error_resolution_log.retry_result=scheduled",
   "lib/intelligence/manager-standup.ts::remotion_composition_renders.render_status=completed",
-  "lib/kernel/ads.ts::platform_credentials.platform=google",
-  "lib/kernel/ads.ts::platform_credentials.platform=tiktok",
   "lib/kernel/crm.ts::lead_deduplication_log.action_taken=merged_into_existing",
   "lib/kernel/crm.ts::lead_deduplication_log.stage=contact",
   "lib/kernel/deconflict/index.ts::isa_outreach_log.channel=phone",

@@ -19,6 +19,11 @@
 //   10. All ad content subject to real estate compliance gates
 
 import { createServiceClient } from "@/lib/supabase/service"
+import {
+  CONNECTABLE_AD_PLATFORMS,
+  AD_PLATFORMS_WITHOUT_CREDENTIALS,
+  isConnectableAdPlatform,
+} from "@/lib/integrations/credential-platforms"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import type { ActorContext } from "@/lib/kernel/types"
@@ -101,6 +106,10 @@ export interface KernelAdsResult {
   audience?: any
   syncRunId?: string
   syncRun?: any
+  /** createAdCampaign: is the ad account connected and active right now? */
+  accountConnected?: boolean
+  /** createAdCampaign: does a credential path for this platform exist at all? */
+  accountConnectable?: boolean
   performance?: any
   accountStatus?: "connected" | "disconnected" | "error"
   accountInfo?: any
@@ -122,6 +131,14 @@ export interface AdsWorkspaceData {
     is_active: boolean
     account_name: string | null
   }>
+  /**
+   * Ad platforms a campaign may target that have NO credential path in this
+   * product today. Absent from accountConnections not because the brokerage has
+   * not connected them, but because there is nothing to connect — a campaign can
+   * be created for these and never launched from here. Named so the workspace
+   * can say which it means.
+   */
+  unconnectableAdPlatforms: readonly string[]
 }
 
 // Input types
@@ -259,12 +276,20 @@ export async function loadAdsWorkspace(input: LoadAdsWorkspaceInput): Promise<Ke
     const avgCtr = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0
     const avgCpl = totalLeads > 0 ? totalSpend / totalLeads : 0
 
-    // Load account connections
+    // Load account connections.
+    //
+    // This asked platform_credentials for the ad_campaigns.platform vocabulary —
+    // two different columns, two different sets. 'tiktok' is not a value
+    // platform_credentials admits and, more to the point, nothing in this
+    // codebase could ever write it: there is no TikTok OAuth provider and no
+    // TikTok connect form. Querying it produced a permanently absent row that
+    // rendered as "not connected", which is a different claim from "cannot be
+    // connected here" — see lib/integrations/credential-platforms.ts.
     const { data: accountConnections } = await supabase
       .from("platform_credentials")
       .select("platform, is_active, account_name")
       .eq("brokerage_id", ctx.brokerageId)
-      .in("platform", ["facebook", "instagram", "google", "linkedin", "tiktok"])
+      .in("platform", [...CONNECTABLE_AD_PLATFORMS])
 
     const workspaceData: AdsWorkspaceData = {
       campaigns: campaigns || [],
@@ -278,6 +303,7 @@ export async function loadAdsWorkspace(input: LoadAdsWorkspaceInput): Promise<Ke
         avgCpl,
       },
       accountConnections: accountConnections || [],
+      unconnectableAdPlatforms: AD_PLATFORMS_WITHOUT_CREDENTIALS,
     }
 
     return { success: true, campaign: workspaceData }
@@ -322,13 +348,23 @@ export async function createAdCampaign(input: CreateAdCampaignInput): Promise<Ke
   try {
     const supabase = createServiceClient()
 
-    // Check platform account connection
-    const { data: platformCred } = await supabase
-      .from("platform_credentials")
-      .select("is_active, platform")
-      .eq("brokerage_id", ctx.brokerageId)
-      .eq("platform", platform)
-      .maybeSingle()
+    // Check platform account connection.
+    //
+    // This result was FETCHED AND DISCARDED — the file header's rule 9
+    // ("Provider account connection required before campaign launch") was
+    // enforced nowhere, which is a large part of why nobody noticed the query
+    // could not match for two of the five platforms it was asked about. A draft
+    // legitimately does not require a live connection, so this does not block;
+    // it now REPORTS, which is the honest version of what the query was for.
+    const connectable = isConnectableAdPlatform(platform)
+    const { data: platformCred } = connectable
+      ? await supabase
+          .from("platform_credentials")
+          .select("is_active, platform")
+          .eq("brokerage_id", ctx.brokerageId)
+          .eq("platform", platform)
+          .maybeSingle()
+      : { data: null }
 
     // Create campaign in draft status
     const { data: campaign, error } = await supabase
@@ -358,7 +394,17 @@ export async function createAdCampaign(input: CreateAdCampaignInput): Promise<Ke
     // Increment feature usage
     await incrementFeatureUsage(ctx.userId, "ads_campaigns")
 
-    return { success: true, campaignId: campaign!.id, campaign }
+    return {
+      success: true,
+      campaignId: campaign!.id,
+      campaign,
+      accountConnected: !!platformCred?.is_active,
+      // Distinguishes "you have not connected this yet" from "this product has
+      // no way to connect it" — a draft for the latter can never be launched
+      // from here, and the caller should say so rather than show a connect
+      // prompt that leads nowhere.
+      accountConnectable: connectable,
+    }
   } catch (err) {
     return {
       success: false,
