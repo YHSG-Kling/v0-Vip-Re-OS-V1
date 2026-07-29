@@ -73,7 +73,6 @@
   "lib/managers/cross-referral.ts::manager_signals.status=pending",
   "lib/managers/deliberation.ts::ad_campaigns.status=active",
   "lib/onboarding/certification-engine.ts::onboarding_steps.category=platform_tour",
-  "lib/onboarding/critical-setup.ts::platform_credentials.platform=zoom",
   "lib/pricing/predictive-pricing.ts::price_trend_alerts.alert_type=price_gap",
   "lib/pricing/predictive-pricing.ts::pricing_history.price_type=ai_prediction",
   "lib/workflow/adapters/schedule-showing.ts::showings.sync_source=workflow_sequence"

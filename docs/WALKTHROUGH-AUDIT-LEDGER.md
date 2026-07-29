@@ -3599,3 +3599,58 @@ and `transaction_commissions` are back to 0/0.
 functions through a recording fake client so the *filters* are asserted, not just the result.
 
 Chain: **119 simulators**. `tsc --noEmit`: 0. `npm run guard`: exit 0.
+
+---
+
+## OWNER RULING: zoom is a provider platform — and the snapshot can no longer rot
+
+> "zoom is a setup'd provider platform and tenants"
+
+`lib/onboarding/critical-setup.ts` has carried a `zoomConnected` readiness item since it was
+written:
+
+```ts
+zoomConnected: boolean   // platform_credentials platform='zoom' (brokerage-owned)
+```
+
+`'zoom'` was never in the `platform_credentials.platform` CHECK. So a brokerage that connected
+Zoom could not have the credential stored — the insert is rejected — and the readiness checker's
+filter matched nothing on every run. A permanently-red row on the onboarding meter with no way
+to turn it green. **m290** widens the vocabulary (additive only; nothing previously accepted is
+now rejected). `owner_type = 'brokerage'` was already admitted, so tenant scoping needed no
+change. Verified live: the insert that used to raise `check_violation` is accepted and the
+setup item's exact query resolves it; probe row deleted.
+
+### The bigger problem m290 exposed
+
+`scripts/check-vocabularies.ts` says "GENERATED from the live database" — **but there is no
+generator.** It cannot be regenerated in CI, because that needs database credentials CI does not
+have; it was produced once, by hand, through the MCP. So the moment a migration widens a CHECK
+and nobody re-syncs the snapshot, every guard built on it validates yesterday's contract — and
+nothing goes red. The vocabulary ratchet quietly becomes a lie.
+
+`npm run test:vocabulary-snapshot` closes that without touching the database. A migration that
+changes a CHECK *declares the new vocabulary in SQL, in the repo* — so the migration file is the
+second source of truth. The guard parses the `ARRAY[…]` out of every
+`ADD CONSTRAINT … CHECK (col = ANY (ARRAY[…]))` under `supabase/migrations`, keeps the **last**
+declaration per `table.column`, and asserts the snapshot agrees.
+
+```
+237 migrations · 16 table.column vocabularies declared in SQL · 11 agree · 5 baselined
+```
+
+All five baselined disagreements are the *safe* direction — the snapshot has **more** values than
+the migration declared, because those columns were widened by SQL applied outside the migrations
+directory in an earlier era of the project. **Zero** cases of the dangerous direction (a
+migration declaring a value the snapshot lacks), which is the one that would make a guard call a
+valid literal impossible.
+
+Chain: **121 simulators** (`test:vocabulary-snapshot` + `test:commission-ledger-sync`).
+Vocabulary baseline: **78 → 77**. `tsc --noEmit`: 0. `npm run guard`: exit 0.
+
+**Flagged, not done:** the owner's video stack is Remotion + D-ID + ElevenLabs clones, explicitly
+**no HeyGen** — but `heygen` is still in the `platform_credentials.platform` vocabulary and
+referenced across 8 modules (`provider-posture`, `kernel/video`, `kernel/marketing`,
+`video-provider-resolver`, `vendor-policy`, …). Retiring it is a real reader sweep, not a
+one-line vocabulary edit, so it is filed rather than half-done. ElevenLabs needs no credential
+row — it runs off `ELEVENLABS_API_KEY` with voice ids on `agent_voice_profiles.elevenlabs_voice_id`.
