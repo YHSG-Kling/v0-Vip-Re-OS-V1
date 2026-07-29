@@ -812,6 +812,62 @@ export function getPlatformProviderRegistry(): PlatformProviderEntry[] {
 // ── Full-registry posture (DB + env only — no vendor calls; the deep-dive
 //    Twilio/SendGrid sweeps above remain the vendor-calling drill-downs) ──────
 
+// ─── IS THIS PROVIDER'S PLATFORM KEY PRESENT? — one implementation ───────────
+//
+// "Configured at the platform level" was answered by reading process.env inline
+// at each call site (getBrokerageProviderReadiness below, the connector-health
+// cron). Each site knew a DIFFERENT set of env vars for the same provider, so
+// the answers could disagree: the capability resolver looked only at
+// platform_credentials ROWS and reported Lob dark while LOB_API_KEY was set and
+// dispatchDirectMail was sending happily.
+//
+// The canonical registry already knows every env var that can carry a
+// provider's key (CONNECTOR_REGISTRY.envKey + the tenancy matrix +
+// PLATFORM_PROVIDER_KEYS). So the answer is derived from it, once, here.
+//
+// The registry MAP is memoized (it is pure and deterministic); the ENV read
+// never is — a key added at deploy time must be seen on the next call.
+let ENV_VARS_BY_PROVIDER: Map<string, string[]> | null = null
+
+function envVarsByProvider(): Map<string, string[]> {
+  if (!ENV_VARS_BY_PROVIDER) {
+    const m = new Map<string, string[]>()
+    for (const e of getPlatformProviderRegistry()) {
+      m.set(e.provider, e.envVars)
+      // Storage aliases resolve too, so a caller holding 'd_id' or
+      // 'twilio_voice' gets the same answer as one holding the canonical key.
+      for (const al of e.storageAliases) if (!m.has(al)) m.set(al, e.envVars)
+    }
+    ENV_VARS_BY_PROVIDER = m
+  }
+  return ENV_VARS_BY_PROVIDER
+}
+
+/** The ONE env-presence expression. null = no env home, so "no platform lane
+ *  exists" stays distinguishable from "the platform lane is dark". */
+export function envPresence(vars: readonly string[]): boolean | null {
+  if (vars.length === 0) return null
+  return vars.some((v) => !!process.env[v])
+}
+
+/** Every platform env var that can carry this provider's key. [] = the provider
+ *  has no env home at all (credential-stores only, or keyless). */
+export function platformEnvVarsFor(provider: string): string[] {
+  const key = canonPostureKey(provider)
+  return envVarsByProvider().get(key) ?? envVarsByProvider().get((provider ?? "").trim().toLowerCase()) ?? []
+}
+
+/**
+ * Is this provider configured AT THE PLATFORM LEVEL?
+ *
+ * Returns null — not false — when the provider has no env home: "no platform
+ * lane exists" is a different fact from "the platform lane is dark", and
+ * resolveBrokerageReadinessState below branches on exactly that distinction.
+ */
+export function platformEnvConfigured(provider: string): boolean | null {
+  return envPresence(platformEnvVarsFor(provider))
+}
+
 export const POSTURE_WINDOW_DAYS = 14
 /** A provider with ≥ this many unhealed failures (failed/escalated) in the window needs attention. */
 export const UNHEALED_ATTENTION_THRESHOLD = 3
@@ -976,7 +1032,7 @@ export async function getFullProviderPosture(svc: any): Promise<FullProviderPost
 
   let needsAttentionCount = 0
   const rows: ProviderPostureRow[] = registry.map((e) => {
-    const envConfigured = e.envVars.length === 0 ? null : e.envVars.some((v) => !!process.env[v])
+    const envConfigured = envPresence(e.envVars)
     const l = ledger.get(e.provider) ?? { calls: 0, errors: 0, lastSuccessAt: null, lastErrorAt: null }
     const h = healByProvider.get(e.provider) ?? { healed: 0, failed: 0, escalated: 0, failures: [] }
     const d = driftByProvider.get(e.provider) ?? { pending: 0, lastAt: null }
@@ -1155,7 +1211,7 @@ export async function getBrokerageProviderReadiness(
   }
 
   const rows: BrokerageProviderReadinessRow[] = registry.map((e) => {
-    const envConfigured = e.envVars.length === 0 ? null : e.envVars.some((v) => !!process.env[v])
+    const envConfigured = envPresence(e.envVars)
     const { state, ready } = resolveBrokerageReadinessState({
       keyless: e.keyless,
       scope: e.scope,

@@ -72,6 +72,20 @@ export type AppDomain =
  *                system-managed lanes. CONNECTOR_PROVIDERS deliberately leaves
  *                `marketing: []` for exactly this reason.
  *
+ * ANY-of ACROSS BOTH, not connections-then-stop. A capability may be reachable
+ * either way and several are: distributing a video rides a connected social
+ * account OR the platform email lane. Phase 1 returned as soon as `connections`
+ * was present and never looked at `platform`, so a tenant with no social
+ * account read dark on a capability the platform email lane could serve.
+ *
+ * EVERY declaration below is grounded in the gate the code ACTUALLY hits — the
+ * `if (!process.env.X) return unconfigured` in the dispatcher, not a guess at
+ * which vendor sounds right. Phase 1 guessed twice and got both wrong:
+ * `video_distribute` was filed against the D-ID render key (D-ID renders video;
+ * it has nothing to do with distributing one) and every platform lane was
+ * checked against platform_credentials ROWS while the dispatchers gate on ENV
+ * KEYS — so Lob read dark with LOB_API_KEY set and direct mail sending fine.
+ *
  * Undeclared means "no external dependency known" — see UNDECLARED_REQUIREMENTS
  * below, which keeps the not-yet-modelled ones VISIBLE rather than letting an
  * absent contract read as a satisfied one.
@@ -99,14 +113,22 @@ export interface AppCapabilityDef {
 export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = {
   lead_search:          { capability: "lead_search",          verb: "FIND",    scope: "lead:read",         domain: "lead_generation", mutates: false, purpose: "Search the brokerage's leads by status, source, score, or territory.", inputs: ["brokerageId", "filters?"] },
   contact_get:          { capability: "contact_get",          verb: "GET",     scope: "contact:read",      domain: "crm",             mutates: false, purpose: "Fetch a single contact record (CRM) with its lead lineage.", inputs: ["contactId"] },
-  cma_generate:         { capability: "cma_generate",         verb: "ANALYZE", scope: "cma:write",         domain: "valuation",       mutates: true,  purpose: "Generate a comparative market analysis report for a property.", inputs: ["agentId", "propertyAddress", "propertyCity", "propertyState", "propertyZip"] },
+  // GROUNDED: app/actions/ai-cma.ts fetchComparableProperties() gets its comps from
+  // getRentcastComps — a tenant integration_credentials row for rentcast, else the
+  // platform RENTCAST_API_KEY. With neither it returns [] and the CMA renders with
+  // zero comparables, which is not a CMA. Declared platform-scope: the readiness
+  // resolver already lets a tenant's own key satisfy a platform lane.
+  cma_generate:         { capability: "cma_generate",         verb: "ANALYZE", scope: "cma:write",         domain: "valuation",       mutates: true,  purpose: "Generate a comparative market analysis report for a property.", inputs: ["agentId", "propertyAddress", "propertyCity", "propertyState", "propertyZip"], requires: { platform: ["rentcast"] } },
   appointment_schedule: { capability: "appointment_schedule", verb: "BOOK",    scope: "calendar:write",    domain: "scheduling",      mutates: true,  purpose: "Book an appointment on an agent's calendar with a contact.", inputs: ["agentId", "contactId", "startsAt", "durationMin?"] },
   transaction_advance:  { capability: "transaction_advance",  verb: "ADVANCE", scope: "transaction:write", domain: "transactions",    mutates: true,  purpose: "Advance a transaction to its next valid lifecycle stage.", inputs: ["transactionId", "toStatus"] },
   listing_publish:      { capability: "listing_publish",      verb: "PUBLISH", scope: "listing:write",     domain: "listings",        mutates: true,  purpose: "Publish a listing (signed agreement → coming-soon / active).", inputs: ["listingId"] },
   isa_qualify:          { capability: "isa_qualify",          verb: "ANALYZE", scope: "lead:qualify",      domain: "lead_generation", mutates: true,  purpose: "Run AI-ISA qualification on a lead and record the outcome.", inputs: ["leadId"] },
   lead_create:          { capability: "lead_create",          verb: "CREATE",  scope: "lead:write",        domain: "lead_generation", mutates: true,  purpose: "Create a new lead/contact record from supplied identity.", inputs: ["brokerageId", "firstName", "lastName", "email?", "phone?"] },
 
-  newsletter_send:          { capability: "newsletter_send",          verb: "NOTIFY",  scope: "marketing:send",   domain: "marketing",      mutates: true,  purpose: "Send or schedule a newsletter campaign to a contact segment.", inputs: ["brokerageId", "campaignId", "scheduledAt?"] },
+  // GROUNDED: the publish-newsletters cron dispatches through dispatchEmail, which
+  // ends at messagingSendEmail for EVERY providerKey — SENDGRID_API_KEY absent is a
+  // clean "SendGrid not configured" refusal, so the platform email lane IS the gate.
+  newsletter_send:          { capability: "newsletter_send",          verb: "NOTIFY",  scope: "marketing:send",   domain: "marketing",      mutates: true,  purpose: "Send or schedule a newsletter campaign to a contact segment.", inputs: ["brokerageId", "campaignId", "scheduledAt?"], requires: { platform: ["sendgrid"] } },
   blog_publish:             { capability: "blog_publish",             verb: "PUBLISH", scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Publish a drafted blog post to the brokerage's site/SEO engine.", inputs: ["brokerageId", "postId"] },
   marketing_campaign_create:{ capability: "marketing_campaign_create",verb: "CREATE",  scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Create a multi-channel marketing campaign.", inputs: ["brokerageId", "name", "channels"] },
   content_repurpose:        { capability: "content_repurpose",        verb: "CREATE",  scope: "content:write",    domain: "marketing",      mutates: true,  purpose: "Repurpose an existing content asset into another channel format.", inputs: ["brokerageId", "assetId", "targetChannel"] },
@@ -116,11 +138,31 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
   education_path_get:       { capability: "education_path_get",        verb: "GET",     scope: "education:read",   domain: "education",      mutates: false, purpose: "Fetch a contact's personalized learning path.", inputs: ["contactId"] },
   education_assign:         { capability: "education_assign",          verb: "CREATE",  scope: "education:write",  domain: "education",      mutates: true,  purpose: "Assign an educational resource to a contact.", inputs: ["contactId", "resourceId"] },
   portal_milestones_get:    { capability: "portal_milestones_get",     verb: "GET",     scope: "portal:read",      domain: "portal",         mutates: false, purpose: "Fetch the client-portal milestone timeline for a contact/transaction.", inputs: ["contactId"] },
-  review_request_send:      { capability: "review_request_send",       verb: "NOTIFY",  scope: "reputation:write", domain: "reputation",     mutates: true,  purpose: "Send a review request to a past client (reputation engine).", inputs: ["brokerageId", "contactId"] },
-  inbox_reply_send:         { capability: "inbox_reply_send",          verb: "NOTIFY",  scope: "comms:write",      domain: "communications", mutates: true,  purpose: "Send a reply in the universal inbox (compliance-gated).", inputs: ["brokerageId", "threadId", "body"] },
+  // GROUNDED: app/api/cron/review-request-on-close composes then dispatchEmail's —
+  // same platform email lane. Refused sends stay 'pending', never stamped sent.
+  review_request_send:      { capability: "review_request_send",       verb: "NOTIFY",  scope: "reputation:write", domain: "reputation",     mutates: true,  purpose: "Send a review request to a past client (reputation engine).", inputs: ["brokerageId", "contactId"], requires: { platform: ["sendgrid"] } },
+  // GROUNDED: sendInboxReply tries the agent's OWN connected mailbox first
+  // (sendPersonalEmail → gmail/outlook), then the platform email lane, and sms
+  // through dispatchSms (per-actor Twilio credential, else the platform key).
+  // portal/chat is in-app and needs no provider. ANY-of across both kinds,
+  // because which lane a reply needs depends on the thread's channel — and
+  // because an agent with their own mailbox connected does not need SendGrid.
+  inbox_reply_send:         { capability: "inbox_reply_send",          verb: "NOTIFY",  scope: "comms:write",      domain: "communications", mutates: true,  purpose: "Send a reply in the universal inbox (compliance-gated).", inputs: ["brokerageId", "threadId", "body"], requires: { connections: [...CONNECTOR_PROVIDERS.email, ...CONNECTOR_PROVIDERS.phone], platform: ["sendgrid", "twilio"] } },
   podcast_publish:          { capability: "podcast_publish",           verb: "PUBLISH", scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Publish a podcast episode to the brokerage's distribution channels.", inputs: ["brokerageId", "episodeId"], requires: { connections: CONNECTOR_PROVIDERS.podcast } },
-  direct_mail_send:         { capability: "direct_mail_send",          verb: "NOTIFY",  scope: "marketing:send",   domain: "marketing",      mutates: true,  purpose: "Submit a direct-mail campaign for print + delivery (Lob).", inputs: ["brokerageId", "campaignId"] },
-  video_distribute:         { capability: "video_distribute",          verb: "PUBLISH", scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Distribute a marketing video asset across configured channels.", inputs: ["brokerageId", "videoProjectId", "channels"] },
+  // GROUNDED: dispatchDirectMail reads process.env.LOB_API_KEY and returns
+  // "Direct mail provider (Lob) not configured" without it. PLATFORM_PROVIDER_KEYS
+  // already maps lob → LOB_API_KEY for the Integration Guardian's probe.
+  direct_mail_send:         { capability: "direct_mail_send",          verb: "NOTIFY",  scope: "marketing:send",   domain: "marketing",      mutates: true,  purpose: "Submit a direct-mail campaign for print + delivery (Lob).", inputs: ["brokerageId", "campaignId"], requires: { platform: ["lob"] } },
+  // GROUNDED in distributeVideo's real branches: post_now/schedule write a
+  // social_posts row against a connected social account; email_to_client enqueues
+  // to email_queue, which the queue-drain cron sends via dispatchEmail (SendGrid).
+  // So EITHER lane distributes a video — the any-of case that phase 1's
+  // connections-then-stop resolution could not express.
+  //
+  // OWNER RULING honoured: video is not a channel. It is delivered IN an email or
+  // an sms, so the contract names the DELIVERY lanes, not the render providers.
+  // (D-ID + ElevenLabs render the video; a render key does not distribute one.)
+  video_distribute:         { capability: "video_distribute",          verb: "PUBLISH", scope: "marketing:write",  domain: "marketing",      mutates: true,  purpose: "Distribute a marketing video asset across configured channels.", inputs: ["brokerageId", "videoProjectId", "channels"], requires: { connections: CONNECTOR_PROVIDERS.social, platform: ["sendgrid"] } },
   gift_send:                { capability: "gift_send",                 verb: "NOTIFY",  scope: "gifting:write",    domain: "gifting",        mutates: true,  purpose: "Trigger a closing/nurture gift order for a contact.", inputs: ["brokerageId", "contactId", "giftType?"] },
   handwritten_note_send:    { capability: "handwritten_note_send",     verb: "NOTIFY",  scope: "gifting:write",    domain: "gifting",        mutates: true,  purpose: "Send a handwritten thank-you note to a contact.", inputs: ["brokerageId", "contactId", "message?"] },
 
@@ -132,14 +174,30 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
 }
 
 /**
- * CAPABILITIES WHOSE DEPENDENCY IS REAL BUT NOT YET MODELLED.
+ * CAPABILITIES WHOSE DEPENDENCY IS REAL BUT CANNOT BE EXPRESSED AS A PROVIDER.
  *
- * Each of these plainly needs something external — direct mail needs a print
- * vendor, video needs the avatar + voice providers, a gift needs a gifting
- * vendor — but the exact provider key is NOT asserted here, because guessing one
- * would be worse than admitting the gap: a wrong contract reports a capability
- * dark when it works, or ready when it cannot run, and both are the defect this
- * whole mechanism exists to remove.
+ * Six of the original eight are now declared above, each against the gate its
+ * dispatcher actually hits. These two are NOT, and the reason is not laziness —
+ * it is that their dependency is not a credential at all:
+ *
+ *   gift_send      needs a VENDOR ROW, not an API key. lib/workflow/adapters/
+ *                  send-gift.ts routes the order through the vendor marketplace
+ *                  (aiRecommendGift → createGiftOrder), and when the brokerage
+ *                  has no gifting vendor it does the honest thing already: it
+ *                  creates a "Pick a closing gift provider" TASK on the agent
+ *                  rather than failing silently. A CapabilityRequirement names
+ *                  providers; "at least one vendor row of the right kind exists
+ *                  for this tenant" is a different assertion, and inventing a
+ *                  fake provider key to express it would be the drift.
+ *
+ *   handwritten_note_send
+ *                  has NO delivery lane, by design as it stands: the reputation
+ *                  kernel writes the thank_you_notes row and marks it sent
+ *                  "(delivery handled externally)" — i.e. a human writes and
+ *                  posts it. That is legitimate for handwriting, and it is also
+ *                  why no provider can be asserted. Flagged for the owner:
+ *                  the SAME branch marks an SMS note sent without dispatching
+ *                  it, which is not legitimate — an sms is a machine channel.
  *
  * Declared as data so the guard can hold the list at a known size and force this
  * comment to be revisited rather than letting an absent contract pass as a
@@ -147,14 +205,8 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
  * as ready.
  */
 export const UNDECLARED_REQUIREMENTS: readonly AppCapability[] = [
-  "direct_mail_send",       // a print/mail vendor (system-managed lane)
-  "video_distribute",       // avatar + cloned-voice render providers
-  "gift_send",              // a gifting vendor
-  "handwritten_note_send",  // a handwriting vendor
-  "inbox_reply_send",       // an email or phone connection, depending on thread channel
-  "newsletter_send",        // an email sending lane
-  "review_request_send",    // an email or phone lane
-  "cma_generate",           // a valuation data source
+  "gift_send",              // a gifting VENDOR ROW, not a credential — degrades to a task
+  "handwritten_note_send",  // no delivery lane at all: a human writes and posts it
 ] as const
 
 export function getAppCapability(capability: AppCapability): AppCapabilityDef {

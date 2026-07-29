@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 import {
   SystemCommandStrip,
   ProviderHealthPanel,
+  AgentCapabilityPanel,
   ObservabilityPanel,
   AIQualityPanel,
   SyncHealthPanel,
@@ -56,6 +57,10 @@ export default async function SystemPage() {
           {/* Column 1: Provider & Sync Health */}
           <div className="space-y-6">
             <ProviderHealthPanel brokerageId={brokerageId} />
+            {/* Providers answer "which vendors are live"; this answers the question a
+                broker actually asks before switching autonomy on — what the agents can
+                DO. Same resolver the MCP tool list uses, so screen and tool list agree. */}
+            <AgentCapabilityPanel brokerageId={brokerageId} />
             <SyncHealthPanel brokerageId={brokerageId} />
           </div>
 

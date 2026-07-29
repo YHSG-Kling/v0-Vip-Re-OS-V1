@@ -9,7 +9,11 @@ import { buildFullActionManifest } from "@/lib/agentic-os/app-capability-registr
 import { AGIS_VERBS } from "@/lib/agentic-os/vendor-capability-registry"
 import { authorizedActions } from "@/lib/agentic-os/agent-scopes"
 import { resolveAgenticCaller } from "@/lib/agentic-os/agent-credentials"
-import { resolveAllAppCapabilities, blockExplanation } from "@/lib/agentic-os/resolve-app-capability"
+import {
+  resolveAllAppCapabilities,
+  blockExplanation,
+  attentionExplanation,
+} from "@/lib/agentic-os/resolve-app-capability"
 
 export async function GET(req: Request) {
   const caller = await resolveAgenticCaller(req)
@@ -25,7 +29,16 @@ export async function GET(req: Request) {
   // a tool and watching it fail — so a discovering agent now gets both, and the
   // REASON a dark capability is dark.
   let operable: string[] | undefined
-  let dark: Array<{ action: string; capability: string; reason: string; missing: string[]; explanation: string | null }> | undefined
+  let dark: Array<{
+    action: string; capability: string; reason: string; missing: string[]
+    explanation: string | null
+    /** The self-healer already has an open repair for this provider. */
+    healing: boolean
+  }> | undefined
+  // Operable TODAY but on a credential that is lapsing. A planner that only sees
+  // operable/dark cannot act before the outage — this is the window in which
+  // acting is cheap, and it comes from the connectivity agent, not a new rule.
+  let expiring: Array<{ action: string; capability: string; provider: string; status: string; warning: string | null }> | undefined
 
   if (caller.brokerageId) {
     // Brokerage scope only — the caller is a brokerage-scoped agent token or a
@@ -44,6 +57,16 @@ export async function GET(req: Request) {
         reason: r.reason ?? "unknown",
         missing: r.missing,
         explanation: blockExplanation(r),
+        healing: r.healingInFlight,
+      }))
+    expiring = resolutions
+      .filter((r) => r.operable && r.attention)
+      .map((r) => ({
+        action: `${r.def.verb} ${r.capability}`,
+        capability: r.capability,
+        provider: r.satisfiedBy ?? "",
+        status: r.connectivity ?? "connected",
+        warning: attentionExplanation(r),
       }))
   }
 
@@ -54,7 +77,7 @@ export async function GET(req: Request) {
     authorized: authorizedActions(manifest, caller.scopes).map((a) => a.action),
     // Absent when the caller has no brokerage context (platform-wide token):
     // omitted rather than guessed, because an empty list would read as "nothing works".
-    ...(operable ? { operable, dark } : {}),
+    ...(operable ? { operable, dark, expiring } : {}),
     authenticatedVia: caller.via,
   })
 }

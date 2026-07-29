@@ -64,6 +64,15 @@ export interface ResolvedConnection {
   apiUrl: string | null
   config: Record<string, unknown>
   isActive: boolean
+  /**
+   * OAuth token expiry (ISO-8601) when the store carries one, else null.
+   *
+   * Selected so a CALLER can ask the connectivity agent whether a live
+   * connection is about to lapse (deriveConnectivityStatus). Without it every
+   * consumer saw only "connected / not connected" and an expiring token was
+   * indistinguishable from a healthy one until the day it stopped working.
+   */
+  tokenExpiresAt: string | null
 }
 
 export interface ResolveConnectionInput {
@@ -90,7 +99,7 @@ export async function resolveConnection(
   if (input.agentId) {
     const { data } = await svc
       .from("agent_api_credentials")
-      .select("id, api_key, api_secret, access_token, refresh_token, config, is_active")
+      .select("id, api_key, api_secret, access_token, refresh_token, config, is_active, token_expires_at")
       .eq("agent_id", input.agentId)
       .in("service_name", aliases)
       .eq("is_active", true)
@@ -103,6 +112,7 @@ export async function resolveConnection(
         accessToken: data.access_token ?? null, refreshToken: data.refresh_token ?? null,
         accountId: null, accountName: null, apiUrl: null,
         config: (data.config as Record<string, unknown>) ?? {}, isActive: true,
+        tokenExpiresAt: data.token_expires_at ?? null,
       }
     }
   }
@@ -112,7 +122,7 @@ export async function resolveConnection(
     if (scope === "agent" && !input.agentUserId) continue
     let q = svc
       .from("platform_credentials")
-      .select("id, api_key, access_token, refresh_token, account_id, account_name, api_url, config, is_active")
+      .select("id, api_key, access_token, refresh_token, account_id, account_name, api_url, config, is_active, token_expires_at")
       .eq("brokerage_id", input.brokerageId)
       .in("platform", aliases)
       .eq("scope", scope)
@@ -127,6 +137,7 @@ export async function resolveConnection(
         accountId: data.account_id ?? null, accountName: data.account_name ?? null,
         apiUrl: data.api_url ?? null,
         config: (data.config as Record<string, unknown>) ?? {}, isActive: true,
+        tokenExpiresAt: data.token_expires_at ?? null,
       }
     }
   }
@@ -147,6 +158,8 @@ export async function resolveConnection(
       accessToken: null, refreshToken: null, accountId: null, accountName: null,
       apiUrl: data.webhook_url ?? null,
       config: {}, isActive: true,
+      // integration_credentials carries no expiry column — a static key store.
+      tokenExpiresAt: null,
     }
   }
 

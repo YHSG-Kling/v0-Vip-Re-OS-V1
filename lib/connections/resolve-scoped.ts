@@ -30,7 +30,7 @@ async function readOwnerCredential(
     const svc = createServiceClient()
     const { data, error } = await svc
       .from("platform_credentials")
-      .select("id, platform, api_key, access_token, refresh_token, account_id, account_name, api_url, config, is_active")
+      .select("id, platform, api_key, access_token, refresh_token, account_id, account_name, api_url, config, is_active, token_expires_at")
       .eq("owner_type", ownerType)
       .eq("owner_id", ownerId)
       .in("platform", aliasesFor(provider))
@@ -53,6 +53,10 @@ async function readOwnerCredential(
       apiUrl: data.api_url ?? null,
       config: (data.config as Record<string, unknown>) ?? {},
       isActive: true,
+      // Carried so a caller can ask the connectivity agent whether this owner's
+      // token is about to lapse — the owner-scoped cascade must not be the one
+      // path that loses the expiry signal.
+      tokenExpiresAt: data.token_expires_at ?? null,
       ownerType,
       ownerId,
     }

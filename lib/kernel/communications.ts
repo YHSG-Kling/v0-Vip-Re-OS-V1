@@ -566,10 +566,30 @@ export interface SendInboxReplyInput {
  * sendInboxReply
  *
  * Kernel command to send an outbound reply from the inbox.
- * Runs full outbound eligibility gate before persisting via communication-spine.
+ * Runs full outbound eligibility gate, then ACTUALLY DISPATCHES, then records.
+ *
+ * ─── THE REPLY THAT WAS NEVER SENT ──────────────────────────────────────────
+ * This function used to run the compliance gate and then INSERT a messages row
+ * with `status: "sent"` — and stop. For channel 'portal'/'chat' that is correct:
+ * an in-app message IS delivered by being stored, and the client portal reads
+ * that row. For 'email' and 'sms' it was not: no dispatcher was ever called, no
+ * provider ever saw the text, and the row said sent. An agent replying to a
+ * client from the universal inbox got a success toast and a message in the
+ * thread, and the client got nothing — with no error anywhere to notice.
+ *
+ * The canonical pattern already existed one directory over: the sequence email
+ * adapter tries the agent's own connected mailbox (sendPersonalEmail), falls
+ * back to dispatchEmail, and reports 'sent' ONLY on a successful dispatch. This
+ * now does the same, in that order, so a reply leaves from the agent's real
+ * mailbox when they have connected one — and a refusal is recorded as a FAILED
+ * message with the provider's reason rather than a convincing lie.
+ *
+ * Every gate downstream still applies: dispatchEmail/dispatchSms re-run
+ * suppression, compliance, de-conflict and budget. Double-gating is deliberate
+ * (both fail closed) and matches the defence-in-depth the rest of the app uses.
  *
  * Tables written:
- *   messages OR client_portal_messages (via communication-spine persister)
+ *   messages OR client_portal_messages
  */
 export async function sendInboxReply(
   input: SendInboxReplyInput
@@ -648,6 +668,70 @@ export async function sendInboxReply(
         contactId, brokerageId: actorContext.brokerageId, agentId,
       })
       if (!conversationId) return { success: false, error: "Could not resolve the conversation thread" }
+
+      // ── DISPATCH FIRST, then record what actually happened ────────────────
+      let dispatched = false
+      let dispatchError: string | null = null
+      let providerKey: string | null = null
+
+      if (channel === "email") {
+        if (!contact.email) return { success: false, error: "Contact has no email address" }
+        const subject = "Re: your message"
+        // 1. The agent's OWN connected mailbox, when they have one — a reply to a
+        //    client should come from the agent, not a platform relay.
+        if (actorContext.userId) {
+          try {
+            const { sendPersonalEmail } = await import("@/lib/providers/email/personal-email-adapter")
+            const personal = await sendPersonalEmail({
+              agentUserId: actorContext.userId,
+              to: contact.email,
+              subject,
+              htmlBody: body.replace(/\n/g, "<br>"),
+              textBody: body,
+            })
+            if (personal.success) { dispatched = true; providerKey = personal.provider ?? "personal" }
+          } catch { /* fall through to the platform lane */ }
+        }
+        // 2. Platform email lane.
+        if (!dispatched) {
+          const { dispatchEmail } = await import("@/lib/providers/dispatch")
+          const result = await dispatchEmail({
+            brokerageId: actorContext.brokerageId,
+            userId: actorContext.userId,
+            agentId: agentId ?? undefined,
+            from: process.env.SENDGRID_FROM_EMAIL || "noreply@yourdomain.com",
+            to: contact.email,
+            subject,
+            html: body.replace(/\n/g, "<br>"),
+            text: body,
+            contactId,
+            channelPurpose: "conversation",
+            systemSource: "inbox_reply",
+          })
+          dispatched = result.success
+          providerKey = result.providerKey
+          dispatchError = result.error ?? null
+        }
+      } else {
+        // sms
+        if (!contact.phone) return { success: false, error: "Contact has no phone number" }
+        const { dispatchSms } = await import("@/lib/providers/dispatch")
+        const result = await dispatchSms({
+          brokerageId: actorContext.brokerageId,
+          userId: actorContext.userId,
+          agentId: agentId ?? undefined,
+          to: contact.phone,
+          message: body,
+          contactId,
+          systemSource: "inbox_reply",
+        })
+        dispatched = result.success
+        providerKey = result.providerKey
+        dispatchError = result.error ?? null
+      }
+
+      // Record the attempt either way — an agent must be able to see that the
+      // reply they typed did not leave, and why. status carries the truth.
       const { data: msg, error } = await supabase
         .from("messages")
         .insert({
@@ -658,12 +742,20 @@ export async function sendInboxReply(
           type: channel,
           direction: "outbound",
           body,
-          status: "sent",
+          status: dispatched ? "sent" : "failed",
           created_at: new Date().toISOString(),
         })
         .select("id")
         .single()
       if (error) throw error
+
+      if (!dispatched) {
+        return {
+          success: false,
+          messageId: msg.id,
+          error: dispatchError ?? `Reply could not be sent (${providerKey ?? channel} refused it)`,
+        }
+      }
       await touchConversation(supabase, conversationId, { inbound: false })
       return { success: true, messageId: msg.id }
     }
