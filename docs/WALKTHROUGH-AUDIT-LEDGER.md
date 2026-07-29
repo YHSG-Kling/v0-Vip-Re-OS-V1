@@ -3897,3 +3897,50 @@ never fired by either route; the enroller wired here is the first thing that mak
 against the kernel union so the two cannot drift apart again.
 
 Chain: **123 simulators**. `tsc --noEmit`: 0. `npm run guard`: exit 0.
+
+---
+
+## The event-subscriber guard I recommended: mostly wrong, one part worth keeping
+
+I proposed "a kernel event-handler registry with a guard that fails CI when an emitted
+`KernelEvent` has no subscriber" as the next architectural step. I measured it before building
+it, and most of it does not survive.
+
+**The broad version is a bad idea.** 421 `KernelEvent` members; 315 referenced; **308 of those
+have no literal consumer.** Not because 308 features are dead — because most lifecycle events
+are an *audit trail*, written so a timeline can render them and read generically by queries that
+never name a specific type. A guard demanding a subscriber per event would have produced a
+308-entry baseline that asserts nothing and needs rebaselining forever. That is the shape of a
+guard that looks rigorous and checks nothing. Not implemented.
+
+**The second finding was already documented.** `lib/orchestrator/internal.ts` declares
+`EVENT_HANDLERS`, a 23-key map referenced nowhere — `orchestrateEvent` routes through a
+type-safe `switch` instead. The file's own header says so and carries an activation plan. Known
+debt, not a discovery.
+
+**One part is real, and it is an invariant rather than a ratchet.** There are two emitters:
+
+| emitter | behaviour | sites |
+| --- | --- | --- |
+| `emitEvent()` (app/actions/orchestrator.ts) | inserts **and** calls `orchestrateEvent` | 8 |
+| `emitLifecycleEvent()` (lib/kernel/helpers.ts) | inserts, returns, dispatches nothing | 20 |
+
+Both are legitimate — audit-trail events *should* use the cheap one. The silent failure is
+emitting one of the 9 types the orchestrator routes (`lead.created`, `listing.signed`,
+`listing.live`, `transaction.milestone_overdue`, `credit.status_updated`, `video.generated`,
+`image.generated`, `lead.tagged_hot`, `listing.appointment_set`) through the emitter that does
+not dispatch. The row lands, the timeline looks complete, the handler never runs, nothing
+errors. That is the exact shape of every defect in this sweep.
+
+`npm run test:event-dispatch` pins it — **with no baseline, on purpose.** Measured: zero
+violations today. A baseline here would be a licence to add the first one.
+
+**The guard caught its own bug before it could lie.** `EVENT_TYPES` is re-exported twice —
+`lib/orchestrator/index.ts` → `lib/orchestrator/event-types.ts` → `lib/events/types.ts`, where
+the literals actually live. Reading either shim resolved no values, so the bypass check compared
+against constant *names* and could never match a real emit: the invariant would have passed
+vacuously forever. The assertion "every routed case resolved to a real string value" is what
+failed, twice, until the path pointed at the declaration. A guard that cannot prove it resolved
+its own inputs is not a guard.
+
+Chain: **124 simulators**. `tsc --noEmit`: 0. `npm run guard`: exit 0.
