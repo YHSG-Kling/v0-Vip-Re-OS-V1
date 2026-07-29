@@ -39,6 +39,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { LISTING_STATUSES } from "../lib/constants"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -109,6 +110,32 @@ console.log("\n[the coverage gap, held visible rather than rediscovered]")
   // Not a failure — a standing, honest count. It fails only if coverage REGRESSES.
   check("coverage never silently shrinks below what is wired today",
     offered.size >= 12 && missing.length <= LIVE.length - 12)
+}
+
+console.log("\n[the same class, elsewhere: the listing phase picker]")
+{
+  // Found by sweeping every .tsx option list against the live CHECK vocabularies
+  // after the "voice" bug — the defect generalises, so the check does too.
+  // listings.status had THREE disagreeing vocabularies: the CHECK (10), a
+  // LISTING_STATUSES constant with ZERO consumers (6), and the picker (7,
+  // including "under_contract" — a TRANSACTION status the column rejects).
+  const live = CHECK_VOCABULARIES.listings?.status ?? []
+  check("listings.status does NOT admit 'under_contract' (it is a transaction status)",
+    !live.includes("under_contract"))
+  check("the canonical LISTING_STATUSES now matches the column exactly",
+    LISTING_STATUSES.length === live.length &&
+    LISTING_STATUSES.every((s2) => live.includes(s2)))
+  check("…and every phase the owner's process names is in it",
+    ["listing_signed", "coming_soon", "active", "withdrawn", "cancelled", "off_market", "sold"]
+      .every((s2) => (LISTING_STATUSES as readonly string[]).includes(s2)))
+  const picker = src("app/components/dashboard/listings/listing-status-select.tsx")
+  check("the picker DERIVES its options instead of restating them",
+    /LISTING_STATUSES\.map/.test(picker) && !/value: "under_contract"/.test(picker))
+  const action = src("app/actions/listings-kernel.ts")
+  check("updateListingStatus rejects a non-phase before it reaches the CHECK",
+    /isListingStatus\(status\)/.test(action))
+  check("…and the constant is no longer a dead list (the picker + action use it)",
+    /LISTING_STATUSES/.test(picker) && /LISTING_STATUSES/.test(action))
 }
 
 console.log("\n──────────────────────────────────────────────────")

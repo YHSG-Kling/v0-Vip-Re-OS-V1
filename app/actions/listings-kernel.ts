@@ -15,6 +15,7 @@
 
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
+import { LISTING_STATUSES, isListingStatus } from "@/lib/constants"
 import {
   createListingRecord,
   createOrAttachSellerContact,
@@ -417,6 +418,19 @@ export async function loadListingWorkspaceAction(listingId: string) {
 export async function updateListingStatus(listingId: string, status: string) {
   const supabase = await createClient()
   try {
+    // VOCABULARY GATE. `status` arrives as free text from a client picker, and
+    // listings.status is CHECK-constrained — so an unadmitted value reached the
+    // database and came back as a raw constraint error that names no valid
+    // phases. The picker offered "under_contract" (a TRANSACTION status) for
+    // exactly this reason: nothing here disagreed with it. Validated against the
+    // one canonical list the picker now renders from, so the two cannot drift.
+    if (!isListingStatus(status)) {
+      return {
+        success: false,
+        error: `'${status}' is not a listing phase. Valid: ${LISTING_STATUSES.join(", ")}`,
+      }
+    }
+
     // Auth + ownership check — was previously open IDOR
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return { success: false, error: "Unauthorized" }

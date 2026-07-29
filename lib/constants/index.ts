@@ -145,8 +145,59 @@ export function canonicalPropertyType(raw: string | null | undefined): PropertyT
   return ALIASES[key] ?? null
 }
 
-export const LISTING_STATUSES = ["coming_soon", "active", "pending", "sold", "off_market", "expired"] as const
+// ─────────────────────────────────────────────────────────────────────────────
+// THE LISTING PHASES — one vocabulary, in lifecycle order.
+//
+// There were THREE and none of them agreed:
+//   · listings.status CHECK (10 values, the only one that decides a write)
+//   · this constant (6 — missing listing_signed, withdrawn, cancelled, draft)
+//     and with ZERO consumers, so it corrected nothing
+//   · the status picker (7, including "under_contract" — which the column does
+//     NOT admit, so choosing it produced a rejected write)
+//
+// under_contract is a TRANSACTION status, not a listing phase. The owner's
+// stated process separates them: a LISTING moves listing_signed → coming_soon →
+// active → pending → sold, exiting via withdrawn / cancelled / off_market /
+// expired; a TRANSACTION moves under_contract → pending → clear_to_close →
+// closed_sold → funded. Offering a transaction status on a listing conflated
+// the two and could never save.
+//
+// This list is now the full admitted set, matched to the CHECK, and it is USED:
+// the picker renders from it and updateListingStatus validates against it, so a
+// value that cannot be stored can no longer be offered or submitted.
+export const LISTING_STATUSES = [
+  "draft",
+  "listing_signed",
+  "coming_soon",
+  "active",
+  "pending",
+  "sold",
+  "withdrawn",
+  "cancelled",
+  "off_market",
+  "expired",
+] as const
 export type ListingStatus = (typeof LISTING_STATUSES)[number]
+
+/** Display labels for the phases above — kept beside the vocabulary so a new
+ *  phase cannot be added without a label, or labelled without existing. */
+export const LISTING_STATUS_LABELS: Record<ListingStatus, string> = {
+  draft:          "Draft",
+  listing_signed: "Listing Signed",
+  coming_soon:    "Coming Soon",
+  active:         "Active",
+  pending:        "Pending",
+  sold:           "Sold",
+  withdrawn:      "Withdrawn",
+  cancelled:      "Cancelled",
+  off_market:     "Off Market",
+  expired:        "Expired",
+}
+
+/** PURE — is this a phase a listing may actually be set to? */
+export function isListingStatus(value: string): value is ListingStatus {
+  return (LISTING_STATUSES as readonly string[]).includes(value)
+}
 
 // ============================================
 // CONTENT TYPES
