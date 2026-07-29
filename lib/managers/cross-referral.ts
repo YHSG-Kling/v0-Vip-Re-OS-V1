@@ -57,6 +57,13 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import {
+  BLOG_PENDING_PUBLISH_STATUS,
+  NEWSLETTER_PENDING_APPROVAL_STATUSES,
+  AD_CREATIVE_PENDING_APPROVAL_STATUSES,
+  PODCAST_PENDING_APPROVAL_STATUS,
+  VIDEO_SNIPPET_PENDING_APPROVAL_STATUS,
+} from "@/lib/kernel/approval-pending"
+import {
   MANAGERS, MANAGER_COLLABORATIONS, canRefer, type ManagerKey,
 } from "@/lib/kernel/manager-registry"
 
@@ -154,17 +161,25 @@ export async function raiseReferralDeduped(
 
 /** The probes that find CANDIDATE brokerages cheaply: any tenant carrying at least
  *  one pending approval row older than the breach line, per the aggregator's own
- *  source tables + filters (mirrored read-only — the aggregator stays untouched). */
+ *  source tables + filters (mirrored read-only — the aggregator stays untouched).
+ *
+ *  MIRRORED FROM THE SHARED CONSTANTS, NOT RETYPED. This list originally
+ *  hardcoded its literals, which is exactly how it drifted: it asked
+ *  video_snippets for approval_status='pending', a value that column's CHECK
+ *  does not admit, so a snippet breaching its SLA could never make its tenant a
+ *  candidate. Every pending value that lib/kernel/approval-pending.ts owns is
+ *  now imported from there, so this mirror cannot diverge from the queue it
+ *  mirrors. */
 const BREACH_CANDIDATE_PROBES: Array<{
   table: string
   apply: (q: any, cutoffIso: string) => any
 }> = [
-  { table: "newsletter_campaigns",   apply: (q, c) => q.in("approval_status", ["pending", "pending_review"]).lt("created_at", c) },
+  { table: "newsletter_campaigns",   apply: (q, c) => q.in("approval_status", [...NEWSLETTER_PENDING_APPROVAL_STATUSES]).lt("created_at", c) },
   { table: "email_campaigns",        apply: (q, c) => q.eq("approval_status", "pending").lt("created_at", c) },
-  { table: "ad_creative_variations", apply: (q, c) => q.eq("approval_status", "draft").lt("created_at", c) },
-  { table: "video_snippets",         apply: (q, c) => q.eq("approval_status", "pending").lt("created_at", c) },
-  { table: "blog_posts",             apply: (q, c) => q.eq("publish_status", "draft").lt("created_at", c) },
-  { table: "podcast_episodes",       apply: (q, c) => q.eq("approval_status", "pending_review").lt("created_at", c) },
+  { table: "ad_creative_variations", apply: (q, c) => q.in("approval_status", [...AD_CREATIVE_PENDING_APPROVAL_STATUSES]).lt("created_at", c) },
+  { table: "video_snippets",         apply: (q, c) => q.eq("approval_status", VIDEO_SNIPPET_PENDING_APPROVAL_STATUS).lt("created_at", c) },
+  { table: "blog_posts",             apply: (q, c) => q.eq("publish_status", BLOG_PENDING_PUBLISH_STATUS).lt("created_at", c) },
+  { table: "podcast_episodes",       apply: (q, c) => q.eq("approval_status", PODCAST_PENDING_APPROVAL_STATUS).lt("created_at", c) },
   { table: "ai_video_projects",      apply: (q, c) => q.eq("approval_status", "pending_review").lt("created_at", c) },
   { table: "offers",                 apply: (q, c) => q.eq("status", "pending").lt("created_at", c) },
   { table: "property_alerts",        apply: (q, c) => q.eq("is_active", false).in("source", ["voice_conversation", "text_conversation"]).lt("created_at", c) },

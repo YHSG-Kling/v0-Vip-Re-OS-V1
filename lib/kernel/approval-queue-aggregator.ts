@@ -19,7 +19,9 @@
  *   nl:   newsletter_campaigns (approval_status pending / pending_review)
  *   em:   email_campaigns      (approval_status pending)
  *   acv:  ad_creative_variations (approval_status draft — pre-launch review)
- *   vsn:  video_snippets       (approval_status pending)
+ *   vsn:  video_snippets       (approval_status pending_review — 'pending' is
+ *         not a value the column admits; the readers had drifted off the
+ *         writers and the filter matched nothing, ever)
  *   bp:   blog_posts           (publish_status draft)
  *   pc:   podcast_episodes     (approval_status pending_review — generated
  *         episodes awaiting release before the distributor ships them)
@@ -49,10 +51,12 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
   BLOG_PENDING_PUBLISH_STATUS,
+  BLOG_REJECTED_PUBLISH_STATUS,
   NEWSLETTER_PENDING_APPROVAL_STATUSES,
   AD_CREATIVE_PENDING_APPROVAL_STATUSES,
   PODCAST_PENDING_STATUS,
   PODCAST_PENDING_APPROVAL_STATUS,
+  VIDEO_SNIPPET_PENDING_APPROVAL_STATUS,
 } from "./approval-pending"
 
 export type ApprovalSource = "newsletter" | "email" | "ad_creative" | "video_snippet" | "blog" | "podcast" | "video" | "offer" | "property_alert" | "legacy"
@@ -185,7 +189,9 @@ export async function applyMarketingAssetRejection(
   }
 
   if (kind === "blog") {
-    await svc.from("blog_posts").update({ publish_status: "rejected" }).eq("id", id)
+    await svc.from("blog_posts")
+      .update({ publish_status: BLOG_REJECTED_PUBLISH_STATUS })
+      .eq("id", id)
   }
 
   return { ok: true }
@@ -264,7 +270,7 @@ export async function aggregatePendingApprovals(
         .from("video_snippets")
         .select("id, created_by, snippet_title, caption_text, approval_status, created_at")
         .eq("brokerage_id", brokerageId)
-        .eq("approval_status", "pending")
+        .eq("approval_status", VIDEO_SNIPPET_PENDING_APPROVAL_STATUS)
         .order("created_at", { ascending: false })
         .limit(PER_TABLE_LIMIT),
       svc

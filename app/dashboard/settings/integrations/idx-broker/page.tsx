@@ -209,11 +209,29 @@ export default function IDXBrokerSettingsPage() {
       .eq("brokerage_id", brokerageId)
       .eq("platform", "idxbroker")
 
-    // Pause all brokerage alerts
+    // Pause all brokerage alerts.
+    //
+    // paused_by is an ACTOR CLASS (agent | buyer | system) — it previously got
+    // 'admin_disconnect', an EVENT name, which the CHECK rejects. Because this
+    // is one bulk UPDATE, that rejection took the whole statement with it: the
+    // confirm dialog promised "All active alerts will be paused" and not one
+    // alert was ever paused. The actor is the system (a cascade of losing the
+    // feed, not a per-alert human decision); the event moves to paused_reason.
+    //
+    // Scoped to is_active=true so the cascade only touches LIVE alerts. The
+    // inactive rows are the conversation-criteria proposals awaiting approval,
+    // and paused_reason is where their [VOICE_PROPOSAL]/[TEXT_PROPOSAL] evidence
+    // lives — overwriting it would drop them off the approval rail.
     await supabase
       .from("property_alerts")
-      .update({ is_active: false, paused_by: "admin_disconnect", updated_at: new Date().toISOString() })
+      .update({
+        is_active: false,
+        paused_by: "system",
+        paused_reason: "IDX Broker integration disconnected",
+        updated_at: new Date().toISOString(),
+      })
       .eq("brokerage_id", brokerageId)
+      .eq("is_active", true)
 
     setDisconnecting(false)
     setCred(null)

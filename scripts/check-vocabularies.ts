@@ -253,7 +253,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     scope_type: ["agent", "brokerage", "multi_location", "platform", "team"],
   },
   blog_posts: {
-    publish_status: ["approved", "archived", "draft", "pending_review", "published", "scheduled"],
+    publish_status: ["approved", "archived", "draft", "pending_review", "published", "rejected", "scheduled"],
     publish_target: ["both", "embed", "hosted", "wordpress"],
     visibility_scope: ["agent", "brokerage", "multi_location", "platform", "team"],
   },
@@ -1184,7 +1184,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   property_alerts: {
     frequency: ["daily", "instant", "paused", "twice_daily", "weekly"],
     paused_by: ["agent", "buyer", "system"],
-    source: ["agent_created", "buyer_adjusted", "system_generated"],
+    source: ["agent_created", "buyer_adjusted", "system_generated", "text_conversation", "voice_conversation"],
   },
   property_interactions: {
     interaction_type: ["favorite", "inquiry", "offer", "price_alert_click", "save", "share", "tour_request", "view"],
