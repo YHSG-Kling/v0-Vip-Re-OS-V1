@@ -115,13 +115,26 @@ interface Props {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+// EVERY VALUE HERE MUST BE ONE campaign_sequence_steps.channel ADMITS.
+// "voice" was not. It is not in that column's CHECK — the real channels are
+// 'voice_drop' (a ringless voicemail) and 'ai_call' (a live AI call), which are
+// separate adapters with separate consent implications. Picking Voice built a
+// step whose INSERT was rejected by campaign_sequence_steps_channel_check
+// (verified live), so the option could never produce a saved step.
+//
+// Both real channels are now offered. They are TCPA-gated in the executor
+// (TCPA_CHANNELS = sms | voice_drop | ai_call), so a contact without consent or
+// on the DNC list is skipped at run time — the picker does not need its own gate.
+// scripts/sequence-step-palette-guard.ts pins every value in this list against
+// the live CHECK so an unsavable option cannot be added again.
 const CHANNELS = [
-  { value: "email",       label: "Email",       icon: Mail,           flagKey: null },
-  { value: "sms",         label: "SMS",          icon: MessageSquare,  flagKey: null },
-  { value: "voice",       label: "Voice",        icon: Phone,          flagKey: null },
-  { value: "in_app",      label: "In-App",       icon: Layers,         flagKey: null },
-  { value: "video",       label: "Video",        icon: Video,          flagKey: "video_campaigns" },
-  { value: "direct_mail", label: "Direct Mail",  icon: Send,           flagKey: "direct_mail_campaigns" },
+  { value: "email",       label: "Email",           icon: Mail,           flagKey: null },
+  { value: "sms",         label: "SMS",             icon: MessageSquare,  flagKey: null },
+  { value: "voice_drop",  label: "Voicemail Drop",  icon: Phone,          flagKey: null },
+  { value: "ai_call",     label: "AI Call",         icon: Phone,          flagKey: null },
+  { value: "in_app",      label: "In-App",          icon: Layers,         flagKey: null },
+  { value: "video",       label: "Video",           icon: Video,          flagKey: "video_campaigns" },
+  { value: "direct_mail", label: "Direct Mail",     icon: Send,           flagKey: "direct_mail_campaigns" },
 ]
 
 const PERSONALIZATION_TOKENS = [
