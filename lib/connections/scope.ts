@@ -64,6 +64,70 @@ export const CONNECTOR_PROVIDERS: Record<ConnectorDomain, readonly string[]> = {
   marketing:   [], // system-managed; not a user-selectable connection
 }
 
+/**
+ * BUILT BUT NOT OFFERED — the parking bay, so a provider is never "lost".
+ *
+ * These vendors have REAL code in the repo (OAuth configs, API clients, publish
+ * paths) but are deliberately absent from CONNECTOR_PROVIDERS above, so nothing
+ * offers them and nothing pretends they work. They live here — in the same file
+ * as the decision they are waiting on — rather than in a second allow-list,
+ * because a parallel list is exactly how the provider surface drifted before:
+ * a vendor got added to a CHECK constraint to make one call site stop failing,
+ * and the Connection OS never heard about it.
+ *
+ * This is the ONLY place to look when a customer asks "can you add X?", and the
+ * only place to change to say yes. Turning one on is: move it into
+ * CONNECTOR_PROVIDERS under its domain (creating the domain if needed), add a
+ * DOMAIN_AUTH entry in lib/connections/field-spec.ts, add a row to
+ * lib/providers/tenancy-matrix.ts saying who owns the account, and — for
+ * anything stored owner-scoped — admit the key in the platform_credentials
+ * CHECK. Nothing else in the app needs to change, because every selector and
+ * every write-side gate derives from CONNECTOR_PROVIDERS.
+ */
+export interface CandidateProvider {
+  /** Canonical provider id, as it would appear in CONNECTOR_PROVIDERS. */
+  provider: string
+  /** The domain it would join (may not exist yet — see `blockedBy`). */
+  domain: ConnectorDomain | "cms" | "ads" | "financial"
+  /** What already exists, so nobody re-builds it. */
+  built: string
+  /** What is genuinely missing before it can be offered. */
+  blockedBy: string
+}
+
+export const CANDIDATE_PROVIDERS: readonly CandidateProvider[] = [
+  {
+    provider: "xero",
+    domain: "financial",
+    built:
+      "Full OAuth config in app/api/integrations/oauth/[provider]/route.ts (authorize + token URLs, scopes) and an accounting-sync surface that reads a xero connection from integration_credentials.",
+    blockedBy:
+      "Not in CONNECTOR_PROVIDERS.financial and not an admitted platform_credentials.platform value, so the owner-scoped half of the connection cannot be stored. QuickBooks is the offered accounting provider today.",
+  },
+  {
+    provider: "google_ads",
+    domain: "ads",
+    built:
+      "OAuth config in the same route (stored under the 'google' key) plus ad-campaign plumbing that already understands a google platform.",
+    blockedBy:
+      "There is no `ads` connector domain at all — ad platforms are currently system-managed, and lib/integrations/ad-campaign-vocabulary.ts lists google under AD_PLATFORMS_WITHOUT_CONNECTIONS precisely because nothing offers the connection.",
+  },
+  {
+    provider: "wordpress",
+    domain: "cms",
+    built:
+      "A complete REST publish path (app/actions/blog.ts publishToWordPress: renders the post, injects the view-tracker and share block, sets rel=canonical for the 'both' target) plus the blog_posts.publish_target ladder and a Publish-to-WordPress button.",
+    blockedBy:
+      "No `cms` domain, no field spec for its credential shape (site URL + application password), and 'wordpress' is not an admitted platform_credentials.platform value. See lib/blog/wordpress-connection.ts, which answers honestly instead of running a query that cannot match.",
+  },
+] as const
+
+/** Pure: is this provider a known candidate rather than an unknown name? Lets a
+ *  UI answer "we support that, it just isn't switched on" instead of "no". */
+export function candidateProvider(providerId: string): CandidateProvider | null {
+  return CANDIDATE_PROVIDERS.find((c) => c.provider === providerId) ?? null
+}
+
 /** Pure: may this owner scope connect a given connector domain? Vendor/contact are leaf actors
  *  limited to calendar + social + financial; everyone else may connect any domain that has at
  *  least one selectable provider. */

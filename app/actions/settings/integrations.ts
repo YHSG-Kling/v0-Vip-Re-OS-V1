@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { CONNECTOR_PROVIDERS, domainsForScope } from "@/lib/connections/scope"
+import { CONNECTOR_PROVIDERS, domainsForScope, candidateProvider } from "@/lib/connections/scope"
 import { canonicalProvider } from "@/lib/integrations/connection-manager"
 
 export type PlatformCredential = {
@@ -176,6 +176,18 @@ export async function upsertPlatformCredential(params: {
   const canonical = canonicalProvider(params.platform)
   const allowed = BROKERAGE_CONNECTABLE_PROVIDERS()
   if (!allowed.includes(canonical)) {
+    // A provider we have BUILT but not switched on answers differently from one
+    // we have never heard of — otherwise a broker asking for Xero or WordPress
+    // gets a flat "not connectable" and we lose the request.
+    const candidate = candidateProvider(canonical)
+    if (candidate) {
+      return {
+        success: false,
+        error:
+          `'${params.platform}' is supported but not enabled yet — ${candidate.blockedBy} ` +
+          `Ask your platform admin to turn it on; the integration itself is already built.`,
+      }
+    }
     return {
       success: false,
       error: `'${params.platform}' is not a connectable provider. Connectable: ${allowed.join(", ")}`,
