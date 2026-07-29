@@ -47,6 +47,7 @@ import {
 import { selectAgentByCapacity, resolveBrokerageMaxLoad } from "./capacity-pick"
 import { loadRoutingProfiles } from "./routing-profiles"
 import { assignByDefaultMethod } from "./default-assignment"
+import { resolveSoloAgentOwner } from "./solo-agent"
 
 
 /** What the rule pass decided for a lead. */
@@ -180,6 +181,27 @@ export async function evaluateAndAssignLead(params: {
       assigned: false,
       reason: `Engine 2 requires lead_stage='qualified' AND lifecycle_state in (consented|qualified|assigned). ` +
         `Got lead_stage='${typedLead0.lead_stage}', lifecycle_state='${typedLead0.lifecycle_state}'.`,
+    }
+  }
+
+  // Step 2b: SOLO TENANT — the one agent owns every lead, ahead of rules and
+  // ahead of the brokerage default. The contact side always honoured this; the
+  // lead side did not, so a solo tenant's qualified leads were run through
+  // assignment_rules and a capacity comparison across whatever agents rows
+  // existed. Since m305 it was worse: an admin choosing the 'manual' default
+  // would have their OWN leads held for a person to place, and they are the only
+  // person there is.
+  {
+    const soloOwner = await resolveSoloAgentOwner(supabase, brokerageId)
+    if (soloOwner) {
+      await handleLeadAssigned({
+        leadId,
+        brokerageId,
+        agentId: soloOwner,
+        method: "solo_agent",
+        scoreAtAssignment: typedLead0.lead_score ?? 0,
+      })
+      return { assigned: true, agentId: soloOwner, reason: "Assigned via solo_agent (single-agent brokerage)" }
     }
   }
 

@@ -19,6 +19,7 @@ import {
   type RemotionCompositionRow,
   type CompositionTier,
 } from "@/lib/remotion/registry"
+import { resolvePlanTier } from "@/lib/billing/plan-tier"
 
 export interface CompositionLibraryRow extends RemotionCompositionRow {
   /** Lifetime render count for THIS brokerage. NULL when no renders. */
@@ -54,13 +55,9 @@ export async function getCompositionLibrarySnapshot(): Promise<{
 
   const svc = createServiceClient()
 
-  // Resolve subscription tier — falls back to solo_agent when null.
-  const { data: brokerageRow } = await svc.from("brokerages")
-    .select("subscription_tier")
-    .eq("id", ctx.brokerageId)
-    .maybeSingle()
-  const brokerageTier = (((brokerageRow as { subscription_tier: string | null } | null)?.subscription_tier)
-    ?? "solo_agent") as CompositionTier
+  // The tier from plan_tier — the column with writers. This read
+  // brokerages.subscription_tier, which nothing maintains (m306 drops it).
+  const brokerageTier = (await resolvePlanTier(svc, ctx.brokerageId)) as CompositionTier
 
   const [allCompositions, rendersAggR, stockR] = await Promise.all([
     listAllCompositions(),

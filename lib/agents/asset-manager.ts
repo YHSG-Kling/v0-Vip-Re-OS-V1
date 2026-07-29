@@ -26,6 +26,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { spawnManagedAgentSession, type AgentTemplate } from "./spawn-helper"
 import { buildOutcomeFor, buildDefineOutcomeEvent } from "./outcomes"
+import { resolvePlanTier } from "@/lib/billing/plan-tier"
 
 const ASSET_MANAGER_SYSTEM = `\
 You are the Asset Manager Agent for a real estate brokerage's media + brand library.
@@ -422,12 +423,10 @@ async function buildAssetSnapshot(brokerageId: string): Promise<AssetSnapshot> {
     // The brokerage's subscription tier determines which compositions
     // are reachable. Resolve the tier from the brokerages row, then
     // walk the registry against it.
-    const { data: brokerageTierRow } = await svc.from("brokerages")
-      .select("subscription_tier")
-      .eq("id", brokerageId)
-      .maybeSingle()
-    const subscriptionTier = ((brokerageTierRow as { subscription_tier: string | null } | null)
-      ?.subscription_tier ?? "solo_agent") as
+    // plan_tier — the column with writers. This read brokerages
+    // .subscription_tier, which nothing maintains, so the Remotion composition
+    // catalog a tenant was offered came from a stale value (m306 drops it).
+    const subscriptionTier = await resolvePlanTier(svc, brokerageId) as
       "solo_agent" | "team" | "brokerage" | "multi_location" | "platform"
 
     const { listCompositionsForTier } = await import("@/lib/remotion/registry")

@@ -27,6 +27,7 @@ import { headers } from "next/headers"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { isStripeConfigured } from "@/lib/billing/stripe-subscription-ops"
+import { toPlanTier } from "@/lib/billing/plan-tier"
 import {
   validateCouponInput,
   validateCouponForRedemption,
@@ -200,13 +201,13 @@ export async function listBrokeragesForCouponAction(): Promise<
   const svc = createServiceClient()
   const { data, error } = await svc
     .from("brokerages")
-    .select("id, name, subscription_tier, plan_tier, status")
+    .select("id, name, plan_tier, status")
     .order("name", { ascending: true })
     .limit(500)
   if (error) return { ok: false, error: error.message }
   const brokerages = ((data ?? []) as any[])
     .filter((b) => b.status !== "archived")
-    .map((b) => ({ id: b.id, name: b.name ?? "(unnamed)", tier: (b.subscription_tier ?? b.plan_tier) ?? null }))
+    .map((b) => ({ id: b.id, name: b.name ?? "(unnamed)", tier: toPlanTier(b.plan_tier) }))
   return { ok: true, brokerages }
 }
 
@@ -227,7 +228,7 @@ export async function redeemCouponForBrokerageAction(couponId: string, brokerage
 
   const [couponRes, brokerageRes, existingRes] = await Promise.all([
     svc.from("platform_coupons").select(COUPON_COLS).eq("id", couponId).maybeSingle(),
-    svc.from("brokerages").select("id, name, subscription_tier, plan_tier").eq("id", brokerageId).maybeSingle(),
+    svc.from("brokerages").select("id, name, plan_tier").eq("id", brokerageId).maybeSingle(),
     svc.from("platform_coupon_redemptions").select("id").eq("coupon_id", couponId).eq("brokerage_id", brokerageId).maybeSingle(),
   ])
   const coupon = couponRes.data as unknown as (PlatformCoupon & { id: string }) | null
@@ -235,7 +236,8 @@ export async function redeemCouponForBrokerageAction(couponId: string, brokerage
   if (!coupon) return { ok: false, error: "Coupon not found" }
   if (!brokerage) return { ok: false, error: "Brokerage not found" }
 
-  const tier = (brokerage.subscription_tier ?? brokerage.plan_tier) ?? null
+  // plan_tier only — a coupon must key off the tier the tenant is BILLED on (m306).
+  const tier = toPlanTier(brokerage.plan_tier)
   const check = validateCouponForRedemption(coupon, { tier, now: new Date(), existingRedemption: !!existingRes.data })
   if (!check.ok) return { ok: false, error: check.message }
 

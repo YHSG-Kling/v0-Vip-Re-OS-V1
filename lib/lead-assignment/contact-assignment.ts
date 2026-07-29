@@ -40,6 +40,8 @@ import {
 import { selectAgentByCapacity, resolveBrokerageMaxLoad } from "./capacity-pick"
 import { loadRoutingProfiles } from "./routing-profiles"
 import { assignByDefaultMethod } from "./default-assignment"
+import { resolveSoloAgentOwner } from "./solo-agent"
+import { resolvePlanTier } from "@/lib/billing/plan-tier"
 
 export interface ResolveAgentForContactInput {
   brokerageId: string
@@ -94,30 +96,20 @@ export async function resolveAgentForContact(
     if (ownerAgent?.team_id && !teamHint) teamHint = ownerAgent.team_id
   }
 
-  // 2. Solo-agent brokerage — single-agent shortcut.
-  const { data: brokerage } = await supabase
-    .from("brokerages")
-    .select("plan_tier")
-    .eq("id", brokerageId)
-    .maybeSingle()
-
-  if (brokerage?.plan_tier === "solo_agent") {
-    const { data: soloAgent } = await supabase
-      .from("agents")
-      .select("id")
-      .eq("brokerage_id", brokerageId)
-      .eq("is_active", true)
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle()
-    if (soloAgent?.id) {
-      return { agentId: soloAgent.id, method: "solo_agent" }
-    }
+  // 2. SOLO TENANT — the one agent owns everything, ahead of rules and ahead of
+  //    the brokerage default. Shared with Engine 2 so the guarantee holds on the
+  //    lead side too; see lib/lead-assignment/solo-agent.ts.
+  const soloOwner = await resolveSoloAgentOwner(supabase, brokerageId)
+  if (soloOwner) {
+    return { agentId: soloOwner, method: "solo_agent" }
   }
+
+  // The tier is still needed below for the single-team shortcut.
+  const planTier = await resolvePlanTier(supabase, brokerageId)
 
   // 2b. Team tier — a single-team brokerage gives every contact that team's
   //     affinity (rules + fallback then stay within the team).
-  if (!teamHint && brokerage?.plan_tier === "team") {
+  if (!teamHint && planTier === "team") {
     const { data: onlyTeam } = await supabase
       .from("teams")
       .select("id")

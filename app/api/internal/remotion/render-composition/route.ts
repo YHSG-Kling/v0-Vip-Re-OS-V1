@@ -34,6 +34,7 @@
 import "server-only"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolvePlanTier } from "@/lib/billing/plan-tier"
 import { getBundle } from "@/lib/remotion/bundle-cache"
 import { getComposition, recordRenderCompleted, type CompositionTier } from "@/lib/remotion/registry"
 import { finalizeCoordinatedRender } from "@/lib/remotion/render-coordinator"
@@ -250,12 +251,11 @@ async function resolveBrokerageTier(
   svc: ReturnType<typeof createServiceClient>,
   brokerageId: string,
 ): Promise<CompositionTier> {
-  const { data } = await svc.from("brokerages")
-    .select("subscription_tier")
-    .eq("id", brokerageId)
-    .maybeSingle()
-  const t = (data as { subscription_tier: string | null } | null)?.subscription_tier
-  return (t && (VALID_TIERS as string[]).includes(t)) ? (t as CompositionTier) : "solo_agent"
+  // plan_tier — the column with writers. This read brokerages.subscription_tier,
+  // which nothing maintained, so the tier gating a RENDER came from a stale value
+  // (m306 dropped it). resolvePlanTier falls to the tightest tier when absent.
+  const t = await resolvePlanTier(svc, brokerageId)
+  return (VALID_TIERS as string[]).includes(t) ? (t as CompositionTier) : "solo_agent"
 }
 
 async function resolveChromium(): Promise<string | undefined> {

@@ -35,6 +35,7 @@
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 import {
   pickAgentForRule,
   previewRuleRouting,
@@ -52,6 +53,9 @@ const check = (n: string, c: boolean, detail?: string) => {
   if (c) { pass++; console.log(`  ✓ ${n}`) }
   else { fail++; fails.push(n + (detail ? ` — ${detail}` : "")); console.log(`  ✗ ${n}${detail ? ` — ${detail}` : ""}`) }
 }
+/** The dropped brokerages column, SINGULAR — never the subscription_tiers table. */
+const TWIN_READ = /subscription_tier(?!s)/
+
 const src = (p: string) => (existsSync(join(process.cwd(), p)) ? readFileSync(join(process.cwd(), p), "utf8") : "")
 
 console.log("══════════════════════════════════════════════════")
@@ -203,6 +207,96 @@ console.log("\n[one resolver — the third implementation is gone]")
     check(`${f}: no "round_robin ? rotate : pool[0]" left`,
       !/rule_type === ["']round_robin["'][\s\S]{0,160}?:\s*(pool\[0\]|0\b)/.test(s))
   }
+}
+
+console.log("\n[a SOLO tenant gets everything — every ingress path, ahead of everything]")
+{
+  // Owner's rule: on a solo_agent subscription every lead and contact belongs to
+  // that one agent, whether it arrives from their own site, another real-estate
+  // site, a lead magnet or form they built, a CSV import, a QR scan or a call.
+  //
+  // The CONTACT side honoured it. The LEAD side did not: evaluateAndAssignLead
+  // went straight to assignment_rules and then the brokerage default. Wrong three
+  // ways for a solo tenant, and the third arrived with m305: an admin choosing
+  // the 'manual' default would have their OWN leads held for a person to place,
+  // and they are the only person there is.
+  const solo = src("lib/lead-assignment/solo-agent.ts")
+  check("there is ONE solo resolver", solo.length > 0)
+  const stripComments = (t: string) =>
+    t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  check("…and it decides the tier through the canonical accessor, not a raw column read",
+    /resolvePlanTier/.test(solo) && !TWIN_READ.test(stripComments(solo)))
+  check("…returns null for a non-solo brokerage rather than guessing",
+    /if \(tier !== "solo_agent"\) return null/.test(solo))
+  check("…and picks the oldest active agent, so ownership never silently migrates",
+    /order\("created_at", \{ ascending: true \}\)/.test(solo))
+
+  const engine = src("lib/lead-assignment/assignment-engine.ts")
+  const contact = src("lib/lead-assignment/contact-assignment.ts")
+  check("Engine 2 (leads) now honours the solo guarantee", /resolveSoloAgentOwner/.test(engine))
+  check("…BEFORE it loads any assignment rule",
+    engine.indexOf("resolveSoloAgentOwner") < engine.indexOf("resolveAgentByRules"))
+  check("…and still ledgers the assignment through the canonical handler",
+    /resolveSoloAgentOwner[\s\S]{0,600}?handleLeadAssigned/.test(engine))
+  check("the contact resolver uses the SAME resolver, so the two cannot disagree",
+    /resolveSoloAgentOwner/.test(contact))
+  check("…and no longer keeps its own inline plan_tier solo query",
+    !/plan_tier === "solo_agent"/.test(contact))
+
+  // Every ingress path routes through one of the two engines — that is what makes
+  // the guarantee hold for imports, QR scans, forms and scraped territory alike.
+  for (const f of [
+    "lib/contact-pipeline/contact-capture.ts",
+    "lib/platform/tenant-import.ts",
+    "lib/application/lead-application-service.ts",
+    "app/actions/lead-import/import-actions.ts",
+    "app/api/qr/submit/route.ts",
+  ]) {
+    check(`${f} routes through the canonical contact resolver`,
+      /resolveAgentForContact/.test(src(f)))
+  }
+}
+
+console.log("\n[ONE tier per tenant — the unwritten twin is gone (m306)]")
+{
+  // brokerages carried plan_tier AND subscription_tier. Only plan_tier had
+  // writers (lib/billing/sync-plan-tier.ts syncs it from Stripe and calls itself
+  // "the runtime cache"); nothing wrote subscription_tier except a test fixture,
+  // which set it INSTEAD of plan_tier. Seven production readers preferred the
+  // unwritten one. Live, VIP Premier Realty was plan_tier=solo_agent with
+  // subscription_tier=brokerage — a SOLO tenant to the lead router and a
+  // BROKERAGE tenant to the asset manager, the Remotion catalog, its own billing
+  // save-offer and the coupon check, simultaneously.
+  const cols = (SCHEMA_SNAPSHOT as Record<string, string[]>).brokerages ?? []
+  check("plan_tier is the surviving tier column", cols.includes("plan_tier"))
+  check("…and the subscription_tier twin is dropped", !cols.includes("subscription_tier"))
+
+  const mod = src("lib/billing/plan-tier.ts")
+  check("there is one accessor, and it reads plan_tier only",
+    /\.select\("plan_tier"\)/.test(mod) && !/subscription_tier/.test(mod.replace(/\/\/[^\n]*/g, "")))
+  check("…falling to the TIGHTEST tier, so a mis-tagged tenant gets no free upgrade",
+    /FALLBACK_TIER: PlanTier = "solo_agent"/.test(mod))
+
+  // Every former reader repointed. A missed one is a stale tier decision.
+  for (const f of [
+    "lib/agents/brokerage-context.ts",
+    "lib/agents/asset-manager.ts",
+    "app/actions/composition-library.ts",
+    "app/actions/billing.ts",
+    "app/actions/superadmin/coupons.ts",
+    "app/api/internal/remotion/render-composition/route.ts",
+  ]) {
+    const s = src(f)
+    // TWIN_READ is the SINGULAR column. `subscription_tiers` (plural) is the plan
+    // catalog TABLE and joining to it is correct — billing legitimately reads
+    // subscription_tiers:tier_id(monthly_price_cents) for the save-offer price.
+    check(`${f}: no longer reads brokerages.subscription_tier`,
+      !TWIN_READ.test(s.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "")))
+    check(`${f}: resolves the tier through lib/billing/plan-tier`,
+      /from "@\/lib\/billing\/plan-tier"/.test(s))
+  }
+  check("the test fixture writes the column with writers, not the twin",
+    /plan_tier: "solo_agent"/.test(src("scripts/studio-session-simulator.ts")))
 }
 
 console.log("\n[the DEFAULT method is the admin's decision, not a hardcoded one (m305)]")

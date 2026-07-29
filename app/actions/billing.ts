@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
+import { toPlanTier } from "@/lib/billing/plan-tier"
 
 const BILLING_ADMIN_ROLES = new Set(["admin", "broker", "broker_owner", "superadmin", "super_admin"])
 
@@ -64,7 +65,7 @@ async function loadSaveOfferResolution(brokerageId: string) {
   const config = resolveRetentionOfferConfig(rawConfig)
 
   const [brokerageRes, subRes] = await Promise.all([
-    svc.from("brokerages").select("subscription_tier, plan_tier").eq("id", brokerageId).maybeSingle(),
+    svc.from("brokerages").select("plan_tier").eq("id", brokerageId).maybeSingle(),
     svc
       .from("subscriptions")
       .select("id, stripe_subscription_id, status, subscription_tiers:tier_id(monthly_price_cents)")
@@ -95,7 +96,9 @@ async function loadSaveOfferResolution(brokerageId: string) {
     }
   }
 
-  const tier = ((brokerageRes.data as any)?.subscription_tier ?? (brokerageRes.data as any)?.plan_tier) ?? null
+  // plan_tier only — the save-offer a churning tenant is shown must key off the
+  // tier they are actually BILLED on, not an unmaintained twin (m306).
+  const tier = toPlanTier((brokerageRes.data as any)?.plan_tier)
   const monthlyPriceCents = Number((subRes.data as any)?.subscription_tiers?.monthly_price_cents ?? 0)
   const resolution = resolveSaveOffer({
     config, coupon, tier, monthlyPriceCents, existingRedemption, now: new Date(),
