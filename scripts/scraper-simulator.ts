@@ -884,10 +884,22 @@ async function testVendorGateway() {
   const noOwnCaps = { canOwn: false, hasAgentId: false, isBrokerageManager: false, hasBrokerage: true }
   const platformNoBrokerage = { canOwn: true, hasAgentId: false, isBrokerageManager: false, hasBrokerage: false }
   check("availability: api_key supported when actor can own + has a brokerage (esign docusign)", isConnectSupported("esign", "docusign", vendorCaps).available && isConnectSupported("esign", "docusign", agentCaps).available)
-  check("availability: stripe Connect available to any owner; quickbooks needs brokerage manager", isConnectSupported("financial", "stripe", vendorCaps).available && !isConnectSupported("financial", "quickbooks", vendorCaps).available)
+  // QuickBooks is OWNER-scoped, not brokerage-only. These two assertions predate
+  // the scope-aware accounting layer ("QuickBooks/Stripe options at every level"),
+  // which made every scope in lib/connections/accounting-scopes.ts —
+  // platform | brokerage | team | agent | VENDOR — able to connect its OWN
+  // QuickBooks company, stored under its own (owner_type, owner_id). A vendor
+  // connecting their books is the designed behaviour, not a leak: the platform's
+  // own company stays unreachable behind the distinct 'platform_quickbooks' key.
+  check("availability: stripe Connect AND quickbooks are available to any owner-capable actor",
+    isConnectSupported("financial", "stripe", vendorCaps).available
+    && isConnectSupported("financial", "quickbooks", vendorCaps).available)
   check("availability: social OAuth supported for any owner (stored by user_id)", isConnectSupported("social", "meta", vendorCaps).available && isConnectSupported("social", "linkedin", agentCaps).available)
   check("availability: email/calendar OAuth available to any owner with a brokerage (incl vendor/contact)", isConnectSupported("calendar", "gmail", agentCaps).available && isConnectSupported("email", "gmail", vendorCaps).available && !isConnectSupported("email", "gmail", platformNoBrokerage).available)
-  check("availability: QuickBooks OAuth needs brokerage manager", isConnectSupported("financial", "quickbooks", { canOwn: true, hasAgentId: false, isBrokerageManager: true, hasBrokerage: true }).available && !isConnectSupported("financial", "quickbooks", vendorCaps).available)
+  check("availability: QuickBooks needs only an owner — NOT a brokerage manager, and not even a brokerage anchor (platform connects its own books)",
+    isConnectSupported("financial", "quickbooks", { canOwn: true, hasAgentId: false, isBrokerageManager: true, hasBrokerage: true }).available
+    && isConnectSupported("financial", "quickbooks", platformNoBrokerage).available
+    && !isConnectSupported("financial", "quickbooks", noOwnCaps).available)
   check("availability: api_key unavailable without a brokerage anchor (platform/superadmin)", !isConnectSupported("esign", "docusign", platformNoBrokerage).available && !isConnectSupported("transaction", "dotloop", platformNoBrokerage).available)
   check("availability: nothing is connectable without an owner id", !isConnectSupported("esign", "docusign", noOwnCaps).available && !isConnectSupported("social", "meta", noOwnCaps).available)
 }

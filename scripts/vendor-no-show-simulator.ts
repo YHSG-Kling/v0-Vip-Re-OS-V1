@@ -89,7 +89,13 @@ function sourceLayer() {
   const auto = src("lib/kernel/vendor-no-show-autopilot.ts")
   check("autopilot marks the ghosted booking no_show (the missing writer)", /updateVendorBookingStatus\(\{[\s\S]*?toStatus: "no_show"/.test(auto))
   check("autopilot proposes a GATED backup (agent-audience, nothing auto-books)", /proposeClientMessage\(\{[\s\S]*?agentKind: "deal_coordinator"[\s\S]*?audience: "agent"/.test(auto))
-  check("backup ranking uses the vendor_directory preference source of truth", /resolvePreferredVendorIds\(bench/.test(auto))
+  // Was: /resolvePreferredVendorIds\(bench/ — the vendor_directory bridge, deleted
+  // as dead after the round-4 repoint moved preference onto the `vendors` bench
+  // itself (broker approval, status='active'). The promise is unchanged — the
+  // backup is ranked preference-first — only its source moved.
+  check("backup ranking is preference-first from the vendors bench (broker-approved)",
+    /from\("vendors"\)[\s\S]*?\.eq\("status", "active"\)[\s\S]*?preferredVendorIds/.test(auto)
+    && /rankVendors\(pool, \{ preferredVendorIds \}\)/.test(auto))
   const cron = src("app/api/cron/vendor-orchestration/route.ts")
   check("the daily vendor-orchestration cron runs the autopilot", /runVendorNoShowAutopilotAll/.test(cron))
   const reg = src("lib/kernel/manager-registry.ts")

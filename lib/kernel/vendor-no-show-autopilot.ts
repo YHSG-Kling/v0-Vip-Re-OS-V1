@@ -10,7 +10,7 @@
 // marketplace heals a no-show.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { rankVendors, resolvePreferredVendorIds, type BenchVendor, type DirectoryPref } from "@/lib/kernel/vendor-orchestration"
+import { rankVendors, type BenchVendor } from "@/lib/kernel/vendor-orchestration"
 
 type Svc = ReturnType<typeof createServiceClient>
 

@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   vendorGapForStage, rankVendors, pickVendorForGap, composeQuoteRequestFallback,
-  runVendorOrchestration, resolvePreferredVendorIds, type BenchVendor, type DealCoverage,
+  runVendorOrchestration, type BenchVendor, type DealCoverage,
 } from "../lib/kernel/vendor-orchestration"
 
 let passed = 0, failed = 0; const fails: string[] = []
@@ -93,23 +93,31 @@ function layer1() {
     { id: "v2", name: "Budget Home Inspect", category: "Inspector", email: null, rating: 5 },
     { id: "v3", name: "Summit Title", category: "Title Company", email: null, rating: 4 },
   ]
-  const directory = [
-    { name: "Ace Inspections", category: "Inspector", preferred: true },   // broker's preferred pick
-    { name: "Summit Title", category: "Title Company", preferred: false },
-  ]
-  const prefIds = resolvePreferredVendorIds(bench, directory)
-  check("directory preferred=true resolves to the matching bench id", prefIds.has("v1") && prefIds.size === 1)
-  check("a NON-preferred directory row does not mark its bench vendor", !prefIds.has("v3"))
-  check("case/space-insensitive name+category match", resolvePreferredVendorIds(bench, [{ name: " ace inspections ", category: "inspector", preferred: true }]).has("v1"))
-  check("no directory rows → empty set (honest, no false preference)", resolvePreferredVendorIds(bench, []).size === 0)
-  // The resolved set makes ranking preference-first even though the LOWER-rated vendor is preferred.
+  // PREFERENCE NO LONGER COMES FROM vendor_directory.
+  // These assertions used to drive resolvePreferredVendorIds, the bridge that
+  // matched a broker's vendor_directory `preferred` flag onto the `vendors`
+  // bench by (name, category) because the two tables have no FK. The round-4
+  // burn-down found vendor_directory to be a writer-less legacy twin FOR THIS
+  // PURPOSE and repointed the orchestrator onto `vendors`, where explicit broker
+  // approval — status='active', set only by approveVendor — is the real
+  // preference signal. The bridge then sat with ZERO production callers, kept
+  // alive solely by this simulator; it is deleted, and these now assert the
+  // mechanism that actually runs. (vendor_directory itself is still live for
+  // lib/vendors/premium-placement.ts — only the bridge was dead.)
+  const prefIds = new Set(["v1"])   // as runVendorOrchestration builds it: the approved ids
   const pickInspector: any = { category: "Inspector", serviceType: "home_inspection", label: "home inspection" }
-  check("preferred (lower-rated) beats the higher-rated non-preferred when sourced from the directory",
+  check("preference beats rating — the preferred v1 wins over higher-rated v2",
     pickVendorForGap(bench, pickInspector, { preferredVendorIds: prefIds })?.id === "v1")
+  check("no preferred ids → highest rating wins (honest, no false preference)",
+    pickVendorForGap(bench, pickInspector, { preferredVendorIds: new Set<string>() })?.id === "v2")
 
-  const orchSrc = readFileSync(join(process.cwd(), "lib/kernel/vendor-orchestration.ts"), "utf8")
-  check("runVendorOrchestration loads vendor_directory preferred rows + resolves them",
-    /from\("vendor_directory"\)[\s\S]*?resolvePreferredVendorIds\(bench/.test(orchSrc))
+  const orchRaw = readFileSync(join(process.cwd(), "lib/kernel/vendor-orchestration.ts"), "utf8")
+  // Comments stripped: this file legitimately DOCUMENTS the retired bridge.
+  const orchSrc = orchRaw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  check("the retired bridge is gone — no resolvePreferredVendorIds, no vendor_directory read",
+    !/resolvePreferredVendorIds/.test(orchSrc) && !/from\("vendor_directory"\)/.test(orchSrc))
+  check("preference is read from the vendors bench: broker-approved status='active'",
+    /from\("vendors"\)[\s\S]*?\.eq\("status", "active"\)[\s\S]*?preferredVendorIds/.test(orchSrc))
   check("the resolved preferred set is passed into the pick", /pickVendorForGap\(eligibleBench, gap, \{ preferredVendorIds, slaByVendor \}\)/.test(orchSrc))
   check("a rating-suppressed vendor is filtered out of the eligible bench before the pick", /loadSuppressedVendorIds\(supabase, brokerageId\)[\s\S]*?eligibleBench =/.test(orchSrc))
   check("runVendorOrchestration computes SLA (incl. no-shows) + passes it so proven breachers demote", /computeVendorSla\(\(slaBookings/.test(orchSrc) && /status\.eq\.no_show/.test(orchSrc))

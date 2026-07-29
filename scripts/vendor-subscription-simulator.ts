@@ -61,7 +61,17 @@ function pureLayer() {
 function sourceLayer() {
   console.log("\n[wiring — Stripe SDK checkout, webhook applier, UI, owned]")
   const act = src("app/actions/vendor-billing.ts")
-  check("checkout + portal reuse the canonical lib/stripe proxy", /from "@\/lib\/stripe"/.test(act) && /stripe\.checkout\.sessions\.create/.test(act) && /stripe\.billingPortal\.sessions\.create/.test(act))
+  // The portal call moved OUT of this action into lib/billing/stripe-portal.ts —
+  // the billing-convergence keep-one, shared with the brokerage-tenant portal so
+  // the two paths cannot drift. Asserting the inline stripe.billingPortal call
+  // here pinned the old shape and failed on the consolidation that was the point.
+  const portal = src("lib/billing/stripe-portal.ts")
+  check("checkout + portal reuse the canonical lib/stripe proxy",
+    /from "@\/lib\/stripe"/.test(act) && /stripe\.checkout\.sessions\.create/.test(act)
+    && /createBillingPortalUrl/.test(act)
+    // The helper reaches the proxy via a DYNAMIC import — same canonical module,
+    // different syntax; match either so this tests the dependency, not the form.
+    && /(from|import\()\s*"@\/lib\/stripe"/.test(portal) && /stripe\.billingPortal\.sessions\.create/.test(portal))
   check("applyVendorSubscriptionEvent maps Stripe events → status + suspend", /applyVendorSubscriptionEvent/.test(act) && /mapStripeEventToStatus/.test(act) && /update\.status = "suspended"/.test(act))
   const wh = src("app/api/webhooks/stripe/vendor/route.ts")
   check("the webhook verifies the signature + calls the applier", /constructEvent\(body, sig, secret\)/.test(wh) && /applyVendorSubscriptionEvent\(/.test(wh))

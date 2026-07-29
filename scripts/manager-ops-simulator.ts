@@ -41,7 +41,13 @@ function sourceLayer() {
   check("staff-gated action exposes it", /export async function getManagerOpsAction/.test(src("app/actions/superadmin/ai-ops.ts")))
   check("the AI-ops console surfaces the per-manager SLO panel", /ManagerOpsPanel/.test(src("app/dashboard/superadmin/ai-ops/page.tsx")))
   const reg = src("lib/kernel/manager-registry.ts")
-  check("burn domain owned by data_steward with a runnable proof", /manager_ops_slo:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:manager-ops"/.test(reg))
+  // Owner is cron_manager, not data_steward. This assertion and the registry
+  // entry it checks were authored in the SAME commit disagreeing with each
+  // other, and because the simulator was never wired nobody saw it. The
+  // registry is the one that is right: cron_manager owns "schedules,
+  // heartbeat & loop health (operations)", which is exactly this domain;
+  // data_steward owns "data integrity, identity & field stewardship".
+  check("burn domain owned by cron_manager with a runnable proof", /manager_ops_slo:\s*\{\s*manager:\s*"cron_manager",\s*proof:\s*"test:manager-ops"/.test(reg))
   check("package.json wires the proof", /"test:manager-ops":\s*"tsx scripts\/manager-ops-simulator\.ts"/.test(src("package.json")))
 }
 
