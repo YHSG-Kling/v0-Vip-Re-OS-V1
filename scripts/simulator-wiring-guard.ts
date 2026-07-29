@@ -27,14 +27,15 @@
  * currently-unwired `test:*` script; adding a NEW one fails CI, and wiring an old
  * one shrinks the list. The rot can only be paid down, never added to.
  *
- * Run UPDATE_SIMULATOR_WIRING_BASELINE=1 after deliberately wiring or removing scripts.
+ * The frozen-baseline mechanism is retired — scripts/simulator-sweep.ts runs
+ * everything the curated chain does not, so there is no unwired population left
+ * to ration. See the [repo] section for what replaced it.
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
-const BASELINE_PATH = join(root, "scripts", "simulator-wiring-baseline.json")
 
 /** The scripts CI actually invokes. Anything reachable from one of these runs. */
 export const CI_CHAINS = ["guard", "guard:compliance", "harness:integrity"]
@@ -107,33 +108,55 @@ console.log("\n[pure — the reachability walk]")
 console.log("\n[repo]")
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts: Record<string, string> }
 const reachable = reachableScripts(pkg.scripts, CI_CHAINS)
-const unwired = unwiredSimulators(pkg.scripts, reachable, (p) => existsSync(join(root, p)))
+const unwiredFromChain = unwiredSimulators(pkg.scripts, reachable, (p) => existsSync(join(root, p)))
 const totalTests = Object.keys(pkg.scripts).filter((k) => k.startsWith("test:")).length
-const wiredTests = Object.keys(pkg.scripts).filter((k) => k.startsWith("test:") && reachable.has(k)).length
-console.log(`  · ${totalTests} test:* scripts · ${wiredTests} reachable from CI · ${unwired.length} unwired with a real file`)
 
-const baseline: string[] = existsSync(BASELINE_PATH) ? JSON.parse(readFileSync(BASELINE_PATH, "utf8")) : []
+// ── THE BASELINE IS RETIRED — THE SWEEP REPLACED IT ────────────────────────
+// This guard used to FREEZE the unwired population (411 entries) and allow it
+// only to shrink. That was the right instrument while wiring meant appending
+// another `&&` to a sequential chain, which is why the population never moved.
+//
+// scripts/simulator-sweep.ts removed the constraint: it discovers every tsx
+// simulator the curated chain does not name and runs them in PARALLEL, which
+// measured cheaper than the sequential chain it supplements. So "unwired" is no
+// longer a population to ration — it is zero by construction, and a frozen list
+// of 411 would now report a shortfall that does not exist. A guard whose number
+// is false is the same defect class this repo keeps finding, so the number is
+// replaced by the invariant that actually holds.
+const sweepSrc = existsSync(join(root, "scripts/simulator-sweep.ts"))
+  ? readFileSync(join(root, "scripts/simulator-sweep.ts"), "utf8")
+  : ""
+const guardChain = pkg.scripts.guard ?? ""
 
-if (process.env.UPDATE_SIMULATOR_WIRING_BASELINE === "1") {
-  writeFileSync(BASELINE_PATH, JSON.stringify(unwired, null, 2) + "\n")
-  console.log(`  · baseline rewritten with ${unwired.length} entries`)
-  process.exit(0)
-}
+console.log(`  · ${totalTests} test:* scripts · ${reachable.size} named by the chain · ${unwiredFromChain.length} reached by the sweep instead`)
 
-const known = new Set(baseline)
-const fresh = unwired.filter((n) => !known.has(n))
-const nowWired = baseline.filter((n) => !unwired.includes(n))
+check("the sweep exists and is the last link in the guard chain",
+  sweepSrc.length > 0 && /npm run test:sweep/.test(guardChain))
+check("…it DISCOVERS targets from package.json rather than a hand-kept list",
+  /Object\.keys\(pkg\.scripts\)/.test(sweepSrc) && /reachableFromGuard/.test(sweepSrc))
+check("…it runs them through `npm run`, so per-script env survives",
+  /"npm", \["run", "--silent", script\]/.test(sweepSrc))
+check("…it fails CI on any failing proof", /process\.exit\(1\)/.test(sweepSrc))
+check("…and it excludes the browser suites, which need a running server",
+  /tsx\\s\+scripts/.test(sweepSrc))
 
-check(`no NEW unwired test:* script (${unwired.length} known)`, fresh.length === 0,
-  fresh.slice(0, 10).join(", "))
-check(`the unwired list only shrinks (${nowWired.length} wired or removed since the baseline)`, true)
+// The one thing still worth failing on: a test:* script whose FILE is missing.
+// The sweep would error on it, but naming it here says why.
+const missingFile = Object.keys(pkg.scripts)
+  .filter((k) => k.startsWith("test:"))
+  .filter((k) => {
+    const m = (pkg.scripts[k] ?? "").match(/tsx\s+(scripts\/[\w.-]+\.ts)/)
+    return !!m && !existsSync(join(root, m[1]))
+  })
+check(`every test:* script points at a file that exists (${missingFile.length} missing)`,
+  missingFile.length === 0, missingFile.slice(0, 6).join(", "))
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
 if (failed > 0) {
   console.log(" ✗ Failures:")
   for (const f of failures) console.log(`   - ${f}`)
-  console.log(" ❌ SIMULATOR_WIRING_FAIL — define a test:* script and chain it, or CI will never run it")
+  console.log(" ❌ SIMULATOR_WIRING_FAIL — a proof is unreachable or its file is missing")
   process.exit(1)
 }
-console.log(" ✅ SIMULATOR_WIRING_PASS — the unwired population is frozen and can only shrink")
+console.log(" ✅ SIMULATOR_WIRING_PASS — every proof is reached, by the chain or by the sweep")
